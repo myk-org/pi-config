@@ -1088,11 +1088,13 @@ Control your pi sessions from your phone via Discord DMs.
 Agent questions arrive with **Approve/Deny** buttons or a dropdown; you can also
 reply `yes`/`no`, an option number, or the option text. In a server, watching a
 session opens a **thread** for it (DMs are used as a fallback).
-Channel and thread identity are resolved before newest-active fallback. Explicit
-threads never fall back when disconnected. Menu prompts and ordinary active-fallback
-prompts establish reply subscriptions without changing the watch; private subscriptions
-survive restarts. `/file` returns a private interaction attachment. Guild `/cancel`
-refuses ambiguous channel questions; DMs dismiss the newest question.
+Channel and thread identity are resolved before newest-active fallback (excluding
+sessions claimed by other Discord users). Explicit threads and channels whose target
+session died never fall back. Menu prompts and ordinary active-fallback prompts
+establish reply subscriptions without changing the watch; private subscriptions
+survive restarts. `/file` returns a private interaction attachment. Guild answers and
+`/cancel` never cross into an active-fallback session and refuse ambiguous channel
+questions; DMs dismiss the newest question.
 
 The bot fails closed: without `DISCORD_ALLOWED_USERS` it refuses to start unless
 you set `DISCORD_ALLOW_ALL=true`. Commands, reaction shortcuts (⏹ 🔁 🗑), the

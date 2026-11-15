@@ -146,19 +146,23 @@ Once you are watching a session, the bot's thread or DM behaves like the Pi prom
 - `/stop` also works as a plain DM message
 
 When no watch or channel identity resolves, messages, message-menu prompts and
-session commands use the connected session with the most recent activity.
-Explicit thread identities and ambiguous shared-channel routes do not fall back.
-Message-menu prompts and ordinary active-fallback prompts keep your watch unchanged
-and establish a reply subscription for the selected session. If the existing destination
-is missing or unavailable, the bot opens a private DM before forwarding the prompt.
-If that DM cannot be opened, the prompt is not sent. These private session subscriptions
-survive bot restarts. Availability checks cannot prevent permission changes after forwarding.
-A transient session disconnect does not erase your saved watch. Sending a DM does
-not move an existing session output destination out of its retained thread/channel;
-new fallback subscriptions without an available destination use the private DM.
+session commands use the connected session with the most recent activity,
+excluding sessions claimed by another Discord user. Explicit thread identities,
+channels whose target session died, and ambiguous shared-channel routes do not
+fall back. Message-menu prompts and ordinary active-fallback prompts keep your
+watch unchanged and establish a reply subscription for the selected session. If
+the existing destination is missing or unavailable, the bot opens a private DM
+before forwarding the prompt. If that DM cannot be opened, the prompt is not
+sent. These private session subscriptions survive bot restarts. Availability
+checks cannot prevent permission changes after forwarding. A transient session
+disconnect does not erase your saved watch. Sending a DM does not move an
+existing session output destination out of its retained thread/channel; new
+fallback subscriptions without an available destination use the private DM.
 
-Guild `/cancel` and `/dismiss` select the session asking in that channel and refuse
-when multiple sessions are asking there. DMs still dismiss the newest pending question.
+Guild answers, `/cancel` and `/dismiss` only address prompts belonging to that
+channel or thread (never an active-fallback session) and refuse when multiple
+sessions are asking there; failed dismissals leave fallback prompt targets
+reachable. DMs still dismiss the newest pending question.
 
 ## Answering the agent
 

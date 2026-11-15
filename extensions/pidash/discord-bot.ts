@@ -65,6 +65,7 @@ import { checkoutName } from "../shared/chat/chat-sessions.ts";
 
 const log = createLogger("pidash-discord");
 
+const INBOUND_DROP_LOG_WINDOW_MS = 60_000;
 const SEEN_MESSAGE_LIMIT = 500;
 const STREAM_EDIT_INTERVAL_MS = 1500;
 const TYPING_REFRESH_MS = 8000;
@@ -358,17 +359,46 @@ export function setupDiscordBot(opts: {
     return null;
   }
 
+  /** Ambient guild-gate drops repeat on every message in unrelated channels; throttle those per
+   *  channel+reason (and known bot user) while keeping every interactive refusal unthrottled. */
+  const dropLoggedAt = new Map<string, number>();
   /** The routing decision last logged per channel. A busy channel repeats one decision for every
    *  message it carries, so only a NEW decision gets a line — bounded, no timer. */
   const routedDecisions = new Map<string, string>();
-  /** Every refusal logs, always: a refusal that logs once and hides the second occurrence is how a
-   *  broken route survived several deploys (issue #1075). */
+  const fallbackDecisions = new Map<string, string>();
+
+  function hasBotState(state: RuntimeUserState | undefined): boolean {
+    return Boolean(state && (
+      state.watchedSessionId
+      || state.responseChannelId
+      || state.threadId
+      || Object.keys(state.threads ?? {}).length
+      || Object.keys(state.targets ?? {}).length
+    ));
+  }
+
+  function claimsSession(state: RuntimeUserState | undefined, sessionId: string): boolean {
+    return Boolean(state && (ownsSession(state, sessionId) || state.threads?.[sessionId]));
+  }
+
   function logInboundDrop(
     facts: Omit<InboundRouteFacts, "reason"> & { reason: string },
     level: "info" | "warn" = "warn",
     /** Which handler decided — merged into the same line, so one event is one line. */
     trace?: InboundTraceFacts,
+    throttleKey?: string,
   ): void {
+    if (throttleKey) {
+      const now = Date.now();
+      const last = dropLoggedAt.get(throttleKey);
+      if (last !== undefined && now - last < INBOUND_DROP_LOG_WINDOW_MS) return;
+      dropLoggedAt.delete(throttleKey);
+      if (dropLoggedAt.size >= SEEN_MESSAGE_LIMIT) {
+        const oldest = dropLoggedAt.keys().next().value;
+        if (oldest !== undefined) dropLoggedAt.delete(oldest);
+      }
+      dropLoggedAt.set(throttleKey, now);
+    }
     const record = trace
       ? { ...inboundRouteRecord(facts), ...inboundTraceRecord(trace) }
       : inboundRouteRecord(facts);
@@ -393,21 +423,42 @@ export function setupDiscordBot(opts: {
       userId?: string | null;
     },
   ): InboundSession {
-    if (resolved.sessionId || resolved.ambiguous) return resolved;
-    const active = [...piClients.entries()].filter(([, client]) => Boolean(client?.ws)).map(([sessionId]) => sessionId);
-    if (!active.length) return resolved;
+    const fallbackKey = `${where.handler}:${where.channelId ?? ""}:${where.userId ?? ""}`;
+    if (resolved.sessionId || resolved.ambiguous || resolved.deadTarget) {
+      fallbackDecisions.delete(fallbackKey);
+      return resolved;
+    }
+    const callerState = where.userId ? runtime.get(where.userId) : undefined;
+    const active = [...piClients.entries()]
+      .filter(([sessionId, client]) => Boolean(client?.ws) && (
+        claimsSession(callerState, sessionId)
+        || ![...runtime.entries()].some(([uid, other]) => uid !== where.userId && claimsSession(other, sessionId))
+      ))
+      .map(([sessionId]) => sessionId);
+    if (!active.length) {
+      fallbackDecisions.delete(fallbackKey);
+      return resolved;
+    }
     const lastActivity = (sessionId: string) => Number(piClients.get(sessionId)?.session?.lastActivity) || 0;
     const sessionId = active.reduce((newest, id) => (lastActivity(id) > lastActivity(newest) ? id : newest));
-    log.debug("discord_inbound_fallback", {
-      reason: active.length === 1 ? "fallback_single_active" : "fallback_newest_active",
-      sessionId,
-      candidates: active.length,
-      handler: where.handler,
-      channelId: where.channelId ?? null,
-      guildId: where.guildId ?? null,
-      watchedSessionId: where.watchedSessionId ?? null,
-      userId: where.userId ?? null,
-    });
+    if (fallbackDecisions.get(fallbackKey) !== sessionId) {
+      fallbackDecisions.delete(fallbackKey);
+      if (fallbackDecisions.size >= SEEN_MESSAGE_LIMIT) {
+        const oldest = fallbackDecisions.keys().next().value;
+        if (oldest !== undefined) fallbackDecisions.delete(oldest);
+      }
+      fallbackDecisions.set(fallbackKey, sessionId);
+      log.debug("discord_inbound_fallback", {
+        reason: active.length === 1 ? "fallback_single_active" : "fallback_newest_active",
+        sessionId,
+        candidates: active.length,
+        handler: where.handler,
+        channelId: where.channelId ?? null,
+        guildId: where.guildId ?? null,
+        watchedSessionId: where.watchedSessionId ?? null,
+        userId: where.userId ?? null,
+      });
+    }
     return { ...resolved, sessionId, source: "active" };
   }
 
@@ -1495,49 +1546,48 @@ export function setupDiscordBot(opts: {
 
     // Same owner rule as the message and menu paths: a connected session is a target, so the guard
     // below may only refuse when NOTHING is connected (issue #1075).
-    {
-      const resolved = routeToActiveSession(resolveInboundSession({
-        channelId: interaction.channelId,
-        threadSessionId: Object.entries(state.threads ?? {}).find(([, threadId]) => threadId === interaction.channelId)?.[0] ?? null,
-        watchedSessionId: watched,
-        targets: state.targets,
-        isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
-      }), {
-        handler: `slash-command:${name}`,
-        channelId: interaction.channelId,
-        guildId: interaction.guildId,
-        watchedSessionId: watched,
-        userId: interaction.user.id,
-      });
-      watched = resolved.sessionId;
-      if (resolved.ambiguous) {
-        logInboundDrop({ reason: "interaction-ambiguous", channelId: interaction.channelId, userId: interaction.user.id, inbound: resolved, watchLive: false, ownsTarget: false });
-        await acknowledge(interaction, "This channel carries more than one session. Send in that session's thread or use `/sessions`.");
-        return;
-      }
-    }
+    const resolved = routeToActiveSession(resolveInboundSession({
+      channelId: interaction.channelId,
+      threadSessionId: Object.entries(state.threads ?? {}).find(([, threadId]) => threadId === interaction.channelId)?.[0] ?? null,
+      watchedSessionId: watched,
+      targets: state.targets,
+      isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+    }), {
+      handler: `slash-command:${name}`,
+      channelId: interaction.channelId,
+      guildId: interaction.guildId,
+      watchedSessionId: watched,
+      userId: interaction.user.id,
+    });
+    watched = resolved.sessionId;
     if (!watched) {
       logInboundDrop({
-        reason: "interaction-no-watch",
+        reason: resolved.ambiguous ? "interaction-ambiguous" : resolved.deadTarget ? "interaction-dead-target" : "interaction-no-watch",
         channelId: interaction.channelId,
         guildId: interaction.guildId,
-        watchedSessionId: null,
-        watchLive: false,
+        watchedSessionId: state.watchedSessionId ?? null,
+        watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
         targets: state.targets,
         ownsTarget: false,
         userId: interaction.user.id,
+        inbound: resolved,
       }, "warn", {
         kind: "chat-input-command",
         handler: "slash-command",
         commandName: name,
         channelId: interaction.channelId,
         guildId: interaction.guildId,
-        watchedSessionId: null,
-        watchLive: false,
+        watchedSessionId: state.watchedSessionId ?? null,
+        watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
         targets: state.targets,
         watchedClientPresent: false,
+        inbound: resolved,
       });
-      await acknowledge(interaction, "Not watching any session. Use `/sessions` first.");
+      await acknowledge(interaction, resolved.ambiguous
+        ? "This channel carries more than one session. Send in that session's thread or use `/sessions`."
+        : resolved.deadTarget
+          ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
+          : "Not watching any session. Use `/sessions` first.");
       return;
     }
     const client = piClients.get(watched);
@@ -2108,14 +2158,13 @@ export function setupDiscordBot(opts: {
       return;
     }
 
-    const state = userState(userId);
-    // Talking to the bot again re-enables delivery after a /disconnect.
-    state.deliveryMuted = false;
     // Threads are guild channels; only ours are accepted. A message is routed by
     // the SESSION its thread belongs to, so writing in an older session's thread
     // cannot spill into whichever session is currently watched (Qodo 0d2dca6d).
     let threadSessionId: string | null = null;
     if (message.guildId) {
+      const existingState = runtime.get(userId);
+      const actorBucket = hasBotState(existingState) ? userId : "";
       const byThread = userForThread(message.channelId);
       // Somebody else's thread is never this author's channel.
       if (byThread && byThread[0] !== userId) {
@@ -2123,18 +2172,18 @@ export function setupDiscordBot(opts: {
           reason: "thread-owned-by-other",
           channelId: message.channelId,
           guildId: message.guildId,
-          watchedSessionId: state.watchedSessionId ?? null,
-          watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
-          targets: state.targets,
+          watchedSessionId: existingState?.watchedSessionId ?? null,
+          watchLive: Boolean(existingState?.watchedSessionId && piClients.get(existingState.watchedSessionId)?.ws),
+          targets: existingState?.targets,
           ownsTarget: false,
           userId,
-        }, "info");
+        }, "info", undefined, `${message.channelId}:thread-owned-by-other:${actorBucket}`);
         return;
       }
       // A plain channel can be a fallback target for SEVERAL users, so the target is looked up in the
       // author's own state: taking the first owner dropped everyone else's replies.
-      const ownsTarget = state.target?.channelId === message.channelId
-        || Object.values(state.targets ?? {}).some((target) => target?.channelId === message.channelId);
+      const ownsTarget = existingState?.target?.channelId === message.channelId
+        || Object.values(existingState?.targets ?? {}).some((target) => target?.channelId === message.channelId);
       // The likeliest place a message dies: a channel that is neither this user's thread nor one of
       // their targets. Silent before, so the user saw nothing and the log said nothing either.
       if (!byThread && !ownsTarget) {
@@ -2142,12 +2191,12 @@ export function setupDiscordBot(opts: {
           reason: "channel-not-owned",
           channelId: message.channelId,
           guildId: message.guildId,
-          watchedSessionId: state.watchedSessionId ?? null,
-          watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
-          targets: state.targets,
+          watchedSessionId: existingState?.watchedSessionId ?? null,
+          watchLive: Boolean(existingState?.watchedSessionId && piClients.get(existingState.watchedSessionId)?.ws),
+          targets: existingState?.targets,
           ownsTarget: false,
           userId,
-        }, "info");
+        }, "info", undefined, `${message.channelId}:channel-not-owned:${actorBucket}`);
         return;
       }
       // A message is routed by the SESSION its thread belongs to, so writing in an older session's
@@ -2156,6 +2205,9 @@ export function setupDiscordBot(opts: {
         ? Object.entries(byThread[1].threads ?? {}).find(([, threadId]) => threadId === message.channelId)?.[0] ?? null
         : null;
     }
+    const state = userState(userId);
+    // Talking to the bot again re-enables delivery after a /disconnect.
+    state.deliveryMuted = false;
     state.updatedAt = Date.now();
     if (!message.guildId) {
       state.responseChannelId = message.channelId;
@@ -2251,7 +2303,9 @@ export function setupDiscordBot(opts: {
       return;
     }
     // A DM names no session, so it answers the newest question.
-    const answerSession = message.guildId ? askersHere[0] ?? inbound.sessionId ?? undefined : undefined;
+    const answerSession = message.guildId
+      ? askersHere[0] ?? (inbound.source === "active" ? undefined : inbound.sessionId ?? undefined)
+      : undefined;
     const hasPrompt = message.guildId
       ? Boolean(answerSession && (state.pendingPrompts ?? {})[answerSession])
       : Boolean(state.pendingPrompt);
@@ -2262,8 +2316,10 @@ export function setupDiscordBot(opts: {
         return;
       }
       // Guild questions name their asker; DMs intentionally answer the newest question.
-      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), answerSession);
-      if (answerSession) releasePromptOnlyTarget(state, answerSession);
+      const dismissed = bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), answerSession);
+      if (dismissed && answerSession && !(state.pendingPrompts ?? {})[answerSession]) {
+        releasePromptOnlyTarget(state, answerSession);
+      }
       return;
     }
     // Routed where, and why — at DEBUG, once per DECISION: a branch decision is control flow, not a

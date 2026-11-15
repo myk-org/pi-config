@@ -87,12 +87,13 @@ process.env.DISCORD_BOT_TOKEN = "test-token";
 process.env.DISCORD_ALLOWED_USERS = USER;
 process.env.DISCORD_ALLOW_ALL = "false";
 
-interface Sent { sessionId: string; type: string; command?: string; id?: string; cancelled?: boolean }
+interface Sent { sessionId: string; type: string; command?: string; id?: string; cancelled?: boolean; confirmed?: boolean }
 
 interface Bot {
   handler: (m: any) => Promise<void>;
   interaction: (i: any) => Promise<void>;
   sends: Sent[];
+  clients: Map<string, any>;
   /** pi -> bot events, as the daemon feeds them. */
   hooks: Array<(sessionId: string, event: any) => void>;
 }
@@ -162,6 +163,7 @@ function startBot(opts: {
     handler: built[built.length - 1]!.listeners("messageCreate")[0] as (m: any) => Promise<void>,
     interaction: built[built.length - 1]!.listeners("interactionCreate")[0] as (i: any) => Promise<void>,
     sends,
+    clients: piClients,
     hooks,
   };
 }
@@ -764,8 +766,8 @@ describe("discord messageCreate routing", () => {
       assert.match(body, /chan-not-owned/);
       // A routine refusal is not a degradation: this record is INFO, not WARN.
       assert.match(body, /\[info\] \[pidash-discord\] discord_inbound_dropped \{"reason":"channel-not-owned"/);
-      // Two refusals, two lines.
-      assert.equal(body.match(/"reason":"channel-not-owned","channelId":"chan-not-owned"/g)?.length, 2);
+      // Ambient guild-gate drops are throttled to one line per minute.
+      assert.equal(body.match(/"reason":"channel-not-owned","channelId":"chan-not-owned"/g)?.length, 1);
       // Ids only: the message body must never reach the log.
       assert.doesNotMatch(body, /hello there/);
       assert.doesNotMatch(body, /hello again/);
@@ -951,5 +953,233 @@ describe("discord messageCreate routing", () => {
     await bot.interaction(contextMenu(replies));
     assert.deepEqual(bot.sends, []);
     assert.deepEqual(replies, ["The session this channel belonged to is gone. Use `/sessions` and pick one."]);
+  });
+
+  it("failed guild dismissal keeps the fallback prompt target reachable after reconnect", async () => {
+    const bot = startBot({
+      live: ["s2", "s9"],
+      watchedSessionId: "s2",
+      threadId: THREAD,
+      threads: { s2: THREAD },
+      responseChannelId: PLAIN,
+      dmChannelId: null,
+    });
+    bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q9", method: "confirm", title: "Proceed?" });
+    await settle();
+
+    const client = bot.clients.get("s9")!;
+    const savedWs = client.ws;
+    client.ws = null;
+    const cancelReplies: string[] = [];
+    await bot.handler(message("cancel-offline", "/cancel", cancelReplies, { channelId: PLAIN }));
+    assert.deepEqual(cancelReplies, ["The session is not connected."]);
+    assert.deepEqual(bot.sends, []);
+
+    client.ws = savedWs;
+    const answerReplies: string[] = [];
+    await bot.handler(message("answer-reconnected", "yes", answerReplies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id, s.confirmed]), [["s9", "q9", true]]);
+  });
+
+  it("active fallback in a guild channel never approves another session's prompt", async () => {
+    const bot = startBot({
+      live: ["s1"],
+      watchedSessionId: "s2",
+      threads: { s1: THREAD },
+      threadId: PLAIN,
+      responseChannelId: DM,
+      dmChannelId: DM,
+    });
+    bot.hooks[0]!("s1", { type: "extension_ui_request", id: "q1", method: "confirm", title: "Run dangerous cmd?" });
+    await settle();
+
+    const replies: string[] = [];
+    await bot.handler(message("unrelated-guild-yes", "yes", replies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.type]), [["s1", "prompt"]]);
+
+    await bot.handler(message("thread-no", "no", [], { channelId: THREAD }));
+    assert.deepEqual(bot.sends.slice(1).map((s) => [s.sessionId, s.id, s.confirmed]), [["s1", "q1", false]]);
+  });
+
+  it("active fallback in a guild channel never dismisses another session's prompt", async () => {
+    const bot = startBot({
+      live: ["s1"],
+      watchedSessionId: "s2",
+      threads: { s1: THREAD },
+      threadId: PLAIN,
+      responseChannelId: DM,
+      dmChannelId: DM,
+    });
+    bot.hooks[0]!("s1", { type: "extension_ui_request", id: "q1", method: "confirm", title: "Proceed?" });
+    await settle();
+
+    const replies: string[] = [];
+    await bot.handler(message("unrelated-guild-cancel", "/cancel", replies, { channelId: PLAIN }));
+    assert.deepEqual(replies, ["Nothing pending."]);
+    assert.deepEqual(bot.sends, []);
+  });
+
+  it("guild channel with a dead target refuses ordinary messages instead of routing to another live session", async () => {
+    const bot = startBot({ live: ["s1", "s9"], watchedSessionId: null, threads: {}, responseChannelId: PLAIN, dmChannelId: null });
+    bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q9", method: "confirm", title: "Proceed?" });
+    await settle();
+    bot.clients.delete("s9");
+    bot.hooks[0]!("s9", { type: "ui-dismiss", id: "q9" });
+
+    const replies: string[] = [];
+    await bot.handler(message("dead-target-msg", "hello", replies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends, []);
+    assert.deepEqual(replies, ["The session this channel belonged to is gone. Use `/sessions` and pick one."]);
+  });
+
+  it("guild channel with a dead target refuses /stop instead of aborting another live session", async () => {
+    const bot = startBot({ live: ["s1", "s9"], watchedSessionId: null, threads: {}, responseChannelId: PLAIN, dmChannelId: null });
+    bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q9", method: "confirm", title: "Proceed?" });
+    await settle();
+    bot.clients.delete("s9");
+    bot.hooks[0]!("s9", { type: "ui-dismiss", id: "q9" });
+
+    const replies: string[] = [];
+    await bot.handler(message("dead-target-stop", "/stop", replies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends, []);
+    assert.deepEqual(replies, ["The session this channel belonged to is gone. Use `/sessions` and pick one."]);
+  });
+
+  it("slash command in a channel with a dead target refuses instead of acting on another live session", async () => {
+    const bot = startBot({ live: ["s1", "s9"], watchedSessionId: null, threads: {}, responseChannelId: PLAIN, dmChannelId: null });
+    bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q9", method: "confirm", title: "Proceed?" });
+    await settle();
+    bot.clients.delete("s9");
+    bot.hooks[0]!("s9", { type: "ui-dismiss", id: "q9" });
+
+    const replies: string[] = [];
+    const interaction = slash("stop", replies);
+    interaction.channelId = PLAIN;
+    interaction.guildId = "g1";
+    await bot.interaction(interaction);
+    assert.deepEqual(bot.sends, []);
+    assert.deepEqual(replies, ["The session this channel belonged to is gone. Use `/sessions` and pick one."]);
+  });
+
+  it("throttles ambient unowned-channel drops across unwatched guild chatters within a minute", async () => {
+    (globalThis as any).__piConfigSessionId = "ambient-guild-gate-throttle";
+    pinLevel("info");
+    const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
+    process.env.DISCORD_ALLOW_ALL = "true";
+    mock.timers.enable({ apis: ["Date"] });
+    try {
+      const bot = startBot({ live: ["s2"], watchedSessionId: null, threads: {} });
+      await bot.handler(message("busy-1", "hi", [], { channelId: "chan-busy", author: "guest-1" }));
+      await bot.handler(message("busy-2", "yo", [], { channelId: "chan-busy", author: "guest-2" }));
+      await bot.handler(message("busy-3", "hey", [], { channelId: "chan-busy", author: "guest-3" }));
+      assert.equal(readLogs().match(/"reason":"channel-not-owned","channelId":"chan-busy"/g)?.length, 1);
+
+      mock.timers.tick(60_001);
+      await bot.handler(message("busy-4", "later", [], { channelId: "chan-busy", author: "guest-4" }));
+      assert.equal(readLogs().match(/"reason":"channel-not-owned","channelId":"chan-busy"/g)?.length, 2);
+    } finally {
+      mock.timers.reset();
+      process.env.DISCORD_ALLOW_ALL = previousAllowAll;
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("throttles repeated foreign-thread drops within a minute", async () => {
+    (globalThis as any).__piConfigSessionId = "foreign-thread-throttle";
+    pinLevel("info");
+    const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
+    process.env.DISCORD_ALLOW_ALL = "true";
+    try {
+      const bot = startBot({ live: ["s3"], watchedSessionId: null, threads: { s3: THREAD } });
+      await bot.handler(message("foreign-1", "hi", [], { channelId: THREAD, author: USER2 }));
+      await bot.handler(message("foreign-2", "again", [], { channelId: THREAD, author: USER2 }));
+      assert.equal(readLogs().match(/"reason":"thread-owned-by-other","channelId":"chan-3"/g)?.length, 1);
+    } finally {
+      process.env.DISCORD_ALLOW_ALL = previousAllowAll;
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("deduplicates repeated active-fallback debug logs for an unchanged route", async () => {
+    (globalThis as any).__piConfigSessionId = "fallback-dedup-debug";
+    pinLevel("debug");
+    try {
+      const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: {} });
+      await bot.interaction(slash("status", []));
+      await bot.interaction(slash("status", []));
+      const lines = readLogs().split("\n").filter((line) => line.includes("discord_inbound_fallback"));
+      assert.equal(lines.length, 1);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("active fallback excludes sessions claimed by another Discord user for direct messages", async () => {
+    const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
+    process.env.DISCORD_ALLOW_ALL = "true";
+    try {
+      const bot = startBot({ live: ["s1"], watchedSessionId: "s1", threads: {}, extraUsers: [USER2] });
+      const replies: string[] = [];
+      await bot.handler(message("foreign-dm", "run whoami", replies, { dm: true, author: USER2 }));
+      assert.deepEqual(bot.sends, []);
+      assert.deepEqual(replies, ["Not watching any session. Use `/sessions` and pick one."]);
+    } finally {
+      process.env.DISCORD_ALLOW_ALL = previousAllowAll;
+    }
+  });
+
+  it("active fallback excludes sessions claimed by another Discord user for slash commands", async () => {
+    const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
+    process.env.DISCORD_ALLOW_ALL = "true";
+    try {
+      const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: { s1: THREAD }, extraUsers: [USER2] });
+      const replies: string[] = [];
+      const interaction = slash("stop", replies);
+      interaction.user = { id: USER2, username: "other" };
+      await bot.interaction(interaction);
+      assert.deepEqual(bot.sends, []);
+      assert.deepEqual(replies, ["Not watching any session. Use `/sessions` first."]);
+    } finally {
+      process.env.DISCORD_ALLOW_ALL = previousAllowAll;
+    }
+  });
+
+  it("active fallback excludes sessions claimed by another Discord user for context-menu prompts", async () => {
+    const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
+    process.env.DISCORD_ALLOW_ALL = "true";
+    try {
+      const bot = startBot({ live: ["s1"], watchedSessionId: "s1", threads: {}, extraUsers: [USER2] });
+      const replies: string[] = [];
+      const interaction = contextMenu(replies);
+      interaction.user = { id: USER2, username: "other", createDM: async () => ({ id: "dm-2" }) };
+      await bot.interaction(interaction);
+      assert.deepEqual(bot.sends, []);
+      assert.deepEqual(replies, ["Not watching any session. Use `/sessions` first."]);
+    } finally {
+      process.env.DISCORD_ALLOW_ALL = previousAllowAll;
+    }
+  });
+
+  it("active fallback selects an unclaimed session when another user claims the newest session", async () => {
+    const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
+    process.env.DISCORD_ALLOW_ALL = "true";
+    try {
+      const bot = startBot({
+        live: ["s1", "s2"],
+        watchedSessionId: "s1",
+        threads: {},
+        lastActivity: { s1: 5_000, s2: 1_000 },
+        extraUsers: [USER2],
+      });
+      const replies: string[] = [];
+      await bot.handler(message("unclaimed-dm", "hello", replies, { dm: true, author: USER2 }));
+      assert.deepEqual(replies, []);
+      assert.deepEqual(bot.sends.map((s) => s.sessionId), ["s2"]);
+    } finally {
+      process.env.DISCORD_ALLOW_ALL = previousAllowAll;
+    }
   });
 });
