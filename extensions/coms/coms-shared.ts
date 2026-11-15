@@ -550,13 +550,13 @@ export function buildBundledContent(
 /** Build the command-layer send request from the peers overlay composer. A blank line means
  *  "nothing to send" (Esc and empty input are the same decision), so it yields null. */
 export function buildTellRequest(
-	peer: { name: string; project?: string | null },
+	peer: { name: string; project?: string | null; endpoint?: string },
 	text: string,
-): { target: string; prompt: string; project?: string } | null {
+): { target: string; prompt: string; project?: string; expectedEndpoint?: string } | null {
 	const prompt = text.trim();
 	if (!prompt) return null;
 	tellLog.debug("tell_built", { target: peer.name, origin: "user" });
-	return { target: peer.name, prompt, ...(peer.project ? { project: peer.project } : {}) };
+	return { target: peer.name, prompt, ...(peer.project ? { project: peer.project } : {}), ...(peer.endpoint ? { expectedEndpoint: peer.endpoint } : {}) };
 }
 
 /** Parse `/coms tell [--project <p>] <peer> <message…>` (the text after "tell"). The message is
@@ -592,6 +592,8 @@ export function buildInboundContent(
 	origin?: PromptOrigin,
 	/** The sender's registry session id — the fallback address when its name cannot be quoted. */
 	senderSessionId?: string,
+	/** Bundles already sanitize each peer body and retain per-message user labels. */
+	bundled = false,
 ): string {
 	// Sanitize peer-controlled values — strip control chars, tag-breaking brackets and the origin
 	// marker (#1084), then cap. A name can otherwise close the tag early or pose as the human.
@@ -602,12 +604,14 @@ export function buildInboundContent(
 	// origin comes before the name: "a human decided this" is the part that changes the reply.
 	const originTag = origin === "user" ? "USER (a human), via " : "";
 	const fromTag = safeName ? `[from ${originTag}${safeName}${safeCwd ? ` @ ${safeCwd}` : ''}] ` : '';
-	let content = header ? `${fromTag}${header}\n\n${prompt}` : `${fromTag}${prompt}`;
+	const body = origin === "user" || bundled ? prompt : stripOriginMarker(prompt);
+	log.debug("inbound_body_formatted", { origin, bundled });
+	let content = header ? `${fromTag}${header}\n\n${body}` : `${fromTag}${body}`;
 	if (senderName) {
 		// The hint is an ADDRESS: coms_send resolves the RAW registry name, so it stays verbatim —
 		// sanitizing it would name a peer that does not exist. Only the displayed tag is sanitized.
 		// A name that cannot be quoted safely falls back to the sender's session id.
-		const address = /^[^"\r\n\x00-\x1f\x7f]+$/.test(senderName) ? senderName : senderSessionId;
+		const address = [senderName, senderSessionId].find((value) => value && /^[^"\\\r\n\x00-\x1f\x7f-\x9f]+$/.test(value));
 		if (address) content += `\n\nReply to me via coms_send(target="${address}")`;
 	}
 	if (tasks && tasks.length > 0) {

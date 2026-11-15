@@ -114,6 +114,18 @@ describe("start / done subcommands", () => {
 		return { outcome, updates };
 	};
 
+	it("refuses to start work with an open blocker", () => {
+		const result = run("start", "3", [task({ status: "pending", blockedBy: ["1"] }), task({ id: "1", status: "pending" })]);
+		assert.equal(result.outcome, "blocked");
+		assert.deepEqual(result.updates, []);
+	});
+	it("starts work after its blocker completes", () => {
+		assert.equal(run("start", "3", [task({ status: "pending", blockedBy: ["1"] }), task({ id: "1", status: "completed" })]).outcome, "applied");
+	});
+	it("does not display completed dependencies as blockers", () => {
+		const text = formatTasksPlainText([task({ blockedBy: ["1"] }), task({ id: "1", status: "completed" })]);
+		assert.doesNotMatch(text, /⛔/);
+	});
 	it("moves a pending task to in_progress", () => {
 		const started = run("start", "3", [task({ id: "3", status: "pending" })]);
 		assert.equal(started.outcome, "applied");
@@ -218,7 +230,7 @@ describe("formatTasksPlainText", () => {
 		]);
 		assert.deepEqual(text.split("\n"), [
 			"✔ #3 [completed] wire the overlay",
-			"◻ #4 [pending] wait on 3 ⛔ blocked",
+			"◻ #4 [pending] wait on 3",
 			TASKS_HINT,
 		]);
 	});

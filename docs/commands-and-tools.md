@@ -58,11 +58,14 @@ Overlay of your queued inbound messages on a peer. Selecting a message shows the
 
 ### /cron
 
-Schedule, list, and remove cron tasks. Non-empty scheduling requests are forwarded to the model as a `cron_manage` request, so you describe the schedule in natural language. `add <request>` is also forwarded, not scheduled directly. Bare `/cron`, whitespace-only input, `--persist` alone, and `add` without a request show `/cron requires a message for the LLM to work on.` without calling the model or changing schedules.
+Schedule, list, and remove cron tasks. Non-empty scheduling requests are forwarded to the model as a `cron_manage` request, so you describe the schedule in natural language.
+`add <request>` is also forwarded, not scheduled directly. Bare `/cron`, whitespace-only input, `--persist` alone, and `add` without a request show
+`/cron requires a message for the LLM to work on.` without calling the model or changing schedules.
 
 - **Arguments:** `list | list-all | remove <id>` (also `rm` / `delete`), plus the `--persist` flag
 - **Flags:** `--persist` scope the task to the project (`.pi/cron/crons.json`) instead of the session. `--scope` and `--project` are rejected with an error pointing at `--persist`.
-- **Listing:** `list` opens a cron status overlay; `list-all` shows every scope instead of just project-scoped tasks. In the overlay `p` pauses/resumes the focused cron and `x` removes it
+- **Listing:** `list` opens a cron status overlay; `list-all` shows every scope instead of just project-scoped tasks. In the overlay `Space` multi-selects rows,
+  `p` pauses/resumes the focused cron (or selected group), and `x` removes the focused or selected crons
 
 ```
 /cron list
@@ -203,14 +206,20 @@ Unified session status in one notification: async agents, cron tasks, git branch
 Task manager for the current session's task list.
 
 - **Arguments:** optional subcommand — none (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
-- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` select, `Enter` opens a task, `n` adds a task from one line, `e` edits the focused task's subject, `x` deletes the focused task, `Esc` closes
-- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store. An empty board opens the create dialog directly, since there is no row to press `n` on. The edit dialog starts pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
-- **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`; a task with blockers is marked `⛔ blocked`
-- **Detail:** subject, status, owner, blocked-by, description, created and updated
-- **`create`:** prompts for subject and description (bridged, so pidash can answer it too)
-- **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op, and `start` refuses to reopen completed work
-- **Existing `clear completed` / `clear all` subcommands:** delete matching tasks and report the count. Bulk clearing is not an overlay action; the overlay only deletes the focused task with `x`.
-- **No terminal, or a command sent from the pidash browser:** the same rows are printed as plain text (followed by the subcommand hint) instead of opening the overlay — a browser user cannot see or drive a terminal overlay, so text is the honest answer
+- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` navigate, `Space` multi-selects, `Enter` opens a task,
+  `n` adds a task from one line, `e` edits the focused task's subject, `x` deletes the focused task (or the `Space`-selected tasks), `Esc` closes
+- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store (`n` and `e` refuse while rows are selected). An empty board opens the create
+  dialog directly, since there is no row to press `n` on. The edit dialog starts pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line
+  writes nothing, and an unchanged subject is a no-op
+- **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`; a task with currently open blockers is marked `⛔ blocked`
+- **Detail:** subject, status, owner, blocked-by (currently open blockers), description, created and updated
+- **`create`:** prompts for subject and description (bridged, so pidash can answer it too). Headless sessions receive guidance to use `TaskCreate` or an interactive UI.
+- **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op,
+  and `start` refuses open blockers or reopening completed work
+- **Existing `clear completed` / `clear all` subcommands:** delete matching tasks and report the count. Status-based bulk clearing is a subcommand, not an overlay key;
+  the overlay deletes the focused task or `Space`-selected tasks with `x`.
+- **No terminal, or a command sent from the pidash browser:** the same rows are printed as plain text (followed by the subcommand hint) instead of opening the overlay —
+  a browser user cannot see or drive a terminal overlay, so text is the honest answer
 - **Note:** when the task scope is `session` and the list becomes empty, the backing file is deleted.
 
 ```
