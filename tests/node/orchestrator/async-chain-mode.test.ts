@@ -7,12 +7,9 @@ import { join } from "node:path";
 import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
 import { fireOnComplete, firePendingCompletions, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
-import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
-
-const log = createLogger("subagent-async-chain-test");
 
 /** Log writes are captured from the real file logger under a test session id. */
 const LOG_SESSION = "async-chain-mode-test";
@@ -130,7 +127,6 @@ describe("subagent async chain mode", () => {
     const h = harness();
     try {
       const result = await h.run({ chain: chain(h.ctx.cwd), async: true });
-      log.debug("chain_start_result", { text: h.text(result), spawns: h.spawns.length });
       assert.ok(!result.isError);
       assert.equal(h.spawns.length, 1, "step 2 must wait for step 1 to complete");
       assert.equal(h.spawns[0].task, "step one");

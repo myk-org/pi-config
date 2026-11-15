@@ -5,12 +5,9 @@ import { join } from "node:path";
 
 import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
 import type { AsyncKillOrigin } from "../../../extensions/orchestrator/async-agents.js";
-import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
-
-const log = createLogger("subagent-async-kill-test");
 
 /**
  * Minimal harness around registerSubagentTool. The asyncKill parameter is
@@ -63,7 +60,6 @@ describe("subagent asyncKill attribution (issue #816)", () => {
     const h = harness();
     try {
       await h.run({ asyncKill: "worker" });
-      log.debug("async_kill_case", { origin: "orchestrator", via: "subagent(asyncKill)" });
       assert.equal(h.killCalls.length, 1);
       assert.equal(h.killCalls[0].target, "worker");
       assert.equal(
