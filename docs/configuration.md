@@ -906,16 +906,21 @@ The interactive session watches `.pi/run/reload.flag`, with `.pi/tmp/reload.flag
 legacy fallback. It claims one pathname by rename before reading its nonce, parks an
 owner-stamped `reload.pending`, waits for idle, then reloads through the public command
 API. The replacement runtime publishes that pending nonce to `reload.done`, mirrored
-to the legacy directory. A newer flag remains for another reload. Consuming one directory's
-request never removes the other directory's request.
+best-effort to the legacy directory (mirror write errors log `reload_legacy_mirror_failed`
+without retaining `reload.pending`). A newer flag remains for another reload. Consuming
+one directory's request never removes the other directory's request.
 
 Manual `/reload` has no trustworthy public pre-load nonce boundary. Without pending
 state it leaves any sitting flag untouched for a conservative extra reload. It does
-not publish an unproven confirmation. Fresh-start cleanup expires only old completion
-markers, never requests. Reload failures re-enable the owner's watcher. Non-reload
-shutdown atomically releases the departing owner's pending into a claim whose filename
-records that owner's release intent. It never overwrites a newer pending publication.
-Live foreign pending owners are never taken over based on age.
+not publish an unproven confirmation. Fresh-start inspection removes only corrupt
+`reload.pending` records (empty or missing a valid `pid:session` owner), preserving
+both unconfirmed requests and `reload.done` completion markers regardless of age so a
+requester polling after a long turn never loses completion proof. Reload failures
+re-enable the owner's watcher with exponential backoff (`1s` doubling up to `30s`,
+reset immediately when a new flag nonce appears). Non-reload shutdown atomically
+releases the departing owner's pending into a claim whose filename records that
+owner's release intent. It never overwrites a newer pending publication. Live foreign
+pending owners are never taken over based on age.
 
 Publication contract: every writer must finish a unique temporary file in the target
 directory, close it, then atomically rename it to `reload.flag`. Never truncate the
@@ -930,7 +935,9 @@ and retry them before newly claimed flags. Recovery parks an owned pending and p
 another reload before confirmation. Exclusive pending publication prevents replacement of
 an existing current pending; a failed attempt retains the claim. A crash after pending
 publication but before claim removal can cause an extra reload, never an unproven completion.
-Unreadable pending files remain untouched until readable. Live foreign pending claims stay
+Empty or syntactically invalid `reload.pending` files are safely removed as corrupt
+(`reload_pending_corrupt`) so deploys never wedge, whereas transiently unreadable files
+(such as `EACCES`) remain untouched and retry with backoff. Live foreign pending claims stay
 with their owner unless that owner explicitly released them or its process has exited.
 Keep `.pi/run` intact across retries; deleting runtime files discards recoverable requests.
 Legacy `.pi/tmp` compatibility remains subject to that directory's throwaway cleanup policy.

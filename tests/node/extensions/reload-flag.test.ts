@@ -18,8 +18,6 @@ import { syncBuiltinESMExports } from "node:module";
 import reloadExtension, {
   shouldSkipReloadFlag,
   isHandshakeParticipant,
-  isStaleHandshakeFile,
-  STALE_HANDSHAKE_MS,
   RELOAD_COMMAND,
   runReloadFlagCommand,
   parkReloadNonce,
@@ -81,10 +79,36 @@ function makeCtx(cwd: string, reloads: { count: number }, sessionId = "test-sess
   };
 }
 
-/** Age a control file past the stale bound (cleanup is time-bounded, #1091). */
-function backdate(file: string, ageMs = STALE_HANDSHAKE_MS * 2): void {
+const TEN_MINUTES_MS = 10 * 60_000;
+
+/** Age a control file well past five minutes to verify age never deletes state. */
+function backdate(file: string, ageMs = TEN_MINUTES_MS): void {
   const when = new Date(Date.now() - ageMs);
   utimesSync(file, when, when);
+}
+
+/** Capture file-logger writes without touching ~/.pi/logs or calling loggers in tests. */
+function captureLogs(t: any): string[] {
+  const records: string[] = [];
+  const prevSid = (globalThis as any).__piConfigSessionId;
+  (globalThis as any).__piConfigSessionId = prevSid || "reload-flag-test";
+  const mkdir = fs.mkdirSync;
+  t.mock.method(fs, "mkdirSync", (target: fs.PathLike, ...args: any[]) => {
+    if (String(target).includes(`${path.sep}.pi${path.sep}logs${path.sep}`)) return undefined;
+    return (mkdir as any)(target, ...args);
+  });
+  t.mock.method(fs, "appendFileSync", (_target: fs.PathOrFileDescriptor, data: any) => {
+    const line = String(data);
+    if (line.includes("[reload-flag]")) records.push(line);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    if (prevSid === undefined) delete (globalThis as any).__piConfigSessionId;
+    else (globalThis as any).__piConfigSessionId = prevSid;
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  return records;
 }
 
 describe("reload-flag", () => {
@@ -221,17 +245,19 @@ describe("reload-flag", () => {
     }
   });
 
-  test("an EMPTY pending file is retained without a false confirmation", async () => {
+  test("reload session_start removes an empty pending file without false confirmation", async (t) => {
+    const records = captureLogs(t);
     const reg = register();
     const cwd = makeCwd();
     try {
       const reloads = { count: 0 };
-      writeFileSync(reloadPendingPath(cwd), ""); // truncated/empty pending
+      const pendingFile = reloadPendingPath(cwd);
+      writeFileSync(pendingFile, ""); // truncated/empty pending
       await reg.handlers.get("session_start")!({ reason: "reload" }, makeCtx(cwd, reloads));
-      assert.ok(existsSync(reloadPendingPath(cwd)), "unreadable pending retained");
+      assert.ok(!existsSync(pendingFile), "corrupt empty pending removed");
+      assert.ok(records.some((line) => line.includes("reload_pending_corrupt") && line.includes(pendingFile)));
       await new Promise((r) => setTimeout(r, 400));
       assert.equal(reg.messages.length, 0, "no continuation for a nonce-less pending");
-      // And the watcher must not re-dispatch on the removed garbage either
       await reg.handlers.get("turn_end")!({}, makeCtx(cwd, reloads));
       assert.equal(reg.sent.length, 0, "no reload dispatch — loop closed");
       await reg.handlers.get("session_shutdown")!({}, undefined);
@@ -240,19 +266,107 @@ describe("reload-flag", () => {
     }
   });
 
-  test("an EMPTY pending file does not dispatch from turn_end either (R8 reload-loop fix)", async () => {
+  test("turn_end removes whitespace-only pending without dispatching", async (t) => {
+    const records = captureLogs(t);
     const reg = register();
     const cwd = makeCwd();
     try {
       const reloads = { count: 0 };
       const ctx = makeCtx(cwd, reloads);
+      const pendingFile = reloadPendingPath(cwd);
       await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
-      writeFileSync(reloadPendingPath(cwd), "   "); // whitespace-only nonce
+      writeFileSync(pendingFile, "   "); // whitespace-only nonce
       await reg.handlers.get("turn_end")!({}, ctx);
       assert.equal(reg.sent.length, 0, "garbage pending never dispatches");
-      assert.ok(existsSync(reloadPendingPath(cwd)), "watcher retains unreadable pending");
+      assert.ok(!existsSync(pendingFile), "watcher removes corrupt pending");
+      assert.ok(records.some((line) => line.includes("reload_pending_corrupt") && line.includes(pendingFile)));
       await reg.handlers.get("session_shutdown")!({}, undefined);
     } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("empty pending file is removed as corrupt so a deploy flag dispatches", async (t) => {
+    const records = captureLogs(t);
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads);
+      const pendingFile = reloadPendingPath(cwd);
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      writeFileSync(pendingFile, "");
+      writeFileSync(reloadFlagPath(cwd), "nonce-unwedged");
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.ok(records.some((line) => line.includes("reload_pending_corrupt") && line.includes(pendingFile)));
+      assert.equal(reg.sent.length, 1, "deploy flag dispatches instead of wedging");
+      await reg.commands.get("reload-flag")!("", ctx);
+      assert.equal(reloads.count, 1);
+      assert.equal(JSON.parse(readFileSync(pendingFile, "utf-8")).nonce, "nonce-unwedged");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("syntactically invalid pending owner is removed as corrupt before flag dispatch", async (t) => {
+    const records = captureLogs(t);
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads);
+      const pendingFile = reloadPendingPath(cwd);
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      for (const bad of ["{truncated", "plain-nonce", JSON.stringify({ nonce: "n", owner: "" }), JSON.stringify({ nonce: "n", owner: "bad-owner" })]) {
+        writeFileSync(pendingFile, bad);
+        await reg.handlers.get("turn_end")!({}, ctx);
+        assert.ok(!existsSync(pendingFile), `corrupt pending removed: ${bad}`);
+        assert.equal(reg.sent.length, 0, "corrupt pending alone never dispatches");
+      }
+      writeFileSync(pendingFile, JSON.stringify({ nonce: "n", owner: "not-a-pid:sess" }));
+      writeFileSync(reloadFlagPath(cwd), "nonce-valid-after-corrupt");
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(reg.sent.length, 1);
+      await reg.commands.get("reload-flag")!("", ctx);
+      assert.equal(reloads.count, 1);
+      assert.equal(JSON.parse(readFileSync(pendingFile, "utf-8")).nonce, "nonce-valid-after-corrupt");
+      assert.ok(records.some((line) => line.includes("reload_pending_corrupt") && line.includes(pendingFile)));
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("corrupt pending cleanup preserves a valid pending published concurrently", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const pendingFile = reloadPendingPath(cwd);
+    const valid = JSON.stringify({ nonce: "concurrent-valid", owner: "1:foreign" });
+    try {
+      const ctx = makeCtx(cwd, { count: 0 });
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      writeFileSync(pendingFile, "");
+      const rename = fs.renameSync;
+      let injected = false;
+      t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+        if (String(from) === pendingFile && !injected) {
+          injected = true;
+          writeFileSync(pendingFile, valid);
+        }
+        return rename(from, to);
+      });
+      syncBuiltinESMExports();
+      await reg.handlers.get("turn_end")!({}, ctx);
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      assert.equal(injected, true);
+      assert.equal(readFileSync(pendingFile, "utf-8"), valid);
+      assert.equal(reg.sent.length, 0);
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
       rmSync(cwd, { recursive: true, force: true });
     }
   });
@@ -378,13 +492,13 @@ describe("reload-flag", () => {
     try {
       const reloads = { count: 0 };
       writeFileSync(reloadFlagPath(cwd), "old");
-      writeFileSync(reloadPendingPath(cwd), "older");
+      writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "older", owner: "999999:dead" }));
       writeFileSync(reloadDonePath(cwd), "oldest");
       for (const file of [reloadFlagPath(cwd), reloadPendingPath(cwd), reloadDonePath(cwd)]) backdate(file);
       await reg.handlers.get("session_start")!({ reason: "startup" }, makeCtx(cwd, reloads));
       assert.ok(existsSync(reloadFlagPath(cwd)));
       assert.ok(existsSync(reloadPendingPath(cwd)));
-      assert.ok(!existsSync(reloadDonePath(cwd)));
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "oldest");
       await reg.handlers.get("turn_end")!({}, makeCtx(cwd, reloads));
       assert.equal(reg.sent.length, 1);
       await reg.handlers.get("session_shutdown")!({}, undefined);
@@ -393,20 +507,38 @@ describe("reload-flag", () => {
     }
   });
 
-  test("fresh session start keeps handshake state that is NOT old yet (#1091)", async () => {
+  test("fresh session start preserves recent handshake files", async () => {
     const reg = register();
     const cwd = makeCwd();
     try {
       const reloads = { count: 0 };
       const ctx = makeCtx(cwd, reloads, "session-B");
       writeFileSync(reloadFlagPath(cwd), "deploy-in-flight");
-      writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "p", owner: "" }));
-      writeFileSync(reloadDonePath(cwd), "stale-done");
-      backdate(reloadDonePath(cwd)); // only the done marker is old
+      writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "p", owner: "999999:dead" }));
+      writeFileSync(reloadDonePath(cwd), "recent-done");
       await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
       assert.equal(readFileSync(reloadFlagPath(cwd), "utf-8"), "deploy-in-flight", "a just-written flag survives");
       assert.ok(existsSync(reloadPendingPath(cwd)), "a just-parked pending survives");
-      assert.ok(!existsSync(reloadDonePath(cwd)), "an old done marker is still cleaned up");
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "recent-done", "done completion proof survives");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("fresh session preserves old reload.done completion proof beyond five minutes", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads, "session-B");
+      writeFileSync(reloadDonePath(cwd), "long-turn-proof");
+      writeFileSync(legacyPath(cwd, "reload.done"), "long-turn-proof");
+      backdate(reloadDonePath(cwd));
+      backdate(legacyPath(cwd, "reload.done"));
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "long-turn-proof");
+      assert.equal(readFileSync(legacyPath(cwd, "reload.done"), "utf-8"), "long-turn-proof");
       await reg.handlers.get("session_shutdown")!({}, undefined);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -497,24 +629,34 @@ describe("reload-flag", () => {
     }
   });
 
-  test("unexpected stat failures record their path and error code", (t) => {
+  test("legacy done mirror write errors warn without leaving pending behind", async (t) => {
+    const records = captureLogs(t);
     const cwd = makeCwd();
-    const file = reloadFlagPath(cwd);
-    const records: string[] = [];
-    const stat = fs.statSync;
-    const append = fs.appendFileSync;
-    t.mock.method(fs, "statSync", (target: fs.PathLike, ...args: any[]) => {
-      if (String(target) === file) throw Object.assign(new Error("denied"), { code: "EACCES" });
-      return (stat as any)(target, ...args);
-    });
-    t.mock.method(fs, "appendFileSync", (target: fs.PathOrFileDescriptor, data: any, ...args: any[]) => {
-      records.push(String(data));
-      return (append as any)(target, data, ...args);
-    });
-    syncBuiltinESMExports();
-    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-    assert.equal(isStaleHandshakeFile(file), false);
-    assert.ok(records.some(line => line.includes("reload_flag_stat_failed") && line.includes(file) && line.includes("EACCES")));
+    const reg = register();
+    try {
+      const ctx = makeCtx(cwd, { count: 0 });
+      for (const code of ["EACCES", "EROFS", "ENOENT"]) {
+        writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: `nonce-${code}`, owner: `${process.pid}:test-session` }));
+        const origWrite = fs.writeFileSync;
+        t.mock.method(fs, "writeFileSync", (target: fs.PathOrFileDescriptor, data: any, ...args: any[]) => {
+          if (String(target).startsWith(path.join(cwd, ".pi", "tmp"))) {
+            throw Object.assign(new Error(`legacy ${code}`), { code });
+          }
+          return (origWrite as any)(target, data, ...args);
+        });
+        syncBuiltinESMExports();
+        await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+        assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), `nonce-${code}`);
+        assert.equal(existsSync(reloadPendingPath(cwd)), false);
+        assert.equal(fs.readdirSync(path.dirname(reloadPendingPath(cwd))).some((n) => n.endsWith(".claim")), false);
+        assert.ok(records.some((line) => line.includes("reload_legacy_mirror_failed") && line.includes(`"code":"${code}"`)));
+        await reg.handlers.get("turn_end")!({}, ctx);
+        assert.equal(reg.sent.length, 0, `no endless reload loop for ${code}`);
+      }
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test("a command waiting for idle cannot reload a replaced session", async () => {
@@ -555,32 +697,27 @@ describe("reload-flag", () => {
     assert.equal(readFileSync(legacyPath(cwd, "reload.flag"), "utf8"), "fresh");
   });
 
-  test("cleanup rechecks a done marker replaced after the stale stat", async (t) => {
+  test("inaccessible legacy directory does not break completion cleanup", async (t) => {
+    const records = captureLogs(t);
     const cwd = makeCwd();
     const reg = register();
-    const file = reloadDonePath(cwd);
-    writeFileSync(file, "old");
-    backdate(file);
-    const stat = fs.statSync;
-    let injected = false;
-    t.mock.method(fs, "statSync", (target: fs.PathLike, ...args: any[]) => {
-      const result = (stat as any)(target, ...args);
-      if (String(target) === file && !injected) {
-        injected = true;
-        const tmp = `${file}.writer`;
-        writeFileSync(tmp, "replacement");
-        fs.renameSync(tmp, file);
-      }
-      return result;
-    });
-    syncBuiltinESMExports();
-    t.after(async () => {
-      t.mock.restoreAll(); syncBuiltinESMExports();
+    const legacyDir = path.join(cwd, ".pi", "tmp");
+    try {
+      const ctx = makeCtx(cwd, { count: 0 });
+      writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "chmod-zero", owner: `${process.pid}:test-session` }));
+      fs.chmodSync(legacyDir, 0o000);
+      await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+      fs.chmodSync(legacyDir, 0o700);
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "chmod-zero");
+      assert.equal(existsSync(reloadPendingPath(cwd)), false);
+      assert.ok(records.some((line) => line.includes("reload_legacy_mirror_failed")));
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(reg.sent.length, 0);
       await reg.handlers.get("session_shutdown")!({}, undefined);
-    });
-    await reg.handlers.get("session_start")!({ reason: "startup" }, makeCtx(cwd, { count: 0 }));
-    assert.equal(injected, true);
-    assert.equal(readFileSync(file, "utf8"), "replacement");
+    } finally {
+      try { fs.chmodSync(legacyDir, 0o700); } catch {}
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test("old flags waiting for a live foreign owner survive cleanup", async (t) => {
@@ -594,18 +731,134 @@ describe("reload-flag", () => {
     assert.equal(readFileSync(reloadFlagPath(cwd), "utf8"), "queued");
   });
 
-  test("owner retries a failed reload on the next turn", async (t) => {
+  test("owner retries a failed reload after the backoff window", async (t) => {
     const cwd = makeCwd();
     const reg = register();
-    t.after(() => reg.handlers.get("session_shutdown")!({}, undefined));
+    let now = 50_000;
+    t.mock.method(Date, "now", () => now);
+    t.after(async () => {
+      t.mock.restoreAll();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
     const ctx = { ...makeCtx(cwd, { count: 0 }), reload: async () => { throw new Error("refused"); } };
     await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
     writeFileSync(reloadFlagPath(cwd), "retry");
     await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 1);
     await reg.commands.get("reload-flag")!("", ctx);
+    now += 500;
     await reg.handlers.get("turn_end")!({}, ctx);
-    assert.equal(reg.sent.length, 2);
+    assert.equal(reg.sent.length, 1, "skipped while inside backoff window");
+    now += 500;
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 2, "retried once backoff elapsed");
     assert.equal(JSON.parse(readFileSync(reloadPendingPath(cwd), "utf8")).nonce, "retry");
+  });
+
+  test("persistent reload failures double backoff up to thirty seconds without spin logging", async (t) => {
+    const records = captureLogs(t);
+    const cwd = makeCwd();
+    const reg = register();
+    let now = 100_000;
+    t.mock.method(Date, "now", () => now);
+    try {
+      const ctx = { ...makeCtx(cwd, { count: 0 }), reload: async () => { throw new Error("persistent-fail"); } };
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      writeFileSync(reloadFlagPath(cwd), "backoff-seq");
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(reg.sent.length, 1);
+      await reg.commands.get("reload-flag")!("", ctx);
+
+      const expectedDelays = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000];
+      let expectedSent = 1;
+      for (const delay of expectedDelays) {
+        const logCountBeforeSkip = records.length;
+        for (let step = 500; step < delay; step += 500) {
+          now += 500;
+          await reg.handlers.get("turn_end")!({}, ctx);
+          assert.equal(reg.sent.length, expectedSent, `no dispatch at +${step}ms of ${delay}ms backoff`);
+        }
+        assert.equal(records.length, logCountBeforeSkip, `no spin logging during ${delay}ms backoff`);
+        now += 500;
+        await reg.handlers.get("turn_end")!({}, ctx);
+        expectedSent++;
+        assert.equal(reg.sent.length, expectedSent, `dispatches once ${delay}ms backoff expires`);
+        await reg.commands.get("reload-flag")!("", ctx);
+      }
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("new flag nonce resets retry backoff immediately", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    let now = 200_000;
+    t.mock.method(Date, "now", () => now);
+    t.after(async () => {
+      t.mock.restoreAll();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
+    const ctx = { ...makeCtx(cwd, { count: 0 }), reload: async () => { throw new Error("refused"); } };
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    writeFileSync(reloadFlagPath(cwd), "nonce-first");
+    await reg.handlers.get("turn_end")!({}, ctx);
+    await reg.commands.get("reload-flag")!("", ctx);
+    now += 1_000;
+    await reg.handlers.get("turn_end")!({}, ctx);
+    await reg.commands.get("reload-flag")!("", ctx);
+    // Now backoff is 2_000ms; at +100ms a new flag nonce arrives.
+    now += 100;
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 2, "still backed off before new flag");
+    writeFileSync(reloadFlagPath(cwd), "nonce-second");
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 3, "new flag nonce dispatches immediately");
+    await reg.commands.get("reload-flag")!("", ctx);
+    // And backoff delay was reset back to 1_000ms (not 4_000ms).
+    now += 500;
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 3);
+    now += 500;
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 4, "reset backoff retries after initial 1_000ms");
+  });
+
+  test("unreadable retained claim backs off instead of retrying every tick", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    let now = 300_000;
+    t.mock.method(Date, "now", () => now);
+    const claimFile = path.join(cwd, ".pi", "run", "reload.flag.stuck.claim");
+    writeFileSync(claimFile, "stuck-nonce");
+    const origRead = fs.readFileSync;
+    t.mock.method(fs, "readFileSync", (target: any, ...args: any[]) => {
+      if (String(target) === claimFile) {
+        throw Object.assign(new Error("claim denied"), { code: "EACCES" });
+      }
+      return (origRead as any)(target, ...args);
+    });
+    syncBuiltinESMExports();
+    t.after(async () => {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
+    const ctx = makeCtx(cwd, { count: 0 });
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 1);
+    await reg.commands.get("reload-flag")!("", ctx);
+    now += 500;
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 1, "unreadable claim skips retry inside backoff window");
+    now += 500;
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 2, "unreadable claim retries once backoff expires");
   });
 
   test("session replacement releases only its owner's pending record", async (t) => {
@@ -767,7 +1020,7 @@ describe("reload-flag", () => {
     const reg = register();
     const ctx = makeCtx(cwd, { count: 0 });
     t.after(() => reg.handlers.get("session_shutdown")!({}, undefined));
-    writeFileSync(legacyPath(cwd, "reload.pending.old.claim"), JSON.stringify({ nonce: "recovered", owner: "" }));
+    writeFileSync(legacyPath(cwd, "reload.pending.old.claim"), JSON.stringify({ nonce: "recovered", owner: "999999:old" }));
     writeFileSync(reloadFlagPath(cwd), "current");
     await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
     assert.equal(existsSync(reloadDonePath(cwd)), false);
@@ -799,7 +1052,7 @@ describe("reload-flag", () => {
       const ctx = makeCtx(cwd, reloads);
       await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
       // Simulate a refused reload from an older runtime: nonce parked, no done
-      writeFileSync(reloadPendingPath(cwd), "nonce-stranded");
+      writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "nonce-stranded", owner: "999999:old-runtime" }));
       await reg.handlers.get("turn_end")!({}, ctx);
       assert.deepEqual(
         reg.sent.map((s) => s.text),
