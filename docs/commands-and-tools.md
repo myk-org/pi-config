@@ -58,7 +58,7 @@ Overlay of your queued inbound messages on a peer. Selecting a message shows the
 
 ### /cron
 
-Schedule, list, and remove cron tasks. `add` is not handled directly: anything that is not a listing or removal verb is forwarded to the model as a `cron_manage` request, so you describe the schedule in natural language.
+Schedule, list, and remove cron tasks. Non-empty scheduling requests are forwarded to the model as a `cron_manage` request, so you describe the schedule in natural language. `add <request>` is also forwarded, not scheduled directly. Bare `/cron`, whitespace-only input, `--persist` alone, and `add` without a request show `/cron requires a message for the LLM to work on.` without calling the model or changing schedules.
 
 - **Arguments:** `list | list-all | remove <id>` (also `rm` / `delete`), plus the `--persist` flag
 - **Flags:** `--persist` scope the task to the project (`.pi/cron/crons.json`) instead of the session. `--scope` and `--project` are rejected with an error pointing at `--persist`.
@@ -209,7 +209,7 @@ Task manager for the current session's task list.
 - **Detail:** subject, status, owner, blocked-by, description, created and updated
 - **`create`:** prompts for subject and description (bridged, so pidash can answer it too)
 - **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op, and `start` refuses to reopen completed work
-- **`clear completed` / `clear all`:** delete matching tasks and report the count
+- **Existing `clear completed` / `clear all` subcommands:** delete matching tasks and report the count. Bulk clearing is not an overlay action; the overlay only deletes the focused task with `x`.
 - **No terminal, or a command sent from the pidash browser:** the same rows are printed as plain text (followed by the subcommand hint) instead of opening the overlay — a browser user cannot see or drive a terminal overlay, so text is the honest answer
 - **Note:** when the task scope is `session` and the list becomes empty, the backing file is deleted.
 
