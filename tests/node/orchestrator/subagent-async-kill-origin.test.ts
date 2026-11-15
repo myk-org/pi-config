@@ -5,11 +5,9 @@ import { join } from "node:path";
 
 import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
 import type { AsyncKillOrigin } from "../../../extensions/orchestrator/async-agents.js";
-import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
-
-const log = createLogger("subagent-async-kill-test");
 
 /**
  * Minimal harness around registerSubagentTool. The asyncKill parameter is
@@ -27,14 +25,19 @@ function harness() {
     events: { on() {}, emit() {} },
   } as any;
 
-  registerSubagentTool(
-    pi,
-    () => ({ id: "unused", error: "spawn is not exercised by this test" }),
-    (target: string, origin?: AsyncKillOrigin) => {
-      killCalls.push({ target, origin });
-      return { killed: [target], errors: [] };
-    },
-  );
+  // This suite asserts parent-process behaviour, so PI_SUBAGENT_CHILD is absent here
+  // whichever shell runs the tests.
+  withSubagentChildEnv(undefined, () => {
+    registerSubagentTool(
+      pi,
+      () => ({ id: "unused", error: "spawn is not exercised by this test" }),
+      (target: string, origin?: AsyncKillOrigin) => {
+        killCalls.push({ target, origin });
+        return { killed: [target], errors: [] };
+      },
+    );
+  });
+  assert.ok(tool, "the subagent tool must be registered — a parent process that registers nothing means an early return fired (PI_SUBAGENT_CHILD)");
 
   const ctx = {
     cwd,
@@ -57,7 +60,6 @@ describe("subagent asyncKill attribution (issue #816)", () => {
     const h = harness();
     try {
       await h.run({ asyncKill: "worker" });
-      log.debug("async_kill_case", { origin: "orchestrator", via: "subagent(asyncKill)" });
       assert.equal(h.killCalls.length, 1);
       assert.equal(h.killCalls[0].target, "worker");
       assert.equal(
