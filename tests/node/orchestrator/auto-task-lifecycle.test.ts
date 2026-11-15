@@ -12,6 +12,7 @@ import {
   autoMarkInProgress,
 } from "../../../extensions/orchestrator/task-lifecycle.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import { publishTaskStore, TASK_STORE_SYMBOL } from "../../../extensions/shared/task-store-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -393,5 +394,53 @@ describe("autoMarkInProgress update-failure handling", () => {
     // Verify actual file was NOT mutated
     const tasks = readTaskStore(storePath);
     assert.equal(tasks[0].status, "pending");
+  });
+});
+
+describe("live task store bridge resolution", () => {
+  let rootDir: string;
+  let worktreeDir: string;
+  let liveStore: TaskStore | null = null;
+
+  beforeEach(() => {
+    rootDir = makeTempDir("bridge-root-");
+    worktreeDir = makeTempDir("bridge-wt-");
+    const storePath = join(rootDir, ".pi", "tasks", "tasks-s1.json");
+    liveStore = new TaskStore(storePath);
+    liveStore.create("Bridge task", "desc", {
+      type: "local",
+      origin: "user",
+      session: "s1",
+      project: rootDir,
+    });
+    publishTaskStore(() => liveStore);
+  });
+
+  afterEach(() => {
+    liveStore?.close();
+    liveStore = null;
+    delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+    rmSync(rootDir, { recursive: true, force: true });
+    rmSync(worktreeDir, { recursive: true, force: true });
+  });
+
+  it("marks task in_progress through published store when cwd matches store root", async () => {
+    const updated = await autoMarkInProgress("1", rootDir, "s1");
+    assert.equal(updated, true);
+    assert.equal(liveStore?.get("1")?.status, "in_progress");
+  });
+
+  it("completes task through published store when cwd matches store root", async () => {
+    const updated = await autoCompleteTask("1", rootDir, "s1");
+    assert.equal(updated, true);
+    assert.equal(liveStore?.get("1")?.status, "completed");
+  });
+
+  it("skips published store when cwd targets a separate worktree", async () => {
+    const marked = await autoMarkInProgress("1", worktreeDir, "s1");
+    const completed = await autoCompleteTask("1", worktreeDir, "s1");
+    assert.equal(marked, false);
+    assert.equal(completed, false);
+    assert.equal(liveStore?.get("1")?.status, "pending");
   });
 });

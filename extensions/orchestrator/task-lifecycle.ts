@@ -1,106 +1,125 @@
 /**
  * Task lifecycle helpers — auto-complete / mark in_progress via owned taskStore.
- * Uses the exported store instance from extensions/pitasks when available.
- * Falls back to _storeFactory for unit testing.
+ * Uses the published pitasks store when it owns `cwd`, falling back to disk stores
+ * under `<cwd>/.pi/tasks/` (or `_storeFactory` in unit tests).
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
+import { publishedTaskStore } from "../shared/task-store-bridge.js";
 
 const log = createLogger("task-lifecycle");
 
-/** Get the shared task store instance (lazy import to avoid circular deps). */
-async function getStore(): Promise<any> {
-  // Don't cache — pitasks reassigns taskStore during session upgrade/switch.
-  // Always read the latest export.
+function canonicalPath(target: string): string {
+  const resolved = path.resolve(target);
   try {
-    const mod = await import("../pitasks/index.js");
-    return mod.taskStore ?? null;
-  } catch { return null; }
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function candidateStorePaths(cwd: string, sessionId?: string): string[] {
+  const tasksDir = path.join(cwd, ".pi", "tasks");
+  const candidates: string[] = [];
+  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`));
+  candidates.push(path.join(tasksDir, "tasks.json"));
+  return candidates;
+}
+
+/** Resolve the live pitasks store when it belongs to `cwd` (bridge first, module binding second). */
+async function resolveLiveStore(cwd: string): Promise<any> {
+  let store: any = publishedTaskStore();
+  if (!store) {
+    try {
+      const mod = await import("../pitasks/index.js");
+      store = mod.taskStore ?? null;
+    } catch {
+      return null;
+    }
+  }
+  if (!store) return null;
+  if (!store.filePath || process.env.PI_TASKS || !cwd) return store;
+  return canonicalPath(path.dirname(store.filePath)) === canonicalPath(path.join(cwd, ".pi", "tasks"))
+    ? store
+    : null;
+}
+
+async function transitionTaskStatus(
+  label: string,
+  taskId: string,
+  cwd: string,
+  sessionId: string | undefined,
+  shouldUpdate: (status: string) => boolean,
+  nextStatus: "in_progress" | "completed",
+  telemetryActive: boolean,
+  _storeFactory?: (path: string) => any,
+): Promise<boolean> {
+  if (!taskId || taskId === "-1") return false;
+
+  if (_storeFactory) {
+    for (const storePath of candidateStorePaths(cwd, sessionId)) {
+      let store: any;
+      try {
+        store = _storeFactory(storePath);
+        const task = store.get(taskId);
+        if (task) {
+          if (shouldUpdate(task.status)) { store.update(taskId, { status: nextStatus }); return true; }
+          return false;
+        }
+      } catch { continue; }
+      finally { if (store && typeof store.close === "function") store.close(); }
+    }
+    return false;
+  }
+
+  const store = await resolveLiveStore(cwd);
+  if (store) {
+    try {
+      const task = store.get(taskId);
+      if (!task) return false;
+      if (shouldUpdate(task.status)) {
+        store.update(taskId, { status: nextStatus });
+        (await import("../pitasks/index.js")).setTaskTelemetryActive(taskId, telemetryActive);
+        return true;
+      }
+      return false;
+    } catch (e: any) {
+      log.debug(`${label} failed for task`, taskId, e?.message?.slice(0, 100));
+      return false;
+    }
+  }
+
+  if (!cwd) return false;
+  const candidates = candidateStorePaths(cwd, sessionId).filter((p) => fs.existsSync(p));
+  if (candidates.length === 0) return false;
+  const { TaskStore } = await import("../pitasks/task-store.js");
+  for (const storePath of candidates) {
+    let diskStore: any;
+    try {
+      diskStore = new TaskStore(storePath);
+      const task = diskStore.get(taskId);
+      if (task) {
+        if (shouldUpdate(task.status)) { diskStore.update(taskId, { status: nextStatus }); return true; }
+        return false;
+      }
+    } catch (e: any) {
+      log.debug(`${label} disk fallback failed for task`, taskId, e?.message?.slice(0, 100));
+      continue;
+    } finally {
+      if (diskStore && typeof diskStore.close === "function") diskStore.close();
+    }
+  }
+  return false;
 }
 
 /** Auto-complete a task (in-process, no AI involvement). */
 export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
-  if (!taskId || taskId === "-1") return false;
-
-  // TEST-ONLY: _storeFactory constructs file paths for unit test isolation.
-  // Production code NEVER passes this — it falls through to getStore() below.
-  if (_storeFactory) {
-    const tasksDir = path.join(cwd, ".pi", "tasks");
-    const candidates: string[] = [];
-    if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-    candidates.push(path.join(tasksDir, "tasks.json"));
-    for (const storePath of candidates) {
-      let store: any;
-      try {
-        store = _storeFactory(storePath);
-        const task = store.get(taskId);
-        if (task) {
-          if (task.status !== "completed") { store.update(taskId, { status: "completed" }); return true; }
-          return false;
-        }
-      } catch { continue; }
-      finally { if (store && typeof store.close === "function") store.close(); }
-    }
-    return false;
-  }
-
-  const store = await getStore();
-  if (!store) return false;
-  try {
-    const task = store.get(taskId);
-    if (!task) return false;
-    if (task.status !== "completed") {
-      store.update(taskId, { status: "completed" });
-      (await import("../pitasks/index.js")).setTaskTelemetryActive(taskId, false);
-      return true;
-    }
-    return false;
-  } catch (e: any) {
-    log.debug("autoCompleteTask failed for task", taskId, e?.message?.slice(0, 100));
-    return false;
-  }
+  return transitionTaskStatus("autoCompleteTask", taskId, cwd, sessionId, (status) => status !== "completed", "completed", false, _storeFactory);
 }
 
 /** Auto-mark a task in_progress (in-process, no AI involvement). */
 export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
-  if (!taskId || taskId === "-1") return false;
-
-  // TEST-ONLY: _storeFactory constructs file paths for unit test isolation.
-  // Production code NEVER passes this — it falls through to getStore() below.
-  if (_storeFactory) {
-    const tasksDir = path.join(cwd, ".pi", "tasks");
-    const candidates: string[] = [];
-    if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-    candidates.push(path.join(tasksDir, "tasks.json"));
-    for (const storePath of candidates) {
-      let store: any;
-      try {
-        store = _storeFactory(storePath);
-        const task = store.get(taskId);
-        if (task) {
-          if (task.status === "pending") { store.update(taskId, { status: "in_progress" }); return true; }
-          return false;
-        }
-      } catch { continue; }
-      finally { if (store && typeof store.close === "function") store.close(); }
-    }
-    return false;
-  }
-
-  const store = await getStore();
-  if (!store) return false;
-  try {
-    const task = store.get(taskId);
-    if (!task) return false;
-    if (task.status === "pending") {
-      store.update(taskId, { status: "in_progress" });
-      (await import("../pitasks/index.js")).setTaskTelemetryActive(taskId);
-      return true;
-    }
-    return false;
-  } catch (e: any) {
-    log.debug("autoMarkInProgress failed for task", taskId, e?.message?.slice(0, 100));
-    return false;
-  }
+  return transitionTaskStatus("autoMarkInProgress", taskId, cwd, sessionId, (status) => status === "pending", "in_progress", true, _storeFactory);
 }
