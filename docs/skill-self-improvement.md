@@ -62,19 +62,25 @@ A skill file is writable only when it is **marked** *and* its real path (after `
 The rule is enforced in code by a `tool_call` guard on `write`/`edit`/`multi_edit`, so a blocked write is
 refused before it happens and the agent is told what to do instead.
 
-### The shell reads skills, never writes them
+### The shell reads skills and runs helper scripts, never writes them
 
-A `bash` command that names a skills area passes only when **every** `;`, `&&`, `||` or `|` segment is a read:
-an allowlisted verb (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `ls`, `stat`, `wc`, `diff`, `md5sum`,
-`sha256sum`) with no write operator. `mkdir` is the one exception, and only for a directory inside this
-project's own `.pi/skills/` that resolves there — the `SKILL.md` itself still has to be written with
-`write`/`edit`, where the marker and ownership apply.
+A `bash` command that names a skills area passes only when **every** `;`, `&&`, `||`, `&` or `|` segment is a
+read or helper execution with no write operator (`/dev/null` sinks like `2>/dev/null` and fd duplications like
+`2>&1` are ignored, and leading `rtk`/env prefixes are unwrapped):
 
-Everything else blocks, including the shapes that defeated earlier versions: `>`, `>>`, `>&`, `tee`, `cp`, `mv`,
-`rm`, `sed -i`, `install`, `dd`, `truncate`, `chmod`; a bare `SKILL.md`; a `cd`; a command substitution
-(`$(…)`, backticks, `<(…)`, `>(…)`); an option that runs a program (`--pre`); a path through a symlink; and any reference the
-guard cannot resolve. The shell is not a second way to write a skill — one write path means one place to be
-correct.
+- an allowlisted read verb (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `ls`, `stat`, `wc`, `diff`, `md5sum`,
+  `sha256sum`);
+- `mkdir` for a directory inside this project's own `.pi/skills/` that resolves there (the `SKILL.md` itself is
+  still written with `write`/`edit`, where the marker and ownership apply); or
+- running a `.sh`, `.py`, `.mjs`, or `.js` skill helper script directly, via `bash`/`sh`/`node` (never `-c` or
+  `-e`), or via `uv run [--script]`, when no other skill path is referenced.
+
+Quoted prose arguments to non-interpreters (such as `gh issue create --body '…'` with literal single-quoted
+backticks) are not treated as skill paths unless they embed an executable substitution (`$(…)` or unescaped
+backticks outside single quotes). Everything else blocks: `>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
+`perl -i`, `install`, `dd`, `truncate`, `chmod`, `touch`, `patch`, inline `-c`/`-e` scripts, piped/heredoc
+interpreters, a bare `SKILL.md`, a `cd`, `--pre`/`--exec`, a path through a symlink, and any reference the guard
+cannot resolve. The shell is not a second way to write a skill — one write path means one place to be correct.
 
 Known limit, stated rather than guessed at: a path built by shell expansion — `t=…; … > "$t"`, `eval`,
 `find -exec` — carries no literal reference, so no text rule can see it. The change still reaches the turn-end

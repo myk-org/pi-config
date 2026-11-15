@@ -377,10 +377,11 @@ progress. It does not commit, push, create a PR, or post results.
   symlinked/dangling paths and unmarked project skills are blocked with a reason (`/adopt-skill <name>` marks one).
   Agents are steered mid-turn when a marked skill they used fails, every allowed `write`/`edit` is recorded in
   `.pi/data/skill-review.jsonl` (append-only), and one line reports the turn's changes — see
-  `docs/skill-self-improvement.md`. The shell only reads skills — allowlisted read verbs with no write
-  operator, `mkdir` inside the owned tree, nothing else; every shell write blocks (`>`, `>>`, `>&`, `tee`,
-  `cp`, `mv`, `rm`, `sed -i`, …), as does any reference it cannot resolve. No model call, no setting: it is
-  not an async agent at all.
+  `docs/skill-self-improvement.md`. The shell reads skills and runs `.sh`/`.py`/`.mjs`/`.js` helper scripts
+  (directly, via `bash`/`sh`/`node` without `-c`/`-e`, or via `uv run [--script]`, unwrapping `rtk`/env prefixes
+  and ignoring `/dev/null` or fd-dup redirects), plus `mkdir` inside the owned tree — never writes skill files:
+  every shell write (`>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`, `perl -i`, inline `-c`/`-e` scripts, …)
+  and unresolved reference blocks (#1103). No model call, no setting: it is not an async agent at all.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
