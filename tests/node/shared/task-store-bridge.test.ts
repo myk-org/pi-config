@@ -11,12 +11,16 @@ import assert from "node:assert/strict";
 
 import {
   TASK_STORE_SYMBOL,
+  TASK_TELEMETRY_ACTIVE_SYMBOL,
   publishedTaskStore,
+  publishedTaskTelemetryActive,
   publishTaskStore,
+  publishTaskTelemetryActive,
 } from "../../../extensions/shared/task-store-bridge.ts";
 
 const clear = (): void => {
   delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+  delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
 };
 
 describe("task store bridge", () => {
@@ -38,5 +42,25 @@ describe("task store bridge", () => {
   it("reports null while the binding is still unassigned", () => {
     publishTaskStore(() => undefined);
     assert.equal(publishedTaskStore(), null, "an unpublished store is not an empty store");
+  });
+
+  it("returns null before telemetry activation is published", () => {
+    assert.equal(publishedTaskTelemetryActive(), null);
+  });
+
+  it("returns the published telemetry activation callback", () => {
+    const seen: Array<{ taskId: string; active: boolean }> = [];
+    publishTaskTelemetryActive((taskId, active = true) => {
+      seen.push({ taskId, active });
+    });
+    const bridged = publishedTaskTelemetryActive();
+    assert.ok(bridged);
+    bridged("42", false);
+    assert.deepEqual(seen, [{ taskId: "42", active: false }]);
+  });
+
+  it("ignores non-function values under the telemetry symbol", () => {
+    (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL] = { invalid: true };
+    assert.equal(publishedTaskTelemetryActive(), null);
   });
 });

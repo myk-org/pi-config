@@ -491,6 +491,9 @@ function makeTasksCtx(opens: string[][]) {
 	const notifications: Array<{ message: string; level: string }> = [];
 	/** Rendered frame of every list that opened — the footer is asserted through what is drawn. */
 	const frames: string[][] = [];
+	/** How many keys each open had received when it closed — tells a key that closed the list
+	 *  in place from one that only redrew it. */
+	const closeAfterKeys: number[] = [];
 	let opened = 0;
 	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 	const tui = { terminal: { rows: 20 }, requestRender: () => {} };
@@ -505,14 +508,21 @@ function makeTasksCtx(opens: string[][]) {
 				opened += 1;
 				if (!keys) return null; // a further open: close it
 				return new Promise((resolve) => {
-					const component = factory(tui, theme, keybindings, resolve);
+					let delivered = 0;
+					const component = factory(tui, theme, keybindings, (value: unknown) => {
+						closeAfterKeys.push(delivered);
+						resolve(value);
+					});
 					frames.push(component.render(100));
-					for (const key of keys) component.handleInput(key);
+					for (const key of keys) {
+						delivered += 1;
+						component.handleInput(key);
+					}
 				});
 			},
 		},
 	};
-	return { ctx: ctx as any, notifications, openedCount: () => opened, frames };
+	return { ctx: ctx as any, notifications, openedCount: () => opened, frames, closeAfterKeys };
 }
 
 function inMemoryStore(initial: Task[] = []) {
@@ -594,5 +604,58 @@ describe("openTasksOverlay edit prefill (#1089)", () => {
 			update: () => { writes++; },
 		}));
 		assert.equal(writes, 0);
+	});
+});
+
+describe("openTasksOverlay owner completion (#1102)", () => {
+	it("reports an already-completed owner task instead of prompting for a note", async () => {
+		// `completeTask` returns false for a completed task, so the note the owner typed was dropped.
+		const { ctx, notifications, openedCount } = makeTasksCtx([["d", "close"]]);
+		const completed: string[] = [];
+		await openTasksOverlay(ctx, {
+			listTasks: () => [task({ id: "7", status: "completed", assignee: "user" })],
+			deleteTask: () => true,
+			completeTask: (id: string) => { completed.push(id); return true; },
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		});
+		assert.equal(openedCount(), 1, "the note dialog must not open");
+		assert.deepEqual(completed, []);
+		assert.deepEqual(notifications, [{ message: "Task #7 is already completed.", level: "info" }]);
+	});
+});
+
+/** One owner row and one llm row: deleting the owner's last row empties the `mine` filter only. */
+function ownerAndLlmStore() {
+	const tasks = [
+		task({ id: "1", status: "pending", assignee: "user" }),
+		task({ id: "2", status: "pending", assignee: "llm" }),
+	];
+	const created: string[] = [];
+	const deleted: string[] = [];
+	const completed: string[] = [];
+	const store = {
+		list: () => tasks.filter((t) => t.status !== "deleted"),
+		get: (id: string) => tasks.find((t) => t.id === id),
+		create: (subject: string) => { created.push(subject); return { id: "9" }; },
+		update: (id: string, fields: any) => {
+			if (fields.status === "deleted") deleted.push(id);
+			if (fields.status === "completed") completed.push(id);
+			const current = tasks.find((t) => t.id === id);
+			if (current && fields.status) current.status = fields.status;
+		},
+	};
+	return { created, deleted, completed, store };
+}
+
+describe("openTasksOverlay emptied mine filter (#1102)", () => {
+	it("keeps the mine view open after the last owned row is deleted", async () => {
+		// Other tasks remain, so the list must stay in its empty filtered state where f and n
+		// work; closing it took the terminal back and dropped those keys.
+		const { ctx, closeAfterKeys } = makeTasksCtx([["x", "close"]]);
+		const memory = ownerAndLlmStore();
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store), { mine: true });
+		assert.deepEqual(memory.deleted, ["1"]);
+		assert.deepEqual(closeAfterKeys, [2], "the explicit close ended the list, not the delete");
 	});
 });

@@ -175,6 +175,9 @@ export class OverlayListDashboard<
     private selection: OverlaySelection<TId>,
     private done: (value: TId | null) => void,
     initialMulti: readonly TId[] = [],
+    /** The caller deliberately allows an empty list (a filter that can match nothing), so an
+     *  action that empties the rows keeps the filter/create keys reachable instead of closing. */
+    private readonly keepOpenWhenEmpty = false,
   ) {
     this.multi = new Set(initialMulti);
     this.ticker = setInterval(() => { this.invalidate(); this.tui.requestRender(); }, 1000);
@@ -321,7 +324,7 @@ export class OverlayListDashboard<
         this.spec.onSelectionChange?.([]);
         log.debug("list_multi_x", { count: selected.length });
         if (selected.length > 0) this.spec.onXSelected?.(selected);
-        if (this.items().length === 0) {
+        if (this.items().length === 0 && !this.keepOpenWhenEmpty) {
           this.close(null);
           return;
         }
@@ -332,7 +335,7 @@ export class OverlayListDashboard<
       const item = items[this.selection.index];
       if (item) {
         this.spec.onX?.(item);
-        if (this.items().length === 0) {
+        if (this.items().length === 0 && !this.keepOpenWhenEmpty) {
           this.close(null);
           return;
         }
@@ -682,6 +685,7 @@ export async function openListDetailOverlay<
           selection,
           done,
           options.initialSelectionIds ?? [],
+          options.allowEmpty === true,
         ),
       OVERLAY_OPTS,
     );

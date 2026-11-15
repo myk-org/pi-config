@@ -638,14 +638,21 @@ export function taskIdError(taskId: string, lookup: (id: string) => boolean): st
     : `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" for a read-only check (editing or PR work needs a real task id).`;
 }
 
-/** Validate that a taskId references an existing task. Awaits the store load, so the
- *  first async call of a session validates too instead of failing open (issue #1016). */
-async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): Promise<string | null> {
+/** Validate that a taskId references an existing task the agent may work on. Awaits the store
+ *  load, so the first async call of a session validates too instead of failing open (issue #1016).
+ *  An owner-assigned task is refused here: the lifecycle helpers never start or complete it, so
+ *  spawning on it would do the owner's step and silently leave the task untouched (#1102). */
+export async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): Promise<string | null> {
   if (taskId === "-1") return null;
   const store = await getTaskStore();
   if (!store) return null; // pitasks genuinely unavailable — warned in getTaskStore
   try {
-    return taskIdError(taskId, (id) => Boolean(store.get(id)));
+    const task = store.get(taskId);
+    if (task?.assignee === "user") {
+      log.debug("task_id_validation_refused_owner", { taskId });
+      return `Task #${taskId} is assigned to the user (assignee="user"); agents cannot start or complete it. Pick an llm-assigned task or pass taskId: "-1" for a read-only check.`;
+    }
+    return taskIdError(taskId, () => Boolean(task));
   } catch (err) {
     // Same fail-open as before, but a broken store must not look like a valid id.
     log.warn("task_id_validation_failed", { reason: String((err as Error)?.message ?? err).slice(0, 120) });
@@ -657,7 +664,7 @@ async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string)
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState; onComplete?: (result: { text: string; isError: boolean }) => void }) => { id: string; error?: string; model?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState; onComplete?: (result: { text: string; isError: boolean }) => void }) => { id: string; error?: string; model?: string },
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
@@ -751,11 +758,13 @@ export function registerSubagentTool(
         parentModelId,
         parentProvider,
         taskId: s.taskId,
+        projectCwd: ctx?.cwd,
+        sessionId: ctx?.sessionManager?.getSessionId?.(),
         persistSession: params.persistSession,
         explicit,
         // Durable so a reload can report the chain it can no longer continue.
         chain: {
-          steps: steps.map(st => ({ agent: st.agent, task: st.task })),
+          steps: steps.map(st => ({ agent: st.agent, task: st.task, cwd: st.cwd, taskId: st.taskId })),
           index: i,
           previous: capPrevious(prev),
         },
@@ -881,6 +890,8 @@ export function registerSubagentTool(
           parentProvider,
           groupId,
           taskId: (t as any).taskId,
+          projectCwd: ctx?.cwd,
+          sessionId: ctx?.sessionManager?.getSessionId?.(),
           persistSession: params.persistSession,
           explicit: taskExplicit,
         });
@@ -963,6 +974,8 @@ export function registerSubagentTool(
       parentModelId,
       parentProvider,
       taskId: params.taskId,
+      projectCwd: ctx?.cwd,
+      sessionId: ctx?.sessionManager?.getSessionId?.(),
       persistSession: params.persistSession,
       explicit: explicit,
     });
@@ -994,6 +1007,7 @@ export function registerSubagentTool(
     asyncOk: boolean,
     sessionId?: string,
     explicit?: { model?: string; provider?: string },
+    projectCwd?: string,
   ) {
     const results: SingleResult[] = [];
     let prev = "";
@@ -1074,7 +1088,7 @@ export function registerSubagentTool(
       // Auto-mark linked task as in_progress (same as async path)
       const chainTaskId = s.taskId as string | undefined;
       if (chainTaskId && chainTaskId !== "-1") {
-        await autoMarkInProgress(chainTaskId, s.cwd, sessionId).catch(() => {});
+        await autoMarkInProgress(chainTaskId, projectCwd || s.cwd, sessionId).catch(() => {});
       }
       const r = await runSingleAgent(
         agents,
@@ -1111,7 +1125,7 @@ export function registerSubagentTool(
       }
       // Auto-complete linked task on success (same as async path)
       if (chainTaskId && chainTaskId !== "-1") {
-        await autoCompleteTask(chainTaskId, s.cwd, sessionId).catch(() => {});
+        await autoCompleteTask(chainTaskId, projectCwd || s.cwd, sessionId).catch(() => {});
       }
       prev = getFinalOutput(r.messages);
     }
@@ -1141,6 +1155,7 @@ export function registerSubagentTool(
     asyncOk: boolean,
     sessionId?: string,
     explicit?: { model?: string; provider?: string },
+    projectCwd?: string,
   ) {
     if (params.tasks.length > MAX_PARALLEL_TASKS)
       return {
@@ -1242,7 +1257,7 @@ export function registerSubagentTool(
     for (const t of params.tasks) {
       const tid = (t as any).taskId as string | undefined;
       if (tid && tid !== "-1") {
-        await autoMarkInProgress(tid, t.cwd, sessionId).catch(() => {});
+        await autoMarkInProgress(tid, projectCwd || t.cwd, sessionId).catch(() => {});
       }
     }
     const results = await mapWithConcurrency(
@@ -1285,7 +1300,7 @@ export function registerSubagentTool(
           r.stopReason !== "error" &&
           r.stopReason !== "aborted"
         ) {
-          await autoCompleteTask(tid, t.cwd, sessionId).catch(() => {});
+          await autoCompleteTask(tid, projectCwd || t.cwd, sessionId).catch(() => {});
         }
         return r;
       },
@@ -1320,6 +1335,7 @@ export function registerSubagentTool(
     asyncOk: boolean,
     sessionId?: string,
     explicit?: { model?: string; provider?: string },
+    projectCwd?: string,
   ) {
     if (!params.cwd) {
       return {
@@ -1372,7 +1388,7 @@ export function registerSubagentTool(
     // Auto-mark linked task as in_progress (same as async path)
     const syncTaskId = params.taskId as string | undefined;
     if (syncTaskId && syncTaskId !== "-1") {
-      await autoMarkInProgress(syncTaskId, params.cwd, sessionId).catch(() => {});
+      await autoMarkInProgress(syncTaskId, projectCwd || params.cwd, sessionId).catch(() => {});
     }
     log.info("sync_execute_start", params.agent, "taskId", syncTaskId ?? "none");
     const syncStartTime = Date.now();
@@ -1418,7 +1434,7 @@ export function registerSubagentTool(
       };
     // Auto-complete linked task on success (same as async path)
     if (syncTaskId && syncTaskId !== "-1") {
-      await autoCompleteTask(syncTaskId, params.cwd, sessionId).catch(() => {});
+      await autoCompleteTask(syncTaskId, projectCwd || params.cwd, sessionId).catch(() => {});
     }
     log.info("sync_execute_returning", params.agent);
     return {
@@ -1729,14 +1745,15 @@ export function registerSubagentTool(
       };
 
       const scope: AgentScope = params.agentScope ?? "both";
-      const discovery = discoverAgents(ctx.cwd, scope);
+      const fallbackCwd = ctx?.cwd || params.cwd || params.tasks?.[0]?.cwd || params.chain?.[0]?.cwd || process.cwd();
+      const discovery = discoverAgents(fallbackCwd, scope);
       const agents = discovery.agents;
       const confirm = params.confirmProjectAgents ?? true;
       let parentModelId = ctx.model?.id as string | undefined;
       let parentProvider = ctx.model?.provider as string | undefined;
       // Parse explicit model override from params (applies to all execution modes)
       const explicitOverride = parseModelOverride(params.model);
-      const asyncOk = supportsAsyncLlm(parentProvider, ctx.cwd);
+      const asyncOk = supportsAsyncLlm(parentProvider, fallbackCwd);
       let capabilityNote = "";
 
       const hasChain = (params.chain?.length ?? 0) > 0;
@@ -1920,25 +1937,26 @@ export function registerSubagentTool(
       };
 
       const sessionId = ctx.sessionManager?.getSessionId?.();
+      const projectCwd = ctx?.cwd;
 
       // Chain mode
       if (params.chain && params.chain.length > 0) {
         return withCapabilityNote(
-          await executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId, explicit),
+          await executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId, explicit, projectCwd),
         );
       }
 
       // Parallel mode
       if (params.tasks && params.tasks.length > 0) {
         return withCapabilityNote(
-          await executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId, explicit),
+          await executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId, explicit, projectCwd),
         );
       }
 
       // Single mode
       if (params.agent && params.task) {
         return withCapabilityNote(
-          await executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId, explicit),
+          await executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId, explicit, projectCwd),
         );
       }
 
