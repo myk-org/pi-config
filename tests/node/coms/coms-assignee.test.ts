@@ -3,7 +3,7 @@
  * the drilldown still lists them (tagged) so they are visible rather than hidden.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as net from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -15,10 +15,12 @@ import {
   type PeerWorkloadDetail,
   type WorkloadTask,
 } from "../../../extensions/coms/coms-workload.js";
+import { isPeerTaskCreator } from "../../../extensions/coms/coms-shared.js";
 import { requestDescribe, validateDetail } from "../../../extensions/coms/coms-describe.js";
 import { buildDrilldownRows } from "../../../extensions/coms/coms-drilldown.js";
 import pitasks, { taskStore } from "../../../extensions/pitasks/index.js";
 import { formatTaskRowLine } from "../../../extensions/pitasks/tasks-view.js";
+import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { clearWorkloadSources, publishWorkloadSources } from "../../../extensions/shared/workload-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -183,6 +185,10 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
   }
 
   async function sendTaskManage(targetEndpoint: string, dir: string, envelope: Record<string, any>): Promise<any> {
+    if (replyServer) {
+      await new Promise<void>((resolve) => { replyServer!.close(() => resolve()); }).catch(() => {});
+      replyServer = undefined;
+    }
     const replySock = join(dir, `reply-${Math.random().toString(36).slice(2, 8)}.sock`);
     const responsePromise = new Promise<any>((resolve) => {
       replyServer = net.createServer((sock) => {
@@ -275,5 +281,90 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
     });
     assert.match(String(reply.error), /only the user/);
     assert.equal(taskStore.get(owned.id)?.status, "pending");
+  });
+
+  it("rejects two-step peer task_manage closure of a user-assigned coms task", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const { endpoint, workspace: dir } = await bootLivePeer("two-step");
+    const owned = taskStore.create("owner step", "", { type: "coms", origin: "peer", session: "peer-sid", project: "" }, undefined, undefined, "user");
+    const flip = await sendTaskManage(endpoint, dir, {
+      sender_session: "peer-sid",
+      action: "update",
+      task_id: owned.id,
+      fields: { assignee: "llm" },
+    });
+    assert.match(String(flip.error), /only the user/);
+    assert.equal(taskStore.get(owned.id)?.assignee, "user");
+    const close = await sendTaskManage(endpoint, dir, {
+      sender_session: "peer-sid",
+      action: "update",
+      task_id: owned.id,
+      fields: { status: "completed" },
+    });
+    assert.match(String(close.error), /only the user/);
+    assert.equal(taskStore.get(owned.id)?.status, "pending");
+  });
+
+  it("rejects peer task_manage spoofing of completedBy", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const { endpoint, workspace: dir } = await bootLivePeer("comp-by");
+    const peerOwned = taskStore.create("agent step", "", { type: "coms", origin: "peer", session: "peer-sid", project: "" });
+    const reply = await sendTaskManage(endpoint, dir, {
+      sender_session: "peer-sid",
+      action: "update",
+      task_id: peerOwned.id,
+      fields: { status: "completed", completedBy: "user" },
+    });
+    assert.match(String(reply.error), /only the user/);
+    assert.equal(taskStore.get(peerOwned.id)?.status, "pending");
+    assert.equal(taskStore.get(peerOwned.id)?.completedBy, undefined);
+  });
+
+  it("rejects peer task_manage injection of completionNote", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const { endpoint, workspace: dir } = await bootLivePeer("comp-note");
+    const peerOwned = taskStore.create("agent step", "", { type: "coms", origin: "peer", session: "peer-sid", project: "" });
+    const reply = await sendTaskManage(endpoint, dir, {
+      sender_session: "peer-sid",
+      action: "update",
+      task_id: peerOwned.id,
+      fields: { status: "completed", completionNote: "forged outcome" },
+    });
+    assert.match(String(reply.error), /only the user/);
+    assert.equal(taskStore.get(peerOwned.id)?.completionNote, undefined);
+  });
+});
+
+describe("peer task ownership logging (#1090)", () => {
+  it("logs peer_task_creator_check decisions at debug level", () => {
+    const tmpHome = makeTempDir("coms-creator-log-");
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    const savedLevel = process.env.PI_LOG_COMS;
+    const savedSid = (globalThis as any).__piConfigSessionId;
+    try {
+      process.env.HOME = tmpHome;
+      process.env.USERPROFILE = tmpHome;
+      process.env.PI_LOG_COMS = "debug";
+      setGlobalSessionId("coms-creator-check-test");
+      clearLogLevelCache();
+
+      assert.equal(isPeerTaskCreator({ type: "coms", session: "peer-1" }, "peer-1"), true);
+      assert.equal(isPeerTaskCreator({ type: "local", session: "" }, ""), false);
+
+      const logPath = getPiLogPath("coms");
+      assert.ok(logPath && existsSync(logPath));
+      assert.match(readFileSync(logPath, "utf-8"), /peer_task_creator_check/);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = savedUserProfile;
+      if (savedLevel === undefined) delete process.env.PI_LOG_COMS;
+      else process.env.PI_LOG_COMS = savedLevel;
+      if (savedSid !== undefined) setGlobalSessionId(savedSid);
+      clearLogLevelCache();
+      rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 });

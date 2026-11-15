@@ -1071,10 +1071,12 @@ export function isPeerTaskCreator(
   createdBy: { type?: unknown; session?: unknown } | null | undefined,
   senderSession: unknown,
 ): boolean {
-  return (
-    createdBy?.type === "coms" &&
-    typeof senderSession === "string" &&
-    senderSession.length > 0 &&
-    createdBy.session === senderSession
-  );
+  const hasSender = typeof senderSession === "string" && senderSession.length > 0;
+  const allowed = createdBy?.type === "coms" && hasSender && createdBy.session === senderSession;
+  log.debug("peer_task_creator_check", {
+    allowed,
+    originType: typeof createdBy?.type === "string" ? createdBy.type : null,
+    hasSender,
+  });
+  return allowed;
 }
