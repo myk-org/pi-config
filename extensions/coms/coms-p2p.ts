@@ -218,6 +218,8 @@ interface PendingReply {
 	queued_at?: string;
 	/** #924 §6: last progress note received from the peer (never resolves the reply). */
 	progress?: { note: string; at: string };
+	/** Internal RPC reply (e.g. task_manage list): resolves caller directly without chat injection or history. */
+	internal?: boolean;
 }
 
 /** #951: coms_send tool result details — blocked send or delivered message. */
@@ -696,6 +698,8 @@ export default function (pi: ExtensionAPI) {
 		pi_session_id: string;
 		task_store_path: string | null;
 	} | null = null;
+	const initialPiTasks = process.env.PI_TASKS;
+	const initialTaskScope: "session" | "project" = process.env.PI_TASK_SCOPE === "project" ? "project" : "session";
 	const peerCards: Map<string, AgentCard & { staleCount: number }> = new Map();
 	let welcomeShown = false;
 	const knownPeerSessions: Map<string, string> = new Map(); // session_id → name
@@ -794,10 +798,32 @@ export default function (pi: ExtensionAPI) {
 		return typeof fromGlobal === "string" ? fromGlobal.trim() : "";
 	}
 
-	/** #1080: compute the exact TaskStore file path this peer's pitasks instance reads/watches. */
+	/** #1080: compute the exact TaskStore file path this peer's pitasks instance reads/watches.
+	 *  Prefer the live published TaskStore's own filePath first so mid-session PI_TASKS /
+	 *  PI_TASK_SCOPE mutations never desync advertised task_store_path from pitasks. */
 	function resolveOwnTaskStorePath(piSessionId: string, cwd: string): string | null {
-		const storePath = resolveStorePath(piSessionId || undefined, { cwd, piTasks: process.env.PI_TASKS }) ?? null;
-		log.debug("own_task_store_path_resolved", { hasPiSessionId: Boolean(piSessionId), hasStorePath: Boolean(storePath) });
+		const liveStore = publishedTaskStore() as { filePath?: string } | null;
+		const publishedFilePath = typeof liveStore?.filePath === "string" && liveStore.filePath.trim()
+			? liveStore.filePath.trim()
+			: null;
+		if (publishedFilePath) {
+			log.debug("own_task_store_path_resolved", {
+				source: "published_task_store",
+				hasPiSessionId: Boolean(piSessionId),
+				hasStorePath: true,
+			});
+			return publishedFilePath;
+		}
+		const storePath = resolveStorePath(piSessionId || undefined, {
+			cwd,
+			piTasks: initialPiTasks,
+			taskScope: initialTaskScope,
+		}) ?? null;
+		log.debug("own_task_store_path_resolved", {
+			source: "fallback_store_path",
+			hasPiSessionId: Boolean(piSessionId),
+			hasStorePath: Boolean(storePath),
+		});
 		return storePath;
 	}
 
@@ -823,7 +849,7 @@ export default function (pi: ExtensionAPI) {
 				started_at: nowIso(),
 				explicit: identity.explicit,
 				version: 1,
-				context_used_pct: Math.round(ctx?.getContextUsage()?.percent ?? 0),
+				context_used_pct: Math.round(ctx?.getContextUsage?.()?.percent ?? 0),
 				queue_depth: getPendingInboundCount(),
 				busy: processingInbound,
 				heartbeat_at: nowIso(),
@@ -1104,6 +1130,17 @@ export default function (pi: ExtensionAPI) {
 
 	function handleResponse(socket: net.Socket, env: ResponseEnvelope): void {
 		const pending = pendingReplies.get(env.msg_id);
+		if (pending?.internal) {
+			if (pending.timer) {
+				try { clearTimeout(pending.timer); } catch { /* ignore */ }
+				pending.timer = null;
+			}
+			pendingReplies.delete(env.msg_id);
+			log.debug("internal_response_received", { msgId: env.msg_id, hasError: Boolean(env.error) });
+			ackOk(socket, env.msg_id);
+			pending.resolve?.({ response: env.response, error: env.error ?? null });
+			return;
+		}
 		// Clean up pending outbound tracking
 		if (pending?.target_name) {
 			const set = pendingOutbound.get(pending.target_name);
@@ -1183,7 +1220,7 @@ export default function (pi: ExtensionAPI) {
 	async function buildAgentCard(): Promise<AgentCard> {
 		const ctx = currentCtx;
 		const ident = identity;
-		const pct = ctx ? Math.round(ctx.getContextUsage()?.percent ?? 0) : 0;
+		const pct = ctx ? Math.round(ctx.getContextUsage?.()?.percent ?? 0) : 0;
 		log.debug("build_agent_card", { hasIdentity: !!ident });
 		return {
 			name: ident?.name ?? "unknown",
@@ -1502,8 +1539,18 @@ export default function (pi: ExtensionAPI) {
 				case "update":
 					if (env.task_id && env.fields && typeof env.fields === "object" && !Array.isArray(env.fields)) {
 						const t = getTask(env.task_id);
-						if (isPeerTaskCreator(t?.createdBy, env.sender_session)) {
-							result = updateTask(env.task_id, env.fields);
+						if (!t) {
+							error = `Task #${env.task_id} not found`;
+						} else if (isPeerTaskCreator(t.createdBy, env.sender_session)) {
+							const updateRes = updateTask(env.task_id, env.fields);
+							const deletedByUpdate = env.fields.status === "deleted"
+								&& Array.isArray(updateRes?.changedFields)
+								&& updateRes.changedFields.includes("deleted");
+							if (!updateRes?.task && !deletedByUpdate) {
+								error = `Task #${env.task_id} not found`;
+							} else {
+								result = updateRes;
+							}
 						} else {
 							error = "ownership_denied — can only update tasks you created";
 						}
@@ -2366,14 +2413,78 @@ Do not respond to this message.`;
 		return storePath;
 	}
 
+	/** #1080: query a peer's live in-memory TaskStore over its socket via task_manage(list).
+	 *  Required when an older peer lacks task_store_path in its registry entry, so reading a
+	 *  guessed session file on disk cannot prove the peer's TaskStore reads that file. */
+	async function requestPeerTaskListOverSocket(target: RegistryEntry): Promise<any[]> {
+		if (!identity) throw new Error("coms not initialised");
+		if (!target.endpoint) {
+			log.error("peer_task_manage_list_no_endpoint", { peer: target.name, comsSessionId: target.coms_session_id });
+			throw new Error(`peer "${target.name}" has no task_store_path and no live endpoint to confirm tasks`);
+		}
+		const timeoutMs = getSetting(identity.cwd, "coms_probe_timeout_ms");
+		const msg_id = ulid();
+		let resolveReply!: (value: { response?: any; error?: string | null }) => void;
+		const replyPromise = new Promise<{ response?: any; error?: string | null }>((res) => {
+			resolveReply = res;
+		});
+		const timer = setTimeout(() => {
+			pendingReplies.delete(msg_id);
+			// Resolve, never reject: this timer can fire while sendEnvelope is still in flight,
+			// and an unawaited rejection would surface as an unhandled rejection instead of the
+			// documented failure.
+			resolveReply({ error: `timed out waiting for task_manage list from "${target.name}"` });
+		}, timeoutMs);
+		try { (timer as any).unref?.(); } catch { /* ignore */ }
+		pendingReplies.set(msg_id, {
+			internal: true,
+			resolve: resolveReply,
+			timer,
+			target_name: target.name,
+			created_at: nowIso(),
+		});
+		try {
+			await sendEnvelope(target.endpoint, {
+				type: "task_manage",
+				msg_id,
+				sender_session: identity.coms_session_id,
+				sender_endpoint: identity.endpoint,
+				sender_name: identity.name,
+				hops: 0,
+				timestamp: nowIso(),
+				action: "list",
+			});
+			const reply = await replyPromise;
+			if (reply.error) {
+				throw new Error(reply.error);
+			}
+			if (!Array.isArray(reply.response)) {
+				throw new Error("invalid task_manage list response");
+			}
+			log.debug("peer_task_manage_listed", { peer: target.name, count: reply.response.length });
+			return reply.response;
+		} catch (error) {
+			clearTimeout(timer);
+			pendingReplies.delete(msg_id);
+			const reason = error instanceof Error ? error.message : String(error);
+			log.error("peer_task_manage_list_failed", { peer: target.name, error: reason });
+			throw new Error(`peer "${target.name}" did not confirm live TaskStore via task_manage: ${reason}`);
+		}
+	}
+
 	/** #1080: shared peer task read path used by both coms_task_list and coms_tasks_create post-write verification. */
 	async function listPeerTasksByTarget(targetRef: string): Promise<{ target: RegistryEntry; storePath: string; tasks: any[] }> {
 		const target = await resolveTarget(targetRef);
 		if (!target) throw new Error(`coms: no live agent matching "${targetRef}"`);
 		const storePath = requirePeerTaskStorePath(target);
+		if (!target.task_store_path) {
+			const tasks = await requestPeerTaskListOverSocket(target);
+			log.debug("peer_tasks_listed", { peer: target.name, storePath, source: "task_manage_rpc", count: tasks.length });
+			return { target, storePath, tasks };
+		}
 		const { listTasksAtStorePath } = await import("../pitasks/index.js");
 		const tasks = listTasksAtStorePath(storePath) || [];
-		log.debug("peer_tasks_listed", { peer: target.name, storePath, count: tasks.length });
+		log.debug("peer_tasks_listed", { peer: target.name, storePath, source: "store_path", count: tasks.length });
 		return { target, storePath, tasks };
 	}
 
@@ -2504,7 +2615,7 @@ Do not respond to this message.`;
 		if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
 			const autoStorePath = resolvePeerTaskStorePath(target);
 			if (!autoStorePath) {
-				log.warn("tasks_auto_create_skipped", { msg_id, target: target.name, reason: "peer_task_store_unavailable" });
+				log.error("tasks_auto_create_skipped", { msg_id, target: target.name, reason: "peer_task_store_unavailable" });
 			} else {
 				try {
 					const count = await createComsInboundTasks(
@@ -2516,7 +2627,7 @@ Do not respond to this message.`;
 					);
 					if (count > 0) log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
 				} catch (error) {
-					log.warn("tasks_auto_create_failed", { msg_id, target: target.name, error: error instanceof Error ? error.message : String(error) });
+					log.error("tasks_auto_create_failed", { msg_id, target: target.name, error: error instanceof Error ? error.message : String(error) });
 				}
 			}
 		}
@@ -3145,58 +3256,117 @@ Do not respond to this message.`;
 
 			try {
 				const storePath = requirePeerTaskStorePath(target);
-				const { createTasksAtStorePath, listTasksAtStorePath, updateTaskAtStorePath } = await import("../pitasks/index.js");
+				const storeExistedBeforeWrite = fs.existsSync(storePath);
+				const { createTasksAtStorePath, deleteTaskAtStorePath, listTasksAtStorePath, updateTaskAtStorePath } = await import("../pitasks/index.js");
 
-				// Create all tasks in one batch
-				const taskDefs = params.tasks.map(t => ({
-					subject: t.subject,
-					description: t.description,
-					createdBy,
-					metadata: { ...meta },
-				}));
-				const created = createTasksAtStorePath(storePath, taskDefs);
-				const createdIds = created.map((t: any) => String(t.id));
-
-				// Check if "Report completion to sender" already exists from this sender
-				const allTasks = listTasksAtStorePath(storePath) || [];
-				const existingReport = allTasks.find((t: any) =>
+				// Check if "Report completion to sender" already exists from this sender before mutating
+				const existingTasks = listTasksAtStorePath(storePath) || [];
+				const existingReport = existingTasks.find((t: any) =>
 					t.createdBy?.session === identity!.coms_session_id &&
 					t.subject === "Report completion to sender" &&
 					t.status !== "completed" && t.status !== "deleted"
 				);
 
-				let reportTaskId = "";
-				if (existingReport) {
-					// Update existing report task's blockedBy to include new task IDs
-					const newBlockedBy = [...new Set([...(existingReport.blockedBy || []), ...createdIds])];
-					updateTaskAtStorePath(storePath, existingReport.id, { blockedBy: newBlockedBy });
-					reportTaskId = String(existingReport.id);
-				} else {
-					// Create report task blocked by all new tasks
-					const [reportTask] = createTasksAtStorePath(storePath, [{
-						subject: "Report completion to sender",
-						description: `When all tasks are done, use coms_send to report back to ${identity!.name}.`,
-						createdBy,
-						blockedBy: createdIds,
-						metadata: { ...meta },
-					}]);
-					reportTaskId = String(reportTask?.id ?? "");
-				}
+				let created: any[] = [];
+				let createdIds: string[] = [];
+				let createdReportTaskId = "";
+				let updatedReportTask: { id: string; priorBlockedBy: string[] } | null = null;
 
-				// #1080: verify created tasks are persisted and visible through the exact read path
-				// coms_task_list uses before reporting success — never claim a silent false success.
-				if (!fs.existsSync(storePath)) {
-					throw new Error(`task store file was not persisted at ${storePath}`);
-				}
-				const verified = await listPeerTasksByTarget(params.target);
-				if (verified.storePath !== storePath) {
-					throw new Error(`write store (${storePath}) disagreed with read store (${verified.storePath})`);
-				}
-				const visibleIds = new Set(verified.tasks.map((t: any) => String(t.id)));
-				const expectedIds = reportTaskId ? [...createdIds, reportTaskId] : createdIds;
-				const missingIds = expectedIds.filter((id) => !visibleIds.has(id));
-				if (created.length !== params.tasks.length || missingIds.length > 0) {
-					throw new Error(`task write verification failed — missing task ID(s) on readback: ${missingIds.join(", ") || "count_mismatch"}`);
+				const rollbackCreatedTasks = (reason: unknown): void => {
+					if (createdIds.length === 0 && !createdReportTaskId && !updatedReportTask) return;
+					try {
+						for (const id of createdIds) {
+							deleteTaskAtStorePath(storePath, id);
+						}
+						if (createdReportTaskId) {
+							deleteTaskAtStorePath(storePath, createdReportTaskId);
+						}
+						if (updatedReportTask) {
+							updateTaskAtStorePath(storePath, updatedReportTask.id, { blockedBy: updatedReportTask.priorBlockedBy });
+						}
+						if (!storeExistedBeforeWrite) {
+							const remaining = listTasksAtStorePath(storePath) || [];
+							if (remaining.length === 0) {
+								try { fs.unlinkSync(storePath); } catch { /* ignore */ }
+							}
+						}
+						log.warn("coms_tasks_create_rolled_back", {
+							target: target.name,
+							storePath,
+							rolledBackIds: createdIds,
+							createdReportTaskId: createdReportTaskId || null,
+							restoredReportTaskId: updatedReportTask?.id ?? null,
+							reason: reason instanceof Error ? reason.message : String(reason),
+						});
+					} catch (rollbackErr: any) {
+						log.error("coms_tasks_create_rollback_failed", {
+							target: target.name,
+							storePath,
+							error: rollbackErr?.message ?? String(rollbackErr),
+						});
+					}
+				};
+
+				try {
+					// Create all tasks in one batch
+					const taskDefs = params.tasks.map(t => ({
+						subject: t.subject,
+						description: t.description,
+						createdBy,
+						metadata: { ...meta },
+					}));
+					created = createTasksAtStorePath(storePath, taskDefs);
+					createdIds = created.map((t: any) => String(t.id));
+
+					let reportTaskId = "";
+					if (existingReport) {
+						const priorBlockedBy = Array.isArray(existingReport.blockedBy) ? [...existingReport.blockedBy] : [];
+						const newBlockedBy = [...new Set([...priorBlockedBy, ...createdIds])];
+						updateTaskAtStorePath(storePath, existingReport.id, { blockedBy: newBlockedBy });
+						reportTaskId = String(existingReport.id);
+						updatedReportTask = { id: reportTaskId, priorBlockedBy };
+					} else {
+						const [reportTask] = createTasksAtStorePath(storePath, [{
+							subject: "Report completion to sender",
+							description: `When all tasks are done, use coms_send to report back to ${identity!.name}.`,
+							createdBy,
+							blockedBy: createdIds,
+							metadata: { ...meta },
+						}]);
+						reportTaskId = String(reportTask?.id ?? "");
+						createdReportTaskId = reportTaskId;
+					}
+
+					// #1080: verify created tasks are persisted and visible through the exact read path
+					// coms_task_list uses before reporting success — never claim a silent false success.
+					if (!fs.existsSync(storePath)) {
+						throw new Error(`task store file was not persisted at ${storePath}`);
+					}
+					const verified = await listPeerTasksByTarget(params.target);
+					if (verified.storePath !== storePath) {
+						throw new Error(`write store (${storePath}) disagreed with read store (${verified.storePath})`);
+					}
+					const expectedTasks = new Map<string, string>(
+						created.map((t: any) => [String(t.id), String(t.subject)]),
+					);
+					if (reportTaskId) {
+						expectedTasks.set(reportTaskId, "Report completion to sender");
+					}
+					const visibleById = new Map(verified.tasks.map((t: any) => [String(t?.id), t]));
+					const missingIds = [...expectedTasks.entries()]
+						.filter(([id, subject]) => {
+							const found = visibleById.get(id);
+							return !found
+								|| found.subject !== subject
+								|| found.createdBy?.session !== identity!.coms_session_id;
+						})
+						.map(([id]) => id);
+					if (created.length !== params.tasks.length || missingIds.length > 0) {
+						throw new Error(`task write verification failed — missing task ID(s) on readback: ${missingIds.join(", ") || "count_mismatch"}`);
+					}
+				} catch (writeOrVerifyErr) {
+					rollbackCreatedTasks(writeOrVerifyErr);
+					throw writeOrVerifyErr;
 				}
 
 				log.info("coms_tasks_create", created.length, "tasks on", target.name);
@@ -3419,6 +3589,12 @@ Do not respond to this message.`;
 
 				const { target: _t, task_id: _tid, ...fields } = params;
 				const result = updateTaskAtStorePath(storePath, params.task_id, fields);
+				const deletedByUpdate = fields.status === "deleted"
+					&& Array.isArray(result?.changedFields)
+					&& result.changedFields.includes("deleted");
+				if (!result?.task && !deletedByUpdate) {
+					throw new Error(`Task #${params.task_id} not found on ${target.name}`);
+				}
 				log.info("coms_task_update", params.task_id, "on", target.name, "fields", Object.keys(fields).join(","));
 
 				const changedFields = result?.changedFields ?? [];

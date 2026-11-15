@@ -435,6 +435,7 @@ export class TaskStore {
 		completionNote?: string;
 		metadata?: Record<string, any>;
 		telemetry?: Task["telemetry"];
+		blockedBy?: string[];
 		addBlocks?: string[];
 		addBlockedBy?: string[];
 	}): { task: Task | undefined; changedFields: string[]; warnings: string[] } {
@@ -495,6 +496,7 @@ export class TaskStore {
 				changedFields.push("metadata");
 			}
 			if (fields.telemetry !== undefined) { task.telemetry = fields.telemetry; changedFields.push("telemetry"); }
+			if (Array.isArray(fields.blockedBy)) { task.blockedBy = [...fields.blockedBy]; changedFields.push("blockedBy"); }
 
 			if (fields.addBlocks?.length) {
 				for (const targetId of fields.addBlocks) {

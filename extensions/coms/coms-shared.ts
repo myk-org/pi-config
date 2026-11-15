@@ -871,7 +871,7 @@ export async function createComsInboundTasks(
 	try {
 		createTasksAtStorePath = (await import("../pitasks/index.js")).createTasksAtStorePath;
 	} catch (error) {
-		log.warn("create_coms_inbound_tasks_import_failed", { storePath, error: error instanceof Error ? error.message : String(error) });
+		log.error("create_coms_inbound_tasks_import_failed", { storePath, error: error instanceof Error ? error.message : String(error) });
 		return 0;
 	}
 	if (!createTasksAtStorePath) return 0;
@@ -898,7 +898,7 @@ export async function createComsInboundTasks(
 	try {
 		return createTasksAtStorePath(storePath, defs).length;
 	} catch (error) {
-		log.warn("create_coms_inbound_tasks_failed", { storePath, count: defs.length, error: error instanceof Error ? error.message : String(error) });
+		log.error("create_coms_inbound_tasks_failed", { storePath, count: defs.length, error: error instanceof Error ? error.message : String(error) });
 		return 0;
 	}
 }

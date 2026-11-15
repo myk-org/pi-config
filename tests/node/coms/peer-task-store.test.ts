@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { createComsInboundTasks, resolvePeerTaskStorePath } from "../../../extensions/coms/coms-shared.js";
+import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import pitasks, {
 	createTasksAtStorePath,
 	deleteTaskAtStorePath,
@@ -85,11 +86,15 @@ async function startComsPeer(opts: {
 	presetGlobalSessionId?: string | null;
 	piTasks?: string;
 	piTaskScope?: string;
+	probeTimeoutMs?: number;
 }): Promise<FakePeer> {
 	mkdirSync(join(opts.cwd, ".pi"), { recursive: true });
 	writeFileSync(
 		join(opts.cwd, ".pi", "pi-config-settings.json"),
-		JSON.stringify({ coms_dir: opts.comsDir }),
+		JSON.stringify({
+			coms_dir: opts.comsDir,
+			...(opts.probeTimeoutMs !== undefined ? { coms_probe_timeout_ms: opts.probeTimeoutMs } : {}),
+		}),
 	);
 
 	const fakePi = createFakePi(opts.name);
@@ -128,6 +133,7 @@ async function startComsPeer(opts: {
 			model: { id: "test-model" },
 			hasUI: false,
 			ui: { notify() {} },
+			getContextUsage: () => ({ percent: 0 }),
 			sessionManager: opts.piSessionId !== undefined
 				? { getSessionId: () => opts.piSessionId }
 				: undefined,
@@ -735,5 +741,617 @@ describe("coms peer task lifecycle regression (#1080)", { concurrency: false }, 
 		});
 		assert.equal(updatedReply.error, null);
 		assert.equal(taskStore.get(createdReply.response.id)?.subject, "RPC task updated");
+	});
+
+	it("keeps advertising the live published TaskStore path after mid-session PI_TASKS changes", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-env-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+		const senderDir = join(root, "sender");
+
+		const peerLiveStore = await bootPeerPitasks({
+			cwd: peerDir,
+			piSessionId: "stable-live-sid",
+		});
+		const peer = await startComsPeer({
+			name: "live-peer",
+			cwd: peerDir,
+			comsDir,
+			piSessionId: "stable-live-sid",
+			presetGlobalSessionId: null,
+		});
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: senderDir,
+			comsDir,
+			piSessionId: "sender-sid",
+		});
+
+		const prevPiTasks = process.env.PI_TASKS;
+		const prevScope = process.env.PI_TASK_SCOPE;
+		process.env.PI_TASKS = join(root, "misrouted-tasks.json");
+		process.env.PI_TASK_SCOPE = "project";
+		try {
+			// Sending a prompt flips busy state on the peer, forcing writeLiveRegistry() while PI_TASKS is mutated.
+			await sender.tools.get("coms_send").execute("s-busy", {
+				target: "live-peer",
+				prompt: "Trigger live registry refresh",
+			});
+
+			const regPath = join(comsDir, "projects", "test-proj", "agents", `${peer.comsSessionId}.json`);
+			const refreshed = JSON.parse(readFileSync(regPath, "utf8"));
+			assert.equal(refreshed.task_store_path, peerLiveStore.filePath);
+
+			const created = await sender.tools.get("coms_tasks_create").execute("c-live", {
+				target: "live-peer",
+				tasks: [{ subject: "Routed to live store", description: "Must ignore mid-session env mutation" }],
+			});
+			assert.equal(created.details.storePath, peerLiveStore.filePath);
+			assert.equal(peerLiveStore.list().some((task) => task.subject === "Routed to live store"), true);
+			assert.equal(existsSync(join(root, "misrouted-tasks.json")), false);
+		} finally {
+			if (prevPiTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = prevPiTasks;
+			if (prevScope === undefined) delete process.env.PI_TASK_SCOPE;
+			else process.env.PI_TASK_SCOPE = prevScope;
+		}
+	});
+
+	it("rejects task creation on a legacy peer whose live PI_TASKS store ignores the guessed session file", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-leg-custom-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+		const customBoard = join(root, "custom-board.json");
+
+		const peerLiveStore = await bootPeerPitasks({
+			cwd: peerDir,
+			piSessionId: "legacy-custom-sid",
+			piTasks: customBoard,
+		});
+		// Populate an unrelated task #1 on the custom board to guard against ID-only false positives.
+		peerLiveStore.create("Unrelated local task", "Already on custom board", {
+			type: "local",
+			origin: "user",
+			session: "",
+			project: peerDir,
+		});
+
+		const peer = await startComsPeer({
+			name: "legacy-custom",
+			cwd: peerDir,
+			comsDir,
+			piSessionId: "legacy-custom-sid",
+			presetGlobalSessionId: null,
+			piTasks: customBoard,
+		});
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: join(root, "sender"),
+			comsDir,
+			piSessionId: "sender-sid",
+		});
+
+		const regPath = join(comsDir, "projects", "test-proj", "agents", `${peer.comsSessionId}.json`);
+		const rawEntry = JSON.parse(readFileSync(regPath, "utf8"));
+		delete rawEntry.task_store_path;
+		writeFileSync(regPath, JSON.stringify(rawEntry, null, 2));
+
+		await assert.rejects(
+			sender.tools.get("coms_tasks_create").execute("c-legacy-custom", {
+				target: "legacy-custom",
+				tasks: [{ subject: "Missed task", description: "Peer reads custom-board.json instead" }],
+			}),
+			/Failed to create tasks on legacy-custom/,
+		);
+		const guessedPath = join(peerDir, ".pi", "tasks", "tasks-legacy-custom-sid.json");
+		assert.equal(existsSync(guessedPath), false);
+	});
+
+	it("succeeds on a legacy peer without task_store_path when live task_manage confirms visibility", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-leg-ok-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+
+		const peerLiveStore = await bootPeerPitasks({
+			cwd: peerDir,
+			piSessionId: "legacy-ok-sid",
+		});
+		const peer = await startComsPeer({
+			name: "legacy-ok",
+			cwd: peerDir,
+			comsDir,
+			piSessionId: "legacy-ok-sid",
+			presetGlobalSessionId: null,
+		});
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: join(root, "sender"),
+			comsDir,
+			piSessionId: "sender-sid",
+		});
+
+		const regPath = join(comsDir, "projects", "test-proj", "agents", `${peer.comsSessionId}.json`);
+		const rawEntry = JSON.parse(readFileSync(regPath, "utf8"));
+		delete rawEntry.task_store_path;
+		writeFileSync(regPath, JSON.stringify(rawEntry, null, 2));
+
+		const created = await sender.tools.get("coms_tasks_create").execute("c-legacy-ok", {
+			target: "legacy-ok",
+			tasks: [{ subject: "Confirmed legacy task", description: "Visible via task_manage list" }],
+		});
+		assert.match(created.content[0].text, /Created 1 tasks on legacy-ok/);
+		assert.equal(peerLiveStore.list().some((task) => task.subject === "Confirmed legacy task"), true);
+	});
+
+	it("rejects task creation on a legacy peer without task_store_path when task_manage fails", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-leg-nack-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+		const sockPath = join(root, "legacy-nack.sock");
+
+		const server = net.createServer((sock) => {
+			let buf = "";
+			sock.on("data", (chunk) => {
+				buf += chunk.toString("utf8");
+				const nl = buf.indexOf("\n");
+				if (nl < 0) return;
+				const parsed = JSON.parse(buf.slice(0, nl));
+				sock.write(JSON.stringify({ type: "nack", msg_id: parsed.msg_id ?? "", error: "task_manage unsupported" }) + "\n");
+				sock.end();
+			});
+			sock.once("error", () => sock.destroy());
+		});
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		await new Promise<void>((resolve) => server.listen(sockPath, () => resolve()));
+
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: join(root, "sender"),
+			comsDir,
+			piSessionId: "sender-sid",
+		});
+
+		const agentsDir = join(comsDir, "projects", "test-proj", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		writeFileSync(
+			join(agentsDir, "legacy-nack-sid.json"),
+			JSON.stringify({
+				coms_session_id: "legacy-nack-sid",
+				name: "legacy-nack",
+				purpose: "",
+				model: "test-model",
+				color: "#36F9F6",
+				pid: process.pid,
+				endpoint: sockPath,
+				cwd: peerDir,
+				started_at: new Date().toISOString(),
+				heartbeat_at: new Date().toISOString(),
+				explicit: false,
+				version: 1,
+				pi_session_id: "legacy-nack-pi-sid",
+			}, null, 2),
+		);
+
+		await assert.rejects(
+			sender.tools.get("coms_tasks_create").execute("c-legacy-nack", {
+				target: "legacy-nack",
+				tasks: [{ subject: "Unverifiable task", description: "Should fail closed" }],
+			}),
+			/Failed to create tasks on legacy-nack/,
+		);
+		assert.equal(existsSync(join(peerDir, ".pi", "tasks", "tasks-legacy-nack-pi-sid.json")), false);
+	});
+
+	it("rejects task creation on a legacy peer when task_manage list times out", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-leg-to-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+		const sockPath = join(root, "legacy-timeout.sock");
+
+		// Ack the inbound socket request late and never send a response envelope back, so the
+		// request timeout fires while the send is still in flight (the case that leaked an
+		// unhandled rejection instead of the documented timeout error).
+		const server = net.createServer((sock) => {
+			let buf = "";
+			sock.on("data", (chunk) => {
+				buf += chunk.toString("utf8");
+				const nl = buf.indexOf("\n");
+				if (nl < 0) return;
+				const parsed = JSON.parse(buf.slice(0, nl));
+				setTimeout(() => {
+					if (sock.destroyed) return;
+					sock.write(JSON.stringify({ type: "ack", msg_id: parsed.msg_id ?? "" }) + "\n");
+					sock.end();
+				}, 500);
+			});
+			sock.once("error", () => sock.destroy());
+		});
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		await new Promise<void>((resolve) => server.listen(sockPath, () => resolve()));
+
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: join(root, "sender"),
+			comsDir,
+			piSessionId: "sender-sid",
+			probeTimeoutMs: 100,
+		});
+
+		const agentsDir = join(comsDir, "projects", "test-proj", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		writeFileSync(
+			join(agentsDir, "legacy-to-sid.json"),
+			JSON.stringify({
+				coms_session_id: "legacy-to-sid",
+				name: "legacy-timeout",
+				purpose: "",
+				model: "test-model",
+				color: "#36F9F6",
+				pid: process.pid,
+				endpoint: sockPath,
+				cwd: peerDir,
+				started_at: new Date().toISOString(),
+				heartbeat_at: new Date().toISOString(),
+				explicit: false,
+				version: 1,
+				pi_session_id: "legacy-to-pi-sid",
+			}, null, 2),
+		);
+
+		await assert.rejects(
+			sender.tools.get("coms_tasks_create").execute("c-legacy-to", {
+				target: "legacy-timeout",
+				tasks: [{ subject: "Timed out task", description: "Must fail closed on RPC timeout" }],
+			}),
+			/timed out waiting for task_manage list/,
+		);
+		assert.equal(existsSync(join(peerDir, ".pi", "tasks", "tasks-legacy-to-pi-sid.json")), false);
+	});
+
+	it("deletes newly created tasks with a new report task when post-write verification fails", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-rb-new-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+		const sockPath = join(root, "swap-peer.sock");
+		const storeA = join(peerDir, ".pi", "tasks", "tasks-store-a.json");
+		const storeB = join(peerDir, ".pi", "tasks", "tasks-store-b.json");
+
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: join(root, "sender"),
+			comsDir,
+			piSessionId: "sender-sid",
+		});
+
+		const regPath = join(comsDir, "projects", "test-proj", "agents", "swap-peer-sid.json");
+		const staleTs = new Date(Date.now() - 60_000).toISOString();
+		const writePeerEntry = (storePath: string) => {
+			writeFileSync(regPath, JSON.stringify({
+				coms_session_id: "swap-peer-sid",
+				name: "swap-peer",
+				purpose: "",
+				model: "test-model",
+				color: "#36F9F6",
+				pid: process.pid,
+				endpoint: sockPath,
+				cwd: peerDir,
+				started_at: staleTs,
+				heartbeat_at: staleTs,
+				explicit: false,
+				version: 1,
+				pi_session_id: "swap-pi-sid",
+				task_store_path: storePath,
+			}, null, 2));
+		};
+
+		let connections = 0;
+		const server = net.createServer((sock) => {
+			connections++;
+			// First probe happens inside resolveTarget() before coms_tasks_create writes to storeA;
+			// flipping the registry to storeB here makes post-write listPeerTasksByTarget() disagree.
+			if (connections === 1) {
+				writePeerEntry(storeB);
+			}
+			sock.once("error", () => sock.destroy());
+		});
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		await new Promise<void>((resolve) => server.listen(sockPath, () => resolve()));
+		writePeerEntry(storeA);
+
+		await assert.rejects(
+			sender.tools.get("coms_tasks_create").execute("c-rb-new", {
+				target: "swap-peer",
+				tasks: [{ subject: "Transient task", description: "Must be rolled back" }],
+			}),
+			/disagreed with read store/,
+		);
+		assert.equal(existsSync(storeA), false);
+	});
+
+	it("restores an existing report task blockedBy list when a subsequent batch fails verification", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-rb-rep-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+		const sockPath = join(root, "swap-rep.sock");
+		const storeA = join(peerDir, ".pi", "tasks", "tasks-store-a.json");
+		const storeB = join(peerDir, ".pi", "tasks", "tasks-store-b.json");
+
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: join(root, "sender"),
+			comsDir,
+			piSessionId: "sender-sid",
+		});
+
+		const regPath = join(comsDir, "projects", "test-proj", "agents", "swap-rep-sid.json");
+		const writePeerEntry = (storePath: string, ts: string) => {
+			writeFileSync(regPath, JSON.stringify({
+				coms_session_id: "swap-rep-sid",
+				name: "swap-rep",
+				purpose: "",
+				model: "test-model",
+				color: "#36F9F6",
+				pid: process.pid,
+				endpoint: sockPath,
+				cwd: peerDir,
+				started_at: ts,
+				heartbeat_at: ts,
+				explicit: false,
+				version: 1,
+				pi_session_id: "swap-rep-pi-sid",
+				task_store_path: storePath,
+			}, null, 2));
+		};
+
+		let swapOnNextProbe = false;
+		const server = net.createServer((sock) => {
+			if (swapOnNextProbe) {
+				swapOnNextProbe = false;
+				writePeerEntry(storeB, new Date().toISOString());
+			}
+			let buf = "";
+			sock.on("data", (chunk) => {
+				buf += chunk.toString("utf8");
+				const nl = buf.indexOf("\n");
+				if (nl < 0) return;
+				const parsed = JSON.parse(buf.slice(0, nl));
+				sock.write(JSON.stringify({ type: "ack", msg_id: parsed.msg_id ?? "" }) + "\n");
+				sock.end();
+			});
+			sock.once("error", () => sock.destroy());
+		});
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		await new Promise<void>((resolve) => server.listen(sockPath, () => resolve()));
+
+		writePeerEntry(storeA, new Date().toISOString());
+		await sender.tools.get("coms_tasks_create").execute("c-batch-1", {
+			target: "swap-rep",
+			tasks: [{ subject: "Initial task", description: "Stays intact" }],
+		});
+
+		const beforeBatch2 = listTasksAtStorePath(storeA);
+		assert.equal(beforeBatch2.length, 2);
+		const initialReport = beforeBatch2.find((task: any) => task.subject === "Report completion to sender");
+		assert.deepEqual(initialReport?.blockedBy, ["1"]);
+
+		// Arm the store swap for the second batch's initial resolveTarget probe.
+		writePeerEntry(storeA, new Date(Date.now() - 60_000).toISOString());
+		swapOnNextProbe = true;
+
+		await assert.rejects(
+			sender.tools.get("coms_tasks_create").execute("c-batch-2", {
+				target: "swap-rep",
+				tasks: [{ subject: "Rolled back second task", description: "Must not pollute report task" }],
+			}),
+			/disagreed with read store/,
+		);
+
+		const afterBatch2 = listTasksAtStorePath(storeA);
+		assert.deepEqual(afterBatch2.map((task: any) => task.subject), [
+			"Initial task",
+			"Report completion to sender",
+		]);
+		const restoredReport = afterBatch2.find((task: any) => task.subject === "Report completion to sender");
+		assert.deepEqual(restoredReport?.blockedBy, ["1"]);
+	});
+
+	it("rejects coms_task_update when the task is concurrently deleted before the store write", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-race-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+
+		await startComsPeer({
+			name: "race-peer",
+			cwd: peerDir,
+			comsDir,
+			piSessionId: "race-pi-sid",
+			presetGlobalSessionId: null,
+		});
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: join(root, "sender"),
+			comsDir,
+			piSessionId: "sender-sid",
+		});
+
+		const created = await sender.tools.get("coms_tasks_create").execute("c-race", {
+			target: "race-peer",
+			tasks: [{ subject: "Ephemeral task", description: "Deleted concurrently" }],
+		});
+		const storePath = created.details.storePath as string;
+
+		const racingParams: Record<string, any> = {
+			target: "race-peer",
+			task_id: "1",
+		};
+		Object.defineProperty(racingParams, "subject", {
+			enumerable: true,
+			get() {
+				deleteTaskAtStorePath(storePath, "1");
+				return "Updated after deletion";
+			},
+		});
+
+		await assert.rejects(
+			sender.tools.get("coms_task_update").execute("u-race", racingParams),
+			/Task #1 not found on race-peer/,
+		);
+	});
+
+	it("returns a not-found error on socket task_manage update when the task does not exist", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-tm-nf-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+
+		await bootPeerPitasks({ cwd: peerDir, piSessionId: "tm-nf-sid" });
+		const peer = await startComsPeer({
+			name: "tm-nf-peer",
+			cwd: peerDir,
+			comsDir,
+			piSessionId: "tm-nf-sid",
+		});
+
+		const replySock = join(root, `reply-${++seq}.sock`);
+		let server: net.Server | undefined;
+		cleanups.push(() => new Promise<void>((resolve) => {
+			if (!server) return resolve();
+			server.close(() => resolve());
+		}));
+		const replyPromise = new Promise<any>((resolve) => {
+			server = net.createServer((sock) => {
+				let buf = "";
+				sock.on("data", (chunk) => {
+					buf += chunk.toString("utf8");
+					const nl = buf.indexOf("\n");
+					if (nl < 0) return;
+					const parsed = JSON.parse(buf.slice(0, nl));
+					sock.write(JSON.stringify({ type: "ack", msg_id: parsed.msg_id }) + "\n");
+					sock.end();
+					resolve(parsed);
+				});
+			});
+		});
+		await new Promise<void>((resolve) => server!.listen(replySock, () => resolve()));
+		await new Promise<void>((resolve, reject) => {
+			const client = net.createConnection({ path: peer.endpoint }, () => {
+				client.write(JSON.stringify({
+					type: "task_manage",
+					msg_id: `tm-nf-${seq}`,
+					sender_session: "creator-session",
+					sender_endpoint: replySock,
+					sender_name: "creator",
+					hops: 0,
+					timestamp: new Date().toISOString(),
+					action: "update",
+					task_id: "999",
+					fields: { subject: "No such task" },
+				}) + "\n");
+			});
+			client.on("data", () => { client.end(); resolve(); });
+			client.once("error", reject);
+		});
+		const reply = await replyPromise;
+		assert.match(String(reply.error), /Task #999 not found/);
+	});
+
+	it("logs create_coms_inbound_tasks_failed at error level when the batch write fails", async () => {
+		const root = makeTempDir("c1080-log-batch-");
+		const tmpHome = join(root, "home");
+		const peerDir = join(root, "peer");
+		mkdirSync(join(peerDir, ".pi"), { recursive: true });
+		writeFileSync(join(peerDir, ".pi", "tasks"), "blocking-file");
+
+		const prevHome = process.env.HOME;
+		const prevUserProfile = process.env.USERPROFILE;
+		const prevSidEnv = process.env.__PI_CONFIG_SESSION_ID;
+		const prevGlobalSid = (globalThis as any).__piConfigSessionId;
+		process.env.HOME = tmpHome;
+		process.env.USERPROFILE = tmpHome;
+		setGlobalSessionId("log-batch-error-sid");
+		clearLogLevelCache();
+		try {
+			const count = await createComsInboundTasks(
+				[{ subject: "Lost task", description: "Write blocked" }],
+				{ sender_session: "sender-1", sender_name: "planner" },
+				"peer-sid",
+				peerDir,
+			);
+			assert.equal(count, 0);
+			const logPath = getPiLogPath("coms");
+			assert.ok(logPath);
+			const logContent = readFileSync(logPath, "utf8");
+			assert.match(logContent, /\[error\] \[coms\] create_coms_inbound_tasks_failed/);
+		} finally {
+			if (prevHome === undefined) delete process.env.HOME;
+			else process.env.HOME = prevHome;
+			if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = prevUserProfile;
+			if (prevSidEnv === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+			else process.env.__PI_CONFIG_SESSION_ID = prevSidEnv;
+			if (prevGlobalSid === undefined) delete (globalThis as any).__piConfigSessionId;
+			else (globalThis as any).__piConfigSessionId = prevGlobalSid;
+			clearLogLevelCache();
+		}
+	});
+
+	it("logs tasks_auto_create_skipped at error level when coms_send drops tasks for an unaddressable peer", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-log-skip-");
+		const tmpHome = join(root, "home");
+		const comsDir = join(root, "coms");
+
+		const prevHome = process.env.HOME;
+		const prevUserProfile = process.env.USERPROFILE;
+		const prevSidEnv = process.env.__PI_CONFIG_SESSION_ID;
+		const prevGlobalSid = (globalThis as any).__piConfigSessionId;
+		process.env.HOME = tmpHome;
+		process.env.USERPROFILE = tmpHome;
+		try {
+			await startComsPeer({
+				name: "tasks-off-peer",
+				cwd: join(root, "peer"),
+				comsDir,
+				piSessionId: "peer-sid",
+				piTasks: "off",
+			});
+			const sender = await startComsPeer({
+				name: "sender-log",
+				cwd: join(root, "sender"),
+				comsDir,
+				piSessionId: "sender-sid",
+			});
+			setGlobalSessionId("log-skip-error-sid");
+			clearLogLevelCache();
+
+			await sender.tools.get("coms_send").execute("s-drop", {
+				target: "tasks-off-peer",
+				prompt: "Work item",
+				tasks: [{ subject: "Dropped task", description: "Peer has PI_TASKS=off" }],
+			});
+
+			const logPath = getPiLogPath("coms");
+			assert.ok(logPath);
+			const logContent = readFileSync(logPath, "utf8");
+			assert.match(logContent, /\[error\] \[coms\] tasks_auto_create_skipped/);
+		} finally {
+			if (prevHome === undefined) delete process.env.HOME;
+			else process.env.HOME = prevHome;
+			if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = prevUserProfile;
+			if (prevSidEnv === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+			else process.env.__PI_CONFIG_SESSION_ID = prevSidEnv;
+			if (prevGlobalSid === undefined) delete (globalThis as any).__piConfigSessionId;
+			else (globalThis as any).__piConfigSessionId = prevGlobalSid;
+			clearLogLevelCache();
+		}
 	});
 });

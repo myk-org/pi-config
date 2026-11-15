@@ -240,8 +240,8 @@ export default function (pi: ExtensionAPI) {
 	currentWidget?.dispose();
 	let store = new TaskStore(resolveStorePath(undefined, { cwd: process.cwd(), piTasks, taskScope }));
 	taskStore = store;
-	// Registration is the only publish site: the getter follows store swaps.
-	publishTaskStore(() => taskStore);
+	// Registration is the only publish site: the getter follows store swaps and hides shut-down stores.
+	publishTaskStore(() => (shuttingDown ? null : taskStore));
 	currentStore = store;
 	const widget = new TaskWidget(store);
 	store.setOnChange(() => { widget.update(); broadcastTasks(); });

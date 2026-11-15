@@ -130,6 +130,11 @@ record `completedBy: user` independently of assignee. Only user-assigned complet
 a follow-up notice, without automatic retries. TaskGet and task details expose the note;
 logs must never contain it. Reopening clears the outcome in single and bulk store updates.
 
+Task storage defaults to `PI_TASK_SCOPE=session` at `.pi/tasks/tasks-<sessionId>.json`, while `PI_TASK_SCOPE=project`
+uses `.pi/tasks/tasks.json`. `PI_TASKS` overrides the store with an absolute or `./`-relative file path, a bare list id
+under `~/.pi/tasks/<id>.json`, or `off` for in-memory storage only. Peer `coms_task*` tools use the target peer's
+advertised `task_store_path` captured at startup.
+
 ## Logging Requirements
 
 All new or modified code MUST include proper `log.debug/info/warn/error` calls via `createLogger`. No code change is complete without logging.
