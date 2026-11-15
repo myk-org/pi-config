@@ -230,19 +230,19 @@ function extractToolTaskRefs(args: any): string[] {
 		const id = normalizeTaskRefId(raw);
 		if (id && !out.includes(id)) out.push(id);
 	};
+	// Only camelCase taskId/taskIds belong to local tools; snake_case task_id targets remote peers (coms_task_*).
 	push(args.taskId);
-	push(args.task_id);
 	if (Array.isArray(args.updates)) {
-		for (const item of args.updates) { push(item?.taskId); push(item?.task_id); }
+		for (const item of args.updates) push(item?.taskId);
 	}
 	if (Array.isArray(args.taskIds)) {
 		for (const id of args.taskIds) push(id);
 	}
 	if (Array.isArray(args.tasks)) {
-		for (const item of args.tasks) { push(item?.taskId); push(item?.task_id); }
+		for (const item of args.tasks) push(item?.taskId);
 	}
 	if (Array.isArray(args.chain)) {
-		for (const step of args.chain) { push(step?.taskId); push(step?.task_id); }
+		for (const step of args.chain) push(step?.taskId);
 	}
 	return out;
 }

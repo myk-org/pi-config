@@ -482,7 +482,7 @@ describe("#1026 per-turn task token attribution", () => {
 		}
 	});
 
-	it("credits tasks referenced via snake_case task_id argument", async () => {
+	it("does not attribute peer snake_case task_id calls to local tasks or suppress sole-task fallback", async () => {
 		const h = bootTelemetryHarness();
 		try {
 			await h.sessionStart();
@@ -490,13 +490,28 @@ describe("#1026 per-turn task token attribution", () => {
 			const t2 = h.startInProgress("Task 2");
 
 			await h.turnStart();
-			await h.toolStart("TaskGet", { task_id: t2.id });
+			await h.toolStart("coms_task_update", { target: "peer-worker", task_id: t2.id, status: "completed" });
+			await h.toolStart("coms_task_get", { target: "peer-worker", task_id: t1.id });
+			await h.toolStart("coms_task_delete", { target: "peer-worker", task_id: t2.id });
 			await h.turnEnd(33, 11);
 
 			assert.equal(taskStore.get(t1.id)?.telemetry?.inputTokens, 0);
-			assert.equal(taskStore.get(t2.id)?.telemetry?.inputTokens, 33);
-			assert.equal(taskStore.get(t2.id)?.telemetry?.outputTokens, 11);
-			assert.deepEqual(sumTokens(taskStore), { input: 33, output: 11 });
+			assert.equal(taskStore.get(t1.id)?.telemetry?.outputTokens, 0);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.inputTokens, 0);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.outputTokens, 0);
+			assert.deepEqual(sumTokens(taskStore), { input: 0, output: 0 });
+
+			taskStore.update(t2.id, { status: "completed" });
+			setTaskTelemetryActive(t2.id, false);
+
+			await h.turnStart();
+			await h.toolStart("coms_task_get", { target: "peer-worker", task_id: "999" });
+			await h.turnEnd(20, 5);
+
+			assert.equal(taskStore.get(t1.id)?.telemetry?.inputTokens, 20);
+			assert.equal(taskStore.get(t1.id)?.telemetry?.outputTokens, 5);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.inputTokens, 0);
+			assert.deepEqual(sumTokens(taskStore), { input: 20, output: 5 });
 		} finally {
 			h.cleanup();
 		}
