@@ -11,7 +11,7 @@ import { formatCronSchedule, cronStateLabel, toCronStatusTaskView, type CronPaus
 import { parseModelOverride } from "./parse-model-override.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
 import { setSlot } from "./status-bar.js";
-import { acquireLeaderLock, durableCronSupported, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, refreshLeaderLock, releaseLeaderLock, setDurableCronPaused, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
+import { acquireLeaderLock, durableCronSupported, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, readDurableCronStoreOutcome, refreshLeaderLock, releaseLeaderLock, setDurableCronPaused, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
 
 const log = createLogger("cron");
 export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; /** "provider/model-id" or bare "model-id"; undefined inherits the normal resolution chain. */ model?: string; /** Paused by the user: kept, never armed (issue #1087). */ paused?: boolean; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
@@ -126,14 +126,23 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       return true;
     } catch (error: any) { log.error("cron_pause_write_failed", { id: qualifyCronId(task), paused, reason: error?.message || error }); return false; }
   }
-  /** The CURRENT paused flag: a durable task re-reads the store, because a peer may have toggled it. */
-  function storedPaused(task: CronTask): boolean {
-    if (durable(task.scope)) {
-      const stored = readDurableCronStore(projectStore(task.cwd)).tasks.find(t => t.id === task.id);
-      if (!stored) { log.debug("cron_record_missing", { id: qualifyCronId(task) }); return true; }
-      task.paused = stored.paused === true;
+  type StoredTaskState = "active" | "paused" | "removed" | "read_error";
+  /** Re-read a durable task's record so peer pauses, removals, and transient read errors stay distinct. */
+  function storedTaskState(task: CronTask): StoredTaskState {
+    if (!durable(task.scope)) return task.paused === true ? "paused" : "active";
+    const file = projectStore(task.cwd);
+    const outcome = readDurableCronStoreOutcome(file);
+    if (outcome.status === "read_error") {
+      log.warn("cron_store_transient_error", { id: qualifyCronId(task), file, reason: outcome.reason });
+      return "read_error";
     }
-    return task.paused === true;
+    const stored = outcome.status === "ok" ? outcome.tasks.find(t => t?.id === task.id) : undefined;
+    if (!stored) {
+      log.debug("cron_record_missing", { id: qualifyCronId(task), file, status: outcome.status });
+      return "removed";
+    }
+    task.paused = stored.paused === true;
+    return task.paused ? "paused" : "active";
   }
   async function execute(task: CronTask, isCurrent: () => boolean) {
     try {
@@ -158,7 +167,13 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       log.debug("cron_dispatch", { id: qualifyCronId(task), model: task.model || "inherit", action: dispatch.action });
       if (dispatch.action === "skip") { log.error("cron_error", qualifyCronId(task), dispatch.note); return; }
       const { discoverAgents } = await import("./agents.js");
-      if (!isCurrent() || storedPaused(task)) { log.debug("cron_execution_fenced", { id: qualifyCronId(task), reason: "stale_or_paused" }); return; }
+      if (!isCurrent()) { log.debug("cron_execution_fenced", { id: qualifyCronId(task), reason: "stale_timer" }); return; }
+      const stateAfterDiscovery = storedTaskState(task);
+      if (stateAfterDiscovery !== "active") {
+        if (stateAfterDiscovery === "removed") { stop(task.id); tasks.delete(task.id); updateStatus(); }
+        (stateAfterDiscovery === "read_error" ? log.warn : log.debug)("cron_execution_fenced", { id: qualifyCronId(task), reason: stateAfterDiscovery });
+        return;
+      }
       const { agents } = discoverAgents(task.cwd, "user");
       if (durable(task.scope) && !refreshLeaderLock(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) {
         log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
@@ -175,25 +190,61 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
   function start(task: CronTask) {
     stop(task.id);
     if (decideCronArm(task) === "skip") { log.debug("cron_timer_skipped", { id: qualifyCronId(task), paused: task.paused === true, leader: task.leader !== false }); return; }
-    const schedule = (runAt = task.nextRun ?? Date.now() + nextDelay(task)) => {
+    const canRearm = () => !durable(task.scope) || (Boolean(task.leader) && owned.has(projectStore(task.cwd)));
+    const schedule = (runAt = task.nextRun ?? Date.now() + nextDelay(task), persistRun = true) => {
       const delay = Math.max(0, runAt - Date.now());
       // A pause stored by a peer reaches this replica only through the store, so the CURRENT
       // stored flag is read BEFORE dispatch: a post-run check cannot undo a run (#1087).
       // The tracked handle also fences continuations invalidated while execute() awaits discovery.
       const isCurrent = () => timers.get(task.id) === timer;
-      const fire = async () => { try { if (!isCurrent()) { log.debug("cron_timer_stale", { id: qualifyCronId(task) }); return; } if (storedPaused(task)) { log.debug("cron_skipped_paused", { id: qualifyCronId(task) }); return; } await execute(task, isCurrent); if (!isCurrent()) { log.debug("cron_rearm_skipped", { id: qualifyCronId(task), reason: "stale_timer" }); return; } if (storedPaused(task)) { log.debug("cron_rearm_skipped", { id: qualifyCronId(task), reason: "paused_during_run" }); return; } if (!durable(task.scope) || (task.leader && owned.has(projectStore(task.cwd)))) schedule(Date.now() + nextDelay(task)); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } };
+      const fire = async () => {
+        try {
+          if (!isCurrent()) { log.debug("cron_timer_stale", { id: qualifyCronId(task) }); return; }
+          const beforeRun = storedTaskState(task);
+          if (beforeRun === "removed") { stop(task.id); tasks.delete(task.id); updateStatus(); log.debug("cron_skipped_removed", { id: qualifyCronId(task) }); return; }
+          if (beforeRun === "paused") { log.debug("cron_skipped_paused", { id: qualifyCronId(task) }); return; }
+          if (beforeRun === "read_error") {
+            log.warn("cron_skipped_read_error", { id: qualifyCronId(task), willRearm: canRearm() });
+            if (canRearm()) schedule(Date.now() + nextDelay(task), false);
+            return;
+          }
+          await execute(task, isCurrent);
+          if (!isCurrent()) { log.debug("cron_rearm_skipped", { id: qualifyCronId(task), reason: "stale_timer" }); return; }
+          const afterRun = storedTaskState(task);
+          if (afterRun === "removed") { stop(task.id); tasks.delete(task.id); updateStatus(); log.debug("cron_rearm_skipped", { id: qualifyCronId(task), reason: "removed_during_run" }); return; }
+          if (afterRun === "paused") { log.debug("cron_rearm_skipped", { id: qualifyCronId(task), reason: "paused_during_run" }); return; }
+          if (canRearm()) schedule(Date.now() + nextDelay(task), afterRun === "active");
+        } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); }
+        finally { if (timers.get(task.id) === timer) timers.delete(task.id); }
+      };
       const timer = setTimeout(fire, delay);
-      task.nextRun = runAt; persist(task); updateStatus(); timer.unref?.(); timers.set(task.id, timer);
+      task.nextRun = runAt; if (persistRun) persist(task); updateStatus(); timer.unref?.(); timers.set(task.id, timer);
     };
     schedule();
   }
   function syncStore(scope: "project", file: string) {
-    const leader = owned.has(file); const disk = readDurableCronStore(file).tasks;
-    for (const old of [...tasks.values()]) if (old.scope === scope && !disk.some(t => t.id === old.id)) { stop(old.id); tasks.delete(old.id); }
+    const leader = owned.has(file);
+    const outcome = readDurableCronStoreOutcome(file);
+    if (outcome.status === "read_error") {
+      log.warn("cron_sync_skipped_read_error", { scope, file, leader, reason: outcome.reason });
+      if (!leader) for (const old of tasks.values()) if (old.scope === scope) { old.leader = false; stop(old.id); }
+      return;
+    }
+    const disk = outcome.status === "ok" ? outcome.tasks : [];
+    for (const old of [...tasks.values()]) if (old.scope === scope && !disk.some(t => t?.id === old.id)) { stop(old.id); tasks.delete(old.id); }
     for (const raw of disk) {
       try { validateDurableCronTask(raw); } catch (error: any) { log.error("invalid durable cron ignored", raw && typeof raw === "object" ? (raw as any).id : "unknown", error?.message || error); continue; }
       const task: CronTask = { ...raw, leader }; const existing = tasks.get(task.id);
-      if (!existing) { tasks.set(task.id, task); start(task); } else { const changed = existing.intervalMs !== task.intervalMs || existing.atHour !== task.atHour || existing.atMinute !== task.atMinute || existing.paused !== task.paused || existing.leader !== leader; const resumed = existing.paused === true && task.paused !== true; Object.assign(existing, task); existing.paused = task.paused; if (resumed) existing.nextRun = undefined; if (changed) start(existing); }
+      if (!existing) { tasks.set(task.id, task); start(task); } else {
+        const changed = existing.intervalMs !== task.intervalMs || existing.atHour !== task.atHour || existing.atMinute !== task.atMinute || existing.paused !== task.paused || existing.leader !== leader;
+        const resumed = existing.paused === true && task.paused !== true;
+        Object.assign(existing, task);
+        existing.paused = task.paused;
+        const disarmed = decideCronArm(existing) === "arm" && !timers.has(existing.id);
+        if (resumed || (disarmed && existing.lastRun !== undefined && existing.nextRun !== undefined && existing.nextRun <= existing.lastRun)) existing.nextRun = undefined;
+        if (!changed && disarmed) log.warn("cron_timer_self_healed", { id: qualifyCronId(existing), file });
+        if (changed || disarmed) start(existing);
+      }
     }
   }
   function election() {

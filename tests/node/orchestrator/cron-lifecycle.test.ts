@@ -199,6 +199,130 @@ describe("cron lifecycle", { concurrency: false }, () => {
     });
   }
 
+  it("stops a project cron when the store file is deleted before fire", async () => {
+    const cwd = makeTempDir("pi-cron-file-remove-"); dirs.push(cwd);
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "/check", interval_seconds: 60 });
+    const timer = h.timeouts.at(-1)!;
+    fs.unlinkSync(path.join(cwd, ".pi", "cron", "crons.json"));
+    const count = h.timeouts.length;
+    await timer.fn();
+    assert.deepEqual(h.messages, []);
+    assert.equal(h.timeouts.length, count, "deleted store file must stop the timer chain");
+    assert.deepEqual(cron.getCronTasks(), []);
+  });
+
+  it("reschedules a project cron after a transient store parse error", async () => {
+    const cwd = makeTempDir("pi-cron-parse-error-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    const h = makeCron();
+    registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "/check", interval_seconds: 60 });
+    const saved = fs.readFileSync(store, "utf8");
+    const timer = h.timeouts.at(-1)!;
+    fs.writeFileSync(store, "{");
+    const count = h.timeouts.length;
+    await timer.fn();
+    assert.deepEqual(h.messages, []);
+    assert.equal(fs.readFileSync(store, "utf8"), "{", "rescheduling on read error must not clobber the store");
+    assert.equal(h.timeouts.length, count + 1, "transient parse error must re-arm the next interval");
+    fs.writeFileSync(store, saved);
+    await h.timeouts.at(-1)!.fn();
+    assert.equal(h.messages.length, 1);
+  });
+
+  it("reschedules a project cron after a transient store read error", async () => {
+    const cwd = makeTempDir("pi-cron-read-error-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    const h = makeCron();
+    registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "/check", interval_seconds: 60 });
+    const saved = fs.readFileSync(store, "utf8");
+    const timer = h.timeouts.at(-1)!;
+    fs.rmSync(store);
+    fs.mkdirSync(store);
+    const count = h.timeouts.length;
+    await timer.fn();
+    assert.deepEqual(h.messages, []);
+    assert.equal(h.timeouts.length, count + 1, "transient OS read error must re-arm the next interval");
+    fs.rmSync(store, { recursive: true, force: true });
+    fs.writeFileSync(store, saved);
+    await h.timeouts.at(-1)!.fn();
+    assert.equal(h.messages.length, 1);
+  });
+
+  it("reschedules after a transient store parse error during discovery", async () => {
+    const cwd = makeTempDir("pi-cron-discovery-error-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    const h = makeCron();
+    const spawns: unknown[][] = [];
+    registerCron(h.pi, (...args: unknown[]) => spawns.push(args));
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "check issues", model: "openai/gpt-5.4", interval_seconds: 60 });
+    const saved = fs.readFileSync(store, "utf8");
+    const timer = h.timeouts.at(-1)!;
+    const pending = timer.fn();
+    fs.writeFileSync(store, "{");
+    const count = h.timeouts.length;
+    await pending;
+    assert.equal(spawns.length, 0);
+    assert.equal(h.timeouts.length, count + 1, "transient parse error during discovery must still re-arm");
+    fs.writeFileSync(store, saved);
+    await h.timeouts.at(-1)!.fn();
+    assert.equal(spawns.length, 1);
+  });
+
+  it("keeps project tasks during sync when the store is transiently unreadable", async () => {
+    const cwd = makeTempDir("pi-cron-sync-error-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "/check", interval_seconds: 60 });
+    const timer = h.timeouts.at(-1)!;
+    fs.writeFileSync(store, "{");
+    h.intervals.find((item) => item.delay === 10_000)!.fn();
+    assert.equal(cron.getCronTasks().length, 1);
+    assert.equal(timer.cleared, undefined);
+  });
+
+  it("self-heals a disarmed leader timer during sync once the store is readable", async () => {
+    const cwd = makeTempDir("pi-cron-self-heal-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "due", scope: "project", cwd, description: "due", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
+    const h = makeCron();
+    registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    const due = h.timeouts.find((timer) => timer.delay === 0)!;
+    const originalSetTimeout = global.setTimeout;
+    let failNextArm = false;
+    const originalSend = h.pi.sendUserMessage;
+    h.pi.sendUserMessage = (message: string, options: any) => {
+      originalSend(message, options);
+      failNextArm = true;
+    };
+    (global as any).setTimeout = (fn: Function, delay: number) => {
+      if (failNextArm) {
+        failNextArm = false;
+        throw new Error("transient timer arm failure");
+      }
+      return (originalSetTimeout as any)(fn, delay);
+    };
+    await due.fn();
+    assert.equal(h.messages.length, 1);
+    assert.equal(h.timeouts.filter((timer) => timer.delay === 10_000).length, 0);
+    h.intervals.find((item) => item.delay === 10_000)!.fn();
+    const healed = h.timeouts.find((timer) => timer.delay === 10_000);
+    assert.ok(healed, "syncStore must re-arm a disarmed active leader task even when fields are unchanged");
+    await healed.fn();
+    assert.equal(h.messages.length, 2);
+  });
+
   for (const action of ["resume", "remove", "shutdown", "switch", "kill-all"]) {
     it(`stops discovery's stale continuation after ${action}`, async () => {
       const cwd = makeTempDir("pi-cron-discovery-"); dirs.push(cwd);

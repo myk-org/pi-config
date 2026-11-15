@@ -26,6 +26,10 @@ export interface DurableCronTask {
   paused?: boolean;
 }
 export interface DurableCronEnvelope { version: 1; tasks: DurableCronTask[]; }
+export type DurableCronReadOutcome =
+  | { status: "ok"; tasks: DurableCronTask[] }
+  | { status: "missing_file" }
+  | { status: "read_error"; reason: string };
 export interface CronLockOwner { pid: number; process_start_token: string; instance_id: string; heartbeat_at: string; pid_namespace?: string; fd?: number; }
 
 type StartTokenDeps = { readFileSync: (path: string, encoding: BufferEncoding) => string; execFileSync: (file: string, args: readonly string[], options: { encoding: BufferEncoding; windowsHide: boolean }) => string; platform: NodeJS.Platform };
@@ -172,13 +176,36 @@ function acquireDirectoryLock(dir: string, instanceId: string, reclaimStale: boo
     return acquireDirectoryLock(dir, instanceId, false);
   }
 }
-export function readDurableCronStore(store: string): DurableCronEnvelope {
+export function readDurableCronStoreOutcome(store: string): DurableCronReadOutcome {
+  let raw: string;
   try {
-    const value = JSON.parse(fs.readFileSync(store, "utf8"));
-    if (value?.version === 1 && Array.isArray(value.tasks)) return value;
-    if (Array.isArray(value)) return { version: 1, tasks: value };
-  } catch {}
-  return { version: 1, tasks: [] };
+    raw = fs.readFileSync(store, "utf8");
+  } catch (error: any) {
+    if (error?.code === "ENOENT") {
+      log.debug("cron_store_missing", { store, status: "missing_file" });
+      return { status: "missing_file" };
+    }
+    const reason = error?.code || "read_error";
+    log.warn("cron_store_read_failed", { store, status: "read_error", reason });
+    return { status: "read_error", reason };
+  }
+  try {
+    const value = JSON.parse(raw);
+    const tasks = value?.version === 1 && Array.isArray(value.tasks) ? value.tasks : Array.isArray(value) ? value : null;
+    if (!tasks) {
+      log.warn("cron_store_read_failed", { store, status: "read_error", reason: "invalid_envelope" });
+      return { status: "read_error", reason: "invalid_envelope" };
+    }
+    log.debug("cron_store_read", { store, status: "ok", count: tasks.length });
+    return { status: "ok", tasks };
+  } catch {
+    log.warn("cron_store_read_failed", { store, status: "read_error", reason: "parse_error" });
+    return { status: "read_error", reason: "parse_error" };
+  }
+}
+export function readDurableCronStore(store: string): DurableCronEnvelope {
+  const outcome = readDurableCronStoreOutcome(store);
+  return { version: 1, tasks: outcome.status === "ok" ? outcome.tasks : [] };
 }
 export function validateDurableCronTask(task: unknown): asserts task is DurableCronTask {
   const value = task as DurableCronTask;
@@ -226,9 +253,14 @@ function acquireKernelMutationLock(store: string): number {
 export function mutateDurableCronStore(store: string, change: (tasks: DurableCronTask[]) => DurableCronTask[]): DurableCronEnvelope {
   const kernel = acquireKernelMutationLock(store);
   try {
+    const outcome = readDurableCronStoreOutcome(store);
+    if (outcome.status === "read_error") {
+      log.error("cron_store_mutate_unreadable", { store, reason: outcome.reason });
+      throw new Error(`Cannot mutate unreadable cron store: ${outcome.reason}`);
+    }
     // Corrupt records must not prevent valid tasks from being updated. Schedulers
     // log each skipped record before calling here.
-    const current = readDurableCronStore(store).tasks.filter((task) => { try { validateDurableCronTask(task); return true; } catch { return false; } });
+    const current = (outcome.status === "ok" ? outcome.tasks : []).filter((task) => { try { validateDurableCronTask(task); return true; } catch { return false; } });
     const tasks = change(current); validate(tasks);
     const envelope: DurableCronEnvelope = { version: 1, tasks }; atomicWrite(store, JSON.stringify(envelope)); return envelope;
   }
