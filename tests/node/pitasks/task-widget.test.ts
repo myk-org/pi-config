@@ -215,8 +215,11 @@ describe("pitasks telemetry bridge", () => {
 			const external = new TaskStore(taskPath);
 			external.create("External", "body", createdBy);
 			external.close();
-			await new Promise(resolve => setTimeout(resolve, 100));
-			assert.ok(renders > baseline, "external update should request a resumed widget render");
+			const deadline = performance.now() + 100;
+			while (renders <= baseline && performance.now() < deadline) {
+				await new Promise(resolve => setTimeout(resolve, 5));
+			}
+			assert.ok(renders > baseline, `external update should request a resumed widget render within 100ms: expected > ${baseline}, observed ${renders}`);
 		} finally {
 			handlers.get("session_shutdown")?.();
 			if (piTasks === undefined) delete process.env.PI_TASKS;
