@@ -298,8 +298,26 @@ progress. It does not commit, push, create a PR, or post results.
   awaits `ctx.waitForIdle()` first. A busy session must END ITS TURN to receive it.
   To confirm a reload landed: read `.pi/run/reload.done` and compare with the newest flag nonce. Verifying
   anything against a runtime that has not reloaded proves nothing — the old code is still loaded.
-  A flag parked in `.pi/tmp/reload.flag` by a pre-#1020 requester is still consumed.
-  Fresh session starts clear stale flag/pending/done state (latest code is already loaded).
+  A flag parked in `.pi/tmp/reload.flag` by a pre-#1020 requester is still consumed, and legacy `.pi/tmp/reload.done`
+  mirror write failures log `reload_legacy_mirror_failed` (`debug` when `.pi/tmp` is absent, `warn` otherwise) without
+  failing completion or retaining `reload.pending`.
+  Fresh session starts (`reconcileStartupHandshake`) remove only corrupt `reload.pending` files (empty or missing a valid
+  `pid:session` owner); unconfirmed requests and `reload.done` completion markers survive regardless of age so a requester
+  polling after a long turn never loses completion proof. `reload.pending` also records the owner's OS `startToken` so a
+  reused PID with a mismatched `startToken` is reclaimable (`reload_pending_pid_reused`), while a live other session's
+  handshake is never deleted, and a process that does not
+  register the watcher (oneshot `pi -p`, `--mode json`, piped print, headless `--mode rpc`) never touches
+  flag/pending/done at all (#1091). A flag that appears while a reload is in flight is a newer request: it is left for
+  the watcher and triggers a second reload, so `reload.done` converges on the newest nonce instead of reporting the older
+  one. A manual `/reload` cannot prove a sitting flag preceded code loading, so it leaves the flag for a conservative
+  extra reload instead of publishing an unproven nonce.
+  Writers must publish complete nonces using same-directory temporary-file atomic rename. In-place writers are
+  unsupported because an open FD can mutate a claimed inode. See `docs/configuration.md#reload-handshake`.
+  Failed commands retry through the owner's watcher with exponential backoff (`1s` up to `30s`, reset immediately when a
+  new flag nonce appears); non-reload shutdown atomically releases only that owner's pending request into a recoverable
+  claim. Retained flag/pending claims retry deterministically without overwriting newer publications. Recovery requires
+  another reload, never confirmation on discovery. Live foreign pending owners remain protected regardless of age.
+  Flag consumption renames a concrete request before reading it and never removes the other directory's request.
   Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
 - **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —
   user `~/.pi/agent/mcp.json`, project `mcp.json` once trusted. Managed with
