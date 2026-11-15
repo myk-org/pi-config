@@ -22,6 +22,8 @@ export interface WorkloadAgent {
   task: string;
   status: string;
   startedAt: number;
+  /** Linked pitasks task ID when spawned with `taskId` (#1104). */
+  taskId?: string;
 }
 
 /** One scheduled cron (session or project scope). */

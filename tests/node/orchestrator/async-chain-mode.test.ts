@@ -439,6 +439,105 @@ describe("async chain durability across a reload", () => {
       assert.equal(h.messages.length, 0);
     } finally { h.restore(); }
   });
+
+  it("persists per-step routing fields in chain.json via executeAsyncChain", async () => {
+    const h = asyncHarness();
+    const stepTwoDir = makeTempDir("async-chain-step-two-");
+    try {
+      for (const dir of [h.cwd, stepTwoDir]) {
+        mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
+        writeFileSync(
+          join(dir, ".pi", "agents", "worker.md"),
+          "---\nname: worker\ndescription: test worker\n---\nWork.\n",
+        );
+      }
+      let tool: any;
+      withSubagentChildEnv(undefined, () => {
+        registerSubagentTool(
+          {
+            registerTool(definition: any) { tool = definition; },
+            on() {},
+            sendMessage() {},
+            events: { on() {}, emit() {} },
+          } as any,
+          h.api.spawnAsyncAgent,
+          h.api.killAsyncAgent,
+        );
+      });
+      const ctx = {
+        cwd: h.cwd,
+        hasUI: false,
+        ui: { theme: { fg: (_: string, value: string) => value }, notify() {}, setWorkingMessage() {}, confirm: async () => true },
+        sessionManager: { getCwd: () => h.cwd, getSessionId: () => "test" },
+      };
+      const result = await tool.execute(
+        "call-chain-json",
+        {
+          async: true,
+          confirmProjectAgents: false,
+          chain: [
+            { agent: "worker", task: "first step", cwd: h.cwd, estimatedSeconds: 5, taskId: "-1" },
+            { agent: "worker", task: "second step {previous}", cwd: stepTwoDir, estimatedSeconds: 5, taskId: "-1" },
+          ],
+        },
+        new AbortController().signal,
+        () => {},
+        ctx,
+      );
+      assert.ok(!result.isError);
+      const spawned = h.api.getAsyncJobs()[0];
+      assert.ok(spawned);
+      const chainState = JSON.parse(readFileSync(join(h.projectTmp, spawned.id, "chain.json"), "utf-8"));
+      assert.deepEqual(chainState.steps, [
+        { agent: "worker", task: "first step", cwd: h.cwd, taskId: "-1" },
+        { agent: "worker", task: "second step {previous}", cwd: stepTwoDir, taskId: "-1" },
+      ]);
+    } finally {
+      rmSync(stepTwoDir, { recursive: true, force: true });
+      h.restore();
+    }
+  });
+
+  it("surfaces unspawned step routing details when reload interrupts a chain", () => {
+    const h = asyncHarness();
+    const logStart = logOffset("async_agents");
+    try {
+      const jobDir = join(h.projectTmp, "worker-restored-meta");
+      mkdirSync(jobDir, { recursive: true });
+      writeFileSync(
+        join(jobDir, "status.json"),
+        JSON.stringify({ runId: "worker-restored-meta", agent: "worker", state: "running", pid: process.pid, startedAt: Date.now() }),
+      );
+      writeFileSync(join(jobDir, "session.json"), JSON.stringify({ resultsDir: join(h.projectTmp, h.resultsDir()) }));
+      writeFileSync(
+        join(jobDir, "chain.json"),
+        JSON.stringify({
+          steps: [
+            { agent: "scout", task: "s", cwd: "/tmp/wt-scout", taskId: "10" },
+            { agent: "worker", task: "w", cwd: "/tmp/wt-worker", taskId: "11" },
+            { agent: "planner", task: "p", cwd: "/tmp/wt-plan", taskId: "12" },
+            { agent: "git-expert", task: "g", cwd: "/tmp/wt-git", taskId: "13" },
+          ],
+          index: 1,
+          previous: "SCOUT-OUTPUT",
+        }),
+      );
+
+      h.sessionStart();
+
+      assert.equal(h.messages.length, 1);
+      assert.match(h.messages[0].content, /Remaining agents: planner, git-expert/);
+      assert.match(h.messages[0].content, /taskId: 12/);
+      assert.match(h.messages[0].content, /\/tmp\/wt-plan/);
+      assert.match(h.messages[0].content, /taskId: 13/);
+      assert.match(h.messages[0].content, /\/tmp\/wt-git/);
+      const logged = logSince("async_agents", logStart);
+      assert.match(logged, /taskId: 12/);
+      assert.match(logged, /\/tmp\/wt-plan/);
+    } finally {
+      h.restore();
+    }
+  });
 });
 
 

@@ -5,10 +5,11 @@
  * store does not know, exempt the `-1` read-only sentinel, and stay silent when the id
  * resolves. It had no test while shipping a behaviour change, so it has one now.
  */
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { taskIdError } from "../../../extensions/orchestrator/subagent-tool.ts";
+import { taskIdError, validateTaskId } from "../../../extensions/orchestrator/subagent-tool.ts";
+import { publishTaskStore, TASK_STORE_SYMBOL } from "../../../extensions/shared/task-store-bridge.js";
 
 const known = (ids: string[]) => (id: string) => ids.includes(id);
 
@@ -32,4 +33,34 @@ describe("taskIdError", () => {
     assert.equal(taskIdError("-1", lookup), null);
     assert.equal(consulted, false, "the sentinel must not hit the store");
   });
+});
+
+/** A published store with one task; the guard reads it through the same bridge the tool does. */
+function storeWith(assignee: string) {
+	return { get: (id: string) => (id === "7" ? { id: "7", assignee } : undefined) };
+}
+
+describe("validateTaskId owner tasks (#1102)", () => {
+	afterEach(() => {
+		delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+	});
+
+	it("refuses a task assigned to the owner", async () => {
+		// The lifecycle helpers never start or complete an owner task, so a spawn on it did the
+		// owner's step and then left the task untouched with no error delivered.
+		publishTaskStore(() => storeWith("user"));
+		const message = await validateTaskId("7", "/tmp");
+		assert.match(message ?? "", /assigned to the user \(assignee="user"\)/);
+		assert.match(message ?? "", /agents cannot start or complete it/);
+	});
+
+	it("accepts an llm-assigned task", async () => {
+		publishTaskStore(() => storeWith("llm"));
+		assert.equal(await validateTaskId("7", "/tmp"), null);
+	});
+
+	it("still reports an id the store does not know", async () => {
+		publishTaskStore(() => storeWith("llm"));
+		assert.match((await validateTaskId("8", "/tmp")) ?? "", /Task #8 not found/);
+	});
 });

@@ -15,7 +15,7 @@ import {
   publishedWorkloadSources,
   publishWorkloadSources,
 } from "../../../extensions/shared/workload-bridge.ts";
-import { collectWorkload } from "../../../extensions/coms/coms-workload.ts";
+import { collectWorkload, toDescribeDetail } from "../../../extensions/coms/coms-workload.ts";
 
 const agent = (id: string) => ({ id, agent: "worker", task: "t", status: "running", startedAt: 1 });
 const cron = (id: string) => ({ id, scope: "session", description: "d", task: "t", createdAt: 1 });
@@ -79,5 +79,17 @@ describe("workload sources bridge", () => {
   it("rejects a malformed publication instead of trusting it", () => {
     (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL] = { agents: "nope" };
     assert.equal(publishedWorkloadSources(), null);
+  });
+
+  it("preserves optional taskId on published workload agents without exposing it on wire detail", () => {
+    publishWorkloadSources({
+      agents: () => [{ ...agent("a1"), taskId: "590" }],
+      crons: () => [],
+    });
+    const sources = publishedWorkloadSources()!;
+    assert.equal(sources.agents()[0].taskId, "590");
+    const { active } = collectWorkload(sources.agents(), [], sources.crons());
+    const wire = toDescribeDetail(active, 10_000);
+    assert.equal("taskId" in wire.agents[0], false);
   });
 });
