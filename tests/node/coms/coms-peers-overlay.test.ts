@@ -12,6 +12,7 @@ import { after, before } from "node:test";
 import { describe, it } from "node:test";
 
 import { openComsPeersOverlay } from "../../../extensions/coms/coms-peers-ui.js";
+import { openListDetailOverlay } from "../../../extensions/orchestrator/overlay-dashboard.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import type { RegistryRow } from "../../../extensions/coms/coms-peers.js";
@@ -35,7 +36,7 @@ const worker: RegistryRow = {
 };
 
 /** Minimal ctx: the list opens once, the keys are fed to it, the second open closes immediately. */
-function makeCtx(keys: string[], typed: string | undefined) {
+function makeCtx(keys: string[], typed: string | undefined, reopenedKeys: string[] = []) {
   const inputTitles: string[] = [];
   const notifications: string[] = [];
   let opened = 0;
@@ -53,10 +54,10 @@ function makeCtx(keys: string[], typed: string | undefined) {
       },
       custom: async (factory: any) => {
         opened += 1;
-        if (opened > 1) return null; // the list re-opened after the send: close it and finish
+        if (opened > 2 || (opened > 1 && reopenedKeys.length === 0)) return null;
         return new Promise((resolve) => {
           const component = factory(tui, {}, keybindings, resolve);
-          for (const key of keys) component.handleInput(key);
+          for (const key of opened === 1 ? keys : reopenedKeys) component.handleInput(key);
         });
       },
     },
@@ -65,6 +66,20 @@ function makeCtx(keys: string[], typed: string | undefined) {
 }
 
 describe("openComsPeersOverlay compose key (#1077)", () => {
+  it("sanitizes row labels without rewriting recipient identity", async () => {
+    const raw = { ...worker, name: "raw\u001b[2Jname", project: "repo\u0007" };
+    await openComsPeersOverlay({ ui: {} }, {
+      listPeers: () => [raw], killPeer: () => "", killAll: () => "",
+      openOverlay: async (_ctx: any, options: any) => {
+        const row = options.listSpec.listItems()[0];
+        const parts = options.listSpec.rowParts(row, { fg: (_color: string, value: string) => value });
+        assert.equal(parts.title, "rawname");
+        assert.equal(parts.idLabel, "repo");
+        assert.equal(row.name, raw.name);
+        assert.equal(row.project, raw.project);
+      },
+    });
+  });
   it("sends one line to the focused peer with the row's scope", async () => {
     const sent: Array<{ target: string; prompt: string; project?: string }> = [];
     const { ctx, inputTitles, openedCount } = makeCtx(["m"], "  ship it  ");
@@ -77,7 +92,7 @@ describe("openComsPeersOverlay compose key (#1077)", () => {
         return { ok: true } as const;
       },
     });
-    assert.deepEqual(sent, [{ target: "worker", prompt: "ship it", project: "repo" }]);
+    assert.deepEqual(sent, [{ target: "worker", prompt: "ship it", project: "repo", expectedEndpoint: worker.endpoint }]);
     assert.match(inputTitles[0], /Message worker/);
     // The list comes back after the send instead of dropping the user into the chat.
     assert.equal(openedCount(), 2);
@@ -130,7 +145,7 @@ describe("openComsPeersOverlay failure reporting (#1084)", () => {
     assert.equal(notifications[0].length <= 200, true);
   });
 
-  it("stays quiet when the send succeeded", async () => {
+  it("always shows a counted result for a successful single send", async () => {
     const { ctx, notifications } = makeCtx(["m"], "hi");
     await openComsPeersOverlay(ctx, {
       listPeers: () => [worker],
@@ -138,12 +153,13 @@ describe("openComsPeersOverlay failure reporting (#1084)", () => {
       killAll: () => "killed all",
       tellPeer: async () => ({ ok: true }) as const,
     });
-    assert.deepEqual(notifications, []);
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0], /sent 1 peer/);
   });
 });
 
 describe("openComsPeersOverlay drilldown (#1084 finding 1)", () => {
-  it("Enter opens the peer's sections and Esc re-opens the list on that row", async () => {
+  for (const behavior of ["opens peer sections", "shows peer info without a work count", "restores peer focus after Esc"]) it(behavior, async () => {
     const opened: any[] = [];
     const described: string[] = [];
     await openComsPeersOverlay({ hasUI: true, ui: { notify: () => {} } } as any, {
@@ -158,25 +174,25 @@ describe("openComsPeersOverlay drilldown (#1084 finding 1)", () => {
       // deeper level immediately, which is what Esc does.
       openOverlay: async (_ctx: any, options: any) => {
         opened.push(options);
-        if (opened.length === 1) options.listSpec.onSelect({ ...worker, id: "repo:worker" });
+        if (opened.length === 1) options.listSpec.onSelect(options.listSpec.listItems()[0]);
       },
     } as any);
 
-    // 1) the drilldown really was opened for the selected row
-    assert.deepEqual(described, ["worker"]);
-    // 2) its first row is the peer info row, and the count ignores it (F2)
-    assert.equal(opened[1].listSpec.listItems()[0].label, "peer info");
-    assert.equal(opened[1].listSpec.countLabel(opened[1].listSpec.listItems()), "");
-    // 3) Esc came back to the peer list focused on the peer it came from
-    assert.equal(opened[2].initialSelectionId, "repo:worker");
-    assert.equal(opened[2].listSpec.title, "Coms peers");
+    if (behavior === "opens peer sections") assert.deepEqual(described, ["worker"]);
+    else if (behavior === "shows peer info without a work count") {
+      assert.equal(opened[1].listSpec.listItems()[0].label, "peer info");
+      assert.equal(opened[1].listSpec.countLabel(opened[1].listSpec.listItems()), "");
+    } else {
+      assert.equal(opened[2].initialSelectionId, opened[2].listSpec.listItems()[0].id);
+      assert.equal(opened[2].listSpec.title, "Coms peers");
+    }
   });
 });
 
 describe("openComsPeersOverlay multi-select compose (#1084)", () => {
   const peer = (name: string): RegistryRow => ({ ...worker, name, endpoint: `/tmp/${name}.sock` });
 
-  it("sends one request per selected peer and reports them in ONE notify line", async () => {
+  for (const behavior of ["sends once per selected peer", "shows one counted multi-send result"]) it(behavior, async () => {
     const sent: string[] = [];
     const { ctx, notifications, inputTitles } = makeCtx([" ", "j", " ", "m"], "go");
     await openComsPeersOverlay(ctx, {
@@ -188,10 +204,11 @@ describe("openComsPeersOverlay multi-select compose (#1084)", () => {
         return { ok: true } as const;
       },
     });
-    assert.deepEqual(sent, ["alpha", "beta"]);
-    assert.match(inputTitles[0], /Message 2 peers/);
-    assert.equal(notifications.length, 1, "one line for the whole send");
-    assert.match(notifications[0], /sent 2 peers/);
+    if (behavior === "sends once per selected peer") assert.deepEqual(sent, ["alpha", "beta"]);
+    else {
+      assert.equal(notifications.length, 1, "one line for the whole send");
+      assert.match(notifications[0], /sent 2 peers/);
+    }
   });
 
   it("names the peer that failed and never reports a partial send as success", async () => {
@@ -228,7 +245,7 @@ describe("openComsPeersOverlay multi-select compose (#1084)", () => {
 });
 
 describe("openComsPeersOverlay delivery truth (#1084 findings 1-3)", () => {
-  // The overlay normally stamps the row id (`project:name`); this helper bypasses the list, so the
+  // The overlay stamps a session-bound row id; this helper bypasses the list, so the
   // ids that dedupe by id depend on must be present here too.
   const peer = (name: string): Row => ({ ...worker, name, endpoint: `/tmp/${name}.sock`, id: `repo:${name}` });
 
@@ -271,7 +288,7 @@ describe("openComsPeersOverlay delivery truth (#1084 findings 1-3)", () => {
 
   it("reports a peer that left between selection and send, instead of dropping it", async () => {
     const alive = [peer("alpha")];
-    const { notifications } = await driveCompose(alive, alive, ["repo:beta"], {
+    const { notifications } = await driveCompose(alive, alive, ["repo:beta\0/tmp/beta.sock"], {
       tellPeer: async () => ({ ok: true }) as const,
     });
     assert.equal(notifications.length, 1);
@@ -286,7 +303,7 @@ describe("openComsPeersOverlay delivery truth (#1084 findings 1-3)", () => {
     });
     assert.deepEqual(inputTitles, [], "no dialog for a send that cannot happen");
     assert.equal(notifications.length, 1);
-    assert.match(notifications[0], /nothing sent · 2 peers left before sending: beta, gamma/);
+    assert.match(notifications[0], /nothing sent .*reopen \/coms peers to reset selection · 2 peers left before sending: beta, gamma/);
     assert.equal(notifications[0].startsWith("\u26a0"), true);
   });
 
@@ -372,5 +389,101 @@ describe("overlay_tell_failed (#1084 finding 3): one event, error level", () => 
     const before = failLines().length;
     await send(async () => ({ ok: true }) as const);
     assert.equal(failLines().length, before);
+  });
+});
+
+describe("openComsPeersOverlay selection lifetime", () => {
+  const peers = ["alpha", "beta", "gamma"].map((name) => ({ ...worker, name, endpoint: `/tmp/${name}.sock` }));
+
+  for (const outcome of ["success", "partial", "thrown"] as const) {
+    it(`kills only the newly focused peer after a ${outcome} send attempt`, async () => {
+      const killed: string[] = [];
+      const { ctx } = makeCtx([" ", "j", " ", "m"], "go", ["j", "j", "x", "close"]);
+      await openComsPeersOverlay(ctx, {
+        listPeers: () => peers,
+        killPeer: (row) => { killed.push(row.name); return "killed"; },
+        killAll: () => "all",
+        tellPeer: async (request) => {
+          if (outcome === "thrown") throw new Error("gone");
+          return outcome === "partial" && request.target === "beta"
+            ? { ok: false, code: "gone", reason: "gone" } : { ok: true };
+        },
+      });
+      assert.deepEqual(killed, ["gamma"]);
+    });
+  }
+
+  for (const text of [undefined, "   "]) {
+    it(`preserves ticks after ${text === undefined ? "cancellation" : "blank input"}`, async () => {
+      const killed: string[] = [];
+      const { ctx } = makeCtx([" ", "j", " ", "m"], text, ["j", "j", "x", "close"]);
+      await openComsPeersOverlay(ctx, {
+        listPeers: () => peers,
+        killPeer: (row) => { killed.push(row.name); return "killed"; },
+        killAll: () => "all",
+        tellPeer: async () => { assert.fail("must not send"); },
+      });
+      assert.deepEqual(killed, ["alpha", "beta"]);
+    });
+  }
+
+  it("does not give a same-name replacement the previous session's tick", async () => {
+    let current = peers[0];
+    let oldId = "";
+    let reopened: any;
+    let calls = 0;
+    const { ctx, notifications, inputTitles } = makeCtx(["m"], "go");
+    await openComsPeersOverlay(ctx, {
+      listPeers: () => [current], killPeer: () => "killed", killAll: () => "all",
+      tellPeer: async () => { assert.fail("replacement must not receive the old selection's message"); },
+      openOverlay: async (_ctx: any, options: any) => {
+        calls += 1;
+        if (calls === 1) {
+          const row = options.listSpec.listItems()[0];
+          oldId = row.id;
+          options.listSpec.onSelectionChange([row.id]);
+          options.listSpec.onSelect(row);
+        } else if (calls === 2) {
+          current = { ...current, endpoint: "/tmp/replacement.sock" };
+        } else if (calls === 3) {
+          reopened = options;
+          await openListDetailOverlay(ctx, options);
+        }
+      },
+    });
+    assert.deepEqual(inputTitles, [], "no composer for a vanished selection");
+    assert.match(notifications[0], /nothing sent .*reopen \/coms peers to reset selection · 1 peer left before sending: alpha$/);
+    const replacement = reopened.listSpec.listItems()[0];
+    assert.notEqual(replacement.id, oldId);
+    assert.equal(reopened.initialSelectionIds.includes(replacement.id), false);
+    assert.notEqual(reopened.initialSelectionId, replacement.id, "focus must not follow a reused name");
+  });
+});
+
+describe("openComsPeersOverlay keeps the ticks across a drilldown (#1084)", () => {
+  const peer = (name: string): Row => ({ ...worker, name, endpoint: `/tmp/${name}.sock`, id: `repo:${name}\0/tmp/${name}.sock` });
+
+  it("re-opens the peer list with the selection it reported earlier", async () => {
+    const opened: any[] = [];
+    await openComsPeersOverlay({ hasUI: true, ui: { notify: () => {} } } as any, {
+      listPeers: () => [peer("alpha"), peer("beta")],
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+      describePeer: async () => ({ ok: false, reason: "not-reported" }),
+      openOverlay: async (_ctx: any, options: any) => {
+        opened.push(options);
+        if (opened.length === 1) {
+          // Tick two peers, then Enter into one — the round trip that used to lose them.
+          const rows = options.listSpec.listItems();
+          options.listSpec.onSelectionChange(rows.map((row: Row) => row.id));
+          options.listSpec.onSelect(rows[0]);
+        }
+      },
+    } as any);
+
+    // 1 = peer list, 2 = the drilldown's sections (left immediately), 3 = the peer list again
+    assert.equal(opened.length, 3);
+    assert.deepEqual(opened[2].initialSelectionIds, opened[2].listSpec.listItems().map((row: Row) => row.id));
+    assert.equal(typeof opened[0].listSpec.onSelectionChange, "function", "the overlay reports ticks back");
   });
 });

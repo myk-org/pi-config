@@ -54,7 +54,8 @@ Use the same `/async-status` overlay:
 
 4. Create a recurring schedule.
 
-Use `/cron` with natural language:
+Use `/cron` with natural language. A scheduling message is required. Bare `/cron`, whitespace-only input, `--persist` alone, and `add` without a request are rejected locally without calling the LLM or changing schedules:
+
 
 ```bash
 /cron Every day at 9:00 AM, run the git-expert to generate a daily summary.

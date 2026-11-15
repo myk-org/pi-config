@@ -25,6 +25,7 @@ function task(overrides: Partial<Task> = {}): Task {
 		subject: "wire the overlay",
 		description: "replace the nested menu",
 		status: "completed",
+		assignee: "llm",
 		metadata: {},
 		blocks: [],
 		blockedBy: [],
@@ -114,6 +115,18 @@ describe("start / done subcommands", () => {
 		return { outcome, updates };
 	};
 
+	it("refuses to start work with an open blocker", () => {
+		const result = run("start", "3", [task({ status: "pending", blockedBy: ["1"] }), task({ id: "1", status: "pending" })]);
+		assert.equal(result.outcome, "blocked");
+		assert.deepEqual(result.updates, []);
+	});
+	it("starts work after its blocker completes", () => {
+		assert.equal(run("start", "3", [task({ status: "pending", blockedBy: ["1"] }), task({ id: "1", status: "completed" })]).outcome, "applied");
+	});
+	it("does not display completed dependencies as blockers", () => {
+		const text = formatTasksPlainText([task({ blockedBy: ["1"] }), task({ id: "1", status: "completed" })]);
+		assert.doesNotMatch(text, /⛔/);
+	});
 	it("moves a pending task to in_progress", () => {
 		const started = run("start", "3", [task({ id: "3", status: "pending" })]);
 		assert.equal(started.outcome, "applied");
@@ -211,16 +224,27 @@ describe("formatTasksPlainText", () => {
 		assert.equal(formatTasksPlainText([]).split("\n")[0], TASKS_EMPTY_MESSAGE);
 	});
 
-	it("lists one line per task with blocked marker", () => {
+	it("lists one line per task with live open-blocker marker", () => {
 		const text = formatTasksPlainText([
 			task(),
 			task({ id: "4", subject: "wait on 3", status: "pending", blockedBy: ["3"] }),
+			task({ id: "5", subject: "wait on 4", status: "pending", blockedBy: ["4"] }),
 		]);
 		assert.deepEqual(text.split("\n"), [
-			"◻ #4 [pending] [llm] wait on 3 ⛔ blocked",
+			"◻ #4 [pending] [llm] wait on 3",
+			"◻ #5 [pending] [llm] wait on 4 ⛔ blocked",
 			"✔ #3 [completed] [llm] wire the overlay",
 			TASKS_HINT,
 		]);
+	});
+
+	it("keeps cross-assignee open blockers on a filtered mine slice", () => {
+		const all = [
+			task({ id: "1", status: "pending", assignee: "llm" }),
+			task({ id: "2", subject: "merge PR", status: "pending", assignee: "user", blockedBy: ["1"] }),
+		];
+		const text = formatTasksPlainText([all[1]], (id) => all.find((t) => t.id === id));
+		assert.equal(text.split("\n")[0], "◻ #2 [pending] [you] merge PR ⛔ blocked");
 	});
 
 	it("always names the subcommands the text output replaces", () => {
@@ -405,6 +429,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		const deps = {
 			listTasks: () => [task({ id: "1" }), task({ id: "2" })],
 			deleteTask: (id: string) => id !== "2",
+			completeTask: () => true,
 			createTask: () => "99",
 			updateTaskSubject: () => true,
 		};
@@ -426,6 +451,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 				return true;
 			},
 			createTask: () => "99",
+			completeTask: () => true,
 			updateTaskSubject: () => true,
 		};
 		await openTasksOverlay(ctx, deps);
@@ -435,7 +461,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		]);
 	});
 
-	for (const key of ["n", "e"]) {
+	for (const key of ["n", "e", "d"]) {
 		it(`refuses ${key} while a selection exists, without opening a dialog`, async () => {
 			const { ctx, notifications, openedCount } = makeTasksCtx([[" ", key, "close"]]);
 			const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);

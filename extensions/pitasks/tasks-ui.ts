@@ -36,8 +36,8 @@ function glyphColor(status: string): "success" | "warning" | "muted" {
 	return "muted";
 }
 
-function detailHeader(task: Task, theme: Theme): string {
-	const row = toTaskRowView(task);
+function detailHeader(task: Task, theme: Theme, tasks: Task[]): string {
+	const row = toTaskRowView(task, (id) => tasks.find((t) => t.id === id));
 	return (
 		`${theme.fg(glyphColor(task.status), row.glyph)} ` +
 		theme.fg("accent", theme.bold(row.label)) +
@@ -115,7 +115,7 @@ export async function openTasksOverlay(
 					footerHints: TASKS_LIST_HINTS,
 					listItems: () => selectTaskRows(deps.listTasks(), { mine: mineOnly }),
 					rowParts: (task, theme) => {
-						const row = toTaskRowView(task);
+						const row = toTaskRowView(task, (id) => deps.listTasks().find((t) => t.id === id));
 						return {
 							glyph: theme.fg(glyphColor(task.status), row.glyph),
 							title: row.label,
@@ -189,14 +189,14 @@ export async function openTasksOverlay(
 							getHeader: (t) => {
 								const live = current();
 								if (!live) return t.fg("error", "Task deleted.");
-								return detailHeader(live, t);
+								return detailHeader(live, t, deps.listTasks());
 							},
 							getBodyLines: (t) => {
 								const live = current();
 								if (!live) {
 									return [t.fg("error", "Task deleted."), t.fg("dim", "Esc back")];
 								}
-								return taskDetailRows(live).map(
+								return taskDetailRows(live, (id) => deps.listTasks().find((item) => item.id === id)).map(
 									([label, value]) => `${t.fg("muted", label.padEnd(11))}  ${value}`,
 								);
 							},

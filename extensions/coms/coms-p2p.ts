@@ -2494,7 +2494,7 @@ Do not respond to this message.`;
 	 *  that owns `/coms` cannot reach this closure. Returns text and never throws, so a delivery
 	 *  failure reaches the user instead of being dropped on the floor. */
 	function publishUserSendBridge(): void {
-		(globalThis as any).__comsUserSend = async (params: { target: string; prompt: string; project?: string }): Promise<{ ok: boolean; message: string }> => {
+		(globalThis as any).__comsUserSend = async (params: { target: string; prompt: string; project?: string; expectedEndpoint?: string }): Promise<{ ok: boolean; message: string }> => {
 			const resolved = await resolveUserTarget(params.target, params.project);
 			if (!resolved.target) {
 				// The decision and its one warn live in resolveUserTarget; this is the send path's trail.
@@ -2503,6 +2503,10 @@ Do not respond to this message.`;
 				return { ok: false, message: resolved.error ?? `no live peer "${params.target}"` };
 			}
 			const target = resolved.target;
+			if (params.expectedEndpoint !== undefined && target.endpoint !== params.expectedEndpoint) {
+				log.warn("user_send_identity_changed", { target: params.target });
+				return { ok: false, message: "peer session changed since selection; select the peer again" };
+			}
 			const safeTarget = sanitizePeerText(target.name, 40);
 			try {
 				const { msg_id } = await deliverPrompt(target, { prompt: params.prompt, userAuthored: true });
@@ -3644,7 +3648,7 @@ Do not respond to this message.`;
 					try {
 						pi.sendMessage({
 							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd, bundle.origin),
-							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin, primary.sender_session),
+							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin, primary.sender_session, true),
 							display: true,
 							details: { msg_id: primary.msg_id, sender_session: primary.sender_session, response_schema: primary.response_schema ?? null, bundled_msg_ids: senderPending.map(i => i.msg_id) },
 						}, { deliverAs: "followUp", triggerTurn: true });
@@ -3781,7 +3785,7 @@ Do not respond to this message.`;
 					pi.sendMessage(
 						{
 							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd, bundle.origin),
-							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin, primary.sender_session),
+							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin, primary.sender_session, true),
 							display: true,
 							details: {
 								msg_id: primary.msg_id,

@@ -58,11 +58,14 @@ Overlay of your queued inbound messages on a peer. Selecting a message shows the
 
 ### /cron
 
-Schedule, list, and remove cron tasks. `add` is not handled directly: anything that is not a listing or removal verb is forwarded to the model as a `cron_manage` request, so you describe the schedule in natural language.
+Schedule, list, and remove cron tasks. Non-empty scheduling requests are forwarded to the model as a `cron_manage` request, so you describe the schedule in natural language.
+`add <request>` is also forwarded, not scheduled directly. Bare `/cron`, whitespace-only input, `--persist` alone, and `add` without a request show
+`/cron requires a message for the LLM to work on.` without calling the model or changing schedules.
 
 - **Arguments:** `list | list-all | remove <id>` (also `rm` / `delete`), plus the `--persist` flag
 - **Flags:** `--persist` scope the task to the project (`.pi/cron/crons.json`) instead of the session. `--scope` and `--project` are rejected with an error pointing at `--persist`.
-- **Listing:** `list` opens a cron status overlay; `list-all` shows every scope instead of just project-scoped tasks. In the overlay `p` pauses/resumes the focused cron and `x` removes it
+- **Listing:** `list` opens a cron status overlay; `list-all` shows every scope instead of just project-scoped tasks. In the overlay `Space` multi-selects rows,
+  `p` pauses/resumes the focused cron (or selected group), and `x` removes the focused or selected crons
 
 ```
 /cron list
@@ -203,19 +206,37 @@ Unified session status in one notification: async agents, cron tasks, git branch
 Task manager for the current session's task list.
 
 - **Arguments:** optional subcommand — none (list), `mine` (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
-- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` select, `Enter` opens a task, `n` adds a task from one line, `e` edits the focused task's subject, `d` marks the focused task done, `x` deletes the focused task, `Space` toggles multi-select, `Esc` closes
-- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store. An empty board opens the create dialog directly, since there is no row to press `n` on. `n` asks who the task is for (`you` or `llm`) once the line is accepted. The edit dialog starts pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
-- **`d`:** completes the focused task. On a task assigned to `you` it opens an optional one-line note dialog first — an empty line completes without a note, `Esc` cancels and changes nothing. The outcome is kept on the record (`completionNote`, `completedBy`), and the session receives one message reading `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns the result on its next turn
-- **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`, then the assignee tag — `[you]` or `[llm]`; a task with blockers is marked `⛔ blocked`. Tasks assigned to `you` sort above `[llm]` tasks within their status group
-- **Assignee:** a task is `llm` (the agent does it, the default for every existing task) or `user` (only the owner can — a merge, a live check in a real UI, an approval). User tasks never produce a reminder and are not counted as an agent's open work; `/tasks mine` (and a toggle in the overlay) shows only them
-- **Detail / TaskGet:** completion attribution and the verbatim note are readable later, alongside task status and description. Reopening clears the old outcome in single and bulk updates. Manual completion always records the actor as `user`, regardless of assignee; legacy completed records read as completed by `llm`. Only user-assigned manual completions send a notice, queued as a follow-up after the agent finishes its run. Failed notice submission is logged without note text and is not retried automatically
-- **`create`:** prompts for subject and description (bridged, so pidash can answer it too)
-- **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op, and `start` refuses to reopen completed work. `done` records manual attribution and sends the same owner-task notice as the overlay, without a note. To attach a note, use `d` on a user task in the terminal overlay
-- **Enforcement:** TaskUpdate, TaskBulkUpdate and automatic job lifecycle transitions cannot start or complete user-assigned tasks. Combining reassignment with status cannot bypass this guard. Reassignment alone, editing and deletion remain supported
+- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` navigate, `Space` multi-selects, `Enter` opens a task,
+  `n` adds a task from one line, `e` edits the focused task's subject, `d` marks the focused task done, `f` toggles `mine`/`all`,
+  `x` deletes the focused task (or the `Space`-selected tasks), `Esc` closes
+- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store (`n`, `e`, and `d` refuse while rows are selected). An empty board opens
+  the create dialog directly, since there is no row to press `n` on. `n` asks who the task is for (`you` or `llm`) once the line is accepted. The edit dialog starts
+  pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
+- **`d`:** completes the focused task. On a task assigned to `you` it opens an optional one-line note dialog first — an empty line completes without a note, `Esc` cancels
+  and changes nothing. The outcome is kept on the record (`completionNote`, `completedBy`), and the session receives one message reading
+  `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns the result on its next turn
+- **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] [you|llm] <subject>`; a task with currently open blockers is marked `⛔ blocked`.
+  Tasks assigned to `you` sort above `[llm]` tasks within their status group
+- **Assignee:** a task is `llm` (the agent does it, the default for every existing task) or `user` (only the owner can — a merge, a live check in a real UI, an approval).
+  User tasks never produce a reminder and are not counted as an agent's open work; `/tasks mine` (and `f` in the overlay) shows only them
+- **Detail / TaskGet:** detail shows subject, status, completed-by, outcome note, owner, blocked-by (currently open blockers), description, created and updated;
+  completion attribution and the verbatim note are also readable via `TaskGet`. Reopening clears the old outcome in single and bulk updates. Manual completion always
+  records the actor as `user`, regardless of assignee; legacy completed records read as completed by `llm`. Only user-assigned manual completions send a notice, queued as
+  a follow-up after the agent finishes its run. Failed notice submission is logged without note text and is not retried automatically
+- **`create`:** prompts for subject and description (bridged, so pidash can answer it too). Headless sessions receive guidance to use `TaskCreate` or an interactive UI.
+- **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op, and `start` refuses open
+  blockers or reopening completed work. `done` records manual attribution and sends the same owner-task notice as the overlay, without a note. To attach a note, use `d`
+  on a user task in the terminal overlay
+- **Enforcement:** `TaskUpdate`, `TaskBulkUpdate` and automatic job lifecycle transitions cannot start or complete user-assigned tasks. Combining reassignment with status
+  cannot bypass this guard. Reassignment alone, editing and deletion remain supported
 - **Empty mine view:** `f` still returns to all tasks and `n` still creates a task. Cancelling either the subject or assignee prompt writes nothing
-- **`clear completed` / `clear all`:** delete matching tasks and report the count
-- **Pidash task-panel complete:** uses the same manual completion operation as `/tasks done`, records `completedBy: user`, and submits one follow-up notice only for a user-assigned task. Repeated completion is a no-op, including after a failed notice submission. The panel does not offer a completion note; use the terminal overlay to attach one.
-- **No terminal, or a command sent from the pidash browser:** the same rows are printed as plain text (followed by the subcommand hint) instead of opening the overlay — a browser user cannot see or drive a terminal overlay, so text is the honest answer
+- **Existing `clear completed` / `clear all` subcommands:** delete matching tasks and report the count. Status-based bulk clearing is a subcommand, not an overlay key;
+  the overlay deletes the focused task or `Space`-selected tasks with `x`.
+- **Pidash task-panel complete:** uses the same manual completion operation as `/tasks done`, records `completedBy: user`, and submits one follow-up notice only for a
+  user-assigned task. Repeated completion is a no-op, including after a failed notice submission. The panel does not offer a completion note; use the terminal overlay to
+  attach one.
+- **No terminal, or a command sent from the pidash browser:** the same rows are printed as plain text (followed by the subcommand hint) instead of opening the overlay —
+  a browser user cannot see or drive a terminal overlay, so text is the honest answer
 - **Note:** when the task scope is `session` and the list becomes empty, the backing file is deleted.
 
 ```
@@ -271,7 +292,8 @@ Project memory, backed by topic files under `.pi/memory/topics/`. See [Memory Ar
 
 ### Task* (7 tools)
 
-The session task list behind `/tasks` and the task widget. Statuses are `pending`, `in_progress`, `completed`, `deleted` (deleted is a status, not a hard delete, except through `TaskBulkDelete`). Every task is assigned to `llm` (the agent, the default) or `user` (the owner), shown as `[llm]` / `[you]`.
+The session task list behind `/tasks` and the task widget. Statuses are `pending`, `in_progress`, `completed`, `deleted` (deleted is a status, not a hard delete, except
+through `TaskBulkDelete`). Every task is assigned to `llm` (the agent, the default) or `user` (the owner), shown as `[llm]` / `[you]`.
 
 | Tool | Purpose | Key parameters |
 |---|---|---|

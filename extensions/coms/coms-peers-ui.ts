@@ -32,7 +32,7 @@ export interface ComsPeersOverlayDeps {
   /** Send the user's own message to a peer (#1077). Absent means no composer is offered.
    *  Returns a stated outcome: a caller that sniffs text to decide delivery counts a dead socket
    *  as a success (#1084). */
-  tellPeer?: (request: { target: string; prompt: string; project?: string }) => Promise<TellOutcome>;
+  tellPeer?: (request: { target: string; prompt: string; project?: string; expectedEndpoint?: string }) => Promise<TellOutcome>;
   /** The shared list→detail overlay. Injected only by tests, which need to drive Enter without a
    *  TUI; production always uses the default. */
   openOverlay?: typeof openListDetailOverlay;
@@ -53,13 +53,18 @@ export async function openComsPeersOverlay(
   deps: ComsPeersOverlayDeps,
 ): Promise<void> {
   const openOverlay = deps.openOverlay ?? openListDetailOverlay;
-  const toRows = (): Row[] => deps.listPeers().map((row) => ({ ...row, id: `${row.project}:${row.name}` }));
+  // Names can be reused; ticks and focus belong to this session's endpoint.
+  const toRows = (): Row[] => deps.listPeers().map((row) => ({ ...row, id: `${row.project}:${row.name}\0${row.endpoint}` }));
   // `m` needs the whole terminal for a text dialog, and Enter navigates a level deeper, so the
   // list closes and is re-opened after each. The overlay hands the focused row over through these
   // queues (a bare variable would be narrowed to null across the await, since the assignment
   // happens inside its callback).
   // Each entry: the rows that survived to this moment, and the selected ids that had already gone.
   const composeQueue: Array<{ rows: Row[]; missing: readonly string[] }> = [];
+  // The ticks belong to the USER, not to one dashboard instance: entering a drilldown re-opens the
+  // list with a fresh instance, so the selection survives here instead (a `Set` the overlay seeds
+  // and reports back into). Same reason `reselectPeer` exists for the cursor.
+  const selectedIds = new Set<string>();
   const peerQueue: Row[] = [];
   // #1084: Esc from the drilldown returns to the peer list focused on the peer it came from.
   let reselectPeer: string | undefined;
@@ -68,6 +73,7 @@ export async function openComsPeersOverlay(
     await openOverlay<string, Row>(ctx, {
       emptyMessage: deps.emptyMessage ?? "No peers in the coms registry.",
       initialSelectionId: reselectPeer,
+      initialSelectionIds: [...selectedIds],
       listSpec: {
         title: "Coms peers",
         countLabel: (rows) => `${rows.length} peer${rows.length === 1 ? "" : "s"}`,
@@ -81,8 +87,8 @@ export async function openComsPeersOverlay(
           const workload = renderWorkloadPart(row.workload, theme).trim();
           return {
             glyph: row.busy ? theme.fg("warning", "◆") : theme.fg("success", "●"),
-            title: row.name,
-            idLabel: theme.fg("dim", row.project),
+            title: sanitizePeerText(row.name, 100),
+            idLabel: theme.fg("dim", sanitizePeerText(row.project, 100)),
             rightParts: [
               theme.fg("muted", row.busy ? "busy" : "idle"),
               ...(row.queueDepth ? [theme.fg("dim", `queue:${row.queueDepth}`)] : []),
@@ -109,6 +115,12 @@ export async function openComsPeersOverlay(
           log.info("overlay_kill_all");
           try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
         },
+        // The overlay keeps no state across re-opens: it reports the ticks and takes them back.
+        onSelectionChange: (ids) => {
+          selectedIds.clear();
+          for (const id of ids) selectedIds.add(String(id));
+          log.debug("overlay_selection_changed", { count: selectedIds.size });
+        },
         // Compose acts on the selection (the overlay hands over every selected row).
         onCompose: deps.tellPeer ? (rows, missingIds) => { composeQueue.push({ rows, missing: missingIds }); } : undefined,
         // #1084: Enter walks INTO the peer instead of opening a wall of text.
@@ -129,7 +141,7 @@ export async function openComsPeersOverlay(
     const targets = [...new Map(picked.rows.map((row) => [row.id, row])).values()];
     const missing = [...new Set(picked.missing)];
     const total = targets.length + missing.length;
-    const nameOf = (id: string): string => sanitizePeerText(id.slice(id.indexOf(":") + 1), 40) || id;
+    const nameOf = (id: string): string => sanitizePeerText(id.split("\0")[0].slice(id.indexOf(":") + 1), 40) || "unknown peer";
     const goneNote = missing.length > 0
       ? ` · ${missing.length} peer${missing.length === 1 ? "" : "s"} left before sending: ${missing.map(nameOf).join(", ")}`
       : "";
@@ -137,7 +149,7 @@ export async function openComsPeersOverlay(
     // Everyone left before the dialog opened: say nothing was sent, do not ask for text.
     if (targets.length === 0) {
       log.warn("overlay_tell_nothing_sent", { selected: total, missing: missing.length });
-      try { ctx.ui.notify(sanitizePeerText(`⚠️ nothing sent${goneNote}`, 160), "error"); } catch {}
+      try { ctx.ui.notify(sanitizePeerText(`⚠️ nothing sent · Esc closes; reopen /coms peers to reset selection${goneNote}`, 160), "error"); } catch {}
       continue;
     }
 
@@ -150,6 +162,10 @@ export async function openComsPeersOverlay(
       log.debug("overlay_tell_cancelled", { count: targets.length });
       continue;
     }
+
+    // A nonempty send consumes the ticks, even when delivery fails. Cancel/back keeps them.
+    log.debug("overlay_selection_consumed", { count: selectedIds.size, targets: targets.length });
+    selectedIds.clear();
 
     // One request per peer. Only a stated `ok` counts as delivered; a failure keeps its reason.
     let sent = 0;
@@ -181,7 +197,7 @@ export async function openComsPeersOverlay(
     // ("sent 1 of 3") whenever the selection did not fully arrive, so a partial send cannot read
     // as success.
     const sentPart = missing.length > 0 || failed.length > 0 ? `sent ${sent} of ${total}` : `sent ${sent} peer${sent === 1 ? "" : "s"}`;
-    if (targets.length + missing.length > 1 || failed.length > 0 || missing.length > 0) {
+    {
       // One failing peer keeps its reason (that is what the user acts on); several get names only.
       const reason = failed.length === 1 && failures[0] ? ` (${failures[0]})` : "";
       const failurePart = failed.length > 0 ? ` · failed ${failed.length}: ${failed.join(", ")}${reason}` : "";
