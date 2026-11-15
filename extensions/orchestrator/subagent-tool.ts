@@ -638,14 +638,21 @@ export function taskIdError(taskId: string, lookup: (id: string) => boolean): st
     : `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" for a read-only check (editing or PR work needs a real task id).`;
 }
 
-/** Validate that a taskId references an existing task. Awaits the store load, so the
- *  first async call of a session validates too instead of failing open (issue #1016). */
-async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): Promise<string | null> {
+/** Validate that a taskId references an existing task the agent may work on. Awaits the store
+ *  load, so the first async call of a session validates too instead of failing open (issue #1016).
+ *  An owner-assigned task is refused here: the lifecycle helpers never start or complete it, so
+ *  spawning on it would do the owner's step and silently leave the task untouched (#1102). */
+export async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): Promise<string | null> {
   if (taskId === "-1") return null;
   const store = await getTaskStore();
   if (!store) return null; // pitasks genuinely unavailable — warned in getTaskStore
   try {
-    return taskIdError(taskId, (id) => Boolean(store.get(id)));
+    const task = store.get(taskId);
+    if (task?.assignee === "user") {
+      log.debug("task_id_validation_refused_owner", { taskId });
+      return `Task #${taskId} is assigned to the user (assignee="user"); agents cannot start or complete it. Pick an llm-assigned task or pass taskId: "-1" for a read-only check.`;
+    }
+    return taskIdError(taskId, () => Boolean(task));
   } catch (err) {
     // Same fail-open as before, but a broken store must not look like a valid id.
     log.warn("task_id_validation_failed", { reason: String((err as Error)?.message ?? err).slice(0, 120) });
