@@ -10,6 +10,7 @@ import {
   mutateDurableCronStore,
   processStartToken,
   readDurableCronStore,
+  readDurableCronStoreOutcome,
   resolveProcessStartToken,
   refreshLeaderLock,
   releaseLeaderLock,
@@ -377,6 +378,41 @@ describe("durable cron store", () => {
     const store = tempStore();
     fs.writeFileSync(store, "not json");
     assert.deepEqual(readDurableCronStore(store), { version: 1, tasks: [] });
+  });
+
+  it("reports missing_file when the store file does not exist", () => {
+    assert.deepEqual(readDurableCronStoreOutcome(tempStore()), { status: "missing_file" });
+  });
+
+  it("reports ok with tasks for a valid store", () => {
+    const store = tempStore();
+    mutateDurableCronStore(store, () => [task("ok-task")]);
+    assert.deepEqual(readDurableCronStoreOutcome(store), { status: "ok", tasks: [task("ok-task")] });
+  });
+
+  it("reports read_error when the store cannot be parsed", () => {
+    const store = tempStore();
+    fs.writeFileSync(store, "{");
+    assert.deepEqual(readDurableCronStoreOutcome(store), { status: "read_error", reason: "parse_error" });
+  });
+
+  it("reports read_error when the store envelope shape is invalid", () => {
+    const store = tempStore();
+    fs.writeFileSync(store, JSON.stringify({ version: 2 }));
+    assert.deepEqual(readDurableCronStoreOutcome(store), { status: "read_error", reason: "invalid_envelope" });
+  });
+
+  it("reports read_error when reading the store path fails", () => {
+    const store = tempStore();
+    fs.mkdirSync(store, { recursive: true });
+    assert.deepEqual(readDurableCronStoreOutcome(store), { status: "read_error", reason: "EISDIR" });
+  });
+
+  it("refuses to clobber an unreadable store during mutation", () => {
+    const store = tempStore();
+    fs.writeFileSync(store, "{");
+    assert.throws(() => mutateDurableCronStore(store, () => [task("clobber")]), /unreadable cron store/);
+    assert.equal(fs.readFileSync(store, "utf8"), "{");
   });
 
   for (const [kind, record] of [
