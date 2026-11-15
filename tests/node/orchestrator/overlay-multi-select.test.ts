@@ -342,4 +342,36 @@ describe("selection survives a re-opened dashboard (#1084)", () => {
     assert.deepEqual(h.composes, [{ ids: ["a"], missing: [] }], "the focused row");
     h.dispose();
   });
+
+  it("evaluates functional emptyBody dynamically on render", () => {
+    let filtered = false;
+    const h = harness({ selectable: true });
+    try {
+      h.spec.emptyBody = () => (filtered ? "Filtered empty." : "All empty.");
+      h.setRows([]);
+      assert.match(h.dash.render(80).join("\n"), /All empty\./);
+      filtered = true;
+      h.dash.invalidate();
+      assert.match(h.dash.render(80).join("\n"), /Filtered empty\./);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("prunes hidden multi-selections when onKey returns redraw", () => {
+    const h = harness({ selectable: true });
+    try {
+      h.spec.onKey = (key: string) => {
+        if (key !== "f") return false as const;
+        h.setRows([{ id: "b", status: "queued" }]);
+        return "redraw" as const;
+      };
+      h.press(" "); // select a
+      h.press("f"); // filter hides a, leaving only b
+      h.press("x"); // no visible selection remains, so focused row b is killed
+      assert.deepEqual(h.kills, [["b"]]);
+    } finally {
+      h.dispose();
+    }
+  });
 });

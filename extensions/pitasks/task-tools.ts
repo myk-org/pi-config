@@ -323,12 +323,13 @@ Set up task dependencies:
 	pi.registerTool({
 		name: "TaskBulkCreate",
 		label: "TaskBulkCreate",
-		description: "Create multiple tasks at once. More efficient than calling TaskCreate multiple times.",
+		description: "Create multiple tasks at once. More efficient than calling TaskCreate multiple times. Set assignee to 'user' for steps only the owner can perform.",
 		parameters: Type.Object({
 			tasks: Type.Array(Type.Object({
 				subject: Type.String({ description: "Brief task title" }),
 				description: Type.String({ description: "Detailed task description" }),
 				blockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
+				assignee: Type.Optional(Type.Union([Type.Literal("llm"), Type.Literal("user")], { description: "Who executes the task: 'llm' (default) or 'user' when only the owner can perform it" })),
 			}), { description: "Array of tasks to create" }),
 		}),
 		async execute(_callId, params) {

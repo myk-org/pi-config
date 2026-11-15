@@ -105,7 +105,10 @@ export async function openTasksOverlay(
 				emptyMessage: mineOnly ? "No tasks assigned to you." : TASKS_EMPTY_MESSAGE,
 				allowEmpty: true,
 				listSpec: {
-					emptyBody: "No tasks assigned to you. Press f for all or n to add.",
+					emptyBody: () =>
+						mineOnly
+							? "No tasks assigned to you. Press f for all or n to add."
+							: "No tasks. Press n to add.",
 					title: mineOnly ? "Tasks · mine" : "Tasks",
 					countLabel: (tasks) => `${tasks.length} task${tasks.length === 1 ? "" : "s"}`,
 					borderTitle: (tasks) => {

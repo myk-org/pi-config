@@ -5,7 +5,7 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import type { TaskStore } from "./task-store.js";
-import { sortTaskRows, toTaskRowView } from "./tasks-view.js";
+import { taskAssigneeRank, toTaskRowView } from "./tasks-view.js";
 
 const log = createLogger("pitasks");
 
@@ -110,8 +110,16 @@ export class TaskWidget {
 	}
 
 	private buildWidgetLines(tui: any, theme: any): string[] {
-		// One order for both surfaces: status group, the owner's tasks first, then id (#1090).
-		const tasks = sortTaskRows(this.store.list());
+		// Active work first so truncation never hides a running spinner behind 10+ pending rows;
+		// within each status group, the owner's tasks sort before the agent's (#1090).
+		const statusRank = (status: string): number =>
+			status === "in_progress" ? 0 : status === "pending" ? 1 : 2;
+		const tasks = [...this.store.list()].sort(
+			(a, b) =>
+				statusRank(a.status) - statusRank(b.status) ||
+				taskAssigneeRank(a) - taskAssigneeRank(b) ||
+				Number(a.id) - Number(b.id),
+		);
 		const w = tui.terminal.columns;
 		const truncate = (line: string) => truncateToWidth(line, w);
 		if (tasks.length === 0) return [];

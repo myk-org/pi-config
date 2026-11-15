@@ -20,7 +20,7 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
 import {
-	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin } from "./coms-shared.js";
+	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, isPeerTaskCreator, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin } from "./coms-shared.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import { projectProblem, userTargetProblem } from "./coms-peers.js";
@@ -1461,7 +1461,7 @@ export default function (pi: ExtensionAPI) {
 				case "update":
 					if (env.task_id && env.fields) {
 						const t = getTask(env.task_id);
-						if (t?.createdBy?.session === env.sender_session) {
+						if (isPeerTaskCreator(t?.createdBy, env.sender_session)) {
 							result = updateTask(env.task_id, env.fields);
 						} else {
 							error = "ownership_denied — can only update tasks you created";
@@ -1471,7 +1471,7 @@ export default function (pi: ExtensionAPI) {
 				case "delete":
 					if (env.task_id) {
 						const t = getTask(env.task_id);
-						if (t?.createdBy?.session === env.sender_session) {
+						if (isPeerTaskCreator(t?.createdBy, env.sender_session)) {
 							result = deleteTask(env.task_id);
 						} else {
 							error = "ownership_denied — can only delete tasks you created";
@@ -3150,7 +3150,7 @@ Do not respond to this message.`;
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
 				if (!task) throw new Error(`Task #${params.task_id} not found`);
-				if (task.createdBy?.session !== identity.coms_session_id) {
+				if (!isPeerTaskCreator(task.createdBy, identity.coms_session_id)) {
 					throw new Error(`Ownership denied — can only delete tasks you created`);
 				}
 				if (task.status === "in_progress") {
@@ -3300,7 +3300,7 @@ Do not respond to this message.`;
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
 				if (!task) throw new Error(`Task #${params.task_id} not found on ${target.name}`);
-				if (task.createdBy?.session !== identity.coms_session_id) {
+				if (!isPeerTaskCreator(task.createdBy, identity.coms_session_id)) {
 					throw new Error(`Ownership denied — can only update tasks you created`);
 				}
 				if (task.status === "in_progress") {

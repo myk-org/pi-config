@@ -301,7 +301,7 @@ through `TaskBulkDelete`). Every task is assigned to `llm` (the agent, the defau
 | `TaskList` | List all tasks as `id`, `subject`, `status`, `owner`, `blockedBy` | none |
 | `TaskGet` | Full task detail including `blocks` and `blockedBy` | `taskId` |
 | `TaskUpdate` | Update a task; `in_progress` sets it as the widget's active task | `taskId`, `status`, `subject`, `description`, `activeForm`, `assignee`, `owner`, `metadata` (merge, `null` deletes), `addBlocks[]`, `addBlockedBy[]` |
-| `TaskBulkCreate` | Create several tasks in one call | `tasks[]` (`subject`, `description`, `blockedBy[]`) |
+| `TaskBulkCreate` | Create several tasks in one call | `tasks[]` (`subject`, `description`, `blockedBy[]`, `assignee`) |
 | `TaskBulkUpdate` | Update several tasks in one call | `updates[]` (`taskId`, `status`, `subject`, `description`, `addBlockedBy[]`, `addBlocks[]`) |
 | `TaskBulkDelete` | Hard-delete several tasks by id | `taskIds[]` |
 

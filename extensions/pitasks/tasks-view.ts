@@ -63,7 +63,9 @@ export interface TaskRowView {
 
 /** The ONE assignee tag: `/tasks`, the widget, the drilldown and TaskList all read it here. */
 export function taskAssigneeTag(task: { assignee?: string }): string {
-	return task.assignee === "user" ? "[you]" : "[llm]";
+	const tag = task.assignee === "user" ? "[you]" : "[llm]";
+	log.debug("task_assignee_tag", { tag });
+	return tag;
 }
 
 /** The owner's tasks sort above the agent's within a status group (#1090). */
@@ -106,6 +108,7 @@ export function toTaskRowView(task: TaskRowSource, get?: (id: string) => TaskRow
 
 /** Row order for every surface: status group, then the owner's tasks, then id. */
 export function sortTaskRows<T extends TaskRowSource>(tasks: readonly T[]): T[] {
+	log.debug("tasks_rows_sorted", { count: tasks.length });
 	const statusRank = (status: string): number =>
 		status === "pending" ? 0 : status === "in_progress" ? 1 : 2;
 	return [...tasks].sort(
@@ -121,7 +124,9 @@ export function selectTaskRows<T extends TaskRowSource>(
 	tasks: readonly T[],
 	opts: { mine?: boolean } = {},
 ): T[] {
-	return sortTaskRows(opts.mine ? tasks.filter((task) => task.assignee === "user") : tasks);
+	const selected = sortTaskRows(opts.mine ? tasks.filter((task) => task.assignee === "user") : tasks);
+	log.debug("tasks_rows_selected", { total: tasks.length, selected: selected.length, mine: !!opts.mine });
+	return selected;
 }
 
 /** The ONE task-row line: `/tasks` plain text and the coms drilldown both use it. */
@@ -225,8 +230,12 @@ export type TaskCompletionPlan =
 
 /** Esc cancels without writing; an empty line completes without a note. */
 export function planTaskCompletion(input: string | undefined): TaskCompletionPlan {
-	if (input === undefined) return { kind: "skip", reason: "cancelled" };
+	if (input === undefined) {
+		log.debug("task_completion_planned", { kind: "skip", reason: "cancelled" });
+		return { kind: "skip", reason: "cancelled" };
+	}
 	const note = input.trim().slice(0, COMPLETION_NOTE_MAX);
+	log.debug("task_completion_planned", { kind: "complete", hasNote: note.length > 0 });
 	return note ? { kind: "complete", note } : { kind: "complete" };
 }
 
@@ -364,6 +373,7 @@ export function tasksOverlayDeps(
 				completedBy: opts.by,
 				...(opts.note ? { completionNote: opts.note } : {}),
 			});
+			onDeleted?.(id);
 			// The note is the owner's free text: the log names the id, never the note.
 			log.info("task_completed", { id });
 			if (opts.by === "user" && task.assignee === "user") onUserCompleted?.({ id: task.id, subject: task.subject, ...(opts.note ? { completionNote: opts.note } : {}) });

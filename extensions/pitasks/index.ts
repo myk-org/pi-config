@@ -84,6 +84,7 @@ export function listTasks(): any[] {
 /** Update a task — for use by other extensions. */
 export function updateTask(id: string, fields: any): any {
 	log.debug("task_updated", { taskId: id, fieldNames: Object.keys(fields) });
+	guardPeerTaskTransition(taskStore?.get(id)?.assignee, "", id, fields);
 	const result = taskStore.update(id, fields);
 	if (result.changedFields.includes("status")) setTaskTelemetryActive(id, fields.status === "in_progress");
 	return result;

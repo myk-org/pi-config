@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { rmSync } from "node:fs";
 import { makeTempDir } from "../helpers/temp-dirs.js";
-import { createTaskForSession, getTaskForSession, updateTaskForSession, updateTasksForSession } from "../../../extensions/pitasks/index.js";
+import pitasks, { createTaskForSession, getTaskForSession, taskStore, updateTask, updateTaskForSession, updateTasksForSession } from "../../../extensions/pitasks/index.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
 import { openListDetailOverlay } from "../../../extensions/orchestrator/overlay-dashboard.js";
 import { tasksOverlayDeps, taskDetailRows } from "../../../extensions/pitasks/tasks-view.js";
 import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
@@ -93,7 +94,7 @@ function tools(store: TaskStore) {
 }
 for (const status of ["in_progress", "completed"]) {
  for (const assignee of ["user", "llm"] as const) {
-  it(`refuses ${status} with existing ${assignee} and resulting user assignment`, async () => {
+  it(`refuses ${status} across ${assignee} reassignment in TaskUpdate`, async () => {
    const store = new TaskStore();
    const t = store.create("step", "", creator, undefined, undefined, assignee);
    await tools(store).TaskUpdate.execute("call", { taskId: t.id, status, assignee: assignee === "user" ? "llm" : "user" });
@@ -141,3 +142,71 @@ for (const transition of [autoCompleteTask, autoMarkInProgress]) {
   assert.equal(store.get(t.id)?.status, "pending");
  });
 }
+for (const status of ["in_progress", "completed"]) {
+ for (const assignee of ["user", "llm"] as const) {
+  it(`refuses exported updateTask ${status} across ${assignee} reassignment`, async () => {
+   const handlers = new Map<string, Function>();
+   const subagent = process.env.PI_SUBAGENT_CHILD;
+   const piTasks = process.env.PI_TASKS;
+   delete process.env.PI_SUBAGENT_CHILD;
+   process.env.PI_TASKS = "off";
+   try {
+    pitasks({ on(n: string, h: Function) { handlers.set(n, h); }, registerTool() {}, registerCommand() {}, events: { on() { return () => {}; }, emit() {} } } as any);
+    await handlers.get("session_start")!({ reason: "new" }, { ui: { setWidget() {} }, sessionManager: { getSessionId: () => "guard-test" } });
+    const t = taskStore.create("step", "", creator, undefined, undefined, assignee);
+    assert.throws(() => updateTask(t.id, { status, assignee: assignee === "user" ? "llm" : "user" }), /only the user/);
+    assert.equal(taskStore.get(t.id)?.status, "pending");
+    assert.equal(taskStore.get(t.id)?.assignee, assignee);
+   } finally {
+    handlers.get("session_shutdown")?.();
+    if (subagent === undefined) delete process.env.PI_SUBAGENT_CHILD;
+    else process.env.PI_SUBAGENT_CHILD = subagent;
+    if (piTasks === undefined) delete process.env.PI_TASKS;
+    else process.env.PI_TASKS = piTasks;
+   }
+  });
+ }
+}
+it("deactivates widget telemetry when completeTask closes an in-progress task", () => {
+ const store = new TaskStore();
+ const widget = new TaskWidget(store);
+ try {
+  const t = store.create("running", "", creator);
+  store.update(t.id, { status: "in_progress" });
+  widget.setActiveTask(t.id, true);
+  const deps = tasksOverlayDeps(store, (id) => {
+   widget.setActiveTask(id, false);
+   widget.update();
+  });
+  assert.equal(deps.completeTask(t.id, { by: "user" }), true);
+  widget.addTokenUsage(50, 75);
+  assert.equal(store.get(t.id)?.telemetry?.inputTokens, 0);
+  assert.equal(typeof store.get(t.id)?.telemetry?.endedAt, "number");
+ } finally {
+  widget.dispose();
+ }
+});
+for (const bulk of [false, true]) {
+ it(`preserves user completedBy across repeated ${bulk ? "bulk" : "single"} completion`, () => {
+  const store = new TaskStore();
+  const t = store.create("step", "", creator);
+  store.update(t.id, { status: "completed", completedBy: "user", completionNote: "owner closed" });
+  if (bulk) store.updateTasks([{ id: t.id, fields: { status: "completed" } }]);
+  else store.update(t.id, { status: "completed" });
+  assert.equal(store.get(t.id)?.completedBy, "user");
+  assert.equal(store.get(t.id)?.completionNote, "owner closed");
+ });
+}
+it("creates user-assigned tasks through TaskBulkCreate", async () => {
+ const store = new TaskStore();
+ const tool = tools(store).TaskBulkCreate;
+ assert.ok(tool.parameters.properties.tasks.items.properties.assignee);
+ await tool.execute("call", {
+  tasks: [
+   { subject: "agent work", description: "a" },
+   { subject: "merge PR", description: "b", assignee: "user" },
+  ],
+ });
+ assert.equal(store.get("1")?.assignee, "llm");
+ assert.equal(store.get("2")?.assignee, "user");
+});

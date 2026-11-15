@@ -419,7 +419,7 @@ export class TaskStore {
 					delete task.completionNote;
 					log.debug("task_outcome_reset", { id, status: fields.status });
 				}
-				if (fields.status === "completed") task.completedBy = fields.completedBy ?? "llm";
+				if (fields.status === "completed") task.completedBy = fields.completedBy ?? task.completedBy ?? "llm";
 				task.status = fields.status as TaskStatus;
 				changedFields.push("status");
 				const now = Date.now();
@@ -511,7 +511,7 @@ export class TaskStore {
 						delete task.completionNote;
 						log.debug("task_outcome_reset", { id, status: fields.status });
 					}
-					if (fields.status === "completed") task.completedBy = fields.completedBy ?? "llm";
+					if (fields.status === "completed") task.completedBy = fields.completedBy ?? task.completedBy ?? "llm";
 					task.status = fields.status as TaskStatus;
 					changedFields.push("status");
 					const now = Date.now();

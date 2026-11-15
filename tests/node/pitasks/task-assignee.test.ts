@@ -18,6 +18,7 @@ import {
 	parseTasksCommand,
 	planTaskCompletion,
 	selectTaskRows,
+	sortTaskRows,
 	taskAssigneeTag,
 	taskCompletionNotice,
 	tasksOverlayDeps,
@@ -61,11 +62,16 @@ function task(overrides: Partial<Task> = {}): Task {
 const storePath = (): string => join(makeTempDir("pitasks-assignee-"), "tasks.json");
 
 describe("assignee on the task record (#1090)", () => {
-	it("defaults to llm and keeps the default across a reload", () => {
+	it("defaults to llm on creation", () => {
+		const store = new TaskStore();
+		const created = store.create("agent work", "", createdBy);
+		assert.equal(created.assignee, "llm");
+	});
+
+	it("preserves the default assignee across a reload", () => {
 		const path = storePath();
 		const store = new TaskStore(path);
 		const created = store.create("agent work", "", createdBy);
-		assert.equal(created.assignee, "llm");
 		store.close();
 		const reopened = new TaskStore(path);
 		assert.equal(reopened.get(created.id)?.assignee, "llm");
@@ -108,16 +114,25 @@ describe("assignee on the task record (#1090)", () => {
 		store.close();
 	});
 
-	it("persists completedBy and the owner's note, and reads them back", () => {
+	it("persists completedBy across a reload", () => {
 		const path = storePath();
 		const store = new TaskStore(path);
 		const created = store.create("owner step", "", createdBy, undefined, undefined, "user");
 		store.update(created.id, { status: "completed", completedBy: "user", completionNote: "merged #1088" });
 		store.close();
 		const reopened = new TaskStore(path);
-		const loaded = reopened.get(created.id);
-		assert.equal(loaded?.completedBy, "user");
-		assert.equal(loaded?.completionNote, "merged #1088");
+		assert.equal(reopened.get(created.id)?.completedBy, "user");
+		reopened.close();
+	});
+
+	it("persists the owner's completion note across a reload", () => {
+		const path = storePath();
+		const store = new TaskStore(path);
+		const created = store.create("owner step", "", createdBy, undefined, undefined, "user");
+		store.update(created.id, { status: "completed", completedBy: "user", completionNote: "merged #1088" });
+		store.close();
+		const reopened = new TaskStore(path);
+		assert.equal(reopened.get(created.id)?.completionNote, "merged #1088");
 		reopened.close();
 	});
 
@@ -149,16 +164,19 @@ describe("the [you] / [llm] tag has one definition (#1090)", () => {
 		assert.equal(taskAssigneeTag({}), "[llm]", "a record without the field is the agent's");
 	});
 
-	it("renders the same tag in the /tasks row and the widget row", () => {
+	it("renders the assignee tag in the /tasks row", () => {
+		const owner = task({ id: "1", subject: "run the Discord test", assignee: "user" });
+		const agent = task({ id: "2", subject: "polish the drilldown", assignee: "llm" });
+		assert.equal(formatTaskRowLine(owner), "◻ #1 [pending] [you] run the Discord test");
+		assert.equal(formatTaskRowLine(agent), "◻ #2 [pending] [llm] polish the drilldown");
+	});
+
+	it("renders the assignee tag in the widget row", () => {
 		const store = new TaskStore();
 		const widget = new TaskWidget(store);
 		try {
 			const owner = store.create("run the Discord test", "", createdBy, undefined, undefined, "user");
 			const agent = store.create("polish the drilldown", "", createdBy);
-			// `/tasks` + drilldown row line.
-			assert.equal(formatTaskRowLine(owner), `◻ #${owner.id} [pending] [you] run the Discord test`);
-			assert.equal(formatTaskRowLine(agent), `◻ #${agent.id} [pending] [llm] polish the drilldown`);
-			// The widget row carries the very same tag from the same definition.
 			const lines = renderer(widget)().join("\n");
 			assert.match(lines, new RegExp(`#${owner.id} \\[you\\] run the Discord test`));
 			assert.match(lines, new RegExp(`#${agent.id} \\[llm\\] polish the drilldown`));
@@ -196,7 +214,7 @@ describe("the owner's tasks sort first within a status group (#1090)", () => {
 		assert.deepEqual(selectTaskRows(rows()).map((t) => t.id), ["3", "1", "2", "5", "4"]);
 	});
 
-	it("renders the widget in the same order", () => {
+	it("orders widget rows with in-progress before pending while keeping owner tasks first per group", () => {
 		const store = new TaskStore();
 		const widget = new TaskWidget(store);
 		try {
@@ -209,7 +227,24 @@ describe("the owner's tasks sort first within a status group (#1090)", () => {
 			widget.update();
 			const lines = (render?.() ?? []).filter((line) => line.includes("#"));
 			const ids = lines.map((line) => Number(/#(\d+)/.exec(line)?.[1]));
-			assert.deepEqual(ids, [3, 1, 2, 5, 4], "owner's pending task above the agent's, in both surfaces");
+			assert.deepEqual(ids, [5, 3, 1, 2, 4]);
+		} finally {
+			widget.dispose();
+		}
+	});
+
+	it("keeps an active in-progress task visible ahead of ten pending tasks", () => {
+		const store = new TaskStore();
+		const widget = new TaskWidget(store);
+		try {
+			for (let i = 1; i <= 11; i++) store.create(`pending ${i}`, "", createdBy);
+			const active = store.create("running work", "", createdBy);
+			store.update(active.id, { status: "in_progress" });
+			let render: (() => string[]) | undefined;
+			widget.setUICtx({ setWidget(_n: string, value: any) { if (value) render = value({ terminal: { columns: 200 } }, theme).render; } });
+			widget.update();
+			const lines = (render?.() ?? []).join("\n");
+			assert.match(lines, /#12 \[llm\] running work/);
 		} finally {
 			widget.dispose();
 		}
@@ -253,8 +288,11 @@ describe("the mine filter (#1090)", () => {
 });
 
 describe("completing the owner's task (#1090)", () => {
-	it("cancels on Esc and completes on an empty line", () => {
+	it("cancels on Esc", () => {
 		assert.deepEqual(planTaskCompletion(undefined), { kind: "skip", reason: "cancelled" });
+	});
+
+	it("completes without a note on a blank input", () => {
 		assert.deepEqual(planTaskCompletion(""), { kind: "complete" });
 		assert.deepEqual(planTaskCompletion("   "), { kind: "complete" });
 	});
@@ -269,21 +307,31 @@ describe("completing the owner's task (#1090)", () => {
 		assert.equal(plan.kind === "complete" ? plan.note?.length : undefined, COMPLETION_NOTE_MAX);
 	});
 
-	it("writes who closed it and notifies the session once, with the note", () => {
+	it("records the user actor with the completion note", () => {
 		const writes: Array<[string, any]> = [];
+		const ui = tasksOverlayDeps({
+			list: () => [task({ id: "5", assignee: "user" })],
+			get: (id) => (id === "5" ? task({ id: "5", assignee: "user" }) : undefined),
+			create: () => ({ id: "6" }),
+			update: (id, fields) => { writes.push([id, fields]); },
+		});
+		assert.equal(ui.completeTask("5", { by: "user", note: "merged it" }), true);
+		assert.deepEqual(writes, [["5", { status: "completed", completedBy: "user", completionNote: "merged it" }]]);
+	});
+
+	it("emits one completion notice carrying the note", () => {
 		const notices: Array<{ id: string; subject: string; completionNote?: string }> = [];
 		const ui = tasksOverlayDeps(
 			{
 				list: () => [task({ id: "5", assignee: "user" })],
 				get: (id) => (id === "5" ? task({ id: "5", assignee: "user" }) : undefined),
 				create: () => ({ id: "6" }),
-				update: (id, fields) => { writes.push([id, fields]); },
+				update: () => undefined,
 			},
 			undefined,
 			(completed) => { notices.push(completed); },
 		);
 		assert.equal(ui.completeTask("5", { by: "user", note: "merged it" }), true);
-		assert.deepEqual(writes, [["5", { status: "completed", completedBy: "user", completionNote: "merged it" }]]);
 		assert.deepEqual(notices, [{ id: "5", subject: "wire the overlay", completionNote: "merged it" }]);
 		const notice = taskCompletionNotice(notices[0]);
 		assert.equal(notice.content, 'Task #5 "wire the overlay" marked done by you\nmerged it');
@@ -421,7 +469,7 @@ describe("d in /tasks closes the focused task (#1090)", () => {
 		await openTasksOverlay(ctx, tasksOverlayDeps(store));
 		assert.equal(store.list().length, 1);
 	});
-	it("asks the owner for an optional note and persists it", async () => {
+	it("persists the optional note from the completion dialog", async () => {
 		const { ctx, openedCount } = makeTasksCtx([["d"], ["merged #1088", "\n"]]);
 		const { deps, writes } = completionDeps("user");
 		await openTasksOverlay(ctx, deps);
@@ -452,8 +500,8 @@ describe("d in /tasks closes the focused task (#1090)", () => {
 		assert.deepEqual(writes, [["5", { status: "completed", completedBy: "user" }]]);
 	});
 
-	it("shows only the owner's rows when the filter is on, and f toggles back", async () => {
-		const { ctx, screens } = makeTasksCtx([["f", "close"]]);
+	it("shows only the owner's rows when the mine filter is on", async () => {
+		const { ctx, screens } = makeTasksCtx([["close"]]);
 		const tasks = [task({ id: "1", subject: "agent row" }), task({ id: "2", assignee: "user", subject: "owner row" })];
 		const deps = {
 			listTasks: () => tasks,
@@ -466,8 +514,64 @@ describe("d in /tasks closes the focused task (#1090)", () => {
 		assert.match(screens[0], /#2 \[pending\] \[you\] owner row/);
 		assert.match(screens[0], /d done · f mine\/all .* Esc close/, "the footer names the new keys");
 		assert.doesNotMatch(screens[0], /agent row/, "mine hides the agent's rows");
+	});
+
+	it("restores agent rows when f toggles off the mine filter", async () => {
+		const { ctx, screens } = makeTasksCtx([["f", "close"]]);
+		const tasks = [task({ id: "1", subject: "agent row" }), task({ id: "2", assignee: "user", subject: "owner row" })];
+		const deps = {
+			listTasks: () => tasks,
+			deleteTask: () => true,
+			createTask: () => "9",
+			updateTaskSubject: () => true,
+			completeTask: () => true,
+		};
+		await openTasksOverlay(ctx, deps, { mine: true });
 		const afterToggle = screens.at(-1) ?? "";
 		assert.match(afterToggle, /agent row/, "f toggles the filter back to all");
+	});
+
+	it("prunes invisible selections when f switches to mine so x deletes the focused row", async () => {
+		const deleted: string[] = [];
+		let tasks = [
+			task({ id: "1", subject: "agent row", assignee: "llm" }),
+			task({ id: "2", subject: "owner row", assignee: "user" }),
+		];
+		const deps = {
+			listTasks: () => tasks,
+			deleteTask: (id: string) => {
+				deleted.push(id);
+				tasks = tasks.filter((t) => t.id !== id);
+				return true;
+			},
+			createTask: () => "9",
+			updateTaskSubject: () => true,
+			completeTask: () => true,
+		};
+		// Row 0 is #2 ([you]), row 1 is #1 ([llm]); move to #1, Space-select it, press f (mine), then press x.
+		const { ctx } = makeTasksCtx([["j", " ", "f", "x", "close"]]);
+		await openTasksOverlay(ctx, deps);
+		assert.deepEqual(deleted, ["2"]);
+	});
+
+	it("shows the unfiltered empty message when all tasks disappear in the all view", async () => {
+		let tasks = [task({ id: "1", subject: "last row", assignee: "llm" })];
+		const deps = {
+			listTasks: () => tasks,
+			deleteTask: (id: string) => {
+				tasks = tasks.filter((t) => t.id !== id);
+				return true;
+			},
+			createTask: () => "9",
+			updateTaskSubject: () => true,
+			completeTask: () => true,
+		};
+		// Enter detail pane, press x to delete the only task, Esc back to the empty unfiltered list, then close.
+		const { ctx, screens } = makeTasksCtx([["\r"], ["x", "\x1b"], ["close"]]);
+		await openTasksOverlay(ctx, deps);
+		const emptyUnfiltered = screens.at(-2) ?? "";
+		assert.match(emptyUnfiltered, /No tasks\. Press n to add\./);
+		assert.doesNotMatch(emptyUnfiltered, /assigned to you/);
 	});
 });
 
@@ -499,7 +603,7 @@ describe("the completion log carries the id only (#1090)", () => {
 		clearLogLevelCache();
 	});
 
-	it("writes the id and never the note", () => {
+	it("logs the completed task id", () => {
 		const { deps } = completionDeps("user");
 		deps.completeTask("5", { by: "user", note: secret });
 		const path = getPiLogPath("pitasks");
@@ -510,6 +614,62 @@ describe("the completion log carries the id only (#1090)", () => {
 		assert.ok(line, "task_completed must be logged");
 		const payload = JSON.parse(line.slice(line.indexOf("task_completed") + "task_completed ".length));
 		assert.deepEqual(payload, { id: "5" });
+	});
+
+	it("omits the completion note from the log", () => {
+		const { deps } = completionDeps("user");
+		deps.completeTask("5", { by: "user", note: secret });
+		const path = getPiLogPath("pitasks");
+		assert.ok(path, "the pitasks log path must resolve");
+		const body = readFileSync(path, "utf-8");
 		assert.equal(body.includes(secret), false, "the note must never reach the log");
+	});
+});
+
+describe("debug logging for stale reminders and pure view helpers (#1090)", () => {
+	const saved: { home?: string; pitasks?: string; reminders?: string } = {};
+
+	before(() => {
+		saved.home = process.env.HOME;
+		saved.pitasks = process.env.PI_LOG_PITASKS;
+		saved.reminders = process.env.PI_LOG_PITASKS_REMINDERS;
+		const tmpHome = makeTempDir("pitasks-debug-logs-");
+		process.env.HOME = tmpHome;
+		process.env.USERPROFILE = tmpHome;
+		process.env.PI_LOG_PITASKS = "debug";
+		process.env.PI_LOG_PITASKS_REMINDERS = "debug";
+		setGlobalSessionId("task-assignee-debug-test");
+		clearLogLevelCache();
+	});
+
+	after(() => {
+		if (saved.home === undefined) delete process.env.HOME;
+		else process.env.HOME = saved.home;
+		if (saved.pitasks === undefined) delete process.env.PI_LOG_PITASKS;
+		else process.env.PI_LOG_PITASKS = saved.pitasks;
+		if (saved.reminders === undefined) delete process.env.PI_LOG_PITASKS_REMINDERS;
+		else process.env.PI_LOG_PITASKS_REMINDERS = saved.reminders;
+		clearLogLevelCache();
+	});
+
+	it("logs selectStaleTasks counts at debug level", () => {
+		selectStaleTasks([{ status: "in_progress", assignee: "user", statusHistory: { in_progress_at: new Date(0).toISOString() } }], 10_000, 1_000);
+		const path = getPiLogPath("pitasks-reminders");
+		assert.ok(path && existsSync(path));
+		assert.match(readFileSync(path, "utf-8"), /selectStaleTasks/);
+	});
+
+	it("logs pure view helper calls at debug level", () => {
+		taskAssigneeTag({ assignee: "user" });
+		sortTaskRows([task({ id: "1" })]);
+		selectTaskRows([task({ id: "1" })], { mine: true });
+		planTaskCompletion(undefined);
+		const path = getPiLogPath("pitasks");
+		assert.ok(path && existsSync(path));
+		const body = readFileSync(path, "utf-8");
+		assert.match(body, /task_assignee_tag/);
+		assert.match(body, /tasks_rows_sorted/);
+		assert.match(body, /tasks_rows_selected/);
+		assert.match(body, /task_completion_planned/);
 	});
 });

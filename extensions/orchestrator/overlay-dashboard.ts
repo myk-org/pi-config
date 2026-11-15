@@ -75,7 +75,7 @@ export interface OverlayListSpec<
   /** Defaults to DEFAULT_LIST_HINTS (+ "Space multi-select" when selectable). */
   footerHints?: string;
   listItems: () => TItem[];
-  emptyBody?: string;
+  emptyBody?: string | (() => string);
   rowParts: (item: TItem, theme: Theme) => OverlayRowParts;
   /** Optional destructive/action key (x). */
   onX?: (item: TItem) => void;
@@ -259,6 +259,17 @@ export class OverlayListDashboard<
       return;
     }
     if (action === "redraw") {
+      if (this.multi.size > 0) {
+        const visible = new Set(this.items().map((item) => item.id));
+        let pruned = false;
+        for (const id of [...this.multi]) {
+          if (!visible.has(id)) {
+            this.multi.delete(id);
+            pruned = true;
+          }
+        }
+        if (pruned) this.spec.onSelectionChange?.([...this.multi]);
+      }
       log.debug("list_key_action", { key: data, outcome: "redraw" });
       this.invalidate();
       this.tui.requestRender(true);
@@ -404,7 +415,10 @@ export class OverlayListDashboard<
     const out: string[] = [];
 
     log.debug("list_render_rows", { items: items.length, height, multi: this.multi.size });
-    if (items.length === 0 && this.spec.emptyBody) return [theme.fg("dim", this.spec.emptyBody)];
+    if (items.length === 0 && this.spec.emptyBody) {
+      const emptyText = typeof this.spec.emptyBody === "function" ? this.spec.emptyBody() : this.spec.emptyBody;
+      return [theme.fg("dim", emptyText)];
+    }
 
     let start = 0;
     if (items.length > height) {

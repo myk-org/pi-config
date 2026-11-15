@@ -47,11 +47,13 @@ export function selectStaleTasks<T extends {
 	assignee?: string;
 	statusHistory?: { in_progress_at?: string | null } | null;
 }>(tasks: readonly T[], now: number, threshold: number): T[] {
-	return tasks.filter((task) => {
+	const stale = tasks.filter((task) => {
 		const startedAt = task.statusHistory?.in_progress_at;
 		if (task.status !== "in_progress" || task.assignee === "user" || !startedAt) return false;
 		return now - new Date(startedAt).getTime() > threshold;
 	});
+	log.debug("selectStaleTasks", tasks.length, stale.length);
+	return stale;
 }
 
 /** Minimal task shape the pending-age gate needs. */
