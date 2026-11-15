@@ -2823,6 +2823,10 @@ export function injectCommitTrailer(command: string, trailerName: string, modelI
 		const gitPart = command.slice(pipeIdx);
 		const lastQuoteIdx = Math.max(echoPart.lastIndexOf('"'), echoPart.lastIndexOf("'"));
 		if (lastQuoteIdx > 0) {
+			if (!/^\s*$/.test(echoPart.slice(lastQuoteIdx + 1))) {
+				enfLog.debug("inject_commit_trailer", "unquoted trailing operand", trailerName);
+				return null;
+			}
 			if (commandHasTrailerByName(echoPart, trailerName)) {
 				enfLog.debug("inject_commit_trailer", "already present", trailerName);
 				return null;
@@ -2832,7 +2836,7 @@ export function injectCommitTrailer(command: string, trailerName: string, modelI
 				? `${escapeForSingleQuote(trailerName)}: ${identity}`
 				: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
 			enfLog.info("inject_commit_trailer", "piped", trailerName);
-			return echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
+			return echoPart.slice(0, lastQuoteIdx) + `\n\n${escaped}` + echoPart.slice(lastQuoteIdx) + gitPart;
 		}
 		return null;
 	}
