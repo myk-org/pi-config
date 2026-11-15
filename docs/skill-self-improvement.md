@@ -72,15 +72,19 @@ read or helper execution with no write operator (`/dev/null` sinks like `2>/dev/
   `sha256sum`);
 - `mkdir` for a directory inside this project's own `.pi/skills/` that resolves there (the `SKILL.md` itself is
   still written with `write`/`edit`, where the marker and ownership apply); or
-- running a `.sh`, `.py`, `.mjs`, or `.js` skill helper script directly, via `bash`/`sh`/`node` (never `-c` or
-  `-e`), or via `uv run [--script]`, when no other skill path is referenced.
+- running a `.sh`, `.py`, `.mjs`, or `.js` helper script inside an **unmarked** project skill, a user-global
+  skill (`~/.pi/agent/skills/`, `~/.agents/skills/`), or an installed `node_modules` package skill — directly,
+  via `bash`/`sh`/`node` (never `-c`, `-e`, or `--eval`), or via `uv run [--script]`, when its resolved real path
+  stays inside that `skills/` tree and no other skill path is referenced. Scripts inside `skill-maintenance: auto`
+  marked project skills are refused because those skills are agent-writable.
 
 Quoted prose arguments to non-interpreters (such as `gh issue create --body '…'` with literal single-quoted
 backticks) are not treated as skill paths unless they embed an executable substitution (`$(…)` or unescaped
 backticks outside single quotes). Everything else blocks: `>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
-`perl -i`, `install`, `dd`, `truncate`, `chmod`, `touch`, `patch`, inline `-c`/`-e` scripts, piped/heredoc
-interpreters, a bare `SKILL.md`, a `cd`, `--pre`/`--exec`, a path through a symlink, and any reference the guard
-cannot resolve. The shell is not a second way to write a skill — one write path means one place to be correct.
+`perl -i`, `install`, `dd`, `truncate`, `chmod`, `touch`, `patch`, quoted or unquoted inline `-c`/`-e`/`--eval`/`eval`
+scripts, piped/heredoc interpreters, scripts in marked project skills, a bare `SKILL.md`, a `cd`, `--pre`/`--exec`,
+a path through a symlink, and any reference the guard cannot resolve. The shell is not a second way to write a
+skill — one write path means one place to be correct.
 
 Known limit, stated rather than guessed at: a path built by shell expansion — `t=…; … > "$t"`, `eval`,
 `find -exec` — carries no literal reference, so no text rule can see it. The change still reaches the turn-end

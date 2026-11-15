@@ -377,11 +377,13 @@ progress. It does not commit, push, create a PR, or post results.
   symlinked/dangling paths and unmarked project skills are blocked with a reason (`/adopt-skill <name>` marks one).
   Agents are steered mid-turn when a marked skill they used fails, every allowed `write`/`edit` is recorded in
   `.pi/data/skill-review.jsonl` (append-only), and one line reports the turn's changes — see
-  `docs/skill-self-improvement.md`. The shell reads skills and runs `.sh`/`.py`/`.mjs`/`.js` helper scripts
-  (directly, via `bash`/`sh`/`node` without `-c`/`-e`, or via `uv run [--script]`, unwrapping `rtk`/env prefixes
-  and ignoring `/dev/null` or fd-dup redirects), plus `mkdir` inside the owned tree — never writes skill files:
-  every shell write (`>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`, `perl -i`, inline `-c`/`-e` scripts, …)
-  and unresolved reference blocks (#1103). No model call, no setting: it is not an async agent at all.
+  `docs/skill-self-improvement.md`. The shell reads skills and runs `.sh`/`.py`/`.mjs`/`.js` helper scripts only inside
+  unmarked project skills, `~/.pi/agent/skills/`, and read-only `node_modules` package skills (directly, via `bash`/`sh`/`node`
+  without `-c`/`-e`/`--eval`, or via `uv run [--script]`, unwrapping `rtk`/env prefixes, ignoring `/dev/null` or fd-dup
+  redirects like `2>&1`, and verifying `realpath` stays inside `skills/`), plus `mkdir` inside the owned tree — never writes
+  skill files or runs scripts inside `skill-maintenance: auto` marked project skills: every shell write (`>`, `>>`, `>&`, `tee`,
+  `cp`, `mv`, `rm`, `sed -i`, `perl -i`, quoted/unquoted inline `-c`/`-e`/`--eval`/`eval` scripts, …) and unresolved reference
+  blocks (#1103). No model call, no setting: it is not an async agent at all.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.

@@ -207,6 +207,18 @@ export function readSkillFile(projectCwd: string, name: string): string | null {
   }
 }
 
+/** True when `skillMdPath` exists on disk and carries `skill-maintenance: auto`. */
+function hasAutoMaintenanceMarker(skillMdPath: string): boolean {
+  try {
+    const marked = isMarkedSkill(fs.readFileSync(skillMdPath, "utf-8"));
+    log.debug("skill_marker_file_check", { skillMdPath, marked });
+    return marked;
+  } catch {
+    log.debug("skill_marker_file_absent", { skillMdPath });
+    return false;
+  }
+}
+
 /** True when the named skill exists under the owned root and carries the marker. */
 export function isMarkedSkillNamed(projectCwd: string, name: string): boolean {
   const content = readSkillFile(projectCwd, name);
@@ -451,8 +463,8 @@ export function classifySkillWrite(
   // the owning SKILL.md, never by applying the auxiliary edit to SKILL.md (Qodo #1079).
   const current = skill ? readSkillFile(projectCwd, skill) : null;
   const isSkillFile = file === "SKILL.md";
-  if (!isSkillFile && current !== null) {
-    if (isMarkedSkill(current)) return { allow: true, path: abs, skill, file };
+  if (!isSkillFile) {
+    if (current !== null && isMarkedSkill(current)) return { allow: true, path: abs, skill, file };
     log.warn("skill_write_aux_unmarked", { skill: skill ?? null, file: file ?? null });
     return {
       allow: false,
@@ -461,7 +473,7 @@ export function classifySkillWrite(
       file,
       reason:
         `⛔ "${skill ?? candidate}" is owned by this project but not marked for maintenance, so its files cannot be edited. ` +
-        `Run /adopt-skill ${skill ?? "<name>"}.`,
+        `Create or mark SKILL.md first (/adopt-skill ${skill ?? "<name>"}).`,
     };
   }
 
@@ -779,15 +791,8 @@ const GH_PROSE_FLAGS = new Set(["--body", "-b", "--title", "-t", "--notes", "-n"
 const GIT_PROSE_SUBCOMMANDS = new Set(["commit", "tag", "notes"]);
 const GIT_VALUE_FLAGS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
 
-/**
- * Replace quoted text with spaces in a single left-to-right pass so an apostrophe
- * inside double quotes (`"it's"`) never pairs with a later single quote.
- */
-function maskQuoted(command: string): string {
-  return command.replace(/\$'(?:[^'\\]|\\.)*'|'[^']*'|"(?:[^"\\]|\\.)*"|\\./g, (match) =>
-    match.startsWith("\\") ? match : " ",
-  );
-}
+const SKILL_MENTION_RE = /skills[\\/]|\bSKILL\.md\b/;
+const QUOTED_SPAN_RE = /\$'(?:[^'\\]|\\.)*'|'[^']*'|"(?:[^"\\]|\\.)*"|\\./g;
 
 /**
  * True when `command` embeds an executable command or process substitution:
@@ -795,17 +800,19 @@ function maskQuoted(command: string): string {
  * Single-quoted `'...'` and `$'...'` spans are literal in bash and never execute.
  */
 function hasExecutableSubstitution(command: string): boolean {
-  const tokenRe = /\$'(?:[^'\\]|\\.)*'|'[^']*'|"(?:[^"\\]|\\.)*"|\\./g;
   let cursor = 0;
-  for (const match of command.matchAll(tokenRe)) {
+  let detected = false;
+  for (const match of command.matchAll(QUOTED_SPAN_RE)) {
     const index = match.index ?? 0;
     const gap = command.slice(cursor, index);
-    if (/\$\(|`|[<>]\s*\(/.test(gap)) return true;
+    if (/\$\(|`|[<>]\s*\(/.test(gap)) { detected = true; break; }
     const span = match[0];
-    if (span.startsWith('"') && /\$\(|`/.test(span.slice(1, -1).replace(/\\./g, ""))) return true;
+    if (span.startsWith('"') && /\$\(|`/.test(span.slice(1, -1).replace(/\\./g, ""))) { detected = true; break; }
     cursor = index + span.length;
   }
-  return /\$\(|`|[<>]\s*\(/.test(command.slice(cursor));
+  if (!detected && /\$\(|`|[<>]\s*\(/.test(command.slice(cursor))) detected = true;
+  log.debug("skill_shell_substitution_check", { detected });
+  return detected;
 }
 
 /** Split `command` into pipelines (`&&`, `||`, `;`, `&`, `\n`) and pipe stages (`|`) outside quotes. */
@@ -872,15 +879,63 @@ function splitPipelines(command: string): string[][] {
     i++;
   }
   flushPipeline(command.length);
+  log.debug("skill_shell_pipelines", { count: pipelines.length });
   return pipelines;
 }
 
-/** Expand literal home and `$PWD` prefixes a shell would expand, so they cannot hide a path. */
-function expandShellToken(projectCwd: string, token: string): string {
-  return token
-    .replace(/^~(?=$|\/)/, os.homedir())
-    .replace(/^\$\{?HOME\}?(?=$|\/)/, os.homedir())
-    .replace(/^\$\{?PWD\}?(?=$|\/)/, projectCwd);
+/**
+ * Strip shell quoting (`'...'`, `"..."`, `$'...'`, `\x`) from a shell word or span,
+ * and expand literal `~`, `$HOME`, and `$PWD` prefixes when `projectCwd` is supplied.
+ */
+function unquoteWord(raw: string, projectCwd?: string): string {
+  let i = 0;
+  let value = "";
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (ch === "\\") {
+      value += raw[i + 1] ?? "";
+      i += 2;
+      continue;
+    }
+    if (ch === "$" && raw[i + 1] === "'") {
+      i += 2;
+      while (i < raw.length && raw[i] !== "'") {
+        if (raw[i] === "\\" && i + 1 < raw.length) { value += raw[i + 1]; i += 2; }
+        else value += raw[i++];
+      }
+      if (i < raw.length) i++;
+      continue;
+    }
+    if (ch === "'") {
+      const end = raw.indexOf("'", i + 1);
+      if (end === -1) { value += raw.slice(i + 1); i = raw.length; }
+      else { value += raw.slice(i + 1, end); i = end + 1; }
+      continue;
+    }
+    if (ch === '"') {
+      i++;
+      while (i < raw.length && raw[i] !== '"') {
+        if (raw[i] === "\\" && i + 1 < raw.length && /["\\$`\n]/.test(raw[i + 1])) {
+          value += raw[i + 1];
+          i += 2;
+        } else {
+          value += raw[i++];
+        }
+      }
+      if (i < raw.length) i++;
+      continue;
+    }
+    value += ch;
+    i++;
+  }
+  if (projectCwd !== undefined) {
+    value = value
+      .replace(/^~(?=$|\/)/, os.homedir())
+      .replace(/^\$\{?HOME\}?(?=$|\/)/, os.homedir())
+      .replace(/^\$\{?PWD\}?(?=$|\/)/, projectCwd);
+  }
+  if (value !== raw) log.debug("skill_shell_unquote", { rawLen: raw.length, outLen: value.length });
+  return value;
 }
 
 interface SegmentWord {
@@ -894,62 +949,39 @@ interface ParsedSegment {
   hasWriteRedirect: boolean;
 }
 
-function readShellWord(segment: string, start: number): { value: string; quoted: boolean; next: number } {
-  let i = start;
-  let value = "";
-  let quoted = false;
-  while (i < segment.length) {
-    const ch = segment[i];
-    if (/[\s()<>]/.test(ch)) break;
-    if (ch === "\\") {
-      value += segment[i + 1] ?? "";
-      i += 2;
-      continue;
-    }
-    if (ch === "$" && segment[i + 1] === "'") {
-      quoted = true;
-      i += 2;
-      while (i < segment.length && segment[i] !== "'") {
-        if (segment[i] === "\\" && i + 1 < segment.length) { value += segment[i + 1]; i += 2; }
-        else value += segment[i++];
-      }
-      if (i < segment.length) i++;
-      continue;
-    }
-    if (ch === "'") {
-      quoted = true;
-      const end = segment.indexOf("'", i + 1);
-      if (end === -1) { value += segment.slice(i + 1); i = segment.length; }
-      else { value += segment.slice(i + 1, end); i = end + 1; }
-      continue;
-    }
-    if (ch === '"') {
-      quoted = true;
-      i++;
-      while (i < segment.length && segment[i] !== '"') {
-        if (segment[i] === "\\" && i + 1 < segment.length && /["\\$`\n]/.test(segment[i + 1])) {
-          value += segment[i + 1];
-          i += 2;
-        } else {
-          value += segment[i++];
-        }
-      }
-      if (i < segment.length) i++;
-      continue;
-    }
-    value += ch;
-    i++;
-  }
-  return { value, quoted, next: i };
-}
-
 /**
  * Parse one pipeline stage into shell words and redirections.
  *
  * `/dev/null` sinks (`2>/dev/null`, `>/dev/null`, `&>/dev/null`) and fd duplications
- * (`2>&1`, `>&2`, `2>&-`) open no disk file and do not set `hasWriteRedirect`.
+ * (`2>&1`, `>&2`, `1>&2`, `2>&-`) open no disk file and do not set `hasWriteRedirect`.
  */
 function parseSegment(projectCwd: string, segment: string): ParsedSegment {
+  const scanWordEnd = (start: number): number => {
+    let pos = start;
+    while (pos < segment.length && !/[\s()<>]/.test(segment[pos])) {
+      if (segment[pos] === "\\") { pos += 2; continue; }
+      if (segment[pos] === "$" && segment[pos + 1] === "'") {
+        pos += 2;
+        while (pos < segment.length && segment[pos] !== "'") pos += segment[pos] === "\\" ? 2 : 1;
+        if (pos < segment.length) pos++;
+        continue;
+      }
+      if (segment[pos] === "'") {
+        const end = segment.indexOf("'", pos + 1);
+        pos = end === -1 ? segment.length : end + 1;
+        continue;
+      }
+      if (segment[pos] === '"') {
+        pos++;
+        while (pos < segment.length && segment[pos] !== '"') pos += segment[pos] === "\\" ? 2 : 1;
+        if (pos < segment.length) pos++;
+        continue;
+      }
+      pos++;
+    }
+    return pos;
+  };
+
   const words: SegmentWord[] = [];
   const redirectTargets: string[] = [];
   let hasWriteRedirect = false;
@@ -959,32 +991,40 @@ function parseSegment(projectCwd: string, segment: string): ParsedSegment {
     if (i >= segment.length) break;
 
     const rest = segment.slice(i);
-    const redirMatch = /^(?:&>>?|(?:\d+)?(?:>>?|<>|<&|>&|>\||<<-?|<<<|<))/.exec(rest);
+    // Match complete fd-duplication operators (`2>&1`, `>&2`, `1>&2`, `2>&-`) BEFORE bare `>`.
+    const fdDupMatch = /^(?:\d+)?[<>]&(?:\d+|-)(?=$|[\s()<>])/.exec(rest);
+    if (fdDupMatch) {
+      i += fdDupMatch[0].length;
+      continue;
+    }
+
+    const redirMatch = /^(?:&>>?|(?:\d+)?(?:<&|>&|<>|>\||<<-?|<<<|>>?|<))/.exec(rest);
     if (redirMatch) {
       const op = redirMatch[0];
       i += op.length;
-      if (/^\d*[<>]&$/.test(op)) {
-        const fdDup = /^(?:\d+|-)(?=$|[\s()<>])/.exec(segment.slice(i));
-        if (fdDup) {
-          i += fdDup[0].length;
-          continue;
-        }
-      }
       while (i < segment.length && /[ \t]/.test(segment[i])) i++;
-      const targetWord = readShellWord(segment, i);
-      i = targetWord.next;
-      const target = expandShellToken(projectCwd, targetWord.value);
+      const end = scanWordEnd(i);
+      const target = unquoteWord(segment.slice(i, end), projectCwd);
+      i = end;
       if (op.includes(">") && target !== "/dev/null") hasWriteRedirect = true;
       if (target && target !== "/dev/null") redirectTargets.push(target);
       continue;
     }
 
-    const word = readShellWord(segment, i);
-    i = word.next > i ? word.next : i + 1;
-    if (word.value !== "" || word.quoted) {
-      words.push({ value: expandShellToken(projectCwd, word.value), quoted: word.quoted });
+    const end = scanWordEnd(i);
+    const raw = segment.slice(i, end);
+    i = end > i ? end : i + 1;
+    const quoted = /['"\\]/.test(raw);
+    const value = unquoteWord(raw, projectCwd);
+    if (value !== "" || quoted) {
+      words.push({ value, quoted });
     }
   }
+  log.debug("skill_shell_segment_parsed", {
+    words: words.length,
+    redirects: redirectTargets.length,
+    hasWriteRedirect,
+  });
   return { words, redirectTargets, hasWriteRedirect };
 }
 
@@ -997,10 +1037,11 @@ function commandWordIndex(plainWords: string[]): number {
     if (!candidate || candidate.startsWith("-")) break;
     idx = idx + 1 + next;
   }
+  log.debug("skill_shell_command_word", { idx, verb: plainWords[idx] ?? "" });
   return idx;
 }
 
-/** Drop pure remote/commit prose flag values (`gh issue|pr --body`, `git commit -m`) before path lookup. */
+/** Drop pure remote/commit prose flag values (`gh issue|pr --body`, `git commit -m`) before lookup. */
 function pathCandidateTokens(parsed: ParsedSegment, cmdIdx: number): string[] {
   const { words, redirectTargets } = parsed;
   const cmd = words[cmdIdx]?.value ?? "";
@@ -1018,6 +1059,7 @@ function pathCandidateTokens(parsed: ParsedSegment, cmdIdx: number): string[] {
         if (/^--(?:body|title|notes)=/.test(val)) continue;
         out.push(val);
       }
+      log.debug("skill_shell_candidates_gh_prose", { sub, count: out.length + redirectTargets.length });
       return [...out, ...redirectTargets];
     }
   } else if (cmd === "git") {
@@ -1033,40 +1075,66 @@ function pathCandidateTokens(parsed: ParsedSegment, cmdIdx: number): string[] {
         if (val.startsWith("-m") || val.startsWith("--message=")) continue;
         out.push(val);
       }
+      log.debug("skill_shell_candidates_git_prose", { sub, count: out.length + redirectTargets.length });
       return [...out, ...redirectTargets];
     }
   }
-  return [...words.map((w) => w.value), ...redirectTargets];
+  const all = [...words.map((w) => w.value), ...redirectTargets];
+  log.debug("skill_shell_candidates", { cmd, count: all.length });
+  return all;
 }
 
-/** True when any unquoted token in `words` runs inline code, a shell, or a stream editor. */
-function segmentRunsInlineCode(words: SegmentWord[], cmdIdx: number): boolean {
-  for (let i = cmdIdx; i < words.length; i++) {
-    if (words[i].quoted) continue;
-    const tok = words[i].value;
-    const base = path.basename(tok);
-    if (INLINE_CODE_RUNNERS.test(base)) return true;
-    if (tok === "-c" || tok === "-e" || tok === "--eval" || tok === "--command") return true;
+/**
+ * True when any unquoted-value command/flag token (even if originally shell-quoted,
+ * e.g. `"bash" "-c" ...`, `'python3' '-c' ...`, `"node" "-e" ...`) runs inline code,
+ * a shell, or a stream editor.
+ */
+function segmentRunsInlineCode(parsed: ParsedSegment, cmdIdx: number): boolean {
+  const verb = parsed.words[cmdIdx]?.value ?? "";
+  if (READ_ONLY_VERBS.has(verb)) {
+    log.debug("skill_shell_inline_readonly", { verb });
+    return false;
   }
+  const candidates = pathCandidateTokens({ words: parsed.words, redirectTargets: [], hasWriteRedirect: false }, cmdIdx);
+  for (let i = cmdIdx; i < candidates.length; i++) {
+    const tok = candidates[i];
+    const base = path.basename(tok);
+    if (
+      INLINE_CODE_RUNNERS.test(base) ||
+      tok === "-c" ||
+      tok === "-e" ||
+      tok === "--eval" ||
+      tok === "--command" ||
+      tok.startsWith("--eval=") ||
+      tok.startsWith("--command=") ||
+      /^-[A-Za-z]*[ce]$/.test(tok)
+    ) {
+      log.debug("skill_shell_inline_runner", { verb, token: tok });
+      return true;
+    }
+  }
+  log.debug("skill_shell_inline_none", { verb });
   return false;
 }
 
-/** Lexically inside a skills directory we know, even when it does not resolve there. */
-function lexicallyUnderSkillsRoot(projectCwd: string, abs: string): boolean {
+/** Lexically inside known skills directories (or only this project's own `.pi/skills` when `ownedOnly`). */
+function lexicallyUnderSkillsRoot(projectCwd: string, abs: string, ownedOnly = false): boolean {
   const realMain = realpathNearestExisting(resolveMainCheckoutRoot(projectCwd)) ?? path.resolve(projectCwd);
+  const ownedLexical = path.join(realMain, ".pi", "skills");
   const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
-  const roots = [
-    path.join(realMain, ".pi", "skills"),
-    path.join(realMain, ".agents", "skills"),
-    path.join(realCwd, ".pi", "skills"),
-    path.join(realCwd, ".agents", "skills"),
-    path.join(os.homedir(), ".pi", "agent", "skills"),
-    path.join(os.homedir(), ".agents", "skills"),
-  ];
-  return roots.some((root) => {
-    const rel = path.relative(root, abs);
-    return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
-  });
+  const roots = ownedOnly
+    ? [ownedLexical]
+    : [
+        ownedLexical,
+        path.join(realMain, ".agents", "skills"),
+        path.join(realCwd, ".pi", "skills"),
+        path.join(realCwd, ".agents", "skills"),
+        path.join(os.homedir(), ".pi", "agent", "skills"),
+        path.join(os.homedir(), ".agents", "skills"),
+      ];
+  const hit = roots.some((root) => isUnder(root, abs));
+  log.debug("skill_lexical_root_check", { abs, ownedOnly, hit });
+  return hit;
 }
 
 export interface ShellSkillReference {
@@ -1087,7 +1155,7 @@ function collectSegmentSkillReferences(projectCwd: string, parsed: ParsedSegment
     // a bare filename value (`--glob=SKILL.md`) is a pattern, not a target.
     const candidates =
       eq > 0 && /^(?:--?[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_]*)$/.test(token.slice(0, eq))
-        ? [token, expandShellToken(projectCwd, token.slice(eq + 1))]
+        ? [token, unquoteWord(token.slice(eq + 1), projectCwd)]
         : [token];
     const hit = candidates.find((candidate) => {
       const abs = path.resolve(projectCwd, candidate);
@@ -1120,79 +1188,124 @@ export function shellSkillReferences(projectCwd: string, command: string): Shell
       refs.push(...collectSegmentSkillReferences(projectCwd, parsed, cmdIdx));
     }
   }
+  log.debug("skill_shell_references_collected", { count: refs.length });
   return refs;
 }
 
 /** True when `scriptAbs` sits at `<skills-root>/<skill>/<script>` without escaping via symlink. */
 function isValidSkillScriptTarget(projectCwd: string, scriptAbs: string): boolean {
-  if (path.basename(scriptAbs).toUpperCase() === "SKILL.MD") return false;
+  if (path.basename(scriptAbs).toUpperCase() === "SKILL.MD") {
+    log.debug("skill_script_target_is_skill_md", { scriptAbs });
+    return false;
+  }
   try {
-    if (fs.lstatSync(scriptAbs).isSymbolicLink()) return false;
+    if (fs.lstatSync(scriptAbs).isSymbolicLink()) {
+      log.debug("skill_script_target_leaf_symlink", { scriptAbs });
+      return false;
+    }
   } catch {
     // non-existent path: checked structurally below
   }
   const realAbs = realpathNearestExisting(scriptAbs) ?? scriptAbs;
   const area = skillAreaOf(projectCwd, scriptAbs);
+  let valid = false;
   if (area === "owned") {
     const root = ownedSkillsRoot(projectCwd);
-    return root !== null && path.relative(root, realAbs).split(path.sep).length >= 2;
-  }
-  if (area === "user-global") {
+    valid =
+      root !== null &&
+      isUnder(root, realAbs) &&
+      !hasSymlinkComponent(root, scriptAbs) &&
+      path.relative(root, realAbs).split(path.sep).length >= 2;
+  } else if (area === "user-global") {
     const home = os.homedir();
-    return [path.join(home, ".pi", "agent", "skills"), path.join(home, ".agents", "skills")].some((root) => {
+    valid = [path.join(home, ".pi", "agent", "skills"), path.join(home, ".agents", "skills")].some((root) => {
       const resolvedRoot = realpathNearestExisting(root) ?? root;
-      return isUnder(resolvedRoot, realAbs) && path.relative(resolvedRoot, realAbs).split(path.sep).length >= 2;
+      return (
+        isUnder(resolvedRoot, realAbs) &&
+        !hasSymlinkComponent(resolvedRoot, realAbs) &&
+        path.relative(resolvedRoot, realAbs).split(path.sep).length >= 2
+      );
     });
-  }
-  if (area === "project-agents") {
+  } else if (area === "project-agents") {
     const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
-    const root = realpathNearestExisting(path.join(realCwd, ".agents", "skills")) ?? path.join(realCwd, ".agents", "skills");
-    return isUnder(root, realAbs) && path.relative(root, realAbs).split(path.sep).length >= 2;
-  }
-  if (area === "package") {
+    const root =
+      realpathNearestExisting(path.join(realCwd, ".agents", "skills")) ?? path.join(realCwd, ".agents", "skills");
+    valid =
+      isUnder(root, realAbs) &&
+      !hasSymlinkComponent(root, realAbs) &&
+      path.relative(root, realAbs).split(path.sep).length >= 2;
+  } else if (area === "package") {
     const segs = scriptAbs.split(path.sep);
-    const nm = segs.indexOf("node_modules");
+    const nm = segs.lastIndexOf("node_modules");
     const skillsIdx = nm >= 0 ? segs.indexOf("skills", nm) : -1;
-    return skillsIdx > nm && segs.length - skillsIdx - 1 >= 2;
+    if (skillsIdx > nm && segs.length - skillsIdx - 1 >= 2) {
+      const pkgRoot = segs.slice(0, skillsIdx).join(path.sep) || path.sep;
+      const pkgSkillsRoot = segs.slice(0, skillsIdx + 1).join(path.sep) || path.sep;
+      let skillsDirIsSymlink = false;
+      try {
+        skillsDirIsSymlink = fs.lstatSync(pkgSkillsRoot).isSymbolicLink();
+      } catch {
+        // non-existent package skills root in synthetic path checks
+      }
+      const resolvedPkgRoot = realpathNearestExisting(pkgRoot) ?? pkgRoot;
+      const resolvedSkillsRoot = realpathNearestExisting(pkgSkillsRoot) ?? pkgSkillsRoot;
+      let realStayInside = true;
+      try {
+        realStayInside = isUnder(fs.realpathSync(pkgSkillsRoot), fs.realpathSync(scriptAbs));
+      } catch {
+        // non-existent target: covered by realpathNearestExisting + hasSymlinkComponent below
+      }
+      valid =
+        !skillsDirIsSymlink &&
+        isUnder(resolvedPkgRoot, resolvedSkillsRoot) &&
+        !hasSymlinkComponent(pkgSkillsRoot, scriptAbs) &&
+        !hasSymlinkComponent(resolvedSkillsRoot, realAbs) &&
+        isUnder(resolvedSkillsRoot, realAbs) &&
+        realStayInside &&
+        path.relative(resolvedSkillsRoot, realAbs).split(path.sep).length >= 2;
+    }
+  } else {
+    // Linked git worktree: `.pi/skills/<skill>/<script>` resolved relative to worktree cwd without symlinks.
+    const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
+    const wtRoot = path.join(realCwd, ".pi", "skills");
+    valid =
+      isUnder(wtRoot, realAbs) &&
+      !hasSymlinkComponent(wtRoot, realAbs) &&
+      path.relative(wtRoot, realAbs).split(path.sep).length >= 2;
   }
-  // Linked git worktree: `.pi/skills/<skill>/<script>` resolved relative to worktree cwd without symlinks.
-  const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
-  const wtRoot = path.join(realCwd, ".pi", "skills");
-  return (
-    isUnder(wtRoot, realAbs) &&
-    !hasSymlinkComponent(wtRoot, realAbs) &&
-    path.relative(wtRoot, realAbs).split(path.sep).length >= 2
-  );
+  log.debug("skill_script_target_check", { scriptAbs, area, valid });
+  return valid;
 }
 
 /**
- * True when the segment executes a skill helper script (`.sh`, `.py`, `.mjs`, `.js`)
- * directly, via `bash`/`sh` (no `-c`), via `uv run [--script]`, or via `node` (no `-e`),
- * and references no other skill path.
+ * Evaluate whether the segment executes an allowed read-only/unmarked skill helper script
+ * (`.sh`, `.py`, `.mjs`, `.js`) directly, via `bash`/`sh` (no `-c`), via `uv run [--script]`,
+ * or via `node` (no `-e`), and references no other skill path.
+ *
+ * Refuses scripts inside `skill-maintenance: auto` marked project skills: those skills are
+ * agent-writable, so running a script there would let an agent modify protected skills.
  */
 function isAllowedSkillScriptExec(
   projectCwd: string,
   plainWords: string[],
   cmdIdx: number,
   segmentRefs: readonly ShellSkillReference[],
-): boolean {
+): { allow: boolean; reason?: string } {
   const args = plainWords.slice(cmdIdx);
-  if (args.length === 0 || segmentRefs.length === 0) return false;
+  if (args.length === 0 || segmentRefs.length === 0) return { allow: false };
 
-  let scriptToken: string | undefined;
+  let scriptIdx = -1;
   let extRe: RegExp | undefined;
   const head = args[0];
 
   if (head.includes("/")) {
-    scriptToken = head;
+    scriptIdx = 0;
     extRe = /\.(?:sh|py|mjs|js)$/i;
   } else if (head === "bash" || head === "sh" || /^(?:\/usr)?\/bin\/(?:ba)?sh$/.test(head)) {
-    const idx = args[1] === "--" ? 2 : 1;
-    scriptToken = args[idx];
+    scriptIdx = args[1] === "--" ? 2 : 1;
     extRe = /\.sh$/i;
   } else if (head === "node") {
-    const idx = args[1] === "--" ? 2 : 1;
-    scriptToken = args[idx];
+    scriptIdx = args[1] === "--" ? 2 : 1;
     extRe = /\.(?:mjs|js)$/i;
   } else if (head === "uv" && args[1] === "run") {
     let k = 2;
@@ -1202,37 +1315,73 @@ function isAllowedSkillScriptExec(
       if (SAFE_UV_FLAGS.has(flag)) { k++; continue; }
       if (SAFE_UV_VALUE_FLAGS.has(flag)) { k += 2; continue; }
       if (/^--(?:with|python)=/.test(flag)) { k++; continue; }
-      return false;
+      log.debug("skill_shell_uv_unsafe_flag", { flag });
+      return { allow: false };
     }
     if (args[k] === "python" || args[k] === "python3") {
       k++;
       if (args[k] === "--") k++;
     }
-    scriptToken = args[k];
+    scriptIdx = k;
     extRe = /\.py$/i;
   }
 
-  if (!scriptToken || !extRe || !extRe.test(scriptToken)) return false;
+  const scriptToken = scriptIdx >= 0 ? args[scriptIdx] : undefined;
+  if (!scriptToken || !extRe || !extRe.test(scriptToken)) {
+    log.debug("skill_shell_script_not_matched", { head, scriptToken: scriptToken ?? null });
+    return { allow: false };
+  }
   const scriptAbs = path.resolve(projectCwd, scriptToken);
-  if (!isValidSkillScriptTarget(projectCwd, scriptAbs)) return false;
-  if (!segmentRefs.every((ref) => ref.abs === scriptAbs)) return false;
+  if (!isValidSkillScriptTarget(projectCwd, scriptAbs)) return { allow: false };
+  if (!segmentRefs.every((ref) => ref.abs === scriptAbs)) {
+    log.debug("skill_shell_script_extra_ref", { script: scriptAbs });
+    return { allow: false };
+  }
+  if (args.some((arg, idx) => idx !== scriptIdx && SKILL_MENTION_RE.test(arg))) {
+    log.debug("skill_shell_script_arg_mentions_skill", { script: scriptAbs });
+    return { allow: false };
+  }
+
+  const realAbs = realpathNearestExisting(scriptAbs) ?? scriptAbs;
+  const area = skillAreaOf(projectCwd, scriptAbs);
+  if (area === "owned" || area === null) {
+    const ownedRoot = ownedSkillsRoot(projectCwd);
+    const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
+    const wtRoot = path.join(realCwd, ".pi", "skills");
+    const activeRoot = area === "owned" ? ownedRoot : wtRoot;
+    const skill = activeRoot ? path.relative(activeRoot, realAbs).split(path.sep)[0] : "";
+    const skillMdCandidates = [
+      ...(activeRoot && skill ? [path.join(activeRoot, skill, "SKILL.md")] : []),
+      ...(ownedRoot && skill && ownedRoot !== activeRoot ? [path.join(ownedRoot, skill, "SKILL.md")] : []),
+    ];
+    if (skillMdCandidates.some((md) => hasAutoMaintenanceMarker(md)) || hasAutoMaintenanceMarker(scriptAbs)) {
+      log.warn("skill_shell_marked_script_refused", { skill, script: scriptAbs });
+      return {
+        allow: false,
+        reason:
+          `helper scripts inside marked project skill "${skill || scriptToken}" (${MARKER_LINE}) ` +
+          `are agent-writable and cannot be executed via bash.`,
+      };
+    }
+  }
 
   log.debug("skill_shell_script_allowed", { head, script: scriptAbs });
-  return true;
+  return { allow: true };
 }
 
 export type ShellVerdict = { block: true; reason: string };
 
 /**
- * Shell guard (Qodo #1079, #1103): the shell reads skills and runs their helper scripts,
+ * Shell guard (Qodo #1079, #1103): the shell reads skills and runs trusted helper scripts,
  * never writes them.
  *
  * A command that names a skills area passes only when EVERY segment is:
  * - an allowlisted read verb (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `ls`, `stat`,
  *   `wc`, `diff`, `md5sum`, `sha256sum`) with no write operator;
  * - `mkdir` inside this project's own skills tree; or
- * - executing a `.sh`/`.py`/`.mjs`/`.js` skill helper script with no write operator
- *   (`/dev/null` sinks and fd duplications like `2>&1` are permitted).
+ * - executing a `.sh`/`.py`/`.mjs`/`.js` helper script of an UNMARKED project skill,
+ *   user-global skill, or installed package skill, with no write operator (`/dev/null`
+ *   sinks and fd duplications like `2>&1` are permitted).
  *
  * No shell write is allowed at all (`>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
  * `perl -i`, `chmod`, `touch`, `patch`, inline `python -c` / `node -e` / `bash -c`, etc.).
@@ -1245,22 +1394,25 @@ export type ShellVerdict = { block: true; reason: string };
 export function bashSkillVerdict(projectCwd: string, command: string): ShellVerdict | null {
   if (typeof command !== "string" || command.trim() === "") return null;
   const refs = shellSkillReferences(projectCwd, command);
-  const rawMentionsSkill = /skills[\\/]|\bSKILL\.md\b/.test(command);
+  const rawMentionsSkill = SKILL_MENTION_RE.test(command) || SKILL_MENTION_RE.test(unquoteWord(command));
   if (refs.length === 0 && !rawMentionsSkill) return null;
 
+  const maskQuoted = (text: string): string =>
+    text.replace(QUOTED_SPAN_RE, (match) => (match.startsWith("\\") ? match : " "));
   const block = (reason: string): ShellVerdict => {
     log.warn("skill_shell_blocked", { reason, command: command.slice(0, 200) });
     return { block: true, reason: `⛔ ${reason}` };
   };
   const hint =
-    `The shell reads skills (and runs helper scripts) but never writes them. Read one with cat/rg/ls; ` +
+    `The shell reads skills (and runs unmarked/read-only helper scripts) but never writes them. Read one with cat/rg/ls; ` +
     `edit a marked skill in ${path.join(projectCwd, ".pi", "skills")}/ with the write/edit tools ` +
     `(run /adopt-skill <name> first if it is not marked yet).`;
 
   if (refs.some((ref) => ref.bare)) {
     return block(`a bare SKILL.md means whatever the working directory is. ${hint}`);
   }
-  if (/(?:^|[\s;&|()])cd\s/.test(maskQuoted(command))) {
+  const maskedCommand = maskQuoted(command);
+  if (/(?:^|[\s;&|()])cd\s/.test(maskedCommand)) {
     return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
   }
   // Nested commands run before the outer one: `cat skill $(python3 -c …)`, `<(...)`, `>(...)`.
@@ -1268,27 +1420,41 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
     return block(`this command embeds a nested command (substitution or process substitution). ${hint}`);
   }
   // Options that execute a program for each file turn a "read" into a write.
-  if (/\s(?:--pre|--pre-glob|--exec|-exec)\b/.test(maskQuoted(command))) {
+  if (/\s(?:--pre|--pre-glob|--exec|-exec)\b/.test(maskedCommand)) {
     return block(`this command's options execute another program. ${hint}`);
   }
 
-  const hasHeredoc = /<</.test(maskQuoted(command));
+  const hasHeredoc = /<</.test(maskedCommand);
   const pipelines = splitPipelines(command);
   let totalSegments = 0;
   for (const stages of pipelines) {
+    const parsedStages = stages.map((segment) => ({ segment, parsed: parseSegment(projectCwd, segment) }));
     const pipelineMentionsSkill =
-      (hasHeredoc && rawMentionsSkill) || stages.some((stage) => /skills[\\/]|\bSKILL\.md\b/.test(stage));
-    for (const segment of stages) {
+      (hasHeredoc && rawMentionsSkill) ||
+      parsedStages.some(
+        ({ segment, parsed }) =>
+          SKILL_MENTION_RE.test(segment) ||
+          parsed.words.some((w) => SKILL_MENTION_RE.test(w.value)) ||
+          parsed.redirectTargets.some((t) => SKILL_MENTION_RE.test(t)),
+      );
+    for (const { segment, parsed } of parsedStages) {
       totalSegments++;
       const masked = maskQuoted(segment);
-      const parsed = parseSegment(projectCwd, segment);
       const plainWords = parsed.words.map((w) => w.value);
       const cmdIdx = commandWordIndex(plainWords);
       const verb = plainWords[cmdIdx] ?? "";
+      if (verb === "cd") {
+        return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
+      }
+      if (plainWords.slice(cmdIdx + 1).some((w) => /^(?:--pre(?:=|$)|--pre-glob(?:=|$)|--?exec$)/.test(w))) {
+        return block(`this command's options execute another program. ${hint}`);
+      }
       const segmentRefs = collectSegmentSkillReferences(projectCwd, parsed, cmdIdx);
-      const unquotedMentionsSkill = /skills[\\/]|\bSKILL\.md\b/.test(masked);
-      const inlineRunnerMentionsSkill = pipelineMentionsSkill && segmentRunsInlineCode(parsed.words, cmdIdx);
-      const namesSkill = segmentRefs.length > 0 || unquotedMentionsSkill || inlineRunnerMentionsSkill;
+      const unquotedMentionsSkill = SKILL_MENTION_RE.test(masked);
+      const runsInlineCode = segmentRunsInlineCode(parsed, cmdIdx);
+      const inlineBodyMentionsSkill =
+        runsInlineCode && (pipelineMentionsSkill || plainWords.some((w) => SKILL_MENTION_RE.test(w)));
+      const namesSkill = segmentRefs.length > 0 || unquotedMentionsSkill || inlineBodyMentionsSkill;
       if (!namesSkill) continue;
 
       if (parsed.hasWriteRedirect || BASH_WRITE_VERBS.test(masked)) {
@@ -1303,24 +1469,22 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
           operands.length > 0 &&
           operands.every((operand) => segmentRefs.some((ref) => ref.abs === path.resolve(projectCwd, operand)));
         const allOwned = segmentRefs.every(
-          (ref) => allOwnedLexical(projectCwd, ref.abs) && isOwnedSkillPath(projectCwd, ref.abs),
+          (ref) => lexicallyUnderSkillsRoot(projectCwd, ref.abs, true) && isOwnedSkillPath(projectCwd, ref.abs),
         );
         if (allOperandsAreSkills && allOwned) continue;
         return block(`mkdir here would create a directory outside this project's own skills tree. ${hint}`);
       }
-      if (isAllowedSkillScriptExec(projectCwd, plainWords, cmdIdx, segmentRefs)) continue;
+      const scriptExec = isAllowedSkillScriptExec(projectCwd, plainWords, cmdIdx, segmentRefs);
+      if (scriptExec.allow) continue;
+      if (scriptExec.reason) return block(`${scriptExec.reason} ${hint}`);
+      if (inlineBodyMentionsSkill) {
+        return block(`this shell command runs inline code ("${verb || "?"}") that names a skill. ${hint}`);
+      }
       return block(`this shell command ("${verb || "?"}") touches a skill path and is not a known read. ${hint}`);
     }
   }
   log.debug("skill_shell_read_allowed", { segments: totalSegments });
   return null;
-}
-
-/** True when `abs` sits lexically inside this project's own `.pi/skills/`. */
-function allOwnedLexical(projectCwd: string, abs: string): boolean {
-  const lexicalRoot = path.join(realpathNearestExisting(resolveMainCheckoutRoot(projectCwd)) ?? path.resolve(projectCwd), ".pi", "skills");
-  const rel = path.relative(lexicalRoot, abs);
-  return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 
 export function registerSkillMaintenance(pi: ExtensionAPI): void {

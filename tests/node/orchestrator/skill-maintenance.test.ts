@@ -624,6 +624,115 @@ describe("skill helper script execution (#1103)", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/install-tools/SKILL.md"), null);
   });
+
+  it("blocks quoted bash -c writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, '"bash" "-c" "echo hi > .pi/skills/foo/SKILL.md"')?.block, true);
+  });
+
+  it("blocks quoted python3 -c writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, `'python3' '-c' 'open(".pi/skills/foo/SKILL.md", "w")'`)?.block, true);
+  });
+
+  it("blocks quoted node -e writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, `"node" "-e" "fs.writeFileSync('.pi/skills/foo/SKILL.md', 'x')"`)?.block,
+      true,
+    );
+  });
+
+  it("blocks node --eval writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, `node --eval "fs.writeFileSync('.pi/skills/foo/SKILL.md', 'x')"`)?.block,
+      true,
+    );
+  });
+
+  it("blocks eval writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, 'eval "echo hi > .pi/skills/foo/SKILL.md"')?.block, true);
+  });
+
+  it("blocks executing a helper script inside a marked project skill", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const helper = path.join(root, "marked", "helper.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    const verdict = bashSkillVerdict(cwd, `bash ${helper}`);
+    assert.equal(verdict?.block, true);
+    assert.match(verdict?.reason ?? "", /skill-maintenance: auto/);
+  });
+
+  it("allows executing a helper script inside an unmarked project skill", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    const helper = path.join(root, "verify-all", "run-suites.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, `bash ${helper}`), null);
+  });
+
+  it("allows reading a skill file with 2>&1 descriptor forwarding", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md 2>&1"), null);
+  });
+
+  it("allows reading a skill file with >&2 descriptor forwarding", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md >&2"), null);
+  });
+
+  it("allows reading a skill file with 2>&- descriptor close", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md 2>&-"), null);
+  });
+
+  it("blocks executing a packaged skill script through a symlinked skill directory", () => {
+    const { cwd } = project();
+    const outside = tempDir("skill-maint-pkg-out-");
+    fs.writeFileSync(path.join(outside, "run.sh"), "#!/bin/sh\n");
+    const pkgSkills = path.join(cwd, "node_modules", "pkg", "skills");
+    fs.mkdirSync(pkgSkills, { recursive: true });
+    fs.symlinkSync(outside, path.join(pkgSkills, "linked"));
+    assert.equal(bashSkillVerdict(cwd, "bash node_modules/pkg/skills/linked/run.sh")?.block, true);
+  });
+
+  it("allows executing a real packaged skill script on disk", () => {
+    const { cwd } = project();
+    const pkgSkill = path.join(cwd, "node_modules", "pkg", "skills", "demo");
+    fs.mkdirSync(pkgSkill, { recursive: true });
+    fs.writeFileSync(path.join(pkgSkill, "run.sh"), "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, "bash node_modules/pkg/skills/demo/run.sh"), null);
+  });
+
+  it("records debug traces for shell parser helpers", async () => {
+    const home = tempDir("skill-maint-shell-log-");
+    const { cwd } = project();
+    const originalHome = process.env.HOME;
+    const originalLevel = process.env.PI_LOG_SKILL_MAINTENANCE;
+    process.env.HOME = home;
+    process.env.PI_LOG_SKILL_MAINTENANCE = "debug";
+    try {
+      const { clearLogLevelCache, getPiLogPath, setGlobalSessionId } = await import(
+        "../../../extensions/shared/file-logger.js"
+      );
+      clearLogLevelCache();
+      setGlobalSessionId("skill-maint-shell-log-test");
+      assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md 2>&1"), null);
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      assert.match(fs.readFileSync(logPath, "utf-8"), /skill_shell_segment_parsed/);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalLevel === undefined) delete process.env.PI_LOG_SKILL_MAINTENANCE;
+      else process.env.PI_LOG_SKILL_MAINTENANCE = originalLevel;
+      const { clearLogLevelCache } = await import("../../../extensions/shared/file-logger.js");
+      clearLogLevelCache();
+    }
+  });
 });
 
 describe("/adopt-skill", () => {
