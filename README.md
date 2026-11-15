@@ -4,6 +4,21 @@ A [pi package](https://github.com/badlogic/pi-mono) that implements an **orchest
 
 📚 **[Full Documentation](https://myk-org.github.io/pi-config/)**
 
+## Deploy reload confirmation
+
+Deploy requests use `.pi/run/reload.flag` and confirm the captured pending nonce in `reload.done`.
+Writers must publish a complete nonce by same-directory temporary-file atomic rename.
+Retained claims retry automatically without replacing newer requests.
+See [reload handshake](docs/configuration.md#reload-handshake) for the publication contract.
+The interactive owner waits for idle and retries failed reload commands with exponential backoff (`1s` to `30s`, reset on a new flag nonce). Live foreign
+owners and their queued flags are protected regardless of age. Oneshot and RPC children
+leave the handshake untouched. Manual `/reload` leaves an unproven flag for one extra
+reload rather than confirming code it may not have loaded.
+
+Legacy `.pi/tmp` requests remain supported independently. Consumption claims one concrete
+flag by rename and leaves replacements alone. In-place or shell-redirection writers are
+unsupported: an open file descriptor can mutate a claimed inode after consumption.
+
 ## What's Included
 
 ### Extension: `orchestrator`
@@ -1099,6 +1114,13 @@ Control your pi sessions from your phone via Discord DMs.
 Agent questions arrive with **Approve/Deny** buttons or a dropdown; you can also
 reply `yes`/`no`, an option number, or the option text. In a server, watching a
 session opens a **thread** for it (DMs are used as a fallback).
+Channel and thread identity are resolved before newest-active fallback (excluding
+sessions claimed by other Discord users). Explicit threads and channels whose target
+session died never fall back. Menu prompts and ordinary active-fallback prompts
+establish reply subscriptions without changing the watch; private subscriptions
+survive restarts. `/file` returns a private interaction attachment. Guild answers and
+`/cancel` never cross into an active-fallback session and refuse ambiguous channel
+questions; DMs dismiss the newest question.
 
 The bot fails closed: without `DISCORD_ALLOWED_USERS` it refuses to start unless
 you set `DISCORD_ALLOW_ALL=true`. Commands, reaction shortcuts (⏹ 🔁 🗑), the

@@ -141,6 +141,8 @@ const LEVEL_ORDER: Record<string, number> = Object.assign(Object.create(null), {
 /** Match settings mtime throttle — burst register calls must not re-stat. */
 const MIN_LEVEL_CACHE_MS = 30_000;
 const minLevelCache = new Map<string, { level: number; at: number }>();
+/** Level pinned by a test (see setLogLevelPin) — decided before settings and environment. */
+const levelPins = new Map<string, number>();
 
 function resolveMinLevel(name: string): number {
   const settingKey = `log_${name.replace(/-/g, "_")}`;
@@ -162,6 +164,8 @@ function resolveMinLevel(name: string): number {
 }
 
 function getMinLevel(name: string): number {
+  const pinned = levelPins.get(name);
+  if (pinned !== undefined) return pinned;
   const now = Date.now();
   const hit = minLevelCache.get(name);
   if (hit && now - hit.at < MIN_LEVEL_CACHE_MS) return hit.level;
@@ -173,6 +177,16 @@ function getMinLevel(name: string): number {
 /** Drop cached min levels (tests). No fileLog here — this is the log filter. */
 export function clearLogLevelCache(): void {
   minLevelCache.clear();
+}
+
+/**
+ * Pin a logger's level for tests, `null` to release it (tests).
+ * Wins over the `log_<name>` setting and `PI_LOG_<NAME>`, so a test asserting on log lines does not
+ * depend on the machine's settings or environment.
+ */
+export function setLogLevelPin(name: string, level: FileLogLevel | null): void {
+  if (level === null) levelPins.delete(name);
+  else levelPins.set(name, LEVEL_ORDER[level]);
 }
 
 /**
