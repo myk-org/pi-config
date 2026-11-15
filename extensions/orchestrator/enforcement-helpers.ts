@@ -2810,35 +2810,146 @@ export function messageFileTrailerState(
 	}
 }
 
+/** Harmless fd/null redirections allowed after the closing quote of a piped message producer. */
+const HARMLESS_PRODUCER_REDIRECT_RE =
+	/^(?:(?:\s+[12]|\s*&?)>>?\s*\/dev\/null(?=\s|$|[>&])|(?:\s+[12]|\s*)>&[12](?=\s|$|[>&]))*\s*$/;
+
+interface PipedCommitSpan {
+	stmtStart: number;
+	firstPipeIdx: number;
+	lastPipeIdx: number;
+	lastQuoteIdx: number;
+}
+
+/** Locate the message-producer segment of a `… | git commit … -F -` pipeline,
+ *  honoring quotes, substitutions, comments, and statement boundaries. */
+function findPipedCommitSpan(command: string): PipedCommitSpan | null {
+	let stmtStart = 0;
+	let firstPipeIdx = -1;
+	let lastPipeIdx = -1;
+	let lastQuoteIdx = -1;
+
+	const finishStatement = (stmtEnd: number): PipedCommitSpan | null => {
+		if (firstPipeIdx !== -1) {
+			const finalSegment = command.slice(lastPipeIdx, stmtEnd).replace(/\\\r?\n/g, " ");
+			if (/git\s+commit\s+.*-F\s*-(?=\s|$|[><])/.test(finalSegment) && !/<</.test(finalSegment)) {
+				return { stmtStart, firstPipeIdx, lastPipeIdx, lastQuoteIdx };
+			}
+		}
+		stmtStart = stmtEnd;
+		firstPipeIdx = -1;
+		lastPipeIdx = -1;
+		lastQuoteIdx = -1;
+		return null;
+	};
+
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i]!;
+		if (ch === "#" && (i === 0 || /[\s(;&|]/.test(command[i - 1]!))) {
+			while (i < command.length && command[i] !== "\n") i++;
+			i--;
+			continue;
+		}
+		if (ch === "\\" && i + 1 < command.length) {
+			i++;
+			continue;
+		}
+		if (ch === "'" || ch === '"') {
+			const close = matchingQuoteIndex(command, i);
+			if (close === null) return null;
+			if (firstPipeIdx === -1 && !/[<>]\s*$/.test(command.slice(stmtStart, i))) {
+				lastQuoteIdx = close;
+			}
+			i = close;
+			continue;
+		}
+		if (ch === "`") {
+			i++;
+			while (i < command.length && command[i] !== "`") {
+				if (command[i] === "\\" && i + 1 < command.length) i++;
+				i++;
+			}
+			if (i >= command.length) return null;
+			continue;
+		}
+		if (ch === "(" && i > 0 && (command[i - 1] === "$" || command[i - 1] === "<" || command[i - 1] === ">")) {
+			let depth = 1;
+			i++;
+			while (i < command.length && depth > 0) {
+				const d = command[i]!;
+				if (d === "\\" && i + 1 < command.length) { i += 2; continue; }
+				if (d === "'" || d === '"') {
+					const close = matchingQuoteIndex(command, i);
+					if (close === null) return null;
+					i = close + 1;
+					continue;
+				}
+				if (d === "(") depth++;
+				else if (d === ")") depth--;
+				i++;
+			}
+			if (depth > 0) return null;
+			i--;
+			continue;
+		}
+		const two = command.slice(i, i + 2);
+		if (two === "&&" || two === "||") {
+			const hit = finishStatement(i);
+			if (hit) return hit;
+			i++;
+			stmtStart = i + 1;
+			continue;
+		}
+		if (ch === ";" || ch === "\n" || ch === "(" || ch === ")") {
+			const hit = finishStatement(i);
+			if (hit) return hit;
+			stmtStart = i + 1;
+			continue;
+		}
+		if (ch === "&") {
+			if (command[i - 1] === ">" || command[i + 1] === ">" || command[i - 1] === "|") continue;
+			const hit = finishStatement(i);
+			if (hit) return hit;
+			stmtStart = i + 1;
+			continue;
+		}
+		if (ch === "|") {
+			if (firstPipeIdx === -1) firstPipeIdx = i;
+			lastPipeIdx = i;
+		}
+	}
+	return finishStatement(command.length);
+}
+
 /** Append `<Trailer>: PI (<model>)` to the message of a real commit invocation.
  *  Covers the two shapes whose message the hook can see — `echo … | git commit -F -`
  *  and `git commit -m "…"` — and returns null when the trailer is already there or
  *  the shape is not covered. Pure so the injection path is testable without a hook. */
 export function injectCommitTrailer(command: string, trailerName: string, modelId: string): string | null {
 	const identity = commitTrailerIdentity(trailerName, modelId);
-	// Pattern A: echo "..." | git commit -F -
-	const pipeIdx = command.lastIndexOf("|");
-	if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
-		const echoPart = command.slice(0, pipeIdx);
-		const gitPart = command.slice(pipeIdx);
-		const lastQuoteIdx = Math.max(echoPart.lastIndexOf('"'), echoPart.lastIndexOf("'"));
-		if (lastQuoteIdx > 0) {
-			if (!/^\s*$/.test(echoPart.slice(lastQuoteIdx + 1))) {
-				enfLog.debug("inject_commit_trailer", "unquoted trailing operand", trailerName);
-				return null;
-			}
-			if (commandHasTrailerByName(echoPart, trailerName)) {
-				enfLog.debug("inject_commit_trailer", "already present", trailerName);
-				return null;
-			}
-			const quoteChar = echoPart[lastQuoteIdx];
-			const escaped = quoteChar === "'"
-				? `${escapeForSingleQuote(trailerName)}: ${identity}`
-				: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
-			enfLog.info("inject_commit_trailer", "piped", trailerName);
-			return echoPart.slice(0, lastQuoteIdx) + `\n\n${escaped}` + echoPart.slice(lastQuoteIdx) + gitPart;
+	// Pattern A: echo "..." [| tee ...] | git commit -F -
+	const pipedSpan = findPipedCommitSpan(command);
+	if (pipedSpan !== null) {
+		const producerPart = command.slice(pipedSpan.stmtStart, pipedSpan.firstPipeIdx);
+		if (pipedSpan.lastQuoteIdx < 0) {
+			enfLog.debug("inject_commit_trailer", "no quoted operand", trailerName, producerPart.trim().slice(0, 64));
+			return null;
 		}
-		return null;
+		const trailing = command.slice(pipedSpan.lastQuoteIdx + 1, pipedSpan.firstPipeIdx);
+		if (!HARMLESS_PRODUCER_REDIRECT_RE.test(trailing.replace(/\\\r?\n/g, " "))) {
+			enfLog.debug("inject_commit_trailer", "unquoted trailing operand", trailerName, trailing.trim().slice(0, 64));
+			return null;
+		}
+		if (commandHasTrailerByName(command.slice(pipedSpan.stmtStart, pipedSpan.lastPipeIdx), trailerName)) {
+			enfLog.debug("inject_commit_trailer", "already present", trailerName);
+			return null;
+		}
+		const quoteChar = command[pipedSpan.lastQuoteIdx];
+		const escaped = quoteChar === "'"
+			? `${escapeForSingleQuote(trailerName)}: ${identity}`
+			: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
+		enfLog.info("inject_commit_trailer", "piped", trailerName);
+		return command.slice(0, pipedSpan.lastQuoteIdx) + `\n\n${escaped}` + command.slice(pipedSpan.lastQuoteIdx);
 	}
 	// Pattern B: git commit -m "..." or git commit -m '...'
 	const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);

@@ -11,7 +11,7 @@ import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { DANGEROUS, DANGEROUS_EXPLANATIONS, DANGEROUS_LABELS, dangerousPatternExplanation, dangerousPatternExplanations, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
-import { getPiLogPath } from "../../../extensions/shared/file-logger.js";
+import { getPiLogPath, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
@@ -2669,9 +2669,93 @@ describe("injectCommitTrailer", () => {
     assert.equal(out, "printf '%s\\n' 'subj' '' 'body\n\nAssisted-by: PI (model-x)' | git commit -F -");
   });
 
+  function captureEnforcementDebugLog(fn: () => void): string {
+    const home = makeTempDir("trailer-log-");
+    const prevHome = process.env.HOME;
+    const prevSid = (globalThis as any).__piConfigSessionId;
+    process.env.HOME = home;
+    (globalThis as any).__piConfigSessionId = "trailer-skip-log";
+    setLogLevelPin("enforcement", "debug");
+    try {
+      fn();
+      const logPath = getPiLogPath("enforcement");
+      return logPath && existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+    } finally {
+      setLogLevelPin("enforcement", null);
+      if (prevSid === undefined) delete (globalThis as any).__piConfigSessionId;
+      else (globalThis as any).__piConfigSessionId = prevSid;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+    }
+  }
+
   it("returns null for piped -F - with an unquoted trailing argument", () => {
     assert.equal(
       injectCommitTrailer("printf '%s\\n' $unquoted_var | git commit -F -", "Assisted-by", "model-x"),
+      null,
+    );
+  });
+
+  it("logs the unquoted trailing operand when skipping injection", () => {
+    const written = captureEnforcementDebugLog(() => {
+      const out = injectCommitTrailer("printf '%s\\n' $unquoted_var | git commit -F -", "Assisted-by", "model-x");
+      assert.equal(out, null);
+    });
+    assert.match(written, /inject_commit_trailer unquoted trailing operand Assisted-by \$unquoted_var/);
+  });
+
+  it("truncates long unquoted trailing operands in the debug log", () => {
+    const longOperand = `$var_${"x".repeat(80)}`;
+    const written = captureEnforcementDebugLog(() => {
+      const out = injectCommitTrailer(`printf '%s\\n' ${longOperand} | git commit -F -`, "Assisted-by", "model-x");
+      assert.equal(out, null);
+    });
+    assert.ok(written.includes(longOperand.slice(0, 64)));
+    assert.ok(!written.includes(longOperand.slice(0, 65)));
+  });
+
+  it("injects into the producer stage when piped through tee", () => {
+    const out = injectCommitTrailer('echo "fix: x" | tee log.txt | git commit -F -', "Assisted-by", "model-x");
+    assert.equal(out, 'echo "fix: x\n\nAssisted-by: PI (model-x)" | tee log.txt | git commit -F -');
+  });
+
+  it("preserves a quoted tee target when injecting into the producer", () => {
+    const out = injectCommitTrailer('echo "fix: x" | tee "commit.log" | git commit -F -', "Assisted-by", "model-x");
+    assert.equal(out, 'echo "fix: x\n\nAssisted-by: PI (model-x)" | tee "commit.log" | git commit -F -');
+  });
+
+  it("ignores a quoted pipe character inside the commit message", () => {
+    const out = injectCommitTrailer('echo "fix: a | b" | tee log.txt | git commit -F -', "Assisted-by", "model-x");
+    assert.equal(out, 'echo "fix: a | b\n\nAssisted-by: PI (model-x)" | tee log.txt | git commit -F -');
+  });
+
+  it("scopes piped -F - injection to the commit pipeline in a chained command", () => {
+    const out = injectCommitTrailer(
+      'echo "Assisted-by: PI (other)" | cat && echo "fix: x" | git commit -F -',
+      "Assisted-by",
+      "model-x",
+    );
+    assert.equal(out, 'echo "Assisted-by: PI (other)" | cat && echo "fix: x\n\nAssisted-by: PI (model-x)" | git commit -F -');
+  });
+
+  it("allows 2>/dev/null on the producer stage", () => {
+    const out = injectCommitTrailer('echo "fix: x" 2>/dev/null | git commit -F -', "Assisted-by", "model-x");
+    assert.equal(out, 'echo "fix: x\n\nAssisted-by: PI (model-x)" 2>/dev/null | git commit -F -');
+  });
+
+  it("allows >/dev/null on the producer stage", () => {
+    const out = injectCommitTrailer('echo "fix: x" >/dev/null | git commit -F -', "Assisted-by", "model-x");
+    assert.equal(out, 'echo "fix: x\n\nAssisted-by: PI (model-x)" >/dev/null | git commit -F -');
+  });
+
+  it("allows 2>&1 on the producer stage", () => {
+    const out = injectCommitTrailer('echo "fix: x" 2>&1 | git commit -F -', "Assisted-by", "model-x");
+    assert.equal(out, 'echo "fix: x\n\nAssisted-by: PI (model-x)" 2>&1 | git commit -F -');
+  });
+
+  it("rejects a non-null file redirection on the producer stage", () => {
+    assert.equal(
+      injectCommitTrailer('echo "fix: x" >/tmp/out | git commit -F -', "Assisted-by", "model-x"),
       null,
     );
   });
@@ -2717,8 +2801,7 @@ describe("injectCommitTrailer piped shell commits (#1101)", () => {
     GIT_CONFIG_SYSTEM: "/dev/null",
   };
 
-  function commitPipedViaBash(command: string): { body: string; trailerValue: string } {
-    const cwd = makeTempDir("trailer-pipe-");
+  function commitPipedViaBash(command: string, cwd = makeTempDir("trailer-pipe-")): { body: string; trailerValue: string } {
     execFileSync("git", ["init", "-q"], { cwd, env: gitEnv });
     writeFileSync(join(cwd, "a.txt"), "1\n");
     execFileSync("git", ["add", "a.txt"], { cwd, env: gitEnv });
@@ -2767,6 +2850,23 @@ describe("injectCommitTrailer piped shell commits (#1101)", () => {
     const { body, trailerValue } = commitPipedViaBash(`printf '%b\\n' 'subj\\n\\nbody' | git commit -F -`);
     assert.ok(!body.includes("\\n"), `unexpected literal \\n in commit body: ${JSON.stringify(body)}`);
     assert.equal(body.trimEnd(), "subj\n\nbody\n\nAssisted-by: PI (model-x)");
+    assert.equal(trailerValue, "PI (model-x)");
+  });
+
+  it("commits echo piped through tee to -F - with a separate trailer paragraph", () => {
+    const cwd = makeTempDir("trailer-pipe-tee-");
+    const teeOut = join(cwd, "commit-msg.log");
+    const { body, trailerValue } = commitPipedViaBash(`echo "fix: x" | tee "${teeOut}" | git commit -F -`, cwd);
+    assert.ok(!body.includes("\\n"), `unexpected literal \\n in commit body: ${JSON.stringify(body)}`);
+    assert.equal(body.trimEnd(), "fix: x\n\nAssisted-by: PI (model-x)");
+    assert.equal(trailerValue, "PI (model-x)");
+    assert.equal(readFileSync(teeOut, "utf8").trimEnd(), "fix: x\n\nAssisted-by: PI (model-x)");
+  });
+
+  it("commits echo with 2>/dev/null piped to -F - with a separate trailer paragraph", () => {
+    const { body, trailerValue } = commitPipedViaBash(`echo "fix: x" 2>/dev/null | git commit -F -`);
+    assert.ok(!body.includes("\\n"), `unexpected literal \\n in commit body: ${JSON.stringify(body)}`);
+    assert.equal(body.trimEnd(), "fix: x\n\nAssisted-by: PI (model-x)");
     assert.equal(trailerValue, "PI (model-x)");
   });
 });
