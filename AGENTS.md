@@ -304,7 +304,15 @@ progress. It does not commit, push, create a PR, or post results.
   session's handshake is never deleted, and a process that does not register the watcher (oneshot `pi -p`, `--mode json`,
   piped print, headless `--mode rpc`) never touches flag/pending/done at all (#1091). A flag that appears while a reload
   is in flight is a newer request: it is left for the watcher and triggers a second reload, so `reload.done` converges on
-  the newest nonce instead of reporting the older one. A manual `/reload` satisfies a sitting flag and publishes its nonce.
+  the newest nonce instead of reporting the older one. A manual `/reload` cannot prove a sitting flag preceded code
+  loading, so it leaves the flag for a conservative extra reload instead of publishing an unproven nonce.
+  Writers must publish complete nonces using same-directory temporary-file atomic rename. In-place writers are
+  unsupported because an open FD can mutate a claimed inode. See `docs/configuration.md#reload-handshake`.
+  Cleanup expires only old completion markers, never unconfirmed requests. Failed commands retry through the owner's
+  watcher; non-reload shutdown atomically releases only that owner's pending request into a recoverable claim.
+  Retained flag/pending claims retry deterministically without overwriting newer publications. Recovery requires
+  another reload, never confirmation on discovery. Live foreign pending owners remain protected regardless of age.
+  Flag consumption renames a concrete request before reading it and never removes the other directory's request.
   Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
 - **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —
   user `~/.pi/agent/mcp.json`, project `mcp.json` once trusted. Managed with

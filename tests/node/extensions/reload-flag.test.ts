@@ -13,9 +13,12 @@ import assert from "node:assert/strict";
 import { rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, utimesSync } from "node:fs";
 
 import path from "node:path";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import reloadExtension, {
   shouldSkipReloadFlag,
   isHandshakeParticipant,
+  isStaleHandshakeFile,
   STALE_HANDSHAKE_MS,
   RELOAD_COMMAND,
   runReloadFlagCommand,
@@ -202,7 +205,7 @@ describe("reload-flag", () => {
     const cwd = makeCwd();
     try {
       const reloads = { count: 0 };
-      writeFileSync(reloadPendingPath(cwd), "nonce-4");
+      writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "nonce-4", owner: `${process.pid}:test-session` }));
       await reg.handlers.get("session_start")!({ reason: "reload" }, makeCtx(cwd, reloads));
       assert.ok(!existsSync(reloadPendingPath(cwd)), "pending consumed");
       assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "nonce-4", "done carries the nonce");
@@ -218,14 +221,14 @@ describe("reload-flag", () => {
     }
   });
 
-  test("an EMPTY pending file is garbage: session_start removes it and sends no continuation (R8 reload-loop fix)", async () => {
+  test("an EMPTY pending file is retained without a false confirmation", async () => {
     const reg = register();
     const cwd = makeCwd();
     try {
       const reloads = { count: 0 };
       writeFileSync(reloadPendingPath(cwd), ""); // truncated/empty pending
       await reg.handlers.get("session_start")!({ reason: "reload" }, makeCtx(cwd, reloads));
-      assert.ok(!existsSync(reloadPendingPath(cwd)), "garbage pending removed");
+      assert.ok(existsSync(reloadPendingPath(cwd)), "unreadable pending retained");
       await new Promise((r) => setTimeout(r, 400));
       assert.equal(reg.messages.length, 0, "no continuation for a nonce-less pending");
       // And the watcher must not re-dispatch on the removed garbage either
@@ -247,7 +250,7 @@ describe("reload-flag", () => {
       writeFileSync(reloadPendingPath(cwd), "   "); // whitespace-only nonce
       await reg.handlers.get("turn_end")!({}, ctx);
       assert.equal(reg.sent.length, 0, "garbage pending never dispatches");
-      assert.ok(!existsSync(reloadPendingPath(cwd)), "garbage pending removed by the watcher");
+      assert.ok(existsSync(reloadPendingPath(cwd)), "watcher retains unreadable pending");
       await reg.handlers.get("session_shutdown")!({}, undefined);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -259,7 +262,7 @@ describe("reload-flag", () => {
     const cwd = makeCwd();
     try {
       const reloads = { count: 0 };
-      writeFileSync(reloadPendingPath(cwd), "nonce-cancel");
+      writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "nonce-cancel", owner: `${process.pid}:test-session` }));
       await reg.handlers.get("session_start")!({ reason: "reload" }, makeCtx(cwd, reloads));
       assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "nonce-cancel", "done already published");
       // Session closes INSIDE the 250ms deferral window
@@ -350,7 +353,7 @@ describe("reload-flag", () => {
     }
   });
 
-  test("manual /reload satisfies a sitting flag — no second reload, done carries its nonce", async () => {
+  test("manual /reload leaves an unproven sitting flag for an extra reload", async () => {
     const reg = register();
     const cwd = makeCwd();
     try {
@@ -359,17 +362,17 @@ describe("reload-flag", () => {
       writeFileSync(reloadFlagPath(cwd), "nonce-stale");
       // User reloaded manually BEFORE the watcher consumed the flag
       await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
-      assert.ok(!existsSync(reloadFlagPath(cwd)), "sitting flag removed by manual reload");
-      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "nonce-stale", "done = the code just loaded");
+      assert.equal(readFileSync(reloadFlagPath(cwd), "utf-8"), "nonce-stale");
+      assert.equal(existsSync(reloadDonePath(cwd)), false, "no preload proof, no confirmation");
       await reg.handlers.get("turn_end")!({}, ctx);
-      assert.equal(reg.sent.length, 0, "no double reload");
+      assert.equal(reg.sent.length, 1, "conservative extra reload");
       await reg.handlers.get("session_shutdown")!({}, undefined);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  test("fresh session start clears stale flag/pending/done without dispatching", async () => {
+  test("fresh session preserves stale requests for a proven reload", async () => {
     const reg = register();
     const cwd = makeCwd();
     try {
@@ -379,11 +382,11 @@ describe("reload-flag", () => {
       writeFileSync(reloadDonePath(cwd), "oldest");
       for (const file of [reloadFlagPath(cwd), reloadPendingPath(cwd), reloadDonePath(cwd)]) backdate(file);
       await reg.handlers.get("session_start")!({ reason: "startup" }, makeCtx(cwd, reloads));
-      assert.ok(!existsSync(reloadFlagPath(cwd)));
-      assert.ok(!existsSync(reloadPendingPath(cwd)));
+      assert.ok(existsSync(reloadFlagPath(cwd)));
+      assert.ok(existsSync(reloadPendingPath(cwd)));
       assert.ok(!existsSync(reloadDonePath(cwd)));
       await reg.handlers.get("turn_end")!({}, makeCtx(cwd, reloads));
-      assert.equal(reg.sent.length, 0);
+      assert.equal(reg.sent.length, 1);
       await reg.handlers.get("session_shutdown")!({}, undefined);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -438,7 +441,7 @@ describe("reload-flag", () => {
       writeFileSync(reloadFlagPath(cwd), "deploy-B");
       writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "nonce-1", owner: "1:session-A" }));
       writeFileSync(reloadDonePath(cwd), "deploy-A");
-      for (const mode of ["json", "print"]) {
+      for (const mode of ["json", "print", "rpc"]) {
         const ctx = makeCtx(cwd, { count: 0 }, "child", mode);
         await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
         await reg.handlers.get("turn_end")!({}, ctx);
@@ -494,10 +497,294 @@ describe("reload-flag", () => {
     }
   });
 
+  test("unexpected stat failures record their path and error code", (t) => {
+    const cwd = makeCwd();
+    const file = reloadFlagPath(cwd);
+    const records: string[] = [];
+    const stat = fs.statSync;
+    const append = fs.appendFileSync;
+    t.mock.method(fs, "statSync", (target: fs.PathLike, ...args: any[]) => {
+      if (String(target) === file) throw Object.assign(new Error("denied"), { code: "EACCES" });
+      return (stat as any)(target, ...args);
+    });
+    t.mock.method(fs, "appendFileSync", (target: fs.PathOrFileDescriptor, data: any, ...args: any[]) => {
+      records.push(String(data));
+      return (append as any)(target, data, ...args);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    assert.equal(isStaleHandshakeFile(file), false);
+    assert.ok(records.some(line => line.includes("reload_flag_stat_failed") && line.includes(file) && line.includes("EACCES")));
+  });
+
+  test("a command waiting for idle cannot reload a replaced session", async () => {
+    const cwd = makeCwd();
+    let active = true;
+    const reloads = { count: 0 };
+    const ctx = {
+      ...makeCtx(cwd, reloads),
+      get mode() { if (!active) throw new Error("stale"); return "tui"; },
+      waitForIdle: async () => { active = false; },
+    };
+    writeFileSync(reloadFlagPath(cwd), "departing");
+    await runReloadFlagCommand(ctx);
+    assert.equal(reloads.count, 0);
+  });
+
+  for (const reason of ["reload", "new", "resume", "fork", "quit"]) {
+    test(`${reason} shutdown preserves a foreign pending owner`, async () => {
+      const cwd = makeCwd();
+      const reg = register();
+      const ctx = makeCtx(cwd, { count: 0 });
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      const foreign = JSON.stringify({ nonce: "foreign", owner: "1:busy" });
+      writeFileSync(reloadPendingPath(cwd), foreign);
+      await reg.handlers.get("session_shutdown")!({ reason }, ctx);
+      assert.equal(readFileSync(reloadPendingPath(cwd), "utf8"), foreign);
+    });
+  }
+
+  test("stale current flag cleanup preserves a fresh legacy request", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    t.after(() => reg.handlers.get("session_shutdown")!({}, undefined));
+    writeFileSync(reloadFlagPath(cwd), "old");
+    backdate(reloadFlagPath(cwd));
+    writeFileSync(legacyPath(cwd, "reload.flag"), "fresh");
+    await reg.handlers.get("session_start")!({ reason: "startup" }, makeCtx(cwd, { count: 0 }));
+    assert.equal(readFileSync(legacyPath(cwd, "reload.flag"), "utf8"), "fresh");
+  });
+
+  test("cleanup rechecks a done marker replaced after the stale stat", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const file = reloadDonePath(cwd);
+    writeFileSync(file, "old");
+    backdate(file);
+    const stat = fs.statSync;
+    let injected = false;
+    t.mock.method(fs, "statSync", (target: fs.PathLike, ...args: any[]) => {
+      const result = (stat as any)(target, ...args);
+      if (String(target) === file && !injected) {
+        injected = true;
+        const tmp = `${file}.writer`;
+        writeFileSync(tmp, "replacement");
+        fs.renameSync(tmp, file);
+      }
+      return result;
+    });
+    syncBuiltinESMExports();
+    t.after(async () => {
+      t.mock.restoreAll(); syncBuiltinESMExports();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    });
+    await reg.handlers.get("session_start")!({ reason: "startup" }, makeCtx(cwd, { count: 0 }));
+    assert.equal(injected, true);
+    assert.equal(readFileSync(file, "utf8"), "replacement");
+  });
+
+  test("old flags waiting for a live foreign owner survive cleanup", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    t.after(() => reg.handlers.get("session_shutdown")!({}, undefined));
+    writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "owner", owner: "1:busy" }));
+    writeFileSync(reloadFlagPath(cwd), "queued");
+    backdate(reloadFlagPath(cwd));
+    await reg.handlers.get("session_start")!({ reason: "startup" }, makeCtx(cwd, { count: 0 }));
+    assert.equal(readFileSync(reloadFlagPath(cwd), "utf8"), "queued");
+  });
+
+  test("owner retries a failed reload on the next turn", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    t.after(() => reg.handlers.get("session_shutdown")!({}, undefined));
+    const ctx = { ...makeCtx(cwd, { count: 0 }), reload: async () => { throw new Error("refused"); } };
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    writeFileSync(reloadFlagPath(cwd), "retry");
+    await reg.handlers.get("turn_end")!({}, ctx);
+    await reg.commands.get("reload-flag")!("", ctx);
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 2);
+    assert.equal(JSON.parse(readFileSync(reloadPendingPath(cwd), "utf8")).nonce, "retry");
+  });
+
+  test("session replacement releases only its owner's pending record", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    t.after(() => reg.handlers.get("session_shutdown")!({}, undefined));
+    const ctx = makeCtx(cwd, { count: 0 });
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    writeFileSync(reloadFlagPath(cwd), "departing");
+    parkReloadNonce(cwd, `${process.pid}:test-session`);
+    await reg.handlers.get("session_shutdown")!({ reason: "new" }, ctx);
+    assert.equal(existsSync(reloadPendingPath(cwd)), false);
+    assert.equal(fs.readdirSync(path.dirname(reloadPendingPath(cwd))).some(name => name.includes(".release-")), true);
+    const next = makeCtx(cwd, { count: 0 }, "replacement");
+    await reg.handlers.get("session_start")!({ reason: "reload" }, next);
+    assert.equal(existsSync(reloadDonePath(cwd)), false);
+    await runReloadFlagCommand(next);
+    await reg.handlers.get("session_start")!({ reason: "reload" }, next);
+    assert.equal(readFileSync(reloadDonePath(cwd), "utf8"), "departing");
+  });
+
+  test("consuming a request preserves a replacement published after its claim", (t) => {
+    const cwd = makeCwd();
+    writeFileSync(reloadFlagPath(cwd), "first");
+    writeFileSync(legacyPath(cwd, "reload.flag"), "legacy");
+    const rename = fs.renameSync;
+    t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+      rename(from, to);
+      if (String(from) === reloadFlagPath(cwd)) writeFileSync(reloadFlagPath(cwd), "newer");
+    });
+    syncBuiltinESMExports();
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    assert.equal(parkReloadNonce(cwd, `${process.pid}:test-session`), "first");
+    assert.equal(readFileSync(reloadFlagPath(cwd), "utf8"), "newer");
+    assert.equal(readFileSync(legacyPath(cwd, "reload.flag"), "utf8"), "legacy");
+  });
+
+  test("unreadable claim retries before a newer publication", async (t) => {
+    const cwd = makeCwd();
+    const owner = `${process.pid}:test-session`;
+    writeFileSync(reloadFlagPath(cwd), "retained");
+    const read = fs.readFileSync;
+    let failed = false;
+    t.mock.method(fs, "readFileSync", (file: any, ...args: any[]) => {
+      if (String(file).endsWith(".claim") && !failed) {
+        failed = true;
+        throw Object.assign(new Error("injected read failure"), { code: "EACCES" });
+      }
+      return (read as any)(file, ...args);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    assert.equal(parkReloadNonce(cwd, owner), null);
+    writeFileSync(reloadFlagPath(cwd), "newer");
+    assert.equal(parkReloadNonce(cwd, owner), "retained");
+    assert.equal(JSON.parse(readFileSync(reloadPendingPath(cwd), "utf8")).nonce, "retained");
+    rmSync(reloadPendingPath(cwd));
+    assert.equal(parkReloadNonce(cwd, owner), "newer");
+  });
+
+  test("completion preserves pending published after its claim", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const ctx = makeCtx(cwd, { count: 0 });
+    const file = reloadPendingPath(cwd);
+    writeFileSync(file, JSON.stringify({ nonce: "loaded", owner: `${process.pid}:test-session` }));
+    const rename = fs.renameSync;
+    let injected = false;
+    t.mock.method(fs, "renameSync", (from: any, to: any) => {
+      rename(from, to);
+      if (String(from) === file && !injected) {
+        injected = true;
+        writeFileSync(file, JSON.stringify({ nonce: "newer", owner: "1:foreign" }));
+      }
+    });
+    syncBuiltinESMExports();
+    t.after(async () => {
+      t.mock.restoreAll(); syncBuiltinESMExports();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    });
+    await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+    assert.equal(readFileSync(reloadDonePath(cwd), "utf8"), "loaded");
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).nonce, "newer");
+  });
+
+  test("completion write failure retries through the watcher", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const ctx = makeCtx(cwd, { count: 0 });
+    writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "retry-done", owner: `${process.pid}:test-session` }));
+    const rename = fs.renameSync;
+    let failed = false;
+    t.mock.method(fs, "renameSync", (from: any, to: any) => {
+      if (String(to) === reloadDonePath(cwd) && !failed) {
+        failed = true; throw new Error("injected done failure");
+      }
+      rename(from, to);
+    });
+    syncBuiltinESMExports();
+    t.after(async () => {
+      t.mock.restoreAll(); syncBuiltinESMExports();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    });
+    await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+    assert.equal(existsSync(reloadDonePath(cwd)), false);
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 1);
+    await reg.commands.get("reload-flag")!("", ctx);
+    await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+    assert.equal(readFileSync(reloadDonePath(cwd), "utf8"), "retry-done");
+  });
+
+  test("current pending cannot hide a live legacy owner from the command", async () => {
+    const cwd = makeCwd();
+    writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "ours", owner: `${process.pid}:test-session` }));
+    writeFileSync(legacyPath(cwd, "reload.pending"), JSON.stringify({ nonce: "foreign", owner: "1:foreign" }));
+    const reloads = { count: 0 };
+    assert.equal(await runReloadFlagCommand(makeCtx(cwd, reloads)), false);
+    assert.equal(reloads.count, 0);
+  });
+
+  test("foreign pending claims block newer flags until their owner releases", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const ctx = makeCtx(cwd, { count: 0 });
+    t.after(() => reg.handlers.get("session_shutdown")!({}, undefined));
+    const claimed = legacyPath(cwd, "reload.pending.collision.claim");
+    writeFileSync(claimed, JSON.stringify({ nonce: "foreign", owner: "1:foreign" }));
+    writeFileSync(reloadFlagPath(cwd), "newer");
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 0);
+    assert.equal(parkReloadNonce(cwd, `${process.pid}:test-session`), null);
+    assert.equal(readFileSync(reloadFlagPath(cwd), "utf8"), "newer");
+    fs.renameSync(claimed, `${claimed}.release-${encodeURIComponent("1:foreign")}.claim`);
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 1);
+    await reg.commands.get("reload-flag")!("", ctx);
+    assert.equal(JSON.parse(readFileSync(reloadPendingPath(cwd), "utf8")).nonce, "foreign");
+  });
+
+  test("pending publication failure retains the claimed request for retry", (t) => {
+    const cwd = makeCwd();
+    writeFileSync(reloadFlagPath(cwd), "retry-publication");
+    const link = fs.linkSync;
+    let failed = false;
+    t.mock.method(fs, "linkSync", (from: any, to: any) => {
+      if (!failed) { failed = true; throw new Error("injected pending publication failure"); }
+      return link(from, to);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    assert.throws(() => parkReloadNonce(cwd, "owner"), /injected/);
+    assert.equal(parkReloadNonce(cwd, "owner"), "retry-publication");
+  });
+
+  test("restore-colliding legacy claims require a proven reload", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const ctx = makeCtx(cwd, { count: 0 });
+    t.after(() => reg.handlers.get("session_shutdown")!({}, undefined));
+    writeFileSync(legacyPath(cwd, "reload.pending.old.claim"), JSON.stringify({ nonce: "recovered", owner: "" }));
+    writeFileSync(reloadFlagPath(cwd), "current");
+    await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+    assert.equal(existsSync(reloadDonePath(cwd)), false);
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 1);
+    await reg.commands.get("reload-flag")!("", ctx);
+    await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+    assert.equal(readFileSync(reloadDonePath(cwd), "utf8"), "recovered");
+    await reg.commands.get("reload-flag")!("", ctx);
+    await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+    assert.equal(readFileSync(reloadDonePath(cwd), "utf8"), "current");
+  });
+
   test("parkReloadNonce is a no-op without a flag", () => {
     const cwd = makeCwd();
     try {
-      assert.equal(parkReloadNonce(cwd), null);
+      assert.equal(parkReloadNonce(cwd, `${process.pid}:test-session`), null);
       assert.ok(!existsSync(reloadPendingPath(cwd)));
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -613,6 +900,7 @@ describe("isHandshakeParticipant", () => {
     assert.equal(isHandshakeParticipant("agent", ["node", "pi"]), true);
     assert.equal(isHandshakeParticipant("print", ["node", "pi"]), false);
     assert.equal(isHandshakeParticipant("json", ["node", "pi"]), false);
+    assert.equal(isHandshakeParticipant("rpc", ["node", "pi"]), false);
     assert.equal(isHandshakeParticipant("tui", ["node", "pi", "-p", "hi"]), false);
     assert.equal(isHandshakeParticipant("tui", ["node", "pi", "--mode", "json"]), false);
   });

@@ -35,13 +35,13 @@
  *     (`pendingOwnerIsClaimable`): a live OTHER owner's handshake is never
  *     consumed, dispatched for, or cleaned up.
  *   - `session_start` with any other reason (startup, new, resume, fork) only
- *     clears state that is genuinely stale — older than STALE_HANDSHAKE_MS.
- *     A fresh session already runs the latest code, so an abandoned request is
- *     satisfied, not repeated.
+ *     clears old completion markers. Unconfirmed requests survive regardless
+ *     of age and retained claims are retried without overwriting publications.
  *   - `reload.done` always carries the nonce of the code actually loaded. A
  *     flag that appears while a reload is in flight is a NEWER request and is
  *     left for the watcher, so the sequence converges on the newest nonce. A
- *     manual `/reload` satisfies a sitting flag: its nonce is published.
+ *     manual `/reload` leaves an unproven flag for an extra reload. There is
+ *     no public pre-load nonce boundary, so it cannot safely confirm one.
  *
  * LOCATION (#1020): the handshake lives in `.pi/run/`, not `.pi/tmp/` — `.pi/tmp`
  * is throwaway by definition and must stay safe to wipe. Reads check the new
@@ -51,8 +51,8 @@
  *
  * CRASH SAFETY (learned the hard way): a timer callback must never let an
  * exception escape — an unhandled rejection kills the whole pi process.
- * Every path is guarded and caught; a failed reload logs and never retries
- * automatically (the deploy can be re-run).
+ * Every timer path is guarded and caught. Failed commands release the dispatch
+ * latch for owner-side retry; non-reload shutdown releases that owner's pending.
  *
  * Skipped in oneshot invocations (`pi -p` / `--mode json`), same as
  * pitasks/pidiff/pidash/coms. Timers follow the live-ctx guard rule: the
@@ -64,8 +64,9 @@ import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation, shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 const log = createLogger("reload-flag");
 
@@ -74,10 +75,8 @@ export const RELOAD_FLAG_FILENAME = "reload.flag";
 export const RELOAD_PENDING_FILENAME = "reload.pending";
 export const RELOAD_DONE_FILENAME = "reload.done";
 
-/** How long idle handshake state may sit before a fresh INTERACTIVE session
- *  treats it as abandoned (#1091). A deploy writes the flag and reloads within
- *  seconds, so an older file belongs to a request nobody is waiting for — and
- *  a younger one may be a request addressed to another live session. */
+/** Cleanup age for unowned idle state, never an expiry for live owners or
+ *  requests waiting behind them. */
 export const STALE_HANDSHAKE_MS = 5 * 60_000;
 
 /** Runtime-state dir for the reload handshake (#1020). */
@@ -125,37 +124,34 @@ function findControlFile(cwd: string, name: string): string | null {
   return null;
 }
 
-function readControlNonce(cwd: string, name: string): string | null {
-  const file = findControlFile(cwd, name);
-  return file === null ? null : readNonce(file);
-}
-
-/** Remove the file from BOTH dirs — a legacy copy left behind would otherwise
- *  satisfy the next watcher tick with a stale nonce. */
-function removeControlFile(cwd: string, name: string): void {
-  for (const dir of [reloadRunDir(cwd), reloadLegacyDir(cwd)]) {
-    rmSync(path.join(dir, name), { force: true });
-  }
-}
-
 function writeControlFile(cwd: string, name: string, content: string): void {
   const dir = reloadRunDir(cwd);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // Write + rename, never a bare truncate (#1091): every session in the cwd
-  // polls these files, and a mid-write empty `reload.pending` is deleted by the
-  // other watchers as garbage — which strands the handshake of the session that
-  // was writing it.
-  const tmp = path.join(dir, `${name}.${process.pid}.tmp`);
-  writeFileSync(tmp, content, "utf-8");
-  renameSync(tmp, path.join(dir, name));
+  // Publish a complete record; never expose a truncated nonce to other readers.
+  const tmp = path.join(dir, `${name}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(tmp, content, "utf-8");
+    renameSync(tmp, path.join(dir, name));
+  } finally {
+    rmSync(tmp, { force: true });
+  }
 }
 
 /** Mirror a control file into the legacy dir for a requester that wrote its
  *  flag under `.pi/tmp` before the move and polls the completion marker there —
- *  without it that requester waits for its nonce forever (#1020). Best effort:
- *  never creates `.pi/tmp`. */
+ *  without it that requester waits for its nonce forever (#1020). A missing
+ *  legacy directory is allowed; other failures retain the request for retry. */
 function writeLegacyControlFile(cwd: string, name: string, content: string): void {
-  try { writeFileSync(path.join(reloadLegacyDir(cwd), name), content, "utf-8"); } catch {}
+  const tmp = path.join(reloadLegacyDir(cwd), `${name}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(tmp, content, "utf-8");
+    renameSync(tmp, path.join(reloadLegacyDir(cwd), name));
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    log.debug("reload_flag_legacy_mirror_unavailable", { cwd, name, error: String(error) });
+  } finally {
+    rmSync(tmp, { force: true });
+  }
 }
 
 function readNonce(file: string): string | null {
@@ -192,7 +188,11 @@ function isPidAlive(pid: number): boolean {
 export function isStaleHandshakeFile(file: string): boolean {
   try {
     return Date.now() - statSync(file).mtimeMs > STALE_HANDSHAKE_MS;
-  } catch {
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    const details = { file, code, error: String(error) };
+    if (code === "ENOENT") log.debug("reload_flag_stat_disappeared", details);
+    else log.warn("reload_flag_stat_failed", details);
     return false;
   }
 }
@@ -203,14 +203,14 @@ export interface ReloadPending {
   owner: string;
 }
 
-/** Read and parse `reload.pending`. Returns null when absent, empty, or
- * unparseable (garbage pending is handled by the callers' removal paths). */
-export function readReloadPending(cwd: string): ReloadPending | null {
-  const raw = readControlNonce(cwd, RELOAD_PENDING_FILENAME);
+/** Read pending ownership, retaining plain-nonce compatibility. Null means
+ * absent, empty or unreadable; callers must not discard an unreadable record. */
+export function readReloadPending(cwd: string, file = findControlFile(cwd, RELOAD_PENDING_FILENAME)): ReloadPending | null {
+  const raw = file === null ? null : readNonce(file);
   if (raw === null) return null;
   try {
     const parsed = JSON.parse(raw) as { nonce?: unknown; owner?: unknown };
-    if (typeof parsed.nonce === "string" && parsed.nonce && typeof parsed.owner === "string" && parsed.owner) {
+    if (typeof parsed.nonce === "string" && parsed.nonce && typeof parsed.owner === "string") {
       return { nonce: parsed.nonce, owner: parsed.owner };
     }
   } catch {
@@ -240,50 +240,140 @@ export function pendingOwnerIsClaimable(pending: ReloadPending, self: string): b
  * has no business cancelling a request issued moments ago.
  */
 function pruneStaleHandshake(cwd: string, owner: string, reason: string): void {
-  const pending = readReloadPending(cwd);
-  const foreignPending = pending !== null && !pendingOwnerIsClaimable(pending, owner);
-  for (const name of [RELOAD_FLAG_FILENAME, RELOAD_PENDING_FILENAME, RELOAD_DONE_FILENAME]) {
-    const file = findControlFile(cwd, name);
-    if (file === null) continue;
-    if (name === RELOAD_PENDING_FILENAME && foreignPending) {
-      log.debug("reload_flag_pending_foreign_owner_kept", { owner: pending.owner, reason });
-      continue;
+  const foreignPending = [reloadRunDir(cwd), reloadLegacyDir(cwd)].some(dir => {
+    const pending = readReloadPending(cwd, path.join(dir, RELOAD_PENDING_FILENAME));
+    return pending !== null && !pendingOwnerIsClaimable(pending, owner);
+  });
+  for (const dir of [reloadRunDir(cwd), reloadLegacyDir(cwd)]) {
+    for (const name of [RELOAD_FLAG_FILENAME, RELOAD_PENDING_FILENAME, RELOAD_DONE_FILENAME]) {
+      const file = path.join(dir, name);
+      // A queued request is not abandoned merely because its owner is busy.
+      if (foreignPending && name !== RELOAD_DONE_FILENAME) {
+        log.debug("reload_flag_foreign_handshake_kept", { file, owner, reason });
+        continue;
+      }
+      // Age cannot prove a request was loaded, even after its owner exits.
+      if (name !== RELOAD_DONE_FILENAME) continue;
+      if (!isStaleHandshakeFile(file)) continue;
+      const claimed = `${file}.${randomUUID()}.claim`;
+      try {
+        renameSync(file, claimed);
+        if (!isStaleHandshakeFile(claimed)) {
+          // Restore without overwriting a request published after the claim.
+          linkSync(claimed, file);
+          rmSync(claimed);
+          log.debug("reload_flag_cleanup_replacement_kept", { file, owner, reason });
+          continue;
+        }
+        rmSync(claimed);
+        log.debug("stale reload state removed at session start", { file, reason });
+      } catch (error: unknown) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") log.debug("reload_flag_cleanup_disappeared", { file, reason, code });
+        else log.warn("reload_flag_cleanup_claim_retained", { file, claimed, reason, code, error: String(error) });
+      }
     }
-    if (!isStaleHandshakeFile(file)) continue;
-    removeControlFile(cwd, name);
-    log.debug("stale reload state removed at session start", { file: name, reason });
   }
 }
 
-/**
- * Move the flag's nonce to `reload.pending` (handshake state for the new
- * runtime), stamped with OUR owner id. Public for tests. Returns the nonce
- * or null when no flag exists.
- */
+/** Deterministic retries for claims left by interruption or restore collision. */
+function retainedRequests(cwd: string): string[] {
+  return [reloadRunDir(cwd), reloadLegacyDir(cwd)].flatMap(dir => {
+    try {
+      return readdirSync(dir).sort().filter(name =>
+        /^reload\.(flag|pending)\..+\.claim$/.test(name),
+      ).map(name => path.join(dir, name));
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.warn("reload_flag_claim_scan_failed", { dir, error: String(error) });
+      }
+      return [];
+    }
+  });
+}
+
+function hasForeignPending(cwd: string, owner: string): boolean {
+  const files = [reloadRunDir(cwd), reloadLegacyDir(cwd)].map(dir => path.join(dir, RELOAD_PENDING_FILENAME));
+  files.push(...retainedRequests(cwd).filter(file => path.basename(file).startsWith("reload.pending.")));
+  return files.some(file => {
+    const record = readReloadPending(cwd, file);
+    return record !== null && !file.endsWith(`.release-${encodeURIComponent(record.owner)}.claim`)
+      && !pendingOwnerIsClaimable(record, owner);
+  });
+}
+
+/** Park one request under our owner before loading code. Never replace pending. */
 export function parkReloadNonce(cwd: string, owner: string): string | null {
+  if (hasForeignPending(cwd, owner)) {
+    log.debug("reload_flag_claim_foreign_owner", { cwd, owner });
+    return null;
+  }
   const flag = findControlFile(cwd, RELOAD_FLAG_FILENAME);
-  if (flag === null) return null;
-  const nonce = readNonce(flag);
-  if (nonce === null) return null;
-  removeControlFile(cwd, RELOAD_FLAG_FILENAME);
-  writeControlFile(cwd, RELOAD_PENDING_FILENAME, JSON.stringify({ nonce, owner }));
-  log.info("reload_flag_consumed", { hasNonce: true });
-  return nonce;
+  // Retry retained claims first. Their path is stable; never restore over a
+  // newer publication. A recovered pending record needs another proven reload.
+  const candidates = retainedRequests(cwd);
+  if (flag !== null && readNonce(flag) !== null) {
+    const claimed = `${flag}.${randomUUID()}.claim`;
+    renameSync(flag, claimed);
+    candidates.push(claimed);
+  }
+  for (const claimed of candidates) {
+    const record = path.basename(claimed).startsWith("reload.pending.")
+      ? readReloadPending(cwd, claimed) : null;
+    const released = record && claimed.endsWith(`.release-${encodeURIComponent(record.owner)}.claim`);
+    if (record && !released && !pendingOwnerIsClaimable(record, owner)) continue;
+    const nonce = record?.nonce ?? readNonce(claimed);
+    if (nonce === null) {
+      log.warn("reload_flag_claim_unreadable", { file: claimed, owner });
+      continue;
+    }
+    // Exclusive publication: concurrent consumers must not replace pending.
+    const tmp = `${reloadPendingPath(cwd)}.${randomUUID()}.tmp`;
+    mkdirSync(reloadRunDir(cwd), { recursive: true, mode: 0o700 });
+    try {
+      writeFileSync(tmp, JSON.stringify({ nonce, owner }), "utf-8");
+      linkSync(tmp, reloadPendingPath(cwd));
+    } finally {
+      rmSync(tmp, { force: true });
+    }
+    rmSync(claimed);
+    log.info("reload_flag_consumed", { file: claimed, owner });
+    return nonce;
+  }
+  return null;
 }
 
 /** The `/reload-flag` command body — runs with the COMMAND ctx (has reload()). */
 export async function runReloadFlagCommand(
-  ctx: { cwd: string; reload?: () => Promise<void>; waitForIdle?: () => Promise<void>; sessionManager?: { getSessionId?: () => string } },
-): Promise<void> {
+  ctx: { cwd: string; mode?: string; reload?: () => Promise<void>; waitForIdle?: () => Promise<void>; sessionManager?: { getSessionId?: () => string } },
+): Promise<boolean> {
+  const cwd = ctx.cwd;
+  const owner = reloadOwnerId(ctx);
   try {
-    parkReloadNonce(ctx.cwd, reloadOwnerId(ctx));
+    if (!isHandshakeParticipant(ctx.mode)) {
+      log.debug("reload_flag_command_nonparticipant", { cwd, owner, mode: ctx.mode });
+      return false;
+    }
+    const pending = readReloadPending(cwd);
+    if (hasForeignPending(cwd, owner)) {
+      log.debug("reload_flag_command_foreign_owner", { cwd: ctx.cwd, owner });
+      return false;
+    }
+    if (!pending) {
+      if (parkReloadNonce(cwd, owner) === null) return false;
+    } else if (pending.owner !== owner) {
+      const file = findControlFile(cwd, RELOAD_PENDING_FILENAME)!;
+      renameSync(file, `${file}.${randomUUID()}.claim`);
+      if (parkReloadNonce(cwd, owner) === null) return false;
+      log.debug("reload_flag_pending_adopted_for_retry", { cwd, owner });
+    }
     if (typeof ctx.reload !== "function") {
       // Should be impossible (command ctx always carries actions) — but a
       // missing action must degrade to a log line, never a crash.
       log.error("reload_flag_no_reload_action", {
         hint: "command context lacks reload(); dispatch path changed?",
       });
-      return;
+      return false;
     }
     // pi's reload action refuses while the session is streaming ("Wait for
     // the current response to finish") — and deploys typically happen
@@ -292,11 +382,17 @@ export async function runReloadFlagCommand(
     if (typeof ctx.waitForIdle === "function") {
       await ctx.waitForIdle();
     }
+    if (!isLiveExtensionCtx(ctx) || reloadOwnerId(ctx) !== owner) {
+      log.debug("reload_flag_command_session_departed", { cwd, owner });
+      return false;
+    }
     // LAST ctx calls: ctx.reload() tears this runtime down (session_shutdown
     // reason "reload") and rebuilds it from disk. Never use the old ctx after.
     await ctx.reload();
+    return true;
   } catch (e: unknown) {
-    log.error("reload_flag_command_failed", { error: String(e) });
+    log.warn("reload_flag_command_failed", { cwd, owner, error: String(e) });
+    return false;
   }
 }
 
@@ -306,7 +402,7 @@ export async function runReloadFlagCommand(
  *  flag is per-cwd, so a child starting mid-deploy used to wipe a request
  *  addressed to the operator's TUI session. */
 export function isHandshakeParticipant(mode?: string | null, argv: string[] = process.argv): boolean {
-  if (mode === "print" || mode === "json") return false;
+  if (mode === "print" || mode === "json" || mode === "rpc") return false;
   return !isPiOneshotInvocation(argv);
 }
 
@@ -339,7 +435,12 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("reload-flag", {
     description: "Internal — deploy-flow bridge: reload extensions when .pi/run/reload.flag is set (the agent dispatches this; you can type /reload anytime)",
     handler: async (_args: string, ctx: any) => {
-      await runReloadFlagCommand(ctx);
+      const cwd = ctx.cwd;
+      const owner = reloadOwnerId(ctx);
+      if (!await runReloadFlagCommand(ctx) && liveCwd === cwd && liveOwner === owner) {
+        triggered = false;
+        log.debug("reload_flag_owner_retry_enabled", { cwd, owner });
+      }
     },
   });
 
@@ -373,7 +474,11 @@ export default function (pi: ExtensionAPI) {
     const pendingPath = findControlFile(liveCwd, RELOAD_PENDING_FILENAME);
     const hasFlag = flagPath !== null;
     const hasPending = pendingPath !== null;
-    if (!hasFlag && !hasPending) return;
+    if (!hasFlag && !hasPending && retainedRequests(liveCwd).length === 0) return;
+    if (hasForeignPending(liveCwd, liveOwner ?? reloadOwnerId())) {
+      log.debug("reload_flag_watcher_foreign_owner", { cwd: liveCwd, owner: liveOwner });
+      return;
+    }
     // Mid-write race (Qodo PR #950 R7): the requester may not have written
     // the nonce yet when the flag file first appears. Dispatching now would
     // reload with NO nonce — the requester could never verify completion.
@@ -382,17 +487,13 @@ export default function (pi: ExtensionAPI) {
       log.debug("reload_flag_mid_write_race", { flag: flagPath });
       return;
     }
-    // Empty/garbage pending (Qodo PR #950 R8): a pending file with no nonce
-    // is NOT a stranded handshake — it is leftover garbage (truncated write,
-    // disk issue). Treating it as one would dispatch a reload whose new
-    // runtime ALSO cannot consume it — an infinite reload loop. Remove it
-    // and wait for a real request.
+    // An unreadable pending may still belong to a live owner. Preserve it
+    // without dispatching until a later tick can read it.
     if (hasPending && pendingPath !== null && readNonce(pendingPath) === null) {
       try {
-        removeControlFile(liveCwd, RELOAD_PENDING_FILENAME);
-        log.warn("reload_flag_stale_pending_removed", {
+        log.warn("reload_flag_unreadable_pending_retained", {
           file: pendingPath,
-          reason: "pending file had no readable nonce — removed to avoid a reload loop",
+          reason: "pending unreadable; preserve ownership and retry on a later tick",
         });
       } catch (e: unknown) {
         log.warn("reload_flag_stale_pending_remove_failed", { error: String(e) });
@@ -412,7 +513,6 @@ export default function (pi: ExtensionAPI) {
       }
     }
     triggered = true;
-    stopWatcher();
     try {
       // Dispatches the registered command: executes immediately (even while
       // streaming), never reaches the LLM. deliverAs satisfies the repo-wide
@@ -447,10 +547,18 @@ export default function (pi: ExtensionAPI) {
     liveOwner = reloadOwnerId(ctx);
     triggered = false;
 
+    try {
     if (reason === "reload") {
-      // We are the NEW runtime: finish the handshake by publishing the nonce.
+      // Claim before reading; completion must never unlink a newer pending.
       const pendingPath = findControlFile(cwd, RELOAD_PENDING_FILENAME);
-      const pendingRecord = readReloadPending(cwd);
+      const claimed = pendingPath === null ? null : `${pendingPath}.${randomUUID()}.claim`;
+      if (pendingPath !== null && claimed !== null) renameSync(pendingPath, claimed);
+      const pendingRecord = readReloadPending(cwd, claimed);
+      if (pendingRecord?.owner !== reloadOwnerId(ctx) && pendingPath !== null && claimed !== null) {
+        // A collision retains the claim for retry rather than replacing state.
+        linkSync(claimed, pendingPath);
+        rmSync(claimed);
+      }
       // Owner check (Qodo PR #950 R9): a pending handshake parked by ANOTHER
       // LIVE session must survive our manual /reload untouched — consuming
       // it here would steal their nonce, publish their done marker, and send
@@ -458,15 +566,15 @@ export default function (pi: ExtensionAPI) {
       // owner process is gone.
       if (pendingRecord && !pendingOwnerIsClaimable(pendingRecord, reloadOwnerId(ctx))) {
         log.info("reload_flag_pending_left_for_owner", { owner: pendingRecord.owner });
-      } else if (pendingRecord) {
+      } else if (pendingRecord?.owner === reloadOwnerId(ctx)) {
         // The nonce WE loaded. Any flag present now was written while this
         // reload was in flight — a NEWER request (#1091) — so it is left for
         // the watcher: the second reload publishes ITS nonce, and the
         // sequence converges on the newest one instead of reporting ours.
         const nonce = pendingRecord.nonce;
-        removeControlFile(cwd, RELOAD_PENDING_FILENAME);
         writeControlFile(cwd, RELOAD_DONE_FILENAME, nonce);
         writeLegacyControlFile(cwd, RELOAD_DONE_FILENAME, nonce);
+        if (claimed !== null) rmSync(claimed, { force: true });
         log.info("reload_done", { nonce });
         // Seamless continuation (user request): the deploy that requested
         // this reload was mid-task — wake the agent with the new code so it
@@ -498,38 +606,21 @@ export default function (pi: ExtensionAPI) {
         continuationTimer = setTimeout(fire, 250);
         (continuationTimer as unknown as { unref: () => void }).unref();
       } else {
-        // A pending file with no readable nonce is garbage (Qodo PR #950
-        // R8): if it survived, remove it — otherwise every future runtime
-        // sees "stranded pending" and re-dispatches a reload, forever.
-        if (pendingPath !== null) {
+        // Neither an unreadable record nor a different owner proves this
+        // runtime loaded the request. Preserve it for a proven retry.
+        if (pendingPath !== null && pendingRecord === null) {
           try {
-            removeControlFile(cwd, RELOAD_PENDING_FILENAME);
-            log.warn("reload_flag_stale_pending_removed", {
+            log.warn("reload_flag_unreadable_pending_retained", {
               file: pendingPath,
-              reason: "pending file existed with no readable nonce at reload session_start",
+              reason: "pending unreadable at reload; no confirmation is safe",
             });
           } catch (e: unknown) {
             log.warn("reload_flag_stale_pending_remove_failed", { error: String(e) });
           }
         }
-        // Manual /reload: it satisfies a sitting flag — the code just loaded
-        // IS the code the flag requested — so publish THAT nonce as done (the
-        // requester can then verify) and drop the flag so no second reload
-        // fires. A flag triggered reload never reaches here: it parked a
-        // pending nonce, and its flag is a newer request (#1091).
-        const flagPath = findControlFile(cwd, RELOAD_FLAG_FILENAME);
-        const sittingNonce = flagPath === null ? null : readNonce(flagPath);
-        if (sittingNonce !== null) {
-          // Drop the satisfied flag: the next turn must not reload again.
-          removeControlFile(cwd, RELOAD_FLAG_FILENAME);
-          writeControlFile(cwd, RELOAD_DONE_FILENAME, sittingNonce);
-          writeLegacyControlFile(cwd, RELOAD_DONE_FILENAME, sittingNonce);
-          log.info("reload_done", { nonce: sittingNonce, manual: true });
-        } else {
-          // No nonce yet (a flag mid-write): leave it — the watcher sees the
-          // finished write and dispatches the next reload.
-          log.debug("reload session_start without pending nonce (manual /reload)");
-        }
+        // session_start is AFTER extension loading, not a preload boundary.
+        // An unproven flag needs an extra reload, never a false confirmation.
+        log.debug("reload_flag_manual_request_left_unproven", { cwd });
       }
     } else {
       // Fresh session: latest code is already loaded — clear state that is
@@ -537,6 +628,9 @@ export default function (pi: ExtensionAPI) {
       // seconds ago may be a deploy in flight for another session in this
       // checkout; deleting it destroys the handshake the deploy polls.
       pruneStaleHandshake(cwd, reloadOwnerId(ctx), reason);
+    }
+    } catch (error: unknown) {
+      log.warn("reload_flag_start_retry_retained", { cwd, owner: liveOwner, reason, error: String(error) });
     }
 
     if (!watcher) {
@@ -570,8 +664,25 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (event: any) => {
     stopWatcher();
+    if (event?.reason && event.reason !== "reload" && liveCwd && liveOwner) {
+      try {
+        for (const dir of [reloadRunDir(liveCwd), reloadLegacyDir(liveCwd)]) {
+          const file = path.join(dir, RELOAD_PENDING_FILENAME);
+          const pending = readReloadPending(liveCwd, file);
+          if (pending?.owner === liveOwner) {
+            // Encode release intent in the atomic rename, not a later write
+            // that could crash or overwrite a newer owner's publication.
+            const claimed = `${file}.${randomUUID()}.release-${encodeURIComponent(liveOwner)}.claim`;
+            renameSync(file, claimed);
+            log.debug("reload_flag_departing_owner_released", { file, claimed, owner: liveOwner, reason: event.reason });
+          }
+        }
+      } catch (error: unknown) {
+        log.warn("reload_flag_owner_release_failed", { cwd: liveCwd, owner: liveOwner, error: String(error) });
+      }
+    }
     liveOwner = null;
     // Cancel a pending reload continuation (Qodo PR #950 R8): firing into a
     // closed/replaced session would inject a turn nobody asked for.
