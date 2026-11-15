@@ -383,7 +383,7 @@ export type InboundSource = "thread" | "watch" | "target" | "active" | "none";
 export interface InboundSession {
   sessionId: string | null;
   source: InboundSource;
-  /** The stored watch points at a session that is gone; the caller should clear it. */
+  /** The stored watch has no live connection; not proof that the session was deleted. */
   deadWatch?: boolean;
   /** This channel carried a session's target, but that session is gone. */
   deadTarget?: boolean;

@@ -145,6 +145,21 @@ Once you are watching a session, the bot's thread or DM behaves like the Pi prom
 - attachments are handled per type (see below)
 - `/stop` also works as a plain DM message
 
+When no watch or channel identity resolves, messages, message-menu prompts and
+session commands use the connected session with the most recent activity.
+Explicit thread identities and ambiguous shared-channel routes do not fall back.
+Message-menu prompts and ordinary active-fallback prompts keep your watch unchanged
+and establish a reply subscription for the selected session. If the existing destination
+is missing or unavailable, the bot opens a private DM before forwarding the prompt.
+If that DM cannot be opened, the prompt is not sent. These private session subscriptions
+survive bot restarts. Availability checks cannot prevent permission changes after forwarding.
+A transient session disconnect does not erase your saved watch. Sending a DM does
+not move an existing session output destination out of its retained thread/channel;
+new fallback subscriptions without an available destination use the private DM.
+
+Guild `/cancel` and `/dismiss` select the session asking in that channel and refuse
+when multiple sessions are asking there. DMs still dismiss the newest pending question.
+
 ## Answering the agent
 
 Questions arrive with **attached controls**: approve/deny buttons for a confirm,
@@ -183,7 +198,7 @@ Any prompt can be dismissed with `/cancel`. A prompt that is not answered **expi
 | `/diff` | Link to the session's diff viewer |
 | `/file path:<rel>` | Send a file from the session's working directory |
 
-`/file` is confined to the session cwd — `..` and absolute paths are refused, since this is a chat command, not a file server. Files up to 8MB are sent as Discord attachments.
+`/file` is confined to the session cwd — `..` and absolute paths are refused, since this is a chat command, not a file server. Files up to 8MB are sent as attachments in a private interaction reply, not uploaded to the guild channel or a stored watch destination. A stored watch is not required when an active session can be resolved.
 
 ## Attachments from Discord
 

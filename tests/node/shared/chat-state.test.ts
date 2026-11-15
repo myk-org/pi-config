@@ -20,6 +20,28 @@ function stateWith(lastPrompts: unknown) {
   }, NOW);
 }
 
+describe("private reply subscriptions", () => {
+  it("retains a DM-only session binding without a watch", () => {
+    const state = migrateState({ users: { u1: { dmChannelId: "dm1", dmTargets: { s1: "dm1" }, updatedAt: NOW } } }, NOW);
+    assert.deepEqual(state.users.u1?.dmTargets, { s1: "dm1" });
+  });
+
+  it("drops destinations other than the known DM", () => {
+    const state = migrateState({ users: { u1: { watchedSessionId: "s1", dmChannelId: "dm1", dmTargets: { s1: "guild", s2: 42, s3: "dm1" }, updatedAt: NOW } } }, NOW);
+    assert.deepEqual(state.users.u1?.dmTargets, { s3: "dm1" });
+  });
+
+  it("preserves explicit mute during hydration", () => {
+    const state = migrateState({ users: { u1: { watchedSessionId: "s1", deliveryMuted: true, updatedAt: NOW } } }, NOW);
+    assert.equal(state.users.u1?.deliveryMuted, true);
+  });
+
+  it("preserves only true question-only flags", () => {
+    const state = migrateState({ users: { u1: { watchedSessionId: "s1", promptOnlyTargets: { s1: true, s2: "true", s3: false }, updatedAt: NOW } } }, NOW);
+    assert.deepEqual(state.users.u1?.promptOnlyTargets, { s1: true });
+  });
+});
+
 describe("remembered prompts", () => {
   it("round-trips the last prompt per session", () => {
     const stored = stateWith({ "1:/repo": { text: "fix the build", hadImages: false, truncated: false } });

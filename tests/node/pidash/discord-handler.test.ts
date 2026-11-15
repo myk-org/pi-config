@@ -28,11 +28,12 @@ const built: FakeClient[] = [];
 
 class FakeClient extends EventEmitter {
   user = { id: "bot-user" };
+  deliveries: any[] = [];
   guilds = { cache: new Map() };
   /** Only the DM and the plain guild channel exist; anything else is a channel the bot cannot see. */
   channels = {
     fetch: async (id: string) => {
-      if (id === DM) return { id, guildId: null };
+      if (id === DM) return { id, guildId: null, isTextBased: () => true, send: async (payload: any) => { this.deliveries.push(payload); return { id: "reply" }; } };
       if (id === PLAIN) {
         return {
           id,
@@ -102,17 +103,19 @@ function startBot(opts: {
   watchedSessionId?: string | null;
   threads?: Record<string, string>;
   threadId?: string | null;
-  responseChannelId?: string;
+  responseChannelId?: string | null;
+  cwd?: string;
   dmChannelId?: string | null;
   /** Per-session `lastActivity`, which decides the newest session when several are connected. */
   lastActivity?: Record<string, number>;
   /** More users in the same guild channel — a shared fallback channel is a real case. */
   extraUsers?: string[];
+  restore?: boolean;
 }): Bot {
   const users: Record<string, unknown> = {
     [USER]: {
       watchedSessionId: opts.watchedSessionId === undefined ? "s2" : opts.watchedSessionId,
-      responseChannelId: opts.responseChannelId ?? DM,
+      responseChannelId: opts.responseChannelId === undefined ? DM : opts.responseChannelId,
       dmChannelId: opts.dmChannelId === undefined ? DM : opts.dmChannelId,
       threads: opts.threads ?? { s3: THREAD },
       threadId: opts.threadId ?? null,
@@ -128,24 +131,32 @@ function startBot(opts: {
       updatedAt: Date.now(),
     };
   }
-  fs.writeFileSync(stateFile, JSON.stringify({ users }));
+  if (!opts.restore) fs.writeFileSync(stateFile, JSON.stringify({ users }));
   const sends: Sent[] = [];
   const piClients = new Map<string, any>();
   for (const sessionId of opts.live) {
     piClients.set(sessionId, {
-      session: { sessionId, active: true, cwd: "/work", supportsImages: true, lastActivity: opts.lastActivity?.[sessionId] ?? Date.now() },
+      session: { sessionId, active: true, cwd: opts.cwd ?? "/work", supportsImages: true, lastActivity: opts.lastActivity?.[sessionId] ?? Date.now() },
       ws: { send: (raw: string) => sends.push({ sessionId, ...JSON.parse(raw) }) },
       replaying: false,
     });
   }
   const hooks: Array<(sessionId: string, event: any) => void> = [];
   const before = built.length;
+  const signals = ["beforeExit", "SIGTERM", "SIGINT"] as const;
+  const previousListeners = new Map(signals.map((signal) => [signal, new Set(process.listeners(signal))]));
   setupDiscordBot({
     piClients,
     piEventHooks: hooks,
     getActiveSessions: () => [...piClients.values()].map((client) => client.session),
     log: () => {},
   });
+  // Each stub bot must not retain process hooks or recreate its fixture after teardown.
+  for (const signal of signals) {
+    for (const listener of process.listeners(signal)) {
+      if (!previousListeners.get(signal)!.has(listener)) process.removeListener(signal, listener);
+    }
+  }
   assert.equal(built.length, before + 1, "setupDiscordBot built no client");
   return {
     handler: built[built.length - 1]!.listeners("messageCreate")[0] as (m: any) => Promise<void>,
@@ -161,7 +172,7 @@ function message(id: string, content: string, replies: string[], opts: { dm?: bo
     guildId: opts.dm ? null : "g1",
     channelId: opts.dm ? DM : opts.channelId ?? THREAD,
     content,
-    author: { id: opts.author ?? USER, bot: false },
+    author: { id: opts.author ?? USER, bot: false, createDM: async () => ({ id: DM }) },
     reply: async (text: string) => { replies.push(text); },
   };
 }
@@ -196,7 +207,7 @@ function pinLevel(level: "debug" | "info"): void {
 /** A right-click "Ask pi about this message" interaction on a message in `channelId`. */
 function contextMenu(replies: string[], opts: { channelId?: string } = {}): any {
   return {
-    user: { id: USER, username: "tester" },
+    user: { id: USER, username: "tester", createDM: async () => ({ id: DM }) },
     channelId: opts.channelId ?? PLAIN,
     guildId: "g1",
     isMessageContextMenuCommand: () => true,
@@ -220,6 +231,217 @@ function slash(name: string, replies: string[]): any {
 }
 
 describe("discord messageCreate routing", () => {
+  it("ordinary fallback refuses when private DM setup fails", async () => {
+    const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: {} });
+    const replies: string[] = [];
+    const inbound = message("ordinary-dm-unavailable", "continue", replies, { dm: true });
+    inbound.author.createDM = async () => { throw new Error("DM unavailable"); };
+    await bot.handler(inbound);
+    assert.deepEqual(bot.sends, []);
+    assert.match(replies.join("\n"), /private reply channel/);
+  });
+
+  it("file failure logs omit private filenames", async () => {
+    (globalThis as any).__piConfigSessionId = "private-file-failure-log";
+    pinLevel("info");
+    try {
+      const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: {}, cwd: tmp });
+      const interaction = slash("file", []);
+      interaction.options.getString = () => "sensitive-name.txt";
+      await bot.interaction(interaction);
+      assert.match(readLogs(), /workspace file delivery failed/);
+      assert.doesNotMatch(readLogs(), /sensitive-name/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("target routing records its session identity", async () => {
+    (globalThis as any).__piConfigSessionId = "target-routing-log";
+    pinLevel("debug");
+    try {
+      const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: { s1: DM } });
+      await bot.handler(message("target-log", "continue", [], { dm: true }));
+      assert.match(readLogs(), /discord_prompt_via_target \{"sessionId":"s1","channelId":"dm-1"\}/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("menu refreshes cached targets before reuse", async () => {
+    const bot = startBot({ live: ["s3"], watchedSessionId: null });
+    const client = built.at(-1)!;
+    const fetch = client.channels.fetch;
+    client.channels.fetch = async (id: string, options?: any) => id === THREAD
+      ? options?.force ? null : { id, isTextBased: () => true, send: async () => ({ id: "stale" }) } as any
+      : fetch(id);
+    await bot.interaction(contextMenu([], { channelId: THREAD }));
+    bot.hooks[0]!("s3", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "fresh target answer" } });
+    bot.hooks[0]!("s3", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "fresh target answer" }] } });
+    await settle();
+    assert.match(JSON.stringify(client.deliveries), /fresh target answer/);
+  });
+
+  it("menu refuses forwarding when a replacement private DM is unavailable", async () => {
+    const bot = startBot({ live: ["s3"], watchedSessionId: null });
+    const replies: string[] = [];
+    const interaction = contextMenu(replies, { channelId: THREAD });
+    interaction.user.createDM = async () => { throw new Error("unavailable"); };
+    await bot.interaction(interaction);
+    assert.deepEqual(bot.sends, []);
+    assert.match(replies.join("\n"), /private reply channel/);
+  });
+
+  it("slash respects channel identity before newest recency", async () => {
+    const bot = startBot({ live: ["s1", "s3"], watchedSessionId: null, lastActivity: { s1: 999, s3: 1 } });
+    const interaction = slash("stop", []);
+    interaction.channelId = THREAD;
+    interaction.guildId = "g1";
+    await bot.interaction(interaction);
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.command]), [["s3", "abort"]]);
+  });
+
+  it("slash preserves disconnected thread identity", async () => {
+    const bot = startBot({ live: ["s1"], watchedSessionId: null });
+    const replies: string[] = [];
+    const interaction = slash("stop", replies);
+    interaction.channelId = THREAD;
+    interaction.guildId = "g1";
+    await bot.interaction(interaction);
+    assert.deepEqual(bot.sends, []);
+    assert.match(replies.join("\n"), /disconnected|not connected/i);
+  });
+
+  it("guild cancel refuses multiple channel askers", async () => {
+    const bot = startBot({ live: ["s1", "s3"], watchedSessionId: null, threads: {}, responseChannelId: PLAIN, dmChannelId: null });
+    for (const id of ["s1", "s3"]) bot.hooks[0]!(id, { type: "extension_ui_request", id, method: "confirm", title: "Proceed?" });
+    await settle();
+    const replies: string[] = [];
+    await bot.handler(message("cancel-conflict", "/cancel", replies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends, []);
+    assert.match(replies[0]!, /more than one session/);
+  });
+
+  it("guild cancel answers the channel asker rather than the watch", async () => {
+    const bot = startBot({ live: ["s2", "s9"], watchedSessionId: "s2", threads: { s2: THREAD }, responseChannelId: PLAIN, dmChannelId: null });
+    for (const id of ["s2", "s9"]) bot.hooks[0]!(id, { type: "extension_ui_request", id, method: "confirm", title: "Proceed?" });
+    await settle();
+    await bot.handler(message("cancel-channel-asker", "/cancel", [], { channelId: PLAIN }));
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id, s.cancelled]), [["s9", "s9", true]]);
+  });
+
+  it("menu reports shared-channel ambiguity on every attempt", async () => {
+    (globalThis as any).__piConfigSessionId = "menu-conflict-every-refusal";
+    pinLevel("info");
+    try {
+      const bot = startBot({ live: ["s1", "s3"], watchedSessionId: null, threads: {}, responseChannelId: PLAIN, dmChannelId: null });
+      for (const id of ["s1", "s3"]) bot.hooks[0]!(id, { type: "extension_ui_request", id, method: "confirm", title: "Proceed?" });
+      await settle();
+      const replies: string[] = [];
+      await bot.interaction(contextMenu(replies));
+      await bot.interaction(contextMenu(replies));
+      assert.equal(replies.filter((r) => /more than one session/.test(r)).length, 2);
+      assert.deepEqual(bot.sends, []);
+      assert.equal(readLogs().split("\n").filter((line) => line.includes('"reason":"interaction-ambiguous"')).length, 2);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("transient disconnection preserves persistent watch", async () => {
+    const bot = startBot({ live: ["s1"], watchedSessionId: "s2", threads: { s2: THREAD } });
+    await bot.handler(message("keep-watch", "continue", [], { dm: true }));
+    assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).users[USER].watchedSessionId, "s2");
+  });
+
+  it("unwatched menu reply subscription survives restart", async () => {
+    const first = startBot({ live: ["s1"], watchedSessionId: null, responseChannelId: null, threads: {} });
+    await first.interaction(contextMenu([]));
+    const restored = startBot({ live: ["s1"], restore: true });
+    restored.hooks[0]!("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "restored answer" } });
+    restored.hooks[0]!("s1", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "restored answer" }] } });
+    await settle();
+    assert.match(JSON.stringify(built.at(-1)!.deliveries), /restored answer/);
+  });
+
+  it("menu replaces unavailable retained target with private DM", async () => {
+    const bot = startBot({ live: ["s3"], watchedSessionId: null });
+    await bot.interaction(contextMenu([], { channelId: THREAD }));
+    bot.hooks[0]!("s3", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "private answer" } });
+    bot.hooks[0]!("s3", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "private answer" }] } });
+    await settle();
+    assert.match(JSON.stringify(built.at(-1)!.deliveries), /private answer/);
+  });
+
+  it("ordinary active fallback subscribes to replies", async () => {
+    const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: {} });
+    await bot.handler(message("fallback-replies", "continue", [], { dm: true }));
+    bot.hooks[0]!("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ordinary answer" } });
+    bot.hooks[0]!("s1", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ordinary answer" }] } });
+    await settle();
+    assert.match(JSON.stringify(built.at(-1)!.deliveries), /ordinary answer/);
+  });
+
+  it("context-menu fallback establishes a private session reply destination", async () => {
+    const bot = startBot({ live: ["s1"], watchedSessionId: null, responseChannelId: null, threads: {} });
+    await bot.interaction(contextMenu([]));
+    bot.hooks[0]!("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "menu answer" } });
+    bot.hooks[0]!("s1", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "menu answer" }] } });
+    await settle();
+    assert.match(JSON.stringify(built.at(-1)!.deliveries), /menu answer/);
+    assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).users[USER].watchedSessionId, null);
+  });
+
+  it("file fallback uploads through the private interaction without a stored watch", async () => {
+    const workspace = fs.mkdtempSync(path.join(tmp, "workspace-"));
+    try {
+      fs.writeFileSync(path.join(workspace, "result.txt"), "private result");
+      const bot = startBot({ live: ["s1"], watchedSessionId: null, responseChannelId: null, threads: {}, cwd: workspace });
+      const interaction = slash("file", []);
+      interaction.channelId = PLAIN;
+      interaction.guildId = "g1";
+      interaction.options.getString = () => "result.txt";
+      const uploads: any[] = [];
+      interaction.deferReply = async (payload: any) => { assert.equal(payload.ephemeral, true); interaction.deferred = true; };
+      interaction.editReply = async (payload: any) => { uploads.push(payload); };
+      await bot.interaction(interaction);
+      assert.equal(uploads.find((p) => p.files)?.files[0].attachment.toString(), "private result");
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("old DM does not pin a dead watch whose output targets a thread", async () => {
+    const bot = startBot({ live: ["s1"], watchedSessionId: "s2", threads: { s2: THREAD } });
+    const replies: string[] = [];
+    await bot.handler(message("stale-dm", "continue", replies, { dm: true }));
+    assert.deepEqual(bot.sends.map((s) => s.sessionId), ["s1"]);
+    assert.deepEqual(replies, []);
+  });
+
+  it("shared live targets remain ambiguous despite a dead watch", async () => {
+    const bot = startBot({ live: ["s1", "s3"], watchedSessionId: "s2", threadId: THREAD, threads: { s1: DM, s3: DM }, responseChannelId: DM });
+    const replies: string[] = [];
+    await bot.handler(message("conflict", "continue", replies, { dm: true }));
+    assert.deepEqual(bot.sends, []);
+    assert.match(replies[0]!, /more than one session/);
+  });
+
+  it("routine fallback diagnostics use DEBUG", async () => {
+    (globalThis as any).__piConfigSessionId = "fallback-debug";
+    pinLevel("debug");
+    try {
+      const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: {} });
+      await bot.handler(message("debug-route", "continue", [], { dm: true }));
+      assert.match(readLogs(), /\[debug\] \[pidash-discord\] discord_inbound_fallback/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
   after(() => {
     process.env = savedEnv;
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -395,7 +617,7 @@ describe("discord messageCreate routing", () => {
   it("says which session is not connected in the channel streaming it", async () => {
     // Same channel, but the watched client lost its connection: "not watching any session" would be
     // false there — the bot still streams this session into that channel.
-    const bot = startBot({ live: [], watchedSessionId: "s2", threads: { s2: THREAD }, dmChannelId: DM });
+    const bot = startBot({ live: [], watchedSessionId: "s2", threads: {}, dmChannelId: DM });
     const replies: string[] = [];
     await bot.handler(message("m31", "hello", replies, { dm: true }));
     assert.deepEqual(bot.sends, []);
@@ -426,7 +648,7 @@ describe("discord messageCreate routing", () => {
     // The owner's rule: "Not watching any session" is false while a session is connected, so the
     // message goes there — and the log says which one and why.
     (globalThis as any).__piConfigSessionId = "inbound-fallback-single";
-    pinLevel("info");
+    pinLevel("debug");
     try {
       const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: {} });
       const replies: string[] = [];
@@ -442,9 +664,9 @@ describe("discord messageCreate routing", () => {
     }
   });
 
-  it("routes to the most recently active session and logs the candidate count", async () => {
+  it("records the newest-active routing decision", async () => {
     (globalThis as any).__piConfigSessionId = "inbound-fallback-newest";
-    pinLevel("info");
+    pinLevel("debug");
     try {
       const bot = startBot({
         live: ["s1", "s2"],
@@ -465,7 +687,15 @@ describe("discord messageCreate routing", () => {
     }
   });
 
-  it("refuses with the exact sentence only when no session is active, and logs every refusal", async () => {
+  it("refuses with the exact sentence when no session is active", async () => {
+    const bot = startBot({ live: [], watchedSessionId: null, threads: {} });
+    const replies: string[] = [];
+    await bot.handler(message("reply-none", "hello", replies, { dm: true }));
+    assert.deepEqual(replies, ["Not watching any session. Use `/sessions` and pick one."]);
+    assert.deepEqual(bot.sends, []);
+  });
+
+  it("logs every no-session refusal", async () => {
     (globalThis as any).__piConfigSessionId = "inbound-refusal-none";
     pinLevel("info");
     try {
@@ -473,11 +703,7 @@ describe("discord messageCreate routing", () => {
       const replies: string[] = [];
       await bot.handler(message("m42", "hello", replies, { dm: true }));
       await bot.handler(message("m43", "hello again", replies, { dm: true }));
-      assert.deepEqual(bot.sends, []);
-      assert.deepEqual(replies, [
-        "Not watching any session. Use `/sessions` and pick one.",
-        "Not watching any session. Use `/sessions` and pick one.",
-      ]);
+      assert.equal(replies.length, 2);
       const body = readLogs();
       // Two refusals, two lines: no throttling anywhere on this path.
       assert.equal(body.match(/discord_inbound_dropped \{"reason":"no-target"/g)?.length, 2);
@@ -573,19 +799,18 @@ describe("discord messageCreate routing", () => {
     }
   });
 
-  it("logs the /stop and /cancel refusals", async () => {
-    (globalThis as any).__piConfigSessionId = "inbound-route-refusal-log-test";
+  for (const [control, refusal, reason] of [
+    ["/stop", "Not watching any session. Use `/sessions` and pick one.", "stop-no-target"],
+    ["/cancel", "Nothing pending.", "cancel-nothing-pending"],
+  ]) it(`logs the ${control} refusal`, async () => {
+    (globalThis as any).__piConfigSessionId = `inbound-route-refusal-${reason}`;
     pinLevel("info");
     try {
       const bot = startBot({ live: [], watchedSessionId: null, threads: {}, dmChannelId: DM });
       const replies: string[] = [];
-      await bot.handler(message("m14", "/stop", replies, { dm: true }));
-      await bot.handler(message("m15", "/cancel", replies, { dm: true }));
-      assert.deepEqual(replies, ["Not watching any session. Use `/sessions` and pick one.", "Nothing pending."]);
-
-      const body = readLogs();
-      assert.match(body, /\{"reason":"stop-no-target"/);
-      assert.match(body, /\{"reason":"cancel-nothing-pending"/);
+      await bot.handler(message("control-refusal", control!, replies, { dm: true }));
+      assert.deepEqual(replies, [refusal]);
+      assert.ok(readLogs().includes(`"reason":"${reason}"`));
     } finally {
       setLogLevelPin(LOG_NAME, null);
       delete (globalThis as any).__piConfigSessionId;
@@ -662,7 +887,7 @@ describe("discord messageCreate routing", () => {
     // The owner's rule reaches this site too: nothing watches this channel, but s9 is connected, so
     // the prompt has a target. Refusing here was the bug (#1075).
     (globalThis as any).__piConfigSessionId = "interaction-fallback-menu";
-    pinLevel("info");
+    pinLevel("debug");
     try {
       const bot = startBot({ live: ["s9"], watchedSessionId: null, threads: {} });
       const replies: string[] = [];
@@ -678,7 +903,7 @@ describe("discord messageCreate routing", () => {
 
   it("a slash command acts on the only active session instead of refusing", async () => {
     (globalThis as any).__piConfigSessionId = "interaction-fallback-slash";
-    pinLevel("info");
+    pinLevel("debug");
     try {
       const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: {} });
       const statusReplies: string[] = [];
@@ -697,20 +922,19 @@ describe("discord messageCreate routing", () => {
     }
   });
 
-  it("the menu and the slash command refuse only when no session is active, logging each time", async () => {
-    (globalThis as any).__piConfigSessionId = "interaction-refusal-none";
+  for (const kind of ["menu", "slash"]) it(`${kind} logs every no-active-session refusal`, async () => {
+    (globalThis as any).__piConfigSessionId = `interaction-refusal-none-${kind}`;
     pinLevel("info");
     try {
       const bot = startBot({ live: [], watchedSessionId: null, threads: {} });
-      const menuReplies: string[] = [];
-      await bot.interaction(contextMenu(menuReplies, { channelId: PLAIN }));
-      const slashReplies: string[] = [];
-      await bot.interaction(slash("status", slashReplies));
+      const replies: string[] = [];
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await bot.interaction(kind === "menu" ? contextMenu(replies, { channelId: PLAIN }) : slash("status", replies));
+      }
       const refusal = "Not watching any session. Use `/sessions` first.";
-      assert.deepEqual(menuReplies, [refusal]);
-      assert.deepEqual(slashReplies, [refusal]);
+      assert.deepEqual(replies, [refusal, refusal]);
       const body = readLogs();
-      // Nothing was picked, so no fallback line — and both refusals are on the record.
+      // Nothing was picked; every refusal is still on the record.
       assert.doesNotMatch(body, /discord_inbound_fallback/);
       assert.equal(body.match(/discord_inbound_dropped \{[^\n]*"reason":"interaction-no-watch"/g)?.length, 2);
     } finally {

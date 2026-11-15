@@ -260,6 +260,11 @@ export function setupDiscordBot(opts: {
     for (const [sessionId, threadId] of Object.entries(hydratableTargets(stored ?? {}))) {
       targets[sessionId] = { channelId: threadId, threadId };
     }
+    if (!stored?.deliveryMuted) {
+      for (const [sessionId, channelId] of Object.entries(stored?.dmTargets ?? {})) {
+        targets[sessionId] = { channelId, threadId: null };
+      }
+    }
     if (watched && !targets[watched] && stored?.responseChannelId) {
       targets[watched] = { channelId: stored.responseChannelId, threadId: null };
     }
@@ -333,6 +338,9 @@ export function setupDiscordBot(opts: {
         deliveryMuted: state.deliveryMuted === true,
         promptOnlyTargets: { ...(state.promptOnlyTargets ?? {}) },
         dmChannelId: state.dmChannelId ?? null,
+        dmTargets: Object.fromEntries(Object.entries(state.targets ?? {}).filter(([id, target]) =>
+          target.channelId === state.dmChannelId && !target.threadId && !state.promptOnlyTargets?.[id]
+        ).map(([id, target]) => [id, target.channelId])),
         updatedAt: state.updatedAt,
       };
     }
@@ -390,7 +398,7 @@ export function setupDiscordBot(opts: {
     if (!active.length) return resolved;
     const lastActivity = (sessionId: string) => Number(piClients.get(sessionId)?.session?.lastActivity) || 0;
     const sessionId = active.reduce((newest, id) => (lastActivity(id) > lastActivity(newest) ? id : newest));
-    log.info("discord_inbound_fallback", {
+    log.debug("discord_inbound_fallback", {
       reason: active.length === 1 ? "fallback_single_active" : "fallback_newest_active",
       sessionId,
       candidates: active.length,
@@ -401,6 +409,36 @@ export function setupDiscordBot(opts: {
       userId: where.userId ?? null,
     });
     return { ...resolved, sessionId, source: "active" };
+  }
+
+  /** A prompt needs a real subscription before it can leave Discord. Never move the watch. */
+  async function establishReplyTarget(state: RuntimeUserState, sessionId: string, user: any): Promise<boolean> {
+    let target = state.targets?.[sessionId];
+    if (target) {
+      try {
+        const channel = await discord.channels.fetch(target.threadId || target.channelId, { force: true });
+        const permissions = channel?.permissionsFor?.(discord.user);
+        if (!channel?.isTextBased?.() || typeof channel.send !== "function" || channel.archived || channel.locked
+          || (permissions && !permissions.has(["ViewChannel", channel.isThread?.() ? "SendMessagesInThreads" : "SendMessages"]))) target = undefined;
+      } catch { target = undefined; }
+    }
+    if (!target) {
+      try {
+        const dm = await user.createDM();
+        if (!dm?.id) throw new Error("DM unavailable");
+        state.dmChannelId = dm.id;
+        target = { channelId: dm.id, threadId: null };
+      } catch {
+        log.warn("discord reply destination unavailable", { userId: user.id, sessionId });
+        return false;
+      }
+    }
+    state.targets = { ...state.targets, [sessionId]: target };
+    if (state.promptOnlyTargets) delete state.promptOnlyTargets[sessionId];
+    state.deliveryMuted = false;
+    persist();
+    log.debug("discord reply destination established", { userId: user.id, sessionId, channelId: target.channelId });
+    return true;
   }
 
   const seenMessages = new Set<string>();
@@ -1300,7 +1338,7 @@ export function setupDiscordBot(opts: {
         // WARN, with the handler and the state it looked at: this refusal reached the user twice
         // with nothing in the log naming which of the "Not watching any session" sites spoke.
         logInboundDrop({
-          reason: inbound.deadTarget ? "interaction-dead-target" : "interaction-no-watch",
+          reason: inbound.ambiguous ? "interaction-ambiguous" : inbound.deadTarget ? "interaction-dead-target" : "interaction-no-watch",
           channelId: interaction.channelId,
           guildId: interaction.guildId,
           watchedSessionId: state.watchedSessionId ?? null,
@@ -1322,7 +1360,9 @@ export function setupDiscordBot(opts: {
         });
         // Two different refusals: a channel nobody watches and a channel whose session died both
         // used to say "Not watching any session", which hid why it went quiet.
-        await interaction.reply({ content: inbound.deadTarget
+        await interaction.reply({ content: inbound.ambiguous
+          ? "This channel carries more than one session. Send in that session's thread or use `/sessions`."
+          : inbound.deadTarget
           ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
           : "Not watching any session. Use `/sessions` first.", ephemeral: true }).catch(() => {});
         return;
@@ -1359,6 +1399,12 @@ export function setupDiscordBot(opts: {
         "",
         "Look at this and tell me what to do.",
       ].filter(Boolean).join("\n");
+      // A menu prompt explicitly requests replies, without moving the user's watch.
+      if (!await establishReplyTarget(state, targetSession, interaction.user)) {
+        logInboundDrop({ reason: "interaction-reply-destination-unavailable", channelId, userId: interaction.user.id, watchedSessionId: targetSession, watchLive: true, ownsTarget: false });
+        await acknowledge(interaction, "Could not open a private reply channel. Enable DMs and try again.");
+        return;
+      }
       bridge.expectEcho(state, targetSession, prompt);
       client.ws.send(JSON.stringify({ type: "prompt", text: prompt }));
       await interaction.reply({ content: `Sent to **${sessionName(targetSession)}**.`, ephemeral: true }).catch(() => {});
@@ -1449,14 +1495,26 @@ export function setupDiscordBot(opts: {
 
     // Same owner rule as the message and menu paths: a connected session is a target, so the guard
     // below may only refuse when NOTHING is connected (issue #1075).
-    if (!watched) {
-      watched = routeToActiveSession({ sessionId: null, source: "none" }, {
+    {
+      const resolved = routeToActiveSession(resolveInboundSession({
+        channelId: interaction.channelId,
+        threadSessionId: Object.entries(state.threads ?? {}).find(([, threadId]) => threadId === interaction.channelId)?.[0] ?? null,
+        watchedSessionId: watched,
+        targets: state.targets,
+        isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+      }), {
         handler: `slash-command:${name}`,
         channelId: interaction.channelId,
         guildId: interaction.guildId,
-        watchedSessionId: null,
+        watchedSessionId: watched,
         userId: interaction.user.id,
-      }).sessionId;
+      });
+      watched = resolved.sessionId;
+      if (resolved.ambiguous) {
+        logInboundDrop({ reason: "interaction-ambiguous", channelId: interaction.channelId, userId: interaction.user.id, inbound: resolved, watchLive: false, ownsTarget: false });
+        await acknowledge(interaction, "This channel carries more than one session. Send in that session's thread or use `/sessions`.");
+        return;
+      }
     }
     if (!watched) {
       logInboundDrop({
@@ -1483,9 +1541,9 @@ export function setupDiscordBot(opts: {
       return;
     }
     const client = piClients.get(watched);
-    if (!client) {
+    if (!client?.ws) {
       logInboundDrop({
-        reason: "interaction-session-gone",
+        reason: "interaction-session-disconnected",
         channelId: interaction.channelId,
         guildId: interaction.guildId,
         watchedSessionId: watched,
@@ -1494,9 +1552,7 @@ export function setupDiscordBot(opts: {
         ownsTarget: false,
         userId: interaction.user.id,
       });
-      state.watchedSessionId = null;
-      persist();
-      await acknowledge(interaction, "The watched session is gone; cleared.");
+      await acknowledge(interaction, "The selected session is disconnected.");
       return;
     }
     const session = client.session;
@@ -1565,7 +1621,7 @@ export function setupDiscordBot(opts: {
     }
 
     if (name === "file") {
-      await sendWorkspaceFile(state, interaction, session.cwd, String(interaction.options?.getString?.("path", true) || ""));
+      await sendWorkspaceFile(interaction, session.cwd, String(interaction.options?.getString?.("path", true) || ""));
       return;
     }
 
@@ -1745,7 +1801,7 @@ export function setupDiscordBot(opts: {
    * whose real target is `~/.pi/discord.env` must not be postable into a guild
    * thread (Qodo d9ff444e).
    */
-  async function sendWorkspaceFile(state: RuntimeUserState, interaction: any, cwd: string, relative: string): Promise<void> {
+  async function sendWorkspaceFile(interaction: any, cwd: string, relative: string): Promise<void> {
     try {
       const root = fs.realpathSync(path.resolve(cwd));
       const candidate = path.resolve(root, relative);
@@ -1763,21 +1819,16 @@ export function setupDiscordBot(opts: {
         await acknowledge(interaction, `File is ${formatKB(stat.size)} — over the ${formatKB(MAX_IMAGE_BYTES)} limit.`);
         return;
       }
-      const channelId = state.threadId || state.responseChannelId;
-      if (!channelId) {
-        await acknowledge(interaction, "No channel to send to yet — watch a session first.");
-        return;
-      }
-      if (!isComponent(interaction)) await interaction.deferReply({ ephemeral: true }).catch(() => {});
-      const channel = await discord.channels.fetch(channelId);
-      await (channel as any).send({
+      // Files belong to this private request, never an ambient or stale guild destination.
+      await interaction.deferReply({ ephemeral: true });
+      await interaction.editReply({
         files: [{ attachment: fs.readFileSync(resolved), name: path.basename(resolved) }],
         ...NO_MENTIONS,
       });
-      await acknowledge(interaction, `Sent \`${path.basename(resolved)}\`.`);
-      log.info("file sent to discord", { file: path.basename(resolved), size: stat.size });
+      log.info("file sent to discord", { userId: interaction.user.id, channelId: interaction.channelId, size: stat.size });
     } catch (error) {
-      await acknowledge(interaction, `Could not read that file: ${String(error).slice(0, 120)}`);
+      log.warn("workspace file delivery failed", { userId: interaction.user.id, channelId: interaction.channelId, code: (error as NodeJS.ErrnoException)?.code ?? null });
+      await acknowledge(interaction, "Could not read or deliver that file.");
     }
   }
 
@@ -2110,8 +2161,9 @@ export function setupDiscordBot(opts: {
       state.responseChannelId = message.channelId;
       state.dmChannelId = message.channelId;
       if (!state.threadId) {
-        state.target = { channelId: message.channelId, threadId: null };
         state.targets = state.targets ?? {};
+        state.target = (state.watchedSessionId && state.targets[state.watchedSessionId])
+          || { channelId: message.channelId, threadId: null };
         if (state.watchedSessionId) state.targets[state.watchedSessionId] = state.target;
       }
     }
@@ -2133,8 +2185,12 @@ export function setupDiscordBot(opts: {
     // answer, a stale thread map. "Not watching any session" is false there, and saying it to the
     // owner of that channel is the bug this guards (issue #1072). The watch is not cleared either:
     // a disconnect is not proof the session is gone.
+    const streamsHere = (sessionId: string): boolean => {
+      const target = state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
+      return Boolean(target && (target.threadId || target.channelId) === message.channelId);
+    };
     const streamingChannelFallback = (resolved: InboundSession): InboundSession =>
-      resolved.sessionId || !state.watchedSessionId || state.responseChannelId !== message.channelId
+      resolved.sessionId || resolved.ambiguous || !state.watchedSessionId || !streamsHere(state.watchedSessionId)
         ? resolved
         : { sessionId: state.watchedSessionId, source: "watch" };
     // A thread is identity (never liveness) and one channel carrying two sessions is a real conflict;
@@ -2179,21 +2235,6 @@ export function setupDiscordBot(opts: {
       await message.reply(sent ? "⏹️ Stop sent." : "Session is not connected.").catch(() => {});
       return;
     }
-    if (/^\/(cancel|dismiss)$/i.test(text)) {
-      if (!state.pendingPrompt) {
-        drop("cancel-nothing-pending", "info");
-        await message.reply("Nothing pending.").catch(() => {});
-        return;
-      }
-      // Clearing locally left the agent waiting forever: the cancelled response
-      // has to travel back through ui-bridge (Qodo 7e102371).
-      // A DM is session-agnostic: passing a session made an older session's question unreachable
-      // (Qodo d9b80852, again as a1c4f7e2). Only a guild channel names a session.
-      const cancelTarget = message.guildId ? inbound.sessionId ?? undefined : undefined;
-      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), cancelTarget);
-      return;
-    }
-
     // Which pending question is this message answering? Routing (above) is about where a channel's
     // output goes; a question delivered into THIS channel belongs to the session that asked here, even
     // when the user watches a different one. Two asking here is a refusal: nobody can tell them apart.
@@ -2214,6 +2255,17 @@ export function setupDiscordBot(opts: {
     const hasPrompt = message.guildId
       ? Boolean(answerSession && (state.pendingPrompts ?? {})[answerSession])
       : Boolean(state.pendingPrompt);
+    if (/^\/(cancel|dismiss)$/i.test(text)) {
+      if (!hasPrompt) {
+        drop("cancel-nothing-pending", "info");
+        await message.reply("Nothing pending.").catch(() => {});
+        return;
+      }
+      // Guild questions name their asker; DMs intentionally answer the newest question.
+      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), answerSession);
+      if (answerSession) releasePromptOnlyTarget(state, answerSession);
+      return;
+    }
     // Routed where, and why — at DEBUG, once per DECISION: a branch decision is control flow, not a
     // lifecycle event, and an append per message stalls a busy channel (Qodo #1075). The answer
     // session is part of the decision: answering a pending prompt here sends the text THERE, so the
@@ -2268,13 +2320,6 @@ export function setupDiscordBot(opts: {
       }
     }
 
-    // A dead watch is cleared HERE, on the first inbound message that proves it dead — not at hydration.
-    // `setupDiscordBot` runs while `piClients` is still empty, so a startup liveness check would clear
-    // every restored watch and undo the fix that saved watches come back alive after a restart.
-    if (inbound.deadWatch && state.watchedSessionId) {
-      log.warn("discord_watch_cleared_dead", { sessionId: state.watchedSessionId });
-      state.watchedSessionId = null;
-    }
     if (inbound.ambiguous) {
       drop("ambiguous");
       await message.reply("This channel carries more than one session. Send in that session's thread or use `/sessions`.").catch(() => {});
@@ -2295,12 +2340,18 @@ export function setupDiscordBot(opts: {
       drop("session-disconnected");
       // A channel that streams the session says WHAT is wrong, so the reply is actionable and cannot
       // be confused with "not watching" (issue #1072).
-      const streams = state.responseChannelId === message.channelId && state.watchedSessionId === targetSessionId;
+      const streams = streamsHere(targetSessionId);
       await message.reply(inbound.source === "thread"
         ? "That thread's session is not connected."
         : streams
           ? `This channel streams ${sessionNameFor(targetSessionId)}, but that session is not connected to the daemon right now.`
           : "The watched session is disconnected.").catch(() => {});
+      return;
+    }
+
+    if (inbound.source === "active" && !await establishReplyTarget(state, targetSessionId, message.author)) {
+      drop("reply-destination-unavailable");
+      await message.reply("Could not open a private reply channel. Enable DMs and try again.").catch(() => {});
       return;
     }
 
