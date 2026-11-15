@@ -78,6 +78,9 @@ async function transitionTaskStatus(
   _storeFactory?: (path: string) => any,
 ): Promise<boolean> {
   if (!taskId || taskId === "-1") return false;
+  const ownerRefusedEvent = nextStatus === "completed"
+    ? "task_auto_complete_owner_refused"
+    : "task_auto_start_owner_refused";
 
   if (_storeFactory) {
     for (const storePath of candidateStorePaths(cwd, sessionId)) {
@@ -86,6 +89,7 @@ async function transitionTaskStatus(
         store = _storeFactory(storePath);
         const task = store.get(taskId);
         if (task) {
+          if (task.assignee === "user") { log.debug(ownerRefusedEvent, { taskId }); return false; }
           if (shouldUpdate(task.status)) { store.update(taskId, { status: nextStatus }); return true; }
           return false;
         }
@@ -100,6 +104,7 @@ async function transitionTaskStatus(
     try {
       const task = store.get(taskId);
       if (!task) return false;
+      if (task.assignee === "user") { log.debug(ownerRefusedEvent, { taskId }); return false; }
       if (shouldUpdate(task.status)) {
         store.update(taskId, { status: nextStatus });
         await notifyTaskTelemetry(taskId, telemetryActive);
@@ -122,6 +127,7 @@ async function transitionTaskStatus(
       diskStore = new TaskStore(storePath);
       const task = diskStore.get(taskId);
       if (task) {
+        if (task.assignee === "user") { log.debug(ownerRefusedEvent, { taskId }); return false; }
         if (shouldUpdate(task.status)) { diskStore.update(taskId, { status: nextStatus }); return true; }
         return false;
       }

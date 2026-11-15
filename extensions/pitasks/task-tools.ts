@@ -8,6 +8,7 @@ import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
 import type { TaskStore } from "./task-store.js";
 import type { TaskWidget } from "./task-widget.js";
+import { selectTaskRows, taskAssigneeTag } from "./tasks-view.js";
 
 const log = createLogger("pitasks");
 
@@ -55,6 +56,7 @@ NOTE that you should not use this tool if there is only one trivial task to do. 
 - **subject**: A brief, actionable title in imperative form (e.g., "Fix authentication bug in login flow")
 - **description**: Detailed description of what needs to be done, including context and acceptance criteria
 - **activeForm** (optional): Present continuous form shown in the spinner when the task is in_progress (e.g., "Fixing authentication bug"). If omitted, the spinner shows the subject instead.
+- **assignee** (optional): who must do it — \`llm\` (default) means the agent does it; \`user\` means the owner must. Pick \`user\` for a step that needs their hands or credentials: a merge, a live check in a real UI, an approval. One task per owner action, subject = the action, description = what to do and what "done" looks like. Never assign \`user\` to work an agent could do itself, and never start, edit or complete a \`user\` task on their behalf — they close it in \`/tasks\`.
 
 All tasks are created with status \`pending\`.
 
@@ -74,6 +76,7 @@ All tasks are created with status \`pending\`.
 			subject: Type.String({ description: "A brief title for the task" }),
 			description: Type.String({ description: "A detailed description of what needs to be done" }),
 			activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress (e.g., 'Running tests')" })),
+			assignee: Type.Optional(Type.Unsafe({ type: "string", enum: ["llm", "user"], description: "Who does it: 'llm' (default, the agent) or 'user' (a step only the owner can do: a merge, a live check, an approval)" })),
 			agentType: Type.Optional(Type.String({ description: "Optional descriptive metadata for the task. It does not dispatch or execute an agent." })),
 			metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Arbitrary metadata to attach to the task" })),
 		}),
@@ -82,7 +85,7 @@ All tasks are created with status \`pending\`.
 			const meta = params.metadata ?? {};
 			if (params.agentType) meta.agentType = params.agentType;
 			const createdBy = { type: "local" as const, origin: "system", session: "", project: "" };
-			const task = store.create(params.subject, params.description, createdBy, params.activeForm, Object.keys(meta).length > 0 ? meta : undefined);
+			const task = store.create(params.subject, params.description, createdBy, params.activeForm, Object.keys(meta).length > 0 ? meta : undefined, params.assignee === "user" ? "user" : "llm");
 			widget.update();
 			return Promise.resolve(textResult(`Task #${task.id} created successfully: ${task.subject}`));
 		},
@@ -123,8 +126,8 @@ Use TaskGet with a specific task ID to view full details including description a
 				if (so !== 0) return so;
 				return Number(a.id) - Number(b.id);
 			});
-			const lines = sorted.map(task => {
-				let line = `#${task.id} [${task.status}] ${task.subject}`;
+			const lines = selectTaskRows(sorted).map(task => {
+				let line = `#${task.id} [${task.status}] ${taskAssigneeTag(task)} ${task.subject}`;
 				if (task.owner) line += ` (${task.owner})`;
 				if (task.blockedBy.length > 0) {
 					const openBlockers = task.blockedBy.filter(bid => {
@@ -157,6 +160,7 @@ Returns full task details:
 - **subject**: Task title
 - **description**: Detailed requirements and context
 - **status**: 'pending', 'in_progress', or 'completed'
+- **completedBy**, **completionNote**: Who closed the task and their verbatim outcome note. Read these back when resuming after an owner completion.
 - **blocks**: Tasks waiting on this one to complete
 - **blockedBy**: Tasks that must complete before this one can start
 
@@ -173,6 +177,9 @@ Returns full task details:
 			if (!task) return Promise.resolve(textResult("Task not found"));
 			const desc = task.description.replace(/\\n/g, "\n");
 			const lines = [`Task #${task.id}: ${task.subject}`, `Status: ${task.status}`];
+			if (task.completedBy) lines.push(`Completed by: ${task.completedBy}`);
+			if (task.completionNote) lines.push(`Completion note: ${task.completionNote}`);
+			log.debug("task_get", { taskId: task.id, status: task.status });
 			if (task.owner) lines.push(`Owner: ${task.owner}`);
 			lines.push(`Description: ${desc}`);
 			if (task.blockedBy.length > 0) {
@@ -200,6 +207,7 @@ Returns full task details:
 		name: "TaskUpdate",
 		label: "TaskUpdate",
 		description: `Use this tool to update a task in the task list.
+Starting or completing an existing or resulting user-assigned task is refused, including reassignment combined with status. Reassignment alone is supported.
 
 ## When to Use This Tool
 
@@ -284,6 +292,7 @@ Set up task dependencies:
 			description: Type.Optional(Type.String({ description: "New description for the task" })),
 			activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress" })),
 			owner: Type.Optional(Type.String({ description: "New owner for the task" })),
+			assignee: Type.Optional(Type.Unsafe({ type: "string", enum: ["llm", "user"], description: "Reassign the task to the agent ('llm') or to the owner ('user')" })),
 			metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Metadata keys to merge into the task. Set a key to null to delete it." })),
 			addBlocks: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that this task blocks" })),
 			addBlockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
@@ -291,6 +300,12 @@ Set up task dependencies:
 		execute(_toolCallId: string, params: any) {
 			const store = getStore();
 			const { taskId, ...fields } = params;
+			const existing = store.get(taskId);
+			if ((fields.status === "in_progress" || fields.status === "completed") &&
+				(existing?.assignee === "user" || fields.assignee === "user")) {
+				log.debug("task_update_owner_transition_refused", { taskId, status: fields.status });
+				return Promise.resolve(textResult(`Task #${taskId}: only the user may start or complete a user-assigned task`));
+			}
 			const { task, changedFields, warnings } = store.update(taskId, fields);
 			if (changedFields.length === 0 && !task) return Promise.resolve(textResult(`Task #${taskId} not found`));
 			if (fields.status === "in_progress") { widget.setActiveTask(taskId); }
@@ -308,12 +323,13 @@ Set up task dependencies:
 	pi.registerTool({
 		name: "TaskBulkCreate",
 		label: "TaskBulkCreate",
-		description: "Create multiple tasks at once. More efficient than calling TaskCreate multiple times.",
+		description: "Create multiple tasks at once. More efficient than calling TaskCreate multiple times. Set assignee to 'user' for steps only the owner can perform.",
 		parameters: Type.Object({
 			tasks: Type.Array(Type.Object({
 				subject: Type.String({ description: "Brief task title" }),
 				description: Type.String({ description: "Detailed task description" }),
 				blockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
+				assignee: Type.Optional(Type.Union([Type.Literal("llm"), Type.Literal("user")], { description: "Who executes the task: 'llm' (default) or 'user' when only the owner can perform it" })),
 			}), { description: "Array of tasks to create" }),
 		}),
 		async execute(_callId, params) {
@@ -346,7 +362,7 @@ Set up task dependencies:
 	pi.registerTool({
 		name: "TaskBulkUpdate",
 		label: "TaskBulkUpdate",
-		description: "Update multiple tasks at once. More efficient than calling TaskUpdate multiple times.",
+		description: "Update multiple tasks at once. More efficient than calling TaskUpdate multiple times. User-assigned tasks cannot be started or completed; other updates remain supported.",
 		parameters: Type.Object({
 			updates: Type.Array(Type.Object({
 				taskId: Type.String({ description: "Task ID to update" }),
@@ -360,7 +376,16 @@ Set up task dependencies:
 		async execute(_callId, params) {
 			log.debug("tasks_bulk_updated", { count: params.updates.length });
 			const store = getStore();
-			const updates = params.updates.map(u => ({
+			const refused: string[] = [];
+			const allowed = params.updates.filter(u => {
+				if ((u.status === "in_progress" || u.status === "completed") && store.get(u.taskId)?.assignee === "user") {
+					refused.push(`#${u.taskId}: only the user may start or complete a user-assigned task`);
+					log.debug("task_bulk_owner_transition_refused", { taskId: u.taskId, status: u.status });
+					return false;
+				}
+				return true;
+			});
+			const updates = allowed.map(u => ({
 				id: u.taskId,
 				fields: {
 					...(u.status !== undefined ? { status: u.status } : {}),
@@ -377,7 +402,7 @@ Set up task dependencies:
 			}
 			widget.update();
 			const lines = results.map(r => r.success ? `#${r.id}: ${r.changedFields?.join(", ") || "no changes"}` : `#${r.id}: not found`);
-			return textResult(`Updated ${results.filter(r => r.success).length} task(s):\n${lines.join("\n")}`);
+			return textResult(`Updated ${results.filter(r => r.success).length} task(s):\n${[...lines, ...refused].join("\n")}`);
 		},
 	});
 }

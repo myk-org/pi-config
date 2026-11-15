@@ -23,6 +23,8 @@ import {
 	applyTaskAction,
 	formatTasksPlainText,
 	parseTasksCommand,
+	selectTaskRows,
+	taskCompletionNotice,
 	tasksOverlayDeps,
 } from "./tasks-view.js";
 import { isBrowserDispatch } from "../shared/ui-bridge.js";
@@ -33,8 +35,9 @@ import {
 	oldestPendingAt,
 	pendingReminderContent,
 	staleReminderContent,
-	shouldFireReminder,
 	selectActiveTasks,
+	selectStaleTasks,
+	shouldFireReminder,
 } from "./reminders.js";
 
 // Re-export reminder pure helpers so consumers (and tests) can import from index.
@@ -43,8 +46,9 @@ export {
 	oldestPendingAt,
 	pendingReminderContent,
 	staleReminderContent,
-	shouldFireReminder,
 	selectActiveTasks,
+	selectStaleTasks,
+	shouldFireReminder,
 };
 
 const log = createLogger("pitasks");
@@ -90,6 +94,7 @@ export function listTasks(): any[] {
 /** Update a task — for use by other extensions. */
 export function updateTask(id: string, fields: any): any {
 	log.debug("task_updated", { taskId: id, fieldNames: Object.keys(fields) });
+	guardPeerTaskTransition(taskStore?.get(id)?.assignee, "", id, fields);
 	const result = taskStore.update(id, fields);
 	if (result.changedFields.includes("status")) setTaskTelemetryActive(id, fields.status === "in_progress");
 	return result;
@@ -154,6 +159,22 @@ export function listTasksForSession(sessionId: string, targetCwd?: string): any[
 	}
 }
 
+function guardPeerTaskTransition(assignee: unknown, sessionId: string, taskId: string, fields: Record<string, any>): void {
+	if ((fields.status === "in_progress" || fields.status === "completed") &&
+		(assignee === "user" || fields.assignee === "user")) {
+		log.debug("session_task_owner_transition_refused", { sessionId, taskId, status: fields.status });
+		throw new Error(`Task #${taskId}: only the user may start or complete a user-assigned task`);
+	}
+	if (assignee === "user" && fields.assignee !== undefined) {
+		log.debug("session_task_owner_reassign_refused", { sessionId, taskId });
+		throw new Error(`Task #${taskId}: only the user may reassign a user-assigned task`);
+	}
+	if (fields.completedBy !== undefined || fields.completionNote !== undefined) {
+		log.debug("session_task_peer_outcome_refused", { sessionId, taskId });
+		throw new Error(`Task #${taskId}: only the user may record completion attribution or notes`);
+	}
+}
+
 /** Update a task on a specific session's store. */
 export function updateTaskForSession(sessionId: string, taskId: string, fields: any, targetCwd?: string): any {
 	log.debug("session_task_updated", { sessionId, taskId, fieldNames: Object.keys(fields) });
@@ -161,6 +182,7 @@ export function updateTaskForSession(sessionId: string, taskId: string, fields: 
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
 	try {
+		guardPeerTaskTransition(store.get(taskId)?.assignee, sessionId, taskId, fields);
 		return store.update(taskId, fields);
 	} finally {
 		store.close();
@@ -174,6 +196,12 @@ export function updateTasksForSession(sessionId: string, updates: Array<{ id: st
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
 	try {
+		const assignees = new Map<string, unknown>();
+		for (const { id, fields } of updates) {
+			const assignee = assignees.has(id) ? assignees.get(id) : store.get(id)?.assignee;
+			guardPeerTaskTransition(assignee, sessionId, id, fields);
+			assignees.set(id, fields.assignee !== undefined ? (fields.assignee === "user" ? "user" : "llm") : assignee);
+		}
 		return store.updateTasks(updates);
 	} finally {
 		store.close();
@@ -277,6 +305,21 @@ export default function (pi: ExtensionAPI) {
 			pi.events.emit("pidash:tasks-list", { tasks: store.list().filter((t: any) => t.status !== "deleted") });
 		} catch (e: any) { log.warn("pidash_task_broadcast_failed", { error: e?.message }); }
 	}
+	function manualTaskOperations(ui: any) {
+		return tasksOverlayDeps(store, (taskId) => {
+			widget.setActiveTask(taskId, false);
+			widget.update();
+		}, (task) => {
+			try {
+				pi.sendMessage(taskCompletionNotice(task), { triggerTurn: true, deliverAs: "followUp" });
+				log.info("task_completed_notice_sent", { taskId: task.id });
+			} catch (error) {
+				// Submission may have succeeded before throwing; never retry or log its content.
+				log.error("task_completed_notice_failed", { taskId: task.id, errorType: error instanceof Error ? error.name : typeof error });
+				ui?.notify(`Task #${task.id} completed, but its notice could not be submitted. Read it with TaskGet.`, "warning");
+			}
+		});
+	}
 	function handleTaskOp(data: any): void {
 		const op = data?.op;
 		try {
@@ -290,7 +333,7 @@ export default function (pi: ExtensionAPI) {
 					if (data.taskId) { store.update(data.taskId, { status: "in_progress" }); widget.setActiveTask(data.taskId, true); }
 					break;
 				case "complete":
-					if (data.taskId) { store.update(data.taskId, { status: "completed" }); widget.setActiveTask(data.taskId, false); }
+					if (data.taskId) { manualTaskOperations(currentUiCtx).completeTask(data.taskId, { by: "user" }); widget.setActiveTask(data.taskId, false); }
 					break;
 				case "delete":
 					if (data.taskId) { store.update(data.taskId, { status: "deleted" }); widget.setActiveTask(data.taskId, false); }
@@ -391,11 +434,7 @@ export default function (pi: ExtensionAPI) {
 				const now2 = Date.now();
 				if (now2 - lastStaleReminderAt < staleThreshold) return;
 				const allTasks = store.list();
-				const staleTasks = allTasks.filter(t =>
-					t.status === "in_progress" &&
-					t.statusHistory?.in_progress_at &&
-					now2 - new Date(t.statusHistory.in_progress_at).getTime() > staleThreshold
-				);
+				const staleTasks = selectStaleTasks(allTasks, now2, staleThreshold);
 				if (staleTasks.length > 0) {
 					if (!shouldFireReminder(agentBusy, staleTasks.length)) {
 						log.debug("reminder_skipped", "busy");
@@ -522,10 +561,14 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui?.notify(`Cleared ${cleared} task${cleared === 1 ? "" : "s"}.`, "info");
 					return;
 				}
+				const manualTasks = manualTaskOperations(ctx.ui);
 				if (cmd.kind === "start" || cmd.kind === "done") {
 					const outcome = applyTaskAction(cmd.kind, cmd.id, {
 						get: (taskId) => taskStore.get(taskId),
-						update: (taskId, status) => { taskStore.update(taskId, { status }); },
+						update: (taskId, status) => {
+							if (status === "completed") manualTasks.completeTask(taskId, { by: "user" });
+							else taskStore.update(taskId, { status });
+						},
 						onChanged: (taskId, status) => {
 							currentWidget?.setActiveTask(taskId, status === "in_progress");
 							currentWidget?.update();
@@ -558,14 +601,13 @@ export default function (pi: ExtensionAPI) {
 				// list — the fullscreen overlay needs a real terminal. No UI, or a command dispatched
 				// from the pidash browser (whose user cannot see the terminal), gets the same plain text.
 				if (!ctx.hasUI || isBrowserDispatch(ctx)) {
-					log.debug("tasks_list_plain_text", { hasUI: !!ctx.hasUI, browser: isBrowserDispatch(ctx), count: taskStore.list().length });
-					ctx.ui?.notify(formatTasksPlainText(taskStore.list()), "info");
+					const allTasks = taskStore.list();
+					const tasks = selectTaskRows(allTasks, { mine: cmd.mine });
+					log.debug("tasks_list_plain_text", { hasUI: !!ctx.hasUI, browser: isBrowserDispatch(ctx), count: tasks.length, mine: !!cmd.mine });
+					ctx.ui?.notify(formatTasksPlainText(tasks, (id) => allTasks.find((t) => t.id === id)), "info");
 					return;
 				}
-				await openTasksOverlay(ctx, tasksOverlayDeps(taskStore, (taskId) => {
-					currentWidget?.setActiveTask(taskId, false);
-					currentWidget?.update();
-				}));
+				await openTasksOverlay(ctx, manualTasks, { mine: cmd.mine });
 			},
 		});
 	}

@@ -469,4 +469,47 @@ describe("live task store bridge resolution", () => {
     assert.equal(completed, false);
     assert.equal(liveStore?.get("1")?.status, "pending");
   });
+
+  it("refuses user-assigned tasks in published live store without activating telemetry", async () => {
+    const owner = liveStore!.create("Owner step", "desc", {
+      type: "local",
+      origin: "user",
+      session: "s1",
+      project: rootDir,
+    }, undefined, undefined, "user");
+    const activations: Array<{ taskId: string; active: boolean }> = [];
+    publishTaskTelemetryActive((taskId, active = true) => {
+      activations.push({ taskId, active });
+    });
+    assert.equal(await autoMarkInProgress(owner.id, rootDir, "s1"), false);
+    assert.equal(await autoCompleteTask(owner.id, rootDir, "s1"), false);
+    assert.equal(liveStore?.get(owner.id)?.status, "pending");
+    assert.deepEqual(activations, []);
+  });
+
+  it("refuses user-assigned tasks in disk fallback without mutating colliding global task", async () => {
+    const sessPath = join(worktreeDir, ".pi", "tasks", "tasks-s1.json");
+    const globalPath = join(worktreeDir, ".pi", "tasks", "tasks.json");
+    const sessStore = new TaskStore(sessPath);
+    sessStore.create("Owner step", "desc", {
+      type: "local",
+      origin: "user",
+      session: "s1",
+      project: worktreeDir,
+    }, undefined, undefined, "user");
+    sessStore.close();
+    const globalStore = new TaskStore(globalPath);
+    globalStore.create("Colliding agent step", "desc", {
+      type: "local",
+      origin: "user",
+      session: "",
+      project: worktreeDir,
+    });
+    globalStore.close();
+
+    assert.equal(await autoMarkInProgress("1", worktreeDir, "s1"), false);
+    assert.equal(await autoCompleteTask("1", worktreeDir, "s1"), false);
+    assert.equal(readTaskStore(sessPath)[0].status, "pending");
+    assert.equal(readTaskStore(globalPath)[0].status, "pending");
+  });
 });

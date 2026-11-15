@@ -25,6 +25,7 @@ function task(overrides: Partial<Task> = {}): Task {
 		subject: "wire the overlay",
 		description: "replace the nested menu",
 		status: "completed",
+		assignee: "llm",
 		metadata: {},
 		blocks: [],
 		blockedBy: [],
@@ -172,7 +173,7 @@ describe("toTaskRowView", () => {
 
 	it("keeps the id/status/subject row label", () => {
 		const row = toTaskRowView(task());
-		assert.equal(row.label, "#3 [completed] wire the overlay");
+		assert.equal(row.label, "#3 [completed] [llm] wire the overlay");
 		assert.equal(row.blocked, false);
 	});
 
@@ -223,16 +224,27 @@ describe("formatTasksPlainText", () => {
 		assert.equal(formatTasksPlainText([]).split("\n")[0], TASKS_EMPTY_MESSAGE);
 	});
 
-	it("lists one line per task with blocked marker", () => {
+	it("lists one line per task with live open-blocker marker", () => {
 		const text = formatTasksPlainText([
 			task(),
 			task({ id: "4", subject: "wait on 3", status: "pending", blockedBy: ["3"] }),
+			task({ id: "5", subject: "wait on 4", status: "pending", blockedBy: ["4"] }),
 		]);
 		assert.deepEqual(text.split("\n"), [
-			"✔ #3 [completed] wire the overlay",
-			"◻ #4 [pending] wait on 3",
+			"◻ #4 [pending] [llm] wait on 3",
+			"◻ #5 [pending] [llm] wait on 4 ⛔ blocked",
+			"✔ #3 [completed] [llm] wire the overlay",
 			TASKS_HINT,
 		]);
+	});
+
+	it("keeps cross-assignee open blockers on a filtered mine slice", () => {
+		const all = [
+			task({ id: "1", status: "pending", assignee: "llm" }),
+			task({ id: "2", subject: "merge PR", status: "pending", assignee: "user", blockedBy: ["1"] }),
+		];
+		const text = formatTasksPlainText([all[1]], (id) => all.find((t) => t.id === id));
+		assert.equal(text.split("\n")[0], "◻ #2 [pending] [you] merge PR ⛔ blocked");
 	});
 
 	it("always names the subcommands the text output replaces", () => {
@@ -417,6 +429,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		const deps = {
 			listTasks: () => [task({ id: "1" }), task({ id: "2" })],
 			deleteTask: (id: string) => id !== "2",
+			completeTask: () => true,
 			createTask: () => "99",
 			updateTaskSubject: () => true,
 		};
@@ -438,6 +451,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 				return true;
 			},
 			createTask: () => "99",
+			completeTask: () => true,
 			updateTaskSubject: () => true,
 		};
 		await openTasksOverlay(ctx, deps);
@@ -447,7 +461,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		]);
 	});
 
-	for (const key of ["n", "e"]) {
+	for (const key of ["n", "e", "d"]) {
 		it(`refuses ${key} while a selection exists, without opening a dialog`, async () => {
 			const { ctx, notifications, openedCount } = makeTasksCtx([[" ", key, "close"]]);
 			const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
@@ -525,19 +539,19 @@ describe("openTasksOverlay footer (#1089)", () => {
 		const footer = frames[0].find((line) => line.includes("Space select")) ?? "";
 		assert.equal(
 			footer.trim(),
-			"Space select · x delete · n add · e edit · Enter view · Esc close",
+			"Space select · x delete · n add · e edit · d done · f mine/all · Enter view · Esc close",
 		);
 	});
 });
 
 describe("openTasksOverlay first task (#1089)", () => {
 	it("creates the first task when the board is empty", async () => {
-		const { ctx, openedCount } = makeTasksCtx([["first task", "\n"]]);
+		const { ctx, openedCount } = makeTasksCtx([["first task", "\n"], ["llm", "\n"]]);
 		const memory = inMemoryStore();
 		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
 		assert.deepEqual(memory.created, ["first task"]);
 		assert.equal(memory.tasks.length, 1, "the created task is visible to the next list");
-		assert.equal(openedCount(), 2, "the list re-opens on the new task");
+		assert.equal(openedCount(), 3, "assignee prompt precedes reopening the list");
 	});
 
 	it("returns instead of reopening a cancelled first-task dialog", async () => {

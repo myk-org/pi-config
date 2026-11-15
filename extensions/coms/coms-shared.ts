@@ -1065,3 +1065,18 @@ export function deadPeerCardIds<T extends { endpoint?: string | null }>(
   }
   return dead;
 }
+
+/** A remote peer may only mutate coms-origin tasks created by its own non-empty session. */
+export function isPeerTaskCreator(
+  createdBy: { type?: unknown; session?: unknown } | null | undefined,
+  senderSession: unknown,
+): boolean {
+  const hasSender = typeof senderSession === "string" && senderSession.length > 0;
+  const allowed = createdBy?.type === "coms" && hasSender && createdBy.session === senderSession;
+  log.debug("peer_task_creator_check", {
+    allowed,
+    originType: typeof createdBy?.type === "string" ? createdBy.type : null,
+    hasSender,
+  });
+  return allowed;
+}
