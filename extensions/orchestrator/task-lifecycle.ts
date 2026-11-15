@@ -36,6 +36,7 @@ export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: 
         store = _storeFactory(storePath);
         const task = store.get(taskId);
         if (task) {
+          if (task.assignee === "user") { log.debug("task_auto_complete_owner_refused", { taskId }); return false; }
           if (task.status !== "completed") { store.update(taskId, { status: "completed" }); return true; }
           return false;
         }
@@ -50,6 +51,7 @@ export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: 
   try {
     const task = store.get(taskId);
     if (!task) return false;
+    if (task.assignee === "user") { log.debug("task_auto_complete_owner_refused", { taskId }); return false; }
     if (task.status !== "completed") {
       store.update(taskId, { status: "completed" });
       (await import("../pitasks/index.js")).setTaskTelemetryActive(taskId, false);
@@ -79,6 +81,7 @@ export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?
         store = _storeFactory(storePath);
         const task = store.get(taskId);
         if (task) {
+          if (task.assignee === "user") { log.debug("task_auto_start_owner_refused", { taskId }); return false; }
           if (task.status === "pending") { store.update(taskId, { status: "in_progress" }); return true; }
           return false;
         }
@@ -93,6 +96,7 @@ export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?
   try {
     const task = store.get(taskId);
     if (!task) return false;
+    if (task.assignee === "user") { log.debug("task_auto_start_owner_refused", { taskId }); return false; }
     if (task.status === "pending") {
       store.update(taskId, { status: "in_progress" });
       (await import("../pitasks/index.js")).setTaskTelemetryActive(taskId);

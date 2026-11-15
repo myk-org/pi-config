@@ -126,6 +126,8 @@ export function taskDetailRows(task: Task): Array<[string, string]> {
 	const rows: Array<[string, string]> = [
 		["Subject", task.subject],
 		["Status", task.status],
+		...(task.completedBy ? [["Completed by", task.completedBy] as [string, string]] : []),
+		...(task.completionNote ? [["Outcome", task.completionNote] as [string, string]] : []),
 		["Owner", task.owner || "—"],
 		["Blocked by", task.blockedBy.length > 0 ? task.blockedBy.map((id) => `#${id}`).join(", ") : "—"],
 		["Description", task.description || "—"],
@@ -291,7 +293,7 @@ export function tasksOverlayDeps(
 	store: {
 		list: () => Task[];
 		get: (id: string) => Task | undefined;
-		create: (subject: string, description: string, createdBy: Task["createdBy"]) => { id: string };
+		create: (subject: string, description: string, createdBy: Task["createdBy"], activeForm?: string, metadata?: Record<string, any>, assignee?: Task["assignee"]) => { id: string };
 		update: (id: string, fields: TaskOverlayUpdate) => unknown;
 	},
 	onDeleted?: (id: string) => void,
@@ -301,8 +303,8 @@ export function tasksOverlayDeps(
 	return {
 		listTasks: () => store.list(),
 		// The one-line dialog only carries a subject; the description stays empty like a fresh task.
-		createTask: (subject) => {
-			const task = store.create(subject, "", { type: "local", origin: "user", session: "", project: process.cwd() });
+		createTask: (subject, assignee = "llm") => {
+			const task = store.create(subject, "", { type: "local", origin: "user", session: "", project: process.cwd() }, undefined, undefined, assignee);
 			log.info("task_created", { id: task.id });
 			return task.id;
 		},
@@ -342,7 +344,7 @@ export function tasksOverlayDeps(
 			});
 			// The note is the owner's free text: the log names the id, never the note.
 			log.info("task_completed", { id });
-			if (opts.by === "user") onUserCompleted?.({ id: task.id, subject: task.subject, ...(opts.note ? { completionNote: opts.note } : {}) });
+			if (opts.by === "user" && task.assignee === "user") onUserCompleted?.({ id: task.id, subject: task.subject, ...(opts.note ? { completionNote: opts.note } : {}) });
 			return true;
 		},
 	};
@@ -356,7 +358,7 @@ export interface TasksUiDeps {
 	/** Close a task; `by: "user"` is the owner pressing `d`, with their optional note. */
 	completeTask: (id: string, opts: { by: TaskCompletedBy; note?: string }) => boolean;
 	/** Create a task from one line of input; returns the new task id. */
-	createTask: (subject: string) => string;
+	createTask: (subject: string, assignee?: Task["assignee"]) => string;
 	/** Rename a task's subject. Returns false when the task is gone. */
 	updateTaskSubject: (id: string, subject: string) => boolean;
 }

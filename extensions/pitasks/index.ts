@@ -148,6 +148,14 @@ export function listTasksForSession(sessionId: string, targetCwd?: string): any[
 	}
 }
 
+function guardPeerTaskTransition(assignee: unknown, sessionId: string, taskId: string, fields: Record<string, any>): void {
+	if ((fields.status === "in_progress" || fields.status === "completed") &&
+		(assignee === "user" || fields.assignee === "user")) {
+		log.debug("session_task_owner_transition_refused", { sessionId, taskId, status: fields.status });
+		throw new Error(`Task #${taskId}: only the user may start or complete a user-assigned task`);
+	}
+}
+
 /** Update a task on a specific session's store. */
 export function updateTaskForSession(sessionId: string, taskId: string, fields: any, targetCwd?: string): any {
 	log.debug("session_task_updated", { sessionId, taskId, fieldNames: Object.keys(fields) });
@@ -155,6 +163,7 @@ export function updateTaskForSession(sessionId: string, taskId: string, fields: 
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
 	try {
+		guardPeerTaskTransition(store.get(taskId)?.assignee, sessionId, taskId, fields);
 		return store.update(taskId, fields);
 	} finally {
 		store.close();
@@ -168,6 +177,12 @@ export function updateTasksForSession(sessionId: string, updates: Array<{ id: st
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
 	try {
+		const assignees = new Map<string, unknown>();
+		for (const { id, fields } of updates) {
+			const assignee = assignees.has(id) ? assignees.get(id) : store.get(id)?.assignee;
+			guardPeerTaskTransition(assignee, sessionId, id, fields);
+			assignees.set(id, fields.assignee ?? assignee);
+		}
 		return store.updateTasks(updates);
 	} finally {
 		store.close();
@@ -267,6 +282,21 @@ export default function (pi: ExtensionAPI) {
 			pi.events.emit("pidash:tasks-list", { tasks: store.list().filter((t: any) => t.status !== "deleted") });
 		} catch (e: any) { log.warn("pidash_task_broadcast_failed", { error: e?.message }); }
 	}
+	function manualTaskOperations(ui: any) {
+		return tasksOverlayDeps(store, (taskId) => {
+			widget.setActiveTask(taskId, false);
+			widget.update();
+		}, (task) => {
+			try {
+				pi.sendMessage(taskCompletionNotice(task), { triggerTurn: true, deliverAs: "followUp" });
+				log.info("task_completed_notice_sent", { taskId: task.id });
+			} catch (error) {
+				// Submission may have succeeded before throwing; never retry or log its content.
+				log.error("task_completed_notice_failed", { taskId: task.id, errorType: error instanceof Error ? error.name : typeof error });
+				ui?.notify(`Task #${task.id} completed, but its notice could not be submitted. Read it with TaskGet.`, "warning");
+			}
+		});
+	}
 	function handleTaskOp(data: any): void {
 		const op = data?.op;
 		try {
@@ -280,7 +310,7 @@ export default function (pi: ExtensionAPI) {
 					if (data.taskId) { store.update(data.taskId, { status: "in_progress" }); widget.setActiveTask(data.taskId, true); }
 					break;
 				case "complete":
-					if (data.taskId) { store.update(data.taskId, { status: "completed" }); widget.setActiveTask(data.taskId, false); }
+					if (data.taskId) { manualTaskOperations(currentUiCtx).completeTask(data.taskId, { by: "user" }); widget.setActiveTask(data.taskId, false); }
 					break;
 				case "delete":
 					if (data.taskId) { store.update(data.taskId, { status: "deleted" }); widget.setActiveTask(data.taskId, false); }
@@ -506,10 +536,14 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui?.notify(`Cleared ${cleared} task${cleared === 1 ? "" : "s"}.`, "info");
 					return;
 				}
+				const manualTasks = manualTaskOperations(ctx.ui);
 				if (cmd.kind === "start" || cmd.kind === "done") {
 					const outcome = applyTaskAction(cmd.kind, cmd.id, {
 						get: (taskId) => taskStore.get(taskId),
-						update: (taskId, status) => { taskStore.update(taskId, { status }); },
+						update: (taskId, status) => {
+							if (status === "completed") manualTasks.completeTask(taskId, { by: "user" });
+							else taskStore.update(taskId, { status });
+						},
 						onChanged: (taskId, status) => {
 							currentWidget?.setActiveTask(taskId, status === "in_progress");
 							currentWidget?.update();
@@ -541,14 +575,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui?.notify(formatTasksPlainText(tasks), "info");
 					return;
 				}
-				await openTasksOverlay(ctx, tasksOverlayDeps(taskStore, (taskId) => {
-					currentWidget?.setActiveTask(taskId, false);
-					currentWidget?.update();
-				}, (task) => {
-					// One message per owner completion, so the agent reads it on its next turn.
-					log.info("task_completed_notice_sent", { taskId: task.id });
-					try { pi.sendMessage(taskCompletionNotice(task), { triggerTurn: true }); } catch {}
-				}), { mine: cmd.mine });
+				await openTasksOverlay(ctx, manualTasks, { mine: cmd.mine });
 			},
 		});
 	}

@@ -733,9 +733,15 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - **Full TUI parity (#968)** — every interactive prompt and surface is answerable/operable from either TUI or browser, first answer wins:
   - Dangerous-command approvals, commit-trailer selection, project-agent confirmations, and `/tasks create` prompts render in both surfaces
   - `/tasks` itself is a terminal-only overlay: list/view, `n` add, `e` edit the focused subject,
-    `x` delete, with `create`, `start <id>`, `done <id>`, and `clear completed|all` as subcommands
+    `x` delete, `d` done, `f` mine/all, with `create`, `start <id>`, `done <id>`, and `clear completed|all` as subcommands.
+    `n` asks for `you` or `llm` after the subject. Manual completion records the actual user;
+    completing a user-assigned task sends one follow-up notice after the agent finishes its run.
+    TaskGet and task details show completion attribution and notes; reopening clears both.
+    `/tasks done <id>` completes without a note. Use terminal `d` on a user task to add a note
   - A browser-sent `/tasks` answers with the same rows as plain text (plus that subcommand list); the overlay is never opened in a browser
-  - Tasks panel (view/create/start/complete/delete/clear) driven through the live TaskStore with live updates
+  - Tasks panel (view/create/start/complete/delete/clear) driven through the live TaskStore with live updates.
+    Manual completion uses the same actor attribution and user-task follow-up notice as `/tasks done`, without a note prompt;
+    use the terminal overlay to attach a note. Repeated completion does not resend the notice, even if submission failed
   - Coms peer list (busy state, queue depth, context %, own-workload counts) + send message to a peer (same delivery path as `coms_send`)
   - New-session creation (name + initial model) and `/compact` from the browser
   - Memory status (usage, topics, situation report)

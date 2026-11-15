@@ -7,7 +7,7 @@ export type TaskStatus = "pending" | "in_progress" | "completed";
 
 /** Who does the task: the agent (default) or the session owner (#1090). */
 export type TaskAssignee = "llm" | "user";
-/** Who closed a completed task. Absent on old records, which can only have been the agent. */
+/** Who closed a completed task. Legacy completions normalize to llm; absent after reopening. */
 export type TaskCompletedBy = "llm" | "user";
 
 export interface Task {

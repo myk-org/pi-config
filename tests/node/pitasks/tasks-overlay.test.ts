@@ -520,12 +520,12 @@ describe("openTasksOverlay footer (#1089)", () => {
 
 describe("openTasksOverlay first task (#1089)", () => {
 	it("creates the first task when the board is empty", async () => {
-		const { ctx, openedCount } = makeTasksCtx([["first task", "\n"]]);
+		const { ctx, openedCount } = makeTasksCtx([["first task", "\n"], ["llm", "\n"]]);
 		const memory = inMemoryStore();
 		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
 		assert.deepEqual(memory.created, ["first task"]);
 		assert.equal(memory.tasks.length, 1, "the created task is visible to the next list");
-		assert.equal(openedCount(), 2, "the list re-opens on the new task");
+		assert.equal(openedCount(), 3, "assignee prompt precedes reopening the list");
 	});
 
 	it("returns instead of reopening a cancelled first-task dialog", async () => {

@@ -127,7 +127,7 @@ describe("assignee on the task record (#1090)", () => {
 		delete legacy.assignee;
 		writeFileSync(path, JSON.stringify({ nextId: 10, tasks: [legacy] }), "utf-8");
 		const store = new TaskStore(path);
-		assert.equal(store.get("9")?.completedBy, undefined, "absent means the agent did it");
+		assert.equal(store.get("9")?.completedBy, "llm");
 		store.close();
 	});
 });
@@ -390,6 +390,37 @@ function completionDeps(assignee: "llm" | "user", onUserCompleted?: (task: any) 
 }
 
 describe("d in /tasks closes the focused task (#1090)", () => {
+	it("keeps an empty mine view navigable", async () => {
+		const { ctx, screens } = makeTasksCtx([["f", "close"]]);
+		const { deps } = completionDeps("llm");
+		await openTasksOverlay(ctx, deps, { mine: true });
+		assert.match(screens[0], /No tasks assigned to you/);
+		assert.match(screens.at(-1) ?? "", /run the Discord test/);
+	});
+
+	it("allows n from an empty mine view", async () => {
+		const { ctx } = makeTasksCtx([["n"], ["new owner step", "\n"], ["you", "\n"]]);
+		const store = new TaskStore();
+		store.create("agent step", "", createdBy);
+		await openTasksOverlay(ctx, tasksOverlayDeps(store), { mine: true });
+		assert.equal(store.list().find(t => t.subject === "new owner step")?.assignee, "user");
+	});
+
+	it("creates a user-assigned task after the assignee prompt", async () => {
+		const { ctx } = makeTasksCtx([["n"], ["new step", "\n"], ["you", "\n"]]);
+		const store = new TaskStore();
+		store.create("existing", "", createdBy);
+		await openTasksOverlay(ctx, tasksOverlayDeps(store));
+		assert.equal(store.list().find(t => t.subject === "new step")?.assignee, "user");
+	});
+
+	it("cancels assignee selection without creating a task", async () => {
+		const { ctx } = makeTasksCtx([["n"], ["new step", "\n"], ["\x1b"]]);
+		const store = new TaskStore();
+		store.create("existing", "", createdBy);
+		await openTasksOverlay(ctx, tasksOverlayDeps(store));
+		assert.equal(store.list().length, 1);
+	});
 	it("asks the owner for an optional note and persists it", async () => {
 		const { ctx, openedCount } = makeTasksCtx([["d"], ["merged #1088", "\n"]]);
 		const { deps, writes } = completionDeps("user");
@@ -418,7 +449,7 @@ describe("d in /tasks closes the focused task (#1090)", () => {
 		const { deps, writes } = completionDeps("llm");
 		await openTasksOverlay(ctx, deps);
 		assert.equal(openedCount(), 1, "no note dialog for the agent's own task");
-		assert.deepEqual(writes, [["5", { status: "completed", completedBy: "llm" }]]);
+		assert.deepEqual(writes, [["5", { status: "completed", completedBy: "user" }]]);
 	});
 
 	it("shows only the owner's rows when the filter is on, and f toggles back", async () => {

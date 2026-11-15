@@ -102,8 +102,10 @@ export async function openTasksOverlay(
 			queue.push({ kind: "add" });
 		} else {
 			await openListDetailOverlay(ctx, {
-				emptyMessage: TASKS_EMPTY_MESSAGE,
+				emptyMessage: mineOnly ? "No tasks assigned to you." : TASKS_EMPTY_MESSAGE,
+				allowEmpty: true,
 				listSpec: {
+					emptyBody: "No tasks assigned to you. Press f for all or n to add.",
 					title: mineOnly ? "Tasks · mine" : "Tasks",
 					countLabel: (tasks) => `${tasks.length} task${tasks.length === 1 ? "" : "s"}`,
 					borderTitle: (tasks) => {
@@ -150,7 +152,7 @@ export async function openTasksOverlay(
 							if (task.assignee === "user") queue.push({ kind: "complete", task });
 							else {
 								log.info("tasks_overlay_complete", { taskId: task.id });
-								deps.completeTask(task.id, { by: "llm" });
+								deps.completeTask(task.id, { by: "user" });
 								return "redraw";
 							}
 						}
@@ -228,7 +230,14 @@ export async function openTasksOverlay(
 			log.debug("tasks_overlay_compose_skipped", { reason: plan.reason, taskId: editing?.id });
 			continue;
 		}
-		if (plan.kind === "create") deps.createTask(plan.subject);
-		else deps.updateTaskSubject(plan.id, plan.subject);
+		if (plan.kind === "create") {
+			const choice = await promptLine(ctx, { title: "Who is this task for?", placeholder: "you or llm" });
+			const assignee = choice?.trim().toLowerCase();
+			if (assignee !== "you" && assignee !== "llm") {
+				log.debug("tasks_overlay_assignee_cancelled");
+				continue;
+			}
+			deps.createTask(plan.subject, assignee === "you" ? "user" : "llm");
+		} else deps.updateTaskSubject(plan.id, plan.subject);
 	}
 }

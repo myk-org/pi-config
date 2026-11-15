@@ -106,6 +106,15 @@ A change is complete when ALL pass:
    exists?" If the answer is "I read the diff", the feature is unfinished.
 7. Files committed with message: `type(scope): description`
 
+## Task completion contract
+
+TaskUpdate, TaskBulkUpdate and orchestrator lifecycle helpers refuse agent start/completion
+of user-assigned tasks, including reassignment combined with status. Reassignment alone,
+content edits and deletion remain supported. Manual `/tasks done`, browser task-panel completion and overlay completion
+record `completedBy: user` independently of assignee. Only user-assigned completions send
+a follow-up notice, without automatic retries. TaskGet and task details expose the note;
+logs must never contain it. Reopening clears the outcome in single and bulk store updates.
+
 ## Logging Requirements
 
 All new or modified code MUST include proper `log.debug/info/warn/error` calls via `createLogger`. No code change is complete without logging.

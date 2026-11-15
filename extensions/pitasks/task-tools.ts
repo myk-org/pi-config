@@ -160,6 +160,7 @@ Returns full task details:
 - **subject**: Task title
 - **description**: Detailed requirements and context
 - **status**: 'pending', 'in_progress', or 'completed'
+- **completedBy**, **completionNote**: Who closed the task and their verbatim outcome note. Read these back when resuming after an owner completion.
 - **blocks**: Tasks waiting on this one to complete
 - **blockedBy**: Tasks that must complete before this one can start
 
@@ -176,6 +177,9 @@ Returns full task details:
 			if (!task) return Promise.resolve(textResult("Task not found"));
 			const desc = task.description.replace(/\\n/g, "\n");
 			const lines = [`Task #${task.id}: ${task.subject}`, `Status: ${task.status}`];
+			if (task.completedBy) lines.push(`Completed by: ${task.completedBy}`);
+			if (task.completionNote) lines.push(`Completion note: ${task.completionNote}`);
+			log.debug("task_get", { taskId: task.id, status: task.status });
 			if (task.owner) lines.push(`Owner: ${task.owner}`);
 			lines.push(`Description: ${desc}`);
 			if (task.blockedBy.length > 0) {
@@ -203,6 +207,7 @@ Returns full task details:
 		name: "TaskUpdate",
 		label: "TaskUpdate",
 		description: `Use this tool to update a task in the task list.
+Starting or completing an existing or resulting user-assigned task is refused, including reassignment combined with status. Reassignment alone is supported.
 
 ## When to Use This Tool
 
@@ -295,6 +300,12 @@ Set up task dependencies:
 		execute(_toolCallId: string, params: any) {
 			const store = getStore();
 			const { taskId, ...fields } = params;
+			const existing = store.get(taskId);
+			if ((fields.status === "in_progress" || fields.status === "completed") &&
+				(existing?.assignee === "user" || fields.assignee === "user")) {
+				log.debug("task_update_owner_transition_refused", { taskId, status: fields.status });
+				return Promise.resolve(textResult(`Task #${taskId}: only the user may start or complete a user-assigned task`));
+			}
 			const { task, changedFields, warnings } = store.update(taskId, fields);
 			if (changedFields.length === 0 && !task) return Promise.resolve(textResult(`Task #${taskId} not found`));
 			if (fields.status === "in_progress") { widget.setActiveTask(taskId); }
@@ -350,7 +361,7 @@ Set up task dependencies:
 	pi.registerTool({
 		name: "TaskBulkUpdate",
 		label: "TaskBulkUpdate",
-		description: "Update multiple tasks at once. More efficient than calling TaskUpdate multiple times.",
+		description: "Update multiple tasks at once. More efficient than calling TaskUpdate multiple times. User-assigned tasks cannot be started or completed; other updates remain supported.",
 		parameters: Type.Object({
 			updates: Type.Array(Type.Object({
 				taskId: Type.String({ description: "Task ID to update" }),
@@ -364,7 +375,16 @@ Set up task dependencies:
 		async execute(_callId, params) {
 			log.debug("tasks_bulk_updated", { count: params.updates.length });
 			const store = getStore();
-			const updates = params.updates.map(u => ({
+			const refused: string[] = [];
+			const allowed = params.updates.filter(u => {
+				if ((u.status === "in_progress" || u.status === "completed") && store.get(u.taskId)?.assignee === "user") {
+					refused.push(`#${u.taskId}: only the user may start or complete a user-assigned task`);
+					log.debug("task_bulk_owner_transition_refused", { taskId: u.taskId, status: u.status });
+					return false;
+				}
+				return true;
+			});
+			const updates = allowed.map(u => ({
 				id: u.taskId,
 				fields: {
 					...(u.status !== undefined ? { status: u.status } : {}),
@@ -381,7 +401,7 @@ Set up task dependencies:
 			}
 			widget.update();
 			const lines = results.map(r => r.success ? `#${r.id}: ${r.changedFields?.join(", ") || "no changes"}` : `#${r.id}: not found`);
-			return textResult(`Updated ${results.filter(r => r.success).length} task(s):\n${lines.join("\n")}`);
+			return textResult(`Updated ${results.filter(r => r.success).length} task(s):\n${[...lines, ...refused].join("\n")}`);
 		},
 	});
 }

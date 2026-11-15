@@ -72,7 +72,7 @@ function normalizeTask(t: any): Task {
 		// #1090: old records carry no assignee; the agent was the only possibility back then.
 		assignee: t?.assignee === "user" ? "user" : "llm",
 		...(typeof completionNote === "string" && completionNote ? { completionNote } : {}),
-		...(completedBy === "user" || completedBy === "llm" ? { completedBy } : {}),
+		...(completedBy === "user" || completedBy === "llm" ? { completedBy } : t?.status === "completed" ? { completedBy: "llm" as const } : {}),
 		createdBy: t.createdBy && typeof t.createdBy === "object" ? t.createdBy :
 			(t.metadata?.coms_origin ? { type: "coms" as const, origin: t.metadata.coms_origin.sender_name || "", session: t.metadata.coms_origin.sender_session || "", project: "" } :
 			{ type: "local" as const, origin: "system", session: "", project: "" }),
@@ -316,6 +316,12 @@ export class TaskStore {
 			}
 
 			if (fields.status !== undefined) {
+				if (fields.status !== "completed" || task.status !== "completed") {
+					delete task.completedBy;
+					delete task.completionNote;
+					log.debug("task_outcome_reset", { id, status: fields.status });
+				}
+				if (fields.status === "completed") task.completedBy = fields.completedBy ?? "llm";
 				task.status = fields.status as TaskStatus;
 				changedFields.push("status");
 				const now = Date.now();
@@ -402,6 +408,12 @@ export class TaskStore {
 				}
 
 				if (fields.status !== undefined) {
+					if (fields.status !== "completed" || task.status !== "completed") {
+						delete task.completedBy;
+						delete task.completionNote;
+						log.debug("task_outcome_reset", { id, status: fields.status });
+					}
+					if (fields.status === "completed") task.completedBy = fields.completedBy ?? "llm";
 					task.status = fields.status as TaskStatus;
 					changedFields.push("status");
 					const now = Date.now();

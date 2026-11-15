@@ -12,6 +12,7 @@ import { makeTempDir } from "../helpers/temp-dirs.js";
 
 function tempProject(): string {
   const dir = makeTempDir("pidash-settings-");
+  execFileSync("git", ["init", "-q", dir]);
   mkdirSync(join(dir, ".pi"), { recursive: true });
   return dir;
 }
@@ -50,7 +51,6 @@ describe("browser-ops settings", () => {
       // settings file — this identity is what SettingsPanel uses to accept
       // or reject cross-session broadcasts. getSettingsPath resolves through
       // git rev-parse --git-common-dir, so the temp project must be a repo.
-      execFileSync("git", ["init", "-q", dir]);
       mkdirSync(join(dir, "packages", "nested", "deeper"), { recursive: true });
       const fromSub = buildSettingsPayload(join(dir, "packages", "nested", "deeper"), "project");
       assert.equal(fromSub.settingsPath, fromRoot.settingsPath, "subdir resolves to the same settings file");
