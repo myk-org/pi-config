@@ -35,11 +35,14 @@ function bootTelemetryHarness() {
 	process.env.PI_TASKS = taskPath;
 
 	const handlers = new Map<string, Function>();
+	const tools = new Map<string, any>();
 	const api = {
 		on(name: string, handler: Function) {
 			handlers.set(name, handler);
 		},
-		registerTool() {},
+		registerTool(tool: any) {
+			tools.set(tool.name, tool);
+		},
 		registerCommand() {},
 		events: { on() { return () => {}; }, emit() {} },
 	};
@@ -72,6 +75,16 @@ function bootTelemetryHarness() {
 				toolName,
 				args,
 			}, ctx);
+		},
+		async runTool(toolName: string, args: Record<string, unknown>) {
+			const toolCallId = `call-${toolName}`;
+			await handlers.get("tool_execution_start")!({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName,
+				args,
+			}, ctx);
+			return tools.get(toolName)!.execute(toolCallId, args);
 		},
 		async turnEnd(input: number, output: number) {
 			await handlers.get("turn_end")!({
@@ -332,6 +345,228 @@ describe("#1026 per-turn task token attribution", () => {
 			assert.deepEqual(sumTokens(store), { input: 0, output: 0 });
 		} finally {
 			widget.dispose();
+		}
+	});
+
+	it("gives integer remainder to the first referenced task regardless of activation order", async () => {
+		const h = bootTelemetryHarness();
+		try {
+			await h.sessionStart();
+			const t1 = h.startInProgress("Task 1");
+			const t2 = h.startInProgress("Task 2");
+			const t3 = h.startInProgress("Task 3");
+
+			await h.turnStart();
+			await h.toolStart("TaskGet", { taskId: t3.id });
+			await h.toolStart("TaskGet", { taskId: t1.id });
+			await h.toolStart("TaskGet", { taskId: t2.id });
+			await h.turnEnd(10, 10);
+
+			assert.equal(taskStore.get(t3.id)?.telemetry?.inputTokens, 4);
+			assert.equal(taskStore.get(t3.id)?.telemetry?.outputTokens, 4);
+			assert.equal(taskStore.get(t1.id)?.telemetry?.inputTokens, 3);
+			assert.equal(taskStore.get(t1.id)?.telemetry?.outputTokens, 3);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.inputTokens, 3);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.outputTokens, 3);
+			assert.deepEqual(sumTokens(taskStore), { input: 10, output: 10 });
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("credits tasks referenced via TaskBulkUpdate updates array", async () => {
+		const h = bootTelemetryHarness();
+		try {
+			await h.sessionStart();
+			const t1 = h.startInProgress("Task 1");
+			const t2 = h.startInProgress("Task 2");
+			const t3 = h.startInProgress("Task 3");
+
+			await h.turnStart();
+			await h.runTool("TaskBulkUpdate", {
+				updates: [
+					{ taskId: t3.id, subject: "Updated 3" },
+					{ taskId: t1.id, subject: "Updated 1" },
+				],
+			});
+			await h.turnEnd(101, 51);
+
+			assert.equal(taskStore.get(t3.id)?.telemetry?.inputTokens, 51);
+			assert.equal(taskStore.get(t3.id)?.telemetry?.outputTokens, 26);
+			assert.equal(taskStore.get(t1.id)?.telemetry?.inputTokens, 50);
+			assert.equal(taskStore.get(t1.id)?.telemetry?.outputTokens, 25);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.inputTokens, 0);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.outputTokens, 0);
+			assert.deepEqual(sumTokens(taskStore), { input: 101, output: 51 });
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("credits tasks referenced via TaskBulkDelete taskIds array", async () => {
+		const h = bootTelemetryHarness();
+		try {
+			await h.sessionStart();
+			const t1 = h.startInProgress("Task 1");
+			const t2 = h.startInProgress("Task 2");
+
+			await h.turnStart();
+			await h.toolStart("TaskBulkDelete", { taskIds: [t2.id] });
+			await h.turnEnd(40, 10);
+
+			assert.equal(taskStore.get(t1.id)?.telemetry?.inputTokens, 0);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.inputTokens, 40);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.outputTokens, 10);
+			assert.deepEqual(sumTokens(taskStore), { input: 40, output: 10 });
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("credits tasks referenced via parallel subagent tasks array", async () => {
+		const h = bootTelemetryHarness();
+		try {
+			await h.sessionStart();
+			const t1 = h.startInProgress("Task 1");
+			const t2 = h.startInProgress("Task 2");
+			const t3 = h.startInProgress("Task 3");
+
+			await h.turnStart();
+			await h.toolStart("subagent", {
+				async: true,
+				tasks: [
+					{ agent: "explorer", task: "inspect", cwd: "/tmp", taskId: "-1" },
+					{ agent: "worker", task: "fix 3", cwd: "/tmp", taskId: t3.id },
+					{ agent: "worker", task: "fix 1", cwd: "/tmp", taskId: t1.id },
+				],
+			});
+			await h.turnEnd(21, 9);
+
+			assert.equal(taskStore.get(t3.id)?.telemetry?.inputTokens, 11);
+			assert.equal(taskStore.get(t3.id)?.telemetry?.outputTokens, 5);
+			assert.equal(taskStore.get(t1.id)?.telemetry?.inputTokens, 10);
+			assert.equal(taskStore.get(t1.id)?.telemetry?.outputTokens, 4);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.inputTokens, 0);
+			assert.deepEqual(sumTokens(taskStore), { input: 21, output: 9 });
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("credits tasks referenced via chain subagent steps array", async () => {
+		const h = bootTelemetryHarness();
+		try {
+			await h.sessionStart();
+			const t1 = h.startInProgress("Task 1");
+			const t2 = h.startInProgress("Task 2");
+			const t3 = h.startInProgress("Task 3");
+
+			await h.turnStart();
+			await h.toolStart("subagent", {
+				async: true,
+				chain: [
+					{ agent: "worker", task: "step 1", cwd: "/tmp", taskId: t2.id },
+					{ agent: "worker", task: "step 2", cwd: "/tmp", taskId: t1.id },
+				],
+			});
+			await h.turnEnd(15, 7);
+
+			assert.equal(taskStore.get(t2.id)?.telemetry?.inputTokens, 8);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.outputTokens, 4);
+			assert.equal(taskStore.get(t1.id)?.telemetry?.inputTokens, 7);
+			assert.equal(taskStore.get(t1.id)?.telemetry?.outputTokens, 3);
+			assert.equal(taskStore.get(t3.id)?.telemetry?.inputTokens, 0);
+			assert.deepEqual(sumTokens(taskStore), { input: 15, output: 7 });
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("credits tasks referenced via snake_case task_id argument", async () => {
+		const h = bootTelemetryHarness();
+		try {
+			await h.sessionStart();
+			const t1 = h.startInProgress("Task 1");
+			const t2 = h.startInProgress("Task 2");
+
+			await h.turnStart();
+			await h.toolStart("TaskGet", { task_id: t2.id });
+			await h.turnEnd(33, 11);
+
+			assert.equal(taskStore.get(t1.id)?.telemetry?.inputTokens, 0);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.inputTokens, 33);
+			assert.equal(taskStore.get(t2.id)?.telemetry?.outputTokens, 11);
+			assert.deepEqual(sumTokens(taskStore), { input: 33, output: 11 });
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("credits a task completed mid-turn while preserving its endedAt timestamp", async () => {
+		const h = bootTelemetryHarness();
+		try {
+			await h.sessionStart();
+			const t5 = h.startInProgress("Task 5");
+			const t6 = h.startInProgress("Task 6");
+
+			await h.turnStart();
+			await h.runTool("TaskUpdate", { taskId: t6.id, status: "completed" });
+			await h.turnEnd(90, 30);
+
+			assert.equal(taskStore.get(t6.id)?.status, "completed");
+			assert.equal(typeof taskStore.get(t6.id)?.telemetry?.endedAt, "number");
+			assert.equal(taskStore.get(t6.id)?.telemetry?.inputTokens, 90);
+			assert.equal(taskStore.get(t6.id)?.telemetry?.outputTokens, 30);
+			assert.equal(taskStore.get(t5.id)?.telemetry?.inputTokens, 0);
+			assert.equal(taskStore.get(t5.id)?.telemetry?.outputTokens, 0);
+			assert.deepEqual(sumTokens(taskStore), { input: 90, output: 30 });
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("does not bill a sole active task when tool calls reference only a pending task", async () => {
+		const h = bootTelemetryHarness();
+		try {
+			await h.sessionStart();
+			const sole = h.startInProgress("Sole active");
+			const pending = taskStore.create("Pending", "body", createdBy);
+
+			await h.turnStart();
+			await h.toolStart("TaskGet", { taskId: pending.id });
+			await h.turnEnd(75, 25);
+
+			assert.equal(taskStore.get(pending.id)?.telemetry, undefined);
+			assert.equal(taskStore.get(sole.id)?.telemetry?.inputTokens, 0);
+			assert.equal(taskStore.get(sole.id)?.telemetry?.outputTokens, 0);
+			assert.deepEqual(sumTokens(taskStore), { input: 0, output: 0 });
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("does not credit a task completed in an earlier turn when read later", async () => {
+		const h = bootTelemetryHarness();
+		try {
+			await h.sessionStart();
+			const t5 = h.startInProgress("Task 5");
+			const t6 = h.startInProgress("Task 6");
+
+			await h.turnStart();
+			await h.runTool("TaskUpdate", { taskId: t6.id, status: "completed" });
+			await h.turnEnd(40, 10);
+
+			await h.turnStart();
+			await h.runTool("TaskGet", { taskId: t6.id });
+			await h.turnEnd(60, 20);
+
+			assert.equal(taskStore.get(t6.id)?.telemetry?.inputTokens, 40);
+			assert.equal(taskStore.get(t6.id)?.telemetry?.outputTokens, 10);
+			assert.equal(taskStore.get(t5.id)?.telemetry?.inputTokens, 0);
+			assert.equal(taskStore.get(t5.id)?.telemetry?.outputTokens, 0);
+			assert.deepEqual(sumTokens(taskStore), { input: 40, output: 10 });
+		} finally {
+			h.cleanup();
 		}
 	});
 });

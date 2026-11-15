@@ -214,14 +214,37 @@ export function deleteTaskForSession(sessionId: string, taskId: string, targetCw
 	}
 }
 
-function extractToolTaskRef(args: any): string | null {
-	const raw = args?.taskId;
+function normalizeTaskRefId(raw: unknown): string | null {
 	const id = typeof raw === "string"
 		? raw.trim()
 		: typeof raw === "number" && Number.isFinite(raw)
 			? String(raw)
 			: "";
 	return id && id !== "-1" ? id : null;
+}
+
+function extractToolTaskRefs(args: any): string[] {
+	if (!args || typeof args !== "object") return [];
+	const out: string[] = [];
+	const push = (raw: unknown) => {
+		const id = normalizeTaskRefId(raw);
+		if (id && !out.includes(id)) out.push(id);
+	};
+	push(args.taskId);
+	push(args.task_id);
+	if (Array.isArray(args.updates)) {
+		for (const item of args.updates) { push(item?.taskId); push(item?.task_id); }
+	}
+	if (Array.isArray(args.taskIds)) {
+		for (const id of args.taskIds) push(id);
+	}
+	if (Array.isArray(args.tasks)) {
+		for (const item of args.tasks) { push(item?.taskId); push(item?.task_id); }
+	}
+	if (Array.isArray(args.chain)) {
+		for (const step of args.chain) { push(step?.taskId); push(step?.task_id); }
+	}
+	return out;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -483,6 +506,7 @@ export default function (pi: ExtensionAPI) {
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
+		widget.beginTurn();
 	});
 
 	pi.on("turn_end", async (event: any) => {
@@ -494,6 +518,8 @@ export default function (pi: ExtensionAPI) {
 		const msg = (event as any).message;
 		if (msg?.role === "assistant" && msg.usage) {
 			widget.addTokenUsage(msg.usage.input ?? 0, msg.usage.output ?? 0, refsSnapshot);
+		} else {
+			widget.beginTurn();
 		}
 	});
 
@@ -503,6 +529,7 @@ export default function (pi: ExtensionAPI) {
 		turnTaskRefs.clear();
 		if (shuttingDown) return;
 		agentBusy = false;
+		widget.beginTurn();
 		log.debug("agentBusy", "agent_settled reset");
 	});
 
@@ -531,6 +558,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		upgradeStoreIfNeeded(ctx);
 		if (forkSeed?.tasks.length) store.seed(forkSeed);
+		widget.beginTurn();
 		showPersistedTasks(reason === "reload" || reason === "resume" || reason === "fork");
 	});
 
@@ -542,17 +570,18 @@ export default function (pi: ExtensionAPI) {
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
+		widget.beginTurn();
 		showPersistedTasks();
 	});
 
 	pi.on("tool_execution_start", async (event: any, ctx: any) => {
 		if (shuttingDown) return;
-		const refTaskId = extractToolTaskRef(event?.args);
-		if (refTaskId) {
-			turnTaskRefs.add(refTaskId);
-			log.debug("task_telemetry_ref_collected", { toolName: event?.toolName, taskId: refTaskId });
-		} else if (event?.args?.taskId !== undefined) {
-			log.debug("task_telemetry_ref_ignored", { toolName: event?.toolName, taskId: event?.args?.taskId });
+		const refTaskIds = extractToolTaskRefs(event?.args);
+		if (refTaskIds.length > 0) {
+			for (const refTaskId of refTaskIds) turnTaskRefs.add(refTaskId);
+			log.debug("task_telemetry_ref_collected", { toolName: event?.toolName, taskIds: refTaskIds });
+		} else if (event?.args?.taskId !== undefined || event?.args?.task_id !== undefined) {
+			log.debug("task_telemetry_ref_ignored", { toolName: event?.toolName, taskId: event?.args?.taskId ?? event?.args?.task_id });
 		}
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
