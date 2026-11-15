@@ -266,6 +266,10 @@ The session task list behind `/tasks` and the task widget. Statuses are `pending
 | `TaskBulkUpdate` | Update several tasks in one call | `updates[]` (`taskId`, `status`, `subject`, `description`, `addBlockedBy[]`, `addBlocks[]`) |
 | `TaskBulkDelete` | Hard-delete several tasks by id | `taskIds[]` |
 
+File-backed task stores watch the configured parent directory and filter by the task filename, so repeated atomic file replacements remain visible, including after session resume. Symlinked stores also watch the resolved target's directory for target writes and replacements. Saves still atomically replace the configured pathname, not the symlink target. Local mutations notify synchronously; filesystem events can also refresh the widget and broadcast the same snapshot again. These notifications are invalidations, not exactly-once mutation events. Refresh callbacks do not write the store. Subagent children do not start watchers.
+
+Watching depends on the platform's `fs.watch` support and event delivery. Replacing the watched parent directory, changes reported without a filename, and filesystems without reliable notifications are not covered; there is no polling fallback or replay of changes made while the watcher is closed. Watcher errors close and clear the handles so a later `reopen()` can try again. There is no automatic retry timer during an active session.
+
 ### Core tools (9 tools)
 
 | Tool | Purpose | Key parameters |

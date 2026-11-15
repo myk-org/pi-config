@@ -5,9 +5,9 @@
  * Session-scoped (default): in-memory Map — no disk I/O.
  * Shared (PI_TASK_LIST_ID set): ~/.pi/tasks/<listId>.json with file locking.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Task, TaskStatus, TaskStoreData } from "./types.js";
 import { createLogger } from "../shared/logger.js";
 
@@ -106,7 +106,8 @@ export class TaskStore {
 	private nextId = 1;
 	private tasks = new Map<string, Task>();
 	private _watcher: FSWatcher | null = null;
-	private _selfWrite = false;
+	private _targetWatcher: FSWatcher | null = null;
+	private _targetPath: string | undefined;
 	private _onChange: (() => void) | null = null;
 
 	constructor(listIdOrPath?: string) {
@@ -124,28 +125,64 @@ export class TaskStore {
 		if (!this.filePath) return;
 		// Subagent children must not keep watchers — they prevent the child
 		// process from exiting, which blocks the parent's proc.on("close").
-		if (process.env.PI_SUBAGENT_CHILD === "1") return;
+		if (process.env.PI_SUBAGENT_CHILD === "1") {
+			log.debug("task_watch_skipped_child", { filePath: this.filePath });
+			return;
+		}
+		this._watcher = this._watchPath(this.filePath);
+		this._syncTargetWatcher();
+	}
+
+	private _syncTargetWatcher(): void {
+		let target: string | undefined;
 		try {
-			if (existsSync(this.filePath)) {
-				this._watcher = watch(this.filePath, (eventType) => {
-					if (eventType === "change" || eventType === "rename") {
-						if (this._selfWrite) { this._selfWrite = false; return; }
-						try { this.load(); if (this._onChange) this._onChange(); } catch {}
-					}
-				});
-			} else {
-				const dir = dirname(this.filePath);
-				const filename = this.filePath.split("/").pop() || this.filePath.split("\\").pop() || "";
+			target = realpathSync(this.filePath!);
+		} catch {
+			// A dangling symlink can still name a file in an existing, watchable directory.
+			try { target = resolve(dirname(this.filePath!), readlinkSync(this.filePath!)); } catch { /* file may not exist yet */ }
+		}
+		if (target === this.filePath) target = undefined;
+		if (target === this._targetPath) return;
+		this._targetWatcher?.close();
+		this._targetWatcher = null;
+		this._targetPath = undefined;
+		if (target) {
+			this._targetWatcher = this._watchPath(target);
+			if (this._targetWatcher) this._targetPath = target;
+		}
+		log.debug("task_watch_target_updated", { filePath: this.filePath, target });
+	}
+
+	private _watchPath(path: string): FSWatcher | null {
+		const dir = dirname(path);
+		const filename = basename(path);
+		try {
+			if (path === this.filePath) mkdirSync(dir, { recursive: true });
+			// Watch the directory so atomic replacements do not detach the watch from the pathname.
+			const watcher = watch(dir, (eventType, changedFile) => {
+				log.debug("task_watch_event", { filePath: this.filePath, eventType, changedFile });
+				if (changedFile !== filename) return;
+				// Events are invalidations, not one-to-one write receipts, including our own writes.
 				try {
-					mkdirSync(dir, { recursive: true });
-					this._watcher = watch(dir, (eventType, changedFile) => {
-						if (changedFile !== filename) return;
-						if (this._selfWrite) { this._selfWrite = false; return; }
-						try { this.load(); if (this._onChange) this._onChange(); } catch {}
-					});
-				} catch {}
-			}
-		} catch {}
+					this._syncTargetWatcher();
+					this.load();
+					this.notifyChange();
+					log.debug("task_watch_refreshed", { filePath: this.filePath, hasCallback: this._onChange !== null });
+				} catch (error) {
+					log.warn("task_watch_refresh_failed", { filePath: this.filePath, error: String(error) });
+				}
+			});
+			watcher.on("error", error => {
+				log.error("task_watch_error", { filePath: this.filePath, path, recovery: "explicit reopen required", error: String(error) });
+				watcher.close();
+				this.close();
+			});
+			log.debug("task_watch_started", { filePath: this.filePath, dir, filename });
+			return watcher;
+		} catch (error) {
+			log.warn("task_watch_start_failed", { filePath: this.filePath, dir, error: String(error) });
+			return null;
+		}
 	}
 
 	setOnChange(cb: () => void): void {
@@ -159,11 +196,18 @@ export class TaskStore {
 	}
 
 	close(): void {
-		if (this._watcher) { this._watcher.close(); this._watcher = null; }
+		this._targetWatcher?.close();
+		this._targetWatcher = null;
+		this._targetPath = undefined;
+		if (this._watcher) {
+			this._watcher.close(); this._watcher = null;
+			log.debug("task_watch_closed", { filePath: this.filePath });
+		}
 	}
 
 	reopen(): void {
 		if (!this._watcher) this._startWatcher();
+		else this._syncTargetWatcher();
 	}
 
 	private load(): void {
@@ -176,12 +220,14 @@ export class TaskStore {
 			for (const t of data.tasks) {
 				this.tasks.set(t.id, normalizeTask(t));
 			}
-		} catch { /* corrupt file — start fresh */ }
+		} catch (error) {
+			log.warn("task_store_load_failed", { filePath: this.filePath, errorType: error instanceof Error ? error.name : "unknown", errorCode: (error as NodeJS.ErrnoException)?.code });
+		}
 	}
 
 	private save(): void {
 		if (!this.filePath) return;
-		this._selfWrite = true;
+		log.debug("task_store_save", { filePath: this.filePath, taskCount: this.tasks.size });
 		const data: TaskStoreData = { nextId: this.nextId, tasks: Array.from(this.tasks.values()) };
 		mkdirSync(dirname(this.filePath), { recursive: true });
 		const tmpPath = this.filePath + ".tmp";
