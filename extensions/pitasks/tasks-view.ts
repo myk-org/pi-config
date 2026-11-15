@@ -67,8 +67,17 @@ export interface TaskRowSource {
 	blockedBy?: readonly string[];
 }
 
-export function toTaskRowView(task: TaskRowSource): TaskRowView {
-	const blocked = (task.blockedBy?.length ?? 0) > 0;
+export function openTaskBlockers(task: TaskRowSource, get: (id: string) => TaskRowSource | undefined): string[] {
+	const blockers = (task.blockedBy ?? []).filter((id) => {
+		const blocker = get(id);
+		return blocker && blocker.status !== "completed" && blocker.status !== "deleted";
+	});
+	log.debug("task_open_blockers", { taskId: task.id, count: blockers.length });
+	return blockers;
+}
+
+export function toTaskRowView(task: TaskRowSource, get?: (id: string) => TaskRowSource | undefined): TaskRowView {
+	const blocked = get ? openTaskBlockers(task, get).length > 0 : (task.blockedBy?.length ?? 0) > 0;
 	return {
 		glyph: taskStatusGlyph(task.status),
 		label: `#${task.id} [${task.status}] ${task.subject}`,
@@ -77,18 +86,19 @@ export function toTaskRowView(task: TaskRowSource): TaskRowView {
 }
 
 /** The ONE task-row line: `/tasks` plain text and the coms drilldown both use it. */
-export function formatTaskRowLine(task: TaskRowSource): string {
-	const row = toTaskRowView(task);
+export function formatTaskRowLine(task: TaskRowSource, get?: (id: string) => TaskRowSource | undefined): string {
+	const row = toTaskRowView(task, get);
 	return `${row.glyph} ${row.label}${row.blocked ? " ⛔ blocked" : ""}`;
 }
 
 /** Uncolored (label, value) rows rendered by the task detail pane. */
-export function taskDetailRows(task: Task): Array<[string, string]> {
+export function taskDetailRows(task: Task, get?: (id: string) => TaskRowSource | undefined): Array<[string, string]> {
+	const blockers = get ? openTaskBlockers(task, get) : task.blockedBy;
 	const rows: Array<[string, string]> = [
 		["Subject", task.subject],
 		["Status", task.status],
 		["Owner", task.owner || "—"],
-		["Blocked by", task.blockedBy.length > 0 ? task.blockedBy.map((id) => `#${id}`).join(", ") : "—"],
+		["Blocked by", blockers.length > 0 ? blockers.map((id) => `#${id}`).join(", ") : "—"],
 		["Description", task.description || "—"],
 		["Created", new Date(task.createdAt).toLocaleString()],
 		["Updated", new Date(task.updatedAt).toLocaleString()],
@@ -97,14 +107,15 @@ export function taskDetailRows(task: Task): Array<[string, string]> {
 	return rows;
 }
 
-/** Headless (no UI) listing — the same rows the overlay would show. */export function formatTasksPlainText(tasks: readonly Task[]): string {
+/** Headless (no UI) listing — the same rows the overlay would show. */
+export function formatTasksPlainText(tasks: readonly Task[]): string {
 	log.debug("tasks_plain_list", { count: tasks.length });
-	const rows = tasks.length === 0 ? [TASKS_EMPTY_MESSAGE] : tasks.map(formatTaskRowLine);
+	const rows = tasks.length === 0 ? [TASKS_EMPTY_MESSAGE] : tasks.map((task) => formatTaskRowLine(task, (id) => tasks.find((t) => t.id === id)));
 	return [...rows, TASKS_HINT].join("\n");
 }
 
 export type TaskAction = "start" | "done";
-export type TaskActionOutcome = "applied" | "missing" | "unchanged" | "refused";
+export type TaskActionOutcome = "applied" | "missing" | "unchanged" | "refused" | "blocked";
 
 /** What `/tasks start|done <id>` would do to a task in this status. */
 export type TaskTransition =
@@ -146,6 +157,10 @@ export function applyTaskAction(
 	if (transition.kind === "none") {
 		log.debug("task_action_unchanged", { action, id, status: task.status });
 		return "unchanged";
+	}
+	if (action === "start" && openTaskBlockers(task, deps.get).length > 0) {
+		log.info("task_action_blocked", { action, id });
+		return "blocked";
 	}
 	deps.update(id, transition.status);
 	deps.onChanged?.(id, transition.status);

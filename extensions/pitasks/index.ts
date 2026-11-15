@@ -515,6 +515,7 @@ export default function (pi: ExtensionAPI) {
 							currentWidget?.update();
 						},
 					});
+					if (outcome === "blocked") { ctx.ui?.notify(`Task #${cmd.id} has open blockers; complete them before /tasks start ${cmd.id}.`, "warning"); return; }
 					if (outcome === "missing") { ctx.ui?.notify(`No task #${cmd.id}.`, "warning"); return; }
 					if (outcome === "refused") { ctx.ui?.notify(`Task #${cmd.id} is completed; it is not restarted by /tasks start.`, "warning"); return; }
 					if (outcome === "unchanged") { ctx.ui?.notify(`Task #${cmd.id} is already ${cmd.kind === "done" ? "completed" : "in progress"}.`, "info"); return; }
@@ -522,6 +523,11 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				if (cmd.kind === "create") {
+					if (!ctx.hasUI && !isBrowserDispatch(ctx)) {
+						log.info("tasks_create_requires_input");
+						ctx.ui?.notify("/tasks create requires an interactive UI. Use the TaskCreate tool with subject and description in a headless session.", "warning");
+						return;
+					}
 					// #968 part B: prompts are bridged — answerable from TUI or pidash browser
 					const bridgedUi = createBridgedUi(pi);
 					const subject = await bridgedUi.input(ctx, "Task subject");

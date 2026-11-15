@@ -187,16 +187,17 @@ export function registerComs(pi: ExtensionAPI) {
         target: string,
         prompt: string,
         project?: string,
+        expectedEndpoint?: string,
     ): Promise<{ ok: true } | { ok: false; reason: string; code: string }> => {
         const send = (globalThis as any).__comsUserSend as
-            | ((p: { target: string; prompt: string; project?: string }) => Promise<{ ok: boolean; message: string }>)
+            | ((p: { target: string; prompt: string; project?: string; expectedEndpoint?: string }) => Promise<{ ok: boolean; message: string }>)
             | undefined;
         if (typeof send !== "function") {
             log.warn("coms_tell_unavailable", { target });
             return { ok: false, code: "coms-inactive", reason: "coms is not active — run /coms start first." };
         }
         try {
-            const result = await send({ target, prompt, project });
+            const result = await send({ target, prompt, project, ...(expectedEndpoint ? { expectedEndpoint } : {}) });
             log.info("coms_tell", { target, project: project ?? null, ok: result.ok });
             if (result.ok) return { ok: true };
             return { ok: false, code: "send-failed", reason: result.message };
@@ -270,7 +271,7 @@ export function registerComs(pi: ExtensionAPI) {
                         if (scope.refused) return scope.refused;
                         return killPeers(scope).text;
                     },
-                    tellPeer: (request) => tellPeer(request.target, request.prompt, request.project),
+                    tellPeer: (request) => tellPeer(request.target, request.prompt, request.project, request.expectedEndpoint),
                 });
                 return;
             }

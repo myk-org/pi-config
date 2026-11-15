@@ -27,8 +27,8 @@ const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
  *  inside MARKER_MAX chars, so an unfinished marker cannot swallow the rest of a message. */
 const MARKER_MAX = 120;
 const MARKER_FULL = new RegExp(`\\[from USER \\(a human\\), via[^\\]]{0,${MARKER_MAX}}\\]`, "gi");
-const MARKER_FROM_USER = /\bfrom USER\b/gi;
-const MARKER_HUMAN = /\(a human\)/gi;
+const MARKER_FROM_USER = /\bfrom USER\b/g;
+const MARKER_HUMAN = /\bfrom user\s*\(a human\)|^\s*\(a human\)\s*$/gi;
 const MARKER_LEADING = /^\s*\[from\s+/i;
 
 /** Remove the origin marker and its fragments from a peer-supplied string. `[from ` is stripped
@@ -36,8 +36,8 @@ const MARKER_LEADING = /^\s*\[from\s+/i;
 export function stripOriginMarker(text: string): string {
   return text
     .replace(MARKER_FULL, " ")
-    .replace(MARKER_FROM_USER, " ")
     .replace(MARKER_HUMAN, " ")
+    .replace(MARKER_FROM_USER, " ")
     .replace(MARKER_LEADING, " ");
 }
 
