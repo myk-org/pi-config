@@ -11,7 +11,11 @@ import { TaskStore } from "./task-store.js";
 import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
-import { publishTaskStore } from "../shared/task-store-bridge.js";
+import {
+	publishTaskStore,
+	publishTaskTelemetryActive,
+	publishedTaskTelemetryActive,
+} from "../shared/task-store-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import { openTasksOverlay } from "./tasks-ui.js";
 import {
@@ -50,8 +54,14 @@ let currentUiCtx: any = null;
 let currentStore: TaskStore | null = null;
 let currentWidget: TaskWidget | null = null;
 export function setTaskTelemetryActive(taskId: string, active = true): void {
-	log.debug("task_telemetry_active", { taskId, active });
-	currentWidget?.setActiveTask(taskId, active);
+	if (currentWidget) {
+		log.debug("task_telemetry_active", { taskId, active, via: "local" });
+		currentWidget.setActiveTask(taskId, active);
+		return;
+	}
+	const bridged = publishedTaskTelemetryActive();
+	log.debug("task_telemetry_active", { taskId, active, via: bridged ? "bridge" : "none" });
+	bridged?.(taskId, active);
 }
 
 /** Exported store instance — set during extension init. */
@@ -208,13 +218,17 @@ export default function (pi: ExtensionAPI) {
 	currentWidget?.dispose();
 	let store = new TaskStore(resolveStorePath());
 	taskStore = store;
-	// Registration is the only publish site: the getter follows store swaps.
-	publishTaskStore(() => taskStore);
 	currentStore = store;
 	const widget = new TaskWidget(store);
 	store.setOnChange(() => { widget.update(); broadcastTasks(); });
 	for (const taskId of resumedActiveTaskIds) widget.setActiveTask(taskId);
 	currentWidget = widget;
+	// Registration is the only publish site: getters and callbacks follow live bindings.
+	publishTaskStore(() => taskStore);
+	publishTaskTelemetryActive((taskId, active = true) => {
+		log.debug("task_telemetry_active_bridged", { taskId, active, hasWidget: Boolean(currentWidget) });
+		currentWidget?.setActiveTask(taskId, active);
+	});
 	const instanceId = Math.random().toString(36).slice(2, 8);
 	(globalThis as any).__pitasks_active_instance = instanceId;
 
@@ -450,6 +464,8 @@ export default function (pi: ExtensionAPI) {
 		widget.reactivate(ctx.ui);
 		store.reopen();
 		store.setOnChange(() => { widget.update(); broadcastTasks(); });
+		currentWidget = widget;
+		currentStore = store;
 		currentUiCtx = ctx.ui;
 		const reason = (event as any).reason;
 		log.debug("session_start", reason);

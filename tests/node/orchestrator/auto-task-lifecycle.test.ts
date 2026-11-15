@@ -12,7 +12,12 @@ import {
   autoMarkInProgress,
 } from "../../../extensions/orchestrator/task-lifecycle.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
-import { publishTaskStore, TASK_STORE_SYMBOL } from "../../../extensions/shared/task-store-bridge.js";
+import {
+  publishTaskStore,
+  publishTaskTelemetryActive,
+  TASK_STORE_SYMBOL,
+  TASK_TELEMETRY_ACTIVE_SYMBOL,
+} from "../../../extensions/shared/task-store-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -420,6 +425,7 @@ describe("live task store bridge resolution", () => {
     liveStore?.close();
     liveStore = null;
     delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+    delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
     rmSync(rootDir, { recursive: true, force: true });
     rmSync(worktreeDir, { recursive: true, force: true });
   });
@@ -428,6 +434,26 @@ describe("live task store bridge resolution", () => {
     const updated = await autoMarkInProgress("1", rootDir, "s1");
     assert.equal(updated, true);
     assert.equal(liveStore?.get("1")?.status, "in_progress");
+  });
+
+  it("activates bridged telemetry when marking task in_progress without local pitasks", async () => {
+    const activations: Array<{ taskId: string; active: boolean }> = [];
+    publishTaskTelemetryActive((taskId, active = true) => {
+      activations.push({ taskId, active });
+    });
+    const updated = await autoMarkInProgress("1", rootDir, "s1");
+    assert.equal(updated, true);
+    assert.deepEqual(activations, [{ taskId: "1", active: true }]);
+  });
+
+  it("deactivates bridged telemetry when completing task without local pitasks", async () => {
+    const activations: Array<{ taskId: string; active: boolean }> = [];
+    publishTaskTelemetryActive((taskId, active = true) => {
+      activations.push({ taskId, active });
+    });
+    const updated = await autoCompleteTask("1", rootDir, "s1");
+    assert.equal(updated, true);
+    assert.deepEqual(activations, [{ taskId: "1", active: false }]);
   });
 
   it("completes task through published store when cwd matches store root", async () => {

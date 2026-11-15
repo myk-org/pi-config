@@ -7,7 +7,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
-import { publishedTaskStore } from "../shared/task-store-bridge.js";
+import { publishedTaskStore, publishedTaskTelemetryActive } from "../shared/task-store-bridge.js";
 
 const log = createLogger("task-lifecycle");
 
@@ -46,6 +46,27 @@ async function resolveLiveStore(cwd: string): Promise<any> {
     : null;
 }
 
+/** Activate or deactivate task telemetry via the published bridge (falling back to local import). */
+async function notifyTaskTelemetry(taskId: string, active: boolean): Promise<void> {
+  const bridged = publishedTaskTelemetryActive();
+  if (bridged) {
+    try {
+      log.debug("task_lifecycle_telemetry", { taskId, active, via: "bridge" });
+      bridged(taskId, active);
+    } catch (e: any) {
+      log.debug("task_lifecycle_telemetry_failed", { taskId, active, error: e?.message?.slice(0, 100) });
+    }
+    return;
+  }
+  try {
+    const mod = await import("../pitasks/index.js");
+    log.debug("task_lifecycle_telemetry", { taskId, active, via: "module" });
+    mod.setTaskTelemetryActive(taskId, active);
+  } catch (e: any) {
+    log.debug("task_lifecycle_telemetry_unavailable", { taskId, active, error: e?.message?.slice(0, 100) });
+  }
+}
+
 async function transitionTaskStatus(
   label: string,
   taskId: string,
@@ -81,7 +102,7 @@ async function transitionTaskStatus(
       if (!task) return false;
       if (shouldUpdate(task.status)) {
         store.update(taskId, { status: nextStatus });
-        (await import("../pitasks/index.js")).setTaskTelemetryActive(taskId, telemetryActive);
+        await notifyTaskTelemetry(taskId, telemetryActive);
         return true;
       }
       return false;
