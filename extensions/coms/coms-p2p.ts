@@ -3257,7 +3257,7 @@ Do not respond to this message.`;
 			try {
 				const storePath = requirePeerTaskStorePath(target);
 				const storeExistedBeforeWrite = fs.existsSync(storePath);
-				const { createTasksAtStorePath, deleteTaskAtStorePath, listTasksAtStorePath, updateTaskAtStorePath } = await import("../pitasks/index.js");
+				const { createTasksAtStorePath, deleteTaskAtStorePath, getTaskAtStorePath, listTasksAtStorePath, updateTaskAtStorePath } = await import("../pitasks/index.js");
 
 				// Check if "Report completion to sender" already exists from this sender before mutating
 				const existingTasks = listTasksAtStorePath(storePath) || [];
@@ -3270,7 +3270,7 @@ Do not respond to this message.`;
 				let created: any[] = [];
 				let createdIds: string[] = [];
 				let createdReportTaskId = "";
-				let updatedReportTask: { id: string; priorBlockedBy: string[] } | null = null;
+				let updatedReportTask: { id: string; addedBlockerIds: string[] } | null = null;
 
 				const rollbackCreatedTasks = (reason: unknown): void => {
 					if (createdIds.length === 0 && !createdReportTaskId && !updatedReportTask) return;
@@ -3281,8 +3281,15 @@ Do not respond to this message.`;
 						if (createdReportTaskId) {
 							deleteTaskAtStorePath(storePath, createdReportTaskId);
 						}
-						if (updatedReportTask) {
-							updateTaskAtStorePath(storePath, updatedReportTask.id, { blockedBy: updatedReportTask.priorBlockedBy });
+						if (updatedReportTask && updatedReportTask.addedBlockerIds.length > 0) {
+							// Another writer may have added blockers meanwhile: read the current list and drop
+							// only the IDs this call appended, leaving theirs intact.
+							const currentReport = getTaskAtStorePath(storePath, updatedReportTask.id);
+							if (currentReport) {
+								const remaining = (Array.isArray(currentReport.blockedBy) ? currentReport.blockedBy : [])
+									.filter((id: string) => !updatedReportTask!.addedBlockerIds.includes(id));
+								updateTaskAtStorePath(storePath, updatedReportTask.id, { blockedBy: remaining });
+							}
 						}
 						if (!storeExistedBeforeWrite) {
 							const remaining = listTasksAtStorePath(storePath) || [];
@@ -3324,7 +3331,7 @@ Do not respond to this message.`;
 						const newBlockedBy = [...new Set([...priorBlockedBy, ...createdIds])];
 						updateTaskAtStorePath(storePath, existingReport.id, { blockedBy: newBlockedBy });
 						reportTaskId = String(existingReport.id);
-						updatedReportTask = { id: reportTaskId, priorBlockedBy };
+						updatedReportTask = { id: reportTaskId, addedBlockerIds: createdIds.filter((id) => !priorBlockedBy.includes(id)) };
 					} else {
 						const [reportTask] = createTasksAtStorePath(storePath, [{
 							subject: "Report completion to sender",

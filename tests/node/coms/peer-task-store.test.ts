@@ -1162,6 +1162,94 @@ describe("coms peer task lifecycle regression (#1080)", { concurrency: false }, 
 		assert.deepEqual(restoredReport?.blockedBy, ["1"]);
 	});
 
+	it("preserves a concurrently added blocker when rolling back an existing report task", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-rb-conc-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+		const sockPath = join(root, "swap-conc.sock");
+		const storeA = join(peerDir, ".pi", "tasks", "tasks-store-a.json");
+		const storeB = join(peerDir, ".pi", "tasks", "tasks-store-b.json");
+
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: join(root, "sender"),
+			comsDir,
+			piSessionId: "sender-sid",
+		});
+
+		const regPath = join(comsDir, "projects", "test-proj", "agents", "swap-conc-sid.json");
+		const writePeerEntry = (storePath: string, ts: string) => {
+			writeFileSync(regPath, JSON.stringify({
+				coms_session_id: "swap-conc-sid",
+				name: "swap-conc",
+				purpose: "",
+				model: "test-model",
+				color: "#36F9F6",
+				pid: process.pid,
+				endpoint: sockPath,
+				cwd: peerDir,
+				started_at: ts,
+				heartbeat_at: ts,
+				explicit: false,
+				version: 1,
+				pi_session_id: "swap-conc-pi-sid",
+				task_store_path: storePath,
+			}, null, 2));
+		};
+
+		// A concurrent writer interferes during readback verification (the peer entry is stale, so
+		// resolveTarget probes the socket again there): it adds an unrelated blocker to the existing
+		// report task and deletes the task this call created, so verification fails after the report
+		// task was already extended. Liveness probes send no data; envelopes are acked.
+		let interfereOnProbe = false;
+		const server = net.createServer((sock) => {
+			sock.on("data", (chunk) => {
+				const nl = chunk.toString("utf8").indexOf("\n");
+				if (nl < 0) return;
+				const parsed = JSON.parse(chunk.toString("utf8").slice(0, nl));
+				sock.write(JSON.stringify({ type: "ack", msg_id: parsed.msg_id ?? "" }) + "\n");
+				sock.end();
+			});
+			sock.once("error", () => sock.destroy());
+			if (!interfereOnProbe) return;
+			const tasks = listTasksAtStorePath(storeA) ?? [];
+			const report = tasks.find((task: any) => task.subject === "Report completion to sender");
+			if (!report || !tasks.some((task: any) => task.id === "3")) return;
+			interfereOnProbe = false;
+			updateTaskAtStorePath(storeA, report.id, { blockedBy: [...(report.blockedBy ?? []), "999"] });
+			deleteTaskAtStorePath(storeA, "3");
+			writePeerEntry(storeB, new Date().toISOString());
+		});
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		await new Promise<void>((resolve) => server.listen(sockPath, () => resolve()));
+
+		writePeerEntry(storeA, new Date().toISOString());
+		await sender.tools.get("coms_tasks_create").execute("c-conc-1", {
+			target: "swap-conc",
+			tasks: [{ subject: "Initial task", description: "Stays intact" }],
+		});
+
+		writePeerEntry(storeA, new Date(Date.now() - 60_000).toISOString());
+		interfereOnProbe = true;
+
+		await assert.rejects(
+			sender.tools.get("coms_tasks_create").execute("c-conc-2", {
+				target: "swap-conc",
+				tasks: [{ subject: "Rolled back task", description: "Must not stay in the report blockers" }],
+			}),
+			/verification failed/,
+		);
+
+		const afterRollback = listTasksAtStorePath(storeA);
+		assert.deepEqual(afterRollback.map((task: any) => task.subject), [
+			"Initial task",
+			"Report completion to sender",
+		]);
+		const reportTask = afterRollback.find((task: any) => task.subject === "Report completion to sender");
+		assert.deepEqual(reportTask?.blockedBy, ["1", "999"]);
+	});
+
 	it("rejects coms_task_update when the task is concurrently deleted before the store write", async (t) => {
 		if (process.platform === "win32") return t.skip("unix sockets only");
 		const root = makeTempDir("c1080-race-");
