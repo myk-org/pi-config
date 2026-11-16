@@ -902,6 +902,7 @@ PI_PIDIFF_ENABLE=false pi
 | `myk-pi-tools pr info`                 | Fetch PR information as structured JSON                                                                                                        |
 | `myk-pi-tools pr post-comment`         | Post inline comments to a PR                                                                                                                   |
 | `myk-pi-tools pr store-pr-review`      | Store posted PR review comments to `pr-reviews.db`                                                                                             |
+| `myk-pi-tools pr check-resolved-threads` | Decide which resolved third-party review threads are still suppressed: runs `git log` in Python (never a shell) against the clone. Fails open — no suppression for an unsafe path, a missing timestamp, or a shallow-clone window |
 | `myk-pi-tools pr update-resolution`    | Update resolution status for a previously posted review comment. Used by Phase 1c of `/pr-review` to persist LLM evaluation verdicts           |
 | `myk-pi-tools pr get-review-history`   | Return complete review history for a PR as JSON (posted, skipped, resolved findings). Used by reviewers to avoid re-raising dismissed findings |
 | `myk-pi-tools pr get-skipped-comments` | Get previously skipped review comments for a PR                                                                                                |

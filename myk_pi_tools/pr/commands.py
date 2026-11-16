@@ -83,6 +83,26 @@ def pr_store_review(json_file: str) -> None:
     sys.exit(exit_code)
 
 
+@pr.command("check-resolved-threads")
+@click.argument("repo_dir", type=click.Path(exists=True, file_okay=False))
+@click.argument("json_file", type=click.Path(exists=True, dir_okay=False))
+def pr_check_resolved_threads(repo_dir: str, json_file: str) -> None:
+    """Decide which resolved third-party review threads are still suppressed.
+
+    JSON input: {"threads": [{"thread_id", "path", "created_at", "resolved_at",
+    "replies": [{"created_at"}]}]} (a bare list also works).
+
+    Output: JSON list with thread_id, suppressed, resolved_at, resolved_at_source,
+    reason. Nothing is suppressed when the path is unsafe, no usable timestamp
+    exists, or the clone is shallow and the window predates its boundary.
+    """
+    import sys
+
+    from myk_pi_tools.pr.resolved_threads import run
+
+    sys.exit(run(repo_dir, json_file))
+
+
 @pr.command("get-skipped-comments")
 @click.argument("owner")
 @click.argument("repo")

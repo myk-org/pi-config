@@ -360,6 +360,12 @@ Resolution tracking adds two columns:
 - `resolution_status` — the LLM evaluation verdict: `resolved_fixed`, `resolved_accepted`, `resolved_bad_fix`, or `resolved_no_fix`
 - `author_response` — the author's reply or fix context, kept as an audit trail
 
+Rows with `status = 'resolved_external'` record third-party threads (CodeRabbit, Qodo, other humans)
+that were resolved and whose path saw no commit afterwards — `/pr-review` persists them as
+`resolved_accepted` via `pr store-pr-review`, upserted by `thread_id`, so resolved external findings
+reach `get-review-history` too. `pr update-resolution` still matches only comments we posted
+(`status = 'posted'`).
+
 The related CLI commands are `myk-pi-tools pr update-resolution` (persist verdicts from resolved threads) and
 `myk-pi-tools pr get-review-history` (dump the full review history across all statuses).
 

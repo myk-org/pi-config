@@ -31,6 +31,15 @@ Every `myk-pi-tools release ...` call below uses the LOCAL build (plain
 inside this repo and a published build cannot plan its own successor — a fix to
 `release plan` must ship from the working tree.
 
+### Phase 0: Local build precheck
+
+```bash
+myk-pi-tools --version
+```
+
+If this does not run: stop with one line telling the user to install/sync the local
+build. The release flow must run the working-tree build, never the published one.
+
 ### Phase 1: Validation
 
 If `--target <branch>` was passed to the release command:

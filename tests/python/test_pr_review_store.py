@@ -636,3 +636,157 @@ def test_run_store_with_author(db_path: Path, tmp_path: Path) -> None:
     reviews = _query_all(db_path, "pr_reviews")
     assert len(reviews) == 1
     assert reviews[0]["author"] == "janedoe"
+
+
+def test_store_resolved_external_creates_row(db_path: Path) -> None:
+    """A resolved third-party thread produces a history row with status='resolved_external'."""
+    comments = [
+        {
+            "thread_id": "CR_thread_1",
+            "comment_id": 987,
+            "path": "src/probe.py",
+            "line": 40,
+            "body": "TCP probe should not use exec",
+            "author": "coderabbitai",
+            "posted_at": "2025-01-02T00:00:00Z",
+            "status": "resolved_external",
+            "resolution_status": "resolved_accepted",
+            "author_response": "Resolved by author on GitHub",
+        },
+    ]
+    store_pr_review("org", "repo", 42, comments, head_sha="abc1234")
+
+    stored = _query_all(db_path, "pr_comments")
+    assert len(stored) == 1
+    assert stored[0]["status"] == "resolved_external"
+    assert stored[0]["resolution_status"] == "resolved_accepted"
+    assert stored[0]["author_response"] == "Resolved by author on GitHub"
+    assert stored[0]["thread_id"] == "CR_thread_1"
+
+    history = get_review_history("org", "repo", 42, db_path=db_path)
+    assert len(history) == 1
+    assert history[0]["path"] == "src/probe.py"
+    assert history[0]["body"] == "TCP probe should not use exec"
+    assert history[0]["resolution_status"] == "resolved_accepted"
+
+
+def test_store_resolved_external_upserts_by_thread_id(db_path: Path) -> None:
+    """Re-storing the same resolved thread updates the row instead of duplicating it."""
+    first = [
+        {
+            "thread_id": "t1",
+            "path": "a.py",
+            "line": 1,
+            "body": "b",
+            "status": "resolved_external",
+            "resolution_status": "resolved_accepted",
+            "author_response": "first",
+        }
+    ]
+    store_pr_review("org", "repo", 42, first, head_sha="sha1")
+
+    second = [
+        {
+            "thread_id": "t1",
+            "path": "a.py",
+            "line": 3,
+            "body": "b2",
+            "status": "resolved_external",
+            "resolution_status": "resolved_fixed",
+            "author_response": "second",
+        }
+    ]
+    store_pr_review("org", "repo", 42, second, head_sha="sha2")
+
+    stored = _query_all(db_path, "pr_comments")
+    assert len(stored) == 1
+    assert stored[0]["resolution_status"] == "resolved_fixed"
+    assert stored[0]["author_response"] == "second"
+    assert stored[0]["body"] == "b2"
+
+
+def test_store_resolved_external_upsert_updates_location(db_path: Path) -> None:
+    """A re-checked thread updates the stored path and line, not only the verdict."""
+    stored_thread = {
+        "thread_id": "t1",
+        "body": "b",
+        "status": "resolved_external",
+        "resolution_status": "resolved_accepted",
+    }
+    store_pr_review("org", "repo", 42, [{**stored_thread, "path": "old/name.py", "line": 1}], head_sha="sha1")
+    store_pr_review(
+        "org",
+        "repo",
+        42,
+        [{**stored_thread, "path": "new/name.py", "line": 3, "resolution_status": "resolved_fixed"}],
+        head_sha="sha2",
+    )
+
+    stored = _query_all(db_path, "pr_comments")
+    assert [(row["path"], row["line"], row["resolution_status"]) for row in stored] == [
+        ("new/name.py", 3, "resolved_fixed")
+    ]
+
+
+def test_store_resolved_external_requires_resolution_status(db_path: Path) -> None:  # noqa: ARG001
+    """status='resolved_external' without a resolution_status raises ValueError."""
+    comments = [{"thread_id": "t1", "path": "a.py", "body": "b", "status": "resolved_external"}]
+    with pytest.raises(ValueError, match="requires a resolution_status"):
+        store_pr_review("org", "repo", 1, comments, head_sha="sha1")
+
+
+def test_store_invalid_resolution_status_raises(db_path: Path) -> None:  # noqa: ARG001
+    """An unknown resolution_status raises ValueError before any DB write."""
+    comments = [{"path": "a.py", "body": "b", "resolution_status": "resolved_maybe"}]
+    with pytest.raises(ValueError, match="Invalid resolution_status"):
+        store_pr_review("org", "repo", 1, comments, head_sha="sha1")
+    assert not db_path.exists()
+
+
+def test_history_keeps_bad_fix_verdict(db_path: Path) -> None:
+    """A resolved_bad_fix verdict stays visible in history."""
+    store_pr_review("org", "repo", 42, [{"path": "a.py", "line": 1, "body": "bad fix"}], head_sha="abc1234")
+    update_resolution(
+        "org", "repo", 42, file_path="a.py", line=1, resolution_status="resolved_bad_fix", db_path=db_path
+    )
+
+    history = get_review_history("org", "repo", 42, db_path=db_path)
+    assert [(row["path"], row["resolution_status"]) for row in history] == [("a.py", "resolved_bad_fix")]
+
+
+def test_history_keeps_no_fix_verdict(db_path: Path) -> None:
+    """A resolved_no_fix verdict stays visible in history."""
+    store_pr_review("org", "repo", 42, [{"path": "b.py", "line": 2, "body": "no fix"}], head_sha="abc1234")
+    update_resolution("org", "repo", 42, file_path="b.py", line=2, resolution_status="resolved_no_fix", db_path=db_path)
+
+    history = get_review_history("org", "repo", 42, db_path=db_path)
+    assert [(row["path"], row["resolution_status"]) for row in history] == [("b.py", "resolved_no_fix")]
+
+
+def test_cli_store_resolved_external(db_path: Path, tmp_path: Path) -> None:  # noqa: ARG001
+    """pr store-pr-review persists a resolved third-party thread from a JSON file."""
+    json_file = tmp_path / "resolved-external.json"
+    json_file.write_text(
+        json.dumps({
+            "metadata": {"owner": "org", "repo": "repo", "pr_number": 42, "head_sha": "abc1234"},
+            "comments": [
+                {
+                    "thread_id": "CR_thread_1",
+                    "path": "src/probe.py",
+                    "line": 40,
+                    "body": "TCP probe should not use exec",
+                    "status": "resolved_external",
+                    "resolution_status": "resolved_accepted",
+                }
+            ],
+        })
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(pr, ["store-pr-review", str(json_file)])
+    assert result.exit_code == 0, result.output
+
+    history = get_review_history("org", "repo", 42, db_path=db_path)
+    assert len(history) == 1
+    assert history[0]["status"] == "resolved_external"
+    assert history[0]["resolution_status"] == "resolved_accepted"

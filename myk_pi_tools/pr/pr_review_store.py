@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-VALID_STATUSES = {"posted", "skipped"}
+VALID_STATUSES = {"posted", "skipped", "resolved_external"}
 VALID_RESOLUTION_STATUSES = {"resolved_fixed", "resolved_accepted", "resolved_bad_fix", "resolved_no_fix"}
 
 SCHEMA = """
@@ -113,9 +113,13 @@ def store_pr_review(
 ) -> None:
     """Store PR review comments to the database.
 
-    Stores both posted and skipped findings. Each comment dict may include:
-    - status: 'posted' (default) or 'skipped'
+    Stores posted, skipped, and third-party resolved findings. Each comment dict may include:
+    - status: 'posted' (default), 'skipped', or 'resolved_external'
     - skip_reason: reason for skipping (only when status='skipped')
+    - resolution_status / author_response: our verdict on a third-party resolved thread
+      (only when status='resolved_external'); rows are upserted by thread_id so a
+      re-review of the same thread updates the row — including path/line, which move
+      when the PR is rebased or the thread is re-anchored — instead of duplicating it
 
     Args:
         owner: Repository owner.
@@ -157,6 +161,14 @@ def store_pr_review(
         skip_reason = comment.get("skip_reason", "").strip()
         if status == "skipped" and not skip_reason:
             raise ValueError("status='skipped' requires a non-empty skip_reason")
+        resolution_status = comment.get("resolution_status")
+        if resolution_status is not None and resolution_status not in VALID_RESOLUTION_STATUSES:
+            raise ValueError(
+                f"Invalid resolution_status '{resolution_status}' in comment[{i}], "
+                f"must be one of {VALID_RESOLUTION_STATUSES}"
+            )
+        if status == "resolved_external" and not resolution_status:
+            raise ValueError("status='resolved_external' requires a resolution_status")
 
     log(f"Storing {len(comments)} PR review comment(s) for {owner}/{repo}#{pr_number}...")
     log(f"Database: {db_path}")
@@ -176,20 +188,42 @@ def store_pr_review(
         if not review_id:
             raise RuntimeError("Failed to insert pr_reviews record")
 
-        posted_count = 0
-        skipped_count = 0
+        counts = dict.fromkeys(("posted", "skipped", "resolved_external", "updated"), 0)
         for comment in comments:
             status = comment.get("status", "posted")
-            if status == "skipped":
-                skipped_count += 1
-            else:
-                posted_count += 1
+            existing_id = (
+                _find_external_resolution(cursor, owner, repo, pr_number, comment)
+                if status == "resolved_external"
+                else None
+            )
+            if existing_id is not None:
+                counts["updated"] += 1
+                cursor.execute(
+                    """
+                    UPDATE pr_comments
+                    SET resolution_status = ?, author_response = ?,
+                        path = COALESCE(?, path), line = COALESCE(?, line),
+                        body = COALESCE(?, body), posted_at = COALESCE(?, posted_at)
+                    WHERE id = ?
+                    """,
+                    (
+                        comment["resolution_status"],
+                        comment.get("author_response"),
+                        comment.get("path"),
+                        comment.get("line"),
+                        comment.get("body"),
+                        comment.get("posted_at"),
+                        existing_id,
+                    ),
+                )
+                continue
+            counts[status] += 1
             cursor.execute(
                 """
                 INSERT INTO pr_comments (
                     review_id, thread_id, comment_id, path, line, body, severity,
-                    posted_at, status, skip_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    posted_at, status, skip_reason, resolution_status, author_response
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     review_id,
@@ -202,13 +236,16 @@ def store_pr_review(
                     comment.get("posted_at"),
                     status,
                     comment.get("skip_reason"),
+                    comment.get("resolution_status"),
+                    comment.get("author_response"),
                 ),
             )
 
         conn.commit()
-        parts = [f"{posted_count} posted"]
-        if skipped_count:
-            parts.append(f"{skipped_count} skipped")
+        parts = [f"{counts['posted']} posted"]
+        for key in ("skipped", "resolved_external", "updated"):
+            if counts[key]:
+                parts.append(f"{counts[key]} {key}")
         log(f"Stored {len(comments)} comment(s) ({', '.join(parts)}) (commit: {head_sha[:7]})")
 
     except sqlite3.Error as e:
@@ -216,6 +253,37 @@ def store_pr_review(
         raise RuntimeError(f"Database error storing PR review: {e}") from e
     finally:
         conn.close()
+
+
+def _find_external_resolution(
+    cursor: sqlite3.Cursor,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    comment: dict[str, Any],
+) -> int | None:
+    """Find an already-stored third-party resolved row for this thread/comment id.
+
+    Matching is by thread id (falling back to comment id) because resolved external
+    threads are not 'posted' by us — the status='posted' filter of the posted path
+    never matches them.
+    """
+    thread_id = comment.get("thread_id")
+    comment_id = comment.get("comment_id")
+    if not thread_id and not comment_id:
+        return None
+    match_column = "thread_id" if thread_id else "comment_id"
+    row = cursor.execute(
+        f"""
+        SELECT c.id FROM pr_comments c
+        JOIN pr_reviews r ON c.review_id = r.id
+        WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
+          AND c.status = 'resolved_external' AND c.{match_column} = ?  -- noqa: S608
+        ORDER BY c.id DESC LIMIT 1
+        """,
+        (owner, repo, pr_number, thread_id or comment_id),
+    ).fetchone()
+    return row[0] if row else None
 
 
 def get_skipped_comments(
