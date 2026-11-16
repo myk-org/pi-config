@@ -37,6 +37,22 @@ function requestId(method: string): string {
   return `${method}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+const BROWSER_DISPATCH = Symbol.for("pi-config.browserDispatchCtx");
+
+/** Tag the ctx pidash hands a browser-dispatched command. Tag the COPY, never the live ctx. */
+export function markBrowserDispatch(ctx: unknown): void {
+  if (ctx && typeof ctx === "object") (ctx as Record<symbol, unknown>)[BROWSER_DISPATCH] = true;
+  log.debug("browser dispatch context marked", { tagged: Boolean(ctx && typeof ctx === "object") });
+}
+
+/** True when this command came from the pidash browser — a surface where no terminal overlay,
+ *  and no keypress on it, is reachable. Callers render text instead of opening one. */
+export function isBrowserDispatch(ctx: unknown): boolean {
+  const browserDispatch = !!(ctx && typeof ctx === "object" && (ctx as Record<symbol, unknown>)[BROWSER_DISPATCH] === true);
+  log.debug("browser dispatch context checked", { browserDispatch });
+  return browserDispatch;
+}
+
 export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
   /**
    * Shared bridge: emit the request to the browser, listen for its response,

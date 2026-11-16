@@ -56,6 +56,21 @@ Status reports come from `TaskList`, not recollection.
 
 Answer the question, then resume the next unchecked task — the task list says where you left off.
 
+## Tasks for the user
+
+When a step needs the owner — a merge, a live check in a real UI, an approval,
+anything that needs their hands or credentials — create it as a task with
+`assignee: "user"` instead of writing "you need to do X" in prose.
+
+- one task per owner action; subject = the action; description = what to do and
+  what "done" looks like;
+- never assign the owner something an agent could do itself;
+- never start, edit or complete a user-assigned task on their behalf — they close
+  it in `/tasks` (`d`, optional note);
+- when they close one you receive a message with their note: read it, act on it,
+  and do not re-ask;
+- user tasks never nag and never count as the agent's own open work.
+
 ---
 
 ## Async Agent taskId (MANDATORY — code-enforced)

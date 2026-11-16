@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, projectProblem, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { activationVerified, describePeerOrigin, filterRegistry, formatPeerDetailLines, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, projectProblem, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -46,6 +46,43 @@ describe("registry-wide peer view", () => {
     assert.deepEqual(selectKillTargets(rows, { name: "peer1", project: "proj-b" }, alive).targets.map((r) => r.project), ["proj-b"]);
     assert.deepEqual(selectKillTargets(rows, { all: true }, alive).targets.length, 2);
     assert.deepEqual(selectKillTargets(rows, { name: "ghost" }, alive).missing, ["ghost"]);
+  });
+
+  // Render-only sanitization (#1084). A peer whose name carries a control character must stay
+  // ADDRESSABLE by that raw value — identity is the wire value — while the rendered row strips it.
+  // If this ever fails, the fix is to sanitize in the projection, not to widen it into identity.
+  it("renders a hostile name stripped yet still resolves it by the raw value", () => {
+    const raw = "peer\u0007one\x1b[2J";
+    const rows = [row({ name: raw })];
+    const table = formatPeerTable(rows);
+    assert.equal(table.includes("\u0007"), false, "a control character must not reach the table");
+    assert.equal(table.includes("\x1b"), false, "an escape sequence must not reach the table");
+    assert.match(table, /● peerone · proj-a/);
+
+    // Identity is untouched: the raw value is what filters and kill targeting compare against.
+    assert.deepEqual(filterRegistry(rows, { name: raw }).map((r) => r.name), [raw]);
+    assert.deepEqual(selectKillTargets(rows, { name: raw }, () => true).targets.map((r) => r.name), [raw]);
+    assert.deepEqual(
+      selectKillTargets(rows, { name: "peerone" }, () => true).missing,
+      ["peerone"],
+      "the stripped form is a render artifact, not an address",
+    );
+  });
+
+  // Render-only, same boundary as the table (#1084): cwd and socket are peer-supplied too.
+  it("strips control characters from the detail pane's cwd and socket", () => {
+    const rows = [row({ cwd: "/w\u0007orc\x1b[2J", endpoint: "/sock\u0007et\x1b]0;title\x07" })];
+    const pane = formatPeerDetailLines(rows[0], { heartbeatAgeSeconds: 12 }).join("\n");
+    assert.equal(pane.includes("\u0007"), false, "no BEL may reach the pane");
+    assert.equal(pane.includes("\x1b"), false, "no escape sequence may reach the pane");
+    assert.match(pane, /cwd {7}\/worc/);
+    assert.match(pane, /socket {4}\/socket/);
+  });
+
+  it("caps an over-long cwd and socket", () => {
+    const pane = formatPeerDetailLines(row({ cwd: `/w/${"x".repeat(400)}`, endpoint: `/s/${"y".repeat(400)}` })).join("\n");
+    assert.match(pane, new RegExp(`cwd {7}/w/${"x".repeat(117)}`));
+    assert.match(pane, new RegExp(`socket {4}/s/${"y".repeat(77)}`));
   });
 
   it("shows the live state that makes the list worth watching", () => {

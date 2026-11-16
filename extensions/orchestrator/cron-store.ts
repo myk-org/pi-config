@@ -22,8 +22,14 @@ export interface DurableCronTask {
   createdAt: number;
   lastRun?: number;
   nextRun?: number;
+  /** Paused by the user: the definition is kept, no timer is armed (issue #1087). */
+  paused?: boolean;
 }
 export interface DurableCronEnvelope { version: 1; tasks: DurableCronTask[]; }
+export type DurableCronReadOutcome =
+  | { status: "ok"; tasks: DurableCronTask[] }
+  | { status: "missing_file" }
+  | { status: "read_error"; reason: string };
 export interface CronLockOwner { pid: number; process_start_token: string; instance_id: string; heartbeat_at: string; pid_namespace?: string; fd?: number; }
 
 type StartTokenDeps = { readFileSync: (path: string, encoding: BufferEncoding) => string; execFileSync: (file: string, args: readonly string[], options: { encoding: BufferEncoding; windowsHide: boolean }) => string; platform: NodeJS.Platform };
@@ -170,13 +176,36 @@ function acquireDirectoryLock(dir: string, instanceId: string, reclaimStale: boo
     return acquireDirectoryLock(dir, instanceId, false);
   }
 }
-export function readDurableCronStore(store: string): DurableCronEnvelope {
+export function readDurableCronStoreOutcome(store: string): DurableCronReadOutcome {
+  let raw: string;
   try {
-    const value = JSON.parse(fs.readFileSync(store, "utf8"));
-    if (value?.version === 1 && Array.isArray(value.tasks)) return value;
-    if (Array.isArray(value)) return { version: 1, tasks: value };
-  } catch {}
-  return { version: 1, tasks: [] };
+    raw = fs.readFileSync(store, "utf8");
+  } catch (error: any) {
+    if (error?.code === "ENOENT") {
+      log.debug("cron_store_missing", { store, status: "missing_file" });
+      return { status: "missing_file" };
+    }
+    const reason = error?.code || "read_error";
+    log.warn("cron_store_read_failed", { store, status: "read_error", reason });
+    return { status: "read_error", reason };
+  }
+  try {
+    const value = JSON.parse(raw);
+    const tasks = value?.version === 1 && Array.isArray(value.tasks) ? value.tasks : Array.isArray(value) ? value : null;
+    if (!tasks) {
+      log.warn("cron_store_read_failed", { store, status: "read_error", reason: "invalid_envelope" });
+      return { status: "read_error", reason: "invalid_envelope" };
+    }
+    log.debug("cron_store_read", { store, status: "ok", count: tasks.length });
+    return { status: "ok", tasks };
+  } catch {
+    log.warn("cron_store_read_failed", { store, status: "read_error", reason: "parse_error" });
+    return { status: "read_error", reason: "parse_error" };
+  }
+}
+export function readDurableCronStore(store: string): DurableCronEnvelope {
+  const outcome = readDurableCronStoreOutcome(store);
+  return { version: 1, tasks: outcome.status === "ok" ? outcome.tasks : [] };
 }
 export function validateDurableCronTask(task: unknown): asserts task is DurableCronTask {
   const value = task as DurableCronTask;
@@ -188,6 +217,7 @@ export function validateDurableCronTask(task: unknown): asserts task is DurableC
   // Disk data is untrusted: guard the type before parseModelOverride, which assumes a string.
   if (value.model !== undefined && (typeof value.model !== "string" || !parseModelOverride(value.model))) throw new Error("Invalid durable cron model");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid durable cron timestamp");
+  if (value.paused !== undefined && typeof value.paused !== "boolean") throw new Error("Invalid durable cron paused flag");
 }
 function validate(tasks: DurableCronTask[]) { for (const task of tasks) validateDurableCronTask(task); }
 function atomicWrite(file: string, content: string) {
@@ -223,9 +253,14 @@ function acquireKernelMutationLock(store: string): number {
 export function mutateDurableCronStore(store: string, change: (tasks: DurableCronTask[]) => DurableCronTask[]): DurableCronEnvelope {
   const kernel = acquireKernelMutationLock(store);
   try {
+    const outcome = readDurableCronStoreOutcome(store);
+    if (outcome.status === "read_error") {
+      log.error("cron_store_mutate_unreadable", { store, reason: outcome.reason });
+      throw new Error(`Cannot mutate unreadable cron store: ${outcome.reason}`);
+    }
     // Corrupt records must not prevent valid tasks from being updated. Schedulers
     // log each skipped record before calling here.
-    const current = readDurableCronStore(store).tasks.filter((task) => { try { validateDurableCronTask(task); return true; } catch { return false; } });
+    const current = (outcome.status === "ok" ? outcome.tasks : []).filter((task) => { try { validateDurableCronTask(task); return true; } catch { return false; } });
     const tasks = change(current); validate(tasks);
     const envelope: DurableCronEnvelope = { version: 1, tasks }; atomicWrite(store, JSON.stringify(envelope)); return envelope;
   }
@@ -233,6 +268,21 @@ export function mutateDurableCronStore(store: string, change: (tasks: DurableCro
     fs.closeSync(kernel);
     log.debug("cron_mutation_kernel_lock", { store, outcome: "released" });
   }
+}
+/**
+ * Write ONLY the `paused` flag of one stored task, preserving every other field a peer may have
+ * written. A rejoining leader persists its whole in-memory record, so a full-record pause write
+ * could be clobbered by it; this read-modify-write cannot (#1089).
+ */
+export function setDurableCronPaused(store: string, id: string, paused: boolean): boolean {
+  let found = false;
+  mutateDurableCronStore(store, (tasks) => tasks.map((task) => {
+    if (task.id !== id) return task;
+    found = true;
+    return { ...task, paused };
+  }));
+  log.debug("cron_pause_persisted", { store, id, paused, found });
+  return found;
 }
 export function acquireLeaderLock(store: string, instanceId: string, deps: StartTokenDeps = startTokenDeps): CronLockOwner | null { return acquireDirectoryLock(lockPath(store, "leader"), instanceId, true, deps); }
 export function isLeaderLockCurrent(store: string, owner: CronLockOwner): boolean {

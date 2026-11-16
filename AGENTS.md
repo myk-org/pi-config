@@ -90,6 +90,21 @@ to nested agents. See `packages/pi-sidecar/README.md` for usage.
 
 pi-sidecar tests are part of the test suite. Breaking pi-sidecar is breaking the project.
 
+## Tests
+
+- **No suite may depend on ambient env for a code path it asserts.** A suite that asserts
+  parent-process behaviour must make that true itself — scope the variable to synchronous
+  setup and restore it immediately. `PI_SUBAGENT_CHILD` is the classic trap:
+  `registerSubagentTool` and a dozen other extensions early-return when it is `1`,
+  so the same suite run from a subagent child
+  silently registers nothing and fails later as `undefined.execute`. Use
+  `withSubagentChildEnv` (`tests/node/helpers/subagent-env.ts`) only around synchronous
+  registration, then `assert.ok(tool)` right where the tool is constructed, so a future
+  early-return names itself. Callbacks must return nothing; async callbacks or detached
+  async work that depends on this env scope are unsupported. Do not wrap an async test
+  body: the process-global env is restored as soon as the callback returns. Cover the
+  guarded side with its own test (var set → nothing registered), not by inheritance.
+
 ## Definition of Done
 
 A change is complete when ALL pass:
@@ -99,7 +114,26 @@ A change is complete when ALL pass:
 3. `npx tsx --test tests/node/**/*.test.ts` exits 0
 4. `npm run typecheck` exits 0
 5. AGENTS.md / README.md updated if structure/commands/features changed
-6. Files committed with message: `type(scope): description`
+6. **LLM-facing capability is TAUGHT, not just built**: a new tool, parameter, key or mode the
+   model must use is incomplete until (a) the rule that governs when to use it lives in
+   `rules/` (injected every turn), and (b) the tool/schema description says what it is for.
+   `docs/` alone does not count — docs are for humans. Ask at PR time: "how would I know this
+   exists?" If the answer is "I read the diff", the feature is unfinished.
+7. Files committed with message: `type(scope): description`
+
+## Task completion contract
+
+TaskUpdate, TaskBulkUpdate and orchestrator lifecycle helpers refuse agent start/completion
+of user-assigned tasks, including reassignment combined with status. Reassignment alone,
+content edits and deletion remain supported. Manual `/tasks done`, browser task-panel completion and overlay completion
+record `completedBy: user` independently of assignee. Only user-assigned completions send
+a follow-up notice, without automatic retries. TaskGet and task details expose the note;
+logs must never contain it. Reopening clears the outcome in single and bulk store updates.
+
+Task storage defaults to `PI_TASK_SCOPE=session` at `.pi/tasks/tasks-<sessionId>.json`, while `PI_TASK_SCOPE=project`
+uses `.pi/tasks/tasks.json`. `PI_TASKS` overrides the store with an absolute or `./`-relative file path, a bare list id
+under `~/.pi/tasks/<id>.json`, or `off` for in-memory storage only. Peer `coms_task*` tools use the target peer's
+advertised `task_store_path` captured at startup.
 
 ## Logging Requirements
 
@@ -282,8 +316,9 @@ progress. It does not commit, push, create a PR, or post results.
   while processing inbound work.
 - User-authored messages (#1077): `/coms tell <peer> <message>` and the `m` composer in `/coms list` stamp envelope `origin: "user"`
   through the `globalThis.__comsUserSend` bridge coms-p2p publishes; `coms_send`/`coms_broadcast` never pass it (schemas carry no
-  `origin`), and `resolvePromptOrigin` accepts only the literal `true`, so tool input cannot claim human authority. Receiver marks the
-  header `(from the USER)` and history `(USER)`.
+  `origin`), and `resolvePromptOrigin` accepts only the literal `true`, so a tool call cannot claim human authorship — that is the
+  whole guarantee. The receiver's header marker `(from the USER)` and history's `(USER)` are display only and unauthenticated: any
+  process that can write to the peer's socket can set `origin: "user"`. Verifying authorship needs signed identities, out of scope.
 - COMS queue recovery is irreversible: call `coms_queue_inspect`, review its body-free result, then pass its one-time `preview_id` to
   `coms_queue_clear` or `coms_queue_delete`. Never use `coms_send.clearPrevious`; it is rejected. Preview tokens are owner-bound and
   expire after five minutes. RPC recovery providers retain at most 20 previews per provider and must implement an atomic
@@ -298,8 +333,26 @@ progress. It does not commit, push, create a PR, or post results.
   awaits `ctx.waitForIdle()` first. A busy session must END ITS TURN to receive it.
   To confirm a reload landed: read `.pi/run/reload.done` and compare with the newest flag nonce. Verifying
   anything against a runtime that has not reloaded proves nothing — the old code is still loaded.
-  A flag parked in `.pi/tmp/reload.flag` by a pre-#1020 requester is still consumed.
-  Fresh session starts clear stale flag/pending/done state (latest code is already loaded).
+  A flag parked in `.pi/tmp/reload.flag` by a pre-#1020 requester is still consumed, and legacy `.pi/tmp/reload.done`
+  mirror write failures log `reload_legacy_mirror_failed` (`debug` when `.pi/tmp` is absent, `warn` otherwise) without
+  failing completion or retaining `reload.pending`.
+  Fresh session starts (`reconcileStartupHandshake`) remove only corrupt `reload.pending` files (empty or missing a valid
+  `pid:session` owner); unconfirmed requests and `reload.done` completion markers survive regardless of age so a requester
+  polling after a long turn never loses completion proof. `reload.pending` also records the owner's OS `startToken` so a
+  reused PID with a mismatched `startToken` is reclaimable (`reload_pending_pid_reused`), while a live other session's
+  handshake is never deleted, and a process that does not
+  register the watcher (oneshot `pi -p`, `--mode json`, piped print, headless `--mode rpc`) never touches
+  flag/pending/done at all (#1091). A flag that appears while a reload is in flight is a newer request: it is left for
+  the watcher and triggers a second reload, so `reload.done` converges on the newest nonce instead of reporting the older
+  one. A manual `/reload` cannot prove a sitting flag preceded code loading, so it leaves the flag for a conservative
+  extra reload instead of publishing an unproven nonce.
+  Writers must publish complete nonces using same-directory temporary-file atomic rename. In-place writers are
+  unsupported because an open FD can mutate a claimed inode. See `docs/configuration.md#reload-handshake`.
+  Failed commands retry through the owner's watcher with exponential backoff (`1s` up to `30s`, reset immediately when a
+  new flag nonce appears); non-reload shutdown atomically releases only that owner's pending request into a recoverable
+  claim. Retained flag/pending claims retry deterministically without overwriting newer publications. Recovery requires
+  another reload, never confirmation on discovery. Live foreign pending owners remain protected regardless of age.
+  Flag consumption renames a concrete request before reading it and never removes the other directory's request.
   Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
 - **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —
   user `~/.pi/agent/mcp.json`, project `mcp.json` once trusted. Managed with
@@ -343,10 +396,13 @@ progress. It does not commit, push, create a PR, or post results.
   symlinked/dangling paths and unmarked project skills are blocked with a reason (`/adopt-skill <name>` marks one).
   Agents are steered mid-turn when a marked skill they used fails, every allowed `write`/`edit` is recorded in
   `.pi/data/skill-review.jsonl` (append-only), and one line reports the turn's changes — see
-  `docs/skill-self-improvement.md`. The shell only reads skills — allowlisted read verbs with no write
-  operator, `mkdir` inside the owned tree, nothing else; every shell write blocks (`>`, `>>`, `>&`, `tee`,
-  `cp`, `mv`, `rm`, `sed -i`, …), as does any reference it cannot resolve. No model call, no setting: it is
-  not an async agent at all.
+  `docs/skill-self-improvement.md`. The shell reads skills and runs `.sh`/`.py`/`.mjs`/`.js` helper scripts only inside
+  unmarked project skills, `~/.pi/agent/skills/`, and read-only `node_modules` package skills (directly, via `bash`/`sh`/`node`
+  without `-c`/`-e`/`--eval`, or via `uv run [--script]`, unwrapping `rtk`/env prefixes, ignoring `/dev/null` or fd-dup
+  redirects like `2>&1`, and verifying `realpath` stays inside `skills/`), plus `mkdir` inside the owned tree — never writes
+  skill files or runs scripts inside `skill-maintenance: auto` marked project skills: every shell write (`>`, `>>`, `>&`, `tee`,
+  `cp`, `mv`, `rm`, `sed -i`, `perl -i`, quoted/unquoted inline `-c`/`-e`/`--eval`/`eval` scripts, …) and unresolved reference
+  blocks (#1103). No model call, no setting: it is not an async agent at all.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.

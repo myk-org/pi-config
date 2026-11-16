@@ -485,6 +485,256 @@ describe("shell guard (Qodo #1079)", () => {
   });
 });
 
+describe("skill helper script execution (#1103)", () => {
+  it("allows uv run --script on a user-global skill python helper with stderr muted", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "uv run --script ~/.pi/agent/skills/gh-issues/gh-issues.py 2>/dev/null"), null);
+  });
+
+  it("allows rtk-wrapped uv run --script on a user-global skill python helper", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "rtk uv run --script ~/.pi/agent/skills/gh-issues/gh-issues.py 2>/dev/null"),
+      null,
+    );
+  });
+
+  it("allows direct execution of a project skill shell helper", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, ".pi/skills/verify-all/run-suites.sh --fast"), null);
+  });
+
+  it("allows bash execution of a project skill shell helper", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "bash .pi/skills/release-publish/publish-release.sh prepare --package pi-orchestrator-config"),
+      null,
+    );
+  });
+
+  it("allows packaged skill helper execution with env prefix", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(
+        cwd,
+        "FOO=bar ~/.pi/agent/npm/node_modules/pi-orchestrator-config/skills/demo/helper.sh --check",
+      ),
+      null,
+    );
+  });
+
+  it("allows single-quoted skill prose with backticks in gh issue create", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "gh issue create --title \"t\" --body 'mentions `.pi/skills/foo/SKILL.md` in single quotes'"),
+      null,
+    );
+  });
+
+  it("blocks double-quoted substitution touching a skill in gh issue create", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, 'gh issue create --title "t" --body "mentions $(cat .pi/skills/foo/SKILL.md)"')?.block,
+      true,
+    );
+  });
+
+  it("blocks output redirection into a project skill script", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "echo hi > .pi/skills/verify-all/run-suites.sh")?.block, true);
+  });
+
+  it("blocks in-place sed on a user-global skill script", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "sed -i 's/a/b/' ~/.pi/agent/skills/gh-issues/gh-issues.py")?.block, true);
+  });
+
+  it("blocks cp into a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cp /tmp/x .pi/skills/foo/SKILL.md")?.block, true);
+  });
+
+  it("blocks inline python writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "python3 -c \"open('.pi/skills/foo/SKILL.md','w')\"")?.block, true);
+  });
+
+  it("blocks inline node writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "node -e \"fs.writeFileSync('.pi/skills/foo/SKILL.md','x')\"")?.block, true);
+  });
+
+  it("blocks bash -c mentioning a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "bash -c \"echo hi > .pi/skills/foo/SKILL.md\"")?.block, true);
+  });
+
+  it("blocks piping skill-mentioning code into an interpreter", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "echo \"open('.pi/skills/foo/SKILL.md','w')\" | python3")?.block, true);
+  });
+
+  it("blocks perl -i on a skill script", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "perl -pi -e 's/a/b/' ~/.pi/agent/skills/gh-issues/gh-issues.py")?.block, true);
+  });
+
+  it("blocks git checkout on a skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "git checkout -- .pi/skills/foo/SKILL.md")?.block, true);
+  });
+
+  it("blocks chmod on a skill script", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "chmod +x .pi/skills/verify-all/run-suites.sh")?.block, true);
+  });
+
+  it("blocks touch on a skill script", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "touch .pi/skills/verify-all/run-suites.sh")?.block, true);
+  });
+
+  it("blocks patch on a skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "patch .pi/skills/foo/SKILL.md /tmp/fix.patch")?.block, true);
+  });
+
+  it("blocks executing SKILL.md as a script", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "bash .pi/skills/foo/SKILL.md")?.block, true);
+  });
+
+  it("blocks executing a skill script through a symlink out of the project", () => {
+    const { cwd, root } = project();
+    const outside = tempDir("skill-maint-script-out-");
+    fs.writeFileSync(path.join(outside, "run.sh"), "#!/bin/sh\n");
+    fs.symlinkSync(outside, path.join(root, "linked"));
+    assert.equal(bashSkillVerdict(cwd, `bash ${path.join(root, "linked", "run.sh")}`)?.block, true);
+  });
+
+  it("blocks heredoc interpreter writing a skill file", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "python3 << 'EOF'\nopen('.pi/skills/foo/SKILL.md', 'w').write('x')\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("allows reading a skill whose name contains a write-verb prefix", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/install-tools/SKILL.md"), null);
+  });
+
+  it("blocks quoted bash -c writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, '"bash" "-c" "echo hi > .pi/skills/foo/SKILL.md"')?.block, true);
+  });
+
+  it("blocks quoted python3 -c writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, `'python3' '-c' 'open(".pi/skills/foo/SKILL.md", "w")'`)?.block, true);
+  });
+
+  it("blocks quoted node -e writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, `"node" "-e" "fs.writeFileSync('.pi/skills/foo/SKILL.md', 'x')"`)?.block,
+      true,
+    );
+  });
+
+  it("blocks node --eval writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, `node --eval "fs.writeFileSync('.pi/skills/foo/SKILL.md', 'x')"`)?.block,
+      true,
+    );
+  });
+
+  it("blocks eval writing a project skill file", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, 'eval "echo hi > .pi/skills/foo/SKILL.md"')?.block, true);
+  });
+
+  it("blocks executing a helper script inside a marked project skill", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const helper = path.join(root, "marked", "helper.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    const verdict = bashSkillVerdict(cwd, `bash ${helper}`);
+    assert.equal(verdict?.block, true);
+    assert.match(verdict?.reason ?? "", /skill-maintenance: auto/);
+  });
+
+  it("allows executing a helper script inside an unmarked project skill", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    const helper = path.join(root, "verify-all", "run-suites.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, `bash ${helper}`), null);
+  });
+
+  it("allows reading a skill file with 2>&1 descriptor forwarding", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md 2>&1"), null);
+  });
+
+  it("allows reading a skill file with >&2 descriptor forwarding", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md >&2"), null);
+  });
+
+  it("allows reading a skill file with 2>&- descriptor close", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md 2>&-"), null);
+  });
+
+  it("blocks executing a packaged skill script through a symlinked skill directory", () => {
+    const { cwd } = project();
+    const outside = tempDir("skill-maint-pkg-out-");
+    fs.writeFileSync(path.join(outside, "run.sh"), "#!/bin/sh\n");
+    const pkgSkills = path.join(cwd, "node_modules", "pkg", "skills");
+    fs.mkdirSync(pkgSkills, { recursive: true });
+    fs.symlinkSync(outside, path.join(pkgSkills, "linked"));
+    assert.equal(bashSkillVerdict(cwd, "bash node_modules/pkg/skills/linked/run.sh")?.block, true);
+  });
+
+  it("allows executing a real packaged skill script on disk", () => {
+    const { cwd } = project();
+    const pkgSkill = path.join(cwd, "node_modules", "pkg", "skills", "demo");
+    fs.mkdirSync(pkgSkill, { recursive: true });
+    fs.writeFileSync(path.join(pkgSkill, "run.sh"), "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, "bash node_modules/pkg/skills/demo/run.sh"), null);
+  });
+
+  it("records debug traces for shell parser helpers", async () => {
+    const home = tempDir("skill-maint-shell-log-");
+    const { cwd } = project();
+    const originalHome = process.env.HOME;
+    const originalLevel = process.env.PI_LOG_SKILL_MAINTENANCE;
+    process.env.HOME = home;
+    process.env.PI_LOG_SKILL_MAINTENANCE = "debug";
+    try {
+      const { clearLogLevelCache, getPiLogPath, setGlobalSessionId } = await import(
+        "../../../extensions/shared/file-logger.js"
+      );
+      clearLogLevelCache();
+      setGlobalSessionId("skill-maint-shell-log-test");
+      assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md 2>&1"), null);
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      assert.match(fs.readFileSync(logPath, "utf-8"), /skill_shell_segment_parsed/);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalLevel === undefined) delete process.env.PI_LOG_SKILL_MAINTENANCE;
+      else process.env.PI_LOG_SKILL_MAINTENANCE = originalLevel;
+      const { clearLogLevelCache } = await import("../../../extensions/shared/file-logger.js");
+      clearLogLevelCache();
+    }
+  });
+});
+
 describe("/adopt-skill", () => {
   it("marks an unmarked project skill", () => {
     const { cwd, root } = project();

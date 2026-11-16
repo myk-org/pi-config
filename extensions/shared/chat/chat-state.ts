@@ -45,6 +45,8 @@ export interface DiscordUserState {
   promptOnlyTargets?: Record<string, true>;
   /** responseChannelId when it is a DM, so it is never offered as a thread parent. */
   dmChannelId?: string | null;
+  /** Explicit unwatched session subscriptions delivered privately. */
+  dmTargets?: Record<string, string>;
 }
 
 /** A remembered prompt is for retrying, not for storage: keep it small. */
@@ -88,8 +90,15 @@ function coerceUser(raw: unknown): DiscordUserState | null {
       if (typeof threadId === "string" && threadId) threads[sessionId] = threadId;
     }
   }
+  const dmChannelId = typeof value.dmChannelId === "string" ? value.dmChannelId : null;
+  const dmTargets: Record<string, string> = {};
+  if (dmChannelId && value.dmTargets && typeof value.dmTargets === "object") {
+    for (const [sessionId, target] of Object.entries(value.dmTargets)) {
+      if (sessionId && target === dmChannelId) dmTargets[sessionId] = dmChannelId;
+    }
+  }
   // A user with no binding at all carries no information.
-  if (!watched && !channel) return null;
+  if (!watched && !channel && !Object.keys(dmTargets).length) return null;
   const lastPrompts: Record<string, LastPromptEntry> = {};
   if (value.lastPrompts && typeof value.lastPrompts === "object") {
     for (const [sessionId, raw] of Object.entries(value.lastPrompts as Record<string, unknown>)) {
@@ -108,7 +117,12 @@ function coerceUser(raw: unknown): DiscordUserState | null {
       };
     }
   }
-  return { watchedSessionId: watched, responseChannelId: channel, threadId: thread, threads, lastPrompts, updatedAt };
+  const promptOnlyTargets = Object.fromEntries(Object.entries(
+    value.promptOnlyTargets && typeof value.promptOnlyTargets === "object" ? value.promptOnlyTargets : {},
+  ).filter(([, flag]) => flag === true)) as Record<string, true>;
+  log.debug("discord user bindings restored", { dmTargets: Object.keys(dmTargets).length, threads: Object.keys(threads).length });
+  return { watchedSessionId: watched, responseChannelId: channel, threadId: thread, threads, lastPrompts, updatedAt,
+    dmChannelId, dmTargets, deliveryMuted: value.deliveryMuted === true, promptOnlyTargets };
 }
 
 /**

@@ -5,6 +5,7 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import type { TaskStore } from "./task-store.js";
+import { taskAssigneeRank, toTaskRowView } from "./tasks-view.js";
 
 const log = createLogger("pitasks");
 
@@ -36,6 +37,7 @@ export class TaskWidget {
 	private widgetFrame = 0;
 	private widgetInterval: ReturnType<typeof setInterval> | undefined;
 	private activeTaskIds = new Set<string>();
+	private turnEligibleIds = new Set<string>();
 	private metrics = new Map<string, { startedAt: number; inputTokens: number; outputTokens: number }>();
 	private tui: any;
 	private widgetRegistered = false;
@@ -48,11 +50,23 @@ export class TaskWidget {
 	setStore(store: TaskStore): void {
 		this.store = store;
 		this.activeTaskIds.clear();
+		this.turnEligibleIds.clear();
 		this.metrics.clear();
 		log.debug("widget_store_set", { taskCount: store.list().length });
 	}
 	setUICtx(ctx: any): void { this.uiCtx = ctx; }
 	getActiveTaskIds(): string[] { return [...this.activeTaskIds]; }
+
+	private getInProgressActiveIds(): string[] {
+		return [...this.activeTaskIds].filter(
+			(id) => this.metrics.has(id) && this.store.get(id)?.status === "in_progress",
+		);
+	}
+
+	beginTurn(): void {
+		this.turnEligibleIds = new Set(this.getInProgressActiveIds());
+		log.debug("task_telemetry_turn_start", { eligibleTaskCount: this.turnEligibleIds.size });
+	}
 
 	reactivate(ctx: any): void {
 		this.disposed = false;
@@ -64,6 +78,7 @@ export class TaskWidget {
 		log.debug("widget_deactivated", { hadWidget: this.widgetRegistered, hadTimer: !!this.widgetInterval });
 		if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
 		if (this.uiCtx) this.uiCtx.setWidget("tasks", undefined);
+		this.turnEligibleIds.clear();
 		this.widgetRegistered = false;
 		this.tui = undefined;
 		this.uiCtx = undefined;
@@ -74,8 +89,12 @@ export class TaskWidget {
 		log.debug("task_telemetry_active", { taskId, active, status: task?.status });
 		if (taskId && active && task) {
 			this.activeTaskIds.add(taskId);
-			const telemetry = task.telemetry ?? { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 };
-			if (!task.telemetry) this.store.update(taskId, { telemetry });
+			if (task.status === "in_progress") this.turnEligibleIds.add(taskId);
+			const existing = task.telemetry;
+			const telemetry = existing
+				? { startedAt: existing.startedAt, inputTokens: existing.inputTokens, outputTokens: existing.outputTokens }
+				: { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 };
+			if (!existing || existing.endedAt !== undefined) this.store.update(taskId, { telemetry });
 			this.metrics.set(taskId, telemetry);
 			this.ensureTimer();
 		} else if (taskId) {
@@ -85,16 +104,71 @@ export class TaskWidget {
 		this.update();
 	}
 
-	addTokenUsage(inputTokens: number, outputTokens: number): void {
-		log.debug("task_telemetry_usage", { activeTaskCount: this.activeTaskIds.size, inputTokens, outputTokens });
-		for (const id of this.activeTaskIds) {
-			const m = this.metrics.get(id);
-			if (m) {
-				m.inputTokens += inputTokens;
-				m.outputTokens += outputTokens;
-				this.store.update(id, { telemetry: m });
+	addTokenUsage(inputTokens: number, outputTokens: number, turnTaskRefs?: Iterable<string>): void {
+		const activeIds = this.getInProgressActiveIds();
+		const eligibleIds = new Set<string>(activeIds);
+		for (const id of this.turnEligibleIds) {
+			const task = this.store.get(id);
+			if (task && (this.metrics.has(id) || task.telemetry !== undefined)) {
+				eligibleIds.add(id);
 			}
 		}
+		this.turnEligibleIds = new Set(activeIds);
+
+		const refSet = new Set<string>();
+		if (turnTaskRefs) {
+			for (const raw of turnTaskRefs) {
+				const id = String(raw).trim();
+				if (id && id !== "-1") refSet.add(id);
+			}
+		}
+		const refs = refSet.size > 0 ? [...refSet].filter((id) => eligibleIds.has(id)) : [];
+		const targetIds = refSet.size > 0 ? refs : activeIds.length === 1 ? activeIds : [];
+		log.debug("task_telemetry_usage", {
+			activeTaskCount: activeIds.length,
+			eligibleTaskCount: eligibleIds.size,
+			turnRefCount: refSet.size,
+			matchedRefCount: refs.length,
+			creditedTaskIds: targetIds,
+			inputTokens,
+			outputTokens,
+		});
+		if (targetIds.length === 0) return;
+		const n = targetIds.length;
+		const inEach = Math.floor(inputTokens / n);
+		const outEach = Math.floor(outputTokens / n);
+		const inRem = inputTokens - inEach * n;
+		const outRem = outputTokens - outEach * n;
+		targetIds.forEach((id, i) => {
+			const task = this.store.get(id);
+			if (!task) return;
+			const isActive = this.activeTaskIds.has(id) && task.status === "in_progress";
+			const base = isActive
+				? this.metrics.get(id) ?? task.telemetry
+				: task.telemetry ?? this.metrics.get(id);
+			if (!base) return;
+			const inDelta = inEach + (i === 0 ? inRem : 0);
+			const outDelta = outEach + (i === 0 ? outRem : 0);
+			if (isActive) {
+				const next = {
+					startedAt: base.startedAt,
+					inputTokens: base.inputTokens + inDelta,
+					outputTokens: base.outputTokens + outDelta,
+				};
+				this.metrics.set(id, next);
+				this.store.update(id, { telemetry: next });
+			} else {
+				const endedAt = task.telemetry?.endedAt;
+				const next = {
+					startedAt: base.startedAt,
+					...(endedAt !== undefined ? { endedAt } : {}),
+					inputTokens: base.inputTokens + inDelta,
+					outputTokens: base.outputTokens + outDelta,
+				};
+				this.metrics.delete(id);
+				this.store.update(id, { telemetry: next });
+			}
+		});
 	}
 
 	private ensureTimer(): void {
@@ -109,8 +183,16 @@ export class TaskWidget {
 	}
 
 	private buildWidgetLines(tui: any, theme: any): string[] {
-		const sortOrder = this.config.sortOrder ?? "id";
-		const tasks = this.store.list(sortOrder);
+		// Active work first so truncation never hides a running spinner behind 10+ pending rows;
+		// within each status group, the owner's tasks sort before the agent's (#1090).
+		const statusRank = (status: string): number =>
+			status === "in_progress" ? 0 : status === "pending" ? 1 : 2;
+		const tasks = [...this.store.list()].sort(
+			(a, b) =>
+				statusRank(a.status) - statusRank(b.status) ||
+				taskAssigneeRank(a) - taskAssigneeRank(b) ||
+				Number(a.id) - Number(b.id),
+		);
 		const w = tui.terminal.columns;
 		const truncate = (line: string) => truncateToWidth(line, w);
 		if (tasks.length === 0) return [];
@@ -118,11 +200,14 @@ export class TaskWidget {
 		const completed = tasks.filter(t => t.status === "completed");
 		const inProgress = tasks.filter(t => t.status === "in_progress");
 		const pending = tasks.filter(t => t.status === "pending");
+		// "yours" is the owner's OPEN work: completed rows are already counted as done.
+		const yours = tasks.filter(t => t.assignee === "user" && t.status !== "completed").length;
 		const parts: string[] = [];
 		if (completed.length > 0) parts.push(`${completed.length} done`);
 		if (inProgress.length > 0) parts.push(`${inProgress.length} in progress`);
 		if (pending.length > 0) parts.push(`${pending.length} open`);
-		const statusText = `${tasks.length} tasks (${parts.join(", ")})`;
+		const yoursText = yours > 0 ? `${parts.length > 0 ? " · " : ""}${yours} yours` : "";
+		const statusText = `${tasks.length} tasks (${parts.join(", ")}${yoursText})`;
 		const spinnerChar = SPINNER[this.widgetFrame % SPINNER.length];
 		const lines: string[] = [truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText))];
 
@@ -157,16 +242,17 @@ export class TaskWidget {
 				return ` ${theme.fg("dim", tokenParts.length ? `(${elapsed} · ${tokenParts.join(" ")})` : `(${elapsed})`)}`;
 			})() : "";
 
+			const tag = theme.fg("dim", toTaskRowView(task).tag);
 			let text: string;
 			if (task.status === "in_progress") {
 				const form = task.activeForm || task.subject;
 				const agentId = task.metadata?.agentId;
 				const agentLabel = agentId ? ` (agent ${agentId.slice(0, 5)})` : "";
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.fg("accent", form + agentLabel + "…")}${stats}`;
+				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${theme.fg("accent", form + agentLabel + "…")}${stats}`;
 			} else if (task.status === "completed") {
-				text = `  ${icon} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}${stats}`;
+				text = `  ${icon} ${tag} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}${stats}`;
 			} else {
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${task.subject}${stats}`;
+				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${task.subject}${stats}`;
 			}
 			lines.push(truncate(text + suffix));
 		}

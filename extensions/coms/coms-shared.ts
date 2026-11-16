@@ -15,8 +15,12 @@ import * as crypto from "node:crypto";
 import * as os from "node:os";
 import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
+import { resolveStorePath } from "../pitasks/task-store.js";
+import { stripOriginMarker } from "./peer-text.js";
 
 const log = createLogger("coms");
+/** #1084: the tell helpers' own trail — parse/build/resolve outcomes, never message text. */
+const tellLog = createLogger("coms-tell");
 
 /**
  * Tokenize a command string respecting double and single quotes.
@@ -526,8 +530,13 @@ export function buildBundledContent(
 	const origins = new Set(messages.map((m) => m.origin ?? "peer"));
 	const shared = origins.size === 1 ? messages[0]?.origin ?? "peer" : undefined;
 	const content = messages.map((m, idx) => {
-		const tag = (m.origin ?? "peer") === "user" ? `[from USER (a human), via ${safeSender}] ` : `[from ${safeSender}] `;
-		return `--- Message ${idx + 1} of ${messages.length} [${m.msg_id}] ---\n${tag}${m.prompt}`;
+		const msgOrigin = m.origin ?? "peer";
+		const tag = msgOrigin === "user" ? `[from USER (a human), via ${safeSender}] ` : `[from ${safeSender}] `;
+		// Origin is decided by the envelope's structured field; this tag is display only. A peer body
+		// that printed the marker itself would read as a human line, so peer text loses it — the
+		// human's own words are never rewritten.
+		const body = msgOrigin === "user" ? m.prompt : stripOriginMarker(m.prompt);
+		return `--- Message ${idx + 1} of ${messages.length} [${m.msg_id}] ---\n${tag}${body}`;
 	}).join("\n\n");
 	const mixed = shared === undefined
 		? " ORIGINS ARE MIXED: messages tagged [from USER (a human), via …] are the human's words; the rest are another agent's. Weigh them differently."
@@ -542,12 +551,13 @@ export function buildBundledContent(
 /** Build the command-layer send request from the peers overlay composer. A blank line means
  *  "nothing to send" (Esc and empty input are the same decision), so it yields null. */
 export function buildTellRequest(
-	peer: { name: string; project?: string | null },
+	peer: { name: string; project?: string | null; endpoint?: string },
 	text: string,
-): { target: string; prompt: string; project?: string } | null {
+): { target: string; prompt: string; project?: string; expectedEndpoint?: string } | null {
 	const prompt = text.trim();
 	if (!prompt) return null;
-	return { target: peer.name, prompt, ...(peer.project ? { project: peer.project } : {}) };
+	tellLog.debug("tell_built", { target: peer.name, origin: "user" });
+	return { target: peer.name, prompt, ...(peer.project ? { project: peer.project } : {}), ...(peer.endpoint ? { expectedEndpoint: peer.endpoint } : {}) };
 }
 
 /** Parse `/coms tell [--project <p>] <peer> <message…>` (the text after "tell"). The message is
@@ -558,6 +568,7 @@ export function parseComsTell(detail: string): { peer: string; message: string; 
 	const [, project, peer, message] = match;
 	const text = message.trim();
 	if (!text) return null;
+	tellLog.debug("tell_parsed", { hasProject: !!project, messageLength: text.length });
 	return { peer, message: text, ...(project ? { project } : {}) };
 }
 
@@ -580,17 +591,29 @@ export function buildInboundContent(
 	senderName?: string,
 	senderCwd?: string,
 	origin?: PromptOrigin,
+	/** The sender's registry session id — the fallback address when its name cannot be quoted. */
+	senderSessionId?: string,
+	/** Bundles already sanitize each peer body and retain per-message user labels. */
+	bundled = false,
 ): string {
-	// Sanitize peer-controlled values — strip control chars and limit length
-	const safeName = senderName ? senderName.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 100) : undefined;
-	const safeCwd = senderCwd ? senderCwd.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 200) : undefined;
+	// Sanitize peer-controlled values — strip control chars, tag-breaking brackets and the origin
+	// marker (#1084), then cap. A name can otherwise close the tag early or pose as the human.
+	const cleanTagPart = (value: string) => stripOriginMarker(value).replace(/[\x00-\x1f\x7f[\]]/g, "").trim();
+	const safeName = senderName ? cleanTagPart(senderName).slice(0, 100) : undefined;
+	const safeCwd = senderCwd ? cleanTagPart(senderCwd).slice(0, 200) : undefined;
 	// Machine-readable prefix so the LLM can distinguish coms messages from user input. The
 	// origin comes before the name: "a human decided this" is the part that changes the reply.
 	const originTag = origin === "user" ? "USER (a human), via " : "";
 	const fromTag = safeName ? `[from ${originTag}${safeName}${safeCwd ? ` @ ${safeCwd}` : ''}] ` : '';
-	let content = header ? `${fromTag}${header}\n\n${prompt}` : `${fromTag}${prompt}`;
-	if (safeName) {
-		content += `\n\nReply to me via coms_send(target="${safeName}")`;
+	const body = origin === "user" || bundled ? prompt : stripOriginMarker(prompt);
+	log.debug("inbound_body_formatted", { origin, bundled });
+	let content = header ? `${fromTag}${header}\n\n${body}` : `${fromTag}${body}`;
+	if (senderName) {
+		// The hint is an ADDRESS: coms_send resolves the RAW registry name, so it stays verbatim —
+		// sanitizing it would name a peer that does not exist. Only the displayed tag is sanitized.
+		// A name that cannot be quoted safely falls back to the sender's session id.
+		const address = [senderName, senderSessionId].find((value) => value && /^[^"\\\r\n\x00-\x1f\x7f-\x9f]+$/.test(value));
+		if (address) content += `\n\nReply to me via coms_send(target="${address}")`;
 	}
 	if (tasks && tasks.length > 0) {
 		content += `\n\n## Assigned Tasks\n\nThese tasks have been added to your task list. Work through them in order:\n\n`;
@@ -679,9 +702,9 @@ export function buildComsPeersPayload(
 }
 
 /** Sanitize a coms identity name for safe embedding in header strings.
- *  Strips all control characters (C0/C1), brackets; replaces whitespace with hyphens. */
+ *  Strips the origin marker, control characters (C0/C1) and brackets; whitespace → hyphens. */
 export function sanitizeComsName(name: string): string {
-	return name
+	return stripOriginMarker(name)
 		.replace(/[\x00-\x1f\x7f-\x9f\[\]]/g, "") // strip C0/C1 control chars + brackets
 		.trim()
 		.replace(/\s+/g, "-")                        // whitespace → hyphens (keep as single token)
@@ -768,6 +791,53 @@ export interface ComsOrigin {
 	sender_endpoint?: string;
 }
 
+export interface PeerTaskTarget {
+	name?: string;
+	cwd?: string;
+	coms_session_id?: string;
+	pi_session_id?: string;
+	task_store_path?: string | null;
+}
+
+/**
+ * Resolve the exact TaskStore file path a target peer reads.
+ * Never falls back to `coms_session_id`: a peer's TaskStore keys session files by `pi_session_id`
+ * (or `PI_TASKS` / project scope advertised in `task_store_path`), so guessing from `coms_session_id`
+ * writes an orphaned file the peer never sees (#1080).
+ */
+export function resolvePeerTaskStorePath(target: PeerTaskTarget | null | undefined): string | undefined {
+	if (!target) {
+		log.debug("peer_task_store_unresolved", { reason: "missing_target" });
+		return undefined;
+	}
+	if (target.task_store_path === null) {
+		log.debug("peer_task_store_unresolved", { peer: target.name ?? "?", reason: "peer_tasks_disabled_or_uninitialized" });
+		return undefined;
+	}
+	if (typeof target.task_store_path === "string" && target.task_store_path.trim().length > 0) {
+		const trimmed = target.task_store_path.trim();
+		if (path.isAbsolute(trimmed) && !/[\x00-\x1f\x7f]/.test(trimmed)) {
+			log.debug("peer_task_store_resolved", { peer: target.name ?? "?", source: "registry_task_store_path", storePath: trimmed });
+			return trimmed;
+		}
+		log.warn("peer_task_store_invalid_path", { peer: target.name ?? "?", reason: "non_absolute_or_control_chars" });
+		return undefined;
+	}
+	const piSessionId = typeof target.pi_session_id === "string" ? target.pi_session_id.trim() : "";
+	const targetCwd = typeof target.cwd === "string" ? target.cwd.trim() : "";
+	if (!piSessionId || !targetCwd) {
+		log.debug("peer_task_store_unresolved", {
+			peer: target.name ?? "?",
+			reason: !piSessionId ? "missing_pi_session_id" : "missing_cwd",
+			hasComsSessionId: Boolean(target.coms_session_id),
+		});
+		return undefined;
+	}
+	const resolved = resolveStorePath(piSessionId, { cwd: targetCwd, piTasks: undefined, taskScope: "session" });
+	log.debug("peer_task_store_resolved", { peer: target.name ?? "?", source: "pi_session_id", storePath: resolved });
+	return resolved;
+}
+
 /** Max tasks accepted from a single inbound message to prevent abuse. */
 const MAX_INBOUND_TASKS = 20;
 /** Max length for task subject/description fields. */
@@ -775,43 +845,62 @@ const MAX_TASK_FIELD_LEN = 2000;
 
 /**
  * Auto-create tasks on a peer's task store via owned TaskStore API.
- * Runs on the SENDER side — uses createTaskForSession with the target's session ID.
- * TaskStore handles locking, file format, everything.
+ * Runs on the SENDER side — writes into the exact store path the target peer reads.
  */
 export async function createComsInboundTasks(
 	tasks: Array<{ subject: string; description: string }>,
 	origin: ComsOrigin,
 	targetSessionId: string,
 	targetCwd?: string,
+	targetStorePath?: string,
 ): Promise<number> {
-	log.debug("create_coms_inbound_tasks", { targetSessionId, count: tasks?.length ?? 0 });
-	if (!tasks || tasks.length === 0 || !targetSessionId) return 0;
+	log.debug("create_coms_inbound_tasks", { targetSessionId, hasStorePath: Boolean(targetStorePath), count: tasks?.length ?? 0 });
+	if (!tasks || tasks.length === 0) return 0;
 
-	let createTaskForSession: any;
+	const storePath = targetStorePath || (
+		targetSessionId
+			? resolveStorePath(targetSessionId, { cwd: targetCwd, piTasks: undefined, taskScope: "session" })
+			: undefined
+	);
+	if (!storePath) {
+		log.debug("create_coms_inbound_tasks_skipped", { reason: "store_path_unresolved", hasSessionId: Boolean(targetSessionId) });
+		return 0;
+	}
+
+	let createTasksAtStorePath: ((path: string, defs: any[]) => any[]) | undefined;
 	try {
-		createTaskForSession = (await import("../pitasks/index.js")).createTaskForSession;
-	} catch { return 0; }
-	if (!createTaskForSession) return 0;
+		createTasksAtStorePath = (await import("../pitasks/index.js")).createTasksAtStorePath;
+	} catch (error) {
+		log.error("create_coms_inbound_tasks_import_failed", { storePath, error: error instanceof Error ? error.message : String(error) });
+		return 0;
+	}
+	if (!createTasksAtStorePath) return 0;
 
-	let created = 0;
+	const defs: Array<{ subject: string; description: string; createdBy: any; metadata?: Record<string, any> }> = [];
 	const capped = tasks.slice(0, MAX_INBOUND_TASKS);
 	for (const task of capped) {
 		const subject = typeof task.subject === "string" ? task.subject.slice(0, MAX_TASK_FIELD_LEN) : "";
 		const description = typeof task.description === "string" ? task.description.slice(0, MAX_TASK_FIELD_LEN) : "";
 		if (!subject) continue;
-		try {
-			const createdBy = {
+		defs.push({
+			subject,
+			description,
+			createdBy: {
 				type: "coms" as const,
 				origin: origin.sender_name,
 				session: origin.sender_session,
 				project: "",
-			};
-			const meta = origin.sender_endpoint ? { sender_endpoint: origin.sender_endpoint } : undefined;
-			createTaskForSession(targetSessionId, subject, description, createdBy, meta, targetCwd);
-			created++;
-		} catch { /* best-effort */ }
+			},
+			metadata: origin.sender_endpoint ? { sender_endpoint: origin.sender_endpoint } : undefined,
+		});
 	}
-	return created;
+	if (defs.length === 0) return 0;
+	try {
+		return createTasksAtStorePath(storePath, defs).length;
+	} catch (error) {
+		log.error("create_coms_inbound_tasks_failed", { storePath, count: defs.length, error: error instanceof Error ? error.message : String(error) });
+		return 0;
+	}
 }
 
 /**
@@ -1042,4 +1131,19 @@ export function deadPeerCardIds<T extends { endpoint?: string | null }>(
     if (!exists(endpoint)) dead.push(id);
   }
   return dead;
+}
+
+/** A remote peer may only mutate coms-origin tasks created by its own non-empty session. */
+export function isPeerTaskCreator(
+  createdBy: { type?: unknown; session?: unknown } | null | undefined,
+  senderSession: unknown,
+): boolean {
+  const hasSender = typeof senderSession === "string" && senderSession.length > 0;
+  const allowed = createdBy?.type === "coms" && hasSender && createdBy.session === senderSession;
+  log.debug("peer_task_creator_check", {
+    allowed,
+    originType: typeof createdBy?.type === "string" ? createdBy.type : null,
+    hasSender,
+  });
+  return allowed;
 }

@@ -1,4 +1,4 @@
-import { describe, it, afterEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -54,16 +54,17 @@ function harness() {
   const result = (id: string, output = reviewerOutput, agent = "code-reviewer-runtime", data: { status?: object; success?: boolean; exitCode?: number } = {}) => {
     const { status = {}, success = true, exitCode = success ? 0 : 1 } = data;
     log.debug("write_result", { id, agent, success, exitCode });
-    writeFileSync(join(cwd, ".pi", "tmp", id, "status.json"), JSON.stringify({ runId: id, state: "running", ...status }));
+    writeFileSync(join(cwd, ".pi", "tmp", id, "status.json"), JSON.stringify({ runId: id, state: "running", pid: process.pid, ...status }));
     writeFileSync(join(resultDir(), `${id}.json`), JSON.stringify({ id, agent, task: "review", success, output, durationMs: 1, exitCode }));
+    // Formatter tests drive the real fallback instead of depending on host inotify capacity.
+    triggerPoller();
   };
   const spawn = (groupId?: string, agent = "code-reviewer-runtime") => api.spawnAsyncAgent(agent, "review", cwd, [{ name: agent } as any], { groupId });
   const triggerPoller = () => {
-    log.debug("trigger_poller", { registered: Boolean(poller) });
     assert.ok(poller, "async poller should be registered");
     poller();
   };
-  return { cwd, api, commands, ctx, events, messages, overlayOpens: () => overlayOpens, result, spawn, triggerPoller, rejectNextSend: () => { rejectedSends += 1; }, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
+  return { cwd, api, commands, ctx, events, messages, overlayOpens: () => overlayOpens, result, spawn, triggerPoller, rejectNextSend: () => { rejectedSends += 1; }, restore: () => { try { handlers.get("session_shutdown")![0]({}, ctx); } finally { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } } };
 }
 
 async function eventually(predicate: () => boolean, timeoutMs = 5_000) {
@@ -80,6 +81,16 @@ function hasPersistedOutput(cwd: string, id: string): boolean {
 }
 
 describe("async delivery formatter runtime wiring (issue #803)", () => {
+  it("delivers fixture results without waiting for filesystem notifications", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      h.result(job.id);
+      assert.equal(h.messages.length, 1);
+      assert.match(h.messages[0].content, /"truncated":true/);
+    } finally { h.restore(); }
+  });
+
   it("formats immediate reviewer delivery through registered async agents", async () => {
     const h = harness();
     try { const job = h.spawn(); h.result(job.id); await eventually(() => h.messages.length === 1); assert.match(h.messages[0].content, /"truncated":true/); } finally { h.restore(); }
@@ -97,7 +108,8 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
 
   it("formats reconciliation delivery through registered async agents", async () => {
     const h = harness();
-    try { h.rejectNextSend(); const job = h.spawn(); h.result(job.id); await eventually(() => hasPersistedOutput(h.cwd, job.id)); assert.equal(h.messages.length, 0); h.triggerPoller(); assert.match(h.messages[0].content, /"truncated":true/); } finally { h.restore(); }
+    // Ingestion and reconciliation each attempt delivery during the first tick.
+    try { h.rejectNextSend(); h.rejectNextSend(); const job = h.spawn(); h.result(job.id); await eventually(() => hasPersistedOutput(h.cwd, job.id)); assert.equal(h.messages.length, 0); h.triggerPoller(); assert.match(h.messages[0].content, /"truncated":true/); } finally { h.restore(); }
   });
 
   it("keeps passed tests passed after failed test-runner completion", async () => {
@@ -147,6 +159,8 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
     try {
       markNeedsReview(h.cwd);
       markTestsPassed(h.cwd);
+      // A poll tick attempts ingestion delivery, then reconciliation delivery.
+      h.rejectNextSend();
       h.rejectNextSend();
       const job = h.spawn(undefined, "test-runner");
       log.debug("failed_test_result", { scenario: "test_runner_reconciliation", jobId: job.id, agent: "test-runner", success: false, resultStatus: "failed", deliveryState: "deferred_reconciliation" });
@@ -159,7 +173,8 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
     } finally { h.restore(); }
   });
 
-  it("persists a result and defers delivery when the captured context becomes stale", async () => {
+  // Watcher contract: unlike formatter cases, stale contexts cannot use the poller.
+  it("persists a watched result when the captured context becomes stale", async () => {
     const h = harness();
     try {
       const job = h.spawn();
