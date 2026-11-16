@@ -260,7 +260,7 @@ describe("#1104 stale in-progress reminder", () => {
 	it("excludes an over-threshold task backed by a running async job", () => {
 		const candidate = { id: "590", status: "in_progress", assignee: "llm", statusHistory: { in_progress_at: new Date(NOW - 33 * MIN).toISOString() } };
 		const activeIds = collectActiveAsyncTaskIds([
-			{ id: "job-1", status: "running", taskId: "590" },
+			{ status: "running", taskId: "590" },
 		]);
 		assert.deepEqual(selectStaleTasks([candidate], NOW, STALE_MS, activeIds), []);
 	});
@@ -268,7 +268,7 @@ describe("#1104 stale in-progress reminder", () => {
 	it("excludes an over-threshold task backed by a queued async job", () => {
 		const candidate = { id: "590", status: "in_progress", assignee: "llm", statusHistory: { in_progress_at: new Date(NOW - 33 * MIN).toISOString() } };
 		const activeIds = collectActiveAsyncTaskIds([
-			{ id: "job-1", status: "queued", taskId: "590" },
+			{ status: "queued", taskId: "590" },
 		]);
 		assert.deepEqual(selectStaleTasks([candidate], NOW, STALE_MS, activeIds), []);
 	});
@@ -276,9 +276,9 @@ describe("#1104 stale in-progress reminder", () => {
 	it("nags an over-threshold task whose async job finished or failed with threshold plus id", () => {
 		const candidate = { id: "590", status: "in_progress", assignee: "llm", statusHistory: { in_progress_at: new Date(NOW - 33 * MIN).toISOString() } };
 		const activeIds = collectActiveAsyncTaskIds([
-			{ id: "job-done", status: "complete", taskId: "590" },
-			{ id: "job-fail", status: "failed", taskId: "590" },
-			{ id: "job-unlinked", status: "running", taskId: "-1" },
+			{ status: "complete", taskId: "590" },
+			{ status: "failed", taskId: "590" },
+			{ status: "running", taskId: "-1" },
 		]);
 		const stale = selectStaleTasks([candidate], NOW, STALE_MS, activeIds);
 		assert.equal(stale.length, 1);
