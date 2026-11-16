@@ -4,13 +4,14 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import {
   autoCompleteTask,
   autoMarkInProgress,
 } from "../../../extensions/orchestrator/task-lifecycle.js";
+import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import {
   publishTaskStore,
@@ -19,6 +20,20 @@ import {
   TASK_TELEMETRY_ACTIVE_SYMBOL,
 } from "../../../extensions/shared/task-store-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+
+/** The lifecycle logger's own file — a warn-only pin proves these lines are not debug. */
+const LOG_NAME = "task-lifecycle";
+setGlobalSessionId("auto-task-lifecycle-test");
+
+function logOffset(): number {
+  const logPath = getPiLogPath(LOG_NAME);
+  return logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
+}
+
+function logSince(offset: number): string {
+  const logPath = getPiLogPath(LOG_NAME);
+  return logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(offset) : "";
+}
 
 
 function writeTaskStore(dir: string, fileName: string, tasks: Array<{ id: string; status: string; subject: string }>): string {
@@ -107,17 +122,25 @@ describe("autoCompleteTask", () => {
     assert.equal(tasks[0].status, "completed");
   });
 
-  it("falls back to tasks.json when session store does not have the task", async () => {
+  it("refuses a project task that shares the id when the session store lacks it", async () => {
     writeTaskStore(tmp, "tasks-sess1.json", [
       { id: "2", status: "pending", subject: "Other task" },
     ]);
     const storePath = writeTaskStore(tmp, "tasks.json", [
-      { id: "1", status: "pending", subject: "Fallback task" },
+      { id: "1", status: "pending", subject: "Unrelated project task" },
     ]);
     const result = await autoCompleteTask("1", tmp, "sess1", (p) => new TaskStore(p));
-    assert.equal(result, true);
-    const tasks = readTaskStore(storePath);
-    assert.equal(tasks[0].status, "completed");
+    assert.equal(result, false);
+    assert.equal(readTaskStore(storePath)[0].status, "pending");
+  });
+
+  it("refuses a project task when a restored job's session store is gone", async () => {
+    const storePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "in_progress", subject: "Someone else's task" },
+    ]);
+    const result = await autoCompleteTask("1", tmp, "restored-worker", (p) => new TaskStore(p));
+    assert.equal(result, false);
+    assert.equal(readTaskStore(storePath)[0].status, "in_progress");
   });
 
   it("returns false when no store files exist", async () => {
@@ -400,6 +423,91 @@ describe("autoMarkInProgress update-failure handling", () => {
     const tasks = readTaskStore(storePath);
     assert.equal(tasks[0].status, "pending");
   });
+});
+
+describe("concurrent status writes", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = makeTempDir("concurrent-write-");
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("refuses a status write another writer already overwrote", async () => {
+    const state = { status: "pending" };
+    const store = {
+      get: () => ({ id: "1", status: state.status, assignee: "llm" }),
+      // A second writer completes the task between our read and our write.
+      update: () => {
+        state.status = "completed";
+        return { changedFields: ["status"] };
+      },
+    };
+    assert.equal(await autoMarkInProgress("1", tmp, undefined, () => store), false);
+    assert.equal(state.status, "completed");
+  });
+
+  it("refuses a status write the store reports as no status change", async () => {
+    const store = {
+      get: () => ({ id: "1", status: "pending", assignee: "llm" }),
+      update: () => ({ task: undefined, changedFields: ["deleted"], warnings: [] }),
+    };
+    assert.equal(await autoCompleteTask("1", tmp, undefined, () => store), false);
+  });
+
+  it("logs a reverting concurrent update at warn level", async () => {
+    setLogLevelPin(LOG_NAME, "warn");
+    const offset = logOffset();
+    try {
+      const state = { status: "pending" };
+      const store = {
+        get: () => ({ id: "1", status: state.status, assignee: "llm" }),
+        update: () => {
+          state.status = "completed";
+          return { changedFields: ["status"] };
+        },
+      };
+      await autoMarkInProgress("1", tmp, undefined, () => store);
+      assert.match(logSince(offset), /\[warn\] \[task-lifecycle\] task_lifecycle_concurrent_update_reverted/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+    }
+  });
+});
+
+describe("failed status write logging", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = makeTempDir("write-log-");
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("logs the failed disk write at warn level with the target status", async () => {
+    writeTaskStore(tmp, "tasks.json", [{ id: "1", status: "pending", subject: "Task" }]);
+    const throwingFactory = () => ({
+      get: () => ({ id: "1", status: "pending", assignee: "llm" }),
+      update: () => { throw new Error("disk write failed"); },
+    });
+    setLogLevelPin(LOG_NAME, "warn");
+    const offset = logOffset();
+    try {
+      assert.equal(await autoCompleteTask("1", tmp, undefined, throwingFactory), false);
+      const logged = logSince(offset);
+      assert.match(logged, /\[warn\] \[task-lifecycle\] task_lifecycle_status_write_failed/);
+      assert.match(logged, /"taskId":"1"/);
+      assert.match(logged, /"targetStatus":"completed"/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+    }
+  });
+
 });
 
 describe("live task store bridge resolution", () => {
