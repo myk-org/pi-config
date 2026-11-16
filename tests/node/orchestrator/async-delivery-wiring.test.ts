@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from "node:path";
 
 import { planSpawnExitRecovery, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
-import { markNeedsReview, markTestsPassed, readReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
+import { addReviewerPending, markNeedsReview, markTestsPassed, readReviewState, recordReviewerResult, resetReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -283,6 +283,48 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
       await eventually(() => h.messages.length === 2);
       assert.match(h.messages[1].content, /late result/);
       assert.match(h.messages[1].content, /late findings/);
+    } finally { h.restore(); }
+  });
+
+  it("marks review not clean when late findings follow a zero sweep", async () => {
+    const h = harness();
+    try {
+      // The fallback delivered an empty result; the reviewer was then recorded as a zero-finding
+      // review and left reviewers_pending. The findings that arrived afterwards were dropped.
+      const job = h.spawn();
+      writeFileSync(join(h.cwd, ".pi", "tmp", job.id, "status.json"), JSON.stringify({ runId: job.id, agent: "code-reviewer-runtime", state: "complete", startedAt: Date.now() - 60_000, lastUpdate: Date.now() - 60_000 }));
+      h.triggerPoller();
+      await eventually(() => h.messages.length === 1);
+      resetReviewState(h.cwd);
+      addReviewerPending(h.cwd, "code-reviewer-runtime", { kind: "other", id: "late-reviewer" } as any);
+      recordReviewerResult(h.cwd, "code-reviewer-runtime", 0);
+      assert.equal(readReviewState(h.cwd).status, "clean");
+      writeFileSync(join(h.resultDir(), `${job.id}.json`), JSON.stringify({ id: job.id, agent: "code-reviewer-runtime", task: "review", success: true, output: reviewerOutput, durationMs: 1, exitCode: 0 }));
+      h.triggerPoller();
+      await eventually(() => h.messages.length === 2);
+      const state = readReviewState(h.cwd);
+      assert.equal(state.status, "has_findings");
+      assert.equal(state.findings_count > 0, true);
+    } finally { h.restore(); }
+  });
+
+  it("withholds a chain hook until the late result carries real text", async () => {
+    const h = harness();
+    try {
+      // Firing the hook with the empty fallback spawned the next chain step with no {previous}.
+      const fired: string[] = [];
+      const job = h.api.spawnAsyncAgent("worker-chained", "step one", h.cwd, [{ name: "worker-chained" } as any], {
+        onComplete: result => { fired.push(result.text); },
+        chain: { steps: [{ agent: "worker-chained", task: "step one" }], index: 0, previous: "" },
+      });
+      writeFileSync(join(h.cwd, ".pi", "tmp", job.id, "status.json"), JSON.stringify({ runId: job.id, agent: "worker-chained", state: "complete", startedAt: Date.now() - 60_000, lastUpdate: Date.now() - 60_000 }));
+      h.triggerPoller();
+      await eventually(() => h.messages.length === 1);
+      assert.deepEqual(fired, []);
+      writeFileSync(join(h.resultDir(), `${job.id}.json`), JSON.stringify({ id: job.id, agent: "worker-chained", task: "step one", success: true, output: "real chain text", durationMs: 1, exitCode: 0 }));
+      h.triggerPoller();
+      await eventually(() => h.messages.length === 2);
+      assert.deepEqual(fired, ["real chain text"]);
     } finally { h.restore(); }
   });
 

@@ -75,6 +75,8 @@ export interface AsyncJob {
   fireAndForget?: boolean;
   /** One-shot: fires once with the ingested result text. Used by async chains to feed {previous}. */
   onComplete?: (result: { text: string; isError: boolean }) => void;
+  /** Set when the empty timeout fallback withheld this job's chain hook for the late result. */
+  pendingChainHook?: boolean;
   groupId?: string;
   taskId?: string;
   /** The task store file this job's task lives in, recorded at spawn time. The only path a
@@ -712,6 +714,13 @@ export function registerAsyncAgents(
       }
 
       let autoCompleteError = "";
+      // A chain continuation fired with the empty fallback text would spawn its next step with
+      // no {previous}. Withhold it so the late result fires it once with the real text.
+      const withholdChainHook = noIngestedResult && !!job.onComplete && readChainState(job.workerDir) !== null;
+      if (withholdChainHook) {
+        job.pendingChainHook = true;
+        log.warn("chain_hook_withheld_no_result", { job: job.id, agent: job.agent });
+      }
       // Auto-complete the linked task even without a live ctx: the poller stops for a stale
       // ctx, so gating this on one left the task open forever after a reload.
       if (!job.fireAndForget && job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
@@ -725,7 +734,7 @@ export function registerAsyncAgents(
       }
 
       if (job.fireAndForget) {
-        if (fireHook) fireOnComplete(job);
+        if (fireHook && !withholdChainHook) fireOnComplete(job);
         job.delivered = true;
       } else if (getLiveAsyncCtx()) {
         const displayName = job.name || job.agent;
@@ -763,7 +772,7 @@ export function registerAsyncAgents(
             // delivered stays false — the reconciliation sweep retries on the next poll
           }
         }
-        if (job.delivered && fireHook) fireOnComplete(job);
+        if (job.delivered && fireHook && !withholdChainHook) fireOnComplete(job);
       } else {
         // No live ctx: delivered stays false so the reconciliation sweep retries later.
         log.debug("deliver_deferred_no_live_ctx", { job: job.id, status: job.status });
@@ -839,7 +848,9 @@ export function registerAsyncAgents(
             // The fallback counted this reviewer as 0 findings; the real count is here.
             try {
               const findings = countFindings(typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
-              recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
+              // force: the fallback already removed this reviewer from reviewers_pending
+              recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { force: true });
+              log.info("late_reviewer_result_applied", { agent: job.agent, count: findings < 0 ? 1 : findings });
             } catch (e: any) { log.error(`late result: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
           }
           log.info("ingest_late_result", { job: job.id, agent: job.agent });
