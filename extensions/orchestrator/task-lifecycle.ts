@@ -42,11 +42,14 @@ async function resolveLiveStore(cwd: string): Promise<any> {
       return null;
     }
   }
-  if (!store) return null;
+  if (!store) {
+    log.debug("task_lifecycle_live_store_unavailable", { reason: "not_published", cwd });
+    return null;
+  }
   if (!store.filePath || process.env.PI_TASKS || !cwd) return store;
-  return canonicalPath(path.dirname(store.filePath)) === canonicalPath(path.join(cwd, ".pi", "tasks"))
-    ? store
-    : null;
+  if (canonicalPath(path.dirname(store.filePath)) === canonicalPath(path.join(cwd, ".pi", "tasks"))) return store;
+  log.debug("task_lifecycle_live_store_unavailable", { reason: "cwd_mismatch", cwd, storePath: store.filePath });
+  return null;
 }
 
 /** Activate or deactivate task telemetry via the published bridge (falling back to local import). */

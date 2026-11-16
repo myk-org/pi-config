@@ -696,7 +696,13 @@ export function registerSubagentTool(
 
   /** The async paths' taskId refusal, delivered to a sync call: a sync spawn on an owner-assigned
    *  or unknown task would do the step the lifecycle helpers then refuse to record (#1102). */
-  async function refuseSyncTask(taskErr: string, where: string, details: SubagentDetails) {
+  async function refuseSyncTask(
+    taskErr: string,
+    where: string,
+    details: SubagentDetails,
+    meta: { agent: string; taskId: string; mode: "chain" | "parallel" | "single" },
+  ) {
+    log.warn("sync_subagent_task_refused", { ...meta, reason: taskErr.slice(0, 120) });
     await sendSystemNote(
       pi,
       `🚨 CRITICAL: ${taskErr} (${where}). NO agents were spawned. Fix the taskId and retry.`,
@@ -1046,7 +1052,13 @@ export function registerSubagentTool(
       const stepTaskId = params.chain[i].taskId as string | undefined;
       if (!stepTaskId || stepTaskId === "-1") continue;
       const taskErr = await validateTaskId(stepTaskId, params.chain[i].cwd, sessionId);
-      if (taskErr) return refuseSyncTask(taskErr, `chain step ${i + 1}, agent: ${params.chain[i].agent}`, mkd("chain")([]));
+      if (taskErr) {
+        return refuseSyncTask(taskErr, `chain step ${i + 1}, agent: ${params.chain[i].agent}`, mkd("chain")([]), {
+          agent: params.chain[i].agent,
+          taskId: stepTaskId,
+          mode: "chain",
+        });
+      }
     }
     // defensive: LLMs may omit schema-required fields
     const missingChainEstimate = params.chain.find((s: any) => s.estimatedSeconds == null);
@@ -1280,7 +1292,13 @@ export function registerSubagentTool(
       const tid = (t as any).taskId as string | undefined;
       if (!tid || tid === "-1") continue;
       const taskErr = await validateTaskId(tid, t.cwd, sessionId);
-      if (taskErr) return refuseSyncTask(taskErr, `parallel, agent: ${t.agent}`, mkd("parallel")([]));
+      if (taskErr) {
+        return refuseSyncTask(taskErr, `parallel, agent: ${t.agent}`, mkd("parallel")([]), {
+          agent: t.agent,
+          taskId: tid,
+          mode: "parallel",
+        });
+      }
     }
     // Auto-mark linked tasks as in_progress
     for (const t of params.tasks) {
@@ -1414,7 +1432,13 @@ export function registerSubagentTool(
     const label = params.name || params.agent;
     if (params.taskId && params.taskId !== "-1") {
       const taskErr = await validateTaskId(params.taskId, params.cwd, sessionId);
-      if (taskErr) return refuseSyncTask(taskErr, `single, agent: ${params.agent}`, mkd("single")([]));
+      if (taskErr) {
+        return refuseSyncTask(taskErr, `single, agent: ${params.agent}`, mkd("single")([]), {
+          agent: params.agent,
+          taskId: params.taskId,
+          mode: "single",
+        });
+      }
     }
     activeAgents.add(label);
     updateWorking();
