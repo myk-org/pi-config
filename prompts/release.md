@@ -26,24 +26,29 @@ Optionally detects and updates version files before creating the release.
 
 **`PROJECT_TMP_DIR`** is the project-scoped temp directory from `getProjectTmpDir(cwd)` — all temp files go here.
 
+Every `myk-pi-tools release ...` call below uses the LOCAL build (plain
+`myk-pi-tools`, no `uvx ...@latest`), unlike other prompts: the release flow runs
+inside this repo and a published build cannot plan its own successor — a fix to
+`release plan` must ship from the working tree.
+
 ### Phase 1: Validation
 
 If `--target <branch>` was passed to the release command:
 
 ```bash
-uvx myk-pi-tools@latest release info --target <branch>
+myk-pi-tools release info --target <branch>
 ```
 
 If `--tag-match <pattern>` was also passed:
 
 ```bash
-uvx myk-pi-tools@latest release info --target <branch> --tag-match <pattern>
+myk-pi-tools release info --target <branch> --tag-match <pattern>
 ```
 
 Otherwise (auto-detect from current branch):
 
 ```bash
-uvx myk-pi-tools@latest release info
+myk-pi-tools release info
 ```
 
 Note: If on a version branch (e.g., `v2.10`), the command auto-detects the target
@@ -64,7 +69,7 @@ root only).
 
 **If PRESENT:** run the SCOPED flow instead of Phases 2–5:
 
-- **Phase S2 — Detection:** `uvx myk-pi-tools@latest release plan --json`. If any
+- **Phase S2 — Detection:** `myk-pi-tools release plan --json`. If any
   package is errored, show the errors and abort — do not bump. The plan
   only reports WHICH packages changed and their published versions — it
   does NOT decide the next versions. ALSO inspect `unmapped_changes` in
@@ -111,7 +116,7 @@ root only).
   options `yes`, `no`, plus one override option per package in the form
   `<name>: <level>` (e.g. `myk-pi-tools: minor`) so the user can adjust
   any package's level before confirming.
-- **Phase S5 — Bump:** `uvx myk-pi-tools@latest release bump-scoped --json` with
+- **Phase S5 — Bump:** `myk-pi-tools release bump-scoped --json` with
   one `--set <name>=<version>` per affected package carrying YOUR final
   proposed versions (after any user overrides). Use `--version X.Y.Z`
   instead when the user passed an explicit version. Parse the JSON:
@@ -151,7 +156,7 @@ root only).
 ### Phase 2: Version Detection
 
 ```bash
-uvx myk-pi-tools@latest release detect-versions
+myk-pi-tools release detect-versions
 ```
 
 Parse the JSON output. If version files are found, store them for Phase 4.
@@ -261,7 +266,7 @@ Skip this phase if no version files were detected in Phase 2.
 Run the bump command with the confirmed version and files:
 
 ```bash
-uvx myk-pi-tools@latest release bump-version <VERSION> --files <file1> --files <file2>
+myk-pi-tools release bump-version <VERSION> --files <file1> --files <file2>
 ```
 
 Where `<VERSION>` is the version number without `v` prefix (e.g., `1.2.0`, not `v1.2.0`).
@@ -311,7 +316,7 @@ cat > "$CHANGELOG_FILE" << 'EOF'
 <changelog content from Phase 3>
 EOF
 
-uvx myk-pi-tools@latest release create {owner}/{repo} {tag} "$CHANGELOG_FILE" [--prerelease] [--draft] [--target {target_branch}]
+myk-pi-tools release create {owner}/{repo} {tag} "$CHANGELOG_FILE" [--prerelease] [--draft] [--target {target_branch}]
 ```
 
 ### Phase 7: Summary
