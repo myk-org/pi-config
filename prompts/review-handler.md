@@ -44,14 +44,6 @@ uv --version
 
 If not found, install from <https://docs.astral.sh/uv/getting-started/installation/>
 
-### Step 1: Check myk-pi-tools
-
-```bash
-myk-pi-tools --version
-```
-
-If not found, prompt to install: `uv tool install myk-pi-tools`
-
 ## Usage
 
 - `/review-handler` - Process reviews from current PR
@@ -87,7 +79,7 @@ Read the **Raw Arguments** section above. Parse as follows:
 
 - autorabbit mode = ON, autoqodo mode = ON
 - cleaned arguments = (empty)
-- CLI call = `myk-pi-tools reviews fetch` (NO flags)
+- CLI call = `uvx myk-pi-tools@latest reviews fetch` (NO flags)
 
 ### Auto Mode Fast Path (MANDATORY)
 
@@ -107,13 +99,13 @@ The `reviews fetch` command auto-detects the PR from the current branch.
 If a specific review URL is in the cleaned arguments:
 
 ```bash
-myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR} <cleaned_arguments>
+uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR} <cleaned_arguments>
 ```
 
 Otherwise (auto-detect from current branch):
 
 ```bash
-myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR}
+uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR}
 ```
 
 Returns JSON with:
@@ -375,7 +367,7 @@ If any approved tasks weren't implemented, review with user.
 
 🚨 **NEVER hand-edit a reviews JSON's `status`/`reply` fields.** No python heredocs, no `jq`, no manual
 `status`/`reply` mutation — those bypass posting and the database store. The
-`myk-pi-tools reviews address` command applies
+`reviews address` command applies
 replies, flips statuses, posts, and stores in one step — you only prepare mapping files.
 (The single exception: narrowing `line`/`end_line` for span disambiguation — see
 span semantics below; that affects matching only, never posting.)
@@ -500,8 +492,8 @@ Run one `reviews address` call per status group prepared in Phase 5 — each cal
 the mapping, posts replies, resolves threads, and stores to the database:
 
 ```bash
-myk-pi-tools reviews address --json {json_path} --replies {mapping_file} --set addressed
-myk-pi-tools reviews address --json {json_path} --replies {mapping_file} --set skipped
+uvx myk-pi-tools@latest reviews address --json {json_path} --replies {mapping_file} --set addressed
+uvx myk-pi-tools@latest reviews address --json {json_path} --replies {mapping_file} --set skipped
 ```
 
 The command picks the newest `pr-*-reviews.json` in `.pi/tmp` when `--json` is omitted.
@@ -583,7 +575,7 @@ Qodo if autoqodo, both if both flags active).
 **If autorabbit is ON (only):** Spawn ONE async worker:
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
+- Task: `Run: uvx myk-pi-tools@latest reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
   `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
 - async: true
@@ -592,7 +584,7 @@ Qodo if autoqodo, both if both flags active).
 **If autoqodo is ON (only):** Spawn ONE async worker:
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
+- Task: `Run: uvx myk-pi-tools@latest reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
   `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
 - async: true
@@ -600,10 +592,10 @@ Qodo if autoqodo, both if both flags active).
 
 **If BOTH are ON:** Spawn TWO async workers in parallel:
 
-1. `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
+1. `Run: uvx myk-pi-tools@latest reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
    `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
    `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
-1. `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
+1. `Run: uvx myk-pi-tools@latest reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
    `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
    `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
 
@@ -666,7 +658,7 @@ Check the poll JSON output — it always contains an `approved` key:
 
   **Tradeoffs table rules:**
   - Include EVERY finding across ALL cycles that was replied without a code change
-  - Read the review database (`myk-pi-tools reviews store` data) or the accumulated
+  - Read the review database (`reviews store` data) or the accumulated
     replies from the session to build this list
   - **Resolution** = the reply text (summarized to one line)
   - If zero tradeoffs: show `## Tradeoffs (0)` with "All findings fixed with code changes."
@@ -693,7 +685,7 @@ Check the poll JSON output — it always contains an `approved` key:
      - Qodo says "fixed" / "looks fixed" / "addressed" → no code change needed
      - Qodo says "still open" / "still relevant" / "still actionable" → MUST fix the code, commit, push
      - If you don't understand what Qodo wants for a specific finding → use
-       `myk-pi-tools reviews ask-qodo "<question>"` to ask Qodo directly.
+       `uvx myk-pi-tools@latest reviews ask-qodo "<question>"` to ask Qodo directly.
        The command posts the question to @qodo-code-review and waits up to 10 minutes
        for Qodo's reply. Read the reply and act on it.
      - Every item in `qodo_cleanup_response` MUST be addressed. No skipping.
@@ -786,7 +778,7 @@ qodo pr-review-session mark-implemented --finding-ids <ids> --explanation "..." 
 #    on already-stored rows, so re-storing earlier rounds self-heals them.
 qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 \
   > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
-myk-pi-tools reviews store-session ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
+uvx myk-pi-tools@latest reviews store-session ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
 ```
 
 NEVER store the poll-time snapshot as the round's final state — findings

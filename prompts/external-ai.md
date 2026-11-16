@@ -11,7 +11,7 @@ $ARGUMENTS
 
 # ai-cli-runner Multi-Agent Prompt Command
 
-🚨 **CRITICAL: NEVER set a timeout on AI CLI execution commands** (Step 5 and Step 9).
+🚨 **CRITICAL: NEVER set a timeout on AI CLI execution commands** (Step 4 and Step 8).
 External agents can take minutes to complete (reading files, thinking, multi-step tool calls).
 Any bash call running an AI CLI prompt MUST NOT include a timeout parameter. Let it run
 until it finishes. Quick probes (`--version`, model listing) may use bounded timeouts (e.g., 30s).
@@ -49,15 +49,7 @@ For other providers (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` inst
 
 ## Workflow
 
-### Step 1: Prerequisites Check
-
-```bash
-myk-pi-tools --version
-```
-
-If not found, prompt to install: `uv tool install myk-pi-tools`
-
-### Step 2: Parse Arguments
+### Step 1: Parse Arguments
 
 Read the **Raw Arguments** section above. Tokenize by whitespace and parse as follows:
 
@@ -114,7 +106,7 @@ For any missing piece (provider or model), fill from saved config and confirm:
    `claude,gemini`, `cursor,claude,gemini`, `Cancel`.
 2. **Model missing?** For EACH provider without a `--model`, ask:
    `Select model for PROVIDER:` — run:
-   `myk-pi-tools ai-cli models PROVIDER 2>/dev/null`
+   `uvx myk-pi-tools@latest ai-cli models PROVIDER 2>/dev/null`
    The command outputs a JSON array to stdout. Parse it directly — do NOT
    pipe through python or any other tool. Present ALL model IDs from the
    `id` field as ask_user options. Do NOT filter, subset, or cherry-pick.
@@ -132,13 +124,13 @@ you must still pass a model to `ai-cli-runner`. Use these defaults:
 | `claude` | `claude-sonnet-4-6` |
 | `gemini` | `gemini-2.5-flash` |
 
-These match each CLI's default behavior. When generating the Python script (Step 5),
+These match each CLI's default behavior. When generating the Python script (Step 4),
 use the default model if none was specified by the user.
 
 When `--model` is specified, use that model.
 When not specified, use the default from the table above.
 
-### Step 2b: Display Execution Summary
+### Step 1b: Display Execution Summary
 
 Before proceeding, display a summary of what will be executed so the user knows
 exactly what is about to be sent. **No black magic.**
@@ -153,11 +145,11 @@ Resume: <yes | no>
 No confirmation prompt needed — the user already confirmed by providing arguments
 or selecting from the interactive prompts above.
 
-### Step 3: Session Management
+### Step 2: Session Management
 
 Sessions allow the AI CLI to maintain conversation context across prompts.
 `ai-cli-runner` exposes `session_id` and `continue_session` params, and returns
-`session_id` in the result. The `myk-pi-tools ai-cli run` command supports:
+`session_id` in the result. The `ai-cli run` command supports:
 
 - `--resume` — continue the most recent session (`continue_session=True`)
 - `--session-id <id>` — resume a specific session by ID (exact targeting)
@@ -173,11 +165,11 @@ Sessions allow the AI CLI to maintain conversation context across prompts.
 | **`--fix`** | Stateless by default. Combine with `--resume` or `--session-id` to continue a session |
 | **`--peer`** | Automatic sessions — first round is fresh, subsequent rounds use `--session-id <id>` captured from the first round's output to maintain exact conversation context. Do NOT combine with `--resume` |
 
-When `--resume` is active, pass `--resume` to the `myk-pi-tools ai-cli run` command.
+When `--resume` is active, pass `--resume` to the `ai-cli run` command.
 In peer mode follow-up rounds, pass `--session-id <id>` instead of `--resume`
-for exact session targeting (see Step 9).
+for exact session targeting (see Step 8).
 
-### Step 4: Workspace Safety Check (--fix and --peer modes)
+### Step 3: Workspace Safety Check (--fix and --peer modes)
 
 **Skip this step if neither --fix nor --peer was passed.**
 
@@ -215,25 +207,25 @@ Follow this decision process:
    - **Abort**: Stop immediately.
 4. If the user declines the non-git prompt from step 1, abort.
 5. If proceeding despite a dirty worktree (via **Continue anyway**),
-   remember that state so Steps 7-8 (`--fix`) or Step 9e (`--peer`)
+   remember that state so Steps 6-7 (`--fix`) or Step 8e (`--peer`)
    can warn that diffs may include pre-existing edits.
 
-### Step 5: Run Prompt
+### Step 4: Run Prompt
 
-**If `--peer` was passed, skip Steps 5-8 and jump to Step 9 (Peer Review Loop).**
+**If `--peer` was passed, skip Steps 4-7 and jump to Step 8 (Peer Review Loop).**
 
-**MANDATORY:** Always use `myk-pi-tools ai-cli run` — never generate inline Python scripts.
+**MANDATORY:** Always use `uvx myk-pi-tools@latest ai-cli run` — never generate inline Python scripts.
 
 **Single provider:**
 
 ```bash
-myk-pi-tools ai-cli run --provider <PROVIDER> --model <MODEL> [--cli-flags=<FLAG>...] "<PROMPT>"
+uvx myk-pi-tools@latest ai-cli run --provider <PROVIDER> --model <MODEL> [--cli-flags=<FLAG>...] "<PROMPT>"
 ```
 
 With resume:
 
 ```bash
-myk-pi-tools ai-cli run --provider <PROVIDER> --model <MODEL> --resume "<PROMPT>"
+uvx myk-pi-tools@latest ai-cli run --provider <PROVIDER> --model <MODEL> --resume "<PROMPT>"
 ```
 
 **Multi-agent execution:**
@@ -242,8 +234,8 @@ When multiple providers are specified (without `--peer`), run all agents **in pa
 by delegating each to a separate subagent or running sequential CLI calls:
 
 ```bash
-myk-pi-tools ai-cli run --provider <P1> --model <M1> "<PROMPT>"
-myk-pi-tools ai-cli run --provider <P2> --model <M2> "<PROMPT>"
+uvx myk-pi-tools@latest ai-cli run --provider <P1> --model <M1> "<PROMPT>"
+uvx myk-pi-tools@latest ai-cli run --provider <P2> --model <M2> "<PROMPT>"
 ```
 
 Collect results from all providers and display grouped by provider.
@@ -288,7 +280,7 @@ If the command exits with a non-zero code:
 
 - For any other error, display the raw output as an error.
 
-### Step 6: Display Result
+### Step 5: Display Result
 
 Display the output to the user.
 
@@ -326,9 +318,9 @@ Duration: <duration_ms>ms
 
 Omit fields that are missing or zero. On error (`"success": false`), display the `error` field.
 
-**Save config:** See "Persist Config" section after Step 9e.
+**Save config:** See "Persist Config" section after Step 8e.
 
-### Step 7: Read Diff (--fix mode only)
+### Step 6: Read Diff (--fix mode only)
 
 **Skip this step if --fix was NOT passed or if the command failed.**
 
@@ -353,7 +345,7 @@ Report to the user:
 - A summary of the changes
 - Verify suggestion: what command to run to confirm changes work
 
-### Step 8: Summary (--fix mode only)
+### Step 7: Summary (--fix mode only)
 
 **Skip this step if --fix was NOT passed or if the command failed.**
 
@@ -363,7 +355,7 @@ Present a clear summary:
 2. **What was done** — Brief description in plain language
 3. **Impact** — Behavioral changes, new dependencies, verification steps
 
-### Step 9: Peer Review Loop (--peer mode only)
+### Step 8: Peer Review Loop (--peer mode only)
 
 **Skip this step if --peer was NOT passed.**
 
@@ -374,13 +366,13 @@ merged findings.
 
 **CRITICAL RULE: Only the peer agent(s) can end the loop.** Claude fixing
 code does NOT count as convergence. After EVERY fix round, Claude MUST
-send the fixes back to the peer agent(s) (Step 9c) for re-review. The loop
+send the fixes back to the peer agent(s) (Step 8c) for re-review. The loop
 ends ONLY when each peer agent confirms no remaining issues. With multiple
 peers, ALL peer agents must agree before the loop exits.
 
-#### 9a: Initial Agent Review
+#### 8a: Initial Agent Review
 
-Initialize a round counter at 1. Use the current counter value in the Step 9c
+Initialize a round counter at 1. Use the current counter value in the Step 8c
 response template (`Round {N}`), then increment the counter after sending.
 
 Before sending the peer framing prompt, check if `AGENTS.md` exists
@@ -428,14 +420,14 @@ provide a concrete fix or suggestion.
 Original prompt: <user's prompt>
 ```
 
-Execute via `myk-pi-tools ai-cli run` (read-only mode — append the read-only guard to the prompt).
+Execute via `uvx myk-pi-tools@latest ai-cli run` (read-only mode — append the read-only guard to the prompt).
 This first round is a **fresh session** — do NOT pass `--resume` or `--session-id`.
 Do NOT display intermediate results to the user.
 If the command fails, abort the peer loop and report the error.
 
 **Capture session_id:** Parse the JSON output from the first round. Extract
 `session_id` from the response. Store it per-provider for use in subsequent
-rounds (Step 9c). The `session_id` enables exact session targeting instead
+rounds (Step 8c). The `session_id` enables exact session targeting instead
 of generic `--resume`.
 
 **Multi-agent:** Send the peer framing prompt to ALL agents in parallel
@@ -446,11 +438,11 @@ deduplicating where the same issue is raised by multiple agents.
 independently (no group context yet). Their individual responses are
 collected for use in subsequent rounds. Store each provider's `session_id`.
 
-If ALL agents report no findings, skip to Step 9e.
-If only SOME agents report no findings, continue to Step 9b with the findings
+If ALL agents report no findings, skip to Step 8e.
+If only SOME agents report no findings, continue to Step 8b with the findings
 from agents that did report issues.
 
-#### 9b: Claude Acts on Findings
+#### 8b: Claude Acts on Findings
 
 For each finding from the agent(s):
 
@@ -472,10 +464,10 @@ For each finding from the agent(s):
 
 **Multi-agent:** Merge and deduplicate findings from all agents.
 
-**After completing all fixes and counter-arguments, proceed to Step 9c.
+**After completing all fixes and counter-arguments, proceed to Step 8c.
 This is MANDATORY — do NOT skip to the summary.**
 
-#### 9c: Claude Responds to Agent
+#### 8c: Claude Responds to Agent
 
 After acting on all findings, send a response back to the agent:
 
@@ -525,8 +517,8 @@ build on other peers' findings.
 When sending to peer A, include findings from peers B, C, etc.
 When sending to peer B, include findings from peers A, C, etc.
 
-Execute via `myk-pi-tools ai-cli run --session-id <id>` using the `session_id`
-captured in Step 9a. Do NOT display intermediate results.
+Execute via `uvx myk-pi-tools@latest ai-cli run --session-id <id>` using the `session_id`
+captured in Step 8a. Do NOT display intermediate results.
 **Use `--session-id <id>`** for this and all subsequent rounds so the peer agent
 resumes the exact conversation session from previous rounds. If `session_id` was
 not captured (provider didn't return one), fall back to `--resume`.
@@ -534,14 +526,14 @@ not captured (provider didn't return one), fall back to `--resume`.
 **Multi-agent:** Send the response to ALL agents in parallel. Each agent uses
 its own `--session-id <id>` captured from its first-round output.
 
-#### 9d: Loop Until Convergence
+#### 8d: Loop Until Convergence
 
 Parse each agent's response:
 
 - **No findings and no remaining disagreements** — All AIs agree. Exit loop.
-- **New findings or continued disagreements** — Go to Step 9b.
+- **New findings or continued disagreements** — Go to Step 8b.
 
-**Convergence criteria (checked ONLY from each peer agent's response in Step 9c):**
+**Convergence criteria (checked ONLY from each peer agent's response in Step 8c):**
 
 - All agents explicitly state no remaining issues, OR
 - All agents' responses contain no actionable findings (only acknowledgments)
@@ -561,11 +553,11 @@ Parse each agent's response:
 - If a disagreement persists for 3+ rounds on the same point, note it as
   "unresolved disagreement" and move on
 
-#### 9e: Summary to User
+#### 8e: Summary to User
 
 After the loop exits, present a comprehensive summary.
 
-**Usage tracking (MANDATORY):** Parse the JSON output from EVERY `myk-pi-tools ai-cli run`
+**Usage tracking (MANDATORY):** Parse the JSON output from EVERY `ai-cli run`
 call during the peer review (all rounds). **Sum** `input_tokens`, `output_tokens`,
 `cache_read_tokens`, and `cost_usd` across ALL rounds per provider to get totals.
 Since peer review runs in the same session, the totals represent the full session cost.
@@ -641,17 +633,17 @@ Total: tokens=87,104 in / 2,731 out / 78,364 cache, cost=$0.0523, duration=29s
 
 ### Persist Config (runs once after successful completion)
 
-After successful execution (Step 6 for normal mode, Step 9e for peer mode), persist
+After successful execution (Step 5 for normal mode, Step 8e for peer mode), persist
 the agent spec using the CLI. Run exactly once per successful completion.
 
 **Skip if any step failed** — do not persist config after errors or aborted runs.
 
 ```bash
 # After normal/fix mode:
-myk-pi-tools ai-cli save-config --agents "<normalized agent string>"
+uvx myk-pi-tools@latest ai-cli save-config --agents "<normalized agent string>"
 
 # After peer mode (include models for each provider):
-myk-pi-tools ai-cli save-config --peers "<provider1 --model model1,provider2 --model model2>"
+uvx myk-pi-tools@latest ai-cli save-config --peers "<provider1 --model model1,provider2 --model model2>"
 ```
 
 **Normalized agent string:** The exact agent spec used for the run, as the user would type it
