@@ -8,8 +8,8 @@ pathspec argument to `git log`.
 
 Every rule fails OPEN (never suppress) unless the check can prove the code is unchanged:
 
-- unsafe path — missing, absolute, containing `..`, or containing control characters
-  (including newlines);
+- unsafe path — missing, absolute, containing `..`, containing control characters
+  (including newlines and NUL), or starting with `:` (Git pathspec magic);
 - no usable timestamp — e.g. Qodo-CLI findings carry neither thread nor reply dates;
 - shallow clone — Phase 1a clones with `--depth 50`, so a window that starts before the
   shallow boundary commit cannot be inspected and an empty `git log` proves nothing;
@@ -21,6 +21,13 @@ explicit `resolved_at` when the caller supplies one and otherwise falls back to 
 reply's `created_at`, then to the thread's own `created_at`. Both fallbacks are at or
 before the real resolution time, so the inspected window is a superset of the true one:
 a derived timestamp can only make us keep a finding, never wrongly suppress one.
+
+Two rules keep a crafted filename from answering a different question than the one asked:
+
+- `is_safe_relative_path` rejects any path whose first segment starts with `:`, because
+  Git reads a leading `:` as pathspec magic (`:(glob)`, `:(exclude)`, `:(attr:…)`, …);
+- the path reaches `git log` as the single argv element `:(literal)<path>`, so wildcards
+  (`*`, `?`, `[`) and any remaining magic in a real filename stay literal.
 """
 
 from __future__ import annotations
@@ -39,12 +46,17 @@ _ABSOLUTE_PATH = re.compile(r"^(/|\\|[A-Za-z]:)")
 
 
 def is_safe_relative_path(path: str) -> bool:
-    """True when `path` is a plain repo-relative path that cannot escape the clone."""
+    """True when `path` is a plain repo-relative path naming exactly one file in the clone."""
     if not path or _CONTROL_CHARS.search(path):
         return False
     if _ABSOLUTE_PATH.match(path):
         return False
-    return ".." not in path.replace("\\", "/").split("/")
+    segments = path.replace("\\", "/").split("/")
+    # A leading ":" is pathspec magic, so Git would query a different path than the one
+    # checked in HEAD — a crafted name could then look unchanged.
+    if segments[0].startswith(":"):
+        return False
+    return ".." not in segments
 
 
 def resolution_timestamp(thread: dict[str, Any]) -> tuple[str | None, str]:
@@ -123,7 +135,8 @@ def check_thread(repo: Path, thread: dict[str, Any]) -> dict[str, Any]:
     if _git(repo, "cat-file", "-e", f"HEAD:{path}") is None:
         return {**verdict, "reason": f"{path} is not in HEAD (deleted or renamed) — not suppressed"}
 
-    commits = (_git(repo, "log", f"--since={since}", "--format=%H", "--", path) or "").split()
+    # `:(literal)` as its own argv element — Git cannot expand wildcards or magic here.
+    commits = (_git(repo, "log", f"--since={since}", "--format=%H", "--", f":(literal){path}") or "").split()
     if commits:
         return {**verdict, "reason": f"{len(commits)} commit(s) touched {path} since {since} — not suppressed"}
     return {**verdict, "suppressed": True, "reason": f"no commit touched {path} since {since}"}

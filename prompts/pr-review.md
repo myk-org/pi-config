@@ -593,8 +593,10 @@ existing unresolved comment.
   by `check-resolved-threads` — no commit touched that path after the thread's resolution
   timestamp). Record it as
   `"Auto-skipped (previously raised by <author> and resolved)"`.
-- When the thread is `suppressed: false` (code changed after resolution, an unsafe path, a
-  missing timestamp, or a shallow clone hiding the window), keep the finding.
+- When the thread is `suppressed: false` (code changed after resolution, an unsafe path —
+  including one starting with `:` — a missing timestamp, or a shallow clone hiding the
+  window), keep the finding. `check-resolved-threads` always queries git with a literal
+  pathspec, so a crafted filename cannot fake "nothing changed".
   You may note that it re-raises a previously resolved thread.
 - Only `resolved_accepted` / `resolved_fixed` verdicts suppress; a matching thread we
   evaluated as `resolved_bad_fix` or `resolved_no_fix` per `get-review-history` never drops a

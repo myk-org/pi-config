@@ -18,7 +18,7 @@ import pytest
 from click.testing import CliRunner
 
 from myk_pi_tools.pr.commands import pr
-from myk_pi_tools.pr.resolved_threads import check_thread, resolution_timestamp
+from myk_pi_tools.pr.resolved_threads import check_thread, is_safe_relative_path, resolution_timestamp
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -120,6 +120,24 @@ def test_check_does_not_suppress_thread_without_timestamp(repo: Path) -> None:
 def test_resolution_timestamp_reports_none_source_for_undated_thread() -> None:
     """The timestamp helper names the fallback it used, including 'none'."""
     assert resolution_timestamp({"path": "a.py"}) == (None, "none")
+
+
+def test_check_does_not_suppress_magic_prefixed_filename(repo: Path) -> None:
+    """A real file named `:(literal)foo.py` never gets treated as a query for foo.py."""
+    _commit(repo, "foo.py", "2025-01-01T00:00:00+00:00")
+    _commit(repo, ":(literal)foo.py", "2025-03-01T00:00:00+00:00")
+
+    assert check_thread(repo, _thread(path=":(literal)foo.py"))["suppressed"] is False
+
+
+def test_is_safe_relative_path_rejects_pathspec_magic() -> None:
+    """Leading ':' means Git pathspec magic, so the path is unsafe."""
+    assert is_safe_relative_path(":(glob)*.py") is False
+
+
+def test_is_safe_relative_path_accepts_normal_path() -> None:
+    """An ordinary src/ path stays safe — the magic rejection is not over-broad."""
+    assert is_safe_relative_path("src/foo.py") is True
 
 
 def test_check_does_not_suppress_absolute_path(repo: Path) -> None:
