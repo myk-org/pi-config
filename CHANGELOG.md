@@ -1,5 +1,57 @@
 # Changelog
 
+## [4.32.0] - 2026-11-16
+
+- A task carries an `assignee`: `user` or `llm`. A user-assigned task cannot be started or completed
+  by an agent — including by reassigning and changing status in one call — and the owner closes it in
+  `/tasks`, where the completion note is recorded and delivered without automatic retries (#1090).
+- Every `/tasks` write action is multi-select, and the overlay can add or edit a task and pause an
+  active cron. A stored pause is honoured before dispatch, not after, and a transient store read error
+  no longer discards a durable schedule (#1087).
+- `/tasks start` and `/tasks done` exist as subcommands, so the two hot actions no longer need the
+  overlay (#1082).
+- Coms peers are navigable: a drilldown shows a peer's sessions and open work, a selection survives a
+  round trip, and an ambiguity is refused instead of guessed (#1084).
+- The user can message a peer: `/coms tell <peer> <message>` and the `m` composer stamp
+  `origin: "user"` through a bridge that tool calls cannot reach, so no `coms_send` can claim human
+  authorship (#1077).
+- Skill maintenance replaces the skill review agent: a marked project skill (`skill-maintenance:
+  auto`) that fails steers the turn once, every allowed write is recorded in
+  `.pi/data/skill-review.jsonl`, and the shell may run skill scripts but never write skill files
+  (#1073, #1074, #1103).
+- A dangerous command can be allowed for this session, and the approval prompt explains why each
+  pattern fired (#1073).
+- Async results are delivered per agent as each finishes, kept across reloads, and a late result no
+  longer writes review state or double-counts a retry; a recovered chain stops instead of resuming on
+  stale routing (#1110).
+- Owner tasks are refused for agents across the two-step peer bypass, peer outcomes are stripped, and
+  filtered task views stay usable (#1107).
+- Task telemetry is bridged across extension instances instead of living in one module copy (#1102).
+- Trailers are injected into piped commits, including `tee` stages and compound spans, with skipped
+  operands logged instead of silently dropped (#1101).
+- The task widget follows the store it was meant to: symlink hops and missing ancestors are resolved,
+  a corrupt file is preserved rather than overwritten, and the poll is capped (#1097).
+- Reload handshakes are trustworthy: a reused PID is detected by start token, a child session cannot
+  delete a deploy handshake, a non-watcher process never touches the files, and a corrupt pending file
+  is quarantined with retry backoff instead of blocking the queue (#1091, #1092).
+- Settings come from one file: only `pi-config-settings.json` is read, a legacy `.jsonc` is migrated,
+  a vanished legacy file counts as migrated, and a repo-shipped symlinked settings dir is refused
+  (#1086, #1088).
+- Resolved third-party review findings stop re-raising: suppression age is resolved with `git log` as
+  an argv list and a literal pathspec, and an older published CLI fails open (#1085).
+- An async job records the task store path it will write, resolved from the project directory, so a
+  worktree job lands in the store its parent reads (#1080, #1026).
+- Discord answers the question that was asked: a channel's own target outranks the watch, a thread
+  stays on its own session, a DM cancel is session-agnostic, every refused inbound message is logged
+  at warn, and routine refusals are throttled at info (#1075).
+- pidiff's `cn` import is relative, so the tests project cannot type-check it against pidash's helper
+  (#1094).
+- The release workflow runs the working-tree `myk-pi-tools`, while every other prompt invokes
+  `uvx myk-pi-tools@latest` and drops the install precheck — a published build cannot plan its own
+  successor (#1029).
+- The test tree is type-checked: a `tsconfig.tests.json` project joins `npm run typecheck`, the
+  overlay harness is typed instead of `any`, and four shared fakes replace hand-rolled mocks (#1094).
+
 ## [4.31.1] - 2026-11-10
 
 - A killed peer now shuts down before its supervisor exits: `stop()` ends stdin deliberately, sends
