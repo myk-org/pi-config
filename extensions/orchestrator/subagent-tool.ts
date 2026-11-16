@@ -76,7 +76,7 @@ import {
   decideAsyncLlmDispatch,
   supportsAsyncLlm,
 } from "./async-capability.js";
-import { autoMarkInProgress, autoCompleteTask, type AsyncKillOrigin } from "./async-agents.js";
+import { autoMarkInProgress, autoCompleteTask, resolveTaskStorePath, type AsyncKillOrigin } from "./async-agents.js";
 import { getSetting } from "./project-settings.js";
 import { checkSyncLimit } from "./sync-limit.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
@@ -1122,7 +1122,7 @@ export function registerSubagentTool(
       // Auto-mark linked task as in_progress (same as async path)
       const chainTaskId = s.taskId as string | undefined;
       if (chainTaskId && chainTaskId !== "-1") {
-        await autoMarkInProgress(chainTaskId, projectCwd || s.cwd, sessionId).catch(() => {});
+        await autoMarkInProgress(chainTaskId, projectCwd || s.cwd, resolveTaskStorePath(projectCwd || s.cwd, sessionId)).catch(() => {});
       }
       const r = await runSingleAgent(
         agents,
@@ -1159,7 +1159,7 @@ export function registerSubagentTool(
       }
       // Auto-complete linked task on success (same as async path)
       if (chainTaskId && chainTaskId !== "-1") {
-        await autoCompleteTask(chainTaskId, projectCwd || s.cwd, sessionId).catch(() => {});
+        await autoCompleteTask(chainTaskId, projectCwd || s.cwd, resolveTaskStorePath(projectCwd || s.cwd, sessionId)).catch(() => {});
       }
       prev = getFinalOutput(r.messages);
     }
@@ -1304,7 +1304,7 @@ export function registerSubagentTool(
     for (const t of params.tasks) {
       const tid = (t as any).taskId as string | undefined;
       if (tid && tid !== "-1") {
-        await autoMarkInProgress(tid, projectCwd || t.cwd, sessionId).catch(() => {});
+        await autoMarkInProgress(tid, projectCwd || t.cwd, resolveTaskStorePath(projectCwd || t.cwd, sessionId)).catch(() => {});
       }
     }
     const results = await mapWithConcurrency(
@@ -1347,7 +1347,7 @@ export function registerSubagentTool(
           r.stopReason !== "error" &&
           r.stopReason !== "aborted"
         ) {
-          await autoCompleteTask(tid, projectCwd || t.cwd, sessionId).catch(() => {});
+          await autoCompleteTask(tid, projectCwd || t.cwd, resolveTaskStorePath(projectCwd || t.cwd, sessionId)).catch(() => {});
         }
         return r;
       },
@@ -1445,7 +1445,7 @@ export function registerSubagentTool(
     // Auto-mark linked task as in_progress (same as async path)
     const syncTaskId = params.taskId as string | undefined;
     if (syncTaskId && syncTaskId !== "-1") {
-      await autoMarkInProgress(syncTaskId, projectCwd || params.cwd, sessionId).catch(() => {});
+      await autoMarkInProgress(syncTaskId, projectCwd || params.cwd, resolveTaskStorePath(projectCwd || params.cwd, sessionId)).catch(() => {});
     }
     log.info("sync_execute_start", params.agent, "taskId", syncTaskId ?? "none");
     const syncStartTime = Date.now();
@@ -1491,7 +1491,7 @@ export function registerSubagentTool(
       };
     // Auto-complete linked task on success (same as async path)
     if (syncTaskId && syncTaskId !== "-1") {
-      await autoCompleteTask(syncTaskId, projectCwd || params.cwd, sessionId).catch(() => {});
+      await autoCompleteTask(syncTaskId, projectCwd || params.cwd, resolveTaskStorePath(projectCwd || params.cwd, sessionId)).catch(() => {});
     }
     log.info("sync_execute_returning", params.agent);
     return {

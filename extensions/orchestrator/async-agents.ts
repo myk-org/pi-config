@@ -29,8 +29,8 @@ import { formatAsyncResultOutput, reviewerOutputArchivePath, MAX_OUTPUT_CHARS } 
 import { cleanupReviewerOutputArchives } from "./reviewer-output-archive.js";
 const log = createLogger("async_agents");
 
-export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
-import { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
+export { autoCompleteTask, autoMarkInProgress, resolveTaskStorePath } from "./task-lifecycle.js";
+import { autoCompleteTask, autoMarkInProgress, resolveTaskStorePath } from "./task-lifecycle.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
 import { setSlot } from "./status-bar.js";
 import { getSetting } from "./project-settings.js";
@@ -72,6 +72,9 @@ export interface AsyncJob {
   onComplete?: (result: { text: string; isError: boolean }) => void;
   groupId?: string;
   taskId?: string;
+  /** The task store file this job's task lives in, recorded at spawn time. The only path a
+   *  later lifecycle write may use: after a reload the env no longer knows this job's list. */
+  taskStorePath?: string;
   cwd?: string;
   projectCwd?: string;
   sessionId?: string;
@@ -665,7 +668,7 @@ export function registerAsyncAgents(
             let autoCompleteError = "";
             if (job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
               try {
-                autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.sessionId)
+                autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.taskStorePath)
                   .then((completed) => log.info(`reconcile: auto-completed task #${job.taskId}: ${completed}`))
                   .catch((e: any) => log.error(`reconcile: auto-complete failed for task #${job.taskId}: ${e?.message}`));
               } catch (e: any) {
@@ -824,7 +827,7 @@ export function registerAsyncAgents(
       // Auto-complete linked task directly in the store file (no AI involvement)
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
         try {
-          const completed = await autoCompleteTask(j.taskId, j.projectCwd || j.cwd, j.sessionId);
+          const completed = await autoCompleteTask(j.taskId, j.projectCwd || j.cwd, j.taskStorePath);
           log.info(`auto-completed task #${j.taskId}: ${completed}`);
         } catch (e: any) {
           autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${j.taskId}: ${e?.message}. Run TaskUpdate(taskId="${j.taskId}", status="completed") manually.`;
@@ -1014,7 +1017,7 @@ export function registerAsyncAgents(
         // Auto-complete linked task directly in the store file (no AI involvement)
         if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
           try {
-            const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.sessionId);
+            const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.taskStorePath);
             log.info(`auto-completed task #${job.taskId}: ${completed}`);
           } catch (e: any) {
             autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
@@ -1127,12 +1130,16 @@ export function registerAsyncAgents(
     const liveCtx = getLiveAsyncCtx();
     const resolvedProjectCwd = liveCtx?.sessionManager?.getCwd?.() || liveCtx?.cwd || options?.projectCwd;
     const resolvedSessionId = liveCtx?.sessionManager?.getSessionId?.() || options?.sessionId;
+    // Record the task's store file now — the only moment the live owner can say where this
+    // job's task lives. A reload cannot re-derive it from an env that may have changed.
+    const taskStorePath = options?.taskId ? resolveTaskStorePath(cwd, resolvedSessionId || undefined) : undefined;
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
       resultsDir: ASYNC_RESULTS_DIR,
       fireAndForget: options?.fireAndForget || false,
       parentPid: process.pid,
       parentStartTime,
       taskId: options?.taskId || null,
+      taskStorePath: taskStorePath || null,
       cwd,
       projectCwd: resolvedProjectCwd || null,
       sessionId: resolvedSessionId || null,
@@ -1339,6 +1346,7 @@ export function registerAsyncAgents(
       onComplete: options?.onComplete,
       groupId: options?.groupId,
       taskId: options?.taskId,
+      taskStorePath,
       cwd,
       projectCwd: resolvedProjectCwd || undefined,
       sessionId: resolvedSessionId || undefined,
@@ -1442,7 +1450,7 @@ export function registerAsyncAgents(
 
     // Auto-mark linked task as in_progress AFTER successful spawn
     if (options?.taskId && options.taskId !== "-1") {
-      autoMarkInProgress(options.taskId, resolvedProjectCwd || cwd, resolvedSessionId || undefined)
+      autoMarkInProgress(options.taskId, resolvedProjectCwd || cwd, taskStorePath)
         .catch(() => {});  // best-effort, don't block spawn
     }
 
@@ -1598,6 +1606,7 @@ export function registerAsyncAgents(
             sideEffectsApplied: isComplete,
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
+            taskStorePath: marker.taskStorePath || undefined,
             cwd: marker.cwd || undefined,
             projectCwd: marker.projectCwd || ctx.cwd || undefined,
             sessionId: marker.sessionId || undefined,

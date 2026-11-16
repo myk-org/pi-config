@@ -176,7 +176,7 @@ for (const transition of [autoCompleteTask, autoMarkInProgress]) {
  it(`${transition.name} refuses user-assigned tasks in factory paths`, async () => {
   const store = new TaskStore();
   const t = store.create("step", "", creator, undefined, undefined, "user");
-  assert.equal(await transition(t.id, "/unused", undefined, () => store), false);
+  assert.equal(await transition(t.id, "/unused", "/unused/tasks.json", () => store), false);
   assert.equal(store.get(t.id)?.status, "pending");
  });
 }
