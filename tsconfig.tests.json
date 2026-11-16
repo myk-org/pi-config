@@ -9,8 +9,9 @@
   //    their own projects in `npm run typecheck`.
   //  - `jsx: react-jsx` + DOM lib: the pidash/pidiff tests render real components.
   //  - `allowJs`: `extensions/shared/install-logger.mjs` is a production module with no typings.
-  //  - `paths`: both UI workspaces use the same `@/` alias for different roots, so the tests
-  //    project maps it to pidash-ui (pidiff's `App.tsx` uses relative imports for this reason).
+  //  - `paths`: both UI workspaces declare the same `@/` alias for different roots, so the tests
+  //    project maps it to pidash-ui. No pidiff-ui source uses `@/` (it imports relative or via
+  //    `@ui/`), so pidiff never silently type-checks against pidash's helpers.
   // React typings for the by-path imports live in tests/node/helpers/ui-react-modules.d.ts.
   "compilerOptions": {
     "target": "es2022",
