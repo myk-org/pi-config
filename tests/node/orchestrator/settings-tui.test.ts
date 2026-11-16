@@ -1387,7 +1387,7 @@ describe("getSettingsListState (overlay Tab-guard inputs)", () => {
           new StringListSubmenu("t", ["a"], {} as any, done),
       },
     ];
-    const list = new SettingsList(items as any, {} as any);
+    const list = new SettingsList(items as any, 20, {} as any, () => {}, () => {});
     assert.equal(getSettingsListState(list).hasActiveSubmenu, false, "no submenu initially");
     list.handleInput(ENTER); // open the item's submenu
     assert.equal(getSettingsListState(list).hasActiveSubmenu, true, "submenu open — Tab/category switching must be suppressed");

@@ -8,55 +8,47 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { killAllJobs, openAsyncStatusOverlay } from "../../../extensions/orchestrator/async-status-ui.js";
+import { killAllJobs, openAsyncStatusOverlay, type AsyncStatusJobView, type AsyncStatusUiDeps } from "../../../extensions/orchestrator/async-status-ui.js";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { fakeCommandCtx, fakeCustom, type FakeCustomFactory } from "../helpers/fake-extension-ctx.js";
 
-type Job = { id: string; name: string; status: string };
+type Job = AsyncStatusJobView;
 
 function job(id: string, status = "running"): Job {
-  return { id, name: `agent-${id}`, status };
+  return { id, agent: `agent-${id}`, name: `agent-${id}`, task: `task ${id}`, status, workerDir: `/tmp/${id}`, startedAt: 0 };
 }
 
+const deps = (jobs: Job[], killJob: AsyncStatusUiDeps["killJob"]): AsyncStatusUiDeps =>
+  ({ listJobs: () => jobs, killJob, formatDuration: (ms: number) => `${ms}ms` });
+
+/** A ctx that records `ui.notify`; typed by the real context so the calls are checked. */
 function ctx() {
-  const notifications: { message: string; level: string }[] = [];
+  const notifications: Array<{ message: string; level: string | undefined }> = [];
   return {
     notifications,
-    ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+    ctx: fakeCommandCtx({ notify: (message: string, level?: "info" | "warning" | "error") => { notifications.push({ message, level }); } }),
   };
 }
 
 describe("selection kill (x on Space-picked rows)", () => {
   /** The real overlay with a mocked `ctx.ui.custom`, so `x` reaches the real onXSelected. */
   function ui(keys: string[]) {
-    const notifications: { message: string; level: string }[] = [];
-    const tui = { terminal: { rows: 20 }, requestRender: () => {} };
-    const theme = { fg: (_c: string, text: string) => text, bold: (text: string) => text };
-    const keybindings = {
-      matches: (data: string, action: string) => action === "tui.select.cancel" && data === "close",
-    };
+    const notifications: Array<{ message: string; level: string | undefined }> = [];
+    // `close` is fed last so a test that presses a key the overlay ignores still closes.
+    const custom = (<T,>(factory: FakeCustomFactory<T>) => fakeCustom(factory, [...keys, "close"])) satisfies ExtensionUIContext["custom"];
     return {
       notifications,
-      ctx: {
-        hasUI: true,
-        ui: {
-          notify: (message: string, level: string) => notifications.push({ message, level }),
-          custom: async (factory: any) =>
-            new Promise((resolve) => {
-              const component = factory(tui, theme, keybindings, resolve);
-              for (const key of keys) component.handleInput(key);
-              component.handleInput("close");
-            }),
-        },
-      },
+      ctx: fakeCommandCtx({
+        notify: (message: string, level?: "info" | "warning" | "error") => notifications.push({ message, level }),
+        custom,
+      }),
     };
   }
-
-  const deps = (jobs: Job[], killJob: (id: string) => any) =>
-    ({ listJobs: () => jobs, killJob, formatDuration: (ms: number) => `${ms}ms` }) as any;
 
   it("kills every selected job and reports the count once", async () => {
     const h = ui([" ", "j", " ", "x"]);
     const killed: string[] = [];
-    await openAsyncStatusOverlay(h.ctx as any, deps([job("a"), job("b"), job("c")], (id) => {
+    await openAsyncStatusOverlay(h.ctx, deps([job("a"), job("b"), job("c")], (id) => {
       killed.push(id);
       return { killed: [`agent-${id}`], errors: [] };
     }));
@@ -66,7 +58,7 @@ describe("selection kill (x on Space-picked rows)", () => {
 
   it("names a job whose selection kill failed instead of reporting a clean sweep", async () => {
     const h = ui([" ", "j", " ", "x"]);
-    await openAsyncStatusOverlay(h.ctx as any, deps([job("a"), job("b")], (id) =>
+    await openAsyncStatusOverlay(h.ctx, deps([job("a"), job("b")], (id) =>
       id === "b"
         ? { killed: [], errors: ["Could not stop agent-b (pid 1 still running)."] }
         : { killed: [`agent-${id}`], errors: [] },
@@ -82,83 +74,69 @@ describe("selection kill (x on Space-picked rows)", () => {
 
 describe("killAllJobs", () => {
   it("attempts later jobs after one throws and reports partial failure", () => {
-    const c = ctx();
+    const { ctx: c, notifications } = ctx();
     const attempted: string[] = [];
     const jobs = [job("a"), job("b"), job("c")];
 
-    killAllJobs(c as any, {
-      listJobs: () => jobs as any,
-      killJob: (id: string) => {
-        attempted.push(id);
-        if (id === "b") throw new Error("spawn failure");
-        return { killed: [`agent-${id}`], errors: [] };
-      },
-    } as any);
+    killAllJobs(c, deps(jobs, (id: string) => {
+      attempted.push(id);
+      if (id === "b") throw new Error("spawn failure");
+      return { killed: [`agent-${id}`], errors: [] };
+    }));
 
     assert.deepEqual(attempted, ["a", "b", "c"],
       "a throw on b must not stop c from being attempted");
-    assert.equal(c.notifications.length, 1);
-    assert.match(c.notifications[0].message, /Killed 2 of 3 async agents — 1 failed/,
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0].message, /Killed 2 of 3 async agents — 1 failed/,
       "the notification must describe the partial result");
-    assert.equal(c.notifications[0].level, "warning");
+    assert.equal(notifications[0].level, "warning");
   });
 
   it("counts a reported signalling error as a failure, not a successful kill", () => {
     // Regression: killAsyncAgent swallowed a failed SIGKILL and marked the job failed, so
     // the bulk notification claimed a kill while the worker was still running.
-    const c = ctx();
+    const { ctx: c, notifications } = ctx();
     const jobs = [job("a"), job("b")];
 
-    killAllJobs(c as any, {
-      listJobs: () => jobs as any,
-      killJob: (id: string) =>
-        id === "a"
-          ? { killed: [], errors: ["Could not stop agent-a (pid 4242 still running)."] }
-          : { killed: ["agent-b"], errors: [] },
-    } as any);
+    killAllJobs(c, deps(jobs, (id: string) =>
+      id === "a"
+        ? { killed: [], errors: ["Could not stop agent-a (pid 4242 still running)."] }
+        : { killed: ["agent-b"], errors: [] },
+    ));
 
-    assert.match(c.notifications[0].message, /Killed 1 of 2 async agents — 1 failed/,
+    assert.match(notifications[0].message, /Killed 1 of 2 async agents — 1 failed/,
       "a non-throwing signalling failure must not be counted as killed");
   });
 
   it("reports full success when every kill succeeds", () => {
-    const c = ctx();
+    const { ctx: c, notifications } = ctx();
     const jobs = [job("a"), job("b")];
 
-    killAllJobs(c as any, {
-      listJobs: () => jobs as any,
-      killJob: (id: string) => ({ killed: [`agent-${id}`], errors: [] }),
-    } as any);
+    killAllJobs(c, deps(jobs, (id: string) => ({ killed: [`agent-${id}`], errors: [] })));
 
-    assert.equal(c.notifications.length, 1);
-    assert.match(c.notifications[0].message, /Killed 2 async agents\./);
-    assert.equal(c.notifications[0].level, "info");
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0].message, /Killed 2 async agents\./);
+    assert.equal(notifications[0].level, "info");
   });
 
   it("only targets active jobs", () => {
-    const c = ctx();
+    const { ctx: c, notifications } = ctx();
     const attempted: string[] = [];
     const jobs = [job("a"), job("b", "failed"), job("c", "completed")];
 
-    killAllJobs(c as any, {
-      listJobs: () => jobs as any,
-      killJob: (id: string) => {
-        attempted.push(id);
-        return { killed: [], errors: [] };
-      },
-    } as any);
+    killAllJobs(c, deps(jobs, (id: string) => {
+      attempted.push(id);
+      return { killed: [], errors: [] };
+    }));
 
     assert.deepEqual(attempted, ["a"], "only running or queued jobs are killed");
-    assert.match(c.notifications[0].message, /Killed 1 async agent\./);
+    assert.match(notifications[0].message, /Killed 1 async agent\./);
   });
 
   it("tells the user when there is nothing to kill", () => {
-    const c = ctx();
-    killAllJobs(c as any, {
-      listJobs: () => [job("a", "completed")] as any,
-      killJob: () => ({ killed: [], errors: [] }),
-    } as any);
+    const { ctx: c, notifications } = ctx();
+    killAllJobs(c, deps([job("a", "completed")], () => ({ killed: [], errors: [] })));
 
-    assert.match(c.notifications[0].message, /No running async agents to kill\./);
+    assert.match(notifications[0].message, /No running async agents to kill\./);
   });
 });

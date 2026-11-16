@@ -121,11 +121,11 @@ describe("updatePromotionCandidates", () => {
           patch: {
             status: "applied",
             reason: "updated",
-            // @ts-expect-error identity fields must be ignored at runtime
+            // Identity fields are not patchable; only `id` is rejected by the type, so the
+            // runtime has to ignore all three.
+            // @ts-expect-error
             id: "mutated-id",
-            // @ts-expect-error
             createdAt: "2099-01-01T00:00:00.000Z",
-            // @ts-expect-error
             destination: "discard",
           },
         },

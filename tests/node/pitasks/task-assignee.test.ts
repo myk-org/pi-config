@@ -32,6 +32,8 @@ import { openTasksOverlay } from "../../../extensions/pitasks/tasks-ui.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import type { Task } from "../../../extensions/pitasks/types.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { fakeCommandCtx, fakeCustom, type FakeCustomFactory, type FakeOverlayComponent } from "../helpers/fake-extension-ctx.js";
 
 const createdBy = { type: "local" as const, origin: "system", session: "", project: "" };
 const theme = { fg: (_color: string, text: string) => text, strikethrough: (text: string) => text };
@@ -395,30 +397,16 @@ describe("completing the owner's task (#1090)", () => {
 function makeTasksCtx(opens: string[][]) {
 	let opened = 0;
 	const screens: string[] = [];
-	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
-	const tui = { terminal: { rows: 20 }, requestRender: () => {} };
-	const keybindings = { matches: (data: string, action: string) => action === "tui.select.cancel" && data === "close" };
-	const ctx = {
-		hasUI: true,
-		ui: {
-			notify: () => {},
-			input: async () => undefined,
-			custom: async (factory: any) => {
-				const keys = opens[opened];
-				opened += 1;
-				if (!keys) return null;
-				return new Promise((resolve) => {
-					const component = factory(tui, theme, keybindings, resolve);
-					screens.push(component.render(100).join("\n"));
-					for (const key of keys) {
-						component.handleInput(key);
-						screens.push(component.render(100).join("\n"));
-					}
-				});
-			},
-		},
-	};
-	return { ctx: ctx as any, openedCount: () => opened, screens };
+	const screen = (component: FakeOverlayComponent): void => { screens.push(component.render?.(100).join("\n") ?? ""); };
+	const custom = (<T,>(factory: FakeCustomFactory<T>) => {
+		const keys = opens[opened];
+		opened += 1;
+		if (!keys) return Promise.resolve(null as never);
+		// A frame per key: the surfaces are asserted through what they draw.
+		return fakeCustom(factory, keys, { onOpen: screen, onKey: (_key, _delivered, component) => screen(component) });
+	}) satisfies ExtensionUIContext["custom"];
+	const ctx = fakeCommandCtx({ notify: () => {}, input: async () => undefined, custom });
+	return { ctx, openedCount: () => opened, screens };
 }
 
 function completionDeps(assignee: "llm" | "user", onUserCompleted?: (task: any) => void) {

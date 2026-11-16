@@ -15,6 +15,11 @@ import {
 import { fillRuntimeModelFromCatalog } from "../../../extensions/shared/models-dev.js";
 import { isPricingKnown, isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
 
+/** What the provider auth surface receives: environment probes plus the abort signal every
+ *  interactive call carries (`login`, `resolve`, `check`). */
+const signal = new AbortController().signal;
+const authCtx = { env: async () => undefined, fileExists: async () => false };
+
 describe("buildRuntimeModel", () => {
   it("fills api, provider, baseUrl with defaults", () => {
     const m = buildRuntimeModel({
@@ -108,6 +113,7 @@ describe("buildAmbientLoginAuth", () => {
     const cred = await auth.login!({
       prompt: async () => "confirm",
       notify: () => {},
+      signal,
     });
     assert.equal(cred.type, "api_key");
     assert.equal(cred.key, CONFIGURED_CREDENTIAL_KEY);
@@ -124,6 +130,7 @@ describe("buildAmbientLoginAuth", () => {
         auth.login!({
           prompt: async () => "confirm",
           notify: () => {},
+          signal,
         }),
       /not available/,
     );
@@ -142,6 +149,7 @@ describe("buildAmbientLoginAuth", () => {
             throw new Error("Login cancelled");
           },
           notify: () => {},
+          signal,
         }),
       /Login cancelled/,
     );
@@ -154,7 +162,8 @@ describe("buildAmbientLoginAuth", () => {
       sourceLabel: "cursor CLI on PATH",
     });
     const result = await auth.resolve({
-      ctx: { env: async () => undefined, fileExists: async () => false },
+      ctx: authCtx,
+      signal,
       credential: { type: "api_key", key: CONFIGURED_CREDENTIAL_KEY },
     });
     assert.ok(result);
@@ -169,7 +178,8 @@ describe("buildAmbientLoginAuth", () => {
       sourceLabel: "cursor CLI on PATH",
     });
     const result = await auth.resolve({
-      ctx: { env: async () => undefined, fileExists: async () => false },
+      ctx: authCtx,
+      signal,
       credential: { type: "api_key", key: CONFIGURED_CREDENTIAL_KEY },
     });
     assert.equal(result, undefined);
@@ -182,7 +192,8 @@ describe("buildAmbientLoginAuth", () => {
       sourceLabel: "cursor CLI on PATH",
     });
     const result = await auth.resolve({
-      ctx: { env: async () => undefined, fileExists: async () => false },
+      ctx: authCtx,
+      signal,
     });
     assert.ok(result);
     assert.equal(result!.auth.apiKey, AMBIENT_AUTH_KEY);
@@ -195,7 +206,8 @@ describe("buildAmbientLoginAuth", () => {
       sourceLabel: "cursor CLI on PATH",
     });
     const result = await auth.resolve({
-      ctx: { env: async () => undefined, fileExists: async () => false },
+      ctx: authCtx,
+      signal,
       credential: { type: "api_key", key: "evil-injected-secret" },
     });
     assert.ok(result);
@@ -209,7 +221,8 @@ describe("buildAmbientLoginAuth", () => {
       sourceLabel: "cursor CLI on PATH",
     });
     const result = await auth.resolve({
-      ctx: { env: async () => undefined, fileExists: async () => false },
+      ctx: authCtx,
+      signal,
     });
     assert.equal(result, undefined);
   });
@@ -221,7 +234,8 @@ describe("buildAmbientLoginAuth", () => {
       sourceLabel: "cursor acpx runtime",
     });
     const check = await auth.check!({
-      ctx: { env: async () => undefined, fileExists: async () => false },
+      ctx: authCtx,
+      signal,
     });
     assert.deepEqual(check, {
       type: "api_key",
@@ -236,7 +250,8 @@ describe("buildAmbientLoginAuth", () => {
       sourceLabel: "cursor acpx runtime",
     });
     const check = await auth.check!({
-      ctx: { env: async () => undefined, fileExists: async () => false },
+      ctx: authCtx,
+      signal,
     });
     assert.equal(check, undefined);
   });
@@ -248,7 +263,8 @@ describe("buildAmbientLoginAuth", () => {
       sourceLabel: "cursor CLI on PATH",
     });
     const check = await auth.check!({
-      ctx: { env: async () => undefined, fileExists: async () => false },
+      ctx: authCtx,
+      signal,
       credential: { type: "api_key", key: CONFIGURED_CREDENTIAL_KEY },
     });
     assert.equal(check, undefined);

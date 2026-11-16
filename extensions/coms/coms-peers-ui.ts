@@ -13,7 +13,7 @@ import { backTarget, buildDrilldownRows, buildPeerInfoRow, itemIdLabel, logDetai
 import { sanitizePeerText } from "./peer-text.js";
 import type { DescribeResult } from "./coms-describe.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import { OVERLAY_OPTS, openListDetailOverlay } from "../orchestrator/overlay-dashboard.js";
@@ -49,7 +49,7 @@ type Row = RegistryRow & { id: string };
 export type TellOutcome = { ok: true } | { ok: false; reason: string; code: string };
 
 export async function openComsPeersOverlay(
-  ctx: any,
+  ctx: ExtensionCommandContext,
   deps: ComsPeersOverlayDeps,
 ): Promise<void> {
   const openOverlay = deps.openOverlay ?? openListDetailOverlay;

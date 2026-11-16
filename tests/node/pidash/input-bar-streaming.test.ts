@@ -12,7 +12,7 @@ import { createServer, type ViteDevServer } from "vite";
 import * as pidashReact from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import { createRoot, type Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
-import { elements, installReactDomShim } from "./react-dom-shim.mjs";
+import { elements, installReactDomShim, type FakeElement } from "./react-dom-shim.mjs";
 
 let vite: ViteDevServer;
 let InputBar: any;
@@ -37,6 +37,13 @@ afterEach(async () => {
   while (mounted.length) await act(async () => mounted.pop()!.unmount());
 });
 
+/** The Stop button, asserted present: a missing one is a failure, not an unchecked `undefined`. */
+function stopButton(root: FakeElement) {
+  const stop = elements(root, "button").find((b) => b.getAttribute("aria-label") === "Stop");
+  assert.ok(stop, "Stop button is present while streaming");
+  return stop;
+}
+
 async function renderInputBar(props: Record<string, unknown>) {
   const { container, document } = installReactDomShim();
   const root = createRoot(container);
@@ -49,10 +56,10 @@ describe("pidash composer streaming state", () => {
   it("shows the Stop button while streaming and hides Send", async () => {
     const view = await renderInputBar({ streaming: true, onAbort: () => {} });
     const buttons = elements(view.container, "button");
-    const stop = buttons.find((b: any) => b.getAttribute("aria-label") === "Stop");
+    const stop = buttons.find((b) => b.getAttribute("aria-label") === "Stop");
     assert.ok(stop, "Stop button is present while streaming");
     assert.equal(stop.getAttribute("title"), "Stop the running turn");
-    assert.equal(buttons.some((b: any) => b.getAttribute("aria-label") === "Send"), false);
+    assert.equal(buttons.some((b) => b.getAttribute("aria-label") === "Send"), false);
   });
 
   it("never advertises Escape as the abort key", async () => {
@@ -61,22 +68,22 @@ describe("pidash composer streaming state", () => {
     const placeholder = area.getAttribute("placeholder");
     assert.equal(placeholder, "Working... press ■ to stop");
     assert.equal(/esc/i.test(placeholder), false);
-    const stop = elements(view.container, "button").find((b: any) => b.getAttribute("aria-label") === "Stop");
+    const stop = stopButton(view.container);
     assert.equal(/esc/i.test(stop.getAttribute("title") || ""), false);
   });
 
   it("falls back to Send when the session is idle", async () => {
     const view = await renderInputBar({ streaming: false });
     const buttons = elements(view.container, "button");
-    assert.equal(buttons.some((b: any) => b.getAttribute("aria-label") === "Stop"), false);
+    assert.equal(buttons.some((b) => b.getAttribute("aria-label") === "Stop"), false);
     const area = elements(view.container, "textarea")[0];
-    assert.match(area.getAttribute("placeholder"), /^Send a message/);
+    assert.match(area.getAttribute("placeholder") ?? "", /^Send a message/);
   });
 
   it("Stop invokes the abort handler", async () => {
     let aborted = 0;
     const view = await renderInputBar({ streaming: true, onAbort: () => { aborted += 1; } });
-    const stop = elements(view.container, "button").find((b: any) => b.getAttribute("aria-label") === "Stop");
+    const stop = stopButton(view.container);
     await act(async () => stop.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     assert.equal(aborted, 1);
   });

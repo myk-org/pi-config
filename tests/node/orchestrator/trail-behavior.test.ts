@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import type { NormalizedBuildSystemPromptOptions } from "@earendil-works/pi-coding-agent";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as trail from "../../../extensions/orchestrator/trail.js";
@@ -49,29 +50,21 @@ function runner(results: Array<{ stdout?: string; stderr?: string; code?: number
   };
   return { run, calls };
 }
-/** Prompt event carrying the mutable structured prompt options Pi exposes. */
-function promptEvent(prompt: string, options: Record<string, any> = {}) {
+/** Spreading a `Partial` makes every section possibly-undefined; the defaults are complete, so an
+ *  override only ever replaces a whole section. */
+function promptOptions(options: Partial<NormalizedBuildSystemPromptOptions>): NormalizedBuildSystemPromptOptions {
   return {
-    messageType: "user",
-    prompt,
-    systemPrompt: "base",
-    systemPromptOptions: {
-      selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [],
-      appendSystemPrompt: "", sections: {}, contextFiles: [], skills: [], cwd: "/repo", ...options,
-    },
-  };
+    selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [],
+    appendSystemPrompt: "", sections: {}, contextFiles: [], skills: [], cwd: "/repo", ...options,
+  } as NormalizedBuildSystemPromptOptions;
+}
+/** Prompt event carrying the mutable structured prompt options Pi exposes. */
+function promptEvent(prompt: string, options: Partial<NormalizedBuildSystemPromptOptions> = {}) {
+  return { messageType: "user", prompt, systemPrompt: "base", systemPromptOptions: promptOptions(options) };
 }
 /** Custom-message event: how a subagent task starts its run — `prompt` is undefined, `message` holds the task. */
-function customEvent(message: any, options: Record<string, any> = {}) {
-  return {
-    messageType: "custom",
-    message,
-    systemPrompt: "base",
-    systemPromptOptions: {
-      selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: [], promptGuidelines: [],
-      appendSystemPrompt: "", sections: {}, contextFiles: [], skills: [], cwd: "/repo", ...options,
-    },
-  };
+function customEvent(message: any, options: Partial<NormalizedBuildSystemPromptOptions> = {}) {
+  return { messageType: "custom", message, systemPrompt: "base", systemPromptOptions: promptOptions(options) };
 }
 /** Temp repo root with an on-disk code map (map presence is a filesystem check). */
 function mapRoot(nodes: Array<{ id: string; name: string; path: string }>, nodeCount = nodes.length) {
@@ -592,7 +585,7 @@ describe("Session start never cold-builds", () => {
     try {
       const r = register();
       await start(r, ctx(root));
-      assert.deepEqual(r.calls, [], "no build, no probe, no retrieval at startup");
+      assert.equal(r.calls.length, 0, "no build, no probe, no retrieval at startup");
       assert.equal(r.calls.some(call => call.args[0] === "build"), false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -603,7 +596,7 @@ describe("Session start never cold-builds", () => {
     try {
       const r = register({ results: [{ stdout: ASK_OUTPUT }] });
       const c = await start(r, ctx(worktree));
-      assert.deepEqual(r.calls, [], "seeding is the query's job, never session_start's");
+      assert.equal(r.calls.length, 0, "seeding is the query's job, never session_start's");
       await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
       assert.deepEqual(r.calls.map(call => call.args[0]), ["ask"]);
       assert.equal(r.calls.some(call => call.args[0] === "build"), false);

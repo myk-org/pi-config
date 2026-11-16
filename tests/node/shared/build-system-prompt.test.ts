@@ -40,7 +40,7 @@ describe("buildExternalSystemPrompt", () => {
   });
 
   it("returns undefined when no systemPrompt", () => {
-    assert.equal(buildExternalSystemPrompt({ messages: [] } as TranscriptContext), undefined);
+    assert.equal(buildExternalSystemPrompt({ messages: [] } as unknown as TranscriptContext), undefined);
   });
 
   it("wraps systemPrompt with pi header", () => {

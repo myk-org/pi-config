@@ -11,9 +11,14 @@ import assert from "node:assert/strict";
 import { createChatBridge, initialChatRuntime, type ChatRuntimeState } from "../../../extensions/shared/chat/chat-bridge.ts";
 import type { ChatAdapter, ChatTarget } from "../../../extensions/shared/chat/chat-types.ts";
 import { DEFAULT_CAPABILITIES } from "../../../extensions/shared/chat/chat-types.ts";
+import type { DiscordUserState } from "../../../extensions/shared/chat/chat-state.ts";
 import { createLogger } from "../../../extensions/shared/logger.ts";
 
 const log = createLogger("chat-bridge-test");
+
+/** What the Discord runtime actually holds: the engine's state plus the platform's persisted
+ *  bookkeeping (`threadId` lives in the store, not in the engine's contract). */
+type RuntimeState = ChatRuntimeState & Pick<DiscordUserState, "threadId">;
 
 interface Sent {
   target: ChatTarget;
@@ -456,7 +461,7 @@ describe("late delivery failure", () => {
     const states = new Map<string, ChatRuntimeState>();
     const state = initialChatRuntime("s1", { channelId: "chan" });
     states.set("user1", state);
-    let rejectFirst: ((error: Error) => void) | null = null;
+    let rejectFirst: (error: Error) => void = () => { throw new Error("renderPrompt was never called"); };
     const bridge = createChatBridge({
       adapter: mem.adapter,
       users: () => states.entries(),
@@ -490,8 +495,7 @@ describe("late delivery failure", () => {
 describe("answering a cross-session prompt keeps the user's watch", () => {
   function setupTwoSessions() {
     const mem = memoryAdapter();
-    const state = initialChatRuntime("A", { channelId: "thread-a" });
-    state.threadId = "thread-a";
+    const state: RuntimeState = { ...initialChatRuntime("A", { channelId: "thread-a" }), threadId: "thread-a" };
     state.target = { channelId: "thread-a", threadId: "thread-a" };
     state.targets = { A: { channelId: "thread-a", threadId: "thread-a" }, B: { channelId: "thread-b", threadId: "thread-b" } };
     const states = new Map([["user", state]]);
@@ -527,7 +531,7 @@ describe("answering a cross-session prompt keeps the user's watch", () => {
 
   it("does not invent a watch for a user who had none", () => {
     const mem = memoryAdapter();
-    const state = initialChatRuntime(null, null);
+    const state: RuntimeState = { ...initialChatRuntime(null, null), threadId: null };
     // This is what ensureSessionTarget creates for a never-watched session: a DELIVERY TARGET for
     // B, with no watch, no current thread — a target is an address, not a subscription.
     state.targets = { B: { channelId: "thread-b", threadId: "thread-b" } };
@@ -545,8 +549,7 @@ describe("answering a cross-session prompt keeps the user's watch", () => {
 describe("a prompt-only target is not a subscription", () => {
   function setup() {
     const mem = memoryAdapter();
-    const state = initialChatRuntime("A", { channelId: "thread-a" });
-    state.threadId = "thread-a";
+    const state: RuntimeState = { ...initialChatRuntime("A", { channelId: "thread-a" }), threadId: "thread-a" };
     state.target = { channelId: "thread-a", threadId: "thread-a" };
     state.targets = { A: { channelId: "thread-a", threadId: "thread-a" } };
     state.promptOnlyTargets = {};
@@ -614,7 +617,7 @@ describe("disconnect silences output, not questions", () => {
   it("still forwards a question while muted", () => {
     // The point of the feature: no session watched must not mean no notification.
     const mem = memoryAdapter();
-    const state = initialChatRuntime(null, null);
+    const state: RuntimeState = { ...initialChatRuntime(null, null), threadId: null };
     state.deliveryMuted = true;
     state.targets = { B: { channelId: "dm", threadId: null } };
     const states = new Map([["u", state]]);

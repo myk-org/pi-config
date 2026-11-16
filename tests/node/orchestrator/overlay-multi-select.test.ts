@@ -6,8 +6,7 @@ import {
   type OverlaySelection,
 } from "../../../extensions/orchestrator/overlay-dashboard.ts";
 import { createLogger } from "../../../extensions/shared/logger.js";
-import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
+import { fakeKeybindings, fakeTheme, fakeTui } from "../helpers/fake-tui.js";
 
 const log = createLogger("overlay-multi-select-test");
 
@@ -56,12 +55,10 @@ function harness(options: { selectable?: boolean; killAll?: boolean; persisted?:
     },
     onSelectionChange: (ids: string[]) => { selectionChanges.push(ids); },
   };
-  const theme = {
-    fg: (_c: string, v: string) => v,
-    bold: (v: string) => v,
-  } as unknown as Theme;
-  const tui = { terminal: { rows: 20 }, requestRender: () => {} } as unknown as TUI;
-  const kb = { matches: () => false } as unknown as KeybindingsManager;
+  const theme = fakeTheme();
+  const tui = fakeTui();
+  // Never matches, so the built-in keys act: the assertions are about `onKey` seeing them.
+  const kb = fakeKeybindings(() => false);
   const dash = new OverlayListDashboard<string, Row>(
     tui, theme, kb, spec, selection, () => {}, options.persisted ?? [],
   );

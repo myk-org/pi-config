@@ -1144,8 +1144,9 @@ The bot starts automatically with pidash when `DISCORD_BOT_TOKEN` is configured.
 ## Development
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, running tests, and managing Python dependencies.
-The repository-wide TypeScript gate is `npm run typecheck` (strict `tsc --noEmit` across all six projects);
-it also runs as a pre-commit hook when TypeScript files change.
+The repository-wide TypeScript gate is `npm run typecheck` (strict `tsc --noEmit` across all seven projects,
+`tests/node/**/*.ts` included via `tsconfig.tests.json`); it also runs as a pre-commit hook when TypeScript
+files change. `npm run typecheck:tests` checks the test tree alone.
 
 ## Prerequisites
 

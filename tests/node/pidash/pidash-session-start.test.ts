@@ -10,12 +10,12 @@ import {
 	resolveSessionStartCtx,
 } from "../../../extensions/shared/live-ctx.js";
 
-function staleCtx() {
+function staleCtx(): { readonly mode: string; readonly cwd: string } {
 	return {
-		get mode() {
+		get mode(): string {
 			throw new Error("This extension ctx is stale after session replacement or reload");
 		},
-		get cwd() {
+		get cwd(): string {
 			throw new Error("This extension ctx is stale after session replacement or reload");
 		},
 	};

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import type { NormalizedBuildSystemPromptOptions } from "@earendil-works/pi-coding-agent";
 
 import { dirname, join } from "node:path";
 import * as trail from "../../../extensions/orchestrator/trail.js";
@@ -39,8 +40,13 @@ function runner(results: Array<{ stdout?: string; stderr?: string; code?: number
   return { run, calls };
 }
 /** Prompt event carrying the mutable structured prompt options Pi exposes. */
-function promptEvent(prompt: string, options: Record<string, any> = {}) {
-  return { messageType: "user", prompt, systemPrompt: "base", systemPromptOptions: { selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [], appendSystemPrompt: "", sections: {}, contextFiles: [], skills: [], cwd: "/repo", ...options } };
+function promptEvent(prompt: string, options: Partial<NormalizedBuildSystemPromptOptions> = {}) {
+  return { messageType: "user", prompt, systemPrompt: "base", systemPromptOptions: promptOptions(options) };
+}
+/** Spreading a `Partial` makes every section possibly-undefined; the defaults above are complete,
+ *  so an override only ever replaces a whole section. */
+function promptOptions(options: Partial<NormalizedBuildSystemPromptOptions>): NormalizedBuildSystemPromptOptions {
+  return { selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [], appendSystemPrompt: "", sections: {}, contextFiles: [], skills: [], cwd: "/repo", ...options } as NormalizedBuildSystemPromptOptions;
 }
 /** Temp repo root with an on-disk code map (map presence is a filesystem check now). */
 function mapRoot(nodes: Array<{ id: string; name: string; path: string }>, nodeCount = nodes.length) {

@@ -36,7 +36,7 @@ function stubScoredEntry(
     status: "active",
     trigger: trigger as any,
     action,
-  } as ScoredEntry;
+  } as unknown as ScoredEntry;
 }
 
 /** Build an EnforcedEntry with the given trigger/action. */

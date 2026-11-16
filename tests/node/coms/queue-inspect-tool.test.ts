@@ -176,7 +176,9 @@ describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 		const sender = await startPeer("sender", "metadata-sender");
 		await startPeer("receiver", "metadata-receiver");
 		await sender.tools.get("coms_tasks_create").execute("create-task", { target: "receiver", tasks: [{ subject: "task", description: "task" }] });
-		await assert.doesNotReject(sender.shutdown?.());
+		const shuttingDown = sender.shutdown?.();
+		assert.ok(shuttingDown, "the peer harness exposes a shutdown");
+		await assert.doesNotReject(shuttingDown);
 	});
 
 	it("renders body-free preview metadata", async () => {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { ProviderDriverRegistry } from "../../../extensions/shared/provider-registry.js";
 import type { ProviderDriver, ProviderInstance } from "../../../extensions/shared/provider-driver.js";
 
-function createMockDriver(kind: string, opts?: { probeAvailable?: boolean; createThrows?: boolean }): ProviderDriver<{ value: string }> {
+function createMockDriver(kind: string, opts?: { probeAvailable?: boolean; createThrows?: boolean; onDispose?: () => void }): ProviderDriver<{ value: string }> {
   return {
     driverKind: kind,
     metadata: { displayName: `Mock ${kind}` },
@@ -16,7 +16,7 @@ function createMockDriver(kind: string, opts?: { probeAvailable?: boolean; creat
         instanceId: input.instanceId, driverKind: kind, displayName: input.displayName, enabled: input.enabled,
         snapshot: { getSnapshot: () => ({ available: true, models: [{ id: "m1", name: "M1" }], checkedAt: new Date().toISOString() }), refresh: async () => ({ available: true, models: [{ id: "m1", name: "M1" }], checkedAt: new Date().toISOString() }), dispose: () => {} },
         adapter: { startSession: async () => ({ sessionId: "s", model: "default" }), sendTurn: async () => ({ text: "ok", stopReason: "stop" }), stopSession: async () => {}, stopAll: async () => {}, hasSession: () => false },
-        dispose: async () => {},
+        dispose: async () => { opts?.onDispose?.(); },
       } satisfies ProviderInstance;
     },
   };
@@ -47,14 +47,7 @@ describe("ProviderDriverRegistry", () => {
   });
   it("teardownInstance calls dispose on the instance", async () => {
     let disposed = false;
-    const d = createMockDriver("test");
-    const origCreate = d.create;
-    d.create = async (input: any) => {
-      const inst = await origCreate(input);
-      inst.dispose = async () => { disposed = true; };
-      return inst;
-    };
-    registry.registerDriver(d);
+    registry.registerDriver(createMockDriver("test", { onDispose: () => { disposed = true; } }));
     await registry.createInstance("i-dispose", { driver: "test", enabled: true }, "/tmp");
     await registry.teardownInstance("i-dispose");
     assert.equal(disposed, true);

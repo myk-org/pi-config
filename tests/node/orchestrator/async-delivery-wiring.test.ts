@@ -9,6 +9,7 @@ import { addReviewerPending, markNeedsReview, markTestsPassed, readReviewState, 
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { fakeAgent, fakeSpawnProcess } from "../helpers/fake-async-runtime.js";
 
 
 const log = createLogger("async-delivery-wiring-test");
@@ -48,8 +49,8 @@ function harness(options: { cwd?: string } = {}) {
     events,
   };
   const api = registerAsyncAgents(pi as any, () => {}, {
-    spawnProcess: () => Object.assign(new EventEmitter(), { stderr: { pipe() {} } }),
-    discoverAgents: () => ({ agents: [{ name: "worker" }], sources: [] }),
+    spawnProcess: fakeSpawnProcess(),
+    discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
   });
   let overlayOpens = 0;
   const ctx = {

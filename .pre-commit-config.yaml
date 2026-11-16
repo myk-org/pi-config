@@ -106,7 +106,7 @@ repos:
         # files filter only decides WHEN it runs, not WHAT it checks. Covers
         # .ts/.tsx/.mts (incl. .d.mts declarations), tsconfigs, and package.json
         # (dependency changes can break compilation) — Qodo PR #954.
-        files: \.(ts|tsx|mts)$|(^|/)(tsconfig\.typecheck\.json|package\.json)$|/tsconfig\.json$
+        files: \.(ts|tsx|mts)$|(^|/)(tsconfig\.typecheck\.json|tsconfig\.tests\.json|package\.json)$|/tsconfig\.json$
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.44.0

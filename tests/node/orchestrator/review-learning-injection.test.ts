@@ -24,7 +24,7 @@ import {
   formatFindingsBlock,
   createReviewLearning,
 } from "../../../extensions/orchestrator/review-learning.js";
-import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
+import { entryHash, loadScores, type MemoryCategory, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { getProjectDataDir } from "../../../extensions/orchestrator/utils.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -107,7 +107,7 @@ function cwdWithDb(batches: CommentSeed[][]): string {
 }
 
 /** Seed a memory lesson entry (optionally with derivedFrom provenance). */
-function seedLessonEntry(cwd: string, text: string, derivedFrom?: string, category = "lesson"): void {
+function seedLessonEntry(cwd: string, text: string, derivedFrom?: string, category: MemoryCategory = "lesson"): void {
   const topicsDir = path.join(cwd, ".pi", "memory", "topics");
   fs.mkdirSync(topicsDir, { recursive: true });
   fs.appendFileSync(path.join(topicsDir, category === "lesson" ? "lessons.md" : "preferences.md"), `- [${category}] ${text}\n`);
