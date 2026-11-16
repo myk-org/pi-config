@@ -715,6 +715,7 @@ class TestSidecarClient:
                     "cost_usd": 0.001,
                     "duration_ms": 150,
                 },
+                "stop_reason": "end_turn",
             },
         )
         client._client.post = AsyncMock(return_value=mock_resp)
@@ -722,6 +723,7 @@ class TestSidecarClient:
         result = await client.prompt("sess-1", "hi")
         assert result.success is True
         assert result.text == "Hello!"
+        assert result.stop_reason == "end_turn"
         assert result.usage is not None
         assert result.usage.input_tokens == 10
         assert result.usage.output_tokens == 20
@@ -790,6 +792,31 @@ class TestSidecarClient:
         assert result.error == "AI model returned an error during processing"
         assert result.usage is not None
         assert result.usage.input_tokens == 10
+
+    async def test_client_prompt_error_stop_is_distinguishable(self, client: SidecarClient) -> None:
+        """Partial text + error must not look like a clean end_turn."""
+        mock_resp = _mock_response(
+            200,
+            {
+                "text": "partial output",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "error": "provider exploded",
+                "stop_reason": "error",
+            },
+        )
+        client._client.post = AsyncMock(return_value=mock_resp)
+
+        result = await client.prompt("sess-1", "hi")
+        assert result.success is False
+        assert result.stop_reason == "error"
+        assert result.stop_reason != "end_turn"
+
+    async def test_client_prompt_tolerates_missing_stop_reason(self, client: SidecarClient) -> None:
+        """An older sidecar omits stop_reason; callers get None, not an error."""
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"text": "hi"}))
+        result = await client.prompt("sess-1", "hi")
+        assert result.success is True
+        assert result.stop_reason is None
 
     async def test_client_prompt_error_only_uses_error_as_text(self, client: SidecarClient) -> None:
         client._client.post = AsyncMock(return_value=_mock_response(200, {"error": "provider unavailable", "text": ""}))

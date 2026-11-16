@@ -2288,7 +2288,7 @@ export class SessionStore {
     }
   }
 
-  async prompt(id: string, message: string): Promise<{ text: string; usage: any; error?: string }> {
+  async prompt(id: string, message: string): Promise<{ text: string; usage: any; error?: string; stop_reason: string | null }> {
     this.assertNotDisposed("prompt");
     const entry = this.sessions.get(id);
     if (!entry) throw new Error(`Session ${id} not found`);
@@ -2709,7 +2709,7 @@ export class SessionStore {
     if (errors.length > 0) {
       const errorText = errors.join("; ") + (errorsDropped > 0 ? ` [+${errorsDropped} more]` : "");
       logger.error(`[sidecar] Prompt completed with errors: session=${id}, errors=${errorText}`);
-      return { text: responseText, usage, error: errorText };
+      return { text: responseText, usage, error: errorText, stop_reason: turnStopReason ?? null };
     }
 
     // Empty text is valid for tool-only responses — warn but don't error
@@ -2717,7 +2717,7 @@ export class SessionStore {
       logger.warn(`[sidecar] AI returned empty text: session=${id}, tokens_in=${usage.input_tokens}, tokens_out=${usage.output_tokens}`);
     }
 
-    return { text: responseText, usage };
+    return { text: responseText, usage, stop_reason: turnStopReason ?? null };
   }
 
   async abort(id: string): Promise<void> {

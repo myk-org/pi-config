@@ -334,6 +334,29 @@ a restart restores the env default. The Python client exposes the same
 surface as `await client.get_recording()`, `await client.set_recording(True)`
 and `await client.reset_recording()`.
 
+## Prompt response
+
+`POST /sessions/:id/prompt` returns the turn's assembled answer, its usage, and
+the turn's stop reason:
+
+```json
+{
+  "text": "…",
+  "usage": { "input_tokens": 12, "output_tokens": 34, "cost_usd": 0.001 },
+  "stop_reason": "end_turn"
+}
+```
+
+`stop_reason` is the SDK's own reason for ending the turn — the same value the
+transcript records as `stop_reason` and the SSE feed consults for its terminal
+event (`end_turn`, `stop`, `error`, `aborted`, …). It is passed through
+unchanged: no new enum, no translation. It is `null` when the turn produced no
+final assistant message (for example a prompt that rejected before
+`agent_end`). A 200 response that also carries `error` is a turn that stopped on
+an error with partial text, so use `stop_reason` to tell it apart from a clean
+`end_turn` rather than relying on `text` alone. The Python client exposes the
+same value as `AIResult.stop_reason`.
+
 ## Event streams (SSE)
 
 `GET /sessions/:id/events` streams one session's turns as server-sent events so

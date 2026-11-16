@@ -246,6 +246,9 @@ class AIResult:
     # HTTP status of the sidecar call that produced this result, when it has one.
     # `stream_prompt` needs it: only a non-200 prompt means no turn of ours ran.
     status_code: int | None = None
+    # The turn's stop reason as reported by the sidecar (`stop_reason` on the
+    # prompt response): None when the turn produced no final assistant message.
+    stop_reason: str | None = None
 
     async def record_usage(
         self,
@@ -637,6 +640,8 @@ class SidecarClient:
         )
 
         # Surface error from sidecar even on HTTP 200
+        raw_stop_reason = data.get("stop_reason")
+        stop_reason = raw_stop_reason if isinstance(raw_stop_reason, str) and raw_stop_reason else None
         error = data.get("error")
         if error:
             logger.error(
@@ -650,6 +655,7 @@ class SidecarClient:
                 usage=usage,
                 error=error,
                 status_code=resp.status_code,
+                stop_reason=stop_reason,
             )
 
         text = data.get("text", "")
@@ -669,6 +675,7 @@ class SidecarClient:
             text=text,
             usage=usage,
             status_code=resp.status_code,
+            stop_reason=stop_reason,
         )
 
     async def stream_prompt(

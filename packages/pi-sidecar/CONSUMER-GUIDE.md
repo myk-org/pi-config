@@ -430,8 +430,14 @@ explicit project path when you want job isolation.
 curl -s -X POST http://127.0.0.1:9100/sessions/<session-id>/prompt \
   -H 'Content-Type: application/json' \
   -d '{"message": "What is 2+2?"}'
-# Returns: {"text": "4", "usage": {"input_tokens": ..., "output_tokens": ..., "cost_usd": ...}}
+# Returns: {"text": "4", "usage": {"input_tokens": ..., "output_tokens": ..., "cost_usd": ...}, "stop_reason": "end_turn"}
 ```
+
+`stop_reason` is passed through from the SDK (`end_turn`, `stop`, `error`,
+`aborted`, …) and is `null` when the turn produced no final assistant message.
+A 200 response that also carries `error` is a turn that stopped on an error with
+partial text — read `stop_reason`, not `text` alone, to tell it from a clean
+`end_turn`.
 
 ### `cost_usd` semantics
 
