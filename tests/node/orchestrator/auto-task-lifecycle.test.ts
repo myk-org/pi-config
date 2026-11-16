@@ -149,6 +149,88 @@ describe("autoCompleteTask", () => {
   });
 });
 
+describe("project-scoped store resolution", () => {
+  let tmp: string;
+  let originalScope: string | undefined;
+
+  beforeEach(() => {
+    tmp = makeTempDir("project-scope-");
+    originalScope = process.env.PI_TASK_SCOPE;
+  });
+
+  afterEach(() => {
+    if (originalScope === undefined) delete process.env.PI_TASK_SCOPE;
+    else process.env.PI_TASK_SCOPE = originalScope;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("completes a job's task in the project list", async () => {
+    const storePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "in_progress", subject: "Project task" },
+    ]);
+    process.env.PI_TASK_SCOPE = "project";
+    const result = await autoCompleteTask("1", tmp, "left-behind-session", (p) => new TaskStore(p));
+    delete process.env.PI_TASK_SCOPE;
+    assert.equal(result, true);
+    assert.equal(readTaskStore(storePath)[0].status, "completed");
+  });
+
+  it("leaves a same-id session task untouched", async () => {
+    const sessionPath = writeTaskStore(tmp, "tasks-left-behind-session.json", [
+      { id: "1", status: "pending", subject: "Session task" },
+    ]);
+    writeTaskStore(tmp, "tasks.json", [{ id: "2", status: "pending", subject: "Project task" }]);
+    process.env.PI_TASK_SCOPE = "project";
+    const result = await autoCompleteTask("1", tmp, "left-behind-session", (p) => new TaskStore(p));
+    delete process.env.PI_TASK_SCOPE;
+    assert.equal(result, false);
+    assert.equal(readTaskStore(sessionPath)[0].status, "pending");
+  });
+});
+
+describe("PI_TASKS store override", () => {
+  let tmp: string;
+  let originalTasks: string | undefined;
+  let originalScope: string | undefined;
+
+  beforeEach(() => {
+    tmp = makeTempDir("pi-tasks-override-");
+    originalTasks = process.env.PI_TASKS;
+    originalScope = process.env.PI_TASK_SCOPE;
+  });
+
+  afterEach(() => {
+    if (originalTasks === undefined) delete process.env.PI_TASKS;
+    else process.env.PI_TASKS = originalTasks;
+    if (originalScope === undefined) delete process.env.PI_TASK_SCOPE;
+    else process.env.PI_TASK_SCOPE = originalScope;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("completes a job's task in the PI_TASKS file", async () => {
+    const overrideDir = join(tmp, "custom");
+    mkdirSync(overrideDir, { recursive: true });
+    const overridePath = join(overrideDir, "list.json");
+    writeFileSync(overridePath, JSON.stringify({ tasks: [{ id: "1", status: "in_progress", subject: "Override task" }] }));
+    process.env.PI_TASKS = "custom/list.json";
+    const result = await autoCompleteTask("1", tmp, "left-behind-session", (p) => new TaskStore(p));
+    delete process.env.PI_TASKS;
+    assert.equal(result, true);
+    assert.equal(readTaskStore(overridePath)[0].status, "completed");
+  });
+
+  it("records nothing when PI_TASKS is off", async () => {
+    const scopePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "in_progress", subject: "Scoped task" },
+    ]);
+    process.env.PI_TASKS = "off";
+    const result = await autoCompleteTask("1", tmp, undefined, (p) => new TaskStore(p));
+    delete process.env.PI_TASKS;
+    assert.equal(result, false);
+    assert.equal(readTaskStore(scopePath)[0].status, "in_progress");
+  });
+});
+
 describe("autoMarkInProgress", () => {
   let tmp: string;
 

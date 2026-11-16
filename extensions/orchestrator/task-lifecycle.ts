@@ -20,13 +20,21 @@ function canonicalPath(target: string): string {
   }
 }
 
-/** Disk store candidate: the session's own file, or the project list when nothing scopes the
- *  lookup. The project list is deliberately NOT a fallback behind the session file — a restored
- *  job whose store no longer holds its task would otherwise finish a different task with the
- *  same numeric id (Qodo 42ab2269). */
+/** Disk store candidate: the project list when the scope is project (or nothing scopes the
+ *  lookup), otherwise the session's own file. A `PI_TASKS` file path wins over the scope, and
+ *  `PI_TASKS=off` means no disk store — both as pitasks' `resolveStorePath` reads it. Exactly ONE
+ *  path is derived (never a search list) — that is what keeps a restored job whose store no
+ *  longer holds its task from finishing a different task with the same numeric id in another
+ *  list (Qodo 42ab2269, 36f2e521). */
 function candidateStorePaths(cwd: string, sessionId?: string): string[] {
+  const override = process.env.PI_TASKS?.trim();
+  if (override === "off") return [];
+  // Absolute or path-like (a bare word would be a list id in pitasks, so it falls through).
+  if (override && /[/\\]/.test(override)) return [path.resolve(cwd, override)];
   const tasksDir = path.join(cwd, ".pi", "tasks");
-  const fileName = sessionId ? `tasks-${sessionId.replace(/[/\\]/g, "_")}.json` : "tasks.json";
+  const normalizedSession = sessionId ? sessionId.replace(/[/\\]/g, "_") : "";
+  const projectScoped = process.env.PI_TASK_SCOPE === "project" || !normalizedSession;
+  const fileName = projectScoped ? "tasks.json" : `tasks-${normalizedSession}.json`;
   return [path.join(tasksDir, fileName)];
 }
 
