@@ -23,14 +23,6 @@ uv --version
 
 If not found, install from <https://docs.astral.sh/uv/getting-started/installation/>
 
-### Step 1: Check myk-pi-tools
-
-```bash
-myk-pi-tools --version
-```
-
-If not found, prompt to install: `uv tool install myk-pi-tools`
-
 ## Usage
 
 ```bash
@@ -49,7 +41,7 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 Show addressed rate by source (human vs AI reviewers):
 
 ```bash
-myk-pi-tools db stats --by-source
+uvx myk-pi-tools@latest db stats --by-source
 ```
 
 ### Stats by Reviewer
@@ -57,7 +49,7 @@ myk-pi-tools db stats --by-source
 Show statistics by individual reviewer:
 
 ```bash
-myk-pi-tools db stats --by-reviewer
+uvx myk-pi-tools@latest db stats --by-reviewer
 ```
 
 ### Duplicate Patterns
@@ -65,7 +57,7 @@ myk-pi-tools db stats --by-reviewer
 Find recurring dismissed suggestions:
 
 ```bash
-myk-pi-tools db patterns --min 2
+uvx myk-pi-tools@latest db patterns --min 2
 ```
 
 ### Dismissed Comments
@@ -73,7 +65,7 @@ myk-pi-tools db patterns --min 2
 Get all dismissed comments for a specific repo:
 
 ```bash
-myk-pi-tools db dismissed --owner <owner> --repo <repo>
+uvx myk-pi-tools@latest db dismissed --owner <owner> --repo <repo>
 ```
 
 ### Custom Query
@@ -81,7 +73,7 @@ myk-pi-tools db dismissed --owner <owner> --repo <repo>
 Run a custom SELECT query:
 
 ```bash
-myk-pi-tools db query "SELECT * FROM comments WHERE status = 'skipped' ORDER BY id DESC LIMIT 10"
+uvx myk-pi-tools@latest db query "SELECT * FROM comments WHERE status = 'skipped' ORDER BY id DESC LIMIT 10"
 ```
 
 ### Find Similar Comments
@@ -89,7 +81,7 @@ myk-pi-tools db query "SELECT * FROM comments WHERE status = 'skipped' ORDER BY 
 Find comments similar to previously dismissed ones. Accepts JSON input via stdin:
 
 ```bash
-echo '[{"body": "Consider adding error handling", "path": "src/main.py"}]' | myk-pi-tools db find-similar
+echo '[{"body": "Consider adding error handling", "path": "src/main.py"}]' | uvx myk-pi-tools@latest db find-similar
 ```
 
 Input format: JSON array of objects with `body` (required) and optionally `path` fields.
@@ -143,6 +135,6 @@ The reviews database is located at `<project-root>/.claude/data/reviews.db`.
 ## Workflow
 
 1. Parse the raw arguments above to determine which query to run
-2. Execute the appropriate myk-pi-tools db command
+2. Execute the appropriate `db` subcommand
 3. Present results in a clear, formatted way
 4. For natural language questions, compose the appropriate query

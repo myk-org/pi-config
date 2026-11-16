@@ -23,14 +23,6 @@ uv --version
 
 If not found, install from <https://docs.astral.sh/uv/getting-started/installation/>
 
-### Step 1: Check myk-pi-tools
-
-```bash
-myk-pi-tools --version
-```
-
-If not found, prompt to install: `uv tool install myk-pi-tools`
-
 ## Usage
 
 - `/coderabbit-rate-limit` - Handle rate limit on current branch's PR
@@ -59,7 +51,7 @@ gh repo view --json nameWithOwner -q .nameWithOwner
 ### Phase 2: Check Rate Limit
 
 ```bash
-myk-pi-tools coderabbit check <owner/repo> <pr_number>
+uvx myk-pi-tools@latest coderabbit check <owner/repo> <pr_number>
 ```
 
 This outputs JSON to stdout. Parse the result:
@@ -74,7 +66,7 @@ This outputs JSON to stdout. Parse the result:
 Add a 30-second buffer to the wait time and run the trigger command in background:
 
 ```bash
-myk-pi-tools coderabbit trigger <owner/repo> <pr_number> --wait <wait_seconds + 30>
+uvx myk-pi-tools@latest coderabbit trigger <owner/repo> <pr_number> --wait <wait_seconds + 30>
 ```
 
 This command will:

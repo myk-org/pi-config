@@ -14,16 +14,6 @@ $ARGUMENTS
 Creates a GitHub release with automatic changelog generation based on conventional commits.
 Optionally detects and updates version files before creating the release.
 
-## Prerequisites Check (MANDATORY)
-
-### Step 1: Check myk-pi-tools
-
-```bash
-myk-pi-tools --version
-```
-
-If not found, prompt to install: `uv tool install myk-pi-tools`
-
 ## Usage
 
 - `/release` - Normal release (auto-detect version bump)
@@ -35,6 +25,11 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 ## Workflow
 
 **`PROJECT_TMP_DIR`** is the project-scoped temp directory from `getProjectTmpDir(cwd)` — all temp files go here.
+
+Every `myk-pi-tools release ...` call below uses the LOCAL build (plain
+`myk-pi-tools`, no `uvx ...@latest`), unlike other prompts: the release flow runs
+inside this repo and a published build cannot plan its own successor — a fix to
+`release plan` must ship from the working tree.
 
 ### Phase 1: Validation
 
