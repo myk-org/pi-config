@@ -1,16 +1,29 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { planSpawnExitRecovery, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { markNeedsReview, markTestsPassed, readReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
+import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
 const log = createLogger("async-delivery-wiring-test");
+setGlobalSessionId("async-delivery-wiring-test");
+
+/** Log trail of async-agents.ts, read from an offset so each assertion sees only its own lines. */
+function asyncLogOffset(): number {
+  const path = getPiLogPath("async_agents");
+  return path && existsSync(path) ? readFileSync(path, "utf-8").length : 0;
+}
+
+function asyncLogSince(offset: number): string {
+  const path = getPiLogPath("async_agents");
+  return path && existsSync(path) ? readFileSync(path, "utf-8").slice(offset) : "";
+}
 const reviewerOutput = JSON.stringify({ findings: Array.from({ length: 100 }, () => ({ detail: "sensitive ".repeat(80) })) });
 
 function harness() {
@@ -64,7 +77,7 @@ function harness() {
     assert.ok(poller, "async poller should be registered");
     poller();
   };
-  return { cwd, api, commands, ctx, events, messages, overlayOpens: () => overlayOpens, result, spawn, triggerPoller, rejectNextSend: () => { rejectedSends += 1; }, restore: () => { try { handlers.get("session_shutdown")![0]({}, ctx); } finally { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } } };
+  return { cwd, api, commands, ctx, events, messages, overlayOpens: () => overlayOpens, result, resultDir, spawn, triggerPoller, rejectNextSend: () => { rejectedSends += 1; }, restore: () => { try { handlers.get("session_shutdown")![0]({}, ctx); } finally { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } } };
 }
 
 async function eventually(predicate: () => boolean, timeoutMs = 5_000) {
@@ -230,6 +243,79 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
       h.api.killAsyncAgent(job.id);
       assert.equal(fired, 0);
       assert.match(String(h.messages[0]?.content), /Killed by user/);
+    } finally { h.restore(); }
+  });
+
+  it("defers delivery of a terminal job until its result file is ingested", async () => {
+    const h = harness();
+    try {
+      // async-runner writes terminal status before its reviewer JSON retries finish, so the
+      // result file lands later. Delivering on status alone sent empty output and deleted
+      // the findings.
+      const job = h.spawn();
+      writeFileSync(join(h.cwd, ".pi", "tmp", job.id, "status.json"), JSON.stringify({ runId: job.id, state: "complete", lastUpdate: Date.now() }));
+      h.triggerPoller();
+      // The runner is still retrying invalid JSON. Delivery's own result-file wait is 2s, so
+      // wait past it: without the deferral the job is delivered empty and the findings die.
+      await new Promise(resolve => setTimeout(resolve, 2_500));
+      assert.equal(h.messages.length, 0, "a terminal status without an ingested result must not be delivered");
+      writeFileSync(join(h.resultDir(), `${job.id}.json`), JSON.stringify({ id: job.id, agent: "code-reviewer-runtime", task: "review", success: true, output: "late findings", durationMs: 1, exitCode: 0 }));
+      await eventually(() => h.messages.length === 1);
+      assert.match(h.messages[0].content, /late findings/);
+    } finally { h.restore(); }
+  });
+
+  it("logs a deferred delivery that has no live session context", () => {
+    const h = harness();
+    setLogLevelPin("async_agents", "debug");
+    try {
+      // Every sweep tick skips such a job; without the line a result that never reaches the
+      // parent leaves nothing behind to explain why.
+      const job = h.spawn();
+      Object.defineProperty(h.ctx, "mode", { get: () => { throw new Error("ctx inactive"); } });
+      const offset = asyncLogOffset();
+      h.api.killAsyncAgent(job.id);
+      const trail = asyncLogSince(offset);
+      assert.match(trail, /deliver_deferred_no_live_ctx/);
+      assert.match(trail, new RegExp(job.id));
+      assert.equal(h.messages.length, 0);
+    } finally { setLogLevelPin("async_agents", null); h.restore(); }
+  });
+
+  it("completes a linked task when the session context is stale", async () => {
+    const h = harness();
+    const storePath = join(h.cwd, ".pi", "tasks", "tasks.json");
+    const previousTasksEnv = process.env.PI_TASKS;
+    try {
+      mkdirSync(join(h.cwd, ".pi", "tasks"), { recursive: true });
+      writeFileSync(storePath, JSON.stringify({ tasks: [{ id: "7", status: "in_progress", subject: "linked" }] }));
+      process.env.PI_TASKS = storePath;
+      const job = h.api.spawnAsyncAgent("worker-linked", "review", h.cwd, [{ name: "worker-linked" } as any], { taskId: "7" });
+      Object.defineProperty(h.ctx, "mode", { get: () => { throw new Error("ctx inactive"); } });
+      h.result(job.id, "done", "worker-linked");
+      await eventually(() => JSON.parse(readFileSync(storePath, "utf-8")).tasks[0].status === "completed");
+      assert.equal(h.messages.length, 0, "no message reaches a stale session");
+    } finally {
+      if (previousTasksEnv === undefined) delete process.env.PI_TASKS;
+      else process.env.PI_TASKS = previousTasksEnv;
+      h.restore();
+    }
+  });
+
+  it("does not run the completion hook when a killed job's delivery is retried", () => {
+    const h = harness();
+    try {
+      // The first attempt suppressed the hook; a failed send left the job undelivered, and the
+      // sweep retried it with the default hook enabled.
+      let fired = 0;
+      const job = h.api.spawnAsyncAgent("worker-killed-retry", "review", h.cwd, [{ name: "worker-killed-retry" } as any], { onComplete: () => { fired++; } });
+      h.rejectNextSend();
+      h.api.killAsyncAgent(job.id);
+      assert.equal(fired, 0);
+      assert.equal(h.messages.length, 0, "the first send was rejected");
+      h.triggerPoller();
+      assert.equal(h.messages.length, 1, "the sweep retries the undelivered kill");
+      assert.equal(fired, 0, "a retried kill must not advance an async chain");
     } finally { h.restore(); }
   });
 

@@ -681,23 +681,40 @@ export function registerAsyncAgents(
         }
       }
 
+      // A terminal status is not a final result: async-runner writes it BEFORE its reviewer
+      // JSON retries finish. Delivering now would send empty output and delete the findings
+      // when they land, so wait until the result was ingested (`job.output` is its marker).
+      // Killed/phantom/zombie jobs fill `output` themselves; the phantom timeout bounds the
+      // wait so a genuinely missing file cannot strand the job forever.
+      if (job.output === undefined && !job.fireAndForget) {
+        const sinceTerminal = Date.now() - (job.updatedAt || job.startedAt);
+        const boundMs = getSetting(jobCwd(job), "async_phantom_timeout_ms");
+        if (sinceTerminal <= boundMs) {
+          log.debug("deliver_deferred_no_result", { job: job.id, status: job.status, since_terminal_ms: sinceTerminal });
+          return;
+        }
+        log.warn("deliver_no_result_file", { job: job.id, status: job.status, since_terminal_ms: sinceTerminal });
+      }
+
+      let autoCompleteError = "";
+      // Auto-complete the linked task even without a live ctx: the poller stops for a stale
+      // ctx, so gating this on one left the task open forever after a reload.
+      if (!job.fireAndForget && job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
+        try {
+          const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.taskStorePath);
+          log.info(`auto-completed task #${job.taskId}: ${completed}`);
+        } catch (e: any) {
+          autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
+          log.error(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
+        }
+      }
+
       if (job.fireAndForget) {
         if (fireHook) fireOnComplete(job);
         job.delivered = true;
       } else if (getLiveAsyncCtx()) {
         const displayName = job.name || job.agent;
         const resultStatus = job.status === "complete" ? "✅ completed" : "❌ failed";
-        let autoCompleteError = "";
-        // Auto-complete linked task directly in the store file (no AI involvement)
-        if (job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
-          try {
-            const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.taskStorePath);
-            log.info(`auto-completed task #${job.taskId}: ${completed}`);
-          } catch (e: any) {
-            autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
-            log.error(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
-          }
-        }
         const maxOutput = Math.max(MAX_OUTPUT_CHARS - autoCompleteError.length, 500);
         const output = formatAsyncResultOutput(job.agent, job.output || "", resultOutputPath(job), maxOutput);
         const duration = job.durationMs || (job.updatedAt ? job.updatedAt - job.startedAt : 0);
@@ -727,8 +744,10 @@ export function registerAsyncAgents(
           }
         }
         if (job.delivered && fireHook) fireOnComplete(job);
+      } else {
+        // No live ctx: delivered stays false so the reconciliation sweep retries later.
+        log.debug("deliver_deferred_no_live_ctx", { job: job.id, status: job.status });
       }
-      // No live ctx: delivered stays false so the reconciliation sweep retries later.
 
       if (job.delivered) {
         // Persist delivered state so restore skips this job
@@ -1563,6 +1582,9 @@ export function registerAsyncAgents(
       const composedOutput = priorOutput ? `${killLabel}\n${priorOutput}` : killLabel;
       job.output = composedOutput;
       job.killOrigin = killOrigin;
+      // A kill must never advance an async chain, not even when delivery is retried: the
+      // delivered flag stays false after a failed send, so clear the continuation itself.
+      job.onComplete = undefined;
 
       // Persist killed state to disk — prevents stale re-delivery on reload
       try {
