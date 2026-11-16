@@ -145,7 +145,10 @@ function startBot(opts: {
   const hooks: Array<(sessionId: string, event: any) => void> = [];
   const before = built.length;
   const signals = ["beforeExit", "SIGTERM", "SIGINT"] as const;
-  const previousListeners = new Map(signals.map((signal) => [signal, new Set(process.listeners(signal))]));
+  // `beforeExit` is not in `NodeJS.Signals`, so the per-event `process.listeners` overloads cannot
+  // take the union; the EventEmitter view of `process` accepts any event name.
+  const emitter: NodeJS.EventEmitter = process;
+  const previousListeners = new Map(signals.map((signal) => [signal, new Set(emitter.listeners(signal))] as const));
   setupDiscordBot({
     piClients,
     piEventHooks: hooks,
@@ -154,8 +157,8 @@ function startBot(opts: {
   });
   // Each stub bot must not retain process hooks or recreate its fixture after teardown.
   for (const signal of signals) {
-    for (const listener of process.listeners(signal)) {
-      if (!previousListeners.get(signal)!.has(listener)) process.removeListener(signal, listener);
+    for (const listener of emitter.listeners(signal)) {
+      if (!previousListeners.get(signal)!.has(listener)) process.removeListener(signal, listener as (...args: unknown[]) => void);
     }
   }
   assert.equal(built.length, before + 1, "setupDiscordBot built no client");
@@ -973,7 +976,7 @@ describe("discord messageCreate routing", () => {
     const cancelReplies: string[] = [];
     await bot.handler(message("cancel-offline", "/cancel", cancelReplies, { channelId: PLAIN }));
     assert.deepEqual(cancelReplies, ["The session is not connected."]);
-    assert.deepEqual(bot.sends, []);
+    assert.equal(bot.sends.length, 0);
 
     client.ws = savedWs;
     const answerReplies: string[] = [];

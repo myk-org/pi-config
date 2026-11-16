@@ -254,7 +254,8 @@ export function registerAsyncAgents(
 ): {
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
-  getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
+  /** The full job record: callers read `taskStorePath` and the delivery flags off it. */
+  getAsyncJobs: () => AsyncJob[];
 } {
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir

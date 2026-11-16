@@ -4,17 +4,17 @@ import type { FileContents, WorkerPoolOptions, WorkerInitializationRenderOptions
 import { useFileTree, FileTree, useFileTreeSelection } from "@pierre/trees/react";
 import { GitBranch, X, Send, Pencil } from "lucide-react";
 import { themeToTreeStyles } from "@pierre/trees";
-import { cn } from "@/lib/utils";
-import { pierreFileCacheKey } from "@/lib/file-cache-key";
-import { createLogger } from "@/lib/create-logger";
-import { runAppRefresh, beginRefreshUi } from "@/lib/request-diffs";
-import { AppReconnectWatch } from "@/lib/app-reconnect-watch";
-import { AppRefreshActions } from "@/lib/app-refresh-actions";
+import { cn } from "./lib/utils";
+import { pierreFileCacheKey } from "./lib/file-cache-key";
+import { createLogger } from "./lib/create-logger";
+import { runAppRefresh, beginRefreshUi } from "./lib/request-diffs";
+import { AppReconnectWatch } from "./lib/app-reconnect-watch";
+import { AppRefreshActions } from "./lib/app-refresh-actions";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
-import { Switch } from "@/components/ui/switch";
-import { useWebSocket } from "@/hooks/useWebSocket";
-import type { DiffMode, DiffData, FileDiffData, GitCommit, ReviewComment, PiSession, Worktree } from "@/types";
+import { Switch } from "./components/ui/switch";
+import { useWebSocket } from "./hooks/useWebSocket";
+import type { DiffMode, DiffData, FileDiffData, GitCommit, ReviewComment, PiSession, Worktree } from "./types";
 
 const log = createLogger("pidiff-ui");
 

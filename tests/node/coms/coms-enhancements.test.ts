@@ -20,13 +20,17 @@ interface TestEntry {
 	priority?: boolean;
 }
 
+/** `insertInboundByPriority` reads only these two fields, so the insertion tests state that
+ *  instead of inventing a full queue entry. */
+type QueueEntry = Pick<TestEntry, "msg_id" | "priority">;
+
 function entry(msg_id: string, sender: string, priority = false): TestEntry {
 	return { msg_id, sender_session: sender, priority };
 }
 
 describe("insertInboundByPriority (#924 §4)", () => {
 	it("appends non-priority entries in arrival order", () => {
-		const out = insertInboundByPriority<TestEntry>(
+		const out = insertInboundByPriority<QueueEntry>(
 			[{ msg_id: "a" }, { msg_id: "b" }],
 			{ msg_id: "c" },
 		);
@@ -34,7 +38,7 @@ describe("insertInboundByPriority (#924 §4)", () => {
 	});
 
 	it("inserts a priority entry ahead of the first non-priority entry", () => {
-		const out = insertInboundByPriority<TestEntry>(
+		const out = insertInboundByPriority<QueueEntry>(
 			[{ msg_id: "a" }, { msg_id: "b" }, { msg_id: "c" }],
 			{ msg_id: "urgent", priority: true },
 		);
@@ -42,7 +46,7 @@ describe("insertInboundByPriority (#924 §4)", () => {
 	});
 
 	it("keeps arrival order among priorities", () => {
-		const out = insertInboundByPriority<TestEntry>(
+		const out = insertInboundByPriority<QueueEntry>(
 			[{ msg_id: "u1", priority: true }, { msg_id: "a" }],
 			{ msg_id: "u2", priority: true },
 		);
@@ -50,7 +54,7 @@ describe("insertInboundByPriority (#924 §4)", () => {
 	});
 
 	it("priority after only priorities stays at the tail", () => {
-		const out = insertInboundByPriority<TestEntry>(
+		const out = insertInboundByPriority<QueueEntry>(
 			[{ msg_id: "u1", priority: true }],
 			{ msg_id: "u2", priority: true },
 		);
@@ -58,7 +62,7 @@ describe("insertInboundByPriority (#924 §4)", () => {
 	});
 
 	it("does not mutate the input array", () => {
-		const input: TestEntry[] = [{ msg_id: "a" }];
+		const input: QueueEntry[] = [{ msg_id: "a" }];
 		insertInboundByPriority(input, { msg_id: "urgent", priority: true });
 		assert.equal(input.length, 1);
 	});

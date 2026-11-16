@@ -9,6 +9,7 @@ import { fireOnComplete, firePendingCompletions, registerAsyncAgents } from "../
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+import { fakeAgent, fakeSpawnProcess } from "../helpers/fake-async-runtime.js";
 
 
 /** Log writes are captured from the real file logger under a test session id. */
@@ -343,6 +344,7 @@ function asyncHarness(opts: { hasUI?: boolean; confirm?: (title: string, message
   const cwd = makeTempDir("async-chain-durable-");
   const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
   const messages: any[] = [];
+  const confirmCalls: Array<{ title: string; message?: string }> = [];
   const previousSetInterval = global.setInterval;
   global.setInterval = (() => ({ unref() {}, [Symbol.toPrimitive]: () => 0 })) as any;
   const pi = {
@@ -354,8 +356,8 @@ function asyncHarness(opts: { hasUI?: boolean; confirm?: (title: string, message
     events: new EventEmitter(),
   };
   const api = registerAsyncAgents(pi as any, () => {}, {
-    spawnProcess: () => Object.assign(new EventEmitter(), { stderr: { pipe() {} } }),
-    discoverAgents: () => ({ agents: [{ name: "worker" } as any] }),
+    spawnProcess: fakeSpawnProcess(),
+    discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
   });
   const ctx = {
     cwd,
@@ -379,6 +381,7 @@ function asyncHarness(opts: { hasUI?: boolean; confirm?: (title: string, message
     cwd,
     api,
     messages,
+    confirmCalls,
     projectTmp,
     resultsDir,
     sessionStart,

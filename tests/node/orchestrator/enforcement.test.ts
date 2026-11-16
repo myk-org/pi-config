@@ -14,7 +14,7 @@ import { DANGEROUS, DANGEROUS_EXPLANATIONS, DANGEROUS_LABELS, dangerousPatternEx
 import { getPiLogPath, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
-import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import { clearSettingsCache, getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
   READ_ONLY_COMMANDS,
   extractSubshells,

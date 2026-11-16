@@ -14,11 +14,13 @@ interface PackResult {
   files: PackFile[];
 }
 
-function runRootNpmPackJson(): ReturnType<typeof spawnSync> {
-  return spawnSync("npm", ["pack", "--dry-run", "--json"], {
+function runRootNpmPackJson(): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync("npm", ["pack", "--dry-run", "--json"], {
     cwd: REPO_DIR,
     encoding: "utf8",
   });
+  // `encoding: "utf8"` already decoded both streams; the spawnSync overload still types them as Buffer.
+  return { status: result.status, stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
 }
 
 describe("root npm pack JSON output", () => {

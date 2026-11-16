@@ -18,6 +18,8 @@ import {
 } from "../../../extensions/pitasks/tasks-view.ts";
 import type { Task, TaskStatus } from "../../../extensions/pitasks/types.ts";
 import { openTasksOverlay } from "../../../extensions/pitasks/tasks-ui.ts";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { fakeCommandCtx, fakeCustom, type FakeCustomFactory } from "../helpers/fake-extension-ctx.js";
 
 /** The `TaskStore.update` fields these doubles accept (a stand-in store may ignore most of them). */
 type StoreUpdateFields = { status?: TaskStatus | "deleted"; subject?: string };
@@ -491,41 +493,28 @@ describe("openTasksOverlay multi-select (#1087)", () => {
  * the keystrokes (#1089).
  */
 function makeTasksCtx(opens: string[][]) {
-	const notifications: Array<{ message: string; level: string }> = [];
+	const notifications: Array<{ message: string; level: string | undefined }> = [];
 	/** Rendered frame of every list that opened — the footer is asserted through what is drawn. */
 	const frames: string[][] = [];
 	/** How many keys each open had received when it closed — tells a key that closed the list
 	 *  in place from one that only redrew it. */
 	const closeAfterKeys: number[] = [];
 	let opened = 0;
-	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
-	const tui = { terminal: { rows: 20 }, requestRender: () => {} };
-	const keybindings = { matches: (data: string, action: string) => action === "tui.select.cancel" && data === "close" };
-	const ctx = {
-		hasUI: true,
-		ui: {
-			notify: (message: string, level: string) => { notifications.push({ message, level }); },
-			input: async () => undefined,
-			custom: async (factory: any) => {
-				const keys = opens[opened];
-				opened += 1;
-				if (!keys) return null; // a further open: close it
-				return new Promise((resolve) => {
-					let delivered = 0;
-					const component = factory(tui, theme, keybindings, (value: unknown) => {
-						closeAfterKeys.push(delivered);
-						resolve(value);
-					});
-					frames.push(component.render(100));
-					for (const key of keys) {
-						delivered += 1;
-						component.handleInput(key);
-					}
-				});
-			},
-		},
-	};
-	return { ctx: ctx as any, notifications, openedCount: () => opened, frames, closeAfterKeys };
+	const custom = (<T,>(factory: FakeCustomFactory<T>) => {
+		const keys = opens[opened];
+		opened += 1;
+		if (!keys) return Promise.resolve(null as never); // a further open: close it
+		return fakeCustom(factory, keys, {
+			onOpen: (component) => { frames.push(component.render?.(100) ?? []); },
+			onClose: (delivered) => { closeAfterKeys.push(delivered); },
+		});
+	}) satisfies ExtensionUIContext["custom"];
+	const ctx = fakeCommandCtx({
+		notify: (message: string, level?: "info" | "warning" | "error") => { notifications.push({ message, level }); },
+		input: async () => undefined,
+		custom,
+	});
+	return { ctx, notifications, openedCount: () => opened, frames, closeAfterKeys };
 }
 
 function inMemoryStore(initial: Task[] = []) {

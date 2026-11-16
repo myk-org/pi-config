@@ -19,6 +19,7 @@ import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agen
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import type { Task } from "../../../extensions/pitasks/types.js";
 import {
   publishTaskStore,
   publishTaskTelemetryActive,
@@ -42,7 +43,10 @@ function logSince(offset: number): string {
 }
 
 
-function writeTaskStore(dir: string, fileName: string, tasks: Array<{ id: string; status: string; subject: string }>): string {
+/** A store file record: tests write partial payloads, and nothing here normalizes them. */
+type RawTask = Partial<Task> & Pick<Task, "id" | "subject" | "status">;
+
+function writeTaskStore(dir: string, fileName: string, tasks: RawTask[]): string {
   const tasksDir = join(dir, ".pi", "tasks");
   mkdirSync(tasksDir, { recursive: true });
   const filePath = join(tasksDir, fileName);
@@ -50,7 +54,7 @@ function writeTaskStore(dir: string, fileName: string, tasks: Array<{ id: string
   return filePath;
 }
 
-function readTaskStore(filePath: string): Array<{ id: string; status: string; subject: string }> {
+function readTaskStore(filePath: string): RawTask[] {
   return JSON.parse(readFileSync(filePath, "utf-8")).tasks;
 }
 

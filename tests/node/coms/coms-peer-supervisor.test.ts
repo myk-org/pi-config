@@ -6,7 +6,7 @@
  * stub writes a READY marker once its trap is installed, so a test never signals the supervisor
  * before the child is armed.
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,8 +14,8 @@ import assert from "node:assert/strict";
 import { after, describe, it } from "node:test";
 
 const supervisor = join(process.cwd(), "scripts", "coms-peer-supervisor.mjs");
-const roots = [];
-const children = [];
+const roots: string[] = [];
+const children: ChildProcess[] = [];
 
 after(() => {
   for (const child of children) {
@@ -24,8 +24,17 @@ after(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
+interface Harness {
+  root: string;
+  home: string;
+  bin: string;
+  coms: string;
+  marker: string;
+  ready: string;
+}
+
 /** A throw-away HOME + coms dir + a stub `pi` whose SIGTERM behaviour the test controls. */
-function harness({ ignoreSigterm = false, exitAfterMs = 200 } = {}) {
+function harness({ ignoreSigterm = false, exitAfterMs = 200 }: { ignoreSigterm?: boolean; exitAfterMs?: number } = {}): Harness {
   const root = mkdtempSync(join(tmpdir(), "coms-supervisor-"));
   roots.push(root);
   const home = join(root, "home");
@@ -43,7 +52,8 @@ function harness({ ignoreSigterm = false, exitAfterMs = 200 } = {}) {
   return { root, home, bin, coms, marker, ready };
 }
 
-function runSupervisor(h, { timeoutMs = 5000 } = {}) {
+/** `timeoutMs` reaches the supervisor as the string env var, so a test may pass garbage there. */
+function runSupervisor(h: Harness, { timeoutMs = 5000 }: { timeoutMs?: number | string } = {}) {
   const child = spawn(process.execPath, [supervisor, "peer1", "--project", "proj", "--cwd", h.root], {
     env: {
       ...process.env,
@@ -58,11 +68,11 @@ function runSupervisor(h, { timeoutMs = 5000 } = {}) {
   return child;
 }
 
-const recordPath = (h) => join(h.coms, "peers", "peer1@proj.json");
-const peerLog = (h) => join(h.home, ".pi", "logs", "coms-peers", "peer1@proj.log");
-const readRecord = (h) => JSON.parse(readFileSync(recordPath(h), "utf8"));
+const recordPath = (h: Harness) => join(h.coms, "peers", "peer1@proj.json");
+const peerLog = (h: Harness) => join(h.home, ".pi", "logs", "coms-peers", "peer1@proj.log");
+const readRecord = (h: Harness) => JSON.parse(readFileSync(recordPath(h), "utf8"));
 
-async function waitFor(predicate, timeoutMs = 8000) {
+async function waitFor(predicate: () => boolean, timeoutMs = 8000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (predicate()) return true;
@@ -72,7 +82,7 @@ async function waitFor(predicate, timeoutMs = 8000) {
 }
 
 /** Start a peer and wait until its record exists AND its stub has armed its trap. */
-async function startedPeer(h, opts) {
+async function startedPeer(h: Harness, opts?: { timeoutMs?: number | string }) {
   const child = runSupervisor(h, opts);
   assert.equal(await waitFor(() => existsSync(recordPath(h))), true, "the supervisor records the peer on spawn");
   assert.equal(await waitFor(() => existsSync(h.ready)), true, "the stub armed its SIGTERM trap");
@@ -80,8 +90,8 @@ async function startedPeer(h, opts) {
 }
 
 /** Signal the supervisor and resolve with its exit code. */
-function stopAndWait(child, signal = "SIGTERM") {
-  const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code)));
+function stopAndWait(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM") {
+  const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
   child.kill(signal);
   return exited;
 }

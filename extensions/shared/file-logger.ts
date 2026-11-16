@@ -23,6 +23,11 @@ export function setLogLevelDiagnosticLogger(logger: { info(message: string, cont
 
 export type FileLogLevel = "debug" | "info" | "warn" | "error";
 
+declare global {
+  /** Session id shared between extensions through `globalThis`; set by {@link setGlobalSessionId}. */
+  var __piConfigSessionId: string | undefined;
+}
+
 const SESSION_ID_ENV_KEY = "__PI_CONFIG_SESSION_ID";
 let pendingLogLines: Array<{ name: string; line: string }> = [];
 

@@ -45,7 +45,7 @@ globalThis.localStorage = {
   },
   setItem() {},
   removeItem() {},
-} as Storage;
+} as unknown as Storage;
 
 describe("App Refresh render", () => {
   it("App header mounts a Refresh control", async () => {

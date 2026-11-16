@@ -11,11 +11,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { after, before } from "node:test";
 import { describe, it } from "node:test";
 
-import { openComsPeersOverlay } from "../../../extensions/coms/coms-peers-ui.js";
+import { openComsPeersOverlay, type ComsPeersOverlayDeps } from "../../../extensions/coms/coms-peers-ui.js";
 import { openListDetailOverlay } from "../../../extensions/orchestrator/overlay-dashboard.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import type { RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { fakeCommandCtx, fakeCustom, type FakeCustomFactory } from "../helpers/fake-extension-ctx.js";
 
 type Row = RegistryRow & { id: string };
 
@@ -35,40 +37,37 @@ const worker: RegistryRow = {
   createdBy: null,
 };
 
+/** The injected overlay, typed by its real signature so `options.listSpec` is checked. */
+type OpenOverlay = NonNullable<ComsPeersOverlayDeps["openOverlay"]>;
+
 /** Minimal ctx: the list opens once, the keys are fed to it, the second open closes immediately. */
 function makeCtx(keys: string[], typed: string | undefined, reopenedKeys: string[] = []) {
   const inputTitles: string[] = [];
   const notifications: string[] = [];
   let opened = 0;
-  const tui = { terminal: { rows: 20 }, requestRender: () => {} };
-  // `close` is the cancel keybinding the dashboard really checks — needed when a test presses a
-  // key the overlay does NOT handle (a never-closing overlay would hang the suite).
-  const keybindings = { matches: (data: string, action: string) => action === "tui.select.cancel" && data === "close" };
-  const ctx = {
-    hasUI: true,
-    ui: {
-      notify: (message: string) => { notifications.push(message); },
-      input: async (title: string) => {
-        inputTitles.push(title);
-        return typed;
-      },
-      custom: async (factory: any) => {
-        opened += 1;
-        if (opened > 2 || (opened > 1 && reopenedKeys.length === 0)) return null;
-        return new Promise((resolve) => {
-          const component = factory(tui, {}, keybindings, resolve);
-          for (const key of opened === 1 ? keys : reopenedKeys) component.handleInput(key);
-        });
-      },
+  // `fakeCustom` feeds `close` (the cancel keybinding the dashboard really checks) on every open,
+  // so a test that presses a key the overlay ignores still closes instead of hanging the suite.
+  const custom = (<T,>(factory: FakeCustomFactory<T>) => {
+    opened += 1;
+    // `null` is how the real dialog closes with nothing chosen.
+    if (opened > 2 || (opened > 1 && reopenedKeys.length === 0)) return Promise.resolve(null as never);
+    return fakeCustom(factory, opened === 1 ? keys : reopenedKeys);
+  }) satisfies ExtensionUIContext["custom"];
+  const ctx = fakeCommandCtx({
+    notify: (message: string) => { notifications.push(message); },
+    input: async (title: string) => {
+      inputTitles.push(title);
+      return typed;
     },
-  };
+    custom,
+  });
   return { ctx, inputTitles, notifications, openedCount: () => opened };
 }
 
 describe("openComsPeersOverlay compose key (#1077)", () => {
   it("sanitizes row labels without rewriting recipient identity", async () => {
     const raw = { ...worker, name: "raw\u001b[2Jname", project: "repo\u0007" };
-    await openComsPeersOverlay({ ui: {} }, {
+    await openComsPeersOverlay(fakeCommandCtx({}), {
       listPeers: () => [raw], killPeer: () => "", killAll: () => "",
       openOverlay: async (_ctx: any, options: any) => {
         const row = options.listSpec.listItems()[0];
@@ -162,7 +161,13 @@ describe("openComsPeersOverlay drilldown (#1084 finding 1)", () => {
   for (const behavior of ["opens peer sections", "shows peer info without a work count", "restores peer focus after Esc"]) it(behavior, async () => {
     const opened: any[] = [];
     const described: string[] = [];
-    await openComsPeersOverlay({ hasUI: true, ui: { notify: () => {} } } as any, {
+    // The overlay's Enter path without a TUI: pick the peer on the first call, then leave each
+    // deeper level immediately, which is what Esc does.
+    const openOverlay: OpenOverlay = async (_ctx, options) => {
+      opened.push(options);
+      if (opened.length === 1) options.listSpec.onSelect?.(options.listSpec.listItems()[0]);
+    };
+    await openComsPeersOverlay(fakeCommandCtx({ notify: () => {} }), {
       listPeers: () => [worker],
       killPeer: () => "killed",
       killAll: () => "killed all",
@@ -170,13 +175,8 @@ describe("openComsPeersOverlay drilldown (#1084 finding 1)", () => {
         described.push(row.name);
         return { ok: false, reason: "not-reported" };
       },
-      // The overlay's Enter path without a TUI: pick the peer on the first call, then leave each
-      // deeper level immediately, which is what Esc does.
-      openOverlay: async (_ctx: any, options: any) => {
-        opened.push(options);
-        if (opened.length === 1) options.listSpec.onSelect(options.listSpec.listItems()[0]);
-      },
-    } as any);
+      openOverlay,
+    });
 
     if (behavior === "opens peer sections") assert.deepEqual(described, ["worker"]);
     else if (behavior === "shows peer info without a work count") {
@@ -465,7 +465,7 @@ describe("openComsPeersOverlay keeps the ticks across a drilldown (#1084)", () =
 
   it("re-opens the peer list with the selection it reported earlier", async () => {
     const opened: any[] = [];
-    await openComsPeersOverlay({ hasUI: true, ui: { notify: () => {} } } as any, {
+    await openComsPeersOverlay(fakeCommandCtx({ notify: () => {} }), {
       listPeers: () => [peer("alpha"), peer("beta")],
       killPeer: () => "killed",
       killAll: () => "killed all",

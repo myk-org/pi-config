@@ -62,12 +62,14 @@ function mergedBranchGuard(): string {
   return match[1];
 }
 
-function runGuard(repo: string): ReturnType<typeof spawnSync> {
-  return spawnSync("bash", ["-c", mergedBranchGuard()], {
+function runGuard(repo: string): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync("bash", ["-c", mergedBranchGuard()], {
     cwd: repo,
     encoding: "utf8",
     env: GIT_ENV,
   });
+  // `encoding: "utf8"` decodes both streams; the spawnSync overload still types them as Buffer.
+  return { status: result.status, stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
 }
 
 describe("git-expert merged-branch guard", () => {

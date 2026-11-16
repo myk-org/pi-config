@@ -5,7 +5,8 @@ import { makeTempDir } from "../helpers/temp-dirs.js";
 import pitasks, { createTaskForSession, getTaskForSession, taskStore, updateTask, updateTaskForSession, updateTasksForSession } from "../../../extensions/pitasks/index.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
-import { openListDetailOverlay } from "../../../extensions/orchestrator/overlay-dashboard.js";
+import { openListDetailOverlay, type OverlayListSpec } from "../../../extensions/orchestrator/overlay-dashboard.js";
+import { fakeCommandCtx } from "../helpers/fake-extension-ctx.js";
 import { tasksOverlayDeps, taskDetailRows } from "../../../extensions/pitasks/tasks-view.js";
 import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
 import { autoCompleteTask, autoMarkInProgress } from "../../../extensions/orchestrator/task-lifecycle.js";
@@ -87,10 +88,18 @@ it("refuses peer completionNote injection in bulk session updates", () => {
 });
 it("preserves the shared overlay's default empty-list return", async () => {
  const notifications: string[] = [];
- await openListDetailOverlay({ hasUI: true, ui: {
+ const listSpec: OverlayListSpec<string, { id: string }> = {
+  title: "Jobs",
+  countLabel: () => "",
+  borderTitle: () => "",
+  listItems: () => [],
+  rowParts: () => ({ glyph: "", title: "", idLabel: "", rightParts: [] }),
+ };
+ const ctx = fakeCommandCtx({
   notify: (text: string) => notifications.push(text),
   custom: () => assert.fail("default empty list must not open a dashboard"),
- } } as any, { emptyMessage: "No jobs.", listSpec: { listItems: () => [] } as any });
+ });
+ await openListDetailOverlay(ctx, { emptyMessage: "No jobs.", listSpec });
  assert.deepEqual(notifications, ["No jobs."]);
 });
 for (const bulk of [false, true]) {

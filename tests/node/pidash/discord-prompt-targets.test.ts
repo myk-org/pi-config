@@ -4,7 +4,7 @@
  */
 import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ensurePromptTarget, evictableSessions, hydratableTargets, nudgeChannelId, promptHeader, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge, resolveInboundSession } from "../../../extensions/pidash/discord-prompt-targets.ts";
+import { ensurePromptTarget, evictableSessions, hydratableTargets, nudgeChannelId, promptHeader, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge, resolveInboundSession, type PromptTargetState } from "../../../extensions/pidash/discord-prompt-targets.ts";
 
 describe("planPromptTarget", () => {
   const base = { existingChannelId: null, threadParentChannelId: "chan", dmChannelId: "dm-1", plainChannelId: "chan" };
@@ -148,23 +148,23 @@ describe("ensurePromptTarget (the wiring, with Discord injected)", () => {
   beforeEach(() => { calls = { persist: 0 }; });
 
   it("creates a thread, records it and marks the target prompt-only", async () => {
-    const state = { responseChannelId: "guild-chan", threads: {}, targets: {}, promptOnlyTargets: {} };
+    const state: PromptTargetState = { responseChannelId: "guild-chan", threads: {}, targets: {}, promptOnlyTargets: {} };
     const target = await ensurePromptTarget(deps(), state, { userId: "u", sessionId: "s1", name: "proj" });
     assert.deepEqual(target, { channelId: "thread-new", threadId: "thread-new" });
-    assert.equal(state.threads.s1, "thread-new");
-    assert.deepEqual(state.targets.s1, target);
-    assert.equal(state.promptOnlyTargets.s1, true, "a delivery thread is not a subscription");
+    assert.equal(state.threads?.s1, "thread-new");
+    assert.deepEqual(state.targets?.s1, target);
+    assert.equal(state.promptOnlyTargets?.s1, true, "a delivery thread is not a subscription");
     assert.ok(calls.persist > 0, "the mapping is persisted for the answer route");
   });
 
   it("reuses an existing thread instead of creating a second one", async () => {
     let created = 0;
-    const state = { responseChannelId: "guild-chan", threads: { s1: "thread-old" }, targets: {}, promptOnlyTargets: {} };
+    const state: PromptTargetState = { responseChannelId: "guild-chan", threads: { s1: "thread-old" }, targets: {}, promptOnlyTargets: {} };
     const target = await ensurePromptTarget(deps({ createThread: async () => { created++; return "x"; } }), state,
       { userId: "u", sessionId: "s1", name: "proj" });
     assert.deepEqual(target, { channelId: "thread-old", threadId: "thread-old" });
     assert.equal(created, 0);
-    assert.equal(state.promptOnlyTargets.s1, true, "reuse re-marks it, or output streams forever");
+    assert.equal(state.promptOnlyTargets?.s1, true, "reuse re-marks it, or output streams forever");
   });
 
   it("falls back to the DM when the guild channel cannot hold a thread", async () => {

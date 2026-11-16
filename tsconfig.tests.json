@@ -1,20 +1,51 @@
 {
+  // The test tree's own project: `tsconfig.typecheck.json` covers `extensions/**` only, so a test
+  // could drift from the contract it exercises without anything noticing (issue #1094).
+  //
+  // Deliberate differences from `tsconfig.typecheck.json`, all forced by what the tests import:
+  //  - `module`/`moduleResolution: bundler`: the tests import UI sources from `extensions/*/*-ui`,
+  //    which are bundler projects (extensionless relative imports, exports maps for
+  //    `@pierre/*`). Node-style resolution rejects those sources, and they are already checked by
+  //    their own projects in `npm run typecheck`.
+  //  - `jsx: react-jsx` + DOM lib: the pidash/pidiff tests render real components.
+  //  - `allowJs`: `extensions/shared/install-logger.mjs` is a production module with no typings.
+  //  - `paths`: both UI workspaces use the same `@/` alias for different roots, so the tests
+  //    project maps it to pidash-ui (pidiff's `App.tsx` uses relative imports for this reason).
+  // React typings for the by-path imports live in tests/node/helpers/ui-react-modules.d.ts.
   "compilerOptions": {
     "target": "es2022",
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "lib": [
+      "es2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "types": [
       "node"
-    ]
+    ],
+    "paths": {
+      "@/*": [
+        "./extensions/pidash/pidash-ui/src/*"
+      ],
+      "@ui/*": [
+        "./extensions/shared/ui/*"
+      ]
+    }
   },
   "include": [
-    "tests/node/**/*.ts"
+    "tests/node/**/*.ts",
+    // The fake-DOM shims are `.d.mts`: they do not match `*.ts`, and a declaration that is never
+    // imported would otherwise go unchecked.
+    "tests/node/**/*.d.mts"
   ],
   "exclude": [
     "node_modules",

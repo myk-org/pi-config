@@ -13,6 +13,7 @@ import {
   writeLastThinkingLevel,
 } from "../../../extensions/providers/last-thinking-level.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { fakeModel } from "../helpers/fake-model.js";
 
 
 type Handler = (event: any, ctx: any) => any;
@@ -35,7 +36,7 @@ function harness(statePath: string, initial = "off") {
 }
 
 const reasoningCtx = (entries: any[] = [], id = "reasoner") => ({
-  model: { id, provider: "native", reasoning: true },
+  model: fakeModel({ id, provider: "native", reasoning: true }),
   sessionManager: { getEntries: () => entries },
 });
 
@@ -145,7 +146,7 @@ describe("last-used thinking level", () => {
   it("skips preference restoration on non-reasoning models", () => {
     assert.equal(shouldRestoreLastThinkingLevel({
       reason: "new",
-      ctx: { model: { reasoning: false } },
+      ctx: { model: fakeModel({ reasoning: false }) },
       argv: [],
     }), false);
   });

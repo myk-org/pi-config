@@ -10,6 +10,8 @@ import {
   toCronStatusTaskView,
 } from "../../../extensions/orchestrator/cron-status-format.ts";
 import { openCronStatusOverlay } from "../../../extensions/orchestrator/cron-status-ui.ts";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { fakeCommandCtx, fakeCustom, type FakeCustomFactory } from "../helpers/fake-extension-ctx.js";
 
 function sample(overrides: Record<string, unknown> = {}) {
   return toCronStatusTaskView(
@@ -129,23 +131,14 @@ describe("toCronStatusTaskView", () => {
 /** Only input handling is exercised: `ctx.ui.custom` is mocked so the real OverlayListDashboard
  *  receives the keystrokes, which is where `p` lives (#1089). */
 function makeCtx(keys: string[] = ["p"]) {
-  const notifications: Array<{ message: string; level: string }> = [];
-  const tui = { terminal: { rows: 20 }, requestRender: () => {} };
-  // `close` is the cancel keybinding the dashboard really checks.
-  const keybindings = { matches: (data: string, action: string) => action === "tui.select.cancel" && data === "close" };
-  const ctx = {
-    hasUI: true,
-    ui: {
-      notify: (message: string, level: string) => notifications.push({ message, level }),
-      custom: async (factory: any) =>
-        new Promise((resolve) => {
-          const component = factory(tui, {}, keybindings, resolve);
-          for (const key of keys) component.handleInput(key);
-          component.handleInput("close");
-        }),
-    },
-  };
-  return { ctx: ctx as any, notifications };
+  const notifications: Array<{ message: string; level: string | undefined }> = [];
+  // `close` is fed last so a test that presses a key the overlay ignores still closes.
+  const custom = (<T,>(factory: FakeCustomFactory<T>) => fakeCustom(factory, [...keys, "close"])) satisfies ExtensionUIContext["custom"];
+  const ctx = fakeCommandCtx({
+    notify: (message: string, level?: "info" | "warning" | "error") => notifications.push({ message, level }),
+    custom,
+  });
+  return { ctx, notifications };
 }
 
 /** One view per distinct id: the overlay row id is the scope-qualified key, so a helper that

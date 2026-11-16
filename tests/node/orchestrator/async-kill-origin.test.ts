@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { fakeAgent, fakeSpawnProcess } from "../helpers/fake-async-runtime.js";
 
 
 const log = createLogger("async-kill-origin-test");
@@ -20,7 +21,7 @@ function harness() {
   const events = new EventEmitter();
   const messages: any[] = [];
   const previousSetInterval = global.setInterval;
-  global.setInterval = (() => ({ unref() {}, [Symbol.toPrimitive]: () => 0 })) as typeof setInterval;
+  global.setInterval = (() => ({ unref() {}, [Symbol.toPrimitive]: () => 0 })) as unknown as typeof setInterval;
   const pi = {
     on(event: string, handler: (event: unknown, ctx: any) => void) {
       const list = handlers.get(event);
@@ -31,8 +32,8 @@ function harness() {
     events,
   };
   const api = registerAsyncAgents(pi as any, () => {}, {
-    spawnProcess: () => Object.assign(new EventEmitter(), { stderr: { pipe() {} } }),
-    discoverAgents: () => ({ agents: [{ name: "worker" }], sources: [] }),
+    spawnProcess: fakeSpawnProcess(),
+    discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
   });
   const ctx = {
     cwd,

@@ -8,8 +8,11 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
 - Pre-commit: `prek run --all-files`
 - Python tests: `uv run --group tests pytest`
 - Node tests: `npx tsx --test tests/node/**/*.test.ts`
-- TypeScript type-check gate: `npm run typecheck` (tsc --noEmit, strict, all five projects — issue #951)
-- Test-tree type-check (not in the gate yet — still has pre-existing errors): `npm run typecheck:tests` (tsconfig.tests.json, strict, `tests/node/**/*.ts` — issue #1094)
+- TypeScript type-check gate: `npm run typecheck` (tsc --noEmit, strict, all seven projects, including
+  `tests/node/**/*.ts` via `tsconfig.tests.json` — issues #951, #1094)
+- Test tree only: `npm run typecheck:tests` (same project as the gate's test step)
+- Overlay/TUI test fakes live in `tests/node/helpers/` (`fake-tui.ts`, `fake-extension-ctx.ts`); the
+  harness `spec`/ctx values are typed by the real interfaces, so contract drift fails the gate
 - Full verify: `prek run --all-files && tox && npm run typecheck`
 
 ## pi-sidecar (Monorepo Workspace)
