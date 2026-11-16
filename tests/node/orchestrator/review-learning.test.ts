@@ -5,7 +5,7 @@
  * No network, no model calls: findings come from a scratch sqlite reviews DB
  * (with and without the `comments.title` column) and seeded memory lessons.
  */
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -37,6 +37,7 @@ import {
   type AddressedFinding,
   type DistilledLesson,
 } from "../../../extensions/orchestrator/review-learning.js";
+import { embedEntry } from "../../../extensions/orchestrator/memory-embeddings.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -580,6 +581,18 @@ function seedLessonEntry(cwd: string, text: string, derivedFrom?: string, eviden
 
 const REPO = { owner: "myk-org", repo: "demo" };
 
+// Warm the ONNX embedding pipeline BEFORE any assertion window (issue #1112,
+// same fix as review-learning-modes.test.ts): every lesson write awaits
+// embedEntry, and the FIRST call pays the ~1.6 s in-process pipeline init
+// (128 MB bge-small model) — the write loop is serialized behind it, so under
+// the full node suite's parallel load that init alone outruns any fixed wait
+// this file could pick. Warming once up front moves it out of the measured
+// window; warmed embeds are ~20 ms. When the model is unavailable the warmup
+// fails fast and the embeds inside the write path fail fast too.
+before(async () => {
+  await embedEntry(makeTempDir("review-learning-warmup-"), "pipeline warmup", "lesson");
+});
+
 // This suite may itself run inside a pi subagent — clear the child marker so
 // register() wires its handler (mirrors trail.test.ts).
 const originalChild = process.env.PI_SUBAGENT_CHILD;
@@ -693,6 +706,45 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<bool
   return predicate();
 }
 
+/**
+ * Wait for a PR's distillation to finish, driven by the pipeline's own
+ * completion signal instead of a guessed wall clock (issue #1112).
+ *
+ * `markReviewDistilled` persists a review id only AFTER every lesson of that
+ * review was written, so `state ⊇ reviewIds` means the walk is over: a short
+ * lesson count at that point is a real failure and is reported immediately
+ * (expected vs last observed) rather than after burning the bound. A short
+ * count with work still pending is machine load — the full node suite runs
+ * ~40 test processes that each cold-load the ONNX embedding pipeline, which
+ * stretches a single lesson write from ~20 ms to seconds.
+ */
+const DISTILL_WAIT_MS = 15_000;
+
+async function waitForDistilledLessons(
+  cwd: string,
+  reviewIds: number[],
+  expected: number,
+  what: string,
+): Promise<string[]> {
+  const dataDir = path.join(cwd, ".pi", "data");
+  const deadline = Date.now() + DISTILL_WAIT_MS;
+  for (;;) {
+    const texts = lessonsIn(cwd).map((e) => e.text);
+    if (texts.length >= expected) return texts;
+    const distilled = [...loadDistilledReviews(dataDir)];
+    const settled = reviewIds.every((id) => distilled.includes(id));
+    if (settled || Date.now() >= deadline) {
+      assert.fail(
+        `${what}: expected ${expected} lesson(s), observed ${texts.length} ` +
+        `(${settled ? "every review marked distilled" : `bound ${DISTILL_WAIT_MS}ms expired`})\n` +
+        `  reviews ${JSON.stringify(reviewIds)} distilled=${JSON.stringify(distilled)}\n` +
+        `  observed lessons: ${JSON.stringify(texts)}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 const lessonsIn = (cwd: string) => readAllTopicEntries(cwd).filter((e) => e.category === "lesson");
 
 describe("review-learning hook", () => {
@@ -739,11 +791,7 @@ describe("review-learning hook", () => {
     }, { cwd });
     // PR 10 has two review rows (ids 1 and 4, 3 addressed findings total):
     // both groups must distill — the highest-ID row alone is not enough.
-    assert.ok(
-      await waitFor(() => lessonsIn(cwd).length >= 3),
-      "lessons from every review row of the PR",
-    );
-    const texts = lessonsIn(cwd).map((e) => e.text).sort();
+    const texts = (await waitForDistilledLessons(cwd, [1, 4], 3, "lessons from every review row of the PR")).sort();
     assert.deepEqual(texts, [
       "src/api.py: Missing strip_sensitive_from_response on the endpoint",
       "src/api.py: Older PR-10 review finding",
@@ -796,8 +844,8 @@ describe("review-learning hook", () => {
     // One trigger drains the PR: bursts are capped at 5 writes, and a burst
     // with remaining lessons schedules its own continuation (Qodo eceb273e)
     // — a session's FINAL store must not leave lessons unwritten.
-    assert.ok(await waitFor(() => lessonsIn(cwd).length >= 7, 6000), "auto-continuation drains all lessons");
-    assert.equal(lessonsIn(cwd).length, 7, "all lessons written, no duplicates");
+    const drained = await waitForDistilledLessons(cwd, [1, 2], 7, "auto-continuation drains all lessons");
+    assert.equal(drained.length, 7, "all lessons written, no duplicates");
     const texts = lessonsIn(cwd).map((e) => e.text);
     assert.equal(new Set(texts).size, texts.length, "no duplicate lesson lines");
     // A re-fire is a stable no-op.
