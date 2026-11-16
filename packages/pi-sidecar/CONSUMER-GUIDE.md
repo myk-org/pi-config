@@ -430,8 +430,18 @@ explicit project path when you want job isolation.
 curl -s -X POST http://127.0.0.1:9100/sessions/<session-id>/prompt \
   -H 'Content-Type: application/json' \
   -d '{"message": "What is 2+2?"}'
-# Returns: {"text": "4", "usage": {"input_tokens": ..., "output_tokens": ..., "cost_usd": ...}}
+# Returns: {"text": "4", "usage": {"input_tokens": ..., "output_tokens": ..., "cost_usd": ...}, "stop_reason": "end_turn"}
 ```
+
+`stop_reason` is passed through from the SDK (`end_turn`, `stop`, `error`,
+`aborted`, …). It is `null` when no final assistant message ended the turn and
+the turn did not fail; a rejected prompt is reported as `error`.
+
+`error` and `stop_reason` are **independent** — an error event is ancillary and
+can precede an assistant message that stopped normally (so the body can carry
+both `error` and `stop_reason: "end_turn"`), and an errored response can carry
+no partial text. Treat a turn as failed when **either** `error` is present and
+non-empty **or** `stop_reason` is not a normal stop (`end_turn` / `stop`).
 
 ### `cost_usd` semantics
 

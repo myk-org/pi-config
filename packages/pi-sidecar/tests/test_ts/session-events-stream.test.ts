@@ -578,7 +578,11 @@ describe("session event stream: subscriber containment (#1019)", () => {
     const quiet = await store.prompt("quiet", "hi");
     const watched = await store.prompt("watched", "hi");
 
-    assert.deepEqual(Object.keys(quiet), ["text", "usage"], "the response object is unchanged by #1019");
+    assert.deepEqual(
+      Object.keys(quiet),
+      ["text", "usage", "stop_reason"],
+      "the response object is unchanged by #1019 (stop_reason is #1111)",
+    );
     assert.deepEqual(Object.keys(watched), Object.keys(quiet));
     assert.equal(watched.text, quiet.text);
     assert.equal(watched.error, quiet.error);
@@ -955,5 +959,107 @@ describe("session event stream: session lifecycle (#1019)", () => {
       (err: any) => err.statusCode === 429 && /max 32/.test(err.message),
       "a session under its own cap is still rejected past the global ceiling",
     );
+  });
+});
+
+describe("prompt response: stop_reason (#1111)", () => {
+  it("a clean turn reports stop_reason end_turn and no error", async () => {
+    const store = new SessionStore();
+    const sink = new FakeSink();
+    store.putSessionFixture(
+      "s",
+      fixtureSession((emit) => {
+        emit(delta("complete answer"));
+        emit(agentEnd("complete answer", "end_turn"));
+      }),
+      "/tmp",
+    );
+    store.openStream("s", sink);
+
+    const result = await store.prompt("s", "hi");
+
+    assert.equal(result.stop_reason, "end_turn", "the response body alone identifies a normal stop");
+    assert.equal(result.error, undefined);
+    // Existing event behaviour is untouched: the turn still ends with turn_end.
+    assert.equal(terminals(sink).length, 1);
+    assert.equal(terminals(sink)[0].type, "turn_end");
+  });
+
+  it("a partial reply that stopped on error is distinguishable from a clean end_turn", async () => {
+    const store = new SessionStore();
+    const sink = new FakeSink();
+    store.putSessionFixture(
+      "s",
+      fixtureSession((emit) => {
+        emit(delta("partial"));
+        emit({ type: "error", error: "provider exploded" });
+        emit(agentEnd("partial", "error"));
+      }),
+      "/tmp",
+    );
+    store.openStream("s", sink);
+
+    const result = await store.prompt("s", "hi");
+
+    assert.equal(result.text, "partial");
+    assert.ok(result.error, "the collected error is still surfaced");
+    assert.equal(result.stop_reason, "error", "the response body names the error stop, not just the failure");
+    // Existing event behaviour is untouched: an errored turn ends with error, not turn_end.
+    assert.equal(terminals(sink).length, 1);
+    assert.equal(terminals(sink)[0].type, "error");
+  });
+
+  it("a rejected turn with partial text reports stop_reason error", async () => {
+    const store = new SessionStore();
+    store.putSessionFixture(
+      "s",
+      fixtureSession((emit) => {
+        emit(delta("partial"));
+        throw new Error("provider exploded mid-turn");
+      }),
+      "/tmp",
+    );
+
+    const result = await store.prompt("s", "hi");
+
+    assert.equal(result.text, "partial");
+    assert.ok(result.error, "the rejection is still surfaced as a structured result");
+    // The catch records the turn as `error`; the body must not contradict it.
+    assert.equal(result.stop_reason, "error", "a rejected turn reports the value its transcript records");
+  });
+
+  it("a rejected turn with partial text and collected errors reports stop_reason error", async () => {
+    const store = new SessionStore();
+    store.putSessionFixture(
+      "s",
+      fixtureSession((emit) => {
+        emit(delta("partial"));
+        emit({ type: "error", error: "provider exploded" });
+        throw new Error("connection lost");
+      }),
+      "/tmp",
+    );
+
+    const result = await store.prompt("s", "hi");
+
+    assert.equal(result.text, "partial");
+    assert.ok(result.error, "the collected and rejection errors are surfaced");
+    assert.equal(result.stop_reason, "error");
+  });
+
+  it("a turn with no final assistant message and no error reports null", async () => {
+    const store = new SessionStore();
+    store.putSessionFixture(
+      "s",
+      fixtureSession((emit) => {
+        emit(delta("partial"));
+      }),
+      "/tmp",
+    );
+
+    const result = await store.prompt("s", "hi");
+
+    assert.equal(result.error, undefined);
+    assert.equal(result.stop_reason, null, "nothing to guess when no assistant message ended the turn");
   });
 });

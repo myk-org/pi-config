@@ -334,6 +334,35 @@ a restart restores the env default. The Python client exposes the same
 surface as `await client.get_recording()`, `await client.set_recording(True)`
 and `await client.reset_recording()`.
 
+## Prompt response
+
+`POST /sessions/:id/prompt` returns the turn's assembled answer, its usage, and
+the turn's stop reason:
+
+```json
+{
+  "text": "…",
+  "usage": { "input_tokens": 12, "output_tokens": 34, "cost_usd": 0.001 },
+  "stop_reason": "end_turn"
+}
+```
+
+`stop_reason` is the SDK's own reason for ending the turn — the same value the
+transcript records as `stop_reason` and the SSE feed consults for its terminal
+event (`end_turn`, `stop`, `error`, `aborted`, …). It is passed through
+unchanged: no new enum, no translation. It is `null` when the turn produced no
+final assistant message and did not fail; a prompt that rejected is reported as
+`error`, exactly as its transcript record is.
+
+`error` and `stop_reason` are **independent**. Collected error events are
+ancillary: an error event can precede an assistant message that stopped
+normally, so a body can carry both `error` and `stop_reason: "end_turn"` — and
+an errored response can have no partial `text` at all. Treat a turn as failed
+when **either** `error` is present and non-empty **or** `stop_reason` is not a
+normal stop (`end_turn` / `stop`). `error` says what went wrong, `stop_reason`
+says how the turn ended; neither alone is the verdict. The Python client exposes
+the same value as `AIResult.stop_reason`.
+
 ## Event streams (SSE)
 
 `GET /sessions/:id/events` streams one session's turns as server-sent events so

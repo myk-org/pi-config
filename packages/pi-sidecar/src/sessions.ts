@@ -2288,7 +2288,7 @@ export class SessionStore {
     }
   }
 
-  async prompt(id: string, message: string): Promise<{ text: string; usage: any; error?: string }> {
+  async prompt(id: string, message: string): Promise<{ text: string; usage: any; error?: string; stop_reason: string | null }> {
     this.assertNotDisposed("prompt");
     const entry = this.sessions.get(id);
     if (!entry) throw new Error(`Session ${id} not found`);
@@ -2350,6 +2350,10 @@ export class SessionStore {
     // duration) so the transcript's final_text matches the returned text.
     let turnMessages: unknown[] | null = null;
     let turnStopReason: string | undefined;
+    // Set when the prompt rejected but partial state was still returned. The
+    // turn is recorded as `error` (see the catch below), so the response body
+    // must report the same value instead of `null`.
+    let turnRejected = false;
 
     logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}, cwd=${redactDiagnostic(entry.cwd, entry.redact)}`);
 
@@ -2579,6 +2583,7 @@ export class SessionStore {
         } else {
           errorsDropped++;
         }
+        turnRejected = true;
         // fall through to structured return below
       } else {
         promptRejected = redactDiagnostic(err?.message || String(err), entry.redact);
@@ -2705,11 +2710,15 @@ export class SessionStore {
       maybeEnforceRetention(new Set(this.sessions.keys()));
     }
 
+    // A rejected turn was recorded as `error`; null would make the body
+    // contradict its own transcript.
+    const stopReason = turnRejected ? "error" : turnStopReason ?? null;
+
     // If we got errors from the AI, surface them
     if (errors.length > 0) {
       const errorText = errors.join("; ") + (errorsDropped > 0 ? ` [+${errorsDropped} more]` : "");
       logger.error(`[sidecar] Prompt completed with errors: session=${id}, errors=${errorText}`);
-      return { text: responseText, usage, error: errorText };
+      return { text: responseText, usage, error: errorText, stop_reason: stopReason };
     }
 
     // Empty text is valid for tool-only responses — warn but don't error
@@ -2717,7 +2726,7 @@ export class SessionStore {
       logger.warn(`[sidecar] AI returned empty text: session=${id}, tokens_in=${usage.input_tokens}, tokens_out=${usage.output_tokens}`);
     }
 
-    return { text: responseText, usage };
+    return { text: responseText, usage, stop_reason: stopReason };
   }
 
   async abort(id: string): Promise<void> {
