@@ -26,9 +26,9 @@ function asyncLogSince(offset: number): string {
 }
 const reviewerOutput = JSON.stringify({ findings: Array.from({ length: 100 }, () => ({ detail: "sensitive ".repeat(80) })) });
 
-function harness() {
+function harness(options: { cwd?: string } = {}) {
   log.debug("create_harness");
-  const cwd = makeTempDir("async-delivery-runtime-");
+  const cwd = options.cwd ?? makeTempDir("async-delivery-runtime-");
   const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
   const events = new EventEmitter();
@@ -243,6 +243,46 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
       h.api.killAsyncAgent(job.id);
       assert.equal(fired, 0);
       assert.match(String(h.messages[0]?.content), /Killed by user/);
+    } finally { h.restore(); }
+  });
+
+  it("keeps the worker dir of a restored terminal job that was never delivered", async () => {
+    const h = harness();
+    try {
+      // async-runner writes terminal status before its reviewer retries finish, so a reload can
+      // land while the job is terminal but undelivered. Restore treated every terminal worker as
+      // delivered: it removed the dir, dropped the job, and the result was unlinked as an orphan.
+      const job = h.spawn();
+      const workerDir = join(h.cwd, ".pi", "tmp", job.id);
+      const resultDir = h.resultDir();
+      writeFileSync(join(workerDir, "status.json"), JSON.stringify({ runId: job.id, agent: "code-reviewer-runtime", state: "complete", startedAt: Date.now(), lastUpdate: Date.now() }));
+      const reloaded = harness({ cwd: h.cwd });
+      try {
+        assert.ok(existsSync(workerDir), "an undelivered terminal worker dir must survive restore");
+        assert.equal(reloaded.messages.length, 0, "the deferral still holds until the result lands");
+        writeFileSync(join(resultDir, `${job.id}.json`), JSON.stringify({ id: job.id, agent: "code-reviewer-runtime", task: "review", success: true, output: "restored findings", durationMs: 1, exitCode: 0 }));
+        reloaded.triggerPoller();
+        await eventually(() => reloaded.messages.length === 1);
+        assert.match(reloaded.messages[0].content, /restored findings/);
+      } finally { reloaded.restore(); }
+    } finally { h.restore(); }
+  });
+
+  it("delivers a result file that appears after the timeout fallback", async () => {
+    const h = harness();
+    try {
+      // A reviewer retry longer than async_phantom_timeout_ms makes the fallback deliver an empty
+      // result. The findings written afterwards were unlinked because the job was "delivered".
+      const job = h.spawn();
+      writeFileSync(join(h.cwd, ".pi", "tmp", job.id, "status.json"), JSON.stringify({ runId: job.id, agent: "code-reviewer-runtime", state: "complete", startedAt: Date.now() - 60_000, lastUpdate: Date.now() - 60_000 }));
+      h.triggerPoller();
+      await eventually(() => h.messages.length === 1);
+      assert.doesNotMatch(h.messages[0].content, /late result/);
+      writeFileSync(join(h.resultDir(), `${job.id}.json`), JSON.stringify({ id: job.id, agent: "code-reviewer-runtime", task: "review", success: true, output: "late findings", durationMs: 1, exitCode: 0 }));
+      h.triggerPoller();
+      await eventually(() => h.messages.length === 2);
+      assert.match(h.messages[1].content, /late result/);
+      assert.match(h.messages[1].content, /late findings/);
     } finally { h.restore(); }
   });
 

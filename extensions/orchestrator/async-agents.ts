@@ -66,6 +66,11 @@ export interface AsyncJob {
   exitCode?: number | null;
   durationMs?: number;
   delivered?: boolean;
+  /** Delivered by the phantom-timeout fallback with no findings ingested. The result file may
+   *  still land, so it is never unlinked and a late delivery is still owed. */
+  deliveredWithoutResult?: boolean;
+  /** One-shot: the late result for a `deliveredWithoutResult` job was sent. */
+  lateResultSent?: boolean;
   sideEffectsApplied?: boolean;
   fireAndForget?: boolean;
   /** One-shot: fires once with the ingested result text. Used by async chains to feed {previous}. */
@@ -637,11 +642,14 @@ export function registerAsyncAgents(
         }
         void deliverJobResult(job);
       }
-      // Remove completed/failed jobs older than 30s — require delivered before cleanup
+      // Remove completed/failed jobs older than 30s — require delivered before cleanup. A job
+      // still owed a late result stays: evicting it would orphan (and so delete) that result.
+      // shortcut: an owed late result that never arrives stays in the map for this session.
       for (const [id, job] of asyncState.jobs.entries()) {
         if ((job.status === "complete" || job.status === "failed")
             && Date.now() - job.updatedAt > 30000
-            && job.delivered) {
+            && job.delivered
+            && !(job.deliveredWithoutResult && !job.lateResultSent)) {
           asyncState.jobs.delete(id);
         }
       }
@@ -657,7 +665,10 @@ export function registerAsyncAgents(
   const deliveryInProgress = new Set<string>();
   async function deliverJobResult(job: AsyncJob, opts?: { fireHook?: boolean }): Promise<void> {
     const fireHook = opts?.fireHook !== false;
-    if (job.delivered || deliveryInProgress.has(job.id)) return;
+    // A timeout-fallback delivery carries no findings. A result file that lands afterwards
+    // re-enters here as a one-shot late delivery, so the guard must let that one through.
+    const isLate = job.deliveredWithoutResult === true && !job.lateResultSent;
+    if ((job.delivered && !isLate) || deliveryInProgress.has(job.id)) return;
     if (job.status !== "complete" && job.status !== "failed") return;
     deliveryInProgress.add(job.id);
     try {
@@ -686,6 +697,7 @@ export function registerAsyncAgents(
       // when they land, so wait until the result was ingested (`job.output` is its marker).
       // Killed/phantom/zombie jobs fill `output` themselves; the phantom timeout bounds the
       // wait so a genuinely missing file cannot strand the job forever.
+      let noIngestedResult = false;
       if (job.output === undefined && !job.fireAndForget) {
         const sinceTerminal = Date.now() - (job.updatedAt || job.startedAt);
         const boundMs = getSetting(jobCwd(job), "async_phantom_timeout_ms");
@@ -694,6 +706,9 @@ export function registerAsyncAgents(
           return;
         }
         log.warn("deliver_no_result_file", { job: job.id, status: job.status, since_terminal_ms: sinceTerminal });
+        // The retry outlived the bound. Deliver what we have, but keep the result file and
+        // stay open to a late one: a retry longer than the timeout still holds the findings.
+        noIngestedResult = true;
       }
 
       let autoCompleteError = "";
@@ -719,13 +734,14 @@ export function registerAsyncAgents(
         const output = formatAsyncResultOutput(job.agent, job.output || "", resultOutputPath(job), maxOutput);
         const duration = job.durationMs || (job.updatedAt ? job.updatedAt - job.startedAt : 0);
         const killSuffix = job.killOrigin ? ` — ${KILL_ORIGIN_LABELS[job.killOrigin]}` : "";
-        const content = `## Async Agent Result: ${displayName} ${resultStatus}${killSuffix}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`;
+        const lateNote = isLate ? "\n\n_(late result — it arrived after the timeout fallback already delivered an empty one)_" : "";
+        const content = `## Async Agent Result: ${displayName} ${resultStatus}${killSuffix}${lateNote}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`;
         if (job.status === "complete") {
           safeEmit("subagents:completed", { id: job.id, result: job.output || "" });
         } else {
           safeEmit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
         }
-        if (wasAlreadyDelivered(job.id)) {
+        if (wasAlreadyDelivered(job.id) && !isLate) {
           job.delivered = true;
           log.debug(`deliver: skipping already-delivered result for ${job.id}`);
         } else {
@@ -737,6 +753,10 @@ export function registerAsyncAgents(
             }, { triggerTurn: true, deliverAs: "followUp" });
             recordDelivered(job.id);
             job.delivered = true;
+            if (isLate) {
+              job.lateResultSent = true;
+              log.info("deliver_late_result", { job: job.id, agent: job.agent });
+            }
             log.debug("deliver_ok", job.id);
           } catch (e: any) {
             log.error(`deliver: sendMessage failed for ${job.id}: ${e?.message}`);
@@ -749,18 +769,41 @@ export function registerAsyncAgents(
         log.debug("deliver_deferred_no_live_ctx", { job: job.id, status: job.status });
       }
 
-      if (job.delivered) {
+      // A result is consumed only once it actually reached the parent. An empty fallback
+      // delivery never consumes it (the findings may still arrive), and a late attempt that
+      // failed must keep its file so the poller can retry it.
+      const consumed = job.delivered && !noIngestedResult && !(isLate && !job.lateResultSent);
+      if (job.delivered && noIngestedResult) {
+        // In-memory marker: a result file appearing later is the real result, not a stale one.
+        job.deliveredWithoutResult = true;
+      }
+      if (consumed) {
         // Persist delivered state so restore skips this job
         try {
           const sp = path.join(job.workerDir, "status.json");
           const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
           ex.delivered = true;
+          delete ex.deliveredWithoutResult;
+          if (job.lateResultSent) ex.lateResultSent = true;
           fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
         } catch {}
         try { fs.unlinkSync(path.join(ASYNC_RESULTS_DIR, `${job.id}.json`)); } catch (e: any) {
           // ENOENT = already deleted by processResultFile — expected
           if ((e as NodeJS.ErrnoException).code !== "ENOENT") log.debug(`unlink failed ${job.id}: ${e?.message}`);
         }
+      } else if (job.delivered) {
+        // Leak-free by design: keep `delivered` unset on disk so a reload reconstructs this job
+        // and delivers the late result instead of unlinking it as an orphan.
+        try {
+          const sp = path.join(job.workerDir, "status.json");
+          const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+          if (noIngestedResult) {
+            delete ex.delivered;
+            ex.deliveredWithoutResult = true;
+          }
+          fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+        } catch {}
+        log.warn("deliver_kept_result_file", { job: job.id, status: job.status, late_pending: isLate });
       }
     } catch (e: any) {
       log.error(`deliverJobResult failed for ${job.id}: ${e?.message}`);
@@ -784,6 +827,25 @@ export function registerAsyncAgents(
         return;
       }
       if (job.delivered) {
+        // The timeout fallback already sent an empty result while this file was still being
+        // written. The findings are the whole point — deliver them as a one-shot late result.
+        if (job.deliveredWithoutResult && !job.lateResultSent) {
+          job.status = data.success ? "complete" : "failed";
+          job.output = data.output;
+          job.exitCode = data.exitCode;
+          job.durationMs = data.durationMs;
+          preserveReviewerOutput(job, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
+          if (job.agent.startsWith("code-reviewer-")) {
+            // The fallback counted this reviewer as 0 findings; the real count is here.
+            try {
+              const findings = countFindings(typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
+              recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
+            } catch (e: any) { log.error(`late result: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+          }
+          log.info("ingest_late_result", { job: job.id, agent: job.agent });
+          await deliverJobResult(job);
+          return;
+        }
         // Already delivered — clean up stale file
         log.debug("processResultFile_skip_delivered", job.id);
         try { fs.unlinkSync(resultPath); } catch (e: any) { log.debug(`stale cleanup failed: ${resultPath}: ${e?.message}`); }
@@ -1374,17 +1436,28 @@ export function registerAsyncAgents(
         if (!id || asyncState.jobs.has(id)) continue;
         const isAlive = status.pid ? (() => { try { process.kill(status.pid, 0); return true; } catch { return false; } })() : false;
         const isComplete = status.state === "complete" || status.state === "failed";
-        // Skip completed/failed jobs — they were already delivered. Clean up worker dir.
-        if (isComplete) {
+        // A terminal job has only done its job once the result REACHED the parent —
+        // `delivered` says that. The deferral leaves jobs terminal while their result file is
+        // still being written, and the timeout fallback delivers without findings, so a reload
+        // must reconstruct those and KEEP the worker dir: dropping it loses the job, and the
+        // poller would then unlink its result file as an orphan.
+        const alreadySent = status.delivered === true || status.deliveredWithoutResult === true;
+        if (isComplete && status.delivered === true) {
           try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
-          log.debug(`cleaned completed worker dir on restore: ${entry} (state=${status.state})`);
+          log.debug(`cleaned delivered worker dir on restore: ${entry} (state=${status.state})`);
           continue;
         }
-        // Only restore running/queued jobs with alive processes
-        log.debug("restore_check", id, "isAlive", isAlive, "state", status.state);
-        if (isAlive || status.state === "running") {
-          // No result file = already processed and delivered — mark as delivered
-          const hasResultFile = fs.existsSync(path.join(ASYNC_RESULTS_DIR, `${id}.json`));
+        // Restore running/queued jobs with alive processes, plus terminal-but-undelivered ones.
+        log.debug("restore_check", id, "isAlive", isAlive, "state", status.state, "delivered", status.delivered === true, "deliveredWithoutResult", status.deliveredWithoutResult === true);
+        if (isAlive || status.state === "running" || isComplete) {
+          if (isComplete) {
+            log.debug("restore_undelivered_terminal", {
+              job: id,
+              state: status.state,
+              delivered_without_result: status.deliveredWithoutResult === true,
+              has_output: typeof status.output === "string",
+            });
+          }
           const job: AsyncJob = {
             id,
             agent: status.agent || "unknown",
@@ -1396,8 +1469,12 @@ export function registerAsyncAgents(
             exitCode: status.exitCode,
             durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
             output: status.output || undefined,
-            delivered: isComplete,
-            sideEffectsApplied: isComplete,
+            // Undelivered terminal jobs stay undelivered so the sweep/ingest delivers them;
+            // a fallback-delivered one must not be sent twice, but still owes a late result.
+            delivered: isComplete && alreadySent,
+            deliveredWithoutResult: status.deliveredWithoutResult === true || undefined,
+            lateResultSent: status.lateResultSent === true || undefined,
+            sideEffectsApplied: isComplete && alreadySent,
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
             taskStorePath: marker.taskStorePath || undefined,
