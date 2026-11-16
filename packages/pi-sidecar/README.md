@@ -351,11 +351,17 @@ the turn's stop reason:
 transcript records as `stop_reason` and the SSE feed consults for its terminal
 event (`end_turn`, `stop`, `error`, `aborted`, …). It is passed through
 unchanged: no new enum, no translation. It is `null` when the turn produced no
-final assistant message (for example a prompt that rejected before
-`agent_end`). A 200 response that also carries `error` is a turn that stopped on
-an error with partial text, so use `stop_reason` to tell it apart from a clean
-`end_turn` rather than relying on `text` alone. The Python client exposes the
-same value as `AIResult.stop_reason`.
+final assistant message and did not fail; a prompt that rejected is reported as
+`error`, exactly as its transcript record is.
+
+`error` and `stop_reason` are **independent**. Collected error events are
+ancillary: an error event can precede an assistant message that stopped
+normally, so a body can carry both `error` and `stop_reason: "end_turn"` — and
+an errored response can have no partial `text` at all. Treat a turn as failed
+when **either** `error` is present and non-empty **or** `stop_reason` is not a
+normal stop (`end_turn` / `stop`). `error` says what went wrong, `stop_reason`
+says how the turn ended; neither alone is the verdict. The Python client exposes
+the same value as `AIResult.stop_reason`.
 
 ## Event streams (SSE)
 

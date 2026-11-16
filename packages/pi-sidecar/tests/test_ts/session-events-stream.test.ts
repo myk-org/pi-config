@@ -1009,7 +1009,7 @@ describe("prompt response: stop_reason (#1111)", () => {
     assert.equal(terminals(sink)[0].type, "error");
   });
 
-  it("a turn with no final assistant message reports null", async () => {
+  it("a rejected turn with partial text reports stop_reason error", async () => {
     const store = new SessionStore();
     store.putSessionFixture(
       "s",
@@ -1022,7 +1022,44 @@ describe("prompt response: stop_reason (#1111)", () => {
 
     const result = await store.prompt("s", "hi");
 
+    assert.equal(result.text, "partial");
     assert.ok(result.error, "the rejection is still surfaced as a structured result");
+    // The catch records the turn as `error`; the body must not contradict it.
+    assert.equal(result.stop_reason, "error", "a rejected turn reports the value its transcript records");
+  });
+
+  it("a rejected turn with partial text and collected errors reports stop_reason error", async () => {
+    const store = new SessionStore();
+    store.putSessionFixture(
+      "s",
+      fixtureSession((emit) => {
+        emit(delta("partial"));
+        emit({ type: "error", error: "provider exploded" });
+        throw new Error("connection lost");
+      }),
+      "/tmp",
+    );
+
+    const result = await store.prompt("s", "hi");
+
+    assert.equal(result.text, "partial");
+    assert.ok(result.error, "the collected and rejection errors are surfaced");
+    assert.equal(result.stop_reason, "error");
+  });
+
+  it("a turn with no final assistant message and no error reports null", async () => {
+    const store = new SessionStore();
+    store.putSessionFixture(
+      "s",
+      fixtureSession((emit) => {
+        emit(delta("partial"));
+      }),
+      "/tmp",
+    );
+
+    const result = await store.prompt("s", "hi");
+
+    assert.equal(result.error, undefined);
     assert.equal(result.stop_reason, null, "nothing to guess when no assistant message ended the turn");
   });
 });
