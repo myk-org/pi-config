@@ -23,14 +23,6 @@ uv --version
 
 If not found, install from <https://docs.astral.sh/uv/getting-started/installation/>
 
-### Step 1: Check myk-pi-tools
-
-```bash
-myk-pi-tools --version
-```
-
-If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool install myk-pi-tools`. Install now?"
-
 ## Usage
 
 - `/refine-review https://github.com/owner/repo/pull/123`
@@ -44,7 +36,7 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 Parse the raw arguments above as the PR URL. If empty, abort with: "PR URL required. Usage: `/refine-review https://github.com/owner/repo/pull/123`"
 
 ```bash
-myk-pi-tools reviews pending-fetch --output-dir ${PROJECT_TMP_DIR} "<PR_URL>"
+uvx myk-pi-tools@latest reviews pending-fetch --output-dir ${PROJECT_TMP_DIR} "<PR_URL>"
 ```
 
 The command saves the review data to a JSON file and outputs the file path to stdout.
@@ -136,13 +128,13 @@ Update the JSON metadata:
 If user chose to submit (Phase 6), run with `--submit` flag:
 
 ```bash
-myk-pi-tools reviews pending-update "<json_path>" --submit
+uvx myk-pi-tools@latest reviews pending-update "<json_path>" --submit
 ```
 
 If user chose "No", run without `--submit`:
 
 ```bash
-myk-pi-tools reviews pending-update "<json_path>"
+uvx myk-pi-tools@latest reviews pending-update "<json_path>"
 ```
 
 This updates accepted comment bodies on GitHub and submits the review when `--submit` is provided.
@@ -178,7 +170,7 @@ EOF
 1. Store to database:
 
 ```bash
-myk-pi-tools pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
+uvx myk-pi-tools@latest pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
 ```
 
 **This step is MANDATORY — never skip it.** Only store if the review was actually

@@ -25,18 +25,7 @@ uv --version
 
 If not found, install from <https://docs.astral.sh/uv/getting-started/installation/>
 
-### Step 1: Check myk-pi-tools
-
-```bash
-myk-pi-tools --version
-```
-
-If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool install myk-pi-tools`. Install now?"
-
-- Yes: Run `uv tool install myk-pi-tools`
-- No: Abort with instructions
-
-### Step 2: Continue with workflow
+### Step 1: Continue with workflow
 
 ## Usage
 
@@ -147,7 +136,7 @@ If the raw arguments are empty:
 1. Detect from current branch and fetch PR metadata:
 
    ```bash
-   myk-pi-tools pr info $(gh pr view --json number --jq '.number')
+   uvx myk-pi-tools@latest pr info $(gh pr view --json number --jq '.number')
    ```
 
    This returns JSON with all needed fields: `owner`, `repo`, `pr_number`, `author`,
@@ -172,7 +161,7 @@ If the raw arguments contain a PR number or URL:
 1. Fetch PR metadata using the CLI:
 
    ```bash
-   myk-pi-tools pr info <cleaned_arguments>
+   uvx myk-pi-tools@latest pr info <cleaned_arguments>
    ```
 
    This returns JSON with all needed fields: `owner`, `repo`, `pr_number`, `author`,
@@ -213,7 +202,7 @@ Store:
 - `REVIEW_DIR` — the clone path (used as `cwd` for reviewers)
 - `BASE_BRANCH` — the PR's target branch (used for `git diff`)
 
-If cloning or checkout fails, fall back to `myk-pi-tools pr diff` (original behavior).
+If cloning or checkout fails, fall back to `uvx myk-pi-tools@latest pr diff` (original behavior).
 
 ### Phase 1b: (Removed — reviewers read AGENTS.md from clone)
 
@@ -227,7 +216,7 @@ Fetch ALL human review threads (resolved + unresolved) from the PR:
 Use the `owner`, `repo`, and `pr_number` from Phase 0 to construct the PR URL:
 
 ```bash
-myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR} --user {current_github_user} --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
+uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR} --user {current_github_user} --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
 ```
 
 Where `{current_github_user}` is obtained from:
@@ -239,7 +228,7 @@ gh api user --jq '.login'
 Also fetch ALL unresolved review threads from all authors (for dedup in Phase 2):
 
 ```bash
-myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR}/all-unresolved https://github.com/{owner}/{repo}/pull/{pr_number}
+uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR}/all-unresolved https://github.com/{owner}/{repo}/pull/{pr_number}
 ```
 
 This second call omits `--user` and `--include-resolved`, so it returns only currently-unresolved
@@ -297,7 +286,7 @@ To store the verdict, write the author's response to a temp file first (to avoid
 then run the CLI:
 
 1. Write `{author_response}` text to `${PROJECT_TMP_DIR}/resolution-response.txt` using the `write` tool
-2. Run: `myk-pi-tools pr update-resolution {owner} {repo} {pr_number} --path {path} --line {line} --status {resolution_status} --response-file ${PROJECT_TMP_DIR}/resolution-response.txt`
+2. Run: `uvx myk-pi-tools@latest pr update-resolution {owner} {repo} {pr_number} --path {path} --line {line} --status {resolution_status} --response-file ${PROJECT_TMP_DIR}/resolution-response.txt`
 
 Where:
 
@@ -411,11 +400,11 @@ Then include `EXISTING_COMMENTS` and `CODE_SUGGESTIONS` in every reviewer's task
 
 ```text
 subagent(tasks=[
-  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
-  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
-  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
-  {agent: "code-reviewer-docs", task: "Review this PR for documentation quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check all docs for completeness and accuracy.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Docs", taskId: "<task 8 ID>"},
-  {agent: "code-reviewer-spec", task: "Review this PR for spec compliance. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check PR description claims vs diff, issue deliverables vs diff, and scope creep.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Spec", taskId: "<task 9 ID>"},
+  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
+  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
+  {agent: "code-reviewer-docs", task: "Review this PR for documentation quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check all docs for completeness and accuracy.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Docs", taskId: "<task 8 ID>"},
+  {agent: "code-reviewer-spec", task: "Review this PR for spec compliance. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check PR description claims vs diff, issue deliverables vs diff, and scope creep.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Spec", taskId: "<task 9 ID>"},
 ])
 ```
 
@@ -460,7 +449,7 @@ existing unresolved comment.
 the user previously skipped on this same PR. Run:
 
 ```bash
-myk-pi-tools pr get-skipped-comments {owner} {repo} {pr_number}
+uvx myk-pi-tools@latest pr get-skipped-comments {owner} {repo} {pr_number}
 ```
 
 This returns a JSON array of previously skipped comments with `path`, `line`, `body`,
@@ -663,7 +652,7 @@ still generate the JSON for the auto-posted items:
 Use the `owner`, `repo`, `pr_number`, and `head_sha` from Phase 0 or Phase 1a metadata:
 
 ```bash
-myk-pi-tools pr post-comment {owner}/{repo} {pr_number} {head_sha} ${PROJECT_TMP_DIR}/pr-review-comments.json
+uvx myk-pi-tools@latest pr post-comment {owner}/{repo} {pr_number} {head_sha} ${PROJECT_TMP_DIR}/pr-review-comments.json
 ```
 
 **Step 2: Reply to `[AUTHOR-QUESTION]` findings (approved/edited only):**
@@ -677,7 +666,7 @@ Write a JSON file with the reply and use `reviews post` which correctly replies 
 existing thread via GraphQL `addPullRequestReviewThreadReply`:
 
 ```bash
-myk-pi-tools reviews post ${PROJECT_TMP_DIR}/author-question-replies.json
+uvx myk-pi-tools@latest reviews post ${PROJECT_TMP_DIR}/author-question-replies.json
 ```
 
 The JSON file MUST use the `reviews post` format with the `"human"` category key:
@@ -786,7 +775,7 @@ EOF
 
 Include `[AUTHOR-QUESTION]` findings with `status: "posted"` (approved/edited and posted)
 or `status: "skipped"` (user chose to skip). Use `"posted"` (not `"answered"`) because
-the `myk-pi-tools pr store-pr-review` CLI only accepts `posted` or `skipped` as valid
+the `pr store-pr-review` CLI only accepts `posted` or `skipped` as valid
 statuses.
 
 **Note on `source` field:** The `source: "author-question"` field in the JSON example is
@@ -794,12 +783,12 @@ for LLM context only — the CLI's DB schema does not have a `source` column and
 ignore it. Future review cycles detect already-answered questions by matching
 `path`/`line`/`body` similarity against stored comments, same as other finding types.
 
-Use `{author}` from Phase 0 (`myk-pi-tools pr info` returns `author` field).
+Use `{author}` from Phase 0 (`pr info` returns `author` field).
 
 1. Store to database:
 
 ```bash
-myk-pi-tools pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
+uvx myk-pi-tools@latest pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
 ```
 
 **This step is MANDATORY — never skip it.** The database is used by future `/pr-review`

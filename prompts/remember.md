@@ -21,7 +21,7 @@ Save this as a **Pinned** project memory. Determine the best category:
 Run:
 
 ```bash
-uv run myk-pi-tools memory add -c <category> -s "<concise one-line summary>" --pinned
+uvx myk-pi-tools@latest memory add -c <category> -s "<concise one-line summary>" --pinned
 ```
 
 After saving, confirm what was stored.

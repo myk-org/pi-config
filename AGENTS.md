@@ -390,7 +390,13 @@ progress. It does not commit, push, create a PR, or post results.
   restatements, quoted examples) coexist; genuine same-action polarity flips reject with an ask-first message and supersede via
   `overrideConflicts`
 - Enforcement honesty (code vs injected): see `contributing/enforcement-honesty-map.md`
-- Memory inventory CLI: `uv run myk-pi-tools memory status`
+- CLI invocation form: `uvx myk-pi-tools@latest <subcommand>` in every prompt and rule (never bare `myk-pi-tools`) — self-installing,
+  so prompts carry no `--version` precheck. `@latest` is required: `uvx` reuses its cached tool environment, so a bare
+  `uvx myk-pi-tools` keeps running the version installed on first use. Consequence: this runs the **published PyPI build, not the
+  working tree** — while developing `myk-pi-tools` here, a prompt rewritten this way exercises the released binary rather than the
+  code under review, so verify local CLI fixes against the working tree. Release scripts keep the local build deliberately: a
+  release must be planned and published by the code being released, not by the previously published version.
+- Memory inventory CLI: `uvx myk-pi-tools@latest memory status`
 - Skill maintenance (issue #1074): `extensions/orchestrator/skill-maintenance.ts`. A skill is maintained when its
   `SKILL.md` frontmatter carries `skill-maintenance: auto`; only a **marked** skill whose real path (after `realpath`) is
   under `<project>/.pi/skills/` may be written. Shipped package skills, `~/.pi/agent/skills/`, third-party skills,
@@ -407,8 +413,8 @@ progress. It does not commit, push, create a PR, or post results.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
-- Settings CLI: `uv run myk-pi-tools settings get [key ...]` — resolve settings (project → global → env → default). No args = all keys.
-- Reviews address CLI: `uv run myk-pi-tools reviews address` — apply `<path>:<line>|<reply>` mapping rules (or `*|<reply>`) to the newest
+- Settings CLI: `uvx myk-pi-tools@latest settings get [key ...]` — resolve settings (project → global → env → default). No args = all keys.
+- Reviews address CLI: `uvx myk-pi-tools@latest reviews address` — apply `<path>:<line>|<reply>` mapping rules (or `*|<reply>`) to the newest
   `pr-*-reviews.json` in `.pi/tmp`, flip statuses (`--set`), then run post + store; validation errors (ambiguous rule, invalid status for
   Qodo sticky findings) leave the JSON unchanged. Options and exit codes: see README `myk-pi-tools` subcommands.
 - Qodo CLI read source: `reviews fetch` / `reviews poll --source qodo` read Qodo findings through the `qodo` CLI's structured
@@ -421,7 +427,7 @@ progress. It does not commit, push, create a PR, or post results.
   status, or any session behind head never approves — and stays on the poller's stuck-review retrigger path. `review_complete` is
   surfaced so a skipped/incomplete run is visible without blocking approval; `reason` describes the findings catalog (`no_findings`,
   `open_findings`, `not_at_head`, or `all_resolved`) and can be `all_resolved` while `approved` is false.
-- Reviews store-session CLI: `uv run myk-pi-tools reviews store-session <json>` — store a Qodo pr-review-session findings JSON (the
+- Reviews store-session CLI: `uvx myk-pi-tools@latest reviews store-session <json>` — store a Qodo pr-review-session findings JSON (the
   `qodo-<pr>-<sha>.json` a session-loop poll saves) into the reviews DB after every completed round; idempotent per finding UUID, and the
   input JSON is kept. See README `myk-pi-tools` subcommands.
 - **Reviews DB ↔ review-learning coupling (MANDATORY)**: `.pi/data/reviews.db` is the single source for review-learning

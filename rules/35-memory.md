@@ -201,7 +201,7 @@ Only memorize **outcomes** (what happened), not **intentions** (what was discuss
 ## CLI
 
 ```bash
-uv run myk-pi-tools memory <command>   # Commands: add, forget, show, migrate, path, status
+uvx myk-pi-tools@latest memory <command>   # Commands: add, forget, show, migrate, path, status
 ```
 
 **Categories:** `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference`
