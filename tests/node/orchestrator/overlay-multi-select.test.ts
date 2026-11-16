@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { OverlayListDashboard } from "../../../extensions/orchestrator/overlay-dashboard.ts";
+import {
+  OverlayListDashboard,
+  type OverlayListSpec,
+  type OverlaySelection,
+} from "../../../extensions/orchestrator/overlay-dashboard.ts";
 import { createLogger } from "../../../extensions/shared/logger.js";
+import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 
 const log = createLogger("overlay-multi-select-test");
 
@@ -21,8 +27,10 @@ function harness(options: { selectable?: boolean; killAll?: boolean; persisted?:
     { id: "b", status: "queued" },
     { id: "c", status: "running" },
   ];
-  const selection = { index: 0, id: "a" as string | undefined };
-  const spec: any = {
+  const selection: OverlaySelection<string> = { index: 0, id: "a" };
+  // Typed against the real contract: a recorder whose signature drifts from OverlayListSpec
+  // must fail the compiler (`npm run typecheck:tests`), which is what `any` here used to hide.
+  const spec: OverlayListSpec<string, Row> = {
     title: "Jobs",
     countLabel: (items: readonly Row[]) => `${items.length}`,
     borderTitle: (items: readonly Row[]) => `jobs · ${items.length}`,
@@ -51,11 +59,11 @@ function harness(options: { selectable?: boolean; killAll?: boolean; persisted?:
   const theme = {
     fg: (_c: string, v: string) => v,
     bold: (v: string) => v,
-  } as any;
-  const tui = { terminal: { rows: 20 }, requestRender: () => {} } as any;
-  const kb = { matches: () => false } as any;
+  } as unknown as Theme;
+  const tui = { terminal: { rows: 20 }, requestRender: () => {} } as unknown as TUI;
+  const kb = { matches: () => false } as unknown as KeybindingsManager;
   const dash = new OverlayListDashboard<string, Row>(
-    tui, theme, kb, spec, selection as any, () => {}, options.persisted ?? [],
+    tui, theme, kb, spec, selection, () => {}, options.persisted ?? [],
   );
   return {
     dash,
@@ -69,7 +77,7 @@ function harness(options: { selectable?: boolean; killAll?: boolean; persisted?:
     footer: () => dash.render(100).find((l) => l.includes("select")) ?? "",
     press: (key: string) => dash.handleInput(key),
     /** The dashboard owns a 1s render ticker; a test that never closes it keeps the suite alive. */
-    dispose: () => { try { (dash as any).close(null); } catch {} },
+    dispose: () => { dash.dispose(); },
     setRows: (next: Row[]) => { rows = next; dash.invalidate(); },
     /** The overlay's multi-selection is private — observable through the `x` callback. */
   };
@@ -213,8 +221,8 @@ describe("OverlayListDashboard multi-select", () => {
     // now-failed jobs — or on nothing — instead of the newly focused running row.
     const h = harness({ selectable: true });
     h.setRows([
-      { id: "a", label: "alpha" },
-      { id: "b", label: "beta" },
+      { id: "a", status: "running" },
+      { id: "b", status: "running" },
     ]);
     h.press(" ");                       // select the focused row (a)
     assert.equal(h.dash.render(100).join("\n").includes("▸"), true, "row a is selected");

@@ -19,6 +19,9 @@ import {
 import type { Task, TaskStatus } from "../../../extensions/pitasks/types.ts";
 import { openTasksOverlay } from "../../../extensions/pitasks/tasks-ui.ts";
 
+/** The `TaskStore.update` fields these doubles accept (a stand-in store may ignore most of them). */
+type StoreUpdateFields = { status?: TaskStatus | "deleted"; subject?: string };
+
 function task(overrides: Partial<Task> = {}): Task {
 	return {
 		id: "3",
@@ -404,7 +407,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 				list: () => tasks.filter((t) => !deleted.includes(t.id)),
 				get: (id: string) => tasks.find((t) => t.id === id),
 				create: () => ({ id: "99" }),
-				update: (id: string, fields: { status?: string }) => {
+				update: (id: string, fields: StoreUpdateFields) => {
 					if (fields.status === "deleted") deleted.push(id);
 				},
 			},
@@ -635,14 +638,14 @@ function ownerAndLlmStore() {
 	const deleted: string[] = [];
 	const completed: string[] = [];
 	const store = {
-		list: () => tasks.filter((t) => t.status !== "deleted"),
+		list: () => tasks.filter((t) => !deleted.includes(t.id)),
 		get: (id: string) => tasks.find((t) => t.id === id),
 		create: (subject: string) => { created.push(subject); return { id: "9" }; },
-		update: (id: string, fields: any) => {
+		update: (id: string, fields: StoreUpdateFields) => {
 			if (fields.status === "deleted") deleted.push(id);
 			if (fields.status === "completed") completed.push(id);
 			const current = tasks.find((t) => t.id === id);
-			if (current && fields.status) current.status = fields.status;
+			if (current && fields.status && fields.status !== "deleted") current.status = fields.status;
 		},
 	};
 	return { created, deleted, completed, store };

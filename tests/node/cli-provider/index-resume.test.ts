@@ -142,7 +142,7 @@ describe("/resume reseed path (markers + history seed)", () => {
       saveCliSessionId(mine, "mine-cli");
       saveCliSessionId(concurrentDefault, "other-process-cli");
 
-      const prevSid = "bound-sid";
+      const prevSid: string = "bound-sid";
       const includeLegacyDefault =
         prevSid == null || prevSid === "" || prevSid === "default";
       assert.equal(includeLegacyDefault, false);
@@ -191,7 +191,7 @@ describe("/resume reseed path (markers + history seed)", () => {
     assert.equal(reseed.forceHistorySeed, true);
 
     // Mimic index.ts: every session_start assigns forceHistorySeed = decision.forceHistorySeed
-    let forceHistorySeed = reseed.forceHistorySeed;
+    let forceHistorySeed: boolean = reseed.forceHistorySeed;
     const reload = decideCliSessionStartReseed({
       reason: "reload",
       prevPiSessionId: "sid-a",

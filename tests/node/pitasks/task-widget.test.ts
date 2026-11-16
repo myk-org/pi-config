@@ -360,7 +360,10 @@ describe("pitasks telemetry bridge", () => {
 			await handlers.get("session_start")!({ reason: "startup" }, { ui: { setWidget() {} }, sessionManager: { getSessionId: () => "widget-test" } });
 			const task = taskStore.create("Delegated", "body", createdBy);
 			taskStore.update(task.id, { status: "in_progress" });
-			const isolatedInstance = await import("../../../extensions/pitasks/index.js?isolated-bridge-instance=1");
+			// The query string busts the module cache to get a second instance; tsc cannot resolve
+			// a specifier that carries one, so keep it in a variable and re-assert the module type.
+			const isolatedPath = "../../../extensions/pitasks/index.js?isolated-bridge-instance=1";
+			const isolatedInstance: typeof import("../../../extensions/pitasks/index.js") = await import(isolatedPath);
 			assert.equal(isolatedInstance.taskStore, undefined);
 			isolatedInstance.setTaskTelemetryActive(task.id, true);
 			await handlers.get("turn_end")!({ message: { role: "assistant", usage: { input: 13, output: 29 } } });
