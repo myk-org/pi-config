@@ -3282,13 +3282,23 @@ Do not respond to this message.`;
 							deleteTaskAtStorePath(storePath, createdReportTaskId);
 						}
 						if (updatedReportTask && updatedReportTask.addedBlockerIds.length > 0) {
-							// Another writer may have added blockers meanwhile: read the current list and drop
-							// only the IDs this call appended, leaving theirs intact.
-							const currentReport = getTaskAtStorePath(storePath, updatedReportTask.id);
-							if (currentReport) {
-								const remaining = (Array.isArray(currentReport.blockedBy) ? currentReport.blockedBy : [])
-									.filter((id: string) => !updatedReportTask!.addedBlockerIds.includes(id));
-								updateTaskAtStorePath(storePath, updatedReportTask.id, { blockedBy: remaining });
+							// The deletes above already stripped our IDs from every blockedBy list under the
+							// store lock, so an unconditional array rewrite would only clobber blockers another
+							// writer added meanwhile. Rewrite (bounded compare-and-set) only if one of our IDs
+							// came back, and always recompute against the freshly read array.
+							const rollbackReportId = updatedReportTask.id;
+							const ourBlockerIds = new Set<string>(updatedReportTask.addedBlockerIds);
+							for (let attempt = 1; attempt <= 3; attempt++) {
+								const currentReport = getTaskAtStorePath(storePath, rollbackReportId);
+								if (!currentReport) break;
+								const snapshot: string[] = Array.isArray(currentReport.blockedBy) ? currentReport.blockedBy : [];
+								if (!snapshot.some((id) => ourBlockerIds.has(id))) break;
+								updateTaskAtStorePath(storePath, rollbackReportId, { blockedBy: snapshot.filter((id) => !ourBlockerIds.has(id)) });
+								const confirmedReport = getTaskAtStorePath(storePath, rollbackReportId);
+								const remaining: string[] = Array.isArray(confirmedReport?.blockedBy) ? confirmedReport.blockedBy : [];
+								if (!remaining.some((id) => ourBlockerIds.has(id))) break;
+								if (attempt === 3) log.warn("peer_report_rollback_unconfirmed", { taskId: rollbackReportId });
+								else log.warn("peer_report_rollback_retry", { attempt });
 							}
 						}
 						if (!storeExistedBeforeWrite) {

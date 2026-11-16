@@ -1250,6 +1250,109 @@ describe("coms peer task lifecycle regression (#1080)", { concurrency: false }, 
 		assert.deepEqual(reportTask?.blockedBy, ["1", "999"]);
 	});
 
+	it("keeps a blocker appended inside the rollback read window", async (t) => {
+		if (process.platform === "win32") return t.skip("unix sockets only");
+		const root = makeTempDir("c1080-rb-window-");
+		const comsDir = join(root, "coms");
+		const peerDir = join(root, "peer");
+		const sockPath = join(root, "swap-window.sock");
+		const storePath = join(peerDir, ".pi", "tasks", "tasks-window.json");
+
+		const sender = await startComsPeer({
+			name: "sender",
+			cwd: join(root, "sender"),
+			comsDir,
+			piSessionId: "sender-sid",
+		});
+
+		const regPath = join(comsDir, "projects", "test-proj", "agents", "swap-window-sid.json");
+		const writePeerEntry = (ts: string) => {
+			writeFileSync(regPath, JSON.stringify({
+				coms_session_id: "swap-window-sid",
+				name: "swap-window",
+				purpose: "",
+				model: "test-model",
+				color: "#36F9F6",
+				pid: process.pid,
+				endpoint: sockPath,
+				cwd: peerDir,
+				started_at: ts,
+				heartbeat_at: ts,
+				explicit: false,
+				version: 1,
+				pi_session_id: "swap-window-pi-sid",
+				task_store_path: storePath,
+			}, null, 2));
+		};
+
+		const server = net.createServer((sock) => {
+			sock.on("data", (chunk) => {
+				const nl = chunk.toString("utf8").indexOf("\n");
+				if (nl < 0) return;
+				const parsed = JSON.parse(chunk.toString("utf8").slice(0, nl));
+				sock.write(JSON.stringify({ type: "ack", msg_id: parsed.msg_id ?? "" }) + "\n");
+				sock.end();
+			});
+			sock.once("error", () => sock.destroy());
+		});
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		await new Promise<void>((resolve) => server.listen(sockPath, () => resolve()));
+
+		writePeerEntry(new Date().toISOString());
+		await sender.tools.get("coms_tasks_create").execute("c-window-1", {
+			target: "swap-window",
+			tasks: [{ subject: "Initial task", description: "Stays intact" }],
+		});
+
+		// Deterministic race: the report-task extension also deletes the task this call created, so the
+		// readback verification fails and the rollback runs; the rollback's report read is the moment
+		// another writer appends an unrelated blocker — between that read and the blockedBy write.
+		let phase: "idle" | "create" | "rollback" | "done" = "create";
+		const originalUpdate = TaskStore.prototype.update;
+		const originalGet = TaskStore.prototype.get;
+		TaskStore.prototype.update = function (this: TaskStore, id: string, fields: any) {
+			const result = originalUpdate.call(this, id, fields);
+			if (phase === "create" && this.filePath === storePath && Array.isArray(fields?.blockedBy) && fields.blockedBy.includes("3")) {
+				phase = "rollback";
+				deleteTaskAtStorePath(storePath, "3");
+			}
+			return result;
+		};
+		TaskStore.prototype.get = function (this: TaskStore, id: string) {
+			const task = originalGet.call(this, id);
+			if (phase === "rollback" && this.filePath === storePath && task?.subject === "Report completion to sender") {
+				phase = "done";
+				const writer = new TaskStore(storePath);
+				try {
+					writer.update(id, { blockedBy: [...(task.blockedBy ?? []), "999"] });
+				} finally {
+					writer.close();
+				}
+			}
+			return task;
+		};
+		cleanups.push(() => {
+			TaskStore.prototype.update = originalUpdate;
+			TaskStore.prototype.get = originalGet;
+		});
+
+		await assert.rejects(
+			sender.tools.get("coms_tasks_create").execute("c-window-2", {
+				target: "swap-window",
+				tasks: [{ subject: "Rolled back task", description: "Must not stay in the report blockers" }],
+			}),
+			/verification failed/,
+		);
+
+		const afterRollback = listTasksAtStorePath(storePath);
+		assert.deepEqual(afterRollback.map((task: any) => task.subject), [
+			"Initial task",
+			"Report completion to sender",
+		]);
+		const reportTask = afterRollback.find((task: any) => task.subject === "Report completion to sender");
+		assert.deepEqual(reportTask?.blockedBy, ["1", "999"]);
+	});
+
 	it("rejects coms_task_update when the task is concurrently deleted before the store write", async (t) => {
 		if (process.platform === "win32") return t.skip("unix sockets only");
 		const root = makeTempDir("c1080-race-");
