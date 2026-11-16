@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.14.*"
 
 [manifest]
@@ -208,7 +208,7 @@ wheels = [
 
 [[package]]
 name = "myk-pi-tools"
-version = "4.22.5"
+version = "4.23.0"
 source = { editable = "." }
 dependencies = [
     { name = "ai-cli-runner" },
