@@ -1132,7 +1132,9 @@ export function registerAsyncAgents(
     const resolvedSessionId = liveCtx?.sessionManager?.getSessionId?.() || options?.sessionId;
     // Record the task's store file now — the only moment the live owner can say where this
     // job's task lives. A reload cannot re-derive it from an env that may have changed.
-    const taskStorePath = options?.taskId ? resolveTaskStorePath(cwd, resolvedSessionId || undefined) : undefined;
+    // Resolve from the project dir — the same one the lifecycle call uses — or a worktree
+    // agent records the worktree's store and never touches the parent task list.
+    const taskStorePath = options?.taskId ? resolveTaskStorePath(resolvedProjectCwd || cwd, resolvedSessionId || undefined) : undefined;
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
       resultsDir: ASYNC_RESULTS_DIR,
       fireAndForget: options?.fireAndForget || false,
