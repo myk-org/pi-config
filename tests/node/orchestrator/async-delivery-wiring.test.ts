@@ -101,9 +101,36 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
     try { const job = h.spawn(); h.result(job.id); await eventually(() => hasPersistedOutput(h.cwd, job.id)); const status = JSON.parse(readFileSync(join(h.cwd, ".pi", "tmp", job.id, "status.json"), "utf8")); assert.match(status.output, /"truncated":true/); } finally { h.restore(); }
   });
 
-  it("formats grouped reviewer delivery through registered async agents", async () => {
+  it("delivers each grouped reviewer result on its own completion", async () => {
     const h = harness();
-    try { const first = h.spawn("group"); const second = h.spawn("group"); h.result(first.id); h.result(second.id); await eventually(() => h.messages.length === 1); assert.match(h.messages[0].content, /"truncated":true/); } finally { h.restore(); }
+    try { const first = h.spawn("group"); const second = h.spawn("group"); h.result(first.id); h.result(second.id); await eventually(() => h.messages.length === 2); assert.match(h.messages[0].content, /"truncated":true/); assert.match(h.messages[1].content, /"truncated":true/); } finally { h.restore(); }
+  });
+
+  it("delivers a finished grouped sibling while its sibling is still running", async () => {
+    const h = harness();
+    try {
+      // Regression for #1110: the group gate withheld a finished agent's result until the
+      // slowest sibling finished, so a hung sibling stranded it indefinitely.
+      const finished = h.spawn("group", "worker-finished");
+      h.spawn("group", "worker-running");
+      h.result(finished.id, "done", "worker-finished");
+      await eventually(() => h.messages.length === 1);
+      assert.match(h.messages[0].content, /worker-finished/);
+      assert.doesNotMatch(h.messages[0].content, /worker-running/);
+      h.triggerPoller();
+      assert.equal(h.messages.length, 1);
+    } finally { h.restore(); }
+  });
+
+  it("delivers a completed grouped job from the poller sweep", () => {
+    const h = harness();
+    try {
+      // No watcher event: the poller sees a dead pid, ingests the result file and the
+      // reconciliation sweep delivers it in the same tick. `groupId` gates nothing.
+      const job = h.spawn("group", "worker-swept");
+      h.result(job.id, "swept output", "worker-swept", { status: { pid: 999_999_999 } });
+      assert.match(String(h.messages[0]?.content), /swept output/);
+    } finally { h.restore(); }
   });
 
   it("formats reconciliation delivery through registered async agents", async () => {
@@ -132,7 +159,7 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
       markNeedsReview(h.cwd);
       markTestsPassed(h.cwd);
       const job = h.spawn("tests", "test-runner");
-      log.debug("failed_test_result", { scenario: "grouped_test_runner_completion", jobId: job.id, agent: "test-runner", success: false, resultStatus: "failed", deliveryState: "grouped" });
+      log.debug("failed_test_result", { scenario: "grouped_test_runner_completion", jobId: job.id, agent: "test-runner", success: false, resultStatus: "failed", deliveryState: "per_agent" });
       h.result(job.id, "Failed", "test-runner", { success: false });
       await eventually(() => h.messages.length === 1);
       assert.match(h.messages[0].content, /test-runner/);
@@ -192,6 +219,18 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
   it("executes killed delivery through registered async agents", () => {
     const h = harness();
     try { const job = h.spawn(); const killed = h.api.killAsyncAgent(job.id); assert.deepEqual(killed.killed, ["code-reviewer-runtime"]); assert.match(h.messages[0].content, /Killed by user/); } finally { h.restore(); }
+  });
+
+  it("does not run the completion hook of a killed job", () => {
+    const h = harness();
+    try {
+      // A kill must not advance an async chain: deliver the failure, never the hook.
+      let fired = 0;
+      const job = h.api.spawnAsyncAgent("worker-hooked", "review", h.cwd, [{ name: "worker-hooked" } as any], { onComplete: () => { fired++; } });
+      h.api.killAsyncAgent(job.id);
+      assert.equal(fired, 0);
+      assert.match(String(h.messages[0]?.content), /Killed by user/);
+    } finally { h.restore(); }
   });
 
   it("opens async status overlay through registered command", async () => {

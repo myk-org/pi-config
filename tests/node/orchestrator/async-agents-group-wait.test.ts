@@ -1,6 +1,6 @@
 /**
- * Tests for waitForResultFiles — the shared helper used by deliverGroupResults
- * to wait for missing async result files before group delivery.
+ * Tests for waitForResultFiles — the shared helper used by deliverJobResult
+ * to wait for a job's missing async result file before delivering it.
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";

@@ -77,19 +77,11 @@ function needsSideEffects(job: AsyncJob): boolean {
   return needsReconciliation(job) && !job.sideEffectsApplied;
 }
 
-/** Group delivery predicate — checks if group delivery should be retried. */
-function groupReadyForDelivery(job: AsyncJob, allJobs: AsyncJob[]): boolean {
-  if (!job.groupId) return false;
-  const groupJobs = allJobs.filter((j) => j.groupId === job.groupId);
-  const pending = groupJobs.filter(
-    (j) => j.status !== "complete" && j.status !== "failed",
-  );
-  return pending.length === 0;
-}
-
-/** Non-group delivery predicate — checks if non-grouped job needs delivery retry. */
-function nonGroupNeedsDelivery(job: AsyncJob): boolean {
-  return needsReconciliation(job) && !job.groupId && !job.fireAndForget;
+/** Delivery predicate — mirrors the poller's reconciliation sweep: every finished,
+ *  undelivered, conversational job is delivered on the next tick. `groupId` is
+ *  display-only and never gates delivery (issue #1110). */
+function needsDelivery(job: AsyncJob): boolean {
+  return needsReconciliation(job) && !job.fireAndForget;
 }
 
 /** jobCwd — mirrors the exported function in async-agents.ts. */
@@ -221,57 +213,45 @@ describe("async-agents reconciliation (issue #734)", () => {
     });
   });
 
-  describe("non-group delivery retry (zombie-ingest fix)", () => {
+  describe("delivery retry (zombie-ingest fix)", () => {
     it("non-grouped undelivered job needs delivery retry", () => {
-      assert.equal(nonGroupNeedsDelivery(makeJob({ id: "n1", agent: "worker" })), true);
+      assert.equal(needsDelivery(makeJob({ id: "n1", agent: "worker" })), true);
     });
 
-    it("grouped job does NOT match non-group delivery", () => {
-      assert.equal(nonGroupNeedsDelivery(makeJob({ id: "n2", agent: "worker", groupId: "grp-1" })), false);
+    it("grouped undelivered job needs delivery retry", () => {
+      assert.equal(needsDelivery(makeJob({ id: "n2", agent: "worker", groupId: "grp-1" })), true);
     });
 
-    it("fire-and-forget job does NOT need non-group delivery", () => {
-      assert.equal(nonGroupNeedsDelivery(makeJob({ id: "n3", agent: "worker", fireAndForget: true })), false);
+    it("fire-and-forget job does NOT need delivery", () => {
+      assert.equal(needsDelivery(makeJob({ id: "n3", agent: "worker", fireAndForget: true })), false);
     });
 
     it("already delivered job does NOT need delivery", () => {
-      assert.equal(nonGroupNeedsDelivery(makeJob({ id: "n4", agent: "worker", delivered: true })), false);
+      assert.equal(needsDelivery(makeJob({ id: "n4", agent: "worker", delivered: true })), false);
     });
   });
 
-  describe("group delivery retry", () => {
-    it("retries delivery when all group members are done", () => {
-      const jobs = [
-        makeJob({ id: "g1", agent: "code-reviewer-security", groupId: "grp-1" }),
-        makeJob({ id: "g2", agent: "code-reviewer-docs", groupId: "grp-1" }),
-        makeJob({ id: "g3", agent: "test-automator", status: "failed", groupId: "grp-1" }),
-      ];
-      assert.equal(groupReadyForDelivery(jobs[0], jobs), true);
-      assert.equal(groupReadyForDelivery(jobs[1], jobs), true);
-      assert.equal(groupReadyForDelivery(jobs[2], jobs), true);
+  describe("per-agent delivery (issue #1110)", () => {
+    it("delivers a finished job while its grouped sibling is still running", () => {
+      const finished = makeJob({ id: "g1", agent: "code-reviewer-security", groupId: "grp-2" });
+      const running = makeJob({ id: "g2", agent: "code-reviewer-docs", status: "running", groupId: "grp-2" });
+      assert.equal(needsDelivery(finished), true);
+      assert.equal(needsDelivery(running), false);
     });
 
-    it("does NOT retry when some group members are still running", () => {
-      const jobs = [
-        makeJob({ id: "g4", agent: "code-reviewer-security", groupId: "grp-2" }),
-        makeJob({ id: "g5", agent: "code-reviewer-docs", status: "running", groupId: "grp-2" }),
-      ];
-      assert.equal(groupReadyForDelivery(jobs[0], jobs), false);
+    it("delivers a failed job in a group too", () => {
+      assert.equal(needsDelivery(makeJob({ id: "g3", agent: "test-automator", status: "failed", groupId: "grp-1" })), true);
     });
 
-    it("does NOT retry for non-grouped jobs", () => {
-      const job = makeJob({ id: "g6", agent: "worker" });
-      assert.equal(groupReadyForDelivery(job, [job]), false);
+    it("treats groupId as display-only", () => {
+      assert.equal(
+        needsDelivery(makeJob({ id: "g6", agent: "worker", groupId: "grp-A" })),
+        needsDelivery(makeJob({ id: "g7", agent: "worker" })),
+      );
     });
 
-    it("handles mixed groups correctly — only checks same groupId", () => {
-      const jobs = [
-        makeJob({ id: "g7", agent: "code-reviewer-security", groupId: "grp-A" }),
-        makeJob({ id: "g8", agent: "code-reviewer-docs", groupId: "grp-A" }),
-        makeJob({ id: "g9", agent: "worker", status: "running", groupId: "grp-B" }),
-      ];
-      assert.equal(groupReadyForDelivery(jobs[0], jobs), true);
-      assert.equal(groupReadyForDelivery(jobs[2], jobs), false);
+    it("skips a fire-and-forget job even when its group finished", () => {
+      assert.equal(needsDelivery(makeJob({ id: "g8", agent: "worker", groupId: "grp-A", fireAndForget: true })), false);
     });
   });
 
@@ -322,13 +302,9 @@ describe("async-agents reconciliation (issue #734)", () => {
       assert.equal(needsSideEffects(stuckJob), true);
     });
 
-    it("stuck grouped job triggers group delivery when all members done", () => {
-      const groupId = "review-batch-1";
-      const jobs = [
-        makeJob({ id: "r-sec", agent: "code-reviewer-security", groupId, delivered: true, sideEffectsApplied: true }),
-        makeJob({ id: "r-docs", agent: "code-reviewer-docs", groupId, delivered: false, sideEffectsApplied: false }),
-      ];
-      assert.equal(groupReadyForDelivery(jobs[1], jobs), true);
+    it("stuck grouped job is delivered by the next sweep tick", () => {
+      const job = makeJob({ id: "r-docs", agent: "code-reviewer-docs", groupId: "review-batch-1", delivered: false, sideEffectsApplied: false });
+      assert.equal(needsDelivery(job), true);
     });
 
     it("stuck job stops needing side-effects after they succeed", () => {
@@ -353,9 +329,9 @@ describe("async-agents reconciliation (issue #734)", () => {
       assert.equal(needsReconciliation(job), true);
     });
 
-    it("non-grouped zombie-ingested job triggers non-group delivery retry", () => {
+    it("non-grouped zombie-ingested job triggers delivery retry", () => {
       const job = makeJob({ id: "zombie-1", agent: "worker", output: "done" });
-      assert.equal(nonGroupNeedsDelivery(job), true);
+      assert.equal(needsDelivery(job), true);
     });
 
     it("non-grouped undelivered job is not cleaned up", () => {
@@ -399,7 +375,7 @@ describe("async-agents reconciliation (issue #734)", () => {
 
     it("group: failed side-effect job stays false for retry", () => {
       const job = makeJob({ id: "g-fail", agent: "code-reviewer-docs", groupId: "grp-1" });
-      job.sideEffectsApplied = false; // simulate catch in deliverGroupResults
+      job.sideEffectsApplied = false; // simulate a failed reviewer side-effect
       if (job.sideEffectsApplied !== false) job.sideEffectsApplied = true;
       assert.equal(job.sideEffectsApplied, false);
     });

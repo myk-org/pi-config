@@ -898,7 +898,8 @@ export function registerSubagentTool(
       }
       const results: string[] = [];
       const errors: string[] = [];
-      // Group parallel async tasks so results are delivered together
+      // Tag parallel async tasks with one groupId for display/status grouping only —
+      // each task's result is delivered the moment that task finishes (issue #1110).
       const groupId = params.tasks.length > 1
         ? `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
         : undefined;

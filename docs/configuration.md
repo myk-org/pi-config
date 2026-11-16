@@ -566,7 +566,7 @@ export PI_ASYNC_POLL_INTERVAL_MS=5000
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `async_phantom_timeout_ms` | integer `5000`-`120000` | `30000` | `PI_ASYNC_PHANTOM_TIMEOUT_MS` | Grace period before an async job with no status file is declared dead. | Once it elapses the job is failed with "Agent process timed out — no status file", the failure is delivered, and any group it belonged to is settled. While the worker PID is still alive, the same window suppresses the failure. |
+| `async_phantom_timeout_ms` | integer `5000`-`120000` | `30000` | `PI_ASYNC_PHANTOM_TIMEOUT_MS` | Grace period before an async job with no status file is declared dead. | Once it elapses the job is failed with "Agent process timed out — no status file" and that job's failure is delivered on its own, without waiting for any other job. While the worker PID is still alive, the same window suppresses the failure. |
 
 > **Warning:** Only integer values in the range `5000`-`120000` are accepted. Invalid values fall back to the next resolution layer or the default.
 
