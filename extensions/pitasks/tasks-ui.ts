@@ -151,6 +151,12 @@ export async function openTasksOverlay(
 							queue.push({ kind: "edit", task });
 						} else {
 							if (!task) return false;
+							// `completeTask` drops a note for a task it finds already done, so never prompt for one.
+							if (task.status === "completed") {
+								log.debug("tasks_overlay_complete_unchanged", { taskId: task.id });
+								ctx.ui.notify(`Task #${task.id} is already completed.`, "info");
+								return "redraw";
+							}
 							// The owner closes their own task with an optional note; the agent's task just closes.
 							if (task.assignee === "user") queue.push({ kind: "complete", task });
 							else {

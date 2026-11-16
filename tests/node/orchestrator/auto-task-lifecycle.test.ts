@@ -12,6 +12,12 @@ import {
   autoMarkInProgress,
 } from "../../../extensions/orchestrator/task-lifecycle.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import {
+  publishTaskStore,
+  publishTaskTelemetryActive,
+  TASK_STORE_SYMBOL,
+  TASK_TELEMETRY_ACTIVE_SYMBOL,
+} from "../../../extensions/shared/task-store-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -393,5 +399,117 @@ describe("autoMarkInProgress update-failure handling", () => {
     // Verify actual file was NOT mutated
     const tasks = readTaskStore(storePath);
     assert.equal(tasks[0].status, "pending");
+  });
+});
+
+describe("live task store bridge resolution", () => {
+  let rootDir: string;
+  let worktreeDir: string;
+  let liveStore: TaskStore | null = null;
+
+  beforeEach(() => {
+    rootDir = makeTempDir("bridge-root-");
+    worktreeDir = makeTempDir("bridge-wt-");
+    const storePath = join(rootDir, ".pi", "tasks", "tasks-s1.json");
+    liveStore = new TaskStore(storePath);
+    liveStore.create("Bridge task", "desc", {
+      type: "local",
+      origin: "user",
+      session: "s1",
+      project: rootDir,
+    });
+    publishTaskStore(() => liveStore);
+  });
+
+  afterEach(() => {
+    liveStore?.close();
+    liveStore = null;
+    delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+    delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+    rmSync(rootDir, { recursive: true, force: true });
+    rmSync(worktreeDir, { recursive: true, force: true });
+  });
+
+  it("marks task in_progress through published store when cwd matches store root", async () => {
+    const updated = await autoMarkInProgress("1", rootDir, "s1");
+    assert.equal(updated, true);
+    assert.equal(liveStore?.get("1")?.status, "in_progress");
+  });
+
+  it("activates bridged telemetry when marking task in_progress without local pitasks", async () => {
+    const activations: Array<{ taskId: string; active: boolean }> = [];
+    publishTaskTelemetryActive((taskId, active = true) => {
+      activations.push({ taskId, active });
+    });
+    const updated = await autoMarkInProgress("1", rootDir, "s1");
+    assert.equal(updated, true);
+    assert.deepEqual(activations, [{ taskId: "1", active: true }]);
+  });
+
+  it("deactivates bridged telemetry when completing task without local pitasks", async () => {
+    const activations: Array<{ taskId: string; active: boolean }> = [];
+    publishTaskTelemetryActive((taskId, active = true) => {
+      activations.push({ taskId, active });
+    });
+    const updated = await autoCompleteTask("1", rootDir, "s1");
+    assert.equal(updated, true);
+    assert.deepEqual(activations, [{ taskId: "1", active: false }]);
+  });
+
+  it("completes task through published store when cwd matches store root", async () => {
+    const updated = await autoCompleteTask("1", rootDir, "s1");
+    assert.equal(updated, true);
+    assert.equal(liveStore?.get("1")?.status, "completed");
+  });
+
+  it("skips published store when cwd targets a separate worktree", async () => {
+    const marked = await autoMarkInProgress("1", worktreeDir, "s1");
+    const completed = await autoCompleteTask("1", worktreeDir, "s1");
+    assert.equal(marked, false);
+    assert.equal(completed, false);
+    assert.equal(liveStore?.get("1")?.status, "pending");
+  });
+
+  it("refuses user-assigned tasks in published live store without activating telemetry", async () => {
+    const owner = liveStore!.create("Owner step", "desc", {
+      type: "local",
+      origin: "user",
+      session: "s1",
+      project: rootDir,
+    }, undefined, undefined, "user");
+    const activations: Array<{ taskId: string; active: boolean }> = [];
+    publishTaskTelemetryActive((taskId, active = true) => {
+      activations.push({ taskId, active });
+    });
+    assert.equal(await autoMarkInProgress(owner.id, rootDir, "s1"), false);
+    assert.equal(await autoCompleteTask(owner.id, rootDir, "s1"), false);
+    assert.equal(liveStore?.get(owner.id)?.status, "pending");
+    assert.deepEqual(activations, []);
+  });
+
+  it("refuses user-assigned tasks in disk fallback without mutating colliding global task", async () => {
+    const sessPath = join(worktreeDir, ".pi", "tasks", "tasks-s1.json");
+    const globalPath = join(worktreeDir, ".pi", "tasks", "tasks.json");
+    const sessStore = new TaskStore(sessPath);
+    sessStore.create("Owner step", "desc", {
+      type: "local",
+      origin: "user",
+      session: "s1",
+      project: worktreeDir,
+    }, undefined, undefined, "user");
+    sessStore.close();
+    const globalStore = new TaskStore(globalPath);
+    globalStore.create("Colliding agent step", "desc", {
+      type: "local",
+      origin: "user",
+      session: "",
+      project: worktreeDir,
+    });
+    globalStore.close();
+
+    assert.equal(await autoMarkInProgress("1", worktreeDir, "s1"), false);
+    assert.equal(await autoCompleteTask("1", worktreeDir, "s1"), false);
+    assert.equal(readTaskStore(sessPath)[0].status, "pending");
+    assert.equal(readTaskStore(globalPath)[0].status, "pending");
   });
 });

@@ -17,6 +17,7 @@ import pitasks, {
 } from "../../../extensions/pitasks/index.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
+import { TASK_STORE_SYMBOL, TASK_TELEMETRY_ACTIVE_SYMBOL } from "../../../extensions/shared/task-store-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -338,8 +339,42 @@ describe("pitasks telemetry bridge", () => {
 			assert.ok(taskStore.get(task.id)?.telemetry?.endedAt);
 		} finally {
 			handlers.get("session_shutdown")?.();
+			delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+			delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
 			else process.env.PI_SUBAGENT_CHILD = child;
+		}
+	});
+
+	it("forwards activation from an uninitialized pitasks module instance over the global bridge", async () => {
+		const child = process.env.PI_SUBAGENT_CHILD;
+		const dir = makeTempDir("pitasks-cross-instance-");
+		const taskPath = join(dir, "tasks.json");
+		const piTasks = process.env.PI_TASKS;
+		const handlers = new Map<string, Function>();
+		delete process.env.PI_SUBAGENT_CHILD;
+		process.env.PI_TASKS = taskPath;
+		try {
+			const api = { on(name: string, handler: Function) { handlers.set(name, handler); }, registerTool() {}, registerCommand() {}, events: { on() { return () => {}; }, emit() {} } };
+			pitasks(api as any);
+			await handlers.get("session_start")!({ reason: "startup" }, { ui: { setWidget() {} }, sessionManager: { getSessionId: () => "widget-test" } });
+			const task = taskStore.create("Delegated", "body", createdBy);
+			taskStore.update(task.id, { status: "in_progress" });
+			const isolatedInstance = await import("../../../extensions/pitasks/index.js?isolated-bridge-instance=1");
+			assert.equal(isolatedInstance.taskStore, undefined);
+			isolatedInstance.setTaskTelemetryActive(task.id, true);
+			await handlers.get("turn_end")!({ message: { role: "assistant", usage: { input: 13, output: 29 } } });
+			assert.equal(taskStore.get(task.id)?.telemetry?.inputTokens, 13);
+			assert.equal(taskStore.get(task.id)?.telemetry?.outputTokens, 29);
+		} finally {
+			handlers.get("session_shutdown")?.();
+			delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+			delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+			if (piTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = piTasks;
+			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = child;
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

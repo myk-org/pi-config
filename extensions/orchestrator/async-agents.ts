@@ -90,12 +90,19 @@ export interface AsyncJob {
  */
 export type AsyncKillOrigin = "user" | "orchestrator" | "task-system";
 
+export interface AsyncChainStep {
+  agent: string;
+  task: string;
+  cwd?: string;
+  taskId?: string;
+}
+
 /** Durable record of an async chain's position, written into each step's workerDir
  *  as chain.json. The step's continuation lives in the onComplete closure, which a
  *  reload destroys — this file is what lets restoration report the chain instead of
  *  dropping it silently. */
 export interface AsyncChainState {
-  steps: Array<{ agent: string; task: string }>;
+  steps: AsyncChainStep[];
   /** Index (0-based) of the step being spawned when this was written. */
   index: number;
   previous: string;
@@ -204,7 +211,7 @@ export function registerAsyncAgents(
     discoverAgents?: (cwd: string, scope: "both") => Pick<AgentDiscoveryResult, "agents">;
   } = {},
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -1093,7 +1100,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -1117,6 +1124,9 @@ export function registerAsyncAgents(
       log.warn("async-spawn: could not read /proc/self/stat starttime after 3 attempts");
     }
     let { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, options?.parentModelId, options?.parentProvider, cwd, options?.explicit);
+    const liveCtx = getLiveAsyncCtx();
+    const resolvedProjectCwd = liveCtx?.sessionManager?.getCwd?.() || liveCtx?.cwd || options?.projectCwd;
+    const resolvedSessionId = liveCtx?.sessionManager?.getSessionId?.() || options?.sessionId;
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
       resultsDir: ASYNC_RESULTS_DIR,
       fireAndForget: options?.fireAndForget || false,
@@ -1124,8 +1134,8 @@ export function registerAsyncAgents(
       parentStartTime,
       taskId: options?.taskId || null,
       cwd,
-      projectCwd: getLiveAsyncCtx()?.sessionManager?.getCwd?.() || null,
-      sessionId: getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || null,
+      projectCwd: resolvedProjectCwd || null,
+      sessionId: resolvedSessionId || null,
     }), { mode: 0o600 });
 
     // Chain position — a reload drops the onComplete continuation, so restore reads
@@ -1330,8 +1340,8 @@ export function registerAsyncAgents(
       groupId: options?.groupId,
       taskId: options?.taskId,
       cwd,
-      projectCwd: getLiveAsyncCtx()?.sessionManager?.getCwd?.(),
-      sessionId: getLiveAsyncCtx()?.sessionManager?.getSessionId?.(),
+      projectCwd: resolvedProjectCwd || undefined,
+      sessionId: resolvedSessionId || undefined,
       model: effectiveModel,
     };
     asyncState.jobs.set(id, job);
@@ -1432,7 +1442,7 @@ export function registerAsyncAgents(
 
     // Auto-mark linked task as in_progress AFTER successful spawn
     if (options?.taskId && options.taskId !== "-1") {
-      autoMarkInProgress(options.taskId, getLiveAsyncCtx()?.sessionManager?.getCwd?.() || cwd, getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || undefined)
+      autoMarkInProgress(options.taskId, resolvedProjectCwd || cwd, resolvedSessionId || undefined)
         .catch(() => {});  // best-effort, don't block spawn
     }
 
@@ -1589,7 +1599,7 @@ export function registerAsyncAgents(
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
             cwd: marker.cwd || undefined,
-            projectCwd: marker.projectCwd || undefined,
+            projectCwd: marker.projectCwd || ctx.cwd || undefined,
             sessionId: marker.sessionId || undefined,
             model: status.model || marker.model || undefined,
             restoredPid: typeof status.pid === "number" ? status.pid : undefined,
@@ -1601,11 +1611,26 @@ export function registerAsyncAgents(
           // chain.json records what was still pending — report it, never drop it silently.
           const chain = readChainState(job.workerDir);
           if (chain && chain.interruptedAt === undefined && chain.index + 1 < chain.steps.length) {
-            const remaining = [...new Set(chain.steps.slice(chain.index + 1).map(s => s.agent))];
-            log.error(`async_chain_interrupted: chain interrupted at step ${chain.index + 1} of ${chain.steps.length} (${job.agent}), remaining agents: ${remaining.join(", ")}`);
+            const unspawned = chain.steps.slice(chain.index + 1);
+            const remaining = [...new Set(unspawned.map(s => s?.agent || "unknown"))];
+            const hasStepMeta = unspawned.some(
+              s => (typeof s?.taskId === "string" && s.taskId.length > 0) || (typeof s?.cwd === "string" && s.cwd.length > 0),
+            );
+            const stepDetails = hasStepMeta
+              ? unspawned.map((s, offset) => {
+                  const agentLabel = s?.agent || "unknown";
+                  const meta: string[] = [];
+                  if (typeof s?.taskId === "string" && s.taskId.length > 0) meta.push(`taskId: ${s.taskId}`);
+                  if (typeof s?.cwd === "string" && s.cwd.length > 0) meta.push(`cwd: ${s.cwd}`);
+                  return meta.length > 0
+                    ? `step ${chain.index + 2 + offset} ${agentLabel} (${meta.join(", ")})`
+                    : `step ${chain.index + 2 + offset} ${agentLabel}`;
+                }).join("; ")
+              : "";
+            log.error(`async_chain_interrupted: chain interrupted at step ${chain.index + 1} of ${chain.steps.length} (${job.agent}), remaining agents: ${remaining.join(", ")}${stepDetails ? `, remaining steps: ${stepDetails}` : ""}`);
             void sendSystemNote(
               pi,
-              `🚨 Async chain interrupted at step ${chain.index + 1} of ${chain.steps.length} — the extension reloaded, so the chain cannot continue. Step ${chain.index + 1} (${job.agent}) may still be running; steps ${chain.index + 2}-${chain.steps.length} were never spawned. Remaining agents: ${remaining.join(", ")}. Re-run them with subagent(chain: ...).`,
+              `🚨 Async chain interrupted at step ${chain.index + 1} of ${chain.steps.length} — the extension reloaded, so the chain cannot continue. Step ${chain.index + 1} (${job.agent}) may still be running; steps ${chain.index + 2}-${chain.steps.length} were never spawned. Remaining agents: ${remaining.join(", ")}.${stepDetails ? ` Remaining steps: ${stepDetails}.` : ""} Re-run them with subagent(chain: ...).`,
               { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
             ).catch((e: any) => log.error(`chain_interrupted note failed: ${e?.message || e}`));
             // Durable so a second reload does not repeat the note.
