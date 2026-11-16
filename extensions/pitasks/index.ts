@@ -16,6 +16,7 @@ import {
 	publishTaskTelemetryActive,
 	publishedTaskTelemetryActive,
 } from "../shared/task-store-bridge.js";
+import { publishedWorkloadSources } from "../shared/workload-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import { openTasksOverlay } from "./tasks-ui.js";
 import {
@@ -31,6 +32,7 @@ import { isBrowserDispatch } from "../shared/ui-bridge.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import {
+	collectActiveAsyncTaskIds,
 	decidePendingReminder,
 	oldestPendingAt,
 	pendingReminderContent,
@@ -42,6 +44,7 @@ import {
 
 // Re-export reminder pure helpers so consumers (and tests) can import from index.
 export {
+	collectActiveAsyncTaskIds,
 	decidePendingReminder,
 	oldestPendingAt,
 	pendingReminderContent,
@@ -221,10 +224,44 @@ export function deleteTaskForSession(sessionId: string, taskId: string, targetCw
 	}
 }
 
+function normalizeTaskRefId(raw: unknown): string | null {
+	const id = typeof raw === "string"
+		? raw.trim()
+		: typeof raw === "number" && Number.isFinite(raw)
+			? String(raw)
+			: "";
+	return id && id !== "-1" ? id : null;
+}
+
+function extractToolTaskRefs(args: any): string[] {
+	if (!args || typeof args !== "object") return [];
+	const out: string[] = [];
+	const push = (raw: unknown) => {
+		const id = normalizeTaskRefId(raw);
+		if (id && !out.includes(id)) out.push(id);
+	};
+	// Only camelCase taskId/taskIds belong to local tools; snake_case task_id targets remote peers (coms_task_*).
+	push(args.taskId);
+	if (Array.isArray(args.updates)) {
+		for (const item of args.updates) push(item?.taskId);
+	}
+	if (Array.isArray(args.taskIds)) {
+		for (const id of args.taskIds) push(id);
+	}
+	if (Array.isArray(args.tasks)) {
+		for (const item of args.tasks) push(item?.taskId);
+	}
+	if (Array.isArray(args.chain)) {
+		for (const step of args.chain) push(step?.taskId);
+	}
+	return out;
+}
+
 export default function (pi: ExtensionAPI) {
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	if (shouldSkipOneshotRegister(log)) return;
 	let shuttingDown = false;
+	const turnTaskRefs = new Set<string>();
 	const taskScope = "session";
 	const piTasks = process.env.PI_TASKS;
 
@@ -434,7 +471,8 @@ export default function (pi: ExtensionAPI) {
 				const now2 = Date.now();
 				if (now2 - lastStaleReminderAt < staleThreshold) return;
 				const allTasks = store.list();
-				const staleTasks = selectStaleTasks(allTasks, now2, staleThreshold);
+				const activeAsyncIds = collectActiveAsyncTaskIds(publishedWorkloadSources()?.agents());
+				const staleTasks = selectStaleTasks(allTasks, now2, staleThreshold, activeAsyncIds);
 				if (staleTasks.length > 0) {
 					if (!shouldFireReminder(agentBusy, staleTasks.length)) {
 						log.debug("reminder_skipped", "busy");
@@ -443,10 +481,14 @@ export default function (pi: ExtensionAPI) {
 						try {
 							pi.sendMessage({
 								customType: "task-focus-reminder",
-								content: staleReminderContent(staleTasks.length),
+								content: staleReminderContent(staleTasks, staleMinutes),
 								display: true,
 							}, { triggerTurn: true });
-							log.info("stale_reminder_fired", "stale", staleTasks.length);
+							log.info("stale_reminder_fired", {
+								stale: staleTasks.length,
+								thresholdMinutes: staleMinutes,
+								taskIds: staleTasks.map((t: any) => t.id),
+							});
 						} catch {}
 					}
 				}
@@ -458,6 +500,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		shuttingDown = true;
+		turnTaskRefs.clear();
 		if (gcTimer) { clearInterval(gcTimer); gcTimer = null; }
 		if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
 		widget.deactivate();
@@ -471,33 +514,42 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("turn_start", async (_event: any, ctx: any) => {
 		if (shuttingDown) return;
+		turnTaskRefs.clear();
 		agentBusy = true;
 		log.debug("agentBusy", "turn_start");
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
+		widget.beginTurn();
 	});
 
 	pi.on("turn_end", async (event: any) => {
+		const refsSnapshot = new Set(turnTaskRefs);
+		turnTaskRefs.clear();
 		if (shuttingDown) return;
 		agentBusy = false;
-		log.debug("agentBusy", "turn_end");
+		log.debug("agentBusy", "turn_end", { turnRefCount: refsSnapshot.size });
 		const msg = (event as any).message;
 		if (msg?.role === "assistant" && msg.usage) {
-			widget.addTokenUsage(msg.usage.input ?? 0, msg.usage.output ?? 0);
+			widget.addTokenUsage(msg.usage.input ?? 0, msg.usage.output ?? 0, refsSnapshot);
+		} else {
+			widget.beginTurn();
 		}
 	});
 
 	// agent_settled is guaranteed to fire even if turn_end is skipped (abort/error).
 	// Reset agentBusy defensively so reminders are never suppressed forever.
 	pi.on("agent_settled", async () => {
+		turnTaskRefs.clear();
 		if (shuttingDown) return;
 		agentBusy = false;
+		widget.beginTurn();
 		log.debug("agentBusy", "agent_settled reset");
 	});
 
 	pi.on("session_start", async (event: any, ctx: any) => {
 		shuttingDown = false;
+		turnTaskRefs.clear();
 		agentBusy = false;
 		log.debug("agentBusy", "session_start reset");
 		widget.reactivate(ctx.ui);
@@ -522,21 +574,31 @@ export default function (pi: ExtensionAPI) {
 		}
 		upgradeStoreIfNeeded(ctx);
 		if (forkSeed?.tasks.length) store.seed(forkSeed);
+		widget.beginTurn();
 		showPersistedTasks(reason === "reload" || reason === "resume" || reason === "fork");
 	});
 
 	pi.on("before_agent_start", async (_event: any, ctx: any) => {
 		if (shuttingDown) return;
+		turnTaskRefs.clear();
 		agentBusy = true;
 		log.debug("agentBusy", "before_agent_start");
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
+		widget.beginTurn();
 		showPersistedTasks();
 	});
 
-	pi.on("tool_execution_start", async (_event: any, ctx: any) => {
+	pi.on("tool_execution_start", async (event: any, ctx: any) => {
 		if (shuttingDown) return;
+		const refTaskIds = extractToolTaskRefs(event?.args);
+		if (refTaskIds.length > 0) {
+			for (const refTaskId of refTaskIds) turnTaskRefs.add(refTaskId);
+			log.debug("task_telemetry_ref_collected", { toolName: event?.toolName, taskIds: refTaskIds });
+		} else if (event?.args?.taskId !== undefined || event?.args?.task_id !== undefined) {
+			log.debug("task_telemetry_ref_ignored", { toolName: event?.toolName, taskId: event?.args?.taskId ?? event?.args?.task_id });
+		}
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);

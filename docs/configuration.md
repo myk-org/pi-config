@@ -872,7 +872,7 @@ export PI_TASK_REMINDER_ENABLED=false
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `task_stale_in_progress_enabled` | boolean | `true` | `PI_TASK_STALE_IN_PROGRESS_ENABLED` | Enables reminders for tasks stuck `in_progress` for too long. | When on, a stale reminder fires for every task whose `in_progress_at` is older than `task_stale_in_progress_minutes`. Set to `false` to disable the stale check. |
+| `task_stale_in_progress_enabled` | boolean | `true` | `PI_TASK_STALE_IN_PROGRESS_ENABLED` | Enables reminders for tasks stuck `in_progress` for too long. | When on, a stale reminder fires when an agent-assigned task without a running or queued async agent has been `in_progress` longer than `task_stale_in_progress_minutes`. Set to `false` to disable the stale check. |
 
 ```json
 {

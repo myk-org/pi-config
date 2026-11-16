@@ -16,10 +16,44 @@ export function pendingReminderContent(activeCount: number): string {
 	return `⚠️ You have ${activeCount} active task(s) and none are in progress. Check your TaskList and resume your workflow.`;
 }
 
-/** Content for the stale in_progress reminder. */
-export function staleReminderContent(staleCount: number): string {
-	log.debug("staleReminderContent", staleCount);
-	return `⚠️ You have ${staleCount} task(s) stuck in progress. Check your TaskList and update their status.`;
+/** Content for the stale in_progress reminder. Accepts stuck tasks (+ optional threshold) or a legacy count. */
+export function staleReminderContent(
+	staleTasksOrCount: number | ReadonlyArray<{ id?: string | number }>,
+	thresholdMinutes?: number,
+): string {
+	const count = typeof staleTasksOrCount === "number" ? staleTasksOrCount : staleTasksOrCount.length;
+	const ids = typeof staleTasksOrCount === "number"
+		? []
+		: staleTasksOrCount
+			.map((t) => (t.id != null ? String(t.id).trim() : ""))
+			.filter(Boolean)
+			.map((id) => `#${id}`);
+	const detailParts: string[] = [];
+	if (typeof thresholdMinutes === "number" && Number.isFinite(thresholdMinutes)) {
+		detailParts.push(`>${thresholdMinutes}m`);
+	}
+	if (ids.length > 0) {
+		detailParts.push(`no running async agent: ${ids.join(", ")}`);
+	}
+	const detail = detailParts.length > 0 ? ` (${detailParts.join(", ")})` : "";
+	log.debug("staleReminderContent", { count, thresholdMinutes, taskIds: ids });
+	return `⚠️ You have ${count} task(s) stuck in progress${detail}. Check your TaskList and update their status.`;
+}
+
+/** Collect linked task IDs from running or queued async jobs, ignoring unlinked `"-1"`. */
+export function collectActiveAsyncTaskIds(
+	agents: ReadonlyArray<{ status?: string; taskId?: string | number | null }> | null | undefined,
+): Set<string> {
+	const ids = new Set<string>();
+	if (agents) {
+		for (const job of agents) {
+			if (job.status !== "running" && job.status !== "queued") continue;
+			const id = job.taskId != null ? String(job.taskId).trim() : "";
+			if (id && id !== "-1") ids.add(id);
+		}
+	}
+	log.debug("collectActiveAsyncTaskIds", { agentCount: agents?.length ?? 0, activeTaskCount: ids.size });
+	return ids;
 }
 
 /** Gate: fire the reminder only when the agent is idle and there are matching tasks. */
@@ -38,21 +72,33 @@ export function selectActiveTasks(tasks: Array<{ status: string; assignee?: stri
 }
 
 /**
- * The stale nudge's input: tasks the AGENT started and left in progress past the threshold, plus
- * nothing that can match one. A task assigned to the owner never nags, and it is not the agent's
- * stuck work either (#1090).
+ * The stale nudge's input: tasks the AGENT started and left in progress past the threshold, with
+ * no active (`running` or `queued`) async job linked to them (#1104). A task assigned to the owner
+ * never nags, and it is not the agent's stuck work either (#1090).
  */
 export function selectStaleTasks<T extends {
+	id?: string | number;
 	status: string;
 	assignee?: string;
 	statusHistory?: { in_progress_at?: string | null } | null;
-}>(tasks: readonly T[], now: number, threshold: number): T[] {
+}>(
+	tasks: readonly T[],
+	now: number,
+	threshold: number,
+	activeAsyncTaskIds?: ReadonlySet<string>,
+): T[] {
+	let activeAsyncExcluded = 0;
 	const stale = tasks.filter((task) => {
 		const startedAt = task.statusHistory?.in_progress_at;
 		if (task.status !== "in_progress" || task.assignee === "user" || !startedAt) return false;
-		return now - new Date(startedAt).getTime() > threshold;
+		if (now - new Date(startedAt).getTime() <= threshold) return false;
+		if (task.id != null && activeAsyncTaskIds?.has(String(task.id))) {
+			activeAsyncExcluded++;
+			return false;
+		}
+		return true;
 	});
-	log.debug("selectStaleTasks", tasks.length, stale.length);
+	log.debug("selectStaleTasks", { total: tasks.length, stale: stale.length, activeAsyncExcluded });
 	return stale;
 }
 
