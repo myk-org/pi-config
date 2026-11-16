@@ -57,17 +57,29 @@ def _fetch(include_resolved: bool, user: str | None = None) -> list[dict[str, An
         return fetch.fetch_review_threads("org", "repo", "1", include_resolved=include_resolved, user=user)
 
 
-def test_resolved_thread_emits_is_resolved_author_and_created_at() -> None:
-    """A resolved thread carries is_resolved, author, and the first comment timestamp."""
-    threads = _fetch(include_resolved=True)
+def test_resolved_thread_emits_is_resolved() -> None:
+    """A resolved thread carries is_resolved."""
+    assert _fetch(include_resolved=True)[0]["is_resolved"] is True
 
-    assert len(threads) == 1
-    thread = threads[0]
-    assert thread["is_resolved"] is True
-    assert thread["author"] == "coderabbitai"
-    assert thread["created_at"] == "2025-01-01T10:00:00Z"
-    assert thread["path"] == "src/probe.py"
-    assert thread["replies"][0]["created_at"] == "2025-01-02T11:00:00Z"
+
+def test_resolved_thread_emits_author_login() -> None:
+    """The thread author is the first comment's author login."""
+    assert _fetch(include_resolved=True)[0]["author"] == "coderabbitai"
+
+
+def test_resolved_thread_created_at_is_first_comment_time() -> None:
+    """created_at is the first comment's timestamp."""
+    assert _fetch(include_resolved=True)[0]["created_at"] == "2025-01-01T10:00:00Z"
+
+
+def test_resolved_thread_emits_path() -> None:
+    """The thread path drives the Phase 1c suppression check."""
+    assert _fetch(include_resolved=True)[0]["path"] == "src/probe.py"
+
+
+def test_resolved_thread_reply_carries_created_at() -> None:
+    """Replies keep their own created_at so resolution time can be derived."""
+    assert _fetch(include_resolved=True)[0]["replies"][0]["created_at"] == "2025-01-02T11:00:00Z"
 
 
 def test_resolved_thread_filtered_out_without_include_resolved() -> None:

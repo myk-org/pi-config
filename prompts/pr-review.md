@@ -258,18 +258,57 @@ This call omits `--user`, so it returns threads from every author with `is_resol
 `author` on each thread. From it, isolate the RESOLVED third-party threads:
 
 - keep threads where `is_resolved: true` AND `author != {current_github_user}` → the
-  `RESOLVED_EXTERNAL` set. For each thread the resolution timestamp is the `created_at` of
-  its last reply, or the thread's own `created_at` when it has no replies.
+  `RESOLVED_EXTERNAL` set. No thread-level resolution timestamp exists in the API — the
+  `check-resolved-threads` CLI below derives one and documents what it falls back to.
 - Threads authored by us are already covered by the first (`--user`) fetch — do NOT use the
   `all-resolved` fetch for the resolved/unresolved categorization of our own threads.
 
 For each `RESOLVED_EXTERNAL` thread, decide mechanically whether its resolution still holds
 by checking the clone from Phase 1a — did anything change at that `path` after the resolution
-timestamp?
+timestamp? Do this with the CLI below, NEVER with a `git log ... -- {path}` shell command:
+`path` and the timestamps are fetched GitHub data, so a contributor can name a file with
+shell syntax and get it executed. The CLI passes the path as a separate argument to git.
+
+1. Write `${PROJECT_TMP_DIR}/resolved-external-check.json` with the `write` tool, holding
+every `RESOLVED_EXTERNAL` thread:
+
+```json
+{
+  "threads": [
+    {
+      "thread_id": "{thread_id}",
+      "path": "{path}",
+      "created_at": "{thread created_at}",
+      "replies": [{"created_at": "{reply created_at}"}]
+    }
+  ]
+}
+```
+
+1. Run:
 
 ```bash
-git log --since="{resolved_at}" --format=%H -- {path}
+myk-pi-tools pr check-resolved-threads {REVIEW_DIR} ${PROJECT_TMP_DIR}/resolved-external-check.json
 ```
+
+1. Read `suppressed` per `thread_id` from the JSON output — do NOT decide it yourself.
+
+The check fails OPEN (`suppressed: false`) whenever it cannot prove the code is unchanged:
+
+- **Unsafe path** — missing, absolute, containing `..`, or containing control characters
+  (newlines included): treated as not suppressed.
+- **No usable timestamp** — GitHub's review-thread API has no "resolved at" field, so the
+  check prefers an explicit `resolved_at` when the thread carries one and otherwise falls
+  back to the newest reply `created_at`, then to the thread's own `created_at`. Both
+  fallbacks are at or before the real resolution time, so the window they inspect is a
+  superset of the true one: a derived timestamp can only make us keep a finding, never
+  wrongly suppress one. Threads with no timestamp at all (Qodo-CLI findings carry none)
+  are never suppressed — they stay `[NEW]` findings.
+- **Shallow clone** — Phase 1a clones with `--depth 50`; when the timestamp predates the
+  shallow boundary commit, the commits inside the window are absent from the clone and an
+  empty `git log` proves nothing, so the thread is not suppressed.
+- **Path absent from HEAD** — a deleted or renamed file leaves nothing to reason about, and
+  an empty `git log` for a path the clone does not know is not evidence of an unchanged file.
 
 - **No commit touched `path` after resolution** → the finding was accepted/dismissed and the
   code is unchanged: treat it as suppressed. Mark the thread `suppressed: true`, include it in
@@ -465,10 +504,10 @@ listing each unresolved thread with its file path, line number, author, and body
 
 Then read the all-resolved JSON from `${PROJECT_TMP_DIR}/all-resolved/` (the third fetch) and
 build a `RESOLVED_COMMENTS` string from the `RESOLVED_EXTERNAL` set isolated in Phase 1c.
-List each thread with its file path, line number, author, body, and resolution timestamp
-(`created_at` of the last reply, or of the thread when it has no replies). Append
-`(suppressed: true)` to threads whose `path` saw no commit after that timestamp and
-`(suppressed: false)` to the rest, so reviewers can weigh them.
+List each thread with its file path, line number, author, body, and the `resolved_at` value
+the `check-resolved-threads` output reported (with `resolved_at_source` alongside it), then
+append `(suppressed: true)` or `(suppressed: false)` exactly as that output said, so
+reviewers can weigh them.
 
 > **Note:** Some comment types (e.g., Qodo sticky findings without code refs) may have an empty
 > `path` or `null` line number. Use `"(no file)"` as fallback when path is missing and
@@ -550,10 +589,12 @@ existing unresolved comment.
 - Match on path + body similarity — the same file and a similar description. Do NOT compare
   line numbers: `reviews fetch` does not fetch `isOutdated`, so lines on resolved or rebased
   threads are unreliable.
-- Drop the `[NEW]` finding only when the matched thread is `suppressed: true` (no commit
-  touched that path after the thread's resolution timestamp). Record it as
+- Drop the `[NEW]` finding only when the matched thread is `suppressed: true` (as reported
+  by `check-resolved-threads` — no commit touched that path after the thread's resolution
+  timestamp). Record it as
   `"Auto-skipped (previously raised by <author> and resolved)"`.
-- When the thread is `suppressed: false` (code changed after resolution), keep the finding.
+- When the thread is `suppressed: false` (code changed after resolution, an unsafe path, a
+  missing timestamp, or a shallow clone hiding the window), keep the finding.
   You may note that it re-raises a previously resolved thread.
 - Only `resolved_accepted` / `resolved_fixed` verdicts suppress; a matching thread we
   evaluated as `resolved_bad_fix` or `resolved_no_fix` per `get-review-history` never drops a

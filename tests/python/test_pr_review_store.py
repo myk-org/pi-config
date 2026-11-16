@@ -705,6 +705,29 @@ def test_store_resolved_external_upserts_by_thread_id(db_path: Path) -> None:
     assert stored[0]["body"] == "b2"
 
 
+def test_store_resolved_external_upsert_updates_location(db_path: Path) -> None:
+    """A re-checked thread updates the stored path and line, not only the verdict."""
+    stored_thread = {
+        "thread_id": "t1",
+        "body": "b",
+        "status": "resolved_external",
+        "resolution_status": "resolved_accepted",
+    }
+    store_pr_review("org", "repo", 42, [{**stored_thread, "path": "old/name.py", "line": 1}], head_sha="sha1")
+    store_pr_review(
+        "org",
+        "repo",
+        42,
+        [{**stored_thread, "path": "new/name.py", "line": 3, "resolution_status": "resolved_fixed"}],
+        head_sha="sha2",
+    )
+
+    stored = _query_all(db_path, "pr_comments")
+    assert [(row["path"], row["line"], row["resolution_status"]) for row in stored] == [
+        ("new/name.py", 3, "resolved_fixed")
+    ]
+
+
 def test_store_resolved_external_requires_resolution_status(db_path: Path) -> None:  # noqa: ARG001
     """status='resolved_external' without a resolution_status raises ValueError."""
     comments = [{"thread_id": "t1", "path": "a.py", "body": "b", "status": "resolved_external"}]
@@ -720,23 +743,24 @@ def test_store_invalid_resolution_status_raises(db_path: Path) -> None:  # noqa:
     assert not db_path.exists()
 
 
-def test_history_keeps_bad_fix_and_no_fix_verdicts(db_path: Path) -> None:
-    """resolved_bad_fix / resolved_no_fix stay visible in history (they must not be suppressed)."""
-    comments = [
-        {"path": "a.py", "line": 1, "body": "bad fix"},
-        {"path": "b.py", "line": 2, "body": "no fix"},
-    ]
-    store_pr_review("org", "repo", 42, comments, head_sha="abc1234")
+def test_history_keeps_bad_fix_verdict(db_path: Path) -> None:
+    """A resolved_bad_fix verdict stays visible in history."""
+    store_pr_review("org", "repo", 42, [{"path": "a.py", "line": 1, "body": "bad fix"}], head_sha="abc1234")
     update_resolution(
         "org", "repo", 42, file_path="a.py", line=1, resolution_status="resolved_bad_fix", db_path=db_path
     )
+
+    history = get_review_history("org", "repo", 42, db_path=db_path)
+    assert [(row["path"], row["resolution_status"]) for row in history] == [("a.py", "resolved_bad_fix")]
+
+
+def test_history_keeps_no_fix_verdict(db_path: Path) -> None:
+    """A resolved_no_fix verdict stays visible in history."""
+    store_pr_review("org", "repo", 42, [{"path": "b.py", "line": 2, "body": "no fix"}], head_sha="abc1234")
     update_resolution("org", "repo", 42, file_path="b.py", line=2, resolution_status="resolved_no_fix", db_path=db_path)
 
     history = get_review_history("org", "repo", 42, db_path=db_path)
-    assert [(row["path"], row["resolution_status"]) for row in history] == [
-        ("a.py", "resolved_bad_fix"),
-        ("b.py", "resolved_no_fix"),
-    ]
+    assert [(row["path"], row["resolution_status"]) for row in history] == [("b.py", "resolved_no_fix")]
 
 
 def test_cli_store_resolved_external(db_path: Path, tmp_path: Path) -> None:  # noqa: ARG001

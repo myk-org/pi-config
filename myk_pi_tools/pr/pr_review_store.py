@@ -118,7 +118,8 @@ def store_pr_review(
     - skip_reason: reason for skipping (only when status='skipped')
     - resolution_status / author_response: our verdict on a third-party resolved thread
       (only when status='resolved_external'); rows are upserted by thread_id so a
-      re-review of the same thread updates the row instead of duplicating it
+      re-review of the same thread updates the row — including path/line, which move
+      when the PR is rebased or the thread is re-anchored — instead of duplicating it
 
     Args:
         owner: Repository owner.
@@ -201,12 +202,15 @@ def store_pr_review(
                     """
                     UPDATE pr_comments
                     SET resolution_status = ?, author_response = ?,
+                        path = COALESCE(?, path), line = COALESCE(?, line),
                         body = COALESCE(?, body), posted_at = COALESCE(?, posted_at)
                     WHERE id = ?
                     """,
                     (
                         comment["resolution_status"],
                         comment.get("author_response"),
+                        comment.get("path"),
+                        comment.get("line"),
                         comment.get("body"),
                         comment.get("posted_at"),
                         existing_id,
