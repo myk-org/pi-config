@@ -180,6 +180,10 @@ export function recoverStalledChainHooks(
     if (!job.pendingChainHook || job.output !== undefined) continue;
     if (now - (job.pendingChainHookAt ?? now) <= opts.graceMs) continue;
     job.pendingChainHook = false;
+    job.pendingChainHookAt = undefined;
+    // The parent is about to be told the chain STOPPED. A result landing afterwards is still
+    // delivered through the late path, and a surviving hook would spawn the next step twice.
+    job.onComplete = undefined;
     recovered.push({ job, chain: readChainState(job.workerDir) });
   }
   return recovered;
@@ -782,7 +786,16 @@ export function registerAsyncAgents(
         const duration = job.durationMs || (job.updatedAt ? job.updatedAt - job.startedAt : 0);
         const killSuffix = job.killOrigin ? ` — ${KILL_ORIGIN_LABELS[job.killOrigin]}` : "";
         const lateNote = isLate ? "\n\n_(late result — it arrived after the timeout fallback already delivered an empty one)_" : "";
-        const content = `## Async Agent Result: ${displayName} ${resultStatus}${killSuffix}${lateNote}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`;
+        // A late reviewer result is NOT written to review state: it let an older round's findings
+        // land on a newer one, and every delivery retry multiplied them. Deliver it and tell the
+        // parent the loop has to re-poll instead.
+        let lateReviewNote = "";
+        if (isLate && job.agent.startsWith("code-reviewer-")) {
+          const findings = countFindings(typeof job.output === "string" ? job.output : "");
+          log.warn("late_reviewer_result_unapplied", { agent: job.agent, findings });
+          lateReviewNote = `\n\n⚠️ Reviewer ${job.agent} produced its result AFTER the delivery timeout. It carried ${findings < 0 ? "an unparsable number of" : findings} finding(s) and the review state was NOT updated automatically — re-poll ${job.agent} to apply them.`;
+        }
+        const content = `## Async Agent Result: ${displayName} ${resultStatus}${killSuffix}${lateNote}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}${lateReviewNote}`;
         if (job.status === "complete") {
           safeEmit("subagents:completed", { id: job.id, result: job.output || "" });
         } else {
@@ -882,15 +895,6 @@ export function registerAsyncAgents(
           job.exitCode = data.exitCode;
           job.durationMs = data.durationMs;
           preserveReviewerOutput(job, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
-          if (job.agent.startsWith("code-reviewer-")) {
-            // The fallback counted this reviewer as 0 findings; the real count is here.
-            try {
-              const findings = countFindings(typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
-              // force: the fallback already removed this reviewer from reviewers_pending
-              recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { force: true, since: job.startedAt });
-              log.info("late_reviewer_result_applied", { agent: job.agent, count: findings < 0 ? 1 : findings });
-            } catch (e: any) { log.error(`late result: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
-          }
           log.info("ingest_late_result", { job: job.id, agent: job.agent });
           await deliverJobResult(job);
           return;

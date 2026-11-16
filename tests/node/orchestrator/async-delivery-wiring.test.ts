@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { chainStoppedNote, planSpawnExitRecovery, recoverStalledChainHooks, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
+import { chainStoppedNote, firePendingCompletions, planSpawnExitRecovery, recoverStalledChainHooks, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { addReviewerPending, markNeedsReview, markTestsPassed, readReviewState, recordReviewerResult, resetReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
@@ -286,11 +286,12 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
     } finally { h.restore(); }
   });
 
-  it("marks review not clean when late findings follow a zero sweep", async () => {
+  it("delivers a late reviewer result without touching review state, once", async () => {
     const h = harness();
     try {
-      // The fallback delivered an empty result; the reviewer was then recorded as a zero-finding
-      // review and left reviewers_pending. The findings that arrived afterwards were dropped.
+      // The fallback delivered an empty result; the reviewer was already recorded as a
+      // zero-finding review. Applying the late findings here let an older round's result land on
+      // a newer one, and every delivery retry added them again.
       const job = h.spawn();
       writeFileSync(join(h.cwd, ".pi", "tmp", job.id, "status.json"), JSON.stringify({ runId: job.id, agent: "code-reviewer-runtime", state: "complete", startedAt: Date.now() - 60_000, lastUpdate: Date.now() - 60_000 }));
       h.triggerPoller();
@@ -298,13 +299,18 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
       resetReviewState(h.cwd);
       addReviewerPending(h.cwd, "code-reviewer-runtime", { kind: "other", id: "late-reviewer" } as any);
       recordReviewerResult(h.cwd, "code-reviewer-runtime", 0);
-      assert.equal(readReviewState(h.cwd).status, "clean");
+      const before = readReviewState(h.cwd);
       writeFileSync(join(h.resultDir(), `${job.id}.json`), JSON.stringify({ id: job.id, agent: "code-reviewer-runtime", task: "review", success: true, output: reviewerOutput, durationMs: 1, exitCode: 0 }));
+      h.rejectNextSend(); // the first late attempt is lost — the poller retries it
       h.triggerPoller();
       await eventually(() => h.messages.length === 2);
-      const state = readReviewState(h.cwd);
-      assert.equal(state.status, "has_findings");
-      assert.equal(state.findings_count > 0, true);
+      assert.deepEqual(readReviewState(h.cwd), before, "the late result must not change review state");
+      assert.match(h.messages[1].content, /AFTER the delivery timeout/);
+      assert.match(h.messages[1].content, /review state was NOT updated automatically/);
+      assert.match(h.messages[1].content, /re-poll code-reviewer-runtime/);
+      h.triggerPoller();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      assert.equal(h.messages.length, 2, "a retry must not repeat the note");
     } finally { h.restore(); }
   });
 
@@ -344,6 +350,23 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
     assert.match(note, /STOPPED at step 1 of 2/);
     assert.match(note, /job-stalled/);
     assert.match(note, /worker-b/);
+  });
+
+  it("a recovered stopped chain cannot spawn its next step when the result lands later", () => {
+    // The parent was told the chain STOPPED, but the hook survived: the late result fired it and
+    // spawned the next step anyway — a chain that resumes and runs its steps twice.
+    const fired: string[] = [];
+    const job: any = {
+      id: "job-stopped", agent: "worker-a", task: "one", status: "complete",
+      startedAt: 1, updatedAt: 1, workerDir: join("/nonexistent", "job-stopped"),
+      pendingChainHook: true, pendingChainHookAt: 1_000,
+      onComplete: (r: { text: string }) => fired.push(r.text),
+    };
+    recoverStalledChainHooks([job], { graceMs: 60_000, now: 120_000 });
+    assert.equal(job.onComplete, undefined, "the stopped chain's hook must be gone");
+    // Both post-recovery spawn paths: the reconciliation sweep and the late result delivery.
+    assert.equal(firePendingCompletions([job]), 0);
+    assert.deepEqual(fired, []);
   });
 
   it("defers delivery of a terminal job until its result file is ingested", async () => {

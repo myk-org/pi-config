@@ -348,7 +348,7 @@ export function addReviewerPending(cwd: string, reviewerName: string, subject: R
 /** Record a reviewer's result. Idempotent — skips if reviewer already reported. Returns true if all reviewers have reported.
  *  `since` (the job's startedAt) rejects a result older than the pending entry it would clear:
  *  a late result from a previous round must not approve the round running now. */
-export function recordReviewerResult(cwd: string, reviewerName: string, findingsCount: number, opts?: { force?: boolean; since?: number }): boolean {
+export function recordReviewerResult(cwd: string, reviewerName: string, findingsCount: number, opts?: { since?: number }): boolean {
   return withStateLock(cwd, (state) => {
     const pendingSince = state.reviewers_pending_at[reviewerName];
     if (opts?.since !== undefined && pendingSince !== undefined && pendingSince > opts.since) {
@@ -356,16 +356,7 @@ export function recordReviewerResult(cwd: string, reviewerName: string, findings
       log.warn("reviewer_result_stale", { agent: reviewerName, pending_added_at: pendingSince, job_started_at: opts.since });
       return state.reviewers_pending.length === 0;
     }
-    if (!state.reviewers_pending.includes(reviewerName)) {
-      // A late result for a reviewer a timeout already counted as 0: `force` re-applies the
-      // real count, otherwise delivered findings are lost and the review stays clean.
-      if (!opts?.force) return state.reviewers_pending.length === 0;
-      state.findings_count += findingsCount;
-      if (findingsCount > 0) state.status = "has_findings";
-      writeState(cwd, state);
-      notifyTransition(state);
-      return state.reviewers_pending.length === 0;
-    }
+    if (!state.reviewers_pending.includes(reviewerName)) return state.reviewers_pending.length === 0;
     state.reviewers_pending = state.reviewers_pending.filter(n => n !== reviewerName);
     delete state.reviewers_pending_at[reviewerName];
     state.findings_count += findingsCount;
