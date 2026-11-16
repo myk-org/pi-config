@@ -280,6 +280,15 @@ every `RESOLVED_EXTERNAL` thread:
 uvx myk-pi-tools@latest pr check-resolved-threads {REVIEW_DIR} ${PROJECT_TMP_DIR}/resolved-external-check.json
 ```
 
+**FAIL-OPEN if the published CLI predates this subcommand.** If the command exits
+non-zero because the published CLI does not know `check-resolved-threads`
+(unknown/unsupported command), skip the suppression gate for this run: treat every
+resolved third-party thread as `suppressed: false`, print one line stating that
+suppression was skipped because the published CLI predates the check, and CONTINUE the
+review. This is deliberate — an unsuppressed finding is only a duplicate the reviewer
+may re-raise, while a hard stop loses the whole review. Once a CLI release containing
+`check-resolved-threads` is published, the gate engages with no further change.
+
 1. Read `suppressed` per `thread_id` from the JSON output — do NOT decide it yourself.
 
 The check fails OPEN (`suppressed: false`) whenever it cannot prove the code is unchanged:
