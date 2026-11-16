@@ -17,6 +17,9 @@ import type { Task } from "./types.js";
 import {
 	TASKS_EMPTY_MESSAGE,
 	planTaskCompose,
+	planTaskCompletion,
+	selectTaskRows,
+	taskCompletionPrompt,
 	taskComposePrompt,
 	taskDetailRows,
 	tasksOverlayIntent,
@@ -43,15 +46,14 @@ function detailHeader(task: Task, theme: Theme, tasks: Task[]): string {
 	);
 }
 
-/** The subject dialog, PRE-FILLED with the current subject — `ctx.ui.input` can only show it as a
- *  placeholder, which turns a rename into a full retype (issue #1089). Enter accepts, Esc cancels. */
-async function promptSubject(
+/** The subject/note dialogs share one input dialog: Enter accepts, Esc cancels. */
+async function promptLine(
 	ctx: ExtensionCommandContext,
-	prompt: { title: string; initialValue: string },
+	prompt: { title: string; placeholder: string; initialValue?: string },
 ): Promise<string | undefined> {
-	if (typeof ctx.ui.custom !== "function") return ctx.ui.input(prompt.title, prompt.initialValue);
+	if (typeof ctx.ui.custom !== "function") return ctx.ui.input(prompt.title, prompt.initialValue ?? "");
 	return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
-		const input = new Input({ placeholder: "one line: the task subject" });
+		const input = new Input({ placeholder: prompt.placeholder });
 		// Bracketed paste puts the cursor AFTER the prefilled subject; setValue alone would leave it
 		// at 0, so the next keystroke would land in front of the name being edited.
 		if (prompt.initialValue) input.handleInput(`\x1b[200~${prompt.initialValue}\x1b[201~`);
@@ -74,15 +76,20 @@ async function promptSubject(
 	});
 }
 
-/** Open the task list overlay; loops list → detail until the list is closed. */
+const TASKS_LIST_HINTS = "Space select · x delete · n add · e edit · d done · f mine/all · Enter view · Esc close";
+
+/** Open the task list overlay; loops list → detail until the list is closed. `mine` starts the
+ *  overlay on the owner's rows only; `f` toggles the same filter in place (#1090). */
 export async function openTasksOverlay(
 	ctx: ExtensionCommandContext,
 	deps: TasksUiDeps,
+	opts: { mine?: boolean } = {},
 ): Promise<void> {
-	log.debug("tasks_overlay_open", { tasks: deps.listTasks().length });
+	log.debug("tasks_overlay_open", { tasks: deps.listTasks().length, mine: !!opts.mine });
+	let mineOnly = opts.mine ?? false;
 	// `n`/`e` need the whole terminal for the input dialog, so the list closes and the loop below
 	// re-opens it — which also re-reads the store, so the new/edited row is never a stale snapshot.
-	const queue: Array<{ kind: "add" } | { kind: "edit"; task: Task }> = [];
+	const queue: Array<{ kind: "add" } | { kind: "edit"; task: Task } | { kind: "complete"; task: Task }> = [];
 	// An empty board has no row to press `n` on, so the create dialog opens directly — once, so a
 	// cancelled dialog returns the terminal instead of reopening forever (issue #1089).
 	let offeredFirstTask = false;
@@ -95,16 +102,21 @@ export async function openTasksOverlay(
 			queue.push({ kind: "add" });
 		} else {
 			await openListDetailOverlay(ctx, {
-				emptyMessage: TASKS_EMPTY_MESSAGE,
+				emptyMessage: mineOnly ? "No tasks assigned to you." : TASKS_EMPTY_MESSAGE,
+				allowEmpty: true,
 				listSpec: {
-					title: "Tasks",
+					emptyBody: () =>
+						mineOnly
+							? "No tasks assigned to you. Press f for all or n to add."
+							: "No tasks. Press n to add.",
+					title: mineOnly ? "Tasks · mine" : "Tasks",
 					countLabel: (tasks) => `${tasks.length} task${tasks.length === 1 ? "" : "s"}`,
 					borderTitle: (tasks) => {
 						const done = tasks.filter((t) => t.status === "completed").length;
-						return `tasks · ${done} done / ${tasks.length}`;
+						return `tasks · ${done} done / ${tasks.length}${mineOnly ? " · mine" : ""}`;
 					},
-					footerHints: "Space select · x delete · n add · e edit · Enter view · Esc close",
-					listItems: () => deps.listTasks(),
+					footerHints: TASKS_LIST_HINTS,
+					listItems: () => selectTaskRows(deps.listTasks(), { mine: mineOnly }),
 					rowParts: (task, theme) => {
 						const row = toTaskRowView(task, (id) => deps.listTasks().find((t) => t.id === id));
 						return {
@@ -115,21 +127,38 @@ export async function openTasksOverlay(
 						};
 					},
 					onKey: (key, task, selected) => {
+						if (key === "f") {
+							mineOnly = !mineOnly;
+							log.debug("tasks_overlay_filter", { mine: mineOnly });
+							return "redraw";
+						}
 						const intent = tasksOverlayIntent(key);
 						if (!intent) return false;
-						// Add/edit are single-row by nature: acting on the focused row while rows are picked
+						// Act/edit/done are single-row by nature: acting on the focused row while rows are picked
 						// would silently ignore the selection, so refuse and leave the rows selected.
 						if (selected.length > 0) {
 							log.debug("tasks_overlay_key_refused", { intent, selected: selected.length });
+							const label = intent === "add" ? "Add" : intent === "edit" ? "Edit" : "Done";
 							ctx.ui.notify(
-								`${intent === "add" ? "Add" : "Edit"} works on one task — clear the selection (Space) first.`,
+								`${label} works on one task — clear the selection (Space) first.`,
 								"warning",
 							);
 							return "redraw";
 						}
 						if (intent === "add") queue.push({ kind: "add" });
-						else if (task) queue.push({ kind: "edit", task });
-						else return false;
+						else if (intent === "edit") {
+							if (!task) return false;
+							queue.push({ kind: "edit", task });
+						} else {
+							if (!task) return false;
+							// The owner closes their own task with an optional note; the agent's task just closes.
+							if (task.assignee === "user") queue.push({ kind: "complete", task });
+							else {
+								log.info("tasks_overlay_complete", { taskId: task.id });
+								deps.completeTask(task.id, { by: "user" });
+								return "redraw";
+							}
+						}
 						log.debug("tasks_overlay_key", { intent, taskId: task?.id });
 						return "close";
 					},
@@ -183,17 +212,35 @@ export async function openTasksOverlay(
 
 		const request = queue.pop();
 		if (!request) return;
+		if (request.kind === "complete") {
+			const note = await promptLine(ctx, taskCompletionPrompt(request.task));
+			const plan = planTaskCompletion(note);
+			if (plan.kind === "skip") {
+				log.debug("tasks_overlay_completion_skipped", { reason: plan.reason, taskId: request.task.id });
+				continue;
+			}
+			log.info("tasks_overlay_complete_by_user", { taskId: request.task.id });
+			deps.completeTask(request.task.id, { by: "user", ...(plan.note ? { note: plan.note } : {}) });
+			continue;
+		}
 		const editing = request.kind === "edit" ? request.task : undefined;
-		const text = await promptSubject(
-			ctx,
-			taskComposePrompt(editing && { id: editing.id, subject: editing.subject }),
-		);
+		const text = await promptLine(ctx, {
+			...taskComposePrompt(editing && { id: editing.id, subject: editing.subject }),
+			placeholder: "one line: the task subject",
+		});
 		const plan = planTaskCompose(text, editing && { id: editing.id, subject: editing.subject });
 		if (plan.kind === "skip") {
 			log.debug("tasks_overlay_compose_skipped", { reason: plan.reason, taskId: editing?.id });
 			continue;
 		}
-		if (plan.kind === "create") deps.createTask(plan.subject);
-		else deps.updateTaskSubject(plan.id, plan.subject);
+		if (plan.kind === "create") {
+			const choice = await promptLine(ctx, { title: "Who is this task for?", placeholder: "you or llm" });
+			const assignee = choice?.trim().toLowerCase();
+			if (assignee !== "you" && assignee !== "llm") {
+				log.debug("tasks_overlay_assignee_cancelled");
+				continue;
+			}
+			deps.createTask(plan.subject, assignee === "you" ? "user" : "llm");
+		} else deps.updateTaskSubject(plan.id, plan.subject);
 	}
 }

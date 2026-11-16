@@ -205,25 +205,43 @@ Unified session status in one notification: async agents, cron tasks, git branch
 
 Task manager for the current session's task list.
 
-- **Arguments:** optional subcommand — none (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
+- **Arguments:** optional subcommand — none (list), `mine` (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
 - **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` navigate, `Space` multi-selects, `Enter` opens a task,
-  `n` adds a task from one line, `e` edits the focused task's subject, `x` deletes the focused task (or the `Space`-selected tasks), `Esc` closes
-- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store (`n` and `e` refuse while rows are selected). An empty board opens the create
-  dialog directly, since there is no row to press `n` on. The edit dialog starts pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line
-  writes nothing, and an unchanged subject is a no-op
-- **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`; a task with currently open blockers is marked `⛔ blocked`
-- **Detail:** subject, status, owner, blocked-by (currently open blockers), description, created and updated
+  `n` adds a task from one line, `e` edits the focused task's subject, `d` marks the focused task done, `f` toggles `mine`/`all`,
+  `x` deletes the focused task (or the `Space`-selected tasks), `Esc` closes
+- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store (`n`, `e`, and `d` refuse while rows are selected). An empty board opens
+  the create dialog directly, since there is no row to press `n` on. `n` asks who the task is for (`you` or `llm`) once the line is accepted. The edit dialog starts
+  pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
+- **`d`:** completes the focused task. On a task assigned to `you` it opens an optional one-line note dialog first — an empty line completes without a note, `Esc` cancels
+  and changes nothing. The outcome is kept on the record (`completionNote`, `completedBy`), and the session receives one message reading
+  `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns the result on its next turn
+- **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] [you|llm] <subject>`; a task with currently open blockers is marked `⛔ blocked`.
+  Tasks assigned to `you` sort above `[llm]` tasks within their status group
+- **Assignee:** a task is `llm` (the agent does it, the default for every existing task) or `user` (only the owner can — a merge, a live check in a real UI, an approval).
+  User tasks never produce a reminder and are not counted as an agent's open work; `/tasks mine` (and `f` in the overlay) shows only them
+- **Detail / TaskGet:** detail shows subject, status, completed-by, outcome note, owner, blocked-by (currently open blockers), description, created and updated;
+  completion attribution and the verbatim note are also readable via `TaskGet`. Reopening clears the old outcome in single and bulk updates. Manual completion always
+  records the actor as `user`, regardless of assignee; legacy completed records read as completed by `llm`. Only user-assigned manual completions send a notice, queued as
+  a follow-up after the agent finishes its run. Failed notice submission is logged without note text and is not retried automatically
 - **`create`:** prompts for subject and description (bridged, so pidash can answer it too). Headless sessions receive guidance to use `TaskCreate` or an interactive UI.
-- **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op,
-  and `start` refuses open blockers or reopening completed work
+- **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op, and `start` refuses open
+  blockers or reopening completed work. `done` records manual attribution and sends the same owner-task notice as the overlay, without a note. To attach a note, use `d`
+  on a user task in the terminal overlay
+- **Enforcement:** `TaskUpdate`, `TaskBulkUpdate` and automatic job lifecycle transitions cannot start or complete user-assigned tasks. Combining reassignment with status
+  cannot bypass this guard. Reassignment alone, editing and deletion remain supported
+- **Empty mine view:** `f` still returns to all tasks and `n` still creates a task. Cancelling either the subject or assignee prompt writes nothing
 - **Existing `clear completed` / `clear all` subcommands:** delete matching tasks and report the count. Status-based bulk clearing is a subcommand, not an overlay key;
   the overlay deletes the focused task or `Space`-selected tasks with `x`.
+- **Pidash task-panel complete:** uses the same manual completion operation as `/tasks done`, records `completedBy: user`, and submits one follow-up notice only for a
+  user-assigned task. Repeated completion is a no-op, including after a failed notice submission. The panel does not offer a completion note; use the terminal overlay to
+  attach one.
 - **No terminal, or a command sent from the pidash browser:** the same rows are printed as plain text (followed by the subcommand hint) instead of opening the overlay —
   a browser user cannot see or drive a terminal overlay, so text is the honest answer
 - **Note:** when the task scope is `session` and the list becomes empty, the backing file is deleted.
 
 ```
 /tasks
+/tasks mine
 /tasks create
 /tasks start 3
 /tasks done 3
@@ -274,21 +292,29 @@ Project memory, backed by topic files under `.pi/memory/topics/`. See [Memory Ar
 
 ### Task* (7 tools)
 
-The session task list behind `/tasks` and the task widget. Statuses are `pending`, `in_progress`, `completed`, `deleted` (deleted is a status, not a hard delete, except through `TaskBulkDelete`).
+The session task list behind `/tasks` and the task widget. Statuses are `pending`, `in_progress`, `completed`, `deleted` (deleted is a status, not a hard delete, except
+through `TaskBulkDelete`). Every task is assigned to `llm` (the agent, the default) or `user` (the owner), shown as `[llm]` / `[you]`.
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
-| `TaskCreate` | Create one task | `subject`, `description`, `activeForm` (spinner text), `agentType` (descriptive metadata only — it does not dispatch an agent), `metadata` |
+| `TaskCreate` | Create one task | `subject`, `description`, `activeForm` (spinner text), `assignee` (`llm` = the agent does it, the default; `user` = only the owner can, e.g. a merge or an approval), `agentType` (descriptive metadata only — it does not dispatch an agent), `metadata` |
 | `TaskList` | List all tasks as `id`, `subject`, `status`, `owner`, `blockedBy` | none |
 | `TaskGet` | Full task detail including `blocks` and `blockedBy` | `taskId` |
-| `TaskUpdate` | Update a task; `in_progress` sets it as the widget's active task | `taskId`, `status`, `subject`, `description`, `activeForm`, `owner`, `metadata` (merge, `null` deletes), `addBlocks[]`, `addBlockedBy[]` |
-| `TaskBulkCreate` | Create several tasks in one call | `tasks[]` (`subject`, `description`, `blockedBy[]`) |
+| `TaskUpdate` | Update a task; `in_progress` sets it as the widget's active task | `taskId`, `status`, `subject`, `description`, `activeForm`, `assignee`, `owner`, `metadata` (merge, `null` deletes), `addBlocks[]`, `addBlockedBy[]` |
+| `TaskBulkCreate` | Create several tasks in one call | `tasks[]` (`subject`, `description`, `blockedBy[]`, `assignee`) |
 | `TaskBulkUpdate` | Update several tasks in one call | `updates[]` (`taskId`, `status`, `subject`, `description`, `addBlockedBy[]`, `addBlocks[]`) |
 | `TaskBulkDelete` | Hard-delete several tasks by id | `taskIds[]` |
 
-File-backed task stores watch the configured parent directory and filter by the task filename, so repeated atomic file replacements remain visible, including after session resume. Symlinked stores follow up to 8 symlink hops, watching each hop's parent directory (or the nearest existing ancestor directory until a missing target directory is created) for link retargets, target writes, and replacements without creating external target directories. Saves still atomically replace the configured pathname, not the symlink target; if the prior load failed with a JSON `SyntaxError`, `save()` best-effort preserves a one-time `<file>.corrupt` copy before overwriting. Local mutations notify synchronously; filesystem events can also refresh the widget and broadcast the same snapshot again. These notifications are invalidations, not exactly-once mutation events. Refresh callbacks do not write the store. Subagent children do not start watchers.
+File-backed task stores watch the configured parent directory and filter by the task filename, so repeated atomic file replacements remain visible, including after session
+resume. Symlinked stores follow up to 8 symlink hops, watching each hop's parent directory (or the nearest existing ancestor directory until a missing target directory is
+created) for link retargets, target writes, and replacements without creating external target directories. Saves still atomically replace the configured pathname, not the
+symlink target; if the prior load failed with a JSON `SyntaxError`, `save()` best-effort preserves a one-time `<file>.corrupt` copy before overwriting. Local mutations notify
+synchronously; filesystem events can also refresh the widget and broadcast the same snapshot again. These notifications are invalidations, not exactly-once mutation events.
+Refresh callbacks do not write the store. Subagent children do not start watchers.
 
-Watching depends on the platform's `fs.watch` support and event delivery. Replacing the watched parent directory, changes reported without a filename, and filesystems without reliable notifications are not covered; there is no polling fallback or replay of changes made while the watcher is closed. Watcher errors close and clear the handles so a later `reopen()` can try again. There is no automatic retry timer during an active session.
+Watching depends on the platform's `fs.watch` support and event delivery. Replacing the watched parent directory, changes reported without a filename, and filesystems without
+reliable notifications are not covered; there is no polling fallback or replay of changes made while the watcher is closed. Watcher errors close and clear the handles so a later
+`reopen()` can try again. There is no automatic retry timer during an active session.
 
 ### Core tools (9 tools)
 

@@ -114,7 +114,21 @@ A change is complete when ALL pass:
 3. `npx tsx --test tests/node/**/*.test.ts` exits 0
 4. `npm run typecheck` exits 0
 5. AGENTS.md / README.md updated if structure/commands/features changed
-6. Files committed with message: `type(scope): description`
+6. **LLM-facing capability is TAUGHT, not just built**: a new tool, parameter, key or mode the
+   model must use is incomplete until (a) the rule that governs when to use it lives in
+   `rules/` (injected every turn), and (b) the tool/schema description says what it is for.
+   `docs/` alone does not count — docs are for humans. Ask at PR time: "how would I know this
+   exists?" If the answer is "I read the diff", the feature is unfinished.
+7. Files committed with message: `type(scope): description`
+
+## Task completion contract
+
+TaskUpdate, TaskBulkUpdate and orchestrator lifecycle helpers refuse agent start/completion
+of user-assigned tasks, including reassignment combined with status. Reassignment alone,
+content edits and deletion remain supported. Manual `/tasks done`, browser task-panel completion and overlay completion
+record `completedBy: user` independently of assignee. Only user-assigned completions send
+a follow-up notice, without automatic retries. TaskGet and task details expose the note;
+logs must never contain it. Reopening clears the outcome in single and bulk store updates.
 
 ## Logging Requirements
 

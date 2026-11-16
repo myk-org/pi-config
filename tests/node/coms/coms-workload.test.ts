@@ -250,7 +250,7 @@ describe("workload drilldown sections", () => {
       "agents (1)",
       "  ts-expert (job-7)  running  10m0s  migrate the widget",
       "tasks (1)",
-      "  ◼ #7 [in_progress] Wire heartbeat",
+      "  ◼ #7 [in_progress] [llm] Wire heartbeat",
       "crons (1)",
       "  session:c9  every 30m  in 20m  nightly audit",
     ]);
@@ -263,7 +263,7 @@ describe("workload drilldown sections", () => {
 
   it("marks a blocked task the way /tasks does", () => {
     const lines = workloadSectionLines(detail({ tasks: [{ id: "4", status: "pending", subject: "wait on 3", blockedBy: ["3"] }] }));
-    assert.equal(lines[1], "  ◻ #4 [pending] wait on 3 ⛔ blocked");
+    assert.equal(lines[1], "  ◻ #4 [pending] [llm] wait on 3 ⛔ blocked");
   });
 
   it("strips control sequences a peer put in a row", () => {

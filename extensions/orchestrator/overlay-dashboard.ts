@@ -75,6 +75,7 @@ export interface OverlayListSpec<
   /** Defaults to DEFAULT_LIST_HINTS (+ "Space multi-select" when selectable). */
   footerHints?: string;
   listItems: () => TItem[];
+  emptyBody?: string | (() => string);
   rowParts: (item: TItem, theme: Theme) => OverlayRowParts;
   /** Optional destructive/action key (x). */
   onX?: (item: TItem) => void;
@@ -258,6 +259,17 @@ export class OverlayListDashboard<
       return;
     }
     if (action === "redraw") {
+      if (this.multi.size > 0) {
+        const visible = new Set(this.items().map((item) => item.id));
+        let pruned = false;
+        for (const id of [...this.multi]) {
+          if (!visible.has(id)) {
+            this.multi.delete(id);
+            pruned = true;
+          }
+        }
+        if (pruned) this.spec.onSelectionChange?.([...this.multi]);
+      }
       log.debug("list_key_action", { key: data, outcome: "redraw" });
       this.invalidate();
       this.tui.requestRender(true);
@@ -403,6 +415,10 @@ export class OverlayListDashboard<
     const out: string[] = [];
 
     log.debug("list_render_rows", { items: items.length, height, multi: this.multi.size });
+    if (items.length === 0 && this.spec.emptyBody) {
+      const emptyText = typeof this.spec.emptyBody === "function" ? this.spec.emptyBody() : this.spec.emptyBody;
+      return [theme.fg("dim", emptyText)];
+    }
 
     let start = 0;
     if (items.length > height) {
@@ -621,6 +637,8 @@ export async function openListDetailOverlay<
   ctx: ExtensionCommandContext,
   options: {
     emptyMessage: string;
+    /** Keep filter/create keys available when a caller deliberately supplies an empty list. */
+    allowEmpty?: boolean;
     listSpec: OverlayListSpec<TId, TItem>;
     /** Re-open the list focused on this row (a caller returning from a deeper level). An id that
      *  is no longer there falls back to the first row. */
@@ -648,11 +666,12 @@ export async function openListDetailOverlay<
 
   while (true) {
     const items = options.listSpec.listItems();
-    if (items.length === 0) {
+    if (items.length === 0 && !options.allowEmpty) {
       ctx.ui.notify(options.emptyMessage, "info");
       return;
     }
 
+    log.debug("overlay_list_open", { count: items.length, allowEmpty: !!options.allowEmpty });
     const picked = await ctx.ui.custom<TId | null>(
       (tui, theme, keybindings, done) =>
         new OverlayListDashboard(

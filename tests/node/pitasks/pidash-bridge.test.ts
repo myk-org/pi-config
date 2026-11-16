@@ -1,7 +1,8 @@
 /** #968 A — pitasks pidash bridge: list request, task operations, live broadcast. */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import pitasks, { createTask } from "../../../extensions/pitasks/index.ts";
+import pitasks, { createTask, taskStore } from "../../../extensions/pitasks/index.ts";
+import { autoCompleteTask, autoMarkInProgress } from "../../../extensions/orchestrator/task-lifecycle.ts";
 
 type Handler = (data: unknown) => void;
 
@@ -56,6 +57,74 @@ describe("pitasks pidash bridge", () => {
   let env: ReturnType<typeof bootPitasks>;
 
   beforeEach(() => { env = bootPitasks(); });
+
+  it("browser completion publishes one owner follow-up with a user actor", () => {
+    const task = taskStore.create("browser owner step", "", { type: "local", origin: "user", session: "", project: "" }, undefined, undefined, "user");
+    const messages: any[] = [];
+    env.pi.sendMessage = (message: any, options: any) => messages.push({ message, options });
+    env.fire("pidash:task-op", { op: "complete", taskId: task.id });
+    env.fire("pidash:task-op", { op: "complete", taskId: task.id });
+    assert.equal(taskStore.get(task.id)?.completedBy, "user");
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].message.customType, "task-completed-by-user");
+    assert.equal(messages[0].message.details.taskId, task.id);
+    assert.ok(messages[0].message.content.includes(task.subject));
+    assert.deepEqual(messages[0].options, { triggerTurn: true, deliverAs: "followUp" });
+  });
+
+  it("browser completion of an agent task does not send an owner notice", () => {
+    const task = createTask("agent step", "");
+    const messages: unknown[] = [];
+    env.pi.sendMessage = (message: unknown) => messages.push(message);
+    env.fire("pidash:task-op", { op: "complete", taskId: task.id });
+    assert.equal(taskStore.get(task.id)?.completedBy, "user");
+    assert.deepEqual(messages, []);
+  });
+
+  it("browser completion stays completed after a failed notice without retry", () => {
+    const task = taskStore.create("browser owner step", "", { type: "local", origin: "user", session: "", project: "" }, undefined, undefined, "user");
+    let submissions = 0;
+    env.pi.sendMessage = () => { submissions++; throw new Error("private submission text"); };
+    env.fire("pidash:task-op", { op: "complete", taskId: task.id });
+    env.fire("pidash:task-op", { op: "complete", taskId: task.id });
+    assert.equal(submissions, 1);
+    assert.equal(taskStore.get(task.id)?.status, "completed");
+    assert.equal(tasksPayload(env.captured).find(t => t.id === task.id)?.completedBy, "user");
+  });
+
+  it("text completion sends one follow-up notice for an owner task", async () => {
+    const task = taskStore.create("owner step", "", { type: "local", origin: "user", session: "", project: "" }, undefined, undefined, "user");
+    const messages: any[] = [];
+    env.pi.sendMessage = (message: any, options: any) => messages.push({ message, options });
+    const handler = env.captured.commands.get("tasks").handler;
+    await handler(`done ${task.id}`, { ui: { notify() {} } });
+    await handler(`done ${task.id}`, { ui: { notify() {} } });
+    assert.equal(taskStore.get(task.id)?.completedBy, "user");
+    assert.equal(messages.length, 1);
+    assert.deepEqual(messages[0].options, { triggerTurn: true, deliverAs: "followUp" });
+  });
+
+  it("does not retry a failed completion notice", async () => {
+    const task = taskStore.create("owner step", "", { type: "local", origin: "user", session: "", project: "" }, undefined, undefined, "user");
+    let sends = 0;
+    env.pi.sendMessage = () => { sends++; throw new Error("submission failed"); };
+    const notices: string[] = [];
+    const handler = env.captured.commands.get("tasks").handler;
+    const ctx = { ui: { notify: (message: string) => notices.push(message) } };
+    await handler(`done ${task.id}`, ctx);
+    await handler(`done ${task.id}`, ctx);
+    assert.equal(sends, 1);
+    assert.equal(taskStore.get(task.id)?.status, "completed");
+    assert.ok(notices.some(message => message.includes("notice could not be submitted")));
+  });
+
+  for (const transition of [autoCompleteTask, autoMarkInProgress]) {
+    it(`${transition.name} leaves the live owner's task untouched`, async () => {
+      const task = taskStore.create("owner step", "", { type: "local", origin: "user", session: "", project: "" }, undefined, undefined, "user");
+      assert.equal(await transition(task.id, process.cwd()), false);
+      assert.equal(taskStore.get(task.id)?.status, "pending");
+    });
+  }
 
   it("tasks-list-request responds with the live store", () => {
     env.fire("pidash:tasks-list-request");
