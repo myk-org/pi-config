@@ -487,6 +487,7 @@ def fetch_review_threads(
             "path": first_comment.get("path"),
             "line": first_comment.get("line"),
             "body": first_comment.get("body", ""),
+            "created_at": first_comment.get("createdAt"),
             "replies": [
                 {
                     "author": c.get("author", {}).get("login") if c.get("author") else None,

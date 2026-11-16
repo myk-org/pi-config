@@ -246,11 +246,51 @@ This second call omits `--user` and `--include-resolved`, so it returns only cur
 threads from every author (humans, Qodo, CodeRabbit, etc.). The output is passed to
 reviewers in Phase 2 so they can avoid raising duplicate findings.
 
+Third, fetch ALL review threads (resolved + unresolved) from every author — this is the only
+source of threads that other reviewers raised and that were later resolved (dedup in Phase 2
+and Phase 3):
+
+```bash
+myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR}/all-resolved --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
+```
+
+This call omits `--user`, so it returns threads from every author with `is_resolved` and
+`author` on each thread. From it, isolate the RESOLVED third-party threads:
+
+- keep threads where `is_resolved: true` AND `author != {current_github_user}` → the
+  `RESOLVED_EXTERNAL` set. For each thread the resolution timestamp is the `created_at` of
+  its last reply, or the thread's own `created_at` when it has no replies.
+- Threads authored by us are already covered by the first (`--user`) fetch — do NOT use the
+  `all-resolved` fetch for the resolved/unresolved categorization of our own threads.
+
+For each `RESOLVED_EXTERNAL` thread, decide mechanically whether its resolution still holds
+by checking the clone from Phase 1a — did anything change at that `path` after the resolution
+timestamp?
+
+```bash
+git log --since="{resolved_at}" --format=%H -- {path}
+```
+
+- **No commit touched `path` after resolution** → the finding was accepted/dismissed and the
+  code is unchanged: treat it as suppressed. Mark the thread `suppressed: true`, include it in
+  the `RESOLVED_COMMENTS` block (Phase 2), drop matching `[NEW]` findings in Phase 3, and
+  persist it to the DB as `resolved_accepted` (see "Persist third-party resolutions" below).
+- **A commit touched `path` after resolution** → the code moved on and the fix may be
+  incomplete, so nothing is suppressed: mark `suppressed: false`, still include it in
+  `RESOLVED_COMMENTS` (reviewers apply the "materially changed" rule themselves), but do NOT
+  drop matching `[NEW]` findings and do NOT persist a suppressing verdict.
+
+A third-party thread is NEVER re-raised as `[PREV-BAD-FIX]` / `[PREV-NO-FIX]` — those labels
+belong to our own threads only. If the code at the path changed after resolution and the
+finding is still real, the Phase 2 reviewers re-derive it as a normal `[NEW]` finding.
+
 Parse the JSON output from the `--user` fetch (`${PROJECT_TMP_DIR}`). This file is used
 for resolved/unresolved categorization below. The all-unresolved fetch (`${PROJECT_TMP_DIR}/all-unresolved`)
 is used separately in Phase 2 for dedup context — do NOT use it for the resolved/unresolved
 categorization above. However, it IS used later in this same phase for `[AUTHOR-QUESTION]`
-detection (see "Detect questions directed at us" section below).
+detection (see "Detect questions directed at us" section below). The all-resolved fetch
+(`${PROJECT_TMP_DIR}/all-resolved`) feeds Phase 2 (`RESOLVED_COMMENTS`) and Phase 3 (resolved
+third-party dedup) only — never the categorization of our own threads.
 
 For the `human` list, categorize each thread:
 
@@ -310,6 +350,41 @@ Where:
 
 This persists resolution decisions to the DB so future review cycles can query them.
 Resolution decisions are OURS (from this LLM evaluation), not the PR author's click.
+
+**Persist third-party resolutions (MANDATORY):**
+
+A resolved third-party thread never reaches the DB through `update-resolution` (that command
+matches only comments **we** posted). Persist the `suppressed: true` `RESOLVED_EXTERNAL`
+threads with a single `store-pr-review` call so `get-review-history` can see them in later
+cycles:
+
+1. Write this JSON to `${PROJECT_TMP_DIR}/resolved-external.json` using the `write` tool:
+
+```json
+{
+  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{LATEST_COMMIT_SHA}"},
+  "comments": [
+    {
+      "thread_id": "{thread_id}",
+      "comment_id": {comment_id},
+      "path": "{path}",
+      "line": {line},
+      "body": "{body}",
+      "author": "{author}",
+      "posted_at": "{resolved_at}",
+      "status": "resolved_external",
+      "resolution_status": "resolved_accepted",
+      "author_response": "{author's resolving reply, or 'Resolved by author on GitHub'}"
+    }
+  ]
+}
+```
+
+1. Run: `myk-pi-tools pr store-pr-review ${PROJECT_TMP_DIR}/resolved-external.json`
+
+Rows are upserted by `thread_id`, so re-running `/pr-review` on the same PR updates the
+existing row instead of duplicating it. Skip this step when the `RESOLVED_EXTERNAL` set is
+empty or when no thread is `suppressed: true`.
 
 **All past comment statuses are included in the combined findings in Phase 4 —
 not presented as a separate summary.**
@@ -388,6 +463,13 @@ Before spawning reviewers, read the all-unresolved JSON from `${PROJECT_TMP_DIR}
 and format the existing comments as a block of context. Build an `EXISTING_COMMENTS` string
 listing each unresolved thread with its file path, line number, author, and body.
 
+Then read the all-resolved JSON from `${PROJECT_TMP_DIR}/all-resolved/` (the third fetch) and
+build a `RESOLVED_COMMENTS` string from the `RESOLVED_EXTERNAL` set isolated in Phase 1c.
+List each thread with its file path, line number, author, body, and resolution timestamp
+(`created_at` of the last reply, or of the thread when it has no replies). Append
+`(suppressed: true)` to threads whose `path` saw no commit after that timestamp and
+`(suppressed: false)` to the rest, so reviewers can weigh them.
+
 > **Note:** Some comment types (e.g., Qodo sticky findings without code refs) may have an empty
 > `path` or `null` line number. Use `"(no file)"` as fallback when path is missing and
 > `"(no line)"` when line is missing or null.
@@ -407,21 +489,26 @@ Also build a `CODE_SUGGESTIONS` instruction block to include in each reviewer's 
 > missing tests, new files, or design questions where the fix isn't a simple line replacement.
 > The suggestion must replace the exact lines referenced by the finding.
 
-Then include `EXISTING_COMMENTS` and `CODE_SUGGESTIONS` in every reviewer's task prompt:
+Then include `EXISTING_COMMENTS`, `RESOLVED_COMMENTS` and `CODE_SUGGESTIONS` in every
+reviewer's task prompt:
 
 ```text
 subagent(tasks=[
-  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
-  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
-  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
-  {agent: "code-reviewer-docs", task: "Review this PR for documentation quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check all docs for completeness and accuracy.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Docs", taskId: "<task 8 ID>"},
-  {agent: "code-reviewer-spec", task: "Review this PR for spec compliance. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check PR description claims vs diff, issue deliverables vs diff, and scope creep.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Spec", taskId: "<task 9 ID>"},
+  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
+  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
+  {agent: "code-reviewer-docs", task: "Review this PR for documentation quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check all docs for completeness and accuracy.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Docs", taskId: "<task 8 ID>"},
+  {agent: "code-reviewer-spec", task: "Review this PR for spec compliance. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check PR description claims vs diff, issue deliverables vs diff, and scope creep.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Spec", taskId: "<task 9 ID>"},
 ])
 ```
 
 Where `<EXISTING_COMMENTS>` is replaced with the formatted unresolved comments from
 `${PROJECT_TMP_DIR}/all-unresolved/`. If no unresolved comments exist, replace with
 "No existing unresolved comments found."
+
+Where `<RESOLVED_COMMENTS>` is replaced with the formatted resolved third-party comments
+from `${PROJECT_TMP_DIR}/all-resolved/`. If there are none, replace with
+"No resolved third-party comments found."
 
 Each reviewer runs in the cloned repo directory (`REVIEW_DIR`) and has full access to:
 
@@ -455,6 +542,22 @@ existing unresolved comment.
 > Task 4 are NEVER dropped by dedup. These represent the current user's own prior review
 > comments that naturally appear in the all-unresolved list — removing them would lose
 > tracking of unresolved prior findings. Dedup applies ONLY to `[NEW]` findings.
+
+**Resolved third-party findings dedup:** For each `[NEW]` finding, also compare against the
+`RESOLVED_EXTERNAL` set from `${PROJECT_TMP_DIR}/all-resolved/` isolated in Phase 1c
+(otherwise accepted findings keep coming back).
+
+- Match on path + body similarity — the same file and a similar description. Do NOT compare
+  line numbers: `reviews fetch` does not fetch `isOutdated`, so lines on resolved or rebased
+  threads are unreliable.
+- Drop the `[NEW]` finding only when the matched thread is `suppressed: true` (no commit
+  touched that path after the thread's resolution timestamp). Record it as
+  `"Auto-skipped (previously raised by <author> and resolved)"`.
+- When the thread is `suppressed: false` (code changed after resolution), keep the finding.
+  You may note that it re-raises a previously resolved thread.
+- Only `resolved_accepted` / `resolved_fixed` verdicts suppress; a matching thread we
+  evaluated as `resolved_bad_fix` or `resolved_no_fix` per `get-review-history` never drops a
+  `[NEW]` finding.
 
 **Previously skipped findings dedup:** Also check the PR review database for findings
 the user previously skipped on this same PR. Run:
