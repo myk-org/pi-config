@@ -1,12 +1,17 @@
 /**
  * Task lifecycle helpers — auto-complete / mark in_progress via owned taskStore.
- * Uses the published pitasks store when it owns `cwd`, falling back to disk stores
- * under `<cwd>/.pi/tasks/` (or `_storeFactory` in unit tests).
+ *
+ * The store is never guessed. Whoever starts a task records the store file once, from the
+ * live owner (`resolveTaskStorePath`), and every later write lands in the live published
+ * store when that is the recorded file, else in exactly the recorded file, else nowhere:
+ * the current env cannot tell where an already-running job's task lives, and a guess can
+ * complete a same-numbered task in a different list (Qodo db702025, f796c6c1).
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
+import { resolveStorePath } from "../pitasks/task-store.js";
 import { publishedTaskStore, publishedTaskTelemetryActive } from "../shared/task-store-bridge.js";
 
 const log = createLogger("task-lifecycle");
@@ -20,18 +25,18 @@ function canonicalPath(target: string): string {
   }
 }
 
-/** Disk store candidate: the session's own file, or the project list when nothing scopes the
- *  lookup. The project list is deliberately NOT a fallback behind the session file — a restored
- *  job whose store no longer holds its task would otherwise finish a different task with the
- *  same numeric id (Qodo 42ab2269). */
-function candidateStorePaths(cwd: string, sessionId?: string): string[] {
-  const tasksDir = path.join(cwd, ".pi", "tasks");
-  const fileName = sessionId ? `tasks-${sessionId.replace(/[/\\]/g, "_")}.json` : "tasks.json";
-  return [path.join(tasksDir, fileName)];
+/** The store a task belongs to right now: the published pitasks store, else pitasks' own
+ *  resolution for this cwd/session. Callers record the result when the work starts — that
+ *  string is the only thing a later write may trust. */
+export function resolveTaskStorePath(cwd: string, sessionId?: string): string | undefined {
+  const live = publishedTaskStore() as { filePath?: string } | null;
+  if (typeof live?.filePath === "string") return live.filePath;
+  return resolveStorePath(sessionId, { cwd });
 }
 
-/** Resolve the live pitasks store when it belongs to `cwd` (bridge first, module binding second). */
-async function resolveLiveStore(cwd: string): Promise<any> {
+/** Resolve the live pitasks store when it is the recorded one (bridge first, module binding
+ *  second). Without a recorded path, a store in another directory is the wrong list. */
+async function resolveLiveStore(cwd: string, storePath?: string): Promise<any> {
   let store: any = publishedTaskStore();
   if (!store) {
     try {
@@ -46,10 +51,22 @@ async function resolveLiveStore(cwd: string): Promise<any> {
     log.debug("task_lifecycle_live_store_unavailable", { reason: "not_published", cwd });
     return null;
   }
-  if (!store.filePath || process.env.PI_TASKS || !cwd) return store;
+  if (!store.filePath) return store;
+  if (storePath) {
+    if (canonicalPath(store.filePath) === canonicalPath(storePath)) return store;
+    log.debug("task_lifecycle_live_store_unavailable", { reason: "recorded_path_mismatch", cwd, storePath: store.filePath, recorded: storePath });
+    return null;
+  }
+  if (process.env.PI_TASKS || !cwd) return store;
   if (canonicalPath(path.dirname(store.filePath)) === canonicalPath(path.join(cwd, ".pi", "tasks"))) return store;
   log.debug("task_lifecycle_live_store_unavailable", { reason: "cwd_mismatch", cwd, storePath: store.filePath });
   return null;
+}
+
+/** No store is known for this task, so no file may be touched — say so instead of guessing. */
+function unknownStore(label: string, taskId: string, nextStatus: string): false {
+  log.warn("task_lifecycle_store_unknown", { taskId, reason: "no_store_recorded", label, targetStatus: nextStatus });
+  return false;
 }
 
 /** Activate or deactivate task telemetry via the published bridge (falling back to local import). */
@@ -110,7 +127,7 @@ async function transitionTaskStatus(
   label: string,
   taskId: string,
   cwd: string,
-  sessionId: string | undefined,
+  storePath: string | undefined,
   shouldUpdate: (status: string) => boolean,
   nextStatus: "in_progress" | "completed",
   telemetryActive: boolean,
@@ -122,22 +139,18 @@ async function transitionTaskStatus(
     : "task_auto_start_owner_refused";
 
   if (_storeFactory) {
-    for (const storePath of candidateStorePaths(cwd, sessionId)) {
-      let store: any;
-      try {
-        store = _storeFactory(storePath);
-        const outcome = writeStatus(store, taskId, shouldUpdate, nextStatus, ownerRefusedEvent);
-        if (outcome === "written") return true;
-        if (outcome === "refused") return false;
-      } catch (e: any) {
-        log.warn("task_lifecycle_status_write_failed", { label, via: "factory", taskId, targetStatus: nextStatus, storePath, errorType: e?.name ?? typeof e, error: String(e?.message ?? e).slice(0, 120) });
-        continue;
-      } finally { if (store && typeof store.close === "function") store.close(); }
-    }
-    return false;
+    if (!storePath) return unknownStore(label, taskId, nextStatus);
+    let store: any;
+    try {
+      store = _storeFactory(storePath);
+      return writeStatus(store, taskId, shouldUpdate, nextStatus, ownerRefusedEvent) === "written";
+    } catch (e: any) {
+      log.warn("task_lifecycle_status_write_failed", { label, via: "factory", taskId, targetStatus: nextStatus, storePath, errorType: e?.name ?? typeof e, error: String(e?.message ?? e).slice(0, 120) });
+      return false;
+    } finally { if (store && typeof store.close === "function") store.close(); }
   }
 
-  const store = await resolveLiveStore(cwd);
+  const store = await resolveLiveStore(cwd, storePath);
   if (store) {
     try {
       const outcome = writeStatus(store, taskId, shouldUpdate, nextStatus, ownerRefusedEvent);
@@ -150,33 +163,27 @@ async function transitionTaskStatus(
     }
   }
 
-  if (!cwd) return false;
-  const candidates = candidateStorePaths(cwd, sessionId).filter((p) => fs.existsSync(p));
-  if (candidates.length === 0) return false;
+  if (!storePath) return unknownStore(label, taskId, nextStatus);
   const { TaskStore } = await import("../pitasks/task-store.js");
-  for (const storePath of candidates) {
-    let diskStore: any;
-    try {
-      diskStore = new TaskStore(storePath);
-      const outcome = writeStatus(diskStore, taskId, shouldUpdate, nextStatus, ownerRefusedEvent);
-      if (outcome === "written") return true;
-      if (outcome === "refused") return false;
-    } catch (e: any) {
-      log.warn("task_lifecycle_status_write_failed", { label, via: "disk", taskId, targetStatus: nextStatus, storePath, errorType: e?.name ?? typeof e, error: String(e?.message ?? e).slice(0, 120) });
-      continue;
-    } finally {
-      if (diskStore && typeof diskStore.close === "function") diskStore.close();
-    }
+  let diskStore: any;
+  try {
+    diskStore = new TaskStore(storePath);
+    return writeStatus(diskStore, taskId, shouldUpdate, nextStatus, ownerRefusedEvent) === "written";
+  } catch (e: any) {
+    log.warn("task_lifecycle_status_write_failed", { label, via: "disk", taskId, targetStatus: nextStatus, storePath, errorType: e?.name ?? typeof e, error: String(e?.message ?? e).slice(0, 120) });
+    return false;
+  } finally {
+    if (diskStore && typeof diskStore.close === "function") diskStore.close();
   }
-  return false;
 }
 
-/** Auto-complete a task (in-process, no AI involvement). */
-export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
-  return transitionTaskStatus("autoCompleteTask", taskId, cwd, sessionId, (status) => status !== "completed", "completed", false, _storeFactory);
+/** Auto-complete a task (in-process, no AI involvement). `storePath` is the file the job
+ *  recorded at spawn time — without it nothing is written. */
+export async function autoCompleteTask(taskId: string, cwd: string, storePath?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
+  return transitionTaskStatus("autoCompleteTask", taskId, cwd, storePath, (status) => status !== "completed", "completed", false, _storeFactory);
 }
 
 /** Auto-mark a task in_progress (in-process, no AI involvement). */
-export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
-  return transitionTaskStatus("autoMarkInProgress", taskId, cwd, sessionId, (status) => status === "pending", "in_progress", true, _storeFactory);
+export async function autoMarkInProgress(taskId: string, cwd: string, storePath?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
+  return transitionTaskStatus("autoMarkInProgress", taskId, cwd, storePath, (status) => status === "pending", "in_progress", true, _storeFactory);
 }

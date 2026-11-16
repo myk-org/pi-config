@@ -20,7 +20,8 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
 import {
-	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, isPeerTaskCreator, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin } from "./coms-shared.js";
+	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, resolvePeerTaskStorePath, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, isPeerTaskCreator, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin } from "./coms-shared.js";
+import { resolveStorePath } from "../pitasks/task-store.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import { projectProblem, userTargetProblem } from "./coms-peers.js";
@@ -197,6 +198,8 @@ interface RegistryEntry {
 	busy?: boolean;
 	heartbeat_at?: string;
 	pi_session_id?: string;
+	/** #1080: exact TaskStore file path this peer reads, or null when peer task persistence is disabled/unavailable. */
+	task_store_path?: string | null;
 	/** #1083: active-only workload counted by the peer itself; absent on older entries. */
 	workload?: PeerWorkloadCounts | null;
 }
@@ -215,6 +218,8 @@ interface PendingReply {
 	queued_at?: string;
 	/** #924 §6: last progress note received from the peer (never resolves the reply). */
 	progress?: { note: string; at: string };
+	/** Internal RPC reply (e.g. task_manage list): resolves caller directly without chat injection or history. */
+	internal?: boolean;
 }
 
 /** #951: coms_send tool result details — blocked send or delivered message. */
@@ -691,7 +696,10 @@ export default function (pi: ExtensionAPI) {
 		registryFile: string;
 		origin?: string | null;
 		pi_session_id: string;
+		task_store_path: string | null;
 	} | null = null;
+	const initialPiTasks = process.env.PI_TASKS;
+	const initialTaskScope: "session" | "project" = process.env.PI_TASK_SCOPE === "project" ? "project" : "session";
 	const peerCards: Map<string, AgentCard & { staleCount: number }> = new Map();
 	let welcomeShown = false;
 	const knownPeerSessions: Map<string, string> = new Map(); // session_id → name
@@ -780,12 +788,55 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	/** #1080: resolve this peer's own Pi session ID from its ExtensionContext first, before
+	 *  orchestrator's session_start sets `__piConfigSessionId` (coms loads alphabetically earlier). */
+	function resolveOwnPiSessionId(ctx?: ExtensionContext | null): string {
+		const fromCtx = ctx?.sessionManager?.getSessionId?.();
+		if (typeof fromCtx === "string" && fromCtx.trim()) return fromCtx.trim();
+		if (identity?.pi_session_id) return identity.pi_session_id;
+		const fromGlobal = (globalThis as any).__piConfigSessionId;
+		return typeof fromGlobal === "string" ? fromGlobal.trim() : "";
+	}
+
+	/** #1080: compute the exact TaskStore file path this peer's pitasks instance reads/watches.
+	 *  Prefer the live published TaskStore's own filePath first so mid-session PI_TASKS /
+	 *  PI_TASK_SCOPE mutations never desync advertised task_store_path from pitasks. */
+	function resolveOwnTaskStorePath(piSessionId: string, cwd: string): string | null {
+		const liveStore = publishedTaskStore() as { filePath?: string } | null;
+		const publishedFilePath = typeof liveStore?.filePath === "string" && liveStore.filePath.trim()
+			? liveStore.filePath.trim()
+			: null;
+		if (publishedFilePath) {
+			log.debug("own_task_store_path_resolved", {
+				source: "published_task_store",
+				hasPiSessionId: Boolean(piSessionId),
+				hasStorePath: true,
+			});
+			return publishedFilePath;
+		}
+		const storePath = resolveStorePath(piSessionId || undefined, {
+			cwd,
+			piTasks: initialPiTasks,
+			taskScope: initialTaskScope,
+		}) ?? null;
+		log.debug("own_task_store_path_resolved", {
+			source: "fallback_store_path",
+			hasPiSessionId: Boolean(piSessionId),
+			hasStorePath: Boolean(storePath),
+		});
+		return storePath;
+	}
+
 	/** Write a live registry entry snapshot (shared by the keepalive timer and
 	 *  busy transitions). Fail-soft. */
 	function writeLiveRegistry(): void {
 		if (!identity || shuttingDown) return;
 		try {
 			const ctx = currentCtx;
+			const piSessionId = resolveOwnPiSessionId(ctx);
+			const taskStorePath = resolveOwnTaskStorePath(piSessionId, identity.cwd);
+			identity.pi_session_id = piSessionId;
+			identity.task_store_path = taskStorePath;
 			const live: RegistryEntry = {
 				coms_session_id: identity.coms_session_id,
 				name: identity.name,
@@ -798,11 +849,12 @@ export default function (pi: ExtensionAPI) {
 				started_at: nowIso(),
 				explicit: identity.explicit,
 				version: 1,
-				context_used_pct: Math.round(ctx?.getContextUsage()?.percent ?? 0),
+				context_used_pct: Math.round(ctx?.getContextUsage?.()?.percent ?? 0),
 				queue_depth: getPendingInboundCount(),
 				busy: processingInbound,
 				heartbeat_at: nowIso(),
-				pi_session_id: (globalThis as any).__piConfigSessionId || identity.pi_session_id || "",
+				pi_session_id: piSessionId,
+				task_store_path: taskStorePath,
 				// Rebuilt fields win: this writer rewrites the whole entry on every heartbeat, so a
 				// field missing here vanishes from the registry a few seconds after activation.
 				origin: identity.origin ?? null,
@@ -1078,6 +1130,17 @@ export default function (pi: ExtensionAPI) {
 
 	function handleResponse(socket: net.Socket, env: ResponseEnvelope): void {
 		const pending = pendingReplies.get(env.msg_id);
+		if (pending?.internal) {
+			if (pending.timer) {
+				try { clearTimeout(pending.timer); } catch { /* ignore */ }
+				pending.timer = null;
+			}
+			pendingReplies.delete(env.msg_id);
+			log.debug("internal_response_received", { msgId: env.msg_id, hasError: Boolean(env.error) });
+			ackOk(socket, env.msg_id);
+			pending.resolve?.({ response: env.response, error: env.error ?? null });
+			return;
+		}
 		// Clean up pending outbound tracking
 		if (pending?.target_name) {
 			const set = pendingOutbound.get(pending.target_name);
@@ -1157,7 +1220,7 @@ export default function (pi: ExtensionAPI) {
 	async function buildAgentCard(): Promise<AgentCard> {
 		const ctx = currentCtx;
 		const ident = identity;
-		const pct = ctx ? Math.round(ctx.getContextUsage()?.percent ?? 0) : 0;
+		const pct = ctx ? Math.round(ctx.getContextUsage?.()?.percent ?? 0) : 0;
 		log.debug("build_agent_card", { hasIdentity: !!ident });
 		return {
 			name: ident?.name ?? "unknown",
@@ -1448,8 +1511,23 @@ export default function (pi: ExtensionAPI) {
 			const { createTask, getTask, listTasks, updateTask, deleteTask } = await import("../pitasks/index.js");
 			switch (env.action) {
 				case "create":
-					if (env.subject) result = createTask(env.subject, env.description ?? "", env.metadata);
-					else error = "missing subject";
+					if (!env.sender_session) {
+						error = "missing sender_session";
+					} else if (env.subject) {
+						const createdBy = {
+							type: "coms" as const,
+							origin: env.sender_name || "",
+							session: env.sender_session,
+							project: "",
+						};
+						const meta = {
+							...(env.metadata && typeof env.metadata === "object" ? env.metadata : {}),
+							...(env.sender_endpoint ? { sender_endpoint: env.sender_endpoint } : {}),
+						};
+						result = createTask(env.subject, env.description ?? "", createdBy, meta);
+					} else {
+						error = "missing subject";
+					}
 					break;
 				case "get":
 					if (env.task_id) result = getTask(env.task_id);
@@ -1461,8 +1539,18 @@ export default function (pi: ExtensionAPI) {
 				case "update":
 					if (env.task_id && env.fields && typeof env.fields === "object" && !Array.isArray(env.fields)) {
 						const t = getTask(env.task_id);
-						if (isPeerTaskCreator(t?.createdBy, env.sender_session)) {
-							result = updateTask(env.task_id, env.fields);
+						if (!t) {
+							error = `Task #${env.task_id} not found`;
+						} else if (isPeerTaskCreator(t.createdBy, env.sender_session)) {
+							const updateRes = updateTask(env.task_id, env.fields);
+							const deletedByUpdate = env.fields.status === "deleted"
+								&& Array.isArray(updateRes?.changedFields)
+								&& updateRes.changedFields.includes("deleted");
+							if (!updateRes?.task && !deletedByUpdate) {
+								error = `Task #${env.task_id} not found`;
+							} else {
+								result = updateRes;
+							}
 						} else {
 							error = "ownership_denied — can only update tasks you created";
 						}
@@ -1667,7 +1755,8 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// 4. Build + write registry entry atomically.
-		const piSessionId = (globalThis as any).__piConfigSessionId || "";
+		const piSessionId = resolveOwnPiSessionId(ctx);
+		const taskStorePath = resolveOwnTaskStorePath(piSessionId, cwd);
 		/** Which entry point activated coms: the `coms_start` tool, `/coms start`, or `pi --coms`. */
 		const activationOrigin = (() => {
 			const entry = (globalThis as any).__comsSelfOrigin;
@@ -1686,6 +1775,7 @@ export default function (pi: ExtensionAPI) {
 			explicit,
 			version: 1,
 			pi_session_id: piSessionId,
+			task_store_path: taskStorePath,
 			origin: activationOrigin,
 		};
 		let registryFile: string;
@@ -1709,6 +1799,7 @@ export default function (pi: ExtensionAPI) {
 			endpoint,
 			registryFile,
 			pi_session_id: piSessionId,
+			task_store_path: taskStorePath,
 			origin: activationOrigin,
 		};
 		// Publish who we are so an activation path can VERIFY that a peer really exists (a socket
@@ -2307,6 +2398,96 @@ Do not respond to this message.`;
 		return null;
 	}
 
+	/** #1080: resolve a peer's TaskStore file path or fail explicitly — never fall back to coms_session_id. */
+	function requirePeerTaskStorePath(target: RegistryEntry): string {
+		const storePath = resolvePeerTaskStorePath(target);
+		if (!storePath) {
+			log.error("peer_task_store_unavailable", {
+				peer: target.name,
+				comsSessionId: target.coms_session_id,
+				hasPiSessionId: Boolean(target.pi_session_id),
+				advertisedStorePath: target.task_store_path ?? null,
+			});
+			throw new Error(`peer "${target.name}" has no addressable task store (missing pi_session_id or tasks disabled)`);
+		}
+		return storePath;
+	}
+
+	/** #1080: query a peer's live in-memory TaskStore over its socket via task_manage(list).
+	 *  Required when an older peer lacks task_store_path in its registry entry, so reading a
+	 *  guessed session file on disk cannot prove the peer's TaskStore reads that file. */
+	async function requestPeerTaskListOverSocket(target: RegistryEntry): Promise<any[]> {
+		if (!identity) throw new Error("coms not initialised");
+		if (!target.endpoint) {
+			log.error("peer_task_manage_list_no_endpoint", { peer: target.name, comsSessionId: target.coms_session_id });
+			throw new Error(`peer "${target.name}" has no task_store_path and no live endpoint to confirm tasks`);
+		}
+		const timeoutMs = getSetting(identity.cwd, "coms_probe_timeout_ms");
+		const msg_id = ulid();
+		let resolveReply!: (value: { response?: any; error?: string | null }) => void;
+		const replyPromise = new Promise<{ response?: any; error?: string | null }>((res) => {
+			resolveReply = res;
+		});
+		const timer = setTimeout(() => {
+			pendingReplies.delete(msg_id);
+			// Resolve, never reject: this timer can fire while sendEnvelope is still in flight,
+			// and an unawaited rejection would surface as an unhandled rejection instead of the
+			// documented failure.
+			resolveReply({ error: `timed out waiting for task_manage list from "${target.name}"` });
+		}, timeoutMs);
+		try { (timer as any).unref?.(); } catch { /* ignore */ }
+		pendingReplies.set(msg_id, {
+			internal: true,
+			resolve: resolveReply,
+			timer,
+			target_name: target.name,
+			created_at: nowIso(),
+		});
+		try {
+			await sendEnvelope(target.endpoint, {
+				type: "task_manage",
+				msg_id,
+				sender_session: identity.coms_session_id,
+				sender_endpoint: identity.endpoint,
+				sender_name: identity.name,
+				hops: 0,
+				timestamp: nowIso(),
+				action: "list",
+			});
+			const reply = await replyPromise;
+			if (reply.error) {
+				throw new Error(reply.error);
+			}
+			if (!Array.isArray(reply.response)) {
+				throw new Error("invalid task_manage list response");
+			}
+			log.debug("peer_task_manage_listed", { peer: target.name, count: reply.response.length });
+			return reply.response;
+		} catch (error) {
+			clearTimeout(timer);
+			pendingReplies.delete(msg_id);
+			const reason = error instanceof Error ? error.message : String(error);
+			log.error("peer_task_manage_list_failed", { peer: target.name, error: reason });
+			throw new Error(`peer "${target.name}" did not confirm live TaskStore via task_manage: ${reason}`);
+		}
+	}
+
+	/** #1080: shared peer task read path used by both coms_task_list and coms_tasks_create post-write verification. */
+	async function listPeerTasksByTarget(targetRef: string): Promise<{ target: RegistryEntry; storePath: string; tasks: any[] }> {
+		const target = await resolveTarget(targetRef);
+		if (!target) throw new Error(`coms: no live agent matching "${targetRef}"`);
+		const storePath = requirePeerTaskStorePath(target);
+		if (!target.task_store_path) {
+			const tasks = await requestPeerTaskListOverSocket(target);
+			log.debug("peer_tasks_listed", { peer: target.name, storePath, source: "task_manage_rpc", count: tasks.length });
+			return { target, storePath, tasks };
+		}
+		const { listTasksAtStorePath } = await import("../pitasks/index.js");
+		const tasks = listTasksAtStorePath(storePath) || [];
+		log.debug("peer_tasks_listed", { peer: target.name, storePath, source: "store_path", count: tasks.length });
+		return { target, storePath, tasks };
+	}
+
 	/** Shared prompt delivery (#924 §2): builds the envelope (with the sender's
 	 *  task reminder appended), registers the pending reply, sends, auto-creates
 	 *  tasks, and appends to history. Used by coms_send and coms_broadcast. */
@@ -2335,19 +2516,28 @@ Do not respond to this message.`;
 		const msg_id = ulid();
 		// Append sender's active tasks for this peer to the prompt
 		let promptText = params.prompt;
-		try {
-			const { listTasksForSession } = await import("../pitasks/index.js");
-			const targetPiSessionId = target.pi_session_id || target.coms_session_id;
-			const allTasks = listTasksForSession(targetPiSessionId, target.cwd) || [];
-			const myTasks = allTasks.filter((t: any) =>
-				(t.status === "pending" || t.status === "in_progress") &&
-				t.createdBy?.session === identity!.coms_session_id
-			);
-			if (myTasks.length > 0) {
-				const taskLines = myTasks.map((t: any) => `#${t.id} [${t.status}] ${t.subject}`).join("\n");
-				promptText += `\n\n---\nReminder - Tasks assigned to you by ${identity!.name}:\n${taskLines}`;
+		const reminderStorePath = resolvePeerTaskStorePath(target);
+		if (reminderStorePath) {
+			try {
+				const { listTasksAtStorePath } = await import("../pitasks/index.js");
+				const allTasks = listTasksAtStorePath(reminderStorePath) || [];
+				const myTasks = allTasks.filter((t: any) =>
+					(t.status === "pending" || t.status === "in_progress") &&
+					t.createdBy?.session === identity!.coms_session_id
+				);
+				if (myTasks.length > 0) {
+					const taskLines = myTasks.map((t: any) => `#${t.id} [${t.status}] ${t.subject}`).join("\n");
+					promptText += `\n\n---\nReminder - Tasks assigned to you by ${identity!.name}:\n${taskLines}`;
+					log.debug("outbound_task_reminder_attached", { msg_id, target: target.name, count: myTasks.length });
+				}
+			} catch (error) {
+				log.debug("outbound_task_reminder_skipped", {
+					msg_id,
+					target: target.name,
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
-		} catch { /* task store not available — skip */ }
+		}
 		const env: PromptEnvelope = {
 			type: "prompt",
 			msg_id,
@@ -2423,16 +2613,22 @@ Do not respond to this message.`;
 		if (params.userAuthored !== true) comsSendCalledThisTurn.add(target.coms_session_id);
 
 		if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
-			try {
-				const count = await createComsInboundTasks(
-					params.tasks,
-					{ sender_session: identity.coms_session_id, sender_name: identity.name, sender_endpoint: identity.endpoint },
-					target.pi_session_id || target.coms_session_id,
-					target.cwd,
-				);
-				if (count > 0) log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
-			} catch (error) {
-				log.warn("tasks_auto_create_failed", { msg_id, target: target.name, error: error instanceof Error ? error.message : String(error) });
+			const autoStorePath = resolvePeerTaskStorePath(target);
+			if (!autoStorePath) {
+				log.error("tasks_auto_create_skipped", { msg_id, target: target.name, reason: "peer_task_store_unavailable" });
+			} else {
+				try {
+					const count = await createComsInboundTasks(
+						params.tasks,
+						{ sender_session: identity.coms_session_id, sender_name: identity.name, sender_endpoint: identity.endpoint },
+						target.pi_session_id ?? "",
+						target.cwd,
+						autoStorePath,
+					);
+					if (count > 0) log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
+				} catch (error) {
+					log.error("tasks_auto_create_failed", { msg_id, target: target.name, error: error instanceof Error ? error.message : String(error) });
+				}
 			}
 		}
 
@@ -3059,40 +3255,135 @@ Do not respond to this message.`;
 			if (identity.endpoint) meta.sender_endpoint = identity.endpoint;
 
 			try {
-				const { createTasksForSession, listTasksForSession, updateTaskForSession } = await import("../pitasks/index.js");
-				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
+				const storePath = requirePeerTaskStorePath(target);
+				const storeExistedBeforeWrite = fs.existsSync(storePath);
+				const { createTasksAtStorePath, deleteTaskAtStorePath, getTaskAtStorePath, listTasksAtStorePath, updateTaskAtStorePath } = await import("../pitasks/index.js");
 
-				// Create all tasks in one batch
-				const taskDefs = params.tasks.map(t => ({
-					subject: t.subject,
-					description: t.description,
-					createdBy,
-					metadata: { ...meta },
-				}));
-				const created = createTasksForSession(targetPiSessionId, taskDefs, target.cwd);
-				const createdIds = created.map((t: any) => t.id);
-
-				// Check if "Report completion to sender" already exists from this sender
-				const allTasks = listTasksForSession(targetPiSessionId, target.cwd) || [];
-				const existingReport = allTasks.find((t: any) =>
+				// Check if "Report completion to sender" already exists from this sender before mutating
+				const existingTasks = listTasksAtStorePath(storePath) || [];
+				const existingReport = existingTasks.find((t: any) =>
 					t.createdBy?.session === identity!.coms_session_id &&
 					t.subject === "Report completion to sender" &&
 					t.status !== "completed" && t.status !== "deleted"
 				);
 
-				if (existingReport) {
-					// Update existing report task's blockedBy to include new task IDs
-					const newBlockedBy = [...new Set([...(existingReport.blockedBy || []), ...createdIds])];
-					updateTaskForSession(targetPiSessionId, existingReport.id, { blockedBy: newBlockedBy }, target.cwd);
-				} else {
-					// Create report task blocked by all new tasks
-					createTasksForSession(targetPiSessionId, [{
-						subject: "Report completion to sender",
-						description: `When all tasks are done, use coms_send to report back to ${identity!.name}.`,
+				let created: any[] = [];
+				let createdIds: string[] = [];
+				let createdReportTaskId = "";
+				let updatedReportTask: { id: string; addedBlockerIds: string[] } | null = null;
+
+				const rollbackCreatedTasks = (reason: unknown): void => {
+					if (createdIds.length === 0 && !createdReportTaskId && !updatedReportTask) return;
+					try {
+						for (const id of createdIds) {
+							deleteTaskAtStorePath(storePath, id);
+						}
+						if (createdReportTaskId) {
+							deleteTaskAtStorePath(storePath, createdReportTaskId);
+						}
+						if (updatedReportTask && updatedReportTask.addedBlockerIds.length > 0) {
+							// The deletes above already stripped our IDs from every blockedBy list under the
+							// store lock, so an unconditional array rewrite would only clobber blockers another
+							// writer added meanwhile. Rewrite (bounded compare-and-set) only if one of our IDs
+							// came back, and always recompute against the freshly read array.
+							const rollbackReportId = updatedReportTask.id;
+							const ourBlockerIds = new Set<string>(updatedReportTask.addedBlockerIds);
+							for (let attempt = 1; attempt <= 3; attempt++) {
+								const currentReport = getTaskAtStorePath(storePath, rollbackReportId);
+								if (!currentReport) break;
+								const snapshot: string[] = Array.isArray(currentReport.blockedBy) ? currentReport.blockedBy : [];
+								if (!snapshot.some((id) => ourBlockerIds.has(id))) break;
+								updateTaskAtStorePath(storePath, rollbackReportId, { blockedBy: snapshot.filter((id) => !ourBlockerIds.has(id)) });
+								const confirmedReport = getTaskAtStorePath(storePath, rollbackReportId);
+								const remaining: string[] = Array.isArray(confirmedReport?.blockedBy) ? confirmedReport.blockedBy : [];
+								if (!remaining.some((id) => ourBlockerIds.has(id))) break;
+								if (attempt === 3) log.warn("peer_report_rollback_unconfirmed", { taskId: rollbackReportId });
+								else log.warn("peer_report_rollback_retry", { attempt });
+							}
+						}
+						if (!storeExistedBeforeWrite) {
+							const remaining = listTasksAtStorePath(storePath) || [];
+							if (remaining.length === 0) {
+								try { fs.unlinkSync(storePath); } catch { /* ignore */ }
+							}
+						}
+						log.warn("coms_tasks_create_rolled_back", {
+							target: target.name,
+							storePath,
+							rolledBackIds: createdIds,
+							createdReportTaskId: createdReportTaskId || null,
+							restoredReportTaskId: updatedReportTask?.id ?? null,
+							reason: reason instanceof Error ? reason.message : String(reason),
+						});
+					} catch (rollbackErr: any) {
+						log.error("coms_tasks_create_rollback_failed", {
+							target: target.name,
+							storePath,
+							error: rollbackErr?.message ?? String(rollbackErr),
+						});
+					}
+				};
+
+				try {
+					// Create all tasks in one batch
+					const taskDefs = params.tasks.map(t => ({
+						subject: t.subject,
+						description: t.description,
 						createdBy,
-						blockedBy: createdIds,
 						metadata: { ...meta },
-					}], target.cwd);
+					}));
+					created = createTasksAtStorePath(storePath, taskDefs);
+					createdIds = created.map((t: any) => String(t.id));
+
+					let reportTaskId = "";
+					if (existingReport) {
+						const priorBlockedBy = Array.isArray(existingReport.blockedBy) ? [...existingReport.blockedBy] : [];
+						const newBlockedBy = [...new Set([...priorBlockedBy, ...createdIds])];
+						updateTaskAtStorePath(storePath, existingReport.id, { blockedBy: newBlockedBy });
+						reportTaskId = String(existingReport.id);
+						updatedReportTask = { id: reportTaskId, addedBlockerIds: createdIds.filter((id) => !priorBlockedBy.includes(id)) };
+					} else {
+						const [reportTask] = createTasksAtStorePath(storePath, [{
+							subject: "Report completion to sender",
+							description: `When all tasks are done, use coms_send to report back to ${identity!.name}.`,
+							createdBy,
+							blockedBy: createdIds,
+							metadata: { ...meta },
+						}]);
+						reportTaskId = String(reportTask?.id ?? "");
+						createdReportTaskId = reportTaskId;
+					}
+
+					// #1080: verify created tasks are persisted and visible through the exact read path
+					// coms_task_list uses before reporting success — never claim a silent false success.
+					if (!fs.existsSync(storePath)) {
+						throw new Error(`task store file was not persisted at ${storePath}`);
+					}
+					const verified = await listPeerTasksByTarget(params.target);
+					if (verified.storePath !== storePath) {
+						throw new Error(`write store (${storePath}) disagreed with read store (${verified.storePath})`);
+					}
+					const expectedTasks = new Map<string, string>(
+						created.map((t: any) => [String(t.id), String(t.subject)]),
+					);
+					if (reportTaskId) {
+						expectedTasks.set(reportTaskId, "Report completion to sender");
+					}
+					const visibleById = new Map(verified.tasks.map((t: any) => [String(t?.id), t]));
+					const missingIds = [...expectedTasks.entries()]
+						.filter(([id, subject]) => {
+							const found = visibleById.get(id);
+							return !found
+								|| found.subject !== subject
+								|| found.createdBy?.session !== identity!.coms_session_id;
+						})
+						.map(([id]) => id);
+					if (created.length !== params.tasks.length || missingIds.length > 0) {
+						throw new Error(`task write verification failed — missing task ID(s) on readback: ${missingIds.join(", ") || "count_mismatch"}`);
+					}
+				} catch (writeOrVerifyErr) {
+					rollbackCreatedTasks(writeOrVerifyErr);
+					throw writeOrVerifyErr;
 				}
 
 				log.info("coms_tasks_create", created.length, "tasks on", target.name);
@@ -3117,15 +3408,16 @@ Do not respond to this message.`;
 					await sendEnvelope(target.endpoint, env);
 					pendingReplies.set(msg_id, { target_session: target.coms_session_id, target_name: target.name, sent_at: Date.now() });
 				} catch (e: any) {
-					log.debug("auto-message after task create failed:", e?.message);
+					log.warn("coms_tasks_create_auto_prompt_failed", { target: target.name, error: e?.message ?? String(e) });
 				}
 
 				const lines = created.map((t: any) => `#${t.id}: ${t.subject}`);
 				return {
 					content: [{ type: "text" as const, text: `Created ${created.length} tasks on ${target.name}:\n${lines.join("\n")}` }],
-					details: { target: target.name, count: created.length, taskIds: createdIds },
+					details: { target: target.name, count: created.length, taskIds: createdIds, storePath },
 				};
 			} catch (e: any) {
+				log.error("coms_tasks_create_failed", { target: target.name, error: e?.message ?? String(e) });
 				throw new Error(`Failed to create tasks on ${target.name}: ${e?.message}`);
 			}
 		},
@@ -3146,9 +3438,9 @@ Do not respond to this message.`;
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 
 			try {
-				const { getTaskForSession, deleteTaskForSession } = await import("../pitasks/index.js");
-				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
-				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
+				const storePath = requirePeerTaskStorePath(target);
+				const { getTaskAtStorePath, deleteTaskAtStorePath } = await import("../pitasks/index.js");
+				const task = getTaskAtStorePath(storePath, params.task_id);
 				if (!task) throw new Error(`Task #${params.task_id} not found`);
 				if (!isPeerTaskCreator(task.createdBy, identity.coms_session_id)) {
 					throw new Error(`Ownership denied — can only delete tasks you created`);
@@ -3159,9 +3451,11 @@ Do not respond to this message.`;
 						details: { blocked: true, reason: "in_progress" },
 					};
 				}
-				deleteTaskForSession(targetPiSessionId, params.task_id, target.cwd);
+				const deleted = deleteTaskAtStorePath(storePath, params.task_id);
+				if (!deleted) throw new Error(`Task #${params.task_id} could not be deleted`);
 				log.info("coms_task_delete", params.task_id, "on", target.name);
 			} catch (e: any) {
+				log.error("coms_task_delete_failed", { target: target.name, taskId: params.task_id, error: e?.message ?? String(e) });
 				throw new Error(`Failed to delete task on ${target.name}: ${e?.message}`);
 			}
 
@@ -3182,19 +3476,17 @@ Do not respond to this message.`;
 		async execute(_callId, params) {
 			log.debug("coms_task_list_start", { target: params.target });
 			if (!identity) throw new Error("coms not initialised");
-			const target = await resolveTarget(params.target);
-			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+			const resolvedTarget = await resolveTarget(params.target);
+			if (!resolvedTarget) throw new Error(`coms: no live agent matching "${params.target}"`);
 
 			try {
-				const { listTasksForSession } = await import("../pitasks/index.js");
-				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
-				const tasks = listTasksForSession(targetPiSessionId, target.cwd);
-				log.debug("coms_task_list", target.name, "tasks", tasks?.length ?? 0);
+				const { target, storePath, tasks } = await listPeerTasksByTarget(params.target);
+				log.debug("coms_task_list", target.name, "tasks", tasks.length);
 
-				if (!tasks || tasks.length === 0) {
+				if (tasks.length === 0) {
 					return {
 						content: [{ type: "text" as const, text: "No tasks found" }],
-						details: undefined,
+						details: { target: target.name, count: 0, taskIds: [] as string[], storePath },
 					};
 				}
 
@@ -3218,10 +3510,11 @@ Do not respond to this message.`;
 				});
 				return {
 					content: [{ type: "text" as const, text: lines.join("\n") }],
-					details: undefined,
+					details: { target: target.name, count: sorted.length, taskIds: sorted.map((t: any) => String(t.id)), storePath },
 				};
 			} catch (e: any) {
-				throw new Error(`Failed to list tasks on ${target.name}: ${e?.message}`);
+				log.error("coms_task_list_failed", { target: resolvedTarget.name, error: e?.message ?? String(e) });
+				throw new Error(`Failed to list tasks on ${resolvedTarget.name}: ${e?.message}`);
 			}
 		},
 	});
@@ -3241,9 +3534,9 @@ Do not respond to this message.`;
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 
 			try {
-				const { getTaskForSession, listTasksForSession } = await import("../pitasks/index.js");
-				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
-				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
+				const storePath = requirePeerTaskStorePath(target);
+				const { getTaskAtStorePath, listTasksAtStorePath } = await import("../pitasks/index.js");
+				const task = getTaskAtStorePath(storePath, params.task_id);
 				if (!task) throw new Error(`Task #${params.task_id} not found on ${target.name}`);
 
 				log.debug("coms_task_get", target.name, "task", params.task_id);
@@ -3254,7 +3547,7 @@ Do not respond to this message.`;
 				if (task.owner) lines.push(`Owner: ${task.owner}`);
 				lines.push(`Description: ${desc}`);
 				if (task.blockedBy?.length > 0) {
-					const allTasks = listTasksForSession(targetPiSessionId, target.cwd);
+					const allTasks = listTasksAtStorePath(storePath) || [];
 					const openBlockers = task.blockedBy.filter((bid: string) => {
 						const blocker = allTasks.find((bt: any) => bt.id === bid);
 						return blocker && blocker.status !== "completed";
@@ -3268,6 +3561,7 @@ Do not respond to this message.`;
 					details: undefined,
 				};
 			} catch (e: any) {
+				log.error("coms_task_get_failed", { target: target.name, taskId: params.task_id, error: e?.message ?? String(e) });
 				throw new Error(`Failed to get task from ${target.name}: ${e?.message}`);
 			}
 		},
@@ -3296,9 +3590,9 @@ Do not respond to this message.`;
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 
 			try {
-				const { getTaskForSession, updateTaskForSession } = await import("../pitasks/index.js");
-				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
-				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
+				const storePath = requirePeerTaskStorePath(target);
+				const { getTaskAtStorePath, updateTaskAtStorePath } = await import("../pitasks/index.js");
+				const task = getTaskAtStorePath(storePath, params.task_id);
 				if (!task) throw new Error(`Task #${params.task_id} not found on ${target.name}`);
 				if (!isPeerTaskCreator(task.createdBy, identity.coms_session_id)) {
 					throw new Error(`Ownership denied — can only update tasks you created`);
@@ -3311,7 +3605,13 @@ Do not respond to this message.`;
 				}
 
 				const { target: _t, task_id: _tid, ...fields } = params;
-				const result = updateTaskForSession(targetPiSessionId, params.task_id, fields, target.cwd);
+				const result = updateTaskAtStorePath(storePath, params.task_id, fields);
+				const deletedByUpdate = fields.status === "deleted"
+					&& Array.isArray(result?.changedFields)
+					&& result.changedFields.includes("deleted");
+				if (!result?.task && !deletedByUpdate) {
+					throw new Error(`Task #${params.task_id} not found on ${target.name}`);
+				}
 				log.info("coms_task_update", params.task_id, "on", target.name, "fields", Object.keys(fields).join(","));
 
 				const changedFields = result?.changedFields ?? [];
@@ -3323,6 +3623,7 @@ Do not respond to this message.`;
 					details: undefined,
 				};
 			} catch (e: any) {
+				log.error("coms_task_update_failed", { target: target.name, taskId: params.task_id, error: e?.message ?? String(e) });
 				throw new Error(`Failed to update task on ${target.name}: ${e?.message}`);
 			}
 		},
@@ -3331,7 +3632,11 @@ Do not respond to this message.`;
 	// ━━ Track agent running state for mixed-turn detection (#731) ━━━━━━━━━
 	// Only mark as "user turn" if NO coms inbound is active (processingInbound false).
 	// When processingInbound is true, the agent is running a coms followUp — not a user turn.
-	pi.on("agent_start" as any, () => {
+	pi.on("agent_start" as any, (_event: any, ctx?: ExtensionContext) => {
+		if (ctx) {
+			currentCtx = ctx;
+			if (identity && resolveOwnPiSessionId(ctx) !== identity.pi_session_id) writeLiveRegistry();
+		}
 		agentRunningUserTurn = !processingInbound;
 		comsSendCalledThisTurn.clear();
 		userMessageDuringInbound = false;

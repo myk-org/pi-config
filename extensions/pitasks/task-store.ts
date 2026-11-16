@@ -34,6 +34,48 @@ const LOCK_RETRY_MS = 50;
 const LOCK_MAX_RETRIES = 100;
 const MAX_SYMLINK_HOPS = 8;
 
+export interface ResolveStorePathOptions {
+	cwd?: string;
+	piTasks?: string;
+	taskScope?: "session" | "project";
+}
+
+/**
+ * Resolve the exact file path a session's TaskStore reads and writes.
+ * Shared by pitasks itself and coms peer task operations so readers and writers agree.
+ */
+export function resolveStorePath(sessionId?: string, options: ResolveStorePathOptions = {}): string | undefined {
+	const baseCwd = options.cwd || process.cwd();
+	const piTasks = "piTasks" in options ? options.piTasks : process.env.PI_TASKS;
+	const taskScope = options.taskScope ?? (process.env.PI_TASK_SCOPE === "project" ? "project" : "session");
+	if (piTasks === "off") {
+		log.debug("store_path_disabled", { reason: "pi_tasks_off" });
+		return undefined;
+	}
+	if (piTasks) {
+		const resolved = isAbsolute(piTasks)
+			? piTasks
+			: piTasks.startsWith(".")
+				? resolve(baseCwd, piTasks)
+				: join(TASKS_DIR, `${piTasks}.json`);
+		log.debug("store_path_resolved", { source: "pi_tasks", storePath: resolved });
+		return resolved;
+	}
+	if (taskScope === "project") {
+		const resolved = join(baseCwd, ".pi", "tasks", "tasks.json");
+		log.debug("store_path_resolved", { source: "project_scope", storePath: resolved });
+		return resolved;
+	}
+	const normalizedSession = typeof sessionId === "string" ? sessionId.trim().replace(/[/\\]/g, "_") : "";
+	if (!normalizedSession) {
+		log.debug("store_path_unresolved", { source: "session_scope_missing_id" });
+		return undefined;
+	}
+	const resolved = join(baseCwd, ".pi", "tasks", `tasks-${normalizedSession}.json`);
+	log.debug("store_path_resolved", { source: "session_scope", sessionId: normalizedSession, storePath: resolved });
+	return resolved;
+}
+
 function acquireLock(lockPath: string): void {
 	mkdirSync(dirname(lockPath), { recursive: true });
 	for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
@@ -393,6 +435,7 @@ export class TaskStore {
 		completionNote?: string;
 		metadata?: Record<string, any>;
 		telemetry?: Task["telemetry"];
+		blockedBy?: string[];
 		addBlocks?: string[];
 		addBlockedBy?: string[];
 	}): { task: Task | undefined; changedFields: string[]; warnings: string[] } {
@@ -453,6 +496,7 @@ export class TaskStore {
 				changedFields.push("metadata");
 			}
 			if (fields.telemetry !== undefined) { task.telemetry = fields.telemetry; changedFields.push("telemetry"); }
+			if (Array.isArray(fields.blockedBy)) { task.blockedBy = [...fields.blockedBy]; changedFields.push("blockedBy"); }
 
 			if (fields.addBlocks?.length) {
 				for (const targetId of fields.addBlocks) {

@@ -481,6 +481,27 @@ describe("subagent worktree task lifecycle", { concurrency: false }, () => {
     }
   });
 
+  it("records the parent project task store path for an async worktree job", async () => {
+    const h = createWorktreeHarness({ publishLiveStore: false });
+    try {
+      const result = await h.run({
+        async: true,
+        agent: "worker",
+        name: "Store Path Probe",
+        task: "recorded store path",
+        cwd: h.worktreeA,
+        estimatedSeconds: 5,
+        taskId: "1",
+      });
+      assert.ok(!result.isError);
+      const job = h.asyncApi.getAsyncJobs()[0];
+      assert.ok(job);
+      assert.equal(job.taskStorePath, join(h.orchestratorCwd, ".pi", "tasks", "tasks-sess-worktree-1102.json"));
+    } finally {
+      await h.restore();
+    }
+  });
+
   it("falls back to target cwd when orchestrator ctx.cwd is absent", async () => {
     const h = createWorktreeHarness({ publishLiveStore: false, includeSessionGetCwd: false, omitCtxCwd: true });
     try {

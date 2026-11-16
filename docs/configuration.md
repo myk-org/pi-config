@@ -898,6 +898,21 @@ export PI_TASK_STALE_IN_PROGRESS_ENABLED=false
 }
 ```
 
+### Task storage environment variables
+
+Task store location is selected once at extension registration through environment variables rather than `pi-config-settings.json`,
+and advertised to `coms` peers via `task_store_path`.
+
+| Environment variable | Values | Default | Effect |
+|---|---|---|---|
+| `PI_TASK_SCOPE` | `session` or `project` | `session` | `session` stores tasks in `.pi/tasks/tasks-<sessionId>.json`; `project` shares `.pi/tasks/tasks.json` under the project directory. |
+| `PI_TASKS` | file path, list id, or `off` | unset | Overrides `PI_TASK_SCOPE`. Absolute and `./`-relative paths resolve to that file, a bare id uses `~/.pi/tasks/<id>.json`, and `off` keeps tasks in memory only. |
+
+```bash
+export PI_TASK_SCOPE=project
+export PI_TASKS=./.pi/tasks/custom-board.json
+```
+
 See [Managing Custom Agents](managing-custom-agents.html) for details.
 
 ## Reload handshake
