@@ -66,10 +66,19 @@ export interface AsyncJob {
   exitCode?: number | null;
   durationMs?: number;
   delivered?: boolean;
+  /** Delivered by the phantom-timeout fallback with no findings ingested. The result file may
+   *  still land, so it is never unlinked and a late delivery is still owed. */
+  deliveredWithoutResult?: boolean;
+  /** One-shot: the late result for a `deliveredWithoutResult` job was sent. */
+  lateResultSent?: boolean;
   sideEffectsApplied?: boolean;
   fireAndForget?: boolean;
   /** One-shot: fires once with the ingested result text. Used by async chains to feed {previous}. */
   onComplete?: (result: { text: string; isError: boolean }) => void;
+  /** Set when the empty timeout fallback withheld this job's chain hook for the late result. */
+  pendingChainHook?: boolean;
+  /** When `pendingChainHook` was set — bounds how long the chain waits for a result that never comes. */
+  pendingChainHookAt?: number;
   groupId?: string;
   taskId?: string;
   /** The task store file this job's task lives in, recorded at spawn time. The only path a
@@ -156,6 +165,35 @@ export function firePendingCompletions(jobs: Iterable<AsyncJob>): number {
   }
   if (fired > 0) log.info("fire_pending_completions", { fired });
   return fired;
+}
+
+/** A withheld chain hook has no reader: if its result never lands, the chain stalls silently and
+ *  its remaining steps are never spawned. Recover such a job once, past the grace period.
+ *  Clearing the flag is what makes it fire at most once. */
+export function recoverStalledChainHooks(
+  jobs: Iterable<AsyncJob>,
+  opts: { graceMs: number; now?: number },
+): Array<{ job: AsyncJob; chain: AsyncChainState | null }> {
+  const now = opts.now ?? Date.now();
+  const recovered: Array<{ job: AsyncJob; chain: AsyncChainState | null }> = [];
+  for (const job of jobs) {
+    if (!job.pendingChainHook || job.output !== undefined) continue;
+    if (now - (job.pendingChainHookAt ?? now) <= opts.graceMs) continue;
+    job.pendingChainHook = false;
+    job.pendingChainHookAt = undefined;
+    // The parent is about to be told the chain STOPPED. A result landing afterwards is still
+    // delivered through the late path, and a surviving hook would spawn the next step twice.
+    job.onComplete = undefined;
+    recovered.push({ job, chain: readChainState(job.workerDir) });
+  }
+  return recovered;
+}
+
+/** What the parent is told when a withheld chain hook was recovered without a result. */
+export function chainStoppedNote(job: AsyncJob, chain: AsyncChainState | null): string {
+  const step = chain ? `step ${chain.index + 1} of ${chain.steps.length}` : "its current step";
+  const remaining = chain ? [...new Set(chain.steps.slice(chain.index + 1).map(s => s?.agent || "unknown"))] : [];
+  return `⚠️ Async chain STOPPED at ${step} (job ${job.id}, ${job.agent}) — its result was never written, so the next step was not spawned on empty input.${remaining.length > 0 ? ` Remaining agents: ${remaining.join(", ")}.` : ""} Re-run them with subagent(chain: ...).`;
 }
 
 interface AsyncState {
@@ -513,12 +551,7 @@ export function registerAsyncAgents(
             job.sideEffectsApplied = true;
             log.debug(`phantom: ${job.id} — no status file, worker dir missing`);
             if (job.agent.startsWith("code-reviewer-")) {
-              try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
-            }
-            if (job.groupId) {
-              const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-              const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-              if (pending.length === 0) deliverGroupResults(groupJobs);
+              try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
             }
           } else {
             // Worker dir exists but no status file — check timeout
@@ -531,12 +564,7 @@ export function registerAsyncAgents(
               job.sideEffectsApplied = true;
               log.debug(`phantom-timeout: ${job.id} — no status file after ${Math.round(elapsed / 1000)}s`);
               if (job.agent.startsWith("code-reviewer-")) {
-                try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
-              }
-              if (job.groupId) {
-                const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-                const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-                if (pending.length === 0) deliverGroupResults(groupJobs);
+                try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
               }
               updateAsyncWidget();
             }
@@ -558,12 +586,7 @@ export function registerAsyncAgents(
             job.sideEffectsApplied = true;
             log.debug(`phantom: ${job.id} — status file exists but no PID`);
             if (job.agent.startsWith("code-reviewer-")) {
-              try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
-            }
-            if (job.groupId) {
-              const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-              const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-              if (pending.length === 0) deliverGroupResults(groupJobs);
+              try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
             }
           } else if (job.status === "running" && status.pid) {
             try { process.kill(status.pid, 0); } catch {
@@ -583,7 +606,7 @@ export function registerAsyncAgents(
                   let zombieSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
                     const findings = countFindings(typeof data.output === "string" ? data.output : "");
-                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { zombieSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt }); } catch (e: any) { zombieSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
                   if (zombieSideEffectsOk) job.sideEffectsApplied = true;
                   try { fs.unlinkSync(resultFilePath); } catch {}
@@ -594,7 +617,7 @@ export function registerAsyncAgents(
                   job.updatedAt = Date.now();
                   let catchSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
-                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { catchSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch (e: any) { catchSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
                   if (catchSideEffectsOk) job.sideEffectsApplied = true;
                 }
@@ -607,16 +630,11 @@ export function registerAsyncAgents(
                 // Record killed reviewer as having 0 findings — prevents permanent commit block
                 let noFileSideEffectsOk = true;
                 if (job.agent.startsWith("code-reviewer-")) {
-                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { noFileSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                  try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch (e: any) { noFileSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                 }
                 if (noFileSideEffectsOk) job.sideEffectsApplied = true;
               }
-              // Check if this completes a group — deliver remaining siblings' results
-              if (job.groupId) {
-                const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-                const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-                if (pending.length === 0) deliverGroupResults(groupJobs);
-              }
+              // Delivery happens in the reconciliation sweep at the end of this tick.
             }
           }
         }
@@ -640,99 +658,41 @@ export function registerAsyncAgents(
         }
       }
 
-      // Reconciliation pass — retry side-effects + delivery for done-but-undelivered jobs
-      for (const [id, job] of asyncState.jobs.entries()) {
-        if ((job.status === "complete" || job.status === "failed") && !job.delivered) {
-          // Side-effects: ensure they fired (only mark applied when ALL succeed)
-          if (!job.sideEffectsApplied) {
-            let sideEffectsOk = true;
-            if (job.agent.startsWith("code-reviewer-")) {
-              const findings = countFindings(typeof job.output === "string" ? job.output : "");
-              try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { sideEffectsOk = false; log.error(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
-            }
-            if (sideEffectsOk) job.sideEffectsApplied = true;
+      // Reconciliation sweep — deliver every finished-but-undelivered job, grouped or not,
+      // on every tick. This is the safety net for a missed watcher event or a reload, and it
+      // is also where poller-detected completions above get delivered. Idempotent: a job an
+      // earlier path already delivered has `delivered` set and is skipped here.
+      for (const job of asyncState.jobs.values()) {
+        if ((job.status !== "complete" && job.status !== "failed") || job.delivered) continue;
+        // Side-effects: ensure they fired (only mark applied when ALL succeed)
+        if (!job.sideEffectsApplied) {
+          let sideEffectsOk = true;
+          if (job.agent.startsWith("code-reviewer-")) {
+            const findings = countFindings(typeof job.output === "string" ? job.output : "");
+            try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt }); } catch (e: any) { sideEffectsOk = false; log.error(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
           }
-          // Delivery: retry for groups where all members are done
-          if (job.groupId) {
-            const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-            const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-            if (pending.length === 0) {
-              deliverGroupResults(groupJobs);
-            }
-          // Delivery: retry for non-grouped jobs (zombie-ingest path may skip delivery)
-          } else if (getLiveAsyncCtx() && !job.fireAndForget) {
-            const displayName = job.name || job.agent;
-            const resultStatus = job.status === "complete" ? "✅ completed" : "❌ failed";
-            const duration = job.durationMs || (job.updatedAt ? job.updatedAt - job.startedAt : 0);
-            // Auto-complete linked task (with logging, matching processResultFile behavior)
-            let autoCompleteError = "";
-            if (job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
-              try {
-                autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.taskStorePath)
-                  .then((completed) => log.info(`reconcile: auto-completed task #${job.taskId}: ${completed}`))
-                  .catch((e: any) => log.error(`reconcile: auto-complete failed for task #${job.taskId}: ${e?.message}`));
-              } catch (e: any) {
-                const safeTaskId = /^-?\d+$/.test(job.taskId!) ? job.taskId : "(invalid)";
-                autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${safeTaskId}: ${e?.message}. Run TaskUpdate(taskId="${safeTaskId}", status="completed") manually.`;
-                log.error(`reconcile: auto-complete failed for task #${safeTaskId}: ${e?.message}`);
-              }
-            }
-            // Enforce same output-length budget as processResultFile.
-            const maxOutput = Math.max(3000 - autoCompleteError.length, 500);
-            const output = formatAsyncResultOutput(
-              job.agent,
-              job.output || "",
-              resultOutputPath(job),
-              maxOutput,
-            );
-            // Emit lifecycle events
-            if (job.status === "complete") {
-              safeEmit("subagents:completed", { id: job.id, result: job.output || "" });
-            } else {
-              safeEmit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
-            }
-            const msgContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`;
-            if (wasAlreadyDelivered(job.id)) {
-              job.delivered = true;
-              log.debug(`reconcile: skipping already-delivered result for ${job.id}`);
-            } else {
-              log.debug("reconcile_deliver", job.id, "hasCtx", true);
-              try {
-                pi.sendMessage({
-                  customType: "async-agent-result",
-                  content: msgContent,
-                  display: true,
-                }, { triggerTurn: true, deliverAs: "followUp" });
-                fireOnComplete(job);
-                job.delivered = true;
-                recordDelivered(job.id);
-                log.debug("reconcile_deliver_ok", job.id);
-              } catch (e: any) {
-                log.error(`reconcile: sendMessage failed for ${job.id}: ${e?.message}`);
-                // delivered stays false — will retry on next poll
-              }
-            }
-            // Persist delivered state so restore skips this job
-            if (job.delivered) {
-              try {
-                const sp = path.join(job.workerDir, "status.json");
-                const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
-                ex.delivered = true;
-                fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
-              } catch {}
-            }
-          } else if (job.fireAndForget) {
-            fireOnComplete(job);
-            job.delivered = true;
-          }
+          if (sideEffectsOk) job.sideEffectsApplied = true;
         }
+        void deliverJobResult(job);
       }
-
-      // Remove completed/failed jobs older than 30s — require delivered before cleanup
+      // A withheld hook whose result never arrives stalls the chain forever: report the stop once
+      // instead of hanging, and never spawn the next step on empty input.
+      for (const { job, chain } of recoverStalledChainHooks(asyncState.jobs.values(), { graceMs: 2 * getSetting(liveCtx.cwd, "async_phantom_timeout_ms") })) {
+        log.warn("chain_hook_recovered_no_result", { job: job.id, agent: job.agent, step: chain ? chain.index + 1 : null, chain_steps: chain?.steps.length ?? null });
+        void sendSystemNote(
+          pi,
+          chainStoppedNote(job, chain),
+          { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
+        ).catch((e: any) => log.error(`chain_recovered note failed: ${e?.message || e}`));
+      }
+      // Remove completed/failed jobs older than 30s — require delivered before cleanup. A job
+      // still owed a late result stays: evicting it would orphan (and so delete) that result.
+      // shortcut: an owed late result that never arrives stays in the map for this session.
       for (const [id, job] of asyncState.jobs.entries()) {
         if ((job.status === "complete" || job.status === "failed")
             && Date.now() - job.updatedAt > 30000
-            && job.delivered) {
+            && job.delivered
+            && !(job.deliveredWithoutResult && !job.lateResultSent)) {
           asyncState.jobs.delete(id);
         }
       }
@@ -741,149 +701,174 @@ export function registerAsyncAgents(
     if (asyncState.poller.unref) asyncState.poller.unref();
   }
 
-  /** Deliver all results from a completed group as a single combined message. */
-  let groupDeliveryInProgress = new Set<string>();
-  async function deliverGroupResults(groupJobs: AsyncJob[]) {
-    // Guard against duplicate concurrent invocations
-    const gid = groupJobs[0]?.groupId;
-    if (gid && groupDeliveryInProgress.has(gid)) return;
-    if (gid) groupDeliveryInProgress.add(gid);
+  /** Deliver ONE job's result the moment it finishes. Never gated on `groupId`: a finished
+   *  agent must not wait for its slowest sibling (issue #1110). `groupId` stays display-only.
+   *  Idempotent (`job.delivered` + the in-flight set), so the watcher, the poller sweep, the
+   *  spawn-exit timer and the kill path can all call it for the same job. */
+  const deliveryInProgress = new Set<string>();
+  async function deliverJobResult(job: AsyncJob, opts?: { fireHook?: boolean }): Promise<void> {
+    const fireHook = opts?.fireHook !== false;
+    // A timeout-fallback delivery carries no findings. A result file that lands afterwards
+    // re-enters here as a one-shot late delivery, so the guard must let that one through.
+    const isLate = job.deliveredWithoutResult === true && !job.lateResultSent;
+    if ((job.delivered && !isLate) || deliveryInProgress.has(job.id)) return;
+    if (job.status !== "complete" && job.status !== "failed") return;
+    deliveryInProgress.add(job.id);
     try {
-    // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
-    // before processResultFile() has read all group members' outputs.
-    // Wait up to 2s total (not per-job) for all missing result files.
-    // Wait for non-failed, non-fireAndForget jobs that haven't been ingested yet
-    const waitJobs = groupJobs.filter(j => j.output === undefined && !j.fireAndForget && j.status !== "failed");
-    if (waitJobs.length > 0) {
-      await waitForResultFiles(ASYNC_RESULTS_DIR, waitJobs.map(j => j.id), 2000);
-    }
-    // Ingest ALL jobs with missing output (including failed ones that may have a result file)
-    const uningestedJobs = groupJobs.filter(j => j.output === undefined && !j.fireAndForget);
-    for (const j of uningestedJobs) {
-      if (j.output !== undefined) continue;
-      const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
-      try {
-        const data = JSON.parse(fs.readFileSync(rp, "utf-8"));
-        j.output = data.output;
-        preserveReviewerOutput(j, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
-        j.exitCode = data.exitCode;
-        j.durationMs = data.durationMs;
-        if (data.success !== undefined) j.status = data.success ? "complete" : "failed";
-        log.debug(`deliverGroupResults: late-ingested result for ${j.id}`);
-      } catch (e: any) { log.error(`deliverGroupResults: late-ingest failed for ${j.id}: ${e?.message}`); }
-    }
-
-    // Track reviewer completions for ALL code-reviewer jobs in the group.
-    // processResultFile may have already called recordReviewerResult for some,
-    // but recordReviewerResult is idempotent (skips if reviewer already reported).
-    for (const j of groupJobs) {
-      if (!j.agent.startsWith("code-reviewer-")) continue;
-      try {
-        const output = typeof j.output === "string" ? j.output : "";
-        const findings = countFindings(output);
-        // -1 means invalid JSON output — treat conservatively as having findings
-        recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
-      } catch (e: any) { j.sideEffectsApplied = false; log.error(`recordReviewerResult failed for ${j.agent}: ${e?.message}`); continue; }
-    }
-
-    // Mark side-effects applied per-job (only if not already marked false by a failed side-effect above)
-    for (const j of groupJobs) {
-      if (j.sideEffectsApplied !== false) j.sideEffectsApplied = true;
-    }
-
-    // Skip delivery if ALL jobs in group are fire-and-forget
-    if (groupJobs.every(j => j.fireAndForget)) {
-      firePendingCompletions(groupJobs);
-      for (const j of groupJobs) j.delivered = true;
-      // Clean up result files for fire-and-forget groups
-      for (const j of groupJobs) {
-        const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
-        try { fs.unlinkSync(rp); } catch (e: any) { log.debug(`unlink failed ${rp}: ${e?.message}`); }
-      }
-      return;
-    }
-
-    // Emit lifecycle events for pitasks RPC bridge (one per job)
-    for (const j of groupJobs) {
-      if (j.status === "complete") {
-        safeEmit("subagents:completed", { id: j.id, result: j.output || "" });
-      } else if (j.status === "failed") {
-        safeEmit("subagents:failed", { id: j.id, error: j.output || "Agent failed", result: j.output || "", status: "failed" });
-      }
-    }
-
-    const sections: string[] = [];
-    const deliverableJobs: AsyncJob[] = [];
-    for (const j of groupJobs) {
-      if (j.fireAndForget) { j.delivered = true; continue; }
-      const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
-      const displayName = j.name || j.agent;
-      const output = formatAsyncResultOutput(
-        j.agent,
-        j.output || "",
-        resultOutputPath(j),
-      );
-      let autoCompleteError = "";
-      // Auto-complete linked task directly in the store file (no AI involvement)
-      if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
-        try {
-          const completed = await autoCompleteTask(j.taskId, j.projectCwd || j.cwd, j.taskStorePath);
-          log.info(`auto-completed task #${j.taskId}: ${completed}`);
-        } catch (e: any) {
-          autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${j.taskId}: ${e?.message}. Run TaskUpdate(taskId="${j.taskId}", status="completed") manually.`;
-          log.error(`auto-complete failed for task #${j.taskId}: ${e?.message}`);
-        }
-      }
-      const duration = j.durationMs || (j.updatedAt ? j.updatedAt - j.startedAt : 0);
-      // Killed members carry the same attribution suffix the non-grouped kill path uses, so a
-      // group result says who stopped the job instead of only reporting that it failed.
-      const killSuffix = j.killOrigin ? ` — ${KILL_ORIGIN_LABELS[j.killOrigin]}` : "";
-      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}${killSuffix}\n\nTask: ${j.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`);
-      deliverableJobs.push(j);
-    }
-
-    if (sections.length > 0) {
-      // A group may have waited for result files while its session was replaced.
-      // Keep persisted/in-memory results for reconciliation rather than sending into it.
-      if (!getLiveAsyncCtx()) {
-        log.debug("deliver_group_results_deferred", { groupId: groupJobs[0]?.groupId, jobs: groupJobs.length, deliverableJobs: deliverableJobs.length, status: groupJobs[0]?.status });
-        return;
-      }
-      try {
-        pi.sendMessage({
-          customType: "async-agent-result",
-          content: sections.join("\n\n---\n\n"),
-          display: true,
-        }, { triggerTurn: true, deliverAs: "followUp" });
-        // Only mark delivered AFTER sendMessage succeeds
-        for (const j of deliverableJobs) {
-          j.delivered = true;
-          // Persist delivered state so restore skips this job
+      // A kill/zombie/phantom path can reach delivery before the watcher has read this
+      // job's result file — ingest it here so the message carries the agent's real output.
+      if (job.output === undefined && !job.fireAndForget) {
+        const resultPath = path.join(ASYNC_RESULTS_DIR, `${job.id}.json`);
+        if (!fs.existsSync(resultPath)) await waitForResultFiles(ASYNC_RESULTS_DIR, [job.id], 2000);
+        // Re-check after the wait: a concurrent ingestion may have filled the output in,
+        // and the file it consumed is gone by now.
+        if (job.output === undefined) {
           try {
-            const sp = path.join(j.workerDir, "status.json");
-            const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
-            ex.delivered = true;
-            fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
-          } catch {}
+            const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+            job.output = data.output;
+            preserveReviewerOutput(job, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
+            job.exitCode = data.exitCode;
+            job.durationMs = data.durationMs;
+            if (data.success !== undefined) job.status = data.success ? "complete" : "failed";
+            log.debug(`deliver: late-ingested result for ${job.id}`);
+          } catch (e: any) { log.debug(`deliver: no result file to ingest for ${job.id}: ${e?.message}`); }
         }
-      } catch (e: any) {
-        log.error(`deliverGroupResults: sendMessage failed: ${e?.message}`);
-        // delivered stays false — reconciliation will retry on next poll
       }
-    } else {
-      // No sections to deliver (all fire-and-forget) — already marked above
-    }
 
-    // Clean up any remaining result files (most already deleted by processResultFile)
-    for (const j of groupJobs) {
-      const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
-      try { fs.unlinkSync(rp); } catch (e: any) {
-        // ENOENT = already deleted by processResultFile — expected
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") log.debug(`unlink failed ${rp}: ${e?.message}`);
+      // A terminal status is not a final result: async-runner writes it BEFORE its reviewer
+      // JSON retries finish. Delivering now would send empty output and delete the findings
+      // when they land, so wait until the result was ingested (`job.output` is its marker).
+      // Killed/phantom/zombie jobs fill `output` themselves; the phantom timeout bounds the
+      // wait so a genuinely missing file cannot strand the job forever.
+      let noIngestedResult = false;
+      if (job.output === undefined && !job.fireAndForget) {
+        const sinceTerminal = Date.now() - (job.updatedAt || job.startedAt);
+        const boundMs = getSetting(jobCwd(job), "async_phantom_timeout_ms");
+        if (sinceTerminal <= boundMs) {
+          log.debug("deliver_deferred_no_result", { job: job.id, status: job.status, since_terminal_ms: sinceTerminal });
+          return;
+        }
+        log.warn("deliver_no_result_file", { job: job.id, status: job.status, since_terminal_ms: sinceTerminal });
+        // The retry outlived the bound. Deliver what we have, but keep the result file and
+        // stay open to a late one: a retry longer than the timeout still holds the findings.
+        noIngestedResult = true;
       }
-    }
+
+      let autoCompleteError = "";
+      // A chain continuation fired with the empty fallback text would spawn its next step with
+      // no {previous}. Withhold it so the late result fires it once with the real text.
+      const withholdChainHook = noIngestedResult && !!job.onComplete && readChainState(job.workerDir) !== null;
+      if (withholdChainHook) {
+        job.pendingChainHook = true;
+        job.pendingChainHookAt = Date.now();
+        log.warn("chain_hook_withheld_no_result", { job: job.id, agent: job.agent });
+      }
+      // Auto-complete the linked task even without a live ctx: the poller stops for a stale
+      // ctx, so gating this on one left the task open forever after a reload.
+      if (!job.fireAndForget && job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
+        try {
+          const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.taskStorePath);
+          log.info(`auto-completed task #${job.taskId}: ${completed}`);
+        } catch (e: any) {
+          autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
+          log.error(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
+        }
+      }
+
+      if (job.fireAndForget) {
+        if (fireHook && !withholdChainHook) fireOnComplete(job);
+        job.delivered = true;
+      } else if (getLiveAsyncCtx()) {
+        const displayName = job.name || job.agent;
+        const resultStatus = job.status === "complete" ? "✅ completed" : "❌ failed";
+        const maxOutput = Math.max(MAX_OUTPUT_CHARS - autoCompleteError.length, 500);
+        const output = formatAsyncResultOutput(job.agent, job.output || "", resultOutputPath(job), maxOutput);
+        const duration = job.durationMs || (job.updatedAt ? job.updatedAt - job.startedAt : 0);
+        const killSuffix = job.killOrigin ? ` — ${KILL_ORIGIN_LABELS[job.killOrigin]}` : "";
+        const lateNote = isLate ? "\n\n_(late result — it arrived after the timeout fallback already delivered an empty one)_" : "";
+        // A late reviewer result is NOT written to review state: it let an older round's findings
+        // land on a newer one, and every delivery retry multiplied them. Deliver it and tell the
+        // parent the loop has to re-poll instead.
+        let lateReviewNote = "";
+        if (isLate && job.agent.startsWith("code-reviewer-")) {
+          const findings = countFindings(typeof job.output === "string" ? job.output : "");
+          log.warn("late_reviewer_result_unapplied", { agent: job.agent, findings });
+          lateReviewNote = `\n\n⚠️ Reviewer ${job.agent} produced its result AFTER the delivery timeout. It carried ${findings < 0 ? "an unparsable number of" : findings} finding(s) and the review state was NOT updated automatically — re-poll ${job.agent} to apply them.`;
+        }
+        const content = `## Async Agent Result: ${displayName} ${resultStatus}${killSuffix}${lateNote}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}${lateReviewNote}`;
+        if (job.status === "complete") {
+          safeEmit("subagents:completed", { id: job.id, result: job.output || "" });
+        } else {
+          safeEmit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
+        }
+        if (wasAlreadyDelivered(job.id) && !isLate) {
+          job.delivered = true;
+          log.debug(`deliver: skipping already-delivered result for ${job.id}`);
+        } else {
+          try {
+            pi.sendMessage({
+              customType: "async-agent-result",
+              content,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+            recordDelivered(job.id);
+            job.delivered = true;
+            if (isLate) {
+              job.lateResultSent = true;
+              log.info("deliver_late_result", { job: job.id, agent: job.agent });
+            }
+            log.debug("deliver_ok", job.id);
+          } catch (e: any) {
+            log.error(`deliver: sendMessage failed for ${job.id}: ${e?.message}`);
+            // delivered stays false — the reconciliation sweep retries on the next poll
+          }
+        }
+        if (job.delivered && fireHook && !withholdChainHook) fireOnComplete(job);
+      } else {
+        // No live ctx: delivered stays false so the reconciliation sweep retries later.
+        log.debug("deliver_deferred_no_live_ctx", { job: job.id, status: job.status });
+      }
+
+      // A result is consumed only once it actually reached the parent. An empty fallback
+      // delivery never consumes it (the findings may still arrive), and a late attempt that
+      // failed must keep its file so the poller can retry it.
+      const consumed = job.delivered && !noIngestedResult && !(isLate && !job.lateResultSent);
+      if (job.delivered && noIngestedResult) {
+        // In-memory marker: a result file appearing later is the real result, not a stale one.
+        job.deliveredWithoutResult = true;
+      }
+      if (consumed) {
+        // Persist delivered state so restore skips this job
+        try {
+          const sp = path.join(job.workerDir, "status.json");
+          const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+          ex.delivered = true;
+          delete ex.deliveredWithoutResult;
+          if (job.lateResultSent) ex.lateResultSent = true;
+          fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+        } catch {}
+        try { fs.unlinkSync(path.join(ASYNC_RESULTS_DIR, `${job.id}.json`)); } catch (e: any) {
+          // ENOENT = already deleted by processResultFile — expected
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") log.debug(`unlink failed ${job.id}: ${e?.message}`);
+        }
+      } else if (job.delivered) {
+        // Leak-free by design: keep `delivered` unset on disk so a reload reconstructs this job
+        // and delivers the late result instead of unlinking it as an orphan.
+        try {
+          const sp = path.join(job.workerDir, "status.json");
+          const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+          if (noIngestedResult) {
+            delete ex.delivered;
+            ex.deliveredWithoutResult = true;
+          }
+          fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+        } catch {}
+        log.warn("deliver_kept_result_file", { job: job.id, status: job.status, late_pending: isLate });
+      }
+    } catch (e: any) {
+      log.error(`deliverJobResult failed for ${job.id}: ${e?.message}`);
     } finally {
-      if (gid) groupDeliveryInProgress.delete(gid);
+      deliveryInProgress.delete(job.id);
     }
   }
 
@@ -902,6 +887,18 @@ export function registerAsyncAgents(
         return;
       }
       if (job.delivered) {
+        // The timeout fallback already sent an empty result while this file was still being
+        // written. The findings are the whole point — deliver them as a one-shot late result.
+        if (job.deliveredWithoutResult && !job.lateResultSent) {
+          job.status = data.success ? "complete" : "failed";
+          job.output = data.output;
+          job.exitCode = data.exitCode;
+          job.durationMs = data.durationMs;
+          preserveReviewerOutput(job, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
+          log.info("ingest_late_result", { job: job.id, agent: job.agent });
+          await deliverJobResult(job);
+          return;
+        }
         // Already delivered — clean up stale file
         log.debug("processResultFile_skip_delivered", job.id);
         try { fs.unlinkSync(resultPath); } catch (e: any) { log.debug(`stale cleanup failed: ${resultPath}: ${e?.message}`); }
@@ -934,7 +931,7 @@ export function registerAsyncAgents(
           const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
           const findings = countFindings(output);
           // -1 means invalid JSON output — treat conservatively as having findings
-          recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
+          recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt });
         } catch (e: any) { processResultSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.
@@ -986,91 +983,9 @@ export function registerAsyncAgents(
         fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
       } catch (e: any) { log.error(`status.json output persist failed for ${job.id}: ${e?.message}`); }
 
-      // Group-aware delivery: hold results until ALL jobs in the group are done
-      if (job.groupId) {
-        const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-        const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-        log.info(`group ${job.groupId}: ${groupJobs.length} total, ${pending.length} pending`);
-        if (pending.length > 0) {
-          // Not all group members done yet — hold delivery
-          updateAsyncWidget();
-          return;
-        }
-        // All group members done — deliver combined result
-        deliverGroupResults(groupJobs);
-        updateAsyncWidget();
-        return;
-      }
-
-      // Emit lifecycle events for pitasks RPC bridge
-      if (data.success) {
-        safeEmit("subagents:completed", { id: job.id, result: data.output || "" });
-      } else {
-        safeEmit("subagents:failed", { id: job.id, error: data.output || "Agent failed", result: data.output || "", status: "failed" });
-      }
-
-      // Non-grouped job: deliver immediately (existing behavior)
-      let sendSucceeded = false;
-      if (getLiveAsyncCtx() && !job.fireAndForget) {
-        const resultStatus = data.success ? "✅ completed" : "❌ failed";
-        let autoCompleteError = "";
-        // Auto-complete linked task directly in the store file (no AI involvement)
-        if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
-          try {
-            const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.taskStorePath);
-            log.info(`auto-completed task #${job.taskId}: ${completed}`);
-          } catch (e: any) {
-            autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
-            log.error(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
-          }
-        }
-        const maxOutput = Math.max(3000 - autoCompleteError.length, 500);
-        const output = formatAsyncResultOutput(
-          job.agent,
-          data.output || "",
-          resultOutputPath(job),
-          maxOutput,
-        );
-        const pContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`;
-        if (wasAlreadyDelivered(job.id)) {
-          // Already delivered in previous lifecycle — skip send AND onComplete
-          job.delivered = true;
-          log.debug(`processResultFile: skipping already-delivered result for ${job.id}`);
-          updateAsyncWidget();
-          return;
-        } else {
-          try {
-            pi.sendMessage({
-              customType: "async-agent-result",
-              content: pContent,
-              display: true,
-            }, { triggerTurn: true, deliverAs: "followUp" });
-            sendSucceeded = true;
-            recordDelivered(job.id);
-          } catch (e: any) {
-            log.error(`processResultFile: sendMessage failed for ${job.id}: ${e?.message}`);
-            // sendSucceeded stays false — delivered won't be set, reconciliation retries
-          }
-        }
-      } else if (job.fireAndForget) {
-        sendSucceeded = true; // fire-and-forget doesn't need sendMessage
-      }
-
-      // Invoke onComplete callback if registered (e.g., dreaming, async chain step)
-      fireOnComplete(job);
-      if (sendSucceeded) {
-        job.delivered = true;
-        // Persist delivered state so restore skips this job
-        if (job.delivered) {
-          try {
-            const sp = path.join(job.workerDir, "status.json");
-            const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
-            ex.delivered = true;
-            fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
-          } catch {}
-        }
-      }
-      // Result file already deleted above (non-grouped path)
+      // Deliver this job's own result now. A grouped job never waits for its siblings:
+      // `groupId` is display-only (issue #1110).
+      await deliverJobResult(job);
       updateAsyncWidget();
     } catch (e: any) {
       log.error(`processResultFile ERROR: ${e.message}`);
@@ -1379,13 +1294,9 @@ export function registerAsyncAgents(
       job.updatedAt = Date.now();
       job.sideEffectsApplied = true;
       if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+        try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
       }
-      if (job.groupId) {
-        const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-        const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-        if (pending.length === 0) deliverGroupResults(groupJobs);
-      }
+      void deliverJobResult(job);
       updateAsyncWidget();
     });
 
@@ -1425,17 +1336,13 @@ export function registerAsyncAgents(
           job.updatedAt = Date.now();
           job.sideEffectsApplied = true;
           if (job.agent.startsWith("code-reviewer-")) {
-            try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+            try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
           }
           if (!plan.deliver) {
             log.warn("spawn_exit_delivery_skipped_stale_ctx", { job: job.id, status: job.status });
             return;
           }
-          if (job.groupId) {
-            const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-            const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-            if (pending.length === 0) deliverGroupResults(groupJobs);
-          }
+          void deliverJobResult(job);
           updateAsyncWidget();
           } catch (error: any) {
             log.warn("spawn_exit_timer_failed", { job: job.id, error: String(error?.message ?? error).slice(0, 200) });
@@ -1582,17 +1489,28 @@ export function registerAsyncAgents(
         if (!id || asyncState.jobs.has(id)) continue;
         const isAlive = status.pid ? (() => { try { process.kill(status.pid, 0); return true; } catch { return false; } })() : false;
         const isComplete = status.state === "complete" || status.state === "failed";
-        // Skip completed/failed jobs — they were already delivered. Clean up worker dir.
-        if (isComplete) {
+        // A terminal job has only done its job once the result REACHED the parent —
+        // `delivered` says that. The deferral leaves jobs terminal while their result file is
+        // still being written, and the timeout fallback delivers without findings, so a reload
+        // must reconstruct those and KEEP the worker dir: dropping it loses the job, and the
+        // poller would then unlink its result file as an orphan.
+        const alreadySent = status.delivered === true || status.deliveredWithoutResult === true;
+        if (isComplete && status.delivered === true) {
           try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
-          log.debug(`cleaned completed worker dir on restore: ${entry} (state=${status.state})`);
+          log.debug(`cleaned delivered worker dir on restore: ${entry} (state=${status.state})`);
           continue;
         }
-        // Only restore running/queued jobs with alive processes
-        log.debug("restore_check", id, "isAlive", isAlive, "state", status.state);
-        if (isAlive || status.state === "running") {
-          // No result file = already processed and delivered — mark as delivered
-          const hasResultFile = fs.existsSync(path.join(ASYNC_RESULTS_DIR, `${id}.json`));
+        // Restore running/queued jobs with alive processes, plus terminal-but-undelivered ones.
+        log.debug("restore_check", id, "isAlive", isAlive, "state", status.state, "delivered", status.delivered === true, "deliveredWithoutResult", status.deliveredWithoutResult === true);
+        if (isAlive || status.state === "running" || isComplete) {
+          if (isComplete) {
+            log.debug("restore_undelivered_terminal", {
+              job: id,
+              state: status.state,
+              delivered_without_result: status.deliveredWithoutResult === true,
+              has_output: typeof status.output === "string",
+            });
+          }
           const job: AsyncJob = {
             id,
             agent: status.agent || "unknown",
@@ -1604,8 +1522,12 @@ export function registerAsyncAgents(
             exitCode: status.exitCode,
             durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
             output: status.output || undefined,
-            delivered: isComplete,
-            sideEffectsApplied: isComplete,
+            // Undelivered terminal jobs stay undelivered so the sweep/ingest delivers them;
+            // a fallback-delivered one must not be sent twice, but still owes a late result.
+            delivered: isComplete && alreadySent,
+            deliveredWithoutResult: status.deliveredWithoutResult === true || undefined,
+            lateResultSent: status.lateResultSent === true || undefined,
+            sideEffectsApplied: isComplete && alreadySent,
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
             taskStorePath: marker.taskStorePath || undefined,
@@ -1790,6 +1712,9 @@ export function registerAsyncAgents(
       const composedOutput = priorOutput ? `${killLabel}\n${priorOutput}` : killLabel;
       job.output = composedOutput;
       job.killOrigin = killOrigin;
+      // A kill must never advance an async chain, not even when delivery is retried: the
+      // delivered flag stays false after a failed send, so clear the continuation itself.
+      job.onComplete = undefined;
 
       // Persist killed state to disk — prevents stale re-delivery on reload
       try {
@@ -1809,46 +1734,12 @@ export function registerAsyncAgents(
       // Record killed reviewer as having 0 findings — prevents permanent commit block
       let killSideEffectsOk = true;
       if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { killSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+        try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch (e: any) { killSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
       }
       if (killSideEffectsOk) job.sideEffectsApplied = true;
-      // Check if this completes a group — deliver remaining siblings' results
-      if (job.groupId) {
-        const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-        const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-        if (pending.length === 0) {
-          deliverGroupResults(groupJobs);
-        }
-      } else if (getLiveAsyncCtx() && !job.fireAndForget) {
-        // Non-grouped killed job — deliver immediately so AI knows it was killed
-        const displayName = job.name || job.agent;
-        const duration = job.durationMs || (Date.now() - job.startedAt);
-        const output = formatAsyncResultOutput(
-          job.agent,
-          job.output,
-          resultOutputPath(job),
-        );
-        const killContent = `## Async Agent Result: ${displayName} ❌ failed — ${killLabel}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
-        if (wasAlreadyDelivered(job.id)) {
-          job.delivered = true;
-          log.debug(`kill: skipping already-delivered result for ${job.id}`);
-        } else {
-          try {
-            pi.sendMessage({
-              customType: "async-agent-result",
-              content: killContent,
-              display: true,
-            }, { triggerTurn: true, deliverAs: "followUp" });
-            job.delivered = true;
-            recordDelivered(job.id);
-          } catch (e: any) {
-            log.error(`kill delivery failed for ${job.id}: ${e?.message}`);
-            // delivered stays false — reconciliation will retry
-          }
-        }
-      } else if (job.fireAndForget) {
-        job.delivered = true;
-      }
+      // Deliver this job's own result — grouped or not, a finished agent never waits for
+      // its siblings. No completion hook: a kill must not advance an async chain.
+      void deliverJobResult(job, { fireHook: false });
       // Delay cleanup — only for delivered jobs
       if (job.delivered) {
         setTimeout(() => { asyncState.jobs.delete(job.id); updateAsyncWidget(); }, 5000);

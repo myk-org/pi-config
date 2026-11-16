@@ -469,22 +469,22 @@ describe("async kill origin attribution (issue #816)", () => {
     } finally { h.restore(); }
   });
 
-  it("keeps the kill label on grouped jobs so group delivery carries attribution", () => {
+  it("keeps the kill label on a grouped job's own delivery", () => {
     const h = harness();
     try {
       const job = h.spawn({ groupId: "group-886" });
       h.api.killAsyncAgent(job.id, "orchestrator");
       log.debug("kill_origin_case", { origin: "orchestrator", grouped: true });
-      // Group delivery reads the in-memory job output, not status.json, so the label
-      // has to live there too or the AI and pitasks lose attribution entirely.
+      // Delivery reads the in-memory job output, not status.json, so the label has to
+      // live there too or the AI and pitasks lose attribution entirely.
       const delivered = h.messages.map((m: any) => String(m.content)).join("\n");
-      assert.ok(h.messages.length > 0, "a completed group delivers its results");
-      assert.match(delivered, /Killed by orchestrator/, "group delivery carries the kill origin in the body");
-      // The group header must also name who killed it, matching the non-grouped header.
+      assert.ok(h.messages.length > 0, "a killed job delivers its result");
+      assert.match(delivered, /Killed by orchestrator/, "delivery carries the kill origin in the body");
+      // The header must also name who killed it, matching the non-grouped header.
       assert.match(
         delivered,
         /## Async Agent Result: .* — Killed by orchestrator/,
-        "the group header must carry the attribution suffix",
+        "the header must carry the attribution suffix",
       );
     } finally { h.restore(); }
   });
