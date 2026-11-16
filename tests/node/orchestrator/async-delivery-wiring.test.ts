@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { planSpawnExitRecovery, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
+import { chainStoppedNote, planSpawnExitRecovery, recoverStalledChainHooks, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { addReviewerPending, markNeedsReview, markTestsPassed, readReviewState, recordReviewerResult, resetReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
@@ -326,6 +326,24 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
       await eventually(() => h.messages.length === 2);
       assert.deepEqual(fired, ["real chain text"]);
     } finally { h.restore(); }
+  });
+
+  it("recovers a withheld chain hook once its grace period passes", () => {
+    // The result file never landed, so the withheld hook had no reader: the chain stalled with
+    // nothing telling the parent why. Recovery reports the stop instead of hanging.
+    const chain = { steps: [{ agent: "worker-a", task: "one" }, { agent: "worker-b", task: "two" }], index: 0, previous: "" };
+    const stalled = (id: string) => ({ id, agent: "worker-a", task: "one", status: "complete", workerDir: join("/nonexistent", id), startedAt: 1, updatedAt: 1, pendingChainHook: true, pendingChainHookAt: 1_000 });
+    const jobs = [stalled("job-stalled") as any];
+    const recovered = recoverStalledChainHooks(jobs, { graceMs: 60_000, now: 30_000 });
+    assert.equal(recovered.length, 0, "nothing is recovered inside the grace period");
+    const after = recoverStalledChainHooks(jobs, { graceMs: 60_000, now: 120_000 });
+    assert.equal(after.length, 1);
+    assert.equal(jobs[0].pendingChainHook, false);
+    assert.equal(recoverStalledChainHooks(jobs, { graceMs: 60_000, now: 300_000 }).length, 0, "recovery fires once");
+    const note = chainStoppedNote(jobs[0] as any, chain);
+    assert.match(note, /STOPPED at step 1 of 2/);
+    assert.match(note, /job-stalled/);
+    assert.match(note, /worker-b/);
   });
 
   it("defers delivery of a terminal job until its result file is ingested", async () => {

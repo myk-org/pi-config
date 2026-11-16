@@ -77,6 +77,8 @@ export interface AsyncJob {
   onComplete?: (result: { text: string; isError: boolean }) => void;
   /** Set when the empty timeout fallback withheld this job's chain hook for the late result. */
   pendingChainHook?: boolean;
+  /** When `pendingChainHook` was set — bounds how long the chain waits for a result that never comes. */
+  pendingChainHookAt?: number;
   groupId?: string;
   taskId?: string;
   /** The task store file this job's task lives in, recorded at spawn time. The only path a
@@ -163,6 +165,31 @@ export function firePendingCompletions(jobs: Iterable<AsyncJob>): number {
   }
   if (fired > 0) log.info("fire_pending_completions", { fired });
   return fired;
+}
+
+/** A withheld chain hook has no reader: if its result never lands, the chain stalls silently and
+ *  its remaining steps are never spawned. Recover such a job once, past the grace period.
+ *  Clearing the flag is what makes it fire at most once. */
+export function recoverStalledChainHooks(
+  jobs: Iterable<AsyncJob>,
+  opts: { graceMs: number; now?: number },
+): Array<{ job: AsyncJob; chain: AsyncChainState | null }> {
+  const now = opts.now ?? Date.now();
+  const recovered: Array<{ job: AsyncJob; chain: AsyncChainState | null }> = [];
+  for (const job of jobs) {
+    if (!job.pendingChainHook || job.output !== undefined) continue;
+    if (now - (job.pendingChainHookAt ?? now) <= opts.graceMs) continue;
+    job.pendingChainHook = false;
+    recovered.push({ job, chain: readChainState(job.workerDir) });
+  }
+  return recovered;
+}
+
+/** What the parent is told when a withheld chain hook was recovered without a result. */
+export function chainStoppedNote(job: AsyncJob, chain: AsyncChainState | null): string {
+  const step = chain ? `step ${chain.index + 1} of ${chain.steps.length}` : "its current step";
+  const remaining = chain ? [...new Set(chain.steps.slice(chain.index + 1).map(s => s?.agent || "unknown"))] : [];
+  return `⚠️ Async chain STOPPED at ${step} (job ${job.id}, ${job.agent}) — its result was never written, so the next step was not spawned on empty input.${remaining.length > 0 ? ` Remaining agents: ${remaining.join(", ")}.` : ""} Re-run them with subagent(chain: ...).`;
 }
 
 interface AsyncState {
@@ -520,7 +547,7 @@ export function registerAsyncAgents(
             job.sideEffectsApplied = true;
             log.debug(`phantom: ${job.id} — no status file, worker dir missing`);
             if (job.agent.startsWith("code-reviewer-")) {
-              try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+              try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
             }
           } else {
             // Worker dir exists but no status file — check timeout
@@ -533,7 +560,7 @@ export function registerAsyncAgents(
               job.sideEffectsApplied = true;
               log.debug(`phantom-timeout: ${job.id} — no status file after ${Math.round(elapsed / 1000)}s`);
               if (job.agent.startsWith("code-reviewer-")) {
-                try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+                try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
               }
               updateAsyncWidget();
             }
@@ -555,7 +582,7 @@ export function registerAsyncAgents(
             job.sideEffectsApplied = true;
             log.debug(`phantom: ${job.id} — status file exists but no PID`);
             if (job.agent.startsWith("code-reviewer-")) {
-              try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+              try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
             }
           } else if (job.status === "running" && status.pid) {
             try { process.kill(status.pid, 0); } catch {
@@ -575,7 +602,7 @@ export function registerAsyncAgents(
                   let zombieSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
                     const findings = countFindings(typeof data.output === "string" ? data.output : "");
-                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { zombieSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt }); } catch (e: any) { zombieSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
                   if (zombieSideEffectsOk) job.sideEffectsApplied = true;
                   try { fs.unlinkSync(resultFilePath); } catch {}
@@ -586,7 +613,7 @@ export function registerAsyncAgents(
                   job.updatedAt = Date.now();
                   let catchSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
-                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { catchSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch (e: any) { catchSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
                   if (catchSideEffectsOk) job.sideEffectsApplied = true;
                 }
@@ -599,7 +626,7 @@ export function registerAsyncAgents(
                 // Record killed reviewer as having 0 findings — prevents permanent commit block
                 let noFileSideEffectsOk = true;
                 if (job.agent.startsWith("code-reviewer-")) {
-                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { noFileSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                  try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch (e: any) { noFileSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                 }
                 if (noFileSideEffectsOk) job.sideEffectsApplied = true;
               }
@@ -638,11 +665,21 @@ export function registerAsyncAgents(
           let sideEffectsOk = true;
           if (job.agent.startsWith("code-reviewer-")) {
             const findings = countFindings(typeof job.output === "string" ? job.output : "");
-            try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { sideEffectsOk = false; log.error(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+            try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt }); } catch (e: any) { sideEffectsOk = false; log.error(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
           }
           if (sideEffectsOk) job.sideEffectsApplied = true;
         }
         void deliverJobResult(job);
+      }
+      // A withheld hook whose result never arrives stalls the chain forever: report the stop once
+      // instead of hanging, and never spawn the next step on empty input.
+      for (const { job, chain } of recoverStalledChainHooks(asyncState.jobs.values(), { graceMs: 2 * getSetting(liveCtx.cwd, "async_phantom_timeout_ms") })) {
+        log.warn("chain_hook_recovered_no_result", { job: job.id, agent: job.agent, step: chain ? chain.index + 1 : null, chain_steps: chain?.steps.length ?? null });
+        void sendSystemNote(
+          pi,
+          chainStoppedNote(job, chain),
+          { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
+        ).catch((e: any) => log.error(`chain_recovered note failed: ${e?.message || e}`));
       }
       // Remove completed/failed jobs older than 30s — require delivered before cleanup. A job
       // still owed a late result stays: evicting it would orphan (and so delete) that result.
@@ -719,6 +756,7 @@ export function registerAsyncAgents(
       const withholdChainHook = noIngestedResult && !!job.onComplete && readChainState(job.workerDir) !== null;
       if (withholdChainHook) {
         job.pendingChainHook = true;
+        job.pendingChainHookAt = Date.now();
         log.warn("chain_hook_withheld_no_result", { job: job.id, agent: job.agent });
       }
       // Auto-complete the linked task even without a live ctx: the poller stops for a stale
@@ -849,7 +887,7 @@ export function registerAsyncAgents(
             try {
               const findings = countFindings(typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
               // force: the fallback already removed this reviewer from reviewers_pending
-              recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { force: true });
+              recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { force: true, since: job.startedAt });
               log.info("late_reviewer_result_applied", { agent: job.agent, count: findings < 0 ? 1 : findings });
             } catch (e: any) { log.error(`late result: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
           }
@@ -889,7 +927,7 @@ export function registerAsyncAgents(
           const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
           const findings = countFindings(output);
           // -1 means invalid JSON output — treat conservatively as having findings
-          recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
+          recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt });
         } catch (e: any) { processResultSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.
@@ -1252,7 +1290,7 @@ export function registerAsyncAgents(
       job.updatedAt = Date.now();
       job.sideEffectsApplied = true;
       if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+        try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
       }
       void deliverJobResult(job);
       updateAsyncWidget();
@@ -1294,7 +1332,7 @@ export function registerAsyncAgents(
           job.updatedAt = Date.now();
           job.sideEffectsApplied = true;
           if (job.agent.startsWith("code-reviewer-")) {
-            try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+            try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
           }
           if (!plan.deliver) {
             log.warn("spawn_exit_delivery_skipped_stale_ctx", { job: job.id, status: job.status });
@@ -1692,7 +1730,7 @@ export function registerAsyncAgents(
       // Record killed reviewer as having 0 findings — prevents permanent commit block
       let killSideEffectsOk = true;
       if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { killSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+        try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch (e: any) { killSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
       }
       if (killSideEffectsOk) job.sideEffectsApplied = true;
       // Deliver this job's own result — grouped or not, a finished agent never waits for

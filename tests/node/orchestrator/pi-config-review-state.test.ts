@@ -377,6 +377,19 @@ describe("edited_during_cycle resets on new cycle", () => {
   });
 });
 
+describe("recordReviewerResult rejects a result from an older round", () => {
+  it("keeps the newer pending entry when the job started before it was added", () => {
+    // A late result from the previous round arrived after this round registered its reviewer.
+    // Clearing the entry here let the new round look clean before its own result landed.
+    addReviewerPending(cwd, "lint", SUBJECT);
+    recordReviewerResult(cwd, "lint", 0, { since: Date.now() - 60_000 });
+    const s = readReviewState(cwd);
+    assert.deepEqual(s.reviewers_pending, ["lint"]);
+    assert.equal(s.status, "in_progress");
+    assert.equal(isReviewClean(cwd), false);
+  });
+});
+
 describe("recordReviewerResult idempotent", () => {
   it("second call for same reviewer doesn't double-count findings", () => {
     addReviewerPending(cwd, "lint", SUBJECT);
