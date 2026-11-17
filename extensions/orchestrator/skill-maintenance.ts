@@ -1452,8 +1452,13 @@ function cdChangesSkillMeaning(
     log.debug("skill_shell_cd_expansion", { target });
     return true;
   }
+  // Physical, not lexical: a symlinked cd target (`/link` -> `/tmp/deep`) keeps the text of a
+  // relative reference identical while the shell executes it somewhere else entirely.
+  const physicalTarget = realpathNearestExisting(target) ?? target;
   const changes = refs.some(
-    (ref) => !path.isAbsolute(ref.token) && path.resolve(target, ref.token) !== ref.abs,
+    (ref) =>
+      !path.isAbsolute(ref.token)
+      && path.resolve(physicalTarget, ref.token) !== (realpathNearestExisting(ref.abs) ?? ref.abs),
   );
   log.debug("skill_shell_cd_resolved", { target, refs: refs.length, changes });
   return changes;

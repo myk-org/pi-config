@@ -735,6 +735,40 @@ describe("skill helper script execution (#1103)", () => {
     );
   });
 
+  it("blocks a cd through a symlink that moves a relative skill path (#1124)", () => {
+    // `link` and `proj` are siblings, so `../proj/.pi/skills/...` reads as the project's own
+    // script from the link's TEXT — but `link` really points into another tree, and that is
+    // where the shell resolves the relative path from.
+    const base = tempDir("skill-maint-cd-link-");
+    const cwd = path.join(base, "proj");
+    const root = path.join(cwd, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    const deep = path.join(tempDir("skill-maint-cd-deep-"), "deep");
+    fs.mkdirSync(deep);
+    fs.symlinkSync(deep, path.join(base, "link"));
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${base}/link && bash ../proj/.pi/skills/verify-all/run-suites.sh`)?.block,
+      true,
+    );
+  });
+
+  it("allows a cd into a symlinked project whose relative skill path is the same file", () => {
+    const real = tempDir("skill-maint-real-proj-");
+    const root = path.join(real, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    const linkedProject = path.join(tempDir("skill-maint-linked-proj-"), "proj");
+    fs.symlinkSync(real, linkedProject);
+    // Both sides realpath to the same directory: the cd still changes nothing.
+    assert.equal(
+      bashSkillVerdict(linkedProject, `cd ${linkedProject} && bash .pi/skills/verify-all/run-suites.sh`),
+      null,
+    );
+  });
+
   it("blocks a quoted or escaped cd", () => {
     const { cwd, root } = project();
     writeSkill(root, "verify-all", UNMARKED);
