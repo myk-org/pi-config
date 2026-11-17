@@ -1028,14 +1028,39 @@ function parseSegment(projectCwd: string, segment: string): ParsedSegment {
   return { words, redirectTargets, hasWriteRedirect };
 }
 
-/** Unwrap leading control keywords, `FOO=bar` env assignments, `rtk` wrappers, and plain `env`. */
+/**
+ * `timeout` options that take a separate value. Mirrors `PIPE_TIMEOUT_VALUE_OPTIONS` in
+ * `enforcement-helpers.ts` (module-private there, so not imported).
+ */
+const TIMEOUT_VALUE_OPTIONS = new Set(["-s", "--signal", "-k", "--kill-after"]);
+
+/** Unwrap leading control keywords, `FOO=bar` env assignments, `rtk` wrappers, `env`, and `timeout`. */
 function commandWordIndex(plainWords: string[]): number {
   let idx = skipToCommandWord(plainWords);
-  while (plainWords[idx] === "env") {
-    const next = skipToCommandWord(plainWords.slice(idx + 1));
-    const candidate = plainWords[idx + 1 + next];
-    if (!candidate || candidate.startsWith("-")) break;
-    idx = idx + 1 + next;
+  // `env` and `timeout` nest (`timeout 5 env bash helper`), so unwrap until the word stops changing.
+  // Unwrapping only exposes the real verb to the write checks, never hides one.
+  for (;;) {
+    if (plainWords[idx] === "env") {
+      const next = skipToCommandWord(plainWords.slice(idx + 1));
+      const candidate = plainWords[idx + 1 + next];
+      if (!candidate || candidate.startsWith("-")) break;
+      idx = idx + 1 + next;
+      continue;
+    }
+    // `timeout [-s SIG] [-k N] [--signal SIG] [--kill-after N] <duration> <command…>` — without
+    // this the verb looks like `timeout`, so a bounded run of a skill helper read as an
+    // unknown command and blocked.
+    if (plainWords[idx] === "timeout") {
+      let next = idx + 1;
+      while (plainWords[next]?.startsWith("-")) {
+        next += TIMEOUT_VALUE_OPTIONS.has(plainWords[next]) ? 2 : 1;
+      }
+      next += 1; // the duration operand
+      if (!plainWords[next]) break;
+      idx = next;
+      continue;
+    }
+    break;
   }
   log.debug("skill_shell_command_word", { idx, verb: plainWords[idx] ?? "" });
   return idx;
@@ -1369,6 +1394,89 @@ function isAllowedSkillScriptExec(
   return { allow: true };
 }
 
+/**
+ * Any shell variable expansion. With a `cd` in the command no working directory can be
+ * pinned: `$PWD` (and any other variable) expands AFTER the cd, so a reference that
+ * `unquoteWord` already turned into an absolute path is not the path the shell uses.
+ */
+const VARIABLE_EXPANSION_RE = /\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})/;
+
+/**
+ * The directory change a command makes, read from the PARSED segments so quoted (`'cd'`)
+ * and escaped (`c\d`) forms count — `maskQuoted` blanks exactly those. The target is
+ * recorded only for the one pinning shape: the first segment of the first pipeline.
+ */
+function pinnedCdTarget(projectCwd: string, command: string): { count: number; target: string | null } {
+  let count = 0;
+  let target: string | null = null;
+  const pipelines = splitPipelines(command);
+  for (let p = 0; p < pipelines.length; p++) {
+    for (let s = 0; s < pipelines[p].length; s++) {
+      const words = parseSegment(projectCwd, pipelines[p][s]).words.map((w) => w.value);
+      const cmdIdx = commandWordIndex(words);
+      if (words[cmdIdx] !== "cd") continue;
+      count++;
+      if (p === 0 && s === 0 && count === 1) target = words[cmdIdx + 1] ?? null;
+    }
+  }
+  log.debug("skill_shell_cd_scan", { count, target });
+  return { count, target };
+}
+
+/** A `..` path component, quoted or not — the shell resolves it against a physical directory. */
+function hasParentComponent(token: string): boolean {
+  return token.split("/").includes("..");
+}
+
+/**
+ * Whether a `cd` in the command could change what a skill path means.
+ *
+ * References are resolved against `projectCwd`, so the guard used to refuse every command
+ * that changed directory at all — including `cd <projectCwd> && bash .pi/skills/x/run.sh`,
+ * where the cd provably changes nothing. Block only when the cd is unpinnable (not the first
+ * segment of the first pipeline, not a literal absolute path, more than one of them, or any
+ * variable expansion that expands after the cd) or when a relative reference would resolve
+ * elsewhere under it. An absolute literal reference is unaffected by any cd.
+ *
+ * A relative reference carrying a `..` component is blocked outright under a cd: collapsing
+ * `..` lexically is NOT what the shell does — it follows a symlink first and applies `..` to
+ * the physical directory. With `link -> <project>` and the project's `foo -> /tmp/attacker/deep`,
+ * `cd link && bash foo/../.pi/skills/x/run.sh` compares against the project's helper while the
+ * shell runs `/tmp/attacker/.pi/skills/x/run.sh`. The comparison cannot be trusted there, so no
+ * attempt is made to model the shell's physical `..` semantics.
+ */
+function cdChangesSkillMeaning(
+  projectCwd: string,
+  command: string,
+  refs: readonly ShellSkillReference[],
+): boolean {
+  const { count, target } = pinnedCdTarget(projectCwd, command);
+  if (count === 0) return false;
+  if (count > 1 || target === null) {
+    log.debug("skill_shell_cd_unpinned", { cds: count });
+    return true;
+  }
+  if (!path.isAbsolute(target)) {
+    log.debug("skill_shell_cd_relative_target", { target });
+    return true;
+  }
+  if (VARIABLE_EXPANSION_RE.test(command)) {
+    log.debug("skill_shell_cd_expansion", { target });
+    return true;
+  }
+  // Physical, not lexical: a symlinked cd target (`/link` -> `/tmp/deep`) keeps the text of a
+  // relative reference identical while the shell executes it somewhere else entirely.
+  const physicalTarget = realpathNearestExisting(target) ?? target;
+  const changes = refs.some(
+    (ref) =>
+      !path.isAbsolute(ref.token)
+      && (hasParentComponent(ref.token)
+        || path.resolve(physicalTarget, ref.token) !== (realpathNearestExisting(ref.abs) ?? ref.abs)),
+  );
+  log.debug("skill_shell_cd_resolved", { target, refs: refs.length, changes });
+  return changes;
+}
+
 export type ShellVerdict = { block: true; reason: string };
 
 /**
@@ -1385,7 +1493,8 @@ export type ShellVerdict = { block: true; reason: string };
  *
  * No shell write is allowed at all (`>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
  * `perl -i`, `chmod`, `touch`, `patch`, inline `python -c` / `node -e` / `bash -c`, etc.).
- * Ambiguity blocks: a bare `SKILL.md`, a `cd` into a skills area, a path through a symlink.
+ * Ambiguity blocks: a bare `SKILL.md`, a `cd` that could change a skill path's meaning, a
+ * path through a symlink.
  *
  * Known limit (documented, not widened around): a path built by shell expansion
  * (`t=…; … > "$t"`, `eval`, `find -exec`) carries no literal reference, so no text rule
@@ -1412,7 +1521,7 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
     return block(`a bare SKILL.md means whatever the working directory is. ${hint}`);
   }
   const maskedCommand = maskQuoted(command);
-  if (/(?:^|[\s;&|()])cd\s/.test(maskedCommand)) {
+  if (cdChangesSkillMeaning(projectCwd, command, refs)) {
     return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
   }
   // Nested commands run before the outer one: `cat skill $(python3 -c …)`, `<(...)`, `>(...)`.
@@ -1443,9 +1552,6 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
       const plainWords = parsed.words.map((w) => w.value);
       const cmdIdx = commandWordIndex(plainWords);
       const verb = plainWords[cmdIdx] ?? "";
-      if (verb === "cd") {
-        return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
-      }
       if (plainWords.slice(cmdIdx + 1).some((w) => /^(?:--pre(?:=|$)|--pre-glob(?:=|$)|--?exec$)/.test(w))) {
         return block(`this command's options execute another program. ${hint}`);
       }

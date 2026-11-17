@@ -674,6 +674,181 @@ describe("skill helper script execution (#1103)", () => {
     assert.equal(bashSkillVerdict(cwd, `bash ${helper}`), null);
   });
 
+  it("allows a cd that cannot change what a relative skill path means", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    // cd into the project itself: every relative reference resolves to the same absolute path
+    // as it does without the cd, so the directory change is provably irrelevant.
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${cwd} && bash .pi/skills/verify-all/run-suites.sh`),
+      null,
+    );
+  });
+
+  it("allows a cd elsewhere when every skill path is absolute", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    const helper = path.join(root, "verify-all", "run-suites.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, `cd /tmp && bash ${helper}`), null);
+  });
+
+  it("blocks a cd that would move a relative skill path", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    assert.equal(
+      bashSkillVerdict(cwd, "cd /tmp && bash .pi/skills/verify-all/run-suites.sh")?.block,
+      true,
+    );
+  });
+
+  it("blocks a relative cd target", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, "cd sub && bash .pi/skills/verify-all/run-suites.sh")?.block, true);
+  });
+
+  it("blocks a chain of cds", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${cwd} && cd /tmp && bash .pi/skills/verify-all/run-suites.sh`)?.block,
+      true,
+    );
+  });
+
+  it("blocks a $PWD reference that expands after the cd", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    assert.equal(
+      bashSkillVerdict(cwd, "cd /tmp && bash $PWD/.pi/skills/verify-all/run-suites.sh")?.block,
+      true,
+    );
+    assert.equal(
+      bashSkillVerdict(cwd, "cd /tmp && bash ${PWD}/.pi/skills/verify-all/run-suites.sh")?.block,
+      true,
+    );
+  });
+
+  it("blocks a cd through a symlink that moves a relative skill path (#1124)", () => {
+    // `link` and `proj` are siblings, so `../proj/.pi/skills/...` reads as the project's own
+    // script from the link's TEXT — but `link` really points into another tree, and that is
+    // where the shell resolves the relative path from.
+    const base = tempDir("skill-maint-cd-link-");
+    const cwd = path.join(base, "proj");
+    const root = path.join(cwd, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    const deep = path.join(tempDir("skill-maint-cd-deep-"), "deep");
+    fs.mkdirSync(deep);
+    fs.symlinkSync(deep, path.join(base, "link"));
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${base}/link && bash ../proj/.pi/skills/verify-all/run-suites.sh`)?.block,
+      true,
+    );
+  });
+
+  it("blocks a relative `..` reference after a cd (#1124)", () => {
+    // The finding's shape: `link` -> this project, and the project's own `foo` -> another tree.
+    // Lexically `foo/../.pi/skills/...` is this project's helper, but the shell follows `foo`
+    // first and runs the attacker's file, so the reference cannot be pinned.
+    const base = tempDir("skill-maint-cd-dotdot-");
+    const cwd = path.join(base, "proj");
+    const root = path.join(cwd, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    const attacker = path.join(tempDir("skill-maint-cd-attacker-"), ".pi", "skills", "verify-all");
+    fs.mkdirSync(attacker, { recursive: true });
+    fs.writeFileSync(path.join(attacker, "run-suites.sh"), "#!/bin/sh\n");
+    fs.mkdirSync(path.join(attacker, "..", "..", "deep"));
+    fs.symlinkSync(path.join(attacker, "..", "..", "deep"), path.join(cwd, "foo"));
+    fs.symlinkSync(cwd, path.join(base, "link"));
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${base}/link && bash foo/../.pi/skills/verify-all/run-suites.sh`)?.block,
+      true,
+    );
+  });
+
+  it("blocks a plain relative `..` reference after a cd (#1124)", () => {
+    const base = tempDir("skill-maint-cd-dotdot-plain-");
+    const cwd = path.join(base, "proj");
+    const root = path.join(cwd, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    // `../proj/...` collapses to this project's own skill from the TEXT alone; collapsing `..`
+    // lexically is not what the shell does, so the reference is refused rather than compared.
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${cwd} && bash ../${path.basename(cwd)}/.pi/skills/verify-all/run-suites.sh`)
+        ?.block,
+      true,
+    );
+  });
+
+  it("allows a cd into a symlinked project whose relative skill path is the same file", () => {
+    const real = tempDir("skill-maint-real-proj-");
+    const root = path.join(real, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    const linkedProject = path.join(tempDir("skill-maint-linked-proj-"), "proj");
+    fs.symlinkSync(real, linkedProject);
+    // Both sides realpath to the same directory: the cd still changes nothing.
+    assert.equal(
+      bashSkillVerdict(linkedProject, `cd ${linkedProject} && bash .pi/skills/verify-all/run-suites.sh`),
+      null,
+    );
+  });
+
+  it("blocks a quoted or escaped cd", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    assert.equal(
+      bashSkillVerdict(cwd, "'cd' /tmp && bash .pi/skills/verify-all/run-suites.sh")?.block,
+      true,
+    );
+    assert.equal(
+      bashSkillVerdict(cwd, "c\\d /tmp && bash .pi/skills/verify-all/run-suites.sh")?.block,
+      true,
+    );
+  });
+
+  it("unwraps timeout so a bounded helper run is read as the helper run", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    const helper = path.join(root, "verify-all", "run-suites.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, `timeout 3000 bash ${helper}`), null);
+    assert.equal(bashSkillVerdict(cwd, `timeout -k 2 5 bash ${helper}`), null);
+    // Unwrapping must expose a write, never hide it.
+    assert.equal(bashSkillVerdict(cwd, `timeout 5 rm ${helper}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `timeout -s KILL 5 sed -i 's/a/b/' ${helper}`)?.block, true);
+  });
+
+  it("unwraps timeout's value-taking long options", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    assert.equal(bashSkillVerdict(cwd, "timeout --signal TERM 5 cat .pi/skills/verify-all/SKILL.md"), null);
+    assert.equal(bashSkillVerdict(cwd, "timeout --kill-after=5 5 cat .pi/skills/verify-all/SKILL.md"), null);
+  });
+
+  it("unwraps env nested after timeout", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    const helper = path.join(root, "verify-all", "run-suites.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, `timeout 5 env bash ${helper}`), null);
+    assert.equal(bashSkillVerdict(cwd, `timeout 5 env rm ${helper}`)?.block, true);
+  });
+
   it("allows reading a skill file with 2>&1 descriptor forwarding", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md 2>&1"), null);
