@@ -154,9 +154,14 @@ an entry, `setTool()` for the current tool, `setAbort()` for the kill escalation
 
 - Footer: `formatAgentsStatus(asyncRunning, syncRunning)` — `💤 agents: 0` idle,
   `⏳ async: N` for async-only (unchanged look), `⏳ agents: T (A async, S sync)` when mixed.
-- `/async-status` and pidash: sync rows carry `mode: "sync"` and are killed through
-  `abortSyncAgentRun` (by run id, never by agent name).
-- Each run writes `<cwd>/.pi/tmp/sync-runs/<id>/status.json` — running at `beginSyncAgentRun`
+- `/async-status`: sync rows carry `mode: "sync"` and are stopped through
+  `abortSyncAgentRun` (by run id, never by agent name). A sync run is also stopped by
+  cancelling the parent turn. The pidash row is display-only: the browser has no sync
+  kill button, and a pidash kill never reaches a sync child
+  (`tests/node/orchestrator/sync-agent-runs-wiring.test.ts`).
+- Each run writes `<cwd>/.pi/tmp/sync-runs/sync-<session>-<n>/status.json` — the session id
+  (or the pid when there is none) namespaces both id and dir, so two sessions sharing a cwd
+  never share a run dir. Running at `beginSyncAgentRun`
   with agent/task/startedAt, updated with `setPid`/`setTool`, final `complete`/`failed` plus
   `killOrigin` on end or abort — so the detail header reads a sync row through the same
   `readLiveStatus(workerDir)` as an async job. No `output.log`: the row has no output pane.

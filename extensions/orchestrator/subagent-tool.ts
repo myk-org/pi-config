@@ -659,10 +659,17 @@ export async function runSingleAgent(
     }
     return cur;
   } finally {
-    const ok = !stoppedByRegistry && !parentAborted && exitCode === 0;
+    // A zero exit is not success on its own: a JSON child can report an error/aborted stop
+    // reason and still exit 0, which would leave the row saying "complete".
+    const failedByChild = cur.stopReason === "error" || cur.stopReason === "aborted";
+    const ok = !stoppedByRegistry && !parentAborted && exitCode === 0 && !failedByChild;
     syncRun.end(ok);
     if (ok) log.info("sync_run_end", syncRun.id, agentName);
-    else log.warn("sync_run_end", syncRun.id, agentName, "exitCode", exitCode, "stoppedByRegistry", stoppedByRegistry, "parentAborted", parentAborted);
+    // Both stops are user-requested outcomes, not a failure of the agent.
+    else if (stoppedByRegistry || parentAborted)
+      log.info("sync_run_end", syncRun.id, agentName, "stopped", parentAborted ? "parent-abort" : "async-status");
+    else
+      log.warn("sync_run_end", syncRun.id, agentName, "exitCode", exitCode, "stopReason", cur.stopReason ?? null);
     if (tmpFile)
       try {
         fs.unlinkSync(tmpFile);

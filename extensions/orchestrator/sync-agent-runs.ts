@@ -65,15 +65,41 @@ function removeWorkerDir(workerDir: string): void {
 }
 
 /**
+ * Namespace for this session's run ids and worker dirs. Two sessions can share a cwd, so a
+ * bare counter would hand both of them `sync-1`: they would overwrite each other's status and
+ * one teardown would delete the other's live dir.
+ */
+function sessionScope(): string {
+  const sid = (globalThis as any).__piConfigSessionId;
+  const safe = String(sid ?? "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32);
+  return safe || String(process.pid);
+}
+
+/**
  * Write the run's status.json. Same shape an async job writes, so the overlay's
  * `readLiveStatus(workerDir)` renders a sync row without a second code path.
  * Best-effort: visibility must never break the run itself.
  */
 function writeStatus(run: SyncAgentRunEntry): void {
+  const target = path.join(run.workerDir, "status.json");
   try {
     fs.mkdirSync(run.workerDir, { recursive: true });
+    // The dir and file names are predictable, so a hostile checkout can pre-place either as a
+    // symlink and we would write run metadata through it. Refuse the dir, replace the file.
+    if (fs.lstatSync(run.workerDir).isSymbolicLink()) {
+      log.warn("status_write_refused_symlinked_dir", { id: run.id, workerDir: run.workerDir });
+      return;
+    }
+    // Removes a link, never its target. `wx` then fails on anything re-created in between
+    // instead of following it.
+    try {
+      fs.rmSync(target, { force: true });
+    } catch (e: any) {
+      log.warn("status_unlink_failed", { id: run.id, target, error: e?.message || String(e) });
+      return;
+    }
     fs.writeFileSync(
-      path.join(run.workerDir, "status.json"),
+      target,
       JSON.stringify({
         runId: run.id,
         agent: run.agent,
@@ -85,7 +111,7 @@ function writeStatus(run: SyncAgentRunEntry): void {
         ...(run.endedAt != null ? { endedAt: run.endedAt } : {}),
         ...(run.killOrigin ? { killOrigin: run.killOrigin } : {}),
       }),
-      { mode: 0o600 },
+      { flag: "wx", mode: 0o600 },
     );
   } catch (e: any) {
     log.warn("status_write_failed", { id: run.id, workerDir: run.workerDir, error: e?.message || String(e) });
@@ -136,7 +162,7 @@ export function beginSyncAgentRun(args: {
   setAbort: (fn: () => void) => boolean;
   end: (ok: boolean) => void;
 } {
-  const id = `sync-${++counter}`;
+  const id = `sync-${sessionScope()}-${++counter}`;
   const entry: SyncAgentRunEntry = {
     id,
     agent: args.agent,

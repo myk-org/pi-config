@@ -10,8 +10,8 @@
 
 import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import {
   abortAllSyncAgentRuns,
@@ -25,6 +25,7 @@ import {
 } from "../../../extensions/orchestrator/sync-agent-runs.js";
 import { runSingleAgent } from "../../../extensions/orchestrator/subagent-tool.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import { getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 /** Every run writes a worker dir under its cwd, so each test gets its own project dir. */
@@ -35,6 +36,17 @@ beforeEach(() => {
 
 function reset() {
   abortAllSyncAgentRuns();
+}
+
+/** The id the next `beginSyncAgentRun` will take, so a test can pre-place its worker dir. */
+function nextRunId(cwd: string): string {
+  const probe = beginSyncAgentRun({ agent: "probe", task: "probe", cwd });
+  const id = probe.id;
+  probe.end(true);
+  reset();
+  const match = /^(.*-)(\d+)$/.exec(id);
+  assert.ok(match, `unexpected run id ${id}`);
+  return `${match[1]}${Number(match[2]) + 1}`;
 }
 
 test("begin registers a running run; end clears it", () => {
@@ -236,7 +248,7 @@ test("a run writes status.json from begin to end, then drops the dir with the ro
   assert.equal(existsSync(dir), false, "the dir goes with the row it described");
 });
 
-test("a registry stop writes killOrigin and end() keeps it", () => {
+test("a registry stop writes killOrigin to status.json", () => {
   reset();
   const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
   run.setAbort(() => {});
@@ -244,11 +256,86 @@ test("a registry stop writes killOrigin and end() keeps it", () => {
 
   assert.equal(abortSyncAgentRun(run.id), true);
   assert.equal(JSON.parse(readFileSync(statusPath, "utf-8")).killOrigin, "user");
+  run.end(false);
+  reset();
+});
 
+test("end keeps the killOrigin a stop wrote", () => {
+  reset();
+  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
+  run.setAbort(() => {});
+  const statusPath = join(listSyncAgentRuns()[0].workerDir, "status.json");
+
+  assert.equal(abortSyncAgentRun(run.id), true);
   run.end(false);
   const final = JSON.parse(readFileSync(statusPath, "utf-8"));
   assert.equal(final.state, "failed");
   assert.equal(final.killOrigin, "user", "the final write must not drop who stopped it");
+  reset();
+});
+
+test("a pre-placed status.json symlink is not followed", () => {
+  reset();
+  const id = nextRunId(projectCwd);
+  const dir = join(projectCwd, ".pi", "tmp", "sync-runs", id);
+  mkdirSync(dir, { recursive: true });
+  const victim = join(projectCwd, "victim.txt");
+  writeFileSync(victim, "untouched");
+  symlinkSync(victim, join(dir, "status.json"));
+
+  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
+  assert.equal(run.id, id, "the prepared dir must be the one the run uses");
+  assert.equal(readFileSync(victim, "utf-8"), "untouched", "a hostile link must not redirect the write");
+  assert.equal(lstatSync(join(dir, "status.json")).isSymbolicLink(), false, "the link is replaced, not written through");
+  assert.equal(JSON.parse(readFileSync(join(dir, "status.json"), "utf-8")).state, "running");
+  reset();
+});
+
+test("a symlinked run dir is refused and logged", () => {
+  reset();
+  const previousSid = (globalThis as any).__piConfigSessionId;
+  setGlobalSessionId("sync-agent-runs-symlinked-dir-test");
+  const logPath = getPiLogPath("sync-agent-runs")!;
+  const before = existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
+  try {
+    const id = nextRunId(projectCwd);
+    const decoy = makeTempDir("sync-runs-decoy-");
+    const dir = join(projectCwd, ".pi", "tmp", "sync-runs", id);
+    mkdirSync(dirname(dir), { recursive: true });
+    symlinkSync(decoy, dir);
+
+    const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
+    assert.equal(run.id, id);
+    assert.equal(existsSync(join(decoy, "status.json")), false, "nothing may be written through a symlinked run dir");
+    const logged = readFileSync(logPath, "utf-8").slice(before);
+    assert.match(logged, /status_write_refused_symlinked_dir/, "a refused write is visible in the log");
+  } finally {
+    if (previousSid === undefined) delete (globalThis as any).__piConfigSessionId;
+    else (globalThis as any).__piConfigSessionId = previousSid;
+    reset();
+  }
+});
+
+test("two sessions never share a worker dir", () => {
+  reset();
+  const previousSid = (globalThis as any).__piConfigSessionId;
+  try {
+    setGlobalSessionId("session-a");
+    const first = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
+    setGlobalSessionId("session-b");
+    beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
+    const dirs = listSyncAgentRuns().map((r) => r.workerDir);
+
+    assert.notEqual(dirs[0], dirs[1], "a shared cwd must not mean a shared dir");
+    assert.ok(dirs[0].includes("session-a") && dirs[1].includes("session-b"));
+    // One session's teardown must leave the other's live dir alone.
+    first.end(true);
+    assert.ok(existsSync(join(dirs[1], "status.json")));
+  } finally {
+    if (previousSid === undefined) delete (globalThis as any).__piConfigSessionId;
+    else (globalThis as any).__piConfigSessionId = previousSid;
+    reset();
+  }
 });
 
 test("formatAgentsStatus — every mix", () => {
@@ -264,10 +351,14 @@ test("formatAgentsStatus — every mix", () => {
 
 /**
  * The sync path spawns `process.argv[1]`, so a real Node child at that boundary is what
- * `runSingleAgent` runs. One script, two behaviours, chosen by the task text it is given.
+ * `runSingleAgent` runs. One script, several behaviours, chosen by the task text it is given.
  */
 const CHILD = `
 const task = process.argv[process.argv.length - 1] || "";
+if (task.includes("error-stop")) {
+  console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "boom" } }));
+  process.exit(0);
+}
 require("node:fs").writeFileSync(process.env.CHILD_MARK + (task.includes("slow") ? ".slow" : ".fast"), "up");
 if (task.includes("ignore-term")) process.on("SIGTERM", () => {});
 if (task.includes("slow")) setInterval(() => {}, 1000);
@@ -361,7 +452,7 @@ test("a stop that lands before the spawn kills the fresh child", { timeout: 30_0
   }
 });
 
-test("a parent abort wins over a registry stop and cancels the call", { timeout: 30_000 }, async () => {
+test("a parent abort cancels the call even after a registry stop", { timeout: 30_000 }, async () => {
   const h = withChild();
   reset();
   try {
@@ -375,6 +466,22 @@ test("a parent abort wins over a registry stop and cancels the call", { timeout:
     // A failed result here would tell the orchestrator the call finished normally while the
     // session is shutting down.
     await assert.rejects(run, /Subagent was aborted/);
+  } finally {
+    h.restore();
+    reset();
+  }
+});
+
+test("a zero-exit child that reports an error stop reason is not complete", { timeout: 30_000 }, async () => {
+  const h = withChild();
+  reset();
+  try {
+    const result = await runSingleAgent(h.agents, "worker", "error-stop", h.cwd, undefined, undefined, undefined, () => ({} as any));
+    assert.equal(result.exitCode, 0, "the child exits cleanly");
+    assert.equal(result.stopReason, "error");
+    const [run] = listSyncAgentRunsWithFinished();
+    assert.equal(run.status, "failed", "a failed agent must not show as complete");
+    assert.equal(JSON.parse(readFileSync(join(run.workerDir, "status.json"), "utf-8")).state, "failed");
   } finally {
     h.restore();
     reset();
