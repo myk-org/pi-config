@@ -446,11 +446,11 @@ function commandSegments(command: unknown, logger: Logger = log): {
 }
 
 /** The directory a `cd <target>` moves to, or null when it cannot be known statically. */
-function cdBase(current: string, targetRaw: string, logger: Logger): string | null {
+function cdBase(current: string, targetRaw: string, logger: Logger, home: string | null): string | null {
   const raw = String(targetRaw ?? "").trim().replace(/^["']|["']$/g, "");
   // `cd ~/x` moves to the real home; anything still carrying a shell metacharacter (`~user`, `$VAR`)
   // stays unmodellable, so the gate stays closed.
-  const target = expandHome(raw);
+  const target = expandHome(raw, home);
   if (!target || target === "-" || /[$`*?~]/.test(target)) {
     logger.debug("gate_search_base", { reason: "unmodellable_cd", target: raw });
     return null;
@@ -468,6 +468,8 @@ function cdBase(current: string, targetRaw: string, logger: Logger): string | nu
 
 export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string, logger: Logger = log): boolean {
   const split = commandSegments(command, logger);
+  // The home a `~` in THIS command names, or null when the shell's answer cannot be known.
+  const home = shellExpandsTilde(String(command ?? "")) ? homedir() : null;
   // `cd build & rg foo .` runs the cd in a subshell: not worth modelling. Detected from the separator
   // rather than by regex on raw text — `rg 'a&b'` is a pattern, not a background job.
   if (split.backgroundJob) {
@@ -494,11 +496,11 @@ export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: s
       // `git -C repo grep …` searches repo, which the stage's own base must reflect.
       let stagedBase = base;
       for (const directory of staged.directories) {
-        const next = cdBase(stagedBase, directory, logger);
+        const next = cdBase(stagedBase, directory, logger, home);
         if (next === null) return false;
         stagedBase = next;
       }
-      if (!exemptSegment(staged, stagedBase, mapPaths, root, logger)) return false;
+      if (!exemptSegment(staged, stagedBase, mapPaths, root, logger, home)) return false;
       continue;
     }
     const cd = /^cd(?:\s+(.*))?$/.exec(segment.text);
@@ -509,7 +511,7 @@ export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: s
         logger.debug("gate_search_base", { reason: "conditional_cd", command: String(command).slice(0, 200) });
         return false;
       }
-      const next = cdBase(base, cd[1] ?? "", logger);
+      const next = cdBase(base, cd[1] ?? "", logger, home);
       if (next === null) return false;
       base = next;
       continue;
@@ -520,21 +522,31 @@ export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: s
     // `git -C dir grep …` searches dir: compose it onto this segment's base.
     let segBase = base;
     for (const directory of search.directories) {
-      const next = cdBase(segBase, directory, logger);
+      const next = cdBase(segBase, directory, logger, home);
       if (next === null) return false;
       segBase = next;
     }
-    if (!exemptSegment(search, segBase, mapPaths, root, logger)) return false;
+    if (!exemptSegment(search, segBase, mapPaths, root, logger, home)) return false;
   }
   return sawSearch;
 }
 
 /** `path.resolve` does not expand `~`, so `~/.ssh/config` would become `<checkout>/~/.ssh/config` and be
  *  called unresolvable. Only the shell's own forms are expanded; `~user` is left alone and stays
- *  fail-closed. */
-function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+ *  fail-closed. `home` is null when this command's tildes are not the shell's business (see
+ *  shellExpandsTilde): nothing is expanded then, so the path fails closed as unresolvable. */
+function expandHome(path: string, home: string | null): string {
+  if (home === null) return path;
+  if (path === "~") return home;
+  return path.startsWith("~/") ? join(home, path.slice(2)) : path;
+}
+
+/** Whether a `~` in this command means the hook's home at all. Two shell forms break that identity,
+ *  and neither is modelled: `cd "~"` does not expand a quoted tilde, and `HOME=$PWD; rg foo ~`
+ *  re-points `~` at another directory mid-command. A wrong expansion would approve a different
+ *  target than the one searched, so a command carrying either form expands nothing and fails closed. */
+function shellExpandsTilde(command: string): boolean {
+  return !/\bHOME=|["']~|~["']/.test(command);
 }
 
 /**
@@ -553,6 +565,7 @@ function exemptSegment(
   mapPaths: Set<string>,
   root: string,
   logger: Logger,
+  home: string | null,
 ): boolean {
   const operands = search.operands.filter(token => !token.startsWith("-"));
   // `find` names a path first; a search with `-e`/`-f` has no positional pattern; otherwise the
@@ -568,7 +581,7 @@ function exemptSegment(
     let real: string;
     let info;
     try {
-      const absolute = resolve(base, expandHome(path));
+      const absolute = resolve(base, expandHome(path, home));
       real = realpathSync(absolute);
       info = statSync(real);
     } catch {

@@ -909,6 +909,19 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
 
   const allowed = (cmd: string, paths = mapPaths): boolean => trail.unindexedSearch(cmd, paths, root, silentLogger);
 
+  /** Runs `body` with HOME pointing at a temp home that holds `.ssh/config` and a symlink into the checkout. */
+  const withTempHome = (body: () => void): void => {
+    const home = makeTempDir("trail-home-");
+    mkdirSync(join(home, ".ssh"), { recursive: true });
+    writeFileSync(join(home, ".ssh", "config"), "Host mediaserver\n  HostName 10.0.0.5\n");
+    symlinkSync(join(root, "extensions/orchestrator/trail.ts"), join(home, "linked.ts"));
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try { body(); } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    }
+  };
+
   it("allows a search of gitignored scratch", () => {
     assert.equal(allowed(`grep -rn "E1" .pi/tmp --include=*.md`), true);
     // A redirect is plumbing, not an operand — the live form of the reported command.
@@ -1027,25 +1040,46 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed(`grep -rn "E1" .pi/tmp | git -C ${foreign} grep needle notes.txt`), true);
   });
 
-  it("expands a leading tilde so a home search is not called unresolvable", () => {
+  it("allows the reported home-file search by expanding its tilde", () => {
     // The reported command: `~/.ssh/config` searched relative to the HOME of the session.
-    const home = makeTempDir("trail-home-");
-    mkdirSync(join(home, ".ssh"), { recursive: true });
-    writeFileSync(join(home, ".ssh", "config"), "Host mediaserver\n  HostName 10.0.0.5\n");
-    symlinkSync(join(root, "extensions/orchestrator/trail.ts"), join(home, "linked.ts"));
-    const savedHome = process.env.HOME;
+    withTempHome(() => {
+      assert.equal(allowed(`grep -iA6 "mediaserver" ~/.ssh/config 2>/dev/null | head -20`), true, "a file under the home is outside the checkout");
+      assert.equal(allowed("rg foo ~/.ssh/config"), true, "the unquoted operand form");
+    });
+  });
+
+  it("allows a bare tilde that names the home directory", () => {
+    withTempHome(() => {
+      assert.equal(allowed("grep -rn PATTERN ~"), true, "home itself is a directory outside the checkout");
+    });
+  });
+
+  it("blocks a home-relative path that symlinks back into the checkout", () => {
+    withTempHome(() => {
+      assert.equal(allowed("rg PATTERN ~/linked.ts"), false, "a symlink out of the home is still judged by its target");
+    });
+  });
+
+  it("blocks a missing home-relative path as unresolvable", () => {
     const reasons: string[] = [];
     const capturingLogger = { ...silentLogger, debug(event: string, data: any) { if (event === "gate_search_unindexed") reasons.push(String(data?.reason)); } };
-    process.env.HOME = home;
-    try {
-      assert.equal(allowed(`grep -iA6 "mediaserver" ~/.ssh/config 2>/dev/null | head -20`), true, "a file under the home is outside the checkout");
-      assert.equal(allowed("grep -rn PATTERN ~"), true, "home itself is a directory outside the checkout");
-      assert.equal(allowed("rg PATTERN ~/linked.ts"), false, "a symlink out of the home is still judged by its target");
+    withTempHome(() => {
       assert.equal(trail.unindexedSearch("grep -rn PATTERN ~/definitely-not-here-1128", mapPaths, root, capturingLogger), false);
-      assert.deepEqual(reasons, ["unresolvable"], "a missing home-relative path keeps the gate");
-    } finally {
-      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
-    }
+    });
+    assert.deepEqual(reasons, ["unresolvable"], "a missing home-relative path keeps the gate");
+  });
+
+  it("does not expand a quoted tilde", () => {
+    // The shell leaves `"~"` alone, so `cd "~"` fails and the search runs in this checkout: expanding
+    // it on our side approved a target the shell never entered.
+    assert.equal(allowed(`cd "~" && rg foo .`), false);
+    assert.equal(allowed(`cd '~' && rg foo .`), false);
+  });
+
+  it("does not expand a tilde when the command assigns HOME", () => {
+    // `HOME=$PWD` re-points `~` at the checkout mid-command; the hook's home would be the wrong one.
+    assert.equal(allowed(`rg foo /etc/hosts; HOME="$PWD"; rg foo ~`), false);
+    assert.equal(allowed("HOME=$PWD rg foo ~"), false);
   });
 
   it("does not expand a user-qualified tilde", () => {
