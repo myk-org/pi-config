@@ -27,6 +27,14 @@ export interface PendingPrompt {
   method: PromptMethod;
   /** Offered options for select/confirm (confirm is always ["Yes", "No"]). */
   options: string[];
+  /**
+   * The asking side accepts an answer outside its options.
+   *
+   * Only `ask_user` sets it: it takes `value` verbatim. Everything else goes through
+   * `../ui-bridge.ts`, which rejects a select answer that is not one of its options —
+   * offering a free-text control there strands the prompt.
+   */
+  freeText?: boolean;
   createdAt: number;
 }
 
@@ -107,6 +115,15 @@ export function mapAnswer(prompt: PendingPrompt, raw: string): AnswerResult {
   }
 
   return { kind: "value", value: text };
+}
+
+/**
+ * A modal submission is the user saying "this IS my answer", so it is sent as written: a typed
+ * `1` means the text "1", not option 1, and the word `cancel` is an answer, not the escape word.
+ */
+export function literalAnswer(raw: string): AnswerResult {
+  const text = (raw || "").trim();
+  return text ? { kind: "value", value: text } : { kind: "reject", reason: "empty" };
 }
 
 /** The wire payload for `extension_ui_response`, shaped the way ui-bridge reads it. */

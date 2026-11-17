@@ -1451,8 +1451,9 @@ export function setupDiscordBot(opts: {
       const prompt = owned;
       const value = interaction.fields.getTextInputValue("value");
       // Scoped to the PROMPT's session: answering in another session's thread must not move the
-      // user's watch to it (bridge.answer takes the session explicitly).
-      bridge.answer(state, value, (content) => void acknowledge(interaction, content), prompt.sessionId);
+      // user's watch to it (answerLiteral takes the session explicitly).
+      // literal: a typed "1" or "cancel" is the answer, not a menu index or the escape word.
+      bridge.answerLiteral(state, value, (content) => void acknowledge(interaction, content), prompt.sessionId);
       return;
     }
 

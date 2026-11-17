@@ -14,7 +14,7 @@ import { createLogger } from "../logger.ts";
 import type { ChatAdapter, ChatCapabilities, ChatTarget } from "./chat-types.ts";
 import { chunkText } from "./chat-format.ts";
 import { initialRenderState, renderEvent, shouldSuppressEcho, streamingView, type RenderState } from "./chat-events.ts";
-import { isAnswerLike, isPromptExpired, mapAnswer, renderPrompt, toBridgeResponse, type PendingPrompt, type PromptMethod } from "./chat-prompts.ts";
+import { isAnswerLike, isPromptExpired, literalAnswer, mapAnswer, renderPrompt, toBridgeResponse, type PendingPrompt, type PromptMethod } from "./chat-prompts.ts";
 
 const log = createLogger("chat-bridge");
 
@@ -135,6 +135,8 @@ export interface ChatBridge {
   expectEcho(state: ChatRuntimeState, sessionId: string, text: string): void;
   /** Answer a pending prompt from a native control (button/menu). */
   answer(state: ChatRuntimeState, raw: string, reply: (text: string) => void, sessionId?: string): boolean;
+  /** Answer with raw text the user typed as the answer itself (a modal submission) — no parsing. */
+  answerLiteral(state: ChatRuntimeState, text: string, reply: (text: string) => void, sessionId?: string): boolean;
   /** Send the agent's question to a user and remember it as pending. */
   askUser(sessionId: string, event: any, state: ChatRuntimeState): PendingPrompt | null;
 }
@@ -214,6 +216,27 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
     if (prompt) state.pendingPrompts[sessionId] = prompt;
     else delete state.pendingPrompts[sessionId];
     state.pendingPrompt = prompt ?? Object.values(state.pendingPrompts)[0] ?? null;
+  }
+
+  /** Deliver one mapped answer, clear the prompt, and tell the user what happened. */
+  function sendAnswer(
+    state: ChatRuntimeState,
+    prompt: PendingPrompt,
+    answer: ReturnType<typeof mapAnswer>,
+    reply: (text: string) => void,
+  ): boolean {
+    if (answer.kind === "reject") {
+      reply(`Didn't understand that: ${answer.reason}.`);
+      return false;
+    }
+    const payload = toBridgeResponse(prompt, answer);
+    if (!payload || !host.sendToSession(prompt.sessionId, payload)) {
+      reply("The session is not connected.");
+      return false;
+    }
+    setPending(state, prompt.sessionId, null);
+    reply(answer.kind === "cancel" ? "Dismissed." : "Answer sent.");
+    return true;
   }
 
   async function publishFinal(text: string, stream: ChatSessionStream, target: ChatTarget): Promise<void> {
@@ -377,6 +400,9 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         sessionId,
         method,
         options: method === "confirm" ? ["Yes", "No"] : Array.isArray(event.options) ? event.options : [],
+        // Left UNSET unless the asking side said its prompt takes a free answer: a bridged
+        // prompt validates against its options, so offering one there strands it.
+        ...(event.freeText === true ? { freeText: true } : {}),
         createdAt: Date.now(),
       };
       setPending(state, sessionId, prompt);
@@ -424,19 +450,13 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
     answer(state, raw, reply, sessionId) {
       const prompt = pendingFor(state, sessionId);
       if (!prompt) return false;
-      const answer = mapAnswer(prompt, raw);
-      if (answer.kind === "reject") {
-        reply(`Didn't understand that: ${answer.reason}.`);
-        return false;
-      }
-      const payload = toBridgeResponse(prompt, answer);
-      if (!payload || !host.sendToSession(prompt.sessionId, payload)) {
-        reply("The session is not connected.");
-        return false;
-      }
-      setPending(state, prompt.sessionId, null);
-      reply(answer.kind === "cancel" ? "Dismissed." : "Answer sent.");
-      return true;
+      return sendAnswer(state, prompt, mapAnswer(prompt, raw), reply);
+    },
+
+    answerLiteral(state, text, reply, sessionId) {
+      const prompt = pendingFor(state, sessionId);
+      if (!prompt) return false;
+      return sendAnswer(state, prompt, literalAnswer(text), reply);
     },
   };
 }

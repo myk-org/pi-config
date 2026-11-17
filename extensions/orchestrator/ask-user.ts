@@ -101,6 +101,9 @@ export function registerAskUser(
         method: assembled.length ? "select" : "input",
         title: params.question,
         options: assembled.length ? browserAskOptions(assembled) : undefined,
+        // This prompt accepts ANY answer (the response value is taken verbatim), so a chat
+        // surface may offer a free-text control. Bridged prompts must not — see chat-prompts.
+        freeText: true,
       });
 
       // Track if resolved (from TUI or browser)

@@ -39,6 +39,9 @@ import {
 } from "../../../extensions/pidash/discord-sessions-view.ts";
 import { renderEvent, initialRenderState, toolLine, streamingView, shouldSuppressEcho } from "../../../extensions/pidash/discord-render.ts";
 import { resolveDiscordConfig, parseEnvFile } from "../../../extensions/pidash/discord-config.ts";
+import { createChatBridge, initialChatRuntime } from "../../../extensions/shared/chat/chat-bridge.ts";
+import { DEFAULT_CAPABILITIES } from "../../../extensions/shared/chat/chat-types.ts";
+import { createLogger } from "../../../extensions/shared/logger.ts";
 import { boundListText } from "../../../extensions/pidash/discord-sessions-view.ts";
 import { migrateState, pruneState, STATE_VERSION, emptyState } from "../../../extensions/pidash/discord-state.ts";
 
@@ -485,5 +488,67 @@ describe("image modality guard", () => {
     const note = imageSupportNote(false, 2);
     assert.match(note ?? "", /2 images not sent/);
     assert.match(note ?? "", /does not accept image input/);
+  });
+});
+
+describe("modal answers are literal (Qodo PR #1135)", () => {
+  /** The bridge with an in-memory adapter: the answer paths, not the transport. */
+  function bridgeHarness() {
+    const sent: Array<Record<string, unknown>> = [];
+    const replies: string[] = [];
+    const state = initialChatRuntime("s1", { channelId: "chan" });
+    const users = new Map([["u", state]]);
+    const bridge = createChatBridge({
+      adapter: {
+        platform: "memory",
+        capabilities: DEFAULT_CAPABILITIES,
+        log: createLogger("discord-bridge-test"),
+        async sendText() { return "m1"; },
+        async editText() { return true; },
+      },
+      users: () => users.entries(),
+      sendToSession: (_sessionId, payload) => { sent.push(payload); return true; },
+      streamEditIntervalMs: 0,
+    });
+    return { bridge, state, sent, replies, reply: (text: string) => replies.push(text) };
+  }
+
+  it("sends a typed answer as written, for an option prompt and a no-options prompt", () => {
+    // Both share Discord's `answer-submit:` handler, so the literality is a bridge property.
+    for (const event of [
+      { id: "opt", method: "select", options: ["Approve", "Deny"], title: "Approval", freeText: true },
+      { id: "noopt", method: "input", title: "Which cluster?", freeText: true },
+    ]) {
+      for (const typed of ["1", "cancel", "use the staging cluster", "  2  "]) {
+        const { bridge, state, sent, replies, reply } = bridgeHarness();
+        assert.ok(bridge.askUser("s1", event, state));
+        assert.equal(bridge.answerLiteral(state, typed, reply), true);
+        assert.deepEqual(sent.at(-1), { type: "extension_ui_response", id: event.id, value: typed.trim() });
+        assert.equal(state.pendingPrompt, null);
+        assert.deepEqual(replies, ["Answer sent."]);
+      }
+    }
+  });
+
+  it("keeps mapAnswer's parsing for text typed into the channel", () => {
+    const { bridge, state, sent, reply } = bridgeHarness();
+    bridge.askUser("s1", { id: "opt", method: "select", options: ["Approve", "Deny"], title: "Approval" }, state);
+    bridge.answer(state, "1", reply, "s1");
+    assert.equal((sent.at(-1) as any).value, "Approve", "a channel message still picks option 1");
+  });
+
+  it("refuses an empty modal submission instead of sending it", () => {
+    const { bridge, state, sent, replies, reply } = bridgeHarness();
+    bridge.askUser("s1", { id: "opt", method: "select", options: ["A"], title: "Pick", freeText: true }, state);
+    assert.equal(bridge.answerLiteral(state, "   ", reply), false);
+    assert.equal(sent.length, 0);
+    assert.match(replies[0] ?? "", /Didn't understand/);
+    assert.equal(state.pendingPrompt?.id, "opt", "still answerable");
+  });
+
+  it("only marks a prompt free-text when the asking side said so", () => {
+    const { bridge, state } = bridgeHarness();
+    assert.equal(bridge.askUser("s1", { id: "q1", method: "select", options: ["A"], title: "Ask", freeText: true }, state)?.freeText, true);
+    assert.equal(bridge.askUser("s1", { id: "q2", method: "select", options: ["Approve", "Deny"], title: "Approval" }, state)?.freeText, undefined);
   });
 });
