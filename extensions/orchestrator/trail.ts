@@ -2,6 +2,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { unquotedSegments, type ShellSegment } from "./enforcement-helpers.js";
@@ -398,75 +399,6 @@ function searchCommand(command: unknown): { binary: string; operands: string[]; 
 function searchBinary(command: unknown): string | null { return searchCommand(command)?.binary ?? null; }
 /** `git` options whose value is the following token. */
 const GIT_VALUE_OPTIONS = new Set(["-c", "-C"]);
-/**
- * A search that only touches files this map does not index cannot be answered by
- * Trail, so blocking it would force a pointless `trail_*` call. Every path operand
- * must resolve to an unindexed FILE inside this checkout. A directory (whatever its
- * name), an absolute path that lands inside the root, an indexed file, a path that
- * does not exist, or a bare word all keep the gate — otherwise `rg foo .`,
- * `rg foo src/v1.2/` or `rg foo /abs/checkout/src/auth.ts` would slip through.
- * An absolute path OUTSIDE the checkout is not project navigation at all: the map
- * has nothing to say about it, so it is allowed.
- */
-/** The directory the search itself runs in. A leading `cd` moves it, and relative operands must
- *  be resolved there — resolving against the session root approved paths the shell never searched.
- *  Returns null when the destination cannot be known statically, which keeps the gate closed. */
-function searchBaseDir(command: unknown, root: string, logger: Logger = log): string | null {
-  const raw = String(command ?? "").split("|")[0]!;
-  // `cd build & rg foo .` runs the cd in a background subshell, so the foreground search keeps the
-  // session directory. Background semantics are not worth modelling — gate instead of guessing.
-  if (/(^|[^&>])&([^&=]|$)/.test(raw)) {
-    logger.debug("gate_search_base", { reason: "background_job" });
-    return null;
-  }
-  const segments = raw.split(/&&|;/).map(part => part.trim()).filter(Boolean);
-  let base = root;
-  for (const segment of segments) {
-    const match = /^cd(?:\s+(.*))?$/.exec(segment);
-    if (!match) break; // the search segment; its directory is resolved below
-
-    const target = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
-    // `cd` alone (HOME), `cd -`, and anything the shell must expand are not modellable.
-    if (!target || target === "-" || /[$`*?~]/.test(target)) {
-      logger.debug("gate_search_base", { reason: "unmodellable_cd", target });
-      return null;
-    }
-    // Physically, like the process: entering a symlink moves the shell to its TARGET, so a later
-    // `cd ../x` must be resolved from there, not from the link's own location.
-    let next: string;
-    // `cd somefile; rg foo .` leaves the shell where it was when the cd FAILS, so a target that is
-    // not an existing directory tells us nothing about where the search runs.
-    try {
-      next = realpathSync(resolve(base, target));
-      if (!statSync(next).isDirectory()) throw new Error("not a directory");
-    } catch {
-      logger.debug("gate_search_base", { reason: "cd_target_unusable", target });
-      return null;
-    }
-    base = next;
-  }
-  // `git -C <dir> grep …` searches <dir>. The parser reports it — already past the wrappers and
-  // only from the pre-subcommand region — so nothing here has to re-read the tokens.
-  for (const directory of searchCommand(command)?.directories ?? []) {
-    const target = directory.replace(/^["']|["']$/g, "");
-    if (!target || /[$`*?~]/.test(target)) {
-      logger.debug("gate_search_base", { reason: "unmodellable_git_c", target });
-      return null;
-    }
-    let next: string;
-    try {
-      next = realpathSync(resolve(base, target)); // physical, as git enters it
-      if (!statSync(next).isDirectory()) throw new Error("not a directory");
-    } catch {
-      logger.debug("gate_search_base", { reason: "git_c_target_unusable", target });
-      return null;
-    }
-    base = next;
-  }
-  logger.debug("gate_search_base", { base, root });
-  return base;
-}
-
 /** `prefix` with exactly one trailing separator — `/` must not become `//`, which made every
  *  ancestor test against the filesystem root answer false. */
 function dirPrefix(directory: string): string {
@@ -515,9 +447,12 @@ function commandSegments(command: unknown, logger: Logger = log): {
 
 /** The directory a `cd <target>` moves to, or null when it cannot be known statically. */
 function cdBase(current: string, targetRaw: string, logger: Logger): string | null {
-  const target = String(targetRaw ?? "").trim().replace(/^["']|["']$/g, "");
+  const raw = String(targetRaw ?? "").trim().replace(/^["']|["']$/g, "");
+  // `cd ~/x` moves to the real home; anything still carrying a shell metacharacter (`~user`, `$VAR`)
+  // stays unmodellable, so the gate stays closed.
+  const target = expandHome(raw);
   if (!target || target === "-" || /[$`*?~]/.test(target)) {
-    logger.debug("gate_search_base", { reason: "unmodellable_cd", target });
+    logger.debug("gate_search_base", { reason: "unmodellable_cd", target: raw });
     return null;
   }
   try {
@@ -594,7 +529,24 @@ export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: s
   return sawSearch;
 }
 
-/** Is this one search segment answerable by the map, i.e. safe to let through? */
+/** `path.resolve` does not expand `~`, so `~/.ssh/config` would become `<checkout>/~/.ssh/config` and be
+ *  called unresolvable. Only the shell's own forms are expanded; `~user` is left alone and stays
+ *  fail-closed. */
+function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+}
+
+/**
+ * A search that only touches files this map does not index cannot be answered by
+ * Trail, so blocking it would force a pointless `trail_*` call. Every path operand
+ * must resolve to an unindexed FILE inside this checkout. A directory (whatever its
+ * name), an absolute path that lands inside the root, an indexed file, a path that
+ * does not exist, or a bare word all keep the gate — otherwise `rg foo .`,
+ * `rg foo src/v1.2/` or `rg foo /abs/checkout/src/auth.ts` would slip through.
+ * An absolute path OUTSIDE the checkout is not project navigation at all: the map
+ * has nothing to say about it, so it is allowed.
+ */
 function exemptSegment(
   search: { binary: string; operands: string[]; patternFromFlag: boolean },
   base: string,
@@ -616,7 +568,7 @@ function exemptSegment(
     let real: string;
     let info;
     try {
-      const absolute = resolve(base, path);
+      const absolute = resolve(base, expandHome(path));
       real = realpathSync(absolute);
       info = statSync(real);
     } catch {

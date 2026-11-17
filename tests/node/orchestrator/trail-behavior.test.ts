@@ -1027,6 +1027,52 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed(`grep -rn "E1" .pi/tmp | git -C ${foreign} grep needle notes.txt`), true);
   });
 
+  it("expands a leading tilde so a home search is not called unresolvable", () => {
+    // The reported command: `~/.ssh/config` searched relative to the HOME of the session.
+    const home = makeTempDir("trail-home-");
+    mkdirSync(join(home, ".ssh"), { recursive: true });
+    writeFileSync(join(home, ".ssh", "config"), "Host mediaserver\n  HostName 10.0.0.5\n");
+    symlinkSync(join(root, "extensions/orchestrator/trail.ts"), join(home, "linked.ts"));
+    const savedHome = process.env.HOME;
+    const reasons: string[] = [];
+    const capturingLogger = { ...silentLogger, debug(event: string, data: any) { if (event === "gate_search_unindexed") reasons.push(String(data?.reason)); } };
+    process.env.HOME = home;
+    try {
+      assert.equal(allowed(`grep -iA6 "mediaserver" ~/.ssh/config 2>/dev/null | head -20`), true, "a file under the home is outside the checkout");
+      assert.equal(allowed("grep -rn PATTERN ~"), true, "home itself is a directory outside the checkout");
+      assert.equal(allowed("rg PATTERN ~/linked.ts"), false, "a symlink out of the home is still judged by its target");
+      assert.equal(trail.unindexedSearch("grep -rn PATTERN ~/definitely-not-here-1128", mapPaths, root, capturingLogger), false);
+      assert.deepEqual(reasons, ["unresolvable"], "a missing home-relative path keeps the gate");
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    }
+  });
+
+  it("does not expand a user-qualified tilde", () => {
+    // `~user` is not the session home: leaving it unresolved keeps the gate fail-closed.
+    assert.equal(allowed("grep -rn PATTERN ~root/somewhere"), false);
+  });
+
+  it("resolves a cd into the home instead of gating on the tilde", () => {
+    // Same bug as the operand case: an unexpanded `~` made the base unmodellable, so a search
+    // outside the checkout was blocked as if it were project navigation.
+    const home = makeTempDir("trail-home-cd-");
+    mkdirSync(join(home, "sub"), { recursive: true });
+    symlinkSync(root, join(home, "checkout"));
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      assert.equal(allowed(`cd ${home}/sub && rg foo .`), true, "the absolute form of the same command");
+      assert.equal(allowed("cd ~/sub && rg foo ."), true, "the tilde form resolves to the same base");
+      assert.equal(allowed("cd ~ && rg foo ."), true, "the home itself is outside the checkout");
+      assert.equal(allowed("cd ~/ && rg foo ."), true, "a trailing slash changes nothing");
+      assert.equal(allowed("cd ~/checkout && rg foo extensions/orchestrator/trail.ts"), false, "a home symlink into the checkout is no bypass");
+      assert.equal(allowed("cd ~/definitely-not-here-1128 && rg foo ."), false, "a missing home-relative target keeps the gate");
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    }
+  });
+
   it("allows a search of a directory the map holds nothing beneath", () => {
     assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
     assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");
