@@ -32,6 +32,7 @@ import {
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
 import type { AsyncChainState } from "./async-agents.js";
+import { beginSyncAgentRun } from "./sync-agent-runs.js";
 
 // Task store access via the pitasks module.
 // `taskStore` is `export let` — a live binding the pitasks extension assigns when it
@@ -520,6 +521,12 @@ export async function runSingleAgent(
       });
   };
 
+  // Registered before the spawn so the footer/overlay see the run from its first instant,
+  // and cleared in the finally below so abort, throw and error paths cannot leak it.
+  const syncRun = beginSyncAgentRun({ agent: agentName, task, cwd });
+  let aborted = false;
+  let exitCode = 1; // stays 1 when the spawn never happens, so `end` reports failure
+
   try {
     if (agent.systemPrompt.trim()) {
       const resolvedPrompt = substituteSettingsPlaceholders(
@@ -533,10 +540,9 @@ export async function runSingleAgent(
       args.push("--append-system-prompt", tmpFile);
     }
     args.push(`Task: ${task}`);
-    let aborted = false;
 
-    log.info("sync_spawn_start", agentName, "cwd", cwd);
-    const exitCode = await new Promise<number>((resolve) => {
+    log.info("sync_spawn_start", agentName, "cwd", cwd, "run", syncRun.id);
+    exitCode = await new Promise<number>((resolve) => {
       const inv = getPiInvocation(args);
       const proc = spawn(inv.command, inv.args, {
         cwd: cwd,
@@ -557,6 +563,12 @@ export async function runSingleAgent(
         if (ev.type === "message_end" && ev.message) {
           const msg = ev.message as Message;
           cur.messages.push(msg);
+          // Current activity for the overlay: the tool an assistant message is asking
+          // for, cleared as soon as the assistant answers without a tool call.
+          const toolCall = msg.role === "assistant"
+            ? msg.content.filter((p) => p.type === "toolCall").pop()
+            : undefined;
+          syncRun.setTool(toolCall && toolCall.type === "toolCall" ? toolCall.name : undefined);
           if (msg.role === "assistant") {
             cur.usage.turns++;
             const u = msg.usage;
@@ -576,6 +588,7 @@ export async function runSingleAgent(
         }
         if (ev.type === "tool_result_end" && ev.message) {
           cur.messages.push(ev.message as Message);
+          syncRun.setTool((ev.message as any).toolName || undefined);
           emit();
         }
       };
@@ -599,26 +612,31 @@ export async function runSingleAgent(
         resolve(1);
       });
 
+      const kill = () => {
+        aborted = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          if (!proc.killed) proc.kill("SIGKILL");
+        }, 5000);
+      };
+      // Same escalation for both paths: the parent's abort signal and a kill requested
+      // from /async-status or pidash.
+      syncRun.setAbort(kill);
       if (signal) {
-        const kill = () => {
-          aborted = true;
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            if (!proc.killed) proc.kill("SIGKILL");
-          }, 5000);
-        };
         if (signal.aborted) kill();
         else signal.addEventListener("abort", kill, { once: true });
       }
     });
 
-    log.info("sync_proc_resolved", agentName, "exitCode", exitCode, "elapsed", Date.now() - startTime);
+    log.info("sync_proc_resolved", agentName, "exitCode", exitCode, "elapsed", Date.now() - startTime, "run", syncRun.id);
     cur.exitCode = exitCode;
     cur.durationMs = Date.now() - startTime;
 
     if (aborted) throw new Error("Subagent was aborted");
     return cur;
   } finally {
+    syncRun.end(!aborted && exitCode === 0);
+    log.info("sync_run_end", syncRun.id, agentName, "ok", !aborted && exitCode === 0);
     if (tmpFile)
       try {
         fs.unlinkSync(tmpFile);

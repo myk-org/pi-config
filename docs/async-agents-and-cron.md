@@ -43,6 +43,8 @@ Open the async overlay:
 
 This shows queued and running jobs, elapsed time, and live output. Press `Enter` to inspect a job, press `x` to kill the focused job, press `Space` to multi-select rows and `x` again to kill the whole selection, or press `X` to immediately kill every running and queued job (no confirmation prompt).
 
+Sync subagents run in the foreground of your turn, but they are real child processes, so they appear here too with a `sync` marker, their elapsed time and the tool they are running. `x` on a sync row aborts that process: the same SIGTERM → SIGKILL (after 5s) escalation the async kill uses. A sync agent's *result* still arrives in the orchestrator's turn, not as a follow-up message — the row is visibility plus an abort handle, nothing more. The footer counts both: `⏳ agents: 3 (2 async, 1 sync)`, and stays `⏳ async: N` when only async jobs run.
+
 3. Stop async work when needed.
 
 Use the same `/async-status` overlay:
@@ -102,6 +104,7 @@ Persisted tasks are written to `.pi/cron/crons.json` in the project and reloaded
 | Goal | Command | What you get |
 |---|---|---|
 | Watch async jobs | `/async-status` | Fullscreen list, live output, kill with `x` |
+| Watch foreground subagents | `/async-status` | Sync rows carry a `sync` marker, current tool and elapsed time; `x` aborts them |
 | Kill the focused job | `/async-status` → `x` | Kills the highlighted job |
 | Kill several jobs | `/async-status` → `Space`, `Space`, `x` | Kills every multi-selected job |
 | Kill every running job | `/async-status` → `a` | Confirmation prompt, then kills all running and queued jobs |
@@ -182,7 +185,8 @@ See [ACPX Provider Integration](acpx-provider.html) and [Configuration & Setting
 - **Async job does not start:** Confirm you asked for it in the background (`async: true`) and that you ended your turn — Pi delivers results automatically and does not expect a polling loop. Agents declared async-only force `async: true` on a native provider and refuse chain mode.
 - **Job starts but immediately skips:** If your session is using an ACPX-backed provider, configure `internal_operations_provider` and `internal_operations_model` before retrying.
 - **You want the result to update a task automatically:** Pass a numeric `taskId` from the task tools. It is optional; when set, the finished job marks that task `completed` for you.
-- **You want live output but nothing appears:** Use `/async-status` from a TUI session. The fullscreen overlay is the supported live-view interface.
+- **You want live output but nothing appears:** Use `/async-status` from a TUI session. The fullscreen overlay is the supported live-view interface. A sync row has no output pane — everything it printed is already in your transcript.
+- **The footer counts an agent you cannot find in `/async-status`:** A sync agent registers for exactly as long as its child process lives. A count that does not fall back to `0` means a child is still alive — open `/async-status`, find the `sync` row and press `x` to abort it.
 - **A cron task seems stuck or outdated:** Run `/cron list` or `/cron list-all`, then remove the old task and create a fresh one.
 - **You want browser-based monitoring instead of terminal overlays:** See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
 

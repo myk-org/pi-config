@@ -141,8 +141,27 @@ Modes: `"tui"` (interactive), `"rpc"` (programmatic), `"json"` (structured outpu
 
 Use `ctx.hasUI` for simple UI guards (`notify`, `select`, `confirm`). Use argv helpers for register-time oneshot skips. Use `ctx.mode` in session callbacks after mode exists.
 
-## Kill origin attribution
+## Sync agent runs (`sync-agent-runs.ts`)
 
+`asyncState.jobs` only ever held background jobs, so a running sync subagent — a real
+child `pi` process, several at once in parallel mode — was invisible in the footer,
+`/async-status` and pidash. `extensions/orchestrator/sync-agent-runs.ts` is a
+process-local registry that closes that gap: `beginSyncAgentRun()` on spawn,
+`end(ok)` from the `finally` in `runSingleAgent` so abort/throw/error paths cannot leak
+an entry, `setTool()` for the current tool, `setAbort()` for the kill escalation, and
+`onSyncAgentRunsChanged()` for repaints. Entries are deleted when they end, so
+`listSyncAgentRuns()` is running-only.
+
+- Footer: `formatAgentsStatus(asyncRunning, syncRunning)` — `💤 agents: 0` idle,
+  `⏳ async: N` for async-only (unchanged look), `⏳ agents: T (A async, S sync)` when mixed.
+- `/async-status` and pidash: sync rows carry `mode: "sync"`, `workerDir: ""` (no
+  `status.json`, no `output.log`) and are killed through `abortSyncAgentRun`.
+- Visibility only: delivery of a sync agent's result is unchanged — it arrives in the
+  orchestrator's turn, never as a follow-up. Nothing in the registry may be treated as
+  an async job by the poller, restore, chain or delivery paths.
+- Teardown: `clearSyncAgentRuns()` on `session_shutdown`, with the widget subscription.
+
+## Kill origin attribution
 `killAsyncAgent(target, origin)` takes a typed `AsyncKillOrigin` so a kill is never
 misattributed to the user. The label is persisted to `status.json` as `killOrigin`
 plus `output`, and prefixes the `## Async Agent Result` delivery to the AI.

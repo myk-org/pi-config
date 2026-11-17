@@ -58,7 +58,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
   const [asyncAgents, setAsyncAgents] = useState<{
     count: number;
     agents: string;
-    jobs: Array<{ id: string; name: string; agent: string; task: string; status: string; startedAt: number }>;
+    jobs: Array<{ id: string; name: string; agent: string; task: string; status: string; startedAt: number; mode?: "sync" | "async"; currentTool?: string }>;
   }>({ count: 0, agents: "", jobs: [] });
   const [cronTasks, setCronTasks] = useState<{
     count: number;
@@ -126,9 +126,12 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       if (ev.type === "async-status") {
         const newCount = ev.count || 0;
         const newAgents = ev.agents || "";
+        const newJobs = ev.jobs || [];
         setAsyncAgents(prev => {
-          if (prev.count === newCount && prev.agents === newAgents) return prev;
-          return { count: newCount, agents: newAgents, jobs: ev.jobs || [] };
+          // Compare the rows too: a sync agent's current tool changes without changing
+          // the count or the agent names, and a stale tool is worse than a re-render.
+          if (prev.count === newCount && prev.agents === newAgents && JSON.stringify(prev.jobs) === JSON.stringify(newJobs)) return prev;
+          return { count: newCount, agents: newAgents, jobs: newJobs };
         });
       }
       if (ev.type === "cron-status") {
@@ -441,14 +444,14 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
             "cursor-pointer text-xs",
             asyncAgents.count > 0 ? "text-yellow-400 hover:text-yellow-300" : "text-muted-foreground/50"
           )}>
-            ⏳ {asyncAgents.count} async
+            ⏳ {asyncAgents.count} agent{asyncAgents.count === 1 ? "" : "s"}
           </PopoverTrigger>
           {asyncAgents.count > 0 && (
             <PopoverContent className="w-72 max-h-60 overflow-y-auto">
               <div className="text-xs space-y-1.5">
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-bold text-foreground">Running Agents ({asyncAgents.count})</span>
-                  {asyncAgents.count > 1 && (
+                  {asyncAgents.jobs.filter((j) => j.mode !== "sync").length > 1 && (
                     <button
                       onClick={() => {
                         send({ type: "pidash-command", command: "async-kill", target: "all", sessionId: session.sessionId });
@@ -474,24 +477,39 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
                   const mins = Math.floor(elapsed / 60);
                   const secs = elapsed % 60;
                   const duration = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                  const isSync = job.mode === "sync";
                   return (
                     <div key={job.id} className="flex items-center justify-between gap-2 p-1.5 rounded bg-muted/50">
                       <div className="flex-1 min-w-0">
-                        <div className="font-medium text-foreground truncate">{job.name}</div>
+                        <div className="font-medium text-foreground truncate">
+                          {job.name}
+                          {isSync && (
+                            <span className="ml-1 px-1 rounded bg-muted text-[9px] text-muted-foreground align-middle" title="Sync agent: runs inside this session's turn — stop it from the session that owns it">
+                              sync
+                            </span>
+                          )}
+                        </div>
                         <div className="text-muted-foreground truncate text-[10px]">{job.task.slice(0, 60)}</div>
-                        <div className="text-muted-foreground text-[10px]">{job.agent} · {duration}</div>
+                        <div className="text-muted-foreground text-[10px] truncate">
+                          {job.agent} · {duration}
+                          {job.currentTool ? ` · ${job.currentTool}` : ""}
+                        </div>
                       </div>
-                      <div className="flex gap-1 shrink-0">
-                        <button
-                          onClick={() => {
-                            send({ type: "pidash-command", command: "async-kill", target: job.name, sessionId: session.sessionId });
-                          }}
-                          className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 hover:bg-red-500/40"
-                          title="Kill this agent"
-                        >
-                          Kill
-                        </button>
-                      </div>
+                      {/* A sync agent has no async job to kill: its stop belongs to the
+                          session that owns it, hence no button and no misleading one. */}
+                      {!isSync && (
+                        <div className="flex gap-1 shrink-0">
+                          <button
+                            onClick={() => {
+                              send({ type: "pidash-command", command: "async-kill", target: job.name, sessionId: session.sessionId });
+                            }}
+                            className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 hover:bg-red-500/40"
+                            title="Kill this agent"
+                          >
+                            Kill
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
