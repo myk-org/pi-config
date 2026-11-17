@@ -524,7 +524,11 @@ export async function runSingleAgent(
   // Registered before the spawn so the footer/overlay see the run from its first instant,
   // and cleared in the finally below so abort, throw and error paths cannot leak it.
   const syncRun = beginSyncAgentRun({ agent: agentName, task, cwd });
-  let aborted = false;
+  // Who stopped this run decides what the caller sees: the parent signal cancels the whole
+  // call, a stop from /async-status must only fail this one result.
+  let stopSource: "parent-signal" | "async-status" | null = null;
+  // `proc.killed` turns true the moment SIGTERM is *sent*, so escalation needs the real exit.
+  let exited = false;
   let exitCode = 1; // stays 1 when the spawn never happens, so `end` reports failure
 
   try {
@@ -603,28 +607,30 @@ export async function runSingleAgent(
         cur.stderr += d.toString();
       });
       proc.on("close", (c) => {
+        exited = true;
         log.info("sync_proc_close", agentName, "code", c);
         if (buf.trim()) processLine(buf);
         resolve(c ?? 0);
       });
       proc.on("error", (err) => {
+        exited = true;
         log.error("sync_proc_error", agentName, err?.message);
         resolve(1);
       });
 
-      const kill = () => {
-        aborted = true;
+      const kill = (source: "parent-signal" | "async-status") => {
+        stopSource ??= source;
         proc.kill("SIGTERM");
         setTimeout(() => {
-          if (!proc.killed) proc.kill("SIGKILL");
+          if (!exited) proc.kill("SIGKILL");
         }, 5000);
       };
-      // Same escalation for both paths: the parent's abort signal and a kill requested
-      // from /async-status or pidash.
-      syncRun.setAbort(kill);
+      // A stop that arrived before this spawn existed is recorded on the run; kill the child
+      // now instead of letting it run to completion unnoticed.
+      if (syncRun.setAbort(() => kill("async-status"))) kill("async-status");
       if (signal) {
-        if (signal.aborted) kill();
-        else signal.addEventListener("abort", kill, { once: true });
+        if (signal.aborted) kill("parent-signal");
+        else signal.addEventListener("abort", () => kill("parent-signal"), { once: true });
       }
     });
 
@@ -632,11 +638,24 @@ export async function runSingleAgent(
     cur.exitCode = exitCode;
     cur.durationMs = Date.now() - startTime;
 
-    if (aborted) throw new Error("Subagent was aborted");
+    if (stopSource) {
+      if (stopSource === "async-status") {
+        // One row was stopped: return a failed result so the batch's other agents survive and
+        // still render, instead of rejecting the whole parallel call.
+        const note = "stopped from /async-status";
+        cur.exitCode = 1;
+        cur.stderr = cur.stderr.trim() ? `${cur.stderr.trim()}\n${note}` : note;
+        log.info("sync_run_stopped", agentName, "run", syncRun.id);
+        return cur;
+      }
+      throw new Error("Subagent was aborted");
+    }
     return cur;
   } finally {
-    syncRun.end(!aborted && exitCode === 0);
-    log.info("sync_run_end", syncRun.id, agentName, "ok", !aborted && exitCode === 0);
+    const ok = !stopSource && exitCode === 0;
+    syncRun.end(ok);
+    if (ok) log.info("sync_run_end", syncRun.id, agentName);
+    else log.warn("sync_run_end", syncRun.id, agentName, "exitCode", exitCode, "stoppedBy", stopSource);
     if (tmpFile)
       try {
         fs.unlinkSync(tmpFile);

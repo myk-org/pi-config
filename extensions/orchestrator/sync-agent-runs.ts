@@ -30,12 +30,38 @@ export interface SyncAgentRun {
 interface SyncAgentRunEntry extends SyncAgentRun {
   /** Terminates the child process: SIGTERM, then SIGKILL. Set once the spawn exists. */
   abort?: () => void;
+  /** A stop asked for before the spawn existed; `setAbort` reports it so the caller kills at once. */
+  pendingStop?: boolean;
 }
 
-/** Running runs only — an entry is deleted when it ends, so the map stays bounded. */
+/** Live runs — an entry leaves this map only in `end()`, i.e. once the child is gone. */
 const runs = new Map<string, SyncAgentRunEntry>();
+/**
+ * Finished runs kept for a short grace window. A detail view opened while the run was running
+ * must not keep saying "running" with a growing duration once the child is gone.
+ */
+const finished = new Map<string, SyncAgentRunEntry>();
+const FINISHED_GRACE_MS = 60_000;
+/** Bound on retained finished runs so a long session cannot grow the map. */
+const FINISHED_LIMIT = 20;
 const listeners = new Set<() => void>();
 let counter = 0;
+
+/** Drop expired finished runs, then the oldest beyond the cap. */
+function pruneFinished(now = Date.now()): void {
+  for (const [id, run] of finished) {
+    if (now - (run.endedAt ?? now) >= FINISHED_GRACE_MS) finished.delete(id);
+  }
+  while (finished.size > FINISHED_LIMIT) {
+    const oldest = finished.keys().next();
+    if (oldest.done) break;
+    finished.delete(oldest.value);
+  }
+}
+
+function strip({ abort: _abort, pendingStop: _pendingStop, ...run }: SyncAgentRunEntry): SyncAgentRun {
+  return run;
+}
 
 function notify(): void {
   for (const cb of [...listeners]) {
@@ -56,7 +82,8 @@ export function beginSyncAgentRun(args: {
 }): {
   id: string;
   setTool: (tool?: string) => void;
-  setAbort: (fn: () => void) => void;
+  /** Returns true when a stop was requested before the child existed — kill it right away. */
+  setAbort: (fn: () => void) => boolean;
   end: (ok: boolean) => void;
 } {
   const id = `sync-${++counter}`;
@@ -83,21 +110,27 @@ export function beginSyncAgentRun(args: {
       log.debug("tool", { id, tool: tool ?? null });
       notify();
     },
-    setAbort: (fn: () => void) => {
+    setAbort: (fn: () => void): boolean => {
       const run = runs.get(id);
-      if (!run || run.status !== "running") {
-        log.warn("set_abort: run already finished", { id });
-        return;
+      if (!run) {
+        log.warn("set_abort: run already ended", { id });
+        return false;
       }
       run.abort = fn;
-      log.debug("abort_registered", { id });
+      log.debug("abort_registered", { id, pendingStop: Boolean(run.pendingStop) });
+      return Boolean(run.pendingStop);
     },
     end: (ok: boolean) => {
       const run = runs.get(id);
       if (run) {
-        run.status = ok ? "complete" : "failed";
+        // A run that was stopped stays failed even if its child exited cleanly.
+        run.status = ok && run.status === "running" ? "complete" : "failed";
         run.endedAt = Date.now();
+        run.abort = undefined;
+        run.pendingStop = false;
         runs.delete(id);
+        finished.set(id, run);
+        pruneFinished();
         log.debug("end", { id, agent: run.agent, status: run.status });
       }
       // Idempotent, but subscribers still hear about it: they re-read the registry, so a
@@ -108,49 +141,59 @@ export function beginSyncAgentRun(args: {
 }
 
 /**
- * Abort a running sync agent by run id or agent name.
- * Returns false when nothing matches (unknown or already finished).
+ * Abort a running sync agent by run id. Never by agent name: two runs of one agent are two
+ * children, and a name match would stop the wrong one.
+ * Returns false when nothing matches (unknown, already stopped or already ended).
  */
-export function abortSyncAgentRun(target: string): boolean {
-  const want = target.toLowerCase();
-  let match: SyncAgentRunEntry | undefined;
-  for (const run of runs.values()) {
-    if (run.id.toLowerCase() === want || run.agent.toLowerCase() === want) {
-      match = run;
-      break;
-    }
-  }
-  if (!match) {
-    log.warn("abort: unknown or finished run", { target });
+export function abortSyncAgentRun(id: string): boolean {
+  const run = runs.get(id);
+  if (!run) {
+    log.warn("abort: unknown or finished run", { id });
     return false;
   }
-  if (!match.abort) {
-    log.warn("abort: no abort handle yet", { id: match.id, agent: match.agent });
+  if (run.status !== "running") {
+    log.warn("abort: run already stopped", { id, agent: run.agent });
     return false;
   }
-  log.debug("abort", { id: match.id, agent: match.agent });
-  match.status = "failed";
-  match.endedAt = Date.now();
-  const abort = match.abort;
-  // Delete before invoking: the abort fn also resolves the spawn, whose `end` would
-  // otherwise log a second, confusing end for the same run.
-  runs.delete(match.id);
+  run.status = "failed";
+  run.endedAt = Date.now();
+  if (!run.abort) {
+    // The spawn does not exist yet: record the stop, `setAbort` reports it to the spawner.
+    run.pendingStop = true;
+    log.info("abort: queued before spawn", { id, agent: run.agent });
+    notify();
+    return true;
+  }
+  log.debug("abort", { id, agent: run.agent });
+  const abort = run.abort;
+  // The row stays until `end()` sees the child exit: deleting here would hide a live process
+  // that nobody can stop again.
   try {
     abort();
   } catch (e: any) {
-    log.warn("abort: signal failed", { id: match.id, error: e?.message || String(e) });
+    log.warn("abort: signal failed", { id: run.id, error: e?.message || String(e) });
   }
   notify();
   return true;
 }
 
-/** Running runs only, oldest first. */
+/** Live runs, oldest first — an entry stays here after a stop until its child exits. */
 export function listSyncAgentRuns(): SyncAgentRun[] {
-  return Array.from(runs.values()).map(({ abort: _abort, ...run }) => run);
+  return Array.from(runs.values()).map(strip);
 }
 
+/** Live runs plus the finished ones still in the grace window, so a finished row can show
+ *  its final status instead of a stale "running". */
+export function listSyncAgentRunsWithFinished(): SyncAgentRun[] {
+  pruneFinished();
+  return [...Array.from(runs.values()), ...Array.from(finished.values())].map(strip);
+}
+
+/** Running runs only — a stopped child awaiting its exit is no longer running. */
 export function syncAgentRunCount(): number {
-  return runs.size;
+  let count = 0;
+  for (const run of runs.values()) if (run.status === "running") count++;
+  return count;
 }
 
 /** Subscribe to any run begin/end/tool/abort change. Returns an unsubscribe. */
@@ -163,12 +206,31 @@ export function onSyncAgentRunsChanged(cb: () => void): () => void {
   };
 }
 
-/** Drop every run — teardown only; a still-spawning child is left to its own exit path. */
-export function clearSyncAgentRuns(): void {
-  if (runs.size === 0) return;
-  log.debug("clear", { count: runs.size });
+/** Drop every run, live and finished. Internal teardown — use `abortAllSyncAgentRuns` from a
+ *  session path, so a live child is never silently forgotten. */
+function clearSyncAgentRuns(): void {
+  if (runs.size === 0 && finished.size === 0) return;
+  log.debug("clear", { count: runs.size, finished: finished.size });
   runs.clear();
+  finished.clear();
   notify();
+}
+
+/**
+ * Stop every still-running sync run, then clear. Called on session shutdown: these children
+ * belong to this process, so none may outlive the session. Exported rather than reached for
+ * directly so the clearing path cannot drop a live handle without killing it first.
+ * Returns the number of runs stopped.
+ */
+export function abortAllSyncAgentRuns(): number {
+  let stopped = 0;
+  for (const run of [...runs.values()]) {
+    if (run.status !== "running") continue;
+    if (abortSyncAgentRun(run.id)) stopped++;
+  }
+  clearSyncAgentRuns();
+  log.info("abort_all", { stopped });
+  return stopped;
 }
 
 /**

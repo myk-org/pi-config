@@ -34,10 +34,11 @@ import { autoCompleteTask, autoMarkInProgress, resolveTaskStorePath } from "./ta
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
 import type { AsyncStatusJobView } from "./async-status-ui.js";
 import {
+  abortAllSyncAgentRuns,
   abortSyncAgentRun,
-  clearSyncAgentRuns,
   formatAgentsStatus,
   listSyncAgentRuns,
+  listSyncAgentRunsWithFinished,
   onSyncAgentRunsChanged,
   syncAgentRunCount,
 } from "./sync-agent-runs.js";
@@ -489,7 +490,8 @@ export function registerAsyncAgents(
       const running = Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued");
       const names = running.map(j => j.name || j.agent).join(", ");
       // Sync agents are real child processes too; count both so nothing running is hidden.
-      const syncRuns = listSyncAgentRuns();
+      // A stopped run keeps its row until its child exits, but it is no longer running.
+      const syncRuns = listSyncAgentRuns().filter(r => r.status === "running");
       const syncNames = syncRuns.map(r => r.agent).join(", ");
       const widgetKey = `${running.length}:${names}:${syncRuns.length}:${syncNames}`;
       const changed = widgetKey !== lastWidgetKey;
@@ -1625,7 +1627,9 @@ export function registerAsyncAgents(
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
     unsubscribeSyncRuns();
-    clearSyncAgentRuns();
+    // Sync children belong to this process: stop them, then clear, so none outlives the session.
+    const stoppedSyncRuns = abortAllSyncAgentRuns();
+    log.info("shutdown: sync runs stopped", { stoppedSyncRuns });
   });
 
   // /async-status — fullscreen overlay list → live output detail
@@ -1650,17 +1654,20 @@ export function registerAsyncAgents(
             model: j.model,
             mode: "async" as const,
           }));
-        const syncJobs: AsyncStatusJobView[] = listSyncAgentRuns()
+        const syncJobs: AsyncStatusJobView[] = listSyncAgentRunsWithFinished()
           .sort(newestFirst)
           .map(r => ({
             id: r.id,
             agent: r.agent,
             name: r.agent,
             task: r.task,
-            status: "running",
+            // The real status: a finished run is retained briefly so this row (and the detail
+            // header that reads it) cannot claim "running" for a child that already exited.
+            status: r.status,
             // No worker dir, no status.json: the run lives in this process only.
             workerDir: "",
             startedAt: r.startedAt,
+            durationMs: r.endedAt != null ? r.endedAt - r.startedAt : undefined,
             currentTool: r.currentTool,
             mode: "sync" as const,
           }));
@@ -1679,14 +1686,13 @@ export function registerAsyncAgents(
   });
 
   /** Sync runs live in this process, so a kill is just the spawn's abort handle. Null when
-   *  no sync run matches — the caller then falls through to the async jobs. */
-  function killSyncAgent(target: string): { killed: string[]; errors: string[] } | null {
-    const want = target.toLowerCase();
-    const match = listSyncAgentRuns().find(
-      (r) => r.id.toLowerCase() === want || r.agent.toLowerCase() === want,
-    );
+   *  no running sync run has this id — the caller then falls through to the async jobs.
+   *  Id only: the overlay passes row ids, and a name match would stop a different run of
+   *  the same agent. */
+  function killSyncAgent(id: string): { killed: string[]; errors: string[] } | null {
+    const match = listSyncAgentRuns().find((r) => r.id === id && r.status === "running");
     if (!match) return null;
-    log.info("sync_kill_requested", { target, id: match.id, agent: match.agent });
+    log.info("sync_kill_requested", { id, agent: match.agent });
     return abortSyncAgentRun(match.id)
       ? { killed: [match.agent], errors: [] }
       : { killed: [], errors: [`Could not stop sync agent ${match.agent}.`] };
@@ -1829,14 +1835,10 @@ export function registerAsyncAgents(
     return { killed, errors };
   }
 
-  // Handle async-kill from pidash browser UI
+  // Handle async-kill from pidash browser UI. Async only: the browser has no kill button for
+  // sync rows, so a name here is an async job's name and must never stop a sync child.
   pi.events.on("pidash:async-kill", (target: unknown) => {
-    if (typeof target === "string") {
-      // A human clicking in the browser UI — still a user kill. A sync run is not an
-      // async job, so it is resolved through the sync registry first.
-      if (killSyncAgent(target)) return;
-      killAsyncAgent(target, "user");
-    }
+    if (typeof target === "string") killAsyncAgent(target, "user");
   });
 
   // ── pi-subagents RPC compatibility bridge ──────────────────────────────

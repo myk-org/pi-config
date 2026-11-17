@@ -2,15 +2,21 @@
  * Sync runs through the real async wiring (#1121).
  *
  * The registry tests cover the bookkeeping; these drive `registerAsyncAgents` itself so
- * the three surfaces that were blind to sync agents — footer slot, pidash emit, and the
- * `/async-status` overlay with its kill routing — are exercised, not assumed.
+ * the surfaces that render or stop sync agents — footer slot, pidash emit, the
+ * `/async-status` overlay and session shutdown — are exercised, not assumed.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
-import { beginSyncAgentRun, clearSyncAgentRuns, syncAgentRunCount } from "../../../extensions/orchestrator/sync-agent-runs.js";
+import {
+  abortAllSyncAgentRuns,
+  beginSyncAgentRun,
+  listSyncAgentRuns,
+  listSyncAgentRunsWithFinished,
+  syncAgentRunCount,
+} from "../../../extensions/orchestrator/sync-agent-runs.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -73,13 +79,25 @@ function harness() {
     events,
     /** The footer slot as last written. */
     footer: () => statuses.get("2-async"),
+    shutdown: () => handlers.get("session_shutdown")![0]({}, ctx),
     pidash,
-    /** Rendered lines of the /async-status overlay. */
-    async openAsyncStatus() {
+    /**
+     * Render the /async-status overlay. `onOpen` sees every component it opens, in order
+     * (list first, then the detail when the keys navigate into a row).
+     */
+    async openAsyncStatus(
+      keys: readonly string[] = ["close"],
+      onOpen?: (component: any, opened: number) => void,
+    ) {
       let frame: string[] = [];
+      let opened = 0;
       const capturing = (<T,>(factory: any) =>
-        fakeCustom(factory, ["close"], {
-          onOpen: (component: any) => { frame = component.render(160).map((line: string) => line.trimEnd()); },
+        fakeCustom(factory, keys, {
+          onOpen: (component: any) => {
+            opened += 1;
+            if (opened === 1) frame = component.render(160).map((line: string) => line.trimEnd());
+            onOpen?.(component, opened);
+          },
         })) satisfies ExtensionUIContext["custom"];
       await commands.get("async-status")!.handler("", { ...ctx, ui: ui(capturing) });
       return frame;
@@ -95,6 +113,7 @@ describe("sync runs in the async surfaces", () => {
     assert.equal(h.footer(), "⏳ agents: 1 (1 sync)");
     run.end(true);
     assert.equal(h.footer(), "💤 agents: 0");
+    abortAllSyncAgentRuns();
   });
 
   it("pidash emit carries the sync run as a sync-mode row and counts it", async () => {
@@ -109,6 +128,20 @@ describe("sync runs in the async surfaces", () => {
       { id: payload.jobs[0].id, mode: payload.jobs[0].mode, name: payload.jobs[0].name, status: payload.jobs[0].status },
       { id: run.id, mode: "sync", name: "worker", status: "running" },
     );
+    abortAllSyncAgentRuns();
+  });
+
+  it("a retained finished run is visible but counted as idle", () => {
+    const h = harness();
+    beginSyncAgentRun({ agent: "worker", task: "done already", cwd: h.cwd }).end(true);
+    // The row outlives the child so an open detail view can show a final status; the
+    // footer is a running count, so it must not.
+    assert.equal(listSyncAgentRunsWithFinished().length, 1);
+    assert.equal(h.footer(), "💤 agents: 0");
+    const payload = h.pidash();
+    assert.equal(payload.count, 0);
+    assert.equal(payload.jobs.length, 0, "pidash lists running agents only");
+    abortAllSyncAgentRuns();
   });
 
   it("the overlay renders a sync row with the marker and the current tool", async () => {
@@ -122,29 +155,72 @@ describe("sync runs in the async surfaces", () => {
     assert.match(row!, /sync/, "a sync row must say it is not an async job");
     assert.match(row!, /bash/, "current tool must be visible");
     assert.ok(frame.some((line) => line.includes("1 active")), "the sync run counts as active");
+    abortAllSyncAgentRuns();
   });
 
-  it("a pidash kill of a sync id aborts the child", () => {
+  it("the overlay row and detail header show the final status, not running", async () => {
     const h = harness();
-    const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: h.cwd });
-    let aborts = 0;
-    run.setAbort(() => { aborts++; });
+    const run = beginSyncAgentRun({ agent: "worker", task: "finished job", cwd: h.cwd });
+    run.end(true);
 
-    h.events.emit("pidash:async-kill", run.id);
-    assert.equal(aborts, 1, "the sync spawn must be aborted, not reported as an unknown async job");
-    assert.equal(syncAgentRunCount(), 0);
-    clearSyncAgentRuns();
+    const frame = await h.openAsyncStatus();
+    const row = frame.find((line) => line.includes("finished job"));
+    assert.ok(row, `no row for the finished run in:\n${frame.join("\n")}`);
+    assert.match(row!, /done/, "a finished sync row must not say running");
+    assert.doesNotMatch(row!, /running/);
+    assert.ok(frame.some((line) => line.includes("0 active")), "a finished run is not active");
+
+    // Enter opens the detail; its header reads the same row, so it must agree.
+    let header = "";
+    await h.openAsyncStatus(["\r"], (component, opened) => {
+      if (opened === 1) return; // the list, not the detail
+      header = component.render(160)[0];
+      // Empty the registry so the loop's next list pass ends instead of reopening the row.
+      abortAllSyncAgentRuns();
+      component.handleInput("\u001b");
+    });
+    assert.match(header, /complete/, "the header must carry the final status");
+    assert.doesNotMatch(header, /running/);
   });
 
-  it("a pidash kill by agent name reaches the sync run too", () => {
+  it("a pidash kill never reaches a sync run — the browser has no sync kill button", () => {
     const h = harness();
     const run = beginSyncAgentRun({ agent: "code-reviewer-wiring", task: "t", cwd: h.cwd });
     let aborts = 0;
     run.setAbort(() => { aborts++; });
 
+    h.events.emit("pidash:async-kill", run.id);
     h.events.emit("pidash:async-kill", "code-reviewer-wiring");
-    assert.equal(aborts, 1);
+    assert.equal(aborts, 0, "an async-name kill must not stop a sync child");
+    assert.equal(syncAgentRunCount(), 1);
+    abortAllSyncAgentRuns();
+  });
+
+  it("the overlay kill stops the selected sync row by id and keeps the row until exit", async () => {
+    const h = harness();
+    const run = beginSyncAgentRun({ agent: "worker", task: "stop me", cwd: h.cwd });
+    let aborts = 0;
+    run.setAbort(() => { aborts++; });
+
+    await h.openAsyncStatus(["x", "close"]);
+    assert.equal(aborts, 1, "x must reach the sync abort handle");
     assert.equal(syncAgentRunCount(), 0);
-    clearSyncAgentRuns();
+    // The child is still alive, so the row stays — and end() takes it away.
+    assert.deepEqual(listSyncAgentRuns().map((r) => `${r.id}:${r.status}`), [`${run.id}:failed`]);
+    run.end(false);
+    assert.deepEqual(listSyncAgentRuns(), []);
+    abortAllSyncAgentRuns();
+  });
+
+  it("session shutdown stops live sync runs before clearing them", () => {
+    const h = harness();
+    const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: h.cwd });
+    let aborts = 0;
+    run.setAbort(() => { aborts++; });
+
+    h.shutdown();
+    assert.equal(aborts, 1, "a sync child must not outlive the session");
+    assert.deepEqual(listSyncAgentRuns(), []);
+    assert.deepEqual(listSyncAgentRunsWithFinished(), []);
   });
 });
