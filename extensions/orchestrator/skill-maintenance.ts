@@ -1028,26 +1028,39 @@ function parseSegment(projectCwd: string, segment: string): ParsedSegment {
   return { words, redirectTargets, hasWriteRedirect };
 }
 
+/**
+ * `timeout` options that take a separate value. Mirrors `PIPE_TIMEOUT_VALUE_OPTIONS` in
+ * `enforcement-helpers.ts` (module-private there, so not imported).
+ */
+const TIMEOUT_VALUE_OPTIONS = new Set(["-s", "--signal", "-k", "--kill-after"]);
+
 /** Unwrap leading control keywords, `FOO=bar` env assignments, `rtk` wrappers, `env`, and `timeout`. */
 function commandWordIndex(plainWords: string[]): number {
   let idx = skipToCommandWord(plainWords);
-  while (plainWords[idx] === "env") {
-    const next = skipToCommandWord(plainWords.slice(idx + 1));
-    const candidate = plainWords[idx + 1 + next];
-    if (!candidate || candidate.startsWith("-")) break;
-    idx = idx + 1 + next;
-  }
-  // `timeout [-s SIG] [-k N] <duration> <command…>` — without this the verb looks like
-  // `timeout`, so a bounded run of a skill helper read as an unknown command and blocked.
+  // `env` and `timeout` nest (`timeout 5 env bash helper`), so unwrap until the word stops changing.
   // Unwrapping only exposes the real verb to the write checks, never hides one.
-  while (plainWords[idx] === "timeout") {
-    let next = idx + 1;
-    while (plainWords[next]?.startsWith("-")) {
-      next += plainWords[next] === "-s" || plainWords[next] === "-k" ? 2 : 1;
+  for (;;) {
+    if (plainWords[idx] === "env") {
+      const next = skipToCommandWord(plainWords.slice(idx + 1));
+      const candidate = plainWords[idx + 1 + next];
+      if (!candidate || candidate.startsWith("-")) break;
+      idx = idx + 1 + next;
+      continue;
     }
-    next += 1; // the duration operand
-    if (!plainWords[next]) break;
-    idx = next;
+    // `timeout [-s SIG] [-k N] [--signal SIG] [--kill-after N] <duration> <command…>` — without
+    // this the verb looks like `timeout`, so a bounded run of a skill helper read as an
+    // unknown command and blocked.
+    if (plainWords[idx] === "timeout") {
+      let next = idx + 1;
+      while (plainWords[next]?.startsWith("-")) {
+        next += TIMEOUT_VALUE_OPTIONS.has(plainWords[next]) ? 2 : 1;
+      }
+      next += 1; // the duration operand
+      if (!plainWords[next]) break;
+      idx = next;
+      continue;
+    }
+    break;
   }
   log.debug("skill_shell_command_word", { idx, verb: plainWords[idx] ?? "" });
   return idx;
@@ -1382,29 +1395,61 @@ function isAllowedSkillScriptExec(
 }
 
 /**
+ * Any shell variable expansion. With a `cd` in the command no working directory can be
+ * pinned: `$PWD` (and any other variable) expands AFTER the cd, so a reference that
+ * `unquoteWord` already turned into an absolute path is not the path the shell uses.
+ */
+const VARIABLE_EXPANSION_RE = /\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})/;
+
+/**
+ * The directory change a command makes, read from the PARSED segments so quoted (`'cd'`)
+ * and escaped (`c\d`) forms count — `maskQuoted` blanks exactly those. The target is
+ * recorded only for the one pinning shape: the first segment of the first pipeline.
+ */
+function pinnedCdTarget(projectCwd: string, command: string): { count: number; target: string | null } {
+  let count = 0;
+  let target: string | null = null;
+  const pipelines = splitPipelines(command);
+  for (let p = 0; p < pipelines.length; p++) {
+    for (let s = 0; s < pipelines[p].length; s++) {
+      const words = parseSegment(projectCwd, pipelines[p][s]).words.map((w) => w.value);
+      const cmdIdx = commandWordIndex(words);
+      if (words[cmdIdx] !== "cd") continue;
+      count++;
+      if (p === 0 && s === 0 && count === 1) target = words[cmdIdx + 1] ?? null;
+    }
+  }
+  log.debug("skill_shell_cd_scan", { count, target });
+  return { count, target };
+}
+
+/**
  * Whether a `cd` in the command could change what a skill path means.
  *
  * References are resolved against `projectCwd`, so the guard used to refuse every command
  * that changed directory at all — including `cd <projectCwd> && bash .pi/skills/x/run.sh`,
  * where the cd provably changes nothing. Block only when the cd is unpinnable (not the first
- * segment, not a literal absolute path, or more than one of them) or when a relative
- * reference would resolve elsewhere under it. An absolute reference is unaffected by any cd.
+ * segment of the first pipeline, not a literal absolute path, more than one of them, or any
+ * variable expansion that expands after the cd) or when a relative reference would resolve
+ * elsewhere under it. An absolute literal reference is unaffected by any cd.
  */
 function cdChangesSkillMeaning(
   projectCwd: string,
-  maskedCommand: string,
+  command: string,
   refs: readonly ShellSkillReference[],
 ): boolean {
-  const cdCount = (maskedCommand.match(/(?:^|[\s;&|()])cd\s/g) ?? []).length;
-  if (cdCount === 0) return false;
-  const first = /^\s*cd\s+(\S+)/.exec(maskedCommand);
-  if (cdCount > 1 || !first) {
-    log.debug("skill_shell_cd_unpinned", { cds: cdCount });
+  const { count, target } = pinnedCdTarget(projectCwd, command);
+  if (count === 0) return false;
+  if (count > 1 || target === null) {
+    log.debug("skill_shell_cd_unpinned", { cds: count });
     return true;
   }
-  const target = unquoteWord(first[1], projectCwd);
   if (!path.isAbsolute(target)) {
     log.debug("skill_shell_cd_relative_target", { target });
+    return true;
+  }
+  if (VARIABLE_EXPANSION_RE.test(command)) {
+    log.debug("skill_shell_cd_expansion", { target });
     return true;
   }
   const changes = refs.some(
@@ -1458,7 +1503,7 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
     return block(`a bare SKILL.md means whatever the working directory is. ${hint}`);
   }
   const maskedCommand = maskQuoted(command);
-  if (cdChangesSkillMeaning(projectCwd, maskedCommand, refs)) {
+  if (cdChangesSkillMeaning(projectCwd, command, refs)) {
     return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
   }
   // Nested commands run before the outer one: `cat skill $(python3 -c …)`, `<(...)`, `>(...)`.

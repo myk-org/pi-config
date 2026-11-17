@@ -704,13 +704,47 @@ describe("skill helper script execution (#1103)", () => {
     );
   });
 
-  it("blocks a relative cd target and a chain of cds", () => {
+  it("blocks a relative cd target", () => {
     const { cwd, root } = project();
     writeSkill(root, "verify-all", UNMARKED);
     fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
     assert.equal(bashSkillVerdict(cwd, "cd sub && bash .pi/skills/verify-all/run-suites.sh")?.block, true);
+  });
+
+  it("blocks a chain of cds", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
     assert.equal(
       bashSkillVerdict(cwd, `cd ${cwd} && cd /tmp && bash .pi/skills/verify-all/run-suites.sh`)?.block,
+      true,
+    );
+  });
+
+  it("blocks a $PWD reference that expands after the cd", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    assert.equal(
+      bashSkillVerdict(cwd, "cd /tmp && bash $PWD/.pi/skills/verify-all/run-suites.sh")?.block,
+      true,
+    );
+    assert.equal(
+      bashSkillVerdict(cwd, "cd /tmp && bash ${PWD}/.pi/skills/verify-all/run-suites.sh")?.block,
+      true,
+    );
+  });
+
+  it("blocks a quoted or escaped cd", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    assert.equal(
+      bashSkillVerdict(cwd, "'cd' /tmp && bash .pi/skills/verify-all/run-suites.sh")?.block,
+      true,
+    );
+    assert.equal(
+      bashSkillVerdict(cwd, "c\\d /tmp && bash .pi/skills/verify-all/run-suites.sh")?.block,
       true,
     );
   });
@@ -725,6 +759,22 @@ describe("skill helper script execution (#1103)", () => {
     // Unwrapping must expose a write, never hide it.
     assert.equal(bashSkillVerdict(cwd, `timeout 5 rm ${helper}`)?.block, true);
     assert.equal(bashSkillVerdict(cwd, `timeout -s KILL 5 sed -i 's/a/b/' ${helper}`)?.block, true);
+  });
+
+  it("unwraps timeout's value-taking long options", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    assert.equal(bashSkillVerdict(cwd, "timeout --signal TERM 5 cat .pi/skills/verify-all/SKILL.md"), null);
+    assert.equal(bashSkillVerdict(cwd, "timeout --kill-after=5 5 cat .pi/skills/verify-all/SKILL.md"), null);
+  });
+
+  it("unwraps env nested after timeout", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    const helper = path.join(root, "verify-all", "run-suites.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, `timeout 5 env bash ${helper}`), null);
+    assert.equal(bashSkillVerdict(cwd, `timeout 5 env rm ${helper}`)?.block, true);
   });
 
   it("allows reading a skill file with 2>&1 descriptor forwarding", () => {
