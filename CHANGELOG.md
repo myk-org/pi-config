@@ -1,5 +1,33 @@
 # Changelog
 
+## [4.33.0] - 2026-11-17
+
+- Sync subagents are visible. A sync run is a real child process, but the footer, `/async-status` and pidash
+  only ever knew about async jobs, so "how many agents are running" was answerable only by scrolling. A
+  process-local registry now records each sync run from `runSingleAgent` and clears it in a `finally`, the
+  footer reports both modes (`⏳ agents: 2 (2 sync)`, unchanged `⏳ async: N` when nothing is sync), the
+  overlay lists sync rows marked `sync` and stops them by run id, and each run writes a session-scoped
+  `sync-runs/<id>/status.json` in the layout the overlay already reads. A stop from the overlay returns a
+  failed result instead of throwing, so a parallel batch keeps its completed siblings (#1121).
+- A stopped round stays honest. A parent abort now wins over an earlier overlay stop instead of being
+  swallowed as an ordinary failure, a user-stopped runaway no longer feeds the sync overrun penalty that
+  would reject the next call, and success requires the child's stop reason — a zero-exit child reporting
+  `error` is not described as complete. `status.json` is written with `flag: "wx"` after unlinking, so a
+  hostile checkout cannot pre-place a symlink and have run metadata overwrite another file, and a
+  symlinked run directory is refused (#1121).
+- The skill shell guard stops refusing commands it can prove. A `cd` blocked the whole command merely by
+  appearing, even when its target was this project and every relative path resolved to the same absolute
+  file; a `cd` is now pinned only when it is the single first segment with a literal absolute target and
+  no variable expansion can move the path, and `timeout` is unwrapped so a bounded helper run is
+  classified by its real verb. `$PWD` references, quoted or escaped `cd`, a symlinked target and a
+  relative `..` reference are all still refused, because in each the shell's target differs from the
+  classified one (#1122).
+- A home-relative path is no longer "unresolvable". The navigation gate resolved search operands with
+  `path.resolve`, which leaves `~` literal, so `~/.ssh/config` became `<checkout>/~/.ssh/config`, the
+  realpath threw, and the gate blocked an ordinary command — while the same command against `/etc/hosts`
+  was allowed. Tildes are now expanded only when the shell would expand them: exactly `~` and `~/…`, never
+  inside quotes, never when the command assigns `HOME`, and never for `~user` (#1128).
+
 ## [4.32.0] - 2026-11-16
 
 - A task carries an `assignee`: `user` or `llm`. A user-assigned task cannot be started or completed
