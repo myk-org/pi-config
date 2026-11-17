@@ -9,16 +9,18 @@
  * fixtures, except in the `POST /sessions` suite, which creates one against an
  * unroutable loopback provider in a temp `models.json` — registration and
  * creation only, never a provider call.
+ *
+ * The shutdown SEQUENCE is not driven from here: `performShutdown` owns it and
+ * `shutdown.test.ts` asserts it with fakes.
  */
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync, writeFileSync } from "node:fs";
+import { readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { SessionStore } from "../../src/sessions.js";
 import { isAllowedStreamRequest } from "../../src/index.js";
 import { createRequestHandler } from "../../src/request-handler.js";
-import { settlesWithin } from "../../src/settle-within.js";
 import { invoke, type InvokeResult, type RequestHandler } from "./helpers/invoke-handler.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
 
@@ -27,8 +29,6 @@ const MAX_STREAMS_PER_SESSION = 8;
 const MAX_STREAMS_GLOBAL = 32;
 /** Fake loopback port for Origin/Host headers — nothing listens on it. */
 const LOOPBACK = "127.0.0.1:9201";
-/** Shutdown drain timeout the feed must not have to wait out (`startSidecar`). */
-const DRAIN_TIMEOUT_MS = 30_000;
 
 type Emit = (event: any) => void;
 
@@ -213,14 +213,24 @@ describe("POST /sessions in-process (creation covered over HTTP before #1126)", 
   const PROVIDER = "sse-1019-provider";
   const MODEL = "sse-1019-model";
   let dir: string;
+  /** Where a recording-enabled run would write — must stay empty (off here). */
+  let transcripts: string;
   let store: SessionStore;
   let handler: RequestHandler;
   const offline = process.env.PI_OFFLINE;
+  const recording = process.env.RECORD_TRANSCRIPTS;
+  const transcriptsDir = process.env.PI_SIDECAR_TRANSCRIPTS_DIR;
 
   before(() => {
     // One offline provider whose baseUrl is unroutable: creation needs a
     // registered model, never a network call.
     dir = makeTempDir("sidecar-sse-1019-create-");
+    // Creation writes a transcript header when recording is on: point that at a
+    // temp dir and pin recording off, so a developer's env cannot leave files
+    // behind in the real archive.
+    transcripts = makeTempDir("sidecar-sse-1019-transcripts-");
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = transcripts;
+    delete process.env.RECORD_TRANSCRIPTS;
     writeFileSync(
       join(dir, "models.json"),
       JSON.stringify({
@@ -248,6 +258,12 @@ describe("POST /sessions in-process (creation covered over HTTP before #1126)", 
     await store.disposeAll();
     if (offline === undefined) delete process.env.PI_OFFLINE;
     else process.env.PI_OFFLINE = offline;
+    if (recording === undefined) delete process.env.RECORD_TRANSCRIPTS;
+    else process.env.RECORD_TRANSCRIPTS = recording;
+    if (transcriptsDir === undefined) delete process.env.PI_SIDECAR_TRANSCRIPTS_DIR;
+    else process.env.PI_SIDECAR_TRANSCRIPTS_DIR = transcriptsDir;
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(transcripts, { recursive: true, force: true });
   });
 
   it("creates a session and answers 201 with its session_id", async () => {
@@ -262,90 +278,16 @@ describe("POST /sessions in-process (creation covered over HTTP before #1126)", 
     assert.equal(typeof sessionId, "string");
     assert.ok(sessionId.length > 0, "the created id is usable");
     assert.equal(store.count(), 1, "the session is live in the store");
+    assert.deepEqual(
+      readdirSync(transcripts),
+      [],
+      "recording off must write no transcript header (nothing left in the archive)",
+    );
 
     const deleted = await invoke(handler, { method: "DELETE", url: `/sessions/${sessionId}` });
     assert.deepEqual(deleted.json, { deleted: true, existed: true }, "the id addresses a real session");
     assert.equal(store.count(), 0);
-  });
-});
-
-describe("shutdown drain with an open feed (#1019)", () => {
-  let dir: string;
-  let store: SessionStore;
-  let handler: RequestHandler;
-  const offline = process.env.PI_OFFLINE;
-  const transcriptsDir = process.env.PI_SIDECAR_TRANSCRIPTS_DIR;
-  const recording = process.env.RECORD_TRANSCRIPTS;
-
-  before(() => {
-    dir = makeTempDir("sidecar-shutdown-drain-");
-    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
-    process.env.PI_OFFLINE = "1";
-    delete process.env.RECORD_TRANSCRIPTS;
-    store = new SessionStore();
-    handler = createRequestHandler({
-      store,
-      isDraining: () => false,
-      getTrustBindHost: () => "127.0.0.1",
-      beginRequest: () => {},
-      endRequest: () => {},
-    });
-  });
-  after(() => {
-    if (offline === undefined) delete process.env.PI_OFFLINE;
-    else process.env.PI_OFFLINE = offline;
-    if (transcriptsDir === undefined) delete process.env.PI_SIDECAR_TRANSCRIPTS_DIR;
-    else process.env.PI_SIDECAR_TRANSCRIPTS_DIR = transcriptsDir;
-    if (recording === undefined) delete process.env.RECORD_TRANSCRIPTS;
-    else process.env.RECORD_TRANSCRIPTS = recording;
-  });
-
-  it("the drain wait returns as soon as the open feeds close — no timeout needed", async () => {
-    // `server.close()` resolves only once every socket is gone; an open feed
-    // holds one. Shutdown closes the feeds first, so the wait must return
-    // immediately — the old over-HTTP test asserted shutdown finished in well
-    // under a third of the drain timeout.
-    store.putSessionFixture("drain-feed", fixtureSession(), "/tmp");
-    const feed = await invoke(handler, { method: "GET", url: "/sessions/drain-feed/events" });
-    assert.equal(feed.status, 200);
-    const connectionsClosed = new Promise<void>((resolve) => feed.res.once("close", () => resolve()));
-
-    let forcedDrop = false;
-    const started = Date.now();
-    store.closeAllStreams();
-    assert.equal(feed.res.ended, 1, "shutdown ends the feed before waiting on the drain");
-    feed.res.disconnect();
-    const settled = await settlesWithin(connectionsClosed, DRAIN_TIMEOUT_MS, () => { forcedDrop = true; });
-    const elapsed = Date.now() - started;
-
-    assert.equal(settled, true, "the wait returns on its own, not on the timeout");
-    assert.equal(forcedDrop, false, "nothing had to be force-dropped");
-    assert.ok(
-      elapsed < DRAIN_TIMEOUT_MS / 3,
-      `the drain wait must not wait out the ${DRAIN_TIMEOUT_MS}ms timeout (took ${elapsed}ms)`,
-    );
-    await invoke(handler, { method: "DELETE", url: "/sessions/drain-feed" });
-    assert.equal(store.count(), 0);
-  });
-
-  it("a connection that never closes is bounded by the timeout and force-dropped", async () => {
-    // The only case where shutdown pays the full drain: force-drop remaining
-    // connections so disposeAll() still runs.
-    let forcedDrop = 0;
-    const started = Date.now();
-    const settled = await settlesWithin(
-      new Promise<void>(() => { /* a socket that never closes */ }),
-      20,
-      () => { forcedDrop++; },
-    );
-    const elapsed = Date.now() - started;
-
-    assert.equal(settled, false, "the timeout wins, and the force-drop runs");
-    assert.equal(forcedDrop, 1, "exactly one force-drop, not a loop");
-    assert.ok(
-      elapsed < DRAIN_TIMEOUT_MS / 3,
-      `the wait must end at its own timeout (took ${elapsed}ms)`,
-    );
+    assert.deepEqual(readdirSync(transcripts), [], "deleting the session leaves no transcript behind");
   });
 });
 

@@ -14,7 +14,7 @@ import { assertPiVersionFloor } from "./pi-version.js";
 import { createLogger, logger } from "./logger.js";
 import { ensureSidecarPortEnv, resolveSidecarListenPort } from "./sidecar-port.js";
 import { createRequestHandler } from "./request-handler.js";
-import { settlesWithin } from "./settle-within.js";
+import { performShutdown } from "./shutdown.js";
 
 // Public HTTP surface stays exported from this entry point; implementations
 // live in http-helpers.ts (#1126).
@@ -155,7 +155,6 @@ export function startSidecar(options?: {
   // reaching 0 (with a timeout) before disposeAll(), so prompt/abort that
   // already entered the handler finish before sessions are torn down.
   let activeRequests = 0;
-  const SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
   // Declared early so shutdownSidecar can clear them; assigned after createServer.
   let cleanupInterval: ReturnType<typeof setInterval> | undefined;
   let stopWatchdog: (() => void) | undefined;
@@ -237,51 +236,19 @@ export function startSidecar(options?: {
       return shutdownPromise;
     }
     shutdownPromise = (async () => {
-      logger.info(`[sidecar] SHUTDOWN_START: reason=${reason}`);
       draining = true;
       stopWatchdog?.();
       if (cleanupInterval !== undefined) clearInterval(cleanupInterval);
-      // #1019: close SSE feeds BEFORE waiting for connections to drain — an
-      // open stream holds its socket, so the drain would run to its timeout.
       try {
-        store.closeAllStreams();
-      } catch (err) {
-        logger.warn(`[sidecar] SHUTDOWN_STREAM_CLOSE_FAILED: reason=${reason}`, err);
-      }
-      // Stop accepting new connections, then wait for in-flight handlers, then
-      // dispose the store. Disposing before handlers finish races prompt/abort.
-      // Always continue to disposeAll even if close() fails — otherwise sessions
-      // and the internal AgentSessionRuntime would be left undisposed.
-      const closed = new Promise<void>((resolve) => {
-        server.close((err) => {
-          if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
-            logger.warn(`[sidecar] SHUTDOWN_CLOSE_FAILED: reason=${reason}`, err);
-          }
-          resolve();
+        // The sequence itself lives in shutdown.ts (#1126) so a unit test can
+        // assert its order without a socket.
+        await performShutdown({
+          reason,
+          server,
+          closeStreams: () => store.closeAllStreams(),
+          waitForIdleRequests,
+          disposeStore: () => store.disposeAll(),
         });
-      });
-      try {
-        await settlesWithin(closed, SHUTDOWN_DRAIN_TIMEOUT_MS, () => {
-          logger.warn(
-            `[sidecar] SHUTDOWN_CLOSE_TIMEOUT: reason=${reason}, waited_ms=${SHUTDOWN_DRAIN_TIMEOUT_MS}`,
-          );
-          // Force-drop remaining connections so close() can finish and disposeAll runs.
-          if (typeof server.closeAllConnections === "function") {
-            server.closeAllConnections();
-          }
-        });
-        await waitForIdleRequests(SHUTDOWN_DRAIN_TIMEOUT_MS);
-        try {
-          await store.disposeAll();
-        } catch (err) {
-          // Once draining=true, do not abort mid-shutdown or reset shutdownPromise —
-          // that would leave requests permanently rejected with teardown incomplete.
-          logger.error(`[sidecar] SHUTDOWN_DISPOSE_FAILED: reason=${reason}`, err);
-        }
-        logger.info(`[sidecar] SHUTDOWN_COMPLETE: reason=${reason}`);
-      } catch (err) {
-        logger.error(`[sidecar] SHUTDOWN_FAILED: reason=${reason}`, err);
-        // Still complete the memoized promise so joiners do not hang; draining stays true.
       } finally {
         releaseSidecarPortEnv();
         log.info(`startSidecar restored SIDECAR_PORT reason=${reason}`);
