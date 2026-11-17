@@ -674,6 +674,59 @@ describe("skill helper script execution (#1103)", () => {
     assert.equal(bashSkillVerdict(cwd, `bash ${helper}`), null);
   });
 
+  it("allows a cd that cannot change what a relative skill path means", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    // cd into the project itself: every relative reference resolves to the same absolute path
+    // as it does without the cd, so the directory change is provably irrelevant.
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${cwd} && bash .pi/skills/verify-all/run-suites.sh`),
+      null,
+    );
+  });
+
+  it("allows a cd elsewhere when every skill path is absolute", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    const helper = path.join(root, "verify-all", "run-suites.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, `cd /tmp && bash ${helper}`), null);
+  });
+
+  it("blocks a cd that would move a relative skill path", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    assert.equal(
+      bashSkillVerdict(cwd, "cd /tmp && bash .pi/skills/verify-all/run-suites.sh")?.block,
+      true,
+    );
+  });
+
+  it("blocks a relative cd target and a chain of cds", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, "cd sub && bash .pi/skills/verify-all/run-suites.sh")?.block, true);
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${cwd} && cd /tmp && bash .pi/skills/verify-all/run-suites.sh`)?.block,
+      true,
+    );
+  });
+
+  it("unwraps timeout so a bounded helper run is read as the helper run", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "verify-all", UNMARKED);
+    const helper = path.join(root, "verify-all", "run-suites.sh");
+    fs.writeFileSync(helper, "#!/bin/sh\n");
+    assert.equal(bashSkillVerdict(cwd, `timeout 3000 bash ${helper}`), null);
+    assert.equal(bashSkillVerdict(cwd, `timeout -k 2 5 bash ${helper}`), null);
+    // Unwrapping must expose a write, never hide it.
+    assert.equal(bashSkillVerdict(cwd, `timeout 5 rm ${helper}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `timeout -s KILL 5 sed -i 's/a/b/' ${helper}`)?.block, true);
+  });
+
   it("allows reading a skill file with 2>&1 descriptor forwarding", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md 2>&1"), null);

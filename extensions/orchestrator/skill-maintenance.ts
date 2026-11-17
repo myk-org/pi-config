@@ -1028,7 +1028,7 @@ function parseSegment(projectCwd: string, segment: string): ParsedSegment {
   return { words, redirectTargets, hasWriteRedirect };
 }
 
-/** Unwrap leading control keywords, `FOO=bar` env assignments, `rtk` wrappers, and plain `env`. */
+/** Unwrap leading control keywords, `FOO=bar` env assignments, `rtk` wrappers, `env`, and `timeout`. */
 function commandWordIndex(plainWords: string[]): number {
   let idx = skipToCommandWord(plainWords);
   while (plainWords[idx] === "env") {
@@ -1036,6 +1036,18 @@ function commandWordIndex(plainWords: string[]): number {
     const candidate = plainWords[idx + 1 + next];
     if (!candidate || candidate.startsWith("-")) break;
     idx = idx + 1 + next;
+  }
+  // `timeout [-s SIG] [-k N] <duration> <command…>` — without this the verb looks like
+  // `timeout`, so a bounded run of a skill helper read as an unknown command and blocked.
+  // Unwrapping only exposes the real verb to the write checks, never hides one.
+  while (plainWords[idx] === "timeout") {
+    let next = idx + 1;
+    while (plainWords[next]?.startsWith("-")) {
+      next += plainWords[next] === "-s" || plainWords[next] === "-k" ? 2 : 1;
+    }
+    next += 1; // the duration operand
+    if (!plainWords[next]) break;
+    idx = next;
   }
   log.debug("skill_shell_command_word", { idx, verb: plainWords[idx] ?? "" });
   return idx;
@@ -1369,6 +1381,39 @@ function isAllowedSkillScriptExec(
   return { allow: true };
 }
 
+/**
+ * Whether a `cd` in the command could change what a skill path means.
+ *
+ * References are resolved against `projectCwd`, so the guard used to refuse every command
+ * that changed directory at all — including `cd <projectCwd> && bash .pi/skills/x/run.sh`,
+ * where the cd provably changes nothing. Block only when the cd is unpinnable (not the first
+ * segment, not a literal absolute path, or more than one of them) or when a relative
+ * reference would resolve elsewhere under it. An absolute reference is unaffected by any cd.
+ */
+function cdChangesSkillMeaning(
+  projectCwd: string,
+  maskedCommand: string,
+  refs: readonly ShellSkillReference[],
+): boolean {
+  const cdCount = (maskedCommand.match(/(?:^|[\s;&|()])cd\s/g) ?? []).length;
+  if (cdCount === 0) return false;
+  const first = /^\s*cd\s+(\S+)/.exec(maskedCommand);
+  if (cdCount > 1 || !first) {
+    log.debug("skill_shell_cd_unpinned", { cds: cdCount });
+    return true;
+  }
+  const target = unquoteWord(first[1], projectCwd);
+  if (!path.isAbsolute(target)) {
+    log.debug("skill_shell_cd_relative_target", { target });
+    return true;
+  }
+  const changes = refs.some(
+    (ref) => !path.isAbsolute(ref.token) && path.resolve(target, ref.token) !== ref.abs,
+  );
+  log.debug("skill_shell_cd_resolved", { target, refs: refs.length, changes });
+  return changes;
+}
+
 export type ShellVerdict = { block: true; reason: string };
 
 /**
@@ -1385,7 +1430,8 @@ export type ShellVerdict = { block: true; reason: string };
  *
  * No shell write is allowed at all (`>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
  * `perl -i`, `chmod`, `touch`, `patch`, inline `python -c` / `node -e` / `bash -c`, etc.).
- * Ambiguity blocks: a bare `SKILL.md`, a `cd` into a skills area, a path through a symlink.
+ * Ambiguity blocks: a bare `SKILL.md`, a `cd` that could change a skill path's meaning, a
+ * path through a symlink.
  *
  * Known limit (documented, not widened around): a path built by shell expansion
  * (`t=…; … > "$t"`, `eval`, `find -exec`) carries no literal reference, so no text rule
@@ -1412,7 +1458,7 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
     return block(`a bare SKILL.md means whatever the working directory is. ${hint}`);
   }
   const maskedCommand = maskQuoted(command);
-  if (/(?:^|[\s;&|()])cd\s/.test(maskedCommand)) {
+  if (cdChangesSkillMeaning(projectCwd, maskedCommand, refs)) {
     return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
   }
   // Nested commands run before the outer one: `cat skill $(python3 -c …)`, `<(...)`, `>(...)`.
@@ -1443,9 +1489,6 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
       const plainWords = parsed.words.map((w) => w.value);
       const cmdIdx = commandWordIndex(plainWords);
       const verb = plainWords[cmdIdx] ?? "";
-      if (verb === "cd") {
-        return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
-      }
       if (plainWords.slice(cmdIdx + 1).some((w) => /^(?:--pre(?:=|$)|--pre-glob(?:=|$)|--?exec$)/.test(w))) {
         return block(`this command's options execute another program. ${hint}`);
       }
