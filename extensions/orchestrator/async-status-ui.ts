@@ -24,10 +24,15 @@ export interface AsyncStatusJobView {
   name?: string;
   task: string;
   status: string;
-  workerDir: string;
+  /** Where this job's status.json lives. A sync run under `sync-runs/<id>` has one too. */
+  workerDir?: string;
   startedAt: number;
   durationMs?: number;
   model?: string;
+  /** "sync" marks a child of this session; absent/"async" is a background job. */
+  mode?: "sync" | "async";
+  /** Tool a sync agent is executing right now, when known. */
+  currentTool?: string;
 }
 
 export interface AsyncStatusUiDeps {
@@ -209,8 +214,12 @@ export async function openAsyncStatusOverlay(
           title: jobTitle(job),
           idLabel: theme.fg("dim", shortId),
           rightParts: [
+            // A sync row is not an async job: say so, because it is not restored by the
+            // async poller and its result arrives in the orchestrator's turn instead.
+            ...(job.mode === "sync" ? [theme.fg("dim", "sync")] : []),
             theme.fg("muted", job.agent),
             ...(job.model ? [theme.fg("dim", job.model)] : []),
+            ...(job.currentTool ? [theme.fg("dim", job.currentTool)] : []),
             theme.fg("dim", taskPreview),
             theme.fg("muted", deps.formatDuration(elapsedMs(job))),
             statusWord(job.status, theme),
@@ -245,6 +254,8 @@ export async function openAsyncStatusOverlay(
       let lastLoggedError = "";
 
       const readNewContent = (): boolean => {
+        // No worker dir means no output.log — path.join("", ...) would read the cwd.
+        if (!job.workerDir) return false;
         try {
           const content = fs.readFileSync(
             path.join(job.workerDir, "output.log"),
@@ -297,7 +308,7 @@ export async function openAsyncStatusOverlay(
             return false;
           },
           getHeader: (t) => {
-            const live = deps.readLiveStatus?.(job.workerDir);
+            const live = job.workerDir ? deps.readLiveStatus?.(job.workerDir) : undefined;
             const current = deps.listJobs().find((j) => j.id === jobId) || job;
             const state = live?.state || current.status;
             const dur = deps.formatDuration(elapsedMs(current));

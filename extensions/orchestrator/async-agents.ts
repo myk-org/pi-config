@@ -32,6 +32,16 @@ const log = createLogger("async_agents");
 export { autoCompleteTask, autoMarkInProgress, resolveTaskStorePath } from "./task-lifecycle.js";
 import { autoCompleteTask, autoMarkInProgress, resolveTaskStorePath } from "./task-lifecycle.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
+import type { AsyncStatusJobView } from "./async-status-ui.js";
+import {
+  abortAllSyncAgentRuns,
+  abortSyncAgentRun,
+  formatAgentsStatus,
+  listSyncAgentRuns,
+  listSyncAgentRunsWithFinished,
+  onSyncAgentRunsChanged,
+  syncAgentRunCount,
+} from "./sync-agent-runs.js";
 import { setSlot } from "./status-bar.js";
 import { getSetting } from "./project-settings.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
@@ -479,29 +489,51 @@ export function registerAsyncAgents(
       if (!ctx?.hasUI) return;
       const running = Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued");
       const names = running.map(j => j.name || j.agent).join(", ");
-      const widgetKey = `${running.length}:${names}`;
+      // Sync agents are real child processes too; count both so nothing running is hidden.
+      // A stopped run keeps its row until its child exits, but it is no longer running.
+      const syncRuns = listSyncAgentRuns().filter(r => r.status === "running");
+      const syncNames = syncRuns.map(r => r.agent).join(", ");
+      const widgetKey = `${running.length}:${names}:${syncRuns.length}:${syncNames}`;
       const changed = widgetKey !== lastWidgetKey;
       lastWidgetKey = widgetKey;
-      if (running.length > 0) {
-        setSlot("async", ctx.ui.theme.fg("warning", `⏳ async: ${running.length}`), ctx);
+      const total = running.length + syncRuns.length;
+      const label = formatAgentsStatus(running.length, syncRuns.length);
+      if (total > 0) {
+        setSlot("async", ctx.ui.theme.fg("warning", label), ctx);
       } else if (changed) {
-        setSlot("async", ctx.ui.theme.fg("muted", `💤 async: 0`), ctx);
+        setSlot("async", ctx.ui.theme.fg("muted", label), ctx);
       }
       // Always emit to pidash — browser may have reconnected and needs fresh state
       safeEmit("pidash:async-status", {
-        count: running.length,
-        agents: names,
-        jobs: running.map(j => ({
-          id: j.id,
-          name: j.name || j.agent,
-          agent: j.agent,
-          task: j.task,
-          status: j.status,
-          startedAt: j.startedAt,
-        })),
+        count: total,
+        agents: [names, syncNames].filter(Boolean).join(", "),
+        jobs: [
+          ...running.map(j => ({
+            id: j.id,
+            name: j.name || j.agent,
+            agent: j.agent,
+            task: j.task,
+            status: j.status,
+            startedAt: j.startedAt,
+            mode: "async" as const,
+          })),
+          ...syncRuns.map(r => ({
+            id: r.id,
+            name: r.agent,
+            agent: r.agent,
+            task: r.task,
+            status: "running" as const,
+            startedAt: r.startedAt,
+            mode: "sync" as const,
+            currentTool: r.currentTool,
+          })),
+        ],
       });
     } catch { /* stale ctx after session replacement */ }
   }
+
+  // Sync runs share the footer/pidash surface with async jobs, so a change repaints both.
+  const unsubscribeSyncRuns = onSyncAgentRunsChanged(() => updateAsyncWidget());
 
   function ensureAsyncPoller() {
     if (asyncState.poller) return;
@@ -1594,15 +1626,55 @@ export function registerAsyncAgents(
     asyncState.lastCtx = null;
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
+    unsubscribeSyncRuns();
+    // Sync children belong to this process: stop them, then clear, so none outlives the session.
+    const stoppedSyncRuns = abortAllSyncAgentRuns();
+    log.info("shutdown: sync runs stopped", { stoppedSyncRuns });
   });
 
   // /async-status — fullscreen overlay list → live output detail
   async function handleAsyncStatus(ctx: any): Promise<void> {
     if (!ctx.hasUI) return;
-    log.debug("opening_async_status_overlay", { jobs: asyncState.jobs.size });
+    log.debug("opening_async_status_overlay", { jobs: asyncState.jobs.size, syncRuns: syncAgentRunCount() });
     await openAsyncStatusOverlay(ctx, {
-      listJobs: () => Array.from(asyncState.jobs.values()),
-      killJob: (id) => killAsyncAgent(id, "user"),
+      listJobs: () => {
+        // Async first, then sync; newest first inside each group.
+        const newestFirst = (a: { startedAt: number }, b: { startedAt: number }) => b.startedAt - a.startedAt;
+        const asyncJobs: AsyncStatusJobView[] = Array.from(asyncState.jobs.values())
+          .sort(newestFirst)
+          .map(j => ({
+            id: j.id,
+            agent: j.agent,
+            name: j.name,
+            task: j.task,
+            status: j.status,
+            workerDir: j.workerDir,
+            startedAt: j.startedAt,
+            durationMs: j.durationMs,
+            model: j.model,
+            mode: "async" as const,
+          }));
+        const syncJobs: AsyncStatusJobView[] = listSyncAgentRunsWithFinished()
+          .sort(newestFirst)
+          .map(r => ({
+            id: r.id,
+            agent: r.agent,
+            name: r.agent,
+            task: r.task,
+            // The real status: a finished run is retained briefly so this row (and the detail
+            // header that reads it) cannot claim "running" for a child that already exited.
+            status: r.status,
+            // The run's own status.json, same layout as an async job's: the detail header
+            // reads the live state and killOrigin from it.
+            workerDir: r.workerDir,
+            startedAt: r.startedAt,
+            durationMs: r.endedAt != null ? r.endedAt - r.startedAt : undefined,
+            currentTool: r.currentTool,
+            mode: "sync" as const,
+          }));
+        return [...asyncJobs, ...syncJobs];
+      },
+      killJob: (id) => killSyncAgent(id) ?? killAsyncAgent(id, "user"),
       formatDuration,
       readLiveStatus: (workerDir) => readAsyncStatus(workerDir),
     });
@@ -1613,6 +1685,19 @@ export function registerAsyncAgents(
     description: "Fullscreen overlay: list async agents, view live output, kill with x",
     handler: async (_args, ctx) => handleAsyncStatus(ctx),
   });
+
+  /** Sync runs live in this process, so a kill is just the spawn's abort handle. Null when
+   *  no running sync run has this id — the caller then falls through to the async jobs.
+   *  Id only: the overlay passes row ids, and a name match would stop a different run of
+   *  the same agent. */
+  function killSyncAgent(id: string): { killed: string[]; errors: string[] } | null {
+    const match = listSyncAgentRuns().find((r) => r.id === id && r.status === "running");
+    if (!match) return null;
+    log.info("sync_kill_requested", { id, agent: match.agent });
+    return abortSyncAgentRun(match.id)
+      ? { killed: [match.agent], errors: [] }
+      : { killed: [], errors: [`Could not stop sync agent ${match.agent}.`] };
+  }
 
   // Kill an async agent by name, id prefix, or "all"
   function killAsyncAgent(target: string, origin: AsyncKillOrigin = "user"): { killed: string[]; errors: string[] } {
@@ -1751,12 +1836,10 @@ export function registerAsyncAgents(
     return { killed, errors };
   }
 
-  // Handle async-kill from pidash browser UI
+  // Handle async-kill from pidash browser UI. Async only: the browser has no kill button for
+  // sync rows, so a name here is an async job's name and must never stop a sync child.
   pi.events.on("pidash:async-kill", (target: unknown) => {
-    if (typeof target === "string") {
-      // A human clicking in the browser UI — still a user kill.
-      killAsyncAgent(target, "user");
-    }
+    if (typeof target === "string") killAsyncAgent(target, "user");
   });
 
   // ── pi-subagents RPC compatibility bridge ──────────────────────────────
