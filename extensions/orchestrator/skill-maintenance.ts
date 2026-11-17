@@ -1423,6 +1423,11 @@ function pinnedCdTarget(projectCwd: string, command: string): { count: number; t
   return { count, target };
 }
 
+/** A `..` path component, quoted or not — the shell resolves it against a physical directory. */
+function hasParentComponent(token: string): boolean {
+  return token.split("/").includes("..");
+}
+
 /**
  * Whether a `cd` in the command could change what a skill path means.
  *
@@ -1432,6 +1437,13 @@ function pinnedCdTarget(projectCwd: string, command: string): { count: number; t
  * segment of the first pipeline, not a literal absolute path, more than one of them, or any
  * variable expansion that expands after the cd) or when a relative reference would resolve
  * elsewhere under it. An absolute literal reference is unaffected by any cd.
+ *
+ * A relative reference carrying a `..` component is blocked outright under a cd: collapsing
+ * `..` lexically is NOT what the shell does — it follows a symlink first and applies `..` to
+ * the physical directory. With `link -> <project>` and the project's `foo -> /tmp/attacker/deep`,
+ * `cd link && bash foo/../.pi/skills/x/run.sh` compares against the project's helper while the
+ * shell runs `/tmp/attacker/.pi/skills/x/run.sh`. The comparison cannot be trusted there, so no
+ * attempt is made to model the shell's physical `..` semantics.
  */
 function cdChangesSkillMeaning(
   projectCwd: string,
@@ -1458,7 +1470,8 @@ function cdChangesSkillMeaning(
   const changes = refs.some(
     (ref) =>
       !path.isAbsolute(ref.token)
-      && path.resolve(physicalTarget, ref.token) !== (realpathNearestExisting(ref.abs) ?? ref.abs),
+      && (hasParentComponent(ref.token)
+        || path.resolve(physicalTarget, ref.token) !== (realpathNearestExisting(ref.abs) ?? ref.abs)),
   );
   log.debug("skill_shell_cd_resolved", { target, refs: refs.length, changes });
   return changes;

@@ -754,6 +754,44 @@ describe("skill helper script execution (#1103)", () => {
     );
   });
 
+  it("blocks a relative `..` reference after a cd (#1124)", () => {
+    // The finding's shape: `link` -> this project, and the project's own `foo` -> another tree.
+    // Lexically `foo/../.pi/skills/...` is this project's helper, but the shell follows `foo`
+    // first and runs the attacker's file, so the reference cannot be pinned.
+    const base = tempDir("skill-maint-cd-dotdot-");
+    const cwd = path.join(base, "proj");
+    const root = path.join(cwd, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    const attacker = path.join(tempDir("skill-maint-cd-attacker-"), ".pi", "skills", "verify-all");
+    fs.mkdirSync(attacker, { recursive: true });
+    fs.writeFileSync(path.join(attacker, "run-suites.sh"), "#!/bin/sh\n");
+    fs.mkdirSync(path.join(attacker, "..", "..", "deep"));
+    fs.symlinkSync(path.join(attacker, "..", "..", "deep"), path.join(cwd, "foo"));
+    fs.symlinkSync(cwd, path.join(base, "link"));
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${base}/link && bash foo/../.pi/skills/verify-all/run-suites.sh`)?.block,
+      true,
+    );
+  });
+
+  it("blocks a plain relative `..` reference after a cd (#1124)", () => {
+    const base = tempDir("skill-maint-cd-dotdot-plain-");
+    const cwd = path.join(base, "proj");
+    const root = path.join(cwd, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    writeSkill(root, "verify-all", UNMARKED);
+    fs.writeFileSync(path.join(root, "verify-all", "run-suites.sh"), "#!/bin/sh\n");
+    // `../proj/...` collapses to this project's own skill from the TEXT alone; collapsing `..`
+    // lexically is not what the shell does, so the reference is refused rather than compared.
+    assert.equal(
+      bashSkillVerdict(cwd, `cd ${cwd} && bash ../${path.basename(cwd)}/.pi/skills/verify-all/run-suites.sh`)
+        ?.block,
+      true,
+    );
+  });
+
   it("allows a cd into a symlinked project whose relative skill path is the same file", () => {
     const real = tempDir("skill-maint-real-proj-");
     const root = path.join(real, ".pi", "skills");
