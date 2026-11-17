@@ -14,6 +14,24 @@ import { createRequestHandler, type RequestHandlerDeps } from "../../src/request
 import { invoke, type InvokeOptions } from "./helpers/invoke-handler.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
 
+/**
+ * Flake evidence for #1126, recorded at the deleted freePort() helper's site.
+ *
+ * Observed: `POST rejects a non-boolean enabled with 400` failed with
+ * ECONNRESET after ~8.5 s — twice inside `prek run --all-files`, on a diff that
+ * touched neither pi-sidecar nor extensions/shared. It passed standalone (7/7),
+ * passed in the full sidecar suite, and passed on retry with no code change.
+ *
+ * Unconfirmed hypothesis: the old helper bound :0, read the port, closed the
+ * socket, and the sidecar bound that same port later in before(), so another
+ * parallel process could take it in between and the client could hit a closing
+ * socket. The root cause is NOT proven, and passing afterwards does not prove
+ * it — the retry is consistent with the hypothesis, not evidence for it.
+ *
+ * Why it cannot recur here: this suite allocates no port at all — it builds the
+ * handler in-process and drives it through invoke(...) — so the failure-mode
+ * class is gone regardless of which interleaving triggered the original flake.
+ */
 describe("/transcripts/recording routes (#935)", () => {
   let dir: string;
   let store: SessionStore;
