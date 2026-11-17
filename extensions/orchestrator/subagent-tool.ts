@@ -245,6 +245,8 @@ export interface SingleResult {
   durationMs?: number;
   errorMessage?: string;
   step?: number;
+  /** Stopped from /async-status instead of failing on its own: not an overrun, not the parent's abort. */
+  stoppedByRegistry?: boolean;
 }
 
 export interface SubagentDetails {
@@ -524,9 +526,12 @@ export async function runSingleAgent(
   // Registered before the spawn so the footer/overlay see the run from its first instant,
   // and cleared in the finally below so abort, throw and error paths cannot leak it.
   const syncRun = beginSyncAgentRun({ agent: agentName, task, cwd });
-  // Who stopped this run decides what the caller sees: the parent signal cancels the whole
-  // call, a stop from /async-status must only fail this one result.
-  let stopSource: "parent-signal" | "async-status" | null = null;
+  // Two independent flags, because both can happen: a shutdown abort landing right after a
+  // /async-status stop must still cancel the call instead of returning a failed result.
+  // A parent abort cancels the whole call; a registry stop only fails this one result so the
+  // batch's siblings survive and still render.
+  let stoppedByRegistry = false;
+  let parentAborted = false;
   // `proc.killed` turns true the moment SIGTERM is *sent*, so escalation needs the real exit.
   let exited = false;
   let exitCode = 1; // stays 1 when the spawn never happens, so `end` reports failure
@@ -555,6 +560,7 @@ export async function runSingleAgent(
         env: { ...process.env, PI_MODEL: effectiveModel || undefined, PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: agentName, PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "", __PI_CONFIG_SESSION_ID: (globalThis as any).__piConfigSessionId || "", __PI_PARENT_SESSION_ID: (globalThis as any).__piConfigSessionId || "" },
       });
       let buf = "";
+      if (proc.pid != null) syncRun.setPid(proc.pid);
 
       const processLine = (line: string) => {
         if (!line.trim()) return;
@@ -619,7 +625,8 @@ export async function runSingleAgent(
       });
 
       const kill = (source: "parent-signal" | "async-status") => {
-        stopSource ??= source;
+        if (source === "parent-signal") parentAborted = true;
+        else stoppedByRegistry = true;
         proc.kill("SIGTERM");
         setTimeout(() => {
           if (!exited) proc.kill("SIGKILL");
@@ -638,24 +645,24 @@ export async function runSingleAgent(
     cur.exitCode = exitCode;
     cur.durationMs = Date.now() - startTime;
 
-    if (stopSource) {
-      if (stopSource === "async-status") {
-        // One row was stopped: return a failed result so the batch's other agents survive and
-        // still render, instead of rejecting the whole parallel call.
-        const note = "stopped from /async-status";
-        cur.exitCode = 1;
-        cur.stderr = cur.stderr.trim() ? `${cur.stderr.trim()}\n${note}` : note;
-        log.info("sync_run_stopped", agentName, "run", syncRun.id);
-        return cur;
-      }
-      throw new Error("Subagent was aborted");
+    // Order matters: a parent abort always wins, even when a registry stop came first.
+    if (parentAborted) throw new Error("Subagent was aborted");
+    if (stoppedByRegistry) {
+      // One row was stopped: return a failed result so the batch's other agents survive and
+      // still render, instead of rejecting the whole parallel call.
+      const note = "stopped from /async-status";
+      cur.exitCode = 1;
+      cur.stoppedByRegistry = true;
+      cur.stderr = cur.stderr.trim() ? `${cur.stderr.trim()}\n${note}` : note;
+      log.info("sync_run_stopped", agentName, "run", syncRun.id);
+      return cur;
     }
     return cur;
   } finally {
-    const ok = !stopSource && exitCode === 0;
+    const ok = !stoppedByRegistry && !parentAborted && exitCode === 0;
     syncRun.end(ok);
     if (ok) log.info("sync_run_end", syncRun.id, agentName);
-    else log.warn("sync_run_end", syncRun.id, agentName, "exitCode", exitCode, "stoppedBy", stopSource);
+    else log.warn("sync_run_end", syncRun.id, agentName, "exitCode", exitCode, "stoppedByRegistry", stoppedByRegistry, "parentAborted", parentAborted);
     if (tmpFile)
       try {
         fs.unlinkSync(tmpFile);
@@ -1502,7 +1509,9 @@ export function registerSubagentTool(
       explicit,
     );
     const actualSeconds = Math.round((Date.now() - syncStartTime) / 1000);
-    if (actualSeconds > checkSyncLimit(0, params.cwd).limit && actualSeconds - (params.estimatedSeconds ?? 0) > 30) {
+    // A registry stop is the user killing a runaway child, not an overrun: penalising it would
+    // reject the next sync call because of a child the user chose to stop.
+    if (!r.stoppedByRegistry && actualSeconds > checkSyncLimit(0, params.cwd).limit && actualSeconds - (params.estimatedSeconds ?? 0) > 30) {
       syncPenalty = actualSeconds - (params.estimatedSeconds ?? 0);
       lastSyncAgent = params.agent;
       lastSyncEstimate = params.estimatedSeconds ?? 0;

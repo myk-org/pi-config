@@ -3,14 +3,14 @@
  *
  * Checks the parts that decide what the footer, /async-status and pidash show:
  * counts, the footer strings for every mix, idempotent end, abort routing by run id,
- * and the finished-row retention that keeps a detail view from lying. The last three
- * tests drive `runSingleAgent` itself, because "stop one row, keep the batch" is a
- * property of the spawn loop, not of the map.
+ * and the finished-row retention that keeps a detail view from lying. The last two tests drive
+ * `runSingleAgent` itself, because "stop one row, keep the batch" is a property of the spawn
+ * loop, not of the map.
  */
 
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -27,13 +27,19 @@ import { runSingleAgent } from "../../../extensions/orchestrator/subagent-tool.j
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
+/** Every run writes a worker dir under its cwd, so each test gets its own project dir. */
+let projectCwd = "";
+beforeEach(() => {
+  projectCwd = makeTempDir("sync-runs-project-");
+});
+
 function reset() {
   abortAllSyncAgentRuns();
 }
 
 test("begin registers a running run; end clears it", () => {
   reset();
-  const run = beginSyncAgentRun({ agent: "worker", task: "do it", cwd: "/tmp" });
+  const run = beginSyncAgentRun({ agent: "worker", task: "do it", cwd: projectCwd });
   assert.equal(syncAgentRunCount(), 1);
   const [listed] = listSyncAgentRuns();
   assert.equal(listed.id, run.id);
@@ -54,7 +60,7 @@ test("begin registers a running run; end clears it", () => {
 
 test("setTool is visible while running and dies with the run", () => {
   reset();
-  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: "/tmp" });
+  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
   run.setTool("bash");
   assert.equal(listSyncAgentRuns()[0].currentTool, "bash");
   run.setTool(undefined);
@@ -67,7 +73,7 @@ test("setTool is visible while running and dies with the run", () => {
 
 test("abort by id marks the run failed, fires the abort fn once, keeps the row until end", () => {
   reset();
-  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: "/tmp" });
+  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
   let aborts = 0;
   run.setAbort(() => { aborts++; });
 
@@ -92,7 +98,7 @@ test("abort by id marks the run failed, fires the abort fn once, keeps the row u
 
 test("abort matches the run id only, never the agent name", () => {
   reset();
-  const run = beginSyncAgentRun({ agent: "code-reviewer-x", task: "t", cwd: "/tmp" });
+  const run = beginSyncAgentRun({ agent: "code-reviewer-x", task: "t", cwd: projectCwd });
   let aborts = 0;
   run.setAbort(() => { aborts++; });
   // Two runs of one agent are two children; a name match would stop the wrong one.
@@ -105,7 +111,7 @@ test("abort matches the run id only, never the agent name", () => {
 
 test("a stop before the spawn is recorded and reported by setAbort", () => {
   reset();
-  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: "/tmp" });
+  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
   // Stop arrives between begin and setAbort (the spawn does not exist yet).
   assert.equal(abortSyncAgentRun(run.id), true);
   assert.equal(syncAgentRunCount(), 0);
@@ -118,7 +124,7 @@ test("a stop before the spawn is recorded and reported by setAbort", () => {
 
 test("abort of an unknown target returns false and changes nothing", () => {
   reset();
-  beginSyncAgentRun({ agent: "worker", task: "t", cwd: "/tmp" });
+  beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
   assert.equal(abortSyncAgentRun("nobody"), false);
   assert.equal(syncAgentRunCount(), 1);
   reset();
@@ -126,7 +132,7 @@ test("abort of an unknown target returns false and changes nothing", () => {
 
 test("a finished run is retained with its final status, then dropped after the grace window", () => {
   reset();
-  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: "/tmp" });
+  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
   run.end(true);
   assert.equal(syncAgentRunCount(), 0);
   const [done] = listSyncAgentRunsWithFinished();
@@ -135,10 +141,17 @@ test("a finished run is retained with its final status, then dropped after the g
   assert.ok(done.endedAt! >= done.startedAt);
 
   // A long session cannot grow the retained set: newest 20 only.
-  for (let i = 0; i < 25; i++) beginSyncAgentRun({ agent: "worker", task: `t${i}`, cwd: "/tmp" }).end(true);
+  const dirs: string[] = [];
+  for (let i = 0; i < 25; i++) {
+    const extra = beginSyncAgentRun({ agent: "worker", task: `t${i}`, cwd: projectCwd });
+    dirs.push(listSyncAgentRuns()[0].workerDir);
+    extra.end(true);
+  }
   const retained = listSyncAgentRunsWithFinished();
   assert.equal(retained.length, 20);
   assert.equal(retained[retained.length - 1].task, "t24", "newest kept");
+  assert.equal(existsSync(dirs[0]), false, "a pruned row takes its worker dir with it");
+  assert.ok(existsSync(dirs[24]), "a retained row keeps its status.json readable");
 
   // Time passing empties it — no timer, the read prunes.
   const realNow = Date.now;
@@ -155,7 +168,7 @@ test("end and abort notify subscribers; unsubscribe stops them", () => {
   reset();
   let calls = 0;
   const unsubscribe = onSyncAgentRunsChanged(() => { calls++; });
-  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: "/tmp" });
+  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
   const afterBegin = calls;
   assert.ok(afterBegin > 0, "begin must repaint the footer");
   run.end(true);
@@ -165,26 +178,77 @@ test("end and abort notify subscribers; unsubscribe stops them", () => {
   assert.ok(afterSecondEnd > afterBegin);
 
   unsubscribe();
-  beginSyncAgentRun({ agent: "worker", task: "t2", cwd: "/tmp" });
+  beginSyncAgentRun({ agent: "worker", task: "t2", cwd: projectCwd });
   assert.equal(calls, afterSecondEnd);
   reset();
 });
 
 test("abortAll stops every running child before clearing", () => {
   reset();
-  const first = beginSyncAgentRun({ agent: "a", task: "t", cwd: "/tmp" });
-  const second = beginSyncAgentRun({ agent: "b", task: "t", cwd: "/tmp" });
+  const first = beginSyncAgentRun({ agent: "a", task: "t", cwd: projectCwd });
+  const second = beginSyncAgentRun({ agent: "b", task: "t", cwd: projectCwd });
   const aborted: string[] = [];
   first.setAbort(() => { aborted.push("a"); });
   second.setAbort(() => { aborted.push("b"); });
-  const stopped = beginSyncAgentRun({ agent: "c", task: "t", cwd: "/tmp" });
-  beginSyncAgentRun({ agent: "done", task: "t", cwd: "/tmp" }).end(true);
+  const stopped = beginSyncAgentRun({ agent: "c", task: "t", cwd: projectCwd });
+  beginSyncAgentRun({ agent: "done", task: "t", cwd: projectCwd }).end(true);
 
   assert.equal(abortAllSyncAgentRuns(), 3, "every still-running run counts, handle or not");
   assert.deepEqual(aborted.sort(), ["a", "b"]);
   assert.deepEqual(listSyncAgentRuns(), []);
   assert.deepEqual(listSyncAgentRunsWithFinished(), [], "clearing drops finished rows too");
   assert.equal(abortSyncAgentRun(stopped.id), false);
+});
+
+test("a run writes status.json from begin to end, then drops the dir with the row", () => {
+  reset();
+  const run = beginSyncAgentRun({ agent: "worker", task: "lifecycle", cwd: projectCwd });
+  const dir = listSyncAgentRuns()[0].workerDir;
+  assert.equal(dir, join(projectCwd, ".pi", "tmp", "sync-runs", run.id), "one dir per run under the project temp dir");
+  const read = () => JSON.parse(readFileSync(join(dir, "status.json"), "utf-8"));
+
+  // Created running: the overlay can render a row from its first instant.
+  const running = read();
+  assert.equal(running.state, "running");
+  assert.equal(running.agent, "worker");
+  assert.equal(running.task, "lifecycle");
+  assert.ok(running.startedAt > 0);
+
+  // Updated with what the child is doing right now.
+  run.setPid(4242);
+  run.setTool("bash");
+  assert.equal(read().pid, 4242);
+  assert.equal(read().tool, "bash");
+
+  // Final state, still on disk for the grace window so an open detail view can read it.
+  run.end(true);
+  const done = read();
+  assert.equal(done.state, "complete");
+  assert.ok(done.endedAt >= done.startedAt);
+
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 61_000;
+    assert.deepEqual(listSyncAgentRunsWithFinished(), []);
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(existsSync(dir), false, "the dir goes with the row it described");
+});
+
+test("a registry stop writes killOrigin and end() keeps it", () => {
+  reset();
+  const run = beginSyncAgentRun({ agent: "worker", task: "t", cwd: projectCwd });
+  run.setAbort(() => {});
+  const statusPath = join(listSyncAgentRuns()[0].workerDir, "status.json");
+
+  assert.equal(abortSyncAgentRun(run.id), true);
+  assert.equal(JSON.parse(readFileSync(statusPath, "utf-8")).killOrigin, "user");
+
+  run.end(false);
+  const final = JSON.parse(readFileSync(statusPath, "utf-8"));
+  assert.equal(final.state, "failed");
+  assert.equal(final.killOrigin, "user", "the final write must not drop who stopped it");
 });
 
 test("formatAgentsStatus — every mix", () => {
@@ -253,11 +317,14 @@ test("a row stop fails that one result and lets its sibling finish", { timeout: 
     // Abort through the registry once the child exists and its handle is registered.
     await waitFor(() => existsSync(h.mark("slow")) && listSyncAgentRuns().some((r) => r.task === "slow job"), "slow child");
     const stopped = listSyncAgentRuns().find((r) => r.task === "slow job")!;
+    // The worker dir the overlay reads belongs to the row, not to a name lookup.
+    assert.ok(stopped.workerDir.endsWith(stopped.id), "each row carries its own worker dir");
     assert.equal(abortSyncAgentRun(stopped.id), true);
 
     // A returned result, not a rejection: Promise.all must not discard the sibling.
     const [slowResult, fastResult] = await Promise.all([slow, fast]);
     assert.equal(slowResult.exitCode, 1);
+    assert.equal(slowResult.stoppedByRegistry, true, "a stopped result is marked so it is not penalised");
     assert.match(slowResult.stderr, /stopped from \/async-status/);
     assert.equal(fastResult.exitCode, 0, "the sibling must not be collateral");
 
@@ -289,6 +356,26 @@ test("a stop that lands before the spawn kills the fresh child", { timeout: 30_0
     assert.equal(listSyncAgentRunsWithFinished()[0].status, "failed");
   } finally {
     unsubscribe();
+    h.restore();
+    reset();
+  }
+});
+
+test("a parent abort wins over a registry stop and cancels the call", { timeout: 30_000 }, async () => {
+  const h = withChild();
+  reset();
+  try {
+    const ac = new AbortController();
+    const run = runSingleAgent(h.agents, "worker", "slow job", h.cwd, undefined, ac.signal, undefined, () => ({} as any));
+    await waitFor(() => existsSync(h.mark("slow")), "slow child");
+    // Shutdown order: the user's /async-status stop lands first, then the parent aborts. Both
+    // are synchronous, so the child's close event cannot settle the promise in between.
+    assert.equal(abortSyncAgentRun(listSyncAgentRuns().find((r) => r.task === "slow job")!.id), true);
+    ac.abort();
+    // A failed result here would tell the orchestrator the call finished normally while the
+    // session is shutting down.
+    await assert.rejects(run, /Subagent was aborted/);
+  } finally {
     h.restore();
     reset();
   }

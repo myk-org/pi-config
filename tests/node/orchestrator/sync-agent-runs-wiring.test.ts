@@ -12,6 +12,7 @@ import { EventEmitter } from "node:events";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import {
   abortAllSyncAgentRuns,
+  abortSyncAgentRun,
   beginSyncAgentRun,
   listSyncAgentRuns,
   listSyncAgentRunsWithFinished,
@@ -158,7 +159,7 @@ describe("sync runs in the async surfaces", () => {
     abortAllSyncAgentRuns();
   });
 
-  it("the overlay row and detail header show the final status, not running", async () => {
+  it("the overlay lists a finished sync run as done, not running", async () => {
     const h = harness();
     const run = beginSyncAgentRun({ agent: "worker", task: "finished job", cwd: h.cwd });
     run.end(true);
@@ -168,9 +169,24 @@ describe("sync runs in the async surfaces", () => {
     assert.ok(row, `no row for the finished run in:\n${frame.join("\n")}`);
     assert.match(row!, /done/, "a finished sync row must not say running");
     assert.doesNotMatch(row!, /running/);
-    assert.ok(frame.some((line) => line.includes("0 active")), "a finished run is not active");
+    abortAllSyncAgentRuns();
+  });
 
-    // Enter opens the detail; its header reads the same row, so it must agree.
+  it("the overlay counts a finished run as inactive", async () => {
+    const h = harness();
+    const run = beginSyncAgentRun({ agent: "worker", task: "finished job", cwd: h.cwd });
+    run.end(true);
+
+    const frame = await h.openAsyncStatus();
+    assert.ok(frame.some((line) => line.includes("0 active")), "a finished run is not active");
+    abortAllSyncAgentRuns();
+  });
+
+  it("the overlay detail header shows the final status, not running", async () => {
+    const h = harness();
+    beginSyncAgentRun({ agent: "worker", task: "finished job", cwd: h.cwd }).end(true);
+
+    // Enter opens the detail; it reads the row's own status.json, so it must agree.
     let header = "";
     await h.openAsyncStatus(["\r"], (component, opened) => {
       if (opened === 1) return; // the list, not the detail
@@ -181,6 +197,24 @@ describe("sync runs in the async surfaces", () => {
     });
     assert.match(header, /complete/, "the header must carry the final status");
     assert.doesNotMatch(header, /running/);
+  });
+
+  it("the detail header reads a sync run's own status.json", async () => {
+    const h = harness();
+    const run = beginSyncAgentRun({ agent: "worker", task: "stop me", cwd: h.cwd });
+    run.setAbort(() => {});
+    // The stop origin exists only on disk, so a header that names it proves the row's
+    // workerDir reached readLiveStatus.
+    abortSyncAgentRun(run.id);
+
+    let header = "";
+    await h.openAsyncStatus(["\r"], (component, opened) => {
+      if (opened === 1) return; // the list, not the detail
+      header = component.render(160)[0];
+      abortAllSyncAgentRuns();
+      component.handleInput("\u001b");
+    });
+    assert.match(header, /killed by user/);
   });
 
   it("a pidash kill never reaches a sync run — the browser has no sync kill button", () => {

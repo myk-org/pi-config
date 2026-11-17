@@ -1664,8 +1664,9 @@ export function registerAsyncAgents(
             // The real status: a finished run is retained briefly so this row (and the detail
             // header that reads it) cannot claim "running" for a child that already exited.
             status: r.status,
-            // No worker dir, no status.json: the run lives in this process only.
-            workerDir: "",
+            // The run's own status.json, same layout as an async job's: the detail header
+            // reads the live state and killOrigin from it.
+            workerDir: r.workerDir,
             startedAt: r.startedAt,
             durationMs: r.endedAt != null ? r.endedAt - r.startedAt : undefined,
             currentTool: r.currentTool,

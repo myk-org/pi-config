@@ -24,7 +24,7 @@ export interface AsyncStatusJobView {
   name?: string;
   task: string;
   status: string;
-  /** Absent for a sync run: it has no worker dir, status.json is async-only. */
+  /** Where this job's status.json lives. A sync run under `sync-runs/<id>` has one too. */
   workerDir?: string;
   startedAt: number;
   durationMs?: number;

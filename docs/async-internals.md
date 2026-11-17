@@ -154,8 +154,19 @@ an entry, `setTool()` for the current tool, `setAbort()` for the kill escalation
 
 - Footer: `formatAgentsStatus(asyncRunning, syncRunning)` — `💤 agents: 0` idle,
   `⏳ async: N` for async-only (unchanged look), `⏳ agents: T (A async, S sync)` when mixed.
-- `/async-status` and pidash: sync rows carry `mode: "sync"`, `workerDir: ""` (no
-  `status.json`, no `output.log`) and are killed through `abortSyncAgentRun`.
+- `/async-status` and pidash: sync rows carry `mode: "sync"` and are killed through
+  `abortSyncAgentRun` (by run id, never by agent name).
+- Each run writes `<cwd>/.pi/tmp/sync-runs/<id>/status.json` — running at `beginSyncAgentRun`
+  with agent/task/startedAt, updated with `setPid`/`setTool`, final `complete`/`failed` plus
+  `killOrigin` on end or abort — so the detail header reads a sync row through the same
+  `readLiveStatus(workerDir)` as an async job. No `output.log`: the row has no output pane.
+  The dir goes with its row (finished-run grace, cap, or teardown).
+- Two stops are tracked independently: a parent abort always cancels the call (throws), a
+  registry stop alone returns a failed result so the batch survives. A registry-stopped
+  result is marked `stoppedByRegistry`, which exempts it from the single-agent sync
+  overrun penalty.
+- `session.json` is deliberately absent, so the async restore, delivered-id and zombie
+  scans (which read `PROJECT_TMP_DIR` one level up) never adopt a sync run.
 - Visibility only: delivery of a sync agent's result is unchanged — it arrives in the
   orchestrator's turn, never as a follow-up. Nothing in the registry may be treated as
   an async job by the poller, restore, chain or delivery paths.

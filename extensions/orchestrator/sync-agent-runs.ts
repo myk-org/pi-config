@@ -10,7 +10,11 @@
  * a follow-up message. Do not route delivery through here.
  */
 
+import fs from "node:fs";
+import path from "node:path";
+
 import { createLogger } from "../shared/logger.js";
+import { getProjectTmpDir } from "./utils.js";
 
 const log = createLogger("sync-agent-runs");
 
@@ -24,7 +28,9 @@ export interface SyncAgentRun {
   currentTool?: string;
   endedAt?: number;
   exitCode?: number;
-  taskId?: string;
+  /** Where this run's status.json lives, in the async layout the overlay already reads. */
+  workerDir: string;
+  pid?: number;
 }
 
 interface SyncAgentRunEntry extends SyncAgentRun {
@@ -32,6 +38,8 @@ interface SyncAgentRunEntry extends SyncAgentRun {
   abort?: () => void;
   /** A stop asked for before the spawn existed; `setAbort` reports it so the caller kills at once. */
   pendingStop?: boolean;
+  /** Who stopped it, kept so the final status.json still names it after `end()` rewrites. */
+  killOrigin?: string;
 }
 
 /** Live runs — an entry leaves this map only in `end()`, i.e. once the child is gone. */
@@ -47,19 +55,60 @@ const FINISHED_LIMIT = 20;
 const listeners = new Set<() => void>();
 let counter = 0;
 
+/** The worker dir is throwaway: drop it with the row it describes. */
+function removeWorkerDir(workerDir: string): void {
+  try {
+    fs.rmSync(workerDir, { recursive: true, force: true });
+  } catch (e: any) {
+    log.warn("worker_dir_remove_failed", { workerDir, error: e?.message || String(e) });
+  }
+}
+
+/**
+ * Write the run's status.json. Same shape an async job writes, so the overlay's
+ * `readLiveStatus(workerDir)` renders a sync row without a second code path.
+ * Best-effort: visibility must never break the run itself.
+ */
+function writeStatus(run: SyncAgentRunEntry): void {
+  try {
+    fs.mkdirSync(run.workerDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(run.workerDir, "status.json"),
+      JSON.stringify({
+        runId: run.id,
+        agent: run.agent,
+        task: run.task,
+        state: run.status,
+        startedAt: run.startedAt,
+        ...(run.pid != null ? { pid: run.pid } : {}),
+        ...(run.currentTool ? { tool: run.currentTool } : {}),
+        ...(run.endedAt != null ? { endedAt: run.endedAt } : {}),
+        ...(run.killOrigin ? { killOrigin: run.killOrigin } : {}),
+      }),
+      { mode: 0o600 },
+    );
+  } catch (e: any) {
+    log.warn("status_write_failed", { id: run.id, workerDir: run.workerDir, error: e?.message || String(e) });
+  }
+}
+
 /** Drop expired finished runs, then the oldest beyond the cap. */
 function pruneFinished(now = Date.now()): void {
   for (const [id, run] of finished) {
-    if (now - (run.endedAt ?? now) >= FINISHED_GRACE_MS) finished.delete(id);
+    if (now - (run.endedAt ?? now) >= FINISHED_GRACE_MS) {
+      finished.delete(id);
+      removeWorkerDir(run.workerDir);
+    }
   }
   while (finished.size > FINISHED_LIMIT) {
     const oldest = finished.keys().next();
     if (oldest.done) break;
+    removeWorkerDir(finished.get(oldest.value)!.workerDir);
     finished.delete(oldest.value);
   }
 }
 
-function strip({ abort: _abort, pendingStop: _pendingStop, ...run }: SyncAgentRunEntry): SyncAgentRun {
+function strip({ abort: _abort, pendingStop: _pendingStop, killOrigin: _killOrigin, ...run }: SyncAgentRunEntry): SyncAgentRun {
   return run;
 }
 
@@ -78,10 +127,11 @@ export function beginSyncAgentRun(args: {
   agent: string;
   task: string;
   cwd: string;
-  taskId?: string;
 }): {
   id: string;
   setTool: (tool?: string) => void;
+  /** The child's pid, once the spawn exists, so a stuck child is findable on disk. */
+  setPid: (pid: number) => void;
   /** Returns true when a stop was requested before the child existed — kill it right away. */
   setAbort: (fn: () => void) => boolean;
   end: (ok: boolean) => void;
@@ -92,12 +142,15 @@ export function beginSyncAgentRun(args: {
     agent: args.agent,
     task: args.task,
     cwd: args.cwd,
+    // Same project temp dir as async jobs, in its own subtree so the async recovery and
+    // zombie scans (which look for status.json/session.json directly under it) skip it.
+    workerDir: path.join(getProjectTmpDir(args.cwd), "sync-runs", id),
     startedAt: Date.now(),
     status: "running",
-    ...(args.taskId ? { taskId: args.taskId } : {}),
   };
   runs.set(id, entry);
-  log.debug("begin", { id, agent: entry.agent, cwd: entry.cwd });
+  writeStatus(entry);
+  log.debug("begin", { id, agent: entry.agent, cwd: entry.cwd, workerDir: entry.workerDir });
   notify();
 
   return {
@@ -107,7 +160,16 @@ export function beginSyncAgentRun(args: {
       if (!run || run.status !== "running") return;
       if (run.currentTool === tool) return;
       run.currentTool = tool;
+      writeStatus(run);
       log.debug("tool", { id, tool: tool ?? null });
+      notify();
+    },
+    setPid: (pid: number) => {
+      const run = runs.get(id);
+      if (!run || run.status !== "running") return;
+      run.pid = pid;
+      writeStatus(run);
+      log.debug("pid", { id, pid });
       notify();
     },
     setAbort: (fn: () => void): boolean => {
@@ -130,6 +192,7 @@ export function beginSyncAgentRun(args: {
         run.pendingStop = false;
         runs.delete(id);
         finished.set(id, run);
+        writeStatus(run);
         pruneFinished();
         log.debug("end", { id, agent: run.agent, status: run.status });
       }
@@ -157,6 +220,9 @@ export function abortSyncAgentRun(id: string): boolean {
   }
   run.status = "failed";
   run.endedAt = Date.now();
+  // A registry stop is a human action; the detail header reads this from disk.
+  run.killOrigin = "user";
+  writeStatus(run);
   if (!run.abort) {
     // The spawn does not exist yet: record the stop, `setAbort` reports it to the spawner.
     run.pendingStop = true;
@@ -211,6 +277,7 @@ export function onSyncAgentRunsChanged(cb: () => void): () => void {
 function clearSyncAgentRuns(): void {
   if (runs.size === 0 && finished.size === 0) return;
   log.debug("clear", { count: runs.size, finished: finished.size });
+  for (const run of [...runs.values(), ...finished.values()]) removeWorkerDir(run.workerDir);
   runs.clear();
   finished.clear();
   notify();
