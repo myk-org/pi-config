@@ -3166,6 +3166,16 @@ describe("commitMessageFiles (#1131)", () => {
     assert.deepEqual(commitMessageFiles("git commit -F 'msg*.txt'", CWD), ["/s/msg*.txt"]);
     assert.deepEqual(commitMessageFiles("git commit -F msg~1.txt", CWD), ["/s/msg~1.txt"]);
   });
+
+  it("stays opaque for POSIX line continuations in double-quoted or unquoted operands", () => {
+    assert.deepEqual(commitMessageFiles('git commit -F "bad\\\ngood"', CWD), [null]);
+    assert.deepEqual(commitMessageFiles('git commit -F "bad\\\r\ngood"', CWD), [null]);
+    assert.deepEqual(commitMessageFiles("git commit -F bad\\\ngood", CWD), [null]);
+  });
+
+  it("keeps single-quoted backslash-newline literals as filenames", () => {
+    assert.deepEqual(commitMessageFiles("git commit -F 'bad\\\ngood'", CWD), ["/s/bad\\\ngood"]);
+  });
 });
 
 // ── #1131: the trailer check reads the -F file behind git's global options ──
@@ -3373,6 +3383,22 @@ describe("commit-trailer check behind git global options (#1131)", () => {
     const repo = makeRepo();
     writeFileSync(join(repo, "$FILE"), "fix: x\n\nAssisted-by: PI (m)\n");
     const res = await runBash("git commit -F '$FILE'", repo);
+    assert.equal(res?.block, undefined, JSON.stringify(res) ?? "allowed");
+  });
+
+  it("blocks double-quoted -F with backslash-newline continuation even when literal decoy carries trailer", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "bad\\\ngood"), "fix: x\n\nAssisted-by: PI (m)\n");
+    writeFileSync(join(repo, "badgood"), "fix: x\n");
+    const res = await runBash('git commit -F "bad\\\ngood"', repo);
+    assert.equal(res?.block, true, JSON.stringify(res) ?? "allowed");
+    assert.match(res?.reason ?? "", /opaque/);
+  });
+
+  it("allows single-quoted -F with literal backslash-newline when that file carries the trailer", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "bad\\\ngood"), "fix: x\n\nAssisted-by: PI (m)\n");
+    const res = await runBash("git commit -F 'bad\\\ngood'", repo);
     assert.equal(res?.block, undefined, JSON.stringify(res) ?? "allowed");
   });
 });

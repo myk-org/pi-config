@@ -2641,8 +2641,9 @@ function rawShellWords(region: string): string[] {
 
 /** A raw operand word as a path: cut at the first UNQUOTED `;|&)<>\n` — the region
  *  of a subshell runs through its closing paren — never inside quotes. Returns
- *  `""` for fd/empty redirects (`2>out`, `>out`), unclosed quotes, or operands
- *  with unescaped shell expansions (`$VAR`, `` `...` ``, unquoted leading `~`,
+ *  `""` for fd/empty redirects (`2>out`, `>out`), unclosed quotes, unquoted or
+ *  double-quoted POSIX line continuations (`\\\r?\n`), or operands with
+ *  unescaped shell expansions (`$VAR`, `` `...` ``, unquoted leading `~`,
  *  unquoted globs `*`, `?`, `[`). */
 function operandBeforeShellSyntax(raw: string): string {
   let i = 0;
@@ -2660,6 +2661,8 @@ function operandBeforeShellSyntax(raw: string): string {
       if (ch === "\\") {
         if (i + 1 >= raw.length) return "";
         const next = raw[i + 1]!;
+        // Fail closed on POSIX line continuations (`\<newline>` or CRLF variant).
+        if (next === "\n" || (next === "\r" && raw[i + 2] === "\n")) return "";
         // In POSIX double quotes, backslash only escapes $, `, ", \.
         out += next === "$" || next === "`" || next === '"' || next === "\\" ? next : ch + next;
         i += 2;
@@ -2678,7 +2681,9 @@ function operandBeforeShellSyntax(raw: string): string {
     }
     if (ch === "\\") {
       if (i + 1 >= raw.length) return "";
-      out += raw[i + 1]!;
+      const next = raw[i + 1]!;
+      if (next === "\n" || (next === "\r" && raw[i + 2] === "\n")) return "";
+      out += next;
       i += 2;
       continue;
     }
