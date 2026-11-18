@@ -58,7 +58,10 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
     so the trailer would land in the wrong file). The shell expands `$PI_MODEL` while writing the
     file, so no placeholder can reach the message. Never repeat the trailer in the command text as
     a shell comment — the check reads the file, not the comment. Every commit in a compound
-    command is checked, so a second `-F` commit needs its own trailer too.
+    command is checked (each against the directory of its own `-C`), so a second `-F` commit needs
+    its own trailer too. When one commit carries several `-F` options, git uses the LAST one and
+    so does the hook; a message file the hook cannot read is refused outright, never waved
+    through on the command text.
   Never write a bare `MODEL` placeholder and never leave an unexpanded `$PI_MODEL` in a `-m` message:
   the enforcement hook **refuses** such a commit (it reports the placeholder line back), and it also
   refuses a commit shape it cannot inspect when the message shows no trailer. The fix is always to

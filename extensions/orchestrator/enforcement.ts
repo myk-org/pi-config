@@ -220,8 +220,9 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
   // flow the git-expert instruction describes (Qodo, PR #1004). Found through the git
   // parser, so global options before `commit` (`-C <path>`, `-c <k=v>`, `--no-pager`)
   // no longer hide the file (#1131), and EVERY commit in a compound command is
-  // verified — one trailerless file refuses all of them (Qodo, PR #1139).
-  const fileMessages = commitMessageFiles(command);
+  // verified — one trailerless file refuses all of them (Qodo, PR #1139). Each path
+  // arrives resolved against its OWN invocation's `-C`/`cd` (#1131).
+  const fileMessages = commitMessageFiles(command, ctx.cwd);
   let unverified = fileMessages.length === 0;
   for (const fileMessage of fileMessages) {
     if (!fileMessage) {
@@ -241,12 +242,9 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
           "so the message cannot be verified before it is read. Write the message (with the trailer) in one call and commit in the next.",
       };
     }
-    // Relative paths are relative to the directory git runs in — `gitCwd` is that
-    // directory (resolveEffectiveCwd already applies `git -C`).
-    const candidate = path.isAbsolute(fileMessage) ? fileMessage : join(gitCwd, fileMessage);
-    const state = messageFileTrailerState(candidate, trailerName, (p) => readFileSync(p, "utf8"));
+    const state = messageFileTrailerState(fileMessage, trailerName, (p) => readFileSync(p, "utf8"));
     if (state === "has") {
-      log.debug("commit_trailer: message file already carries the trailer", candidate);
+      log.debug("commit_trailer: message file already carries the trailer", fileMessage);
       continue;
     }
     if (state === "missing") {
@@ -257,7 +255,15 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
           `Append it with the real id — \`printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> " + fileMessage + "\` — then re-run the commit.`,
       };
     }
-    unverified = true; // unreadable: refuse below rather than trust a guess
+    // Unreadable: the file cannot be verified, and the command TEXT is no substitute
+    // for it — a trailing comment naming the trailer satisfied that check while the
+    // commit recorded a message the hook never saw (#1131).
+    return {
+      block: true,
+      reason:
+        `⛔ Commit refused: cannot read the message file ${fileMessage}, so the \`${trailerName}\` ` +
+        "trailer cannot be verified. Write the message to a file the hook can read, with the trailer in it, then re-run the commit.",
+    };
   }
   if (!unverified) return undefined;
   // Other opaque shapes must carry the trailer already; refusing beats guessing.

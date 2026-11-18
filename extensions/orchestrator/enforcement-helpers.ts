@@ -2548,41 +2548,113 @@ export function gitAddPathspecs(command: string): string[] | null {
 
 /**
  * The message source of EVERY real `git commit` in the command — one entry per
- * commit segment: the `-F <file>` path, or null when that segment's message is
- * not a file the hook can read (`-F -` is stdin, a `-m` message is inline).
+ * commit segment, already resolved against the directory THAT invocation runs
+ * in: the `-F <file>` path, or null when that segment's message is not a file
+ * the hook can read (`-F -` is stdin, a `-m` message is inline).
  * Every segment is returned because a compound command commits twice — checking
  * only the first would let the second commit through unverified (Qodo, PR #1139).
+ * Each relative operand resolves against its own invocation's `-C`/`cd`, so
+ * `git -C repo1 commit -F msg.txt && git -C repo2 commit -F msg.txt` reads each
+ * repo's file instead of repo1's twice (#1131).
  * Global options before `commit` (`-C <path>`, `-c <k=v>`, `--no-pager`) do not
  * hide the file: the region starts after the subcommand.
  */
-export function commitMessageFiles(command: string): Array<string | null> {
-  const files = gitSubParseRegions(command, "commit").map((region) => {
-    const tokens = tokenize(region);
-    for (let i = 0; i < tokens.length; i++) {
-      const token = tokens[i]!;
-      if (token === "--") break; // after this, paths only
-      let value: string | undefined;
-      if (token === "-F" || token === "--file") value = tokens[++i];
-      else if (token.startsWith("--file=")) value = token.slice("--file=".length);
+export function commitMessageFiles(command: string, sessionCwd: string): Array<string | null> {
+  const files = subArgSpans(command, "commit").map((span) => {
+    const words = rawShellWords(span.text);
+    // git records the LAST `-F` of an invocation, so the earlier ones are not
+    // files it opens: keep scanning instead of returning the first (#1131).
+    let operand: string | null = null;
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i]!;
+      if (word === "--") break; // after this, paths only
+      if (word === "-F" || word === "--file") operand = words[++i] ?? null;
+      else if (word.startsWith("--file=")) operand = word.slice("--file=".length);
       // `-F<file>`: an ATTACHED value, tested before the `-m` cluster below so
       // `-F"msg with space"` is not read as `-a -m …`.
-      else if (token.startsWith("-F") && token.length > 2) value = token.slice(2);
+      else if (word.startsWith("-F") && word.length > 2) operand = word.slice(2);
       // An inline message wins: `git commit -m '--file=good.txt'` records that
       // literal text, so its operand is a MESSAGE and the commit is opaque
       // (Qodo, PR #1139). `-m`, `--message`, `--message=…` and a combined short
       // option (`-am`) all mean an inline message.
-      else if (token === "--message" || token.startsWith("--message=") || /^-[a-zA-Z]*m/.test(token)) {
-        return null;
-      } else continue;
-      // The region of a subshell runs through the closing paren
-      // (`(git commit -F msg.txt)`), so end the operand at shell syntax.
-      const clean = (value ?? "").split(/[)|&;\n]/)[0]!;
-      return clean === "-" || clean === "" ? null : clean;
+      else if (/^(?:--message(?:=|$)|-[a-zA-Z]*m)/.test(tokenize(word)[0] ?? "")) {
+        operand = null;
+        break;
+      }
     }
-    return null;
+    const value = operand === null ? "" : operandBeforeShellSyntax(operand);
+    if (value === "-" || value === "") return null;
+    return path.isAbsolute(value) ? value : join(cwdAt(command, span.start, sessionCwd), value);
   });
   enfLog.debug("commitMessageFiles", `segments=${files.length} files=${files.filter(Boolean).length}`);
   return files;
+}
+
+/** The directory the `git` invocation ending at `anchorStart` runs in: the
+ *  shell's own `cd` chain up to it, then that invocation's own `-C`s. Same rules
+ *  as resolveEffectiveCwd, but anchored per invocation — a compound command can
+ *  commit in several directories, and a relative path belongs to its own one. */
+function cwdAt(command: string, anchorStart: number, sessionCwd: string): string {
+  const segments = unquotedSegments(command.slice(0, anchorStart));
+  const anchor = segments[segments.length - 1];
+  if (!anchor) return sessionCwd;
+  const running: string[] = [sessionCwd];
+  for (const seg of segments) {
+    // A segment deeper than the invocation runs in a subshell that has already
+    // closed by the time it starts, so it cannot have moved this shell.
+    if (seg.depth > anchor.depth) continue;
+    while (running.length <= seg.depth) running.push(running[running.length - 1]!);
+    const target = cdTargetIn(seg.text);
+    if (!target || target === "~popd") continue;
+    running[seg.depth] = applyCd(running[seg.depth]!, target);
+  }
+  while (running.length <= anchor.depth) running.push(running[running.length - 1]!);
+  let dir = running[anchor.depth]!;
+  // Git applies each -C in turn, each relative to the previous one.
+  for (const target of gitCsIn(anchor.text)) dir = applyCd(dir, target, process.env.HOME ?? "~", false);
+  return dir;
+}
+
+/** Split an argument region into shell words, keeping each word's quotes: a
+ *  later cut at shell punctuation must tell a quoted value from syntax, and
+ *  stripping the quotes first turned `-F 'msg;bad.txt'` into `msg`. */
+function rawShellWords(region: string): string[] {
+  const words: string[] = [];
+  let i = 0;
+  while (i < region.length) {
+    if (/\s/.test(region[i]!)) { i++; continue; }
+    const start = i;
+    while (i < region.length && !/\s/.test(region[i]!)) {
+      const ch = region[i]!;
+      if (ch === "\\" && i + 1 < region.length) { i += 2; continue; }
+      if (ch === "'" || ch === '"') {
+        const close = matchingQuoteIndex(region, i);
+        i = close === null ? region.length : close + 1;
+        continue;
+      }
+      i++;
+    }
+    words.push(region.slice(start, i));
+  }
+  return words;
+}
+
+/** A raw operand word as a path: cut at the first UNQUOTED `;|&)` — the region of
+ *  a subshell runs through its closing paren — never inside quotes. */
+function operandBeforeShellSyntax(raw: string): string {
+  let i = 0;
+  while (i < raw.length) {
+    const ch = raw[i]!;
+    if (ch === "'" || ch === '"') {
+      const close = matchingQuoteIndex(raw, i);
+      i = close === null ? raw.length : close + 1;
+      continue;
+    }
+    if (ch === "\\") { i += 2; continue; }
+    if (/[)|&;\n]/.test(ch)) break;
+    i++;
+  }
+  return tokenize(raw.slice(0, i))[0] ?? "";
 }
 
 /**

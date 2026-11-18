@@ -3039,22 +3039,28 @@ describe("messageFileTrailerState", () => {
 
 // ── commitMessageFiles: git's global options do not hide the -F file (#1131) ──
 describe("commitMessageFiles (#1131)", () => {
+  // A relative operand is resolved against the directory its own invocation runs
+  // in, so the expectations below are absolute paths.
+  const CWD = "/s";
+
   it("finds the file of a plain -F commit", () => {
-    assert.deepEqual(commitMessageFiles("git commit -F msg.txt"), ["msg.txt"]);
+    assert.deepEqual(commitMessageFiles("git commit -F msg.txt", CWD), ["/s/msg.txt"]);
   });
 
   it("finds the file behind git's global options", () => {
     // The standard worktree commit form: the message file is the LAST word of
     // the invocation, `-C` and friends come before the subcommand.
     assert.deepEqual(
-      commitMessageFiles("git -C /repo/.worktrees/issue-1 commit --signoff -F /abs/msg.txt"),
+      commitMessageFiles("git -C /repo/.worktrees/issue-1 commit --signoff -F /abs/msg.txt", CWD),
       ["/abs/msg.txt"],
     );
-    assert.deepEqual(commitMessageFiles("git -c user.name=x commit -F msg.txt"), ["msg.txt"]);
-    assert.deepEqual(commitMessageFiles("git --no-pager commit -F msg.txt"), ["msg.txt"]);
-    assert.deepEqual(commitMessageFiles("git --git-dir=.git --work-tree=/p commit --file=msg.txt"), ["msg.txt"]);
-    assert.deepEqual(commitMessageFiles("git --git-dir .git --work-tree /p commit --file msg.txt"), ["msg.txt"]);
-    assert.deepEqual(commitMessageFiles('rtk git -C "/path with space" commit -F"msg with space.txt"'), ["msg with space.txt"]);
+    assert.deepEqual(commitMessageFiles("git -c user.name=x commit -F msg.txt", CWD), ["/s/msg.txt"]);
+    assert.deepEqual(commitMessageFiles("git --no-pager commit -F msg.txt", CWD), ["/s/msg.txt"]);
+    assert.deepEqual(commitMessageFiles("git --git-dir=.git --work-tree=/p commit --file=msg.txt", CWD), ["/s/msg.txt"]);
+    assert.deepEqual(commitMessageFiles("git --git-dir .git --work-tree /p commit --file msg.txt", CWD), ["/s/msg.txt"]);
+    assert.deepEqual(commitMessageFiles('rtk git -C "/path with space" commit -F"msg with space.txt"', CWD), [
+      "/path with space/msg with space.txt",
+    ]);
   });
 
   it("stays opaque for stdin, inline and built messages", () => {
@@ -3067,29 +3073,54 @@ describe("commitMessageFiles (#1131)", () => {
       "git commit -C HEAD", // -C after the subcommand reuses a message
       'echo "git commit -F msg.txt"',
     ]) {
-      assert.deepEqual(commitMessageFiles(cmd), cmd.startsWith("echo \"git") ? [] : [null], cmd);
+      assert.deepEqual(commitMessageFiles(cmd, CWD), cmd.startsWith("echo \"git") ? [] : [null], cmd);
     }
   });
 
   it("reads a -m operand as a MESSAGE, never as a file option", () => {
     // `git commit -m '--file=good.txt'` commits the literal text, so reading
     // good.txt would validate a file git never opens (Qodo, PR #1139).
-    assert.deepEqual(commitMessageFiles("git -C /wt commit -m '--file=/wt/good.txt'"), [null]);
-    assert.deepEqual(commitMessageFiles("git commit -m '--file=good.txt' -F msg.txt"), [null]);
-    assert.deepEqual(commitMessageFiles("git commit -am '--file=good.txt'"), [null]);
+    assert.deepEqual(commitMessageFiles("git -C /wt commit -m '--file=/wt/good.txt'", CWD), [null]);
+    assert.deepEqual(commitMessageFiles("git commit -m '--file=good.txt' -F msg.txt", CWD), [null]);
+    assert.deepEqual(commitMessageFiles("git commit -am '--file=good.txt'", CWD), [null]);
   });
 
   it("reports EVERY commit segment, so no commit can ride on another", () => {
     assert.deepEqual(
-      commitMessageFiles("git -C /wt commit -F good.txt; git -C /wt commit --allow-empty -F bad.txt"),
-      ["good.txt", "bad.txt"],
+      commitMessageFiles("git -C /wt commit -F good.txt; git -C /wt commit --allow-empty -F bad.txt", CWD),
+      ["/wt/good.txt", "/wt/bad.txt"],
     );
+  });
+
+  it("keeps a quoted operand whole instead of cutting it at quoted punctuation", () => {
+    // Quotes were stripped before the cut, so `-F 'msg;bad.txt'` named `msg` — a
+    // path nobody wrote, which then fell through to the command text.
+    assert.deepEqual(commitMessageFiles("git commit -F 'msg;bad.txt'", CWD), ["/s/msg;bad.txt"]);
+    assert.deepEqual(commitMessageFiles("git commit -F 'msg with space.txt'", CWD), ["/s/msg with space.txt"]);
+    assert.deepEqual(commitMessageFiles("(git commit -F 'msg with space.txt')", CWD), ["/s/msg with space.txt"]);
+  });
+
+  it("resolves each segment's relative file against that segment's own -C and cd", () => {
+    // One cwd for the whole command read repo1's file twice (#1131).
+    assert.deepEqual(
+      commitMessageFiles("git -C /repo1 commit -F msg.txt && git -C /repo2 commit -F msg.txt", CWD),
+      ["/repo1/msg.txt", "/repo2/msg.txt"],
+    );
+    assert.deepEqual(
+      commitMessageFiles("cd /repo1 && git commit -F msg.txt; cd /repo2 && git commit -F msg.txt", CWD),
+      ["/repo1/msg.txt", "/repo2/msg.txt"],
+    );
+  });
+
+  it("reads the LAST -F of a segment, the message git records", () => {
+    assert.deepEqual(commitMessageFiles("git commit -F old.txt -F new.txt", CWD), ["/s/new.txt"]);
+    assert.deepEqual(commitMessageFiles("git commit --file old.txt -F new.txt", CWD), ["/s/new.txt"]);
   });
 
   it("ends the operand at shell syntax", () => {
     // The region of a subshell runs through `)`, so the token is `msg.txt)`.
-    assert.deepEqual(commitMessageFiles("(git commit -F msg.txt)"), ["msg.txt"]);
-    assert.deepEqual(commitMessageFiles("$(git -C /wt commit -F /abs/msg.txt)"), ["/abs/msg.txt"]);
+    assert.deepEqual(commitMessageFiles("(git commit -F msg.txt)", CWD), ["/s/msg.txt"]);
+    assert.deepEqual(commitMessageFiles("$(git -C /wt commit -F /abs/msg.txt)", CWD), ["/abs/msg.txt"]);
   });
 });
 
@@ -3196,6 +3227,51 @@ describe("commit-trailer check behind git global options (#1131)", () => {
     );
     assert.equal(res?.block, true, JSON.stringify(res));
     assert.match(res?.reason ?? "", /has no `Assisted-by` trailer/);
+  });
+
+  it("refuses a quoted message path it cannot read, even with a trailer in a comment", async () => {
+    // The quotes were stripped before the cut at `;`, so the operand became the
+    // unreadable `missing`, and the comment then satisfied the command-TEXT check.
+    const repo = makeRepo();
+    const res = await runBash(`git -C ${repo} commit -F 'missing;msg.txt' # Assisted-by: PI (m)`, makeTempDir("rl-trailer-cwd-"));
+    assert.equal(res?.block, true, JSON.stringify(res));
+    assert.match(res?.reason ?? "", /cannot read the message file .*missing;msg\.txt/);
+  });
+
+  it("allows a quoted message path with spaces when the file carries the trailer", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "msg with space.txt"), "fix: x\n\nAssisted-by: PI (m)\n");
+    const res = await runBash(`git -C ${repo} commit -F 'msg with space.txt'`, repo);
+    assert.equal(res?.block, undefined, JSON.stringify(res));
+  });
+
+  it("resolves each commit's message file in its own worktree", async () => {
+    // Every file used to resolve against the FIRST `-C`, so repo2's commit was
+    // verified against repo1's message (#1131).
+    const one = makeRepo();
+    const two = makeRepo();
+    writeFileSync(join(one, "msg.txt"), "fix: x\n\nAssisted-by: PI (m)\n");
+    writeFileSync(join(two, "msg.txt"), "fix: x\n");
+    const res = await runBash(
+      `git -C ${one} commit -F msg.txt && git -C ${two} commit -F msg.txt`,
+      makeTempDir("rl-trailer-cwd-"),
+    );
+    assert.equal(res?.block, true, JSON.stringify(res));
+    assert.match(res?.reason ?? "", new RegExp(`message file ${two}/msg.txt has no`));
+  });
+
+  it("checks the LAST -F of an invocation, the message git records", async () => {
+    // git writes the message of the last -F, so verifying the first one read a
+    // file the commit never uses (#1131).
+    const repo = makeRepo();
+    const good = makeMsg("fix: x\n\nAssisted-by: PI (m)\n");
+    const bad = makeMsg("fix: x\n");
+    const cwd = makeTempDir("rl-trailer-cwd-");
+    const res = await runBash(`git -C ${repo} commit -F ${good} -F ${bad}`, cwd);
+    assert.equal(res?.block, true, JSON.stringify(res));
+    assert.match(res?.reason ?? "", /has no `Assisted-by` trailer/);
+    // The file git ignores is not a reason to refuse.
+    assert.equal((await runBash(`git -C ${repo} commit -F ${bad} -F ${good}`, cwd))?.block, undefined);
   });
 
   it("allows a parenthesized commit whose message file carries the trailer", async () => {
