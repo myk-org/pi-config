@@ -3658,6 +3658,125 @@ describe("findPlaceholderTrailer", () => {
   });
 });
 
+// ── handleCommitTrailer refusal hints (issue #1145) ──
+describe("handleCommitTrailer refusal hints (#1145)", () => {
+  let hooks: Map<string, Function>;
+  let cwd: string;
+  let globalFile: string;
+  let priorEnv: Record<string, string | undefined>;
+  const envKeys = ["PI_AGENT_NAME", "PI_SUBAGENT_CHILD", "PI_MODEL", "PI_PRIMARY_MODEL"] as const;
+  const {
+    GIT_DIR: _GIT_DIR,
+    GIT_WORK_TREE: _GIT_WORK_TREE,
+    GIT_INDEX_FILE: _GIT_INDEX_FILE,
+    GIT_COMMON_DIR: _GIT_COMMON_DIR,
+    GIT_CEILING_DIRECTORIES: _GIT_CEILING_DIRECTORIES,
+    ...baseEnv
+  } = process.env;
+  const gitEnv = {
+    ...baseEnv,
+    GIT_AUTHOR_NAME: "test",
+    GIT_AUTHOR_EMAIL: "test@example.com",
+    GIT_COMMITTER_NAME: "test",
+    GIT_COMMITTER_EMAIL: "test@example.com",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+  };
+
+  const runCommitToolCall = (command: string) =>
+    hooks.get("tool_call")!(
+      { type: "tool_call", toolName: "bash", input: { command } },
+      { cwd, model: { id: "test-model", provider: "openai" }, hasUI: false },
+    );
+
+  before(() => {
+    hooks = new Map();
+    registerEnforcement({
+      on: (name: string, handler: Function) => { hooks.set(name, handler); },
+      registerTool: () => {},
+      registerCommand: () => {},
+    } as any);
+  });
+
+  beforeEach(() => {
+    priorEnv = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]));
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    process.env.PI_MODEL = "test-model";
+    delete process.env.PI_PRIMARY_MODEL;
+
+    cwd = makeTempDir("commit-trailer-refusal-");
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd, env: gitEnv });
+    writeFileSync(join(cwd, "a.txt"), "1\n");
+    execFileSync("git", ["add", "a.txt"], { cwd, env: gitEnv });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd, env: gitEnv });
+    execFileSync("git", ["checkout", "-q", "-b", "feat/issue-1145"], { cwd, env: gitEnv });
+
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    globalFile = join(cwd, "global-settings.json");
+    writeFileSync(globalFile, "{}");
+    setGlobalSettingsPath(globalFile);
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ commit_trailer: "Assisted-by", review_loop_enforcement: false }),
+    );
+    clearSettingsCache();
+  });
+
+  afterEach(() => {
+    setGlobalSettingsPath(null);
+    clearSettingsCache();
+    for (const key of envKeys) {
+      if (priorEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = priorEnv[key];
+    }
+  });
+
+  it("interpolates trailerName, message file path, and $PI_MODEL on -F <file> missing-trailer refusal", async () => {
+    const msgFile = join(cwd, "commit-msg.txt");
+    writeFileSync(msgFile, "fix: missing trailer\n");
+
+    const res1 = await runCommitToolCall(`git commit -F "${msgFile}"`);
+    assert.equal(res1?.block, true);
+    const reason1 = res1?.reason ?? "";
+    assert.ok(reason1.includes("Assisted-by: PI (%s)"), `expected Assisted-by: PI (%s) in: ${reason1}`);
+    assert.ok(reason1.includes('"$PI_MODEL"'), `expected "$PI_MODEL" in: ${reason1}`);
+    assert.ok(reason1.includes(msgFile), `expected message file path in: ${reason1}`);
+    assert.ok(!reason1.includes("trailerName"), `unexpected literal trailerName in: ${reason1}`);
+    assert.ok(!reason1.includes("fileMessage"), `unexpected literal fileMessage in: ${reason1}`);
+    assert.ok(!reason1.includes('"+'), `unexpected literal "+ in: ${reason1}`);
+    assert.ok(!reason1.includes('" +'), `unexpected literal " + in: ${reason1}`);
+
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ commit_trailer: "Signed-by", review_loop_enforcement: false }),
+    );
+    clearSettingsCache();
+
+    const res2 = await runCommitToolCall(`git commit -F "${msgFile}"`);
+    assert.equal(res2?.block, true);
+    const reason2 = res2?.reason ?? "";
+    assert.ok(reason2.includes("Signed-by: PI (%s)"), `expected Signed-by: PI (%s) in: ${reason2}`);
+    assert.ok(reason2.includes('"$PI_MODEL"'), `expected "$PI_MODEL" in: ${reason2}`);
+    assert.ok(reason2.includes(msgFile), `expected message file path in: ${reason2}`);
+    assert.ok(!reason2.includes("trailerName"), `unexpected literal trailerName in: ${reason2}`);
+    assert.ok(!reason2.includes("fileMessage"), `unexpected literal fileMessage in: ${reason2}`);
+    assert.ok(!reason2.includes('"+'), `unexpected literal "+ in: ${reason2}`);
+    assert.ok(!reason2.includes('" +'), `unexpected literal " + in: ${reason2}`);
+  });
+
+  it("interpolates trailerName and $PI_MODEL on opaque commit refusal", async () => {
+    const res = await runCommitToolCall("git commit -m $MSG");
+    assert.equal(res?.block, true);
+    const reason = res?.reason ?? "";
+    assert.ok(reason.includes("Assisted-by: PI (%s)"), `expected Assisted-by: PI (%s) in: ${reason}`);
+    assert.ok(reason.includes('"$PI_MODEL"'), `expected "$PI_MODEL" in: ${reason}`);
+    assert.ok(!reason.includes("trailerName"), `unexpected literal trailerName in: ${reason}`);
+    assert.ok(!reason.includes('"+'), `unexpected literal "+ in: ${reason}`);
+    assert.ok(!reason.includes('" +'), `unexpected literal " + in: ${reason}`);
+  });
+});
+
 // ── issue #947: rtk-wrapped read-only commands + trailing-sh false positive ──
 
 describe("isReadOnlyStatement wrapper prefixes (issue #947)", () => {
