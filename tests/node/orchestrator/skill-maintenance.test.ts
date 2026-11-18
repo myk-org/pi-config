@@ -79,7 +79,13 @@ function tempDir(prefix: string): string {
  * global it touched — HOME, session id and the level pin — so no later test inherits the temp
  * path, and prove the operator's real `~/.pi/logs` gained nothing for this session id.
  */
-function inTempLogHome(sid: string, body: (home: string) => void, level: "debug" | "warn" = "debug"): void {
+function inTempLogHome(sid: string, body: (home: string) => Promise<void>, level?: "debug" | "warn"): Promise<void>;
+function inTempLogHome(sid: string, body: (home: string) => void, level?: "debug" | "warn"): void;
+function inTempLogHome(
+  sid: string,
+  body: (home: string) => void | Promise<void>,
+  level: "debug" | "warn" = "debug",
+): void | Promise<void> {
   const realLog = path.join(os.homedir(), ".pi", "logs", "skill-maintenance", sid, "main.log");
   const stamp = () => (fs.existsSync(realLog) ? `${fs.statSync(realLog).size}:${fs.statSync(realLog).mtimeMs}` : "absent");
   const before = stamp();
@@ -89,18 +95,27 @@ function inTempLogHome(sid: string, body: (home: string) => void, level: "debug"
   process.env.HOME = home;
   (globalThis as any).__piConfigSessionId = sid;
   setLogLevelPin("skill-maintenance", level);
-  try {
-    body(home);
-  } finally {
+  const cleanup = () => {
     setLogLevelPin("skill-maintenance", null);
     if (savedSid === undefined) delete (globalThis as any).__piConfigSessionId;
     else (globalThis as any).__piConfigSessionId = savedSid;
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
+    assert.equal((globalThis as any).__piConfigSessionId, savedSid, "session id leaked into later tests");
+    assert.equal(process.env.HOME, savedHome, "HOME leaked into later tests");
+    assert.equal(stamp(), before, `test wrote to the real home: ${realLog}`);
+  };
+  let result: void | Promise<void>;
+  try {
+    result = body(home);
+  } catch (err) {
+    cleanup();
+    throw err;
   }
-  assert.equal((globalThis as any).__piConfigSessionId, savedSid, "session id leaked into later tests");
-  assert.equal(process.env.HOME, savedHome, "HOME leaked into later tests");
-  assert.equal(stamp(), before, `test wrote to the real home: ${realLog}`);
+  if (result && typeof (result as Promise<void>).then === "function") {
+    return (result as Promise<void>).finally(cleanup);
+  }
+  cleanup();
 }
 
 function provenanceRecords(cwd: string): any[] {
@@ -348,6 +363,28 @@ describe("the marker decides", () => {
     const verdict = classifySkillWrite(cwd, existing, write(UNMARKED));
     assert.equal(verdict.allow, false);
     assert.ok(!verdict.autoAdopt);
+  });
+
+  it("refuses overwriting an unreadable existing SKILL.md without auto-adopting", () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    inTempLogHome("skill-maint-unreadable-existing", () => {
+      const { cwd, root } = project();
+      const existing = writeSkill(root, "locked", UNMARKED);
+      fs.chmodSync(existing, 0o000);
+      try {
+        const verdict = classifySkillWrite(cwd, existing, write(UNMARKED));
+        assert.equal(verdict.allow, false);
+        assert.ok(!verdict.autoAdopt);
+        const markedVerdict = classifySkillWrite(cwd, existing, write(MARKED));
+        assert.equal(markedVerdict.allow, false);
+        assert.ok(!markedVerdict.autoAdopt);
+        const logPath = getPiLogPath("skill-maintenance");
+        assert.ok(logPath);
+        assert.match(fs.readFileSync(logPath, "utf-8"), /skill_write_unreadable_existing/);
+      } finally {
+        fs.chmodSync(existing, 0o644);
+      }
+    }, "warn");
   });
 
   it("refuses an edit targeting a missing SKILL.md", () => {
@@ -1607,53 +1644,58 @@ describe("write guard in the main session", () => {
     assert.equal(blocked?.block, true);
   });
 
-  it("auto-adopts a brand-new SKILL.md with frontmatter lacking skill-maintenance: auto and logs it", async () => {
+  it("auto-adopts a brand-new SKILL.md lacking the marker", async () => {
     const { cwd, root } = project();
-    const realLog = path.join(os.homedir(), ".pi", "logs", "skill-maintenance", "skill-maint-auto-adopt", "main.log");
-    const beforeLog = fs.existsSync(realLog) ? `${fs.statSync(realLog).size}:${fs.statSync(realLog).mtimeMs}` : "absent";
-    const home = tempDir("skill-maint-log-auto-adopt-");
-    const savedHome = process.env.HOME;
-    const savedSid = (globalThis as any).__piConfigSessionId;
-    process.env.HOME = home;
-    (globalThis as any).__piConfigSessionId = "skill-maint-auto-adopt";
-    setLogLevelPin("skill-maintenance", "debug");
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const target = path.join(root, "pr-workflow", "SKILL.md");
+    const original = `---\nname: pr-workflow\ndescription: "Open a PR"\n---\n\n# PR Workflow\n\nRun git push.\n`;
+    const input = { path: target, content: original };
 
-    try {
+    const res = await h.emit("tool_call", { toolCallId: "aa1", toolName: "write", input });
+    assert.equal(res, undefined);
+    assert.equal(isMarkedSkill(input.content), true);
+    assert.match(input.content, /IMPORTANT — keep this skill true/);
+    assert.match(input.content, /name: pr-workflow/);
+    assert.match(input.content, /description: "Open a PR"/);
+    assert.match(input.content, /# PR Workflow\n\nRun git push\./);
+  });
+
+  it("records provenance when a brand-new unmarked SKILL.md is written", async () => {
+    const { cwd, root } = project();
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const target = path.join(root, "pr-workflow", "SKILL.md");
+    const original = `---\nname: pr-workflow\ndescription: "Open a PR"\n---\n\n# PR Workflow\n\nRun git push.\n`;
+    const input = { path: target, content: original };
+
+    await h.emit("tool_call", { toolCallId: "aa1", toolName: "write", input });
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, input.content);
+    await h.emit("tool_result", { toolCallId: "aa1", toolName: "write", input: { path: target }, isError: false });
+
+    const [record] = provenanceRecords(cwd);
+    assert.deepEqual(
+      { skill: record.skill, action: record.action, file: record.file },
+      { skill: "pr-workflow", action: "written", file: "SKILL.md" },
+    );
+  });
+
+  it("logs skill_creation_auto_adopted when auto-adopting a brand-new SKILL.md", async () => {
+    await inTempLogHome("skill-maint-auto-adopt", async () => {
+      const { cwd, root } = project();
       const h = harness(cwd);
       await h.emit("turn_start", { turnIndex: 1 });
       const target = path.join(root, "pr-workflow", "SKILL.md");
       const original = `---\nname: pr-workflow\ndescription: "Open a PR"\n---\n\n# PR Workflow\n\nRun git push.\n`;
       const input = { path: target, content: original };
 
-      const res = await h.emit("tool_call", { toolCallId: "aa1", toolName: "write", input });
-      assert.equal(res, undefined);
-      assert.equal(isMarkedSkill(input.content), true);
-      assert.match(input.content, /IMPORTANT — keep this skill true/);
-      assert.match(input.content, /name: pr-workflow/);
-      assert.match(input.content, /description: "Open a PR"/);
-      assert.match(input.content, /# PR Workflow\n\nRun git push\./);
-
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, input.content);
-      await h.emit("tool_result", { toolCallId: "aa1", toolName: "write", input: { path: target }, isError: false });
-      const [record] = provenanceRecords(cwd);
-      assert.deepEqual(
-        { skill: record.skill, action: record.action, file: record.file },
-        { skill: "pr-workflow", action: "written", file: "SKILL.md" },
-      );
+      await h.emit("tool_call", { toolCallId: "aa1", toolName: "write", input });
 
       const logPath = getPiLogPath("skill-maintenance");
       assert.ok(logPath);
       assert.match(fs.readFileSync(logPath, "utf-8"), /skill_creation_auto_adopted/);
-    } finally {
-      setLogLevelPin("skill-maintenance", null);
-      if (savedSid === undefined) delete (globalThis as any).__piConfigSessionId;
-      else (globalThis as any).__piConfigSessionId = savedSid;
-      if (savedHome === undefined) delete process.env.HOME;
-      else process.env.HOME = savedHome;
-    }
-    const afterLog = fs.existsSync(realLog) ? `${fs.statSync(realLog).size}:${fs.statSync(realLog).mtimeMs}` : "absent";
-    assert.equal(afterLog, beforeLog, `test wrote to the real home: ${realLog}`);
+    });
   });
 
   it("auto-adopts a brand-new bare SKILL.md without frontmatter", async () => {

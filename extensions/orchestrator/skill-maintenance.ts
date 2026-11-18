@@ -377,6 +377,23 @@ export function resultingContent(current: string | null, input: unknown): string
   return applyEditToContent(current, input) ?? (incomingText(input) || null);
 }
 
+/** True only when `abs` does not exist on disk (`ENOENT`); fail closed on any other error. */
+function isBrandNewSkillFile(abs: string): boolean {
+  try {
+    fs.lstatSync(abs);
+    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return true;
+    log.warn("skill_lstat_failed", {
+      abs,
+      code: code ?? null,
+      reason: String((err as Error)?.message ?? err).slice(0, 200),
+    });
+    return false;
+  }
+}
+
 export interface SkillWriteVerdict {
   allow: boolean;
   /** True when creating a brand-new SKILL.md without `skill-maintenance: auto` that should be stamped on write. */
@@ -485,11 +502,24 @@ export function classifySkillWrite(
     typeof input === "object" && input !== null && typeof (input as Record<string, unknown>).content === "string"
       ? ((input as Record<string, unknown>).content as string)
       : null;
-  if (current === null && writeContent !== null) {
-    if (isMarkedSkill(writeContent)) {
-      return { allow: true, path: abs, skill, file };
+  if (current === null) {
+    if (!isBrandNewSkillFile(abs)) {
+      log.warn("skill_write_unreadable_existing", { skill: skill ?? null, abs });
+      return {
+        allow: false,
+        path: abs,
+        skill,
+        file,
+        reason:
+          `⛔ "${skill ?? candidate}" exists on disk but could not be read — refused so existing content cannot be overwritten.`,
+      };
     }
-    return { allow: true, autoAdopt: true, path: abs, skill, file };
+    if (writeContent !== null) {
+      if (isMarkedSkill(writeContent)) {
+        return { allow: true, path: abs, skill, file };
+      }
+      return { allow: true, autoAdopt: true, path: abs, skill, file };
+    }
   }
 
   // Classify against the RESULTING content (Qodo HIGH): an edit's replacement fragment
