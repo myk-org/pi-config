@@ -49,10 +49,13 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
   - `git commit -m "…"` → the enforcement hook appends `TRAILER: PI (<model>)`.
     Do not write it yourself.
   - `echo … | git commit -F -` → the hook appends it. Do not write it yourself.
-  - `git commit -F <file>` (message written to a file, including heredoc-to-file) → the hook never
-    sees the file's contents, so append the trailer yourself with the already-resolved id:
-    `printf '\n\nTRAILER: PI (%s)\n' "$PI_MODEL" >> <file>` and then commit. The shell expands
-    `$PI_MODEL` while writing the file, so no placeholder can reach the message.
+  - `git commit -F <file>` (message written to a file, including heredoc-to-file) → the hook reads
+    the FILE, and it reads it in the directory git runs in, so the standard worktree form
+    `git -C <path> commit -F <file>` is inspected too. Write the trailer into the file before
+    committing, with the already-resolved id:
+    `printf '\n\nTRAILER: PI (%s)\n' "$PI_MODEL" >> <file>`, then commit. The shell expands
+    `$PI_MODEL` while writing the file, so no placeholder can reach the message. Never repeat the
+    trailer in the command text as a shell comment — the check reads the file, not the comment.
   Never write a bare `MODEL` placeholder and never leave an unexpanded `$PI_MODEL` in a `-m` message:
   the enforcement hook **refuses** such a commit (it reports the placeholder line back), and it also
   refuses a commit shape it cannot inspect when the message shows no trailer. The fix is always to

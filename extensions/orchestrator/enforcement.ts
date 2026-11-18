@@ -85,6 +85,7 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
+  commitMessageFile,
   isTestRunnerCommand,
   isBumpVersionBranch,
   getCachedBranch,
@@ -216,23 +217,27 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
   }
   // `git commit -F <file>`: the message is a file we CAN read, so check it instead of
   // guessing. Refusing a message that already carries the trailer would block the very
-  // flow the git-expert instruction describes (Qodo, PR #1004).
-  const fileMessage = command.match(/git\s+commit\b[^\n]*?-F\s+(?!-)(["']?)([^\s"']+)\1/);
-  if (fileMessage && fileMessage[2]) {
+  // flow the git-expert instruction describes (Qodo, PR #1004). Found through the git
+  // parser, so global options before `commit` (`-C <path>`, `-c <k=v>`, `--no-pager`)
+  // no longer hide the file (#1131).
+  const fileMessage = commitMessageFile(command);
+  if (fileMessage) {
     // The read happens BEFORE the command runs, so a command that writes the same file
     // would be verified against its OLD contents while git commits the new ones. Refuse
     // that shape instead of trusting the stale read (Qodo, PR #1004).
-    const filePathSrc = fileMessage[2].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const filePathSrc = fileMessage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (bashWritesToPath(command, maskQuotedRegions(command), filePathSrc)) {
-      log.warn("commit_trailer: message file is written by the same command", fileMessage[2]);
+      log.warn("commit_trailer: message file is written by the same command", fileMessage);
       return {
         block: true,
         reason:
-          `⛔ Commit refused: this command writes ${fileMessage[2]} and commits it in the same call, ` +
+          `⛔ Commit refused: this command writes ${fileMessage} and commits it in the same call, ` +
           "so the message cannot be verified before it is read. Write the message (with the trailer) in one call and commit in the next.",
       };
     }
-    const candidate = path.isAbsolute(fileMessage[2]) ? fileMessage[2] : join(gitCwd, fileMessage[2]);
+    // Relative paths are relative to the directory git runs in — `gitCwd` is that
+    // directory (resolveEffectiveCwd already applies `git -C`).
+    const candidate = path.isAbsolute(fileMessage) ? fileMessage : join(gitCwd, fileMessage);
     const state = messageFileTrailerState(candidate, trailerName, (p) => readFileSync(p, "utf8"));
     if (state === "has") {
       log.debug("commit_trailer: message file already carries the trailer", candidate);
@@ -242,8 +247,8 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
       return {
         block: true,
         reason:
-          `⛔ Commit refused: the message file ${fileMessage[2]} has no \`${trailerName}\` trailer. ` +
-          `Append it with the real id — \`printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> " + fileMessage[2] + "\` — then re-run the commit.`,
+          `⛔ Commit refused: the message file ${fileMessage} has no \`${trailerName}\` trailer. ` +
+          `Append it with the real id — \`printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> " + fileMessage + "\` — then re-run the commit.`,
       };
     }
   }

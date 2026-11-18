@@ -2206,7 +2206,12 @@ const GIT_WRAP_SRC = /(?:command|builtin|exec)\s+/.source;
 const GIT_RTK_SRC = /rtk(?:\s+-\S+)*\s+/.source;
 const GIT_PREFIX_SRC = `(?:${GIT_WRAPPER_SRC}|${GIT_ASSIGN_SRC}|${GIT_WRAP_SRC}|${GIT_RTK_SRC})*`;
 const GIT_EXE_SRC = /(?:\S*\/)?git\b/.source;
-const GIT_FLAGS_SRC = /(?:\s+(?:-[a-zA-Z]\s+\S*|-\S+))*/.source;
+// Global options may precede the subcommand (`git -C <path> commit`). Short options
+// take a separate value; so do the long ones git accepts with a space
+// (`--git-dir <p>`) — listing only those keeps `--no-pager commit` from being read
+// as "long option plus its value".
+const GIT_FLAGS_SRC =
+  /(?:\s+(?:-[a-zA-Z]\s+\S*|--(?:git-dir|work-tree|namespace|config-env)\s+\S*|-\S+))*/.source;
 
 /** Prefix that opens a nested command string: `bash -lc "..."`, `sh -c '...'`, `eval "..."`. */
 const SHELL_C_PREFIX_RE =
@@ -2539,6 +2544,32 @@ export function gitAddPathspecs(command: string): string[] | null {
   }
   enfLog.debug("gitAddPathspecs", `paths=${paths.length}`);
   return paths;
+}
+
+/**
+ * The message file of a real `git commit -F <file>` / `--file <file>` /
+ * `--file=<file>` / `-F<file>`, or null when the message does not come from a
+ * file the hook can read (`-F -` is stdin; a `-m` message is inline). Global
+ * options before `commit` (`-C <path>`, `-c <k=v>`, `--no-pager`) do not hide
+ * it — the region starts after the subcommand.
+ */
+export function commitMessageFile(command: string): string | null {
+  for (const region of gitSubParseRegions(command, "commit")) {
+    const tokens = tokenize(region);
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i]!;
+      if (token === "--") break; // after this, paths only
+      let value: string | undefined;
+      if (token === "-F" || token === "--file") value = tokens[++i];
+      else if (token.startsWith("--file=")) value = token.slice("--file=".length);
+      else if (token.startsWith("-F") && token.length > 2) value = token.slice(2);
+      else continue;
+      const found = value === "-" || value === "" ? null : value ?? null;
+      enfLog.debug("commitMessageFile", found ? "file" : "opaque");
+      return found;
+    }
+  }
+  return null;
 }
 
 /**

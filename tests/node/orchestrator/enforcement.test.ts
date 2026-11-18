@@ -42,6 +42,7 @@ import {
   failedFileEditSkipMessage,
   findPlaceholderTrailer,
   messageFileTrailerState,
+  commitMessageFile,
   injectCommitTrailer,
   resolveEffectiveCwd,
   checkPythonPipBlock,
@@ -3033,6 +3034,133 @@ describe("messageFileTrailerState", () => {
   it("reports an unreadable message file instead of refusing on a guess", () => {
     const boom = () => { throw new Error("ENOENT"); };
     assert.equal(messageFileTrailerState("/tmp/msg", "Assisted-by", boom), "unreadable");
+  });
+});
+
+// ── commitMessageFile: git's global options do not hide the -F file (#1131) ──
+describe("commitMessageFile (#1131)", () => {
+  it("finds the file of a plain -F commit", () => {
+    assert.equal(commitMessageFile("git commit -F msg.txt"), "msg.txt");
+  });
+
+  it("finds the file behind git's global options", () => {
+    // The standard worktree commit form: the message file is the LAST word of
+    // the invocation, `-C` and friends come before the subcommand.
+    assert.equal(
+      commitMessageFile("git -C /repo/.worktrees/issue-1 commit --signoff -F /abs/msg.txt"),
+      "/abs/msg.txt",
+    );
+    assert.equal(commitMessageFile("git -c user.name=x commit -F msg.txt"), "msg.txt");
+    assert.equal(commitMessageFile("git --no-pager commit -F msg.txt"), "msg.txt");
+    assert.equal(commitMessageFile("git --git-dir=.git --work-tree=/p commit --file=msg.txt"), "msg.txt");
+    assert.equal(commitMessageFile("git --git-dir .git --work-tree /p commit --file msg.txt"), "msg.txt");
+    assert.equal(commitMessageFile('rtk git -C "/path with space" commit -F"msg with space.txt"'), "msg with space.txt");
+  });
+
+  it("stays opaque for stdin, inline and built messages", () => {
+    for (const cmd of [
+      'echo "fix: x" | git commit -F -',
+      'git commit -m "$(cat msg.txt)"',
+      'git -C /repo commit -m "$msg"',
+      "git commit -F - <<'EOF'\nfix: x\nEOF",
+      "git -C /repo commit",
+      "git commit -C HEAD", // -C after the subcommand reuses a message
+      'echo "git commit -F msg.txt"',
+    ]) {
+      assert.equal(commitMessageFile(cmd), null, cmd);
+    }
+  });
+});
+
+// ── #1131: the trailer check reads the -F file behind git's global options ──
+describe("commit-trailer check behind git global options (#1131)", () => {
+  let hooks: Map<string, Function>;
+  let priorAgent: string | undefined;
+
+  before(() => {
+    hooks = new Map();
+    registerEnforcement({
+      on: (name: string, handler: Function) => hooks.set(name, handler),
+      registerTool: () => {},
+      registerCommand: () => {},
+    } as any);
+    // Only git-expert may commit (the plain guard refuses it for every other
+    // agent), so the trailer check is what these tests reach.
+    priorAgent = process.env.PI_AGENT_NAME;
+    process.env.PI_AGENT_NAME = "git-expert";
+  });
+
+  after(() => {
+    if (priorAgent === undefined) delete process.env.PI_AGENT_NAME;
+    else process.env.PI_AGENT_NAME = priorAgent;
+  });
+
+  const makeRepo = (): string => {
+    const dir = makeTempDir("rl-trailer-c-");
+    execFileSync("git", ["init", "-q", "-b", "feature"], { cwd: dir });
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    writeFileSync(getSettingsPath(dir), JSON.stringify({ commit_trailer: "Assisted-by" }));
+    return dir;
+  };
+
+  const makeMsg = (body: string): string => {
+    const file = join(makeTempDir("rl-trailer-msg-"), "msg.txt");
+    writeFileSync(file, body);
+    return file;
+  };
+
+  const runBash = (command: string, cwd: string) =>
+    hooks.get("tool_call")!(
+      { type: "tool_call", toolName: "bash", input: { command } },
+      { cwd, model: { id: "m" }, hasUI: false },
+    );
+
+  it("allows git -C <worktree> commit -F <file> when the FILE carries the trailer", async () => {
+    const repo = makeRepo();
+    const msg = makeMsg("fix: x\n\nAssisted-by: PI (m)\n");
+    // cwd is neither the repo nor the message dir: only -C names the repo, so
+    // the check has to follow it instead of assuming the session cwd.
+    const res = await runBash(`git -C ${repo} commit -F ${msg}`, makeTempDir("rl-trailer-cwd-"));
+    assert.equal(res?.block, undefined, JSON.stringify(res));
+  });
+
+  it("blocks the same command when the FILE has no trailer", async () => {
+    const repo = makeRepo();
+    const msg = makeMsg("fix: x\n");
+    const res = await runBash(`git -C ${repo} commit -F ${msg}`, makeTempDir("rl-trailer-cwd-"));
+    assert.equal(res?.block, true);
+    assert.match(res?.reason ?? "", /has no `Assisted-by` trailer/);
+  });
+
+  it("resolves a RELATIVE message file inside the -C directory", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "msg.txt"), "fix: x\n");
+    const res = await runBash(`git -C ${repo} commit -F msg.txt`, makeTempDir("rl-trailer-cwd-"));
+    assert.equal(res?.block, true);
+    assert.match(res?.reason ?? "", /has no `Assisted-by` trailer/);
+  });
+
+  it("reads the file behind --no-pager and -c too", async () => {
+    const repo = makeRepo();
+    const good = makeMsg("fix: x\n\nAssisted-by: PI (m)\n");
+    const bad = makeMsg("fix: x\n");
+    for (const [cmd, blocked] of [
+      [`git --no-pager commit -F ${good}`, false],
+      [`git --no-pager commit -F ${bad}`, true],
+      [`git -c commit.gpgsign=false commit -F ${good}`, false],
+      [`git -c commit.gpgsign=false commit -F ${bad}`, true],
+    ] as const) {
+      const res = await runBash(cmd, repo);
+      assert.equal(res?.block, blocked ? true : undefined, `${cmd}: ${JSON.stringify(res)}`);
+    }
+  });
+
+  it('still refuses an opaque -m "$(cat msg)" message', async () => {
+    const repo = makeRepo();
+    const msg = makeMsg("fix: x\n\nAssisted-by: PI (m)\n");
+    const res = await runBash(`git -C ${repo} commit -m "$(cat ${msg})"`, makeTempDir("rl-trailer-cwd-"));
+    assert.equal(res?.block, true);
+    assert.match(res?.reason ?? "", /opaque/);
   });
 });
 
