@@ -23,8 +23,9 @@ skill-maintenance: auto
 `skill-maintenance: auto` is the whole opt-in. It says two things: this skill is ours to maintain, and an
 agent that finds it wrong may fix it. There is no setting to turn on.
 
-Skills are created marked: the `/create-skill` workflow and the dream pass both stamp the marker, and an
-unmarked creation is refused by the write guard with the exact line to add.
+Skills are created marked: the `/create-skill` workflow and the dream pass both stamp the marker, and
+creating a brand-new `SKILL.md` under `<project>/.pi/skills/` without it is allowed and auto-adopted with
+`skill-maintenance: auto` on write.
 
 ## `/adopt-skill <name>`
 
@@ -52,8 +53,9 @@ A skill file is writable only when it is **marked** *and* its real path (after `
 | Location | Result |
 |---|---|
 | `<project>/.pi/skills/<name>/SKILL.md` (marked) | Allowed |
-| `<project>/.pi/skills/<name>/…` (unmarked) | Blocked — run `/adopt-skill <name>` |
-| Any skill where the write itself adds `skill-maintenance: auto` | Allowed — otherwise creation could never start |
+| Brand-new `<project>/.pi/skills/<name>/SKILL.md` (`write`, unmarked) | Allowed & auto-adopted (`skill-maintenance: auto` stamped on write) |
+| Existing `<project>/.pi/skills/<name>/…` (unmarked) | Blocked — run `/adopt-skill <name>` |
+| Any existing skill where the write itself adds `skill-maintenance: auto` | Allowed — otherwise adoption could never start |
 | Skills shipped in the `pi-orchestrator-config` package (`node_modules`, `skills/`) | Blocked — product surface |
 | User-global skills (`~/.pi/agent/skills/`, `~/.agents/skills/`) | Blocked — shared by every project |
 | Skills from another repository or marketplace | Blocked — somebody else's file |

@@ -322,14 +322,55 @@ describe("the marker decides", () => {
     assert.equal(verdict.allow, false);
   });
 
-  it("allows a marked creation under .pi/skills", () => {
+  it("allows a marked creation under .pi/skills without autoAdopt", () => {
     const { cwd, root } = project();
-    assert.equal(classifySkillWrite(cwd, path.join(root, "fresh", "SKILL.md"), write(MARKED)).allow, true);
+    const input = write(MARKED);
+    const verdict = classifySkillWrite(cwd, path.join(root, "fresh", "SKILL.md"), input);
+    assert.equal(verdict.allow, true);
+    assert.ok(!verdict.autoAdopt);
+    assert.equal(input.content, MARKED);
   });
 
-  it("refuses an unmarked creation under .pi/skills", () => {
+  it("allows an unmarked write creation under .pi/skills with autoAdopt without mutating input", () => {
     const { cwd, root } = project();
-    assert.equal(classifySkillWrite(cwd, path.join(root, "fresh", "SKILL.md"), write(UNMARKED)).allow, false);
+    const input = write(UNMARKED);
+    const verdict = classifySkillWrite(cwd, path.join(root, "fresh", "SKILL.md"), input);
+    assert.equal(verdict.allow, true);
+    assert.equal(verdict.autoAdopt, true);
+    assert.equal(verdict.skill, "fresh");
+    assert.equal(verdict.file, "SKILL.md");
+    assert.equal(input.content, UNMARKED);
+  });
+
+  it("refuses overwriting an existing unmarked SKILL.md with unmarked write", () => {
+    const { cwd, root } = project();
+    const existing = writeSkill(root, "existing", UNMARKED);
+    const verdict = classifySkillWrite(cwd, existing, write(UNMARKED));
+    assert.equal(verdict.allow, false);
+    assert.ok(!verdict.autoAdopt);
+  });
+
+  it("refuses an edit targeting a missing SKILL.md", () => {
+    const { cwd, root } = project();
+    const verdict = classifySkillWrite(cwd, path.join(root, "missing", "SKILL.md"), {
+      edits: [{ oldText: "a", newText: "b" }],
+    });
+    assert.equal(verdict.allow, false);
+  });
+
+  it("never auto-adopts unmarked writes via symlink, .agents/skills, or user-global", () => {
+    const { cwd, root } = project();
+    const outside = tempDir("skill-maint-outside-");
+    fs.symlinkSync(outside, path.join(root, "linked"));
+    assert.equal(classifySkillWrite(cwd, path.join(root, "linked", "SKILL.md"), write(UNMARKED)).allow, false);
+    assert.equal(
+      classifySkillWrite(cwd, path.join(cwd, ".agents", "skills", "fresh", "SKILL.md"), write(UNMARKED)).allow,
+      false,
+    );
+    assert.equal(
+      classifySkillWrite(cwd, path.join(os.homedir(), ".agents", "skills", "fresh", "SKILL.md"), write(UNMARKED)).allow,
+      false,
+    );
   });
 
   it("reads the new text out of a write input", () => {
@@ -1564,6 +1605,94 @@ describe("write guard in the main session", () => {
       input: { command: `echo x > ${path.join(os.homedir(), ".agents", "skills", "y", "SKILL.md")}` },
     });
     assert.equal(blocked?.block, true);
+  });
+
+  it("auto-adopts a brand-new SKILL.md with frontmatter lacking skill-maintenance: auto and logs it", async () => {
+    const { cwd, root } = project();
+    const realLog = path.join(os.homedir(), ".pi", "logs", "skill-maintenance", "skill-maint-auto-adopt", "main.log");
+    const beforeLog = fs.existsSync(realLog) ? `${fs.statSync(realLog).size}:${fs.statSync(realLog).mtimeMs}` : "absent";
+    const home = tempDir("skill-maint-log-auto-adopt-");
+    const savedHome = process.env.HOME;
+    const savedSid = (globalThis as any).__piConfigSessionId;
+    process.env.HOME = home;
+    (globalThis as any).__piConfigSessionId = "skill-maint-auto-adopt";
+    setLogLevelPin("skill-maintenance", "debug");
+
+    try {
+      const h = harness(cwd);
+      await h.emit("turn_start", { turnIndex: 1 });
+      const target = path.join(root, "pr-workflow", "SKILL.md");
+      const original = `---\nname: pr-workflow\ndescription: "Open a PR"\n---\n\n# PR Workflow\n\nRun git push.\n`;
+      const input = { path: target, content: original };
+
+      const res = await h.emit("tool_call", { toolCallId: "aa1", toolName: "write", input });
+      assert.equal(res, undefined);
+      assert.equal(isMarkedSkill(input.content), true);
+      assert.match(input.content, /IMPORTANT — keep this skill true/);
+      assert.match(input.content, /name: pr-workflow/);
+      assert.match(input.content, /description: "Open a PR"/);
+      assert.match(input.content, /# PR Workflow\n\nRun git push\./);
+
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, input.content);
+      await h.emit("tool_result", { toolCallId: "aa1", toolName: "write", input: { path: target }, isError: false });
+      const [record] = provenanceRecords(cwd);
+      assert.deepEqual(
+        { skill: record.skill, action: record.action, file: record.file },
+        { skill: "pr-workflow", action: "written", file: "SKILL.md" },
+      );
+
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      assert.match(fs.readFileSync(logPath, "utf-8"), /skill_creation_auto_adopted/);
+    } finally {
+      setLogLevelPin("skill-maintenance", null);
+      if (savedSid === undefined) delete (globalThis as any).__piConfigSessionId;
+      else (globalThis as any).__piConfigSessionId = savedSid;
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
+    const afterLog = fs.existsSync(realLog) ? `${fs.statSync(realLog).size}:${fs.statSync(realLog).mtimeMs}` : "absent";
+    assert.equal(afterLog, beforeLog, `test wrote to the real home: ${realLog}`);
+  });
+
+  it("auto-adopts a brand-new bare SKILL.md without frontmatter", async () => {
+    const { cwd, root } = project();
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const target = path.join(root, "bare", "SKILL.md");
+    const input = { path: target, content: "# Bare Skill\n\nDo the thing.\n" };
+
+    const res = await h.emit("tool_call", { toolCallId: "aa2", toolName: "write", input });
+    assert.equal(res, undefined);
+    assert.ok(input.content.startsWith(`---\n${MARKER_LINE}\n---\n`));
+    assert.match(input.content, /IMPORTANT — keep this skill true/);
+    assert.match(input.content, /# Bare Skill\n\nDo the thing\./);
+  });
+
+  it("leaves already-marked brand-new SKILL.md content unchanged", async () => {
+    const { cwd, root } = project();
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const target = path.join(root, "marked", "SKILL.md");
+    const input = { path: target, content: MARKED };
+
+    const res = await h.emit("tool_call", { toolCallId: "aa3", toolName: "write", input });
+    assert.equal(res, undefined);
+    assert.equal(input.content, MARKED);
+  });
+
+  it("blocks overwriting an existing unmarked SKILL.md and does not mutate content", async () => {
+    const { cwd, root } = project();
+    const existing = writeSkill(root, "existing", UNMARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const replacement = `---\nname: existing\ndescription: "Changed"\n---\n\n# New body\n`;
+    const input = { path: existing, content: replacement };
+
+    const blocked = await h.emit("tool_call", { toolCallId: "aa4", toolName: "write", input });
+    assert.equal(blocked?.block, true);
+    assert.equal(input.content, replacement);
   });
 });
 

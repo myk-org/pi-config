@@ -379,6 +379,8 @@ export function resultingContent(current: string | null, input: unknown): string
 
 export interface SkillWriteVerdict {
   allow: boolean;
+  /** True when creating a brand-new SKILL.md without `skill-maintenance: auto` that should be stamped on write. */
+  autoAdopt?: boolean;
   /** Set when the write lands in an owned skill (marked or not). */
   skill?: string;
   /** File path relative to the skill directory. */
@@ -475,6 +477,19 @@ export function classifySkillWrite(
         `⛔ "${skill ?? candidate}" is owned by this project but not marked for maintenance, so its files cannot be edited. ` +
         `Create or mark SKILL.md first (/adopt-skill ${skill ?? "<name>"}).`,
     };
+  }
+
+  // Brand-new SKILL.md created via `write` under `.pi/skills/`: allow and auto-adopt
+  // when unmarked so creating a new project skill does not deadlock on /adopt-skill (#1147).
+  const writeContent =
+    typeof input === "object" && input !== null && typeof (input as Record<string, unknown>).content === "string"
+      ? ((input as Record<string, unknown>).content as string)
+      : null;
+  if (current === null && writeContent !== null) {
+    if (isMarkedSkill(writeContent)) {
+      return { allow: true, path: abs, skill, file };
+    }
+    return { allow: true, autoAdopt: true, path: abs, skill, file };
   }
 
   // Classify against the RESULTING content (Qodo HIGH): an edit's replacement fragment
@@ -1914,6 +1929,11 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
       return { block: true, reason: verdict.reason ?? "skill write blocked" };
     }
     if (!verdict.skill) return;
+
+    if (verdict.autoAdopt && typeof (input as any)?.content === "string") {
+      (input as any).content = stampSkill((input as any).content).content;
+      log.info("skill_creation_auto_adopted", { skill: verdict.skill, target });
+    }
 
     // Allowed — but provenance is only written once the tool actually succeeded.
     const resolved = realpathNearestExisting(path.resolve(ctx.cwd, target)) ?? path.resolve(ctx.cwd, target);
