@@ -500,9 +500,9 @@ test("a child that ignores SIGTERM is escalated to SIGKILL", { timeout: 30_000 }
     assert.equal(abortSyncAgentRun(listSyncAgentRuns().find((r) => r.task === "slow ignore-term")!.id), true);
     const result = await run;
     // `proc.killed` is true the moment SIGTERM is sent, so the old escalation never fired and
-    // this promise would never settle. Reaching the 5 s timer is the proof it fired; 4.5 s floor
-    // tolerates 1-2 ms setTimeout/wall-clock jitter while rejecting ~274 ms immediate SIGTERM death.
-    assert.ok(Date.now() - started >= 4_500, "escalation runs on its 5 s timer");
+    // this promise would never settle. Reaching the 5 s timer is the proof it fired; 4,950 ms
+    // floor absorbs minor setTimeout/clock jitter without letting a shortened escalation timer pass.
+    assert.ok(Date.now() - started >= 4_950, "escalation runs on its 5 s timer");
     assert.equal(result.exitCode, 1);
   } finally {
     h.restore();
