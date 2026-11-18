@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.34.2] - 2026-11-18
+
+- Adopted (`skill-maintenance: auto`) owned project skills now have no bash or write limitations: helper
+  scripts (such as `release-publish/publish-release.sh`), `$()` command wrappers, `chmod`, and shell
+  writes run freely when every skill mention resolves inside adopted owned skills, while unmarked project
+  skills, `.agents/skills/`, user-global skills, package skills, symlink escapes, bare root mentions,
+  `cd` escapes, variable/glob targets, `ln`, and mixed commands remain strictly guarded (#1153).
+
 ## [4.34.1] - 2026-11-18
 
 - Brand-new project skills under `.pi/skills/<name>/SKILL.md` are now auto-adopted by default on `write`
