@@ -1,5 +1,29 @@
 # Changelog
 
+## [4.34.0] - 2026-11-17
+
+- An option prompt can be answered in words. In Discord an `ask_user` with options showed a select menu and
+  nothing else, even though the answer path already accepted a typed custom answer — the free-text modal was
+  reached only when a question had no options at all. An option prompt now returns two action rows, the menu
+  and a `✎ Type answer` button that opens the same modal, because Discord forbids mixing a select with buttons
+  in one row (#1134).
+- A typed modal answer is literal. The answer path that parses chat replies (`1` = first option, `cancel` =
+  cancel) no longer applies to a modal submission, so what the user types is the answer — `1` is the string
+  `1` and `cancel` is text. Messages typed into the channel keep the parsing, which is what makes them
+  convenient (#1134).
+- Free text is offered only where it can be accepted. An approval's bridged validation ignores an answer that
+  is not one of the offered options, so giving every select prompt a modal made a custom answer report
+  "Answer sent." while the approval kept waiting. Prompts now carry `freeText`, set only by `ask_user`, and
+  the modal row exists only for those. A prompt with more options than Discord's 25-item menu shows the first
+  25 entries — a menu value is an index into the original list, so the mapping stays correct — rather than
+  falling back to a modal that cannot be honoured (#1134).
+- The discuss-first row is gone. `ask_user` no longer offers a `Discuss with AI first` option, and the
+  `allowDiscuss` parameter, the `__discuss__` sentinel and the guidance that told the model to expect it are
+  removed; a caller that still passes that label gets it back as an ordinary option (#1134).
+- The prompt-row logic moved to a pure `buildPromptControls` with the discord.js builders injected, so the
+  rows are asserted without a Discord client. The component logic previously had no tests at all, which is how
+  the TUI/Discord asymmetry survived (#1134).
+
 ## [4.33.0] - 2026-11-17
 
 - Sync subagents are visible. A sync run is a real child process, but the footer, `/async-status` and pidash
