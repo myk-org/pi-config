@@ -910,6 +910,67 @@ describe("skill helper script execution (#1103)", () => {
   });
 });
 
+describe("shell syntax check (#1138)", () => {
+  /** A marked and an unmarked project skill, each with a `run.sh` helper. */
+  function both(): { cwd: string; markedScript: string; unmarkedScript: string } {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    writeSkill(root, "verify-all", UNMARKED);
+    const markedScript = path.join(root, "marked", "run.sh");
+    const unmarkedScript = path.join(root, "verify-all", "run.sh");
+    fs.writeFileSync(markedScript, "#!/bin/sh\necho hi\n");
+    fs.writeFileSync(unmarkedScript, "#!/bin/sh\necho hi\n");
+    return { cwd, markedScript, unmarkedScript };
+  }
+
+  it("allows bash -n on a MARKED project skill script", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash -n ${markedScript}`), null);
+  });
+
+  it("allows bash -n on an unmarked project skill script", () => {
+    const { cwd, unmarkedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash -n ${unmarkedScript}`), null);
+  });
+
+  it("allows sh -n on a marked project skill script", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `sh -n ${markedScript}`), null);
+  });
+
+  it("allows bash --noexec on a marked project skill script", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash --noexec ${markedScript}`), null);
+  });
+
+  it("allows a relative bash -n with a trailing success check", () => {
+    const { cwd } = both();
+    assert.equal(bashSkillVerdict(cwd, "bash -n .pi/skills/marked/run.sh && echo 'syntax OK'"), null);
+  });
+
+  it("still blocks running a MARKED project skill script", () => {
+    const { cwd, markedScript } = both();
+    const verdict = bashSkillVerdict(cwd, `bash ${markedScript}`);
+    assert.equal(verdict?.block, true);
+    assert.match(verdict?.reason ?? "", /skill-maintenance: auto/);
+  });
+
+  it("still blocks bash -nc as inline code naming a skill", () => {
+    const { cwd } = both();
+    assert.equal(bashSkillVerdict(cwd, "bash -nc 'rm -rf .pi/skills/marked'")?.block, true);
+  });
+
+  it("still blocks bash -c naming a skill", () => {
+    const { cwd } = both();
+    assert.equal(bashSkillVerdict(cwd, "bash -c 'rm -rf .pi/skills/marked'")?.block, true);
+  });
+
+  it("still blocks a bash -n that redirects into a skill file", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash -n ${markedScript} > ${path.join(cwd, ".pi", "skills", "marked", "SKILL.md")}`)?.block, true);
+  });
+});
+
 describe("/adopt-skill", () => {
   it("marks an unmarked project skill", () => {
     const { cwd, root } = project();

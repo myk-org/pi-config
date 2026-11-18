@@ -76,7 +76,10 @@ read or helper execution with no write operator (`/dev/null` sinks like `2>/dev/
   skill (`~/.pi/agent/skills/`, `~/.agents/skills/`), or an installed `node_modules` package skill — directly,
   via `bash`/`sh`/`node` (never `-c`, `-e`, or `--eval`), or via `uv run [--script]`, when its resolved real path
   stays inside that `skills/` tree and no other skill path is referenced. Scripts inside `skill-maintenance: auto`
-  marked project skills are refused because those skills are agent-writable.
+  marked project skills are refused because those skills are agent-writable; or
+- a syntax-only shell check — `bash`/`sh`/`dash`/`zsh` with `-n` or `--noexec` — of any skill script, marked or
+  not, because the shell parses and executes nothing (a write redirect riding along still blocks, and a `-c`
+  cluster is inline code, not a flag).
 
 Quoted prose arguments to non-interpreters (such as `gh issue create --body '…'` with literal single-quoted
 backticks) are not treated as skill paths unless they embed an executable substitution (`$(…)` or unescaped

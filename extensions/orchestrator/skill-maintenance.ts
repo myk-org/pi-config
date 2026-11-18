@@ -1302,6 +1302,30 @@ function isValidSkillScriptTarget(projectCwd: string, scriptAbs: string): boolea
   return valid;
 }
 
+/** Shell verbs whose `-n`/`--noexec` flag parses the script and runs nothing. */
+const SHELL_VERBS = /^(?:bash|sh|dash|zsh)$/;
+/** `-n`, `--noexec`, or a short cluster carrying `n` (`-nx`, `-en`). */
+const NOEXEC_FLAG_RE = /^-[A-Za-z]*n[A-Za-z]*$/;
+
+/**
+ * A syntax-only check of a skill script: `bash -n <script>`, `sh --noexec <script>`.
+ *
+ * The shell parses and reports without executing, so nothing can be run or written. This is
+ * the one way to check a MARKED skill's script, whose remedy is "edit it with the write/edit
+ * tools" — executing it is what the guard forbids. A `-c` cluster hands the next word to the
+ * shell as code, so it is never a flag scan (inline code keeps today's rule).
+ */
+function isShellSyntaxCheck(plainWords: string[], cmdIdx: number): boolean {
+  if (!SHELL_VERBS.test(path.basename(plainWords[cmdIdx] ?? ""))) return false;
+  for (let i = cmdIdx + 1; i < plainWords.length; i++) {
+    const word = plainWords[i];
+    if (!word.startsWith("-")) break;
+    if (/^-[A-Za-z]*c/.test(word)) return false;
+    if (word === "--noexec" || NOEXEC_FLAG_RE.test(word)) return true;
+  }
+  return false;
+}
+
 /**
  * Evaluate whether the segment executes an allowed read-only/unmarked skill helper script
  * (`.sh`, `.py`, `.mjs`, `.js`) directly, via `bash`/`sh` (no `-c`), via `uv run [--script]`,
@@ -1567,6 +1591,10 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
         return block(`this shell command writes (${verb || "?"}) and names a skill. ${hint}`);
       }
       if (READ_ONLY_VERBS.has(verb)) continue;
+      if (isShellSyntaxCheck(plainWords, cmdIdx)) {
+        log.debug("skill_shell_syntax_check_allowed", { verb, segment: masked.slice(0, 120) });
+        continue;
+      }
       if (verb === "mkdir" && segmentRefs.length > 0) {
         // Every operand must be a path this project owns *after* symlinks resolve, and a
         // directory we create must be inside the owned tree — a linked parent escapes it.
