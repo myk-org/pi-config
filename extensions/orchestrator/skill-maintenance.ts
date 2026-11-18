@@ -1213,10 +1213,13 @@ function collectSegmentSkillReferences(projectCwd: string, parsed: ParsedSegment
     const eq = token.indexOf("=");
     // `--option=/path/to/skill` or `of=/path/to/skill` carries its path after `=`;
     // a bare filename value (`--glob=SKILL.md`) is a pattern, not a target.
+    const shortT = /^-[A-Za-z]*t(.+)$/.exec(token);
     const candidates =
       eq > 0 && /^(?:--?[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_]*)$/.test(token.slice(0, eq))
         ? [token, unquoteWord(token.slice(eq + 1), projectCwd)]
-        : [token];
+        : shortT
+          ? [token, unquoteWord(shortT[1], projectCwd)]
+          : [token];
     const hit = candidates.find((candidate) => {
       const abs = path.resolve(projectCwd, candidate);
       if (skillAreaOf(projectCwd, abs) !== null || lexicallyUnderSkillsRoot(projectCwd, abs)) return true;
@@ -1722,7 +1725,11 @@ function allMentionsAdopted(projectCwd: string, text: string): boolean {
     let end = start + match[0].length;
     while (start > 0 && !SKILL_SLICE_DELIM_RE.test(text[start - 1])) start--;
     while (end < text.length && !SKILL_SLICE_DELIM_RE.test(text[end])) end++;
-    const token = text.slice(start, end);
+    let token = text.slice(start, end);
+    const shortT = /^-[A-Za-z]*t(.+)$/.exec(token);
+    if (shortT && !isAdoptedOwnedToken(projectCwd, token)) {
+      token = shortT[1];
+    }
     if (!isAdoptedOwnedToken(projectCwd, token)) {
       log.debug("skill_shell_adopted_rejected", { reason: "unadopted_mention", token });
       return false;
@@ -1780,7 +1787,7 @@ function writeStageTargetsAdopted(projectCwd: string, parsed: ParsedSegment): bo
       if (a.startsWith("-")) return false;
       targets.push(a);
     }
-  } else if (verb === "cp" || verb === "ln" || verb === "install") {
+  } else if (verb === "cp" || verb === "install") {
     let targetDir: string | null = null;
     const positional: string[] = [];
     for (let i = 0; i < args.length; i++) {
@@ -1789,12 +1796,32 @@ function writeStageTargetsAdopted(projectCwd: string, parsed: ParsedSegment): bo
         positional.push(...args.slice(i + 1));
         break;
       }
-      if (a === "-t" || a === "--target-directory") {
+      if (a === "--target-directory") {
         if (i + 1 >= args.length || targetDir !== null) return false;
         targetDir = args[++i];
       } else if (a.startsWith("--target-directory=")) {
         if (targetDir !== null) return false;
         targetDir = a.slice("--target-directory=".length);
+      } else if (a === "--suffix") {
+        return false;
+      } else if (a.startsWith("-") && !a.startsWith("--") && a.length > 1) {
+        let handledT = false;
+        for (let k = 1; k < a.length && /[A-Za-z]/.test(a[k]); k++) {
+          if (a[k] === "S") return false;
+          if (a[k] === "t") {
+            if (targetDir !== null) return false;
+            if (k + 1 < a.length) {
+              targetDir = a.slice(k + 1);
+            } else if (i + 1 < args.length) {
+              targetDir = args[++i];
+            } else {
+              return false;
+            }
+            handledT = true;
+            break;
+          }
+        }
+        if (!handledT && a.includes("=")) return false;
       } else if (a.startsWith("-")) {
         if (a.includes("=")) return false;
       } else {

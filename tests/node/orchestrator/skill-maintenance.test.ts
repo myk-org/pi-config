@@ -1452,6 +1452,29 @@ describe("adopted skill shell boundaries (#1152)", () => {
     const { cwd, markedSkillMd } = setup();
     assert.equal(bashSkillVerdict(cwd, `cat ${markedSkillMd} && echo x > SKILL.md`)?.block, true);
   });
+
+  it("blocks ln creating a symlink inside an adopted skill (#1152)", () => {
+    const { cwd, root } = setup();
+    const markedDir = path.join(root, "marked");
+    assert.equal(
+      bashSkillVerdict(cwd, `ln -s ../verify-all ${markedDir}/x && printf 'x' > ${markedDir}/x/SKILL.md`)?.block,
+      true,
+    );
+    assert.equal(bashSkillVerdict(cwd, "ln -s .pi/skills/verify-all .pi/skills/marked/x")?.block, true);
+  });
+
+  it("blocks cp with an attached or clustered -t option targeting an external or variable dir (#1152)", () => {
+    const { cwd, root } = setup();
+    const markedDir = path.join(root, "marked");
+    assert.equal(bashSkillVerdict(cwd, `cp -t"$TARGET" /tmp/payload ${markedDir}/run.sh`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp -at"$TARGET" /tmp/payload ${markedDir}/run.sh`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp -t/tmp/out ${markedDir}/run.sh`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp -at /tmp/out /tmp/payload ${markedDir}/run.sh`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp -S .bak /tmp/payload ${markedDir}/run.sh`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp --suffix .bak /tmp/payload ${markedDir}/run.sh`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp -t${markedDir} /tmp/new.sh`), null);
+    assert.equal(bashSkillVerdict(cwd, `cp -at${markedDir} /tmp/new.sh`), null);
+  });
 });
 
 describe("/adopt-skill", () => {
