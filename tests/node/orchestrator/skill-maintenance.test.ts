@@ -803,6 +803,30 @@ describe("skill helper script execution (#1103)", () => {
     );
   });
 
+  it("does not treat a here-string <<< as a heredoc opener (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat <<<x > /tmp/a\nrm -f .pi/skills/s/SKILL.md\nx")?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc redirected into a process substitution (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat <<'EOF' > >(bash)\nrm -f .pi/skills/s/SKILL.md\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc redirected via command substitution (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat <<'EOF' > $(echo /tmp/out)\nrm -f .pi/skills/s/SKILL.md\nEOF")?.block,
+      true,
+    );
+  });
+
   it("allows reading a skill whose name contains a write-verb prefix", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/install-tools/SKILL.md"), null);

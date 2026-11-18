@@ -1538,17 +1538,24 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
       i = end === -1 ? command.length : end + 1;
       continue;
     }
-    if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
-      const m = HEREDOC_OPENER_RE.exec(command.slice(i));
-      if (m) {
-        // `<<\EOF` (and `<<E\OF`) is a literal delimiter: bash drops the backslash, and
-        // the resulting body does not expand.
-        const bare = m[4] ?? "";
-        const delim = m[2] ?? m[3] ?? bare.replace(/\\(.)/g, "$1");
-        const expand = m[2] === undefined && m[3] === undefined && !bare.includes("\\");
-        pending.push({ delim, stripTabs: m[1] === "-", expand });
-        i += m[0].length;
+    if (ch === "<" && command[i + 1] === "<") {
+      if (command[i + 2] === "<") {
+        // Here-string (`<<<`): skip all contiguous `<` so its tail is never read as `<<`.
+        while (command[i] === "<") i++;
         continue;
+      }
+      if (command[i - 1] !== "<") {
+        const m = HEREDOC_OPENER_RE.exec(command.slice(i));
+        if (m) {
+          // `<<\EOF` (and `<<E\OF`) is a literal delimiter: bash drops the backslash, and
+          // the resulting body does not expand.
+          const bare = m[4] ?? "";
+          const delim = m[2] ?? m[3] ?? bare.replace(/\\(.)/g, "$1");
+          const expand = m[2] === undefined && m[3] === undefined && !bare.includes("\\");
+          pending.push({ delim, stripTabs: m[1] === "-", expand });
+          i += m[0].length;
+          continue;
+        }
       }
     }
     // A `#` that starts a comment hides the rest of the line: a `<<` after it opens nothing.
@@ -1601,7 +1608,7 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
   const pipelines = splitPipelines(withoutBodies);
   if (pipelines.length !== 1 || pipelines[0].length !== 1) return command;
   const stage = pipelines[0][0];
-  if (/^\s*\(/.test(stage)) return command;
+  if (/^\s*\(/.test(stage) || hasExecutableSubstitution(stage)) return command;
   if (!bodies.every((b) => isDataHeredocWrite(projectCwd, stage, command.slice(b.bodyStart, b.bodyEnd), b.expand))) {
     return command;
   }
