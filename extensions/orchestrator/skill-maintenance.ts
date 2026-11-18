@@ -1523,6 +1523,10 @@ function cdChangesSkillMeaning(
     log.debug("skill_shell_cd_relative_target", { target });
     return true;
   }
+  if (skillAreaOf(projectCwd, target) !== null || lexicallyUnderSkillsRoot(projectCwd, target)) {
+    log.debug("skill_shell_cd_inside_skills_area", { target });
+    return true;
+  }
   if (VARIABLE_EXPANSION_RE.test(command)) {
     log.debug("skill_shell_cd_expansion", { target });
     return true;
@@ -1687,26 +1691,106 @@ const SKILL_SLICE_DELIM_RE = /[\s'"()<>;&|=]/;
 const BARE_SKILLS_ROOT_RE =
   /(?:^|[^\w-])(?:\.pi|\.agents|\.pi\/agent)\/skills(?=$|[\s"'`;|&)>])|node_modules\/[^\s"'`]*\/skills(?=$|[\s"'`;|&)>])/;
 const GLOBAL_SKILL_MENTION_RE = new RegExp(SKILL_MENTION_RE.source, "g");
+const ADOPTED_FORBIDDEN_META_RE = /[$`~{}*?[\]]/;
 
 function isAdoptedOwnedToken(projectCwd: string, rawToken: string): string | null {
-  if (!rawToken || /[$`~{}]/.test(rawToken) || hasParentComponent(rawToken)) return null;
+  if (!rawToken || ADOPTED_FORBIDDEN_META_RE.test(rawToken) || hasParentComponent(rawToken)) {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "invalid_or_meta" });
+    return null;
+  }
   const abs = path.resolve(projectCwd, rawToken);
-  if (skillAreaOf(projectCwd, abs) !== "owned") return null;
+  const area = skillAreaOf(projectCwd, abs);
+  if (area !== "owned") {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "not_owned", area });
+    return null;
+  }
   const skill = ownedSkillName(projectCwd, abs);
-  if (!skill || !isMarkedSkillNamed(projectCwd, skill)) return null;
+  if (!skill || !isMarkedSkillNamed(projectCwd, skill)) {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "unmarked_or_root", skill });
+    return null;
+  }
   return skill;
 }
 
 function allMentionsAdopted(projectCwd: string, text: string): boolean {
-  if (BARE_SKILLS_ROOT_RE.test(text)) return false;
+  if (BARE_SKILLS_ROOT_RE.test(text)) {
+    log.debug("skill_shell_adopted_rejected", { reason: "bare_skills_root" });
+    return false;
+  }
   for (const match of text.matchAll(GLOBAL_SKILL_MENTION_RE)) {
     let start = match.index ?? 0;
     let end = start + match[0].length;
     while (start > 0 && !SKILL_SLICE_DELIM_RE.test(text[start - 1])) start--;
     while (end < text.length && !SKILL_SLICE_DELIM_RE.test(text[end])) end++;
-    if (!isAdoptedOwnedToken(projectCwd, text.slice(start, end))) return false;
+    const token = text.slice(start, end);
+    if (!isAdoptedOwnedToken(projectCwd, token)) {
+      log.debug("skill_shell_adopted_rejected", { reason: "unadopted_mention", token });
+      return false;
+    }
   }
   return true;
+}
+
+function writeStageTargetsAdopted(projectCwd: string, parsed: ParsedSegment): boolean {
+  const plainWords = parsed.words.map((w) => w.value);
+  const cmdIdx = commandWordIndex(plainWords);
+  const verb = plainWords[cmdIdx] ?? "";
+  const args = plainWords.slice(cmdIdx + 1);
+  let targets: string[] = [];
+
+  if (verb === "chmod" || verb === "chown" || verb === "chgrp") {
+    let i = 0;
+    while (i < args.length && args[i].startsWith("-")) {
+      if (args[i].includes("=")) return false;
+      i++;
+    }
+    targets = args.slice(i + 1);
+  } else if (verb === "sed") {
+    let sawScript = false;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-e" || a === "--expression") { sawScript = true; i++; continue; }
+      if (a.startsWith("--expression=")) { sawScript = true; continue; }
+      if (a === "-f" || a === "--file" || a.startsWith("--file=")) return false;
+      if (a.startsWith("-")) continue;
+      if (!sawScript) { sawScript = true; continue; }
+      targets.push(a);
+    }
+  } else if (verb === "perl") {
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (/^-[A-Za-z]*[eE]$/.test(a)) { i++; continue; }
+      if (/^-[A-Za-z]+$/.test(a)) continue;
+      if (a.startsWith("-")) return false;
+      targets.push(a);
+    }
+  } else if (verb === "dd") {
+    for (const a of args) {
+      if (a.startsWith("of=") || a.startsWith("if=")) targets.push(a.slice(3));
+    }
+  } else if (verb === "truncate") {
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-s" || a === "--size" || a === "-r" || a === "--reference") {
+        if (a === "-r" || a === "--reference") return false;
+        i++;
+        continue;
+      }
+      if (a.startsWith("--size=") || /^-[A-Za-z]+$/.test(a)) continue;
+      if (a.startsWith("-")) return false;
+      targets.push(a);
+    }
+  } else if (
+    verb === "rm" || verb === "tee" || verb === "cp" || verb === "mv" ||
+    verb === "ln" || verb === "install" || verb === "touch" || verb === "unlink"
+  ) {
+    if (args.some((a) => a.startsWith("-") && a.includes("="))) return false;
+    targets = args.filter((a) => !a.startsWith("-"));
+  } else {
+    return false;
+  }
+
+  return targets.length > 0 && targets.every((t) => isAdoptedOwnedToken(projectCwd, t) !== null);
 }
 
 /**
@@ -1721,13 +1805,46 @@ function isAdoptedSkillsOnlyCommand(
   refs: readonly ShellSkillReference[],
 ): string[] | null {
   if (refs.length === 0) return null;
+  const cd = pinnedCdTarget(projectCwd, analyzed);
+  if (cd.count > 0) {
+    const realTarget = cd.target ? (realpathNearestExisting(cd.target) ?? cd.target) : null;
+    const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
+    if (cd.count > 1 || realTarget !== realCwd) {
+      log.debug("skill_shell_adopted_rejected", { reason: "cd_outside_project", count: cd.count, target: cd.target });
+      return null;
+    }
+  }
   const skills = new Set<string>();
   for (const ref of refs) {
-    if (ref.bare || ref.area !== "owned") return null;
-    if (/[$`~{}]/.test(ref.token) || hasParentComponent(ref.token)) return null;
+    if (ref.bare || ref.area !== "owned") {
+      log.debug("skill_shell_adopted_rejected", { reason: "ref_not_owned", token: ref.token, area: ref.area, bare: ref.bare });
+      return null;
+    }
+    if (ADOPTED_FORBIDDEN_META_RE.test(ref.token) || hasParentComponent(ref.token)) {
+      log.debug("skill_shell_adopted_rejected", { reason: "ref_meta_or_parent", token: ref.token });
+      return null;
+    }
     const skill = ownedSkillName(projectCwd, ref.abs);
-    if (!skill || !isMarkedSkillNamed(projectCwd, skill)) return null;
+    if (!skill || !isMarkedSkillNamed(projectCwd, skill)) {
+      log.debug("skill_shell_adopted_rejected", { reason: "ref_unmarked", token: ref.token, skill });
+      return null;
+    }
     skills.add(skill);
+  }
+  const maskQuoted = (text: string): string =>
+    text.replace(QUOTED_SPAN_RE, (match) => (match.startsWith("\\") ? match : " "));
+  for (const stages of splitPipelines(analyzed)) {
+    for (const stage of stages) {
+      const parsed = parseSegment(projectCwd, stage);
+      if (parsed.hasWriteRedirect && !parsed.redirectTargets.every((t) => isAdoptedOwnedToken(projectCwd, t) !== null)) {
+        log.debug("skill_shell_adopted_rejected", { reason: "write_redirect_not_adopted", targets: parsed.redirectTargets });
+        return null;
+      }
+      if (BASH_WRITE_VERBS.test(maskQuoted(stage)) && !writeStageTargetsAdopted(projectCwd, parsed)) {
+        log.debug("skill_shell_adopted_rejected", { reason: "write_verb_target_not_adopted", stage: stage.slice(0, 120) });
+        return null;
+      }
+    }
   }
   const variants = [analyzed, unquoteWord(analyzed), analyzed.replace(/\\([A-Za-z])/g, "$1")];
   if (!variants.every((text) => allMentionsAdopted(projectCwd, text))) return null;

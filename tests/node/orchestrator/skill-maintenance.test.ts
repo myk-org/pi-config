@@ -1341,20 +1341,67 @@ describe("adopted skill shell boundaries (#1152)", () => {
     });
   });
 
-  it("blocks mixed commands touching both a marked skill and an unmarked, global, or package skill", () => {
-    const { cwd, markedScript, markedSkillMd } = setup();
-    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript} ~/.agents/skills/x/SKILL.md`)?.block, true);
+  it("blocks a command mixing a marked skill with an unmarked project skill", () => {
+    const { cwd, markedScript } = setup();
     assert.equal(bashSkillVerdict(cwd, `cp ${markedScript} .pi/skills/verify-all/run.sh`)?.block, true);
-    assert.equal(bashSkillVerdict(cwd, `bash -c 'rm ~/.agents/skills/x' ${markedSkillMd}`)?.block, true);
-    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript} && rm -rf ~/.agents/skills`)?.block, true);
-    assert.equal(
-      bashSkillVerdict(cwd, `bash ${markedScript} && sed -i 's/a/b/' node_modules/pkg/skills/demo/SKILL.md`)?.block,
-      true,
-    );
     assert.equal(
       bashSkillVerdict(cwd, `bash -c 'rm .pi/skil\\ls/verify-all/SKILL.md' ${markedScript}`)?.block,
       true,
     );
+  });
+
+  it("blocks a command mixing a marked skill with a user-global skill", () => {
+    const { cwd, markedScript, markedSkillMd } = setup();
+    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript} ~/.agents/skills/x/SKILL.md`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash -c 'rm ~/.agents/skills/x' ${markedSkillMd}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript} && rm -rf ~/.agents/skills`)?.block, true);
+  });
+
+  it("blocks a command mixing a marked skill with a package skill", () => {
+    const { cwd, markedScript } = setup();
+    assert.equal(
+      bashSkillVerdict(cwd, `bash ${markedScript} && sed -i 's/a/b/' node_modules/pkg/skills/demo/SKILL.md`)?.block,
+      true,
+    );
+  });
+
+  it("blocks cd into an adopted skill directory followed by relative rm (#1152)", () => {
+    const { cwd, root } = setup();
+    assert.equal(bashSkillVerdict(cwd, `cd ${path.join(root, "marked")} && rm -rf ../verify-all`)?.block, true);
+  });
+
+  it("blocks variable redirect from an adopted skill (#1152)", () => {
+    const { cwd, markedSkillMd, markedScript } = setup();
+    assert.equal(bashSkillVerdict(cwd, `cat ${markedSkillMd} > "$TARGET"`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp ${markedScript} "$TARGET"`)?.block, true);
+  });
+
+  it("blocks inline skill write after cd to another directory (#1152)", () => {
+    const { cwd, markedSkillMd } = setup();
+    assert.equal(
+      bashSkillVerdict(cwd, `cd /tmp && cat ${markedSkillMd} && sh -c 'rm -rf .pi/skills/marked'`)?.block,
+      true,
+    );
+  });
+
+  it("blocks glob characters in adopted skill paths (#1152)", () => {
+    const { cwd } = setup();
+    assert.equal(bashSkillVerdict(cwd, "rm -rf .pi/skills/*")?.block, true);
+    assert.equal(bashSkillVerdict(cwd, "rm .pi/skills/marked/*/SKILL.md")?.block, true);
+    assert.equal(bashSkillVerdict(cwd, "rm .pi/skills/marked/?/SKILL.md")?.block, true);
+    assert.equal(bashSkillVerdict(cwd, "rm .pi/skills/marked/[a-z]/SKILL.md")?.block, true);
+  });
+
+  it("logs skill_shell_adopted_rejected when an adopted skill check rejects a command (#1152)", () => {
+    const { cwd, markedSkillMd } = setup();
+    inTempLogHome("skill-maint-adopted-reject-log-test", () => {
+      assert.equal(bashSkillVerdict(cwd, `cat ${markedSkillMd} > "$TARGET"`)?.block, true);
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      const body = fs.readFileSync(logPath, "utf-8");
+      assert.match(body, /skill_shell_adopted_token_rejected/);
+      assert.match(body, /skill_shell_adopted_rejected/);
+    });
   });
 
   it("blocks variable-constructed skill paths even alongside a marked skill", () => {
