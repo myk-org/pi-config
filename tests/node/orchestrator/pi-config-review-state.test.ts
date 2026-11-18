@@ -635,6 +635,24 @@ describe("worktree state isolation", () => {
     // Main repo unaffected
     assert.equal(readReviewState(mainRepo).status, "none");
   });
+
+  // Issue #1129: the one refusal reported there quoted the MAIN checkout's state while the commit
+  // was issued from a worktree. The gate can only do that if it consulted another tree's state, so
+  // pin the predicate it calls: a worktree with no loop of its own is always allowed, however
+  // blocked another tree is.
+  it("a worktree with state none is never blocked by the main checkout's unfinished loop", () => {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: mainRepo, encoding: "utf-8", env: GIT_ENV }).trim();
+    markNeedsReview(mainRepo);
+    addReviewerPending(mainRepo, "lint", { kind: "local", head_sha: head });
+    recordReviewerResult(mainRepo, "lint", 28);
+    markTestsPassed(mainRepo);
+
+    assert.equal(readReviewState(mainRepo).status, "has_findings");
+    assert.equal(isCommitAllowed(mainRepo), false, "the main checkout is blocked by its own loop");
+    assert.equal(readReviewState(worktreeA).status, "none");
+    assert.equal(isCommitAllowed(worktreeA), true, "an untracked worktree is not blocked by the main checkout");
+    assert.equal(isCommitAllowed(worktreeB), true, "nor by a sibling worktree");
+  });
 });
 
 // ── cycle counter preservation across fix-edit-review loop (max-cycles regression) ──
