@@ -8,7 +8,9 @@
  * - a skill we maintain carries `skill-maintenance: auto` in its frontmatter;
  * - a write/edit guard lets an agent patch a skill only when it is MARKED and its
  *   real path sits under `<project>/.pi/skills/` — shipped package skills,
- *   user-global skills, third-party skills and unmarked project skills are refused;
+ *   user-global skills, third-party skills and unmarked project skills are refused.
+ *   Once adopted (`skill-maintenance: auto`), owned project skills have no write or
+ *   bash limitations;
  * - when a skill we used this turn fails, the agent is steered mid-turn to fix it;
  * - after the turn, one line reports what changed, and every write is recorded in
  *   `.pi/data/skill-review.jsonl` as it happens.
@@ -204,18 +206,6 @@ export function readSkillFile(projectCwd: string, name: string): string | null {
     return fs.readFileSync(path.join(root, name, "SKILL.md"), "utf-8");
   } catch {
     return null;
-  }
-}
-
-/** True when `skillMdPath` exists on disk and carries `skill-maintenance: auto`. */
-function hasAutoMaintenanceMarker(skillMdPath: string): boolean {
-  try {
-    const marked = isMarkedSkill(fs.readFileSync(skillMdPath, "utf-8"));
-    log.debug("skill_marker_file_check", { skillMdPath, marked });
-    return marked;
-  } catch {
-    log.debug("skill_marker_file_absent", { skillMdPath });
-    return false;
   }
 }
 
@@ -1223,10 +1213,13 @@ function collectSegmentSkillReferences(projectCwd: string, parsed: ParsedSegment
     const eq = token.indexOf("=");
     // `--option=/path/to/skill` or `of=/path/to/skill` carries its path after `=`;
     // a bare filename value (`--glob=SKILL.md`) is a pattern, not a target.
+    const shortT = /^-[A-Za-z]*t(.+)$/.exec(token);
     const candidates =
       eq > 0 && /^(?:--?[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_]*)$/.test(token.slice(0, eq))
         ? [token, unquoteWord(token.slice(eq + 1), projectCwd)]
-        : [token];
+        : shortT
+          ? [token, unquoteWord(shortT[1], projectCwd)]
+          : [token];
     const hit = candidates.find((candidate) => {
       const abs = path.resolve(projectCwd, candidate);
       if (skillAreaOf(projectCwd, abs) !== null || lexicallyUnderSkillsRoot(projectCwd, abs)) return true;
@@ -1402,21 +1395,18 @@ function isShellSyntaxCheck(plainWords: string[], cmdIdx: number): boolean {
 }
 
 /**
- * Evaluate whether the segment executes an allowed read-only/unmarked skill helper script
- * (`.sh`, `.py`, `.mjs`, `.js`) directly, via `bash`/`sh` (no `-c`), via `uv run [--script]`,
- * or via `node` (no `-e`), and references no other skill path.
- *
- * Refuses scripts inside `skill-maintenance: auto` marked project skills: those skills are
- * agent-writable, so running a script there would let an agent modify protected skills.
+ * Evaluate whether the segment executes an allowed skill helper script (`.sh`, `.py`,
+ * `.mjs`, `.js`) directly, via `bash`/`sh` (no `-c`), via `uv run [--script]`, or via
+ * `node` (no `-e`), and references no other skill path.
  */
 function isAllowedSkillScriptExec(
   projectCwd: string,
   plainWords: string[],
   cmdIdx: number,
   segmentRefs: readonly ShellSkillReference[],
-): { allow: boolean; reason?: string } {
+): boolean {
   const args = plainWords.slice(cmdIdx);
-  if (args.length === 0 || segmentRefs.length === 0) return { allow: false };
+  if (args.length === 0 || segmentRefs.length === 0) return false;
 
   let scriptIdx = -1;
   let extRe: RegExp | undefined;
@@ -1440,7 +1430,7 @@ function isAllowedSkillScriptExec(
       if (SAFE_UV_VALUE_FLAGS.has(flag)) { k += 2; continue; }
       if (/^--(?:with|python)=/.test(flag)) { k++; continue; }
       log.debug("skill_shell_uv_unsafe_flag", { flag });
-      return { allow: false };
+      return false;
     }
     if (args[k] === "python" || args[k] === "python3") {
       k++;
@@ -1453,44 +1443,21 @@ function isAllowedSkillScriptExec(
   const scriptToken = scriptIdx >= 0 ? args[scriptIdx] : undefined;
   if (!scriptToken || !extRe || !extRe.test(scriptToken)) {
     log.debug("skill_shell_script_not_matched", { head, scriptToken: scriptToken ?? null });
-    return { allow: false };
+    return false;
   }
   const scriptAbs = path.resolve(projectCwd, scriptToken);
-  if (!isValidSkillScriptTarget(projectCwd, scriptAbs)) return { allow: false };
+  if (!isValidSkillScriptTarget(projectCwd, scriptAbs)) return false;
   if (!segmentRefs.every((ref) => ref.abs === scriptAbs)) {
     log.debug("skill_shell_script_extra_ref", { script: scriptAbs });
-    return { allow: false };
+    return false;
   }
   if (args.some((arg, idx) => idx !== scriptIdx && SKILL_MENTION_RE.test(arg))) {
     log.debug("skill_shell_script_arg_mentions_skill", { script: scriptAbs });
-    return { allow: false };
-  }
-
-  const realAbs = realpathNearestExisting(scriptAbs) ?? scriptAbs;
-  const area = skillAreaOf(projectCwd, scriptAbs);
-  if (area === "owned" || area === null) {
-    const ownedRoot = ownedSkillsRoot(projectCwd);
-    const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
-    const wtRoot = path.join(realCwd, ".pi", "skills");
-    const activeRoot = area === "owned" ? ownedRoot : wtRoot;
-    const skill = activeRoot ? path.relative(activeRoot, realAbs).split(path.sep)[0] : "";
-    const skillMdCandidates = [
-      ...(activeRoot && skill ? [path.join(activeRoot, skill, "SKILL.md")] : []),
-      ...(ownedRoot && skill && ownedRoot !== activeRoot ? [path.join(ownedRoot, skill, "SKILL.md")] : []),
-    ];
-    if (skillMdCandidates.some((md) => hasAutoMaintenanceMarker(md)) || hasAutoMaintenanceMarker(scriptAbs)) {
-      log.warn("skill_shell_marked_script_refused", { skill, script: scriptAbs });
-      return {
-        allow: false,
-        reason:
-          `helper scripts inside marked project skill "${skill || scriptToken}" (${MARKER_LINE}) ` +
-          `are agent-writable and cannot be executed via bash.`,
-      };
-    }
+    return false;
   }
 
   log.debug("skill_shell_script_allowed", { head, script: scriptAbs });
-  return { allow: true };
+  return true;
 }
 
 /**
@@ -1557,6 +1524,10 @@ function cdChangesSkillMeaning(
   }
   if (!path.isAbsolute(target)) {
     log.debug("skill_shell_cd_relative_target", { target });
+    return true;
+  }
+  if (skillAreaOf(projectCwd, target) !== null || lexicallyUnderSkillsRoot(projectCwd, target)) {
+    log.debug("skill_shell_cd_inside_skills_area", { target });
     return true;
   }
   if (VARIABLE_EXPANSION_RE.test(command)) {
@@ -1719,22 +1690,292 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
   return out;
 }
 
+const SHELL_WORD_DELIM_RE = /[\s()<>;&|]/;
+const BARE_SKILLS_ROOT_RE =
+  /(?:^|[^\w-])(?:\.pi|\.agents|\.pi\/agent)\/skills(?=$|[\s"'`;|&)>])|node_modules\/[^\s"'`]*\/skills(?=$|[\s"'`;|&)>])/;
+const ADOPTED_FORBIDDEN_META_RE = /[$`~{}*?[\]]/;
+
+function isAdoptedOwnedToken(projectCwd: string, rawToken: string): string | null {
+  if (!rawToken || ADOPTED_FORBIDDEN_META_RE.test(rawToken) || hasParentComponent(rawToken)) {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "invalid_or_meta" });
+    return null;
+  }
+  const abs = path.resolve(projectCwd, rawToken);
+  const area = skillAreaOf(projectCwd, abs);
+  if (area !== "owned") {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "not_owned", area });
+    return null;
+  }
+  const skill = ownedSkillName(projectCwd, abs);
+  if (!skill || !isMarkedSkillNamed(projectCwd, skill)) {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "unmarked_or_root", skill });
+    return null;
+  }
+  return skill;
+}
+
+/** Split `text` into raw shell words without stripping quotes, keeping quoted/escaped spaces intact. */
+function tokenizeShellWords(text: string): string[] {
+  const words: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    while (i < text.length && SHELL_WORD_DELIM_RE.test(text[i])) i++;
+    if (i >= text.length) break;
+    const start = i;
+    while (i < text.length && !SHELL_WORD_DELIM_RE.test(text[i])) {
+      const ch = text[i];
+      if (ch === "\\") {
+        i += i + 1 < text.length ? 2 : 1;
+        continue;
+      }
+      if (ch === "$" && text[i + 1] === "'") {
+        i += 2;
+        while (i < text.length && text[i] !== "'") {
+          i += text[i] === "\\" && i + 1 < text.length ? 2 : 1;
+        }
+        if (i < text.length) i++;
+        continue;
+      }
+      if (ch === "'") {
+        const end = text.indexOf("'", i + 1);
+        i = end === -1 ? text.length : end + 1;
+        continue;
+      }
+      if (ch === '"') {
+        i++;
+        while (i < text.length && text[i] !== '"') {
+          i += text[i] === "\\" && i + 1 < text.length ? 2 : 1;
+        }
+        if (i < text.length) i++;
+        continue;
+      }
+      i++;
+    }
+    words.push(text.slice(start, i));
+  }
+  return words;
+}
+
+function extractAdoptedSkillToken(projectCwd: string, unquoted: string): string | null {
+  if (isAdoptedOwnedToken(projectCwd, unquoted) !== null) return unquoted;
+  const eq = unquoted.indexOf("=");
+  if (eq > 0 && /^(?:--?[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_]*)$/.test(unquoted.slice(0, eq))) {
+    const rhs = unquoted.slice(eq + 1);
+    if (isAdoptedOwnedToken(projectCwd, rhs) !== null) return rhs;
+  }
+  const shortT = /^-[A-Za-z]*t(.+)$/.exec(unquoted);
+  if (shortT && isAdoptedOwnedToken(projectCwd, shortT[1]) !== null) return shortT[1];
+  return null;
+}
+
+function allMentionsAdopted(projectCwd: string, text: string, depth = 0): boolean {
+  if (BARE_SKILLS_ROOT_RE.test(text)) {
+    log.debug("skill_shell_adopted_rejected", { reason: "bare_skills_root" });
+    return false;
+  }
+  for (const rawWord of tokenizeShellWords(text)) {
+    const unquoted = unquoteWord(rawWord);
+    if (BARE_SKILLS_ROOT_RE.test(unquoted)) {
+      log.debug("skill_shell_adopted_rejected", { reason: "bare_skills_root", token: unquoted });
+      return false;
+    }
+    if (extractAdoptedSkillToken(projectCwd, unquoted) !== null) continue;
+    // Quoted/escaped words that are not themselves adopted skill paths may hold inline code
+    // (e.g. `bash -c 'rm -rf "/path/unmarked"'`), so inspect their unquoted shell tokens too.
+    if (unquoted !== rawWord && depth < 16) {
+      if (!allMentionsAdopted(projectCwd, unquoted, depth + 1)) return false;
+      continue;
+    }
+    const deescaped = unquoted.replace(/\\([A-Za-z])/g, "$1");
+    if (SKILL_MENTION_RE.test(unquoted) || SKILL_MENTION_RE.test(deescaped) || BARE_SKILLS_ROOT_RE.test(deescaped)) {
+      log.debug("skill_shell_adopted_rejected", { reason: "unadopted_mention", token: unquoted });
+      return false;
+    }
+  }
+  return true;
+}
+
+function writeStageTargetsAdopted(projectCwd: string, parsed: ParsedSegment): boolean {
+  const plainWords = parsed.words.map((w) => w.value);
+  const cmdIdx = commandWordIndex(plainWords);
+  const verb = plainWords[cmdIdx] ?? "";
+  const args = plainWords.slice(cmdIdx + 1);
+  let targets: string[] = [];
+
+  if (verb === "chmod" || verb === "chown" || verb === "chgrp") {
+    let i = 0;
+    while (i < args.length && args[i].startsWith("-")) {
+      if (args[i].includes("=")) return false;
+      i++;
+    }
+    targets = args.slice(i + 1);
+  } else if (verb === "sed") {
+    let sawScript = false;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-e" || a === "--expression") { sawScript = true; i++; continue; }
+      if (a.startsWith("--expression=")) { sawScript = true; continue; }
+      if (a === "-f" || a === "--file" || a.startsWith("--file=")) return false;
+      if (a.startsWith("-")) continue;
+      if (!sawScript) { sawScript = true; continue; }
+      targets.push(a);
+    }
+  } else if (verb === "perl") {
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (/^-[A-Za-z]*[eE]$/.test(a)) { i++; continue; }
+      if (/^-[A-Za-z]+$/.test(a)) continue;
+      if (a.startsWith("-")) return false;
+      targets.push(a);
+    }
+  } else if (verb === "dd") {
+    for (const a of args) {
+      if (a.startsWith("of=") || a.startsWith("if=")) targets.push(a.slice(3));
+    }
+  } else if (verb === "truncate") {
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-s" || a === "--size" || a === "-r" || a === "--reference") {
+        if (a === "-r" || a === "--reference") return false;
+        i++;
+        continue;
+      }
+      if (a.startsWith("--size=") || /^-[A-Za-z]+$/.test(a)) continue;
+      if (a.startsWith("-")) return false;
+      targets.push(a);
+    }
+  } else if (verb === "cp" || verb === "install") {
+    let targetDir: string | null = null;
+    const positional: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--") {
+        positional.push(...args.slice(i + 1));
+        break;
+      }
+      if (a === "--target-directory") {
+        if (i + 1 >= args.length || targetDir !== null) return false;
+        targetDir = args[++i];
+      } else if (a.startsWith("--target-directory=")) {
+        if (targetDir !== null) return false;
+        targetDir = a.slice("--target-directory=".length);
+      } else if (a === "--suffix") {
+        return false;
+      } else if (a.startsWith("-") && !a.startsWith("--") && a.length > 1) {
+        let handledT = false;
+        for (let k = 1; k < a.length && /[A-Za-z]/.test(a[k]); k++) {
+          if (a[k] === "S") return false;
+          if (a[k] === "t") {
+            if (targetDir !== null) return false;
+            if (k + 1 < a.length) {
+              targetDir = a.slice(k + 1);
+            } else if (i + 1 < args.length) {
+              targetDir = args[++i];
+            } else {
+              return false;
+            }
+            handledT = true;
+            break;
+          }
+        }
+        if (!handledT && a.includes("=")) return false;
+      } else if (a.startsWith("-")) {
+        if (a.includes("=")) return false;
+      } else {
+        positional.push(a);
+      }
+    }
+    if (targetDir !== null) {
+      targets = [targetDir];
+    } else {
+      if (positional.length < 2) return false;
+      targets = [positional[positional.length - 1]!];
+    }
+  } else if (verb === "rm" || verb === "tee" || verb === "mv" || verb === "touch" || verb === "unlink") {
+    if (args.some((a) => a.startsWith("-") && a.includes("="))) return false;
+    targets = args.filter((a) => !a.startsWith("-"));
+  } else {
+    return false;
+  }
+
+  return targets.length > 0 && targets.every((t) => isAdoptedOwnedToken(projectCwd, t) !== null);
+}
+
 /**
- * Shell guard (Qodo #1079, #1103): the shell reads skills and runs trusted helper scripts,
- * never writes them.
+ * True (returning the sorted adopted skill names) when every skill reference and every
+ * skill mention in `analyzed` resolves exclusively to owned project skills under
+ * `.pi/skills/` that carry `skill-maintenance: auto`. Any mention of unmarked, global,
+ * `.agents/skills/`, package, symlinked, or variable-constructed skill paths fails closed.
+ */
+function isAdoptedSkillsOnlyCommand(
+  projectCwd: string,
+  analyzed: string,
+  refs: readonly ShellSkillReference[],
+): string[] | null {
+  if (refs.length === 0) return null;
+  const cd = pinnedCdTarget(projectCwd, analyzed);
+  if (cd.count > 0) {
+    const realTarget = cd.target ? (realpathNearestExisting(cd.target) ?? cd.target) : null;
+    const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
+    if (cd.count > 1 || realTarget !== realCwd) {
+      log.debug("skill_shell_adopted_rejected", { reason: "cd_outside_project", count: cd.count, target: cd.target });
+      return null;
+    }
+  }
+  const skills = new Set<string>();
+  for (const ref of refs) {
+    if (ref.bare || ref.area !== "owned") {
+      log.debug("skill_shell_adopted_rejected", { reason: "ref_not_owned", token: ref.token, area: ref.area, bare: ref.bare });
+      return null;
+    }
+    if (ADOPTED_FORBIDDEN_META_RE.test(ref.token) || hasParentComponent(ref.token)) {
+      log.debug("skill_shell_adopted_rejected", { reason: "ref_meta_or_parent", token: ref.token });
+      return null;
+    }
+    const skill = ownedSkillName(projectCwd, ref.abs);
+    if (!skill || !isMarkedSkillNamed(projectCwd, skill)) {
+      log.debug("skill_shell_adopted_rejected", { reason: "ref_unmarked", token: ref.token, skill });
+      return null;
+    }
+    skills.add(skill);
+  }
+  const maskQuoted = (text: string): string =>
+    text.replace(QUOTED_SPAN_RE, (match) => (match.startsWith("\\") ? match : " "));
+  for (const stages of splitPipelines(analyzed)) {
+    for (const stage of stages) {
+      const parsed = parseSegment(projectCwd, stage);
+      if (parsed.hasWriteRedirect && !parsed.redirectTargets.every((t) => isAdoptedOwnedToken(projectCwd, t) !== null)) {
+        log.debug("skill_shell_adopted_rejected", { reason: "write_redirect_not_adopted", targets: parsed.redirectTargets });
+        return null;
+      }
+      if (BASH_WRITE_VERBS.test(maskQuoted(stage)) && !writeStageTargetsAdopted(projectCwd, parsed)) {
+        log.debug("skill_shell_adopted_rejected", { reason: "write_verb_target_not_adopted", stage: stage.slice(0, 120) });
+        return null;
+      }
+    }
+  }
+  if (!allMentionsAdopted(projectCwd, analyzed)) return null;
+  return [...skills].sort();
+}
+
+/**
+ * Shell guard (Qodo #1079, #1103, #1152): adopted (`skill-maintenance: auto`) owned
+ * project skills have no bash limitations when the command touches ONLY adopted skills.
+ * For all protected skills (unmarked project skills, `.agents/skills/`, user-global,
+ * package skills, symlink escapes, bare `SKILL.md`, `$VAR` skill paths, or mixed
+ * commands), the shell reads skills and runs helper scripts, never writes them.
  *
- * A command that names a skills area passes only when EVERY segment is:
+ * A protected command passes only when EVERY segment is:
  * - an allowlisted read verb (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `ls`, `stat`,
  *   `wc`, `diff`, `md5sum`, `sha256sum`) with no write operator;
  * - `mkdir` inside this project's own skills tree; or
- * - executing a `.sh`/`.py`/`.mjs`/`.js` helper script of an UNMARKED project skill,
- *   user-global skill, or installed package skill, with no write operator (`/dev/null`
- *   sinks and fd duplications like `2>&1` are permitted).
+ * - executing a `.sh`/`.py`/`.mjs`/`.js` helper script of a skill with no write operator
+ *   (`/dev/null` sinks and fd duplications like `2>&1` are permitted).
  *
- * No shell write is allowed at all (`>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
- * `perl -i`, `chmod`, `touch`, `patch`, inline `python -c` / `node -e` / `bash -c`, etc.).
- * Ambiguity blocks: a bare `SKILL.md`, a `cd` that could change a skill path's meaning, a
- * path through a symlink.
+ * No shell write is allowed at all on protected skills (`>`, `>>`, `>&`, `tee`, `cp`,
+ * `mv`, `rm`, `sed -i`, `perl -i`, `chmod`, `touch`, `patch`, inline `python -c` /
+ * `node -e` / `bash -c`, etc.). Ambiguity blocks: a bare `SKILL.md`, a `cd` that could
+ * change a skill path's meaning, a path through a symlink.
  *
  * A heredoc BODY is file content, not a reference, when the whole command is a single
  * pure data writer (`cat`, `printf`, `echo`, `tee`) writing somewhere that names no skill
@@ -1754,7 +1995,11 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
   // segments) never reads file content as a command.
   const analyzed = blankDataHeredocBodies(projectCwd, command);
   const refs = shellSkillReferences(projectCwd, analyzed);
-  const rawMentionsSkill = SKILL_MENTION_RE.test(analyzed) || SKILL_MENTION_RE.test(unquoteWord(analyzed));
+  const rawMentionsSkill =
+    SKILL_MENTION_RE.test(analyzed) ||
+    SKILL_MENTION_RE.test(unquoteWord(analyzed)) ||
+    BARE_SKILLS_ROOT_RE.test(analyzed) ||
+    BARE_SKILLS_ROOT_RE.test(unquoteWord(analyzed));
   if (refs.length === 0 && !rawMentionsSkill) return null;
 
   const maskQuoted = (text: string): string =>
@@ -1764,9 +2009,8 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
     return { block: true, reason: `⛔ ${reason}` };
   };
   const hint =
-    `The shell reads skills (and runs unmarked/read-only helper scripts) but never writes them. Read one with cat/rg/ls; ` +
-    `edit a marked skill in ${path.join(projectCwd, ".pi", "skills")}/ with the write/edit tools ` +
-    `(run /adopt-skill <name> first if it is not marked yet).`;
+    `The shell reads protected skills (and runs their helper scripts) but never writes them. Read one with cat/rg/ls; ` +
+    `edit a marked skill in ${path.join(projectCwd, ".pi", "skills")}/ (run /adopt-skill <name> first if it is not marked yet).`;
 
   if (refs.some((ref) => ref.bare)) {
     return block(`a bare SKILL.md means whatever the working directory is. ${hint}`);
@@ -1774,6 +2018,11 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
   const maskedCommand = maskQuoted(analyzed);
   if (cdChangesSkillMeaning(projectCwd, analyzed, refs)) {
     return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
+  }
+  const adoptedSkills = isAdoptedSkillsOnlyCommand(projectCwd, analyzed, refs);
+  if (adoptedSkills !== null) {
+    log.debug("skill_shell_adopted_allowed", { skills: adoptedSkills });
+    return null;
   }
   // Nested commands run before the outer one: `cat skill $(python3 -c …)`, `<(...)`, `>(...)`.
   if (hasExecutableSubstitution(analyzed)) {
@@ -1807,11 +2056,16 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
         return block(`this command's options execute another program. ${hint}`);
       }
       const segmentRefs = collectSegmentSkillReferences(projectCwd, parsed, cmdIdx);
+      const unquotedSegment = unquoteWord(segment);
       const unquotedMentionsSkill = SKILL_MENTION_RE.test(masked);
       const runsInlineCode = segmentRunsInlineCode(parsed, cmdIdx);
+      const mentionsBareRoot = BARE_SKILLS_ROOT_RE.test(masked) || BARE_SKILLS_ROOT_RE.test(unquotedSegment);
+      const writesOrRunsBareRoot =
+        mentionsBareRoot && (parsed.hasWriteRedirect || BASH_WRITE_VERBS.test(masked) || runsInlineCode);
       const inlineBodyMentionsSkill =
         runsInlineCode && (pipelineMentionsSkill || plainWords.some((w) => SKILL_MENTION_RE.test(w)));
-      const namesSkill = segmentRefs.length > 0 || unquotedMentionsSkill || inlineBodyMentionsSkill;
+      const namesSkill =
+        segmentRefs.length > 0 || unquotedMentionsSkill || inlineBodyMentionsSkill || writesOrRunsBareRoot;
       if (!namesSkill) continue;
 
       if (parsed.hasWriteRedirect || BASH_WRITE_VERBS.test(masked)) {
@@ -1835,9 +2089,7 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
         if (allOperandsAreSkills && allOwned) continue;
         return block(`mkdir here would create a directory outside this project's own skills tree. ${hint}`);
       }
-      const scriptExec = isAllowedSkillScriptExec(projectCwd, plainWords, cmdIdx, segmentRefs);
-      if (scriptExec.allow) continue;
-      if (scriptExec.reason) return block(`${scriptExec.reason} ${hint}`);
+      if (isAllowedSkillScriptExec(projectCwd, plainWords, cmdIdx, segmentRefs)) continue;
       if (inlineBodyMentionsSkill) {
         return block(`this shell command runs inline code ("${verb || "?"}") that names a skill. ${hint}`);
       }

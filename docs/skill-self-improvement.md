@@ -64,34 +64,40 @@ A skill file is writable only when it is **marked** *and* its real path (after `
 The rule is enforced in code by a `tool_call` guard on `write`/`edit`/`multi_edit`, so a blocked write is
 refused before it happens and the agent is told what to do instead.
 
-### The shell reads skills and runs helper scripts, never writes them
+### Adopted skills have full bash access; protected skills are read/script-only
 
-A `bash` command that names a skills area passes only when **every** `;`, `&&`, `||`, `&` or `|` segment is a
-read or helper execution with no write operator (`/dev/null` sinks like `2>/dev/null` and fd duplications like
-`2>&1` are ignored, and leading `rtk`/env prefixes are unwrapped):
+Adopted (`skill-maintenance: auto`) owned project skills under `<project>/.pi/skills/` have **no limitations**
+on `write`/`edit` or `bash` (#1152): once a project skill is adopted, agents and dreaming can run its scripts
+(`bash`, direct execution, `OTP=$(...) && script.sh`, etc.) and self-improve it freely via `write`/`edit` or
+shell commands (`chmod +x`, `sed -i`, `>`, etc.). The exemption only applies when **every** skill reference and
+mention in the command resolves strictly to adopted owned project skills with no bare `SKILL.md`, `$VAR`/`~`
+skill paths, symlink escapes, or directory changes that alter relative resolution.
+
+For **protected** skills — unmarked project skills, `.agents/skills/`, user-global skills
+(`~/.pi/agent/skills/`, `~/.agents/skills/`), `node_modules` package skills, symlink escapes, and mixed
+commands touching both adopted and protected skills — a `bash` command passes only when **every** `;`, `&&`,
+`||`, `&` or `|` segment is a read or helper execution with no write operator (`/dev/null` sinks like
+`2>/dev/null` and fd duplications like `2>&1` are ignored, and leading `rtk`/env prefixes are unwrapped):
 
 - an allowlisted read verb (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `ls`, `stat`, `wc`, `diff`, `md5sum`,
   `sha256sum`);
 - `mkdir` for a directory inside this project's own `.pi/skills/` that resolves there (the `SKILL.md` itself is
   still written with `write`/`edit`, where the marker and ownership apply); or
-- running a `.sh`, `.py`, `.mjs`, or `.js` helper script inside an **unmarked** project skill, a user-global
-  skill (`~/.pi/agent/skills/`, `~/.agents/skills/`), or an installed `node_modules` package skill — directly,
-  via `bash`/`sh`/`node` (never `-c`, `-e`, or `--eval`), or via `uv run [--script]`, when its resolved real path
-  stays inside that `skills/` tree and no other skill path is referenced. Scripts inside `skill-maintenance: auto`
-  marked project skills are refused because those skills are agent-writable; or
-- a syntax-only shell check — `bash`/`sh`/`dash`/`zsh` with `-n` or `--noexec` — of any skill script, marked or
-  not, because the shell parses and executes nothing (a write redirect riding along still blocks). The exemption
-  fails closed: the program must be a bare shell name or a real shell binary (not a renamed copy), every flag must be
-  a noexec flag (a `-c` cluster, a value-taking option like `--rcfile`/`-o`, or an unknown flag disqualifies), and
-  no `+n` may appear.
+- running a `.sh`, `.py`, `.mjs`, or `.js` helper script inside a protected skill — directly, via
+  `bash`/`sh`/`node` (never `-c`, `-e`, or `--eval`), or via `uv run [--script]`, when its resolved real path
+  stays inside that `skills/` tree and no other skill path is referenced; or
+- a syntax-only shell check — `bash`/`sh`/`dash`/`zsh` with `-n` or `--noexec` — of any skill script, because the
+  shell parses and executes nothing (a write redirect riding along still blocks). The exemption fails closed: the
+  program must be a bare shell name or a real shell binary (not a renamed copy), every flag must be a noexec flag
+  (a `-c` cluster, a value-taking option like `--rcfile`/`-o`, or an unknown flag disqualifies), and no `+n` may
+  appear.
 
 Quoted prose arguments to non-interpreters (such as `gh issue create --body '…'` with literal single-quoted
 backticks) are not treated as skill paths unless they embed an executable substitution (`$(…)` or unescaped
-backticks outside single quotes). Everything else blocks: `>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
-`perl -i`, `install`, `dd`, `truncate`, `chmod`, `touch`, `patch`, quoted or unquoted inline `-c`/`-e`/`--eval`/`eval`
-scripts, piped/heredoc interpreters, scripts in marked project skills, a bare `SKILL.md`, a `cd`, `--pre`/`--exec`,
-a path through a symlink, and any reference the guard cannot resolve. The shell is not a second way to write a
-skill — one write path means one place to be correct.
+backticks outside single quotes). Everything else on protected skills blocks: `>`, `>>`, `>&`, `tee`, `cp`, `mv`,
+`rm`, `sed -i`, `perl -i`, `install`, `dd`, `truncate`, `chmod`, `touch`, `patch`, quoted or unquoted inline
+`-c`/`-e`/`--eval`/`eval` scripts, piped/heredoc interpreters, a bare `SKILL.md`, a `cd` that changes relative
+resolution, `--pre`/`--exec`, a path through a symlink, and any reference the guard cannot resolve.
 
 Known limit, stated rather than guessed at: a path built by shell expansion — `t=…; … > "$t"`, `eval`,
 `find -exec` — carries no literal reference, so no text rule can see it. The change still reaches the turn-end
