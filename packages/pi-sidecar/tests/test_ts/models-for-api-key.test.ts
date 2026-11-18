@@ -1026,6 +1026,70 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
     }
   });
 
+  // Issue 1133: models.json is JSONC — pi's ModelConfig.load parses it with
+  // stripJsonComments+stripBom, so the trust-map reader must not use a bare JSON.parse.
+  it("reads trustKeyScopedListing from a commented models.json", () => {
+    const dir = makeTempDir("sidecar-1133-jsonc-");
+    writeFileSync(join(dir, "models.json"), [
+      "{",
+      "  // line comment before providers",
+      "  \"providers\": {",
+      "    /* block comment before a flagged provider */",
+      "    \"gw1133\": {",
+      "      \"baseUrl\": \"https://gw1133.example.test/v1\", // trailing line comment",
+      "      \"api\": \"openai-completions\",",
+      "      \"apiKey\": \"unused-ambient\",", // pragma: allowlist secret — synthetic config
+      "      \"trustKeyScopedListing\": true,",
+      "      \"models\": [{ \"id\": \"static-1133\", \"name\": \"Static\" }],",
+      "    },",
+      "  },",
+      "}",
+    ].join("\n"));
+    try {
+      const trusted = readTrustedKeyScopedProviders(dir);
+      assert.deepEqual([...trusted.keys()], ["gw1133"], "a commented manifest keeps its trust map");
+      assert.deepEqual(trusted.get("gw1133"), {
+        baseUrl: "https://gw1133.example.test/v1",
+        models: [{ id: "static-1133", name: "Static" }],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed with a warn on a genuinely malformed models.json", () => {
+    const dir = makeTempDir("sidecar-1133-broken-");
+    const modelsPath = join(dir, "models.json");
+    writeFileSync(modelsPath, `{ "providers": { "gw1133broken": { "trustKeyScopedListing": true, }`);
+    const warn = logger.warn;
+    const warnings: string[] = [];
+    logger.warn = (...args) => { warnings.push(args.map((arg) => String(arg)).join(" ")); };
+    try {
+      assert.deepEqual([...readTrustedKeyScopedProviders(dir)], [], "a malformed manifest grants no trust");
+      const failure = warnings.find((line) => line.includes("Failed to read/parse models.json"));
+      assert.ok(failure, "the failure is logged at warn");
+      assert.ok(failure.includes(modelsPath), "the warn names the file");
+      assert.ok(/error=.+/.test(failure), "the warn names the reason");
+    } finally {
+      logger.warn = warn;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps reading an uncommented models.json (regression)", () => {
+    const dir = makeTempDir("sidecar-1133-plain-");
+    writeManifest(dir, { gw1133plain: {
+      baseUrl: "https://gw1133plain.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      trustKeyScopedListing: true, models: [{ id: "static-plain-1133", name: "Static" }] } });
+    try {
+      const trusted = readTrustedKeyScopedProviders(dir);
+      assert.deepEqual([...trusted.keys()], ["gw1133plain"]);
+      assert.deepEqual(trusted.get("gw1133plain")?.models, [{ id: "static-plain-1133", name: "Static" }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to manifest-declared limits when a key-listed model omits them", async () => {
     // Gateway listings (e.g. Acme) return ids without token-limit capabilities;
     // the admin declares limits for the same id in the agent-dir models.json.

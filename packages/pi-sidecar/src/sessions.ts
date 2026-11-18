@@ -22,6 +22,7 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { Model, Provider } from "@earendil-works/pi-ai";
 import { createJiti } from "jiti";
+import stripJsonComments from "strip-json-comments";
 
 import { createLogger, logger } from "./logger.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
@@ -599,7 +600,12 @@ export function readTrustedKeyScopedProviders(agentDir?: string): Map<string, Tr
       log.debug(`No models.json in agent dir; no trustKeyScopedListing flags: path=${modelsPath}`);
       return trusted;
     }
-    const parsed: unknown = JSON.parse(readFileSync(modelsPath, "utf-8"));
+    // Parse exactly like pi's ModelConfig.load (issue 1133): models.json is JSONC —
+    // comments, trailing commas and a BOM are legal to the runtime, so a bare
+    // JSON.parse here would drop a manifest pi itself accepts. Same library the
+    // orchestrator uses for its JSONC settings files.
+    const content = readFileSync(modelsPath, "utf-8").replace(/^\uFEFF/, "");
+    const parsed: unknown = JSON.parse(stripJsonComments(content, { trailingCommas: true }));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       log.warn(`models.json in agent dir is not a JSON object; no trustKeyScopedListing flags: path=${modelsPath}`);
       return trusted;
