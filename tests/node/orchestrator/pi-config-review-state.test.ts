@@ -2,7 +2,7 @@
  * Tests for review state machine (review loop enforcement).
  * Run with: npx tsx --test tests/node/orchestrator/pi-config-review-state.test.ts
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -26,6 +26,7 @@ import {
   type ReviewSubject,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { parseRepoSlug, resolveReviewSubject } from "../../../extensions/orchestrator/review-subject.js";
+import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 
 /** Every round must name what it reviews; these suites review one local commit. */
 const SUBJECT: ReviewSubject = { kind: "local", head_sha: "0123456789abcdef0123456789abcdef01234567" }; // pragma: allowlist secret
@@ -639,19 +640,110 @@ describe("worktree state isolation", () => {
   // Issue #1129: the one refusal reported there quoted the MAIN checkout's state while the commit
   // was issued from a worktree. The gate can only do that if it consulted another tree's state, so
   // pin the predicate it calls: a worktree with no loop of its own is always allowed, however
-  // blocked another tree is.
-  it("a worktree with state none is never blocked by the main checkout's unfinished loop", () => {
-    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: mainRepo, encoding: "utf-8", env: GIT_ENV }).trim();
-    markNeedsReview(mainRepo);
-    addReviewerPending(mainRepo, "lint", { kind: "local", head_sha: head });
-    recordReviewerResult(mainRepo, "lint", 28);
-    markTestsPassed(mainRepo);
+  // blocked another tree — the main checkout OR a sibling worktree — is.
+  const unfinishedLoop = (dir: string, findings: number) => {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf-8", env: GIT_ENV }).trim();
+    markNeedsReview(dir);
+    addReviewerPending(dir, "lint", { kind: "local", head_sha: head });
+    recordReviewerResult(dir, "lint", findings);
+    markTestsPassed(dir);
+  };
+
+  it("a worktree with state none is never blocked by the main checkout's or a sibling's loop", () => {
+    unfinishedLoop(mainRepo, 28);
+    // The sibling runs its own loop too — isolation must not depend on the other tree being idle.
+    unfinishedLoop(worktreeA, 4);
 
     assert.equal(readReviewState(mainRepo).status, "has_findings");
     assert.equal(isCommitAllowed(mainRepo), false, "the main checkout is blocked by its own loop");
-    assert.equal(readReviewState(worktreeA).status, "none");
-    assert.equal(isCommitAllowed(worktreeA), true, "an untracked worktree is not blocked by the main checkout");
-    assert.equal(isCommitAllowed(worktreeB), true, "nor by a sibling worktree");
+    assert.equal(readReviewState(worktreeA).status, "has_findings");
+    assert.equal(isCommitAllowed(worktreeA), false, "a worktree is blocked by its own loop");
+    assert.equal(readReviewState(worktreeB).status, "none");
+    assert.equal(isCommitAllowed(worktreeB), true, "an untracked worktree is not blocked by the main checkout or a sibling");
+  });
+});
+
+// ── The real gate: `git -C <tree>` must consult <tree>, never the session cwd ──
+
+// Issue #1129's describe above pins the predicate; this pins the command-level cwd derivation
+// (resolveEffectiveCwd) by driving the actual tool_call hook, which is the only place the wrong
+// tree could have been consulted.
+describe("commit gate honours git -C", () => {
+  const hooks = new Map<string, Function>();
+  const envBackup = { PI_AGENT_NAME: process.env.PI_AGENT_NAME, PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD };
+  let repo: string;
+  let tree: string;
+  let msgFile: string;
+
+  before(() => {
+    registerEnforcement({
+      on: (name: string, handler: Function) => hooks.set(name, handler),
+      registerTool: () => {},
+      registerCommand: () => {},
+    } as any);
+  });
+
+  beforeEach(() => {
+    repo = makeTempDir("gate-main-");
+    execFileSync("git", ["init", "-q"], { cwd: repo, stdio: "ignore", env: GIT_ENV });
+    execFileSync("git", ["commit", "--allow-empty", "-qm", "init"], { cwd: repo, stdio: "ignore", env: GIT_ENV });
+    tree = join(tmpdir(), `gate-tree-${crypto.randomUUID()}`);
+    execFileSync("git", ["worktree", "add", tree, "-b", "branch-a"], { cwd: repo, stdio: "ignore", env: GIT_ENV });
+    // branch-a needs a commit of its own, or the "branch already merged" guard answers instead
+    // of the review gate.
+    writeFileSync(join(tree, "f.txt"), "x\n");
+    execFileSync("git", ["add", "f.txt"], { cwd: tree, stdio: "ignore", env: GIT_ENV });
+    execFileSync("git", ["commit", "-qm", "worktree work"], { cwd: tree, stdio: "ignore", env: GIT_ENV });
+    // Settings resolve to the main checkout root for BOTH trees, so one file enables the gate in
+    // each and no other commit guard can answer first.
+    mkdirSync(join(repo, ".pi"), { recursive: true });
+    writeFileSync(join(repo, ".pi", "pi-config-settings.json"), JSON.stringify({ review_loop_enforcement: true, commit_trailer: false }));
+    msgFile = join(repo, "msg.txt");
+    writeFileSync(msgFile, "test: message\n");
+    process.env.PI_AGENT_NAME = "git-expert";
+    delete process.env.PI_SUBAGENT_CHILD;
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(envBackup)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try { execFileSync("git", ["worktree", "remove", tree, "--force"], { cwd: repo, stdio: "ignore", env: GIT_ENV }); } catch {}
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  const runCommit = async (cwd: string) =>
+    (await hooks.get("tool_call")!(
+      { type: "tool_call", toolName: "bash", input: { command: `git -C ${tree} commit -F ${msgFile}` } },
+      { cwd, model: { id: "m", provider: "openai" } },
+    )) as { block: true; reason: string } | undefined;
+
+  const unfinishedLoop = (dir: string) => {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf-8", env: GIT_ENV }).trim();
+    markNeedsReview(dir);
+    addReviewerPending(dir, "lint", { kind: "local", head_sha: head });
+    recordReviewerResult(dir, "lint", 3);
+  };
+
+  it("allows a commit whose -C tree has no loop of its own, though the session cwd is blocked", async () => {
+    unfinishedLoop(repo);
+    assert.equal(readReviewState(repo).status, "has_findings");
+    assert.equal(isCommitAllowed(repo), false, "the session cwd itself is blocked");
+    assert.equal(readReviewState(tree).status, "none");
+
+    const res = await runCommit(repo);
+    assert.equal(res, undefined, `the gate honoured -C and read the worktree's none state: ${res?.reason ?? ""}`);
+  });
+
+  it("blocks a commit whose -C tree has its own findings, though the session cwd has none", async () => {
+    unfinishedLoop(tree);
+    assert.equal(readReviewState(repo).status, "none");
+    assert.equal(readReviewState(tree).status, "has_findings");
+
+    const res = await runCommit(repo);
+    assert.equal(res?.block, true);
+    assert.match(res?.reason ?? "", /Review loop incomplete \(status: has_findings/);
   });
 });
 
