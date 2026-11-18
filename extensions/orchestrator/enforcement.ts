@@ -271,11 +271,12 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
       continue;
     }
     if (state === "missing") {
+      const quotedFile = `'${escapeForSingleQuote(fileMessage)}'`;
       return {
         block: true,
         reason:
           `⛔ Commit refused: the message file ${fileMessage} has no \`${trailerName}\` trailer. ` +
-          `Append it with the real id — \`printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> " + fileMessage + "\` — then re-run the commit.`,
+          `Append it with the real id — \`printf '\\n\\n${trailerName}: PI (%s)\\n' "$PI_MODEL" >> ${quotedFile}\` — then re-run the commit.`,
       };
     }
     // Unreadable: the file cannot be verified, and the command TEXT is no substitute
@@ -297,7 +298,7 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
       reason:
         `⛔ Commit refused: no \`${trailerName}\` trailer found and this commit shape is opaque to the hook ` +
         `(the message is built in a way it cannot inspect). Add \`${trailerName}: PI (${modelId})\` to the message ` +
-        "yourself — e.g. `printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> <file>` for `-F <file>` — then re-run the commit.",
+        `yourself — e.g. \`printf '\\n\\n${trailerName}: PI (%s)\\n' "$PI_MODEL" >> <file>\` for \`-F <file>\` — then re-run the commit.`,
     };
   }
   return undefined;
