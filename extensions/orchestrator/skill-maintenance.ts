@@ -1690,10 +1690,9 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
   return out;
 }
 
-const SKILL_SLICE_DELIM_RE = /[\s'"()<>;&|=]/;
+const SHELL_WORD_DELIM_RE = /[\s()<>;&|]/;
 const BARE_SKILLS_ROOT_RE =
   /(?:^|[^\w-])(?:\.pi|\.agents|\.pi\/agent)\/skills(?=$|[\s"'`;|&)>])|node_modules\/[^\s"'`]*\/skills(?=$|[\s"'`;|&)>])/;
-const GLOBAL_SKILL_MENTION_RE = new RegExp(SKILL_MENTION_RE.source, "g");
 const ADOPTED_FORBIDDEN_META_RE = /[$`~{}*?[\]]/;
 
 function isAdoptedOwnedToken(projectCwd: string, rawToken: string): string | null {
@@ -1715,23 +1714,81 @@ function isAdoptedOwnedToken(projectCwd: string, rawToken: string): string | nul
   return skill;
 }
 
-function allMentionsAdopted(projectCwd: string, text: string): boolean {
+/** Split `text` into raw shell words without stripping quotes, keeping quoted/escaped spaces intact. */
+function tokenizeShellWords(text: string): string[] {
+  const words: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    while (i < text.length && SHELL_WORD_DELIM_RE.test(text[i])) i++;
+    if (i >= text.length) break;
+    const start = i;
+    while (i < text.length && !SHELL_WORD_DELIM_RE.test(text[i])) {
+      const ch = text[i];
+      if (ch === "\\") {
+        i += i + 1 < text.length ? 2 : 1;
+        continue;
+      }
+      if (ch === "$" && text[i + 1] === "'") {
+        i += 2;
+        while (i < text.length && text[i] !== "'") {
+          i += text[i] === "\\" && i + 1 < text.length ? 2 : 1;
+        }
+        if (i < text.length) i++;
+        continue;
+      }
+      if (ch === "'") {
+        const end = text.indexOf("'", i + 1);
+        i = end === -1 ? text.length : end + 1;
+        continue;
+      }
+      if (ch === '"') {
+        i++;
+        while (i < text.length && text[i] !== '"') {
+          i += text[i] === "\\" && i + 1 < text.length ? 2 : 1;
+        }
+        if (i < text.length) i++;
+        continue;
+      }
+      i++;
+    }
+    words.push(text.slice(start, i));
+  }
+  return words;
+}
+
+function extractAdoptedSkillToken(projectCwd: string, unquoted: string): string | null {
+  if (isAdoptedOwnedToken(projectCwd, unquoted) !== null) return unquoted;
+  const eq = unquoted.indexOf("=");
+  if (eq > 0 && /^(?:--?[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_]*)$/.test(unquoted.slice(0, eq))) {
+    const rhs = unquoted.slice(eq + 1);
+    if (isAdoptedOwnedToken(projectCwd, rhs) !== null) return rhs;
+  }
+  const shortT = /^-[A-Za-z]*t(.+)$/.exec(unquoted);
+  if (shortT && isAdoptedOwnedToken(projectCwd, shortT[1]) !== null) return shortT[1];
+  return null;
+}
+
+function allMentionsAdopted(projectCwd: string, text: string, depth = 0): boolean {
   if (BARE_SKILLS_ROOT_RE.test(text)) {
     log.debug("skill_shell_adopted_rejected", { reason: "bare_skills_root" });
     return false;
   }
-  for (const match of text.matchAll(GLOBAL_SKILL_MENTION_RE)) {
-    let start = match.index ?? 0;
-    let end = start + match[0].length;
-    while (start > 0 && !SKILL_SLICE_DELIM_RE.test(text[start - 1])) start--;
-    while (end < text.length && !SKILL_SLICE_DELIM_RE.test(text[end])) end++;
-    let token = text.slice(start, end);
-    const shortT = /^-[A-Za-z]*t(.+)$/.exec(token);
-    if (shortT && !isAdoptedOwnedToken(projectCwd, token)) {
-      token = shortT[1];
+  for (const rawWord of tokenizeShellWords(text)) {
+    const unquoted = unquoteWord(rawWord);
+    if (BARE_SKILLS_ROOT_RE.test(unquoted)) {
+      log.debug("skill_shell_adopted_rejected", { reason: "bare_skills_root", token: unquoted });
+      return false;
     }
-    if (!isAdoptedOwnedToken(projectCwd, token)) {
-      log.debug("skill_shell_adopted_rejected", { reason: "unadopted_mention", token });
+    if (extractAdoptedSkillToken(projectCwd, unquoted) !== null) continue;
+    // Quoted/escaped words that are not themselves adopted skill paths may hold inline code
+    // (e.g. `bash -c 'rm -rf "/path/unmarked"'`), so inspect their unquoted shell tokens too.
+    if (unquoted !== rawWord && depth < 16) {
+      if (!allMentionsAdopted(projectCwd, unquoted, depth + 1)) return false;
+      continue;
+    }
+    const deescaped = unquoted.replace(/\\([A-Za-z])/g, "$1");
+    if (SKILL_MENTION_RE.test(unquoted) || SKILL_MENTION_RE.test(deescaped) || BARE_SKILLS_ROOT_RE.test(deescaped)) {
+      log.debug("skill_shell_adopted_rejected", { reason: "unadopted_mention", token: unquoted });
       return false;
     }
   }
@@ -1897,8 +1954,7 @@ function isAdoptedSkillsOnlyCommand(
       }
     }
   }
-  const variants = [analyzed, unquoteWord(analyzed), analyzed.replace(/\\([A-Za-z])/g, "$1")];
-  if (!variants.every((text) => allMentionsAdopted(projectCwd, text))) return null;
+  if (!allMentionsAdopted(projectCwd, analyzed)) return null;
   return [...skills].sort();
 }
 

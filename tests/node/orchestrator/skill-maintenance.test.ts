@@ -1475,6 +1475,36 @@ describe("adopted skill shell boundaries (#1152)", () => {
     assert.equal(bashSkillVerdict(cwd, `cp -t${markedDir} /tmp/new.sh`), null);
     assert.equal(bashSkillVerdict(cwd, `cp -at${markedDir} /tmp/new.sh`), null);
   });
+
+  it("allows quoted adopted skill paths when the project path contains spaces (#1152)", () => {
+    const projDir = tempDir("skill maint space ");
+    const root = path.join(projDir, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    writeSkill(root, "marked", MARKED);
+    writeSkill(root, "unmarked", UNMARKED);
+
+    assert.equal(bashSkillVerdict(projDir, `cp -t"${projDir}/.pi/skills/marked" /tmp/new.sh`), null);
+    assert.equal(bashSkillVerdict(projDir, `cp --target-directory="${projDir}/.pi/skills/marked" /tmp/new.sh`), null);
+    assert.equal(bashSkillVerdict(projDir, `cat "${projDir}/.pi/skills/marked/SKILL.md"`), null);
+    assert.equal(bashSkillVerdict(projDir, `echo hi > "${projDir}/.pi/skills/unmarked/SKILL.md"`)?.block, true);
+    assert.equal(
+      bashSkillVerdict(projDir, `cat "${projDir}/.pi/skills/marked/SKILL.md" && echo hi > "${projDir}/.pi/skills/unmarked/SKILL.md"`)?.block,
+      true,
+    );
+    assert.equal(
+      bashSkillVerdict(projDir, `bash -c 'rm -rf "${projDir}/.pi/skills/unmarked"' "${projDir}/.pi/skills/marked/SKILL.md"`)?.block,
+      true,
+    );
+    assert.equal(
+      bashSkillVerdict(projDir, `bash -c 'rm -rf ~/.agents/skills/x' "${projDir}/.pi/skills/marked/SKILL.md"`)?.block,
+      true,
+    );
+    assert.equal(bashSkillVerdict(projDir, `rm -rf "${projDir}/.pi/skills"`)?.block, true);
+    assert.equal(
+      bashSkillVerdict(projDir, `cat "${projDir}/.pi/skills/marked/SKILL.md" && rm -rf "${projDir}/.pi/skills"`)?.block,
+      true,
+    );
+  });
 });
 
 describe("/adopt-skill", () => {
