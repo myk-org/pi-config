@@ -1331,6 +1331,26 @@ describe("adopted skill shell boundaries (#1152)", () => {
     return { cwd, root, markedScript, markedSkillMd };
   }
 
+  it("allows copying an external file into an adopted skill", () => {
+    const { cwd, root } = setup();
+    const markedDir = path.join(root, "marked");
+    assert.equal(bashSkillVerdict(cwd, `cp /tmp/new.sh ${markedDir}/new.sh`), null);
+    assert.equal(bashSkillVerdict(cwd, `cp -t ${markedDir} /tmp/new.sh`), null);
+    assert.equal(bashSkillVerdict(cwd, "cp /tmp/new.sh .pi/skills/marked/new.sh"), null);
+    assert.equal(bashSkillVerdict(cwd, "cp -t .pi/skills/marked /tmp/new.sh"), null);
+    assert.equal(bashSkillVerdict(cwd, `cp --target-directory=${markedDir} /tmp/new.sh`), null);
+    assert.equal(bashSkillVerdict(cwd, `cp --target-directory ${markedDir} /tmp/new.sh`), null);
+  });
+
+  it("blocks copying out of an adopted skill to a variable target", () => {
+    const { cwd, root } = setup();
+    const markedDir = path.join(root, "marked");
+    assert.equal(bashSkillVerdict(cwd, `cp ${markedDir}/new.sh "$TARGET"`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp ${markedDir}/new.sh /tmp/out.sh`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, 'cp .pi/skills/marked/new.sh "$TARGET"')?.block, true);
+    assert.equal(bashSkillVerdict(cwd, "cp .pi/skills/marked/new.sh .pi/skills/verify-all/new.sh")?.block, true);
+  });
+
   it("logs skill_shell_adopted_allowed when only adopted owned skills are referenced", () => {
     const { cwd, markedScript } = setup();
     inTempLogHome("skill-maint-adopted-log-test", () => {

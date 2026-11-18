@@ -1780,10 +1780,34 @@ function writeStageTargetsAdopted(projectCwd: string, parsed: ParsedSegment): bo
       if (a.startsWith("-")) return false;
       targets.push(a);
     }
-  } else if (
-    verb === "rm" || verb === "tee" || verb === "cp" || verb === "mv" ||
-    verb === "ln" || verb === "install" || verb === "touch" || verb === "unlink"
-  ) {
+  } else if (verb === "cp" || verb === "ln" || verb === "install") {
+    let targetDir: string | null = null;
+    const positional: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--") {
+        positional.push(...args.slice(i + 1));
+        break;
+      }
+      if (a === "-t" || a === "--target-directory") {
+        if (i + 1 >= args.length || targetDir !== null) return false;
+        targetDir = args[++i];
+      } else if (a.startsWith("--target-directory=")) {
+        if (targetDir !== null) return false;
+        targetDir = a.slice("--target-directory=".length);
+      } else if (a.startsWith("-")) {
+        if (a.includes("=")) return false;
+      } else {
+        positional.push(a);
+      }
+    }
+    if (targetDir !== null) {
+      targets = [targetDir];
+    } else {
+      if (positional.length < 2) return false;
+      targets = [positional[positional.length - 1]!];
+    }
+  } else if (verb === "rm" || verb === "tee" || verb === "mv" || verb === "touch" || verb === "unlink") {
     if (args.some((a) => a.startsWith("-") && a.includes("="))) return false;
     targets = args.filter((a) => !a.startsWith("-"));
   } else {
