@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,21 +10,25 @@ import { fileURLToPath } from "node:url";
 const PKG_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SENTINEL_WHEEL = "pi_sidecar_client-0.0.0-sentinel.whl";
 const SENTINEL_SDIST = "pi_sidecar_client-0.0.0-sentinel.tar.gz";
+// Same compiler the package's `build` script runs ("build": "tsc").
+const TSC = createRequire(import.meta.url).resolve("typescript/bin/tsc");
+const NODE_MODULES = join(dirname(TSC), "..", "..");
 
 /**
- * Pack a scratch copy of the real package with a dist/ this test owns.
+ * Pack a scratch copy of the real package, built for real inside the fixture.
  *
  * packages/pi-sidecar/tsconfig.json emits into dist/ and `npm run typecheck`
  * (the tsc-typecheck pre-commit hook) runs it in parallel with this suite, so
  * packing the real package raced a concurrent build emitting dist/index.js
  * between npm pack's file listing and the existsSync below (issue #1137).
+ * The fixture therefore builds src/ into its own dist/ (node_modules is
+ * symlinked so the build resolves the same types) and never touches the
+ * repo's dist/.
  */
 function withFixturePackage(run: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "pi-sidecar-npm-pack-"));
   try {
-    // Split by design: packaging config comes from the repo (asserted
-    // byte-identical below), build output is a fixture, because the real dist/
-    // is written by the parallel tsc-typecheck hook.
+    // Packaging config comes from the repo (asserted byte-identical below).
     for (const name of ["package.json", ".npmignore", ".gitignore"]) {
       cpSync(join(PKG_DIR, name), join(dir, name));
       assert.deepEqual(
@@ -32,14 +37,24 @@ function withFixturePackage(run: (dir: string) => void): void {
         `${name} must be a faithful copy of the repo's`,
       );
     }
-    cpSync(join(PKG_DIR, "scripts"), join(dir, "scripts"), { recursive: true });
-    const dist = join(dir, "dist");
-    mkdirSync(dist);
-    for (const built of ["index.js", "server.js"]) {
-      writeFileSync(join(dist, built), "// built\n");
+    for (const name of ["scripts", "src"]) {
+      cpSync(join(PKG_DIR, name), join(dir, name), { recursive: true });
     }
-    writeFileSync(join(dist, SENTINEL_WHEEL), "sentinel");
-    writeFileSync(join(dist, SENTINEL_SDIST), "sentinel");
+    cpSync(join(PKG_DIR, "tsconfig.json"), join(dir, "tsconfig.json"));
+    symlinkSync(NODE_MODULES, join(dir, "node_modules"), "junction");
+    const build = spawnSync(process.execPath, [TSC, "-p", "tsconfig.json"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    assert.equal(build.status, 0, build.stdout + build.stderr);
+    for (const built of ["index.js", "server.js"] as const) {
+      assert.ok(
+        existsSync(join(dir, "dist", built)),
+        `build must emit dist/${built} — packing a stub dist/ would prove nothing`,
+      );
+    }
+    writeFileSync(join(dir, "dist", SENTINEL_WHEEL), "sentinel");
+    writeFileSync(join(dir, "dist", SENTINEL_SDIST), "sentinel");
     run(dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
