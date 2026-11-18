@@ -2547,14 +2547,16 @@ export function gitAddPathspecs(command: string): string[] | null {
 }
 
 /**
- * The message file of a real `git commit -F <file>` / `--file <file>` /
- * `--file=<file>` / `-F<file>`, or null when the message does not come from a
- * file the hook can read (`-F -` is stdin; a `-m` message is inline). Global
- * options before `commit` (`-C <path>`, `-c <k=v>`, `--no-pager`) do not hide
- * it — the region starts after the subcommand.
+ * The message source of EVERY real `git commit` in the command — one entry per
+ * commit segment: the `-F <file>` path, or null when that segment's message is
+ * not a file the hook can read (`-F -` is stdin, a `-m` message is inline).
+ * Every segment is returned because a compound command commits twice — checking
+ * only the first would let the second commit through unverified (Qodo, PR #1139).
+ * Global options before `commit` (`-C <path>`, `-c <k=v>`, `--no-pager`) do not
+ * hide the file: the region starts after the subcommand.
  */
-export function commitMessageFile(command: string): string | null {
-  for (const region of gitSubParseRegions(command, "commit")) {
+export function commitMessageFiles(command: string): Array<string | null> {
+  const files = gitSubParseRegions(command, "commit").map((region) => {
     const tokens = tokenize(region);
     for (let i = 0; i < tokens.length; i++) {
       const token = tokens[i]!;
@@ -2562,14 +2564,25 @@ export function commitMessageFile(command: string): string | null {
       let value: string | undefined;
       if (token === "-F" || token === "--file") value = tokens[++i];
       else if (token.startsWith("--file=")) value = token.slice("--file=".length);
+      // `-F<file>`: an ATTACHED value, tested before the `-m` cluster below so
+      // `-F"msg with space"` is not read as `-a -m …`.
       else if (token.startsWith("-F") && token.length > 2) value = token.slice(2);
-      else continue;
-      const found = value === "-" || value === "" ? null : value ?? null;
-      enfLog.debug("commitMessageFile", found ? "file" : "opaque");
-      return found;
+      // An inline message wins: `git commit -m '--file=good.txt'` records that
+      // literal text, so its operand is a MESSAGE and the commit is opaque
+      // (Qodo, PR #1139). `-m`, `--message`, `--message=…` and a combined short
+      // option (`-am`) all mean an inline message.
+      else if (token === "--message" || token.startsWith("--message=") || /^-[a-zA-Z]*m/.test(token)) {
+        return null;
+      } else continue;
+      // The region of a subshell runs through the closing paren
+      // (`(git commit -F msg.txt)`), so end the operand at shell syntax.
+      const clean = (value ?? "").split(/[)|&;\n]/)[0]!;
+      return clean === "-" || clean === "" ? null : clean;
     }
-  }
-  return null;
+    return null;
+  });
+  enfLog.debug("commitMessageFiles", `segments=${files.length} files=${files.filter(Boolean).length}`);
+  return files;
 }
 
 /**

@@ -53,9 +53,12 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
     the FILE, and it reads it in the directory git runs in, so the standard worktree form
     `git -C <path> commit -F <file>` is inspected too. Write the trailer into the file before
     committing, with the already-resolved id:
-    `printf '\n\nTRAILER: PI (%s)\n' "$PI_MODEL" >> <file>`, then commit. The shell expands
-    `$PI_MODEL` while writing the file, so no placeholder can reach the message. Never repeat the
-    trailer in the command text as a shell comment — the check reads the file, not the comment.
+    `printf '\n\nTRAILER: PI (%s)\n' "$PI_MODEL" >> <file>`, then commit. Use an ABSOLUTE
+    `<file>` in both commands (a relative path resolves against YOUR cwd, not the `-C` worktree,
+    so the trailer would land in the wrong file). The shell expands `$PI_MODEL` while writing the
+    file, so no placeholder can reach the message. Never repeat the trailer in the command text as
+    a shell comment — the check reads the file, not the comment. Every commit in a compound
+    command is checked, so a second `-F` commit needs its own trailer too.
   Never write a bare `MODEL` placeholder and never leave an unexpanded `$PI_MODEL` in a `-m` message:
   the enforcement hook **refuses** such a commit (it reports the placeholder line back), and it also
   refuses a commit shape it cannot inspect when the message shows no trailer. The fix is always to

@@ -85,7 +85,7 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
-  commitMessageFile,
+  commitMessageFiles,
   isTestRunnerCommand,
   isBumpVersionBranch,
   getCachedBranch,
@@ -219,9 +219,15 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
   // guessing. Refusing a message that already carries the trailer would block the very
   // flow the git-expert instruction describes (Qodo, PR #1004). Found through the git
   // parser, so global options before `commit` (`-C <path>`, `-c <k=v>`, `--no-pager`)
-  // no longer hide the file (#1131).
-  const fileMessage = commitMessageFile(command);
-  if (fileMessage) {
+  // no longer hide the file (#1131), and EVERY commit in a compound command is
+  // verified — one trailerless file refuses all of them (Qodo, PR #1139).
+  const fileMessages = commitMessageFiles(command);
+  let unverified = fileMessages.length === 0;
+  for (const fileMessage of fileMessages) {
+    if (!fileMessage) {
+      unverified = true; // inline or built message: no file to read
+      continue;
+    }
     // The read happens BEFORE the command runs, so a command that writes the same file
     // would be verified against its OLD contents while git commits the new ones. Refuse
     // that shape instead of trusting the stale read (Qodo, PR #1004).
@@ -241,7 +247,7 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     const state = messageFileTrailerState(candidate, trailerName, (p) => readFileSync(p, "utf8"));
     if (state === "has") {
       log.debug("commit_trailer: message file already carries the trailer", candidate);
-      return undefined;
+      continue;
     }
     if (state === "missing") {
       return {
@@ -251,7 +257,9 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
           `Append it with the real id — \`printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> " + fileMessage + "\` — then re-run the commit.`,
       };
     }
+    unverified = true; // unreadable: refuse below rather than trust a guess
   }
+  if (!unverified) return undefined;
   // Other opaque shapes must carry the trailer already; refusing beats guessing.
   if (!commandHasTrailerByName(command, trailerName)) {
     return {
