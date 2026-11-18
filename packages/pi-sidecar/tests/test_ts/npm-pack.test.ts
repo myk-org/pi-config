@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,8 +21,16 @@ const SENTINEL_SDIST = "pi_sidecar_client-0.0.0-sentinel.tar.gz";
 function withFixturePackage(run: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "pi-sidecar-npm-pack-"));
   try {
+    // Split by design: packaging config comes from the repo (asserted
+    // byte-identical below), build output is a fixture, because the real dist/
+    // is written by the parallel tsc-typecheck hook.
     for (const name of ["package.json", ".npmignore", ".gitignore"]) {
       cpSync(join(PKG_DIR, name), join(dir, name));
+      assert.deepEqual(
+        readFileSync(join(dir, name)),
+        readFileSync(join(PKG_DIR, name)),
+        `${name} must be a faithful copy of the repo's`,
+      );
     }
     cpSync(join(PKG_DIR, "scripts"), join(dir, "scripts"), { recursive: true });
     const dist = join(dir, "dist");
@@ -67,7 +75,7 @@ describe("npm pack excludes Python artifacts from dist/", () => {
     });
   });
 
-  it("postbuild strips dist/*.whl and dist/*.tar.gz and keeps the build", () => {
+  it("postbuild strips dist/*.whl and dist/*.tar.gz", () => {
     withFixturePackage((dir) => {
       const result = spawnSync("npm", ["run", "postbuild"], {
         cwd: dir,
@@ -76,6 +84,16 @@ describe("npm pack excludes Python artifacts from dist/", () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.equal(existsSync(join(dir, "dist", SENTINEL_WHEEL)), false);
       assert.equal(existsSync(join(dir, "dist", SENTINEL_SDIST)), false);
+    });
+  });
+
+  it("postbuild keeps the built JS files", () => {
+    withFixturePackage((dir) => {
+      const result = spawnSync("npm", ["run", "postbuild"], {
+        cwd: dir,
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.equal(existsSync(join(dir, "dist", "index.js")), true, "postbuild must not strip dist/index.js");
     });
   });
