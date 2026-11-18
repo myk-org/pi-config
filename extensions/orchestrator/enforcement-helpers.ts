@@ -2639,22 +2639,58 @@ function rawShellWords(region: string): string[] {
   return words;
 }
 
-/** A raw operand word as a path: cut at the first UNQUOTED `;|&)` — the region of
- *  a subshell runs through its closing paren — never inside quotes. */
+/** A raw operand word as a path: cut at the first UNQUOTED `;|&)<>\n` — the region
+ *  of a subshell runs through its closing paren — never inside quotes. Returns
+ *  `""` for fd/empty redirects (`2>out`, `>out`), unclosed quotes, or operands
+ *  with unescaped shell expansions (`$VAR`, `` `...` ``, unquoted leading `~`,
+ *  unquoted globs `*`, `?`, `[`). */
 function operandBeforeShellSyntax(raw: string): string {
   let i = 0;
+  let quote: "'" | '"' | null = null;
+  let out = "";
   while (i < raw.length) {
     const ch = raw[i]!;
-    if (ch === "'" || ch === '"') {
-      const close = matchingQuoteIndex(raw, i);
-      i = close === null ? raw.length : close + 1;
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else out += ch;
+      i++;
       continue;
     }
-    if (ch === "\\") { i += 2; continue; }
-    if (/[)|&;\n]/.test(ch)) break;
+    if (quote === '"') {
+      if (ch === "\\") {
+        if (i + 1 >= raw.length) return "";
+        const next = raw[i + 1]!;
+        // In POSIX double quotes, backslash only escapes $, `, ", \.
+        out += next === "$" || next === "`" || next === '"' || next === "\\" ? next : ch + next;
+        i += 2;
+        continue;
+      }
+      if (ch === "$" || ch === "`") return "";
+      if (ch === '"') quote = null;
+      else out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      i++;
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 >= raw.length) return "";
+      out += raw[i + 1]!;
+      i += 2;
+      continue;
+    }
+    if (/[)|&;\n<>]/.test(ch)) break;
+    if (ch === "$" || ch === "`" || ch === "*" || ch === "?" || ch === "[") return "";
+    if (i === 0 && ch === "~") return "";
+    out += ch;
     i++;
   }
-  return tokenize(raw.slice(0, i))[0] ?? "";
+  if (quote !== null) return "";
+  if ((raw[i] === "<" || raw[i] === ">") && /^\d+$/.test(raw.slice(0, i))) return "";
+  return out;
 }
 
 /**
