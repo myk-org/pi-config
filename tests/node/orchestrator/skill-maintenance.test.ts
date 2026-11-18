@@ -40,6 +40,7 @@ import {
   snapshotSkillTree,
   stampSkill,
 } from "../../../extensions/orchestrator/skill-maintenance.js";
+import { getPiLogPath, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const cleanups: Array<() => void> = [];
@@ -71,6 +72,35 @@ function tempDir(prefix: string): string {
   const dir = makeTempDir(prefix);
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
+}
+
+/**
+ * Run `body` with the logger writing under a throwaway HOME and session id, then restore every
+ * global it touched — HOME, session id and the level pin — so no later test inherits the temp
+ * path, and prove the operator's real `~/.pi/logs` gained nothing for this session id.
+ */
+function inTempLogHome(sid: string, body: (home: string) => void, level: "debug" | "warn" = "debug"): void {
+  const realLog = path.join(os.homedir(), ".pi", "logs", "skill-maintenance", sid, "main.log");
+  const stamp = () => (fs.existsSync(realLog) ? `${fs.statSync(realLog).size}:${fs.statSync(realLog).mtimeMs}` : "absent");
+  const before = stamp();
+  const home = tempDir(`skill-maint-log-${sid}-`);
+  const savedHome = process.env.HOME;
+  const savedSid = (globalThis as any).__piConfigSessionId;
+  process.env.HOME = home;
+  (globalThis as any).__piConfigSessionId = sid;
+  setLogLevelPin("skill-maintenance", level);
+  try {
+    body(home);
+  } finally {
+    setLogLevelPin("skill-maintenance", null);
+    if (savedSid === undefined) delete (globalThis as any).__piConfigSessionId;
+    else (globalThis as any).__piConfigSessionId = savedSid;
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  }
+  assert.equal((globalThis as any).__piConfigSessionId, savedSid, "session id leaked into later tests");
+  assert.equal(process.env.HOME, savedHome, "HOME leaked into later tests");
+  assert.equal(stamp(), before, `test wrote to the real home: ${realLog}`);
 }
 
 function provenanceRecords(cwd: string): any[] {
@@ -882,31 +912,121 @@ describe("skill helper script execution (#1103)", () => {
     assert.equal(bashSkillVerdict(cwd, "bash node_modules/pkg/skills/demo/run.sh"), null);
   });
 
-  it("records debug traces for shell parser helpers", async () => {
-    const home = tempDir("skill-maint-shell-log-");
+  it("records debug traces for shell parser helpers", () => {
     const { cwd } = project();
-    const originalHome = process.env.HOME;
-    const originalLevel = process.env.PI_LOG_SKILL_MAINTENANCE;
-    process.env.HOME = home;
-    process.env.PI_LOG_SKILL_MAINTENANCE = "debug";
-    try {
-      const { clearLogLevelCache, getPiLogPath, setGlobalSessionId } = await import(
-        "../../../extensions/shared/file-logger.js"
-      );
-      clearLogLevelCache();
-      setGlobalSessionId("skill-maint-shell-log-test");
+    inTempLogHome("skill-maint-shell-log-test", () => {
       assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/foo/SKILL.md 2>&1"), null);
       const logPath = getPiLogPath("skill-maintenance");
       assert.ok(logPath);
       assert.match(fs.readFileSync(logPath, "utf-8"), /skill_shell_segment_parsed/);
-    } finally {
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-      if (originalLevel === undefined) delete process.env.PI_LOG_SKILL_MAINTENANCE;
-      else process.env.PI_LOG_SKILL_MAINTENANCE = originalLevel;
-      const { clearLogLevelCache } = await import("../../../extensions/shared/file-logger.js");
-      clearLogLevelCache();
+    });
+  });
+});
+
+describe("shell syntax check (#1138)", () => {
+  /** A marked and an unmarked project skill, each with a `run.sh` helper. */
+  function both(): { cwd: string; root: string; markedScript: string; unmarkedScript: string } {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    writeSkill(root, "verify-all", UNMARKED);
+    const markedScript = path.join(root, "marked", "run.sh");
+    const unmarkedScript = path.join(root, "verify-all", "run.sh");
+    fs.writeFileSync(markedScript, "#!/bin/sh\necho hi\n");
+    fs.writeFileSync(unmarkedScript, "#!/bin/sh\necho hi\n");
+    return { cwd, root, markedScript, unmarkedScript };
+  }
+
+  it("allows bash -n on a MARKED project skill script", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash -n ${markedScript}`), null);
+  });
+
+  it("allows bash -n on an unmarked project skill script", () => {
+    const { cwd, unmarkedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash -n ${unmarkedScript}`), null);
+  });
+
+  it("allows sh -n on a marked project skill script", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `sh -n ${markedScript}`), null);
+  });
+
+  it("allows bash --noexec on a marked project skill script", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash --noexec ${markedScript}`), null);
+  });
+
+  it("allows a relative bash -n with a trailing success check", () => {
+    const { cwd } = both();
+    assert.equal(bashSkillVerdict(cwd, "bash -n .pi/skills/marked/run.sh && echo 'syntax OK'"), null);
+  });
+
+  it("still blocks running a MARKED project skill script", () => {
+    const { cwd, markedScript } = both();
+    const verdict = bashSkillVerdict(cwd, `bash ${markedScript}`);
+    assert.equal(verdict?.block, true);
+    assert.match(verdict?.reason ?? "", /skill-maintenance: auto/);
+  });
+
+  it("still blocks bash -nc as inline code naming a skill", () => {
+    const { cwd } = both();
+    assert.equal(bashSkillVerdict(cwd, "bash -nc 'rm -rf .pi/skills/marked'")?.block, true);
+  });
+
+  it("still blocks bash -c naming a skill", () => {
+    const { cwd } = both();
+    assert.equal(bashSkillVerdict(cwd, "bash -c 'rm -rf .pi/skills/marked'")?.block, true);
+  });
+
+  it("still blocks a bash -n that redirects into a skill file", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash -n ${markedScript} > ${path.join(cwd, ".pi", "skills", "marked", "SKILL.md")}`)?.block, true);
+  });
+
+  it("blocks a value-taking option, which makes -n its value and -c the real work", () => {
+    const { cwd, root } = both();
+    const skillMd = path.join(root, "marked", "SKILL.md");
+    for (const option of ["--rcfile", "--init-file", "--debugger", "--rcfile=/dev/null", "-o", "--noprofile"]) {
+      const command = `bash ${option} -n -c 'echo changed > ${skillMd}'`;
+      assert.equal(bashSkillVerdict(cwd, command)?.block, true, command);
     }
+    assert.equal(bashSkillVerdict(cwd, `bash --debugger -n ${path.join(root, "marked", "run.sh")}`)?.block, true);
+  });
+
+  it("blocks a renamed shell binary running on a skill script", () => {
+    const { cwd, markedScript } = both();
+    const fake = path.join(tempDir("skill-maint-renamed-shell-"), "bash");
+    fs.writeFileSync(fake, "#!/bin/sh\n", { mode: 0o755 });
+    assert.equal(bashSkillVerdict(cwd, `${fake} -n ${markedScript}`)?.block, true);
+  });
+
+  it("allows a real shell binary path", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `${fs.realpathSync("/bin/sh")} -n ${markedScript}`), null);
+  });
+
+  it("blocks +n, which re-enables execution after -n", () => {
+    const { cwd, markedScript, root } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash -n +n ${markedScript}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash -n +o noexec ${markedScript}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash -n +n -c 'echo changed > ${path.join(root, "marked", "SKILL.md")}'`)?.block, true);
+  });
+
+  it("blocks inline code after -n", () => {
+    const { cwd, root } = both();
+    const skillMd = path.join(root, "marked", "SKILL.md");
+    assert.equal(bashSkillVerdict(cwd, `bash -n -c 'echo changed > ${skillMd}'`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `sh -n -c 'echo changed > ${skillMd}'`)?.block, true);
+  });
+
+  it("logs skill_shell_syntax_check_allowed for an exempted bash -n", () => {
+    const { cwd, markedScript } = both();
+    inTempLogHome("skill-maint-syntax-log-test", () => {
+      assert.equal(bashSkillVerdict(cwd, `bash -n ${markedScript}`), null);
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      assert.match(fs.readFileSync(logPath, "utf-8"), /skill_shell_syntax_check_allowed/);
+    });
   });
 });
 
@@ -1462,14 +1582,8 @@ describe("second-round findings (Qodo #1079)", () => {
     ]);
   });
 
-  it("logs the depth cap when a tree goes past it", async () => {
-    const home = makeTempDir("skill-maint-depth-");
-    cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
-    const originalHome = process.env.HOME;
-    process.env.HOME = home;
-    try {
-      const { getPiLogPath, setGlobalSessionId } = await import("../../../extensions/shared/file-logger.js");
-      setGlobalSessionId("skill-maint-depth-test");
+  it("logs the depth cap when a tree goes past it", () => {
+    inTempLogHome("skill-maint-depth-test", home => {
       const deepRoot = path.join(home, "skills");
       const segments = Array.from({ length: 40 }, (_, i) => `d${i}`);
       fs.mkdirSync(path.join(deepRoot, ...segments), { recursive: true });
@@ -1477,10 +1591,7 @@ describe("second-round findings (Qodo #1079)", () => {
       const logPath = getPiLogPath("skill-maintenance");
       assert.ok(logPath);
       assert.match(fs.readFileSync(logPath, "utf-8"), /skill_snapshot_depth_cap/);
-    } finally {
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-    }
+    });
   });
 
   it("nudges again after an aborted turn", async () => {
@@ -1516,19 +1627,8 @@ describe("second-round findings (Qodo #1079)", () => {
     assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance-nudge").length, 0);
   });
 
-  it("logs the unresolved tail of a path that does not exist yet", async () => {
-    const home = makeTempDir("skill-maint-realpath-");
-    cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
-    const originalHome = process.env.HOME;
-    const originalLevel = process.env.PI_LOG_SKILL_MAINTENANCE;
-    process.env.HOME = home;
-    process.env.PI_LOG_SKILL_MAINTENANCE = "debug";
-    try {
-      const { clearLogLevelCache, getPiLogPath, setGlobalSessionId } = await import(
-        "../../../extensions/shared/file-logger.js"
-      );
-      clearLogLevelCache();
-      setGlobalSessionId("skill-maint-realpath-test");
+  it("logs the unresolved tail of a path that does not exist yet", () => {
+    inTempLogHome("skill-maint-realpath-test", home => {
       const missing = path.join(home, "not", "created", "yet", "SKILL.md");
       assert.equal(realpathNearestExisting(missing), missing);
 
@@ -1537,27 +1637,16 @@ describe("second-round findings (Qodo #1079)", () => {
       const body = fs.readFileSync(logPath, "utf-8");
       assert.match(body, /realpath_missing_tail/);
       assert.match(body, /"missing":4/);
-    } finally {
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-      if (originalLevel === undefined) delete process.env.PI_LOG_SKILL_MAINTENANCE;
-      else process.env.PI_LOG_SKILL_MAINTENANCE = originalLevel;
-      const { clearLogLevelCache } = await import("../../../extensions/shared/file-logger.js");
-      clearLogLevelCache();
-    }
+    });
   });
 
-  it("logs an unreadable skills tree without warning for an absent one", async () => {
-    const home = makeTempDir("skill-maint-log-");
-    cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
-    const originalHome = process.env.HOME;
-    process.env.HOME = home;
-    const unreadable = path.join(home, "locked");
-    fs.mkdirSync(unreadable, { recursive: true });
-    fs.chmodSync(unreadable, 0o000);
-    try {
-      const { getPiLogPath, setGlobalSessionId } = await import("../../../extensions/shared/file-logger.js");
-      setGlobalSessionId("skill-maint-log-test");
+  it("logs an unreadable skills tree without warning for an absent one", () => {
+    inTempLogHome("skill-maint-log-test", home => {
+      const unreadable = path.join(home, "locked");
+      // cleanups are LIFO: this unlock runs before the temp dir is removed
+      cleanups.push(() => fs.chmodSync(unreadable, 0o755));
+      fs.mkdirSync(unreadable, { recursive: true });
+      fs.chmodSync(unreadable, 0o000);
       const missing = path.join(home, "nope", ".pi", "skills");
       assert.equal(snapshotSkillTree(missing).size, 0);
       assert.equal(snapshotSkillTree(unreadable).size, 0);
@@ -1567,10 +1656,6 @@ describe("second-round findings (Qodo #1079)", () => {
       assert.match(body, /skill_snapshot_readdir_failed/);
       assert.ok(body.includes(unreadable), "the failing directory is named");
       assert.ok(!body.includes(missing), "an absent skills tree is not a warning");
-    } finally {
-      fs.chmodSync(unreadable, 0o755);
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-    }
+    }, "warn");
   });
 });

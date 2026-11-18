@@ -1302,6 +1302,60 @@ function isValidSkillScriptTarget(projectCwd: string, scriptAbs: string): boolea
   return valid;
 }
 
+/** Shell programs whose `-n`/`--noexec` flag parses the script and runs nothing. */
+const SHELL_NAMES = new Set(["bash", "sh", "dash", "zsh"]);
+/** A real shell binary, after `realpath` (`/bin` and `/usr/bin` both normalise here). */
+const SHELL_BINARY_PATH_RE = /^\/(?:usr\/)?bin\/(?:bash|sh|dash|zsh)$/;
+/** Long options that consume a value, which is itself code when paired with `-c`. */
+const SHELL_VALUE_OPTION_RE = /^--(?:rcfile|init-file|debugger)(?:=|$)/;
+/** Short cluster carrying inline code (`c`) or a value-taking letter (`o`, `O`). */
+const SHELL_CODE_SHORT_RE = /^-[A-Za-z]*[coO]/;
+/** `-n`, `--noexec`, or a short cluster carrying `n` (`-nx`, `-en`). */
+const NOEXEC_FLAG_RE = /^-[A-Za-z]*n[A-Za-z]*$/;
+
+/**
+ * A bare shell name, or an absolute path whose `realpath` is a real shell binary.
+ * A copy or rename elsewhere (`/tmp/bash`) is some other program and is not exempt.
+ */
+function isShellProgram(word: string): boolean {
+  if (!word.includes("/")) return SHELL_NAMES.has(word);
+  if (!path.isAbsolute(word)) return false;
+  try {
+    return SHELL_BINARY_PATH_RE.test(fs.realpathSync(word));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A syntax-only check of a skill script: `bash -n <script>`, `sh --noexec <script>`.
+ *
+ * The shell parses and reports without executing, so nothing can be run or written. This is
+ * the one way to check a MARKED skill's script, whose remedy is "edit it with the write/edit
+ * tools" — executing it is what the guard forbids. The decision fails closed: every flag must
+ * be a noexec flag of a real shell, because `--rcfile -n -c …`, `-n -c …`, `-n +n …` and a
+ * renamed `bash` all run the inline command while looking like a syntax check.
+ */
+function isShellSyntaxCheck(plainWords: string[], cmdIdx: number): boolean {
+  if (!isShellProgram(plainWords[cmdIdx] ?? "")) return false;
+  const args = plainWords.slice(cmdIdx + 1);
+  // `+n` (any `+x`) undoes a `-n` wherever it sits: never syntax-only.
+  if (args.some((word) => word.startsWith("+"))) return false;
+  let noexec = false;
+  for (const word of args) {
+    // End of options, or the first operand (the script itself): no flags follow.
+    if (word === "--" || !word.startsWith("-")) break;
+    // A value-taking option, inline code, or an unknown option can run what `-n` would skip.
+    if (SHELL_VALUE_OPTION_RE.test(word) || SHELL_CODE_SHORT_RE.test(word)) return false;
+    if (word === "--noexec" || NOEXEC_FLAG_RE.test(word)) {
+      noexec = true;
+      continue;
+    }
+    return false;
+  }
+  return noexec;
+}
+
 /**
  * Evaluate whether the segment executes an allowed read-only/unmarked skill helper script
  * (`.sh`, `.py`, `.mjs`, `.js`) directly, via `bash`/`sh` (no `-c`), via `uv run [--script]`,
@@ -1567,6 +1621,10 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
         return block(`this shell command writes (${verb || "?"}) and names a skill. ${hint}`);
       }
       if (READ_ONLY_VERBS.has(verb)) continue;
+      if (isShellSyntaxCheck(plainWords, cmdIdx)) {
+        log.debug("skill_shell_syntax_check_allowed", { verb, segment: masked.slice(0, 120) });
+        continue;
+      }
       if (verb === "mkdir" && segmentRefs.length > 0) {
         // Every operand must be a path this project owns *after* symlinks resolve, and a
         // directory we create must be inside the owned tree — a linked parent escapes it.
