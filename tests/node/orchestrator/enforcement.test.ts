@@ -2638,6 +2638,26 @@ describe("quoted parens inside substitution content (Qodo round 8, PR #916)", ()
 });
 
 // ── injectCommitTrailer: the trailer actually appended to a commit command ──
+function captureEnforcementDebugLog(fn: () => void): string {
+  const home = makeTempDir("trailer-log-");
+  const prevHome = process.env.HOME;
+  const prevSid = (globalThis as any).__piConfigSessionId;
+  process.env.HOME = home;
+  (globalThis as any).__piConfigSessionId = "trailer-skip-log";
+  setLogLevelPin("enforcement", "debug");
+  try {
+    fn();
+    const logPath = getPiLogPath("enforcement");
+    return logPath && existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+  } finally {
+    setLogLevelPin("enforcement", null);
+    if (prevSid === undefined) delete (globalThis as any).__piConfigSessionId;
+    else (globalThis as any).__piConfigSessionId = prevSid;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+  }
+}
+
 describe("injectCommitTrailer", () => {
   it("appends the trailer without an address for Assisted-by", () => {
     const out = injectCommitTrailer('git commit -m "fix: x"', "Assisted-by", "model-x");
@@ -2671,26 +2691,6 @@ describe("injectCommitTrailer", () => {
     const out = injectCommitTrailer(`printf '%s\\n' 'subj' '' 'body' | git commit -F -`, "Assisted-by", "model-x");
     assert.equal(out, "printf '%s\\n' 'subj' '' 'body\n\nAssisted-by: PI (model-x)' | git commit -F -");
   });
-
-  function captureEnforcementDebugLog(fn: () => void): string {
-    const home = makeTempDir("trailer-log-");
-    const prevHome = process.env.HOME;
-    const prevSid = (globalThis as any).__piConfigSessionId;
-    process.env.HOME = home;
-    (globalThis as any).__piConfigSessionId = "trailer-skip-log";
-    setLogLevelPin("enforcement", "debug");
-    try {
-      fn();
-      const logPath = getPiLogPath("enforcement");
-      return logPath && existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
-    } finally {
-      setLogLevelPin("enforcement", null);
-      if (prevSid === undefined) delete (globalThis as any).__piConfigSessionId;
-      else (globalThis as any).__piConfigSessionId = prevSid;
-      if (prevHome === undefined) delete process.env.HOME;
-      else process.env.HOME = prevHome;
-    }
-  }
 
   it("returns null for piped -F - with an unquoted trailing argument", () => {
     assert.equal(
@@ -3184,7 +3184,9 @@ describe("commitMessageSpecs (#1131)", () => {
   const CWD = "/s";
 
   it("distinguishes resolved files, opaque-file operands, inline/stdin commits", () => {
-    assert.deepEqual(commitMessageSpecs("git commit -F msg.txt", CWD), [{ kind: "file", path: "/s/msg.txt" }]);
+    assert.deepEqual(commitMessageSpecs("git commit -F msg.txt", CWD), [
+      { kind: "file", path: "/s/msg.txt", rawOperand: "msg.txt", cwd: CWD },
+    ]);
     assert.deepEqual(commitMessageSpecs("git commit -F -", CWD), [{ kind: "inline" }]);
     assert.deepEqual(commitMessageSpecs("git commit --file=-", CWD), [{ kind: "inline" }]);
     assert.deepEqual(commitMessageSpecs("git commit -m 'fix: x'", CWD), [{ kind: "inline" }]);
@@ -3211,8 +3213,56 @@ describe("commitMessageSpecs (#1131)", () => {
       { kind: "opaque-file", raw: '"$FILE"' },
     ]);
     assert.deepEqual(commitMessageSpecs("git commit -F - --file=msg.txt", CWD), [
-      { kind: "file", path: "/s/msg.txt" },
+      { kind: "file", path: "/s/msg.txt", rawOperand: "msg.txt", cwd: CWD },
     ]);
+  });
+
+  it("handles clustered short options with -F or -m in cluster order", () => {
+    assert.deepEqual(commitMessageSpecs("git commit -aFmsg.txt", CWD), [
+      { kind: "file", path: "/s/msg.txt", rawOperand: "msg.txt", cwd: CWD },
+    ]);
+    assert.deepEqual(commitMessageSpecs("git commit -aF msg.txt", CWD), [
+      { kind: "file", path: "/s/msg.txt", rawOperand: "msg.txt", cwd: CWD },
+    ]);
+    assert.deepEqual(commitMessageSpecs("git commit -sF msg.txt", CWD), [
+      { kind: "file", path: "/s/msg.txt", rawOperand: "msg.txt", cwd: CWD },
+    ]);
+    assert.deepEqual(commitMessageSpecs('git commit -aF"msg with space.txt"', CWD), [
+      { kind: "file", path: "/s/msg with space.txt", rawOperand: "msg with space.txt", cwd: CWD },
+    ]);
+    assert.deepEqual(commitMessageSpecs("git commit -mFgood.txt", CWD), [{ kind: "inline" }]);
+    assert.deepEqual(commitMessageSpecs("git commit -ammsg", CWD), [{ kind: "inline" }]);
+  });
+
+  it("resolves env -C / --chdir directories before relative -F operands", () => {
+    assert.deepEqual(commitMessageSpecs("env -C /other git commit -F msg.txt", CWD), [
+      { kind: "file", path: "/other/msg.txt", rawOperand: "msg.txt", cwd: "/other" },
+    ]);
+    assert.deepEqual(commitMessageSpecs("env --chdir=/other git commit -F msg.txt", CWD), [
+      { kind: "file", path: "/other/msg.txt", rawOperand: "msg.txt", cwd: "/other" },
+    ]);
+    assert.deepEqual(commitMessageSpecs("env -u HOME --chdir /other git -C sub commit -F msg.txt", CWD), [
+      { kind: "file", path: "/other/sub/msg.txt", rawOperand: "msg.txt", cwd: "/other/sub" },
+    ]);
+    assert.deepEqual(commitMessageSpecs("env -uCOLOR git commit -F msg.txt", CWD), [
+      { kind: "file", path: "/s/msg.txt", rawOperand: "msg.txt", cwd: CWD },
+    ]);
+    assert.deepEqual(commitMessageSpecs('env -C "$DIR" git commit -F msg.txt', CWD), [
+      { kind: "opaque-file", raw: "msg.txt" },
+    ]);
+    assert.deepEqual(commitMessageSpecs('git -C "$DIR" commit -F msg.txt', CWD), [
+      { kind: "opaque-file", raw: "msg.txt" },
+    ]);
+  });
+
+  it("logs commitMessageSpecs summary with scanner fallback debug lines", () => {
+    const written = captureEnforcementDebugLog(() => {
+      commitMessageSpecs('git commit -F "$FILE"', CWD);
+      stripUnquotedShellComments('git commit -m "unclosed');
+    });
+    assert.match(written, /commitMessageSpecs segments=1 files=0 opaqueFiles=1/);
+    assert.match(written, /operandBeforeShellSyntax expansion in double quotes/);
+    assert.match(written, /scanUnquotedShellComments unclosed double quote/);
   });
 });
 
@@ -3510,6 +3560,57 @@ describe("commit-trailer check behind git global options (#1131)", () => {
       repo,
     );
     assert.equal(res?.block, undefined, JSON.stringify(res));
+  });
+
+  it("checks clustered -aFmsg.txt options for the trailer", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "bad.txt"), "fix: x\n");
+    const badAttached = await runBash("git commit -aFbad.txt", repo);
+    assert.equal(badAttached?.block, true, JSON.stringify(badAttached) ?? "allowed");
+    assert.match(badAttached?.reason ?? "", /has no `Assisted-by` trailer/);
+
+    const badComment = await runBash("git commit -aFbad.txt # Assisted-by: PI (m)", repo);
+    assert.equal(badComment?.block, true, JSON.stringify(badComment) ?? "allowed");
+    assert.match(badComment?.reason ?? "", /has no `Assisted-by` trailer/);
+
+    const badSeparated = await runBash("git commit -aF bad.txt", repo);
+    assert.equal(badSeparated?.block, true, JSON.stringify(badSeparated) ?? "allowed");
+    assert.match(badSeparated?.reason ?? "", /has no `Assisted-by` trailer/);
+
+    writeFileSync(join(repo, "good.txt"), "fix: x\n\nAssisted-by: PI (m)\n");
+    assert.equal((await runBash("git commit -aFgood.txt", repo))?.block, undefined);
+    assert.equal((await runBash("git commit -aF good.txt", repo))?.block, undefined);
+  });
+
+  it("blocks same-command overwrite of relative -F message files", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "msg.txt"), "fix: x\n\nAssisted-by: PI (m)\n");
+    const res = await runBash("printf bad > msg.txt && git commit -F msg.txt", repo);
+    assert.equal(res?.block, true, JSON.stringify(res) ?? "allowed");
+    assert.match(res?.reason ?? "", /writes .*msg\.txt and commits it in the same call/);
+
+    const resDotSlash = await runBash(`printf bad > ./msg.txt && git -C ${repo} commit -F msg.txt`, repo);
+    assert.equal(resDotSlash?.block, true, JSON.stringify(resDotSlash) ?? "allowed");
+    assert.match(resDotSlash?.reason ?? "", /writes .*msg\.txt and commits it in the same call/);
+  });
+
+  it("checks the env -C / env --chdir target directory instead of session cwd", async () => {
+    const sessionRepo = makeRepo();
+    const otherRepo = makeRepo();
+    writeFileSync(join(sessionRepo, "msg.txt"), "fix: x\n\nAssisted-by: PI (m)\n");
+    writeFileSync(join(otherRepo, "msg.txt"), "fix: x\n");
+
+    const resShort = await runBash(`env -C ${otherRepo} git commit -F msg.txt`, sessionRepo);
+    assert.equal(resShort?.block, true, JSON.stringify(resShort) ?? "allowed");
+    assert.match(resShort?.reason ?? "", new RegExp(`message file ${otherRepo}/msg.txt has no`));
+
+    const resLong = await runBash(`env --chdir=${otherRepo} git commit -F msg.txt`, sessionRepo);
+    assert.equal(resLong?.block, true, JSON.stringify(resLong) ?? "allowed");
+    assert.match(resLong?.reason ?? "", new RegExp(`message file ${otherRepo}/msg.txt has no`));
+
+    writeFileSync(join(otherRepo, "msg.txt"), "fix: x\n\nAssisted-by: PI (m)\n");
+    assert.equal((await runBash(`env -C ${otherRepo} git commit -F msg.txt`, sessionRepo))?.block, undefined);
+    assert.equal((await runBash(`env --chdir=${otherRepo} git commit -F msg.txt`, sessionRepo))?.block, undefined);
   });
 });
 

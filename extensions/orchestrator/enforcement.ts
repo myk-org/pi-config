@@ -244,9 +244,19 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     const fileMessage = spec.path;
     // The read happens BEFORE the command runs, so a command that writes the same file
     // would be verified against its OLD contents while git commits the new ones. Refuse
-    // that shape instead of trusting the stale read (Qodo, PR #1004).
-    const filePathSrc = fileMessage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (bashWritesToPath(command, maskQuotedRegions(command), filePathSrc)) {
+    // that shape instead of trusting the stale read (Qodo, PR #1004). Check every
+    // path spelling (resolved absolute, raw operand, and relative to both session cwd
+    // and invocation cwd) so `printf bad > msg.txt && git commit -F msg.txt` is caught.
+    const candidatePaths = [...new Set(
+      [
+        fileMessage,
+        spec.rawOperand,
+        path.relative(ctx.cwd, fileMessage),
+        path.relative(spec.cwd, fileMessage),
+      ].filter((p) => p && p !== "."),
+    )];
+    const maskedCommand = maskQuotedRegions(command);
+    if (candidatePaths.some((p) => bashWritesToPath(command, maskedCommand, p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))) {
       log.warn("commit_trailer: message file is written by the same command", fileMessage);
       return {
         block: true,
