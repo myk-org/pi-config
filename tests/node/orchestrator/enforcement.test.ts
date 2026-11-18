@@ -3732,40 +3732,54 @@ describe("handleCommitTrailer refusal hints (#1145)", () => {
     }
   });
 
-  it("interpolates trailerName, message file path, and $PI_MODEL on -F <file> missing-trailer refusal", async () => {
+  it("interpolates the -F <file> refusal hint", async () => {
     const msgFile = join(cwd, "commit-msg.txt");
     writeFileSync(msgFile, "fix: missing trailer\n");
 
-    const res1 = await runCommitToolCall(`git commit -F "${msgFile}"`);
-    assert.equal(res1?.block, true);
-    const reason1 = res1?.reason ?? "";
-    assert.ok(reason1.includes("Assisted-by: PI (%s)"), `expected Assisted-by: PI (%s) in: ${reason1}`);
-    assert.ok(reason1.includes('"$PI_MODEL"'), `expected "$PI_MODEL" in: ${reason1}`);
-    assert.ok(reason1.includes(msgFile), `expected message file path in: ${reason1}`);
-    assert.ok(!reason1.includes("trailerName"), `unexpected literal trailerName in: ${reason1}`);
-    assert.ok(!reason1.includes("fileMessage"), `unexpected literal fileMessage in: ${reason1}`);
-    assert.ok(!reason1.includes('"+'), `unexpected literal "+ in: ${reason1}`);
-    assert.ok(!reason1.includes('" +'), `unexpected literal " + in: ${reason1}`);
+    const res = await runCommitToolCall(`git commit -F "${msgFile}"`);
+    assert.equal(res?.block, true);
+    const reason = res?.reason ?? "";
+    assert.ok(reason.includes("Assisted-by: PI (%s)"), `expected Assisted-by: PI (%s) in: ${reason}`);
+    assert.ok(reason.includes('"$PI_MODEL"'), `expected "$PI_MODEL" in: ${reason}`);
+    assert.ok(reason.includes(`>> '${msgFile}'`), `expected shell-quoted file path in: ${reason}`);
+    assert.ok(!reason.includes("trailerName"), `unexpected literal trailerName in: ${reason}`);
+    assert.ok(!reason.includes("fileMessage"), `unexpected literal fileMessage in: ${reason}`);
+    assert.ok(!reason.includes('"+'), `unexpected literal "+ in: ${reason}`);
+    assert.ok(!reason.includes('" +'), `unexpected literal " + in: ${reason}`);
+  });
 
+  it("shell-quotes a -F <file> path with spaces in the refusal hint", async () => {
+    const msgFile = join(cwd, "my commit msg.txt");
+    writeFileSync(msgFile, "fix: missing trailer\n");
+
+    const res = await runCommitToolCall(`git commit -F "${msgFile}"`);
+    assert.equal(res?.block, true);
+    const reason = res?.reason ?? "";
+    assert.ok(reason.includes(`>> '${msgFile}'`), `expected single-quoted path with spaces in: ${reason}`);
+  });
+
+  it("interpolates a custom commit_trailer name into the -F <file> refusal hint", async () => {
+    const msgFile = join(cwd, "commit-msg.txt");
+    writeFileSync(msgFile, "fix: missing trailer\n");
     writeFileSync(
       join(cwd, ".pi", "pi-config-settings.json"),
       JSON.stringify({ commit_trailer: "Signed-by", review_loop_enforcement: false }),
     );
     clearSettingsCache();
 
-    const res2 = await runCommitToolCall(`git commit -F "${msgFile}"`);
-    assert.equal(res2?.block, true);
-    const reason2 = res2?.reason ?? "";
-    assert.ok(reason2.includes("Signed-by: PI (%s)"), `expected Signed-by: PI (%s) in: ${reason2}`);
-    assert.ok(reason2.includes('"$PI_MODEL"'), `expected "$PI_MODEL" in: ${reason2}`);
-    assert.ok(reason2.includes(msgFile), `expected message file path in: ${reason2}`);
-    assert.ok(!reason2.includes("trailerName"), `unexpected literal trailerName in: ${reason2}`);
-    assert.ok(!reason2.includes("fileMessage"), `unexpected literal fileMessage in: ${reason2}`);
-    assert.ok(!reason2.includes('"+'), `unexpected literal "+ in: ${reason2}`);
-    assert.ok(!reason2.includes('" +'), `unexpected literal " + in: ${reason2}`);
+    const res = await runCommitToolCall(`git commit -F "${msgFile}"`);
+    assert.equal(res?.block, true);
+    const reason = res?.reason ?? "";
+    assert.ok(reason.includes("Signed-by: PI (%s)"), `expected Signed-by: PI (%s) in: ${reason}`);
+    assert.ok(reason.includes('"$PI_MODEL"'), `expected "$PI_MODEL" in: ${reason}`);
+    assert.ok(reason.includes(`>> '${msgFile}'`), `expected shell-quoted file path in: ${reason}`);
+    assert.ok(!reason.includes("trailerName"), `unexpected literal trailerName in: ${reason}`);
+    assert.ok(!reason.includes("fileMessage"), `unexpected literal fileMessage in: ${reason}`);
+    assert.ok(!reason.includes('"+'), `unexpected literal "+ in: ${reason}`);
+    assert.ok(!reason.includes('" +'), `unexpected literal " + in: ${reason}`);
   });
 
-  it("interpolates trailerName and $PI_MODEL on opaque commit refusal", async () => {
+  it("interpolates the opaque-commit refusal hint", async () => {
     const res = await runCommitToolCall("git commit -m $MSG");
     assert.equal(res?.block, true);
     const reason = res?.reason ?? "";

@@ -271,11 +271,12 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
       continue;
     }
     if (state === "missing") {
+      const quotedFile = `'${escapeForSingleQuote(fileMessage)}'`;
       return {
         block: true,
         reason:
           `⛔ Commit refused: the message file ${fileMessage} has no \`${trailerName}\` trailer. ` +
-          `Append it with the real id — \`printf '\\n\\n${trailerName}: PI (%s)\\n' "$PI_MODEL" >> ${fileMessage}\` — then re-run the commit.`,
+          `Append it with the real id — \`printf '\\n\\n${trailerName}: PI (%s)\\n' "$PI_MODEL" >> ${quotedFile}\` — then re-run the commit.`,
       };
     }
     // Unreadable: the file cannot be verified, and the command TEXT is no substitute
