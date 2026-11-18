@@ -1533,6 +1533,147 @@ function cdChangesSkillMeaning(
 
 export type ShellVerdict = { block: true; reason: string };
 
+/** Command words that write their stdin/arguments out verbatim: their heredoc body is data. */
+const DATA_WRITER_VERBS = new Set(["cat", "printf", "echo", "tee"]);
+
+/** `<<DELIM` / `<<-DELIM`, quoted or bare. */
+const HEREDOC_OPENER_RE = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s;&|)'\n]+))/;
+
+/** A line closes a heredoc: exact match, `<<-` allows leading tabs. */
+const isTerminatorLine = (line: string, delim: string, stripTabs: boolean): boolean =>
+  line === delim || (stripTabs && line.replace(/^\t+/, "") === delim);
+
+/**
+ * Is this heredoc's body written out verbatim by `stage`? The stage must be a pure data
+ * writer that names no skill (so `cat > <skill>/SKILL.md <<EOF` keeps deciding, and
+ * `tee <skill file> <<EOF` too), and the body must be inert: a quoted delimiter, or no
+ * substitution for an unquoted one (`$(…)` / backticks still run inside an unquoted body).
+ */
+function isDataHeredocWrite(projectCwd: string, stage: string, body: string, expand: boolean): boolean {
+  if (expand && /`|\$\(/.test(body)) return false;
+  const parsed = parseSegment(projectCwd, stage);
+  const plainWords = parsed.words.map((w) => w.value);
+  const cmdIdx = commandWordIndex(plainWords);
+  if (!DATA_WRITER_VERBS.has(plainWords[cmdIdx] ?? "")) return false;
+  if (SKILL_MENTION_RE.test(stage)) return false;
+  const clean = collectSegmentSkillReferences(projectCwd, parsed, cmdIdx).length === 0;
+  log.debug("skill_shell_data_heredoc", { verb: plainWords[cmdIdx], clean });
+  return clean;
+}
+
+/**
+ * Blank every heredoc body that is DATA, so its text cannot be read as a skill reference
+ * (issue #1125: `cat > .pi/tmp/msg.txt <<'EOF'` whose body mentions a skill path was
+ * refused, and agents learned to launder the path through a variable to get past it).
+ *
+ * The exemption is narrow on purpose. A body is blanked ONLY when the WHOLE command
+ * (outside the heredoc body) is a SINGLE `cat`/`printf`/`echo`/`tee` stage whose
+ * targets are outside every skills tree (`splitPipelines` over the command with the
+ * candidate body and terminator blanked produces 1 pipeline with 1 stage, and no subshell),
+ * the delimiter is quoted or the body carries no expansion, and the heredoc closes.
+ *
+ * Deliberate trade-off: `cat > msg <<'EOF' … && git commit -F msg` is not exempt (second
+ * segment), because multi-step scripts belong in separate tool calls. Everything else —
+ * `bash <<EOF`, `sh -s <<EOF`, `python3 <<EOF`, `node <<EOF`, `xargs`, pipelines
+ * (`cat <<EOF | bash`), unclosed heredocs, substitutions inside an unquoted body,
+ * subshells, or any command with a second segment — keeps the body visible so
+ * `bashSkillVerdict` still blocks it.
+ */
+function blankDataHeredocBodies(projectCwd: string, command: string): string {
+  if (!command.includes("<<")) return command;
+  const bodies: Array<{ bodyStart: number; bodyEnd: number; termEnd: number; expand: boolean }> = [];
+  let pending: Array<{ delim: string; stripTabs: boolean; expand: boolean }> = [];
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "'" || ch === '"') {
+      const end = command.indexOf(ch, i + 1);
+      i = end === -1 ? command.length : end + 1;
+      continue;
+    }
+    if (ch === "<" && command[i + 1] === "<") {
+      if (command[i + 2] === "<") {
+        // Here-string (`<<<`): skip all contiguous `<` so its tail is never read as `<<`.
+        while (command[i] === "<") i++;
+        continue;
+      }
+      if (command[i - 1] !== "<") {
+        const m = HEREDOC_OPENER_RE.exec(command.slice(i));
+        if (m) {
+          // `<<\EOF` (and `<<E\OF`) is a literal delimiter: bash drops the backslash, and
+          // the resulting body does not expand.
+          const bare = m[4] ?? "";
+          const delim = m[2] ?? m[3] ?? bare.replace(/\\(.)/g, "$1");
+          const expand = m[2] === undefined && m[3] === undefined && !bare.includes("\\");
+          pending.push({ delim, stripTabs: m[1] === "-", expand });
+          i += m[0].length;
+          continue;
+        }
+      }
+    }
+    // A `#` that starts a comment hides the rest of the line: a `<<` after it opens nothing.
+    if (ch === "#" && (i === 0 || /[\s;&|(\n]/.test(command[i - 1]))) {
+      const nl = command.indexOf("\n", i);
+      i = nl === -1 ? command.length : nl;
+      continue;
+    }
+    if (ch !== "\n" || pending.length === 0) { i++; continue; }
+
+    let cursor = i + 1;
+    for (const h of pending) {
+      const bodyStart = cursor;
+      let bodyEnd = cursor;
+      let termEnd = cursor;
+      let closed = false;
+      while (cursor <= command.length) {
+        let lineEnd = command.indexOf("\n", cursor);
+        const atEnd = lineEnd === -1;
+        if (atEnd) lineEnd = command.length;
+        if (isTerminatorLine(command.slice(cursor, lineEnd), h.delim, h.stripTabs)) {
+          bodyEnd = cursor;
+          termEnd = lineEnd;
+          cursor = Math.min(lineEnd + 1, command.length);
+          closed = true;
+          break;
+        }
+        if (atEnd) { bodyEnd = command.length; cursor = command.length + 1; break; }
+        cursor = lineEnd + 1;
+      }
+      if (!closed) {
+        log.debug("skill_shell_heredoc_unclosed", { delim: h.delim });
+        return command;
+      }
+      bodies.push({ bodyStart, bodyEnd, termEnd, expand: h.expand });
+    }
+    pending = [];
+    i = cursor;
+  }
+  if (bodies.length === 0) return command;
+
+  // Blank bodies and terminator lines to check whether the outer command is a single stage.
+  let withoutBodies = command;
+  for (const { bodyStart, termEnd } of bodies) {
+    withoutBodies =
+      withoutBodies.slice(0, bodyStart) +
+      withoutBodies.slice(bodyStart, termEnd).replace(/[^\n]/g, " ") +
+      withoutBodies.slice(termEnd);
+  }
+  const pipelines = splitPipelines(withoutBodies);
+  if (pipelines.length !== 1 || pipelines[0].length !== 1) return command;
+  const stage = pipelines[0][0];
+  if (/^\s*\(/.test(stage) || hasExecutableSubstitution(stage)) return command;
+  if (!bodies.every((b) => isDataHeredocWrite(projectCwd, stage, command.slice(b.bodyStart, b.bodyEnd), b.expand))) {
+    return command;
+  }
+
+  let out = command;
+  for (const { bodyStart, bodyEnd } of bodies) {
+    out = out.slice(0, bodyStart) + out.slice(bodyStart, bodyEnd).replace(/[^\n]/g, " ") + out.slice(bodyEnd);
+  }
+  return out;
+}
+
 /**
  * Shell guard (Qodo #1079, #1103): the shell reads skills and runs trusted helper scripts,
  * never writes them.
@@ -1550,14 +1691,25 @@ export type ShellVerdict = { block: true; reason: string };
  * Ambiguity blocks: a bare `SKILL.md`, a `cd` that could change a skill path's meaning, a
  * path through a symlink.
  *
+ * A heredoc BODY is file content, not a reference, when the whole command is a single
+ * pure data writer (`cat`, `printf`, `echo`, `tee`) writing somewhere that names no skill
+ * — so a standalone message write that merely mentions a skill path is allowed (issue #1125).
+ * The boundary: the redirect target still decides (`cat > <skill>/SKILL.md <<EOF` blocks),
+ * and a body fed to anything that executes it, reads it as arguments (`bash`, `sh -s`,
+ * `python3`, `node`, `xargs`), or paired with any second segment is still analysed — see
+ * `blankDataHeredocBodies`.
+ *
  * Known limit (documented, not widened around): a path built by shell expansion
  * (`t=…; … > "$t"`, `eval`, `find -exec`) carries no literal reference, so no text rule
  * sees it. The file change still reaches the turn-end notice.
  */
 export function bashSkillVerdict(projectCwd: string, command: string): ShellVerdict | null {
   if (typeof command !== "string" || command.trim() === "") return null;
-  const refs = shellSkillReferences(projectCwd, command);
-  const rawMentionsSkill = SKILL_MENTION_RE.test(command) || SKILL_MENTION_RE.test(unquoteWord(command));
+  // Data heredoc bodies are blanked here, so the whole analysis below (refs, mentions,
+  // segments) never reads file content as a command.
+  const analyzed = blankDataHeredocBodies(projectCwd, command);
+  const refs = shellSkillReferences(projectCwd, analyzed);
+  const rawMentionsSkill = SKILL_MENTION_RE.test(analyzed) || SKILL_MENTION_RE.test(unquoteWord(analyzed));
   if (refs.length === 0 && !rawMentionsSkill) return null;
 
   const maskQuoted = (text: string): string =>
@@ -1574,12 +1726,12 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
   if (refs.some((ref) => ref.bare)) {
     return block(`a bare SKILL.md means whatever the working directory is. ${hint}`);
   }
-  const maskedCommand = maskQuoted(command);
-  if (cdChangesSkillMeaning(projectCwd, command, refs)) {
+  const maskedCommand = maskQuoted(analyzed);
+  if (cdChangesSkillMeaning(projectCwd, analyzed, refs)) {
     return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
   }
   // Nested commands run before the outer one: `cat skill $(python3 -c …)`, `<(...)`, `>(...)`.
-  if (hasExecutableSubstitution(command)) {
+  if (hasExecutableSubstitution(analyzed)) {
     return block(`this command embeds a nested command (substitution or process substitution). ${hint}`);
   }
   // Options that execute a program for each file turn a "read" into a write.
@@ -1588,7 +1740,7 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
   }
 
   const hasHeredoc = /<</.test(maskedCommand);
-  const pipelines = splitPipelines(command);
+  const pipelines = splitPipelines(analyzed);
   let totalSegments = 0;
   for (const stages of pipelines) {
     const parsedStages = stages.map((segment) => ({ segment, parsed: parseSegment(projectCwd, segment) }));

@@ -650,6 +650,213 @@ describe("skill helper script execution (#1103)", () => {
     );
   });
 
+  it("allows a data-writer heredoc whose target is outside skills (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/msg.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh for details\nEOF"),
+      null,
+    );
+  });
+
+  it("allows tee a non-skill file with a skill-mentioning heredoc body (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "tee .pi/tmp/x.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh\nEOF"),
+      null,
+    );
+  });
+
+  it("blocks a heredoc whose redirect target is a skill file (#1125)", () => {
+    const { cwd, root } = project();
+    const skill = path.join(root, "x", "SKILL.md");
+    assert.equal(bashSkillVerdict(cwd, `cat > ${skill} <<'EOF'\nplain body\nEOF`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `tee ${skill} <<'EOF'\nplain body\nEOF`)?.block, true);
+  });
+
+  it("blocks a heredoc fed to an interpreter, whatever the shell (#1125)", () => {
+    const { cwd } = project();
+    const body = "rm .pi/skills/x/run-suites.sh";
+    for (const cmd of [`bash <<'EOF'\n${body}\nEOF`, `sh -s <<'EOF'\n${body}\nEOF`, `node <<'EOF'\n${body}\nEOF`]) {
+      assert.equal(bashSkillVerdict(cwd, cmd)?.block, true, cmd);
+    }
+  });
+
+  it("blocks xargs consuming a heredoc that lists a skill file (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "xargs rm <<'EOF'\n.pi/skills/x/SKILL.md\nEOF")?.block, true);
+  });
+
+  it("blocks a heredoc piped into an interpreter (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat <<'EOF' | bash\nrm .pi/skills/x/run-suites.sh\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("blocks an unquoted heredoc body whose substitution names a skill (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/x.txt <<EOF\n$(rm .pi/skills/x/run-suites.sh)\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("blocks an escaped separator hiding an interpreter behind a data writer (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "sh -s x\\; echo <<'EOF'\nrm .pi/skills/x/run-suites.sh\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("ignores a heredoc opener that starts a comment (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/out.txt <<REAL # <<FAKE\nhello\nREAL\nrm .pi/skills/x/SKILL.md\nFAKE")?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc body that a later segment runs (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/cleanup.sh <<'EOF'\nrm -f .pi/skills/x/SKILL.md\nEOF\n; bash .pi/tmp/cleanup.sh")?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc body whose written script is run by its own path (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(
+        cwd,
+        "cat > .pi/tmp/c.sh <<'EOF'\n#!/bin/sh\nrm -f .pi/skills/x/SKILL.md\nEOF\nchmod +x .pi/tmp/c.sh && .pi/tmp/c.sh",
+      )?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc body whose file is run on the opener's own line (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/x.sh <<'EOF' && bash .pi/tmp/x.sh\nrm -f .pi/skills/x/SKILL.md\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc body whose file is sourced by a `-c` program (#1125)", () => {
+    const { cwd } = project();
+    for (const run of ["bash -c 'source .pi/tmp/c.sh'", "sh -c '. .pi/tmp/c.sh'", "bash -ec '. .pi/tmp/c.sh'"]) {
+      assert.equal(
+        bashSkillVerdict(cwd, `cat > .pi/tmp/c.sh <<'EOF'\nrm -f .pi/skills/x/SKILL.md\nEOF\n${run}`)?.block,
+        true,
+        run,
+      );
+    }
+  });
+
+  it("allows single cat > /tmp/msg.txt <<'EOF' with skill-path prose (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > /tmp/msg.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh for details\nEOF"),
+      null,
+    );
+  });
+
+  it("blocks heredoc write followed by exec or redirected bash (#1125)", () => {
+    const { cwd } = project();
+    for (const follow of ["exec .pi/tmp/x.sh", "bash < .pi/tmp/x.sh"]) {
+      assert.equal(
+        bashSkillVerdict(cwd, `cat > .pi/tmp/x.sh <<'EOF'\nrm -f .pi/skills/x/SKILL.md\nEOF\n${follow}`)?.block,
+        true,
+        follow,
+      );
+    }
+  });
+
+  it("blocks a heredoc write paired with a second segment such as && git commit -F (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(
+        cwd,
+        "cat > /tmp/msg.txt <<'EOF' && git commit -F /tmp/msg.txt\nsee .pi/skills/verify-all/run-suites.sh\nEOF",
+      )?.block,
+      true,
+    );
+  });
+
+  it("blocks a heredoc write wrapped in a subshell (#1125)", () => {
+    const { cwd } = project();
+    for (const cmd of [
+      "(cat > /tmp/msg.txt <<'EOF'\nsee .pi/skills/x/SKILL.md\nEOF\n)",
+      "(cat > /tmp/msg.txt <<'EOF')\nsee .pi/skills/x/SKILL.md\nEOF",
+    ]) {
+      assert.equal(bashSkillVerdict(cwd, cmd)?.block, true, cmd);
+    }
+  });
+
+  it("reads a backslash-quoted heredoc delimiter as quoted (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/msg.txt <<\\EOF\nsee .pi/skills/verify-all/run-suites.sh\nEOF"),
+      null,
+    );
+  });
+
+  it("does not read a quoted pipe as a pipeline in the heredoc opener (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "printf '|%s' x > .pi/tmp/msg.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh\nEOF"),
+      null,
+    );
+  });
+
+  it("allows printf writing skill-path prose to a non-skill file (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "printf '%s\\n' x > .pi/tmp/prose.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh\nEOF"),
+      null,
+    );
+  });
+
+  it("allows git commit -F on a file whose contents mention a skill (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "git commit -F .pi/tmp/prose.txt"), null);
+  });
+
+  it("blocks python3 consuming a heredoc that names a skill path (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "python3 <<'EOF'\nopen('.pi/skills/x/SKILL.md').read()\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("does not treat a here-string <<< as a heredoc opener (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat <<<x > /tmp/a\nrm -f .pi/skills/s/SKILL.md\nx")?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc redirected into a process substitution (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat <<'EOF' > >(bash)\nrm -f .pi/skills/s/SKILL.md\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc redirected via command substitution (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat <<'EOF' > $(echo /tmp/out)\nrm -f .pi/skills/s/SKILL.md\nEOF")?.block,
+      true,
+    );
+  });
+
   it("allows reading a skill whose name contains a write-verb prefix", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/install-tools/SKILL.md"), null);
