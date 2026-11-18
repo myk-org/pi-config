@@ -912,7 +912,7 @@ describe("skill helper script execution (#1103)", () => {
 
 describe("shell syntax check (#1138)", () => {
   /** A marked and an unmarked project skill, each with a `run.sh` helper. */
-  function both(): { cwd: string; markedScript: string; unmarkedScript: string } {
+  function both(): { cwd: string; root: string; markedScript: string; unmarkedScript: string } {
     const { cwd, root } = project();
     writeSkill(root, "marked", MARKED);
     writeSkill(root, "verify-all", UNMARKED);
@@ -920,7 +920,7 @@ describe("shell syntax check (#1138)", () => {
     const unmarkedScript = path.join(root, "verify-all", "run.sh");
     fs.writeFileSync(markedScript, "#!/bin/sh\necho hi\n");
     fs.writeFileSync(unmarkedScript, "#!/bin/sh\necho hi\n");
-    return { cwd, markedScript, unmarkedScript };
+    return { cwd, root, markedScript, unmarkedScript };
   }
 
   it("allows bash -n on a MARKED project skill script", () => {
@@ -968,6 +968,69 @@ describe("shell syntax check (#1138)", () => {
   it("still blocks a bash -n that redirects into a skill file", () => {
     const { cwd, markedScript } = both();
     assert.equal(bashSkillVerdict(cwd, `bash -n ${markedScript} > ${path.join(cwd, ".pi", "skills", "marked", "SKILL.md")}`)?.block, true);
+  });
+
+  it("blocks a value-taking option, which makes -n its value and -c the real work", () => {
+    const { cwd, root } = both();
+    const skillMd = path.join(root, "marked", "SKILL.md");
+    for (const option of ["--rcfile", "--init-file", "--debugger", "--rcfile=/dev/null", "-o", "--noprofile"]) {
+      const command = `bash ${option} -n -c 'echo changed > ${skillMd}'`;
+      assert.equal(bashSkillVerdict(cwd, command)?.block, true, command);
+    }
+    assert.equal(bashSkillVerdict(cwd, `bash --debugger -n ${path.join(root, "marked", "run.sh")}`)?.block, true);
+  });
+
+  it("blocks a renamed shell binary running on a skill script", () => {
+    const { cwd, markedScript } = both();
+    const fake = path.join(tempDir("skill-maint-renamed-shell-"), "bash");
+    fs.writeFileSync(fake, "#!/bin/sh\n", { mode: 0o755 });
+    assert.equal(bashSkillVerdict(cwd, `${fake} -n ${markedScript}`)?.block, true);
+  });
+
+  it("allows a real shell binary path", () => {
+    const { cwd, markedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `${fs.realpathSync("/bin/sh")} -n ${markedScript}`), null);
+  });
+
+  it("blocks +n, which re-enables execution after -n", () => {
+    const { cwd, markedScript, root } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash -n +n ${markedScript}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash -n +o noexec ${markedScript}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash -n +n -c 'echo changed > ${path.join(root, "marked", "SKILL.md")}'`)?.block, true);
+  });
+
+  it("blocks inline code after -n", () => {
+    const { cwd, root } = both();
+    const skillMd = path.join(root, "marked", "SKILL.md");
+    assert.equal(bashSkillVerdict(cwd, `bash -n -c 'echo changed > ${skillMd}'`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `sh -n -c 'echo changed > ${skillMd}'`)?.block, true);
+  });
+
+  it("logs skill_shell_syntax_check_allowed for an exempted bash -n", async () => {
+    const home = tempDir("skill-maint-syntax-log-");
+    const { cwd, markedScript } = both();
+    const originalHome = process.env.HOME;
+    const originalLevel = process.env.PI_LOG_SKILL_MAINTENANCE;
+    process.env.HOME = home;
+    process.env.PI_LOG_SKILL_MAINTENANCE = "debug";
+    try {
+      const { clearLogLevelCache, getPiLogPath, setGlobalSessionId } = await import(
+        "../../../extensions/shared/file-logger.js"
+      );
+      clearLogLevelCache();
+      setGlobalSessionId("skill-maint-syntax-log-test");
+      assert.equal(bashSkillVerdict(cwd, `bash -n ${markedScript}`), null);
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      assert.match(fs.readFileSync(logPath, "utf-8"), /skill_shell_syntax_check_allowed/);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalLevel === undefined) delete process.env.PI_LOG_SKILL_MAINTENANCE;
+      else process.env.PI_LOG_SKILL_MAINTENANCE = originalLevel;
+      const { clearLogLevelCache } = await import("../../../extensions/shared/file-logger.js");
+      clearLogLevelCache();
+    }
   });
 });
 

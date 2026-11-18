@@ -410,7 +410,8 @@ progress. It does not commit, push, create a PR, or post results.
   unmarked project skills, `~/.pi/agent/skills/`, and read-only `node_modules` package skills (directly, via `bash`/`sh`/`node`
   without `-c`/`-e`/`--eval`, or via `uv run [--script]`, unwrapping `rtk`/env prefixes, ignoring `/dev/null` or fd-dup
   redirects like `2>&1`, and verifying `realpath` stays inside `skills/`), plus a syntax-only `bash -n`/`sh -n`/`--noexec`
-  parse of any skill script (it executes nothing) and `mkdir` inside the owned tree — never writes
+  parse of any skill script (`bash`/`sh`/`dash`/`zsh` bare or as a real binary path, every flag a noexec flag, no `+n`;
+  it executes nothing) and `mkdir` inside the owned tree — never writes
   skill files or runs scripts inside `skill-maintenance: auto` marked project skills: every shell write (`>`, `>>`, `>&`, `tee`,
   `cp`, `mv`, `rm`, `sed -i`, `perl -i`, quoted/unquoted inline `-c`/`-e`/`--eval`/`eval` scripts, …) and unresolved reference
   blocks (#1103). No model call, no setting: it is not an async agent at all.
