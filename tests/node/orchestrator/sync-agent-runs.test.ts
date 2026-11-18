@@ -359,9 +359,11 @@ if (task.includes("error-stop")) {
   console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "boom" } }));
   process.exit(0);
 }
-require("node:fs").writeFileSync(process.env.CHILD_MARK + (task.includes("slow") ? ".slow" : ".fast"), "up");
+// Register SIGTERM handler and keepalive before writing the readiness marker so the parent
+// never signals the child before it is actually ignoring SIGTERM.
 if (task.includes("ignore-term")) process.on("SIGTERM", () => {});
 if (task.includes("slow")) setInterval(() => {}, 1000);
+require("node:fs").writeFileSync(process.env.CHILD_MARK + (task.includes("slow") ? ".slow" : ".fast"), "up");
 `;
 
 function withChild() {
@@ -498,8 +500,9 @@ test("a child that ignores SIGTERM is escalated to SIGKILL", { timeout: 30_000 }
     assert.equal(abortSyncAgentRun(listSyncAgentRuns().find((r) => r.task === "slow ignore-term")!.id), true);
     const result = await run;
     // `proc.killed` is true the moment SIGTERM is sent, so the old escalation never fired and
-    // this promise would never settle. Reaching the 5 s timer is the proof it fired.
-    assert.ok(Date.now() - started >= 5_000, "escalation runs on its 5 s timer");
+    // this promise would never settle. Reaching the 5 s timer is the proof it fired; 4,950 ms
+    // floor absorbs minor setTimeout/clock jitter without letting a shortened escalation timer pass.
+    assert.ok(Date.now() - started >= 4_950, "escalation runs on its 5 s timer");
     assert.equal(result.exitCode, 1);
   } finally {
     h.restore();
