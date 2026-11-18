@@ -37,12 +37,14 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
+  stripUnquotedShellComments,
   bashWritesToPath,
   gitIdentityConfigSrc,
   failedFileEditSkipMessage,
   findPlaceholderTrailer,
   messageFileTrailerState,
   commitMessageFiles,
+  commitMessageSpecs,
   injectCommitTrailer,
   resolveEffectiveCwd,
   checkPythonPipBlock,
@@ -3178,6 +3180,75 @@ describe("commitMessageFiles (#1131)", () => {
   });
 });
 
+describe("commitMessageSpecs (#1131)", () => {
+  const CWD = "/s";
+
+  it("distinguishes resolved files, opaque-file operands, inline/stdin commits", () => {
+    assert.deepEqual(commitMessageSpecs("git commit -F msg.txt", CWD), [{ kind: "file", path: "/s/msg.txt" }]);
+    assert.deepEqual(commitMessageSpecs("git commit -F -", CWD), [{ kind: "inline" }]);
+    assert.deepEqual(commitMessageSpecs("git commit --file=-", CWD), [{ kind: "inline" }]);
+    assert.deepEqual(commitMessageSpecs("git commit -m 'fix: x'", CWD), [{ kind: "inline" }]);
+    assert.deepEqual(commitMessageSpecs('git commit -F "bad\\\ngood"', CWD), [
+      { kind: "opaque-file", raw: '"bad\\\ngood"' },
+    ]);
+    assert.deepEqual(commitMessageSpecs('git commit -F "$FILE"', CWD), [
+      { kind: "opaque-file", raw: '"$FILE"' },
+    ]);
+    assert.deepEqual(commitMessageSpecs("git commit -F >out", CWD), [
+      { kind: "opaque-file", raw: ">out" },
+    ]);
+    assert.deepEqual(commitMessageSpecs("git commit -F", CWD), [
+      { kind: "opaque-file", raw: "" },
+    ]);
+    assert.deepEqual(commitMessageSpecs("git commit -F # Assisted-by: PI (m)", CWD), [
+      { kind: "opaque-file", raw: "" },
+    ]);
+  });
+
+  it("uses the last -F/--file to decide stdin vs opaque-file", () => {
+    assert.deepEqual(commitMessageSpecs('git commit -F "$FILE" -F -', CWD), [{ kind: "inline" }]);
+    assert.deepEqual(commitMessageSpecs('git commit -F - -F "$FILE"', CWD), [
+      { kind: "opaque-file", raw: '"$FILE"' },
+    ]);
+    assert.deepEqual(commitMessageSpecs("git commit -F - --file=msg.txt", CWD), [
+      { kind: "file", path: "/s/msg.txt" },
+    ]);
+  });
+});
+
+describe("stripUnquotedShellComments (#1131)", () => {
+  it("strips unquoted # comments to newline while preserving quotes, escapes, heredocs", () => {
+    assert.equal(
+      stripUnquotedShellComments('git commit -m "$MSG" # Assisted-by: PI (m)'),
+      'git commit -m "$MSG" ',
+    );
+    assert.equal(
+      stripUnquotedShellComments('git commit -m "$MSG"\n# Assisted-by: PI (m)\necho done'),
+      'git commit -m "$MSG"\n\necho done',
+    );
+    assert.equal(
+      stripUnquotedShellComments('git commit -m "fix #123\n\nAssisted-by: PI (m)"'),
+      'git commit -m "fix #123\n\nAssisted-by: PI (m)"',
+    );
+    assert.equal(
+      stripUnquotedShellComments("git commit -m 'fix #123\n\nAssisted-by: PI (m)'"),
+      "git commit -m 'fix #123\n\nAssisted-by: PI (m)'",
+    );
+    assert.equal(
+      stripUnquotedShellComments("git commit -m \\#Assisted-by:\\ PI"),
+      "git commit -m \\#Assisted-by:\\ PI",
+    );
+    const heredocCmd = "cat <<'EOF' | git commit -F -\nfix: x\n\n# kept in heredoc\nAssisted-by: PI (m)\nEOF";
+    assert.equal(stripUnquotedShellComments(heredocCmd), heredocCmd);
+    const substHeredoc = 'git commit -m "$(cat <<\'EOF\'\nfix: "x" # kept\n\nAssisted-by: PI (m)\nEOF\n)"';
+    assert.equal(stripUnquotedShellComments(substHeredoc), substHeredoc);
+    assert.equal(
+      stripUnquotedShellComments('git commit -m "$(echo hi # Assisted-by: PI (m)\n)"'),
+      'git commit -m "$(echo hi \n)"',
+    );
+  });
+});
+
 // ── #1131: the trailer check reads the -F file behind git's global options ──
 describe("commit-trailer check behind git global options (#1131)", () => {
   let hooks: Map<string, Function>;
@@ -3400,6 +3471,45 @@ describe("commit-trailer check behind git global options (#1131)", () => {
     writeFileSync(join(repo, "bad\\\ngood"), "fix: x\n\nAssisted-by: PI (m)\n");
     const res = await runBash("git commit -F 'bad\\\ngood'", repo);
     assert.equal(res?.block, undefined, JSON.stringify(res) ?? "allowed");
+  });
+
+  it("blocks double-quoted -F line continuation despite trailing # Assisted-by comment", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "badgood"), "fix: x\n");
+    const res = await runBash('git commit -F "bad\\\ngood" # Assisted-by: PI (m)', repo);
+    assert.equal(res?.block, true, JSON.stringify(res) ?? "allowed");
+    assert.match(res?.reason ?? "", /opaque/);
+  });
+
+  it('blocks -F "$FILE" despite trailing # Assisted-by comment', async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "bad.txt"), "fix: x\n");
+    const res = await runBash('FILE=bad.txt git commit -F "$FILE" # Assisted-by: PI (m)', repo);
+    assert.equal(res?.block, true, JSON.stringify(res) ?? "allowed");
+    assert.match(res?.reason ?? "", /opaque/);
+  });
+
+  it("blocks opaque -m with trailing # Assisted-by comment", async () => {
+    const repo = makeRepo();
+    const resWithC = await runBash(`git -C ${repo} commit -m "$MSG" # Assisted-by: PI (m)`, makeTempDir("rl-trailer-cwd-"));
+    assert.equal(resWithC?.block, true, JSON.stringify(resWithC) ?? "allowed");
+    const resUnquoted = await runBash("git commit -m $MSG # Assisted-by: PI (m)", repo);
+    assert.equal(resUnquoted?.block, true, JSON.stringify(resUnquoted) ?? "allowed");
+  });
+
+  it("allows heredoc piped to git commit -F - carrying the trailer", async () => {
+    const repo = makeRepo();
+    const res = await runBash("cat <<'EOF' | git commit -F -\nfix: x\n\nAssisted-by: PI (m)\nEOF", repo);
+    assert.equal(res?.block, undefined, JSON.stringify(res));
+  });
+
+  it("allows -m command-substitution heredoc carrying the trailer", async () => {
+    const repo = makeRepo();
+    const res = await runBash(
+      "git commit -m \"$(cat <<'EOF'\nfix: x\n\nAssisted-by: PI (m)\nEOF\n)\"",
+      repo,
+    );
+    assert.equal(res?.block, undefined, JSON.stringify(res));
   });
 });
 

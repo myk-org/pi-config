@@ -85,7 +85,8 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
-  commitMessageFiles,
+  commitMessageSpecs,
+  stripUnquotedShellComments,
   isTestRunnerCommand,
   isBumpVersionBranch,
   getCachedBranch,
@@ -222,13 +223,25 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
   // no longer hide the file (#1131), and EVERY commit in a compound command is
   // verified — one trailerless file refuses all of them (Qodo, PR #1139). Each path
   // arrives resolved against its OWN invocation's `-C`/`cd` (#1131).
-  const fileMessages = commitMessageFiles(command, ctx.cwd);
-  let unverified = fileMessages.length === 0;
-  for (const fileMessage of fileMessages) {
-    if (!fileMessage) {
-      unverified = true; // inline or built message: no file to read
+  const messageSpecs = commitMessageSpecs(command, ctx.cwd);
+  let unverified = messageSpecs.length === 0;
+  for (const spec of messageSpecs) {
+    if (spec.kind === "inline") {
+      unverified = true; // inline or stdin (`-F -`) message: no file to read
       continue;
     }
+    if (spec.kind === "opaque-file") {
+      // Unresolvable `-F <file>` (line continuation, `$VAR`, backtick, glob, `~`,
+      // redirect, missing operand): never fall through to `commandHasTrailerByName`,
+      // because a trailing `# Assisted-by:` comment would let a trailerless file pass.
+      return {
+        block: true,
+        reason:
+          `⛔ Commit refused: the \`-F\` message file path is opaque and cannot be resolved or verified, ` +
+          `so the \`${trailerName}\` trailer cannot be checked. Write the message to a literal readable file path with \`${trailerName}: PI (${modelId})\` in it, then re-run the commit.`,
+      };
+    }
+    const fileMessage = spec.path;
     // The read happens BEFORE the command runs, so a command that writes the same file
     // would be verified against its OLD contents while git commits the new ones. Refuse
     // that shape instead of trusting the stale read (Qodo, PR #1004).
@@ -266,8 +279,9 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     };
   }
   if (!unverified) return undefined;
-  // Other opaque shapes must carry the trailer already; refusing beats guessing.
-  if (!commandHasTrailerByName(command, trailerName)) {
+  // Other opaque shapes must carry the trailer already; strip unquoted `#`
+  // comments first so a shell comment never satisfies the trailer check.
+  if (!commandHasTrailerByName(stripUnquotedShellComments(command), trailerName)) {
     return {
       block: true,
       reason:

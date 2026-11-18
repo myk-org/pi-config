@@ -65,6 +65,262 @@ export function commandHasTrailerByName(command: string, trailerName: string): b
   return result;
 }
 
+/** Consume heredoc bodies (preserving body + terminator verbatim) after the opener line's `\n`. */
+function consumeShellHeredocBodies(
+  cmd: string,
+  start: number,
+  pending: Array<{ delim: string; stripTabs: boolean }>,
+): { text: string; next: number } {
+  let cursor = start;
+  for (const h of pending) {
+    let closed = false;
+    while (cursor <= cmd.length) {
+      let lineEnd = cmd.indexOf("\n", cursor);
+      const atEnd = lineEnd === -1;
+      if (atEnd) lineEnd = cmd.length;
+      const line = cmd.slice(cursor, lineEnd).replace(/\r$/, "");
+      const bodyMatch = h.stripTabs ? line.replace(/^\t+/, "") === h.delim : line === h.delim;
+      cursor = atEnd ? cmd.length : lineEnd + 1;
+      if (bodyMatch) {
+        closed = true;
+        break;
+      }
+      if (atEnd) break;
+    }
+    if (!closed) break;
+  }
+  return { text: cmd.slice(start, cursor), next: cursor };
+}
+
+function scanBacktickShellComments(cmd: string, start: number): { text: string; next: number } {
+  let out = "";
+  let i = start;
+  let atWordStart = true;
+  while (i < cmd.length) {
+    const ch = cmd[i]!;
+    if (ch === "`") {
+      out += "`";
+      return { text: out, next: i + 1 };
+    }
+    if (ch === "\\" && i + 1 < cmd.length) {
+      out += cmd.slice(i, i + 2);
+      atWordStart = cmd[i + 1] === "\n" ? atWordStart : false;
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      const close = cmd.indexOf("'", i + 1);
+      const end = close === -1 ? cmd.length : close + 1;
+      out += cmd.slice(i, end);
+      i = end;
+      atWordStart = false;
+      continue;
+    }
+    if (ch === '"') {
+      out += '"';
+      i++;
+      while (i < cmd.length) {
+        const qch = cmd[i]!;
+        if (qch === "\\" && i + 1 < cmd.length) {
+          out += cmd.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        out += qch;
+        i++;
+        if (qch === '"') break;
+      }
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "#" && atWordStart) {
+      while (i < cmd.length && cmd[i] !== "\n" && cmd[i] !== "`") i++;
+      continue;
+    }
+    out += ch;
+    atWordStart = /[\s;&|()]/.test(ch);
+    i++;
+  }
+  return { text: out, next: i };
+}
+
+function scanUnquotedShellComments(
+  cmd: string,
+  start: number,
+  stopAtCloseParen: boolean,
+): { text: string; next: number } {
+  let out = "";
+  let i = start;
+  let atWordStart = true;
+  let parenDepth = stopAtCloseParen ? 1 : 0;
+  const pendingHeredocs: Array<{ delim: string; stripTabs: boolean }> = [];
+
+  while (i < cmd.length) {
+    const ch = cmd[i]!;
+
+    if (ch === "\\" && i + 1 < cmd.length) {
+      if (cmd[i + 1] === "\n") {
+        out += "\\\n";
+        i += 2;
+        continue;
+      }
+      if (cmd[i + 1] === "\r" && cmd[i + 2] === "\n") {
+        out += "\\\r\n";
+        i += 3;
+        continue;
+      }
+      out += cmd.slice(i, i + 2);
+      i += 2;
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "#" && atWordStart) {
+      while (i < cmd.length && cmd[i] !== "\n") i++;
+      continue;
+    }
+
+    if (ch === "$" && cmd[i + 1] === "'") {
+      out += "$'";
+      i += 2;
+      while (i < cmd.length) {
+        const sch = cmd[i]!;
+        if (sch === "\\" && i + 1 < cmd.length) {
+          out += cmd.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        out += sch;
+        i++;
+        if (sch === "'") break;
+      }
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "'") {
+      const close = cmd.indexOf("'", i + 1);
+      const end = close === -1 ? cmd.length : close + 1;
+      out += cmd.slice(i, end);
+      i = end;
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === '"') {
+      out += '"';
+      i++;
+      while (i < cmd.length) {
+        const dch = cmd[i]!;
+        if (dch === "\\" && i + 1 < cmd.length) {
+          out += cmd.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (dch === "$" && cmd[i + 1] === "(") {
+          out += "$(";
+          const sub = scanUnquotedShellComments(cmd, i + 2, true);
+          out += sub.text;
+          i = sub.next;
+          continue;
+        }
+        if (dch === "`") {
+          out += "`";
+          const bt = scanBacktickShellComments(cmd, i + 1);
+          out += bt.text;
+          i = bt.next;
+          continue;
+        }
+        out += dch;
+        i++;
+        if (dch === '"') break;
+      }
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "$" && cmd[i + 1] === "(") {
+      out += "$(";
+      const sub = scanUnquotedShellComments(cmd, i + 2, true);
+      out += sub.text;
+      i = sub.next;
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "`") {
+      out += "`";
+      const bt = scanBacktickShellComments(cmd, i + 1);
+      out += bt.text;
+      i = bt.next;
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "<" && cmd[i + 1] === "<" && cmd[i + 2] !== "<") {
+      const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|((?:\\.|[^\s;&|)'"\\`\n])+))/.exec(cmd.slice(i));
+      if (m) {
+        const delim = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4]!.replace(/\\(.)/g, "$1");
+        pendingHeredocs.push({ delim, stripTabs: m[1] === "-" });
+        out += m[0];
+        i += m[0].length;
+        atWordStart = false;
+        continue;
+      }
+    }
+
+    if (ch === "\n") {
+      out += "\n";
+      i++;
+      if (pendingHeredocs.length > 0) {
+        const body = consumeShellHeredocBodies(cmd, i, pendingHeredocs);
+        out += body.text;
+        i = body.next;
+        pendingHeredocs.length = 0;
+      }
+      atWordStart = true;
+      continue;
+    }
+
+    if (stopAtCloseParen) {
+      if (ch === "(") {
+        parenDepth++;
+        out += ch;
+        i++;
+        atWordStart = true;
+        continue;
+      }
+      if (ch === ")") {
+        if (parenDepth === 1) {
+          out += ch;
+          return { text: out, next: i + 1 };
+        }
+        parenDepth--;
+        out += ch;
+        i++;
+        atWordStart = true;
+        continue;
+      }
+    }
+
+    out += ch;
+    atWordStart = /[\s;&|()]/.test(ch);
+    i++;
+  }
+
+  return { text: out, next: i };
+}
+
+/**
+ * Strip unquoted shell `#` comments while preserving single/double/`$'...'`
+ * quotes, backslash escapes, and heredoc bodies (including inside `$(...)`).
+ * Used before `commandHasTrailerByName` so trailing `# Assisted-by:` shell
+ * comments never satisfy the commit-trailer check.
+ */
+export function stripUnquotedShellComments(command: string): string {
+  return scanUnquotedShellComments(command, 0, false).text;
+}
+
 /**
  * Split a command into segments on shell separators that are *outside* quotes,
  * recording each segment's offset, its parenthesis depth, and whether the
@@ -2546,48 +2802,80 @@ export function gitAddPathspecs(command: string): string[] | null {
   return paths;
 }
 
+export type CommitMessageSpec =
+  | { kind: "file"; path: string }
+  | { kind: "opaque-file"; raw: string }
+  | { kind: "inline" };
+
 /**
- * The message source of EVERY real `git commit` in the command — one entry per
- * commit segment, already resolved against the directory THAT invocation runs
- * in: the `-F <file>` path, or null when that segment's message is not a file
- * the hook can read (`-F -` is stdin, a `-m` message is inline).
- * Every segment is returned because a compound command commits twice — checking
- * only the first would let the second commit through unverified (Qodo, PR #1139).
- * Each relative operand resolves against its own invocation's `-C`/`cd`, so
- * `git -C repo1 commit -F msg.txt && git -C repo2 commit -F msg.txt` reads each
- * repo's file instead of repo1's twice (#1131).
- * Global options before `commit` (`-C <path>`, `-c <k=v>`, `--no-pager`) do not
- * hide the file: the region starts after the subcommand.
+ * Classify EVERY real `git commit` in the command into its message source:
+ * - `{ kind: "file", path }` for a resolved `-F`/`--file` path
+ * - `{ kind: "opaque-file", raw }` when `-F`/`--file` was given (and not `-`),
+ *   but the operand is unresolvable (line continuation, `$VAR`, backtick, glob,
+ *   `~`, redirect, or missing operand) — must block directly, never fall back
+ * - `{ kind: "inline" }` for stdin (`-F -`, `--file=-`), `-m`, or no `-F`
  */
-export function commitMessageFiles(command: string, sessionCwd: string): Array<string | null> {
-  const files = subArgSpans(command, "commit").map((span) => {
+export function commitMessageSpecs(command: string, sessionCwd: string): CommitMessageSpec[] {
+  const specs: CommitMessageSpec[] = subArgSpans(command, "commit").map((span) => {
     const words = rawShellWords(span.text);
     // git records the LAST `-F` of an invocation, so the earlier ones are not
     // files it opens: keep scanning instead of returning the first (#1131).
+    let sawFileFlag = false;
     let operand: string | null = null;
     for (let i = 0; i < words.length; i++) {
       const word = words[i]!;
+      if (word.startsWith("#")) break; // shell comment runs to end of line
       if (word === "--") break; // after this, paths only
-      if (word === "-F" || word === "--file") operand = words[++i] ?? null;
-      else if (word.startsWith("--file=")) operand = word.slice("--file=".length);
+      if (word === "-F" || word === "--file") {
+        sawFileFlag = true;
+        const next = words[i + 1];
+        if (next && !next.startsWith("#")) {
+          operand = next;
+          i++;
+        } else {
+          operand = null;
+        }
+      } else if (word.startsWith("--file=")) {
+        sawFileFlag = true;
+        operand = word.slice("--file=".length);
       // `-F<file>`: an ATTACHED value, tested before the `-m` cluster below so
       // `-F"msg with space"` is not read as `-a -m …`.
-      else if (word.startsWith("-F") && word.length > 2) operand = word.slice(2);
+      } else if (word.startsWith("-F") && word.length > 2) {
+        sawFileFlag = true;
+        operand = word.slice(2);
       // An inline message wins: `git commit -m '--file=good.txt'` records that
       // literal text, so its operand is a MESSAGE and the commit is opaque
       // (Qodo, PR #1139). `-m`, `--message`, `--message=…` and a combined short
       // option (`-am`) all mean an inline message.
-      else if (/^(?:--message(?:=|$)|-[a-zA-Z]*m)/.test(tokenize(word)[0] ?? "")) {
+      } else if (/^(?:--message(?:=|$)|-[a-zA-Z]*m)/.test(tokenize(word)[0] ?? "")) {
+        sawFileFlag = false;
         operand = null;
         break;
       }
     }
+    if (!sawFileFlag) return { kind: "inline" };
     const value = operand === null ? "" : operandBeforeShellSyntax(operand);
-    if (value === "-" || value === "") return null;
-    return path.isAbsolute(value) ? value : join(cwdAt(command, span.start, sessionCwd), value);
+    if (value === "-") return { kind: "inline" };
+    if (value === "") return { kind: "opaque-file", raw: operand ?? "" };
+    const resolved = path.isAbsolute(value) ? value : join(cwdAt(command, span.start, sessionCwd), value);
+    return { kind: "file", path: resolved };
   });
-  enfLog.debug("commitMessageFiles", `segments=${files.length} files=${files.filter(Boolean).length}`);
-  return files;
+  enfLog.debug(
+    "commitMessageSpecs",
+    `segments=${specs.length} files=${specs.filter((s) => s.kind === "file").length} opaqueFiles=${specs.filter((s) => s.kind === "opaque-file").length}`,
+  );
+  return specs;
+}
+
+/**
+ * The message source of EVERY real `git commit` in the command — one entry per
+ * commit segment, already resolved against the directory THAT invocation runs
+ * in: the `-F <file>` path, or null when that segment's message is not a file
+ * the hook can read (`-F -` is stdin, a `-m` message is inline, or an opaque
+ * `-F` operand cannot be resolved).
+ */
+export function commitMessageFiles(command: string, sessionCwd: string): Array<string | null> {
+  return commitMessageSpecs(command, sessionCwd).map((s) => (s.kind === "file" ? s.path : null));
 }
 
 /** The directory the `git` invocation ending at `anchorStart` runs in: the
