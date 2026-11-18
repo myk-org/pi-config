@@ -453,14 +453,14 @@ describe("shell guard (Qodo #1079)", () => {
     assert.equal(bashSkillVerdict(cwd, `printf x >> ${path.join(root, "linked", "SKILL.md")}`)?.block, true);
   });
 
-  it("blocks every shell write into a skill, marked or not", () => {
+  it("allows shell writes into a marked project skill while blocking unmarked ones (#1152)", () => {
     const { cwd, root } = project();
     writeSkill(root, "marked", MARKED);
     writeSkill(root, "unmarked", UNMARKED);
-    for (const name of ["marked", "unmarked"]) {
-      assert.equal(bashSkillVerdict(cwd, `printf x >> ${path.join(root, name, "SKILL.md")}`)?.block, true);
-      assert.equal(bashSkillVerdict(cwd, `sed -i 's/a/b/' ${path.join(root, name, "SKILL.md")}`)?.block, true);
-    }
+    assert.equal(bashSkillVerdict(cwd, `printf x >> ${path.join(root, "marked", "SKILL.md")}`), null);
+    assert.equal(bashSkillVerdict(cwd, `sed -i 's/a/b/' ${path.join(root, "marked", "SKILL.md")}`), null);
+    assert.equal(bashSkillVerdict(cwd, `printf x >> ${path.join(root, "unmarked", "SKILL.md")}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `sed -i 's/a/b/' ${path.join(root, "unmarked", "SKILL.md")}`)?.block, true);
   });
 
   it("blocks cp into a skill whatever the option shape", () => {
@@ -521,10 +521,10 @@ describe("shell guard (Qodo #1079)", () => {
 
   it("blocks a command substitution anywhere in the command", () => {
     const { cwd, root } = project();
-    writeSkill(root, "marked", MARKED);
-    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
+    writeSkill(root, "unmarked", UNMARKED);
+    const read = `cat ${path.join(root, "unmarked", "SKILL.md")}`;
     assert.equal(
-      bashSkillVerdict(cwd, `${read} $(python3 -c 'open("${path.join(root, "marked", "SKILL.md")}", "w")')`)?.block,
+      bashSkillVerdict(cwd, `${read} $(python3 -c 'open("${path.join(root, "unmarked", "SKILL.md")}", "w")')`)?.block,
       true,
     );
     assert.equal(bashSkillVerdict(cwd, "`printf x` >> ~/.agents/skills/x/SKILL.md")?.block, true);
@@ -547,11 +547,11 @@ describe("shell guard (Qodo #1079)", () => {
     assert.equal(bashSkillVerdict(cwd, `mkdir -p ${path.join(root, "ok")} /tmp/elsewhere`)?.block, true);
   });
 
-  it("blocks a command substitution anywhere in the command", () => {
+  it("blocks a command substitution with date or protected write", () => {
     const { cwd, root } = project();
-    writeSkill(root, "marked", MARKED);
-    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
-    const nested = `${read} $(python3 -c 'open("${path.join(root, "marked", "SKILL.md")}", "w")')`;
+    writeSkill(root, "unmarked", UNMARKED);
+    const read = `cat ${path.join(root, "unmarked", "SKILL.md")}`;
+    const nested = `${read} $(python3 -c 'open("${path.join(root, "unmarked", "SKILL.md")}", "w")')`;
     assert.equal(bashSkillVerdict(cwd, nested)?.block, true);
     assert.equal(bashSkillVerdict(cwd, "printf x $(date) >> ~/.agents/skills/x/SKILL.md")?.block, true);
   });
@@ -971,14 +971,18 @@ describe("skill helper script execution (#1103)", () => {
     assert.equal(bashSkillVerdict(cwd, 'eval "echo hi > .pi/skills/foo/SKILL.md"')?.block, true);
   });
 
-  it("blocks executing a helper script inside a marked project skill", () => {
+  it("allows executing a helper script inside a marked project skill (#1152)", () => {
     const { cwd, root } = project();
     writeSkill(root, "marked", MARKED);
     const helper = path.join(root, "marked", "helper.sh");
+    const skillMd = path.join(root, "marked", "SKILL.md");
     fs.writeFileSync(helper, "#!/bin/sh\n");
-    const verdict = bashSkillVerdict(cwd, `bash ${helper}`);
-    assert.equal(verdict?.block, true);
-    assert.match(verdict?.reason ?? "", /skill-maintenance: auto/);
+    assert.equal(bashSkillVerdict(cwd, `bash ${helper}`), null);
+    assert.equal(bashSkillVerdict(cwd, helper), null);
+    assert.equal(bashSkillVerdict(cwd, `chmod +x ${helper}`), null);
+    assert.equal(bashSkillVerdict(cwd, `echo '# updated' > ${helper}`), null);
+    assert.equal(bashSkillVerdict(cwd, `sed -i 's/Run the query/Run it/' ${skillMd}`), null);
+    assert.equal(bashSkillVerdict(cwd, `OTP=$(bw-session get totp npmjs.com) && ${helper} --otp "$OTP"`), null);
   });
 
   it("allows executing a helper script inside an unmarked project skill", () => {
@@ -1246,72 +1250,140 @@ describe("shell syntax check (#1138)", () => {
     assert.equal(bashSkillVerdict(cwd, "bash -n .pi/skills/marked/run.sh && echo 'syntax OK'"), null);
   });
 
-  it("still blocks running a MARKED project skill script", () => {
+  it("allows running a marked project skill script directly (#1152)", () => {
     const { cwd, markedScript } = both();
-    const verdict = bashSkillVerdict(cwd, `bash ${markedScript}`);
-    assert.equal(verdict?.block, true);
-    assert.match(verdict?.reason ?? "", /skill-maintenance: auto/);
+    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript}`), null);
   });
 
   it("still blocks bash -nc as inline code naming a skill", () => {
     const { cwd } = both();
-    assert.equal(bashSkillVerdict(cwd, "bash -nc 'rm -rf .pi/skills/marked'")?.block, true);
+    assert.equal(bashSkillVerdict(cwd, "bash -nc 'rm -rf .pi/skills/verify-all'")?.block, true);
   });
 
   it("still blocks bash -c naming a skill", () => {
     const { cwd } = both();
-    assert.equal(bashSkillVerdict(cwd, "bash -c 'rm -rf .pi/skills/marked'")?.block, true);
+    assert.equal(bashSkillVerdict(cwd, "bash -c 'rm -rf .pi/skills/verify-all'")?.block, true);
   });
 
   it("still blocks a bash -n that redirects into a skill file", () => {
-    const { cwd, markedScript } = both();
-    assert.equal(bashSkillVerdict(cwd, `bash -n ${markedScript} > ${path.join(cwd, ".pi", "skills", "marked", "SKILL.md")}`)?.block, true);
+    const { cwd, unmarkedScript } = both();
+    assert.equal(
+      bashSkillVerdict(cwd, `bash -n ${unmarkedScript} > ${path.join(cwd, ".pi", "skills", "verify-all", "SKILL.md")}`)?.block,
+      true,
+    );
   });
 
   it("blocks a value-taking option, which makes -n its value and -c the real work", () => {
     const { cwd, root } = both();
-    const skillMd = path.join(root, "marked", "SKILL.md");
+    const skillMd = path.join(root, "verify-all", "SKILL.md");
     for (const option of ["--rcfile", "--init-file", "--debugger", "--rcfile=/dev/null", "-o", "--noprofile"]) {
       const command = `bash ${option} -n -c 'echo changed > ${skillMd}'`;
       assert.equal(bashSkillVerdict(cwd, command)?.block, true, command);
     }
-    assert.equal(bashSkillVerdict(cwd, `bash --debugger -n ${path.join(root, "marked", "run.sh")}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash --debugger -n ${path.join(root, "verify-all", "run.sh")}`)?.block, true);
   });
 
   it("blocks a renamed shell binary running on a skill script", () => {
-    const { cwd, markedScript } = both();
+    const { cwd, unmarkedScript } = both();
     const fake = path.join(tempDir("skill-maint-renamed-shell-"), "bash");
     fs.writeFileSync(fake, "#!/bin/sh\n", { mode: 0o755 });
-    assert.equal(bashSkillVerdict(cwd, `${fake} -n ${markedScript}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `${fake} -n ${unmarkedScript}`)?.block, true);
   });
 
   it("allows a real shell binary path", () => {
-    const { cwd, markedScript } = both();
-    assert.equal(bashSkillVerdict(cwd, `${fs.realpathSync("/bin/sh")} -n ${markedScript}`), null);
+    const { cwd, unmarkedScript } = both();
+    assert.equal(bashSkillVerdict(cwd, `${fs.realpathSync("/bin/sh")} -n ${unmarkedScript}`), null);
   });
 
   it("blocks +n, which re-enables execution after -n", () => {
-    const { cwd, markedScript, root } = both();
-    assert.equal(bashSkillVerdict(cwd, `bash -n +n ${markedScript}`)?.block, true);
-    assert.equal(bashSkillVerdict(cwd, `bash -n +o noexec ${markedScript}`)?.block, true);
-    assert.equal(bashSkillVerdict(cwd, `bash -n +n -c 'echo changed > ${path.join(root, "marked", "SKILL.md")}'`)?.block, true);
+    const { cwd, unmarkedScript, root } = both();
+    assert.equal(bashSkillVerdict(cwd, `bash -n +n ${unmarkedScript}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash -n +o noexec ${unmarkedScript}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash -n +n -c 'echo changed > ${path.join(root, "verify-all", "SKILL.md")}'`)?.block, true);
   });
 
   it("blocks inline code after -n", () => {
     const { cwd, root } = both();
-    const skillMd = path.join(root, "marked", "SKILL.md");
+    const skillMd = path.join(root, "verify-all", "SKILL.md");
     assert.equal(bashSkillVerdict(cwd, `bash -n -c 'echo changed > ${skillMd}'`)?.block, true);
     assert.equal(bashSkillVerdict(cwd, `sh -n -c 'echo changed > ${skillMd}'`)?.block, true);
   });
 
   it("logs skill_shell_syntax_check_allowed for an exempted bash -n", () => {
-    const { cwd, markedScript } = both();
+    const { cwd, unmarkedScript } = both();
     inTempLogHome("skill-maint-syntax-log-test", () => {
-      assert.equal(bashSkillVerdict(cwd, `bash -n ${markedScript}`), null);
+      assert.equal(bashSkillVerdict(cwd, `bash -n ${unmarkedScript}`), null);
       const logPath = getPiLogPath("skill-maintenance");
       assert.ok(logPath);
       assert.match(fs.readFileSync(logPath, "utf-8"), /skill_shell_syntax_check_allowed/);
     });
+  });
+});
+
+describe("adopted skill shell boundaries (#1152)", () => {
+  function setup() {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    writeSkill(root, "verify-all", UNMARKED);
+    const markedScript = path.join(root, "marked", "run.sh");
+    const markedSkillMd = path.join(root, "marked", "SKILL.md");
+    fs.writeFileSync(markedScript, "#!/bin/sh\necho ok\n");
+    return { cwd, root, markedScript, markedSkillMd };
+  }
+
+  it("logs skill_shell_adopted_allowed when only adopted owned skills are referenced", () => {
+    const { cwd, markedScript } = setup();
+    inTempLogHome("skill-maint-adopted-log-test", () => {
+      assert.equal(bashSkillVerdict(cwd, `chmod +x ${markedScript} && ${markedScript}`), null);
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      assert.match(fs.readFileSync(logPath, "utf-8"), /skill_shell_adopted_allowed/);
+    });
+  });
+
+  it("blocks mixed commands touching both a marked skill and an unmarked, global, or package skill", () => {
+    const { cwd, markedScript, markedSkillMd } = setup();
+    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript} ~/.agents/skills/x/SKILL.md`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp ${markedScript} .pi/skills/verify-all/run.sh`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash -c 'rm ~/.agents/skills/x' ${markedSkillMd}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript} && rm -rf ~/.agents/skills`)?.block, true);
+    assert.equal(
+      bashSkillVerdict(cwd, `bash ${markedScript} && sed -i 's/a/b/' node_modules/pkg/skills/demo/SKILL.md`)?.block,
+      true,
+    );
+    assert.equal(
+      bashSkillVerdict(cwd, `bash -c 'rm .pi/skil\\ls/verify-all/SKILL.md' ${markedScript}`)?.block,
+      true,
+    );
+  });
+
+  it("blocks variable-constructed skill paths even alongside a marked skill", () => {
+    const { cwd, markedScript } = setup();
+    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript} && rm .pi/skills/$VAR/SKILL.md`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `X=verify-all; bash ${markedScript} .pi/skills/$X/SKILL.md`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript} && rm .pi/skills/marked/$VAR`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `bash ${markedScript} && echo \${PWD}/.pi/skills/verify-all/SKILL.md > /tmp/x`)?.block, true);
+  });
+
+  it("blocks symlink escapes inside a marked skill directory", () => {
+    const { cwd, root } = setup();
+    const outside = tempDir("skill-maint-marked-escape-");
+    fs.writeFileSync(path.join(outside, "secret.txt"), "secret\n");
+    fs.symlinkSync(outside, path.join(root, "marked", "escape"));
+    assert.equal(bashSkillVerdict(cwd, `echo x > ${path.join(root, "marked", "escape", "secret.txt")}`)?.block, true);
+
+    fs.symlinkSync(path.join(root, "verify-all"), path.join(root, "marked", "to-unmarked"));
+    assert.equal(bashSkillVerdict(cwd, `echo x > ${path.join(root, "marked", "to-unmarked", "SKILL.md")}`)?.block, true);
+  });
+
+  it("blocks cd that changes a relative marked skill path's meaning", () => {
+    const { cwd } = setup();
+    assert.equal(bashSkillVerdict(cwd, "cd /tmp && bash .pi/skills/marked/run.sh")?.block, true);
+  });
+
+  it("blocks bare SKILL.md even when paired with a marked skill", () => {
+    const { cwd, markedSkillMd } = setup();
+    assert.equal(bashSkillVerdict(cwd, `cat ${markedSkillMd} && echo x > SKILL.md`)?.block, true);
   });
 });
 
