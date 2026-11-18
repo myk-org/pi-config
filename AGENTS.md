@@ -402,8 +402,10 @@ progress. It does not commit, push, create a PR, or post results.
 - Memory inventory CLI: `uvx myk-pi-tools@latest memory status`
 - Skill maintenance (issue #1074): `extensions/orchestrator/skill-maintenance.ts`. A skill is maintained when its
   `SKILL.md` frontmatter carries `skill-maintenance: auto`; only a **marked** skill whose real path (after `realpath`) is
-  under `<project>/.pi/skills/` may be written. Shipped package skills, `~/.pi/agent/skills/`, third-party skills,
-  symlinked/dangling paths and unmarked project skills are blocked with a reason (`/adopt-skill <name>` marks one).
+  under `<project>/.pi/skills/` may be edited or overwritten, while creating a brand-new `SKILL.md` under
+  `<project>/.pi/skills/` is allowed and auto-adopted with `skill-maintenance: auto` on write (#1147). Shipped package
+  skills, `~/.pi/agent/skills/`, third-party skills, symlinked/dangling paths and existing unmarked project skills are
+  blocked with a reason (`/adopt-skill <name>` marks one).
   Agents are steered mid-turn when a marked skill they used fails, every allowed `write`/`edit` is recorded in
   `.pi/data/skill-review.jsonl` (append-only), and one line reports the turn's changes — see
   `docs/skill-self-improvement.md`. The shell reads skills and runs `.sh`/`.py`/`.mjs`/`.js` helper scripts only inside

@@ -51,7 +51,9 @@ skill-maintenance: auto
 
 - **name**: lowercase, hyphenated, max 64 chars
 - **description**: one line, max 1024 chars, explains WHEN to use it
-- **skill-maintenance**: always `auto` — it is what lets a later agent patch this skill when it drifts (an unmarked project skill is refused by the write guard)
+- **skill-maintenance**: always `auto` — it is what lets a later agent patch this skill when it drifts
+  (omitting it on a brand-new `.pi/skills/<name>/SKILL.md` is auto-adopted on write; existing unmarked
+  project skills are refused until adopted)
 - **Body**: concrete steps, exact commands, verification
 - **No fluff**: skip background, motivation, history — just the procedure
 - **Include pitfalls**: what goes wrong and how to avoid it

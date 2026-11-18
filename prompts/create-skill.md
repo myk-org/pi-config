@@ -115,8 +115,8 @@ like `<API_KEY>` or `$ENV_VAR`. Skills are stored in plain text.
 **Rules:**
 
 - **Always include `skill-maintenance: auto`** in the frontmatter — it is what lets a later agent patch this skill
-  when it drifts. A project skill written without it is refused by the write guard (issue #1074) with the exact line
-  to add; existing unmarked skills get it via `/adopt-skill <name>`
+  when it drifts. If omitted when creating a brand-new `.pi/skills/<name>/SKILL.md`, the write guard auto-adopts it
+  by stamping `skill-maintenance: auto` on write; existing unmarked skills get it via `/adopt-skill <name>`
 - **Be specific** — exact commands, exact file paths, exact verification steps
 - **No fluff** — skip background, motivation, history — just the procedure
 - **Include pitfalls** — what went wrong during this session and how it was resolved
