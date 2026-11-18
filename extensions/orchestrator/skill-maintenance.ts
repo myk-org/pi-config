@@ -1507,83 +1507,28 @@ function isDataHeredocWrite(projectCwd: string, stage: string, body: string, exp
   return clean;
 }
 
-/** Command words that run a file path given as their operand. */
-const SCRIPT_RUNNERS = new Set(["bash", "sh", "dash", "zsh", "python", "python3", "node", "source", "."]);
-
-/** Shells whose `-c` operand is a program, not a file — the written path hides inside it. */
-const INLINE_SHELLS = new Set(["bash", "sh", "dash", "zsh"]);
-
-/**
- * True when a part of the command AFTER the opener runs a file this heredoc wrote: the
- * body is then a script that executes, not data. Three shapes, all off the opener's own
- * line or later (`cat > /tmp/x.sh <<EOF && bash /tmp/x.sh`, `… EOF; /tmp/x.sh`,
- * `… EOF; bash -c 'source /tmp/x.sh'`).
- */
-function executesWrittenFile(projectCwd: string, afterOpener: string, stage: string): boolean {
-  const parsedStage = parseSegment(projectCwd, stage);
-  const cmdIdx = commandWordIndex(parsedStage.words.map((w) => w.value));
-  const verb = parsedStage.words[cmdIdx]?.value ?? "";
-  const written =
-    verb === "tee"
-      ? parsedStage.words.slice(cmdIdx + 1).filter((w) => !w.value.startsWith("-")).map((w) => w.value)
-      : parsedStage.redirectTargets;
-  if (written.length === 0) return false;
-  const isWritten = (token: string): boolean =>
-    written.some((target) => path.resolve(projectCwd, target) === path.resolve(projectCwd, token));
-  for (const stages of splitPipelines(afterOpener)) {
-    for (const segment of stages) {
-      const parsed = parseSegment(projectCwd, segment);
-      const words = parsed.words.map((w) => w.value);
-      const idx = commandWordIndex(words);
-      const base = path.basename(words[idx] ?? "");
-      // A `-c` program is ONE operand, so the path shows up only inside its text.
-      if (INLINE_SHELLS.has(base) && /^-[A-Za-z]*c$/.test(words[idx + 1] ?? "")) {
-        const programWords = parseSegment(projectCwd, words.slice(idx + 2).join(" ")).words.map((w) => w.value);
-        const target = programWords.find(isWritten);
-        if (target) {
-          log.debug("skill_shell_heredoc_body_executed_inline", { target });
-          return true;
-        }
-        continue;
-      }
-      if (SCRIPT_RUNNERS.has(base)) {
-        const operand = words.slice(idx + 1).find((w) => !w.startsWith("-"));
-        if (operand && isWritten(operand)) {
-          log.debug("skill_shell_heredoc_body_executed", { target: operand });
-          return true;
-        }
-        continue;
-      }
-      // The command word IS the file: `chmod +x /tmp/x.sh && /tmp/x.sh` — a written script
-      // run by its own path, with no interpreter word to recognise it by.
-      if (isWritten(words[idx] ?? "")) {
-        log.debug("skill_shell_heredoc_body_executed_direct", { target: words[idx] });
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 /**
  * Blank every heredoc body that is DATA, so its text cannot be read as a skill reference
  * (issue #1125: `cat > .pi/tmp/msg.txt <<'EOF'` whose body mentions a skill path was
  * refused, and agents learned to launder the path through a variable to get past it).
  *
- * The exemption is narrow on purpose. A body goes unanalysed only when its own stage is a
- * `cat`/`printf`/`echo`/`tee` writing something that names no skill, that stage is not
- * piped anywhere (`cat <<EOF | bash` hands the body to the next command), and the body is
- * inert. Every other shape — `bash <<EOF`, `sh -s <<EOF`, `python3 <<EOF`, `node <<EOF`,
- * `xargs rm <<EOF`, an unclosed heredoc, a body carrying a substitution, a body a later
- * part of the command runs — off disk, on the opener's own line, by its own path, or
- * through a `bash -c` program — keeps today's behaviour and still blocks: the body stays
- * in the text the analysis reads.
+ * The exemption is narrow on purpose. A body is blanked ONLY when the WHOLE command
+ * (outside the heredoc body) is a SINGLE `cat`/`printf`/`echo`/`tee` stage whose
+ * targets are outside every skills tree (`splitPipelines` over the command with the
+ * candidate body and terminator blanked produces 1 pipeline with 1 stage, and no subshell),
+ * the delimiter is quoted or the body carries no expansion, and the heredoc closes.
+ *
+ * Deliberate trade-off: `cat > msg <<'EOF' … && git commit -F msg` is not exempt (second
+ * segment), because multi-step scripts belong in separate tool calls. Everything else —
+ * `bash <<EOF`, `sh -s <<EOF`, `python3 <<EOF`, `node <<EOF`, `xargs`, pipelines
+ * (`cat <<EOF | bash`), unclosed heredocs, substitutions inside an unquoted body,
+ * subshells, or any command with a second segment — keeps the body visible so
+ * `bashSkillVerdict` still blocks it.
  */
 function blankDataHeredocBodies(projectCwd: string, command: string): string {
   if (!command.includes("<<")) return command;
-  const candidates: Array<{ start: number; end: number; after: string; stage: string }> = [];
-  let pending: Array<{ at: number; after: number; delim: string; stripTabs: boolean; expand: boolean }> = [];
-  let lineStart = 0;
+  const bodies: Array<{ bodyStart: number; bodyEnd: number; termEnd: number; expand: boolean }> = [];
+  let pending: Array<{ delim: string; stripTabs: boolean; expand: boolean }> = [];
   let i = 0;
   while (i < command.length) {
     const ch = command[i];
@@ -1601,7 +1546,7 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
         const bare = m[4] ?? "";
         const delim = m[2] ?? m[3] ?? bare.replace(/\\(.)/g, "$1");
         const expand = m[2] === undefined && m[3] === undefined && !bare.includes("\\");
-        pending.push({ at: i, after: i + m[0].length, delim, stripTabs: m[1] === "-", expand });
+        pending.push({ delim, stripTabs: m[1] === "-", expand });
         i += m[0].length;
         continue;
       }
@@ -1614,16 +1559,11 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
     }
     if (ch !== "\n" || pending.length === 0) { i++; continue; }
 
-    const openerLine = command.slice(lineStart, i);
-    // Only an unquoted `|` after the heredoc's own stage hands the body to another command;
-    // a `|` inside a quoted argument (`printf '|%s'`) is not a pipeline.
-    const piped = splitPipelines(openerLine).some(
-      (stages) => stages.length > 1 && stages.some((part) => part.includes("<<")),
-    );
     let cursor = i + 1;
     for (const h of pending) {
       const bodyStart = cursor;
       let bodyEnd = cursor;
+      let termEnd = cursor;
       let closed = false;
       while (cursor <= command.length) {
         let lineEnd = command.indexOf("\n", cursor);
@@ -1631,6 +1571,7 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
         if (atEnd) lineEnd = command.length;
         if (isTerminatorLine(command.slice(cursor, lineEnd), h.delim, h.stripTabs)) {
           bodyEnd = cursor;
+          termEnd = lineEnd;
           cursor = Math.min(lineEnd + 1, command.length);
           closed = true;
           break;
@@ -1642,30 +1583,32 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
         log.debug("skill_shell_heredoc_unclosed", { delim: h.delim });
         return command;
       }
-      // The shell-aware splitter, so an escaped (`\;`) or quoted separator is not a boundary
-      // that would expose the wrong command word.
-      const openerStages = splitPipelines(command.slice(lineStart, h.at));
-      const stage = openerStages.at(-1)?.at(-1) ?? "";
-      const body = command.slice(bodyStart, bodyEnd);
-      if (!piped && isDataHeredocWrite(projectCwd, stage, body, h.expand)) {
-        // Everything the shell runs apart from the body: the rest of the opener's line
-        // (a runner there runs BEFORE the body is written) and whatever follows the body.
-        const tail = command.slice(h.after, Math.min(bodyStart, i + 1)) + command.slice(bodyEnd);
-        candidates.push({ start: bodyStart, end: bodyEnd, after: tail, stage });
-      }
+      bodies.push({ bodyStart, bodyEnd, termEnd, expand: h.expand });
     }
     pending = [];
-    lineStart = cursor;
     i = cursor;
   }
-  // A body is data only while nothing runs the file it was written to.
-  const blanks: Array<[number, number]> = candidates
-    .filter((candidate) => !executesWrittenFile(projectCwd, candidate.after, candidate.stage))
-    .map((candidate): [number, number] => [candidate.start, candidate.end]);
-  if (blanks.length === 0) return command;
+  if (bodies.length === 0) return command;
+
+  // Blank bodies and terminator lines to check whether the outer command is a single stage.
+  let withoutBodies = command;
+  for (const { bodyStart, termEnd } of bodies) {
+    withoutBodies =
+      withoutBodies.slice(0, bodyStart) +
+      withoutBodies.slice(bodyStart, termEnd).replace(/[^\n]/g, " ") +
+      withoutBodies.slice(termEnd);
+  }
+  const pipelines = splitPipelines(withoutBodies);
+  if (pipelines.length !== 1 || pipelines[0].length !== 1) return command;
+  const stage = pipelines[0][0];
+  if (/^\s*\(/.test(stage)) return command;
+  if (!bodies.every((b) => isDataHeredocWrite(projectCwd, stage, command.slice(b.bodyStart, b.bodyEnd), b.expand))) {
+    return command;
+  }
+
   let out = command;
-  for (const [start, end] of blanks) {
-    out = out.slice(0, start) + out.slice(start, end).replace(/[^\n]/g, " ") + out.slice(end);
+  for (const { bodyStart, bodyEnd } of bodies) {
+    out = out.slice(0, bodyStart) + out.slice(bodyStart, bodyEnd).replace(/[^\n]/g, " ") + out.slice(bodyEnd);
   }
   return out;
 }
@@ -1687,12 +1630,13 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
  * Ambiguity blocks: a bare `SKILL.md`, a `cd` that could change a skill path's meaning, a
  * path through a symlink.
  *
- * A heredoc BODY is file content, not a reference, when a pure data writer (`cat`,
- * `printf`, `echo`, `tee`) writes it somewhere that names no skill — so a commit message
- * that merely mentions a skill path is allowed (issue #1125). The boundary: the redirect
- * target still decides (`cat > <skill>/SKILL.md <<EOF` blocks), and a body fed to anything
- * that executes it or reads it as arguments (`bash`, `sh -s`, `python3`, `node`, `xargs`,
- * or run later as a written file) is still analysed — see `blankDataHeredocBodies`.
+ * A heredoc BODY is file content, not a reference, when the whole command is a single
+ * pure data writer (`cat`, `printf`, `echo`, `tee`) writing somewhere that names no skill
+ * — so a standalone message write that merely mentions a skill path is allowed (issue #1125).
+ * The boundary: the redirect target still decides (`cat > <skill>/SKILL.md <<EOF` blocks),
+ * and a body fed to anything that executes it, reads it as arguments (`bash`, `sh -s`,
+ * `python3`, `node`, `xargs`), or paired with any second segment is still analysed — see
+ * `blankDataHeredocBodies`.
  *
  * Known limit (documented, not widened around): a path built by shell expansion
  * (`t=…; … > "$t"`, `eval`, `find -exec`) carries no literal reference, so no text rule

@@ -726,6 +726,46 @@ describe("skill helper script execution (#1103)", () => {
     }
   });
 
+  it("allows single cat > /tmp/msg.txt <<'EOF' with skill-path prose (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > /tmp/msg.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh for details\nEOF"),
+      null,
+    );
+  });
+
+  it("blocks heredoc write followed by exec or redirected bash (#1125)", () => {
+    const { cwd } = project();
+    for (const follow of ["exec .pi/tmp/x.sh", "bash < .pi/tmp/x.sh"]) {
+      assert.equal(
+        bashSkillVerdict(cwd, `cat > .pi/tmp/x.sh <<'EOF'\nrm -f .pi/skills/x/SKILL.md\nEOF\n${follow}`)?.block,
+        true,
+        follow,
+      );
+    }
+  });
+
+  it("blocks a heredoc write paired with a second segment such as && git commit -F (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(
+        cwd,
+        "cat > /tmp/msg.txt <<'EOF' && git commit -F /tmp/msg.txt\nsee .pi/skills/verify-all/run-suites.sh\nEOF",
+      )?.block,
+      true,
+    );
+  });
+
+  it("blocks a heredoc write wrapped in a subshell (#1125)", () => {
+    const { cwd } = project();
+    for (const cmd of [
+      "(cat > /tmp/msg.txt <<'EOF'\nsee .pi/skills/x/SKILL.md\nEOF\n)",
+      "(cat > /tmp/msg.txt <<'EOF')\nsee .pi/skills/x/SKILL.md\nEOF",
+    ]) {
+      assert.equal(bashSkillVerdict(cwd, cmd)?.block, true, cmd);
+    }
+  });
+
   it("reads a backslash-quoted heredoc delimiter as quoted (#1125)", () => {
     const { cwd } = project();
     assert.equal(
