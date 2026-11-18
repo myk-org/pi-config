@@ -65,6 +65,288 @@ export function commandHasTrailerByName(command: string, trailerName: string): b
   return result;
 }
 
+/** Consume heredoc bodies (preserving body + terminator verbatim) after the opener line's `\n`. */
+function consumeShellHeredocBodies(
+  cmd: string,
+  start: number,
+  pending: Array<{ delim: string; stripTabs: boolean }>,
+): { text: string; next: number } {
+  let cursor = start;
+  for (const h of pending) {
+    let closed = false;
+    while (cursor <= cmd.length) {
+      let lineEnd = cmd.indexOf("\n", cursor);
+      const atEnd = lineEnd === -1;
+      if (atEnd) lineEnd = cmd.length;
+      const line = cmd.slice(cursor, lineEnd).replace(/\r$/, "");
+      const bodyMatch = h.stripTabs ? line.replace(/^\t+/, "") === h.delim : line === h.delim;
+      cursor = atEnd ? cmd.length : lineEnd + 1;
+      if (bodyMatch) {
+        closed = true;
+        break;
+      }
+      if (atEnd) break;
+    }
+    if (!closed) {
+      enfLog.debug("consumeShellHeredocBodies unclosed heredoc", h.delim);
+      break;
+    }
+  }
+  return { text: cmd.slice(start, cursor), next: cursor };
+}
+
+function scanBacktickShellComments(cmd: string, start: number): { text: string; next: number } {
+  let out = "";
+  let i = start;
+  let atWordStart = true;
+  while (i < cmd.length) {
+    const ch = cmd[i]!;
+    if (ch === "`") {
+      out += "`";
+      return { text: out, next: i + 1 };
+    }
+    if (ch === "\\" && i + 1 < cmd.length) {
+      out += cmd.slice(i, i + 2);
+      atWordStart = cmd[i + 1] === "\n" ? atWordStart : false;
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      const close = cmd.indexOf("'", i + 1);
+      if (close === -1) enfLog.debug("scanBacktickShellComments unclosed single quote");
+      const end = close === -1 ? cmd.length : close + 1;
+      out += cmd.slice(i, end);
+      i = end;
+      atWordStart = false;
+      continue;
+    }
+    if (ch === '"') {
+      out += '"';
+      i++;
+      let closed = false;
+      while (i < cmd.length) {
+        const qch = cmd[i]!;
+        if (qch === "\\" && i + 1 < cmd.length) {
+          out += cmd.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        out += qch;
+        i++;
+        if (qch === '"') {
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) enfLog.debug("scanBacktickShellComments unclosed double quote");
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "#" && atWordStart) {
+      enfLog.debug("scanBacktickShellComments stripped comment");
+      while (i < cmd.length && cmd[i] !== "\n" && cmd[i] !== "`") i++;
+      continue;
+    }
+    out += ch;
+    atWordStart = /[\s;&|()]/.test(ch);
+    i++;
+  }
+  enfLog.debug("scanBacktickShellComments unclosed backtick");
+  return { text: out, next: i };
+}
+
+function scanUnquotedShellComments(
+  cmd: string,
+  start: number,
+  stopAtCloseParen: boolean,
+): { text: string; next: number } {
+  let out = "";
+  let i = start;
+  let atWordStart = true;
+  let parenDepth = stopAtCloseParen ? 1 : 0;
+  const pendingHeredocs: Array<{ delim: string; stripTabs: boolean }> = [];
+
+  while (i < cmd.length) {
+    const ch = cmd[i]!;
+
+    if (ch === "\\" && i + 1 < cmd.length) {
+      if (cmd[i + 1] === "\n") {
+        enfLog.debug("scanUnquotedShellComments line continuation lf");
+        out += "\\\n";
+        i += 2;
+        continue;
+      }
+      if (cmd[i + 1] === "\r" && cmd[i + 2] === "\n") {
+        enfLog.debug("scanUnquotedShellComments line continuation crlf");
+        out += "\\\r\n";
+        i += 3;
+        continue;
+      }
+      out += cmd.slice(i, i + 2);
+      i += 2;
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "#" && atWordStart) {
+      while (i < cmd.length && cmd[i] !== "\n") i++;
+      continue;
+    }
+
+    if (ch === "$" && cmd[i + 1] === "'") {
+      out += "$'";
+      i += 2;
+      let closed = false;
+      while (i < cmd.length) {
+        const sch = cmd[i]!;
+        if (sch === "\\" && i + 1 < cmd.length) {
+          out += cmd.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        out += sch;
+        i++;
+        if (sch === "'") {
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) enfLog.debug("scanUnquotedShellComments unclosed ansi-c quote");
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "'") {
+      const close = cmd.indexOf("'", i + 1);
+      if (close === -1) enfLog.debug("scanUnquotedShellComments unclosed single quote");
+      const end = close === -1 ? cmd.length : close + 1;
+      out += cmd.slice(i, end);
+      i = end;
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === '"') {
+      out += '"';
+      i++;
+      let closed = false;
+      while (i < cmd.length) {
+        const dch = cmd[i]!;
+        if (dch === "\\" && i + 1 < cmd.length) {
+          out += cmd.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (dch === "$" && cmd[i + 1] === "(") {
+          out += "$(";
+          const sub = scanUnquotedShellComments(cmd, i + 2, true);
+          out += sub.text;
+          i = sub.next;
+          continue;
+        }
+        if (dch === "`") {
+          out += "`";
+          const bt = scanBacktickShellComments(cmd, i + 1);
+          out += bt.text;
+          i = bt.next;
+          continue;
+        }
+        out += dch;
+        i++;
+        if (dch === '"') {
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) enfLog.debug("scanUnquotedShellComments unclosed double quote");
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "$" && cmd[i + 1] === "(") {
+      out += "$(";
+      const sub = scanUnquotedShellComments(cmd, i + 2, true);
+      out += sub.text;
+      i = sub.next;
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "`") {
+      out += "`";
+      const bt = scanBacktickShellComments(cmd, i + 1);
+      out += bt.text;
+      i = bt.next;
+      atWordStart = false;
+      continue;
+    }
+
+    if (ch === "<" && cmd[i + 1] === "<" && cmd[i + 2] !== "<") {
+      const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|((?:\\.|[^\s;&|)'"\\`\n])+))/.exec(cmd.slice(i));
+      if (m) {
+        const delim = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4]!.replace(/\\(.)/g, "$1");
+        pendingHeredocs.push({ delim, stripTabs: m[1] === "-" });
+        out += m[0];
+        i += m[0].length;
+        atWordStart = false;
+        continue;
+      }
+    }
+
+    if (ch === "\n") {
+      out += "\n";
+      i++;
+      if (pendingHeredocs.length > 0) {
+        const body = consumeShellHeredocBodies(cmd, i, pendingHeredocs);
+        out += body.text;
+        i = body.next;
+        pendingHeredocs.length = 0;
+      }
+      atWordStart = true;
+      continue;
+    }
+
+    if (stopAtCloseParen) {
+      if (ch === "(") {
+        parenDepth++;
+        out += ch;
+        i++;
+        atWordStart = true;
+        continue;
+      }
+      if (ch === ")") {
+        if (parenDepth === 1) {
+          out += ch;
+          return { text: out, next: i + 1 };
+        }
+        parenDepth--;
+        out += ch;
+        i++;
+        atWordStart = true;
+        continue;
+      }
+    }
+
+    out += ch;
+    atWordStart = /[\s;&|()]/.test(ch);
+    i++;
+  }
+
+  if (stopAtCloseParen) enfLog.debug("scanUnquotedShellComments unclosed command substitution");
+  if (pendingHeredocs.length > 0) enfLog.debug("scanUnquotedShellComments pending heredoc at eof", pendingHeredocs.length);
+  return { text: out, next: i };
+}
+
+/**
+ * Strip unquoted shell `#` comments while preserving single/double/`$'...'`
+ * quotes, backslash escapes, and heredoc bodies (including inside `$(...)`).
+ * Used before `commandHasTrailerByName` so trailing `# Assisted-by:` shell
+ * comments never satisfy the commit-trailer check.
+ */
+export function stripUnquotedShellComments(command: string): string {
+  return scanUnquotedShellComments(command, 0, false).text;
+}
+
 /**
  * Split a command into segments on shell separators that are *outside* quotes,
  * recording each segment's offset, its parenthesis depth, and whether the
@@ -830,11 +1112,13 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
   // has no entry yet. It inherits the directory of the shell that spawned it.
   while (running.length <= targetDepth) running.push(running[running.length - 1]);
   let dir = running[targetDepth];
+  const envShifts = gitIndex === -1 ? { envDirs: [], gitDirs: [], opaque: false } : segmentDirShifts(segments[gitIndex].text);
+  for (const envTarget of envShifts.envDirs) dir = applyCd(dir, envTarget);
   // Git applies each -C in turn, each relative to the previous one, so
   // `git -C worktree -C nested` lands in worktree/nested.
   const cTargets = gitIndex === -1 ? [] : gitCsIn(segments[gitIndex].text);
   for (const cTarget of cTargets) dir = applyCd(dir, cTarget, process.env.HOME ?? "~", false);
-  enfLog.debug("effective_cwd", "dir", dir, "source", cTargets.length ? "git_C" : applied.length ? "cd" : "session", "cds", applied.length);
+  enfLog.debug("effective_cwd", "dir", dir, "source", cTargets.length ? "git_C" : envShifts.envDirs.length ? "env_C" : applied.length ? "cd" : "session", "cds", applied.length);
   return dir;
 }
 
@@ -2206,7 +2490,12 @@ const GIT_WRAP_SRC = /(?:command|builtin|exec)\s+/.source;
 const GIT_RTK_SRC = /rtk(?:\s+-\S+)*\s+/.source;
 const GIT_PREFIX_SRC = `(?:${GIT_WRAPPER_SRC}|${GIT_ASSIGN_SRC}|${GIT_WRAP_SRC}|${GIT_RTK_SRC})*`;
 const GIT_EXE_SRC = /(?:\S*\/)?git\b/.source;
-const GIT_FLAGS_SRC = /(?:\s+(?:-[a-zA-Z]\s+\S*|-\S+))*/.source;
+// Global options may precede the subcommand (`git -C <path> commit`). Short options
+// take a separate value; so do the long ones git accepts with a space
+// (`--git-dir <p>`) — listing only those keeps `--no-pager commit` from being read
+// as "long option plus its value".
+const GIT_FLAGS_SRC =
+  /(?:\s+(?:-[a-zA-Z]\s+\S*|--(?:git-dir|work-tree|namespace|config-env)\s+\S*|-\S+))*/.source;
 
 /** Prefix that opens a nested command string: `bash -lc "..."`, `sh -c '...'`, `eval "..."`. */
 const SHELL_C_PREFIX_RE =
@@ -2539,6 +2828,470 @@ export function gitAddPathspecs(command: string): string[] | null {
   }
   enfLog.debug("gitAddPathspecs", `paths=${paths.length}`);
   return paths;
+}
+
+export type CommitMessageSpec =
+  | { kind: "file"; path: string; rawOperand: string; cwd: string }
+  | { kind: "opaque-file"; raw: string }
+  | { kind: "inline" };
+
+/**
+ * Classify EVERY real `git commit` in the command into its message source:
+ * - `{ kind: "file", path, rawOperand, cwd }` for a resolved `-F`/`--file` path
+ * - `{ kind: "opaque-file", raw }` when `-F`/`--file` was given (and not `-`),
+ *   but the operand (or a relative operand's directory wrapper) is unresolvable
+ *   (line continuation, `$VAR`, backtick, glob, `~`, redirect, or missing operand)
+ *   — must block directly, never fall back
+ * - `{ kind: "inline" }` for stdin (`-F -`, `--file=-`), `-m`, or no `-F`
+ */
+export function commitMessageSpecs(command: string, sessionCwd: string): CommitMessageSpec[] {
+  const specs: CommitMessageSpec[] = subArgSpans(command, "commit").map((span) => {
+    const words = rawShellWords(span.text);
+    // git records the LAST `-F` of an invocation, so the earlier ones are not
+    // files it opens: keep scanning instead of returning the first (#1131).
+    let sawFileFlag = false;
+    let operand: string | null = null;
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i]!;
+      if (word.startsWith("#")) break; // shell comment runs to end of line
+      if (word === "--") break; // after this, paths only
+      if (word === "--file") {
+        sawFileFlag = true;
+        const next = words[i + 1];
+        if (next && !next.startsWith("#")) {
+          operand = next;
+          i++;
+        } else {
+          enfLog.debug("commitMessageSpecs missing operand", word);
+          operand = null;
+        }
+      } else if (word.startsWith("--file=")) {
+        sawFileFlag = true;
+        operand = word.slice("--file=".length);
+      // An inline message wins: `git commit --message='--file=good.txt'` records
+      // that literal text, so its operand is a MESSAGE and the commit is opaque
+      // (Qodo, PR #1139).
+      } else if (/^--message(?:=|$)/.test(tokenize(word)[0] ?? "")) {
+        enfLog.debug("commitMessageSpecs inline message wins", word);
+        sawFileFlag = false;
+        operand = null;
+        break;
+      } else if (word.startsWith("-") && !word.startsWith("--") && word.length > 1) {
+        // Scan single-dash short option cluster left-to-right so `-aFmsg.txt`,
+        // `-aF msg.txt`, `-sFmsg.txt` resolve the file while `-am`, `-ammsg`,
+        // `-mFgood.txt` let the inline `-m` win.
+        let inlineBreak = false;
+        for (let k = 1; k < word.length; k++) {
+          const ch = word[k]!;
+          if (ch === "m") {
+            enfLog.debug("commitMessageSpecs inline cluster wins", word);
+            sawFileFlag = false;
+            operand = null;
+            inlineBreak = true;
+            break;
+          }
+          if (ch === "F") {
+            sawFileFlag = true;
+            if (k + 1 < word.length) {
+              operand = word.slice(k + 1);
+            } else {
+              const next = words[i + 1];
+              if (next && !next.startsWith("#")) {
+                operand = next;
+                i++;
+              } else {
+                enfLog.debug("commitMessageSpecs missing operand", word);
+                operand = null;
+              }
+            }
+            break;
+          }
+          if (!/[a-zA-Z]/.test(ch)) break;
+        }
+        if (inlineBreak) break;
+      } else if ((word.startsWith("'") || word.startsWith('"')) && /^-[a-zA-Z]*m/.test(tokenize(word)[0] ?? "")) {
+        enfLog.debug("commitMessageSpecs quoted inline cluster wins", word);
+        sawFileFlag = false;
+        operand = null;
+        break;
+      }
+    }
+    if (!sawFileFlag) return { kind: "inline" };
+    const value = operand === null ? "" : operandBeforeShellSyntax(operand);
+    if (value === "-") return { kind: "inline" };
+    if (value === "") return { kind: "opaque-file", raw: operand ?? "" };
+    const invocationCwd = cwdAt(span.stripped, span.start, sessionCwd);
+    if (path.isAbsolute(value)) {
+      return { kind: "file", path: value, rawOperand: value, cwd: invocationCwd ?? sessionCwd };
+    }
+    if (invocationCwd === null) {
+      enfLog.debug("commitMessageSpecs opaque cwd for relative operand", value);
+      return { kind: "opaque-file", raw: value };
+    }
+    return { kind: "file", path: join(invocationCwd, value), rawOperand: value, cwd: invocationCwd };
+  });
+  enfLog.debug(
+    "commitMessageSpecs",
+    `segments=${specs.length} files=${specs.filter((s) => s.kind === "file").length} opaqueFiles=${specs.filter((s) => s.kind === "opaque-file").length}`,
+  );
+  return specs;
+}
+
+/**
+ * The message source of EVERY real `git commit` in the command — one entry per
+ * commit segment, already resolved against the directory THAT invocation runs
+ * in: the `-F <file>` path, or null when that segment's message is not a file
+ * the hook can read (`-F -` is stdin, a `-m` message is inline, or an opaque
+ * `-F` operand cannot be resolved).
+ */
+export function commitMessageFiles(command: string, sessionCwd: string): Array<string | null> {
+  return commitMessageSpecs(command, sessionCwd).map((s) => (s.kind === "file" ? s.path : null));
+}
+
+function hasDynamicExpansion(raw: string): boolean {
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\") {
+        if (i + 1 >= raw.length) return true;
+        const next = raw[i + 1]!;
+        if (next === "\n" || (next === "\r" && raw[i + 2] === "\n")) return true;
+        i++;
+        continue;
+      }
+      if (ch === "$" || ch === "`") return true;
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 >= raw.length) return true;
+      const next = raw[i + 1]!;
+      if (next === "\n" || (next === "\r" && raw[i + 2] === "\n")) return true;
+      i++;
+      continue;
+    }
+    if (ch === "$" || ch === "`") return true;
+  }
+  return quote !== null;
+}
+
+function segmentDirShifts(segment: string): { envDirs: string[]; gitDirs: string[]; opaque: boolean } {
+  const words = rawShellWords(segment);
+  const envDirs: string[] = [];
+  const gitDirs: string[] = [];
+  let i = 0;
+  const unq = (w: string) => tokenize(w)[0] ?? "";
+  while (i < words.length) {
+    const raw = words[i]!;
+    const tok = unq(raw).replace(/^[!{]+/, "");
+    if (!tok) { i++; continue; }
+    if (
+      tok === "if" || tok === "then" || tok === "else" || tok === "elif" ||
+      tok === "do" || tok === "time" || tok === "nohup" || tok === "command" ||
+      tok === "builtin" || tok === "exec" || /^[A-Za-z_]\w*=/.test(raw)
+    ) {
+      if (tok === "time" && unq(words[i + 1] ?? "") === "-p") i++;
+      if (tok === "exec" && unq(words[i + 1] ?? "") === "-a") i += 2;
+      i++;
+      continue;
+    }
+    if (tok === "env" || tok.endsWith("/env")) {
+      i++;
+      while (i < words.length) {
+        const curRaw = words[i]!;
+        const cur = unq(curRaw);
+        if (/^[A-Za-z_]\w*=/.test(curRaw) || /^[A-Za-z_]\w*=/.test(cur)) { i++; continue; }
+        if (!cur.startsWith("-") || cur === "-") break;
+        if (cur === "--") { i++; break; }
+        if (cur === "-C" || cur === "--chdir") {
+          const valRaw = words[i + 1];
+          if (!valRaw || hasDynamicExpansion(valRaw)) {
+            enfLog.debug("segmentDirShifts opaque env chdir", cur, valRaw ?? "");
+            return { envDirs, gitDirs, opaque: true };
+          }
+          const val = unq(valRaw);
+          if (val) envDirs.push(val);
+          i += 2;
+          continue;
+        }
+        if (curRaw.startsWith("--chdir=")) {
+          const valRaw = curRaw.slice("--chdir=".length);
+          if (!valRaw || hasDynamicExpansion(valRaw)) {
+            enfLog.debug("segmentDirShifts opaque env --chdir=", valRaw);
+            return { envDirs, gitDirs, opaque: true };
+          }
+          const val = unq(valRaw);
+          if (val) envDirs.push(val);
+          i++;
+          continue;
+        }
+        if (curRaw.startsWith("-") && !curRaw.startsWith("--") && curRaw.length > 1) {
+          let handled = false;
+          for (let k = 1; k < curRaw.length; k++) {
+            const ch = curRaw[k]!;
+            if (ch === "u" || ch === "a" || ch === "S") {
+              // Option takes an argument; remainder of word (or next word) is its value.
+              i += k + 1 < curRaw.length || words[i + 1] === undefined ? 1 : 2;
+              handled = true;
+              break;
+            }
+            if (ch === "C") {
+              if (k + 1 < curRaw.length) {
+                const valRaw = curRaw.slice(k + 1);
+                if (hasDynamicExpansion(valRaw)) {
+                  enfLog.debug("segmentDirShifts opaque env short chdir", curRaw, valRaw);
+                  return { envDirs, gitDirs, opaque: true };
+                }
+                const val = unq(valRaw);
+                if (val) envDirs.push(val);
+                i++;
+              } else {
+                const valRaw = words[i + 1];
+                if (!valRaw || hasDynamicExpansion(valRaw)) {
+                  enfLog.debug("segmentDirShifts opaque env short chdir", curRaw, valRaw ?? "");
+                  return { envDirs, gitDirs, opaque: true };
+                }
+                const val = unq(valRaw);
+                if (val) envDirs.push(val);
+                i += 2;
+              }
+              handled = true;
+              break;
+            }
+            if (!/[a-zA-Z]/.test(ch)) break;
+          }
+          if (handled) continue;
+        }
+        const optName = cur.split("=")[0]!;
+        if (!cur.includes("=") && ENV_VALUE_OPTIONS.has(optName) && words[i + 1] !== undefined) {
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      continue;
+    }
+    if (WRAPPER_WORDS.has(tok)) {
+      i++;
+      while (i < words.length) {
+        const cur = unq(words[i]!);
+        if (!cur.startsWith("-") || cur === "-") break;
+        if (cur === "--") { i++; break; }
+        const optName = cur.split("=")[0]!;
+        const takesValue =
+          WRAPPER_VALUE_OPTIONS.has(optName) ||
+          optName === "-D" || optName === "-n" || optName === "--adjustment" ||
+          optName === "-s" || optName === "--signal" || optName === "-k" || optName === "--kill-after";
+        if (!cur.includes("=") && takesValue && words[i + 1] !== undefined) {
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      if (tok === "timeout" && i < words.length && !unq(words[i]!).startsWith("-")) i++;
+      continue;
+    }
+    if (tok === "git" || tok.endsWith("/git")) {
+      for (let j = i + 1; j < words.length; j++) {
+        const curRaw = words[j]!;
+        const cur = unq(curRaw);
+        if (!cur.startsWith("-") || cur === "-" || cur === "--") break;
+        if (cur === "-C") {
+          const valRaw = words[j + 1];
+          if (!valRaw || hasDynamicExpansion(valRaw)) {
+            enfLog.debug("segmentDirShifts opaque git -C", valRaw ?? "");
+            return { envDirs, gitDirs, opaque: true };
+          }
+          const val = unq(valRaw);
+          if (val) gitDirs.push(val);
+          j++;
+          continue;
+        }
+        if (curRaw.startsWith("-C") && curRaw.length > 2) {
+          const valRaw = curRaw.slice(2);
+          if (hasDynamicExpansion(valRaw)) {
+            enfLog.debug("segmentDirShifts opaque git -C attached", valRaw);
+            return { envDirs, gitDirs, opaque: true };
+          }
+          const val = unq(valRaw);
+          if (val) gitDirs.push(val);
+          continue;
+        }
+        if (!cur.includes("=") && words[j + 1] && !unq(words[j + 1]!).startsWith("-")) j++;
+      }
+      break;
+    }
+    break;
+  }
+  return { envDirs, gitDirs, opaque: false };
+}
+
+/** The directory the `git` invocation ending at `anchorStart` runs in: the
+ *  shell's own `cd` chain up to it, then any `env -C`/`--chdir` and `git -C`
+ *  overrides on that invocation. Same rules as resolveEffectiveCwd, anchored per
+ *  invocation — returns null when an unresolvable wrapper/git `-C` expansion
+ *  appears so relative `-F` files fail closed as opaque. */
+function cwdAt(command: string, anchorStart: number, sessionCwd: string): string | null {
+  const segments = unquotedSegments(command.slice(0, anchorStart));
+  const anchor = segments[segments.length - 1];
+  if (!anchor) {
+    enfLog.debug("cwdAt missing anchor, using sessionCwd", sessionCwd);
+    return sessionCwd;
+  }
+  const running: string[] = [sessionCwd];
+  for (const seg of segments) {
+    // A segment deeper than the invocation runs in a subshell that has already
+    // closed by the time it starts, so it cannot have moved this shell.
+    if (seg.depth > anchor.depth) {
+      enfLog.debug("cwdAt skip deeper subshell segment", seg.depth, anchor.depth);
+      continue;
+    }
+    while (running.length <= seg.depth) running.push(running[running.length - 1]!);
+    const target = cdTargetIn(seg.text);
+    if (!target || target === "~popd") continue;
+    running[seg.depth] = applyCd(running[seg.depth]!, target);
+  }
+  while (running.length <= anchor.depth) running.push(running[running.length - 1]!);
+  let dir = running[anchor.depth]!;
+  const shifts = segmentDirShifts(anchor.text);
+  if (shifts.opaque) {
+    enfLog.debug("cwdAt opaque dir shift", anchor.text.trim().slice(0, 64));
+    return null;
+  }
+  for (const target of shifts.envDirs) dir = applyCd(dir, target);
+  // Git applies each -C in turn, each relative to the previous one.
+  for (const target of shifts.gitDirs) dir = applyCd(dir, target, process.env.HOME ?? "~", false);
+  enfLog.debug("cwdAt resolved", dir, `envC=${shifts.envDirs.length}`, `gitC=${shifts.gitDirs.length}`);
+  return dir;
+}
+
+/** Split an argument region into shell words, keeping each word's quotes: a
+ *  later cut at shell punctuation must tell a quoted value from syntax, and
+ *  stripping the quotes first turned `-F 'msg;bad.txt'` into `msg`. */
+function rawShellWords(region: string): string[] {
+  const words: string[] = [];
+  let i = 0;
+  while (i < region.length) {
+    if (/\s/.test(region[i]!)) { i++; continue; }
+    const start = i;
+    while (i < region.length && !/\s/.test(region[i]!)) {
+      const ch = region[i]!;
+      if (ch === "\\") {
+        if (i + 1 < region.length) { i += 2; continue; }
+        enfLog.debug("rawShellWords trailing backslash");
+        i++;
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        const close = matchingQuoteIndex(region, i);
+        if (close === null) enfLog.debug("rawShellWords unclosed quote", ch);
+        i = close === null ? region.length : close + 1;
+        continue;
+      }
+      i++;
+    }
+    words.push(region.slice(start, i));
+  }
+  return words;
+}
+
+/** A raw operand word as a path: cut at the first UNQUOTED `;|&)<>\n` — the region
+ *  of a subshell runs through its closing paren — never inside quotes. Returns
+ *  `""` for fd/empty redirects (`2>out`, `>out`), unclosed quotes, unquoted or
+ *  double-quoted POSIX line continuations (`\\\r?\n`), or operands with
+ *  unescaped shell expansions (`$VAR`, `` `...` ``, unquoted leading `~`,
+ *  unquoted globs `*`, `?`, `[`). */
+function operandBeforeShellSyntax(raw: string): string {
+  let i = 0;
+  let quote: "'" | '"' | null = null;
+  let out = "";
+  while (i < raw.length) {
+    const ch = raw[i]!;
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else out += ch;
+      i++;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\") {
+        if (i + 1 >= raw.length) {
+          enfLog.debug("operandBeforeShellSyntax trailing backslash in double quotes");
+          return "";
+        }
+        const next = raw[i + 1]!;
+        // Fail closed on POSIX line continuations (`\<newline>` or CRLF variant).
+        if (next === "\n" || (next === "\r" && raw[i + 2] === "\n")) {
+          enfLog.debug("operandBeforeShellSyntax line continuation in double quotes");
+          return "";
+        }
+        // In POSIX double quotes, backslash only escapes $, `, ", \.
+        out += next === "$" || next === "`" || next === '"' || next === "\\" ? next : ch + next;
+        i += 2;
+        continue;
+      }
+      if (ch === "$" || ch === "`") {
+        enfLog.debug("operandBeforeShellSyntax expansion in double quotes", ch);
+        return "";
+      }
+      if (ch === '"') quote = null;
+      else out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      i++;
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 >= raw.length) {
+        enfLog.debug("operandBeforeShellSyntax trailing backslash");
+        return "";
+      }
+      const next = raw[i + 1]!;
+      if (next === "\n" || (next === "\r" && raw[i + 2] === "\n")) {
+        enfLog.debug("operandBeforeShellSyntax line continuation");
+        return "";
+      }
+      out += next;
+      i += 2;
+      continue;
+    }
+    if (/[)|&;\n<>]/.test(ch)) {
+      enfLog.debug("operandBeforeShellSyntax cut at shell syntax", ch);
+      break;
+    }
+    if (ch === "$" || ch === "`" || ch === "*" || ch === "?" || ch === "[") {
+      enfLog.debug("operandBeforeShellSyntax expansion or glob", ch);
+      return "";
+    }
+    if (i === 0 && ch === "~") {
+      enfLog.debug("operandBeforeShellSyntax leading tilde");
+      return "";
+    }
+    out += ch;
+    i++;
+  }
+  if (quote !== null) {
+    enfLog.debug("operandBeforeShellSyntax unclosed quote", quote);
+    return "";
+  }
+  if ((raw[i] === "<" || raw[i] === ">") && /^\d+$/.test(raw.slice(0, i))) {
+    enfLog.debug("operandBeforeShellSyntax fd redirect", raw.slice(0, i));
+    return "";
+  }
+  if (out === "") enfLog.debug("operandBeforeShellSyntax empty operand", raw);
+  return out;
 }
 
 /**

@@ -85,6 +85,8 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
+  commitMessageSpecs,
+  stripUnquotedShellComments,
   isTestRunnerCommand,
   isBumpVersionBranch,
   getCachedBranch,
@@ -216,39 +218,80 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
   }
   // `git commit -F <file>`: the message is a file we CAN read, so check it instead of
   // guessing. Refusing a message that already carries the trailer would block the very
-  // flow the git-expert instruction describes (Qodo, PR #1004).
-  const fileMessage = command.match(/git\s+commit\b[^\n]*?-F\s+(?!-)(["']?)([^\s"']+)\1/);
-  if (fileMessage && fileMessage[2]) {
-    // The read happens BEFORE the command runs, so a command that writes the same file
-    // would be verified against its OLD contents while git commits the new ones. Refuse
-    // that shape instead of trusting the stale read (Qodo, PR #1004).
-    const filePathSrc = fileMessage[2].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (bashWritesToPath(command, maskQuotedRegions(command), filePathSrc)) {
-      log.warn("commit_trailer: message file is written by the same command", fileMessage[2]);
+  // flow the git-expert instruction describes (Qodo, PR #1004). Found through the git
+  // parser, so global options before `commit` (`-C <path>`, `-c <k=v>`, `--no-pager`)
+  // no longer hide the file (#1131), and EVERY commit in a compound command is
+  // verified — one trailerless file refuses all of them (Qodo, PR #1139). Each path
+  // arrives resolved against its OWN invocation's `-C`/`cd` (#1131).
+  const messageSpecs = commitMessageSpecs(command, ctx.cwd);
+  let unverified = messageSpecs.length === 0;
+  for (const spec of messageSpecs) {
+    if (spec.kind === "inline") {
+      unverified = true; // inline or stdin (`-F -`) message: no file to read
+      continue;
+    }
+    if (spec.kind === "opaque-file") {
+      // Unresolvable `-F <file>` (line continuation, `$VAR`, backtick, glob, `~`,
+      // redirect, missing operand): never fall through to `commandHasTrailerByName`,
+      // because a trailing `# Assisted-by:` comment would let a trailerless file pass.
       return {
         block: true,
         reason:
-          `⛔ Commit refused: this command writes ${fileMessage[2]} and commits it in the same call, ` +
+          `⛔ Commit refused: the \`-F\` message file path is opaque and cannot be resolved or verified, ` +
+          `so the \`${trailerName}\` trailer cannot be checked. Write the message to a literal readable file path with \`${trailerName}: PI (${modelId})\` in it, then re-run the commit.`,
+      };
+    }
+    const fileMessage = spec.path;
+    // The read happens BEFORE the command runs, so a command that writes the same file
+    // would be verified against its OLD contents while git commits the new ones. Refuse
+    // that shape instead of trusting the stale read (Qodo, PR #1004). Check every
+    // path spelling (resolved absolute, raw operand, and relative to both session cwd
+    // and invocation cwd) so `printf bad > msg.txt && git commit -F msg.txt` is caught.
+    const candidatePaths = [...new Set(
+      [
+        fileMessage,
+        spec.rawOperand,
+        path.relative(ctx.cwd, fileMessage),
+        path.relative(spec.cwd, fileMessage),
+      ].filter((p) => p && p !== "."),
+    )];
+    const maskedCommand = maskQuotedRegions(command);
+    if (candidatePaths.some((p) => bashWritesToPath(command, maskedCommand, p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))) {
+      log.warn("commit_trailer: message file is written by the same command", fileMessage);
+      return {
+        block: true,
+        reason:
+          `⛔ Commit refused: this command writes ${fileMessage} and commits it in the same call, ` +
           "so the message cannot be verified before it is read. Write the message (with the trailer) in one call and commit in the next.",
       };
     }
-    const candidate = path.isAbsolute(fileMessage[2]) ? fileMessage[2] : join(gitCwd, fileMessage[2]);
-    const state = messageFileTrailerState(candidate, trailerName, (p) => readFileSync(p, "utf8"));
+    const state = messageFileTrailerState(fileMessage, trailerName, (p) => readFileSync(p, "utf8"));
     if (state === "has") {
-      log.debug("commit_trailer: message file already carries the trailer", candidate);
-      return undefined;
+      log.debug("commit_trailer: message file already carries the trailer", fileMessage);
+      continue;
     }
     if (state === "missing") {
       return {
         block: true,
         reason:
-          `⛔ Commit refused: the message file ${fileMessage[2]} has no \`${trailerName}\` trailer. ` +
-          `Append it with the real id — \`printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> " + fileMessage[2] + "\` — then re-run the commit.`,
+          `⛔ Commit refused: the message file ${fileMessage} has no \`${trailerName}\` trailer. ` +
+          `Append it with the real id — \`printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> " + fileMessage + "\` — then re-run the commit.`,
       };
     }
+    // Unreadable: the file cannot be verified, and the command TEXT is no substitute
+    // for it — a trailing comment naming the trailer satisfied that check while the
+    // commit recorded a message the hook never saw (#1131).
+    return {
+      block: true,
+      reason:
+        `⛔ Commit refused: cannot read the message file ${fileMessage}, so the \`${trailerName}\` ` +
+        "trailer cannot be verified. Write the message to a file the hook can read, with the trailer in it, then re-run the commit.",
+    };
   }
-  // Other opaque shapes must carry the trailer already; refusing beats guessing.
-  if (!commandHasTrailerByName(command, trailerName)) {
+  if (!unverified) return undefined;
+  // Other opaque shapes must carry the trailer already; strip unquoted `#`
+  // comments first so a shell comment never satisfies the trailer check.
+  if (!commandHasTrailerByName(stripUnquotedShellComments(command), trailerName)) {
     return {
       block: true,
       reason:
