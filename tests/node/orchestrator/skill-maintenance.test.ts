@@ -620,6 +620,58 @@ describe("skill helper script execution (#1103)", () => {
     );
   });
 
+  it("allows a data-writer heredoc whose target is outside skills (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/msg.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh for details\nEOF"),
+      null,
+    );
+  });
+
+  it("allows tee a non-skill file with a skill-mentioning heredoc body (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "tee .pi/tmp/x.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh\nEOF"),
+      null,
+    );
+  });
+
+  it("blocks a heredoc whose redirect target is a skill file (#1125)", () => {
+    const { cwd, root } = project();
+    const skill = path.join(root, "x", "SKILL.md");
+    assert.equal(bashSkillVerdict(cwd, `cat > ${skill} <<'EOF'\nplain body\nEOF`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `tee ${skill} <<'EOF'\nplain body\nEOF`)?.block, true);
+  });
+
+  it("blocks a heredoc fed to an interpreter, whatever the shell (#1125)", () => {
+    const { cwd } = project();
+    const body = "rm .pi/skills/x/run-suites.sh";
+    for (const cmd of [`bash <<'EOF'\n${body}\nEOF`, `sh -s <<'EOF'\n${body}\nEOF`, `node <<'EOF'\n${body}\nEOF`]) {
+      assert.equal(bashSkillVerdict(cwd, cmd)?.block, true, cmd);
+    }
+  });
+
+  it("blocks xargs consuming a heredoc that lists a skill file (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "xargs rm <<'EOF'\n.pi/skills/x/SKILL.md\nEOF")?.block, true);
+  });
+
+  it("blocks a heredoc piped into an interpreter (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat <<'EOF' | bash\nrm .pi/skills/x/run-suites.sh\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("blocks an unquoted heredoc body whose substitution names a skill (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/x.txt <<EOF\n$(rm .pi/skills/x/run-suites.sh)\nEOF")?.block,
+      true,
+    );
+  });
+
   it("allows reading a skill whose name contains a write-verb prefix", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/install-tools/SKILL.md"), null);
