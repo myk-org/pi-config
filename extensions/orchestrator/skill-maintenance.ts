@@ -1507,6 +1507,39 @@ function isDataHeredocWrite(projectCwd: string, stage: string, body: string, exp
   return clean;
 }
 
+/** Command words that run a file path given as their operand. */
+const SCRIPT_RUNNERS = new Set(["bash", "sh", "dash", "zsh", "python", "python3", "node", "source", "."]);
+
+/**
+ * True when a segment AFTER the body runs a file this heredoc wrote: the body is then a
+ * script that executes, not data (`cat > /tmp/x.sh <<EOF … EOF; bash /tmp/x.sh`).
+ */
+function executesWrittenFile(projectCwd: string, command: string, bodyEnd: number, stage: string): boolean {
+  const parsedStage = parseSegment(projectCwd, stage);
+  const cmdIdx = commandWordIndex(parsedStage.words.map((w) => w.value));
+  const verb = parsedStage.words[cmdIdx]?.value ?? "";
+  const written =
+    verb === "tee"
+      ? parsedStage.words.slice(cmdIdx + 1).filter((w) => !w.value.startsWith("-")).map((w) => w.value)
+      : parsedStage.redirectTargets;
+  if (written.length === 0) return false;
+  for (const stages of splitPipelines(command.slice(bodyEnd))) {
+    for (const segment of stages) {
+      const parsed = parseSegment(projectCwd, segment);
+      const words = parsed.words.map((w) => w.value);
+      const idx = commandWordIndex(words);
+      if (!SCRIPT_RUNNERS.has(path.basename(words[idx] ?? ""))) continue;
+      const operand = words.slice(idx + 1).find((w) => !w.startsWith("-"));
+      if (!operand) continue;
+      if (written.some((target) => path.resolve(projectCwd, target) === path.resolve(projectCwd, operand))) {
+        log.debug("skill_shell_heredoc_body_executed", { target: operand });
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Blank every heredoc body that is DATA, so its text cannot be read as a skill reference
  * (issue #1125: `cat > .pi/tmp/msg.txt <<'EOF'` whose body mentions a skill path was
@@ -1516,12 +1549,13 @@ function isDataHeredocWrite(projectCwd: string, stage: string, body: string, exp
  * `cat`/`printf`/`echo`/`tee` writing something that names no skill, that stage is not
  * piped anywhere (`cat <<EOF | bash` hands the body to the next command), and the body is
  * inert. Every other shape — `bash <<EOF`, `sh -s <<EOF`, `python3 <<EOF`, `node <<EOF`,
- * `xargs rm <<EOF`, an unclosed heredoc, a body carrying a substitution — keeps today's
- * behaviour and still blocks: the body stays in the text the analysis reads.
+ * `xargs rm <<EOF`, an unclosed heredoc, a body carrying a substitution, a body a later
+ * segment runs off disk — keeps today's behaviour and still blocks: the body stays in the
+ * text the analysis reads.
  */
 function blankDataHeredocBodies(projectCwd: string, command: string): string {
   if (!command.includes("<<")) return command;
-  const blanks: Array<[number, number]> = [];
+  const candidates: Array<{ start: number; end: number; stage: string }> = [];
   let pending: Array<{ at: number; delim: string; stripTabs: boolean; expand: boolean }> = [];
   let lineStart = 0;
   let i = 0;
@@ -1536,15 +1570,30 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
     if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
       const m = HEREDOC_OPENER_RE.exec(command.slice(i));
       if (m) {
-        pending.push({ at: i, delim: m[2] ?? m[3] ?? m[4]!, stripTabs: m[1] === "-", expand: !m[2] && !m[3] });
+        // `<<\EOF` (and `<<E\OF`) is a literal delimiter: bash drops the backslash, and
+        // the resulting body does not expand.
+        const bare = m[4] ?? "";
+        const delim = m[2] ?? m[3] ?? bare.replace(/\\(.)/g, "$1");
+        const expand = m[2] === undefined && m[3] === undefined && !bare.includes("\\");
+        pending.push({ at: i, delim, stripTabs: m[1] === "-", expand });
         i += m[0].length;
         continue;
       }
     }
+    // A `#` that starts a comment hides the rest of the line: a `<<` after it opens nothing.
+    if (ch === "#" && (i === 0 || /[\s;&|(\n]/.test(command[i - 1]))) {
+      const nl = command.indexOf("\n", i);
+      i = nl === -1 ? command.length : nl;
+      continue;
+    }
     if (ch !== "\n" || pending.length === 0) { i++; continue; }
 
     const openerLine = command.slice(lineStart, i);
-    const piped = openerLine.includes("|");
+    // Only an unquoted `|` after the heredoc's own stage hands the body to another command;
+    // a `|` inside a quoted argument (`printf '|%s'`) is not a pipeline.
+    const piped = splitPipelines(openerLine).some(
+      (stages) => stages.length > 1 && stages.some((part) => part.includes("<<")),
+    );
     let cursor = i + 1;
     for (const h of pending) {
       const bodyStart = cursor;
@@ -1567,14 +1616,23 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
         log.debug("skill_shell_heredoc_unclosed", { delim: h.delim });
         return command;
       }
-      const stage = command.slice(lineStart, h.at).split(/[;&|(\n]/).pop() ?? "";
+      // The shell-aware splitter, so an escaped (`\;`) or quoted separator is not a boundary
+      // that would expose the wrong command word.
+      const openerStages = splitPipelines(command.slice(lineStart, h.at));
+      const stage = openerStages.at(-1)?.at(-1) ?? "";
       const body = command.slice(bodyStart, bodyEnd);
-      if (!piped && isDataHeredocWrite(projectCwd, stage, body, h.expand)) blanks.push([bodyStart, bodyEnd]);
+      if (!piped && isDataHeredocWrite(projectCwd, stage, body, h.expand)) {
+        candidates.push({ start: bodyStart, end: bodyEnd, stage });
+      }
     }
     pending = [];
     lineStart = cursor;
     i = cursor;
   }
+  // A body is data only while nothing later runs the file it was written to.
+  const blanks: Array<[number, number]> = candidates
+    .filter((candidate) => !executesWrittenFile(projectCwd, command, candidate.end, candidate.stage))
+    .map((candidate): [number, number] => [candidate.start, candidate.end]);
   if (blanks.length === 0) return command;
   let out = command;
   for (const [start, end] of blanks) {

@@ -672,6 +672,67 @@ describe("skill helper script execution (#1103)", () => {
     );
   });
 
+  it("blocks an escaped separator hiding an interpreter behind a data writer (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "sh -s x\\; echo <<'EOF'\nrm .pi/skills/x/run-suites.sh\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("ignores a heredoc opener that starts a comment (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/out.txt <<REAL # <<FAKE\nhello\nREAL\nrm .pi/skills/x/SKILL.md\nFAKE")?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc body that a later segment runs (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/cleanup.sh <<'EOF'\nrm -f .pi/skills/x/SKILL.md\nEOF\n; bash .pi/tmp/cleanup.sh")?.block,
+      true,
+    );
+  });
+
+  it("reads a backslash-quoted heredoc delimiter as quoted (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/msg.txt <<\\EOF\nsee .pi/skills/verify-all/run-suites.sh\nEOF"),
+      null,
+    );
+  });
+
+  it("does not read a quoted pipe as a pipeline in the heredoc opener (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "printf '|%s' x > .pi/tmp/msg.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh\nEOF"),
+      null,
+    );
+  });
+
+  it("allows printf writing skill-path prose to a non-skill file (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "printf '%s\\n' x > .pi/tmp/prose.txt <<'EOF'\nsee .pi/skills/verify-all/run-suites.sh\nEOF"),
+      null,
+    );
+  });
+
+  it("allows git commit -F on a file whose contents mention a skill (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "git commit -F .pi/tmp/prose.txt"), null);
+  });
+
+  it("blocks python3 consuming a heredoc that names a skill path (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "python3 <<'EOF'\nopen('.pi/skills/x/SKILL.md').read()\nEOF")?.block,
+      true,
+    );
+  });
+
   it("allows reading a skill whose name contains a write-verb prefix", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "cat .pi/skills/install-tools/SKILL.md"), null);
