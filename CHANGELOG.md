@@ -1,5 +1,24 @@
 # Changelog
 
+## [4.34.1] - 2026-11-18
+
+- Brand-new project skills under `.pi/skills/<name>/SKILL.md` are now auto-adopted by default on `write`
+  (`skill-maintenance: auto` and the maintenance instruction are stamped automatically via `stampSkill`),
+  while existing unmarked skills, unreadable existing files (`lstatSync` non-`ENOENT`), symlinks,
+  `.agents/skills/`, user-global, and package skills remain blocked (#1148).
+- Fixed literal `" + trailerName + "` / `" + fileMessage + "` JavaScript concatenation in
+  `handleCommitTrailer` refusal hints and POSIX single-quoted the suggested redirect file path (#1146).
+- `commitMessageSpecs` and `cwdAt` now follow `git` global options (`-C`, `-c`, `--no-pager`), `env -C` /
+  `--chdir`, and clustered `-aF` / `-am` flags, inspect every commit segment using its last `-F`, block
+  opaque `-F` operands (expansions, redirects, line continuations) and same-command overwrites on both
+  resolved and relative paths, and strip unquoted `#` shell comments before fallback checks (#1139).
+- Shell syntax checks (`bash -n`, `sh -n`, `dash -n`, `zsh -n`, `--noexec`) are now allowed on any skill
+  script when invoked via a bare or realpath-verified shell binary with no value-taking option, `+` flags,
+  or `-c` (#1141).
+- Standalone single-segment data heredocs (`cat`/`printf`/`echo`/`tee` outside subshells, with no outer
+  substitutions, no `<<<` here-strings, and targets outside skills) now have their bodies blanked before
+  skill-path analysis so prose mentioning a skill path is not blocked (#1142).
+
 ## [4.34.0] - 2026-11-17
 
 - An option prompt can be answered in words. In Discord an `ask_user` with options showed a select menu and
