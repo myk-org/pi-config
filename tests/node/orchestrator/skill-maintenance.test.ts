@@ -696,6 +696,36 @@ describe("skill helper script execution (#1103)", () => {
     );
   });
 
+  it("does not blank a heredoc body whose written script is run by its own path (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(
+        cwd,
+        "cat > .pi/tmp/c.sh <<'EOF'\n#!/bin/sh\nrm -f .pi/skills/x/SKILL.md\nEOF\nchmod +x .pi/tmp/c.sh && .pi/tmp/c.sh",
+      )?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc body whose file is run on the opener's own line (#1125)", () => {
+    const { cwd } = project();
+    assert.equal(
+      bashSkillVerdict(cwd, "cat > .pi/tmp/x.sh <<'EOF' && bash .pi/tmp/x.sh\nrm -f .pi/skills/x/SKILL.md\nEOF")?.block,
+      true,
+    );
+  });
+
+  it("does not blank a heredoc body whose file is sourced by a `-c` program (#1125)", () => {
+    const { cwd } = project();
+    for (const run of ["bash -c 'source .pi/tmp/c.sh'", "sh -c '. .pi/tmp/c.sh'", "bash -ec '. .pi/tmp/c.sh'"]) {
+      assert.equal(
+        bashSkillVerdict(cwd, `cat > .pi/tmp/c.sh <<'EOF'\nrm -f .pi/skills/x/SKILL.md\nEOF\n${run}`)?.block,
+        true,
+        run,
+      );
+    }
+  });
+
   it("reads a backslash-quoted heredoc delimiter as quoted (#1125)", () => {
     const { cwd } = project();
     assert.equal(

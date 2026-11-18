@@ -1510,11 +1510,16 @@ function isDataHeredocWrite(projectCwd: string, stage: string, body: string, exp
 /** Command words that run a file path given as their operand. */
 const SCRIPT_RUNNERS = new Set(["bash", "sh", "dash", "zsh", "python", "python3", "node", "source", "."]);
 
+/** Shells whose `-c` operand is a program, not a file — the written path hides inside it. */
+const INLINE_SHELLS = new Set(["bash", "sh", "dash", "zsh"]);
+
 /**
- * True when a segment AFTER the body runs a file this heredoc wrote: the body is then a
- * script that executes, not data (`cat > /tmp/x.sh <<EOF … EOF; bash /tmp/x.sh`).
+ * True when a part of the command AFTER the opener runs a file this heredoc wrote: the
+ * body is then a script that executes, not data. Three shapes, all off the opener's own
+ * line or later (`cat > /tmp/x.sh <<EOF && bash /tmp/x.sh`, `… EOF; /tmp/x.sh`,
+ * `… EOF; bash -c 'source /tmp/x.sh'`).
  */
-function executesWrittenFile(projectCwd: string, command: string, bodyEnd: number, stage: string): boolean {
+function executesWrittenFile(projectCwd: string, afterOpener: string, stage: string): boolean {
   const parsedStage = parseSegment(projectCwd, stage);
   const cmdIdx = commandWordIndex(parsedStage.words.map((w) => w.value));
   const verb = parsedStage.words[cmdIdx]?.value ?? "";
@@ -1523,16 +1528,36 @@ function executesWrittenFile(projectCwd: string, command: string, bodyEnd: numbe
       ? parsedStage.words.slice(cmdIdx + 1).filter((w) => !w.value.startsWith("-")).map((w) => w.value)
       : parsedStage.redirectTargets;
   if (written.length === 0) return false;
-  for (const stages of splitPipelines(command.slice(bodyEnd))) {
+  const isWritten = (token: string): boolean =>
+    written.some((target) => path.resolve(projectCwd, target) === path.resolve(projectCwd, token));
+  for (const stages of splitPipelines(afterOpener)) {
     for (const segment of stages) {
       const parsed = parseSegment(projectCwd, segment);
       const words = parsed.words.map((w) => w.value);
       const idx = commandWordIndex(words);
-      if (!SCRIPT_RUNNERS.has(path.basename(words[idx] ?? ""))) continue;
-      const operand = words.slice(idx + 1).find((w) => !w.startsWith("-"));
-      if (!operand) continue;
-      if (written.some((target) => path.resolve(projectCwd, target) === path.resolve(projectCwd, operand))) {
-        log.debug("skill_shell_heredoc_body_executed", { target: operand });
+      const base = path.basename(words[idx] ?? "");
+      // A `-c` program is ONE operand, so the path shows up only inside its text.
+      if (INLINE_SHELLS.has(base) && /^-[A-Za-z]*c$/.test(words[idx + 1] ?? "")) {
+        const programWords = parseSegment(projectCwd, words.slice(idx + 2).join(" ")).words.map((w) => w.value);
+        const target = programWords.find(isWritten);
+        if (target) {
+          log.debug("skill_shell_heredoc_body_executed_inline", { target });
+          return true;
+        }
+        continue;
+      }
+      if (SCRIPT_RUNNERS.has(base)) {
+        const operand = words.slice(idx + 1).find((w) => !w.startsWith("-"));
+        if (operand && isWritten(operand)) {
+          log.debug("skill_shell_heredoc_body_executed", { target: operand });
+          return true;
+        }
+        continue;
+      }
+      // The command word IS the file: `chmod +x /tmp/x.sh && /tmp/x.sh` — a written script
+      // run by its own path, with no interpreter word to recognise it by.
+      if (isWritten(words[idx] ?? "")) {
+        log.debug("skill_shell_heredoc_body_executed_direct", { target: words[idx] });
         return true;
       }
     }
@@ -1550,13 +1575,14 @@ function executesWrittenFile(projectCwd: string, command: string, bodyEnd: numbe
  * piped anywhere (`cat <<EOF | bash` hands the body to the next command), and the body is
  * inert. Every other shape — `bash <<EOF`, `sh -s <<EOF`, `python3 <<EOF`, `node <<EOF`,
  * `xargs rm <<EOF`, an unclosed heredoc, a body carrying a substitution, a body a later
- * segment runs off disk — keeps today's behaviour and still blocks: the body stays in the
- * text the analysis reads.
+ * part of the command runs — off disk, on the opener's own line, by its own path, or
+ * through a `bash -c` program — keeps today's behaviour and still blocks: the body stays
+ * in the text the analysis reads.
  */
 function blankDataHeredocBodies(projectCwd: string, command: string): string {
   if (!command.includes("<<")) return command;
-  const candidates: Array<{ start: number; end: number; stage: string }> = [];
-  let pending: Array<{ at: number; delim: string; stripTabs: boolean; expand: boolean }> = [];
+  const candidates: Array<{ start: number; end: number; after: string; stage: string }> = [];
+  let pending: Array<{ at: number; after: number; delim: string; stripTabs: boolean; expand: boolean }> = [];
   let lineStart = 0;
   let i = 0;
   while (i < command.length) {
@@ -1575,7 +1601,7 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
         const bare = m[4] ?? "";
         const delim = m[2] ?? m[3] ?? bare.replace(/\\(.)/g, "$1");
         const expand = m[2] === undefined && m[3] === undefined && !bare.includes("\\");
-        pending.push({ at: i, delim, stripTabs: m[1] === "-", expand });
+        pending.push({ at: i, after: i + m[0].length, delim, stripTabs: m[1] === "-", expand });
         i += m[0].length;
         continue;
       }
@@ -1622,16 +1648,19 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
       const stage = openerStages.at(-1)?.at(-1) ?? "";
       const body = command.slice(bodyStart, bodyEnd);
       if (!piped && isDataHeredocWrite(projectCwd, stage, body, h.expand)) {
-        candidates.push({ start: bodyStart, end: bodyEnd, stage });
+        // Everything the shell runs apart from the body: the rest of the opener's line
+        // (a runner there runs BEFORE the body is written) and whatever follows the body.
+        const tail = command.slice(h.after, Math.min(bodyStart, i + 1)) + command.slice(bodyEnd);
+        candidates.push({ start: bodyStart, end: bodyEnd, after: tail, stage });
       }
     }
     pending = [];
     lineStart = cursor;
     i = cursor;
   }
-  // A body is data only while nothing later runs the file it was written to.
+  // A body is data only while nothing runs the file it was written to.
   const blanks: Array<[number, number]> = candidates
-    .filter((candidate) => !executesWrittenFile(projectCwd, command, candidate.end, candidate.stage))
+    .filter((candidate) => !executesWrittenFile(projectCwd, candidate.after, candidate.stage))
     .map((candidate): [number, number] => [candidate.start, candidate.end]);
   if (blanks.length === 0) return command;
   let out = command;
@@ -1662,8 +1691,8 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
  * `printf`, `echo`, `tee`) writes it somewhere that names no skill — so a commit message
  * that merely mentions a skill path is allowed (issue #1125). The boundary: the redirect
  * target still decides (`cat > <skill>/SKILL.md <<EOF` blocks), and a body fed to anything
- * that executes it or reads it as arguments (`bash`, `sh -s`, `python3`, `node`, `xargs`)
- * is still analysed — see `blankDataHeredocBodies`.
+ * that executes it or reads it as arguments (`bash`, `sh -s`, `python3`, `node`, `xargs`,
+ * or run later as a written file) is still analysed — see `blankDataHeredocBodies`.
  *
  * Known limit (documented, not widened around): a path built by shell expansion
  * (`t=…; … > "$t"`, `eval`, `find -exec`) carries no literal reference, so no text rule
