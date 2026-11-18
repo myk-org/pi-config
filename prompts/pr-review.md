@@ -34,9 +34,9 @@ If not found, install from <https://docs.astral.sh/uv/getting-started/installati
 - `/pr-review https://github.com/owner/repo/pull/123` - Review from URL
 
 Phase 4 asks how you want to decide: `Post all`, `Skip all`, or `Decide one by one`.
-Deciding one by one costs roughly one turn per finding (plus one per discussion round, and one
-more when you skip with a reason or stop early) — choose it when findings need individual
-judgment, not on a 20-finding wall.
+Deciding one by one costs roughly one turn per finding (plus one more when you skip with a
+reason or stop early) — choose it when findings need individual judgment, not on a 20-finding
+wall.
 
 ## Task Plan
 
@@ -675,16 +675,11 @@ This avoids ambiguity — user selections for new findings always refer to the `
 `{N} findings — how do you want to decide?` and options `Post all`, `Skip all`, `Decide one by one`.
 Skip this question entirely when there are ZERO `[NEW]` and ZERO `[AUTHOR-QUESTION]` items —
 go straight to Phase 5 with the auto-posted prior findings (see the zero-item rule below).
-Typed answers (`all`, `none`, `3,7,12`) keep working as free text. `ask_user` appends the
-`💬 Discuss with AI first` row itself — never pass it as one of your own options, or the user
-sees it twice.
+Typed answers (`all`, `none`, `3,7,12`) keep working as free text.
 
 - `Post all` → every `[NEW]` finding is selected. Continue to the refine step in bulk mode.
 - `Skip all` → every `[NEW]` finding is skipped. Collect one blanket reason in bulk mode below.
 - `Decide one by one` → run the per-finding loop below.
-- `💬 Discuss with AI first` (`__discuss__`) → not an answer. Talk about the decision itself —
-  trade-offs, what is missing, the alternatives — never a status report on what you just checked —
-  then re-ask the same question with the same options once it resolves.
 
 **Per-finding loop (chosen by `Decide one by one`):**
 
@@ -712,8 +707,7 @@ Everything after this phase — the JSON, the post step, the replies — is unch
    a. Print `Finding i/N — <severity> — <file>:<line>`, the source tag, the full description,
       the suggestion block, and which reviewer(s) raised it after dedup.
    b. Call `ask_user` with question `Finding i/N — <one-line summary>` and exactly these options:
-      `Post`, `Skip`, `Skip + reason`, `Show more context`, `Stop here`. Do NOT pass
-      `Discuss with AI first` — `ask_user` appends that row itself.
+      `Post`, `Skip`, `Skip + reason`, `Show more context`, `Stop here`.
    c. Act on the answer:
       - `Post` → finding is selected for posting.
       - `Skip` → finding is skipped. Phase 5b still requires a reason, so store the fixed
@@ -724,11 +718,6 @@ Everything after this phase — the JSON, the post step, the replies — is unch
         plain chat text and STOP the turn instead — their next message is the reason.
       - `Show more context` → print the surrounding diff hunk and the affected call sites, then
         re-ask the SAME finding (same index, same options).
-      - `Discuss with AI first` → `ask_user` returns exactly `__discuss__`. That is NOT an answer:
-        the user wants to talk about this finding. Discuss the finding itself — its trade-offs,
-        what you would need to know to judge it, the alternatives — and do not report on your own
-        workflow. Re-ask the SAME finding once the discussion resolves. `__discuss__` is a control
-        value — never post it, never store it, never write it to `.pi/data/review-guidelines.md`.
       - `Stop here` → every remaining finding is skipped. Ask once for a blanket reason: use
         `ask_user` with no options when one line is enough, otherwise print the prompt as plain
         chat text and STOP the turn. If the user gives no reason, store the fixed

@@ -23,6 +23,7 @@ import {
   MAX_INLINE_TEXT_BYTES,
 } from "../shared/chat/chat-attachments.ts";
 import { renderPrompt, type PendingPrompt, type PromptMethod } from "../shared/chat/chat-prompts.ts";
+import { buildPromptControls } from "./discord-prompt-controls.ts";
 import {
   entriesFromModels,
   orderPickerEntries,
@@ -836,37 +837,13 @@ export function setupDiscordBot(opts: {
     }
   });
 
-  /** Native controls for a question: buttons, a select, or a modal button. */
-  function promptControls(prompt: PendingPrompt): any[] {
-    if (prompt.method === "confirm") {
-      return [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`answer:${prompt.id}:yes`).setLabel("Approve").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`answer:${prompt.id}:no`).setLabel("Deny").setStyle(ButtonStyle.Danger),
-      )];
-    }
-    if (prompt.options.length > 0 && prompt.options.length <= 25) {
-      return [new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId(`answer:${prompt.id}:select`)
-          .setPlaceholder("Choose an option")
-          .addOptions(prompt.options.slice(0, 25).map((option: string, i: number) => ({
-            label: truncateLine(option, 100), value: String(i),
-          }))),
-      )];
-    }
-    // Free-text question: a modal beats "type your answer as a chat message".
-    return [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`answer-modal:${prompt.id}`).setLabel("Answer").setStyle(ButtonStyle.Primary),
-    )];
-  }
-
   const bridge: ChatBridge = createChatBridge({
     adapter,
     promptTtlMs: config.promptTtlMs,
     streamEditIntervalMs: STREAM_EDIT_INTERVAL_MS,
     users: () => runtime.entries(),
     renderPrompt: async (target, prompt, body) => {
-      const controls = promptControls(prompt);
+      const controls = buildPromptControls(prompt, { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder });
       const sentId = await sendText(target.threadId || target.channelId, body, controls);
       if (!sentId) log.warn("question could not be delivered", { promptId: prompt.id, session: prompt.sessionId });
       else log.info("question delivered with controls", { promptId: prompt.id, controls: controls.length });
@@ -1474,8 +1451,9 @@ export function setupDiscordBot(opts: {
       const prompt = owned;
       const value = interaction.fields.getTextInputValue("value");
       // Scoped to the PROMPT's session: answering in another session's thread must not move the
-      // user's watch to it (bridge.answer takes the session explicitly).
-      bridge.answer(state, value, (content) => void acknowledge(interaction, content), prompt.sessionId);
+      // user's watch to it (answerLiteral takes the session explicitly).
+      // literal: a typed "1" or "cancel" is the answer, not a menu index or the escape word.
+      bridge.answerLiteral(state, value, (content) => void acknowledge(interaction, content), prompt.sessionId);
       return;
     }
 
