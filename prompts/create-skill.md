@@ -48,8 +48,7 @@ Use `ask_user` with options: `["Global", "Project"]`
 
 Map the response to the path:
 
-- "Global" → create it under `.pi/skills/` and hand the user the copy command (see Step 3): the skill write
-  guard refuses agent writes outside the project, so a global skill is a manual copy, not an agent write
+- "Global" → `~/.agents/skills/`
 - "Project" → `.pi/skills/`
 
 Store the resolved path for Step 3.
@@ -66,16 +65,10 @@ Review the current conversation and identify:
 
 ### Step 3: Write the SKILL.md
 
-Create the skill file at the project location from Step 1.5:
+Create the skill file at the chosen location from Step 1.5:
 
 - **Project:** `.pi/skills/<name>/SKILL.md`
-- **Global:** write it to `.pi/skills/<name>/SKILL.md` first — the skill write guard refuses writes outside the
-  project (`~/.agents/skills/`, `~/.pi/agent/skills/`, package skills), so the agent never writes the global copy
-  itself. Give the user the one-line copy command instead:
-
-  ```bash
-  mkdir -p ~/.agents/skills/<name> && cp -r .pi/skills/<name>/. ~/.agents/skills/<name>/
-  ```
+- **Global:** `~/.agents/skills/<name>/SKILL.md`
 
 ```bash
 mkdir -p <chosen-path>/<name>
@@ -114,9 +107,9 @@ like `<API_KEY>` or `$ENV_VAR`. Skills are stored in plain text.
 
 **Rules:**
 
-- **Always include `skill-maintenance: auto`** in the frontmatter — it is what lets a later agent patch this skill
-  when it drifts. If omitted when creating a brand-new `.pi/skills/<name>/SKILL.md`, the write guard auto-adopts it
-  by stamping `skill-maintenance: auto` on write; existing unmarked skills get it via `/adopt-skill <name>`
+- **Always include `skill-maintenance: auto`** in the frontmatter — it opts the skill into maintenance so agents
+  keep it true when it drifts. If omitted when creating a brand-new `.pi/skills/<name>/SKILL.md`, skill maintenance
+  auto-adopts it on write; existing unmarked skills in any scope get it via `/adopt-skill <name>`
 - **Be specific** — exact commands, exact file paths, exact verification steps
 - **No fluff** — skip background, motivation, history — just the procedure
 - **Include pitfalls** — what went wrong during this session and how it was resolved
@@ -129,5 +122,5 @@ Tell the user:
 
 > ✅ Skill `<name>` created at `<chosen-path>/<name>/SKILL.md`
 >
-> **Global skills** are available in all projects — run the copy command above to install it there. **Project skills** are available only in this project.
+> **Global skills** (`~/.agents/skills/`) are available in all projects. **Project skills** (`.pi/skills/`) are available only in this project.
 > Reload pi to use it immediately.

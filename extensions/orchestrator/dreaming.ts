@@ -242,8 +242,7 @@ export function buildDreamPrompt(
     `   skill-maintenance: auto\n` +
     `   ---\n` +
     `   New project skills under .pi/skills/ are auto-adopted (skill-maintenance: auto) on write;\n` +
-    `   include it in frontmatter anyway. Adopted project skills have no write or bash limitations\n` +
-    `   and can be self-improved freely by agents and dreaming.\n` +
+    `   include it in frontmatter anyway so agents keep the skill up to date as they use it.\n` +
     `   Only create skills for workflows with 3+ steps that are likely to recur.\n` +
     `8. Write the current timestamp to ${topicsDir}/../.dream-watermark to track progress.\n` +
     `9. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.\n` +
