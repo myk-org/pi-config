@@ -29,8 +29,9 @@ creating a brand-new `SKILL.md` under `<project>/.pi/skills/` without it is allo
 
 ## `/adopt-skill <name>`
 
-Marks an existing project skill. Idempotent, and it lists only the unmarked skills under
-`<project>/.pi/skills/` in autocomplete.
+Marks an existing project skill (including a safe top-level symlinked shared skill directory under
+`<project>/.pi/skills/<name>`). Idempotent, and it lists only the unmarked skills under `<project>/.pi/skills/`
+in autocomplete.
 
 ```text
 /adopt-skill searxng
@@ -42,41 +43,52 @@ prepends the instruction that tells an agent what the marker asks of it:
 > **IMPORTANT — keep this skill true:** if it was wrong, incomplete or misleading while you used it, fix it
 > now (and its description, if routing was wrong), then say one line: `Skill updated: <name> — <why>`.
 
-A shipped, user-global or third-party skill is refused with *copy it into the project first* — maintenance
-never reaches outside the project. Re-running on a maintained skill answers *already maintained*.
+A shipped, user-global, third-party, or unsafe symlinked skill is refused — maintenance never reaches into
+global, package, dotfile, system, or dangling targets. Re-running on a maintained skill answers
+*already maintained*.
 
 ## Ownership: Whose File May Be Written
 
-A skill file is writable only when it is **marked** *and* its real path (after `realpath`) is under
-`<project>/.pi/skills/`. Everything else is blocked, with the reason naming what it is:
+A skill file is writable only when it is **marked** *and* either its real path (after `realpath`) is under
+`<project>/.pi/skills/`, or it belongs to an already-adopted **safe symlinked shared project skill** under
+`<project>/.pi/skills/<name>`. Everything else is blocked, with the reason naming what it is:
 
 | Location | Result |
 |---|---|
 | `<project>/.pi/skills/<name>/SKILL.md` (marked) | Allowed |
+| `<project>/.pi/skills/<name>/…` (safe symlinked dir, marked) | Allowed — maintained like an owned project skill (#1155) |
+| `<project>/.pi/skills/<name>/…` (safe symlinked dir, unmarked) | Blocked — run `/adopt-skill <name>` (never auto-adopted on `write`) |
 | Brand-new `<project>/.pi/skills/<name>/SKILL.md` (`write`, unmarked) | Allowed & auto-adopted (`skill-maintenance: auto` stamped on write) |
 | Existing `<project>/.pi/skills/<name>/…` (unmarked) | Blocked — run `/adopt-skill <name>` |
-| Any existing skill where the write itself adds `skill-maintenance: auto` | Allowed — otherwise adoption could never start |
+| Any existing non-symlink project skill where the write itself adds `skill-maintenance: auto` | Allowed — otherwise adoption could never start |
 | Skills shipped in the `pi-orchestrator-config` package (`node_modules`, `skills/`) | Blocked — product surface |
 | User-global skills (`~/.pi/agent/skills/`, `~/.agents/skills/`) | Blocked — shared by every project |
 | Skills from another repository or marketplace | Blocked — somebody else's file |
-| Anything under `.pi/skills/` reached through a symlink (including a dangling one) | Blocked — the path resolves outside |
+| Unsafe symlinks (`.pi/skills` itself symlinked out, dangling links, nested symlinks, or targets in global/`.agents`/`node_modules`/`$HOME` dot-dirs/system dirs) | Blocked — unsafe target or path escape |
+
+A symlinked shared skill under `<project>/.pi/skills/<name>` is considered safe only when `<name>` is a top-level
+symlink to a real directory containing a regular (non-symlink) `SKILL.md`, with no nested symlinks inside it,
+and whose real target stays outside `~/.pi/agent/skills/`, `~/.agents/skills/`, `<project>/.agents/skills/`,
+`node_modules/`, dot-directories under `$HOME` (`~/.ssh`, `~/.config`, etc.), and system prefixes (`/etc`,
+`/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/var`, `/boot`, `/root`, `/proc`, `/sys`, `/dev`).
 
 The rule is enforced in code by a `tool_call` guard on `write`/`edit`/`multi_edit`, so a blocked write is
 refused before it happens and the agent is told what to do instead.
 
 ### Adopted skills have full bash access; protected skills are read/script-only
 
-Adopted (`skill-maintenance: auto`) owned project skills under `<project>/.pi/skills/` have **no limitations**
-on `write`/`edit` or `bash` (#1152): once a project skill is adopted, agents and dreaming can run its scripts
-(`bash`, direct execution, `OTP=$(...) && script.sh`, etc.) and self-improve it freely via `write`/`edit` or
-shell commands (`chmod +x`, `sed -i`, `>`, etc.). The exemption only applies when **every** skill reference and
-mention in the command resolves strictly to adopted owned project skills with no bare `SKILL.md`, `$VAR`/`~`
-skill paths, symlink escapes, or directory changes that alter relative resolution.
+Adopted (`skill-maintenance: auto`) owned project skills under `<project>/.pi/skills/` — including adopted safe
+symlinked shared skills (#1155) — have **no limitations** on `write`/`edit` or `bash` (#1152): once a project
+skill is adopted, agents and dreaming can run its scripts (`bash`, direct execution, `OTP=$(...) && script.sh`,
+etc.) and self-improve it freely via `write`/`edit` or shell commands (`chmod +x`, `sed -i`, `>`, etc.). The
+exemption only applies when **every** skill reference and mention in the command resolves strictly to adopted
+owned project skills with no bare `SKILL.md`, `$VAR`/`~` skill paths, nested/unsafe symlink escapes, or
+directory changes that alter relative resolution.
 
-For **protected** skills — unmarked project skills, `.agents/skills/`, user-global skills
-(`~/.pi/agent/skills/`, `~/.agents/skills/`), `node_modules` package skills, symlink escapes, and mixed
-commands touching both adopted and protected skills — a `bash` command passes only when **every** `;`, `&&`,
-`||`, `&` or `|` segment is a read or helper execution with no write operator (`/dev/null` sinks like
+For **protected** skills — unmarked project skills, unmarked symlinked skills, `.agents/skills/`, user-global
+skills (`~/.pi/agent/skills/`, `~/.agents/skills/`), `node_modules` package skills, unsafe symlink escapes, and
+mixed commands touching both adopted and protected skills — a `bash` command passes only when **every** `;`,
+`&&`, `||`, `&` or `|` segment is a read or helper execution with no write operator (`/dev/null` sinks like
 `2>/dev/null` and fd duplications like `2>&1` are ignored, and leading `rtk`/env prefixes are unwrapped):
 
 - an allowlisted read verb (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `ls`, `stat`, `wc`, `diff`, `md5sum`,

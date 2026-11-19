@@ -141,10 +141,191 @@ function hasSymlinkComponent(root: string, target: string): boolean {
   return false;
 }
 
+const SYSTEM_PREFIXES = [
+  "/etc",
+  "/usr",
+  "/bin",
+  "/sbin",
+  "/lib",
+  "/lib64",
+  "/var",
+  "/boot",
+  "/root",
+  "/proc",
+  "/sys",
+  "/dev",
+];
+
+export interface SafeSymlinkedSkillInfo {
+  skill: string;
+  skillEntry: string;
+  realSkillDir: string;
+  skillMdPath: string;
+  subRel: string[];
+  realTarget: string;
+  marked: boolean;
+}
+
+function safeSymlinkedSkillFromRoot(
+  root: string,
+  skillName: string,
+  subRel: string[],
+  projectRoots: string[],
+): SafeSymlinkedSkillInfo | null {
+  if (!skillName || skillName === "." || skillName === "..") return null;
+  const skillEntry = path.join(root, skillName);
+  try {
+    if (!fs.lstatSync(skillEntry).isSymbolicLink()) return null;
+  } catch {
+    return null;
+  }
+
+  let realSkillDir: string;
+  try {
+    realSkillDir = fs.realpathSync(skillEntry);
+    if (!fs.statSync(realSkillDir).isDirectory()) {
+      log.debug("safe_symlink_not_dir", { skillEntry, realSkillDir });
+      return null;
+    }
+  } catch {
+    log.debug("safe_symlink_dangling", { skillEntry });
+    return null;
+  }
+
+  const home = os.homedir();
+  const realHome = realpathNearestExisting(home) ?? home;
+  const forbiddenSkillsRoots = [
+    path.join(home, ".pi", "agent", "skills"),
+    path.join(home, ".agents", "skills"),
+    ...projectRoots.map((proj) =>
+      path.join(realpathNearestExisting(proj) ?? path.resolve(proj), ".agents", "skills"),
+    ),
+  ];
+  for (const candidateRoot of forbiddenSkillsRoots) {
+    const realForbidden = realpathNearestExisting(candidateRoot) ?? candidateRoot;
+    if (realSkillDir === realForbidden || isUnder(realForbidden, realSkillDir)) {
+      log.debug("safe_symlink_forbidden_root", { skillEntry, realSkillDir, forbidden: realForbidden });
+      return null;
+    }
+  }
+
+  if (realSkillDir.split(path.sep).includes("node_modules")) {
+    log.debug("safe_symlink_node_modules", { skillEntry, realSkillDir });
+    return null;
+  }
+
+  if (isUnder(realHome, realSkillDir)) {
+    const firstSegment = path.relative(realHome, realSkillDir).split(path.sep)[0];
+    if (firstSegment?.startsWith(".")) {
+      log.debug("safe_symlink_home_dotdir", { skillEntry, realSkillDir, firstSegment });
+      return null;
+    }
+  }
+
+  for (const prefix of SYSTEM_PREFIXES) {
+    const realPrefix = realpathNearestExisting(prefix) ?? prefix;
+    if (realSkillDir === realPrefix || isUnder(realPrefix, realSkillDir)) {
+      log.debug("safe_symlink_system_prefix", { skillEntry, realSkillDir, prefix: realPrefix });
+      return null;
+    }
+  }
+
+  if (
+    realSkillDir === realHome ||
+    realSkillDir === "/" ||
+    realSkillDir === root ||
+    isUnder(realSkillDir, root)
+  ) {
+    log.debug("safe_symlink_unsafe_target", { skillEntry, realSkillDir, root });
+    return null;
+  }
+
+  const skillMdPath = path.join(realSkillDir, "SKILL.md");
+  try {
+    if (!fs.lstatSync(skillMdPath).isFile()) {
+      log.debug("safe_symlink_skill_md_not_file", { skillEntry, skillMdPath });
+      return null;
+    }
+  } catch {
+    log.debug("safe_symlink_missing_skill_md", { skillEntry, skillMdPath });
+    return null;
+  }
+
+  const lexicalSub = subRel.length === 0 ? realSkillDir : path.join(realSkillDir, ...subRel);
+  const realTarget = realpathNearestExisting(lexicalSub);
+  if (
+    realTarget === null ||
+    (realTarget !== realSkillDir && !isUnder(realSkillDir, realTarget)) ||
+    hasSymlinkComponent(realSkillDir, lexicalSub) ||
+    hasSymlinkComponent(realSkillDir, realTarget)
+  ) {
+    log.debug("safe_symlink_nested_escape", { skillEntry, lexicalSub, realTarget });
+    return null;
+  }
+
+  let content: string;
+  try {
+    content = fs.readFileSync(skillMdPath, "utf-8");
+  } catch {
+    log.debug("safe_symlink_unreadable_skill_md", { skillMdPath });
+    return null;
+  }
+
+  return {
+    skill: skillName,
+    skillEntry,
+    realSkillDir,
+    skillMdPath,
+    subRel,
+    realTarget,
+    marked: isMarkedSkill(content),
+  };
+}
+
 /**
- * Pure ownership predicate: true only for a real path inside the project's own
- * `.pi/skills/`. Prefix-string matching is not enough — a symlink inside the
- * directory resolves elsewhere, and that file is not ours.
+ * Metadata for a safe top-level symlinked shared skill under `<project>/.pi/skills/<name>`.
+ * Returns null for non-symlinks, dangling links, nested symlink escapes, missing regular
+ * `SKILL.md`, or targets inside forbidden global/package/dotfile/system directories.
+ */
+export function safeSymlinkedSkillInfo(projectCwd: string, candidate: string): SafeSymlinkedSkillInfo | null {
+  if (typeof candidate !== "string" || candidate.trim() === "") return null;
+  const root = ownedSkillsRoot(projectCwd);
+  if (!root) return null;
+  const abs = path.resolve(projectCwd, candidate);
+  const projectRoots = [projectCwd, resolveMainCheckoutRoot(projectCwd)];
+
+  if (isUnder(root, abs)) {
+    const parts = path.relative(root, abs).split(path.sep);
+    const skillName = parts[0];
+    return skillName ? safeSymlinkedSkillFromRoot(root, skillName, parts.slice(1), projectRoots) : null;
+  }
+
+  const cwdSkills = path.join(path.resolve(projectCwd), ".pi", "skills");
+  const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
+  const realWtSkills = realpathNearestExisting(path.join(realCwd, ".pi", "skills"));
+  if (isUnder(cwdSkills, abs) && realWtSkills === root) {
+    const parts = path.relative(cwdSkills, abs).split(path.sep);
+    const skillName = parts[0];
+    return skillName ? safeSymlinkedSkillFromRoot(root, skillName, parts.slice(1), projectRoots) : null;
+  }
+
+  if (realWtSkills && isUnder(realCwd, realWtSkills) && (isUnder(cwdSkills, abs) || isUnder(realWtSkills, abs))) {
+    const rel = isUnder(cwdSkills, abs) ? path.relative(cwdSkills, abs) : path.relative(realWtSkills, abs);
+    const parts = rel.split(path.sep);
+    const skillName = parts[0];
+    if (!skillName) return null;
+    return (
+      safeSymlinkedSkillFromRoot(root, skillName, parts.slice(1), projectRoots) ??
+      safeSymlinkedSkillFromRoot(realWtSkills, skillName, parts.slice(1), projectRoots)
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Pure ownership predicate: true for a real path inside the project's own `.pi/skills/`,
+ * or for an already-adopted (`skill-maintenance: auto`) safe symlinked shared skill there.
  */
 export function isOwnedSkillPath(projectCwd: string, candidate: string): boolean {
   if (typeof candidate !== "string" || candidate.trim() === "") {
@@ -167,12 +348,18 @@ export function isOwnedSkillPath(projectCwd: string, candidate: string): boolean
   }
   const rel = path.relative(root, target);
   const owned = rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+  if (!owned && safeSymlinkedSkillInfo(projectCwd, candidate)?.marked === true) {
+    log.debug("owned_check_safe_symlink", { candidate, owned: true });
+    return true;
+  }
   log.debug("owned_check", { candidate, owned });
   return owned;
 }
 
 /** Skill name owning a path, or null when it is not an owned skill file. */
 export function ownedSkillName(projectCwd: string, candidate: string): string | null {
+  const safeInfo = safeSymlinkedSkillInfo(projectCwd, candidate);
+  if (safeInfo?.marked) return safeInfo.skill;
   if (!isOwnedSkillPath(projectCwd, candidate)) return null;
   const root = ownedSkillsRoot(projectCwd);
   if (!root) return null;
@@ -198,12 +385,23 @@ export function isMarkedSkill(content: string): boolean {
     .some((line) => new RegExp(`^\\s*${MARKER_KEY}\\s*:\\s*${MARKER_VALUE}\\s*$`).test(line));
 }
 
-/** Content of a skill file under the owned root, or null when unreadable. */
+/** Content of a skill file under the owned root (or a safe symlinked skill), or null when unreadable. */
 export function readSkillFile(projectCwd: string, name: string): string | null {
   const root = ownedSkillsRoot(projectCwd);
-  if (!root) return null;
+  if (!root || !name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) return null;
+  const skillDir = path.join(root, name);
+  const skillMd = path.join(skillDir, "SKILL.md");
   try {
-    return fs.readFileSync(path.join(root, name, "SKILL.md"), "utf-8");
+    if (!fs.lstatSync(skillDir).isSymbolicLink() && !fs.lstatSync(skillMd).isSymbolicLink()) {
+      return fs.readFileSync(skillMd, "utf-8");
+    }
+  } catch {
+    // Fall through to safe symlinked skill resolution.
+  }
+  const safeInfo = safeSymlinkedSkillInfo(projectCwd, skillMd);
+  if (!safeInfo) return null;
+  try {
+    return fs.readFileSync(safeInfo.skillMdPath, "utf-8");
   } catch {
     return null;
   }
@@ -242,7 +440,7 @@ export function stampSkill(content: string): { content: string; changed: boolean
   return { content: stamped, changed: stamped !== content };
 }
 
-/** Skill names under the owned root, sorted. Symlinked dirs are not ours and are skipped. */
+/** Skill names under the owned root (including safe symlinked shared skill dirs), sorted. */
 export function listOwnedSkills(projectCwd: string): string[] {
   const root = ownedSkillsRoot(projectCwd);
   if (!root) return [];
@@ -252,11 +450,21 @@ export function listOwnedSkills(projectCwd: string): string[] {
   } catch {
     return [];
   }
-  return entries
-    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-    .map((entry) => entry.name)
-    .filter((name) => fs.existsSync(path.join(root, name, "SKILL.md")))
-    .sort();
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      try {
+        if (fs.lstatSync(path.join(root, entry.name, "SKILL.md")).isFile()) names.push(entry.name);
+      } catch {
+        // missing or non-regular SKILL.md
+      }
+      continue;
+    }
+    if (entry.isSymbolicLink() && safeSymlinkedSkillInfo(projectCwd, path.join(root, entry.name, "SKILL.md")) !== null) {
+      names.push(entry.name);
+    }
+  }
+  return names.sort();
 }
 
 /** Owned skills that do not carry the marker yet — what `/adopt-skill` offers. */
@@ -410,6 +618,23 @@ export function classifySkillWrite(
   input: unknown,
 ): SkillWriteVerdict {
   const abs = path.resolve(projectCwd, candidate);
+
+  // An unmarked safe symlinked skill may only be adopted by the user via /adopt-skill —
+  // never auto-adopted or marked by an agent write/edit (#1155).
+  const safeInfo = safeSymlinkedSkillInfo(projectCwd, abs);
+  if (safeInfo !== null && !safeInfo.marked) {
+    log.warn("skill_write_symlink_unmarked", { skill: safeInfo.skill, candidate });
+    return {
+      allow: false,
+      path: abs,
+      skill: safeInfo.skill,
+      file: safeInfo.subRel.join(path.sep),
+      reason:
+        `⛔ "${safeInfo.skill}" is a symlinked skill that is not adopted yet. ` +
+        `Run /adopt-skill ${safeInfo.skill} to adopt its target skill before agents can edit it.`,
+    };
+  }
+
   const area = skillAreaOf(projectCwd, abs);
 
   // Lexically inside our own skills dir but not owned: a symlink (dangling or
@@ -455,7 +680,12 @@ export function classifySkillWrite(
 
   const skill = ownedSkillName(projectCwd, abs) ?? undefined;
   const root = ownedSkillsRoot(projectCwd);
-  const file = root && skill ? path.relative(path.join(root, skill), abs) : undefined;
+  const file =
+    safeInfo !== null
+      ? safeInfo.subRel.join(path.sep)
+      : root && skill
+        ? path.relative(path.join(root, skill), abs)
+        : undefined;
 
   if (area === "project-agents") {
     log.debug("skill_area_project_agents", { candidate });
@@ -533,8 +763,9 @@ export function classifySkillWrite(
 // ── snapshot / diff / notice ────────────────────────────────────────────────
 
 /**
- * Snapshot every regular file in the owned tree (path → mtime:size). Symlinks
- * are not followed: a link is not a file we own, whatever it points at.
+ * Snapshot every regular file in the owned tree (path → mtime:size), plus marked safe
+ * top-level symlinked shared skills (keyed under `<root>/<skill>/<rel>`). Nested symlinks
+ * and unsafe/unmarked symlinks are never followed.
  */
 export function snapshotSkillTree(root: string | null): Map<string, string> {
   const snapshot = new Map<string, string>();
@@ -542,7 +773,8 @@ export function snapshotSkillTree(root: string | null): Map<string, string> {
     log.debug("skill_snapshot_no_root");
     return snapshot;
   }
-  const walk = (dir: string, depth: number): void => {
+  const projectRoots = [path.dirname(path.dirname(root))];
+  const walk = (dir: string, depth: number, keyPrefix?: string, realSkillRoot?: string): void => {
     if (depth > MAX_SKILL_DEPTH) {
       log.warn("skill_snapshot_depth_cap", { dir, max: MAX_SKILL_DEPTH });
       return;
@@ -566,17 +798,25 @@ export function snapshotSkillTree(root: string | null): Map<string, string> {
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) {
+        if (depth === 0 && !keyPrefix) {
+          const safeInfo = safeSymlinkedSkillFromRoot(root, entry.name, [], projectRoots);
+          if (safeInfo?.marked) {
+            walk(safeInfo.realSkillDir, 1, path.join(root, entry.name), safeInfo.realSkillDir);
+            continue;
+          }
+        }
         log.debug("skill_snapshot_skip_symlink", { full });
         continue;
       }
       if (entry.isDirectory()) {
-        walk(full, depth + 1);
+        walk(full, depth + 1, keyPrefix, realSkillRoot);
         continue;
       }
       if (!entry.isFile()) continue;
       try {
         const stat = fs.statSync(full);
-        snapshot.set(full, `${stat.mtimeMs}:${stat.size}`);
+        const key = keyPrefix && realSkillRoot ? path.join(keyPrefix, path.relative(realSkillRoot, full)) : full;
+        snapshot.set(key, `${stat.mtimeMs}:${stat.size}`);
       } catch (err) {
         // vanished mid-walk — treat as untouched
         log.warn("skill_snapshot_stat_failed", {
@@ -721,33 +961,39 @@ export function adoptSkill(projectCwd: string, name: string): AdoptResult {
     return { ok: false, message: `"${name}" is not a skill name — use a bare name under ${root}.` };
   }
   const file = path.join(root, name, "SKILL.md");
-  if (!isOwnedSkillPath(projectCwd, file)) {
-    log.warn("adopt_skill_not_owned", { name, file });
-    return {
-      ok: false,
-      message: `"${name}" does not resolve to a file this project owns (symlink or path escape) — refusing to write it.`,
-    };
-  }
-  if (!fs.existsSync(file)) {
-    const elsewhere = skillExistsOutside(projectCwd, name);
-    log.warn("adopt_skill_refused", { name, existsElsewhere: elsewhere });
-    return {
-      ok: false,
-      message: elsewhere
-        ? `"${name}" is not a project skill — copy it into ${path.join(root, name)}/ first, then run /adopt-skill ${name}.`
-        : `No project skill named "${name}" under ${root}.`,
-    };
+  const safeInfo = safeSymlinkedSkillInfo(projectCwd, file);
+  let targetFile = file;
+  if (safeInfo !== null) {
+    targetFile = safeInfo.skillMdPath;
+  } else {
+    if (!isOwnedSkillPath(projectCwd, file)) {
+      log.warn("adopt_skill_not_owned", { name, file });
+      return {
+        ok: false,
+        message: `"${name}" does not resolve to a file this project owns (symlink or path escape) — refusing to write it.`,
+      };
+    }
+    if (!fs.existsSync(file)) {
+      const elsewhere = skillExistsOutside(projectCwd, name);
+      log.warn("adopt_skill_refused", { name, existsElsewhere: elsewhere });
+      return {
+        ok: false,
+        message: elsewhere
+          ? `"${name}" is not a project skill — copy it into ${path.join(root, name)}/ first, then run /adopt-skill ${name}.`
+          : `No project skill named "${name}" under ${root}.`,
+      };
+    }
   }
   try {
-    const content = fs.readFileSync(file, "utf-8");
+    const content = fs.readFileSync(targetFile, "utf-8");
     const { content: stamped, changed } = stampSkill(content);
     if (!changed) return { ok: true, message: `Skill "${name}" is already maintained.` };
-    fs.writeFileSync(file, stamped, "utf-8");
-    log.info("adopt_skill_marked", { name, file });
+    fs.writeFileSync(targetFile, stamped, "utf-8");
+    log.info("adopt_skill_marked", { name, file: targetFile });
     return { ok: true, message: `✅ Skill "${name}" is now maintained — patching it is allowed from here on.` };
   } catch (err) {
     log.error("adopt_skill_failed", { name, reason: String((err as Error)?.message ?? err).slice(0, 200) });
-    return { ok: false, message: `Could not update ${file}: ${(err as Error)?.message ?? err}` };
+    return { ok: false, message: `Could not update ${targetFile}: ${(err as Error)?.message ?? err}` };
   }
 }
 
@@ -1268,6 +1514,16 @@ function isValidSkillScriptTarget(projectCwd: string, scriptAbs: string): boolea
     }
   } catch {
     // non-existent path: checked structurally below
+  }
+  const safeInfo = safeSymlinkedSkillInfo(projectCwd, scriptAbs);
+  if (safeInfo !== null) {
+    const lexicalSub = path.join(safeInfo.realSkillDir, ...safeInfo.subRel);
+    const valid =
+      safeInfo.subRel.length >= 1 &&
+      isUnder(safeInfo.realSkillDir, safeInfo.realTarget) &&
+      !hasSymlinkComponent(safeInfo.realSkillDir, lexicalSub);
+    log.debug("skill_script_target_check", { scriptAbs, area: skillAreaOf(projectCwd, scriptAbs), safeSymlink: true, valid });
+    return valid;
   }
   const realAbs = realpathNearestExisting(scriptAbs) ?? scriptAbs;
   const area = skillAreaOf(projectCwd, scriptAbs);
@@ -2219,11 +2475,16 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
 
     // Allowed — but provenance is only written once the tool actually succeeded.
     const resolved = realpathNearestExisting(path.resolve(ctx.cwd, target)) ?? path.resolve(ctx.cwd, target);
+    const root = ownedSkillsRoot(ctx.cwd);
+    const file = verdict.file ?? "SKILL.md";
+    const snapshotKey = root ? path.join(root, verdict.skill, file) : resolved;
+    const existsInSnapshot =
+      turnSnapshot.get(snapshotKey) !== undefined || turnSnapshot.get(resolved) !== undefined;
     pendingWrites.set(String((event as any)?.toolCallId ?? ""), {
       skill: verdict.skill,
-      file: verdict.file ?? "SKILL.md",
+      file,
       path: resolved,
-      written: turnSnapshot.get(resolved) === undefined,
+      written: !existsInSnapshot,
     });
     log.debug("skill_write_allowed", { skill: verdict.skill, file: verdict.file ?? "SKILL.md" });
     return;

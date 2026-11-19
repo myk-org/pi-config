@@ -402,22 +402,28 @@ progress. It does not commit, push, create a PR, or post results.
 - Memory inventory CLI: `uvx myk-pi-tools@latest memory status`
 - Skill maintenance (issue #1074): `extensions/orchestrator/skill-maintenance.ts`. A skill is maintained when its
   `SKILL.md` frontmatter carries `skill-maintenance: auto`; only a **marked** skill whose real path (after `realpath`) is
-  under `<project>/.pi/skills/` may be edited or overwritten, while creating a brand-new `SKILL.md` under
-  `<project>/.pi/skills/` is allowed and auto-adopted with `skill-maintenance: auto` on write (#1147). Shipped package
-  skills, `~/.pi/agent/skills/`, third-party skills, symlinked/dangling paths and existing unmarked project skills are
-  blocked with a reason (`/adopt-skill <name>` marks one).
+  under `<project>/.pi/skills/` — or an already-adopted safe top-level symlinked shared project skill under
+  `<project>/.pi/skills/<name>` (#1155) — may be edited or overwritten, while creating a brand-new `SKILL.md` under
+  `<project>/.pi/skills/` is allowed and auto-adopted with `skill-maintenance: auto` on write (#1147). Safe symlinked
+  shared skills (top-level `.pi/skills/<name>` symlinks pointing to a real directory with a regular `SKILL.md`, outside
+  `~/.pi/agent/skills/`, `~/.agents/skills/`, `<project>/.agents/skills/`, `node_modules/`, `$HOME` dot-directories, and
+  system prefixes, with no nested symlinks) appear in `/adopt-skill` and can be adopted with `/adopt-skill <name>`. Unmarked
+  symlinked skills remain blocked for agents and are never auto-adopted on `write`. Shipped package skills,
+  `~/.pi/agent/skills/`, third-party skills, unsafe/dangling/nested symlinks (including `.pi/skills` itself symlinked),
+  and existing unmarked project skills are blocked with a reason (`/adopt-skill <name>` marks one).
   Agents are steered mid-turn when a marked skill they used fails, every allowed `write`/`edit` is recorded in
   `.pi/data/skill-review.jsonl` (append-only), and one line reports the turn's changes — see
-  `docs/skill-self-improvement.md`. Adopted (`skill-maintenance: auto`) owned project skills have no limitations on
-  `write`/`edit` or `bash` (#1152): agents and dreaming can run their scripts and self-improve them freely. For all
-  protected skills (unmarked project skills, `.agents/skills/`, `~/.pi/agent/skills/`, `~/.agents/skills/`, `node_modules`
-  package skills, and symlink escapes), the shell only reads skills and runs `.sh`/`.py`/`.mjs`/`.js` helper scripts
-  (directly, via `bash`/`sh`/`node` without `-c`/`-e`/`--eval`, or via `uv run [--script]`, unwrapping `rtk`/env prefixes,
-  ignoring `/dev/null` or fd-dup redirects like `2>&1`, and verifying `realpath` stays inside `skills/`), plus a syntax-only
-  `bash -n`/`sh -n`/`--noexec` parse (`bash`/`sh`/`dash`/`zsh` bare or as a real binary path, every flag a noexec flag, no `+n`)
-  and `mkdir` inside the owned tree — every shell write (`>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`, `perl -i`,
-  quoted/unquoted inline `-c`/`-e`/`--eval`/`eval` scripts, …), bare `SKILL.md`, `$VAR` skill path, mixed adopted+protected
-  command, and unresolved reference blocks (#1103). No model call, no setting: it is not an async agent at all.
+  `docs/skill-self-improvement.md`. Adopted (`skill-maintenance: auto`) owned project skills (including adopted safe
+  symlinked shared skills) have no limitations on `write`/`edit` or `bash` (#1152): agents and dreaming can run their
+  scripts and self-improve them freely. For all protected skills (unmarked project skills, unmarked symlinked skills,
+  `.agents/skills/`, `~/.pi/agent/skills/`, `~/.agents/skills/`, `node_modules` package skills, and unsafe symlink escapes),
+  the shell only reads skills and runs `.sh`/`.py`/`.mjs`/`.js` helper scripts (directly, via `bash`/`sh`/`node` without
+  `-c`/`-e`/`--eval`, or via `uv run [--script]`, unwrapping `rtk`/env prefixes, ignoring `/dev/null` or fd-dup redirects
+  like `2>&1`, and verifying `realpath` stays inside `skills/`), plus a syntax-only `bash -n`/`sh -n`/`--noexec` parse
+  (`bash`/`sh`/`dash`/`zsh` bare or as a real binary path, every flag a noexec flag, no `+n`) and `mkdir` inside the owned
+  tree — every shell write (`>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`, `perl -i`, quoted/unquoted inline
+  `-c`/`-e`/`--eval`/`eval` scripts, …), bare `SKILL.md`, `$VAR` skill path, mixed adopted+protected command, and
+  unresolved reference blocks (#1103). No model call, no setting: it is not an async agent at all.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
