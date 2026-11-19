@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.34.3] - 2026-11-19
+
+- Simplified skill adoption and maintenance to use Pi's built-in `pi.getCommands()` registry
+  (`source === "skill"`, excluding shipped package skills via `origin === "package"`, `node_modules/`, or
+  package-alias targets), removed all `write`/`edit`/`bash` skill blocking guards, and preserved
+  auto-adoption on new `.pi/skills/<name>/SKILL.md` writes, mid-turn failure nudges, provenance, and
+  turn-end notices (#1156).
+
 ## [4.34.2] - 2026-11-18
 
 - Adopted (`skill-maintenance: auto`) owned project skills now have no bash or write limitations: helper
