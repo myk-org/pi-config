@@ -401,10 +401,12 @@ progress. It does not commit, push, create a PR, or post results.
   release must be planned and published by the code being released, not by the previously published version.
 - Memory inventory CLI: `uvx myk-pi-tools@latest memory status`
 - Skill maintenance (issues #1074, #1147, #1155): `extensions/orchestrator/skill-maintenance.ts`. Non-blocking — no `write`/`edit`
-  or `bash` tool calls are ever blocked. Uses `pi.getCommands()` (plus a lightweight `.pi/skills/` fallback) to discover loaded skills;
-  `/adopt-skill <name>` stamps `skill-maintenance: auto` and the maintainer instruction on any non-package skill (brand-new
-  `.pi/skills/<name>/SKILL.md` writes auto-adopt). Failed adopted skills steer mid-turn; skill edits log to `.pi/data/skill-review.jsonl`
-  with a one-line turn summary — see `docs/skill-self-improvement.md`.
+  or `bash` tool calls are ever blocked. Uses `pi.getCommands()` to discover loaded skills (falling back to `.pi/skills/` only when
+  `pi.getCommands()` is unavailable); `/adopt-skill <name>` stamps `skill-maintenance: auto` and the maintainer instruction on any
+  non-package skill (brand-new `.pi/skills/<name>/SKILL.md` writes auto-adopt). Failed adopted skills steer mid-turn; provenance
+  (`.pi/data/skill-review.jsonl`) and the turn-end notice cover `write`/`edit`/`multi_edit` tool changes across all scopes plus
+  direct `.pi/skills/` tree diffs (shell edits to external/global/symlinked skill paths are not snapshotted) — see
+  `docs/skill-self-improvement.md`.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.

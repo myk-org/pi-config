@@ -3,7 +3,7 @@
  *
  * Non-blocking skill maintenance without a background model call:
  * - Pi's `pi.getCommands()` supplies loaded skills across project, user, and symlinked
- *   shared directories (plus a lightweight `.pi/skills/` fallback before `/reload`);
+ *   shared directories (falling back to `.pi/skills/` only when `pi.getCommands()` is unavailable);
  * - `/adopt-skill <name>` stamps `skill-maintenance: auto` on any non-package skill
  *   (brand-new `<project>/.pi/skills/<name>/SKILL.md` writes auto-adopt);
  * - failed adopted skills steer mid-turn; edits log to `.pi/data/skill-review.jsonl`
@@ -35,6 +35,9 @@ const MAX_SKILL_DEPTH = 32;
 const WRITE_TOOLS = new Set(["write", "edit", "multi_edit"]);
 const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SKILL_INVOCATION_RE = /\/skill:([A-Za-z0-9][A-Za-z0-9._-]*)/g;
+const SKILL_PATH_RE = /(?:^|[\s"'=:(])(?:[^\s"'=:(]*\/)?skills\/([A-Za-z0-9][A-Za-z0-9._-]*)(?=$|[/\s"'):;|&])/g;
+const PATH_LEFT_BOUNDARY_RE = /[\s"'=:(]/;
+const PATH_RIGHT_BOUNDARY_RE = /[/\s"'):;|&]/;
 const MARKER_LINE_RE = new RegExp(`^\\s*${MARKER_KEY}\\s*:\\s*${MARKER_VALUE}\\s*$`);
 
 export type SkillChangeAction = "patched" | "written";
@@ -294,7 +297,8 @@ export function stampSkill(content: string): { content: string; changed: boolean
 
 function allAdoptableSkills(projectCwd: string, skills?: readonly RegisteredSkillInfo[]): Map<string, RegisteredSkillInfo> {
   const byName = new Map<string, RegisteredSkillInfo>();
-  for (const skill of [...(skills ?? []), ...listFallbackProjectSkills(projectCwd, skills)]) {
+  const candidates = skills !== undefined ? skills : listFallbackProjectSkills(projectCwd);
+  for (const skill of candidates) {
     if (isAdoptableSkill(skill, skills) && !byName.has(skill.name)) byName.set(skill.name, skill);
   }
   return byName;
@@ -351,6 +355,21 @@ export function adoptSkill(projectCwd: string, name: string, skills?: readonly R
   }
 }
 
+function containsPathBoundary(text: string, target: string): boolean {
+  if (!target) return false;
+  let from = 0;
+  while (from <= text.length - target.length) {
+    const idx = text.indexOf(target, from);
+    if (idx === -1) return false;
+    const leftOk = idx === 0 || PATH_LEFT_BOUNDARY_RE.test(text[idx - 1]);
+    const end = idx + target.length;
+    const rightOk = end === text.length || PATH_RIGHT_BOUNDARY_RE.test(text[end]);
+    if (leftOk && rightOk) return true;
+    from = idx + 1;
+  }
+  return false;
+}
+
 export function markedSkillsInText(projectCwd: string, text: string, skills?: readonly RegisteredSkillInfo[]): string[] {
   if (typeof text !== "string" || !text) return [];
   const byName = allAdoptableSkills(projectCwd, skills);
@@ -361,9 +380,19 @@ export function markedSkillsInText(projectCwd: string, text: string, skills?: re
     if (content !== null && isMarkedSkill(content)) found.add(skill.name);
   };
   for (const match of text.matchAll(SKILL_INVOCATION_RE)) addIfMarked(byName.get(match[1]));
+  for (const match of text.matchAll(SKILL_PATH_RE)) addIfMarked(byName.get(match[1]));
   for (const skill of byName.values()) {
+    if (path.basename(skill.filePath) !== "SKILL.md") {
+      const realFile = realpathNearestExisting(skill.filePath);
+      if (containsPathBoundary(text, skill.filePath) || (realFile !== null && containsPathBoundary(text, realFile))) {
+        addIfMarked(skill);
+      }
+      continue;
+    }
     const realBase = realpathNearestExisting(skill.baseDir);
-    if (text.includes(skill.baseDir) || (realBase !== null && text.includes(realBase))) addIfMarked(skill);
+    if (containsPathBoundary(text, skill.baseDir) || (realBase !== null && containsPathBoundary(text, realBase))) {
+      addIfMarked(skill);
+    }
   }
   return [...found];
 }
@@ -480,14 +509,18 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
   let provenanceFailed = false;
   let snapshotPrimed = false;
 
-  const getLiveSkills = (): RegisteredSkillInfo[] => {
+  const getLiveSkills = (): RegisteredSkillInfo[] | undefined => {
+    if (typeof pi.getCommands !== "function") {
+      log.debug("skills_from_pi_commands_unavailable");
+      return undefined;
+    }
     try {
-      const skills = skillsFromCommands(typeof pi.getCommands === "function" ? pi.getCommands() : []);
+      const skills = skillsFromCommands(pi.getCommands());
       log.debug("skills_from_pi_commands", { count: skills.length });
       return skills;
     } catch (err) {
       log.warn("skills_from_pi_commands_failed", { reason: errMsg(err) });
-      return [];
+      return undefined;
     }
   };
 

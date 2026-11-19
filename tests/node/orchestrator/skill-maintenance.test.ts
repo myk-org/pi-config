@@ -282,8 +282,6 @@ describe("listUnmarkedSkills & completeUnmarkedSkills", () => {
     const pkgNmFile = writeSkill(nmDir, "shipped-nm", UNMARKED);
     // Alias symlink pointing to a non-node_modules git package skill (Qodo 33de3c92)
     fs.symlinkSync(path.dirname(pkgGitFile), path.join(root, "pkg-alias"));
-    // Brand-new .pi/skills dir not yet in pi.getCommands()
-    writeSkill(root, "fresh-mid-session", UNMARKED);
 
     const skills: RegisteredSkillInfo[] = [
       makeSkillInfo("proj-unmarked", projUnmarked, "project", "top-level"),
@@ -302,7 +300,6 @@ describe("listUnmarkedSkills & completeUnmarkedSkills", () => {
 
     assert.deepEqual(listUnmarkedSkills(cwd, skills), [
       "agents-tool",
-      "fresh-mid-session",
       "global-tool",
       "proj-unmarked",
       "shared-tool",
@@ -313,6 +310,24 @@ describe("listUnmarkedSkills & completeUnmarkedSkills", () => {
       { value: "agents-tool", label: "agents-tool", description: "project — mark for maintenance" },
       { value: "global-tool", label: "global-tool", description: "user — mark for maintenance" },
       { value: "shared-tool", label: "shared-tool", description: "project — mark for maintenance" },
+    ]);
+  });
+
+  it("listUnmarkedSkills skips .pi/skills disk scan when skills are supplied", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "disk-only", UNMARKED);
+
+    assert.deepEqual(listUnmarkedSkills(cwd, []), []);
+    assert.deepEqual(listUnmarkedSkills(cwd), ["disk-only"]);
+  });
+
+  it("completeUnmarkedSkills skips .pi/skills disk scan when skills are supplied", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "disk-only", UNMARKED);
+
+    assert.deepEqual(completeUnmarkedSkills(cwd, "disk", []), []);
+    assert.deepEqual(completeUnmarkedSkills(cwd, "disk"), [
+      { value: "disk-only", label: "disk-only", description: "project — mark for maintenance" },
     ]);
   });
 });
@@ -405,6 +420,48 @@ describe("markedSkillsInText", () => {
       markedSkillsInText(cwd, "Run /skill:adopted-s and /skill:plain-s and /skill:pkg-s", skills),
       ["adopted-s"],
     );
+  });
+
+  it("ignores skill directory prefix collisions like foobar when only foo is adopted", () => {
+    const { cwd, root } = project();
+    const fooFile = writeSkill(root, "foo", MARKED);
+    const skills = [makeSkillInfo("foo", fooFile, "project", "top-level")];
+
+    assert.deepEqual(markedSkillsInText(cwd, `bash ${path.join(root, "foobar", "run.sh")}`, skills), []);
+    assert.deepEqual(markedSkillsInText(cwd, `bash ${path.join(root, "foo", "run.sh")}`, skills), ["foo"]);
+  });
+
+  it("does not match a single-file skill when a sibling file in its scope root is mentioned", () => {
+    const { cwd } = project();
+    const scopeRoot = tempDir("single-file-scope-");
+    const singleFile = path.join(scopeRoot, "standalone.md");
+    const siblingFile = path.join(scopeRoot, "other.md");
+    fs.writeFileSync(singleFile, MARKED);
+    fs.writeFileSync(siblingFile, "# Other\n");
+
+    const skills = [makeSkillInfo("standalone", singleFile, "user", "top-level")];
+
+    assert.deepEqual(markedSkillsInText(cwd, `cat ${siblingFile}`, skills), []);
+    assert.deepEqual(markedSkillsInText(cwd, `cat ${singleFile}`, skills), ["standalone"]);
+  });
+
+  it("matches relative .pi/skills/<name> paths when adopted", () => {
+    const { cwd, root } = project();
+    const verifyFile = writeSkill(root, "verify-all", MARKED);
+    const skills = [makeSkillInfo("verify-all", verifyFile, "project", "top-level")];
+
+    assert.deepEqual(markedSkillsInText(cwd, "bash .pi/skills/verify-all/run.sh", skills), ["verify-all"]);
+    assert.deepEqual(markedSkillsInText(cwd, "bash .pi/skills/verify-all-extra/run.sh", skills), []);
+  });
+
+  it("matches home ~/.agents/skills/<name> paths when adopted", () => {
+    const { cwd } = project();
+    const userSkillsDir = tempDir("home-agents-skills-");
+    const xFile = writeSkill(userSkillsDir, "x", MARKED);
+    const skills = [makeSkillInfo("x", xFile, "user", "top-level")];
+
+    assert.deepEqual(markedSkillsInText(cwd, "bash ~/.agents/skills/x/run.sh", skills), ["x"]);
+    assert.deepEqual(markedSkillsInText(cwd, "bash ~/.agents/skills/xyz/run.sh", skills), []);
   });
 });
 

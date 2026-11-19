@@ -8,10 +8,11 @@ blocking tool guards:
 
 - Pi's built-in `pi.getCommands()` supplies every skill loaded into the session (project `.pi/skills/` and
   `.agents/skills/`, user-global `~/.pi/agent/skills/` and `~/.agents/skills/`, and symlinked shared skills),
-  with a lightweight `.pi/skills/` fallback for brand-new skills created before `/reload`;
+  falling back to `.pi/skills/` only when `pi.getCommands()` is unavailable;
 - a skill you maintain carries `skill-maintenance: auto` in its frontmatter;
 - while you use an adopted skill, a failed step triggers one mid-turn steer nudge to fix it;
-- skill edits are recorded in `.pi/data/skill-review.jsonl` and summarized in one line at turn end;
+- `write`/`edit`/`multi_edit` skill changes across all scopes (plus direct `.pi/skills/` tree diffs) are
+  recorded in `.pi/data/skill-review.jsonl` and summarized in one line at turn end;
 - no `write`/`edit` or `bash` calls are ever blocked.
 
 ## The Marker
@@ -61,7 +62,8 @@ agent to fix the skill or note why it still applies. Unmarked skills never trigg
 
 ## Provenance
 
-Every skill write or edit is recorded as it happens in `.pi/data/skill-review.jsonl`, one JSON line per file:
+Every skill change made via `write`, `edit`, or `multi_edit` across any scope is recorded as it happens in
+`.pi/data/skill-review.jsonl`, one JSON line per file:
 
 ```json
 {"skill":"searxng","action":"patched","file":"SKILL.md","sessionId":"…","turnId":"…:42","at":"2026-01-01T00:00:00.000Z"}
@@ -70,20 +72,22 @@ Every skill write or edit is recorded as it happens in `.pi/data/skill-review.js
 `action` is `patched` when the file already existed and `written` when it was created. Attribution comes from
 the write call itself, so each line names the session and turn that made the change. Records are appended
 (`O_APPEND`), so two sessions writing at once cannot overwrite each other; the file is rotated once it passes
-1 MB.
+1 MB. Provenance covers `write`/`edit`/`multi_edit` tool changes across all scopes; shell edits to
+external, user-global, or symlinked skill paths are not snapshotted.
 
 ## The Notice
 
-After the turn (or at the start of the next turn if a turn was aborted), if a skill file changed, Pi shows
-one line:
+After the turn (or at the start of the next turn if a turn was aborted), if a skill file changed via
+`write`/`edit`/`multi_edit` across any scope or via direct `.pi/skills/` tree diffs, Pi shows one line:
 
 ```text
 📙 Self-improvement review: Skill 'image-pixel-measurement' patched · Skill 'homeassistant' written (references/voice-pe-ecosystem.md)
 ```
 
 One line per turn, one entry per skill, and nothing when nothing changed. The content of an edit is
-deliberately not reported — the action is the signal, and the provenance record has the file. If the
-provenance write fails, the line says so instead of claiming the change was recorded.
+deliberately not reported — the action is the signal, and the provenance record has the file. Shell edits to
+external, user-global, or symlinked skill paths are not snapshotted and do not appear in the turn-end notice.
+If the provenance write fails, the line says so instead of claiming the change was recorded.
 
 ## Related Pages
 
