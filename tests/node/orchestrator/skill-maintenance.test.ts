@@ -463,6 +463,40 @@ describe("markedSkillsInText", () => {
     assert.deepEqual(markedSkillsInText(cwd, "bash ~/.agents/skills/x/run.sh", skills), ["x"]);
     assert.deepEqual(markedSkillsInText(cwd, "bash ~/.agents/skills/xyz/run.sh", skills), []);
   });
+
+  it("matches backtick-wrapped Markdown skill paths when adopted while rejecting prefix collisions", () => {
+    const { cwd, root } = project();
+    const fooFile = writeSkill(root, "foo", MARKED);
+    const skills = [makeSkillInfo("foo", fooFile, "project", "top-level")];
+
+    assert.deepEqual(markedSkillsInText(cwd, "Use `skills/foo` first", skills), ["foo"]);
+    assert.deepEqual(markedSkillsInText(cwd, "Run `.pi/skills/foo/run.sh`", skills), ["foo"]);
+    assert.deepEqual(markedSkillsInText(cwd, "Read `/proj/.pi/skills/foo/SKILL.md`", skills), ["foo"]);
+    assert.deepEqual(markedSkillsInText(cwd, `Check \`${path.dirname(fooFile)}\``, skills), ["foo"]);
+    assert.deepEqual(
+      markedSkillsInText(cwd, "Ignore `skills/foobar` and `.pi/skills/foobar/run.sh` and `/proj/.pi/skills/foobar/SKILL.md`", skills),
+      [],
+    );
+    assert.deepEqual(markedSkillsInText(cwd, `Ignore \`${path.join(root, "foobar", "run.sh")}\``, skills), []);
+  });
+
+  it("emits debug logs for path boundary decisions and markedSkillsInText outcomes", () => {
+    inTempLogHome("path-boundary-log", () => {
+      const { cwd, root } = project();
+      const fooFile = writeSkill(root, "foo", MARKED);
+      const skills = [makeSkillInfo("foo", fooFile, "project", "top-level")];
+
+      assert.deepEqual(markedSkillsInText(cwd, `bash ${path.join(root, "foobar", "run.sh")}`, skills), []);
+      assert.deepEqual(markedSkillsInText(cwd, `Read \`${fooFile}\``, skills), ["foo"]);
+
+      const logFile = getPiLogPath("skill-maintenance");
+      assert.ok(logFile);
+      const logText = fs.readFileSync(logFile, "utf-8");
+      assert.match(logText, /skill_path_boundary_skip/);
+      assert.match(logText, /skill_path_boundary_match/);
+      assert.match(logText, /marked_skills_in_text/);
+    });
+  });
 });
 
 // ── registerSkillMaintenance (non-blocking) ─────────────────────────────────

@@ -35,9 +35,9 @@ const MAX_SKILL_DEPTH = 32;
 const WRITE_TOOLS = new Set(["write", "edit", "multi_edit"]);
 const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SKILL_INVOCATION_RE = /\/skill:([A-Za-z0-9][A-Za-z0-9._-]*)/g;
-const SKILL_PATH_RE = /(?:^|[\s"'=:(])(?:[^\s"'=:(]*\/)?skills\/([A-Za-z0-9][A-Za-z0-9._-]*)(?=$|[/\s"'):;|&])/g;
-const PATH_LEFT_BOUNDARY_RE = /[\s"'=:(]/;
-const PATH_RIGHT_BOUNDARY_RE = /[/\s"'):;|&]/;
+const SKILL_PATH_RE = /(?:^|[\s"'=:(`])(?:[^\s"'=:(`]*\/)?skills\/([A-Za-z0-9][A-Za-z0-9._-]*)(?=$|[/\s"'):;|&`])/g;
+const PATH_LEFT_BOUNDARY_RE = /[\s"'=:(`]/;
+const PATH_RIGHT_BOUNDARY_RE = /[/\s"'):;|&`]/;
 const MARKER_LINE_RE = new RegExp(`^\\s*${MARKER_KEY}\\s*:\\s*${MARKER_VALUE}\\s*$`);
 
 export type SkillChangeAction = "patched" | "written";
@@ -364,7 +364,11 @@ function containsPathBoundary(text: string, target: string): boolean {
     const leftOk = idx === 0 || PATH_LEFT_BOUNDARY_RE.test(text[idx - 1]);
     const end = idx + target.length;
     const rightOk = end === text.length || PATH_RIGHT_BOUNDARY_RE.test(text[end]);
-    if (leftOk && rightOk) return true;
+    if (leftOk && rightOk) {
+      log.debug("skill_path_boundary_match", { target, idx });
+      return true;
+    }
+    log.debug("skill_path_boundary_skip", { target, idx, leftOk, rightOk });
     from = idx + 1;
   }
   return false;
@@ -394,7 +398,9 @@ export function markedSkillsInText(projectCwd: string, text: string, skills?: re
       addIfMarked(skill);
     }
   }
-  return [...found];
+  const matched = [...found];
+  log.debug("marked_skills_in_text", { candidates: byName.size, matched });
+  return matched;
 }
 
 // ── snapshot, diff, notice & provenance ─────────────────────────────────────
