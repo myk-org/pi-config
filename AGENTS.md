@@ -400,29 +400,11 @@ progress. It does not commit, push, create a PR, or post results.
   code under review, so verify local CLI fixes against the working tree. Release scripts keep the local build deliberately: a
   release must be planned and published by the code being released, not by the previously published version.
 - Memory inventory CLI: `uvx myk-pi-tools@latest memory status`
-- Skill maintenance (issues #1074, #1155): `extensions/orchestrator/skill-maintenance.ts`. Uses Pi's built-in
-  `pi.getCommands()` to discover every skill loaded into the session (project `.pi/skills/` and `.agents/skills/`,
-  user-global `~/.pi/agent/skills/` and `~/.agents/skills/`, and symlinked shared skill directories), plus a lightweight
-  `<project>/.pi/skills/` fallback for brand-new skills created mid-session before `/reload`. A skill is maintained when
-  its `SKILL.md` frontmatter carries `skill-maintenance: auto`; only a **marked** adoptable skill may be edited or
-  overwritten (via either its symlink path or its resolved target path), while creating a brand-new `SKILL.md` under
-  `<project>/.pi/skills/` is allowed and auto-adopted with `skill-maintenance: auto` on write (#1147). Shipped package
-  skills (`origin === "package"` or under `node_modules/.../skills/`, direct or symlinked), dangling/non-directory
-  symlinks, and unmarked skills are blocked with a reason (`/adopt-skill <name>` marks any non-package loaded skill;
-  worktree symlink shadowing cannot borrow main's adoption).
-  Agents are steered mid-turn when a marked skill they used fails, every allowed `write`/`edit` is recorded in
-  `.pi/data/skill-review.jsonl` (append-only), and one line reports the turn's changes across all scopes — see
-  `docs/skill-self-improvement.md`. Adopted (`skill-maintenance: auto`) non-package skills have no limitations on
-  `write`/`edit` or `bash` (#1152): agents and dreaming can run their scripts and self-improve them freely (including
-  `~/...` and resolved symlink target paths). For all protected skills (unmarked skills across any scope, shipped
-  package skills, and dangling/escape symlinks), the shell only reads skills and runs `.sh`/`.py`/`.mjs`/`.js` helper
-  scripts (directly, via `bash`/`sh`/`node` without `-c`/`-e`/`--eval`, or via `uv run [--script]`, unwrapping
-  `rtk`/env prefixes, ignoring `/dev/null` or fd-dup redirects like `2>&1`), plus a syntax-only
-  `bash -n`/`sh -n`/`--noexec` parse (`bash`/`sh`/`dash`/`zsh` bare or as a real binary path, every flag a noexec flag,
-  no `+n`) and `mkdir` inside the owned tree — every shell write (`>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
-  `perl -i`, quoted/unquoted inline `-c`/`-e`/`--eval`/`eval` scripts, …), bare `SKILL.md`, `$VAR` skill path, mixed
-  adopted+protected command, and unresolved reference blocks (#1103). No model call, no setting: it is not an async
-  agent at all.
+- Skill maintenance (issues #1074, #1147, #1155): `extensions/orchestrator/skill-maintenance.ts`. Non-blocking — no `write`/`edit`
+  or `bash` tool calls are ever blocked. Uses `pi.getCommands()` (plus a lightweight `.pi/skills/` fallback) to discover loaded skills;
+  `/adopt-skill <name>` stamps `skill-maintenance: auto` and the maintainer instruction on any non-package skill (brand-new
+  `.pi/skills/<name>/SKILL.md` writes auto-adopt). Failed adopted skills steer mid-turn; skill edits log to `.pi/data/skill-review.jsonl`
+  with a one-line turn summary — see `docs/skill-self-improvement.md`.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
