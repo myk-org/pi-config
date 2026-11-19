@@ -53,7 +53,7 @@ skill-maintenance: auto
 - **description**: one line, max 1024 chars, explains WHEN to use it
 - **skill-maintenance**: always `auto` — it is what lets a later agent patch this skill when it drifts
   (omitting it on a brand-new `.pi/skills/<name>/SKILL.md` is auto-adopted on write; existing unmarked
-  project skills are refused until adopted)
+  loaded skills — project, user-global, or symlinked shared — can be opted in with `/adopt-skill <name>`)
 - **Body**: concrete steps, exact commands, verification
 - **No fluff**: skip background, motivation, history — just the procedure
 - **Include pitfalls**: what goes wrong and how to avoid it
@@ -68,9 +68,9 @@ mkdir -p .pi/skills/<skill-name>
 
 Project skills under `.pi/skills/` are automatically discovered in this project.
 
-**Global skills are not written by an agent.** `~/.agents/skills/` and `~/.pi/agent/skills/`
-are shared by every project, so the write guard refuses agent writes there. Write the skill
-in `.pi/skills/` and hand the user the copy:
+**Brand-new global skills are copied by the user.** New skills are created under `.pi/skills/`
+(unmarked files under `~/.agents/skills/` and `~/.pi/agent/skills/` are protected until adopted
+with `/adopt-skill <name>`). Write the skill in `.pi/skills/` and hand the user the copy:
 
 ```bash
 mkdir -p ~/.agents/skills/<skill-name> && cp -r .pi/skills/<skill-name>/. ~/.agents/skills/<skill-name>/

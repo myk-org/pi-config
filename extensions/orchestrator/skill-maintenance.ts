@@ -1,22 +1,22 @@
 /**
- * Skill maintenance (issue #1074).
+ * Skill maintenance (issue #1074, #1155).
  *
  * Skills are effectively write-once: `skill-creator` makes one and dreaming may
  * promote another, but nothing patches a skill that has drifted. Skill maintenance
  * closes that gap without spending a model call:
  *
+ * - Pi's built-in `pi.getCommands()` supplies every skill loaded into the session
+ *   across project, user, and symlinked shared directories, alongside a lightweight
+ *   `<project>/.pi/skills/` fallback for brand-new skills created mid-session;
  * - a skill we maintain carries `skill-maintenance: auto` in its frontmatter;
- * - a write/edit guard lets an agent patch a skill only when it is MARKED and its
- *   real path sits under `<project>/.pi/skills/` — shipped package skills,
- *   user-global skills, third-party skills and unmarked project skills are refused.
- *   Once adopted (`skill-maintenance: auto`), owned project skills have no write or
- *   bash limitations;
+ * - shipped package skills (`origin === "package"` or under `node_modules/.../skills/`)
+ *   are never adoptable and never edited;
+ * - every other loaded skill is protected until explicitly adopted via `/adopt-skill`
+ *   (or auto-adopted when creating a brand-new `<project>/.pi/skills/<name>/SKILL.md`).
+ *   Once adopted (`skill-maintenance: auto`), a skill has no write or bash limitations;
  * - when a skill we used this turn fails, the agent is steered mid-turn to fix it;
  * - after the turn, one line reports what changed, and every write is recorded in
  *   `.pi/data/skill-review.jsonl` as it happens.
- *
- * Ownership is decided by real path, never by prefix string: a symlink inside
- * `.pi/skills/` resolves elsewhere, and that file is not ours.
  */
 
 import fs from "node:fs";
@@ -141,191 +141,10 @@ function hasSymlinkComponent(root: string, target: string): boolean {
   return false;
 }
 
-const SYSTEM_PREFIXES = [
-  "/etc",
-  "/usr",
-  "/bin",
-  "/sbin",
-  "/lib",
-  "/lib64",
-  "/var",
-  "/boot",
-  "/root",
-  "/proc",
-  "/sys",
-  "/dev",
-];
-
-export interface SafeSymlinkedSkillInfo {
-  skill: string;
-  skillEntry: string;
-  realSkillDir: string;
-  skillMdPath: string;
-  subRel: string[];
-  realTarget: string;
-  marked: boolean;
-}
-
-function safeSymlinkedSkillFromRoot(
-  root: string,
-  skillName: string,
-  subRel: string[],
-  projectRoots: string[],
-): SafeSymlinkedSkillInfo | null {
-  if (!skillName || skillName === "." || skillName === "..") return null;
-  const skillEntry = path.join(root, skillName);
-  try {
-    if (!fs.lstatSync(skillEntry).isSymbolicLink()) return null;
-  } catch {
-    return null;
-  }
-
-  let realSkillDir: string;
-  try {
-    realSkillDir = fs.realpathSync(skillEntry);
-    if (!fs.statSync(realSkillDir).isDirectory()) {
-      log.debug("safe_symlink_not_dir", { skillEntry, realSkillDir });
-      return null;
-    }
-  } catch {
-    log.debug("safe_symlink_dangling", { skillEntry });
-    return null;
-  }
-
-  const home = os.homedir();
-  const realHome = realpathNearestExisting(home) ?? home;
-  const forbiddenSkillsRoots = [
-    path.join(home, ".pi", "agent", "skills"),
-    path.join(home, ".agents", "skills"),
-    ...projectRoots.map((proj) =>
-      path.join(realpathNearestExisting(proj) ?? path.resolve(proj), ".agents", "skills"),
-    ),
-  ];
-  for (const candidateRoot of forbiddenSkillsRoots) {
-    const realForbidden = realpathNearestExisting(candidateRoot) ?? candidateRoot;
-    if (realSkillDir === realForbidden || isUnder(realForbidden, realSkillDir)) {
-      log.debug("safe_symlink_forbidden_root", { skillEntry, realSkillDir, forbidden: realForbidden });
-      return null;
-    }
-  }
-
-  if (realSkillDir.split(path.sep).includes("node_modules")) {
-    log.debug("safe_symlink_node_modules", { skillEntry, realSkillDir });
-    return null;
-  }
-
-  if (isUnder(realHome, realSkillDir)) {
-    const firstSegment = path.relative(realHome, realSkillDir).split(path.sep)[0];
-    if (firstSegment?.startsWith(".")) {
-      log.debug("safe_symlink_home_dotdir", { skillEntry, realSkillDir, firstSegment });
-      return null;
-    }
-  }
-
-  for (const prefix of SYSTEM_PREFIXES) {
-    const realPrefix = realpathNearestExisting(prefix) ?? prefix;
-    if (realSkillDir === realPrefix || isUnder(realPrefix, realSkillDir)) {
-      log.debug("safe_symlink_system_prefix", { skillEntry, realSkillDir, prefix: realPrefix });
-      return null;
-    }
-  }
-
-  if (
-    realSkillDir === realHome ||
-    realSkillDir === "/" ||
-    realSkillDir === root ||
-    isUnder(realSkillDir, root)
-  ) {
-    log.debug("safe_symlink_unsafe_target", { skillEntry, realSkillDir, root });
-    return null;
-  }
-
-  const skillMdPath = path.join(realSkillDir, "SKILL.md");
-  try {
-    if (!fs.lstatSync(skillMdPath).isFile()) {
-      log.debug("safe_symlink_skill_md_not_file", { skillEntry, skillMdPath });
-      return null;
-    }
-  } catch {
-    log.debug("safe_symlink_missing_skill_md", { skillEntry, skillMdPath });
-    return null;
-  }
-
-  const lexicalSub = subRel.length === 0 ? realSkillDir : path.join(realSkillDir, ...subRel);
-  const realTarget = realpathNearestExisting(lexicalSub);
-  if (
-    realTarget === null ||
-    (realTarget !== realSkillDir && !isUnder(realSkillDir, realTarget)) ||
-    hasSymlinkComponent(realSkillDir, lexicalSub) ||
-    hasSymlinkComponent(realSkillDir, realTarget)
-  ) {
-    log.debug("safe_symlink_nested_escape", { skillEntry, lexicalSub, realTarget });
-    return null;
-  }
-
-  let content: string;
-  try {
-    content = fs.readFileSync(skillMdPath, "utf-8");
-  } catch {
-    log.debug("safe_symlink_unreadable_skill_md", { skillMdPath });
-    return null;
-  }
-
-  return {
-    skill: skillName,
-    skillEntry,
-    realSkillDir,
-    skillMdPath,
-    subRel,
-    realTarget,
-    marked: isMarkedSkill(content),
-  };
-}
-
 /**
- * Metadata for a safe top-level symlinked shared skill under `<project>/.pi/skills/<name>`.
- * Returns null for non-symlinks, dangling links, nested symlink escapes, missing regular
- * `SKILL.md`, or targets inside forbidden global/package/dotfile/system directories.
- */
-export function safeSymlinkedSkillInfo(projectCwd: string, candidate: string): SafeSymlinkedSkillInfo | null {
-  if (typeof candidate !== "string" || candidate.trim() === "") return null;
-  const root = ownedSkillsRoot(projectCwd);
-  if (!root) return null;
-  const abs = path.resolve(projectCwd, candidate);
-  const projectRoots = [projectCwd, resolveMainCheckoutRoot(projectCwd)];
-
-  if (isUnder(root, abs)) {
-    const parts = path.relative(root, abs).split(path.sep);
-    const skillName = parts[0];
-    return skillName ? safeSymlinkedSkillFromRoot(root, skillName, parts.slice(1), projectRoots) : null;
-  }
-
-  const cwdSkills = path.join(path.resolve(projectCwd), ".pi", "skills");
-  const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
-  const realWtSkills = realpathNearestExisting(path.join(realCwd, ".pi", "skills"));
-  if (isUnder(cwdSkills, abs) && realWtSkills === root) {
-    const parts = path.relative(cwdSkills, abs).split(path.sep);
-    const skillName = parts[0];
-    return skillName ? safeSymlinkedSkillFromRoot(root, skillName, parts.slice(1), projectRoots) : null;
-  }
-
-  if (realWtSkills && isUnder(realCwd, realWtSkills) && (isUnder(cwdSkills, abs) || isUnder(realWtSkills, abs))) {
-    const rel = isUnder(cwdSkills, abs) ? path.relative(cwdSkills, abs) : path.relative(realWtSkills, abs);
-    const parts = rel.split(path.sep);
-    const skillName = parts[0];
-    if (!skillName) return null;
-    return (
-      safeSymlinkedSkillFromRoot(root, skillName, parts.slice(1), projectRoots) ??
-      safeSymlinkedSkillFromRoot(realWtSkills, skillName, parts.slice(1), projectRoots)
-    );
-  }
-
-  return null;
-}
-
-/**
- * Pure ownership predicate: true for a real path inside the project's own `.pi/skills/`,
- * or for an already-adopted (`skill-maintenance: auto`) safe symlinked shared skill there.
+ * Pure ownership predicate: true only for a real path inside the project's own
+ * `.pi/skills/`. Prefix-string matching is not enough — a symlink inside the
+ * directory resolves elsewhere, and that file is not ours.
  */
 export function isOwnedSkillPath(projectCwd: string, candidate: string): boolean {
   if (typeof candidate !== "string" || candidate.trim() === "") {
@@ -348,24 +167,214 @@ export function isOwnedSkillPath(projectCwd: string, candidate: string): boolean
   }
   const rel = path.relative(root, target);
   const owned = rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
-  if (!owned && safeSymlinkedSkillInfo(projectCwd, candidate)?.marked === true) {
-    log.debug("owned_check_safe_symlink", { candidate, owned: true });
-    return true;
-  }
   log.debug("owned_check", { candidate, owned });
   return owned;
 }
 
 /** Skill name owning a path, or null when it is not an owned skill file. */
 export function ownedSkillName(projectCwd: string, candidate: string): string | null {
-  const safeInfo = safeSymlinkedSkillInfo(projectCwd, candidate);
-  if (safeInfo?.marked) return safeInfo.skill;
   if (!isOwnedSkillPath(projectCwd, candidate)) return null;
   const root = ownedSkillsRoot(projectCwd);
   if (!root) return null;
   const rel = path.relative(root, realpathNearestExisting(path.resolve(projectCwd, candidate))!);
   const name = rel.split(path.sep)[0];
   return name && name !== "" ? name : null;
+}
+
+/** Skill metadata extracted from Pi's `pi.getCommands()` (or `.pi/skills/` fallback). */
+export interface RegisteredSkillInfo {
+  name: string;
+  filePath: string;
+  baseDir: string;
+  scope: "project" | "user" | "temporary";
+  origin: "package" | "top-level";
+}
+
+function hasPackageSkillSegments(p: string): boolean {
+  const segs = p.split(path.sep);
+  const nm = segs.indexOf("node_modules");
+  return nm >= 0 && segs.indexOf("skills", nm) > nm;
+}
+
+/** True when `candidate` (raw or resolved) sits under `node_modules/.../skills/`. */
+export function isPackageSkillPath(candidate: string): boolean {
+  if (typeof candidate !== "string" || candidate.trim() === "") return false;
+  if (hasPackageSkillSegments(candidate)) return true;
+  const resolved = path.resolve(candidate);
+  if (hasPackageSkillSegments(resolved)) return true;
+  const real = realpathNearestExisting(resolved);
+  return real !== null && hasPackageSkillSegments(real);
+}
+
+/** Extract every loaded skill from Pi's `ExtensionAPI.getCommands()` output. */
+export function skillsFromCommands(
+  commands: ReadonlyArray<{
+    name: string;
+    source?: string;
+    sourceInfo?: { path?: string; baseDir?: string; scope?: string; origin?: string };
+  }>,
+): RegisteredSkillInfo[] {
+  const out: RegisteredSkillInfo[] = [];
+  for (const cmd of commands) {
+    if (cmd.source !== "skill") continue;
+    if (typeof cmd.name !== "string" || !cmd.name.startsWith("skill:")) continue;
+    const rawPath = cmd.sourceInfo?.path;
+    if (typeof rawPath !== "string" || rawPath.trim() === "") continue;
+    const name = cmd.name.slice("skill:".length);
+    if (!name) continue;
+    const filePath = path.resolve(rawPath);
+    // Derive baseDir from filePath: Pi's package-manager sets sourceInfo.baseDir to
+    // the scope/package root (e.g. `.pi` or `~/.pi/agent`), not the individual skill dir.
+    const baseDir = path.dirname(filePath);
+    const rawScope = cmd.sourceInfo?.scope;
+    const scope: RegisteredSkillInfo["scope"] =
+      rawScope === "project" || rawScope === "user" || rawScope === "temporary" ? rawScope : "temporary";
+    const origin: RegisteredSkillInfo["origin"] = cmd.sourceInfo?.origin === "package" ? "package" : "top-level";
+    out.push({ name, filePath, baseDir, scope, origin });
+  }
+  return out;
+}
+
+/** True when a registered skill is user/project owned (never a shipped package skill). */
+export function isAdoptableSkill(skill: RegisteredSkillInfo): boolean {
+  return skill.origin !== "package" && !isPackageSkillPath(skill.filePath) && !isPackageSkillPath(skill.baseDir);
+}
+
+/** True when `abs` equals `root` or sits below `root`. */
+function isAtOrUnder(root: string, abs: string): boolean {
+  const rel = path.relative(root, abs);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+function readSkillContent(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, "utf-8");
+  } catch (err) {
+    log.debug("skill_read_failed", {
+      filePath,
+      reason: String((err as Error)?.message ?? err).slice(0, 120),
+    });
+    return null;
+  }
+}
+
+/**
+ * Lightweight `.pi/skills/<name>` fallback (allows symlinks to real dirs containing SKILL.md,
+ * refuses dangling links / non-dirs, marks `node_modules/.../skills/` targets as `"package"`).
+ */
+function fallbackProjectSkill(projectCwd: string, name: string): RegisteredSkillInfo | null {
+  const root = ownedSkillsRoot(projectCwd);
+  if (!root) return null;
+  const dir = path.join(root, name);
+  try {
+    if (!fs.statSync(dir).isDirectory()) return null;
+    const filePath = path.join(dir, "SKILL.md");
+    if (!fs.statSync(filePath).isFile()) return null;
+    const origin: RegisteredSkillInfo["origin"] =
+      isPackageSkillPath(dir) || isPackageSkillPath(filePath) ? "package" : "top-level";
+    return { name, filePath, baseDir: dir, scope: "project", origin };
+  } catch (err) {
+    log.debug("fallback_project_skill_unavailable", {
+      name,
+      reason: String((err as Error)?.message ?? err).slice(0, 120),
+    });
+    return null;
+  }
+}
+
+function listFallbackProjectSkills(projectCwd: string): RegisteredSkillInfo[] {
+  const root = ownedSkillsRoot(projectCwd);
+  if (!root) return [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch (err) {
+    log.debug("fallback_project_skills_readdir_failed", {
+      root,
+      reason: String((err as Error)?.message ?? err).slice(0, 120),
+    });
+    return [];
+  }
+  const out: RegisteredSkillInfo[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const skill = fallbackProjectSkill(projectCwd, entry.name);
+    if (skill) out.push(skill);
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function matchSkillEntry(skill: RegisteredSkillInfo, abs: string, realAbs: string): { skill: RegisteredSkillInfo; file: string } | null {
+  const realBaseDir = realpathNearestExisting(skill.baseDir) ?? skill.baseDir;
+  const realFilePath = realpathNearestExisting(skill.filePath) ?? skill.filePath;
+  if (path.basename(skill.filePath) !== "SKILL.md") {
+    if ((abs === skill.filePath || realAbs === realFilePath) && fs.existsSync(skill.filePath)) {
+      return { skill, file: path.basename(skill.filePath) };
+    }
+    return null;
+  }
+  if (isAtOrUnder(realBaseDir, realAbs) && !hasSymlinkComponent(realBaseDir, realAbs)) {
+    return { skill, file: path.relative(realBaseDir, realAbs) || "." };
+  }
+  if (realAbs === realFilePath && fs.existsSync(skill.filePath)) {
+    return { skill, file: "SKILL.md" };
+  }
+  return null;
+}
+
+/**
+ * Match `abs` (raw or realpath) to a registered skill or `.pi/skills/` fallback.
+ * Both symlink paths and their resolved targets match the same `RegisteredSkillInfo`.
+ */
+function matchRegisteredSkill(
+  projectCwd: string,
+  abs: string,
+  skills?: readonly RegisteredSkillInfo[],
+): { skill: RegisteredSkillInfo; file: string } | null {
+  const realAbs = realpathNearestExisting(abs) ?? abs;
+  // Worktree safety: when a linked worktree has its own `.pi/skills/<name>` with a different
+  // realpath than main's skill, do not let main's skill match — evaluate the worktree dir directly.
+  const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
+  const realMain = realpathNearestExisting(resolveMainCheckoutRoot(projectCwd)) ?? realCwd;
+  const wtSkillsDir = path.join(realCwd, ".pi", "skills");
+  let wtShadow: { name: string; dir: string; realDir: string } | null = null;
+  if (realCwd !== realMain && isUnder(wtSkillsDir, abs)) {
+    const seg = path.relative(wtSkillsDir, abs).split(path.sep)[0];
+    if (seg) {
+      const candidateDir = path.join(wtSkillsDir, seg);
+      if (fs.existsSync(candidateDir)) {
+        wtShadow = { name: seg, dir: candidateDir, realDir: realpathNearestExisting(candidateDir) ?? candidateDir };
+      }
+    }
+  }
+
+  for (const skill of [...(skills ?? []), ...listFallbackProjectSkills(projectCwd)]) {
+    const realBaseDir = realpathNearestExisting(skill.baseDir) ?? skill.baseDir;
+    if (wtShadow && wtShadow.realDir !== realBaseDir) continue;
+    const hit = matchSkillEntry(skill, abs, realAbs);
+    if (hit) return hit;
+  }
+
+  if (wtShadow) {
+    const filePath = path.join(wtShadow.dir, "SKILL.md");
+    try {
+      if (fs.statSync(wtShadow.dir).isDirectory() && fs.statSync(filePath).isFile()) {
+        const origin: RegisteredSkillInfo["origin"] =
+          isPackageSkillPath(wtShadow.dir) || isPackageSkillPath(filePath) ? "package" : "top-level";
+        return matchSkillEntry(
+          { name: wtShadow.name, filePath, baseDir: wtShadow.dir, scope: "project", origin },
+          abs,
+          realAbs,
+        );
+      }
+    } catch (err) {
+      log.debug("worktree_skill_stat_failed", {
+        dir: wtShadow.dir,
+        reason: String((err as Error)?.message ?? err).slice(0, 120),
+      });
+    }
+  }
+  return null;
 }
 
 // ── marker ──────────────────────────────────────────────────────────────────
@@ -385,24 +394,19 @@ export function isMarkedSkill(content: string): boolean {
     .some((line) => new RegExp(`^\\s*${MARKER_KEY}\\s*:\\s*${MARKER_VALUE}\\s*$`).test(line));
 }
 
-/** Content of a skill file under the owned root (or a safe symlinked skill), or null when unreadable. */
+/** Content of a skill file under the owned root, or null when unreadable. */
 export function readSkillFile(projectCwd: string, name: string): string | null {
   const root = ownedSkillsRoot(projectCwd);
-  if (!root || !name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) return null;
-  const skillDir = path.join(root, name);
-  const skillMd = path.join(skillDir, "SKILL.md");
+  if (!root) return null;
+  const file = path.join(root, name, "SKILL.md");
   try {
-    if (!fs.lstatSync(skillDir).isSymbolicLink() && !fs.lstatSync(skillMd).isSymbolicLink()) {
-      return fs.readFileSync(skillMd, "utf-8");
-    }
-  } catch {
-    // Fall through to safe symlinked skill resolution.
-  }
-  const safeInfo = safeSymlinkedSkillInfo(projectCwd, skillMd);
-  if (!safeInfo) return null;
-  try {
-    return fs.readFileSync(safeInfo.skillMdPath, "utf-8");
-  } catch {
+    return fs.readFileSync(file, "utf-8");
+  } catch (err) {
+    log.debug("read_skill_file_failed", {
+      name,
+      file,
+      reason: String((err as Error)?.message ?? err).slice(0, 120),
+    });
     return null;
   }
 }
@@ -440,36 +444,54 @@ export function stampSkill(content: string): { content: string; changed: boolean
   return { content: stamped, changed: stamped !== content };
 }
 
-/** Skill names under the owned root (including safe symlinked shared skill dirs), sorted. */
+/** Skill names under the owned root, sorted. Symlinked dirs are not ours and are skipped. */
 export function listOwnedSkills(projectCwd: string): string[] {
   const root = ownedSkillsRoot(projectCwd);
   if (!root) return [];
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    log.debug("list_owned_skills_readdir_failed", {
+      root,
+      reason: String((err as Error)?.message ?? err).slice(0, 120),
+    });
     return [];
   }
-  const names: string[] = [];
-  for (const entry of entries) {
-    if (entry.isDirectory() && !entry.isSymbolicLink()) {
-      try {
-        if (fs.lstatSync(path.join(root, entry.name, "SKILL.md")).isFile()) names.push(entry.name);
-      } catch {
-        // missing or non-regular SKILL.md
-      }
-      continue;
-    }
-    if (entry.isSymbolicLink() && safeSymlinkedSkillInfo(projectCwd, path.join(root, entry.name, "SKILL.md")) !== null) {
-      names.push(entry.name);
-    }
-  }
-  return names.sort();
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+    .map((entry) => entry.name)
+    .filter((name) => fs.existsSync(path.join(root, name, "SKILL.md")))
+    .sort();
 }
 
-/** Owned skills that do not carry the marker yet — what `/adopt-skill` offers. */
-export function listUnmarkedSkills(projectCwd: string): string[] {
-  return listOwnedSkills(projectCwd).filter((name) => !isMarkedSkillNamed(projectCwd, name));
+function collectAdoptableUnmarkedSkills(
+  projectCwd: string,
+  skills?: readonly RegisteredSkillInfo[],
+): RegisteredSkillInfo[] {
+  const byName = new Map<string, RegisteredSkillInfo>();
+  for (const skill of skills ?? []) {
+    if (!isAdoptableSkill(skill)) continue;
+    if (!byName.has(skill.name)) byName.set(skill.name, skill);
+  }
+  for (const skill of listFallbackProjectSkills(projectCwd)) {
+    if (!isAdoptableSkill(skill)) continue;
+    if (!byName.has(skill.name)) byName.set(skill.name, skill);
+  }
+  const unmarked: RegisteredSkillInfo[] = [];
+  for (const skill of byName.values()) {
+    const content = readSkillContent(skill.filePath);
+    if (content !== null && !isMarkedSkill(content)) unmarked.push(skill);
+  }
+  return unmarked.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Adoptable skills that do not carry the marker yet — what `/adopt-skill` offers. */
+export function listUnmarkedSkills(
+  projectCwd: string,
+  skills?: readonly RegisteredSkillInfo[],
+): string[] {
+  return collectAdoptableUnmarkedSkills(projectCwd, skills).map((s) => s.name);
 }
 
 // ── write classification (the guard) ────────────────────────────────────────
@@ -507,9 +529,7 @@ export function skillAreaOf(projectCwd: string, candidate: string): SkillArea | 
 
   // Packaged skills: an installed package's `skills/` directory (pi-orchestrator-config
   // ships its skills this way; marketplace installs land under node_modules too).
-  const segments = abs.split(path.sep);
-  const ggNodeModules = segments.indexOf("node_modules");
-  if (ggNodeModules >= 0 && segments.indexOf("skills", ggNodeModules) > ggNodeModules) return "package";
+  if (isPackageSkillPath(abs)) return "package";
 
   log.debug("skill_area_none", { candidate });
   return null;
@@ -608,62 +628,135 @@ export interface SkillWriteVerdict {
 /**
  * The one rule that decides whether a write/edit may touch a skill file.
  *
- * A skill file is writable only when it is MARKED and its real path is inside the
- * project's own `.pi/skills/`. A write that *introduces* the marker is allowed even
- * when the file is unmarked — refusing it would deadlock skill creation.
+ * Shipped package skills (`origin === "package"` or under `node_modules/.../skills/`) are
+ * always refused. Any other loaded skill (project, user, or symlinked shared) is writable
+ * once marked with `skill-maintenance: auto` (`/adopt-skill <name>`). Brand-new writes to
+ * `<project>/.pi/skills/<name>/SKILL.md` auto-adopt when unmarked (#1147).
  */
 export function classifySkillWrite(
   projectCwd: string,
   candidate: string,
   input: unknown,
+  skills?: readonly RegisteredSkillInfo[],
 ): SkillWriteVerdict {
   const abs = path.resolve(projectCwd, candidate);
-
-  // An unmarked safe symlinked skill may only be adopted by the user via /adopt-skill —
-  // never auto-adopted or marked by an agent write/edit (#1155).
-  const safeInfo = safeSymlinkedSkillInfo(projectCwd, abs);
-  if (safeInfo !== null && !safeInfo.marked) {
-    log.warn("skill_write_symlink_unmarked", { skill: safeInfo.skill, candidate });
-    return {
-      allow: false,
-      path: abs,
-      skill: safeInfo.skill,
-      file: safeInfo.subRel.join(path.sep),
-      reason:
-        `⛔ "${safeInfo.skill}" is a symlinked skill that is not adopted yet. ` +
-        `Run /adopt-skill ${safeInfo.skill} to adopt its target skill before agents can edit it.`,
-    };
-  }
-
-  const area = skillAreaOf(projectCwd, abs);
-
-  // Lexically inside our own skills dir but not owned: a symlink (dangling or
-  // resolved) put it, or the whole `.pi/skills` dir, outside the project. Checked
-  // before the "ordinary file" early return, or a dangling link reads as writable.
-  const lexicalRoot = path.join(realpathNearestExisting(resolveMainCheckoutRoot(projectCwd)) ?? path.resolve(projectCwd), ".pi", "skills");
-  const lexicalRel = path.relative(lexicalRoot, abs);
-  const lexicallyInSkills =
-    lexicalRel !== "" && lexicalRel !== ".." && !lexicalRel.startsWith(`..${path.sep}`) && !path.isAbsolute(lexicalRel);
-  if (area === null && !lexicallyInSkills) return { allow: true, path: abs };
-  if (area !== "owned" && lexicallyInSkills) {
-    return {
-      allow: false,
-      path: abs,
-      reason:
-        `⛔ ${candidate} resolves outside ${lexicalRoot} (a symlink, or the skills directory itself points out) — refused. ` +
-        `Replace the link with a real file inside the project before editing it.`,
-    };
-  }
-
-  if (area === "package") {
+  if (isPackageSkillPath(abs)) {
     log.warn("skill_write_package_refused", { candidate });
     return {
       allow: false,
       path: abs,
       reason:
         `⛔ ${candidate} is a skill shipped in an installed package (node_modules) — product surface, never edited. ` +
-        `Write your own copy under ${path.join(projectCwd, ".pi", "skills")}/<name>/SKILL.md (a marked creation is allowed there) ` +
-        `and run /adopt-skill <name>; a global copy is yours to place by hand.`,
+        `Write your own copy under ${path.join(projectCwd, ".pi", "skills")}/<name>/SKILL.md and run /adopt-skill <name>.`,
+    };
+  }
+
+  const matched = matchRegisteredSkill(projectCwd, abs, skills);
+  if (matched) {
+    if (!isAdoptableSkill(matched.skill)) {
+      log.warn("skill_write_package_refused", { candidate, skill: matched.skill.name });
+      return {
+        allow: false,
+        path: abs,
+        skill: matched.skill.name,
+        file: matched.file,
+        reason: `⛔ "${matched.skill.name}" is a shipped package skill and cannot be edited.`,
+      };
+    }
+    const current = readSkillContent(matched.skill.filePath);
+    if (current !== null && isMarkedSkill(current)) {
+      return { allow: true, path: abs, skill: matched.skill.name, file: matched.file };
+    }
+    if (current === null) {
+      log.warn("skill_write_unreadable_existing", { skill: matched.skill.name, abs });
+      return {
+        allow: false,
+        path: abs,
+        skill: matched.skill.name,
+        file: matched.file,
+        reason: `⛔ "${matched.skill.name}" exists on disk but could not be read — refused so existing content cannot be overwritten.`,
+      };
+    }
+    if (matched.file === "SKILL.md" && isOwnedSkillPath(projectCwd, abs)) {
+      const result = resultingContent(current, input);
+      if (result !== null && isMarkedSkill(result)) {
+        return { allow: true, path: abs, skill: matched.skill.name, file: matched.file };
+      }
+    }
+    log.warn(matched.file === "SKILL.md" ? "skill_write_unmarked" : "skill_write_aux_unmarked", {
+      skill: matched.skill.name,
+      file: matched.file,
+      candidate,
+    });
+    return {
+      allow: false,
+      path: abs,
+      skill: matched.skill.name,
+      file: matched.file,
+      reason: `⛔ "${matched.skill.name}" is not marked for maintenance. Run /adopt-skill ${matched.skill.name} first.`,
+    };
+  }
+
+  // Not matched to an existing skill: allow brand-new `<project>/.pi/skills/<name>/SKILL.md`
+  // writes (auto-adopting when unmarked, #1147), refuse dangling/invalid symlinks under
+  // `.pi/skills/`, and refuse unmatched paths under known skill directories.
+  if (isOwnedSkillPath(projectCwd, abs)) {
+    const skill = ownedSkillName(projectCwd, abs) ?? undefined;
+    const root = ownedSkillsRoot(projectCwd);
+    const file = root && skill ? path.relative(path.join(root, skill), abs) : undefined;
+    if (file === "SKILL.md") {
+      if (!isBrandNewSkillFile(abs)) {
+        log.warn("skill_write_unreadable_existing", { skill: skill ?? null, abs });
+        return {
+          allow: false,
+          path: abs,
+          skill,
+          file,
+          reason: `⛔ "${skill ?? candidate}" exists on disk but could not be read — refused so existing content cannot be overwritten.`,
+        };
+      }
+      const writeContent =
+        typeof input === "object" && input !== null && typeof (input as Record<string, unknown>).content === "string"
+          ? ((input as Record<string, unknown>).content as string)
+          : null;
+      if (writeContent !== null) {
+        return isMarkedSkill(writeContent)
+          ? { allow: true, path: abs, skill, file }
+          : { allow: true, autoAdopt: true, path: abs, skill, file };
+      }
+    }
+    log.warn(file === "SKILL.md" ? "skill_write_unmarked" : "skill_write_aux_unmarked", {
+      skill: skill ?? null,
+      file: file ?? null,
+    });
+    return {
+      allow: false,
+      path: abs,
+      skill,
+      file,
+      reason: `⛔ "${skill ?? candidate}" is not marked for maintenance. Run /adopt-skill ${skill ?? "<name>"} first.`,
+    };
+  }
+
+  const realMain = realpathNearestExisting(resolveMainCheckoutRoot(projectCwd)) ?? path.resolve(projectCwd);
+  const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
+  const lexicalRoots = [path.join(realMain, ".pi", "skills"), path.join(realCwd, ".pi", "skills")];
+  if (lexicalRoots.some((r) => isUnder(r, abs))) {
+    return {
+      allow: false,
+      path: abs,
+      reason:
+        `⛔ ${candidate} is an invalid or dangling symlink under .pi/skills/ (not a loaded skill directory) — refused.`,
+    };
+  }
+
+  const area = skillAreaOf(projectCwd, abs);
+  if (area === "package") {
+    log.warn("skill_write_package_refused", { candidate });
+    return {
+      allow: false,
+      path: abs,
+      reason: `⛔ ${candidate} is a skill shipped in an installed package (node_modules) — product surface, never edited.`,
     };
   }
   if (area === "user-global") {
@@ -672,100 +765,29 @@ export function classifySkillWrite(
       allow: false,
       path: abs,
       reason:
-        `⛔ ${candidate} is a user-global skill (~/.pi/agent/skills or ~/.agents/skills) — shared by every project, never edited by an agent. ` +
-        `Create it under ${path.join(projectCwd, ".pi", "skills")}/<name>/SKILL.md with \`${MARKER_LINE}\` instead, ` +
-        `then copy it to ~/.agents/skills/<name>/ yourself if you want it globally.`,
+        `⛔ ${candidate} is an unmarked user-global skill (~/.pi/agent/skills or ~/.agents/skills). ` +
+        `Run /adopt-skill <name> first to mark a loaded skill for maintenance.`,
     };
   }
-
-  const skill = ownedSkillName(projectCwd, abs) ?? undefined;
-  const root = ownedSkillsRoot(projectCwd);
-  const file =
-    safeInfo !== null
-      ? safeInfo.subRel.join(path.sep)
-      : root && skill
-        ? path.relative(path.join(root, skill), abs)
-        : undefined;
-
   if (area === "project-agents") {
     log.debug("skill_area_project_agents", { candidate });
     return {
       allow: false,
       path: abs,
       reason:
-        `⛔ ${candidate} is in the project's .agents/skills/ discovery directory, not the maintained location. ` +
-        `Maintain skills under ${path.join(projectCwd, ".pi", "skills")}/ and run /adopt-skill <name>.`,
+        `⛔ ${candidate} is an unmarked skill in .agents/skills/. ` +
+        `Run /adopt-skill <name> first to mark a loaded skill for maintenance.`,
     };
   }
 
-  // An auxiliary file (references/*.md, scripts) belongs to its skill: it is judged by
-  // the owning SKILL.md, never by applying the auxiliary edit to SKILL.md (Qodo #1079).
-  const current = skill ? readSkillFile(projectCwd, skill) : null;
-  const isSkillFile = file === "SKILL.md";
-  if (!isSkillFile) {
-    if (current !== null && isMarkedSkill(current)) return { allow: true, path: abs, skill, file };
-    log.warn("skill_write_aux_unmarked", { skill: skill ?? null, file: file ?? null });
-    return {
-      allow: false,
-      path: abs,
-      skill,
-      file,
-      reason:
-        `⛔ "${skill ?? candidate}" is owned by this project but not marked for maintenance, so its files cannot be edited. ` +
-        `Create or mark SKILL.md first (/adopt-skill ${skill ?? "<name>"}).`,
-    };
-  }
-
-  // Brand-new SKILL.md created via `write` under `.pi/skills/`: allow and auto-adopt
-  // when unmarked so creating a new project skill does not deadlock on /adopt-skill (#1147).
-  const writeContent =
-    typeof input === "object" && input !== null && typeof (input as Record<string, unknown>).content === "string"
-      ? ((input as Record<string, unknown>).content as string)
-      : null;
-  if (current === null) {
-    if (!isBrandNewSkillFile(abs)) {
-      log.warn("skill_write_unreadable_existing", { skill: skill ?? null, abs });
-      return {
-        allow: false,
-        path: abs,
-        skill,
-        file,
-        reason:
-          `⛔ "${skill ?? candidate}" exists on disk but could not be read — refused so existing content cannot be overwritten.`,
-      };
-    }
-    if (writeContent !== null) {
-      if (isMarkedSkill(writeContent)) {
-        return { allow: true, path: abs, skill, file };
-      }
-      return { allow: true, autoAdopt: true, path: abs, skill, file };
-    }
-  }
-
-  // Classify against the RESULTING content (Qodo HIGH): an edit's replacement fragment
-  // is not the file, so "the fragment looks marked" must not unlock an unmarked skill.
-  const result = resultingContent(current, input);
-  if (result !== null && isMarkedSkill(result)) {
-    return { allow: true, path: abs, skill, file };
-  }
-  log.warn("skill_write_unmarked", { skill: skill ?? null, candidate });
-  return {
-    allow: false,
-    path: abs,
-    skill,
-    file,
-    reason:
-      `⛔ "${skill ?? candidate}" is owned by this project but not marked for maintenance. ` +
-      `Run /adopt-skill ${skill ?? "<name>"}, or add \`${MARKER_LINE}\` to its frontmatter.`,
-  };
+  return { allow: true, path: abs };
 }
 
 // ── snapshot / diff / notice ────────────────────────────────────────────────
 
 /**
- * Snapshot every regular file in the owned tree (path → mtime:size), plus marked safe
- * top-level symlinked shared skills (keyed under `<root>/<skill>/<rel>`). Nested symlinks
- * and unsafe/unmarked symlinks are never followed.
+ * Snapshot every regular file in the owned tree (path → mtime:size). Symlinks
+ * are not followed: a link is not a file we own, whatever it points at.
  */
 export function snapshotSkillTree(root: string | null): Map<string, string> {
   const snapshot = new Map<string, string>();
@@ -773,8 +795,7 @@ export function snapshotSkillTree(root: string | null): Map<string, string> {
     log.debug("skill_snapshot_no_root");
     return snapshot;
   }
-  const projectRoots = [path.dirname(path.dirname(root))];
-  const walk = (dir: string, depth: number, keyPrefix?: string, realSkillRoot?: string): void => {
+  const walk = (dir: string, depth: number): void => {
     if (depth > MAX_SKILL_DEPTH) {
       log.warn("skill_snapshot_depth_cap", { dir, max: MAX_SKILL_DEPTH });
       return;
@@ -798,25 +819,17 @@ export function snapshotSkillTree(root: string | null): Map<string, string> {
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) {
-        if (depth === 0 && !keyPrefix) {
-          const safeInfo = safeSymlinkedSkillFromRoot(root, entry.name, [], projectRoots);
-          if (safeInfo?.marked) {
-            walk(safeInfo.realSkillDir, 1, path.join(root, entry.name), safeInfo.realSkillDir);
-            continue;
-          }
-        }
         log.debug("skill_snapshot_skip_symlink", { full });
         continue;
       }
       if (entry.isDirectory()) {
-        walk(full, depth + 1, keyPrefix, realSkillRoot);
+        walk(full, depth + 1);
         continue;
       }
       if (!entry.isFile()) continue;
       try {
         const stat = fs.statSync(full);
-        const key = keyPrefix && realSkillRoot ? path.join(keyPrefix, path.relative(realSkillRoot, full)) : full;
-        snapshot.set(key, `${stat.mtimeMs}:${stat.size}`);
+        snapshot.set(full, `${stat.mtimeMs}:${stat.size}`);
       } catch (err) {
         // vanished mid-walk — treat as untouched
         log.warn("skill_snapshot_stat_failed", {
@@ -941,99 +954,112 @@ export interface AdoptResult {
 }
 
 /**
- * Mark a project-owned skill as maintained: insert the marker and the maintenance
+ * Mark an adoptable skill as maintained: insert the marker and the maintenance
  * instruction. Idempotent. Writes directly — this is the human's command, not an
  * agent write, so it does not go through the tool guard.
  */
-export function adoptSkill(projectCwd: string, name: string): AdoptResult {
-  const root = ownedSkillsRoot(projectCwd);
-  if (!root) {
-    return { ok: false, message: `No ${path.join(projectCwd, ".pi", "skills")} directory in this project.` };
-  }
+export function adoptSkill(
+  projectCwd: string,
+  name: string,
+  skills?: readonly RegisteredSkillInfo[],
+): AdoptResult {
   if (!name) {
     return { ok: false, message: "Usage: /adopt-skill <name>" };
   }
-  // The argument is user input: a bare skill name only, and the resolved target must
-  // pass the same ownership predicate as any other write (`../`, an absolute path and a
-  // symlinked skill all fail it) — otherwise adopting a link would edit an outside file.
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
     log.warn("adopt_skill_bad_name", { name });
-    return { ok: false, message: `"${name}" is not a skill name — use a bare name under ${root}.` };
+    return { ok: false, message: `"${name}" is not a skill name — use a bare skill name.` };
   }
-  const file = path.join(root, name, "SKILL.md");
-  const safeInfo = safeSymlinkedSkillInfo(projectCwd, file);
-  let targetFile = file;
-  if (safeInfo !== null) {
-    targetFile = safeInfo.skillMdPath;
-  } else {
-    if (!isOwnedSkillPath(projectCwd, file)) {
-      log.warn("adopt_skill_not_owned", { name, file });
-      return {
-        ok: false,
-        message: `"${name}" does not resolve to a file this project owns (symlink or path escape) — refusing to write it.`,
-      };
+  const matched = skills?.find((s) => s.name === name) ?? fallbackProjectSkill(projectCwd, name);
+  if (!matched) {
+    const root = ownedSkillsRoot(projectCwd);
+    if (root) {
+      try {
+        const lstat = fs.lstatSync(path.join(root, name));
+        if (lstat.isSymbolicLink()) {
+          log.warn("adopt_skill_invalid_symlink", { name, root });
+          return {
+            ok: false,
+            message: `"${name}" is a dangling or non-directory symlink — refusing to write it.`,
+          };
+        }
+      } catch {
+        // does not exist under .pi/skills
+      }
     }
-    if (!fs.existsSync(file)) {
-      const elsewhere = skillExistsOutside(projectCwd, name);
-      log.warn("adopt_skill_refused", { name, existsElsewhere: elsewhere });
-      return {
-        ok: false,
-        message: elsewhere
-          ? `"${name}" is not a project skill — copy it into ${path.join(root, name)}/ first, then run /adopt-skill ${name}.`
-          : `No project skill named "${name}" under ${root}.`,
-      };
-    }
+    log.warn("adopt_skill_refused", { name });
+    return { ok: false, message: `No skill named "${name}" found.` };
+  }
+  if (!isAdoptableSkill(matched)) {
+    log.warn("adopt_skill_package_refused", { name, file: matched.filePath });
+    return { ok: false, message: `"${name}" is a shipped package skill and cannot be adopted.` };
   }
   try {
-    const content = fs.readFileSync(targetFile, "utf-8");
+    const content = fs.readFileSync(matched.filePath, "utf-8");
     const { content: stamped, changed } = stampSkill(content);
     if (!changed) return { ok: true, message: `Skill "${name}" is already maintained.` };
-    fs.writeFileSync(targetFile, stamped, "utf-8");
-    log.info("adopt_skill_marked", { name, file: targetFile });
+    fs.writeFileSync(matched.filePath, stamped, "utf-8");
+    log.info("adopt_skill_marked", { name, file: matched.filePath, scope: matched.scope });
     return { ok: true, message: `✅ Skill "${name}" is now maintained — patching it is allowed from here on.` };
   } catch (err) {
     log.error("adopt_skill_failed", { name, reason: String((err as Error)?.message ?? err).slice(0, 200) });
-    return { ok: false, message: `Could not update ${targetFile}: ${(err as Error)?.message ?? err}` };
+    return { ok: false, message: `Could not update ${matched.filePath}: ${(err as Error)?.message ?? err}` };
   }
 }
 
-/** True when a skill with this name exists outside the project's own tree. */
-function skillExistsOutside(projectCwd: string, name: string): boolean {
-  const home = os.homedir();
-  const roots = [
-    path.join(home, ".pi", "agent", "skills"),
-    path.join(home, ".agents", "skills"),
-    path.join(path.resolve(projectCwd), ".agents", "skills"),
-  ];
-  return roots.some((root) => fs.existsSync(path.join(root, name, "SKILL.md")));
-}
-
-/** Autocomplete helper: unmarked project skills matching the typed prefix. */
+/** Autocomplete helper: unmarked adoptable skills matching the typed prefix. */
 export function completeUnmarkedSkills(
   projectCwd: string,
   prefix: string,
+  skills?: readonly RegisteredSkillInfo[],
 ): Array<{ value: string; label: string; description?: string }> {
   const needle = (prefix ?? "").trim().toLowerCase();
-  return listUnmarkedSkills(projectCwd)
-    .filter((name) => name.includes(needle))
-    .map((name) => ({ value: name, label: name, description: "mark for maintenance" }));
+  return collectAdoptableUnmarkedSkills(projectCwd, skills)
+    .filter((skill) => skill.name.toLowerCase().includes(needle))
+    .map((skill) => ({
+      value: skill.name,
+      label: skill.name,
+      description: `${skill.scope} — mark for maintenance`,
+    }));
 }
 
 // ── registration ────────────────────────────────────────────────────────────
 
 const SKILL_INVOCATION = /\/skill:([a-z0-9][a-z0-9-]*)/g;
 
-/** Marked owned skills named in a text (a `/skill:x` invocation or a path under a skill dir). */
-export function markedSkillsInText(projectCwd: string, text: string): string[] {
+/** Marked adoptable skills named in a text (`/skill:x`, `skills/<name>`, or skill baseDir). */
+export function markedSkillsInText(
+  projectCwd: string,
+  text: string,
+  skills?: readonly RegisteredSkillInfo[],
+): string[] {
   if (typeof text !== "string" || !text) return [];
-  const root = ownedSkillsRoot(projectCwd);
-  if (!root) return [];
+  const byName = new Map<string, RegisteredSkillInfo>();
+  for (const skill of skills ?? []) {
+    if (!isAdoptableSkill(skill)) continue;
+    if (!byName.has(skill.name)) byName.set(skill.name, skill);
+  }
+  for (const skill of listFallbackProjectSkills(projectCwd)) {
+    if (!isAdoptableSkill(skill)) continue;
+    if (!byName.has(skill.name)) byName.set(skill.name, skill);
+  }
   const found = new Set<string>();
   const candidates = new Set<string>();
   for (const match of text.matchAll(SKILL_INVOCATION)) candidates.add(match[1]);
   for (const segment of text.matchAll(/skills[\\/]([A-Za-z0-9._-]+)/g)) candidates.add(segment[1]);
   for (const name of candidates) {
-    if (isMarkedSkillNamed(projectCwd, name)) found.add(name);
+    const skill = byName.get(name);
+    if (!skill) continue;
+    const content = readSkillContent(skill.filePath);
+    if (content !== null && isMarkedSkill(content)) found.add(name);
+  }
+  for (const skill of byName.values()) {
+    if (found.has(skill.name)) continue;
+    const realBase = realpathNearestExisting(skill.baseDir);
+    if (text.includes(skill.baseDir) || (realBase !== null && text.includes(realBase))) {
+      const content = readSkillContent(skill.filePath);
+      if (content !== null && isMarkedSkill(content)) found.add(skill.name);
+    }
   }
   return [...found];
 }
@@ -1452,7 +1478,12 @@ export interface ShellSkillReference {
   bare: boolean;
 }
 
-function collectSegmentSkillReferences(projectCwd: string, parsed: ParsedSegment, cmdIdx: number): ShellSkillReference[] {
+function collectSegmentSkillReferences(
+  projectCwd: string,
+  parsed: ParsedSegment,
+  cmdIdx: number,
+  skills?: readonly RegisteredSkillInfo[],
+): ShellSkillReference[] {
   const refs: ShellSkillReference[] = [];
   for (const token of pathCandidateTokens(parsed, cmdIdx)) {
     if (token === "cd" || token.includes("\n")) continue;
@@ -1468,7 +1499,13 @@ function collectSegmentSkillReferences(projectCwd: string, parsed: ParsedSegment
           : [token];
     const hit = candidates.find((candidate) => {
       const abs = path.resolve(projectCwd, candidate);
-      if (skillAreaOf(projectCwd, abs) !== null || lexicallyUnderSkillsRoot(projectCwd, abs)) return true;
+      if (
+        skillAreaOf(projectCwd, abs) !== null ||
+        lexicallyUnderSkillsRoot(projectCwd, abs) ||
+        matchRegisteredSkill(projectCwd, abs, skills) !== null
+      ) {
+        return true;
+      }
       return path.basename(candidate) === "SKILL.md" && !candidate.includes("/") && candidate === token;
     });
     if (hit === undefined) continue;
@@ -1488,21 +1525,29 @@ function collectSegmentSkillReferences(projectCwd: string, parsed: ParsedSegment
  * path (not a bare filename), or a bare `SKILL.md`. Resolution happens here; the
  * decision happens in `bashSkillVerdict`.
  */
-export function shellSkillReferences(projectCwd: string, command: string): ShellSkillReference[] {
+export function shellSkillReferences(
+  projectCwd: string,
+  command: string,
+  skills?: readonly RegisteredSkillInfo[],
+): ShellSkillReference[] {
   const refs: ShellSkillReference[] = [];
   for (const stages of splitPipelines(command)) {
     for (const stage of stages) {
       const parsed = parseSegment(projectCwd, stage);
       const cmdIdx = commandWordIndex(parsed.words.map((w) => w.value));
-      refs.push(...collectSegmentSkillReferences(projectCwd, parsed, cmdIdx));
+      refs.push(...collectSegmentSkillReferences(projectCwd, parsed, cmdIdx, skills));
     }
   }
   log.debug("skill_shell_references_collected", { count: refs.length });
   return refs;
 }
 
-/** True when `scriptAbs` sits at `<skills-root>/<skill>/<script>` without escaping via symlink. */
-function isValidSkillScriptTarget(projectCwd: string, scriptAbs: string): boolean {
+/** True when `scriptAbs` sits inside a non-package skill directory (including symlinked skills) or real package skill. */
+function isValidSkillScriptTarget(
+  projectCwd: string,
+  scriptAbs: string,
+  skills?: readonly RegisteredSkillInfo[],
+): boolean {
   if (path.basename(scriptAbs).toUpperCase() === "SKILL.MD") {
     log.debug("skill_script_target_is_skill_md", { scriptAbs });
     return false;
@@ -1515,15 +1560,10 @@ function isValidSkillScriptTarget(projectCwd: string, scriptAbs: string): boolea
   } catch {
     // non-existent path: checked structurally below
   }
-  const safeInfo = safeSymlinkedSkillInfo(projectCwd, scriptAbs);
-  if (safeInfo !== null) {
-    const lexicalSub = path.join(safeInfo.realSkillDir, ...safeInfo.subRel);
-    const valid =
-      safeInfo.subRel.length >= 1 &&
-      isUnder(safeInfo.realSkillDir, safeInfo.realTarget) &&
-      !hasSymlinkComponent(safeInfo.realSkillDir, lexicalSub);
-    log.debug("skill_script_target_check", { scriptAbs, area: skillAreaOf(projectCwd, scriptAbs), safeSymlink: true, valid });
-    return valid;
+  const matched = matchRegisteredSkill(projectCwd, scriptAbs, skills);
+  if (matched && isAdoptableSkill(matched.skill) && matched.file !== "." && matched.file !== "SKILL.md") {
+    log.debug("skill_script_target_check", { scriptAbs, area: "registered", valid: true });
+    return true;
   }
   const realAbs = realpathNearestExisting(scriptAbs) ?? scriptAbs;
   const area = skillAreaOf(projectCwd, scriptAbs);
@@ -1660,6 +1700,7 @@ function isAllowedSkillScriptExec(
   plainWords: string[],
   cmdIdx: number,
   segmentRefs: readonly ShellSkillReference[],
+  skills?: readonly RegisteredSkillInfo[],
 ): boolean {
   const args = plainWords.slice(cmdIdx);
   if (args.length === 0 || segmentRefs.length === 0) return false;
@@ -1702,7 +1743,7 @@ function isAllowedSkillScriptExec(
     return false;
   }
   const scriptAbs = path.resolve(projectCwd, scriptToken);
-  if (!isValidSkillScriptTarget(projectCwd, scriptAbs)) return false;
+  if (!isValidSkillScriptTarget(projectCwd, scriptAbs, skills)) return false;
   if (!segmentRefs.every((ref) => ref.abs === scriptAbs)) {
     log.debug("skill_shell_script_extra_ref", { script: scriptAbs });
     return false;
@@ -1771,6 +1812,7 @@ function cdChangesSkillMeaning(
   projectCwd: string,
   command: string,
   refs: readonly ShellSkillReference[],
+  skills?: readonly RegisteredSkillInfo[],
 ): boolean {
   const { count, target } = pinnedCdTarget(projectCwd, command);
   if (count === 0) return false;
@@ -1782,7 +1824,11 @@ function cdChangesSkillMeaning(
     log.debug("skill_shell_cd_relative_target", { target });
     return true;
   }
-  if (skillAreaOf(projectCwd, target) !== null || lexicallyUnderSkillsRoot(projectCwd, target)) {
+  if (
+    skillAreaOf(projectCwd, target) !== null ||
+    lexicallyUnderSkillsRoot(projectCwd, target) ||
+    matchRegisteredSkill(projectCwd, target, skills) !== null
+  ) {
     log.debug("skill_shell_cd_inside_skills_area", { target });
     return true;
   }
@@ -1821,14 +1867,20 @@ const isTerminatorLine = (line: string, delim: string, stripTabs: boolean): bool
  * `tee <skill file> <<EOF` too), and the body must be inert: a quoted delimiter, or no
  * substitution for an unquoted one (`$(…)` / backticks still run inside an unquoted body).
  */
-function isDataHeredocWrite(projectCwd: string, stage: string, body: string, expand: boolean): boolean {
+function isDataHeredocWrite(
+  projectCwd: string,
+  stage: string,
+  body: string,
+  expand: boolean,
+  skills?: readonly RegisteredSkillInfo[],
+): boolean {
   if (expand && /`|\$\(/.test(body)) return false;
   const parsed = parseSegment(projectCwd, stage);
   const plainWords = parsed.words.map((w) => w.value);
   const cmdIdx = commandWordIndex(plainWords);
   if (!DATA_WRITER_VERBS.has(plainWords[cmdIdx] ?? "")) return false;
   if (SKILL_MENTION_RE.test(stage)) return false;
-  const clean = collectSegmentSkillReferences(projectCwd, parsed, cmdIdx).length === 0;
+  const clean = collectSegmentSkillReferences(projectCwd, parsed, cmdIdx, skills).length === 0;
   log.debug("skill_shell_data_heredoc", { verb: plainWords[cmdIdx], clean });
   return clean;
 }
@@ -1851,7 +1903,11 @@ function isDataHeredocWrite(projectCwd: string, stage: string, body: string, exp
  * subshells, or any command with a second segment — keeps the body visible so
  * `bashSkillVerdict` still blocks it.
  */
-function blankDataHeredocBodies(projectCwd: string, command: string): string {
+function blankDataHeredocBodies(
+  projectCwd: string,
+  command: string,
+  skills?: readonly RegisteredSkillInfo[],
+): string {
   if (!command.includes("<<")) return command;
   const bodies: Array<{ bodyStart: number; bodyEnd: number; termEnd: number; expand: boolean }> = [];
   let pending: Array<{ delim: string; stripTabs: boolean; expand: boolean }> = [];
@@ -1935,7 +1991,7 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
   if (pipelines.length !== 1 || pipelines[0].length !== 1) return command;
   const stage = pipelines[0][0];
   if (/^\s*\(/.test(stage) || hasExecutableSubstitution(stage)) return command;
-  if (!bodies.every((b) => isDataHeredocWrite(projectCwd, stage, command.slice(b.bodyStart, b.bodyEnd), b.expand))) {
+  if (!bodies.every((b) => isDataHeredocWrite(projectCwd, stage, command.slice(b.bodyStart, b.bodyEnd), b.expand, skills))) {
     return command;
   }
 
@@ -1949,25 +2005,44 @@ function blankDataHeredocBodies(projectCwd: string, command: string): string {
 const SHELL_WORD_DELIM_RE = /[\s()<>;&|]/;
 const BARE_SKILLS_ROOT_RE =
   /(?:^|[^\w-])(?:\.pi|\.agents|\.pi\/agent)\/skills(?=$|[\s"'`;|&)>])|node_modules\/[^\s"'`]*\/skills(?=$|[\s"'`;|&)>])/;
-const ADOPTED_FORBIDDEN_META_RE = /[$`~{}*?[\]]/;
+const ADOPTED_FORBIDDEN_META_RE = /[$`{}*?[\]]/;
 
-function isAdoptedOwnedToken(projectCwd: string, rawToken: string): string | null {
+function expandHomePrefix(raw: string): string {
+  if (raw === "~") return os.homedir();
+  if (raw.startsWith("~/")) return path.join(os.homedir(), raw.slice(2));
+  return raw;
+}
+
+function isAdoptedSkillToken(
+  projectCwd: string,
+  rawToken: string,
+  skills?: readonly RegisteredSkillInfo[],
+): string | null {
   if (!rawToken || ADOPTED_FORBIDDEN_META_RE.test(rawToken) || hasParentComponent(rawToken)) {
     log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "invalid_or_meta" });
     return null;
   }
-  const abs = path.resolve(projectCwd, rawToken);
-  const area = skillAreaOf(projectCwd, abs);
-  if (area !== "owned") {
-    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "not_owned", area });
+  const expanded = expandHomePrefix(rawToken);
+  if (expanded.includes("~")) {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "invalid_tilde" });
     return null;
   }
-  const skill = ownedSkillName(projectCwd, abs);
-  if (!skill || !isMarkedSkillNamed(projectCwd, skill)) {
-    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "unmarked_or_root", skill });
+  const abs = path.resolve(projectCwd, expanded);
+  if (isPackageSkillPath(abs)) {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "package" });
     return null;
   }
-  return skill;
+  const matched = matchRegisteredSkill(projectCwd, abs, skills);
+  if (!matched || !isAdoptableSkill(matched.skill)) {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "not_adoptable" });
+    return null;
+  }
+  const content = readSkillContent(matched.skill.filePath);
+  if (content === null || !isMarkedSkill(content)) {
+    log.debug("skill_shell_adopted_token_rejected", { rawToken, reason: "unmarked", skill: matched.skill.name });
+    return null;
+  }
+  return matched.skill.name;
 }
 
 /** Split `text` into raw shell words without stripping quotes, keeping quoted/escaped spaces intact. */
@@ -2012,19 +2087,28 @@ function tokenizeShellWords(text: string): string[] {
   return words;
 }
 
-function extractAdoptedSkillToken(projectCwd: string, unquoted: string): string | null {
-  if (isAdoptedOwnedToken(projectCwd, unquoted) !== null) return unquoted;
+function extractAdoptedSkillToken(
+  projectCwd: string,
+  unquoted: string,
+  skills?: readonly RegisteredSkillInfo[],
+): string | null {
+  if (isAdoptedSkillToken(projectCwd, unquoted, skills) !== null) return unquoted;
   const eq = unquoted.indexOf("=");
   if (eq > 0 && /^(?:--?[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_]*)$/.test(unquoted.slice(0, eq))) {
     const rhs = unquoted.slice(eq + 1);
-    if (isAdoptedOwnedToken(projectCwd, rhs) !== null) return rhs;
+    if (isAdoptedSkillToken(projectCwd, rhs, skills) !== null) return rhs;
   }
   const shortT = /^-[A-Za-z]*t(.+)$/.exec(unquoted);
-  if (shortT && isAdoptedOwnedToken(projectCwd, shortT[1]) !== null) return shortT[1];
+  if (shortT && isAdoptedSkillToken(projectCwd, shortT[1], skills) !== null) return shortT[1];
   return null;
 }
 
-function allMentionsAdopted(projectCwd: string, text: string, depth = 0): boolean {
+function allMentionsAdopted(
+  projectCwd: string,
+  text: string,
+  skills?: readonly RegisteredSkillInfo[],
+  depth = 0,
+): boolean {
   if (BARE_SKILLS_ROOT_RE.test(text)) {
     log.debug("skill_shell_adopted_rejected", { reason: "bare_skills_root" });
     return false;
@@ -2035,12 +2119,21 @@ function allMentionsAdopted(projectCwd: string, text: string, depth = 0): boolea
       log.debug("skill_shell_adopted_rejected", { reason: "bare_skills_root", token: unquoted });
       return false;
     }
-    if (extractAdoptedSkillToken(projectCwd, unquoted) !== null) continue;
+    if (extractAdoptedSkillToken(projectCwd, unquoted, skills) !== null) continue;
     // Quoted/escaped words that are not themselves adopted skill paths may hold inline code
     // (e.g. `bash -c 'rm -rf "/path/unmarked"'`), so inspect their unquoted shell tokens too.
     if (unquoted !== rawWord && depth < 16) {
-      if (!allMentionsAdopted(projectCwd, unquoted, depth + 1)) return false;
+      if (!allMentionsAdopted(projectCwd, unquoted, skills, depth + 1)) return false;
       continue;
+    }
+    const expanded = expandHomePrefix(unquoted);
+    if (
+      !expanded.includes("~") &&
+      !ADOPTED_FORBIDDEN_META_RE.test(unquoted) &&
+      matchRegisteredSkill(projectCwd, path.resolve(projectCwd, expanded), skills) !== null
+    ) {
+      log.debug("skill_shell_adopted_rejected", { reason: "unadopted_registered_mention", token: unquoted });
+      return false;
     }
     const deescaped = unquoted.replace(/\\([A-Za-z])/g, "$1");
     if (SKILL_MENTION_RE.test(unquoted) || SKILL_MENTION_RE.test(deescaped) || BARE_SKILLS_ROOT_RE.test(deescaped)) {
@@ -2051,7 +2144,11 @@ function allMentionsAdopted(projectCwd: string, text: string, depth = 0): boolea
   return true;
 }
 
-function writeStageTargetsAdopted(projectCwd: string, parsed: ParsedSegment): boolean {
+function writeStageTargetsAdopted(
+  projectCwd: string,
+  parsed: ParsedSegment,
+  skills?: readonly RegisteredSkillInfo[],
+): boolean {
   const plainWords = parsed.words.map((w) => w.value);
   const cmdIdx = commandWordIndex(plainWords);
   const verb = plainWords[cmdIdx] ?? "";
@@ -2154,19 +2251,20 @@ function writeStageTargetsAdopted(projectCwd: string, parsed: ParsedSegment): bo
     return false;
   }
 
-  return targets.length > 0 && targets.every((t) => isAdoptedOwnedToken(projectCwd, t) !== null);
+  return targets.length > 0 && targets.every((t) => isAdoptedSkillToken(projectCwd, t, skills) !== null);
 }
 
 /**
  * True (returning the sorted adopted skill names) when every skill reference and every
- * skill mention in `analyzed` resolves exclusively to owned project skills under
- * `.pi/skills/` that carry `skill-maintenance: auto`. Any mention of unmarked, global,
- * `.agents/skills/`, package, symlinked, or variable-constructed skill paths fails closed.
+ * skill mention in `analyzed` resolves exclusively to adoptable skills carrying
+ * `skill-maintenance: auto`. Any mention of unmarked, package, symlink-escape, or
+ * variable-constructed skill paths fails closed.
  */
 function isAdoptedSkillsOnlyCommand(
   projectCwd: string,
   analyzed: string,
   refs: readonly ShellSkillReference[],
+  skills?: readonly RegisteredSkillInfo[],
 ): string[] | null {
   if (refs.length === 0) return null;
   const cd = pinnedCdTarget(projectCwd, analyzed);
@@ -2178,40 +2276,39 @@ function isAdoptedSkillsOnlyCommand(
       return null;
     }
   }
-  const skills = new Set<string>();
+  const matchedSkills = new Set<string>();
   for (const ref of refs) {
-    if (ref.bare || ref.area !== "owned") {
-      log.debug("skill_shell_adopted_rejected", { reason: "ref_not_owned", token: ref.token, area: ref.area, bare: ref.bare });
+    if (ref.bare) {
+      log.debug("skill_shell_adopted_rejected", { reason: "ref_bare", token: ref.token });
       return null;
     }
-    if (ADOPTED_FORBIDDEN_META_RE.test(ref.token) || hasParentComponent(ref.token)) {
-      log.debug("skill_shell_adopted_rejected", { reason: "ref_meta_or_parent", token: ref.token });
+    const skill = isAdoptedSkillToken(projectCwd, ref.token, skills);
+    if (!skill) {
+      log.debug("skill_shell_adopted_rejected", { reason: "ref_not_adopted", token: ref.token });
       return null;
     }
-    const skill = ownedSkillName(projectCwd, ref.abs);
-    if (!skill || !isMarkedSkillNamed(projectCwd, skill)) {
-      log.debug("skill_shell_adopted_rejected", { reason: "ref_unmarked", token: ref.token, skill });
-      return null;
-    }
-    skills.add(skill);
+    matchedSkills.add(skill);
   }
   const maskQuoted = (text: string): string =>
     text.replace(QUOTED_SPAN_RE, (match) => (match.startsWith("\\") ? match : " "));
   for (const stages of splitPipelines(analyzed)) {
     for (const stage of stages) {
       const parsed = parseSegment(projectCwd, stage);
-      if (parsed.hasWriteRedirect && !parsed.redirectTargets.every((t) => isAdoptedOwnedToken(projectCwd, t) !== null)) {
+      if (
+        parsed.hasWriteRedirect &&
+        !parsed.redirectTargets.every((t) => isAdoptedSkillToken(projectCwd, t, skills) !== null)
+      ) {
         log.debug("skill_shell_adopted_rejected", { reason: "write_redirect_not_adopted", targets: parsed.redirectTargets });
         return null;
       }
-      if (BASH_WRITE_VERBS.test(maskQuoted(stage)) && !writeStageTargetsAdopted(projectCwd, parsed)) {
+      if (BASH_WRITE_VERBS.test(maskQuoted(stage)) && !writeStageTargetsAdopted(projectCwd, parsed, skills)) {
         log.debug("skill_shell_adopted_rejected", { reason: "write_verb_target_not_adopted", stage: stage.slice(0, 120) });
         return null;
       }
     }
   }
-  if (!allMentionsAdopted(projectCwd, analyzed)) return null;
-  return [...skills].sort();
+  if (!allMentionsAdopted(projectCwd, analyzed, skills)) return null;
+  return [...matchedSkills].sort();
 }
 
 /**
@@ -2245,12 +2342,16 @@ function isAdoptedSkillsOnlyCommand(
  * (`t=…; … > "$t"`, `eval`, `find -exec`) carries no literal reference, so no text rule
  * sees it. The file change still reaches the turn-end notice.
  */
-export function bashSkillVerdict(projectCwd: string, command: string): ShellVerdict | null {
+export function bashSkillVerdict(
+  projectCwd: string,
+  command: string,
+  skills?: readonly RegisteredSkillInfo[],
+): ShellVerdict | null {
   if (typeof command !== "string" || command.trim() === "") return null;
   // Data heredoc bodies are blanked here, so the whole analysis below (refs, mentions,
   // segments) never reads file content as a command.
-  const analyzed = blankDataHeredocBodies(projectCwd, command);
-  const refs = shellSkillReferences(projectCwd, analyzed);
+  const analyzed = blankDataHeredocBodies(projectCwd, command, skills);
+  const refs = shellSkillReferences(projectCwd, analyzed, skills);
   const rawMentionsSkill =
     SKILL_MENTION_RE.test(analyzed) ||
     SKILL_MENTION_RE.test(unquoteWord(analyzed)) ||
@@ -2266,16 +2367,16 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
   };
   const hint =
     `The shell reads protected skills (and runs their helper scripts) but never writes them. Read one with cat/rg/ls; ` +
-    `edit a marked skill in ${path.join(projectCwd, ".pi", "skills")}/ (run /adopt-skill <name> first if it is not marked yet).`;
+    `run /adopt-skill <name> first to mark a skill for maintenance.`;
 
   if (refs.some((ref) => ref.bare)) {
     return block(`a bare SKILL.md means whatever the working directory is. ${hint}`);
   }
   const maskedCommand = maskQuoted(analyzed);
-  if (cdChangesSkillMeaning(projectCwd, analyzed, refs)) {
+  if (cdChangesSkillMeaning(projectCwd, analyzed, refs, skills)) {
     return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
   }
-  const adoptedSkills = isAdoptedSkillsOnlyCommand(projectCwd, analyzed, refs);
+  const adoptedSkills = isAdoptedSkillsOnlyCommand(projectCwd, analyzed, refs, skills);
   if (adoptedSkills !== null) {
     log.debug("skill_shell_adopted_allowed", { skills: adoptedSkills });
     return null;
@@ -2311,7 +2412,7 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
       if (plainWords.slice(cmdIdx + 1).some((w) => /^(?:--pre(?:=|$)|--pre-glob(?:=|$)|--?exec$)/.test(w))) {
         return block(`this command's options execute another program. ${hint}`);
       }
-      const segmentRefs = collectSegmentSkillReferences(projectCwd, parsed, cmdIdx);
+      const segmentRefs = collectSegmentSkillReferences(projectCwd, parsed, cmdIdx, skills);
       const unquotedSegment = unquoteWord(segment);
       const unquotedMentionsSkill = SKILL_MENTION_RE.test(masked);
       const runsInlineCode = segmentRunsInlineCode(parsed, cmdIdx);
@@ -2345,7 +2446,7 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
         if (allOperandsAreSkills && allOwned) continue;
         return block(`mkdir here would create a directory outside this project's own skills tree. ${hint}`);
       }
-      if (isAllowedSkillScriptExec(projectCwd, plainWords, cmdIdx, segmentRefs)) continue;
+      if (isAllowedSkillScriptExec(projectCwd, plainWords, cmdIdx, segmentRefs, skills)) continue;
       if (inlineBodyMentionsSkill) {
         return block(`this shell command runs inline code ("${verb || "?"}") that names a skill. ${hint}`);
       }
@@ -2365,8 +2466,8 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
   let nudgedSkills = new Set<string>();
   /** Owned-tree snapshot, reconciled at turn end AND at the next turn start. */
   let turnSnapshot = new Map<string, string>();
-  /** Paths this process recorded provenance for, during the current turn. */
-  let recordedThisTurn = new Set<string>();
+  /** Skill changes confirmed on tool_result this turn (covers all scopes, including user/symlinked). */
+  let recordedChangesThisTurn: SkillChange[] = [];
   /** Writes allowed at tool_call and not yet confirmed by a successful tool_result. */
   const pendingWrites = new Map<string, { skill: string; file: string; path: string; written: boolean }>();
   /** Skills named by `/skill:` since the last turn ended — they open the next turn. */
@@ -2378,10 +2479,23 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
 
   const turnIdOf = (sessionId: string): string => `${sessionId}:${turnIndex}`;
 
+  const getLiveSkills = (): RegisteredSkillInfo[] => {
+    try {
+      const cmds = typeof pi.getCommands === "function" ? pi.getCommands() : [];
+      const skills = skillsFromCommands(cmds);
+      log.debug("skills_from_pi_commands", { count: skills.length });
+      return skills;
+    } catch (err) {
+      log.debug("skills_from_pi_commands_failed", {
+        reason: String((err as Error)?.message ?? err).slice(0, 120),
+      });
+      return [];
+    }
+  };
+
   /**
-   * Report what changed in the owned tree since the last reconcile and hand the
-   * caller one line. Deliberately does NOT file whole-tree diffs as provenance:
-   * an editor change by the user is nobody's turn (Qodo #1079).
+   * Report what changed in maintained skills since the last reconcile and hand the
+   * caller one line. Merges confirmed tool writes (any scope) with owned-tree diffs.
    */
   function reconcile(ctx: any, reason: "turn_end" | "turn_start"): void {
     const root = ownedSkillsRoot(ctx.cwd);
@@ -2390,12 +2504,21 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
       snapshotPrimed = true;
       turnSnapshot = after;
       log.debug("skill_snapshot_primed", { files: after.size });
-      return;
+      if (recordedChangesThisTurn.length === 0) return;
     }
-    const changes = diffSkillTree(root, turnSnapshot, after);
+    const treeChanges = diffSkillTree(root, turnSnapshot, after);
     turnSnapshot = after;
+    const recorded = recordedChangesThisTurn;
+    recordedChangesThisTurn = [];
+    const merged = new Map<string, SkillChange>();
+    for (const change of [...recorded, ...treeChanges]) {
+      const key = `${change.skill}:${change.file}`;
+      if (!merged.has(key)) merged.set(key, change);
+    }
+    const changes = [...merged.values()].sort(
+      (a, b) => a.skill.localeCompare(b.skill) || a.file.localeCompare(b.file),
+    );
     if (changes.length === 0) {
-      // A write we recorded may have been the only change; keep the failure visible.
       if (provenanceFailed) {
         log.warn("skill_provenance_failed_silent", { reason });
       }
@@ -2434,7 +2557,6 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
     usedSkills = new Set(invokedBeforeTurn);
     invokedBeforeTurn = new Set();
     nudgedSkills = new Set();
-    recordedThisTurn = new Set();
     provenanceFailed = false;
   });
 
@@ -2442,26 +2564,27 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
   // BEFORE turn_start, so the names are parked and adopted by the turn they open.
   pi.on("input", (event, ctx) => {
     currentCwd = ctx.cwd;
-    for (const name of markedSkillsInText(ctx.cwd, (event as any)?.text ?? "")) {
+    for (const name of markedSkillsInText(ctx.cwd, (event as any)?.text ?? "", getLiveSkills())) {
       usedSkills.add(name);
       invokedBeforeTurn.add(name);
     }
   });
 
-  // ── write guard: marked + owned only, for every session ──────────────────
+  // ── write guard: marked adoptable skills only, for every session ────────
   pi.on("tool_call", (event, ctx) => {
     const toolName = String((event as any)?.toolName ?? "");
     const input = (event as any)?.input;
+    const liveSkills = getLiveSkills();
 
     if (toolName === "bash") {
       const command = typeof (input as any)?.command === "string" ? (input as any).command : "";
-      const shell = bashSkillVerdict(ctx.cwd, command);
+      const shell = bashSkillVerdict(ctx.cwd, command, liveSkills);
       return shell ? { block: true, reason: shell.reason } : undefined;
     }
     if (!WRITE_TOOLS.has(toolName)) return;
     const target = pathFromInput(input);
     if (!target) return;
-    const verdict = classifySkillWrite(ctx.cwd, target, input);
+    const verdict = classifySkillWrite(ctx.cwd, target, input, liveSkills);
     if (!verdict.allow) {
       log.debug("skill_write_blocked", { toolName, target, skill: verdict.skill });
       return { block: true, reason: verdict.reason ?? "skill write blocked" };
@@ -2475,16 +2598,11 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
 
     // Allowed — but provenance is only written once the tool actually succeeded.
     const resolved = realpathNearestExisting(path.resolve(ctx.cwd, target)) ?? path.resolve(ctx.cwd, target);
-    const root = ownedSkillsRoot(ctx.cwd);
-    const file = verdict.file ?? "SKILL.md";
-    const snapshotKey = root ? path.join(root, verdict.skill, file) : resolved;
-    const existsInSnapshot =
-      turnSnapshot.get(snapshotKey) !== undefined || turnSnapshot.get(resolved) !== undefined;
     pendingWrites.set(String((event as any)?.toolCallId ?? ""), {
       skill: verdict.skill,
-      file,
+      file: verdict.file ?? "SKILL.md",
       path: resolved,
-      written: !existsInSnapshot,
+      written: !fs.existsSync(resolved),
     });
     log.debug("skill_write_allowed", { skill: verdict.skill, file: verdict.file ?? "SKILL.md" });
     return;
@@ -2492,13 +2610,17 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
 
   // ── mid-turn nudge + provenance on success ───────────────────────────────
   pi.on("tool_result", (event, ctx) => {
+    const liveSkills = getLiveSkills();
     const input = (event as any)?.input;
     const target = pathFromInput(input);
     if (target) {
-      const skill = ownedSkillName(ctx.cwd, target);
-      if (skill && isMarkedSkillNamed(ctx.cwd, skill)) usedSkills.add(skill);
+      const matched = matchRegisteredSkill(ctx.cwd, path.resolve(ctx.cwd, target), liveSkills);
+      if (matched && isAdoptableSkill(matched.skill)) {
+        const content = readSkillContent(matched.skill.filePath);
+        if (content !== null && isMarkedSkill(content)) usedSkills.add(matched.skill.name);
+      }
     } else if (typeof (input as any)?.command === "string") {
-      for (const name of markedSkillsInText(ctx.cwd, (input as any).command)) usedSkills.add(name);
+      for (const name of markedSkillsInText(ctx.cwd, (input as any).command, liveSkills)) usedSkills.add(name);
     }
 
     const callId = String((event as any)?.toolCallId ?? "");
@@ -2508,11 +2630,13 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
       if ((event as any)?.isError === true) {
         log.warn("skill_write_failed_not_recorded", { skill: pending.skill, file: pending.file });
       } else {
+        const action: SkillChangeAction = pending.written ? "written" : "patched";
+        recordedChangesThisTurn.push({ skill: pending.skill, action, file: pending.file });
         const sessionId = (ctx as any)?.sessionManager?.getSessionId?.() ?? "";
         const ok = appendProvenance(ctx.cwd, [
           {
             skill: pending.skill,
-            action: pending.written ? "written" : "patched",
+            action,
             file: pending.file,
             sessionId,
             turnId: turnIdOf(sessionId),
@@ -2520,8 +2644,7 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
           },
         ]);
         if (!ok) provenanceFailed = true;
-        else recordedThisTurn.add(pending.path);
-        log.info("skill_write_recorded", { skill: pending.skill, action: pending.written ? "written" : "patched" });
+        log.info("skill_write_recorded", { skill: pending.skill, action });
       }
     }
 
@@ -2562,22 +2685,23 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
 
   // ── /adopt-skill ─────────────────────────────────────────────────────────
   pi.registerCommand("adopt-skill", {
-    description: "Mark a project skill as maintained (skill-maintenance: auto) so agents may patch it",
-    getArgumentCompletions: (prefix: string) => completeUnmarkedSkills(currentCwd, prefix),
+    description: "Mark a skill as maintained (skill-maintenance: auto) so agents may patch it",
+    getArgumentCompletions: (prefix: string) => completeUnmarkedSkills(currentCwd, prefix, getLiveSkills()),
     handler: async (args, ctx) => {
       currentCwd = ctx.cwd;
+      const liveSkills = getLiveSkills();
       const name = (args ?? "").trim().split(/\s+/)[0] ?? "";
       if (!name) {
-        const available = listUnmarkedSkills(ctx.cwd);
+        const available = listUnmarkedSkills(ctx.cwd, liveSkills);
         ctx.ui.notify(
           available.length > 0
-            ? `Usage: /adopt-skill <name>. Unmarked project skills: ${available.join(", ")}`
-            : "Usage: /adopt-skill <name>. Every project skill is already maintained.",
+            ? `Usage: /adopt-skill <name>. Unmarked skills: ${available.join(", ")}`
+            : "Usage: /adopt-skill <name>. Every adoptable skill is already maintained.",
           "info",
         );
         return;
       }
-      const result = adoptSkill(ctx.cwd, name);
+      const result = adoptSkill(ctx.cwd, name, liveSkills);
       ctx.ui.notify(result.message, result.ok ? "info" : "warning");
     },
   });

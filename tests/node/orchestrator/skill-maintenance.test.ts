@@ -24,9 +24,10 @@ import {
   diffSkillTree,
   formatSkillReviewNotice,
   incomingText,
+  isAdoptableSkill,
   isMarkedSkill,
   isOwnedSkillPath,
-  listOwnedSkills,
+  isPackageSkillPath,
   listUnmarkedSkills,
   MAINTAINER_INSTRUCTION,
   MARKER_LINE,
@@ -37,10 +38,11 @@ import {
   readSkillFile,
   realpathNearestExisting,
   registerSkillMaintenance,
-  safeSymlinkedSkillInfo,
   skillAreaOf,
+  skillsFromCommands,
   snapshotSkillTree,
   stampSkill,
+  type RegisteredSkillInfo,
 } from "../../../extensions/orchestrator/skill-maintenance.js";
 import { getPiLogPath, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -1552,103 +1554,43 @@ describe("/adopt-skill", () => {
     assert.match(result.message, /not a skill name/);
   });
 
-  it("refuses unsafe symlinked skills without touching their targets", () => {
+  it("adopts a symlinked shared project skill pointing to a real skill directory", () => {
     const { cwd, root } = project();
-    const fakeHome = tempDir("skill-maint-unsafe-home-");
-    const originalHome = process.env.HOME;
-    process.env.HOME = fakeHome;
-    try {
-      // 1. Project .agents/skills
-      const projAgentsDir = path.join(cwd, ".agents", "skills", "proj-agent");
-      fs.mkdirSync(projAgentsDir, { recursive: true });
-      fs.writeFileSync(path.join(projAgentsDir, "SKILL.md"), UNMARKED);
-      fs.symlinkSync(projAgentsDir, path.join(root, "link-proj-agents"));
+    const outside = tempDir("skill-maint-outside-");
+    const sharedDir = path.join(outside, "shared");
+    fs.mkdirSync(sharedDir, { recursive: true });
+    fs.writeFileSync(path.join(sharedDir, "SKILL.md"), UNMARKED);
+    fs.symlinkSync(sharedDir, path.join(root, "linked"));
 
-      // 2. ~/.pi/agent/skills
-      const piGlobalDir = path.join(fakeHome, ".pi", "agent", "skills", "pi-global");
-      fs.mkdirSync(piGlobalDir, { recursive: true });
-      fs.writeFileSync(path.join(piGlobalDir, "SKILL.md"), UNMARKED);
-      fs.symlinkSync(piGlobalDir, path.join(root, "link-pi-global"));
-
-      // 3. ~/.agents/skills
-      const agentsGlobalDir = path.join(fakeHome, ".agents", "skills", "agents-global");
-      fs.mkdirSync(agentsGlobalDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsGlobalDir, "SKILL.md"), UNMARKED);
-      fs.symlinkSync(agentsGlobalDir, path.join(root, "link-agents-global"));
-
-      // 4. node_modules
-      const pkgDir = path.join(cwd, "node_modules", "some-pkg", "skills", "pkg-skill");
-      fs.mkdirSync(pkgDir, { recursive: true });
-      fs.writeFileSync(path.join(pkgDir, "SKILL.md"), UNMARKED);
-      fs.symlinkSync(pkgDir, path.join(root, "link-pkg"));
-
-      // 5. Dot-dir under $HOME (~/.ssh)
-      const sshDir = path.join(fakeHome, ".ssh");
-      fs.mkdirSync(sshDir, { recursive: true });
-      fs.writeFileSync(path.join(sshDir, "SKILL.md"), UNMARKED);
-      fs.symlinkSync(sshDir, path.join(root, "link-dotdir"));
-
-      // 6. Dangling symlink
-      fs.symlinkSync(path.join(tempDir("skill-maint-dangling-"), "missing"), path.join(root, "link-dangling"));
-
-      // 7. Directory missing SKILL.md
-      const noSkillMdDir = tempDir("skill-maint-no-skillmd-");
-      fs.symlinkSync(noSkillMdDir, path.join(root, "link-no-skillmd"));
-
-      // 8. Directory whose SKILL.md is itself a symlink
-      const symlinkedMdDir = tempDir("skill-maint-sym-md-");
-      const realOutsideMd = path.join(tempDir("skill-maint-real-md-"), "SKILL.md");
-      fs.writeFileSync(realOutsideMd, UNMARKED);
-      fs.symlinkSync(realOutsideMd, path.join(symlinkedMdDir, "SKILL.md"));
-      fs.symlinkSync(symlinkedMdDir, path.join(root, "link-sym-md"));
-
-      for (const name of [
-        "link-proj-agents",
-        "link-pi-global",
-        "link-agents-global",
-        "link-pkg",
-        "link-dotdir",
-        "link-dangling",
-        "link-no-skillmd",
-        "link-sym-md",
-      ]) {
-        const result = adoptSkill(cwd, name);
-        assert.equal(result.ok, false, name);
-        assert.match(result.message, /symlink|does not resolve/, name);
-      }
-
-      assert.equal(fs.readFileSync(path.join(projAgentsDir, "SKILL.md"), "utf-8"), UNMARKED);
-      assert.equal(fs.readFileSync(path.join(piGlobalDir, "SKILL.md"), "utf-8"), UNMARKED);
-      assert.equal(fs.readFileSync(path.join(agentsGlobalDir, "SKILL.md"), "utf-8"), UNMARKED);
-      assert.equal(fs.readFileSync(path.join(pkgDir, "SKILL.md"), "utf-8"), UNMARKED);
-      assert.equal(fs.readFileSync(path.join(sshDir, "SKILL.md"), "utf-8"), UNMARKED);
-      assert.equal(fs.readFileSync(realOutsideMd, "utf-8"), UNMARKED);
-    } finally {
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-    }
+    const result = adoptSkill(cwd, "linked");
+    assert.equal(result.ok, true);
+    assert.match(result.message, /now maintained/);
+    assert.equal(isMarkedSkill(fs.readFileSync(path.join(sharedDir, "SKILL.md"), "utf-8")), true);
   });
 
-  it("refuses a skill that lives outside the project", () => {
-    const { cwd } = project();
-    const fakeHome = tempDir("skill-maint-home-");
-    fs.mkdirSync(path.join(fakeHome, ".agents", "skills", "elsewhere"), { recursive: true });
-    fs.writeFileSync(path.join(fakeHome, ".agents", "skills", "elsewhere", "SKILL.md"), UNMARKED);
-    const originalHome = process.env.HOME;
-    process.env.HOME = fakeHome;
-    try {
-      const result = adoptSkill(cwd, "elsewhere");
-      assert.equal(result.ok, false);
-      assert.match(result.message, /copy it into .* first/);
-    } finally {
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-    }
+  it("refuses a dangling symlink and a link-to-file under .pi/skills", () => {
+    const { cwd, root } = project();
+    const outside = tempDir("skill-maint-outside-");
+    const plainFile = path.join(outside, "notes.md");
+    fs.writeFileSync(plainFile, UNMARKED);
+    fs.symlinkSync(path.join(outside, "does-not-exist"), path.join(root, "dangling"));
+    fs.symlinkSync(plainFile, path.join(root, "link-to-file"));
+
+    const danglingRes = adoptSkill(cwd, "dangling");
+    assert.equal(danglingRes.ok, false);
+    assert.match(danglingRes.message, /dangling|symlink/);
+
+    const fileRes = adoptSkill(cwd, "link-to-file");
+    assert.equal(fileRes.ok, false);
+    assert.match(fileRes.message, /dangling|symlink/);
+    assert.equal(fs.readFileSync(plainFile, "utf-8"), UNMARKED);
   });
 
-  it("reports a name that does not exist in the project", () => {
+  it("reports a name that does not exist in loaded or project skills", () => {
     const { cwd } = project();
-    assert.match(adoptSkill(cwd, "definitely-missing").message, /No project skill named/);
+    const result = adoptSkill(cwd, "definitely-missing");
+    assert.equal(result.ok, false);
+    assert.match(result.message, /No skill named "definitely-missing"/);
   });
 
   it("offers only unmarked project skills to autocomplete", () => {
@@ -1656,10 +1598,12 @@ describe("/adopt-skill", () => {
     writeSkill(root, "marked", MARKED);
     writeSkill(root, "unmarked", UNMARKED);
     assert.deepEqual(listUnmarkedSkills(cwd), ["unmarked"]);
+    const completions = completeUnmarkedSkills(cwd, "unm");
     assert.deepEqual(
-      completeUnmarkedSkills(cwd, "unm").map((item) => item.value),
+      completions.map((item) => item.value),
       ["unmarked"],
     );
+    assert.equal(completions[0].description, "project — mark for maintenance");
     assert.deepEqual(completeUnmarkedSkills(cwd, "zzz"), []);
   });
 });
@@ -1774,7 +1718,7 @@ interface Harness {
   emit: (event: string, data?: any) => Promise<any>;
 }
 
-function harness(cwd: string): Harness {
+function harness(cwd: string, getCommands?: () => any[]): Harness {
   const handlers = new Map<string, Function[]>();
   const messages: Harness["messages"] = [];
   const commands = new Map<string, any>();
@@ -1788,6 +1732,7 @@ function harness(cwd: string): Harness {
     registerCommand(name: string, options: any) {
       commands.set(name, options);
     },
+    ...(getCommands ? { getCommands } : {}),
   };
   registerSkillMaintenance(pi);
   const ctx = {
@@ -2295,254 +2240,297 @@ describe("second-round findings (Qodo #1079)", () => {
   });
 });
 
-describe("symlinked shared project skills (#1155)", () => {
-  function sharedSetup(content = UNMARKED) {
-    const { cwd, root } = project();
-    const sharedRoot = tempDir("skill-maint-shared-");
-    const realDir = path.join(sharedRoot, "jira-pr-tickets");
-    fs.mkdirSync(path.join(realDir, "references"), { recursive: true });
-    const realSkillMd = path.join(realDir, "SKILL.md");
-    fs.writeFileSync(realSkillMd, content);
-    const realHelper = path.join(realDir, "fetch.sh");
-    fs.writeFileSync(realHelper, "#!/bin/sh\necho ok\n");
-    const linkDir = path.join(root, "jira-pr-tickets");
-    fs.symlinkSync(realDir, linkDir);
-    return { cwd, root, sharedRoot, realDir, realSkillMd, realHelper, linkDir };
+describe("pi.getCommands() multi-scope & symlinked skills (#1155)", () => {
+  function skillCmd(
+    name: string,
+    filePath: string,
+    scope: "project" | "user" | "temporary" = "project",
+    origin: "package" | "top-level" = "top-level",
+    baseDir?: string,
+  ) {
+    return {
+      name: `skill:${name}`,
+      source: "skill",
+      sourceInfo: { path: filePath, baseDir: baseDir ?? path.dirname(filePath), scope, origin },
+    };
   }
 
-  it("lists unmarked safe symlinked skills in /adopt-skill while excluding unsafe symlinks", () => {
-    const { cwd, root } = sharedSetup(UNMARKED);
-    const fakeHome = tempDir("skill-maint-sym-home-");
-    const originalHome = process.env.HOME;
-    process.env.HOME = fakeHome;
-    try {
-      // Safe skill under ~/work/skills/...
-      const workSkillDir = path.join(fakeHome, "work", "skills", "work-shared");
-      fs.mkdirSync(workSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(workSkillDir, "SKILL.md"), UNMARKED);
-      fs.symlinkSync(workSkillDir, path.join(root, "work-shared"));
-
-      // Unsafe: global, dotfile, node_modules, dangling, non-skill dir
-      const globalDir = path.join(fakeHome, ".agents", "skills", "global-x");
-      fs.mkdirSync(globalDir, { recursive: true });
-      fs.writeFileSync(path.join(globalDir, "SKILL.md"), UNMARKED);
-      fs.symlinkSync(globalDir, path.join(root, "bad-global"));
-
-      const dotDir = path.join(fakeHome, ".config", "secret-skill");
-      fs.mkdirSync(dotDir, { recursive: true });
-      fs.writeFileSync(path.join(dotDir, "SKILL.md"), UNMARKED);
-      fs.symlinkSync(dotDir, path.join(root, "bad-dot"));
-
-      const noSkillDir = tempDir("skill-maint-noskill-");
-      fs.symlinkSync(noSkillDir, path.join(root, "bad-noskill"));
-      fs.symlinkSync(path.join(noSkillDir, "dangling"), path.join(root, "bad-dangling"));
-
-      assert.deepEqual(listOwnedSkills(cwd), ["jira-pr-tickets", "work-shared"]);
-      assert.deepEqual(listUnmarkedSkills(cwd), ["jira-pr-tickets", "work-shared"]);
-      assert.deepEqual(
-        completeUnmarkedSkills(cwd, "jira").map((item) => item.value),
-        ["jira-pr-tickets"],
-      );
-    } finally {
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-    }
-  });
-
-  it("blocks agent writes, edits, and shell writes before adoption without auto-adopting", () => {
-    const { cwd, linkDir } = sharedSetup(UNMARKED);
-    const linkMd = path.join(linkDir, "SKILL.md");
-    const linkAux = path.join(linkDir, "references", "guide.md");
-
-    assert.equal(isOwnedSkillPath(cwd, linkMd), false);
-    assert.equal(ownedSkillName(cwd, linkMd), null);
-
-    // Agent write (even with marker) and edit (even adding marker) are blocked
-    const writeUnmarked = classifySkillWrite(cwd, linkMd, write(UNMARKED));
-    assert.equal(writeUnmarked.allow, false);
-    assert.ok(!writeUnmarked.autoAdopt);
-    assert.match(writeUnmarked.reason ?? "", /\/adopt-skill jira-pr-tickets/);
-
-    const writeMarked = classifySkillWrite(cwd, linkMd, write(MARKED));
-    assert.equal(writeMarked.allow, false);
-    assert.ok(!writeMarked.autoAdopt);
-
-    const editAddMarker = classifySkillWrite(cwd, linkMd, {
-      edits: [
-        {
-          oldText: 'description: "Search with the local instance"\n',
-          newText: `description: "Search with the local instance"\n${MARKER_LINE}\n`,
-        },
-      ],
-    });
-    assert.equal(editAddMarker.allow, false);
-    assert.match(editAddMarker.reason ?? "", /\/adopt-skill jira-pr-tickets/);
-
-    const writeAux = classifySkillWrite(cwd, linkAux, write("# Guide\n"));
-    assert.equal(writeAux.allow, false);
-
-    // Shell writes are blocked, while reads and helper scripts are allowed
-    assert.equal(bashSkillVerdict(cwd, `echo x >> ${linkMd}`)?.block, true);
-    assert.equal(bashSkillVerdict(cwd, `sed -i 's/a/b/' ${linkMd}`)?.block, true);
-    assert.equal(bashSkillVerdict(cwd, `cat ${linkMd}`), null);
-    assert.equal(bashSkillVerdict(cwd, `bash ${path.join(linkDir, "fetch.sh")}`), null);
-
-    // Unmarked symlinked skill is excluded from snapshot
-    assert.equal(snapshotSkillTree(ownedSkillsRoot(cwd)).size, 0);
-  });
-
-  it("adopts a safe symlinked skill via /adopt-skill and stamps its real target SKILL.md", () => {
-    const { cwd, realSkillMd } = sharedSetup(UNMARKED);
-    const result = adoptSkill(cwd, "jira-pr-tickets");
-    assert.equal(result.ok, true);
-    assert.match(result.message, /now maintained/);
-
-    const stamped = fs.readFileSync(realSkillMd, "utf-8");
-    assert.equal(isMarkedSkill(stamped), true);
-    assert.ok(stamped.includes(MAINTAINER_INSTRUCTION));
-    assert.deepEqual(listUnmarkedSkills(cwd), []);
-
-    // Idempotent
-    const second = adoptSkill(cwd, "jira-pr-tickets");
-    assert.equal(second.ok, true);
-    assert.match(second.message, /already maintained/);
-    assert.equal(fs.readFileSync(realSkillMd, "utf-8"), stamped);
-  });
-
-  it("allows write, edit, bash, snapshot, diff, and provenance after adoption", async () => {
-    const { cwd, realSkillMd, linkDir } = sharedSetup(UNMARKED);
-    assert.equal(adoptSkill(cwd, "jira-pr-tickets").ok, true);
-
-    const linkMd = path.join(linkDir, "SKILL.md");
-    const linkAux = path.join(linkDir, "references", "guide.md");
-    const linkHelper = path.join(linkDir, "fetch.sh");
-
-    assert.equal(isOwnedSkillPath(cwd, linkMd), true);
-    assert.equal(isOwnedSkillPath(cwd, linkAux), true);
-    assert.equal(ownedSkillName(cwd, linkMd), "jira-pr-tickets");
-    assert.equal(isMarkedSkill(readSkillFile(cwd, "jira-pr-tickets") ?? ""), true);
-
-    // write and edit on SKILL.md and auxiliary files
-    const editVerdict = classifySkillWrite(cwd, linkMd, {
-      edits: [{ oldText: "Run the query.", newText: "Run the query with --json." }],
-    });
-    assert.equal(editVerdict.allow, true);
-    assert.equal(editVerdict.skill, "jira-pr-tickets");
-    assert.equal(editVerdict.file, "SKILL.md");
-
-    const writeMarkedVerdict = classifySkillWrite(cwd, linkMd, write(fs.readFileSync(realSkillMd, "utf-8")));
-    assert.equal(writeMarkedVerdict.allow, true);
-
-    const auxVerdict = classifySkillWrite(cwd, linkAux, write("# Guide\n"));
-    assert.equal(auxVerdict.allow, true);
-    assert.equal(auxVerdict.skill, "jira-pr-tickets");
-    assert.equal(auxVerdict.file, path.join("references", "guide.md"));
-
-    // bash commands (helper script, chmod, redirect, sed -i, cp -t)
-    assert.equal(bashSkillVerdict(cwd, `bash ${linkHelper}`), null);
-    assert.equal(bashSkillVerdict(cwd, `chmod +x ${linkHelper}`), null);
-    assert.equal(bashSkillVerdict(cwd, `echo '# note' >> ${linkHelper}`), null);
-    assert.equal(bashSkillVerdict(cwd, `sed -i 's/Run/Execute/' ${linkMd}`), null);
-    assert.equal(bashSkillVerdict(cwd, `cp -t ${linkDir} /tmp/extra.md`), null);
-    // Mixed command touching an unmarked skill stays blocked
-    assert.equal(bashSkillVerdict(cwd, `bash ${linkHelper} && rm ~/.agents/skills/x/SKILL.md`)?.block, true);
-
-    // snapshot + diff
-    const owned = ownedSkillsRoot(cwd);
-    const before = snapshotSkillTree(owned);
-    assert.ok(before.has(linkMd));
-    assert.ok(before.has(linkHelper));
-
-    fs.writeFileSync(realSkillMd, `${fs.readFileSync(realSkillMd, "utf-8")}\nupdated\n`);
-    fs.writeFileSync(linkAux, "# New guide\n");
-    const changes = diffSkillTree(owned, before, snapshotSkillTree(owned));
-    assert.deepEqual(changes, [
-      { skill: "jira-pr-tickets", action: "patched", file: path.join("references", "guide.md") },
-      { skill: "jira-pr-tickets", action: "patched", file: "SKILL.md" },
+  it("extracts skill entries from pi.getCommands() and ignores non-skills", () => {
+    const { cwd, root } = project();
+    const skillMd = writeSkill(root, "alpha", UNMARKED);
+    const parsed = skillsFromCommands([
+      { name: "adopt-skill", source: "extension", sourceInfo: { path: "/ext/a.ts", scope: "user", origin: "package" } },
+      { name: "create-skill", source: "prompt", sourceInfo: { path: "/prompts/create.md", scope: "user", origin: "package" } },
+      { name: "skill:", source: "skill", sourceInfo: { path: skillMd, scope: "project", origin: "top-level" } },
+      { name: "skill:no-path", source: "skill", sourceInfo: {} },
+      // Real Pi package-manager sets sourceInfo.baseDir to `<project>/.pi`, not the individual skill dir.
+      skillCmd("alpha", skillMd, "project", "top-level", path.join(cwd, ".pi")),
+      skillCmd("pkg-skill", "/x/node_modules/pkg/skills/pkg-skill/SKILL.md", "user", "package", "/x/node_modules/pkg"),
     ]);
 
-    // End-to-end harness provenance + turn-end notice
-    const h = harness(cwd);
-    await h.emit("session_start");
-    await h.emit("turn_start", { turnIndex: 1 });
-    const tc = await h.emit("tool_call", {
-      toolCallId: "sym-1",
-      toolName: "edit",
-      input: { path: linkMd, edits: [{ oldText: "updated", newText: "updated again" }] },
+    assert.equal(parsed.length, 2);
+    assert.deepEqual(parsed[0], {
+      name: "alpha",
+      filePath: path.resolve(skillMd),
+      baseDir: path.dirname(path.resolve(skillMd)),
+      scope: "project",
+      origin: "top-level",
     });
-    assert.equal(tc, undefined);
-    fs.writeFileSync(realSkillMd, fs.readFileSync(realSkillMd, "utf-8").replace("updated", "updated again"));
-    await h.emit("tool_result", { toolCallId: "sym-1", toolName: "edit", input: { path: linkMd }, isError: false });
+    assert.equal(isAdoptableSkill(parsed[0]), true);
+    assert.equal(isAdoptableSkill(parsed[1]), false);
+    assert.equal(isPackageSkillPath(parsed[1].filePath), true);
+  });
+
+  it("does not leak skill matching across sibling files when Pi passes scope root as sourceInfo.baseDir", () => {
+    const { cwd, root } = project();
+    const markedFile = writeSkill(root, "marked", MARKED);
+    const unmarkedFile = writeSkill(root, "unmarked", UNMARKED);
+    const skills = skillsFromCommands([
+      skillCmd("marked", markedFile, "project", "top-level", path.join(cwd, ".pi")),
+      skillCmd("unmarked", unmarkedFile, "project", "top-level", path.join(cwd, ".pi")),
+    ]);
+
+    assert.equal(classifySkillWrite(cwd, unmarkedFile, write(UNMARKED), skills).allow, false);
+    assert.equal(classifySkillWrite(cwd, markedFile, write(MARKED), skills).allow, true);
+  });
+
+  it("supports symlinked shared skills across autocomplete, adopt, write/edit, bash, nudge, provenance, and notice", async () => {
+    const { cwd, root } = project();
+    const sharedRoot = tempDir("skill-maint-shared-");
+    const targetDir = path.join(sharedRoot, "jira-pr-tickets");
+    fs.mkdirSync(path.join(targetDir, "references"), { recursive: true });
+    const targetSkillMd = path.join(targetDir, "SKILL.md");
+    const targetHelper = path.join(targetDir, "helper.sh");
+    fs.writeFileSync(targetSkillMd, UNMARKED);
+    fs.writeFileSync(targetHelper, "#!/bin/sh\necho ok\n");
+
+    const linkDir = path.join(root, "jira-pr-tickets");
+    fs.symlinkSync(targetDir, linkDir);
+    const linkSkillMd = path.join(linkDir, "SKILL.md");
+    const linkAux = path.join(linkDir, "references", "guide.md");
+    const targetAux = path.join(targetDir, "references", "guide.md");
+
+    const liveCmds = [skillCmd("jira-pr-tickets", linkSkillMd, "project", "top-level")];
+    const skills = skillsFromCommands(liveCmds);
+
+    // 1. Listed in /adopt-skill autocomplete when unmarked.
+    const comps = completeUnmarkedSkills(cwd, "jira", skills);
+    assert.deepEqual(comps, [
+      { value: "jira-pr-tickets", label: "jira-pr-tickets", description: "project — mark for maintenance" },
+    ]);
+
+    // 2. Blocked for write/edit/bash via BOTH symlink path AND direct target path before adoption.
+    assert.equal(classifySkillWrite(cwd, linkSkillMd, write(UNMARKED), skills).allow, false);
+    assert.equal(classifySkillWrite(cwd, targetSkillMd, write(UNMARKED), skills).allow, false);
+    assert.equal(classifySkillWrite(cwd, linkAux, write("# guide"), skills).allow, false);
+    assert.equal(classifySkillWrite(cwd, targetAux, write("# guide"), skills).allow, false);
+    assert.equal(bashSkillVerdict(cwd, `echo hi >> ${linkSkillMd}`, skills)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `echo hi >> ${targetSkillMd}`, skills)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `echo hi >> ${targetHelper}`, skills)?.block, true);
+    // Running the helper script of an unmarked symlinked skill is allowed (read/script-only).
+    assert.equal(bashSkillVerdict(cwd, `bash ${linkDir}/helper.sh`, skills), null);
+
+    // 3. Adopt via adoptSkill.
+    const adopted = adoptSkill(cwd, "jira-pr-tickets", skills);
+    assert.equal(adopted.ok, true);
+    assert.equal(isMarkedSkill(fs.readFileSync(targetSkillMd, "utf-8")), true);
+    assert.deepEqual(completeUnmarkedSkills(cwd, "jira", skills), []);
+
+    // 4. Allowed via BOTH symlink path AND direct target path after adoption.
+    assert.equal(classifySkillWrite(cwd, linkSkillMd, { edits: [{ oldText: "Run the query.", newText: "Run it." }] }, skills).allow, true);
+    assert.equal(classifySkillWrite(cwd, targetSkillMd, { edits: [{ oldText: "Run the query.", newText: "Run it." }] }, skills).allow, true);
+    assert.equal(classifySkillWrite(cwd, linkAux, write("# guide"), skills).allow, true);
+    assert.equal(classifySkillWrite(cwd, targetAux, write("# guide"), skills).allow, true);
+    assert.equal(bashSkillVerdict(cwd, `echo hi >> ${linkSkillMd}`, skills), null);
+    assert.equal(bashSkillVerdict(cwd, `echo hi >> ${targetSkillMd}`, skills), null);
+    assert.equal(bashSkillVerdict(cwd, `chmod +x ${targetHelper} && ${targetHelper}`, skills), null);
+
+    // 5. Full hook lifecycle: mid-turn nudge, provenance, and turn-end notice.
+    const h = harness(cwd, () => liveCmds);
+    await h.emit("session_start");
+    await h.emit("input", { text: "/skill:jira-pr-tickets create ticket" });
+    await h.emit("turn_start", { turnIndex: 1 });
+
+    // Tool failure nudges about the adopted symlinked skill.
+    await h.emit("tool_result", { toolCallId: "e1", toolName: "read", input: { path: targetSkillMd }, isError: true });
+    const nudges = h.messages.filter((m) => m.customType === "skill-maintenance-nudge");
+    assert.equal(nudges.length, 1);
+    assert.match(nudges[0].content, /`jira-pr-tickets` just failed/);
+
+    // Patching via target path succeeds, records provenance, and emits turn-end notice.
+    const editCall = await h.emit("tool_call", {
+      toolCallId: "w1",
+      toolName: "edit",
+      input: { path: targetSkillMd, edits: [{ oldText: "Run the query.", newText: "Run it." }] },
+    });
+    assert.equal(editCall, undefined);
+    await h.emit("tool_result", { toolCallId: "w1", toolName: "edit", input: { path: targetSkillMd }, isError: false });
     await h.emit("turn_end", { turnIndex: 1 });
 
-    const [record] = provenanceRecords(cwd);
+    const [prov] = provenanceRecords(cwd);
     assert.deepEqual(
-      { skill: record.skill, action: record.action, file: record.file },
+      { skill: prov.skill, action: prov.action, file: prov.file },
       { skill: "jira-pr-tickets", action: "patched", file: "SKILL.md" },
     );
     const notices = h.messages.filter((m) => m.customType === "skill-maintenance");
     assert.equal(notices.length, 1);
-    assert.match(notices[0].content, /Skill 'jira-pr-tickets' patched/);
+    assert.equal(notices[0].content, "\u{1F4D9} Self-improvement review: Skill 'jira-pr-tickets' patched");
   });
 
-  it("blocks nested symlink escapes inside an adopted symlinked skill", () => {
-    const { cwd, realDir, linkDir } = sharedSetup(MARKED);
-    const outside = tempDir("skill-maint-nested-escape-");
-    const secret = path.join(outside, "secret.txt");
-    fs.writeFileSync(secret, "secret\n");
-    fs.symlinkSync(outside, path.join(realDir, "escape"));
-    fs.symlinkSync(path.join(realDir, "references"), path.join(realDir, "loop-ref"));
+  it("supports user-global and project .agents/skills skills via pi.getCommands() including ~/ bash paths", async () => {
+    const fakeHome = tempDir("skill-maint-global-home-");
+    const savedHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      const { cwd } = project();
+      const piUserDir = path.join(fakeHome, ".pi", "agent", "skills", "homeassistant");
+      const agentsUserDir = path.join(fakeHome, ".agents", "skills", "fallow");
+      const projAgentsDir = path.join(cwd, ".agents", "skills", "local-agent-skill");
+      for (const dir of [piUserDir, agentsUserDir, projAgentsDir]) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, "SKILL.md"), UNMARKED);
+      }
 
-    const escapeFile = path.join(linkDir, "escape", "secret.txt");
-    const loopFile = path.join(linkDir, "loop-ref", "note.md");
+      const liveCmds = [
+        skillCmd("homeassistant", path.join(piUserDir, "SKILL.md"), "user", "top-level"),
+        skillCmd("fallow", path.join(agentsUserDir, "SKILL.md"), "user", "top-level"),
+        skillCmd("local-agent-skill", path.join(projAgentsDir, "SKILL.md"), "project", "top-level"),
+      ];
+      const skills = skillsFromCommands(liveCmds);
 
-    assert.equal(safeSymlinkedSkillInfo(cwd, escapeFile), null);
-    assert.equal(safeSymlinkedSkillInfo(cwd, loopFile), null);
-    assert.equal(isOwnedSkillPath(cwd, escapeFile), false);
-    assert.equal(isOwnedSkillPath(cwd, loopFile), false);
-    assert.equal(classifySkillWrite(cwd, escapeFile, write("x")).allow, false);
-    assert.equal(classifySkillWrite(cwd, loopFile, write("x")).allow, false);
-    assert.equal(bashSkillVerdict(cwd, `echo x > ${escapeFile}`)?.block, true);
-    assert.equal(bashSkillVerdict(cwd, `bash ${path.join(linkDir, "escape", "run.sh")}`)?.block, true);
+      // Autocomplete shows scope description for each unmarked skill.
+      const comps = completeUnmarkedSkills(cwd, "", skills);
+      assert.deepEqual(comps, [
+        { value: "fallow", label: "fallow", description: "user — mark for maintenance" },
+        { value: "homeassistant", label: "homeassistant", description: "user — mark for maintenance" },
+        { value: "local-agent-skill", label: "local-agent-skill", description: "project — mark for maintenance" },
+      ]);
 
-    // Snapshot ignores nested symlinks inside realSkillDir
-    const snap = snapshotSkillTree(ownedSkillsRoot(cwd));
-    assert.equal([...snap.keys()].some((k) => k.includes("escape") || k.includes("loop-ref")), false);
+      // Blocked until adopted.
+      assert.equal(classifySkillWrite(cwd, path.join(piUserDir, "SKILL.md"), write(UNMARKED), skills).allow, false);
+      assert.equal(bashSkillVerdict(cwd, "echo note >> ~/.pi/agent/skills/homeassistant/SKILL.md", skills)?.block, true);
+      assert.equal(classifySkillWrite(cwd, path.join(projAgentsDir, "SKILL.md"), write(UNMARKED), skills).allow, false);
+
+      // Adopt homeassistant and local-agent-skill.
+      assert.equal(adoptSkill(cwd, "homeassistant", skills).ok, true);
+      assert.equal(adoptSkill(cwd, "local-agent-skill", skills).ok, true);
+
+      // Adopted user-global skill works with write/edit AND ~/ bash paths; unmarked fallow stays blocked!
+      assert.equal(classifySkillWrite(cwd, path.join(piUserDir, "SKILL.md"), write(MARKED), skills).allow, true);
+      assert.equal(classifySkillWrite(cwd, path.join(piUserDir, "notes.md"), write("ok"), skills).allow, true);
+      assert.equal(bashSkillVerdict(cwd, "echo note >> ~/.pi/agent/skills/homeassistant/SKILL.md", skills), null);
+      assert.equal(bashSkillVerdict(cwd, "sed -i 's/a/b/' ~/.pi/agent/skills/homeassistant/SKILL.md", skills), null);
+      assert.equal(bashSkillVerdict(cwd, "echo note >> ~/.agents/skills/fallow/SKILL.md", skills)?.block, true);
+      assert.equal(
+        bashSkillVerdict(
+          cwd,
+          "echo a >> ~/.pi/agent/skills/homeassistant/SKILL.md && echo b >> ~/.agents/skills/fallow/SKILL.md",
+          skills,
+        )?.block,
+        true,
+      );
+      assert.equal(classifySkillWrite(cwd, path.join(projAgentsDir, "SKILL.md"), write(MARKED), skills).allow, true);
+
+      // Full hook integration: adopted user-global skill emits turn-end notice and provenance.
+      const h = harness(cwd, () => liveCmds);
+      await h.emit("session_start");
+      await h.emit("turn_start", { turnIndex: 2 });
+      const skillFile = path.join(piUserDir, "SKILL.md");
+      assert.equal(
+        await h.emit("tool_call", { toolCallId: "g1", toolName: "write", input: { path: skillFile, content: MARKED } }),
+        undefined,
+      );
+      await h.emit("tool_result", { toolCallId: "g1", toolName: "write", input: { path: skillFile }, isError: false });
+      await h.emit("turn_end", { turnIndex: 2 });
+
+      const notices = h.messages.filter((m) => m.customType === "skill-maintenance");
+      assert.equal(notices.length, 1);
+      assert.equal(notices[0].content, "\u{1F4D9} Self-improvement review: Skill 'homeassistant' patched");
+      assert.equal(provenanceRecords(cwd)[0].skill, "homeassistant");
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
   });
 
-  it("blocks system prefixes as symlink targets", () => {
+  it("refuses shipped package skills (origin=package or node_modules, direct or symlinked) even when marked", () => {
     const { cwd, root } = project();
-    fs.symlinkSync("/etc", path.join(root, "etc-link"));
-    assert.equal(safeSymlinkedSkillInfo(cwd, path.join(root, "etc-link", "passwd")), null);
-    assert.equal(adoptSkill(cwd, "etc-link").ok, false);
+    const pkgSkillDir = path.join(tempDir("skill-maint-pkg-"), "node_modules", "pi-orchestrator-config", "skills", "tdd");
+    fs.mkdirSync(pkgSkillDir, { recursive: true });
+    const pkgSkillMd = path.join(pkgSkillDir, "SKILL.md");
+    fs.writeFileSync(pkgSkillMd, MARKED);
+
+    // Also symlink into `.pi/skills/tdd-link` to verify symlink-into-node_modules is refused too.
+    const symlinkToPkg = path.join(root, "tdd-link");
+    fs.symlinkSync(pkgSkillDir, symlinkToPkg);
+
+    // Also a skill marked origin: "package" outside node_modules (e.g. git package install).
+    const gitPkgDir = path.join(tempDir("skill-maint-gitpkg-"), "ponytail");
+    fs.mkdirSync(gitPkgDir, { recursive: true });
+    const gitPkgMd = path.join(gitPkgDir, "SKILL.md");
+    fs.writeFileSync(gitPkgMd, MARKED);
+
+    const skills: RegisteredSkillInfo[] = skillsFromCommands([
+      skillCmd("tdd", pkgSkillMd, "user", "package"),
+      skillCmd("tdd-link", path.join(symlinkToPkg, "SKILL.md"), "project", "top-level"),
+      skillCmd("ponytail", gitPkgMd, "user", "package"),
+    ]);
+
+    assert.deepEqual(completeUnmarkedSkills(cwd, "", skills), []);
+    for (const name of ["tdd", "tdd-link", "ponytail"]) {
+      const res = adoptSkill(cwd, name, skills);
+      assert.equal(res.ok, false, name);
+      assert.match(res.message, /package skill/);
+    }
+    for (const target of [pkgSkillMd, path.join(symlinkToPkg, "SKILL.md"), gitPkgMd]) {
+      assert.equal(classifySkillWrite(cwd, target, write(MARKED), skills).allow, false, target);
+      assert.equal(bashSkillVerdict(cwd, `echo hi >> ${target}`, skills)?.block, true, target);
+    }
   });
 
-  it("guards relative symlinked skill paths from a linked git worktree", () => {
-    const repo = tempDir("skill-maint-wt-sym-repo-");
+  it("guards linked worktree symlink shadowing against borrowing main checkout adoption", () => {
+    const repo = tempDir("skill-maint-wt-shadow-repo-");
     execFileSync("git", ["init", "-q"], { cwd: repo });
     execFileSync("git", ["config", "user.email", "t@example.com"], { cwd: repo });
     execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
     fs.writeFileSync(path.join(repo, "README.md"), "x\n");
     execFileSync("git", ["add", "README.md"], { cwd: repo });
     execFileSync("git", ["commit", "-qm", "init"], { cwd: repo });
-    const worktree = path.join(tempDir("skill-maint-wt-sym-wt-"), "wt");
+    const worktree = path.join(tempDir("skill-maint-wt-shadow-"), "wt");
     execFileSync("git", ["worktree", "add", "-q", worktree], { cwd: repo });
 
-    const sharedDir = path.join(tempDir("skill-maint-wt-shared-"), "jira-pr-tickets");
-    fs.mkdirSync(sharedDir, { recursive: true });
-    fs.writeFileSync(path.join(sharedDir, "SKILL.md"), UNMARKED);
-    fs.mkdirSync(path.join(repo, ".pi", "skills"), { recursive: true });
-    fs.symlinkSync(sharedDir, path.join(repo, ".pi", "skills", "jira-pr-tickets"));
+    // Main checkout has a MARKED skill `shared`.
+    const mainRoot = path.join(repo, ".pi", "skills");
+    fs.mkdirSync(mainRoot, { recursive: true });
+    const mainSkillMd = writeSkill(mainRoot, "shared", MARKED);
 
-    // Unmarked relative path from worktree is blocked
-    const verdictBefore = classifySkillWrite(worktree, ".pi/skills/jira-pr-tickets/SKILL.md", write(MARKED));
-    assert.equal(verdictBefore.allow, false);
-    assert.match(verdictBefore.reason ?? "", /\/adopt-skill jira-pr-tickets/);
+    // Worktree shadows `.pi/skills/shared` with a symlink to an UNMARKED external skill.
+    const outside = tempDir("skill-maint-wt-outside-");
+    const unmarkedDir = path.join(outside, "victim");
+    fs.mkdirSync(unmarkedDir, { recursive: true });
+    fs.writeFileSync(path.join(unmarkedDir, "SKILL.md"), UNMARKED);
+    fs.mkdirSync(path.join(worktree, ".pi", "skills"), { recursive: true });
+    fs.symlinkSync(unmarkedDir, path.join(worktree, ".pi", "skills", "shared"));
 
-    // Adopt from worktree stamps target and unlocks relative writes
-    assert.equal(adoptSkill(worktree, "jira-pr-tickets").ok, true);
-    const verdictAfter = classifySkillWrite(worktree, ".pi/skills/jira-pr-tickets/references/notes.md", write("# Notes\n"));
-    assert.equal(verdictAfter.allow, true);
-    assert.equal(verdictAfter.skill, "jira-pr-tickets");
+    const mainSkills = skillsFromCommands([skillCmd("shared", mainSkillMd, "project", "top-level")]);
+    const wtShadowPath = path.join(worktree, ".pi", "skills", "shared", "SKILL.md");
+    assert.equal(classifySkillWrite(worktree, wtShadowPath, write(UNMARKED), mainSkills).allow, false);
+    assert.equal(bashSkillVerdict(worktree, `echo x >> ${wtShadowPath}`, mainSkills)?.block, true);
+    // Main's own skill remains writable from the worktree.
+    assert.equal(classifySkillWrite(worktree, mainSkillMd, write(MARKED), mainSkills).allow, true);
+  });
+
+  it("keeps brand-new .pi/skills/<name>/SKILL.md auto-adopt working before /reload and handles getCommands errors", async () => {
+    const { cwd, root } = project();
+    const h = harness(cwd, () => {
+      throw new Error("commands unavailable");
+    });
+    await h.emit("session_start");
+    await h.emit("turn_start", { turnIndex: 1 });
+    const freshPath = path.join(root, "brand-new", "SKILL.md");
+    const input = { path: freshPath, content: UNMARKED };
+    const res = await h.emit("tool_call", { toolCallId: "bn1", toolName: "write", input });
+    assert.equal(res, undefined);
+    assert.equal(isMarkedSkill(input.content), true);
   });
 });

@@ -48,8 +48,9 @@ Use `ask_user` with options: `["Global", "Project"]`
 
 Map the response to the path:
 
-- "Global" → create it under `.pi/skills/` and hand the user the copy command (see Step 3): the skill write
-  guard refuses agent writes outside the project, so a global skill is a manual copy, not an agent write
+- "Global" → create it under `.pi/skills/` and hand the user the copy command (see Step 3): brand-new skill
+  writes auto-adopt under `.pi/skills/`, while global skill directories require explicit user creation (once
+  loaded in a session, existing global skills can be opted into maintenance via `/adopt-skill <name>`)
 - "Project" → `.pi/skills/`
 
 Store the resolved path for Step 3.
@@ -69,9 +70,10 @@ Review the current conversation and identify:
 Create the skill file at the project location from Step 1.5:
 
 - **Project:** `.pi/skills/<name>/SKILL.md`
-- **Global:** write it to `.pi/skills/<name>/SKILL.md` first — the skill write guard refuses writes outside the
-  project (`~/.agents/skills/`, `~/.pi/agent/skills/`, package skills), so the agent never writes the global copy
-  itself. Give the user the one-line copy command instead:
+- **Global:** write it to `.pi/skills/<name>/SKILL.md` first — brand-new skill creation happens under
+  `.pi/skills/` (new files under `~/.agents/skills/` or `~/.pi/agent/skills/` are not created directly by an
+  agent, though existing loaded global skills can be adopted with `/adopt-skill <name>`). Give the user the
+  one-line copy command instead:
 
   ```bash
   mkdir -p ~/.agents/skills/<name> && cp -r .pi/skills/<name>/. ~/.agents/skills/<name>/
