@@ -480,21 +480,45 @@ describe("markedSkillsInText", () => {
     assert.deepEqual(markedSkillsInText(cwd, `Ignore \`${path.join(root, "foobar", "run.sh")}\``, skills), []);
   });
 
-  it("emits debug logs for path boundary decisions and markedSkillsInText outcomes", () => {
-    inTempLogHome("path-boundary-log", () => {
+  it("logs skill_path_boundary_skip when a prefix collision fails boundary checks", () => {
+    inTempLogHome("path-boundary-skip-log", () => {
       const { cwd, root } = project();
       const fooFile = writeSkill(root, "foo", MARKED);
       const skills = [makeSkillInfo("foo", fooFile, "project", "top-level")];
 
       assert.deepEqual(markedSkillsInText(cwd, `bash ${path.join(root, "foobar", "run.sh")}`, skills), []);
+
+      const logFile = getPiLogPath("skill-maintenance");
+      assert.ok(logFile);
+      assert.match(fs.readFileSync(logFile, "utf-8"), /skill_path_boundary_skip/);
+    });
+  });
+
+  it("logs skill_path_boundary_match on a matching skill directory", () => {
+    inTempLogHome("path-boundary-match-log", () => {
+      const { cwd, root } = project();
+      const fooFile = writeSkill(root, "foo", MARKED);
+      const skills = [makeSkillInfo("foo", fooFile, "project", "top-level")];
+
       assert.deepEqual(markedSkillsInText(cwd, `Read \`${fooFile}\``, skills), ["foo"]);
 
       const logFile = getPiLogPath("skill-maintenance");
       assert.ok(logFile);
-      const logText = fs.readFileSync(logFile, "utf-8");
-      assert.match(logText, /skill_path_boundary_skip/);
-      assert.match(logText, /skill_path_boundary_match/);
-      assert.match(logText, /marked_skills_in_text/);
+      assert.match(fs.readFileSync(logFile, "utf-8"), /skill_path_boundary_match/);
+    });
+  });
+
+  it("logs marked_skills_in_text summary for each text scan", () => {
+    inTempLogHome("marked-skills-summary-log", () => {
+      const { cwd, root } = project();
+      const fooFile = writeSkill(root, "foo", MARKED);
+      const skills = [makeSkillInfo("foo", fooFile, "project", "top-level")];
+
+      assert.deepEqual(markedSkillsInText(cwd, `Read \`${fooFile}\``, skills), ["foo"]);
+
+      const logFile = getPiLogPath("skill-maintenance");
+      assert.ok(logFile);
+      assert.match(fs.readFileSync(logFile, "utf-8"), /marked_skills_in_text/);
     });
   });
 });
