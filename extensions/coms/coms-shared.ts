@@ -355,13 +355,36 @@ export function pruneStaleRegistry(comsDir?: string): void {
             const socketsDir = path.join(resolvedComsDir, "sockets");
             if (fs.existsSync(socketsDir)) {
                 try {
+                    const isEndpointRegisteredNow = (targetEndpoint: string): boolean => {
+                        let currentDirs: string[];
+                        try { currentDirs = fs.readdirSync(projectsDir); } catch { return false; }
+                        for (const p of currentDirs) {
+                            try {
+                                const pd = path.join(projectsDir, p);
+                                if (!fs.lstatSync(pd).isDirectory()) continue;
+                                const ad = path.join(pd, "agents");
+                                if (!fs.existsSync(ad)) continue;
+                                for (const f of fs.readdirSync(ad)) {
+                                    if (!f.endsWith(".json")) continue;
+                                    try {
+                                        const d = JSON.parse(fs.readFileSync(path.join(ad, f), "utf-8"));
+                                        if (typeof d?.endpoint === "string" && d.endpoint) {
+                                            allEndpoints.add(d.endpoint);
+                                            if (d.endpoint === targetEndpoint) return true;
+                                        }
+                                    } catch {}
+                                }
+                            } catch {}
+                        }
+                        return false;
+                    };
                     // Remove sockets with no registry entry
                     for (const sf of fs.readdirSync(socketsDir)) {
                         if (!sf.endsWith(".sock") && !sf.endsWith(".sock.ping")) continue;
                         const sp = path.join(socketsDir, sf);
                         // For .ping files, check if the parent .sock is in the endpoint set
                         const parentEndpoint = sf.endsWith(".sock.ping") ? sp.slice(0, -5) : sp;
-                        if (!allEndpoints.has(parentEndpoint)) {
+                        if (!allEndpoints.has(parentEndpoint) && !isEndpointRegisteredNow(parentEndpoint)) {
                             try { fs.unlinkSync(sp); } catch {}
                         }
                     }

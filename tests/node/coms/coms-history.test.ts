@@ -153,6 +153,14 @@ describe("queryHistoryRecords", () => {
 		const out = queryHistoryRecords(file, { status: "QuEuEd", limit: 2 });
 		assert.deepEqual(out.map((r) => r.msg_id), ["m4", "m5"]);
 	});
+
+	it("floors fractional limits so the bound still applies", () => {
+		for (let i = 1; i <= 5; i++) {
+			appendHistoryRecord(file, rec({ msg_id: `frac-${i}` }));
+		}
+		const out = queryHistoryRecords(file, { limit: 2.7 });
+		assert.deepEqual(out.map((r) => r.msg_id), ["frac-4", "frac-5"]);
+	});
 });
 
 describe("history rotation", () => {

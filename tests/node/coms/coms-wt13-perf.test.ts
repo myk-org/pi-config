@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import comsP2p from "../../../extensions/coms/coms-p2p.js";
 import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
-import { loadPitasks } from "../../../extensions/coms/coms-shared.js";
+import { loadPitasks, summarizeTaskList } from "../../../extensions/coms/coms-shared.js";
 import { setComsActive } from "../../../extensions/shared/coms-active.js";
 import { TASK_STORE_SYMBOL, publishTaskStore } from "../../../extensions/shared/task-store-bridge.js";
 import { WORKLOAD_SOURCES_SYMBOL, publishWorkloadSources } from "../../../extensions/shared/workload-bridge.js";
@@ -370,6 +370,22 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 	});
 
 	// ── #1245 ────────────────────────────────────────────────────────────────
+	it("#1245: summarizeTaskList handles null, empty, mixed, and non-standard task statuses", () => {
+		assert.equal(summarizeTaskList(null), null);
+		assert.equal(summarizeTaskList(undefined), null);
+		assert.equal(summarizeTaskList([]), null);
+		assert.deepEqual(
+			summarizeTaskList([
+				{ status: "pending" },
+				{ status: "in_progress" },
+				{ status: "completed" },
+				{ status: "completed" },
+				{ status: "archived" },
+			]),
+			{ total: 5, completed: 2, in_progress: 1 },
+		);
+	});
+
 	it("#1245: writeLiveRegistry reads publishedTaskStore().list() once per registry+card update", async () => {
 		const { workspace } = makeWorkspace();
 		let listCalls = 0;
@@ -464,6 +480,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		const t4 = store.create("Downstream task", "d4", senderCreator);
 		store.update(t3.id, { addBlockedBy: [t1.id, t2.id], addBlocks: [t4.id] });
 		const tForeign = store.create("Foreign task", "df", otherCreator);
+		const tUser = store.create("User task", "du", senderCreator, undefined, undefined, "user");
 		const tActive = store.create("Running own task", "da", senderCreator);
 		store.update(tActive.id, { status: "in_progress" });
 		store.close();
@@ -477,6 +494,11 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		assert.ok(t3Line, "task 3 present in list");
 		assert.match(t3Line, new RegExp(`\\[blocked by #${t2.id}\\]`));
 		assert.doesNotMatch(t3Line, new RegExp(`#${t1.id}\\b`));
+		// #1246: coms_task_list preserves status-then-id order (user-assigned tasks do not jump ahead of earlier pending ids).
+		assert.deepEqual(
+			listRes.details.taskIds,
+			[t2.id, t3.id, t4.id, tForeign.id, tUser.id, tActive.id, t1.id],
+		);
 
 		const getRes = await sender.tools.get("coms_task_get").execute("get", { target: "receiver", task_id: t3.id });
 		const getText = getRes.content[0].text as string;

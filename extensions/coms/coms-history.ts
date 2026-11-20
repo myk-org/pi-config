@@ -166,7 +166,8 @@ export function appendHistoryRecord(filePath: string, record: HistoryRecord): bo
 
 /** Query the trail. Malformed lines are skipped; missing file is empty. */
 export function queryHistoryRecords(filePath: string, filter: HistoryFilter = {}): HistoryRecord[] {
-	const limit = Math.max(1, Math.min(filter.limit ?? 50, HISTORY_LIMIT_MAX));
+	const rawLimit = Number(filter.limit ?? 50);
+	const limit = Math.max(1, Math.min(Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 50, HISTORY_LIMIT_MAX));
 	let lines: string[];
 	try {
 		if (!existsSync(filePath)) return [];
@@ -195,7 +196,7 @@ export function queryHistoryRecords(filePath: string, filter: HistoryFilter = {}
 			(!filter.owner || parsed.owner === filter.owner)
 		) {
 			matched.push(parsed);
-			if (matched.length === limit) break;
+			if (matched.length >= limit) break;
 		}
 	}
 	return matched.reverse();

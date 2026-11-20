@@ -23,7 +23,7 @@ import {
 	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, resolvePeerTaskStorePath, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, isPeerTaskCreator, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin, loadPitasks, summarizeTaskList, getComsOriginTask, getComsOriginTasks,
 } from "./coms-shared.js";
 import { resolveStorePath } from "../pitasks/task-store.js";
-import { openTaskBlockers, sortTaskRows } from "../pitasks/tasks-view.js";
+import { openTaskBlockers } from "../pitasks/tasks-view.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import { projectProblem, userTargetProblem } from "./coms-peers.js";
@@ -3515,7 +3515,12 @@ Do not respond to this message.`;
 
 				const taskById = new Map<string, any>(tasks.map((t: any) => [String(t.id), t]));
 				const getTask = (id: string) => taskById.get(id);
-				const sorted = sortTaskRows(tasks);
+				const statusOrder: Record<string, number> = { pending: 0, in_progress: 1, completed: 2 };
+				const sorted = [...tasks].sort((a: any, b: any) => {
+					const so = (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
+					if (so !== 0) return so;
+					return Number(a.id) - Number(b.id);
+				});
 				const lines = sorted.map((t: any) => {
 					let line = `#${t.id} [${t.status}] ${t.subject}`;
 					if (t.owner) line += ` (${t.owner})`;
