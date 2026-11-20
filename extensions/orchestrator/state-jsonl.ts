@@ -551,7 +551,12 @@ export function withFileLock(filePath: string, fn: () => void): boolean {
   const lockFile = filePath + ".wlock";
   const depth = fileLockDepth.get(lockFile) || 0;
   if (depth === 0) {
-    ensurePrivateParentDir(lockFile);
+    try {
+      ensurePrivateParentDir(lockFile);
+    } catch {
+      // Directory creation failed — treat as failed lock acquisition so callers like compact() stay fail-soft.
+      return false;
+    }
     if (!acquirePidLock(lockFile)) {
       // Lock acquisition failed — return false so caller can skip compaction.
       return false;

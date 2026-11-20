@@ -200,7 +200,7 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
     if (lastGitSnapshot && getSetting(ctx.cwd, "review_loop_enforcement") && !isBumpVersionBranch(getCurrentBranch(ctx.cwd))) {
       const state = readReviewState(ctx.cwd);
       if (state.status === "none" || state.status === "clean") {
-        try { markNeedsReview(ctx.cwd); } catch (e: any) { log.debug("markNeedsReview failed", { error: e?.message }); }
+        try { markNeedsReview(ctx.cwd); } catch (e: any) { log.warn("markNeedsReview failed", { error: e?.message }); }
       }
     }
     if (getSetting(ctx.cwd, "review_loop_enforcement")) {
@@ -224,13 +224,26 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
       }
       updateStatusBar(readReviewState(lastCtx.cwd));
     } catch (e: any) {
-      log.debug("poller error", { error: e?.message });
+      log.warn("poller error", { error: e?.message });
     }
   }, 5000);
   if (reviewPoller.unref) reviewPoller.unref();
 
-  // Poll git status asynchronously to detect file changes from CLI/ACPX agents without blocking TUI
+  // Poll git status asynchronously to detect file changes from CLI/ACPX agents without blocking TUI.
+  // Track state-transition generation and poll start time so an in-flight clean snapshot can never
+  // reset a review state after an intervening edit occurred while git was running.
   let gitPollInFlight = false;
+  let editGeneration = 0;
+
+  function hasInterveningEdit(state: ReviewState, pollStartedAt: number, startGen: number): boolean {
+    if (editGeneration !== startGen) return true;
+    if (state.last_edit_at) {
+      const editMs = Date.parse(state.last_edit_at);
+      if (!Number.isNaN(editMs) && editMs >= pollStartedAt) return true;
+    }
+    return false;
+  }
+
   const gitDirtyPoller = setInterval(() => {
     if (!lastCtx || gitPollInFlight) return;
     if (!isLiveExtensionCtx(lastCtx)) { lastCtx = null; return; }
@@ -241,37 +254,80 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
       // Skip on version bump branches (release workflow only)
       if (isBumpVersionBranch(getCachedBranch(cwd))) return;
     } catch (e: any) {
-      log.debug("gitDirtyPoller precheck error", { error: e?.message });
+      log.warn("gitDirtyPoller precheck error", { error: e?.message });
       return;
     }
 
+    const pollStartedAt = Date.now();
+    const startGen = editGeneration;
     gitPollInFlight = true;
     gitStatusAsync(cwd, (result) => {
-      gitPollInFlight = false;
-      if (!lastCtx || lastCtx !== ctx || !isLiveExtensionCtx(lastCtx)) return;
+      if (!lastCtx || lastCtx !== ctx || !isLiveExtensionCtx(lastCtx)) {
+        gitPollInFlight = false;
+        return;
+      }
       try {
-        if (!getSetting(cwd, "review_loop_enforcement")) return;
-        if (isBumpVersionBranch(getCachedBranch(cwd))) return;
+        if (!getSetting(cwd, "review_loop_enforcement") || isBumpVersionBranch(getCachedBranch(cwd))) {
+          gitPollInFlight = false;
+          return;
+        }
         const snapshot = normalizePorcelain(result.stdout);
-        if (snapshot === lastGitSnapshot) return;
-        lastGitSnapshot = snapshot;
+        if (snapshot === lastGitSnapshot) {
+          gitPollInFlight = false;
+          return;
+        }
         if (snapshot) {
+          lastGitSnapshot = snapshot;
+          gitPollInFlight = false;
           // Dirty tree — markNeedsReview handles all states:
           // none/clean/has_findings → sets needs_review
           // in_progress → sets edited_during_cycle + clears tests_passed
           // needs_review → no-op (deduped internally)
-          try { markNeedsReview(cwd); } catch (e: any) { log.debug("markNeedsReview failed", { error: e?.message }); }
-        } else if (result.code === 0) {
-          // Tree clean AND git succeeded — reset when status is clean (committed-away),
-          // needs_review (edits reverted, nothing left to review), or has_findings
-          // (committed+pushed — fresh start). Skip in_progress (reviewers still running).
-          const state = readReviewState(cwd);
-          if (state.status === "clean" || state.status === "needs_review" || state.status === "has_findings") {
-            try { resetReviewState(cwd); } catch (e: any) { log.debug("resetReviewState failed", { error: e?.message }); }
-          }
+          try { markNeedsReview(cwd); } catch (e: any) { log.warn("markNeedsReview failed", { error: e?.message }); }
+          return;
         }
+        if (result.code !== 0) {
+          gitPollInFlight = false;
+          return;
+        }
+        // Tree appeared clean — reject stale snapshots if any edit landed after the poll started.
+        const state = readReviewState(cwd);
+        if (hasInterveningEdit(state, pollStartedAt, startGen)) {
+          gitPollInFlight = false;
+          return;
+        }
+        if (state.status !== "clean" && state.status !== "needs_review" && state.status !== "has_findings") {
+          lastGitSnapshot = "";
+          gitPollInFlight = false;
+          return;
+        }
+        // Revalidate cleanliness before resetting review state so an external edit
+        // that landed while the first git status was in flight is never cleared.
+        gitStatusAsync(cwd, (confirm) => {
+          gitPollInFlight = false;
+          if (!lastCtx || lastCtx !== ctx || !isLiveExtensionCtx(lastCtx)) return;
+          try {
+            if (!getSetting(cwd, "review_loop_enforcement") || isBumpVersionBranch(getCachedBranch(cwd))) return;
+            const confirmSnapshot = normalizePorcelain(confirm.stdout);
+            if (confirmSnapshot) {
+              lastGitSnapshot = confirmSnapshot;
+              try { markNeedsReview(cwd); } catch (e: any) { log.warn("markNeedsReview failed", { error: e?.message }); }
+              return;
+            }
+            if (confirm.code !== 0) return;
+            const freshState = readReviewState(cwd);
+            if (hasInterveningEdit(freshState, pollStartedAt, startGen)) return;
+            lastGitSnapshot = "";
+            if (freshState.status === "clean" || freshState.status === "needs_review" || freshState.status === "has_findings") {
+              try { resetReviewState(cwd); } catch (e: any) { log.warn("resetReviewState failed", { error: e?.message }); }
+            }
+          } catch (e: any) {
+            log.warn("gitDirtyPoller confirm error", { error: e?.message });
+          }
+        });
       } catch (e: any) {
-        log.debug("gitDirtyPoller error", { error: e?.message });
+        gitPollInFlight = false;
+        log.warn("gitDirtyPoller error", { error: e?.message });
       }
     });
   }, gitPollIntervalMs);
@@ -286,6 +342,9 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
   // ── Hook into review state transitions ───────────────────────────────
 
   onStateTransition((state: ReviewState) => {
+    if (state.status === "needs_review" || state.edited_during_cycle) {
+      editGeneration += 1;
+    }
     // Always update status bar
     if (lastCtx && getSetting(lastCtx.cwd, "review_loop_enforcement")) {
       updateStatusBar(state);

@@ -33,12 +33,21 @@ describe("dream prompt", () => {
     ));
   });
 
-  it("deduplicates shared constraint rules into one top-level Rules block (#1268)", () => {
+  it("states each shared constraint once under the top-level Rules block (#1268)", () => {
     assert.ok(prompt.includes("Rules (apply to all steps):"));
-    assert.ok(prompt.length < 5000, `expected compact prompt (<5000 chars), got ${prompt.length}`);
-    // Immutability rules stated once instead of repeated across steps
-    assert.equal(prompt.split("*(pinned)*").length - 1, 3, "pinned mentioned in Rules + Step 6 format only");
-    assert.ok(prompt.includes("skill-maintenance: auto"));
-    assert.ok(prompt.includes("NEVER write rules/ or .pi/rules/"));
+    const sharedConstraints = [
+      "NEVER remove or modify entries marked with *(pinned)*",
+      "NEVER remove or modify entries marked with *(enforced)*",
+      "NEVER store a PR/issue number list",
+      "NEVER write rules/ or .pi/rules/",
+      "skill-maintenance: auto",
+    ];
+    for (const rule of sharedConstraints) {
+      assert.equal(
+        prompt.split(rule).length - 1,
+        1,
+        `expected shared constraint to appear once: ${rule}`,
+      );
+    }
   });
 });

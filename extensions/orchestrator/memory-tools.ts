@@ -446,6 +446,26 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
       const cwd = ctx.cwd;
       const { op, text, category, newText, supersededBy } = params;
 
+      if (op === "invalidate") {
+        // Shared removal path — single read/remove, preserving non-tombstoned semantics.
+        const res = removeMemoryEntry(cwd, category, text, { recordTombstone: false });
+        if (res.status === "invalid_category") {
+          return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${VALID_CATEGORIES.join(", ")}` }], details: undefined };
+        }
+        if (res.status === "topic_missing") {
+          return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }], details: undefined };
+        }
+        if (res.status === "not_found") {
+          return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }], details: undefined };
+        }
+
+        let result = `Invalidated: [${category}] ${text}`;
+        if (supersededBy) {
+          result += `\nSuperseded by: ${supersededBy}`;
+        }
+        return { content: [{ type: "text", text: result }], details: undefined };
+      }
+
       const validCategories = VALID_CATEGORIES;
       if (!validCategories.includes(category as MemoryCategory)) {
         return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }], details: undefined };
@@ -514,17 +534,6 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         await embedEntry(cwd, newText, category);
 
         return { content: [{ type: "text", text: `Updated: [${category}] ${text}\n     → [${category}] ${newText}` }], details: undefined };
-      }
-
-      if (op === "invalidate") {
-        // Shared removal path — preserve invalidate's non-tombstoned semantics.
-        removeMemoryEntry(cwd, category, text, { recordTombstone: false });
-
-        let result = `Invalidated: [${category}] ${text}`;
-        if (supersededBy) {
-          result += `\nSuperseded by: ${supersededBy}`;
-        }
-        return { content: [{ type: "text", text: result }], details: undefined };
       }
 
       return { content: [{ type: "text", text: `Unknown operation: ${op}` }], details: undefined };

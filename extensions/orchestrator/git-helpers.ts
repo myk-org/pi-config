@@ -83,9 +83,11 @@ export function parseRemoteRepo(
   if (typeof remoteUrl !== "string") return null;
   let url = remoteUrl.trim().replace(/\.git$/i, "").replace(/\/+$/, "");
   if (!url) return null;
-  // SCP-like: git@github.com:owner/repo (or any user@host:path)
-  const scp = /^[^@/\s]+@([^:/\s]+):(.+)$/.exec(url);
-  if (scp) url = `https://${scp[1]}/${scp[2]}`;
+  // SCP-like: [user@]host:owner/repo (skip scheme URLs containing "://")
+  if (!url.includes("://")) {
+    const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/.exec(url);
+    if (scp) url = `https://${scp[1]}/${scp[2]}`;
+  }
   const urlMatch = /^(?:https?|ssh|git):\/\/(?:[^@/\s]+@)?([^/\s]+)\/(.+)$/.exec(url);
   if (!urlMatch) return null;
   const host = urlMatch[1]!.replace(/:\d+$/, "").toLowerCase();

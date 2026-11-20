@@ -2058,10 +2058,9 @@ async function findContradictionWithVector(
 ): Promise<{
   conflicts: ConflictCandidate[];
   vectorMatches: VectorMatchItem[];
-  matchedKeys: Set<string>;
 }> {
   const topicEntries = preloadedEntries ?? readAllTopicEntries(cwd);
-  if (topicEntries.length === 0) return { conflicts: [], vectorMatches: [], matchedKeys: new Set() };
+  if (topicEntries.length === 0) return { conflicts: [], vectorMatches: [] };
   const scores = loadScores(cwd);
 
   // Protected pool: same category + pinned + enforced. These are the entries
@@ -2078,7 +2077,7 @@ async function findContradictionWithVector(
       pool.push({ text: te.text, category: te.category, pinned: te.pinned, enforced });
     }
   }
-  if (pool.length === 0) return { conflicts: [], vectorMatches: [], matchedKeys: new Set() };
+  if (pool.length === 0) return { conflicts: [], vectorMatches: [] };
 
   // Vector-narrowed candidates (paraphrase-tolerant). Model may be
   // unavailable — the overlap fallback below still applies. Entries with NO
@@ -2111,10 +2110,14 @@ async function findContradictionWithVector(
       }
     }
     if (similarKeys.size > 0 || matchedKeys.size > 0) {
-      // Keep vector-similar entries AND entries the vector search never saw
-      // (no embedding) — the latter fall through to the overlap check.
+      // Keep vector-similar entries, unembedded entries, AND entries with
+      // strong lexical overlap (multi-clause entries can have low whole-sentence
+      // cosine similarity even when one clause directly contradicts the text).
       candidates = pool.filter(
-        (p) => similarKeys.has(`${p.category}:${p.text}`) || !matchedKeys.has(`${p.category}:${p.text}`),
+        (p) =>
+          similarKeys.has(`${p.category}:${p.text}`) ||
+          !matchedKeys.has(`${p.category}:${p.text}`) ||
+          sharedContentWords(text, p.text) >= 2,
       );
     }
   } catch (err) {
@@ -2163,7 +2166,7 @@ async function findContradictionWithVector(
     conflicts.push({ candidate, score: similarity * 10 + shared });
   }
   conflicts.sort((a, b) => b.score - a.score);
-  return { conflicts: conflicts.map((c) => c.candidate), vectorMatches, matchedKeys };
+  return { conflicts: conflicts.map((c) => c.candidate), vectorMatches };
 }
 
 /**
@@ -2509,17 +2512,26 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     };
   }
 
+  // Embed missing topic entries ONCE before contradiction detection so both
+  // findContradictionWithVector() and Step 4a share a single vectorSearch() pass.
+  let topicEntries = readAllTopicEntries(cwd);
+  if (topicEntries.length > 0) {
+    try {
+      await embedMissing(cwd, topicEntries);
+    } catch (err) {
+      log.debug("memory-write: pre-embed skipped:", err);
+    }
+  }
+
   // 3. Contradiction gate — before dedup, so a permission-flipping near-duplicate
   // is refused rather than silently reinforcing the wrong entry. A conflict is
   // a decision point, not a dead end (issue #915): the model asks the user, and
   // a confirmed rule change retries with overrideConflicts, which supersedes
   // ALL the old entries. Pinned entries are never auto-superseded — they are
   // user-explicit and require the user's own memory_remove / memory_edit.
-  let topicEntries = readAllTopicEntries(cwd);
   const {
     conflicts,
     vectorMatches: poolVectorMatches,
-    matchedKeys: poolMatchedKeys,
   } = await findContradictionWithVector(cwd, text, category, topicEntries);
   const supersededKeys = new Set<string>();
   if (conflicts.length > 0) {
@@ -2618,32 +2630,13 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   const canonicalLine = `- [${category}] ${text}`;
 
   // 4a. Near-duplicate check via vector similarity (catches same lesson,
-  // different wording) — reuse same-category scores from Step 3's vectorSearch,
-  // only embedding & scoring entries that had no embedding yet.
+  // different wording) — reuse same-category scores from Step 3's single vectorSearch.
   try {
     const nearDupThreshold = getNearDuplicateThreshold(cwd);
-    const sameCategoryMatches = poolVectorMatches.filter(
-      (vm) => vm.category === category && !supersededKeys.has(`${vm.category}:${vm.text}`),
-    );
-    const seenSameCat = new Set<string>();
-    const unembeddedSameCat = topicEntries.filter((te) => {
-      if (te.category !== category || seenSameCat.has(te.text)) return false;
-      seenSameCat.add(te.text);
-      return !poolMatchedKeys.has(`${te.category}:${te.text}`);
-    });
-    let mergedMatches = sameCategoryMatches;
-    if (unembeddedSameCat.length > 0) {
-      const newlyEmbedded = await embedMissing(cwd, unembeddedSameCat);
-      if (newlyEmbedded > 0) {
-        const extraMatches = await vectorSearch(cwd, text, unembeddedSameCat, 20);
-        if (extraMatches.length > 0) {
-          mergedMatches = [...sameCategoryMatches, ...extraMatches].sort(
-            (a, b) => b.similarity - a.similarity,
-          );
-        }
-      }
-    }
-    for (const vm of mergedMatches.slice(0, 20)) {
+    const sameCategoryMatches = poolVectorMatches
+      .filter((vm) => vm.category === category && !supersededKeys.has(`${vm.category}:${vm.text}`))
+      .slice(0, 20);
+    for (const vm of sameCategoryMatches) {
       if (vm.similarity < nearDupThreshold) continue;
       const existingLine = `- [${vm.category}] ${vm.text}`;
       const { found, merged } = reinforceOnDedup(cwd, existingLine, input);

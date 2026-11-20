@@ -552,6 +552,7 @@ interface ParsedPrCommand {
  */
 function parsePrCommand(command: string | undefined, cwd: string): ParsedPrCommand {
   const cmd = command ?? "";
+  let partialPrNumber: number | null = null;
   const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(cmd);
   if (m && !isRedirectionToken(m[1]!)) {
     try {
@@ -560,12 +561,15 @@ function parsePrCommand(command: string | undefined, cwd: string): ParsedPrComma
       if (Number.isInteger(pr) && pr > 0) {
         const owner = typeof meta?.owner === "string" && meta.owner ? meta.owner : null;
         const repo = typeof meta?.repo === "string" && meta.repo ? meta.repo : null;
-        return {
-          prNumber: pr,
-          target: owner && repo ? { owner, repo, prNumber: pr } : null,
-        };
+        if (owner && repo) {
+          return { prNumber: pr, target: { owner, repo, prNumber: pr } };
+        }
+        // Partial address metadata (pr_number only): retain PR number and keep
+        // checking store-session pr_url so fork checkouts still get upstream owner/repo.
+        partialPrNumber = pr;
+      } else {
+        log.debug("pr_from_address_json_invalid", { token: m[1]!.slice(0, 120) });
       }
-      log.debug("pr_from_address_json_invalid", { token: m[1]!.slice(0, 120) });
     } catch (error: any) {
       // Deleted file (final storing run) or bad token — fall through to the
       // store-session path; a null here would trigger the repo-newest
@@ -587,11 +591,14 @@ function parsePrCommand(command: string | undefined, cwd: string): ParsedPrComma
         if (parts) {
           const pr = Number(parts[3]);
           if (Number.isInteger(pr) && pr > 0) {
-            return { prNumber: pr, target: { owner: parts[1]!, repo: parts[2]!, prNumber: pr } };
+            if (partialPrNumber === null || partialPrNumber === pr) {
+              return { prNumber: pr, target: { owner: parts[1]!, repo: parts[2]!, prNumber: pr } };
+            }
+            return { prNumber: partialPrNumber, target: null };
           }
         }
         const pr = Number(/\/pull\/(\d+)/.exec(prUrl)?.[1]);
-        if (Number.isInteger(pr) && pr > 0) return { prNumber: pr, target: null };
+        if (Number.isInteger(pr) && pr > 0) return { prNumber: partialPrNumber ?? pr, target: null };
         log.debug("pr_from_session_json_invalid", { prUrl: prUrl.slice(0, 120) });
       } else {
         log.debug("pr_from_session_json_no_pr_url", { path: s[1]!.slice(0, 200) });
@@ -607,7 +614,7 @@ function parsePrCommand(command: string | undefined, cwd: string): ParsedPrComma
       });
     }
   }
-  return { prNumber: null, target: null };
+  return { prNumber: partialPrNumber, target: null };
 }
 
 /**

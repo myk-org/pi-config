@@ -217,9 +217,14 @@ describe("reviewStatusLine", () => {
   });
 });
 
-describe("gitDirtyPoller async execution & overlap guard (#1264)", () => {
-  it("transitions state asynchronously without stacking overlapping polls and stops on shutdown", async () => {
+describe("gitDirtyPoller async behavior (#1264)", () => {
+  function setupPollerHarness() {
     const tmp = makeTempDir("poller-async-");
+    fs.mkdirSync(path.join(tmp, ".pi", "data"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true, review_loop_max_cycles: 3 }),
+    );
     const handlers = new Map<string, Array<(event: any, ctx: any) => void>>();
     const pi = {
       registerEntryRenderer() {},
@@ -228,65 +233,133 @@ describe("gitDirtyPoller async execution & overlap guard (#1264)", () => {
       },
       appendEntry() {},
     };
-    try {
-      fs.mkdirSync(path.join(tmp, ".pi", "data"), { recursive: true });
-      fs.writeFileSync(
-        path.join(tmp, ".pi", "pi-config-settings.json"),
-        JSON.stringify({ review_loop_enforcement: true, review_loop_max_cycles: 3 }),
-      );
-
-      let activeCalls = 0;
-      let maxConcurrent = 0;
-      let totalCalls = 0;
-      const pendingCallbacks: Array<(res: { stdout: string; code: number }) => void> = [];
-      const gitStatusAsync: AsyncGitStatusRunner = (_cwd, cb) => {
-        activeCalls += 1;
-        totalCalls += 1;
-        maxConcurrent = Math.max(maxConcurrent, activeCalls);
-        pendingCallbacks.push((res) => {
-          activeCalls -= 1;
-          cb(res);
-        });
-      };
-
-      registerReviewUI(pi as any, { gitStatusAsync, gitPollIntervalMs: 15 });
-
-      const ctx = {
-        cwd: tmp,
-        hasUI: false,
-        mode: "interactive",
-        ui: { theme: { fg: (_c: string, s: string) => s } },
-      };
-      for (const h of handlers.get("session_start") ?? []) h({}, ctx);
-
-      // Wait for multiple interval ticks while the first poll stays in-flight
-      await new Promise((r) => setTimeout(r, 60));
-      assert.equal(totalCalls, 1, "gitPollInFlight must prevent overlapping git status polls");
-      assert.equal(maxConcurrent, 1);
-
-      // Resolve first poll as dirty → marks needs_review
-      pendingCallbacks.shift()!({ stdout: " M foo.ts", code: 0 });
-      assert.equal(readReviewState(tmp).status, "needs_review");
-
-      // Wait for next poll tick, then resolve as clean → resets to none
-      await new Promise((r) => setTimeout(r, 40));
-      assert.ok(pendingCallbacks.length >= 1, "next poll should fire after prior completes");
-      pendingCallbacks.shift()!({ stdout: "", code: 0 });
-      assert.equal(readReviewState(tmp).status, "none");
-
-      // Shutdown clears timer and ignores any late-resolving callback
-      await new Promise((r) => setTimeout(r, 30));
-      const pendingBeforeShutdown = pendingCallbacks.splice(0);
+    let activeCalls = 0;
+    let maxConcurrent = 0;
+    let totalCalls = 0;
+    const pending: Array<(res: { stdout: string; code: number }) => void> = [];
+    const gitStatusAsync: AsyncGitStatusRunner = (_cwd, cb) => {
+      activeCalls += 1;
+      totalCalls += 1;
+      maxConcurrent = Math.max(maxConcurrent, activeCalls);
+      pending.push((res) => {
+        activeCalls -= 1;
+        cb(res);
+      });
+    };
+    registerReviewUI(pi as any, { gitStatusAsync, gitPollIntervalMs: 15 });
+    const ctx = {
+      cwd: tmp,
+      hasUI: false,
+      mode: "interactive",
+      ui: { theme: { fg: (_c: string, s: string) => s } },
+    };
+    for (const h of handlers.get("session_start") ?? []) h({}, ctx);
+    const shutdown = () => {
       for (const h of handlers.get("session_shutdown") ?? []) h({}, ctx);
-      const callsAtShutdown = totalCalls;
-      for (const cb of pendingBeforeShutdown) cb({ stdout: " M late.ts", code: 0 });
-      assert.equal(readReviewState(tmp).status, "none", "late callback after shutdown must be ignored");
-
-      await new Promise((r) => setTimeout(r, 50));
-      assert.equal(totalCalls, callsAtShutdown, "no polls may run after session_shutdown");
-    } finally {
-      for (const h of handlers.get("session_shutdown") ?? []) h({}, {});
+    };
+    const cleanup = () => {
+      shutdown();
       fs.rmSync(tmp, { recursive: true, force: true });
+    };
+    return {
+      tmp,
+      pending,
+      shutdown,
+      cleanup,
+      getTotalCalls: () => totalCalls,
+      getMaxConcurrent: () => maxConcurrent,
+    };
+  }
+
+  it("prevents overlapping git status polls while one is in flight", async () => {
+    const h = setupPollerHarness();
+    try {
+      await new Promise((r) => setTimeout(r, 60));
+      assert.equal(h.getTotalCalls(), 1);
+      assert.equal(h.getMaxConcurrent(), 1);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("transitions dirty tree to needs_review via async poll", async () => {
+    const h = setupPollerHarness();
+    try {
+      await new Promise((r) => setTimeout(r, 35));
+      assert.ok(h.pending.length >= 1);
+      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("resets review state to none after revalidating a clean tree", async () => {
+    const h = setupPollerHarness();
+    try {
+      await new Promise((r) => setTimeout(r, 35));
+      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+
+      // Wait briefly so the next poll starts strictly after last_edit_at
+      await new Promise((r) => setTimeout(r, 40));
+      assert.ok(h.pending.length >= 1);
+      // First clean poll triggers a revalidation check before resetting
+      h.pending.shift()!({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+      assert.equal(h.pending.length, 1, "revalidation poll must run before resetting state");
+      h.pending.shift()!({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "none");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("does not clear needs_review when an edit lands while a clean poll is in flight", async () => {
+    const h = setupPollerHarness();
+    try {
+      await new Promise((r) => setTimeout(r, 35));
+      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+
+      // Next poll starts while tree was transiently clean
+      await new Promise((r) => setTimeout(r, 40));
+      assert.ok(h.pending.length >= 1);
+      const staleCleanCallback = h.pending.shift()!;
+
+      // Intervening edit occurs before the clean callback completes
+      markNeedsReview(h.tmp);
+      staleCleanCallback({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("stops scheduling polls after session_shutdown", async () => {
+    const h = setupPollerHarness();
+    try {
+      await new Promise((r) => setTimeout(r, 35));
+      h.shutdown();
+      const callsAtShutdown = h.getTotalCalls();
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(h.getTotalCalls(), callsAtShutdown);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("ignores late-resolving poll callbacks after session_shutdown", async () => {
+    const h = setupPollerHarness();
+    try {
+      await new Promise((r) => setTimeout(r, 35));
+      const inFlight = h.pending.splice(0);
+      assert.ok(inFlight.length >= 1);
+      h.shutdown();
+      for (const cb of inFlight) cb({ stdout: " M late.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "none");
+    } finally {
+      h.cleanup();
     }
   });
 });

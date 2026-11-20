@@ -608,4 +608,17 @@ describe("lazy lineCount & multi-line parseLastValidLine (#1227)", () => {
     assert.equal(lockDuringInner, true);
     assert.equal(fs.existsSync(lockFile), false);
   });
+
+  it("compact returns without throwing when lock parent directory cannot be created", () => {
+    const dir = makeTempDir("jsonl-compact-blocked-");
+    try {
+      // A regular file blocks creating a child directory beneath it
+      const blocker = path.join(dir, "not-a-dir");
+      fs.writeFileSync(blocker, "file", "utf-8");
+      const store = new JsonlStateStore<{ n: number }>(path.join(blocker, "state.jsonl"));
+      assert.doesNotThrow(() => store.compact({ n: 1 }));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

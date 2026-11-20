@@ -10,7 +10,9 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   clearOpenPrCache,
+  getHeadSha,
   getOpenPr,
+  getOriginUrl,
   parseOpenPrJson,
   refreshOpenPr,
   seedOpenPrCacheForTests,
@@ -209,5 +211,49 @@ describe("getOpenPr / refreshOpenPr", () => {
     const fresh = await refreshOpenPr(repo, "main");
     assert.equal(fresh?.number, 4);
     assert.equal(getOpenPr(repo, "main")?.number, 4);
+  });
+});
+
+describe("getHeadSha / getOriginUrl (#1282)", () => {
+  it("getHeadSha returns the commit SHA inside a git repository", () => {
+    const dir = initGithubRepo();
+    try {
+      const expected = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: dir,
+        encoding: "utf-8",
+        env: GIT_ENV,
+      }).trim();
+      assert.equal(getHeadSha(dir), expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("getHeadSha returns null outside a git repository", () => {
+    const dir = makeTempDir("not-git-head-");
+    try {
+      assert.equal(getHeadSha(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("getOriginUrl returns the configured origin URL", () => {
+    const dir = initGithubRepo();
+    try {
+      assert.equal(getOriginUrl(dir), "https://github.com/org/repo.git");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("getOriginUrl returns null when origin remote is absent", () => {
+    const dir = makeTempDir("no-origin-");
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: dir, env: GIT_ENV });
+      assert.equal(getOriginUrl(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
