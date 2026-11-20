@@ -85,15 +85,15 @@ export interface PeerWorkloadDetail {
 }
 
 /** Field caps: a peer can send a field of any length, the pane cannot show it. */
-const ID_MAX = 40;
-const NAME_MAX = 40;
-const STATE_MAX = 40;
-const ELAPSED_MAX = 16;
-const PURPOSE_MAX = 120;
-const SUBJECT_MAX = 120;
-const SCHEDULE_MAX = 40;
-const NEXT_MAX = 24;
-const DESCRIPTION_MAX = 120;
+export const ID_MAX = 40;
+export const NAME_MAX = 40;
+export const STATE_MAX = 40;
+export const ELAPSED_MAX = 16;
+export const PURPOSE_MAX = 120;
+export const SUBJECT_MAX = 120;
+export const SCHEDULE_MAX = 40;
+export const NEXT_MAX = 24;
+export const DESCRIPTION_MAX = 120;
 
 /** Active only: a `complete`/`failed` agent is history, and a queued one is waiting, not running. */
 export function isActiveAgent(agent: Pick<WorkloadAgent, "status">): boolean {
