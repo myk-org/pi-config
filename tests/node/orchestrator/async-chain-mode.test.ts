@@ -355,10 +355,14 @@ function asyncHarness(opts: { hasUI?: boolean; confirm?: (title: string, message
     sendMessage(message: any) { messages.push(message); },
     events: new EventEmitter(),
   };
-  const api = registerAsyncAgents(pi as any, () => {}, {
-    spawnProcess: fakeSpawnProcess(),
-    discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
+  let api!: ReturnType<typeof registerAsyncAgents>;
+  withSubagentChildEnv(undefined, () => {
+    api = registerAsyncAgents(pi as any, () => {}, {
+      spawnProcess: fakeSpawnProcess(),
+      discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
+    });
   });
+  assert.ok(handlers.get("session_start")?.length);
   const ctx = {
     cwd,
     hasUI: opts.hasUI ?? false,

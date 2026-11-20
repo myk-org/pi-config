@@ -2,24 +2,87 @@
  * Git status line, container indicator, desktop notifications, git poller.
  */
 
+import { execFile } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
 import {
-  getCurrentBranch,
   getOpenPr,
-  isGithubRepo,
-  runGit,
   scheduleOpenPrStatusRefresh,
 } from "./git-helpers.js";
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
 import { setSlot } from "./status-bar.js";
 import { clockHHMM } from "./utils.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("status-line");
+
+export interface StatusLineDeps {
+  runGitAsync?: (args: string[], cwd?: string) => Promise<{ stdout: string; code: number }>;
+  debounceMs?: number;
+  githubRepoCacheTtlMs?: number;
+}
 
 export function registerStatusLine(
   pi: ExtensionAPI,
   IN_CONTAINER: boolean,
   terminalNotify: (title: string, body: string) => void,
+  deps?: StatusLineDeps,
 ): void {
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+  const debounceMs = deps?.debounceMs ?? 350;
+  const githubRepoCacheTtlMs = deps?.githubRepoCacheTtlMs ?? 60_000;
+  const execGitAsync = deps?.runGitAsync ?? ((args: string[], cwd?: string) =>
+    new Promise<{ stdout: string; code: number }>((resolve) => {
+      execFile(
+        "git",
+        ["--no-optional-locks", ...args],
+        {
+          cwd,
+          timeout: 5000,
+          encoding: "utf-8",
+          maxBuffer: 1024 * 1024,
+          env: {
+            ...process.env,
+            GIT_TERMINAL_PROMPT: "0",
+            GCM_INTERACTIVE: "Never",
+          },
+        },
+        (err, stdout) => {
+          const out = (typeof stdout === "string" ? stdout : "").trimEnd();
+          if (err) {
+            const exitCode = typeof (err as any).code === "number" ? (err as any).code : 1;
+            resolve({ stdout: out, code: exitCode });
+          } else {
+            resolve({ stdout: out, code: 0 });
+          }
+        },
+      );
+    }));
+
+  const githubRepoCache = new Map<string, { at: number; isGh: boolean }>();
+  const getBranchAsync = async (cwd?: string): Promise<string | null> => {
+    const r = await execGitAsync(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+    if (r.code === 0 && r.stdout && r.stdout !== "HEAD") return r.stdout;
+    const s = await execGitAsync(["symbolic-ref", "HEAD"], cwd);
+    if (s.code === 0 && s.stdout.startsWith("refs/heads/"))
+      return s.stdout.slice("refs/heads/".length);
+    return null;
+  };
+  const isGithubRepoAsync = async (cwd?: string): Promise<boolean> => {
+    const key = cwd || "";
+    const now = Date.now();
+    const cached = githubRepoCache.get(key);
+    if (cached && now - cached.at < githubRepoCacheTtlMs) return cached.isGh;
+    const r = await execGitAsync(["remote", "get-url", "origin"], cwd);
+    if (r.code !== 0) {
+      githubRepoCache.delete(key);
+      return false;
+    }
+    const result = r.stdout.toLowerCase().includes("github.com");
+    githubRepoCache.set(key, { at: now, isGh: result });
+    return result;
+  };
   // ── Combined status line builder ───────────────────────────────────────
 
   let lastStatusText = "";
@@ -42,18 +105,34 @@ export function registerStatusLine(
 
   let lastCtx: any = null;
   let lastBranch: string | null = null;
+  let shutDown = false;
+  let branchUpdateSeq = 0;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const updateBranch = (_event: any, ctx: any) => {
+  const clearDebounce = () => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+  };
+
+  const updateBranch = async (_event: any, ctx: any): Promise<void> => {
+    if (shutDown || !ctx?.hasUI) return;
     lastCtx = ctx;
+    const seq = ++branchUpdateSeq;
     try {
-      const b = getCurrentBranch(ctx.cwd);
+      const [b, status, isGh] = await Promise.all([
+        getBranchAsync(ctx.cwd),
+        execGitAsync(["status", "--porcelain"], ctx.cwd),
+        isGithubRepoAsync(ctx.cwd),
+      ]);
+      if (shutDown || seq !== branchUpdateSeq) return;
       if (!b) {
         lastBranch = null;
         return;
       }
       lastBranch = b;
 
-      const status = runGit(["status", "--porcelain"], ctx.cwd);
       let modified = 0,
         added = 0,
         deleted = 0,
@@ -84,8 +163,6 @@ export function registerStatusLine(
         changes.length > 0 ? `${icon} ${changes.join(" ")}` : icon;
 
       // Sync cache only — never block the status path on `gh`.
-      // One isGithubRepo check for getOpenPr + refresh schedule.
-      const isGh = isGithubRepo(ctx.cwd);
       const pr = isGh ? getOpenPr(ctx.cwd, b, { assumeGithub: true }) : null;
       if (pr) {
         const prLabel = ctx.ui.theme.fg(
@@ -104,30 +181,42 @@ export function registerStatusLine(
           branch: b,
           shownPr: pr,
           getState: () => ({ lastCtx, lastBranch }),
-          onRerender: (c) => updateBranch(null, c),
+          onRerender: (c) => void updateBranch(null, c),
           assumeGithub: true,
         });
       }
-    } catch (e: any) { console.debug("[status-line] git status update failed:", e?.message || e); }
+    } catch (e: any) {
+      log.debug("git status update failed", { error: e?.message || String(e) });
+    }
   };
 
-  pi.on("session_start", updateBranch);
-  pi.on("agent_end", updateBranch);
-  pi.on("turn_end", updateBranch);
-  pi.on("tool_result", updateBranch);
-  pi.on("tool_execution_end", updateBranch);
+  pi.on("session_start", (event, ctx) => {
+    clearDebounce();
+    void updateBranch(event, ctx);
+  });
+  pi.on("agent_end", (event, ctx) => {
+    clearDebounce();
+    void updateBranch(event, ctx);
+  });
+  pi.on("tool_execution_end", (_event, ctx) => {
+    if (shutDown || !ctx?.hasUI) return;
+    lastCtx = ctx;
+    clearDebounce();
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      if (!shutDown) void updateBranch(null, ctx);
+    }, debounceMs);
+    if (debounceTimer.unref) debounceTimer.unref();
+  });
 
   // Poll git status every 5s for updates during long-running operations
-  pi.on("session_start", (_event, ctx) => {
-    lastCtx = ctx;
-  });
   const gitPoller = setInterval(() => {
     if (!lastCtx) return;
     try {
       lastCtx.ui.theme; // probe for stale ctx
-      updateBranch(null, lastCtx);
+      void updateBranch(null, lastCtx);
     } catch (e: any) {
-      console.debug("[status-line] git poller error, pausing until next session_start:", e?.message || e);
+      log.debug("git poller error, pausing until next session_start", { error: e?.message || String(e) });
       lastCtx = null;
     }
   }, 5000);
@@ -157,6 +246,7 @@ export function registerStatusLine(
   };
 
   const touchActivity = (_event: any, ctx: any) => {
+    if (shutDown || !ctx?.hasUI) return;
     lastActivityTime = new Date();
     updateTimestamp(ctx);
   };
@@ -172,13 +262,17 @@ export function registerStatusLine(
       lastCtx.ui.theme; // probe for stale ctx
       updateTimestamp(lastCtx);
     } catch (e: any) {
-      console.debug("[status-line] time poller error, pausing until next session_start:", e?.message || e);
+      log.debug("time poller error, pausing until next session_start", { error: e?.message || String(e) });
       lastCtx = null;
     }
   }, 30_000);
   if (timePoller.unref) timePoller.unref();
 
   pi.on("session_shutdown", (_event) => {
+    shutDown = true;
+    branchUpdateSeq++;
+    lastCtx = null;
+    clearDebounce();
     clearInterval(gitPoller);
     clearInterval(timePoller);
   });

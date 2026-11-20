@@ -8,6 +8,7 @@ import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agen
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { fakeAgent, fakeSpawnProcess } from "../helpers/fake-async-runtime.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 
 const log = createLogger("async-kill-origin-test");
@@ -31,10 +32,14 @@ function harness() {
     sendMessage(message: any) { messages.push(message); },
     events,
   };
-  const api = registerAsyncAgents(pi as any, () => {}, {
-    spawnProcess: fakeSpawnProcess(),
-    discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
+  let api!: ReturnType<typeof registerAsyncAgents>;
+  withSubagentChildEnv(undefined, () => {
+    api = registerAsyncAgents(pi as any, () => {}, {
+      spawnProcess: fakeSpawnProcess(),
+      discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
+    });
   });
+  assert.ok(handlers.get("session_start")?.length);
   const ctx = {
     cwd,
     hasUI: true,

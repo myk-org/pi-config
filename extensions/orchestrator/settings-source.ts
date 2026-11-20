@@ -324,9 +324,55 @@ export function readSettingsObject(file: string | null, key?: string): Record<st
 const repoRootCache = new Map<string, string>();
 let repoRootResolver = resolveRepoRootUncached;
 
+const STANDALONE_SETTINGS_TTL_MS = 30_000;
+const STANDALONE_SETTINGS_CACHE_MAX = 32;
+type StandaloneLayerCacheEntry = {
+  checkedAt: number;
+  file: string | null;
+  mtimeMs: number;
+  settings: Record<string, unknown>;
+};
+const standaloneLayerCache = new Map<string, StandaloneLayerCacheEntry>();
+
+export function clearStandaloneSettingsCache(): void {
+  standaloneLayerCache.clear();
+}
+
 export function setRepoRootResolverForTests(resolver: (cwd: string) => string): void {
   repoRootResolver = resolver;
   repoRootCache.clear();
+  standaloneLayerCache.clear();
+}
+
+function readStandaloneLayer(
+  dir: string,
+  scope: SettingsScope,
+  key: string,
+): { file: string | null; settings: Record<string, unknown> } {
+  const cacheKey = `${scope}\0${dir}`;
+  const now = Date.now();
+  const cached = standaloneLayerCache.get(cacheKey);
+  if (cached && now - cached.checkedAt < STANDALONE_SETTINGS_TTL_MS) {
+    return { file: cached.file, settings: cached.settings };
+  }
+
+  const file = findSettingsFile(dir, scope === "global" ? { scope: "global" } : {});
+  let mtimeMs = 0;
+  if (file) {
+    try { mtimeMs = statSync(file).mtimeMs; } catch { mtimeMs = 0; }
+  }
+  if (cached && cached.file === file && cached.mtimeMs === mtimeMs) {
+    cached.checkedAt = now;
+    return { file: cached.file, settings: cached.settings };
+  }
+
+  const settings = readSettingsObject(file, key);
+  if (standaloneLayerCache.size >= STANDALONE_SETTINGS_CACHE_MAX) {
+    const oldest = standaloneLayerCache.keys().next().value;
+    if (oldest !== undefined) standaloneLayerCache.delete(oldest);
+  }
+  standaloneLayerCache.set(cacheKey, { checkedAt: now, file, mtimeMs, settings });
+  return { file, settings };
 }
 
 function resolveRepoRoot(cwd: string): string {
@@ -387,11 +433,11 @@ function isValidCandidate(value: unknown, definition: SettingsKeyDef | undefined
 export function getStandaloneSetting(cwd: string, key: string): unknown {
   const definition = SETTINGS_KEYS[key];
   const root = resolveRepoRoot(cwd);
-  for (const [source, file] of [
-    ["project", findSettingsFile(join(root, ".pi"))],
-    ["global", findSettingsFile(join(process.env.HOME || homedir(), ".pi"), { scope: "global" })],
+  for (const [source, dir] of [
+    ["project", join(root, ".pi")],
+    ["global", join(process.env.HOME || homedir(), ".pi")],
   ] as const) {
-    const settings = readSettingsObject(file, key);
+    const { file, settings } = readStandaloneLayer(dir, source, key);
     if (key in settings && isValidCandidate(settings[key], definition)) {
       log.debug("resolved standalone setting", { key, source, path: file });
       return settings[key];
