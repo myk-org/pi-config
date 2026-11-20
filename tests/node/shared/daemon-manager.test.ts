@@ -7,7 +7,10 @@ import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile, parseHealth } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile, parseHealth, getGitBranch, registerDaemonCommand } from "../../../extensions/shared/daemon-manager.js";
+import { setupExtensionReconnect } from "../../../extensions/shared/ws-client.js";
+import { execFileSync } from "node:child_process";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createServer, type Server } from "node:http";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -439,5 +442,92 @@ describe("parseHealth", () => {
     assert.equal(parseHealth("not json").running, false);
     assert.equal(parseHealth(JSON.stringify({ status: "stopped" })).running, false);
     assert.equal(parseHealth(JSON.stringify({})).running, false);
+  });
+});
+
+describe("getGitBranch (#1172)", () => {
+  it("returns the branch name in a git repo and empty string outside one", () => {
+    const repo = makeTempDir("dm-branch-");
+    const nonRepo = makeTempDir("dm-nobranch-");
+    try {
+      execFileSync("git", ["init", "-b", "feat/test-branch"], { cwd: repo, stdio: "ignore" });
+      assert.equal(getGitBranch(repo), "feat/test-branch");
+      assert.equal(getGitBranch(nonRepo), "");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(nonRepo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("registerDaemonCommand (#1172)", () => {
+  it("registers completions and disabled notification when disabled", async () => {
+    const registered: Record<string, any> = {};
+    const pi = {
+      registerCommand: (name: string, opts: any) => { registered[name] = opts; },
+    } as unknown as ExtensionAPI;
+    const notices: string[] = [];
+    const ctx = { hasUI: true, ui: { notify: (msg: string) => notices.push(msg) } };
+
+    registerDaemonCommand(pi, "pidash", false, "pidash_enable");
+    assert.equal(registered.pidash.description, "Manage pidash server — /pidash start|stop|restart|status");
+    assert.deepEqual(
+      registered.pidash.getArgumentCompletions("st").map((c: any) => c.value),
+      ["start", "stop", "status"],
+    );
+    await registered.pidash.handler("", ctx);
+    assert.deepEqual(notices, ["pidash is disabled (pidash_enable=false in pi-config-settings.json or PI_PIDASH_ENABLE=false)."]);
+  });
+
+  it("delegates to the provided handler when enabled", async () => {
+    const registered: Record<string, any> = {};
+    const pi = {
+      registerCommand: (name: string, opts: any) => { registered[name] = opts; },
+    } as unknown as ExtensionAPI;
+    const calls: string[] = [];
+
+    registerDaemonCommand(pi, "pidiff", true, "pidiff_enable", (args) => { calls.push(args); });
+    await registered.pidiff.handler("status", {});
+    assert.deepEqual(calls, ["status"]);
+  });
+});
+
+describe("setupExtensionReconnect (#1172)", () => {
+  it("connects on tool_result when disconnected in tui mode and clears stale ctx on poll", async () => {
+    let toolResultHandler: ((ev: unknown, ctx: unknown) => void) | undefined;
+    const pi = {
+      on: (name: string, fn: (ev: unknown, ctx: unknown) => void) => {
+        if (name === "tool_result") toolResultHandler = fn;
+      },
+    } as unknown as ExtensionAPI;
+    const connectedCtxs: any[] = [];
+    let lastCtx: any = {
+      get mode(): string { throw new Error("stale"); },
+    };
+    const logs: string[] = [];
+
+    const cleanup = setupExtensionReconnect({
+      pi,
+      isConnected: () => false,
+      isConnecting: () => false,
+      isShuttingDown: () => false,
+      getLastCtx: () => lastCtx,
+      clearLastCtx: () => { lastCtx = null; },
+      connect: (ctx) => connectedCtxs.push(ctx),
+      log: (msg) => logs.push(msg),
+      intervalMs: 15,
+    });
+
+    try {
+      const liveCtx = { mode: "tui", cwd: "/tmp" };
+      toolResultHandler?.({}, liveCtx);
+      assert.deepEqual(connectedCtxs, [liveCtx]);
+
+      await new Promise((r) => setTimeout(r, 40));
+      assert.equal(lastCtx, null);
+      assert.ok(logs.some((m) => m.includes("stale ctx")));
+    } finally {
+      cleanup();
+    }
   });
 });

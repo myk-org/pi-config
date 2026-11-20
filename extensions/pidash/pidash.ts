@@ -9,15 +9,24 @@
  * 5. Receive prompts from the daemon (browser → daemon → here → pi)
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
+import { promisify } from "node:util";
+import { setupExtensionReconnect, setupHeartbeat } from "../shared/ws-client.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
-import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon } from "../shared/daemon-manager.js";
+import {
+  checkHealth,
+  ensureUiBuilt,
+  getGitBranch,
+  killDaemon,
+  registerDaemonCommand,
+  spawnDaemon as spawnDaemonGeneric,
+  waitForDaemon,
+} from "../shared/daemon-manager.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
@@ -29,6 +38,7 @@ import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-o
 import { modelInfoPayload, supportsImagesFor } from "../../scripts/pidash-session-state.ts";
 
 const log = createLogger("pidash");
+const WebSocket = createRequire(import.meta.url)("ws");
 
 /**
  * Last pushed async/cron snapshots.
@@ -65,16 +75,48 @@ function spawnDaemon(port: number): void {
   });
 }
 
-function getGitStatus(cwd: string): { branch: string; dirty: boolean; changes: number } {
+const execFileAsync = promisify(execFile);
+
+export interface GitStatus {
+  branch: string;
+  dirty: boolean;
+  changes: number;
+}
+
+export function parseGitStatusPorcelainB(output: string): GitStatus {
+  if (!output) return { branch: "", dirty: false, changes: 0 };
+  const lines = output.split(/\r?\n/);
+  let branch = "";
+  const headerLine = lines[0] ?? "";
+  if (headerLine.startsWith("## ")) {
+    const header = headerLine.slice(3).trim();
+    if (header === "HEAD (no branch)") {
+      branch = "";
+    } else if (header.startsWith("No commits yet on ")) {
+      branch = header.slice("No commits yet on ".length);
+    } else if (header.startsWith("Initial commit on ")) {
+      branch = header.slice("Initial commit on ".length);
+    } else {
+      branch = header.split("...")[0].replace(/ \[.*\]$/, "");
+    }
+  }
+  let changes = 0;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].length > 0) changes++;
+  }
+  return { branch, dirty: changes > 0, changes };
+}
+
+export function gitStatusEqual(a: GitStatus | null, b: GitStatus): boolean {
+  return a !== null && a.branch === b.branch && a.dirty === b.dirty && a.changes === b.changes;
+}
+
+export async function getGitStatus(cwd: string): Promise<GitStatus> {
   try {
-    const branch = execFileSync("git", ["branch", "--show-current"], {
-      cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const status = execFileSync("git", ["status", "--porcelain"], {
-      cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const changes = status ? status.split("\n").length : 0;
-    return { branch, dirty: changes > 0, changes };
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "-b"], {
+      cwd, encoding: "utf-8", timeout: 3000,
+    });
+    return parseGitStatusPorcelainB(stdout);
   } catch { return { branch: "", dirty: false, changes: 0 }; }
 }
 
@@ -82,15 +124,6 @@ function isContainer(): boolean {
   try {
     return fs.existsSync("/.dockerenv") || fs.existsSync("/run/.containerenv");
   } catch { return false; }
-}
-
-function getCurrentBranch(cwd: string): string {
-  try {
-    return execFileSync("git", ["branch", "--show-current"], {
-      cwd, encoding: "utf-8", timeout: 3000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch { return ""; }
 }
 
 let diffPort: number | null = null;
@@ -109,21 +142,7 @@ export function registerPidash(
   const pidashPort = getSetting(projectCwd, "pidash_port");
   const pidashDisabled = !getSetting(projectCwd, "pidash_enable");
   if (pidashDisabled) {
-    pi.registerCommand("pidash", {
-      description: "Manage pidash server — /pidash start|stop|restart|status",
-      getArgumentCompletions: (prefix: string) => {
-        const items = [
-          { value: "start", label: "start", description: "Start pidash server" },
-          { value: "stop", label: "stop", description: "Stop pidash server" },
-          { value: "restart", label: "restart", description: "Restart pidash server" },
-          { value: "status", label: "status", description: "Show pidash status" },
-        ];
-        return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
-      },
-      handler: async (_args, ctx) => {
-        if (ctx.hasUI) ctx.ui.notify("pidash is disabled (pidash_enable=false in pi-config-settings.json or PI_PIDASH_ENABLE=false).", "info");
-      },
-    });
+    registerDaemonCommand(pi, "pidash", false, "pidash_enable");
     return;
   }
 
@@ -149,6 +168,7 @@ export function registerPidash(
   let comsIdentityPurpose: string | undefined;
   let comsIdentityProject: string | undefined;
   let trailTokenSavings: number | undefined;
+  let lastGitStatus: GitStatus | null = null;
   const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
 
   // Listen for coms identity — coms ext emits this after boot
@@ -611,11 +631,7 @@ export function registerPidash(
       }
       spawnDaemon(pidashPort);
       if (ctx.hasUI) ctx.ui.notify("Starting pidash server...", "info");
-      for (let i = 0; i < 60; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        if (await isDaemonRunning(pidashPort)) break;
-      }
-      if (await isDaemonRunning(pidashPort)) {
+      if (await waitForDaemon(pidashPort, 60, (msg) => log.debug(msg))) {
         connect(ctx);
         if (ctx.hasUI) ctx.ui.notify(`pidash server started at http://localhost:${pidashPort}`, "info");
       } else {
@@ -631,11 +647,7 @@ export function registerPidash(
       await new Promise(r => setTimeout(r, 1000));
       spawnDaemon(pidashPort);
       if (ctx.hasUI) ctx.ui.notify("Restarting pidash server...", "info");
-      for (let i = 0; i < 60; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        if (await isDaemonRunning(pidashPort)) break;
-      }
-      if (await isDaemonRunning(pidashPort)) {
+      if (await waitForDaemon(pidashPort, 60, (msg) => log.debug(msg))) {
         connect(ctx);
         if (ctx.hasUI) ctx.ui.notify(`pidash server restarted at http://localhost:${pidashPort}`, "info");
       } else {
@@ -681,15 +693,7 @@ export function registerPidash(
         spawnDaemon(pidashPort);
       }
       // jiti cold compilation can take 30+ seconds on first run
-      for (let i = 0; i < 60; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        if (await isDaemonRunning(pidashPort)) {
-          log.debug(`daemon ready after ${i + 1}s`);
-          break;
-        }
-      }
-      if (!(await isDaemonRunning(pidashPort))) {
-        log.debug("daemon failed to start after 60s");
+      if (!(await waitForDaemon(pidashPort, 60, (msg) => log.debug(msg)))) {
         spawning = false;
         connecting = false;
         return;
@@ -698,8 +702,11 @@ export function registerPidash(
     }
 
     try {
-      const _require = createRequire(import.meta.url);
-      const WebSocket = _require("ws");
+      const git = await getGitStatus(ctx.cwd);
+      if (shuttingDown || !isLiveExtensionCtx(ctx)) {
+        connecting = false;
+        return;
+      }
       log.debug("creating WebSocket client...");
       const wsClient = new WebSocket(`ws://127.0.0.1:${pidashPort}/ws/pi`);
       const thisConnectionGeneration = ++connectionGeneration;
@@ -712,7 +719,7 @@ export function registerPidash(
 
         try {
         // Register this session
-        const git = getGitStatus(ctx.cwd);
+        lastGitStatus = git;
         const m = ctx.model;
         // Read thinking level from session entries
         let thinking = "medium";
@@ -772,6 +779,7 @@ export function registerPidash(
           onDead: () => {
             connected = false;
             ws = null;
+            lastGitStatus = null;
             if (!shuttingDown && lastCtx) {
               if (reconnectTimer) clearTimeout(reconnectTimer);
               reconnectTimer = setTimeout(() => { reconnectTimer = null; if (lastCtx && !shuttingDown) connect(lastCtx); }, 1000);
@@ -798,6 +806,7 @@ export function registerPidash(
         log.debug("WebSocket closed");
         connected = false;
         ws = null;
+        lastGitStatus = null;
         if (!shuttingDown) {
           if (reconnectTimer) clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(() => { reconnectTimer = null; if (lastCtx && !shuttingDown) connect(lastCtx); }, RECONNECT_INTERVAL_MS);
@@ -907,7 +916,6 @@ export function registerPidash(
     // Track streaming state for prompt-queued feedback
     pi.on("agent_start", () => { if (shuttingDown) return; isStreaming = true; });
     pi.on("agent_settled", () => { if (shuttingDown) return; isStreaming = false; });
-    forward("turn_start");
     forward("turn_end");
     forward("message_start");
     forward("message_update");
@@ -916,7 +924,6 @@ export function registerPidash(
     forward("tool_execution_update");
     forward("tool_execution_end");
     forward("tool_call");
-    forward("tool_result");
     forward("session_info_changed");
 
     pi.on("model_select", (event: any) => {
@@ -944,23 +951,6 @@ export function registerPidash(
           ws.send(JSON.stringify({ type: "update_info", diffPort: port }));
         }
       }
-    });
-
-    // Forward provider response info to pidash
-    pi.on("after_provider_response" as any, (event: any) => {
-      if (shuttingDown) return;
-      if (!ws || !connected) return;
-      try {
-        const info: any = { type: "provider_response" };
-        if (event.status) info.status = event.status;
-        if (event.headers) {
-          if (event.headers["x-ratelimit-remaining"]) info.rateLimitRemaining = event.headers["x-ratelimit-remaining"];
-          if (event.headers["x-ratelimit-reset"]) info.rateLimitReset = event.headers["x-ratelimit-reset"];
-          if (event.headers["retry-after"]) info.retryAfter = event.headers["retry-after"];
-          if (event.headers["x-request-id"]) info.requestId = event.headers["x-request-id"];
-        }
-        ws.send(JSON.stringify(info));
-      } catch (e: any) { log.debug(`provider response forward error: ${e.message}`); }
     });
   }
 
@@ -1035,25 +1025,33 @@ export function registerPidash(
 
   }
 
-  /** Periodically send git status updates to the daemon. */
+  /** Periodically send git status updates to the daemon (async, skipped when unchanged). */
   function setupPeriodicStatus(): ReturnType<typeof setInterval> {
-    const statusInterval = setInterval(() => {
-      if (shuttingDown || !ws || !connected || !lastCtx) return;
-      if (!isLiveExtensionCtx(lastCtx)) {
+    let inFlight = false;
+    const statusInterval = setInterval(async () => {
+      if (shuttingDown || !ws || !connected || !lastCtx || inFlight) return;
+      const ctx = lastCtx;
+      const activeWs = ws;
+      if (!isLiveExtensionCtx(ctx)) {
         log.debug("periodic status stopped — stale ctx after session replacement");
         lastCtx = null;
         return;
       }
-      if (lastCtx.mode !== "tui") return;
+      if (ctx.mode !== "tui") return;
+      inFlight = true;
       try {
-        const git = getGitStatus(lastCtx.cwd);
-        ws.send(JSON.stringify({
+        const git = await getGitStatus(ctx.cwd);
+        if (shuttingDown || !connected || ws !== activeWs) return;
+        if (gitStatusEqual(lastGitStatus, git)) return;
+        lastGitStatus = git;
+        activeWs.send(JSON.stringify({
           type: "update_info",
           branch: git.branch,
           gitDirty: git.dirty,
           gitChanges: git.changes,
         }));
       } catch (e: any) { log.debug(`periodic status error: ${e?.message || e}`); }
+      finally { inFlight = false; }
     }, 10000);
     if (statusInterval.unref) statusInterval.unref();
     return statusInterval;
@@ -1092,11 +1090,12 @@ export function registerPidash(
       activitySequence = 0;
       activity = "idle";
       activityBeforePrompt = null;
+      lastGitStatus = null;
       ws.send(JSON.stringify({
         type: "session_switch",
         sessionId,
         cwd: switchCtx.cwd,
-        branch: getCurrentBranch(switchCtx.cwd),
+        branch: getGitBranch(switchCtx.cwd),
         sessionFile: switchCtx.sessionManager?.getSessionFile?.() || switchCtx.sessionFile || "",
         // One producer for every model field, so a switch cannot omit the
         // capability the daemon relies on (Qodo 3e547c6d / 24f50129).
@@ -1162,27 +1161,15 @@ export function registerPidash(
 
   pi.on("session_start", (event: any, ctx: any) => { if (shuttingDown) return; handleSessionStart(event, ctx); });
 
-  // Fallback for /reload — connect on first tool_result if not connected
-  pi.on("tool_result", (_event, ctx) => {
-    if (shuttingDown) return;
-    if (!connected && !shuttingDown && isLiveExtensionCtx(ctx) && ctx.mode === "tui") connect(ctx);
-  });
-
-  // Periodic reconnect — ensures sessions that started before the daemon still connect
-  const cleanupReconnect = setupReconnectPoller({
+  const cleanupReconnect = setupExtensionReconnect({
+    pi,
     isConnected: () => connected,
     isConnecting: () => connecting,
     isShuttingDown: () => shuttingDown,
-    connect: () => {
-      if (!isLiveExtensionCtx(lastCtx)) {
-        if (lastCtx) {
-          log.debug("reconnect poller skipped — stale ctx");
-          lastCtx = null;
-        }
-        return;
-      }
-      if (lastCtx.mode === "tui") connect(lastCtx);
-    },
+    getLastCtx: () => lastCtx,
+    clearLastCtx: () => { lastCtx = null; },
+    connect,
+    log: (msg) => log.debug(msg),
   });
 
   // ── Command execution from browser ────────────────────────────────
@@ -1193,19 +1180,7 @@ export function registerPidash(
 
   // Hidden command that captures ExtensionCommandContext
   // Called once at startup via /pidash, then reused for all browser commands
-  pi.registerCommand("pidash", {
-    description: "Manage pidash server — /pidash start|stop|restart|status",
-    getArgumentCompletions: (prefix: string) => {
-      const items = [
-        { value: "start", label: "start", description: "Start pidash server" },
-        { value: "stop", label: "stop", description: "Stop pidash server" },
-        { value: "restart", label: "restart", description: "Restart pidash server" },
-        { value: "status", label: "status", description: "Show pidash status" },
-      ];
-      return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
-    },
-    handler: (args, ctx) => handlePidashCommand(args, ctx),
-  });
+  registerDaemonCommand(pi, "pidash", true, "pidash_enable", (args, ctx) => handlePidashCommand(args, ctx));
   commandHandlerRegistry.set("pidash", (args, ctx) => handlePidashCommand(args, ctx));
 
   pi.on("input", async (event, _ctx) => { if (shuttingDown) return; return handleBrowserInput(event, _ctx); });

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil, Plus, MessagesSquare, Sun, Moon } from "lucide-react";
 import { Badge } from "@ui/badge";
 import { Button } from "@ui/button";
@@ -9,6 +9,7 @@ import type { SessionInfo, NotificationPreferences } from "@/types";
 import { sessionActivityDisplay } from "@/lib/activity-display";
 import { loadTheme, setTheme, type Theme } from "@/lib/theme";
 import { createLogger } from "@/lib/create-logger";
+import { groupAndSortSessions } from "@/lib/group-sessions";
 
 const log = createLogger("SessionSidebar");
 
@@ -93,6 +94,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
     });
   };
   const [theme, setThemeState] = useState<Theme>(() => loadTheme());
+  const sortedGroups = useMemo(() => groupAndSortSessions(sessions), [sessions]);
 
   // Wrap setter to persist to localStorage
   const setCollapsedProjects = (update: Set<string> | ((prev: Set<string>) => Set<string>)) => {
@@ -214,27 +216,6 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
     info.sessions.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
   }
 
-  // Group sessions by project name (last segment of cwd)
-  const groups = new Map<string, { cwd: string; sessions: SessionInfo[] }>();
-  for (const s of sessions) {
-    const name = s.cwd.split("/").pop() || s.cwd;
-    if (!groups.has(name)) groups.set(name, { cwd: s.cwd, sessions: [] });
-    groups.get(name)!.sessions.push(s);
-  }
-
-  // Sort: active sessions first within each group
-  for (const g of groups.values()) {
-    g.sessions.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
-  }
-
-  // Sort groups: groups with active sessions first
-  const sortedGroups = [...groups.entries()].sort((a, b) => {
-    const aActive = a[1].sessions.some(s => s.active);
-    const bActive = b[1].sessions.some(s => s.active);
-    if (aActive !== bActive) return bActive ? 1 : -1;
-    return a[0].localeCompare(b[0]);
-  });
-
   const toggleProject = (key: string) => {
     log.debug("group toggled", { key });
     setCollapsedProjects(prev => {
@@ -244,10 +225,6 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
       return next;
     });
   };
-
-  // Auto-expand groups that contain the active session
-  const activeGroup = sessions.find(s => s.sessionId === activeSessionId);
-  const activeGroupName = activeGroup ? (activeGroup.cwd.split("/").pop() || activeGroup.cwd) : null;
 
   return (
     <div className="flex flex-col h-full border-r border-border">
@@ -296,7 +273,8 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
           <p className="p-4 text-center text-xs text-muted-foreground">No sessions</p>
         )}
 
-        {sortedGroups.map(([name, group]) => {
+        {sortedGroups.map((group) => {
+          const name = group.name;
           const groupKey = dirKey(name);
           const isExpanded = !collapsedProjects.has(groupKey);
           const hasActive = group.sessions.some(s => s.active);

@@ -52,4 +52,13 @@ describe("createLogger", () => {
     const msg = (bag().__pidiffUiLogs ?? [])[0]?.msg ?? "";
     assert.ok(msg.includes("[object Object]") || msg.length > 0);
   });
+
+  it("caps stored records at 200 entries", () => {
+    const log = createLogger("pidiff-ui");
+    for (let i = 0; i < 205; i++) log.info(`msg-${i}`);
+    const logs = bag().__pidiffUiLogs ?? [];
+    assert.equal(logs.length, 200);
+    assert.equal(logs[0]?.msg, "msg-5");
+    assert.equal(logs.at(-1)?.msg, "msg-204");
+  });
 });

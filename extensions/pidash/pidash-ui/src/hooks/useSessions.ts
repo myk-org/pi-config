@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionInfo } from "../types";
 
 export function useSessions(wsConnected: boolean, onMessage: (h: (d: any) => void) => () => void) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const sessionsRef = useRef<SessionInfo[]>(sessions);
+  sessionsRef.current = sessions;
 
   const load = useCallback(async () => {
     try {
-      setSessions(await (await fetch("/api/sessions")).json());
+      const next: SessionInfo[] = await (await fetch("/api/sessions")).json();
+      if (JSON.stringify(next) === JSON.stringify(sessionsRef.current)) return;
+      setSessions(next);
     } catch {}
   }, []);
 
@@ -23,7 +27,11 @@ export function useSessions(wsConnected: boolean, onMessage: (h: (d: any) => voi
     });
   }, [onMessage, load]);
 
-  useEffect(() => { const t = setInterval(load, 10000); return () => clearInterval(t); }, [load]);
+  useEffect(() => {
+    if (wsConnected) return;
+    const t = setInterval(load, 10000);
+    return () => clearInterval(t);
+  }, [wsConnected, load]);
 
   return sessions;
 }
