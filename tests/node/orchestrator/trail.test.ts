@@ -740,3 +740,105 @@ describe("Logger injection", () => {
     }
   });
 });
+
+describe("Wiring JSON caching (#1190)", () => {
+  it("preserves blast-radius edge order across multiple target nodes without internal edges", async () => {
+    trail.clearTrailWiringCache();
+    const root = makeTempDir("trail-blast-order-");
+    const wiringPath = join(root, "graft/.graph/wiring.json");
+    try {
+      mkdirSync(join(root, "graft/.graph"), { recursive: true });
+      writeFileSync(
+        wiringPath,
+        JSON.stringify({
+          meta: { nodeCount: 4 },
+          nodes: [
+            { id: "t1", name: "fnOne", path: "src/target.ts" },
+            { id: "t2", name: "fnTwo", path: "src/target.ts" },
+            { id: "c1", name: "callerA", path: "src/a.ts" },
+            { id: "c2", name: "callerB", path: "src/b.ts" },
+          ],
+          edges: [
+            { source: "c2", target: "t2", relation: "calls" },
+            { source: "t1", target: "t2", relation: "calls" },
+            { source: "c1", target: "t1", relation: "imports" },
+          ],
+        }),
+      );
+
+      const r = register({ worktree: () => root });
+      const c = await start(r, ctx(root));
+      const hintRes = await r.handlers.get("tool_result")![0](
+        { toolName: "edit", input: { path: "src/target.ts" }, isError: false, content: [] },
+        c,
+      );
+      assert.ok(hintRes?.content?.[0]?.text);
+      const lines = hintRes.content[0].text.split("\n").slice(1);
+      assert.deepEqual(lines, [
+        " • calls ← callerB (b.ts)",
+        " • imports ← callerA (a.ts)",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes blast-radius hints after wiring.json updates on disk", async () => {
+    trail.clearTrailWiringCache();
+    const root = makeTempDir("trail-blast-refresh-");
+    const wiringPath = join(root, "graft/.graph/wiring.json");
+    try {
+      mkdirSync(join(root, "graft/.graph"), { recursive: true });
+      const writeGraph = (nodes: any[], edges: any[], nodeCount = nodes.length) => {
+        writeFileSync(wiringPath, JSON.stringify({ meta: { nodeCount }, nodes, edges }));
+      };
+      writeGraph(
+        [
+          { id: "t1", name: "fnOne", path: "src/target.ts" },
+          { id: "c1", name: "callerA", path: "src/a.ts" },
+        ],
+        [{ source: "c1", target: "t1", relation: "imports" }],
+      );
+
+      const r = register({ worktree: () => root });
+      const c = await start(r, ctx(root));
+      const hint1 = await r.handlers.get("tool_result")![0](
+        { toolName: "edit", input: { path: "src/target.ts" }, isError: false, content: [] },
+        c,
+      );
+      assert.match(hint1.content[0].text, /callerA \(a\.ts\)/);
+
+      writeGraph(
+        [
+          { id: "t1", name: "fnOne", path: "src/target.ts" },
+          { id: "c3", name: "callerC", path: "src/c.ts" },
+        ],
+        [{ source: "c3", target: "t1", relation: "calls" }],
+        42,
+      );
+      const hint2 = await r.handlers.get("tool_result")![0](
+        { toolName: "write", input: { path: "src/target.ts" }, isError: false, content: [] },
+        c,
+      );
+      assert.match(hint2.content[0].text, /callerC \(c\.ts\)/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns updated node count after wiring.json updates on disk", async () => {
+    trail.clearTrailWiringCache();
+    const root = makeTempDir("trail-count-refresh-");
+    const wiringPath = join(root, "graft/.graph/wiring.json");
+    try {
+      mkdirSync(join(root, "graft/.graph"), { recursive: true });
+      writeFileSync(wiringPath, JSON.stringify({ meta: { nodeCount: 10 }, nodes: [], edges: [] }));
+      assert.equal(trail.trailNodes(root, silentLogger), 10);
+
+      writeFileSync(wiringPath, JSON.stringify({ meta: { nodeCount: 42 }, nodes: [], edges: [] }));
+      assert.equal(trail.trailNodes(root, silentLogger), 42);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

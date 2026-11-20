@@ -8,6 +8,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  clearEnforcementRulesCache,
   matchBashCommand,
   matchToolCall,
   executeAction,
@@ -17,7 +18,7 @@ import {
   type EnforcedEntry,
   type VerifierEntry,
 } from "../../../extensions/orchestrator/enforcement-rules.js";
-import { entryHash, loadScores, rebuild, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
+import { entryHash, loadScores, mutateScores, rebuild, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -792,6 +793,358 @@ describe("loadEnforcedEntries / loadVerifierEntries — session & expiry eligibi
       assert.ok(inB.includes("Durable enforced rule"));
       assert.ok(!inB.includes("Session rule from session A"));
       assert.ok(!inB.includes("Expired task rule"));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("loadEnforcedEntries / loadVerifierEntries caching (#1196)", () => {
+  const makeMemoryFixture = (prefix: string) => {
+    clearEnforcementRulesCache();
+    const tmpDir = makeTempDir(prefix);
+    const memoryDir = path.join(tmpDir, ".pi", "memory");
+    const topicsDir = path.join(memoryDir, "topics");
+    fs.mkdirSync(topicsDir, { recursive: true });
+    return { tmpDir, memoryDir, topicsDir };
+  };
+
+  it("returns empty enforced entries when scores contain no rules despite populated topic files", () => {
+    const { tmpDir, memoryDir, topicsDir } = makeMemoryFixture("enf-zero-");
+    try {
+      const lines = ["# Lessons"];
+      const entries: Record<string, any> = {};
+      const now = new Date().toISOString();
+      for (let i = 0; i < 20; i++) {
+        const line = `- [lesson] plain lesson ${i}`;
+        lines.push(line);
+        entries[entryHash(line)] = {
+          class: "lesson",
+          score: 1.0,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: now,
+          lastReinforced: now,
+          userState: "auto",
+          lifecycle: "active",
+        };
+      }
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), lines.join("\n") + "\n");
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({ entries, lastRebuild: now, hashAlgo: "sha256-16" }) + "\n",
+      );
+
+      assert.deepEqual(loadEnforcedEntries(tmpDir, "s1"), []);
+      assert.deepEqual(loadEnforcedEntries(tmpDir, "s1"), []);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns empty verifier entries when scores contain no verifiers despite populated topic files", () => {
+    const { tmpDir, memoryDir, topicsDir } = makeMemoryFixture("ver-zero-");
+    try {
+      const line = "- [lesson] plain lesson";
+      const now = new Date().toISOString();
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), `# Lessons\n${line}\n`);
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [entryHash(line)]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+            },
+          },
+          lastRebuild: now,
+          hashAlgo: "sha256-16",
+        }) + "\n",
+      );
+
+      assert.deepEqual(loadVerifierEntries(tmpDir, "s1"), []);
+      assert.deepEqual(loadVerifierEntries(tmpDir, "s1"), []);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses cached enforced entries when scores remain unchanged", () => {
+    const { tmpDir, memoryDir, topicsDir } = makeMemoryFixture("enf-reuse-");
+    try {
+      const ruleText = "never run rm -rf /";
+      const ruleLine = `- [lesson] ${ruleText}`;
+      const hash = entryHash(ruleLine);
+      const now = new Date().toISOString();
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), `# Lessons\n${ruleLine}\n`);
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [hash]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+              trigger: "bash_contains rm -rf /",
+              action: "block",
+            },
+          },
+          lastRebuild: now,
+          hashAlgo: "sha256-16",
+        }) + "\n",
+      );
+
+      const first = loadEnforcedEntries(tmpDir, "s1");
+      const second = loadEnforcedEntries(tmpDir, "s1");
+      assert.equal(first.length, 1);
+      assert.equal(first[0].text, ruleText);
+      assert.strictEqual(second, first);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates cached enforced entries when a topic file changes", () => {
+    const { tmpDir, memoryDir, topicsDir } = makeMemoryFixture("enf-topic-");
+    try {
+      const ruleText = "never run rm -rf /";
+      const ruleLine = `- [lesson] ${ruleText}`;
+      const hash = entryHash(ruleLine);
+      const now = new Date().toISOString();
+      const topicFile = path.join(topicsDir, "lessons.md");
+      fs.writeFileSync(topicFile, "# Lessons\n");
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [hash]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+              trigger: "bash_contains rm -rf /",
+              action: "block",
+            },
+          },
+          lastRebuild: now,
+          hashAlgo: "sha256-16",
+        }) + "\n",
+      );
+
+      const beforeTopic = loadEnforcedEntries(tmpDir, "s1");
+      assert.equal(beforeTopic[0].text, hash);
+
+      fs.writeFileSync(topicFile, `# Lessons\n${ruleLine}\n`);
+      const afterTopic = loadEnforcedEntries(tmpDir, "s1");
+      assert.notStrictEqual(afterTopic, beforeTopic);
+      assert.equal(afterTopic[0].text, ruleText);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops expired enforced entries once expiresAt passes", async () => {
+    const { tmpDir, memoryDir, topicsDir } = makeMemoryFixture("enf-expiry-");
+    try {
+      const ruleText = "short lived rule";
+      const ruleLine = `- [lesson] ${ruleText}`;
+      const hash = entryHash(ruleLine);
+      const now = new Date().toISOString();
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), `# Lessons\n${ruleLine}\n`);
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [hash]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+              trigger: "bash_contains deploy",
+              action: "block",
+              scope: "task",
+              expiresAt: new Date(Date.now() + 250).toISOString(),
+            },
+          },
+          lastRebuild: now,
+          hashAlgo: "sha256-16",
+        }) + "\n",
+      );
+
+      assert.equal(loadEnforcedEntries(tmpDir, "s1").length, 1);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(loadEnforcedEntries(tmpDir, "s1").length, 0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reflects a newly enforced rule added via mutateScores after an empty cached load", () => {
+    const { tmpDir, memoryDir, topicsDir } = makeMemoryFixture("enf-mutate-add-");
+    try {
+      const plainLine = "- [lesson] plain memory";
+      const ruleText = "never force push";
+      const ruleLine = `- [lesson] ${ruleText}`;
+      const ruleHash = entryHash(ruleLine);
+      const now = new Date().toISOString();
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), `# Lessons\n${plainLine}\n${ruleLine}\n`);
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [entryHash(plainLine)]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+            },
+          },
+          lastRebuild: now,
+          hashAlgo: "sha256-16",
+        }) + "\n",
+      );
+
+      // Prime empty fast-path cache
+      assert.deepEqual(loadEnforcedEntries(tmpDir, "s1"), []);
+
+      // Mutate cached scores object in-place via mutateScores
+      mutateScores(tmpDir, (scores) => {
+        scores.entries[ruleHash] = {
+          class: "lesson",
+          score: 1.0,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: now,
+          lastReinforced: now,
+          userState: "auto",
+          lifecycle: "active",
+          trigger: "bash_contains git push --force",
+          action: "block",
+        };
+      });
+
+      const updated = loadEnforcedEntries(tmpDir, "s1");
+      assert.equal(updated.length, 1);
+      assert.equal(updated[0].text, ruleText);
+      assert.equal(updated[0].trigger, "bash_contains git push --force");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reflects rule removals made via mutateScores", () => {
+    const { tmpDir, memoryDir, topicsDir } = makeMemoryFixture("enf-mutate-del-");
+    try {
+      const ruleLine = "- [lesson] temporary rule";
+      const ruleHash = entryHash(ruleLine);
+      const now = new Date().toISOString();
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), `# Lessons\n${ruleLine}\n`);
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [ruleHash]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+              trigger: "bash_contains temp-cmd",
+              action: "warn",
+            },
+          },
+          lastRebuild: now,
+          hashAlgo: "sha256-16",
+        }) + "\n",
+      );
+
+      assert.equal(loadEnforcedEntries(tmpDir, "s1").length, 1);
+
+      mutateScores(tmpDir, (scores) => {
+        delete scores.entries[ruleHash];
+      });
+
+      assert.deepEqual(loadEnforcedEntries(tmpDir, "s1"), []);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reflects a newly added verifier rule via mutateScores after an empty cached load", () => {
+    const { tmpDir, memoryDir, topicsDir } = makeMemoryFixture("ver-mutate-add-");
+    try {
+      const plainLine = "- [lesson] plain memory";
+      const verText = "ask before merge";
+      const verLine = `- [lesson] ${verText}`;
+      const verHash = entryHash(verLine);
+      const now = new Date().toISOString();
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), `# Lessons\n${plainLine}\n${verLine}\n`);
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [entryHash(plainLine)]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+            },
+          },
+          lastRebuild: now,
+          hashAlgo: "sha256-16",
+        }) + "\n",
+      );
+
+      assert.deepEqual(loadVerifierEntries(tmpDir, "s1"), []);
+
+      mutateScores(tmpDir, (scores) => {
+        scores.entries[verHash] = {
+          class: "lesson",
+          score: 1.0,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: now,
+          lastReinforced: now,
+          userState: "auto",
+          lifecycle: "active",
+          verifier: "tool_called ask_user before gh pr merge",
+        };
+      });
+
+      const updated = loadVerifierEntries(tmpDir, "s1");
+      assert.equal(updated.length, 1);
+      assert.equal(updated[0].text, verText);
+      assert.equal(updated[0].verifier, "tool_called ask_user before gh pr merge");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
