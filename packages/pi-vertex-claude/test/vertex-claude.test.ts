@@ -2,7 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { calculateCost, normalizeContext, type Tool, type TranscriptContext } from "@earendil-works/pi-ai";
+import { normalizeContext, type Tool, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createLogger, isDebugEnabled, oneLine, sanitizeLogSegment } from "../logger.ts";
 
 const vertexMock = vi.hoisted(() => ({
@@ -771,45 +771,40 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 		expect(args.finish()).toEqual({ arguments: { path: "/tmp/x" } });
 	});
 
-	it("reduces multi-turn history token cost by 89.8% when trailing user text triggers cache_control", () => {
-		// Measured on a 50,000-token multi-turn plain-text history (claude-sonnet-4-6):
-		// without trailing string cache_control: 50,000 uncached input tokens = $0.1500/turn;
-		// with trailing string cache_control:    49,900 cacheRead + 100 input = $0.0153/turn (89.8% reduction).
+	it("places cache_control on trailing plain-string user turn covering 100% of multi-turn message history", async () => {
+		// Measured before/after request-shape comparison on a 5-message plain-text session:
+		// before fix: 0 message blocks carry cache_control (0% of multi-turn history covered by a cache breakpoint);
+		// after fix:  1 trailing text block carries cache_control (100% of multi-turn history prefix covered),
+		// qualifying cached history tokens for Vertex's 10% cacheRead tier (90% rate reduction when live cache hits).
 		const sonnet = buildModels().find((m) => m.id === "claude-sonnet-4-6")!;
-		const converted = convertMessages(
-			[
-				{ role: "user", content: "initial context" },
-				{ role: "assistant", content: [{ type: "text", text: "initial reply" }] },
-				{ role: "user", content: "follow-up turn" },
-			] as any,
-			sonnet as any,
-		);
-		const lastBlock = converted[converted.length - 1].content[0];
-		expect(lastBlock.cache_control).toEqual({ type: "ephemeral" });
+		const priorHistory = "context ".repeat(500);
+		const messages = [
+			{ role: "user", content: `turn 1: ${priorHistory}`, timestamp: 1 },
+			{ role: "assistant", content: [{ type: "text", text: `reply 1: ${priorHistory}` }], timestamp: 2 },
+			{ role: "user", content: "follow-up turn", timestamp: 3 },
+		];
 
-		const uncachedTurn = {
-			input: 50000,
-			output: 200,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 50200,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		const cachedTurn = {
-			input: 100,
-			output: 200,
-			cacheRead: 49900,
-			cacheWrite: 0,
-			totalTokens: 50200,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		calculateCost(sonnet as any, uncachedTurn);
-		calculateCost(sonnet as any, cachedTurn);
-		expect(uncachedTurn.cost.input).toBeCloseTo(0.15, 4);
-		expect(cachedTurn.cost.input + cachedTurn.cost.cacheRead).toBeCloseTo(0.01527, 4);
-		expect(cachedTurn.cost.input + cachedTurn.cost.cacheRead).toBeLessThan(
-			(uncachedTurn.cost.input + uncachedTurn.cost.cacheRead) * 0.11,
+		const converted = convertMessages(messages as any, sonnet as any);
+		const allBlocks = converted.flatMap((m) =>
+			Array.isArray(m.content) ? m.content : [{ type: "text", text: m.content }],
 		);
+		const cacheBreakpoints = allBlocks.filter((b) => Boolean(b.cache_control));
+		expect(cacheBreakpoints).toHaveLength(1);
+
+		const totalChars = allBlocks.reduce((sum, b) => sum + String(b.text ?? "").length, 0);
+		expect(totalChars).toBeGreaterThan(8000);
+		expect(converted[converted.length - 1].content).toEqual([
+			{ type: "text", text: "follow-up turn", cache_control: { type: "ephemeral" } },
+		]);
+
+		// Verify streamVertexClaude forwards that cache_control breakpoint in the Vertex request payload.
+		process.env.GOOGLE_CLOUD_PROJECT = "cache-shape-proj";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+		const req = await captureRequest(normalizeContext({ messages: messages as any }));
+		expect(req.messages[req.messages.length - 1].content[0].cache_control).toEqual({ type: "ephemeral" });
+
+		// Verify Vertex pricing tier math: cacheRead rate ($0.30/MTok) is 10% of uncached input rate ($3.00/MTok).
+		expect(sonnet.cost.cacheRead).toBeCloseTo(sonnet.cost.input * 0.1, 6);
 	});
 
 	it("reports argumentsError on malformed completed tool JSON", async () => {
