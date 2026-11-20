@@ -41,6 +41,7 @@ import {
 	type ThinkingContent,
 	type Tool,
 	type ToolCall,
+	ToolCallArgumentsStream,
 	type ToolResultMessage,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
@@ -200,6 +201,22 @@ type ProjectEnvVar = "GOOGLE_CLOUD_PROJECT" | "GCLOUD_PROJECT" | "ANTHROPIC_VERT
 
 const DEFAULT_ADC_PATH = join(homedir(), ".config", "gcloud", "application_default_credentials.json");
 let cachedAdcExists: boolean | null = null;
+const vertexClients = new Map<string, AnthropicVertex>();
+
+function getVertexClient(projectId: string, region: string): AnthropicVertex {
+	const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS ?? "";
+	const baseUrl = process.env.ANTHROPIC_VERTEX_BASE_URL ?? "";
+	const cacheKey = `${projectId}\0${region}\0${credentialsPath}\0${baseUrl}`;
+	const cached = vertexClients.get(cacheKey);
+	if (cached) {
+		log.debug("getVertexClient: cache hit", { projectId, region });
+		return cached;
+	}
+	log.debug("getVertexClient: creating client", { projectId, region });
+	const client = new AnthropicVertex({ projectId, region });
+	vertexClients.set(cacheKey, client);
+	return client;
+}
 
 function hasAdcCredentials(): boolean {
 	if (cachedAdcExists !== null) return cachedAdcExists;
@@ -343,10 +360,15 @@ export function convertMessages(messages: Message[], model: Model<Api>): any[] {
 	// Add cache control to last user message
 	if (params.length > 0) {
 		const last = params[params.length - 1];
-		if (last.role === "user" && Array.isArray(last.content)) {
-			const lastBlock = last.content[last.content.length - 1];
-			if (lastBlock && (lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")) {
-				lastBlock.cache_control = { type: "ephemeral" };
+		if (last.role === "user") {
+			if (Array.isArray(last.content)) {
+				const lastBlock = last.content[last.content.length - 1];
+				if (lastBlock && (lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")) {
+					lastBlock.cache_control = { type: "ephemeral" };
+				}
+			} else if (typeof last.content === "string") {
+				last.content = [{ type: "text", text: last.content, cache_control: { type: "ephemeral" } }];
+				log.debug("convertMessages: attached cache_control to string user message");
 			}
 		}
 	}
@@ -574,14 +596,8 @@ export function streamVertexClaude(
 				betaFeatures.push(CONTEXT_1M_BETA);
 			}
 
-			// Create AnthropicVertex client - uses Google ADC automatically
-			const client = new AnthropicVertex({
-				projectId: projectInfo.id,
-				region: region,
-				defaultHeaders: {
-					"anthropic-beta": betaFeatures.join(","),
-				},
-			});
+			// Reuse AnthropicVertex client per (projectId, region, credentials, baseURL) to preserve GoogleAuth token cache
+			const client = getVertexClient(projectInfo.id, region);
 
 			// Build request params — strip -1m suffix for the actual API model ID
 			const apiModelId = stripOneMSuffix(model.id);
@@ -630,12 +646,19 @@ export function streamVertexClaude(
 				);
 			}
 
-			// Start streaming
-			const anthropicStream = client.messages.stream({ ...params }, { signal: options?.signal });
+			// Start streaming — pass per-request beta header so cached clients work across standard and -1m models
+			const anthropicStream = client.messages.stream(params, {
+				signal: options?.signal,
+				headers: { "anthropic-beta": betaFeatures.join(",") },
+			});
 			stream.push({ type: "start", partial: output });
 
-			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
-			const blocks = output.content as Block[];
+			type OpenBlock = {
+				block: ThinkingContent | TextContent | ToolCall;
+				contentIndex: number;
+				arguments?: ToolCallArgumentsStream;
+			};
+			const openBlocks = new Map<number, OpenBlock>();
 
 			for await (const event of anthropicStream) {
 				if (event.type === "message_start") {
@@ -648,52 +671,58 @@ export function streamVertexClaude(
 					calculateCost(model, output.usage);
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "text") {
-						const block: Block = { type: "text", text: "", index: event.index };
+						const block: TextContent = { type: "text", text: "" };
+						const contentIndex = output.content.length;
 						output.content.push(block);
-						stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
+						openBlocks.set(event.index, { block, contentIndex });
+						stream.push({ type: "text_start", contentIndex, partial: output });
 					} else if (event.content_block.type === "thinking") {
-						const block: Block = {
+						const block: ThinkingContent = {
 							type: "thinking",
 							thinking: "",
 							thinkingSignature: "",
-							index: event.index,
 						};
+						const contentIndex = output.content.length;
 						output.content.push(block);
-						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+						openBlocks.set(event.index, { block, contentIndex });
+						stream.push({ type: "thinking_start", contentIndex, partial: output });
 					} else if (event.content_block.type === "tool_use") {
-						const block: Block = {
+						const block: ToolCall = {
 							type: "toolCall",
 							id: event.content_block.id,
 							name: event.content_block.name,
-							arguments: event.content_block.input as Record<string, any>,
-							partialJson: "",
-							index: event.index,
+							arguments: (event.content_block.input as Record<string, any>) ?? {},
 						};
+						const contentIndex = output.content.length;
 						output.content.push(block);
-						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+						openBlocks.set(event.index, {
+							block,
+							contentIndex,
+							arguments: new ToolCallArgumentsStream(),
+						});
+						stream.push({ type: "toolcall_start", contentIndex, partial: output });
 					}
 				} else if (event.type === "content_block_delta") {
-					const index = blocks.findIndex((b) => b.index === event.index);
-					const block = blocks[index];
-					if (!block) continue;
+					const open = openBlocks.get(event.index);
+					if (!open) continue;
+					const { block, contentIndex } = open;
 
 					if (event.delta.type === "text_delta" && block.type === "text") {
 						block.text += event.delta.text;
-						stream.push({ type: "text_delta", contentIndex: index, delta: event.delta.text, partial: output });
+						stream.push({ type: "text_delta", contentIndex, delta: event.delta.text, partial: output });
 					} else if (event.delta.type === "thinking_delta" && block.type === "thinking") {
 						block.thinking += event.delta.thinking;
 						stream.push({
 							type: "thinking_delta",
-							contentIndex: index,
+							contentIndex,
 							delta: event.delta.thinking,
 							partial: output,
 						});
-					} else if (event.delta.type === "input_json_delta" && block.type === "toolCall") {
-						(block as any).partialJson += event.delta.partial_json;
-						block.arguments = parseStreamingJson((block as any).partialJson);
+					} else if (event.delta.type === "input_json_delta" && block.type === "toolCall" && open.arguments) {
+						block.arguments = open.arguments.append(event.delta.partial_json);
 						stream.push({
 							type: "toolcall_delta",
-							contentIndex: index,
+							contentIndex,
 							delta: event.delta.partial_json,
 							partial: output,
 						});
@@ -701,19 +730,20 @@ export function streamVertexClaude(
 						block.thinkingSignature = (block.thinkingSignature || "") + (event.delta as any).signature;
 					}
 				} else if (event.type === "content_block_stop") {
-					const index = blocks.findIndex((b) => b.index === event.index);
-					const block = blocks[index];
-					if (!block) continue;
+					const open = openBlocks.get(event.index);
+					if (!open) continue;
+					openBlocks.delete(event.index);
+					const { block, contentIndex } = open;
 
-					delete (block as any).index;
 					if (block.type === "text") {
-						stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: output });
+						stream.push({ type: "text_end", contentIndex, content: block.text, partial: output });
 					} else if (block.type === "thinking") {
-						stream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: output });
+						stream.push({ type: "thinking_end", contentIndex, content: block.thinking, partial: output });
 					} else if (block.type === "toolCall") {
-						block.arguments = parseStreamingJson((block as any).partialJson);
-						delete (block as any).partialJson;
-						stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: output });
+						if (open.arguments) {
+							Object.assign(block, open.arguments.finish());
+						}
+						stream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
 					}
 				} else if (event.type === "message_delta") {
 					if ((event.delta as any).stop_reason) {
@@ -749,10 +779,13 @@ export function streamVertexClaude(
 			stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
 			stream.end();
 		} catch (error) {
-			// Clean up any index properties
-			for (const block of output.content) delete (block as any).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+			log.warn("streamVertexClaude: stream failed", {
+				modelId: model.id,
+				stopReason: output.stopReason,
+				error: output.errorMessage,
+			});
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

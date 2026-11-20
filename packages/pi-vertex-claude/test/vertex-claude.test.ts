@@ -1,15 +1,31 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { normalizeContext, Type, type Tool, type TranscriptContext } from "@earendil-works/pi-ai";
+import { normalizeContext, type Tool, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createLogger, isDebugEnabled, oneLine, sanitizeLogSegment } from "../logger.ts";
 
-const vertexMock = vi.hoisted(() => ({ request: undefined as any }));
+const vertexMock = vi.hoisted(() => ({
+	ctorArgs: [] as Array<Record<string, unknown>>,
+	request: undefined as any,
+	requestOptions: undefined as any,
+	events: [] as Array<Record<string, unknown>>,
+}));
 vi.mock("@anthropic-ai/vertex-sdk", () => ({
 	AnthropicVertex: class {
+		constructor(opts: Record<string, unknown>) {
+			vertexMock.ctorArgs.push(opts);
+		}
 		messages = {
-			stream: (request: unknown) => {
+			stream: (request: unknown, requestOptions?: unknown) => {
 				vertexMock.request = request;
-				return { async *[Symbol.asyncIterator]() {} };
+				vertexMock.requestOptions = requestOptions;
+				const events = vertexMock.events;
+				return {
+					async *[Symbol.asyncIterator]() {
+						for (const event of events) {
+							yield event;
+						}
+					},
+				};
 			},
 		};
 	},
@@ -50,11 +66,15 @@ const model = {
 	maxTokens: 100,
 } as const;
 
-const oldTool: Tool = { name: "old_tool", description: "Old", parameters: Type.Object({}) };
+const oldTool: Tool = { name: "old_tool", description: "Old", parameters: { type: "object", properties: {} } };
 const currentTool: Tool = {
 	name: "current_tool",
 	description: "Current",
-	parameters: Type.Object({ value: Type.String() }, { required: ["value"] }),
+	parameters: {
+		type: "object",
+		properties: { value: { type: "string" } },
+		required: ["value"],
+	},
 };
 
 async function captureRequest(context: TranscriptContext) {
@@ -65,7 +85,10 @@ async function captureRequest(context: TranscriptContext) {
 }
 
 beforeEach(() => {
+	vertexMock.ctorArgs.length = 0;
 	vertexMock.request = undefined;
+	vertexMock.requestOptions = undefined;
+	vertexMock.events = [];
 });
 
 describe("Vertex transcript request state", () => {
@@ -180,6 +203,40 @@ describe("vertex-claude helpers", () => {
 
 		expect(lastBlock.type).toBe("image");
 		expect(lastBlock.cache_control).toEqual({ type: "ephemeral" });
+	});
+
+	it("attaches cache_control when last user message has plain-string content", () => {
+		const messages = [
+			{ role: "user", content: "first question" },
+			{ role: "assistant", content: [{ type: "text", text: "first answer" }] },
+			{ role: "user", content: "follow-up \uD800 question" },
+		];
+
+		const params = convertMessages(messages as any, model as any);
+
+		expect(params[0]).toEqual({ role: "user", content: "first question" });
+		expect(params[2]).toEqual({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: "follow-up \uFFFD question",
+					cache_control: { type: "ephemeral" },
+				},
+			],
+		});
+	});
+
+	it("does not attach cache_control when last message is from assistant", () => {
+		const messages = [
+			{ role: "user", content: "question" },
+			{ role: "assistant", content: [{ type: "text", text: "answer" }] },
+		];
+
+		const params = convertMessages(messages as any, model as any);
+
+		expect(params[0]).toEqual({ role: "user", content: "question" });
+		expect(params[1].content[0]).not.toHaveProperty("cache_control");
 	});
 
 	describe("resolveProjectId priority", () => {
@@ -480,5 +537,233 @@ describe("package-local logger", () => {
 
 	it("collapses CR LF into a single physical log line", () => {
 		expect(oneLine("a\nb\r\nc")).toBe("a\\nb\\nc");
+	});
+});
+
+describe("Vertex client caching with per-request headers (#1181)", () => {
+	const savedProject = process.env.GOOGLE_CLOUD_PROJECT;
+	const savedRegion = process.env.GOOGLE_CLOUD_LOCATION;
+	const savedCreds = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+	afterEach(() => {
+		if (savedProject === undefined) delete process.env.GOOGLE_CLOUD_PROJECT;
+		else process.env.GOOGLE_CLOUD_PROJECT = savedProject;
+		if (savedRegion === undefined) delete process.env.GOOGLE_CLOUD_LOCATION;
+		else process.env.GOOGLE_CLOUD_LOCATION = savedRegion;
+		if (savedCreds === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+		else process.env.GOOGLE_APPLICATION_CREDENTIALS = savedCreds;
+	});
+
+	it("reuses AnthropicVertex client for same project/region/credentials across standard vs -1m models", async () => {
+		process.env.GOOGLE_CLOUD_PROJECT = "cache-test-project";
+		process.env.GOOGLE_CLOUD_LOCATION = "us-east5";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+
+		const context = normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] });
+		const controller = new AbortController();
+
+		for await (const _e of streamVertexClaude({ ...model, id: "claude-opus-4-6" } as any, context, {
+			signal: controller.signal,
+		})) {
+		}
+		expect(vertexMock.ctorArgs).toHaveLength(1);
+		expect(vertexMock.ctorArgs[0]).toEqual({ projectId: "cache-test-project", region: "us-east5" });
+		expect(vertexMock.requestOptions.signal).toBe(controller.signal);
+		expect(vertexMock.requestOptions.headers["anthropic-beta"]).toBe(
+			"fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14",
+		);
+
+		for await (const _e of streamVertexClaude({ ...model, id: "claude-opus-4-6-1m" } as any, context)) {
+		}
+		expect(vertexMock.ctorArgs).toHaveLength(1);
+		expect(vertexMock.request.model).toBe("claude-opus-4-6");
+		expect(vertexMock.requestOptions.headers["anthropic-beta"]).toBe(
+			"fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14,context-1m-2025-08-07",
+		);
+	});
+
+	it("creates a distinct client when projectId, region, or credentials path changes", async () => {
+		process.env.GOOGLE_CLOUD_PROJECT = "proj-a";
+		process.env.GOOGLE_CLOUD_LOCATION = "us-east5";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+
+		const context = normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 1 }] });
+		for await (const _e of streamVertexClaude(model as any, context)) {
+		}
+		const afterFirst = vertexMock.ctorArgs.length;
+
+		process.env.GOOGLE_CLOUD_PROJECT = "proj-b";
+		for await (const _e of streamVertexClaude(model as any, context)) {
+		}
+		expect(vertexMock.ctorArgs.length).toBe(afterFirst + 1);
+
+		process.env.GOOGLE_CLOUD_LOCATION = "europe-west1";
+		for await (const _e of streamVertexClaude(model as any, context)) {
+		}
+		expect(vertexMock.ctorArgs.length).toBe(afterFirst + 2);
+
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = new URL("../package.json", import.meta.url).pathname;
+		for await (const _e of streamVertexClaude(model as any, context)) {
+		}
+		expect(vertexMock.ctorArgs.length).toBe(afterFirst + 3);
+	});
+});
+
+describe("streaming tool-call incremental JSON assembly (#1191)", () => {
+	const savedProject = process.env.GOOGLE_CLOUD_PROJECT;
+	const savedCreds = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		if (savedProject === undefined) delete process.env.GOOGLE_CLOUD_PROJECT;
+		else process.env.GOOGLE_CLOUD_PROJECT = savedProject;
+		if (savedCreds === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+		else process.env.GOOGLE_APPLICATION_CREDENTIALS = savedCreds;
+	});
+
+	it("assembles chunked tool arguments in O(N) without per-chunk JSON.parse or leaked internal props", async () => {
+		process.env.GOOGLE_CLOUD_PROJECT = "stream-test-project";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+
+		const chunks = ['{"pa', 'th":', ' "/tmp/a', '.txt",', ' "count"', ": 42", "}"];
+		vertexMock.events = [
+			{
+				type: "message_start",
+				message: { usage: { input_tokens: 10, output_tokens: 0 } },
+			},
+			{
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "thinking", thinking: "", signature: "" },
+			},
+			{
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "thinking_delta", thinking: "hmm" },
+			},
+			{
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "signature_delta", signature: "sig-1" },
+			},
+			{ type: "content_block_stop", index: 0 },
+			{
+				type: "content_block_start",
+				index: 1,
+				content_block: { type: "tool_use", id: "call-1", name: "write", input: {} },
+			},
+			...chunks.map((partial_json) => ({
+				type: "content_block_delta",
+				index: 1,
+				delta: { type: "input_json_delta", partial_json },
+			})),
+			{ type: "content_block_stop", index: 1 },
+			{
+				type: "message_delta",
+				delta: { stop_reason: "tool_use" },
+				usage: { output_tokens: 20 },
+			},
+		];
+
+		const jsonParseSpy = vi.spyOn(JSON, "parse");
+		const context = normalizeContext({ messages: [{ role: "user", content: "write file", timestamp: 1 }] });
+		const events: Array<any> = [];
+		for await (const ev of streamVertexClaude(model as any, context)) {
+			events.push(ev);
+		}
+
+		// Incremental parser never calls JSON.parse per chunk; only finish() parses once at stop.
+		expect(jsonParseSpy).toHaveBeenCalledTimes(1);
+
+		const deltas = events.filter((e) => e.type === "toolcall_delta");
+		expect(deltas).toHaveLength(chunks.length);
+		for (const deltaEvent of deltas) {
+			const block = deltaEvent.partial.content[1];
+			expect(block).not.toHaveProperty("index");
+			expect(block).not.toHaveProperty("partialJson");
+		}
+
+		const endEvent = events.find((e) => e.type === "toolcall_end");
+		expect(endEvent).toBeDefined();
+		expect(endEvent.toolCall).toEqual({
+			type: "toolCall",
+			id: "call-1",
+			name: "write",
+			arguments: { path: "/tmp/a.txt", count: 42 },
+		});
+
+		const doneEvent = events.find((e) => e.type === "done");
+		expect(doneEvent?.reason).toBe("toolUse");
+		expect(doneEvent?.message.content[0]).toEqual({
+			type: "thinking",
+			thinking: "hmm",
+			thinkingSignature: "sig-1",
+		});
+	});
+
+	it("reports argumentsError on malformed completed tool JSON", async () => {
+		process.env.GOOGLE_CLOUD_PROJECT = "stream-test-project";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+
+		vertexMock.events = [
+			{ type: "message_start", message: { usage: { input_tokens: 5, output_tokens: 0 } } },
+			{
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "tool_use", id: "bad-call", name: "write", input: {} },
+			},
+			{
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "input_json_delta", partial_json: '{"unterminated' },
+			},
+			{ type: "content_block_stop", index: 0 },
+			{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
+		];
+
+		const context = normalizeContext({ messages: [{ role: "user", content: "run", timestamp: 1 }] });
+		const events: Array<any> = [];
+		for await (const ev of streamVertexClaude(model as any, context)) {
+			events.push(ev);
+		}
+
+		const doneEvent = events.find((e) => e.type === "done");
+		expect(doneEvent?.message.content[0]).toMatchObject({
+			type: "toolCall",
+			id: "bad-call",
+			name: "write",
+			arguments: {},
+		});
+		expect(doneEvent?.message.content[0].argumentsError).toBeDefined();
+	});
+
+	it("returns empty arguments object when tool call completes with no delta chunks", async () => {
+		process.env.GOOGLE_CLOUD_PROJECT = "stream-test-project";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+
+		vertexMock.events = [
+			{ type: "message_start", message: { usage: { input_tokens: 5, output_tokens: 0 } } },
+			{
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "tool_use", id: "empty-call", name: "ping", input: {} },
+			},
+			{ type: "content_block_stop", index: 0 },
+			{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
+		];
+
+		const context = normalizeContext({ messages: [{ role: "user", content: "run", timestamp: 1 }] });
+		const events: Array<any> = [];
+		for await (const ev of streamVertexClaude(model as any, context)) {
+			events.push(ev);
+		}
+
+		const doneEvent = events.find((e) => e.type === "done");
+		expect(doneEvent?.message.content[0]).toEqual({
+			type: "toolCall",
+			id: "empty-call",
+			name: "ping",
+			arguments: {},
+		});
 	});
 });
