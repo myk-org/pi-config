@@ -43,7 +43,9 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
 ## Definition of Done
 
 1. All gates pass: `prek run --all-files`, `uv run --group tests pytest`, `npx tsx --test tests/node/**/*.test.ts`, `npm run typecheck`.
-2. `AGENTS.md` / `README.md` (and `contributing/repo-structure.md` / `DEVELOPMENT.md` for module/workflow changes) updated when structure, commands, or features change.
+2. Update docs when code/features change: new feature/command/tool → `README.md` feature table; new prompt template → `README.md` prompt table; new CLI tool/dep →
+   `README.md` tools table + `Dockerfile`; new/modified extension module → `contributing/repo-structure.md`; new/removed agent → `contributing/repo-structure.md` +
+   `rules/10-agent-routing.md` + `rules/50-agent-bug-reporting.md`; dev workflow change → `DEVELOPMENT.md`; plus `AGENTS.md` as needed.
 3. **LLM-facing capability is TAUGHT, not just built:** new tools, params, keys, or modes must be documented in BOTH `rules/` (injected every turn) and the tool/schema
    description (`docs/` alone is for humans).
 4. Committed as `type(scope): description`.
@@ -109,7 +111,8 @@ All new/modified runtime code (extensions, sidecar, CLI, scripts) MUST log via `
   `/coms tell` and `m` composer set `origin: "user"` via `globalThis.__comsUserSend` (`resolvePromptOrigin` accepts literal `true` only; display-only, unauthenticated).
   Queue recovery: `coms_queue_inspect` → 5m owner-bound `preview_id` → `coms_queue_clear`/`delete` (never `clearPrevious`; RPC providers keep ≤20 previews and atomic
   `clearQueueIfSnapshot`).
-- **Async & CLI/ACPX providers (`docs/async-internals.md`, `docs/cli-provider.md`):** use `extensions/shared/create-runtime-provider.ts`; `models.dev` cached at
+- **Async & CLI/ACPX providers (`docs/async-internals.md`, `docs/cli-provider.md`):** native `cli-*`/`acpx-*` providers MUST use
+  `extensions/shared/create-runtime-provider.ts` (`createProvider` + `/login` + fetch/filter) — **never legacy `registerProvider(name, bag)`**; `models.dev` cached at
   `~/.pi/pi-config/models.dev.json` (1d TTL; thinking from id); cold-start restore on `startup`/`resume` (skips non-empty `enabledModels`); spawn cwd uses session cwd
   (`Symbol.for("pi-config.sessionCwdAls")` synced between `extensions/shared/session-cwd.ts` and `packages/pi-sidecar/src/session-cwd.ts`); Cursor `--approve-mcps`
   (`CLI_APPROVE_MCPS` > `SIDECAR_PORT`; `bindSidecarListenExit()` exits 1 on fatal errors); Gemini defaults `GEMINI_CLI_TRUST_WORKSPACE=true`; ops logs in `~/.pi/logs/`.
@@ -120,17 +123,21 @@ All new/modified runtime code (extensions, sidecar, CLI, scripts) MUST log via `
   replaceable MCP tool/command names.
 - **Stream logging:** shared `provider_stream_event` (`extensions/shared/provider-stream-log.ts`) gated on `log_providers` `debug`.
 - **Memory & enforcement:** `docs/memory-architecture.md` (conflict gate allows distinct targets/quoted examples, rejects polarity flips until `overrideConflicts`);
-  `contributing/enforcement-honesty-map.md`; `*(enforced)*` entries are hash-keyed (never mutate text); `checkRemoteExecBlock` (`enforcement-helpers.ts`) uses
-  variable-flow analysis.
+  `contributing/enforcement-honesty-map.md`; `*(enforced)*` entries are hash-keyed (never mutate text); `checkRemoteExecBlock` (`enforcement-helpers.ts`) blocks `curl |
+  bash`, `eval $(curl)`, nested `$(bash -c "$(curl)")`, prefix assignments (`VAR=$(curl) cmd`), and path-prefixed exec (`/bin/bash -c`), while allowing a safe `VAR=$(curl
+  ...)` capture followed by an unrelated interpreter/`eval` call (blocking if exec consumes the captured var or reads untrackable stdin/file input).
 - **CLI & settings:** always `uvx myk-pi-tools@latest <subcommand>` in prompts/rules (runs published PyPI, so verify local CLI fixes against working tree; release scripts
   use local build). `settings-keys.json` is single source of truth for TS + Python; TUI `/pi-config-settings [project|global]`; agents use `{{SETTINGS:key1,key2}}` (never
   read JSON manually).
 - **Skill maintenance (`docs/skill-self-improvement.md`):** `extensions/orchestrator/skill-maintenance.ts` (non-blocking; `pi.getCommands()` + `.pi/skills/` fallback;
   `/adopt-skill`; provenance `.pi/data/skill-review.jsonl`).
 - **Reviews & learning (`README.md` `myk-pi-tools`):** `reviews address` applies `<path>:<line>|<reply>` / `*|<reply>` atomically; `reviews fetch`/`poll --source qodo`
-  reads `qodo` CLI when authed (fail-open to GitHub sticky scrape; read-only, replies via `reviews address`; `approved` = `commit_sha == head` + 0 open + `reviewing ==
-  false`); `reviews store-session <json>` stores `qodo-<pr>-<sha>.json` idempotently. **MANDATORY coupling:** `.pi/data/reviews.db` feeds
-  `extensions/orchestrator/review-learning.ts` (`getAddressedComments`/`getLatestReview`) — store/schema/status changes must preserve distillation.
+  reads `qodo` CLI when authed (fail-open to GitHub sticky scrape; read-only, replies via `reviews address`). `qodo_cli_state.approved` = `commit_sha == head` + 0 open
+  findings + `reviewing == false`; `reviewing` stays `true` until a settled `completed`/`skipped` run covers head (in-progress, missing, unrecognized, or behind-head sessions
+  never approve and stay on the retrigger path); `review_complete` surfaces skipped/incomplete runs without blocking approval; `reason` (`no_findings`, `open_findings`,
+  `not_at_head`, `all_resolved`) can be `all_resolved` while `approved` is `false`. `reviews store-session <json>` stores `qodo-<pr>-<sha>.json` idempotently. **MANDATORY
+  coupling:** `.pi/data/reviews.db` feeds `extensions/orchestrator/review-learning.ts` (`getAddressedComments`/`getLatestReview`) — store/schema/status changes must preserve
+  distillation.
 
 ## Boundaries & When Blocked
 

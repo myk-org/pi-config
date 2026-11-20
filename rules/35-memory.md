@@ -53,10 +53,17 @@ After EVERY turn, check if anything worth remembering occurred:
 
 For mechanical rules ("when X happens, do/block/warn Y"), pass `trigger`, `action`, and optional `verifier` to `memory_add`:
 
+| Pattern | Enforcement | Example |
+|---|---|---|
+| Corrects a specific command/tool usage | `trigger` + `block` | "never use git add ." |
+| Requires action after a specific change | `trigger` + `run_after <cmd>` | "always deploy after code changes" |
+| Wants a warning on a specific pattern | `trigger` + `warn` | "warn when modifying config files" |
+| Requires tool A before command B | `verifier` | "always ask_user before gh pr merge" |
+| General knowledge / context / facts | **No enforcement** | "buildah chown breaks cache mounts" |
+
 - **Triggers:** `bash_contains <str>`, `bash_regex <pattern>`, `tool_name <name>`, `file_modified <pattern>` (e.g. `*.py`, `Dockerfile`)
 - **Actions:** `block` (prevent), `run_after <cmd>` (execute after), `warn` (append warning)
 - **Verifier:** `tool_called <tool> before <command>` (checked at `turn_end`, forces retry on violation)
-- **Plain knowledge/facts:** omit enforcement parameters.
 
 ---
 

@@ -66,6 +66,9 @@ Findings that were fixed in code → verify the fix, do not re-raise if correct.
 </prior-review-cycle>
 ```
 
+**Reviewers MUST respect valid responses:** fixed findings → verify fix and don't re-raise if correct; validly explained findings → accept and don't re-raise; wrong
+explanation or incomplete fix → re-raise with specific pushback.
+
 ## Key Rules & Test Tracking
 
 - **Exceptions:** `chore/bump-version` branches skip review dirty-tracking and commit blocking; minor test/config-only fixes skip re-review (go to step 5); substantive

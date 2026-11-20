@@ -168,9 +168,10 @@ Build three context strings first:
 - `RESOLVED_COMMENTS`: formatted `RESOLVED_EXTERNAL` threads from `${PROJECT_TMP_DIR}/all-resolved/` with `resolved_at`, `resolved_at_source`, and `(suppressed: true)` /
   `(suppressed: false)` from `check-resolved-threads` (or `"No resolved third-party comments found."`).
 - `CODE_SUGGESTIONS`: instruct reviewers to attach GitHub ```` ```suggestion ```` blocks only for exact line-replacement fixes (not architectural concerns, missing tests,
-  new files, or design questions).
+  new files, or design questions). The suggestion must replace the exact lines referenced by the finding.
 
-Define `SHARED_CONTEXT` once and append it to all 5 reviewer tasks:
+Define `SHARED_CONTEXT` once, replacing `<EXISTING_COMMENTS>`, `<RESOLVED_COMMENTS>`, `<CODE_SUGGESTIONS>`, `{owner}`, `{repo}`, and `{pr_number}` with the built
+strings/values before appending it to all 5 reviewer tasks:
 
 ```text
 SHARED_CONTEXT = """
