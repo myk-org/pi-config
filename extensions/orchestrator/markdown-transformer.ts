@@ -308,11 +308,16 @@ export function transformMarkdown(
     return markdown;
   }
 
+  // Pass 1: transforms that cannot introduce code fences (inlineCode in applyComsHeaders can).
   let result = transformOutsideCodeBlocks(markdown, (text) => {
     let chunk = applyMemoryBadges(text);
     chunk = applyMemorySectionHeaders(chunk);
     chunk = applyComsHeaders(chunk);
-    chunk = applySettingsDisplay(chunk);
+    return chunk;
+  });
+  // Pass 2: re-split outside code blocks so triple-backtick spans emitted by inlineCode() stay protected.
+  result = transformOutsideCodeBlocks(result, (text) => {
+    let chunk = applySettingsDisplay(text);
     chunk = applyTaskStatus(chunk);
     chunk = applyAsyncStatus(chunk);
     return chunk;

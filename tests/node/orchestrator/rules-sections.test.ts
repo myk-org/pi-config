@@ -305,15 +305,14 @@ describe("before_agent_start section injection", () => {
     }
   });
 
-  it("caches assembled rules across turns and invalidates on rule edit or setting change (#1229)", async () => {
-    const cwd = makeTempDir("rules-cache-");
+  it("caches assembled rules across repeated turns (#1229)", async () => {
+    const cwd = makeTempDir("rules-cache-hit-");
     try {
       clearRulesCache();
       clearSettingsCache();
       const rulesDir = path.join(cwd, ".pi", "rules");
       fs.mkdirSync(rulesDir, { recursive: true });
-      const customRulePath = path.join(rulesDir, "99-custom-test.md");
-      fs.writeFileSync(customRulePath, "CUSTOM_RULE_V1 cycle={{REVIEW_LOOP_MAX_CYCLES}}\n");
+      fs.writeFileSync(path.join(rulesDir, "99-custom-test.md"), "CUSTOM_RULE_V1 cycle={{REVIEW_LOOP_MAX_CYCLES}}\n");
 
       const { pi, handlers } = makeMockPi();
       registerRules(pi);
@@ -324,34 +323,97 @@ describe("before_agent_start section injection", () => {
       const r1 = e1.systemPromptOptions.sections.orchestrator_rules;
       assert.ok(r1.includes("CUSTOM_RULE_V1 cycle=3"));
 
-      // Second turn: steady state returns byte-identical cached result
       const e2 = makeEvent(cwd);
       await h.fn(e2, { cwd });
       assert.equal(e2.systemPromptOptions.sections.orchestrator_rules, r1);
+    } finally {
+      clearRulesCache();
+      clearSettingsCache();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 
-      // Update setting -> invalidates assembled cache
+  it("invalidates assembled rules cache when settings change (#1229)", async () => {
+    const cwd = makeTempDir("rules-cache-settings-");
+    try {
+      clearRulesCache();
+      clearSettingsCache();
+      const rulesDir = path.join(cwd, ".pi", "rules");
+      fs.mkdirSync(rulesDir, { recursive: true });
+      fs.writeFileSync(path.join(rulesDir, "99-custom-test.md"), "CUSTOM_RULE_V1 cycle={{REVIEW_LOOP_MAX_CYCLES}}\n");
+
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+
+      await h.fn(makeEvent(cwd), { cwd });
       fs.writeFileSync(
         path.join(cwd, ".pi", "pi-config-settings.json"),
         JSON.stringify({ review_loop_max_cycles: 5 }),
       );
       clearSettingsCache();
-      const e3 = makeEvent(cwd);
-      await h.fn(e3, { cwd });
-      const r3 = e3.systemPromptOptions.sections.orchestrator_rules;
-      assert.ok(r3.includes("CUSTOM_RULE_V1 cycle=5"), "setting change invalidates rule cache");
-
-      // Edit project rule file -> invalidates raw + assembled cache
-      fs.writeFileSync(customRulePath, "CUSTOM_RULE_V2 cycle={{REVIEW_LOOP_MAX_CYCLES}}\n");
-      const e4 = makeEvent(cwd);
-      await h.fn(e4, { cwd });
-      assert.ok(
-        e4.systemPromptOptions.sections.orchestrator_rules.includes("CUSTOM_RULE_V2 cycle=5"),
-        "rule file edit invalidates rule cache",
-      );
+      const e2 = makeEvent(cwd);
+      await h.fn(e2, { cwd });
+      assert.ok(e2.systemPromptOptions.sections.orchestrator_rules.includes("CUSTOM_RULE_V1 cycle=5"));
     } finally {
       clearRulesCache();
       clearSettingsCache();
       fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates assembled rules cache when a project rule file changes (#1229)", async () => {
+    const cwd = makeTempDir("rules-cache-project-");
+    try {
+      clearRulesCache();
+      clearSettingsCache();
+      const rulesDir = path.join(cwd, ".pi", "rules");
+      fs.mkdirSync(rulesDir, { recursive: true });
+      const customRulePath = path.join(rulesDir, "99-custom-test.md");
+      fs.writeFileSync(customRulePath, "CUSTOM_RULE_V1\n");
+
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+
+      await h.fn(makeEvent(cwd), { cwd });
+      fs.writeFileSync(customRulePath, "CUSTOM_RULE_V2\n");
+      const e2 = makeEvent(cwd);
+      await h.fn(e2, { cwd });
+      assert.ok(e2.systemPromptOptions.sections.orchestrator_rules.includes("CUSTOM_RULE_V2"));
+    } finally {
+      clearRulesCache();
+      clearSettingsCache();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reflects edits to package rules on the next turn without restart (#1229)", async () => {
+    const cwd = makeTempDir("rules-cache-pkg-");
+    const pkgRulesDir = makeTempDir("pkg-rules-");
+    try {
+      clearRulesCache();
+      clearSettingsCache();
+      const pkgRuleFile = path.join(pkgRulesDir, "00-pkg.md");
+      fs.writeFileSync(pkgRuleFile, "PKG_RULE_V1\n");
+
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi, undefined, { packageRulesDir: pkgRulesDir });
+      const h = getBeforeAgentStart(handlers);
+
+      const e1 = makeEvent(cwd);
+      await h.fn(e1, { cwd });
+      assert.ok(e1.systemPromptOptions.sections.orchestrator_rules.includes("PKG_RULE_V1"));
+
+      fs.writeFileSync(pkgRuleFile, "PKG_RULE_V2\n");
+      const e2 = makeEvent(cwd);
+      await h.fn(e2, { cwd });
+      assert.ok(e2.systemPromptOptions.sections.orchestrator_rules.includes("PKG_RULE_V2"));
+    } finally {
+      clearRulesCache();
+      clearSettingsCache();
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(pkgRulesDir, { recursive: true, force: true });
     }
   });
 });

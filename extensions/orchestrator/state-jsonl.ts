@@ -511,6 +511,7 @@ export function truncateJsonlFile(
   maxSizeBytes: number,
   keepLines: number,
   mode?: number,
+  onError?: (err: unknown) => void,
 ): number | null {
   try {
     const stat = statSync(filePath);
@@ -523,9 +524,10 @@ export function truncateJsonlFile(
     writeFileSync(tmp, kept.join("\n") + "\n", mode !== undefined ? { mode } : undefined);
     renameSync(tmp, filePath);
     return kept.length;
-  } catch {
+  } catch (err) {
     // Truncation failure is non-fatal — log file retains extra entries until next success.
-    // Silent: extensions must not use console.* per AGENTS.md policy.
+    // Silent unless caller provides an error callback (extensions must not use console.*).
+    onError?.(err);
     return null;
   }
 }

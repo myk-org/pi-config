@@ -701,7 +701,13 @@ export function appendProvenance(projectCwd: string, records: readonly SkillProv
 }
 
 export function rotateProvenance(file: string): void {
-  const kept = truncateJsonlFile(file, PROVENANCE_MAX_BYTES, PROVENANCE_KEEP_LINES, 0o600);
+  const kept = truncateJsonlFile(
+    file,
+    PROVENANCE_MAX_BYTES,
+    PROVENANCE_KEEP_LINES,
+    0o600,
+    (err) => log.warn("provenance_rotate_failed", { reason: errMsg(err) }),
+  );
   if (kept !== null) {
     log.info("provenance_rotated", { kept });
   }

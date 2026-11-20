@@ -264,7 +264,7 @@ function scanUnquotedShellComments(
     }
 
     if (ch === "<" && cmd[i + 1] === "<" && cmd[i + 2] !== "<") {
-      const m = matchHeredocOpener(cmd.slice(i));
+      const m = matchHeredocOpener(cmd.slice(i), "comments");
       if (m) {
         pendingHeredocs.push({ delim: m.delim, stripTabs: m.stripTabs });
         out += cmd.slice(i, i + m.length);
@@ -594,7 +594,7 @@ const SHELL_WORDS = new Set(["bash", "sh", "zsh", "dash", "ksh", "eval"]);
 /** True when this segment RUNS a shell (behind any wrapper/assignment/env prefix).
  *  A quoted argument containing shell-looking text is not a shell run: only the
  *  command word counts. */
-function runsNestedShell(tokens: string[]): boolean {
+export function runsNestedShell(tokens: string[]): boolean {
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
     if (WRAPPER_WORDS.has(tok) || tok === "env" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
@@ -3990,7 +3990,7 @@ function findPipedCommitSpans(command: string): PipedCommitSpan[] | null {
 			continue;
 		}
 		if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
-			const m = matchHeredocOpener(command.slice(i));
+			const m = matchHeredocOpener(command.slice(i), "piped-commit");
 			if (m) {
 				pendingHeredocs.push({ delim: m.delim, stripTabs: m.stripTabs });
 				i += m.length - 1;

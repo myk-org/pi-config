@@ -149,7 +149,7 @@ function compileBashRegex(pattern: string): RegExp | null {
 
 // ── Loading ────────────────────────────────────────────────────────────────
 
-function loadEligibleScoreEntries<T>(
+export function loadEligibleScoreEntries<T>(
   cwd: string,
   sessionId: string | undefined,
   cache: Map<string, CachedEntries<T>>,

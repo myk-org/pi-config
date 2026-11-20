@@ -35,13 +35,6 @@ interface CachedRawRuleFile {
   content: string | null; // null when skipped (>128KB)
 }
 
-interface PackageRuleEntry {
-  fileName: string;
-  filePath: string;
-  stamp: string;
-  content: string | null;
-}
-
 interface AssembledRulesCacheEntry {
   accessedSettings: Array<[string, unknown]>;
   comsActive: boolean;
@@ -53,7 +46,6 @@ interface AssembledRulesCacheEntry {
   skippedCount: number;
 }
 
-let cachedPackageRules: PackageRuleEntry[] | null = null;
 const rawRuleFileCache = new Map<string, CachedRawRuleFile>();
 const assembledRulesCache = new Map<string, AssembledRulesCacheEntry>();
 
@@ -68,7 +60,6 @@ function setBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
 
 /** Clear rule file and assembly caches (tests). */
 export function clearRulesCache(): void {
-  cachedPackageRules = null;
   rawRuleFileCache.clear();
   assembledRulesCache.clear();
 }
@@ -104,32 +95,6 @@ function readRuleFileCached(fileName: string, filePath: string): { stamp: string
   }
 }
 
-function getPackageRules(): PackageRuleEntry[] {
-  if (cachedPackageRules !== null) return cachedPackageRules;
-  const entries: PackageRuleEntry[] = [];
-  try {
-    for (const entry of fs.readdirSync(PACKAGE_RULES_DIR, { withFileTypes: true })) {
-      if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.endsWith(".md")) continue;
-      const filePath = path.join(PACKAGE_RULES_DIR, entry.name);
-      try {
-        const { stamp, size } = statStamp(filePath);
-        if (size > RULE_MAX_BYTES) {
-          log.debug(`${entry.name} skipped (${Math.round(size / 1024)}KB > 128KB limit)`);
-          entries.push({ fileName: entry.name, filePath, stamp, content: null });
-          continue;
-        }
-        entries.push({ fileName: entry.name, filePath, stamp, content: fs.readFileSync(filePath, "utf-8") });
-      } catch (e: any) {
-        log.debug(`${entry.name} failed from ${filePath}:`, e?.message?.slice(0, 100));
-      }
-    }
-  } catch (e: any) {
-    if (e?.code !== "ENOENT") log.debug("failed to read", PACKAGE_RULES_DIR, e?.message?.slice(0, 100));
-  }
-  cachedPackageRules = entries;
-  return entries;
-}
-
 function sameSettingValue(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
   if (typeof a === "object" && typeof b === "object" && a !== null && b !== null) {
@@ -138,26 +103,19 @@ function sameSettingValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function loadOrAssembleRules(cwd: string): string {
+function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR): string {
   const userRulesDir = path.join(os.homedir(), ".pi", "agent", "rules");
   const projectRulesDir = path.join(cwd, ".pi", "rules");
 
-  type Candidate = { filePath: string; pkgEntry?: PackageRuleEntry };
-  const ruleCandidates = new Map<string, Candidate[]>();
+  const ruleCandidates = new Map<string, string[]>();
 
-  for (const pkgEntry of getPackageRules()) {
-    const existing = ruleCandidates.get(pkgEntry.fileName) || [];
-    existing.push({ filePath: pkgEntry.filePath, pkgEntry });
-    ruleCandidates.set(pkgEntry.fileName, existing);
-  }
-
-  for (const dir of [userRulesDir, projectRulesDir]) {
+  for (const dir of [packageRulesDir, userRulesDir, projectRulesDir]) {
     try {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.endsWith(".md")) continue;
         const f = entry.name;
         const existing = ruleCandidates.get(f) || [];
-        existing.push({ filePath: path.join(dir, f) });
+        existing.push(path.join(dir, f));
         ruleCandidates.set(f, existing);
       }
     } catch (e: any) {
@@ -176,10 +134,10 @@ function loadOrAssembleRules(cwd: string): string {
   for (const [fileName, candidates] of sorted) {
     let loaded = false;
     for (let i = candidates.length - 1; i >= 0; i--) {
-      const cand = candidates[i];
-      const loadedEntry = cand.pkgEntry ?? readRuleFileCached(fileName, cand.filePath);
+      const filePath = candidates[i]!;
+      const loadedEntry = readRuleFileCached(fileName, filePath);
       if (!loadedEntry) continue;
-      sigParts.push(`${fileName}:${cand.filePath}:${loadedEntry.stamp}`);
+      sigParts.push(`${fileName}:${filePath}:${loadedEntry.stamp}`);
       if (loadedEntry.content !== null) {
         ruleContents.push(loadedEntry.content);
       }
@@ -340,6 +298,7 @@ function logMemoryUsage(cwd: string, injected: { text: string; category: string;
 export function registerRules(
   pi: ExtensionAPI,
   getAsyncJobs?: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>,
+  options?: { packageRulesDir?: string },
 ): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let rebuildDone = false;
@@ -382,7 +341,7 @@ export function registerRules(
     // Load from: package rules/ → user ~/.pi/agent/rules/ → project .pi/rules/
     // Same-filename override: project > user > package
     if (!isSubagent) {
-      extra += loadOrAssembleRules(ctx.cwd);
+      extra += loadOrAssembleRules(ctx.cwd, options?.packageRulesDir);
     }
 
     // Async agent status — always show so the AI knows what's running.

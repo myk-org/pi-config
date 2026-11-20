@@ -48,6 +48,7 @@ import {
   isGitRepo,
   listUnmergedFiles,
   runGit,
+  tokenize,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
 import { markNeedsReview, isCommitAllowed, readReviewState, subjectLabel, statePath, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
@@ -91,6 +92,8 @@ import {
   isBumpVersionBranch,
   getCachedBranch,
   failedFileEditSkipMessage,
+  runsNestedShell,
+  unquotedSegments,
 } from "./enforcement-helpers.js";
 
 const log = createLogger("enforcement");
@@ -945,7 +948,10 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // Block bash WRITES targeting the settings files (issue #949 / Qodo
     // PR #950) and git identity config files (issue #995).
     const maybeSettingsWrite = cmdLower.includes("pi-config-settings");
-    const maybeIdentityWrite = cmdLower.includes("gitconfig") || cmdLower.includes("git/config");
+    const maybeIdentityWrite =
+      cmdLower.includes("gitconfig") ||
+      cmdLower.includes("git/config") ||
+      unquotedSegments(command).some((seg) => runsNestedShell(tokenize(seg.text)));
     if (maybeSettingsWrite || maybeIdentityWrite) {
       const maskedCmd = maskQuotedRegions(command);
       if (maybeSettingsWrite && bashWritesToPath(command, maskedCmd, "pi-config-settings")) {
@@ -1518,7 +1524,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   });
 }
 
-function formatReviewStateSummary(
+export function formatReviewStateSummary(
   state: ReturnType<typeof readReviewState>,
   enabled: boolean,
   opts: { mode: "ui" | "tool"; worktreePath?: string },

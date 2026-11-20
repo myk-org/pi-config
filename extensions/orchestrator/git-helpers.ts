@@ -541,12 +541,29 @@ export interface HeredocSpec {
   stripTabs: boolean;
 }
 
-const HEREDOC_OPENER_RE = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|((?:\\.|[^\s;&|()'\\"`\n<>])+))/;
+export type HeredocGrammar = "executable" | "comments" | "piped-commit";
 
-export function matchHeredocOpener(slice: string): { delim: string; expand: boolean; stripTabs: boolean; length: number } | null {
-  const m = HEREDOC_OPENER_RE.exec(slice);
+const HEREDOC_OPENER_RES: Record<HeredocGrammar, RegExp> = {
+  executable: /^<<(-?)\s*(?:'([^']*)'|"([^"]*)"|([^\s;&|)'\n]+))/,
+  comments: /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|((?:\\.|[^\s;&|)'"\\`\n])+))/,
+  "piped-commit": /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s;&|()<>'"`]+))/,
+};
+
+export function matchHeredocOpener(
+  slice: string,
+  grammar: HeredocGrammar = "executable",
+): { delim: string; expand: boolean; stripTabs: boolean; length: number } | null {
+  const m = HEREDOC_OPENER_RES[grammar].exec(slice);
   if (!m) return null;
-  const delim = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4]!.replace(/\\(.)/g, "$1");
+  const rawUnquoted = m[4];
+  const delim =
+    m[2] !== undefined
+      ? m[2]
+      : m[3] !== undefined
+        ? m[3]
+        : grammar === "comments"
+          ? rawUnquoted!.replace(/\\(.)/g, "$1")
+          : rawUnquoted!;
   return {
     delim,
     expand: m[2] === undefined && m[3] === undefined,
@@ -661,7 +678,7 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
 
     // Heredoc opener: remember the delimiter, keep scanning the same line.
     if (ch === "<" && cmd[i + 1] === "<") {
-      const m = matchHeredocOpener(cmd.slice(i));
+      const m = matchHeredocOpener(cmd.slice(i), "executable");
       if (m) {
         pendingHeredocs.push({
           delim: m.delim,

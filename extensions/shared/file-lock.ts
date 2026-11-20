@@ -74,9 +74,10 @@ export function acquireDirLock(lockDir: string, attempts = 10, sleepMs = 50): bo
  */
 export function acquirePidLock(
   lockFile: string,
-  opts?: { maxRetries?: number; ensureParent?: (filePath: string) => void },
+  opts?: { maxRetries?: number; ensureParent?: (filePath: string) => void; epermIsDead?: boolean },
 ): boolean {
   const maxRetries = opts?.maxRetries ?? 50;
+  const epermIsDead = opts?.epermIsDead ?? true;
   for (let i = 0; i < maxRetries; i++) {
     try {
       opts?.ensureParent?.(lockFile);
@@ -87,7 +88,18 @@ export function acquirePidLock(
         const pid = parseInt(readFileSync(lockFile, "utf-8").trim(), 10);
         if (pid === process.pid) return true; // Reentrant
         if (pid) {
-          if (isPidAlive(pid)) continue;
+          let alive = false;
+          if (epermIsDead) {
+            try {
+              process.kill(pid, 0);
+              alive = true;
+            } catch {
+              alive = false;
+            }
+          } else {
+            alive = isPidAlive(pid);
+          }
+          if (alive) continue;
           try { unlinkSync(lockFile); } catch { /* race */ }
           continue;
         }
