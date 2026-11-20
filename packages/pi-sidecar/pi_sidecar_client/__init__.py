@@ -337,9 +337,9 @@ async def _iter_sse_events(response: httpx.Response) -> AsyncIterator[dict[str, 
     # aiter_text decodes incrementally, so a multi-byte character split across
     # chunks survives intact.
     async for text in response.aiter_text():
-        buffer += text
-        while "\n" in buffer:
-            line, buffer = buffer.split("\n", 1)
+        lines = (buffer + text).split("\n")
+        buffer = lines.pop()
+        for line in lines:
             if line.endswith("\r"):
                 line = line[:-1]
             if not line:
@@ -720,8 +720,9 @@ class SidecarClient:
             # same session) starts no turn, so no terminal frame ever arrives,
             # and the 15s keepalives would defeat the read timeout.
             prompt_task = asyncio.ensure_future(self.prompt(session_id, message, timeout=timeout))
-            next_event = asyncio.ensure_future(anext(events))
+            next_event: asyncio.Future[Any] | None = asyncio.ensure_future(anext(events))
             prompt_ok = False
+            feed_ended = False
 
             def check_prompt() -> None:
                 """Raise unless our prompt ran: only then is the feed our turn's.
@@ -738,12 +739,10 @@ class SidecarClient:
                     raise RuntimeError(f"Sidecar prompt failed: {result.error}")
 
             try:
-                while True:
+                while not prompt_ok and next_event is not None:
                     # Widened element type: the event task and the prompt task
                     # return different payloads, but both are Futures.
-                    waiters: set[asyncio.Future[Any]] = {next_event}
-                    if not prompt_ok:
-                        waiters.add(prompt_task)
+                    waiters: set[asyncio.Future[Any]] = {next_event, prompt_task}
                     done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
                     # Authoritative: the server rejects a second concurrent prompt,
                     # so a rejection means the feed is showing another client's turn.
@@ -755,7 +754,10 @@ class SidecarClient:
                         try:
                             payload = next_event.result()
                         except StopAsyncIteration:
+                            next_event = None
+                            feed_ended = True
                             break
+                        next_event = None
                         terminal = payload.get("type") in _STREAM_TERMINAL_EVENTS
                         if terminal and not prompt_ok:
                             # A terminal frame while our prompt is still in flight
@@ -768,16 +770,26 @@ class SidecarClient:
                         yield payload
                         if terminal:
                             return
-                        next_event = asyncio.ensure_future(anext(events))
-                        continue
-                    # Prompt accepted first — or it ran and answered with an error
-                    # (200 + `error`): keep reading for its terminal frame, which is
-                    # the authoritative report of that failure. The server emits it
-                    # before answering, so the wait is for bytes already written.
-                    # shortcut: a server that errors the prompt without emitting a
-                    # terminal frame leaves us waiting on keepalives; raise early
-                    # again if that is ever observed.
-                    continue
+                        if not prompt_ok:
+                            next_event = asyncio.ensure_future(anext(events))
+                if not feed_ended:
+                    if next_event is not None:
+                        try:
+                            payload = await next_event
+                            next_event = None
+                        except StopAsyncIteration:
+                            next_event = None
+                            feed_ended = True
+                        if not feed_ended:
+                            yield payload
+                            if payload.get("type") in _STREAM_TERMINAL_EVENTS:
+                                return
+                    if not feed_ended:
+                        # Prompt accepted: stream directly without per-frame Task/wait churn.
+                        async for payload in events:
+                            yield payload
+                            if payload.get("type") in _STREAM_TERMINAL_EVENTS:
+                                return
                 # Feed closed with no terminal frame (idle reap, slow-subscriber
                 # eviction, session deleted, shutdown): never report success.
                 detail = ""
@@ -790,6 +802,8 @@ class SidecarClient:
             finally:
                 logger.debug("Stream closed: session=%s", session_id)
                 for task in (next_event, prompt_task):
+                    if task is None:
+                        continue
                     if task.done():
                         # Retrieve an unread result: asyncio warns about any
                         # exception nobody observed.

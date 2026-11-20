@@ -1728,6 +1728,79 @@ async def test_stream_prompt_raises_when_foreign_turn_ends_before_prompt_verdict
     assert transport.stream.closed
 
 
+@pytest.mark.asyncio
+async def test_iter_sse_events_parses_large_single_chunk_linearly() -> None:
+    """Large multi-line chunks are split once in linear time (#1165)."""
+    count = 5000
+    big_chunk = (
+        "".join(f'data: {{"type":"text_delta","turnId":1,"delta":"c{i}"}}\n\n' for i in range(count)).encode("utf-8")
+        + b'data: {"type":"turn_end","turnId":1,"text":"done","aborted":false}\n\n'
+    )
+    transport = _SseTransport([big_chunk], hang=False, prompt_hangs=False)
+    events = [event async for event in _stream_client(transport).stream_prompt("s1", "hello")]
+    assert len(events) == count + 1
+    assert events[0]["delta"] == "c0"
+    assert events[-2]["delta"] == f"c{count - 1}"
+    assert events[-1]["type"] == "turn_end"
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_avoids_asyncio_wait_per_frame_after_prompt_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once prompt_task finishes, stream_prompt iterates frames without per-frame asyncio.wait churn (#1165)."""
+    frame_count = 200
+    chunks = (
+        [b'data: {"type":"session","sessionId":"s1"}\n\n']
+        + [f'data: {{"type":"text_delta","turnId":1,"delta":"d{i}"}}\n\n'.encode() for i in range(frame_count)]
+        + [b'data: {"type":"turn_end","turnId":1,"text":"ok","aborted":false}\n\n']
+    )
+
+    wait_calls = 0
+    real_wait = asyncio.wait
+
+    async def counting_wait(*args: Any, **kwargs: Any) -> Any:
+        nonlocal wait_calls
+        wait_calls += 1
+        return await real_wait(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "wait", counting_wait)
+    transport = _SseTransport(chunks, hang=False, prompt_hangs=False)
+    events = [event async for event in _stream_client(transport).stream_prompt("s1", "hello")]
+    assert len(events) == frame_count + 2
+    assert events[-1]["type"] == "turn_end"
+    assert wait_calls <= 2, f"expected at most 2 asyncio.wait calls for handshake, got {wait_calls}"
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_closes_pending_next_event_when_prompt_accepts_first() -> None:
+    """When prompt completes while next_event is still pending, closing mid-wait cancels next_event cleanly (#1165)."""
+    transport = _SseTransport([STREAM_FRAMES[0]], hang=True, prompt_hangs=False, frame_delay=0.05)
+    stream = _stream_client(transport).stream_prompt("s1", "hello")
+    # Let prompt_task resolve while the delayed first SSE frame is still pending inside next_event.
+    task = asyncio.ensure_future(anext(stream))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await stream.aclose()
+    assert transport.stream.closed
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_raises_when_feed_ends_after_prompt_accepted_without_terminal() -> None:
+    """If feed closes with no terminal frame after prompt_ok becomes True, raise with prompt error detail (#1165)."""
+    transport = _SseTransport(
+        [b'data: {"type":"session","sessionId":"s1"}\n\n', b'data: {"type":"text_delta","turnId":1,"delta":"hi"}\n\n'],
+        hang=False,
+        prompt_hangs=False,
+        prompt_error="upstream dropped",
+        frame_delay=0.02,
+    )
+    with pytest.raises(RuntimeError, match="ended before turn_end/error: upstream dropped"):
+        [event async for event in _stream_client(transport).stream_prompt("s1", "hello")]
+
+
 class TestLogLevelFromEnv:
     """PI_SIDECAR_LOG_LEVEL must never make the client unimportable (rootcoz#453).
 

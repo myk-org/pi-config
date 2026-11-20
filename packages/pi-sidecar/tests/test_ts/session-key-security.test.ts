@@ -320,3 +320,51 @@ it("HTTP creation errors redact Unicode escape variants in response and logs", a
     else process.env.PI_OFFLINE = offline;
   }
 });
+
+it("redacts single-escape and mixed-chunk inputs identically without double-pass overhead (#1161)", () => {
+  const secret = 'sk-"\\é/1'; // pragma: allowlist secret — synthetic test sentinel
+  const redact = createApiKeyRedactor(secret);
+
+  // Backslash-only input (no '%') — JSON/Unicode escapes still redacted, non-matching escapes preserved.
+  const backslashOnly = 'before sk-\\"\\\\\\u00e9/1 and \\n\\t\\u0041 after';
+  assert.equal(redact(backslashOnly), 'before [REDACTED] and \\n\\t\\u0041 after');
+
+  // Backslash that decodes into '%' (\u0025) must still trigger percent decoding.
+  const escapedPercent = 'before sk-\\u0022\\u005c\\u0025C3\\u0025A9/1 after';
+  assert.equal(redact(escapedPercent), 'before [REDACTED] after');
+
+  // Percent-only input (no '\') — percent escapes still redacted, malformed % preserved.
+  const percentOnly = 'url=sk-%22%5C%C3%A9%2F1&bad=%ZZ';
+  assert.equal(redact(percentOnly), 'url=[REDACTED]&bad=%ZZ');
+
+  // Multi-chunk string where chunk 1 is plain, chunk 2 has '\', chunk 3 is plain, chunk 4 has '%'.
+  const filler = "x".repeat(20_000);
+  const combined =
+    `${filler} ${secret} ` +
+    `${filler} sk-\\"\\\\\\u00E9/1 ` +
+    `${filler} ${secret} ` +
+    `${filler} sk-%22%5C%C3%A9%2F1`;
+  const expected =
+    `${filler} [REDACTED] ` +
+    `${filler} [REDACTED] ` +
+    `${filler} [REDACTED] ` +
+    `${filler} [REDACTED]`;
+  assert.equal(redact(combined), expected);
+});
+
+it("avoids per-string debug log calls inside redactor when debug logging is disabled (#1161)", () => {
+  const redact = createApiKeyRedactor("sk-quiet-debug-check");
+  const origDebug = logger.debug;
+  let debugCalls = 0;
+  logger.debug = () => { debugCalls++; };
+  try {
+    for (let i = 0; i < 100; i++) {
+      assert.equal(redact(`value ${i} sk-quiet-debug-check`), `value ${i} [REDACTED]`);
+    }
+    if (process.env.PI_SIDECAR_LOG_LEVEL?.toLowerCase().trim() !== "debug") {
+      assert.equal(debugCalls, 0, "redactor must not invoke logger.debug per string when debug level is off");
+    }
+  } finally {
+    logger.debug = origDebug;
+  }
+});

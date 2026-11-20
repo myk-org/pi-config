@@ -33,6 +33,9 @@ import { drainTranscriptWrites, maybeEnforceRetention, queueLazySessionHeader, q
 const fixtureLog = createLogger("session-store");
 const pricingLog = createLogger("session-store");
 const recordingLog = createLogger("session-store");
+const redactorLog = createLogger("api-key-redactor");
+const redactApiKeyLog = createLogger("redact-api-key");
+const isRedactorDebug = process.env.PI_SIDECAR_LOG_LEVEL?.toLowerCase().trim() === "debug";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -154,13 +157,12 @@ export function redactorLiteralHoldback(redact: (value: string) => string): numb
 
 /** Compile key representations once per session, never per log or response. */
 export function createApiKeyRedactor(apiKey?: string): (value: string) => string {
-  const log = createLogger("api-key-redactor");
-  log.debug(`Creating API key redactor: hasKey=${Boolean(apiKey)}`);
+  if (isRedactorDebug) redactorLog.debug(`Creating API key redactor: hasKey=${Boolean(apiKey)}`);
   if (!apiKey) return (value) => value;
   if (apiKey.length > MAX_API_KEY_LENGTH) throw new RangeError("API key exceeds maximum length");
   const escapes: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
   const redact = (value: string): string => {
-    log.debug(`Redacting API key: inputLength=${value.length}, hasKey=true`);
+    if (isRedactorDebug) redactorLog.debug(`Redacting API key: inputLength=${value.length}, hasKey=true`);
     if (!value.includes("\\") && !value.includes("%")) return value.replaceAll(apiKey, "[REDACTED]");
     const parts: string[] = [];
     // One key unit expands to at most 8 source units (JSON-escaped percent byte),
@@ -175,61 +177,80 @@ export function createApiKeyRedactor(apiKey?: string): (value: string) => string
       for (let at = raw.indexOf(apiKey); at !== -1; at = raw.indexOf(apiKey, at + apiKey.length)) {
         matches.push([at, at + apiKey.length]);
       }
-      let decoded = "";
-      const starts: number[] = [];
-      const ends: number[] = [];
-      for (let i = 0; i < raw.length;) {
-        const start = i;
-        let char = raw[i++];
-        if (char === "\\" && i < raw.length) {
-          const next = raw[i];
-          if (next === "u" && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 1, i + 5))) {
-            char = String.fromCharCode(parseInt(raw.slice(i + 1, i + 5), 16));
-            i += 5;
-          } else if (Object.hasOwn(escapes, next)) {
-            char = escapes[next];
-            i++;
+      const hasBackslash = raw.includes("\\");
+      if (hasBackslash || raw.includes("%")) {
+        let decoded: string;
+        let starts: number[] | undefined;
+        let ends: number[] | undefined;
+        if (hasBackslash) {
+          decoded = "";
+          starts = [];
+          ends = [];
+          for (let i = 0; i < raw.length;) {
+            const start = i;
+            let char = raw[i++];
+            if (char === "\\" && i < raw.length) {
+              const next = raw[i];
+              if (next === "u" && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 1, i + 5))) {
+                char = String.fromCharCode(parseInt(raw.slice(i + 1, i + 5), 16));
+                i += 5;
+              } else if (Object.hasOwn(escapes, next)) {
+                char = escapes[next];
+                i++;
+              }
+            }
+            decoded += char;
+            starts.push(start);
+            ends.push(i);
+          }
+        } else {
+          decoded = raw;
+        }
+        if (!decoded.includes("%")) {
+          // Only reachable when hasBackslash was true (since !hasBackslash && !raw.includes("%") skips this branch).
+          for (let at = decoded.indexOf(apiKey); at !== -1; at = decoded.indexOf(apiKey, at + apiKey.length)) {
+            matches.push([starts![at], ends![at + apiKey.length - 1]]);
+          }
+        } else {
+          let text = "";
+          const percentStarts: number[] = [];
+          const percentEnds: number[] = [];
+          for (let i = 0; i < decoded.length;) {
+            let char = decoded[i];
+            let end = i + 1;
+            if (char === "%" && /^%[0-9a-fA-F]{2}$/.test(decoded.slice(i, i + 3))) {
+              const lead = parseInt(decoded.slice(i + 1, i + 3), 16);
+              const count = lead < 0x80 ? 1 : lead >= 0xc2 && lead <= 0xdf ? 2
+                : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0;
+              let valid = count > 0 && i + count * 3 <= decoded.length;
+              for (let byte = 1; valid && byte < count; byte++) {
+                const offset = i + byte * 3;
+                if (!/^%[0-9a-fA-F]{2}$/.test(decoded.slice(offset, offset + 3))) { valid = false; break; }
+                const continuation = parseInt(decoded.slice(offset + 1, offset + 3), 16);
+                valid = continuation >= 0x80 && continuation <= 0xbf
+                  && (byte !== 1 || !(lead === 0xe0 && continuation < 0xa0
+                    || lead === 0xed && continuation > 0x9f
+                    || lead === 0xf0 && continuation < 0x90
+                    || lead === 0xf4 && continuation > 0x8f));
+              }
+              if (valid) {
+                end = i + count * 3;
+                char = decodeURIComponent(decoded.slice(i, end));
+              }
+            }
+            text += char;
+            const srcStart = starts ? starts[i] : i;
+            const srcEnd = ends ? ends[end - 1] : end;
+            for (let j = 0; j < char.length; j++) {
+              percentStarts.push(srcStart);
+              percentEnds.push(srcEnd);
+            }
+            i = end;
+          }
+          for (let at = text.indexOf(apiKey); at !== -1; at = text.indexOf(apiKey, at + apiKey.length)) {
+            matches.push([percentStarts[at], percentEnds[at + apiKey.length - 1]]);
           }
         }
-        decoded += char;
-        starts.push(start);
-        ends.push(i);
-      }
-      let text = "";
-      const percentStarts: number[] = [];
-      const percentEnds: number[] = [];
-      for (let i = 0; i < decoded.length;) {
-        let char = decoded[i];
-        let end = i + 1;
-        if (char === "%" && /^%[0-9a-fA-F]{2}$/.test(decoded.slice(i, i + 3))) {
-          const lead = parseInt(decoded.slice(i + 1, i + 3), 16);
-          const count = lead < 0x80 ? 1 : lead >= 0xc2 && lead <= 0xdf ? 2
-            : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0;
-          let valid = count > 0 && i + count * 3 <= decoded.length;
-          for (let byte = 1; valid && byte < count; byte++) {
-            const offset = i + byte * 3;
-            if (!/^%[0-9a-fA-F]{2}$/.test(decoded.slice(offset, offset + 3))) { valid = false; break; }
-            const continuation = parseInt(decoded.slice(offset + 1, offset + 3), 16);
-            valid = continuation >= 0x80 && continuation <= 0xbf
-              && (byte !== 1 || !(lead === 0xe0 && continuation < 0xa0
-                || lead === 0xed && continuation > 0x9f
-                || lead === 0xf0 && continuation < 0x90
-                || lead === 0xf4 && continuation > 0x8f));
-          }
-          if (valid) {
-            end = i + count * 3;
-            char = decodeURIComponent(decoded.slice(i, end));
-          }
-        }
-        text += char;
-        for (let j = 0; j < char.length; j++) {
-          percentStarts.push(starts[i]);
-          percentEnds.push(ends[end - 1]);
-        }
-        i = end;
-      }
-      for (let at = text.indexOf(apiKey); at !== -1; at = text.indexOf(apiKey, at + apiKey.length)) {
-        matches.push([percentStarts[at], percentEnds[at + apiKey.length - 1]]);
       }
       matches.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
       let consumed = 0;
@@ -252,8 +273,7 @@ export function createApiKeyRedactor(apiKey?: string): (value: string) => string
 }
 
 export function redactApiKey(value: string, apiKey?: string): string {
-  const log = createLogger("redact-api-key");
-  log.debug(`Redacting API key value: inputLength=${value.length}, hasKey=${Boolean(apiKey)}`);
+  if (isRedactorDebug) redactApiKeyLog.debug(`Redacting API key value: inputLength=${value.length}, hasKey=${Boolean(apiKey)}`);
   return createApiKeyRedactor(apiKey)(value);
 }
 
@@ -447,6 +467,9 @@ interface ResolvedExtensions {
   subagentPathFound: boolean;
 }
 
+const extensionPathExistsCache = new Map<string, boolean>();
+let cachedSubagentExtensions: ResolvedExtensions | undefined;
+
 /** Resolve a list of candidate extension paths to existing files, logging each outcome. */
 function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
   const paths: string[] = [];
@@ -456,21 +479,41 @@ function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
       logger.warn(`[sidecar] EXTENSION_RESOLVE_EMPTY: label=${label}`);
       continue;
     }
+    const cached = extensionPathExistsCache.get(path);
+    if (cached !== undefined) {
+      if (cached) {
+        paths.push(path);
+        if (isSubagent) subagentPathFound = true;
+      }
+      continue;
+    }
     try {
       const stat = statSync(path);
       if (!stat.isFile()) {
+        extensionPathExistsCache.set(path, false);
         logger.warn(`[sidecar] EXTENSION_NOT_FILE: label=${label}, path=${path}`);
         continue;
       }
+      extensionPathExistsCache.set(path, true);
       paths.push(path);
       logger.log(`[sidecar] EXTENSION_FOUND: label=${label}, path=${path}`);
       if (isSubagent) subagentPathFound = true;
     } catch (err) {
+      extensionPathExistsCache.set(path, false);
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.warn(`[sidecar] EXTENSION_NOT_FOUND: label=${label}, path=${path}, error=${errMsg}`);
     }
   }
   return { paths, subagentPathFound };
+}
+
+function resolveSubagentExtensionOnce(): ResolvedExtensions {
+  if (!cachedSubagentExtensions) {
+    cachedSubagentExtensions = resolveExtensionPaths([
+      { path: SUBAGENT_EXTENSION, label: "Subagent", isSubagent: true },
+    ]);
+  }
+  return cachedSubagentExtensions;
 }
 
 /**
@@ -1241,7 +1284,8 @@ export class SessionStore {
    * never be recreated to "refresh" discovery (see refreshModels()).
    *
    * User sessions created via create() never load the unified Providers
-   * extension (only Subagent and Vertex, which have no such shared state) and
+   * extension or Vertex (already registered on the shared modelRuntime), and
+   * only load Subagent when "subagent" is in the session's tools. They
    * resolve acpx-* / cli-* models directly via `modelRuntime.getModel()`. This
    * intentionally bypasses `ModelRuntime.getAvailable()`/`ModelRegistry.getAvailable()`,
    * whose `filterModels()` call would read `isConfigured()` from the *internal*
@@ -2127,15 +2171,25 @@ export class SessionStore {
       },
     });
 
+    const tools = options.tools ?? [...DEFAULT_TOOLS];
+    const needsSubagent = tools.includes("subagent");
     // User sessions deliberately never load the unified Providers extension
-    // here: it owns module-level state (acpx runtime sessions, CLI --resume
-    // markers) that is only correct with a single loaded instance — the
-    // internal runtime's (see the internalRuntime field docstring). Subagent
-    // and Vertex have no such shared state and are safe to load per user session.
-    const { paths: extensionPaths, subagentPathFound } = resolveExtensionPaths([
-      { path: VERTEX_EXTENSION, label: "Vertex" },
-      { path: SUBAGENT_EXTENSION, label: "Subagent", isSubagent: true },
-    ]);
+    // (it owns module-level acpx/CLI state) or Vertex (google-vertex-claude is
+    // already registered on the shared this.modelRuntime). Subagent only
+    // registers the `subagent` tool, so omit it unless requested in `tools`.
+    let extensionPaths: string[] = [];
+    if (needsSubagent) {
+      const { paths, subagentPathFound } = resolveSubagentExtensionOnce();
+      // Fast-fail when the subagent extension file is missing before we build a loader.
+      // Actual load success is verified after reload() below.
+      if (!subagentPathFound) {
+        throw httpError(
+          "Tool 'subagent' was requested but the subagent extension could not be loaded. Check logs for details.",
+          400,
+        );
+      }
+      extensionPaths = paths;
+    }
     log.debug(`[sidecar] EXTENSIONS_LOADING: count=${extensionPaths.length}`);
 
     // Build custom tools from config — result is cast to any[] for Pi SDK ToolDefinition compatibility
@@ -2170,15 +2224,6 @@ export class SessionStore {
       return tool;
     }).filter((t): t is NonNullable<typeof t> => t != null);
 
-    const tools = options.tools ?? [...DEFAULT_TOOLS];
-    // Fast-fail when the subagent extension file is missing before we build a loader.
-    // Actual load success is verified after reload() below.
-    if (tools.includes("subagent") && !subagentPathFound) {
-      throw httpError(
-        "Tool 'subagent' was requested but the subagent extension could not be loaded. Check logs for details.",
-        400,
-      );
-    }
     // Include custom tool names in the allowed tools list so the SDK
     // doesn't filter them out via allowedToolNames.
     const customToolNames = customTools.map((t: any) => t.name as string);
@@ -2397,7 +2442,10 @@ export class SessionStore {
     const literalHold = redactorLiteralHoldback(entry.redact);
     let heldText = "";
     const emitHeldText = (flush: boolean) => {
-      if (heldText === "") return;
+      if (heldText === "" || entry.streams.size === 0) {
+        heldText = "";
+        return;
+      }
       const safe = entry.redact(heldText);
       const window = hold > literalHold && /[%\\]/.test(safe.slice(-hold)) ? hold : literalHold;
       const cut = flush ? safe.length : Math.max(0, safe.length - window);
@@ -2475,8 +2523,14 @@ export class SessionStore {
         // #1019: redact per delta — this is the only redaction point in the
         // prompt path (:2360) and a raw delta can echo a request api_key.
         // Through the holdback, so a key split across deltas is redacted whole.
-        heldText += event.assistantMessageEvent.delta;
-        emitHeldText(false);
+        // #1161: skip holdback buffering & per-delta redaction when no SSE
+        // subscribers are attached (non-streaming prompt path).
+        if (entry.streams.size > 0) {
+          heldText += event.assistantMessageEvent.delta;
+          emitHeldText(false);
+        } else if (heldText !== "") {
+          heldText = "";
+        }
       }
       if (event.type === "agent_end" && event.messages) {
         for (const msg of event.messages) {
