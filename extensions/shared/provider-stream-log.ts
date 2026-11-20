@@ -48,12 +48,18 @@ export function previewStreamData(value: unknown, depth = 0): string {
     const head = value.slice(0, MAX_ITEMS).map(item => previewStreamData(item, depth + 1));
     return `[${head.join(",")}${value.length > MAX_ITEMS ? ",…" : ""}]`;
   }
-  const entries = Object.entries(value as Record<string, unknown>);
-  const body = entries
-    .slice(0, MAX_ITEMS)
-    .map(([key, item]) => `${truncate(key)}:${SECRET_KEY.test(key) ? "…redacted" : previewStreamData(item, depth + 1)}`)
-    .join(",");
-  return `{${body}${entries.length > MAX_ITEMS ? ",…" : ""}}`;
+  const obj = value as Record<string, unknown>;
+  const parts: string[] = [];
+  let hasMore = false;
+  for (const key in obj) {
+    if (!Object.hasOwn(obj, key)) continue;
+    if (parts.length >= MAX_ITEMS) {
+      hasMore = true;
+      break;
+    }
+    parts.push(`${truncate(key)}:${SECRET_KEY.test(key) ? "…redacted" : previewStreamData(obj[key], depth + 1)}`);
+  }
+  return `{${parts.join(",")}${hasMore ? ",…" : ""}}`;
 }
 
 /**
@@ -77,14 +83,7 @@ export function registerProviderStreamLog(pi: ExtensionAPI): void {
         dropped++;
         return;
       }
-      let data: unknown = event.data;
-      try {
-        // data is read-only to extensions — clone before retaining/logging.
-        data = structuredClone(event.data);
-      } catch {
-        log.warn("stream event data not cloneable, logged un-cloned", { provider: event.provider, api: event.api });
-      }
-      log.debug("stream_event", `${event.provider}/${event.api}/${event.model}`, previewStreamData(data));
+      log.debug("stream_event", `${event.provider}/${event.api}/${event.model}`, previewStreamData(event.data));
     } catch (err) {
       // Never throw: pi reports handler errors, but a hot-path handler must not
       // interfere with stream consumption.

@@ -7,8 +7,13 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { homedir } from "node:os";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("acpx_provider");
+const execFileAsync = promisify(execFile);
 
 /** Minimal surface used by acpx-provider. */
 export type AcpxRuntimeModule = {
@@ -20,17 +25,20 @@ export type AcpxRuntimeModule = {
 let cachedRoots: string[] | null = null;
 let cachedRuntime: Promise<AcpxRuntimeModule> | null = null;
 
-function globalNodeModuleRoots(): string[] {
+async function globalNodeModuleRoots(): Promise<string[]> {
   if (cachedRoots) return cachedRoots;
   const roots: string[] = [];
   try {
-    const root = execFileSync("npm", ["root", "-g"], {
+    const { stdout } = await execFileAsync("npm", ["root", "-g"], {
       encoding: "utf-8",
       timeout: 15_000,
-    }).trim();
+    });
+    const root = stdout.trim();
     if (root) roots.push(root);
-  } catch {
-    /* ignore */
+  } catch (err) {
+    log.debug("npm root -g lookup failed, falling back to static roots", {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
   for (const candidate of [
     "/usr/local/lib/node_modules",
@@ -39,6 +47,7 @@ function globalNodeModuleRoots(): string[] {
     if (candidate && !roots.includes(candidate)) roots.push(candidate);
   }
   cachedRoots = roots;
+  log.debug("resolved global node_modules roots", { roots });
   return roots;
 }
 
@@ -59,7 +68,7 @@ async function importFromPackageRoot(pkgRoot: string): Promise<AcpxRuntimeModule
 }
 
 async function resolveAcpxRuntime(): Promise<AcpxRuntimeModule> {
-  for (const root of globalNodeModuleRoots()) {
+  for (const root of await globalNodeModuleRoots()) {
     const mod = await importFromPackageRoot(join(root, "acpx"));
     if (typeof mod?.createAcpRuntime === "function") return mod;
   }

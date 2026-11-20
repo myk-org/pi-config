@@ -5,8 +5,15 @@
  */
 
 import { unlinkSync } from "node:fs";
+import { readdir, readFile, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import { createLogger } from "../shared/logger.js";
-import { listCliSessions } from "./sessions.js";
+import {
+  cliSessionsDir,
+  listCliSessions,
+  parseCliSessionRecord,
+  type CliSessionRecord,
+} from "./sessions.js";
 
 const log = createLogger("cli_provider");
 
@@ -25,6 +32,22 @@ export interface ReapOptions {
   activePiSessionId?: string | null;
 }
 
+const REAP_BATCH_SIZE = 64;
+
+function shouldReapRecord(
+  record: CliSessionRecord,
+  now: number,
+  threshold: number,
+  cwd?: string,
+): boolean {
+  if (cwd && record.cwd !== cwd) return false;
+  // Concurrent pi sessions share ~/.pi/cli-sessions for the same cwd.
+  // Deleting another session's running marker breaks its --resume.
+  if (record.status === "running") return false;
+  const lastSeenMs = Date.parse(record.lastSeenAt);
+  return Number.isNaN(lastSeenMs) || now - lastSeenMs >= threshold;
+}
+
 /**
  * Remove idle *stopped* session files only.
  * Never deletes status=running (own or other piSessionId) so two pi processes
@@ -39,16 +62,7 @@ export function reapStaleCliSessions(options?: ReapOptions): number {
   let reaped = 0;
 
   for (const { path, record } of listCliSessions()) {
-    if (options?.cwd && record.cwd !== options.cwd) continue;
-
-    // Concurrent pi sessions share ~/.pi/cli-sessions for the same cwd.
-    // Deleting another session's running marker breaks its --resume.
-    if (record.status === "running") continue;
-
-    const lastSeenMs = Date.parse(record.lastSeenAt);
-    const idle =
-      Number.isNaN(lastSeenMs) || now - lastSeenMs >= threshold;
-    if (!idle) continue;
+    if (!shouldReapRecord(record, now, threshold, options?.cwd)) continue;
 
     try {
       unlinkSync(path);
@@ -61,6 +75,71 @@ export function reapStaleCliSessions(options?: ReapOptions): number {
       log.error(`failed to reap session ${record.agent}/${record.model} at ${path}`,
         err,
       );
+    }
+  }
+
+  return reaped;
+}
+
+/**
+ * Asynchronous bounded-batch variant used by the periodic reaper timer so
+ * large ~/.pi/cli-sessions directories never stall the event loop.
+ */
+export async function reapStaleCliSessionsAsync(
+  options?: ReapOptions,
+): Promise<number> {
+  const threshold = Math.max(
+    1,
+    options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
+  );
+  const dir = cliSessionsDir();
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return 0;
+  }
+
+  const jsonFiles = names.filter((name) => name.endsWith(".json"));
+  if (jsonFiles.length === 0) return 0;
+
+  const now = Date.now();
+  let reaped = 0;
+
+  for (let i = 0; i < jsonFiles.length; i += REAP_BATCH_SIZE) {
+    const batch = jsonFiles.slice(i, i + REAP_BATCH_SIZE);
+    const counts = await Promise.all(
+      batch.map(async (name) => {
+        const path = join(dir, name);
+        let raw: string;
+        try {
+          raw = await readFile(path, "utf-8");
+        } catch {
+          return 0;
+        }
+        const record = parseCliSessionRecord(raw);
+        if (!record || !shouldReapRecord(record, now, threshold, options?.cwd)) {
+          return 0;
+        }
+        try {
+          await unlink(path);
+          log.info(`reaped session ${record.agent}/${record.model} ` +
+              `(status=${record.status}, piSessionId=${record.piSessionId}, ` +
+              `lastSeen=${record.lastSeenAt})`,
+          );
+          return 1;
+        } catch (err) {
+          log.error(`failed to reap session ${record.agent}/${record.model} at ${path}`,
+            err,
+          );
+          return 0;
+        }
+      }),
+    );
+    for (const c of counts) reaped += c;
+
+    if (i + REAP_BATCH_SIZE < jsonFiles.length) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
   }
 
@@ -97,14 +176,23 @@ export function startCliSessionReaper(opts?: {
     1,
     opts?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,
   );
+  let sweeping = false;
   const sweep = () => {
-    reapStaleCliSessions({
+    if (sweeping) return;
+    sweeping = true;
+    void reapStaleCliSessionsAsync({
       inactivityThresholdMs: opts?.inactivityThresholdMs,
       cwd: opts?.cwd,
       activePiSessionId: resolveReaperActivePiSessionId(
         opts?.getActivePiSessionId,
       ),
-    });
+    })
+      .catch((err) => {
+        log.warn("async cli session reaper sweep failed", err);
+      })
+      .finally(() => {
+        sweeping = false;
+      });
   };
   // Do not sweep immediately — activePiSessionId is usually still unset at
   // extension load; waiting one interval avoids racing session_start.

@@ -326,19 +326,23 @@ function removeCorruptPendingFile(cwd: string, file: string): boolean {
   return true;
 }
 
-function sweepCorruptPending(cwd: string): void {
-  const runPending = path.join(reloadRunDir(cwd), RELOAD_PENDING_FILENAME);
-  const legacyPending = path.join(reloadLegacyDir(cwd), RELOAD_PENDING_FILENAME);
-  const candidates = [
-    ...(existsSync(runPending) ? [runPending] : []),
-    ...(existsSync(legacyPending) ? [legacyPending] : []),
-    ...retainedRequests(cwd).filter((file) => path.basename(file).startsWith("reload.pending.")),
-  ];
+function sweepCorruptPending(cwd: string, preScannedCandidates?: readonly string[]): number {
+  const candidates = preScannedCandidates ?? (() => {
+    const runPending = path.join(reloadRunDir(cwd), RELOAD_PENDING_FILENAME);
+    const legacyPending = path.join(reloadLegacyDir(cwd), RELOAD_PENDING_FILENAME);
+    return [
+      ...(existsSync(runPending) ? [runPending] : []),
+      ...(existsSync(legacyPending) ? [legacyPending] : []),
+      ...retainedRequests(cwd).filter((file) => path.basename(file).startsWith("reload.pending.")),
+    ];
+  })();
+  let removed = 0;
   for (const file of candidates) {
     if (inspectPendingFile(file).status === "corrupt") {
-      removeCorruptPendingFile(cwd, file);
+      if (removeCorruptPendingFile(cwd, file)) removed += 1;
     }
   }
+  return removed;
 }
 
 /** Read validated pending ownership. Null means absent, unreadable, or corrupt. */
@@ -407,13 +411,79 @@ function retainedRequests(cwd: string): string[] {
   }
 }
 
-function hasForeignPending(cwd: string, owner: string): boolean {
-  const legacyPending = path.join(reloadLegacyDir(cwd), RELOAD_PENDING_FILENAME);
-  const files = [
-    path.join(reloadRunDir(cwd), RELOAD_PENDING_FILENAME),
-    ...(existsSync(legacyPending) ? [legacyPending] : []),
-    ...retainedRequests(cwd).filter((file) => path.basename(file).startsWith("reload.pending.")),
-  ];
+interface ReloadControlScan {
+  flagPath: string | null;
+  pendingPath: string | null;
+  retained: string[];
+  pendingCandidates: string[];
+}
+
+/**
+ * Single-pass scan for maybeTrigger(): 1 readdirSync(.pi/run) plus at most 2
+ * existsSync checks on legacy .pi/tmp/{reload.flag,reload.pending} (#1182).
+ */
+function scanReloadControlState(cwd: string): ReloadControlScan {
+  const runDir = reloadRunDir(cwd);
+  const legacyDir = reloadLegacyDir(cwd);
+  let runFlag = false;
+  let runPending = false;
+  const retained: string[] = [];
+  const retainedPending: string[] = [];
+
+  try {
+    const entries = fs.readdirSync(runDir).sort();
+    for (const name of entries) {
+      if (name === RELOAD_FLAG_FILENAME) {
+        runFlag = true;
+      } else if (name === RELOAD_PENDING_FILENAME) {
+        runPending = true;
+      } else if (/^reload\.(flag|pending)\..+\.claim$/.test(name)) {
+        const full = path.join(runDir, name);
+        retained.push(full);
+        if (name.startsWith("reload.pending.")) retainedPending.push(full);
+      }
+    }
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn("reload_flag_claim_scan_failed", { dir: runDir, error: String(error) });
+    }
+  }
+
+  const runFlagPath = runFlag ? path.join(runDir, RELOAD_FLAG_FILENAME) : null;
+  const runPendingPath = runPending ? path.join(runDir, RELOAD_PENDING_FILENAME) : null;
+  const legacyFlagPath = runFlagPath === null && fs.existsSync(path.join(legacyDir, RELOAD_FLAG_FILENAME))
+    ? path.join(legacyDir, RELOAD_FLAG_FILENAME)
+    : null;
+  const legacyPendingPath = fs.existsSync(path.join(legacyDir, RELOAD_PENDING_FILENAME))
+    ? path.join(legacyDir, RELOAD_PENDING_FILENAME)
+    : null;
+
+  const pendingCandidates: string[] = [];
+  if (runPendingPath !== null) pendingCandidates.push(runPendingPath);
+  if (legacyPendingPath !== null) pendingCandidates.push(legacyPendingPath);
+  pendingCandidates.push(...retainedPending);
+
+  return {
+    flagPath: runFlagPath ?? legacyFlagPath,
+    pendingPath: runPendingPath ?? legacyPendingPath,
+    retained,
+    pendingCandidates,
+  };
+}
+
+function hasForeignPending(
+  cwd: string,
+  owner: string,
+  preScannedCandidates?: readonly string[],
+): boolean {
+  const files = preScannedCandidates ?? (() => {
+    const legacyPending = path.join(reloadLegacyDir(cwd), RELOAD_PENDING_FILENAME);
+    return [
+      path.join(reloadRunDir(cwd), RELOAD_PENDING_FILENAME),
+      ...(existsSync(legacyPending) ? [legacyPending] : []),
+      ...retainedRequests(cwd).filter((file) => path.basename(file).startsWith("reload.pending.")),
+    ];
+  })();
   return files.some((file) => {
     const record = readReloadPending(cwd, file);
     return (
@@ -633,7 +703,8 @@ export default function (pi: ExtensionAPI) {
     // Never act twice, and never on a stale cwd snapshot.
     if (triggered || liveCwd === null) return;
 
-    const initialFlagPath = findControlFile(liveCwd, RELOAD_FLAG_FILENAME);
+    let state = scanReloadControlState(liveCwd);
+    const initialFlagPath = state.flagPath;
     const currentFlagNonce = initialFlagPath === null ? null : readNonce(initialFlagPath);
     if (currentFlagNonce !== null && currentFlagNonce !== seenFlagNonce) {
       if (nextRetryAt > 0) {
@@ -648,21 +719,25 @@ export default function (pi: ExtensionAPI) {
     }
     if (Date.now() < nextRetryAt) return;
 
-    sweepCorruptPending(liveCwd);
+    if (state.pendingCandidates.length > 0) {
+      if (sweepCorruptPending(liveCwd, state.pendingCandidates) > 0) {
+        state = scanReloadControlState(liveCwd);
+      }
+    }
 
     // A stranded handshake (pending exists but no new runtime published
     // done — e.g. a reload refused mid-turn in an older runtime) also
     // re-dispatches: the command is idempotent.
-    const flagPath = findControlFile(liveCwd, RELOAD_FLAG_FILENAME);
-    const pendingPath = findControlFile(liveCwd, RELOAD_PENDING_FILENAME);
+    const flagPath = state.flagPath;
+    const pendingPath = state.pendingPath;
     const hasFlag = flagPath !== null;
     const hasPending = pendingPath !== null;
-    if (!hasFlag && !hasPending && retainedRequests(liveCwd).length === 0) {
+    if (!hasFlag && !hasPending && state.retained.length === 0) {
       seenFlagNonce = null;
       resetRetryBackoff();
       return;
     }
-    if (hasForeignPending(liveCwd, liveOwner ?? reloadOwnerId())) {
+    if (hasForeignPending(liveCwd, liveOwner ?? reloadOwnerId(), state.pendingCandidates)) {
       log.debug("reload_flag_watcher_foreign_owner", { cwd: liveCwd, owner: liveOwner });
       return;
     }
@@ -690,7 +765,7 @@ export default function (pi: ExtensionAPI) {
     // flag — OUR reload would consume A's nonce, publish done, and steal A's
     // continuation turn. A will reload and then dispatch the flag itself.
     if (hasPending) {
-      const pending = readReloadPending(liveCwd);
+      const pending = readReloadPending(liveCwd, pendingPath);
       if (pending && !pendingOwnerIsClaimable(pending, liveOwner ?? reloadOwnerId())) {
         log.debug("reload_flag_pending_foreign_owner", { owner: pending.owner });
         return;

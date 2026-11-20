@@ -17,7 +17,10 @@ import {
   setCliSessionMarkerMeta,
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
-import { reapStaleCliSessions } from "../../../extensions/cli-provider/session-reaper.js";
+import {
+  reapStaleCliSessions,
+  reapStaleCliSessionsAsync,
+} from "../../../extensions/cli-provider/session-reaper.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -806,6 +809,52 @@ describe("cli-provider sessions", () => {
       const n = reapStaleCliSessions({ inactivityThresholdMs: 1_000 });
       assert.equal(n, 1);
       assert.equal(loadCliSessionId(key), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reapStaleCliSessionsAsync reaps >batch-size stopped markers while preserving running ones (#1167)", async () => {
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = makeTempDir("cli-reap-async-");
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const stoppedKeys: CliSessionKey[] = [];
+      const runningKeys: CliSessionKey[] = [];
+      for (let i = 0; i < 70; i++) {
+        const key: CliSessionKey = {
+          cwd: "/proj",
+          agent: "gemini",
+          model: `m-${i}`,
+          piSessionId: `stopped-${i}`,
+        };
+        saveCliSessionId(key, `cli-s-${i}`);
+        setCliSessionMarkerMeta(key, { status: "stopped", idleMs: 60_000 });
+        stoppedKeys.push(key);
+      }
+      for (let i = 0; i < 10; i++) {
+        const key: CliSessionKey = {
+          cwd: "/proj",
+          agent: "cursor",
+          model: `m-${i}`,
+          piSessionId: `running-${i}`,
+        };
+        saveCliSessionId(key, `cli-r-${i}`);
+        setCliSessionMarkerMeta(key, { status: "running", idleMs: 60_000 });
+        runningKeys.push(key);
+      }
+      const n = await reapStaleCliSessionsAsync({ inactivityThresholdMs: 1_000 });
+      assert.equal(n, 70);
+      for (const k of stoppedKeys) assert.equal(loadCliSessionId(k), null);
+      for (let i = 0; i < runningKeys.length; i++) {
+        assert.equal(loadCliSessionId(runningKeys[i]), `cli-r-${i}`);
+      }
     } finally {
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;

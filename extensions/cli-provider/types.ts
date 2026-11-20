@@ -22,7 +22,7 @@ export interface CliProviderDef {
   /** Pass prompt on stdin (true) or as final argv (false) */
   promptOnStdin: boolean;
   /** Discover models via this agent's CLI only (no API keys). */
-  discoverModels: () => DiscoveredCliModel[];
+  discoverModels: () => DiscoveredCliModel[] | Promise<DiscoveredCliModel[]>;
 }
 
 export interface CliSessionKey {

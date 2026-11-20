@@ -8,7 +8,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "./logger.js";
@@ -55,9 +56,24 @@ function isCatalog(value: unknown): value is ModelsDevCatalog {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function readCache(path: string): ModelsDevCatalog | null {
+interface InMemoryCatalogCache {
+  cachePath: string;
+  mtimeMs: number;
+  catalog: ModelsDevCatalog;
+}
+
+let inMemoryCatalogCache: InMemoryCatalogCache | null = null;
+const inFlightCatalogLoads = new Map<string, Promise<ModelsDevCatalog | null>>();
+
+/** Clear in-memory catalog cache (primarily for tests). */
+export function clearModelsDevCatalogCache(): void {
+  inMemoryCatalogCache = null;
+  inFlightCatalogLoads.clear();
+}
+
+async function readCache(path: string): Promise<ModelsDevCatalog | null> {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
     if (!isCatalog(parsed)) {
       log.warn("models.dev cache is not an object", path);
       return null;
@@ -70,9 +86,9 @@ function readCache(path: string): ModelsDevCatalog | null {
   }
 }
 
-function cacheAgeMs(path: string, nowMs: number): number | null {
+async function cacheMtimeMs(path: string): Promise<number | null> {
   try {
-    return nowMs - statSync(path).mtimeMs;
+    return (await stat(path)).mtimeMs;
   } catch {
     return null;
   }
@@ -130,17 +146,36 @@ export interface LoadModelsDevCatalogOptions {
   ttlMs?: number;
 }
 
-/** Load models.dev api.json from disk cache, refreshing when older than 1 day. */
-export async function loadModelsDevCatalog(
-  opts: LoadModelsDevCatalogOptions = {},
+async function loadModelsDevCatalogUncached(
+  opts: LoadModelsDevCatalogOptions,
+  useMemo: boolean,
 ): Promise<ModelsDevCatalog | null> {
   const cachePath = opts.cachePath ?? modelsDevCachePath();
   const fetchImpl = opts.fetchImpl ?? fetch;
   const nowMs = opts.nowMs ?? Date.now();
   const ttlMs = opts.ttlMs ?? MODELS_DEV_TTL_MS;
 
-  const age = cacheAgeMs(cachePath, nowMs);
-  const cached = age !== null ? readCache(cachePath) : null;
+  const mtimeMs = await cacheMtimeMs(cachePath);
+  const age = mtimeMs !== null ? nowMs - mtimeMs : null;
+
+  let cached: ModelsDevCatalog | null = null;
+  if (mtimeMs !== null) {
+    if (
+      useMemo &&
+      inMemoryCatalogCache &&
+      inMemoryCatalogCache.cachePath === cachePath &&
+      inMemoryCatalogCache.mtimeMs === mtimeMs
+    ) {
+      cached = inMemoryCatalogCache.catalog;
+      log.debug("models.dev in-memory cache hit", cachePath);
+    } else {
+      cached = await readCache(cachePath);
+      if (cached && useMemo) {
+        inMemoryCatalogCache = { cachePath, mtimeMs, catalog: cached };
+      }
+    }
+  }
+
   if (cached && age !== null && age <= ttlMs) {
     log.debug("models.dev cache fresh", Math.round(age / 1000), "s");
     return cached;
@@ -150,6 +185,16 @@ export async function loadModelsDevCatalog(
   if (fetched) {
     try {
       writeCache(cachePath, fetched);
+      if (useMemo) {
+        const writtenMtime = await cacheMtimeMs(cachePath);
+        if (writtenMtime !== null) {
+          inMemoryCatalogCache = {
+            cachePath,
+            mtimeMs: writtenMtime,
+            catalog: fetched,
+          };
+        }
+      }
     } catch (err) {
       log.warn("models.dev cache write failed", cachePath, err);
     }
@@ -162,6 +207,30 @@ export async function loadModelsDevCatalog(
   }
   log.warn("models.dev unavailable and no cache");
   return null;
+}
+
+/** Load models.dev api.json from disk cache, refreshing when older than 1 day. */
+export async function loadModelsDevCatalog(
+  opts: LoadModelsDevCatalogOptions = {},
+): Promise<ModelsDevCatalog | null> {
+  const useMemo = opts.fetchImpl === undefined && opts.nowMs === undefined;
+  if (!useMemo) {
+    return loadModelsDevCatalogUncached(opts, false);
+  }
+  const cachePath = opts.cachePath ?? modelsDevCachePath();
+  const inFlightKey = `${cachePath}\0${opts.ttlMs ?? MODELS_DEV_TTL_MS}`;
+  const existing = inFlightCatalogLoads.get(inFlightKey);
+  if (existing) {
+    log.debug("models.dev joining in-flight load", cachePath);
+    return existing;
+  }
+  const promise = loadModelsDevCatalogUncached(opts, true).finally(() => {
+    if (inFlightCatalogLoads.get(inFlightKey) === promise) {
+      inFlightCatalogLoads.delete(inFlightKey);
+    }
+  });
+  inFlightCatalogLoads.set(inFlightKey, promise);
+  return promise;
 }
 
 const AGENT_PROVIDER_PREF: Record<string, readonly string[]> = {
@@ -286,25 +355,34 @@ export function modelsDevLookupKeys(agent: string, discoveredId: string): string
   return out;
 }
 
-function providerOrder(agent: string, catalog: ModelsDevCatalog): string[] {
+function buildProviderOrder(agent: string, catalog: ModelsDevCatalog): readonly string[] {
   const preferred = AGENT_PROVIDER_PREF[agent] ?? [];
   const first = preferred.filter((p) => Object.hasOwn(catalog, p));
-  const rest = Object.keys(catalog).filter((p) => !first.includes(p));
+  const firstSet = new Set(first);
+  const rest: string[] = [];
+  for (const p of Object.keys(catalog)) {
+    if (!firstSet.has(p)) rest.push(p);
+  }
   return [...first, ...rest];
 }
 
 type ProviderModelIndex = Map<string, { modelId: string; entry: ModelsDevModel }>;
 type CatalogLookupIndex = Map<string, ProviderModelIndex>;
 
-const catalogIndexCache = new WeakMap<ModelsDevCatalog, CatalogLookupIndex>();
+interface CachedCatalogIndex {
+  byProvider: CatalogLookupIndex;
+  providerOrders: Map<string, readonly string[]>;
+}
 
-function catalogLookupIndex(catalog: ModelsDevCatalog): CatalogLookupIndex {
+const catalogIndexCache = new WeakMap<ModelsDevCatalog, CachedCatalogIndex>();
+
+function catalogLookupIndex(catalog: ModelsDevCatalog): CachedCatalogIndex {
   const cached = catalogIndexCache.get(catalog);
   if (cached) {
-    log.debug("models.dev catalog index reuse", cached.size, "providers");
+    log.debug("models.dev catalog index reuse", cached.byProvider.size, "providers");
     return cached;
   }
-  const index: CatalogLookupIndex = new Map();
+  const byProvider: CatalogLookupIndex = new Map();
   for (const [provider, block] of Object.entries(catalog)) {
     const models = block?.models;
     if (!models) continue;
@@ -316,11 +394,28 @@ function catalogLookupIndex(catalog: ModelsDevCatalog): CatalogLookupIndex {
       const alt = entry.id?.toLowerCase();
       if (alt && !byKey.has(alt)) byKey.set(alt, hit);
     }
-    index.set(provider, byKey);
+    byProvider.set(provider, byKey);
   }
-  catalogIndexCache.set(catalog, index);
-  log.debug("models.dev catalog index built", index.size, "providers");
-  return index;
+  const entry: CachedCatalogIndex = {
+    byProvider,
+    providerOrders: new Map(),
+  };
+  catalogIndexCache.set(catalog, entry);
+  log.debug("models.dev catalog index built", byProvider.size, "providers");
+  return entry;
+}
+
+function providerOrder(
+  agent: string,
+  catalog: ModelsDevCatalog,
+  cachedIndex: CachedCatalogIndex,
+): readonly string[] {
+  let order = cachedIndex.providerOrders.get(agent);
+  if (!order) {
+    order = buildProviderOrder(agent, catalog);
+    cachedIndex.providerOrders.set(agent, order);
+  }
+  return order;
 }
 
 export function lookupModelsDevModel(
@@ -330,9 +425,9 @@ export function lookupModelsDevModel(
 ): ModelsDevHit | undefined {
   if (!catalog) return undefined;
   const keys = modelsDevLookupKeys(agent, discoveredId);
-  const index = catalogLookupIndex(catalog);
-  for (const provider of providerOrder(agent, catalog)) {
-    const byKey = index.get(provider);
+  const cachedIndex = catalogLookupIndex(catalog);
+  for (const provider of providerOrder(agent, catalog, cachedIndex)) {
+    const byKey = cachedIndex.byProvider.get(provider);
     if (!byKey) continue;
     for (const key of keys) {
       const hit = byKey.get(key);

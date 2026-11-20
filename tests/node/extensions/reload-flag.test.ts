@@ -1293,6 +1293,51 @@ describe("reload-flag", () => {
     }
   });
 
+  test("idle turn_end tick performs at most 3 fs syscalls (1 readdirSync + 2 existsSync) (#1182)", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const readdirCalls: string[] = [];
+    const existsCalls: string[] = [];
+    const origReaddir = fs.readdirSync;
+    const origExists = fs.existsSync;
+    t.mock.method(fs, "readdirSync", (target: any, ...args: any[]) => {
+      readdirCalls.push(String(target));
+      return (origReaddir as any)(target, ...args);
+    });
+    t.mock.method(fs, "existsSync", (target: any) => {
+      existsCalls.push(String(target));
+      return origExists(target);
+    });
+    syncBuiltinESMExports();
+    try {
+      const ctx = makeCtx(cwd, { count: 0 });
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      readdirCalls.length = 0;
+      existsCalls.length = 0;
+
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(readdirCalls.length, 1, "exactly 1 readdirSync per idle tick");
+      assert.equal(readdirCalls[0], path.join(cwd, ".pi", "run"));
+      assert.equal(existsCalls.length, 2, "at most 2 existsSync checks per idle tick");
+      assert.ok(readdirCalls.length + existsCalls.length <= 3, "total <= 3 fs checks per idle tick");
+
+      // When .pi/run/reload.flag exists, legacy reload.flag check is skipped (only 1 existsSync)
+      writeFileSync(reloadFlagPath(cwd), "nonce-run-fast");
+      readdirCalls.length = 0;
+      existsCalls.length = 0;
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(readdirCalls.length, 1);
+      assert.equal(existsCalls.length, 1);
+      assert.equal(reg.sent.length, 1);
+
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("reconcileStartupHandshake replaces pruneStaleHandshake without age-pruning branches (f2742a50)", () => {
     assert.equal(typeof reconcileStartupHandshake, "function");
     assert.equal("pruneStaleHandshake" in reloadFlagModule, false);

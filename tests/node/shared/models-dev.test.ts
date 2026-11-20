@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   MODELS_DEV_TTL_MS,
   applyThinkingLevelFromModel,
+  clearModelsDevCatalogCache,
   fillRuntimeModelFromCatalog,
   loadModelsDevCatalog,
   lookupModelsDevModel,
@@ -63,6 +64,54 @@ describe("modelsDevCachePath", () => {
 });
 
 describe("loadModelsDevCatalog", () => {
+  afterEach(() => {
+    clearModelsDevCatalogCache();
+  });
+
+  it("memoizes catalog object reference in memory when disk mtimeMs is unchanged (#1177)", async () => {
+    const dir = makeTempDir("models-dev-memo-");
+    const cachePath = join(dir, "models.dev.json");
+    writeFileSync(cachePath, JSON.stringify(SAMPLE_CATALOG));
+    const t1 = (Date.now() - 5_000) / 1000;
+    utimesSync(cachePath, t1, t1);
+    try {
+      const first = await loadModelsDevCatalog({ cachePath });
+      const second = await loadModelsDevCatalog({ cachePath });
+      assert.ok(first);
+      assert.equal(first, second);
+
+      // Concurrent loads share one in-flight promise and object reference
+      clearModelsDevCatalogCache();
+      const [c1, c2] = await Promise.all([
+        loadModelsDevCatalog({ cachePath }),
+        loadModelsDevCatalog({ cachePath }),
+      ]);
+      assert.ok(c1);
+      assert.equal(c1, c2);
+
+      // Updating disk file with a new mtimeMs invalidates the in-memory entry
+      const updated = {
+        ...SAMPLE_CATALOG,
+        xai: {
+          models: {
+            "grok-4.6": {
+              ...SAMPLE_CATALOG.xai.models["grok-4.6"],
+              limit: { context: 999_000, output: 100_000 },
+            },
+          },
+        },
+      };
+      writeFileSync(cachePath, JSON.stringify(updated));
+      const t2 = (Date.now() - 1_000) / 1000;
+      utimesSync(cachePath, t2, t2);
+
+      const third = await loadModelsDevCatalog({ cachePath });
+      assert.notEqual(third, c1);
+      assert.equal(third?.xai?.models?.["grok-4.6"]?.limit?.context, 999_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("fetches catalog when cache file is missing", async () => {
     const dir = makeTempDir("models-dev-");
     const cachePath = join(dir, "models.dev.json");
