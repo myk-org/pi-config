@@ -9,10 +9,9 @@
  * - HTTP requests (web UI at /, API at /api/*)
  */
 
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
+import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import { appendEventBuffer, disconnectPidashSession, registerPidashSession, updatePidashSession, type PiClient } from "./pidash-session-state.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
@@ -26,25 +25,15 @@ const DEFAULT_PORT = 19190;
 const port = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
 
 const LOG_PATH = path.join(process.env.HOME || "/tmp", ".pi", "pidash-debug.log");
-let logStream: fs.WriteStream | null = null;
-try {
-  fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
-  logStream = fs.createWriteStream(LOG_PATH, { flags: "a" });
-  logStream.on("error", (error) => {
-    serverLog.warn("pidash debug log stream error", error);
-    logStream = null;
-  });
-} catch (error) {
-  serverLog.warn("could not open pidash debug log stream", error);
-}
-process.on("beforeExit", () => { logStream?.end(); });
+const debugLogWriter = createAsyncDebugLogWriter(LOG_PATH, (msg, err) => {
+  serverLog.warn(msg, err);
+});
+process.on("beforeExit", () => { void debugLogWriter.flush(); });
 
 function log(msg: string) {
   const line = `${new Date().toISOString()} [srv] ${msg}\n`;
   serverLog.info(msg);
-  if (logStream && !logStream.destroyed) {
-    try { logStream.write(line); } catch (error) { serverLog.warn("could not write pidash debug log", error); }
-  }
+  debugLogWriter.write(line);
 }
 
 // Pluggable event hooks — Discord bot registers here to receive pi events
@@ -336,6 +325,8 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
     }
     return false;
   },
+
+  onShutdown: () => debugLogWriter.flush(),
 });
 
 // Async agent WebSocket handler

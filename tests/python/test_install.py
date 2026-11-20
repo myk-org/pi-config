@@ -427,6 +427,26 @@ def test_trail_script_audit_rejects_missing_required_dependency(tmp_path: Path) 
         install._install_script_packages(root, tmp_path / "node_modules")
 
 
+def test_trail_script_audit_standalone_fallback_without_sibling_auditor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    standalone_script = tmp_path / "standalone/install.py"
+    standalone_script.parent.mkdir(parents=True)
+    standalone_script.write_text("# standalone\n")
+    monkeypatch.setattr(install, "__file__", str(standalone_script))
+
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"native-dependency": "1"}})
+    _write_package(
+        tmp_path / "node_modules/native-dependency",
+        {"name": "native-dependency", "scripts": {"install": "build"}},
+    )
+
+    assert install._install_script_packages(root, tmp_path / "node_modules") == ["native-dependency"]
+
+
 def _run_trail_auditor(root: Path, *, debug: bool = True) -> subprocess.CompletedProcess[str]:
     env = os.environ | {
         "HOME": str(root.parents[2]),

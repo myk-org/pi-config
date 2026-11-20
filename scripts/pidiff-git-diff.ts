@@ -49,14 +49,23 @@ export function parseDiffEntries(raw: string): ParsedDiffEntry[] {
   return entries;
 }
 
+export interface CatFileBatchParsed {
+  blobs: Map<string, string>;
+  /** Specs that resolved to a non-blob git object (e.g. a locally present submodule commit). */
+  nonBlobSpecs: string[];
+}
+
 /**
- * Parse raw Buffer stdout from `git cat-file --batch`.
+ * Parse raw Buffer stdout from `git cat-file --batch`, returning decoded blobs
+ * and listing any resolved non-blob specs (e.g. gitlink commit objects) so
+ * callers can fall back to `git show` for exact parity.
  *
  * Git emits byte lengths (not UTF-16 code units), so parsing MUST slice the
  * Buffer by byte offsets before decoding UTF-8.
  */
-export function parseCatFileBatch(specs: readonly string[], output: Buffer): Map<string, string> {
-  const results = new Map<string, string>();
+export function parseCatFileBatchDetailed(specs: readonly string[], output: Buffer): CatFileBatchParsed {
+  const blobs = new Map<string, string>();
+  const nonBlobSpecs: string[] = [];
   let offset = 0;
 
   for (const spec of specs) {
@@ -80,13 +89,22 @@ export function parseCatFileBatch(specs: readonly string[], output: Buffer): Map
     }
 
     if (type === "blob") {
-      results.set(spec, output.toString("utf-8", offset, offset + size));
+      blobs.set(spec, output.toString("utf-8", offset, offset + size));
+    } else {
+      nonBlobSpecs.push(spec);
     }
     // Skip payload bytes plus the trailing LF emitted by `git cat-file --batch`.
     offset += size + 1;
   }
 
-  return results;
+  return { blobs, nonBlobSpecs };
+}
+
+/**
+ * Parse raw Buffer stdout from `git cat-file --batch` into a spec → blob map.
+ */
+export function parseCatFileBatch(specs: readonly string[], output: Buffer): Map<string, string> {
+  return parseCatFileBatchDetailed(specs, output).blobs;
 }
 
 const CAT_FILE_BATCH_MAX_BUFFER = 64 * 1024 * 1024;
@@ -148,11 +166,21 @@ export function batchReadGitObjects(
         maxBuffer: CAT_FILE_BATCH_MAX_BUFFER,
       });
 
-    try {
-      const output = runBatch();
-      for (const [k, v] of parseCatFileBatch(batchable, output)) {
+    const applyBatchOutput = (output: Buffer) => {
+      const { blobs, nonBlobSpecs } = parseCatFileBatchDetailed(batchable, output);
+      for (const [k, v] of blobs) {
         results.set(k, v);
       }
+      if (nonBlobSpecs.length > 0) {
+        if (log.isDebugEnabled()) {
+          log.debug("batchReadGitObjects falling back to git show for non-blob objects", { count: nonBlobSpecs.length });
+        }
+        runShowFallback(nonBlobSpecs);
+      }
+    };
+
+    try {
+      applyBatchOutput(runBatch());
       if (log.isDebugEnabled()) {
         log.debug("batchReadGitObjects", { cwd, requested: batchable.length, resolved: results.size });
       }
@@ -160,10 +188,7 @@ export function batchReadGitObjects(
       if (e?.code === "ENOENT" && onEnoent) {
         bin = onEnoent();
         try {
-          const output = runBatch();
-          for (const [k, v] of parseCatFileBatch(batchable, output)) {
-            results.set(k, v);
-          }
+          applyBatchOutput(runBatch());
         } catch (retryErr: any) {
           log.warn("batchReadGitObjects retry failed, falling back to git show", { err: retryErr?.message });
           runShowFallback(batchable);

@@ -99,6 +99,33 @@ describe("batchReadGitObjects", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("matches git show for a changed gitlink whose commit object is locally available", () => {
+    const dir = makeTempDir("pidiff-gitlink-");
+    const git = (args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    try {
+      git(["init"]);
+      git(["config", "user.email", "test@example.com"]);
+      git(["config", "user.name", "Test"]);
+
+      writeFileSync(join(dir, "readme.txt"), "root\n", "utf-8");
+      git(["add", "readme.txt"]);
+      git(["commit", "-m", "base commit"]);
+      const localCommit = git(["rev-parse", "HEAD"]).trim();
+
+      // Add a gitlink (mode 160000) pointing at a commit object present in this repo's ODB
+      git(["update-index", "--add", "--cacheinfo", `160000,${localCommit},submod`]);
+      git(["commit", "-m", "add gitlink"]);
+
+      const expected = git(["show", "HEAD:submod"]);
+      const blobs = batchReadGitObjects("git", dir, ["HEAD:submod", "HEAD:readme.txt"]);
+      assert.equal(blobs.get("HEAD:readme.txt"), "root\n");
+      assert.equal(blobs.get("HEAD:submod"), expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("parseWorktreeList", () => {
