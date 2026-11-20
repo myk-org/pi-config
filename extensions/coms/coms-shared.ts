@@ -152,12 +152,7 @@ export function createDeferredProxy(
                             def.handler = async (args: string, ctx: any) => {
                                 if (!state.active) {
                                     try {
-                                        ctx.ui.notify(
-                                            name.includes('net')
-                                                ? '📡 coms not active — no queue. Run /coms start first.'
-                                                : '📡 coms not active — no queue. Run /coms start first.',
-                                            'info',
-                                        );
+                                        ctx.ui.notify('📡 coms not active — no queue. Run /coms start first.', 'info');
                                     } catch { /* ignore */ }
                                     return;
                                 }
@@ -176,10 +171,7 @@ export function createDeferredProxy(
                         // Inject anti-loop warning into coms_send description
                         if (tool.name === "coms_send" && tool.description && !tool.description.includes("DO NOT")) {
                             tool.description +=
-                                "\n\n\u26a0\ufe0f  DO NOT call this tool to REPLY to an inbound message. " +
-                                "When you receive a `[from <peer>] \u2026` follow-up, just write your answer as your normal assistant message \u2014 " +
-                                "the coms extension automatically captures the final assistant text at the end of your turn and " +
-                                "submits it back to the original caller. Calling coms_send in response creates a new outbound message, not a reply.";
+                                "\n\n⚠️ DO NOT call this to REPLY to a `[from <peer>]` inbound — your final assistant text auto-sends as the reply.";
                         }
                         const origExecute = tool.execute;
                         tool.execute = async (callId: string, params: any, signal?: AbortSignal, ...rest: any[]) => {
@@ -295,6 +287,7 @@ export function pruneStaleRegistry(comsDir?: string): void {
             if (!fs.existsSync(projectsDir)) return;
             let dirs: string[];
             try { dirs = fs.readdirSync(projectsDir); } catch { return; }
+            const allEndpoints = new Set<string>();
             for (const proj of dirs) {
                 try {
                     const projDir = path.join(projectsDir, proj);
@@ -322,6 +315,7 @@ export function pruneStaleRegistry(comsDir?: string): void {
                                 try { fs.unlinkSync(fp); } catch {}
                                 continue;
                             }
+                            allEndpoints.add(endpoint);
                             // Socket exists — try connect to verify.
                             // Prefer the ping endpoint (.ping) which runs on a separate
                             // thread and is immune to main-thread event-loop blocks.
@@ -361,23 +355,6 @@ export function pruneStaleRegistry(comsDir?: string): void {
             const socketsDir = path.join(resolvedComsDir, "sockets");
             if (fs.existsSync(socketsDir)) {
                 try {
-                    const allEndpoints = new Set<string>();
-                    // Collect all endpoints from remaining registry entries
-                    for (const p of dirs) {
-                        try {
-                            const pd = path.join(projectsDir, p);
-                            if (!fs.lstatSync(pd).isDirectory()) continue;
-                            const ad = path.join(pd, "agents");
-                            if (!fs.existsSync(ad)) continue;
-                            for (const f of fs.readdirSync(ad)) {
-                                if (!f.endsWith(".json")) continue;
-                                try {
-                                    const d = JSON.parse(fs.readFileSync(path.join(ad, f), "utf-8"));
-                                    if (d?.endpoint) allEndpoints.add(d.endpoint);
-                                } catch {}
-                            }
-                        } catch {}
-                    }
                     // Remove sockets with no registry entry
                     for (const sf of fs.readdirSync(socketsDir)) {
                         if (!sf.endsWith(".sock") && !sf.endsWith(".sock.ping")) continue;
@@ -507,19 +484,33 @@ export function readFrontmatterFromArgv(argv: string[]): { name?: string; descri
 	}
 }
 
-export async function readTaskSummary(_cwd: string, _sessionId?: string): Promise<{ total: number; completed: number; in_progress: number } | null> {
+type PitasksModule = typeof import("../pitasks/index.js");
+let _pitasksPromise: Promise<PitasksModule> | null = null;
+
+/** Lazy-load pitasks once per process (retries if an import ever failed). */
+export function loadPitasks(): Promise<PitasksModule> {
+	return (_pitasksPromise ??= import("../pitasks/index.js").catch((err) => {
+		_pitasksPromise = null;
+		throw err;
+	}));
+}
+
+export function summarizeTaskList(tasks: readonly any[] | null | undefined): TasksSummary | null {
+	if (!tasks || tasks.length === 0) return null;
+	let total = 0, completed = 0, in_progress = 0;
+	for (const t of tasks) {
+		total++;
+		if (t?.status === "completed") completed++;
+		else if (t?.status === "in_progress") in_progress++;
+	}
+	return { total, completed, in_progress };
+}
+
+export async function readTaskSummary(_cwd: string, _sessionId?: string): Promise<TasksSummary | null> {
 	log.debug("read_task_summary", { hasSessionId: !!_sessionId });
 	try {
-		const { listTasks } = await import("../pitasks/index.js");
-		const tasks = listTasks();
-		if (!tasks || tasks.length === 0) return null;
-		let total = 0, completed = 0, in_progress = 0;
-		for (const t of tasks) {
-			total++;
-			if (t.status === "completed") completed++;
-			else if (t.status === "in_progress") in_progress++;
-		}
-		return { total, completed, in_progress };
+		const { listTasks } = await loadPitasks();
+		return summarizeTaskList(listTasks());
 	} catch { return null; }
 }
 
@@ -904,7 +895,7 @@ export async function createComsInboundTasks(
 
 	let createTasksAtStorePath: ((path: string, defs: any[]) => any[]) | undefined;
 	try {
-		createTasksAtStorePath = (await import("../pitasks/index.js")).createTasksAtStorePath;
+		createTasksAtStorePath = (await loadPitasks()).createTasksAtStorePath;
 	} catch (error) {
 		log.error("create_coms_inbound_tasks_import_failed", { storePath, error: error instanceof Error ? error.message : String(error) });
 		return 0;
@@ -946,7 +937,7 @@ export async function getComsOriginTask(
 ): Promise<{ subject: string; createdBy: { session: string; name: string; endpoint?: string } } | null> {
 	if (!taskId || taskId === "-1") return null;
 	try {
-		const { getTask } = await import("../pitasks/index.js");
+		const { getTask } = await loadPitasks();
 		const task = getTask(taskId);
 		if (task?.createdBy?.type === "coms") {
 			return {
@@ -967,7 +958,7 @@ export async function getComsOriginTask(
  */
 export async function getComsOriginTasks(): Promise<Array<{ taskId: string; subject: string; status: string; createdBy: { session: string; name: string; endpoint?: string } }>> {
 	try {
-		const { listTasks } = await import("../pitasks/index.js");
+		const { listTasks } = await loadPitasks();
 		const tasks = listTasks();
 		return tasks
 			.filter((t: any) => t.createdBy?.type === "coms" && t.status !== "deleted")

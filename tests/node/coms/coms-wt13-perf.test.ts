@@ -1,0 +1,584 @@
+import assert from "node:assert/strict";
+import { afterEach, describe, it } from "node:test";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import * as net from "node:net";
+import { join } from "node:path";
+
+import comsP2p from "../../../extensions/coms/coms-p2p.js";
+import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
+import { loadPitasks } from "../../../extensions/coms/coms-shared.js";
+import { setComsActive } from "../../../extensions/shared/coms-active.js";
+import { TASK_STORE_SYMBOL, publishTaskStore } from "../../../extensions/shared/task-store-bridge.js";
+import { WORKLOAD_SOURCES_SYMBOL, publishWorkloadSources } from "../../../extensions/shared/workload-bridge.js";
+import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
+interface FakePi {
+	tools: Map<string, any>;
+	commands: Map<string, any>;
+	handlers: Map<string, Function>;
+	messages: any[];
+	activeTools: string[];
+	flags: Map<string, any>;
+	events: {
+		on: (channel: string, fn: (data: unknown) => void) => () => void;
+		emit: (channel: string, data?: unknown) => void;
+	};
+	registerFlag: (name: string, opts: any) => void;
+	getFlag: (name: string) => any;
+	registerTool: (tool: any) => void;
+	registerCommand: (name: string, def: any) => void;
+	getActiveTools: () => string[];
+	setActiveTools: (tools: string[]) => void;
+	appendEntry: (key: string, data: unknown) => void;
+	on: (event: string, handler: Function) => void;
+	sendMessage: (msg: any, opts?: any) => void;
+	shutdown: () => Promise<void>;
+}
+
+function createFakePi(flagOverrides: Record<string, any> = {}): FakePi {
+	const tools = new Map<string, any>();
+	const commands = new Map<string, any>();
+	const handlers = new Map<string, Function>();
+	const messages: any[] = [];
+	const flags = new Map<string, any>(Object.entries(flagOverrides));
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	let activeTools: string[] = [];
+
+	return {
+		tools,
+		commands,
+		handlers,
+		messages,
+		get activeTools() { return activeTools; },
+		set activeTools(v: string[]) { activeTools = v; },
+		flags,
+		events: {
+			on(channel: string, fn: (data: unknown) => void) {
+				if (!listeners.has(channel)) listeners.set(channel, new Set());
+				listeners.get(channel)!.add(fn);
+				return () => listeners.get(channel)?.delete(fn);
+			},
+			emit(channel: string, data?: unknown) {
+				for (const fn of listeners.get(channel) ?? []) fn(data);
+			},
+		},
+		registerFlag(name: string, opts: any) {
+			if (!flags.has(name) && opts && "default" in opts) flags.set(name, opts.default);
+		},
+		getFlag(name: string) {
+			return flags.get(name);
+		},
+		registerTool(tool: any) {
+			tools.set(tool.name, tool);
+			if (tool.defaultActive !== false && !activeTools.includes(tool.name)) {
+				activeTools.push(tool.name);
+			}
+		},
+		registerCommand(name: string, def: any) {
+			commands.set(name, def);
+		},
+		getActiveTools() {
+			return [...activeTools];
+		},
+		setActiveTools(next: string[]) {
+			activeTools = [...next];
+		},
+		appendEntry() {},
+		on(event: string, handler: Function) {
+			handlers.set(event, handler);
+		},
+		sendMessage(msg: any) {
+			messages.push(msg);
+		},
+		async shutdown() {
+			await handlers.get("session_shutdown")?.();
+		},
+	};
+}
+
+function makeWorkspace(): { workspace: string; comsDir: string } {
+	const workspace = makeTempDir("coms-wt13-");
+	const comsDir = join(workspace, "coms");
+	mkdirSync(join(workspace, ".pi"), { recursive: true });
+	writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: comsDir }));
+	return { workspace, comsDir };
+}
+
+function makeCtx(cwd: string, sessionId: string, assistantText?: () => string) {
+	return {
+		cwd,
+		model: { id: "test-model" },
+		hasUI: false,
+		ui: { notify: () => {}, setStatus: () => {}, setWidget: () => {} },
+		sessionManager: {
+			getSessionId: () => sessionId,
+			getEntries: () => [],
+			getBranch: () =>
+				assistantText
+					? [{ type: "message", message: { role: "assistant", content: [{ type: "text", text: assistantText() }] } }]
+					: [],
+		},
+	};
+}
+
+async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (await predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error(`Timed out after ${timeoutMs}ms waiting for condition`);
+}
+
+const startedPeers: FakePi[] = [];
+
+afterEach(async () => {
+	for (const peer of startedPeers.splice(0)) {
+		await peer.shutdown();
+	}
+	setComsActive(false);
+	delete (globalThis as any).__piConfigSessionId;
+	delete (globalThis as any).__comsSelf;
+	delete (globalThis as any).__comsSelfOrigin;
+	delete (globalThis as any).__comsUserSend;
+	delete (globalThis as any).__coms_pidash_listener;
+	delete (globalThis as any).__coms_p2p_pidash_listener;
+	delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+	delete (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL];
+});
+
+async function startP2pPeer(opts: {
+	name: string;
+	sessionId: string;
+	project?: string;
+	cwd: string;
+	piTasks?: string;
+}): Promise<FakePi> {
+	const pi = createFakePi({
+		cname: opts.name,
+		project: opts.project ?? "default",
+	});
+	startedPeers.push(pi);
+	const prevPiTasks = process.env.PI_TASKS;
+	if (opts.piTasks !== undefined) process.env.PI_TASKS = opts.piTasks;
+	try {
+		withSubagentChildEnv(undefined, () => {
+			comsP2p(pi as any);
+			assert.ok(pi.tools.get("coms_send"), "coms_send must register");
+		});
+	} finally {
+		if (prevPiTasks === undefined) delete process.env.PI_TASKS;
+		else process.env.PI_TASKS = prevPiTasks;
+	}
+	(globalThis as any).__piConfigSessionId = opts.sessionId;
+	await pi.handlers.get("session_start")!({}, makeCtx(opts.cwd, opts.sessionId));
+	return pi;
+}
+
+describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, () => {
+	// ── #1239 ────────────────────────────────────────────────────────────────
+	it("#1239: staleCheckTimer does not leak intervals across /coms stop -> /coms start cycles", async () => {
+		const { workspace } = makeWorkspace();
+		const pi = createFakePi();
+		startedPeers.push(pi);
+
+		withSubagentChildEnv(undefined, () => {
+			registerComs(pi as any);
+			assert.ok(pi.commands.get("coms"), "/coms command must register");
+		});
+
+		const origSetInterval = globalThis.setInterval;
+		const origClearInterval = globalThis.clearInterval;
+		const activeStaleTimers = new Set<any>();
+		const active60sTimers = new Set<any>();
+		let createdStale = 0;
+		let clearedStale = 0;
+
+		(globalThis as any).setInterval = (fn: any, ms?: number, ...args: any[]) => {
+			const handle = origSetInterval(fn, ms, ...args);
+			if (ms === 60_000) {
+				active60sTimers.add(handle);
+				if (typeof fn === "function" && fn.toString().includes("stale_check")) {
+					createdStale++;
+					activeStaleTimers.add(handle);
+				}
+			}
+			return handle;
+		};
+		(globalThis as any).clearInterval = (handle: any) => {
+			active60sTimers.delete(handle);
+			if (activeStaleTimers.delete(handle)) clearedStale++;
+			return origClearInterval(handle);
+		};
+
+		try {
+			const ctx = makeCtx(workspace, "wrapper-timer-session");
+			await pi.handlers.get("session_start")!({ reason: "startup" }, ctx);
+			const comsCmd = pi.commands.get("coms");
+
+			await comsCmd.handler("start --cname timer-peer --project timer-proj", ctx);
+			assert.equal(activeStaleTimers.size, 1, "first start registers one staleCheckTimer");
+
+			await comsCmd.handler("stop", ctx);
+			assert.equal(activeStaleTimers.size, 0, "first stop clears staleCheckTimer");
+			assert.equal(active60sTimers.size, 0, "first stop clears all 60s timers");
+
+			await comsCmd.handler("start --cname timer-peer --project timer-proj", ctx);
+			assert.equal(activeStaleTimers.size, 1, "second start registers one staleCheckTimer");
+
+			await comsCmd.handler("stop", ctx);
+			assert.equal(activeStaleTimers.size, 0, "second stop clears staleCheckTimer");
+			assert.equal(active60sTimers.size, 0, "second stop clears all 60s timers");
+
+			assert.equal(createdStale, 2);
+			assert.equal(clearedStale, 2);
+		} finally {
+			for (const h of active60sTimers) origClearInterval(h);
+			globalThis.setInterval = origSetInterval;
+			globalThis.clearInterval = origClearInterval;
+		}
+	});
+
+	it("#1239: resolveTarget resolves a peer in a different project by both coms_session_id and name", async () => {
+		const { workspace } = makeWorkspace();
+		const alpha = await startP2pPeer({ name: "alpha", sessionId: "sess-alpha", project: "proj-a", cwd: workspace });
+		const beta = await startP2pPeer({ name: "beta", sessionId: "sess-beta-other", project: "proj-b", cwd: workspace });
+
+		const byId = await alpha.tools.get("coms_send").execute("send-by-id", {
+			target: "sess-beta-other",
+			prompt: "ping-by-id",
+		});
+		assert.equal(byId.details.target_session, "sess-beta-other");
+
+		// Finish beta's first inbound turn before sending the second so each arrives as its own message.
+		await waitUntil(() => beta.messages.some((m) => typeof m.content === "string" && m.content.includes("ping-by-id")));
+		await beta.handlers.get("agent_end")!({}, makeCtx(workspace, "sess-beta-other", () => "ack-id"));
+
+		const byName = await alpha.tools.get("coms_send").execute("send-by-name", {
+			target: "beta",
+			prompt: "ping-by-name",
+		});
+		assert.equal(byName.details.target_session, "sess-beta-other");
+
+		await waitUntil(() => beta.messages.filter((m) => m.customType?.startsWith("from alpha")).length >= 2);
+		const bodies = beta.messages.map((m) => m.content).join("\n");
+		assert.match(bodies, /ping-by-id/);
+		assert.match(bodies, /ping-by-name/);
+	});
+
+	it("#1239: /coms getArgumentCompletions for kill and tell lists live peers without supervision files", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const pi = createFakePi();
+		startedPeers.push(pi);
+
+		withSubagentChildEnv(undefined, () => {
+			registerComs(pi as any);
+			assert.ok(pi.commands.get("coms"), "/coms command must register");
+		});
+		await pi.handlers.get("session_start")!({ reason: "startup" }, makeCtx(workspace, "comp-session"));
+
+		// Write only a live registry entry + dummy endpoint; no peers/ supervision directory.
+		const agentsDir = join(comsDir, "projects", "proj-x", "agents");
+		const socketsDir = join(comsDir, "sockets");
+		mkdirSync(agentsDir, { recursive: true });
+		mkdirSync(socketsDir, { recursive: true });
+		const sockPath = join(socketsDir, "live-peer-sess.sock");
+		writeFileSync(sockPath, "");
+		writeFileSync(join(agentsDir, "live-peer-sess.json"), JSON.stringify({
+			coms_session_id: "live-peer-sess",
+			name: "live-peer",
+			pid: process.pid,
+			endpoint: sockPath,
+			heartbeat_at: new Date().toISOString(),
+		}));
+		assert.equal(existsSync(join(comsDir, "peers")), false, "no supervision directory exists");
+
+		const comsCmd = pi.commands.get("coms");
+		const killCompletions = comsCmd.getArgumentCompletions("kill ");
+		assert.ok(killCompletions, "kill completions returned");
+		assert.ok(killCompletions.some((c: any) => c.label === "live-peer" && c.value === "kill live-peer"));
+		assert.ok(killCompletions.some((c: any) => c.label === "all"));
+
+		const tellCompletions = comsCmd.getArgumentCompletions("tell ");
+		assert.ok(tellCompletions, "tell completions returned");
+		assert.ok(tellCompletions.some((c: any) => c.label === "live-peer"));
+	});
+
+	// ── #1241 ────────────────────────────────────────────────────────────────
+	it("#1241: coms_send schema omits clearPrevious while runtime clearPrevious:true rejects, and pending warning uses queue tools", async () => {
+		const { workspace } = makeWorkspace();
+		const sender = await startP2pPeer({ name: "sender", sessionId: "s-1241", project: "p-1241", cwd: workspace });
+		await startP2pPeer({ name: "receiver", sessionId: "r-1241", project: "p-1241", cwd: workspace });
+
+		const comsSend = sender.tools.get("coms_send");
+		assert.equal("clearPrevious" in comsSend.parameters.properties, false, "schema omits clearPrevious");
+
+		await assert.rejects(
+			comsSend.execute("reject-clear", { target: "receiver", prompt: "hi", clearPrevious: true }),
+			/clearPrevious is no longer allowed/,
+		);
+
+		await comsSend.execute("first", { target: "receiver", prompt: "first pending" });
+		const second = await comsSend.execute("second", { target: "receiver", prompt: "second pending" });
+		const text = second.content[0].text as string;
+		assert.match(text, /coms_queue_inspect/);
+		assert.match(text, /coms_queue_clear/);
+		assert.doesNotMatch(text, /clearPrevious/);
+	});
+
+	it("#1241: coms-welcome omits redundant Available tools catalog while keeping identity, auto-capture rule, and connected peers", async () => {
+		const { workspace } = makeWorkspace();
+		await startP2pPeer({ name: "first-peer", sessionId: "fp-1", project: "p-welcome", cwd: workspace });
+		const second = await startP2pPeer({ name: "second-peer", sessionId: "sp-2", project: "p-welcome", cwd: workspace });
+
+		const welcome = second.messages.find((m) => m.customType === "coms-welcome");
+		assert.ok(welcome, "coms-welcome message emitted");
+		assert.equal(welcome.content.includes("## Available tools"), false);
+		assert.match(welcome.content, /You are "second-peer" on project "p-welcome"/);
+		assert.match(welcome.content, /auto-captured when your turn ends/);
+		assert.match(welcome.content, /## Connected peers/);
+		assert.match(welcome.content, /first-peer/);
+	});
+
+	it("#1241: registerComs keeps always-on wrapper tools registered and active", () => {
+		const pi = createFakePi();
+		withSubagentChildEnv(undefined, () => {
+			registerComs(pi as any);
+			for (const name of ["coms_start", "coms_peers", "coms_peer_spawn", "coms_peer_kill"]) {
+				const tool = pi.tools.get(name);
+				assert.ok(tool, `${name} must be registered`);
+				assert.notEqual(tool.defaultActive, false, `${name} must stay active by default`);
+				assert.ok(pi.activeTools.includes(name), `${name} must be in activeTools`);
+			}
+			for (const gated of ["coms_send", "coms_stop"]) {
+				const tool = pi.tools.get(gated);
+				assert.ok(tool, `${gated} must be registered`);
+				assert.equal(tool.defaultActive, false, `${gated} must be gated off until start`);
+			}
+		});
+	});
+
+	it("#1241: coms-p2p skips registration when PI_SUBAGENT_CHILD=1", () => {
+		const pi = createFakePi();
+		withSubagentChildEnv("1", () => {
+			comsP2p(pi as any);
+			assert.equal(pi.tools.size, 0, "no tools registered for subagent child");
+			assert.equal(pi.handlers.size, 0, "no handlers registered for subagent child");
+		});
+	});
+
+	// ── #1245 ────────────────────────────────────────────────────────────────
+	it("#1245: writeLiveRegistry reads publishedTaskStore().list() once per registry+card update", async () => {
+		const { workspace } = makeWorkspace();
+		let listCalls = 0;
+		const storeFile = join(workspace, "tasks.json");
+		publishWorkloadSources({ agents: () => [], crons: () => [] });
+		publishTaskStore(() => ({
+			filePath: storeFile,
+			list: () => {
+				listCalls++;
+				return [{ id: "1", status: "pending", subject: "Task", blockedBy: [], assignee: "llm" }];
+			},
+		}));
+
+		const peer = await startP2pPeer({ name: "card-peer", sessionId: "cp-1", project: "p-1245", cwd: workspace });
+		const sender = await startP2pPeer({ name: "sender-peer", sessionId: "sp-1", project: "p-1245", cwd: workspace });
+
+		// Wait for initial ping worker ready card push to settle.
+		await waitUntil(() => listCalls >= 1);
+		await new Promise((r) => setTimeout(r, 30));
+		listCalls = 0;
+
+		// Trigger writeLiveRegistry() via agent_start detecting a changed pi_session_id.
+		await peer.handlers.get("agent_start")!({}, makeCtx(workspace, "changed-pi-session-id"));
+		await new Promise((r) => setTimeout(r, 30));
+		assert.equal(listCalls, 1, "agent_start writeLiveRegistry reads store.list() only once");
+
+		// Trigger writeLiveRegistry() via busy transition on inbound prompt.
+		listCalls = 0;
+		await sender.tools.get("coms_send").execute("busy-flip", { target: "card-peer", prompt: "trigger busy" });
+		await new Promise((r) => setTimeout(r, 30));
+		assert.equal(listCalls, 1, "busy transition writeLiveRegistry reads store.list() only once");
+	});
+
+	it("#1245: pruneStaleRegistry removes orphan .sock/.sock.ping files while keeping sockets for surviving entries", async () => {
+		const comsDir = makeTempDir("coms-prune-");
+		const socketsDir = join(comsDir, "sockets");
+		const agentsDir = join(comsDir, "projects", "proj-p", "agents");
+		mkdirSync(socketsDir, { recursive: true });
+		mkdirSync(agentsDir, { recursive: true });
+
+		const aliveSock = join(socketsDir, "alive.sock");
+		const alivePing = `${aliveSock}.ping`;
+		const orphanSock = join(socketsDir, "orphan.sock");
+		const orphanPing = `${orphanSock}.ping`;
+		writeFileSync(aliveSock, "");
+		writeFileSync(orphanSock, "");
+		writeFileSync(orphanPing, "");
+
+		const pingServer = net.createServer((sock) => sock.destroy());
+		await new Promise<void>((resolve) => pingServer.listen(alivePing, resolve));
+
+		const regFile = join(agentsDir, "alive-sess.json");
+		writeFileSync(regFile, JSON.stringify({
+			coms_session_id: "alive-sess",
+			name: "alive",
+			pid: process.pid,
+			endpoint: aliveSock,
+		}));
+
+		try {
+			// Fresh module instance so module-level `_pruned` starts false.
+			const sharedPath = "../../../extensions/coms/coms-shared.js?wt13-prune=1";
+			const isolatedShared: typeof import("../../../extensions/coms/coms-shared.js") = await import(sharedPath);
+			isolatedShared.pruneStaleRegistry(comsDir);
+
+			await waitUntil(() => !existsSync(orphanSock) && !existsSync(orphanPing));
+			// Allow in-flight ping connect for alive.sock.ping to settle.
+			await new Promise((r) => setTimeout(r, 50));
+
+			assert.equal(existsSync(orphanSock), false, "orphan .sock removed");
+			assert.equal(existsSync(orphanPing), false, "orphan .sock.ping removed");
+			assert.equal(existsSync(aliveSock), true, "surviving .sock kept");
+			assert.equal(existsSync(alivePing), true, "surviving .sock.ping kept");
+			assert.equal(existsSync(regFile), true, "surviving registry entry kept");
+		} finally {
+			await new Promise<void>((resolve) => pingServer.close(() => resolve()));
+		}
+	});
+
+	// ── #1246 & #1248 ────────────────────────────────────────────────────────
+	it("#1246/#1248: coms_task_list and coms_task_get filter completed blockers, and delete/update enforce creator & in_progress guards", async () => {
+		const { workspace } = makeWorkspace();
+		const receiverStorePath = join(workspace, "receiver-tasks.json");
+		const store = new TaskStore(receiverStorePath);
+		const senderCreator = { type: "coms" as const, origin: "sender", session: "sender-1246", project: "" };
+		const otherCreator = { type: "coms" as const, origin: "other", session: "other-1246", project: "" };
+
+		const t1 = store.create("Done blocker", "d1", senderCreator);
+		store.update(t1.id, { status: "completed" });
+		const t2 = store.create("Open blocker", "d2", senderCreator);
+		const t3 = store.create("Blocked task", "d3", senderCreator);
+		const t4 = store.create("Downstream task", "d4", senderCreator);
+		store.update(t3.id, { addBlockedBy: [t1.id, t2.id], addBlocks: [t4.id] });
+		const tForeign = store.create("Foreign task", "df", otherCreator);
+		const tActive = store.create("Running own task", "da", senderCreator);
+		store.update(tActive.id, { status: "in_progress" });
+		store.close();
+
+		const sender = await startP2pPeer({ name: "sender", sessionId: "sender-1246", project: "p-1246", cwd: workspace });
+		await startP2pPeer({ name: "receiver", sessionId: "receiver-1246", project: "p-1246", cwd: workspace, piTasks: receiverStorePath });
+
+		const listRes = await sender.tools.get("coms_task_list").execute("list", { target: "receiver" });
+		const listText = listRes.content[0].text as string;
+		const t3Line = listText.split("\n").find((l) => l.startsWith(`#${t3.id} `));
+		assert.ok(t3Line, "task 3 present in list");
+		assert.match(t3Line, new RegExp(`\\[blocked by #${t2.id}\\]`));
+		assert.doesNotMatch(t3Line, new RegExp(`#${t1.id}\\b`));
+
+		const getRes = await sender.tools.get("coms_task_get").execute("get", { target: "receiver", task_id: t3.id });
+		const getText = getRes.content[0].text as string;
+		assert.match(getText, new RegExp(`Blocked by: #${t2.id}\\n`));
+		assert.doesNotMatch(getText, new RegExp(`Blocked by:.*#${t1.id}\\b`));
+		assert.match(getText, new RegExp(`Blocks: #${t4.id}`));
+
+		await assert.rejects(
+			sender.tools.get("coms_task_delete").execute("del-foreign", { target: "receiver", task_id: tForeign.id }),
+			/Ownership denied/,
+		);
+		await assert.rejects(
+			sender.tools.get("coms_task_update").execute("upd-foreign", { target: "receiver", task_id: tForeign.id, subject: "nope" }),
+			/Ownership denied/,
+		);
+
+		const delInProg = await sender.tools.get("coms_task_delete").execute("del-active", { target: "receiver", task_id: tActive.id });
+		assert.deepEqual(delInProg.details, { blocked: true, reason: "in_progress" });
+		assert.match(delInProg.content[0].text, /Cannot delete task.*in_progress/);
+
+		const updInProg = await sender.tools.get("coms_task_update").execute("upd-active", { target: "receiver", task_id: tActive.id, subject: "nope" });
+		assert.deepEqual(updInProg.details, { blocked: true, reason: "in_progress" });
+		assert.match(updInProg.content[0].text, /Cannot update task.*in_progress/);
+	});
+
+	it("#1248: loadPitasks() returns the same memoized Promise across calls", async () => {
+		const p1 = loadPitasks();
+		const p2 = loadPitasks();
+		assert.strictEqual(p1, p2);
+		const mod = await p1;
+		assert.equal(typeof mod.listTasksAtStorePath, "function");
+	});
+
+	// ── #1252 ────────────────────────────────────────────────────────────────
+	it("#1252: multi-message FIFO bundling + comsSendCalledThisTurn drain + mixed-turn reinjection work end-to-end", async () => {
+		const { workspace } = makeWorkspace();
+		const blocker = await startP2pPeer({ name: "blocker", sessionId: "b-1252", project: "p-1252", cwd: workspace });
+		const sender = await startP2pPeer({ name: "sender", sessionId: "s-1252", project: "p-1252", cwd: workspace });
+		const other = await startP2pPeer({ name: "other", sessionId: "o-1252", project: "p-1252", cwd: workspace });
+		const receiver = await startP2pPeer({ name: "receiver", sessionId: "r-1252", project: "p-1252", cwd: workspace });
+
+		// Step A: Multi-message FIFO bundling
+		await blocker.tools.get("coms_send").execute("b0", { target: "receiver", prompt: "initial busy" });
+		const r1 = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "bundle one" });
+		const r2 = await sender.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "bundle two" });
+		const m1 = r1.details.msg_id as string;
+		const m2 = r2.details.msg_id as string;
+
+		// Complete blocker's turn -> drains sender's 2 queued messages as one bundle.
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "r-1252", () => "reply-blocker"));
+		const bundledMsg = receiver.messages.find((m) => Array.isArray(m.details?.bundled_msg_ids));
+		assert.ok(bundledMsg, "receiver injects a bundled followUp");
+		assert.deepEqual(bundledMsg.details.bundled_msg_ids, [m1, m2]);
+		assert.match(bundledMsg.content, /BUNDLED: 2 messages/);
+
+		// Complete bundled turn -> primary gets reply, secondary gets "bundled".
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "r-1252", () => "reply-bundle"));
+		await waitUntil(async () => {
+			const g1 = await sender.tools.get("coms_get").execute("g1", { msg_id: m1 });
+			const g2 = await sender.tools.get("coms_get").execute("g2", { msg_id: m2 });
+			return g1.details.status === "complete" && g2.details.status === "complete";
+		});
+		const g1 = await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 });
+		const g2 = await sender.tools.get("coms_get").execute("g2-check", { msg_id: m2 });
+		assert.equal(g1.details.response, "reply-bundle");
+		assert.equal(g2.details.error, "bundled");
+
+		// Step B: comsSendCalledThisTurn drain
+		const r3 = await sender.tools.get("coms_send").execute("s3", { target: "receiver", prompt: "will reply directly" });
+		const m3 = r3.details.msg_id as string;
+		const r4 = await other.tools.get("coms_send").execute("o4", { target: "receiver", prompt: "queued behind s3" });
+		const m4 = r4.details.msg_id as string;
+
+		await receiver.handlers.get("agent_start")!({}, makeCtx(workspace, "r-1252"));
+		let sendDone = false;
+		const offSendResult = receiver.events.on("pidash:coms-send-result", () => { sendDone = true; });
+		receiver.events.emit("pidash:coms-send", { target: "sender", prompt: "direct reply via deliverPrompt" });
+		await waitUntil(() => sendDone);
+		offSendResult();
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "r-1252", () => "should not auto-capture"));
+
+		const g3 = await sender.tools.get("coms_get").execute("g3-check", { msg_id: m3 });
+		assert.equal(g3.details.status, "pending", "auto-capture skipped when comsSendCalledThisTurn has sender");
+		await waitUntil(() => receiver.messages.some((m) => m.details?.msg_id === m4));
+
+		// Step C: Mixed-turn reinjection
+		await receiver.handlers.get("message_start")!({ message: { role: "user" } });
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "r-1252", () => "user-directed answer"));
+
+		const g4Mid = await other.tools.get("coms_get").execute("g4-mid", { msg_id: m4 });
+		assert.equal(g4Mid.details.status, "pending", "mixed-turn does not leak user-directed answer");
+		assert.ok(
+			receiver.messages.some((m) => m.details?.msg_id === m4 && typeof m.content === "string" && m.content.includes("re-injection")),
+			"receiver re-injects m4 for a dedicated turn",
+		);
+
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "r-1252", () => "dedicated peer reply"));
+		await waitUntil(async () => (await other.tools.get("coms_get").execute("g4-wait", { msg_id: m4 })).details.status === "complete");
+		const g4Done = await other.tools.get("coms_get").execute("g4-done", { msg_id: m4 });
+		assert.equal(g4Done.details.response, "dedicated peer reply");
+
+		// Clean up remaining pending entry m3 before shutdown so coms_send/coms_get assertions stay deterministic
+		assert.equal(readFileSync(join(workspace, "coms", "history.jsonl"), "utf-8").includes(m3), true);
+	});
+});
