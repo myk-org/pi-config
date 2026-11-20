@@ -564,11 +564,80 @@ function isScriptArgument(cmd: string, at: number): boolean {
 
 /** Does `line` terminate the heredoc? Ordinary delimiters match exactly; `<<-` allows leading tabs. */
 function isHeredocTerminator(line: string, delim: string, stripTabs: boolean): boolean {
-  const escaped = delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = stripTabs ? new RegExp(`^\\t*${escaped}$`) : new RegExp(`^${escaped}$`);
-  const isTerminator = re.test(line);
+  const isTerminator = stripTabs && line.charCodeAt(0) === 9 ? line.replace(/^\t+/, "") === delim : line === delim;
   gitLog.debug("heredoc_terminator", "delim", delim, "strip_tabs", stripTabs, "matched", isTerminator);
   return isTerminator;
+}
+
+export interface HeredocSpec {
+  delim: string;
+  expand?: boolean;
+  stripTabs: boolean;
+}
+
+export type HeredocGrammar = "executable" | "comments" | "piped-commit";
+
+const HEREDOC_OPENER_RES: Record<HeredocGrammar, RegExp> = {
+  executable: /^<<(-?)\s*(?:'([^']*)'|"([^"]*)"|([^\s;&|)'\n]+))/,
+  comments: /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|((?:\\.|[^\s;&|)'"\\`\n])+))/,
+  "piped-commit": /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s;&|()<>'"`]+))/,
+};
+
+export function matchHeredocOpener(
+  slice: string,
+  grammar: HeredocGrammar = "executable",
+): { delim: string; expand: boolean; stripTabs: boolean; length: number } | null {
+  const m = HEREDOC_OPENER_RES[grammar].exec(slice);
+  if (!m) return null;
+  const rawUnquoted = m[4];
+  const delim =
+    m[2] !== undefined
+      ? m[2]
+      : m[3] !== undefined
+        ? m[3]
+        : grammar === "comments"
+          ? rawUnquoted!.replace(/\\(.)/g, "$1")
+          : rawUnquoted!;
+  return {
+    delim,
+    expand: m[2] === undefined && m[3] === undefined,
+    stripTabs: m[1] === "-",
+    length: m[0].length,
+  };
+}
+
+export function skipHeredocBody(
+  cmd: string,
+  start: number,
+  pending: ReadonlyArray<HeredocSpec>,
+  opts?: { stripCr?: boolean; onBodyLine?: (line: string, index: number) => void },
+): { next: number; closed: boolean } {
+  let cursor = start;
+  let allClosed = true;
+  for (let hIdx = 0; hIdx < pending.length; hIdx++) {
+    const h = pending[hIdx]!;
+    let closed = false;
+    while (cursor <= cmd.length) {
+      let lineEnd = cmd.indexOf("\n", cursor);
+      const atEnd = lineEnd === -1;
+      if (atEnd) lineEnd = cmd.length;
+      const rawLine = cmd.slice(cursor, lineEnd);
+      const line = opts?.stripCr ? rawLine.replace(/\r$/, "") : rawLine;
+      if (isHeredocTerminator(line, h.delim, h.stripTabs)) {
+        cursor = atEnd ? cmd.length : lineEnd + 1;
+        closed = true;
+        break;
+      }
+      opts?.onBodyLine?.(rawLine, hIdx);
+      cursor = atEnd ? cmd.length : lineEnd + 1;
+      if (atEnd) break;
+    }
+    if (!closed) {
+      allClosed = false;
+      break;
+    }
+  }
+  return { next: cursor, closed: allClosed };
 }
 
 export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string {
@@ -643,15 +712,15 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
 
     // Heredoc opener: remember the delimiter, keep scanning the same line.
     if (ch === "<" && cmd[i + 1] === "<") {
-      const m = /^<<(-?)\s*(?:'([^']*)'|"([^"]*)"|([^\s;&|)'\n]+))/.exec(cmd.slice(i));
+      const m = matchHeredocOpener(cmd.slice(i), "executable");
       if (m) {
         pendingHeredocs.push({
-          delim: m[2] ?? m[3] ?? m[4],
-          expand: !m[2] && !m[3],
-          stripTabs: m[1] === "-",
+          delim: m.delim,
+          expand: m.expand,
+          stripTabs: m.stripTabs,
         });
         heredocs++;
-        i += m[0].length - 1;
+        i += m.length - 1;
         continue;
       }
     }
@@ -660,33 +729,18 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
     // its terminator, so a second heredoc on the same line resumes in the right
     // place instead of inside the first body.
     if (ch === "\n" && pendingHeredocs.length > 0) {
-      let cursor = i + 1;
-      for (const h of pendingHeredocs) {
-        const bodyLines: string[] = [];
-        let closed = false;
-        // Consume the whole body — every line until the terminator — so the
-        // outer scan cannot resume inside body text.
-        while (cursor <= cmd.length) {
-          let lineEnd = cmd.indexOf("\n", cursor);
-          const atEnd = lineEnd === -1;
-          if (atEnd) lineEnd = cmd.length;
-          const line = cmd.slice(cursor, lineEnd);
-          if (isHeredocTerminator(line, h.delim, h.stripTabs)) {
-            cursor = Math.min(lineEnd + 1, cmd.length);
-            closed = true;
-            break;
-          }
-          bodyLines.push(line);
-          cursor = atEnd ? cmd.length : lineEnd + 1;
-          if (atEnd) break;
-        }
-        if (h.expand && keepSubstitutions) add(` ${executableText(bodyLines.join("\n"), depth + 1, "body")} `);
-        if (!closed) break;
+      const bodies: string[][] = pendingHeredocs.map(() => []);
+      const { next } = skipHeredocBody(cmd, i + 1, pendingHeredocs, {
+        onBodyLine: (line, hIdx) => bodies[hIdx]!.push(line),
+      });
+      for (let hIdx = 0; hIdx < pendingHeredocs.length; hIdx++) {
+        const h = pendingHeredocs[hIdx]!;
+        if (h.expand && keepSubstitutions) add(` ${executableText(bodies[hIdx]!.join("\n"), depth + 1, "body")} `);
       }
       pendingHeredocs.length = 0;
       // A newline, so whatever follows the terminator starts its own command.
       add("\n");
-      i = cursor - 1;
+      i = next - 1;
       continue;
     }
 
@@ -1191,22 +1245,26 @@ export function listUnmergedFiles(cwd?: string): { ok: boolean; files: string[] 
   return { ok: true, files: [...files] };
 }
 
+const NOEXEC_WRAPPERS_RE =
+  /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|(?:then|do|else|elif)\b|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b)\s+)*/i;
+const NOEXEC_SHELL_RE = /^(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh\b/i;
+const NOEXEC_DISALLOWED_CHARS_RE = /[$`'"\\]|<(?=\()|>(?=\()/;
+const NOEXEC_C_FLAG_RE = /^-[a-zA-Z]*c[a-zA-Z]*$/;
+const NOEXEC_N_FLAG_RE = /^-[a-zA-Z]*n/;
+
 /** `bash -n file`, `sh -n script`, `bash -x -n f` — the shell only PARSES: nothing is executed.
  *  A syntax check is not a command to approve, so the gate must not treat it as running a shell.
  *  Only an exact `-n` token counts; anything fuzzier stays dangerous. */
 export function isNoexecSyntaxCheck(statement: string): boolean {
-  const WRAPPERS =
-    /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|(?:then|do|else|elif)\b|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b)\s+)*/i;
-  const SHELL = /^(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh\b/i;
   // The calling shell expands and word-splits before the syntax check runs: `$(...)` executes,
   // `${IFS}` splits one token into several options (`bash -n${IFS}+n${IFS}-c …`), backticks run,
   // and `<(...)`/`>(...)` execute. ANY `$` is refused outright — a legitimate `bash -n script.sh`
   // never needs one. Quotes and backslashes go too: the CALLING shell removes them before Bash
   // parses, so `bash -n '+n' script.sh` would hand Bash a `+n` option while this predicate saw a
   // harmless operand.
-  if (/[$`'"\\]|<(?=\()|>(?=\()/.test(statement)) return false;
-  const rest = statement.replace(WRAPPERS, "").trim();
-  const shellMatch = SHELL.exec(rest);
+  if (NOEXEC_DISALLOWED_CHARS_RE.test(statement)) return false;
+  const rest = statement.replace(NOEXEC_WRAPPERS_RE, "").trim();
+  const shellMatch = NOEXEC_SHELL_RE.exec(rest);
   if (!shellMatch) return false;
   const tokens = rest.slice(shellMatch[0].length).trim().split(/\s+/).filter(Boolean);
 
@@ -1223,8 +1281,8 @@ export function isNoexecSyntaxCheck(statement: string): boolean {
     if (token.startsWith("+")) return false;
     if (!token.startsWith("-")) break; // first operand (script name or argument)
     // `-c` takes the program text — whatever follows is executed as parsed, so never exempt it.
-    if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(token)) return false;
-    if (/^-[a-zA-Z]*n/.test(token)) noexec = true; // -n, -xn, -nx
+    if (NOEXEC_C_FLAG_RE.test(token)) return false;
+    if (NOEXEC_N_FLAG_RE.test(token)) noexec = true; // -n, -xn, -nx
   }
   return noexec;
 }

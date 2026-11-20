@@ -11,7 +11,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { JsonlStateStore, parseLastValidLine, createCachedStore, SKIP_MUTATE } from "../../../extensions/orchestrator/state-jsonl.js";
+import { JsonlStateStore, parseLastValidLine, createCachedStore, SKIP_MUTATE, truncateJsonlFile, withFileLock } from "../../../extensions/orchestrator/state-jsonl.js";
 
 interface TestState {
   counter: number;
@@ -547,5 +547,65 @@ describe("JsonlStateStore.mutate — lock contention (Qodo round 2, PR #916)", (
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("lazy lineCount & multi-line parseLastValidLine (#1227)", () => {
+  it("compacts at threshold even when write() is called without a prior read()", () => {
+    const dir = makeTempDir("jsonl-lazy-write-");
+    try {
+      const file = path.join(dir, "state.jsonl");
+      fs.writeFileSync(file, '{"n":1}\n{"n":2}\n');
+      const store = new JsonlStateStore<{ n: number }>(file, { compactThreshold: 3 });
+      store.write({ n: 3 });
+      const lines = fs.readFileSync(file, "utf-8").trim().split("\n");
+      assert.equal(lines.length, 1);
+      assert.deepEqual(JSON.parse(lines[0]), { n: 3 });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses pretty-printed JSON with nested object lines via whole-file fallback", () => {
+    const pretty = JSON.stringify({ items: [{ a: 1 }], count: 2 }, null, 2);
+    assert.deepEqual(parseLastValidLine<{ items: Array<{ a: number }>; count: number }>(pretty), {
+      items: [{ a: 1 }],
+      count: 2,
+    });
+  });
+
+  it("truncateJsonlFile keeps trailing lines when size exceeds threshold", () => {
+    const dir = makeTempDir("jsonl-truncate-");
+    try {
+      const file = path.join(dir, "log.jsonl");
+      fs.writeFileSync(file, '{"i":1}\n{"i":2}\n{"i":3}\n{"i":4}\n');
+      assert.equal(truncateJsonlFile(file, 10_000, 2), null);
+      assert.equal(truncateJsonlFile(file, 10, 2, 0o600), 2);
+      assert.equal(fs.readFileSync(file, "utf-8"), '{"i":3}\n{"i":4}\n');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("truncateJsonlFile invokes onError when target cannot be read or written", () => {
+    const errors: unknown[] = [];
+    const res = truncateJsonlFile(path.join(tmpDir, "missing.jsonl"), 1, 1, 0o600, (err) => errors.push(err));
+    assert.equal(res, null);
+    assert.equal(errors.length, 1);
+  });
+
+  it("withFileLock supports reentrant nesting before releasing the lock file", () => {
+    const file = path.join(tmpDir, "locked.jsonl");
+    const lockFile = file + ".wlock";
+    let lockDuringInner = false;
+    const ok = withFileLock(file, () => {
+      withFileLock(file, () => {
+        lockDuringInner = fs.existsSync(lockFile);
+      });
+      assert.equal(fs.existsSync(lockFile), true);
+    });
+    assert.equal(ok, true);
+    assert.equal(lockDuringInner, true);
+    assert.equal(fs.existsSync(lockFile), false);
   });
 });

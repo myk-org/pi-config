@@ -85,7 +85,8 @@ export async function openTasksOverlay(
 	deps: TasksUiDeps,
 	opts: { mine?: boolean } = {},
 ): Promise<void> {
-	log.debug("tasks_overlay_open", { tasks: deps.listTasks().length, mine: !!opts.mine });
+	let initialTasks: Task[] | null = deps.listTasks();
+	if (log.isDebugEnabled()) log.debug("tasks_overlay_open", { tasks: initialTasks.length, mine: !!opts.mine });
 	let mineOnly = opts.mine ?? false;
 	// `n`/`e` need the whole terminal for the input dialog, so the list closes and the loop below
 	// re-opens it — which also re-reads the store, so the new/edited row is never a stale snapshot.
@@ -96,7 +97,9 @@ export async function openTasksOverlay(
 	let taskById = new Map<string, Task>();
 
 	for (;;) {
-		if (deps.listTasks().length === 0) {
+		const currentTasks = initialTasks ?? deps.listTasks();
+		initialTasks = null;
+		if (currentTasks.length === 0) {
 			if (offeredFirstTask) return;
 			log.debug("tasks_overlay_empty_board", { offeredFirstTask });
 			offeredFirstTask = true;

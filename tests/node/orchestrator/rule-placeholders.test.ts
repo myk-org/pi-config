@@ -10,6 +10,7 @@ import {
 	parseConditionExpr,
 	evaluateConditionalBlocks,
 	parseRuleFrontmatter,
+	resolveAgentSystemPrompt,
 	rulePassesFrontmatterGate,
 	assembleRuleText,
 } from "../../../extensions/orchestrator/rule-placeholders.js";
@@ -667,5 +668,75 @@ describe("assembleRuleText", () => {
 		// No blank line between consecutive table rows
 		assert.doesNotMatch(routingOn, /\|\n\n\|/);
 		assert.doesNotMatch(routingOff, /\|\n\n\|/);
+	});
+});
+
+describe("resolveAgentSystemPrompt (#1255)", () => {
+	it("evaluates conditionals before substituting {{SETTINGS:...}} placeholders", () => {
+		const knownKeys = ["dco", "commit_trailer", "allow_push_to_protected_branches"];
+		const prompt = [
+			"{{SETTINGS:dco,commit_trailer}}",
+			"{{IF:dco}}USE_SIGNOFF{{/IF}}",
+			"{{IF:commit_trailer}}TRAILER={{SETTINGS:commit_trailer}}{{/IF}}",
+			"{{IFNOT:allow_push_to_protected_branches}}BLOCK_MAIN{{/IFNOT}}",
+		].join("\n");
+
+		const offResult = resolveAgentSystemPrompt(prompt, () => false, knownKeys);
+		assert.equal(offResult, '{"dco":false,"commit_trailer":false}\n\n\nBLOCK_MAIN');
+
+		const onResult = resolveAgentSystemPrompt(
+			prompt,
+			(k) => (k === "commit_trailer" ? "Assisted-by" : true),
+			knownKeys,
+		);
+		assert.match(onResult, /USE_SIGNOFF/);
+		assert.match(onResult, /TRAILER=\{"commit_trailer":"Assisted-by"\}/);
+		assert.doesNotMatch(onResult, /BLOCK_MAIN/);
+	});
+
+	it("strips inactive git-expert blocks under default settings while keeping enabled behavior intact", async () => {
+		const { readFileSync } = await import("node:fs");
+		const { join, dirname } = await import("node:path");
+		const { fileURLToPath } = await import("node:url");
+		const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+		const gitExpert = readFileSync(join(root, "agents/git-expert.md"), "utf-8");
+		const allKeys = Object.keys(JSON.parse(readFileSync(join(root, "settings-keys.json"), "utf-8")));
+
+		const defaults: Record<string, unknown> = {
+			review_loop_enforcement: false,
+			review_loop_max_cycles: 3,
+			dco: false,
+			commit_trailer: false,
+			use_worktrees: false,
+			allow_push_to_protected_branches: false,
+		};
+		const resolvedDefault = resolveAgentSystemPrompt(gitExpert, (k) => defaults[k] ?? false, allKeys);
+		assert.doesNotMatch(resolvedDefault, /\{\{IF|\{\{\/IF|\{\{SETTINGS/);
+		assert.doesNotMatch(resolvedDefault, /Review Loop Enforcement/);
+		assert.doesNotMatch(resolvedDefault, /--signoff/);
+		assert.doesNotMatch(resolvedDefault, /git worktree add/);
+		assert.match(resolvedDefault, /NEVER commit or push to main\/master branch/);
+		assert.match(resolvedDefault, /current_branch=\$\(git branch --show-current\)/);
+
+		const allEnabled: Record<string, unknown> = {
+			review_loop_enforcement: true,
+			review_loop_max_cycles: 5,
+			dco: true,
+			commit_trailer: "Assisted-by",
+			use_worktrees: true,
+			allow_push_to_protected_branches: true,
+		};
+		const resolvedEnabled = resolveAgentSystemPrompt(gitExpert, (k) => allEnabled[k] ?? false, allKeys);
+		assert.doesNotMatch(resolvedEnabled, /\{\{IF|\{\{\/IF|\{\{SETTINGS/);
+		assert.match(resolvedEnabled, /Review Loop Enforcement/);
+		assert.match(resolvedEnabled, /--signoff/);
+		assert.match(resolvedEnabled, /Assisted-by/);
+		assert.match(resolvedEnabled, /git worktree add/);
+		assert.match(resolvedEnabled, /commits and pushes to main\/master are allowed/);
+		assert.doesNotMatch(resolvedEnabled, /NEVER commit or push to main\/master branch/);
+		assert.ok(
+			resolvedDefault.length < resolvedEnabled.length * 0.65,
+			`expected default git-expert (${resolvedDefault.length} B) to be much smaller than all-enabled (${resolvedEnabled.length} B)`,
+		);
 	});
 });

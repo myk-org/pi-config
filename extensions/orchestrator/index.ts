@@ -68,14 +68,12 @@ export default function (pi: ExtensionAPI) {
   // command dispatch via RemoteSession.submit() eliminates the need for
   // this event-based handler forwarding.
   const originalRegisterCommand = pi.registerCommand.bind(pi);
-  let latestCommandCtx: any = null;
   const commandHandlerRegistry = new Map<string, Function>();
 
   pi.registerCommand = (name: string, options: any) => {
     if (options?.handler) {
       const origHandler = options.handler;
       options.handler = async (args: string, ctx: any) => {
-        latestCommandCtx = ctx;
         pi.events.emit("pidash:command-ctx", ctx);
         return origHandler(args, ctx);
       };

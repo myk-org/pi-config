@@ -23,7 +23,7 @@
 import { createLogger } from "../shared/logger.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { getProjectMemoryDir } from "./utils.js";
+import { escapeRegExp, getProjectMemoryDir } from "./utils.js";
 import {
   type MemoryCategory,
   type MemoryScope,
@@ -1428,7 +1428,7 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
               // the delimiters and match the bare value in the permission
               // text so both forms of the same status keep the clash.
               new RegExp(
-                `\\b${v.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+                `\\b${escapeRegExp(v.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, ""))}\\b`,
                 "i",
               ).test(perm),
           );

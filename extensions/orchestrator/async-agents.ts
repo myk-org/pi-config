@@ -43,17 +43,10 @@ import {
   syncAgentRunCount,
 } from "./sync-agent-runs.js";
 import { setSlot } from "./status-bar.js";
-import { getSetting } from "./project-settings.js";
-import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
+import { getSetting, getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
+import { resolveAgentSystemPrompt } from "./rule-placeholders.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { sendSystemNote } from "../shared/system-note.js";
-
-const SETTINGS_KEYS: Record<string, unknown> = JSON.parse(
-  fs.readFileSync(
-    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"),
-    "utf-8",
-  ),
-);
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -1315,14 +1308,17 @@ export function registerAsyncAgents(
     piArgs.push(...trailToolsArgs(agent.tools, cwd));
 
     if (agent.systemPrompt?.trim()) {
-      const promptPath = path.join(workerDir, "system-prompt.md");
-      const resolvedPrompt = substituteSettingsPlaceholders(
+      const resolvedPrompt = resolveAgentSystemPrompt(
         agent.systemPrompt,
-        (key) => getSetting(cwd, key as any),
+        (key) => getSettingDynamic(cwd, key),
         Object.keys(SETTINGS_KEYS),
+        (msg) => log.warn("agent conditional evaluation:", msg),
       );
-      fs.writeFileSync(promptPath, resolvedPrompt, { mode: 0o600 });
-      piArgs.push("--append-system-prompt", promptPath);
+      if (resolvedPrompt.trim()) {
+        const promptPath = path.join(workerDir, "system-prompt.md");
+        fs.writeFileSync(promptPath, resolvedPrompt, { mode: 0o600 });
+        piArgs.push("--append-system-prompt", promptPath);
+      }
     }
 
     piArgs.push(`Task: ${task}`);

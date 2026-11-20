@@ -326,13 +326,13 @@ export function registerComs(pi: ExtensionAPI) {
                 ]);
             }
             if (completed[0] === "kill") {
-                const names = attachCreatedBy(readRegistryRows()).filter(rowAlive).map((row) => row.name);
+                const names = readRegistryRows().filter(rowAlive).map((row) => row.name);
                 return mk([...names.map((n) => ({ v: n, l: n, d: "Stop this peer" })), { v: "all", l: "all", d: "Stop every running peer" }]);
             }
             if (completed[0] === "tell") {
                 // Same live-row enumeration as kill (a gone peer must not complete), extended with
                 // the --project scope for a name that exists in several projects.
-                const options = completeTellArgs(attachCreatedBy(readRegistryRows()).filter(rowAlive), completed);
+                const options = completeTellArgs(readRegistryRows().filter(rowAlive), completed);
                 return options ? mk(options) : null;
             }
             if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
@@ -356,12 +356,12 @@ export function registerComs(pi: ExtensionAPI) {
         pi.registerTool({
             name: "coms_start",
             label: "coms start",
-            description: "Make THIS session a coms peer (registers an identity, adds coms_send/coms_list). Do NOT confuse it with spawning: this starts no new process and no new model. Use it when you need to talk to peers or the user asks you to start coms.",
+            description: "Activate coms for THIS session (registers identity and enables coms_send/coms_list; starts no new process).",
             parameters: Type.Object({
-                cname: Type.Optional(Type.String({ description: "Peer name others will address (default: agent-<id suffix>)" })),
-                purpose: Type.Optional(Type.String({ description: "One line describing what you are working on" })),
-                project: Type.Optional(Type.String({ description: "Project namespace for discovery (default: derived from cwd)" })),
-                explicit: Type.Optional(Type.Boolean({ description: "Hide from auto-discovery; addressable only by exact name" })),
+                cname: Type.Optional(Type.String({ description: "Peer name (default: agent-<id suffix>)" })),
+                purpose: Type.Optional(Type.String({ description: "One-line work summary" })),
+                project: Type.Optional(Type.String({ description: "Project namespace (default: from cwd)" })),
+                explicit: Type.Optional(Type.Boolean({ description: "Hide from auto-discovery; addressable by exact name only" })),
             }),
             async execute(_id: string, params: any, _signal?: any, _onUpdate?: any, ctx?: any) {
                 const parts: string[] = [];
@@ -400,22 +400,15 @@ export function registerComs(pi: ExtensionAPI) {
     // Reads the coms registry directly, so it works whether or not coms is active here, and spans
     // every project: the same --project is deliberately shared across repos.
     // Honour a configured coms_dir: the registry may not live under ~/.pi/coms.
-    const comsRoot = (): string => {
-        let base = path.join(os.homedir(), ".pi", "coms");
+    const comsBaseDir = (): string => {
         try {
             const configured = getSetting(liveCtx?.cwd || process.cwd(), "coms_dir");
-            if (typeof configured === "string" && configured) base = configured;
+            if (typeof configured === "string" && configured) return configured;
         } catch { /* fall back to the default */ }
-        return path.join(base, "projects");
+        return path.join(os.homedir(), ".pi", "coms");
     };
-    const supervisedPeersDir = (): string => {
-        let base = path.join(os.homedir(), ".pi", "coms");
-        try {
-            const configured = getSetting(liveCtx?.cwd || process.cwd(), "coms_dir");
-            if (typeof configured === "string" && configured) base = configured;
-        } catch { /* default */ }
-        return path.join(base, "peers");
-    };
+    const comsRoot = (): string => path.join(comsBaseDir(), "projects");
+    const supervisedPeersDir = (): string => path.join(comsBaseDir(), "peers");
     /** #1083: the registry's `workload` is reported by the peer, so a malformed or absent value
      *  means `unknown` (null) rather than a zero count. */
     const readWorkload = (value: any): PeerWorkloadCounts | null => {
@@ -425,15 +418,18 @@ export function registerComs(pi: ExtensionAPI) {
     };
     const readRegistryRows = (): RegistryRow[] => {
         const rows: RegistryRow[] = [];
+        const root = comsRoot();
         let projects: string[] = [];
-        try { projects = readdirSync(comsRoot()); } catch { return rows; }
+        try { projects = readdirSync(root); } catch { return rows; }
         for (const project of projects) {
+            const agentsDir = path.join(root, project, "agents");
             let files: string[] = [];
-            try { files = readdirSync(path.join(comsRoot(), project, "agents")); } catch { continue; }
+            try { files = readdirSync(agentsDir); } catch { continue; }
             for (const file of files) {
                 if (!file.endsWith(".json")) continue;
+                const filePath = path.join(agentsDir, file);
                 try {
-                    const entry = JSON.parse(readFileSync(path.join(comsRoot(), project, "agents", file), "utf-8"));
+                    const entry = JSON.parse(readFileSync(filePath, "utf-8"));
                     if (!entry || typeof entry.name !== "string") continue;
                     rows.push({
                         project,
@@ -453,15 +449,14 @@ export function registerComs(pi: ExtensionAPI) {
                         workload: readWorkload(entry.workload),
                     });
                 } catch (error: any) {
-                    log.warn("coms_registry_entry_unreadable", { file: path.join(comsRoot(), project, "agents", file), error: String(error?.message ?? error) });
+                    log.warn("coms_registry_entry_unreadable", { file: filePath, error: String(error?.message ?? error) });
                 }
             }
         }
         return rows;
     };
     /** Provenance lives in the supervisor record; attach it so the list and its detail can show it. */
-    const attachCreatedBy = (rows: RegistryRow[]): RegistryRow[] => {
-        const records = readSupervisionRecords();
+    const attachCreatedBy = (rows: RegistryRow[], records = readSupervisionRecords()): RegistryRow[] => {
         for (const row of rows) {
             const record = pickSupervisionRecord(records, row);
             if (record && typeof (record as any).createdBy === "string") row.createdBy = (record as any).createdBy;
@@ -529,8 +524,8 @@ export function registerComs(pi: ExtensionAPI) {
     };
 
     const killPeers = (params: { name?: string; project?: string; all?: boolean }): { text: string; killed: number } => {
-        const rows = attachCreatedBy(readRegistryRows());
         const records = readSupervisionRecords();
+        const rows = attachCreatedBy(readRegistryRows(), records);
         const plan = planPeerKills({
             rows,
             supervisedKeys: supervisedPeerKeys(records),
@@ -569,10 +564,10 @@ export function registerComs(pi: ExtensionAPI) {
         pi.registerTool({
             name: "coms_peers",
             label: "coms peers",
-            description: "List pi peers from the coms registry with name, project, busy/idle, queue depth, context usage and pid. Defaults to THIS session's project: a peer in another project cannot be addressed from here, so it is noise. Pass project:\"*\" for every project on the machine. Works even when coms is not active here. Live STATE only: a peer is a headless process, so watching its screen needs an interactive attach (rex), not this list.",
+            description: "List live peers from the registry (name, project, busy/idle, queue, context, pid). Defaults to this project; pass project:\"*\" for all. Works when coms is inactive.",
             parameters: Type.Object({
-                project: Type.Optional(Type.String({ description: "Project namespace, or \"*\" for all projects (default: this session's project)" })),
-                name: Type.Optional(Type.String({ description: "Only this peer name" })),
+                project: Type.Optional(Type.String({ description: "Project namespace, or \"*\" for all (default: this project)" })),
+                name: Type.Optional(Type.String({ description: "Filter to this peer name" })),
             }),
             async execute(_id: string, params: any) {
                 const scope = resolvePeerScope(params?.project, ownProject());
@@ -583,12 +578,12 @@ export function registerComs(pi: ExtensionAPI) {
         pi.registerTool({
             name: "coms_peer_spawn",
             label: "coms peer spawn",
-            description: "Start another agent as its own pi peer: a supervised `pi --coms` process with its own session, addressable by name from coms_send. THIS is how you create a peer — you do not need a human to type anything. The peer boots in ~20-30s before it appears in coms_peers; it has no lifetime of its own, so stop it with coms_peer_kill when done.",
+            description: "Spawn a supervised `pi --coms` peer process (registers in ~20-30s). Stop it with coms_peer_kill when done.",
             parameters: Type.Object({
-                cname: Type.String({ description: "Peer name, e.g. `reviewer` or `builder-2` (letters, digits, dot, dash, underscore)" }),
-                purpose: Type.Optional(Type.String({ description: "One line describing what this peer is for" })),
-                project: Type.Optional(Type.String({ description: "Project namespace (default: this session's project)" })),
-                cwd: Type.Optional(Type.String({ description: "Working directory (default: this session's cwd)" })),
+                cname: Type.String({ description: "Peer name (letters, digits, dot, dash, underscore)" }),
+                purpose: Type.Optional(Type.String({ description: "One-line peer purpose" })),
+                project: Type.Optional(Type.String({ description: "Project namespace (default: this project)" })),
+                cwd: Type.Optional(Type.String({ description: "Working directory (default: this cwd)" })),
             }),
             async execute(_id: string, params: any) {
                 // The supervisor ships inside the package (package.json `files`). Resolve it next to
@@ -641,11 +636,11 @@ export function registerComs(pi: ExtensionAPI) {
         pi.registerTool({
             name: "coms_peer_kill",
             label: "coms peer kill",
-            description: "Stop a running peer by name (add project when the name exists in several projects), or every peer with all:true. Kills the supervisor first so the peer, its stdin and its record are cleaned up together. Reports ambiguity instead of guessing.",
+            description: "Stop a running supervised peer by name (pass project if ambiguous), or all:true for all peers in scope.",
             parameters: Type.Object({
                 name: Type.Optional(Type.String({ description: "Peer name to stop" })),
-                project: Type.Optional(Type.String({ description: "Project namespace, required when the name is ambiguous" })),
-                all: Type.Optional(Type.Boolean({ description: "Stop every running peer on this machine" })),
+                project: Type.Optional(Type.String({ description: "Project namespace when name is ambiguous" })),
+                all: Type.Optional(Type.Boolean({ description: "Stop all running peers in scope" })),
             }),
             async execute(_id: string, params: any) {
                 const scope = resolveKillScope({ name: params?.name, project: params?.project, all: params?.all }, ownProject(), log);
