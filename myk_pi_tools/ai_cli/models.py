@@ -29,5 +29,5 @@ def list_models(provider: str) -> int:
         return 0
 
     click.echo(f"[ai-cli] Found {len(models)} model(s)", err=True)
-    print(json.dumps(models, indent=2))
+    print(json.dumps(models, separators=(",", ":")))
     return 0

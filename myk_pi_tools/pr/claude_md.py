@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from myk_pi_tools.pr.common import PRInfo
@@ -160,12 +161,11 @@ def _collect_local(paths: list[str]) -> list[str]:
 
 def _collect_remote(owner: str, repo: str, paths: list[str]) -> list[str]:
     """Fetch file contents from GitHub API for paths that exist."""
-    found = []
-    for p in paths:
-        content = fetch_from_github(owner, repo, p)
-        if content:
-            found.append(content)
-    return found
+    if not paths:
+        return []
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(fetch_from_github, owner, repo, p) for p in paths]
+        return [content for future in futures if (content := future.result())]
 
 
 def run(args: list[str]) -> None:

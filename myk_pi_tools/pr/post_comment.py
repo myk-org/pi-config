@@ -369,7 +369,7 @@ def run(owner_repo: str, pr_number: str, commit_sha: str, json_file: str) -> Non
     comments = load_comments(json_file)
 
     if not comments:
-        print(json.dumps({"status": "success", "comment_count": 0, "posted": [], "failed": []}))
+        print(json.dumps({"status": "success", "comment_count": 0, "posted": [], "failed": []}, separators=(",", ":")))
         return
 
     print(f"Posting review with {len(comments)} comment(s) on PR #{pr_number}...", file=sys.stderr)
@@ -397,7 +397,7 @@ def run(owner_repo: str, pr_number: str, commit_sha: str, json_file: str) -> Non
             file=sys.stderr,
         )
 
-    print(json.dumps(output, indent=2))
+    print(json.dumps(output, separators=(",", ":")))
 
     if result.status == "failed":
         sys.exit(1)

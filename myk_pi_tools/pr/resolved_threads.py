@@ -164,5 +164,5 @@ def run(repo_dir: str, json_path: str) -> int:
         print(f"Error: not a git repository: {repo_dir}", file=sys.stderr)
         return 1
 
-    print(json.dumps([check_thread(repo, t) for t in threads if isinstance(t, dict)], indent=2))
+    print(json.dumps([check_thread(repo, t) for t in threads if isinstance(t, dict)], separators=(",", ":")))
     return 0

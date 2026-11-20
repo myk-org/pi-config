@@ -111,7 +111,7 @@ def run(
         }
         if session_id:
             error_out["session_id"] = session_id
-        print(json.dumps(error_out, indent=2))
+        print(json.dumps(error_out, separators=(",", ":")))
         return 1
 
     output: dict[str, object] = {
@@ -142,5 +142,5 @@ def run(
         if session_id:
             output["session_id"] = session_id
 
-    print(json.dumps(output, indent=2))
+    print(json.dumps(output, separators=(",", ":")))
     return 0 if result.success else 1

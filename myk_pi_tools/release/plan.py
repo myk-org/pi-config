@@ -541,4 +541,4 @@ def run(
 
 def click_echo_json(payload: dict[str, object]) -> None:
     """Print JSON without importing click here (CLI layer owns click)."""
-    print(json.dumps(payload, indent=2))
+    print(json.dumps(payload, separators=(",", ":")))

@@ -38,6 +38,7 @@ from myk_pi_tools.reviews.store import (
     insert_review,
     run_title_backfill_once,
 )
+from myk_pi_tools.utils import merge_paginated_json
 
 log = create_logger(__name__)
 
@@ -119,6 +120,54 @@ def _inline_location(owner: str, repo: str, inline_comment_id: Any) -> tuple[str
         log.debug(f"Inline location lookup failed for comment {rest_id}: {e}")
     _INLINE_LOCATION_CACHE[rest_id] = (path, line)
     return (path, line)
+
+
+def _prefetch_inline_locations(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    uncached_inline_ids: list[Any],
+) -> None:
+    """Batch-fetch PR review comment locations via a single paginated API call.
+
+    Pre-populates _INLINE_LOCATION_CACHE for all returned comments, then falls
+    back to per-ID _inline_location() only for cache misses. Fail-soft on gh
+    errors or missing binary.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{owner}/{repo}/pulls/{pr_number}/comments",
+                "--paginate",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
+        for item in merge_paginated_json(result.stdout):
+            if not isinstance(item, dict):
+                continue
+            cid = item.get("id")
+            if cid is None:
+                continue
+            cid_str = str(cid)
+            if not cid_str.isdigit():
+                continue
+            raw_path = item.get("path")
+            raw_line = item.get("line") or item.get("original_line")
+            path = raw_path if isinstance(raw_path, str) else None
+            line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) else None
+            _INLINE_LOCATION_CACHE[cid_str] = (path, line)
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as e:
+        log.warning(f"Batch inline location prefetch failed for {owner}/{repo}#{pr_number}: {e}")
+
+    for inline_id in uncached_inline_ids:
+        rest_id = _inline_rest_id(inline_id)
+        if rest_id is not None and rest_id not in _INLINE_LOCATION_CACHE:
+            _inline_location(owner, repo, inline_id)
 
 
 def _attribution(finding: dict[str, Any]) -> tuple[str, str]:
@@ -286,15 +335,29 @@ def store_session(json_path: Path) -> None:
         log.warning(f"existing-session read pass failed for {db_path}: {e} — proceeding without idempotency check")
 
     # Pre-warm the inline-location cache BEFORE the write transaction opens
-    # (Qodo c47d2f7c): the gh api lookups (30 s timeout each) must not run
-    # while the SQLite write lock is held — a concurrent reviews
-    # store/address could hit "database is locked" on a large first import.
-    # Only not-yet-stored findings are looked up; the in-transaction
-    # _to_comment_row calls then hit the cache.
+    # (Qodo c47d2f7c): the gh api lookups must not run while the SQLite write
+    # lock is held — a concurrent reviews store/address could hit "database is
+    # locked" on a large first import. Only not-yet-stored findings are looked
+    # up; when >= 2 uncached rest_ids exist, batch-fetch all PR comments once.
+    uncached_inline_ids: list[Any] = []
+    seen_uncached_rest_ids: set[str] = set()
     for group_findings in groups.values():
         for finding in group_findings:
             if finding.get("id") not in existing_session_ids:
-                _inline_location(owner, repo, finding.get("inline_comment_id"))
+                inline_id = finding.get("inline_comment_id")
+                rest_id = _inline_rest_id(inline_id)
+                if (
+                    rest_id is not None
+                    and rest_id not in _INLINE_LOCATION_CACHE
+                    and rest_id not in seen_uncached_rest_ids
+                ):
+                    seen_uncached_rest_ids.add(rest_id)
+                    uncached_inline_ids.append(inline_id)
+
+    if len(uncached_inline_ids) >= 2:
+        _prefetch_inline_locations(owner, repo, pr_number, uncached_inline_ids)
+    elif uncached_inline_ids:
+        _inline_location(owner, repo, uncached_inline_ids[0])
 
     conn = sqlite3.connect(str(db_path))
     try:

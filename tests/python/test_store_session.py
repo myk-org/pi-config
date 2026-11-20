@@ -639,10 +639,18 @@ def test_inline_lookups_finish_before_the_database_opens(project_root: Path, mon
 
     events: list[str] = []
 
-    def fake_run(*_args: object, **_kwargs: object) -> object:
+    def fake_run(cmd: list[str], *_args: object, **_kwargs: object) -> object:
         events.append("gh")
         import types
 
+        if "--paginate" in cmd:
+            return types.SimpleNamespace(
+                stdout=json.dumps([
+                    {"id": 1111111, "path": "src/x.py", "line": 7},
+                    {"id": 2222222, "path": "src/x.py", "line": 7},
+                ]),
+                returncode=0,
+            )
         return types.SimpleNamespace(stdout='["src/x.py", 7]', returncode=0)
 
     real_connect = sqlite3.connect
@@ -669,8 +677,8 @@ def test_inline_lookups_finish_before_the_database_opens(project_root: Path, mon
     json_path = _write_session(project_root, _session_json(findings))
     store_session.run(str(json_path))
 
-    assert events.count("gh") == 2, "one gh lookup per distinct inline comment"
-    # events: ["db" (lock-free read pass), "gh", "gh", "db" (write txn), ...]
+    assert events.count("gh") == 1, "single batch --paginate call pre-warms both findings"
+    # events: ["db" (lock-free read pass), "gh", "db" (write txn), ...]
     assert events[0] == "db", "the read pass opens first (no write lock)"
     write_db = events.index("db", 1)
     assert all(i < write_db for i, e in enumerate(events) if e == "gh"), (
