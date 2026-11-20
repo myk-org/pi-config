@@ -13,238 +13,59 @@ $ARGUMENTS
 
 Unified handler that processes ALL review sources from the current branch's GitHub PR.
 
-## Multi-PR Handling (MANDATORY)
-
-When asked to handle reviews for **multiple PRs**, NEVER switch branches in the main worktree.
-Use `git worktree` to create isolated directories for each PR:
-
-```bash
-# Create a worktree per PR (inside the repo)
-git worktree add .worktrees/pr-42 origin/fix/issue-42
-git worktree add .worktrees/pr-43 origin/feat/issue-43
-
-# Run review-handler in each worktree directory
-# When done, clean up all worktrees at once
-git worktree remove .worktrees/pr-42
-git worktree remove .worktrees/pr-43
-```
-
-All worktrees live under `.worktrees/` in the repo.
-`.worktrees/` is in the global gitignore (added by entrypoint.sh).
-Branch switching corrupts parallel agent work — other agents running in the
-main worktree will see the wrong branch.
-
-## Prerequisites Check (MANDATORY)
-
-### Step 0: Check uv
-
-```bash
-uv --version
-```
-
-If not found, install from <https://docs.astral.sh/uv/getting-started/installation/>
-
-## Usage
-
-- `/review-handler` - Process reviews from current PR
-- `/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456` - With specific review URL
-- `/review-handler --autorabbit` - Auto-fix CodeRabbit comments in a loop
-- `/review-handler --autoqodo` - Auto-fix Qodo comments in a loop
-- `/review-handler --autorabbit --autoqodo` - Auto-fix both CodeRabbit and Qodo comments
+- **Multi-PR work:** NEVER switch branches in the main worktree — create an isolated worktree per PR under `.worktrees/` (`git worktree add .worktrees/pr-42
+  origin/fix/issue-42`; `git worktree remove` when done).
+- **Check `uv`:** `uv --version` (install from <https://docs.astral.sh/uv/getting-started/installation/> if missing).
+- **Usage:** `/review-handler` | `/review-handler <review-url>` | `--autorabbit` | `--autoqodo` | `--autorabbit --autoqodo`
 
 ## Workflow
 
-**`PROJECT_TMP_DIR`** is the project-scoped temp directory from `getProjectTmpDir(cwd)` — all temp files go here.
+**`PROJECT_TMP_DIR`** is `getProjectTmpDir(cwd)` — all temp files go there.
 
-> **CRITICAL — BEFORE ANY CLI COMMAND:**
-> `--autorabbit` and `--autoqodo` are **command-level flags**, NOT CLI arguments.
-> **NEVER** pass `--autorabbit` or `--autoqodo` to `myk-pi-tools`. The CLI will reject it.
-> You MUST strip them from the raw arguments first. See Phase 0 below.
+> 🚨 **`--autorabbit` and `--autoqodo` are command-level flags, NEVER CLI args.** Strip them from raw arguments first — `myk-pi-tools` rejects them.
 
-### Phase 0: Parse Arguments (MANDATORY — DO NOT SKIP)
+### Phase 0: Parse Arguments (MANDATORY)
 
-Read the **Raw Arguments** section above. Parse as follows:
-
-1. Check if `--autorabbit` appears in the raw arguments
-   - If YES: set autorabbit mode = ON, remove `--autorabbit` from the text
-   - If NO: autorabbit mode = OFF
-2. Check if `--autoqodo` appears in the (remaining) raw arguments
-   - If YES: set autoqodo mode = ON, remove `--autoqodo` from the text
-   - If NO: autoqodo mode = OFF
-3. The remaining text is the cleaned arguments — pass these through to the CLI
-4. `--autorabbit` and `--autoqodo` are **command-level flags** — NEVER pass them to the CLI
-5. Both flags can be active simultaneously
-
-**Example:** Raw arguments = `--autorabbit --autoqodo`
-
-- autorabbit mode = ON, autoqodo mode = ON
-- cleaned arguments = (empty)
-- CLI call = `uvx myk-pi-tools@latest reviews fetch` (NO flags)
-
-### Auto Mode Fast Path (MANDATORY)
-
-**If autorabbit mode OR autoqodo mode is ON (set in Phase 0), skip Phases 1-8 entirely
-and jump directly to Phase 9 (Auto Polling Loop).** The polling
-loop handles fetching, processing, and posting internally. There is no
-initial fetch/review cycle — the first fetch happens inside the poll.
+1. Check raw arguments for `--autorabbit` (set `autorabbit = ON/OFF`, strip flag) and `--autoqodo` (set `autoqodo = ON/OFF`, strip flag). Both can be ON.
+2. Remaining text = `<cleaned_arguments>`.
+3. **Auto Mode Fast Path (MANDATORY):** If `autorabbit` OR `autoqodo` is ON, **skip Phases 1–8 and jump directly to Phase 9** (the polling loop handles fetching,
+   processing, and posting internally).
 
 ### Phase 1: Fetch Reviews
 
-**Skip this phase if autorabbit mode OR autoqodo mode is ON — see Auto Mode Fast Path above.**
-
-The `reviews fetch` command auto-detects the PR from the current branch.
-
-**Use the cleaned arguments from Phase 0 — NEVER pass `--autorabbit` or `--autoqodo` to the CLI.**
-
-If a specific review URL is in the cleaned arguments:
+Skip if `autorabbit` or `autoqodo` is ON.
 
 ```bash
-uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR} <cleaned_arguments>
+uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR} [<cleaned_arguments>]
 ```
 
-Otherwise (auto-detect from current branch):
-
-```bash
-uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR}
-```
-
-Returns JSON with:
-
-- `metadata`: owner, repo, pr_number, json_path
-- `human`: Human review threads
-- `qodo`: Qodo AI review threads
-- `coderabbit`: CodeRabbit AI review threads
+Returns JSON with `metadata` (`owner`, `repo`, `pr_number`, `json_path`), `human`, `qodo`, and `coderabbit`.
 
 ### Phase 2: User Decision Collection
 
-> **CRITICAL — AUTO MODE CHECK (do this FIRST, before anything else):**
->
-> If autorabbit mode is ON:
->
-> 1. **CodeRabbit comments → ALL auto-approved.** Set every CodeRabbit item to "yes" automatically.
->
-> If autoqodo mode is ON:
->
-> **Qodo sticky findings with `is_auto_skipped=true` are auto-skipped.** When a finding
-> has `already_replied=true` and Qodo did not push back (no `qodo_response`), it is
-> auto-skipped — Qodo's silence is treated as implicit acceptance. These findings are
-> presented in the table as auto-skipped but are NOT actionable.
-> Findings where Qodo DID push back (`qodo_response` exists) remain actionable and
-> MUST be re-fixed with a different approach.
->
-> 🚨 **MANDATORY: Read the FULL Qodo sticky JSON data before acting.**
-> Qodo sticky findings contain critical fields beyond the title:
->
-> 🚨 **ALL fields below are MANDATORY — read EVERY field before acting on a finding.**
-> Skipping any field is a violation. Each field provides critical context.
->
-> - `code_diff` — the exact code the finding references. THIS is what you must fix.
-> - `evidence` — Qodo's explanation of why this is a problem. Read to understand the root cause.
-> - `evidence_refs` — links to the specific file/line ranges involved. Check EVERY entry.
-> - `agent_prompt` — Qodo's suggested fix approach. Follow it unless you have a better solution.
-> - `qodo_response` — Qodo's reply to our previous fix. **Read this FIRST when present.**
->   Tells you whether Qodo accepted the fix or pushed back.
->   **If Qodo pushed back, your previous fix was insufficient — make a DIFFERENT fix.**
->   Do NOT repeat the same reply or approach.
-> - `previous_reply` — What we previously replied to this finding. Shows the full conversation:
->   we said `previous_reply` → Qodo responded `qodo_response`. Use both to understand context
->   and avoid repeating the same fix that Qodo already rejected.
->
-> **NEVER match findings by title alone.** Two findings with the same title
-> (e.g., "Deploy ownership conflict") can reference completely different code.
-> Always read `code_diff` and `evidence_refs` to understand what SPECIFIC code
-> the finding is about before deciding it was "already addressed."
->
-> 1. **Qodo comments → auto-approved based on finding type:**
->    - `qodo_bug` → **MUST address.** Fix the code. No skip allowed.
->    - `qodo_rule_violation` → **MUST address.** Fix the code. No skip allowed.
->    - `qodo_requirement_gap` → **MUST address.** Either fix the code OR update the issue requirements to document the design decision. No skip allowed.
->    - `qodo_ux_issue` → **MUST address.** Either fix the UX concern OR update the issue requirements to document the design decision. No skip allowed.
->    - `qodo_cross_repo` → **MUST address.** Fix the code to avoid cross-repo breakage. No skip allowed.
->    - `qodo_finding` (other) → **MUST address.** Either fix the code OR update the issue requirements. No skip allowed.
->
->    **No finding type is optional. Every finding gets a code fix or an issue update.**
->    **"Not a realistic issue", "by design", or "not applicable" are NOT valid skip reasons.**
->
->    🚨 **STRICT ENFORCEMENT — EVERY QODO FINDING MUST RESULT IN ONE OF:**
->    1. **Code fix** — change the code to address the finding. Commit and push.
->    2. **Issue spec update** — if the finding is about a spec mismatch (code does X, spec says Y),
->       update the GitHub issue to match the actual design. Use `gh issue edit` to fix the spec.
->       Then reply to Qodo referencing the updated spec.
->
->    **Bare assertions without proof are FORBIDDEN:**
->    - ❌ "Already addressed" (without citing commit SHA or diff link)
->    - ❌ "By design" (without citing updated issue spec)
->    - ❌ "Not applicable" (without explaining why AND updating spec if needed)
->  
->    **WITH proof, these are allowed:**
->    - ✅ "Already addressed in commit abc123 — see diff" (links to specific change)
->    - ✅ "By design per updated issue #N spec" (issue was actually updated)
->  
->    **Posting the same reply multiple times without a NEW code fix or spec update is a HARD VIOLATION.**
->
->    **If a Qodo sticky comment keeps re-appearing after your reply:**
->    - The spec does not match the code — FIX THE SPEC (gh issue edit)
->    - OR the code does not match the spec — FIX THE CODE
->    - NEVER post the same reply again. That means you haven't actually addressed it.
->
->    🚨 **STICKY FINDINGS WITH `qodo_response` ARE ALWAYS ACTIONABLE.**
->    If a sticky finding has `qodo_response` (Qodo pushed back), it MUST be re-fixed
->    with a different approach. `previous_reply` shows what you said before, `qodo_response`
->    shows Qodo's pushback — use both to make a BETTER fix.
->    Repeating the same reply or approach is a HARD VIOLATION.
->
->    **STICKY FINDINGS WITHOUT `qodo_response` are auto-skipped by the code.**
->    If `already_replied=true` and no `qodo_response`, the finding is `is_auto_skipped=true`.
->    Qodo's silence = implicit acceptance. Do NOT re-process these.
->
->    **Qodo reply detection (consolidated comment responses):**
->    When we post consolidated PR comments mentioning `@qodo-code-review`, Qodo may
->    reply in a new issue comment quoting our response. These replies are now detected
->    automatically:
->    - Sticky findings are enriched with a `qodo_response` field containing Qodo's reply text
->    - If Qodo's reply indicates **pushback** (e.g., "still present", "not addressed",
->      "disagree"), the finding is treated as **actionable** — `already_replied` is NOT
->      a reason to skip. The finding MUST be re-fixed.
->    - This means the autoqodo polling loop will re-surface findings where Qodo disagrees
->      with our fix, requiring re-evaluation and a new code fix or spec update
->    - Pushback keywords: "still present", "not fixed", "disagree", "issue remains", etc.
->
->    🚨 **When processing a finding with `qodo_response`:**
->    1. Read `qodo_response` FIRST — understand what Qodo said about your previous fix
->    2. If Qodo accepted ("looks good", "addressed", "thanks") — the finding may still
->       be unresolved in the sticky (Qodo doesn't always auto-resolve). Reply referencing
->       the acceptance.
->    3. If Qodo pushed back — your previous fix was wrong or incomplete. Make a NEW,
->       DIFFERENT fix that addresses Qodo's specific concern. Do NOT repeat the same approach.
->
-> Combined behavior:
->
-> 1. **Human comments** → ALWAYS follow the normal decision flow (never auto-approved).
-> 1. **If ALL comments are from auto-approved sources** (e.g., only CodeRabbit when autorabbit is on,
->    or only Qodo when autoqodo is on, or both when both flags are on) →
->    skip this entire phase and go directly to Phase 3.
->
-> **Auto-approved sources are NEVER presented to the user for decision.**
+**Auto mode check (run FIRST):**
 
-**Normal mode (no `--autorabbit` / `--autoqodo`):** Follow the full decision flow below.
+- **`autorabbit` ON:** all CodeRabbit items are auto-approved (`yes`).
+- **`autoqodo` ON:**
+  1. **Auto-skipped stickies:** `is_auto_skipped=true` (`already_replied=true` and no `qodo_response`) means implicit acceptance — do NOT re-process.
+  2. **Read ALL 6 Qodo fields before acting** (`code_diff`, `evidence`, `evidence_refs`, `agent_prompt`, `qodo_response`, `previous_reply`) — **NEVER match/dismiss by
+     title alone**.
+  3. **Handle `qodo_response` FIRST when present:** if Qodo accepted ("looks good", "addressed", "thanks"), reply referencing acceptance; if Qodo pushed back ("still
+     present", "not fixed", "disagree", "issue remains"), your prior fix failed — make a **NEW, DIFFERENT fix** (repeating the same reply/approach is a HARD VIOLATION).
+  4. **Every actionable Qodo finding (`qodo_bug`, `qodo_rule_violation`, `qodo_requirement_gap`, `qodo_ux_issue`, `qodo_cross_repo`, `qodo_finding`) is mandatory** — "not
+     realistic", "by design", or "not applicable" are NOT valid skip reasons. Each MUST produce:
+     - **Code fix** (commit & push), OR
+     - **Issue spec update** (`gh issue edit` to match design, then reply citing updated issue `#N` spec — only for spec mismatches).
+  5. **No bare assertions without proof:** ❌ "Already addressed" / "By design" / "Not applicable" without citing a commit SHA/diff link or updated issue `#N` spec. If a
+     sticky re-appears after your reply, fix the code or fix the spec — NEVER repeat the same reply.
+- **Combined behavior:** `human` comments ALWAYS use the interactive flow below; if ALL items are from auto-approved sources, skip the rest of Phase 2 and go straight to
+  Phase 3 (auto-approved items are NEVER presented for user decision).
 
-**MANDATORY: Present ALL fetched items to the user for decision.
-Never silently hide or omit items — including auto-skipped ones.**
+**Normal mode (interactive):**
 
-Even if an item appears to be a repeat from a previous round, was already addressed,
-or seems trivial — present it to the user. The user decides what to address or skip,
-not the AI.
+🚨 **HARD RULE: Present ALL fetched items (pending AND auto-skipped) — never hide repeats or auto-skipped items.**
 
-**Presentation format (MANDATORY — always use this exact structure):**
-
-**HARD RULE: The table MUST include ALL items — pending AND auto-skipped.
-No exceptions. Never present a partial table. If you omit auto-skipped items,
-the output is INVALID and must be redone.**
-
-Present one table per source (human, qodo, coderabbit). Skip sources with zero items.
-Within each table, sort by priority (HIGH → MEDIUM → LOW).
-Use a **global counter** for the `#` column across all tables (not per-table).
+Print one table per non-empty source (`human`, `qodo`, `coderabbit`), sorted `HIGH → MEDIUM → LOW`, with a global `#` counter across tables:
 
 ```text
 ## Review Items: {source} ({total} total, {auto_skipped} auto-skipped)
@@ -252,112 +73,33 @@ Use a **global counter** for the `#` column across all tables (not per-table).
 | # | Priority | File | Line | Summary | Status |
 |---|----------|------|------|---------|--------|
 | 1 | HIGH | src/storage.py | 231 | Backfill destroys historical chronology | Pending |
-| 2 | MEDIUM | src/html_report.py | 1141 | Add/delete leaves badges stale | Pending |
-| 3 | LOW | src/utils.py | 42 | Unused import | Auto-skipped (skipped): "style only" |
-| 4 | LOW | src/config.py | 15 | Missing validation | Auto-skipped (addressed): "added in prev PR" |
-
-(Numbering continues across tables — e.g., if this table ends at 4, the next table starts at 5.)
+| 2 | LOW | src/utils.py | 42 | Unused import | Auto-skipped (skipped): "style only" |
 ```
 
-**Table rules:**
-
-- **Always a table** — never use bullets, prose, or any other format
-- **Summary column:** 1-2 lines summarizing the comment.
-  Include "Also applies to" references if present
-- **Status column values:**
-  - `Pending` — awaiting user decision
-  - `Auto-skipped ({original_status}): "{reason}"` — showing the original status (addressed/skipped/not_addressed) and the stored reason
-- **Every item gets a row** — including auto-skipped items so the user can override
-
-**After presenting all tables, show the response options:**
-
-```text
-Respond with:
-- 'yes' / 'no' (per item number — if 'no', ask for a reason)
-- 'all' — address all remaining pending items
-- 'skip human/qodo/coderabbit' — skip remaining from that source (ask for a reason)
-- 'skip ai' — skip all AI sources (qodo + coderabbit) (ask for a reason)
-```
-
-**User input method (MANDATORY):**
-
-Always use the `AskUserQuestion` tool to collect user decisions — never rely on
-free-text conversation. Present the tables first as regular output, then call
-`AskUserQuestion` with a concise prompt summarizing the available options.
-
-Example `AskUserQuestion` prompt:
-
-```text
-Enter your decisions (e.g., '1 yes, 2 no: already addressed, 3 yes, skip coderabbit: duplicates human review'):
-```
-
-The handler collects ALL decisions in a single `AskUserQuestion` call.
-If the user says 'no' or 'skip' without a reason, follow up with another
-`AskUserQuestion` asking for the reason before proceeding.
+- Always use a table (never bullets/prose); Summary = 1–2 lines (+ `"Also applies to"` refs); Status = `Pending` or `Auto-skipped ({original_status}): "{reason}"`.
+- After the tables, show options (`yes`/`no` per number + reason on `no`, `all`, `skip human/qodo/coderabbit` + reason, `skip ai` + reason), then collect ALL decisions in
+  a single `AskUserQuestion` call (e.g., `'1 yes, 2 no: already addressed, skip coderabbit: duplicates human'`). Follow up with `AskUserQuestion` if any `no`/`skip` lacks
+  a reason.
 
 ### Phase 3: Execute Approved Tasks
 
-For each approved comment, delegate to appropriate specialist agent.
-When delegating, pass the FULL original review thread to the agent — including the complete comment body,
-all replies, every code suggestion/diff, and all referenced locations. Do NOT summarize or compress the thread.
+Delegate each approved comment to the appropriate specialist, passing the **FULL original review thread** (body, all replies, code suggestions/diffs, referenced locations
+— never summarize/compress):
 
-**When fixing review comments (MANDATORY):**
+- **Qodo findings:** read `code_diff`, `evidence`, `evidence_refs`, `agent_prompt`, `qodo_response` (read FIRST), `previous_reply`. If `code_diff` is empty, locate code
+  via every `evidence_refs` entry, `path`/`line`/`end_line`, or snippet from `evidence`.
+- Implement provided code suggestions/diffs **exactly** (do not simplify or half-fix). **NO SKIP WITHOUT USER APPROVAL** (if you disagree, ask user first).
+- Read the ENTIRE thread (top-level + replies) and fix ALL parts, secondary instructions, and `"Also applies to: X-Y"` multi-location references.
+- **Post-fix check:** re-read original thread in full and verify every diff, file/line range, `"Also applies to"`, and reply clarification was addressed.
 
-- **For Qodo findings:** Before fixing or deciding a finding is "already addressed",
-  read the `code_diff`, `evidence`, `evidence_refs`, `agent_prompt`, `qodo_response`, and
-  `previous_reply` fields from the JSON.
-  🚨 **If `qodo_response` exists, read it FIRST** — it contains Qodo's feedback on your previous fix.
-  If Qodo pushed back, your previous approach failed — make a DIFFERENT fix.
-  `previous_reply` shows what you said before so you don't repeat it.
-  These fields — not the title — define what the finding is about. Never dismiss by title alone.
-  If `code_diff` is empty, use `evidence_refs` (check **every** entry, not just the first),
-  `path`/`line`/`end_line` (if present — these can be empty/null), and the finding body to locate the code.
-  If `path`/`line` are missing, derive locations from `evidence_refs` alone or search for the code snippet from `evidence`.
-- If the reviewer provides a specific code suggestion or diff, implement IT exactly — not your own interpretation
-- Do NOT simplify, minimize, or "half-fix" the suggestion
-- After fixing, verify your code matches what the reviewer asked for, not just "addresses the concern"
-- **NO SKIP WITHOUT USER APPROVAL:** If you disagree with the suggestion, ASK THE USER before skipping, partially fixing, or applying a minimum-viable fix
-- **Read the ENTIRE review thread before acting.** Review threads contain a top-level comment plus replies.
-  Comments often contain multiple parts: a main issue description, code suggestions, AND additional references
-  like "Also applies to: 663-668" or mentions of other files/lines. Replies may contain clarifications,
-  additional locations, or refined suggestions. You MUST address ALL parts from the comment AND replies,
-  not just the first paragraph.
-- **Multi-location fixes are MANDATORY.** When a comment says "Also applies to: X-Y" or references other lines/files,
-  apply the same logical fix, adapted as needed to each location. These are not optional — they are part of the
-  comment's requirements.
-- **Post-fix verification checklist.** After fixing a comment, re-read the ORIGINAL review thread in full and verify:
-  1. Every code suggestion or diff was implemented
-  2. Every referenced file and line range was addressed
-  3. Every "Also applies to" location was fixed
-  4. No secondary instructions or reply clarifications were skipped
-  If any part was missed, fix it before moving to the next comment.
+### Phase 3b: Finding Verification (MANDATORY)
 
-### Phase 3b: Finding Verification (MANDATORY — DO NOT SKIP)
+After all fixes, verify EVERY finding against the actual files:
 
-**After ALL fixes are applied, verify EVERY finding from ALL sources (human, Qodo, CodeRabbit):**
-
-1. **Read each finding's FULL description** — not just the title. Two findings with similar titles can reference completely different code.
-2. **Read the code block** in the finding — for Qodo sticky findings, check the `code_diff` field first.
-   If `code_diff` is empty (not all findings have fenced diff blocks), fall back to
-   `evidence_refs` (check each entry — entries that contain file/line references like
-   `file[28-52]` or `file[R28-52]` are code locations to verify; skip non-location entries),
-   `path`/`line`/`end_line` (if present — can be empty/null), and the finding body.
-   If `path`/`line` are missing, derive locations from `evidence_refs` file/line entries.
-   Never skip verification because `code_diff` is empty — use the other fields instead.
-   The title alone is NEVER enough.
-3. **Check the ACTUAL file** at that location — does the problematic code still exist?
-   - If YES → the finding is NOT addressed. Fix it.
-   - If NO → the finding is addressed.
-4. **Never group findings by title.** Each finding is independent.
-   "Inconsistent task counts" about `readTaskSummary` is a DIFFERENT finding than
-   "Inconsistent task counts" about `renderTasksPart`.
-5. **Never mark a finding as "pre-existing" or "by design" without reading the actual
-   code reference.** The code block tells you exactly what the reviewer found —
-   check if it's still there.
-
-🚨 **HARD RULE: Every finding that includes a code block MUST be verified against
-the actual file before being marked as addressed. No exceptions. No shortcuts.
-No "this looks similar to the one I already fixed."**
+1. Read full description + code block (`code_diff` first; if empty, check `evidence_refs` like `file[28-52]`/`file[R28-52]`, `path`/`line`/`end_line`, and body — never
+   skip due to empty `code_diff` or group by title).
+2. Inspect the actual file at that location — if the problematic code still exists, fix it. Never mark `"pre-existing"` or `"by design"` without reading the referenced
+   code.
 
 ### Phase 4: Review Unimplemented
 
@@ -365,436 +107,109 @@ If any approved tasks weren't implemented, review with user.
 
 ### Phase 5: Prepare Reply Mappings
 
-🚨 **NEVER hand-edit a reviews JSON's `status`/`reply` fields.** No python heredocs, no `jq`, no manual
-`status`/`reply` mutation — those bypass posting and the database store. The
-`reviews address` command applies
-replies, flips statuses, posts, and stores in one step — you only prepare mapping files.
-(The single exception: narrowing `line`/`end_line` for span disambiguation — see
-span semantics below; that affects matching only, never posting.)
-
-Write one mapping file per target status. Each line targets one finding:
+🚨 **NEVER hand-edit `status`/`reply` in a reviews JSON** (bypasses posting and DB). Prepare one mapping file per target status (`reviews address` applies, posts, and
+stores in Phase 8 after push):
 
 ```text
-<path>:<line>|<reply>
-```
-
-- `<path>:<line>` — the finding's fetched `path` and `line`. A thread finding and its
-  paired sticky finding are addressed together automatically (the command handles
-  dedupe and pairing — you never target stickies separately).
-- `<path>:<line>~<fragment>` — **discriminator**: additionally requires `<fragment>`
-  (case-insensitive) in the finding's body — the way to target one of two findings
-  whose spans overlap at the same line.
-- `<path>:*` — per-file wildcard: same reply for EVERY finding in that file.
-- `*` — matches ALL pending findings (single-line mapping file).
-- Group findings by their target status — Phase 8 runs one `reviews address` call per
-  status group.
-- Posting happens in Phase 8, AFTER commit/push — do not post before the fixes are pushed.
-
-**How a rule matches a finding (span semantics — issue #945):**
-
-- A specific rule matches the finding's FULL `[line, end_line]` span — any line in
-  the span reaches the finding.
-- When one finding's span CONTAINS another finding's span (nested findings, same
-  file), the containing finding matches only its own reported `line` — so a rule at
-  any inner line reaches the inner finding alone, and a rule at the outer finding's
-  reported line reaches the outer one alone. Equal spans: both findings match only
-  their own reported lines.
-- A rule matching 2+ distinct findings is rejected ATOMICALLY — nothing is posted.
-  Two-pass addressing (reply to one, then the other) cannot work: ALL rules are
-  validated before anything posts. Disambiguate with `~<fragment>`, use
-  `<path>:*` / `*` when the same reply fits all, or narrow `line`/`end_line` in the
-  reviews JSON (the ONE sanctioned JSON edit — it affects matching only, never
-  posting).
-- Sticky records (untitled duplicates of findings) participate in matching through
-  their cluster — you never target them separately, and a rule reaching the thread
-  reaches its sticky.
-
-**Mapping cheat sheet (use this — never read the address source code):**
-
-```text
-src/a.py:10|Fixed in abc1234                      # one finding (any line in its span)
-src/a.py:10~backoff|Fixed the backoff in abc1234  # ONE of two findings overlapping at 10
+src/a.py:10|Fixed in abc1234                      # one finding (any line in [line, end_line] span)
+src/a.py:10~backoff|Fixed the backoff in abc1234  # discriminator when spans overlap at line 10
 src/a.py:*|Same reply for every finding in this file
 *|All findings fixed in def5678                   # every pending finding
 ```
 
-When `reviews address` rejects a rule as ambiguous, re-read the finding bodies in
-the reviews JSON, pick a unique word from the target finding's title, and re-run
-with `<path>:<line>~<word>|<reply>`. Do NOT run the command twice to reach two
-findings at one location — the second run would fail validation the same way.
-
-**Valid status values (the `--set` flag for each mapping group):**
-
-| Status | Behavior |
-|--------|----------|
-| `addressed` | Post reply, resolve thread |
-| `not_addressed` | Post reply (human: leave unresolved; AI: resolve) |
-| `skipped` | Post reply with skip reason (human: leave unresolved; AI: resolve) |
-| `pending` | Skip (not processed yet) |
-| `failed` | Retry posting |
-
-**Mapping from user decisions (Phase 2):**
-
-- User said **yes** and code was changed → `addressed`
-- User said **yes** but fix attempt failed (code change didn't work) → `not_addressed`
-- User said **no** → `skipped` (include the user's skip reason in `reply`)
-- User said **all** → same as **yes** for each remaining comment
-- User said **skip \<source\>** → `skipped` for all remaining from that source
-  (include the user's skip reason in `reply`)
-- User said **skip ai** → `skipped` for all remaining AI sources
-  (include the user's skip reason in `reply`)
-
-**Autoqodo status rules (MANDATORY):**
-
-- Code was changed to fix the finding → `addressed`
-- No code changed, finding is by design / won't fix / not applicable → `skipped` (with reason)
-- No code changed, deferred to follow-up → `skipped` (with reason)
-- Issue spec was updated (no code change) → `skipped` (with reason referencing the spec update)
-
-🚨 **`addressed` means code was changed. If no code was changed, the status MUST be `skipped`.**
-`not_addressed` means "we wanted to fix it but couldn't" — do NOT use it for "by design" findings.
-
-🚨 **NEVER defer or skip a finding because the fix "requires too much work" (schema migration,
-refactoring, new module, etc.).** The AI does NOT decide what is too much work — the user does.
-If a finding requires a code change, make the code change. If you genuinely believe a finding
-is wrong or not applicable, set status to `skipped` with a technical reason — but "too much work",
-"requires migration", "will add later", or "deferred to follow-up" are NEVER valid reasons to skip.
-Fix it now. In auto mode (--autoqodo / --autorabbit), there is NO user interaction — fix the code.
+- **Span semantics (#945):** specific `<path>:<line>` matches `[line, end_line]`. When one span contains another in the same file, the outer finding matches only its own
+  reported `line` (inner lines hit the inner finding); equal spans match only their own reported `line`. Never target sticky duplicates separately (paired automatically
+  via cluster).
+- **Atomic validation:** a rule matching 2+ distinct findings fails atomically (never run twice to split them). Disambiguate with `~<fragment>`, `<path>:*`/`*`, or (the
+  ONE sanctioned JSON edit) narrow `line`/`end_line` in the JSON.
+- **Statuses (`--set`):** `addressed` (post + resolve), `not_addressed` (post; human stays open, AI resolves), `skipped` (post skip reason; human stays open, AI
+  resolves), `pending`, `failed`.
+- **Decision mapping:** `yes` + code fixed → `addressed`; `yes` + fix failed → `not_addressed`; `no`/`skip` → `skipped` (with reason).
+- **Autoqodo status rules (MANDATORY):** `addressed` means **code was changed**. If no code changed (by design, spec updated, deferred), status MUST be `skipped` (with
+  reason referencing spec update if applicable) — never use `not_addressed` for "by design". 🚨 **NEVER skip/defer for "too much work"** (schema migration, refactoring,
+  etc.) — fix it now.
 
 ### Phase 6: Testing
 
-Run tests with coverage.
-
-**ALL tests must pass before proceeding. No exceptions.**
-
-- Do NOT skip or ignore failures, even if they appear "pre-existing" or "unrelated to our changes"
-- Do NOT rationalize failures as acceptable
-- If a test fails, fix it — regardless of whether this PR introduced the failure
-- Only proceed to Phase 7 when the test suite is fully green (zero failures)
+Run tests with coverage. **ALL tests must pass** before Phase 7 — fix any failure (even "pre-existing" or "unrelated").
 
 ### Phase 7: Commit & Push
 
-**NEVER amend commits — always create NEW commits.** Amending + force-push prevents
-automated reviewers (Qodo, CodeRabbit) from detecting changes and re-evaluating findings.
-Each fix cycle MUST be a separate commit so reviewers can see what changed.
+**NEVER amend commits — always create NEW commits** (amending/force-pushing breaks Qodo/CodeRabbit re-evaluation). Auto mode: commit and push automatically. Interactive
+mode: ask user first. Push before Phase 8.
 
-**If ALL comments are from auto-approved sources (see Phase 2 auto mode rules):**
-Skip asking the user — commit and push automatically.
+### Phase 8: Post Replies (via `reviews address`)
 
-**Otherwise:** Ask user if they want to commit and push changes.
-
-Code must be pushed before posting replies so that reviewers can see the fixes
-when threads are resolved.
-
-### Phase 8: Post Replies (via reviews address)
-
-Run one `reviews address` call per status group prepared in Phase 5 — each call applies
-the mapping, posts replies, resolves threads, and stores to the database:
+Run one call per status group (omit `--json` to pick newest `pr-*-reviews.json` in `.pi/tmp`):
 
 ```bash
 uvx myk-pi-tools@latest reviews address --json {json_path} --replies {mapping_file} --set addressed
 uvx myk-pi-tools@latest reviews address --json {json_path} --replies {mapping_file} --set skipped
 ```
 
-The command picks the newest `pr-*-reviews.json` in `.pi/tmp` when `--json` is omitted.
+- **Multi-group retention:** while pending findings remain, a successful run posts its group and keeps the JSON on disk; the final group stores to DB and consumes the
+  JSON. Body comments (CodeRabbit outside-diff/major/minor/nitpick/duplicate, Qodo sticky) get consolidated PR comments mentioning the reviewer.
+- **Exit 0:** matched findings posted (`addressed` and AI `skipped`/`not_addressed` resolved; human `skipped`/`not_addressed` stay open).
+- **Non-zero exit:** JSON is retained for safe re-run (already-posted entries are skipped; failed resolves retry). Fix `no findings matched` in mapping file or re-run
+  failed posts/resolves — **NEVER delete or hand-edit a retained JSON**.
 
-**Multi-group retention:** while any findings remain pending (unposted, not
-auto-skipped), a successful run posts its group but does NOT store — the JSON is
-kept on disk for the remaining status-group runs. The final run (nothing pending)
-stores to the database and consumes the JSON. Run the groups in any order.
+### Phase 9: Auto Polling Loop (`--autorabbit` / `--autoqodo`)
 
-**Body comments (outside-diff, major, minor, nitpick, duplicate, qodo sticky):**
+Skip if NEITHER flag was passed.
 
-Comments that don't have GitHub review threads (e.g., CodeRabbit outside-diff,
-major, minor, nitpick, and duplicate comments) are replied to via a single
-consolidated PR comment per reviewer — `reviews address` handles this exactly like
-`reviews post` did: the comment mentions the reviewer (e.g., `@coderabbitai`) and
-includes sections for each comment with the decision made. This ensures automated
-reviewers know their comments were reviewed and won't re-raise them.
-
-**Failure semantics (MANDATORY):**
-
-- **Exit 0** → all matched findings posted. Threads are resolved per the
-  Phase 5 status table — `addressed` (and AI-source `skipped`/`not_addressed`) threads
-  are resolved; **human `skipped`/`not_addressed` threads intentionally stay open** for
-  follow-up. Exit 0 never means every thread is resolved.
-  Storage happens only on the FINAL group: while pending findings remain the run posts
-  without storing (results live in the retained JSON until the last group's run stores
-  and consumes it).
-- **Non-zero exit** → the JSON is RETAINED on disk for a corrected re-run.
-  Read the printed error:
-  - `no findings matched` → a mapping `path:line` matches no pending finding — fix the
-    mapping file and re-run. Already-posted entries are never touched again, so re-runs
-    are always safe.
-  - Post/resolve failures → the output names the entries that failed; re-run the same
-    command. Re-runs retry BOTH unposted entries AND posted-but-unresolved threads
-    (entries with `posted_at` but no resolution are resumed automatically — a failed
-    resolve retries the already-posted thread).
-- **NEVER delete or hand-edit a retained JSON** — correct the mapping file and re-run
-  `reviews address`.
-
-### Phase 9: Auto Polling Loop (--autorabbit / --autoqodo mode)
-
-**Skip this phase if NEITHER `--autorabbit` NOR `--autoqodo` was passed.**
-
-🚨 **ABSOLUTE RULE: NO USER INTERACTION DURING THE POLLING LOOP.**
-
-**NEVER call AskUserQuestion during Phase 9. NEVER present options,
-dialogs, choices, or questions to the user. The polling loop is FULLY
-AUTOMATIC. If something is stuck, stale, or unclear — keep polling
-silently. Do NOT invent questions like "PRs are stuck, what do you
-want to do?" or "Should I keep polling?" or any variation. The loop
-runs silently until an exit condition is met. Period.**
-
-> **Exception: `qodo_requirement_gap` spec changes require user approval.**
-> When a `qodo_requirement_gap` finding needs an issue spec update (not a code fix),
-> the AI MUST ask the user before changing the spec. This is the ONLY exception to
-> the 'no user interaction in Phase 9' rule.
->
-> - Code fix for a requirement gap → do it automatically, no user interaction needed
-> - Issue spec update for a requirement gap → ask user first via ask_user
-
-After the review flow completes (Phases 1-8), enter a polling loop
-to watch for new comments from auto-approved sources (CodeRabbit if autorabbit,
-Qodo if autoqodo, both if both flags active).
+🚨 **ABSOLUTE RULE: NO USER INTERACTION DURING PHASE 9.** Never call `AskUserQuestion` or present options/questions — run silently until an exit condition holds. **Sole
+exception:** if a `qodo_requirement_gap` requires an issue spec update (not a code fix), ask via `ask_user` first.
 
 #### 9a+9b: Wait and Fetch (combined async)
 
-> **NEVER set `fireAndForget: true` on these workers.** The poll's entire purpose is
-> to hand you its output. A fireAndForget agent is silent — it finishes and you are
-> never told, so the loop stalls until the user comes back and tells you it was done.
-> Leave `fireAndForget` unset. Also pass a `taskId` (`-1` if unlinked); a call without
-> one is rejected outright.
->
-> **After spawning, end your turn.** Do not poll, sleep, or re-spawn. The result arrives
-> as a follow-up message. If you find yourself "checking" on the worker, you have
-> already lost the result.
+Leave `fireAndForget` unset (poll output is required; see `40-critical-rules.md`) and pass `taskId` (`-1` if unlinked; see `60-task-tracking.md`). After spawning, **end
+your turn** — never poll, sleep, or re-spawn; do not report "still waiting".
 
-**Always pass `--source` explicitly. No defaults.**
+**Always pass `--source` explicitly.** Spawn one async `worker` per active flag (in parallel when both are on), with **NO timeout** on the bash call (sleeps 300s/cycle,
+can run 30+ min):
 
-**If autorabbit is ON (only):** Spawn ONE async worker:
+- Task template (`<source>` = `coderabbit` or `qodo`):
+  `Run: uvx myk-pi-tools@latest reviews poll --output-dir ${PROJECT_TMP_DIR} --source <source> [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT
+summarize, interpret, or rephrase it. IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
 
-- Agent: `worker`
-- Task: `Run: uvx myk-pi-tools@latest reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
-  `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-  `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
-- async: true
-- **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
+When a worker returns new comments, run Phases 2–8, then re-spawn that worker (the other keeps running). Check `"approved"` in the returned JSON:
 
-**If autoqodo is ON (only):** Spawn ONE async worker:
+- **`"approved": true` → EXIT loop.**
+  - Check `qodo_cli_state` vs top-level aggregate `approved`: ONLY when `qodo_cli_state.approved` is `true` AND `qodo_cli_state.review_complete` is `false` AND
+    `qodo_cli_state.status` != `completed` (e.g. `skipped`), state plainly that Qodo approved on a clean findings catalog at head while its review run was
+    skipped/incomplete (`status: completed` is never skipped). If `qodo_cli_state.approved` is `false` or Qodo is still reviewing, another reviewer approved — do NOT
+    claim/imply Qodo approved.
+  - Display **only** the two summary tables below on exit (from approval JSON / `metadata.json_path` / DB — no per-cycle summaries):
+    1. `## Tradeoffs ({count})` (`# | Type | File | Finding | Resolution`): every finding across ALL cycles replied without a code change (`All findings fixed with code
+       changes.` if 0).
+    2. `## Remaining Findings ({count})` (`# | Type | File | Finding | Why remaining`): only `not_addressed`/`failed` items, NOT `skipped` (`All findings resolved.` if
+       0).
 
-- Agent: `worker`
-- Task: `Run: uvx myk-pi-tools@latest reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
-  `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-  `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
-- async: true
-- **No timeout** — the poll loops internally until new Qodo comments appear. NEVER set a timeout.
-
-**If BOTH are ON:** Spawn TWO async workers in parallel:
-
-1. `Run: uvx myk-pi-tools@latest reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
-   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-   `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
-1. `Run: uvx myk-pi-tools@latest reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
-   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-   `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
-
-When EITHER returns with new comments, process them (Phases 2-8). Then re-spawn that agent.
-The other agent keeps running independently.
-
-**While waiting for the async result**, the session remains interactive — the user
-can continue working. You do NOT need to track it: the result surfaces on its own as a
-follow-up message, and it is addressed to you, not to the user. Do not tell the user the
-loop is running and then drop it; do not report "still waiting" as if that were an
-update. When the result surfaces, process it:
-
-Check the poll JSON output — it always contains an `approved` key:
-
-- If `"approved": true` in the JSON: **EXIT the loop**.
-  The JSON contains both the approval status AND the reviews data
-  (metadata, human, qodo, coderabbit) — no separate fetch needed.
-
-  The JSON also carries `qodo_cli_state`, and the top-level `approved` is an aggregate across
-  Qodo, CodeRabbit and human reviewers. Only when `qodo_cli_state.approved` is `true` AND
-  `qodo_cli_state.review_complete` is `false` AND `qodo_cli_state.status` is not `completed`
-  (e.g. `skipped`) did Qodo approve on a clean findings catalog at the PR head rather than a
-  completed review run — the exit summary then says so in one plain sentence, without alarm
-  (e.g. "Approved on a clean findings catalog at head; Qodo's review run was
-  skipped/incomplete."); `review_complete` is `false` whenever Qodo did not report the flag, so
-  `status: completed` still means a completed run and must not be called skipped. When
-  `approved` is `true` but `qodo_cli_state.approved` is `false` or Qodo is still reviewing, some
-  other reviewer is what approved: do NOT mention Qodo's catalog and do NOT claim or imply that
-  Qodo approved.
-
-  **On exit, display the Remaining Findings Summary (MANDATORY):**
-
-  The approval JSON includes the reviews data directly — use it for the summary.
-  The `metadata.json_path` field contains the path to the saved JSON file.
-
-  Display TWO tables:
-
-  **Table 1: Tradeoffs** — every finding that was replied WITHOUT a code fix (skipped, by design,
-  false positive, deferred, acknowledged). The user must see what compromises were made.
-
-  **Table 2: Remaining** — any truly unresolved findings (should be 0 on approval).
-
-  ```text
-  🎉 {source} approved PR #{pr_number}. Auto loop complete.
-
-  ## Tradeoffs ({count})
-
-  | # | Type | File | Finding | Resolution |
-  |---|------|------|---------|------------|
-  | 1 | Bug | enforcement.ts:604 | Commit bypass via untracked edits | By design — only tracks edit/write tools |
-  | 2 | Rule violation | implement-and-review.md:6 | Missing policy blockquote | False positive — blockquote exists |
-  | 3 | Bug | pi-config-review-state.ts:66 | Update race risk | Acknowledged — deferred, narrow window |
-
-  ## Remaining Findings ({count})
-
-  | # | Type | File | Finding | Why remaining |
-  |---|------|------|---------|---------------|
-  | 1 | Bug | path/to/file.py:17 | Finding title | Skipped — reason from the reply |
-  ```
-
-  **Tradeoffs table rules:**
-  - Include EVERY finding across ALL cycles that was replied without a code change
-  - Read the review database (`reviews store` data) or the accumulated
-    replies from the session to build this list
-  - **Resolution** = the reply text (summarized to one line)
-  - If zero tradeoffs: show `## Tradeoffs (0)` with "All findings fixed with code changes."
-
-  **Remaining findings table rules:**
-  - Show findings that are truly unresolved — `not_addressed` or `failed` status only
-  - Do NOT include `skipped` findings here — those are tradeoffs (shown in the table above)
-  - **Type** = the finding type (Bug, Requirement gap, Rule violation, etc.)
-  - **Finding** = the finding title (bold text from the body)
-  - **Why remaining** = the status + reason (from the reply field)
-  - If zero remaining findings: show `## Remaining Findings (0)` with "All findings resolved."
-
-  - This is the ONLY user-facing output on exit — no per-cycle summaries, no fix history
-
-- If `"approved": false`: **Process ALL actionable items in the JSON.**
-
-  🚨 **MANDATORY: Process EVERY actionable item — review thread comments, sticky findings,
-  AND cleanup response. Do NOT cherry-pick one type and skip others. Do NOT treat the
-  checks below as mutually exclusive — they ALL apply in the same cycle.**
-
-  1. **Review thread comments** (items with `thread_id`): Run Phases 2-8 for each.
-  2. **Sticky findings** (items without `thread_id`, type starts with `qodo_`): Run Phases 2-8 for each.
-  3. **`qodo_cleanup_response`** (if not empty): Address every item Qodo listed:
-     - Qodo says "fixed" / "looks fixed" / "addressed" → no code change needed
-     - Qodo says "still open" / "still relevant" / "still actionable" → MUST fix the code, commit, push
-     - If you don't understand what Qodo wants for a specific finding → use
-       `uvx myk-pi-tools@latest reviews ask-qodo "<question>"` to ask Qodo directly.
-       The command posts the question to @qodo-code-review and waits up to 10 minutes
-       for Qodo's reply. Read the reply and act on it.
-     - Every item in `qodo_cleanup_response` MUST be addressed. No skipping.
-
-  After fixing ALL items, commit and push, then re-spawn the poll.
+- **`"approved": false` → Process ALL actionable items in the same cycle** (never cherry-pick):
+  1. Review thread comments (`thread_id` present) → Phases 2–8.
+  2. Sticky findings (no `thread_id`, type starts with `qodo_`) → Phases 2–8.
+  3. `qodo_cleanup_response` (if non-empty) → address every item ("fixed"/"addressed" → no code change; "still open/relevant/actionable" → fix code, commit, push; unclear
+     → `uvx myk-pi-tools@latest reviews ask-qodo "<question>"`).
+  Commit, push, and re-spawn the poll.
 
 #### 9c: Exit Conditions (MANDATORY)
 
-**The loop MUST run until one of these conditions is met:**
-
-1. **All auto-approved reviewers approved** — `reviews poll` returns JSON with `"approved": true`. Exit and notify the user.
-2. **User explicitly stops** — user presses `Ctrl+C` or sends "stop", "exit", "done", or "quit".
-
-**No other reason is valid to exit the loop.**
-
-```text
-VIOLATION — The following rationalizations are FORBIDDEN reasons to exit the loop:
-
-  - "All comments have been addressed"
-  - "No new comments found for N cycles"
-  - "The loop seems complete"
-  - "Nothing left to process"
-  - "The review is done"
-  - "CodeRabbit has not posted anything new"
-  - "It appears the review cycle is finished"
-  - "The fetch command failed"
-  - "An error occurred during polling"
-  - "The API returned an error"
-  - "An error prevents continuing"
-  - Any variation of the AI deciding there is no more work to do
-```
-
-```text
-VIOLATION — The following user interactions are FORBIDDEN during Phase 9:
-
-  - Calling AskUserQuestion for ANY reason
-  - Presenting options like "keep polling / stop / skip"
-  - Asking "should I continue?"
-  - Asking "PRs are stuck, what do you want to do?"
-  - Asking for user input about stale comments
-  - Asking for user decisions about polling strategy
-  - ANY dialog, question, or prompt to the user
-  - Any variation of the AI asking the user what to do
-
-The ONLY way the user interacts with the loop is by explicitly
-sending "stop", "exit", "done", or "quit" — unprompted by the AI.
-```
-
-If any command in the loop fails, log the error, wait 5 minutes, and retry from 9a.
-Errors are recoverable — NEVER treat a command failure as a reason to exit.
-
-**Breaking the loop without a valid exit condition is a HARD VIOLATION of this spec.**
-
-Each cycle displays a status update so the user knows the loop is active:
-
-```text
-[auto] Cycle {N} complete — {addressed} addressed, {skipped} skipped. Re-spawning poll...
-[auto] Checking for new comments from auto-approved sources...
-[auto] Found {N} new comments — processing...
-[auto] No new comments. Next check in 5 minutes...
-[auto] CodeRabbit rate-limited. Handling automatically via reviews poll --source coderabbit...
-[auto] 🎉 {source} approved PR #{pr_number}. Displaying remaining findings summary.
-```
+Exit ONLY when: (1) `reviews poll` returns `"approved": true`, OR (2) user explicitly sends `"stop"`, `"exit"`, `"done"`, or `"quit"` (or `Ctrl+C`).
+**FORBIDDEN:** calling `AskUserQuestion`/asking to continue, exiting on "no new comments"/"loop seems complete"/command or API errors (log error, wait 5 min, retry 9a).
+Emit concise `[auto]` progress lines (`Cycle {N} complete...`, `Checking...`, `Found {N} new comments...`, `No new comments...`, `CodeRabbit rate-limited...`, `🎉 {source}
+approved...`).
 
 ## Qodo Review-Session Loops (Storage — MANDATORY)
 
-PRs reviewed through the Qodo `pr-review-session` CLI (poll
-`qodo read pr-review-session findings --pr-url <url> --json`, fix,
-`qodo pr-review-session mark-implemented`) bypass GitHub review comments
-until convergence, so `reviews fetch` sees nothing — every thread is
-resolved by the time the loop converges, and the fetch default excludes
-resolved threads. The reviews database therefore never hears about these
-reviews unless you store them explicitly.
-
-**When a pr-review-session loop runs, every completed round follows this
-EXACT order — the store step runs AFTER the round's findings are resolved
-(mark-implemented / dismissed), on a FRESH fetch, so stored statuses are
-final, not poll-time snapshots:**
+`pr-review-session` loops bypass GitHub review comments until convergence, so every completed round MUST follow this exact order — store AFTER `mark-implemented` on a
+**fresh** fetch (never store poll-time snapshots; re-storing refreshes attribution idempotently per UUID and keeps the JSON):
 
 ```bash
-# 1. Poll — the loop's record (kept on disk, never deleted)
-qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 \
-  > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
-
-# 2. Fix the round's findings, then resolve them:
+# 1. Poll
+qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
+# 2. Fix and resolve
 qodo pr-review-session mark-implemented --finding-ids <ids> --explanation "..." --json
-
-# 3. Store on a FRESH fetch — statuses now reflect the resolution. The
-#    store is idempotent (per finding UUID) and REFRESHES the attribution
-#    on already-stored rows, so re-storing earlier rounds self-heals them.
-qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 \
-  > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
+# 3. Fresh fetch + idempotent DB store (repeat once more at clean convergence)
+qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
 uvx myk-pi-tools@latest reviews store-session ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
 ```
-
-NEVER store the poll-time snapshot as the round's final state — findings
-saved before mark-implemented carry pending attribution, and the status
-report shows stale pendings. If a round was stored pre-resolution (e.g. a
-crash between steps 2 and 3), the NEXT round's step-3 store refreshes it;
-at convergence, run step 3 once more after the final mark-implemented.
-
-The command converts the session findings JSON into reviews DB rows
-(source `qodo`, status from each finding's `attribution_status`, grouped
-by the commit the finding was raised on). It is idempotent — re-running
-skips findings already stored (per session UUID) — and it does NOT delete
-the JSON, so storing every round is safe and `reviews status --pr <n>`
-stays current while the loop runs.
-
-A clean convergence round is stored the same way — it is just the last
-round. Without this step, `reviews status --pr <n>` renders an empty HTML
-report for the PR mid-loop and after convergence, and the review analytics
-lose the whole loop (issue #942).

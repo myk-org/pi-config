@@ -1,119 +1,28 @@
 # Issue-First Workflow
 
-## Scope
-
-> **If you are a SPECIALIST AGENT:**
-> IGNORE this rule. This is for the ORCHESTRATOR only.
-
----
-
 ## Pre-Implementation Checklist (START HERE)
 
-Before ANY code changes, complete this checklist:
-
-1. **Should this workflow be skipped?** (see "SKIP" list below)
-   - YES → Do directly, skip remaining steps
-   - NO → Continue checklist
-
-2. **Root cause investigated?**
-   - Read the relevant source code — identify files, functions, and lines involved
-   - Understand the current behavior and why it happens
-   - Know what the fix looks like (at least conceptually)
-   - If the user's request is based on a misunderstanding, clarify before proceeding
-   - NO → Investigate first.
-   - YES → Continue
-
-3. **GitHub issue created?**
-   - NO → Create issue first (delegate to `github-expert`)
-   - YES → Continue
-
-4. **On correct branch?** (`feat/issue-N-...` or `fix/issue-N-...`)
-   - NO → Create branch from origin/main (delegate to `git-expert`)
-   - YES → Continue
-
-5. **User confirmed "work on it now"?**
-   - NO → Ask user
-   - YES → Proceed with implementation
-
-🚨 **NEVER create issues blindly from user requests.** Before creating ANY issue:
-
-- Read and understand the relevant code
-- Verify the problem exists (don't take the user's word — check the code)
-- Know what files/functions are involved
-- Have a conceptual fix in mind
-- If a fix PR already exists, link to it instead of creating a duplicate issue
-
-An issue without root cause analysis is a TODO, not a useful issue.
-
----
+1. **Skip?** (see "When This Workflow Applies" below) → YES: do directly; NO: continue.
+2. **Root cause investigated?** Read relevant source files/functions/lines, verify the problem exists, and have a conceptual fix (or link an existing fix PR instead of
+   duplicating). Clarify misunderstandings first.
+3. **GitHub issue created?** NO → create via `github-expert` (never create blind TODO issues without root cause analysis).
+4. **On correct branch?** (`<type>/issue-<N>-<short-desc>` from `origin/main` via `git-expert`) → NO: wait for confirmation, then create branch.
+5. **User confirmed "work on it now"?** Ask explicitly after presenting issue number, title, and URL before creating the branch or implementing.
 
 ## When This Workflow Applies
 
-**USE for:**
+- **USE for:** new features, enhancements, bug fixes requiring code changes, refactoring, multi-file edits, tracked work.
+- **SKIP for:** trivial fixes (typos/single-line), questions/exploration (no code edits), user says "just do it" / "quick fix", urgent hotfixes (note in commit message).
+- **Edge cases:** partial requirements → ask clarifying questions first; issue exists → ask to continue it; multiple unrelated requests → separate issues.
 
-- New features, enhancements, bug fixes requiring code changes
-- Refactoring tasks
-- Multi-file modifications
-- Tasks benefiting from tracking/documentation
+## Branch & Issue Format
 
-**SKIP for:**
+- **Branch workflow:** after user confirms, delegate to `git-expert`: `git fetch origin main` and `git checkout -b <type>/issue-<N>-<short-desc> origin/main` (`feat/`,
+  `fix/`, `refactor/`, `docs/`).
+- **Issue format (`github-expert`):** include type, problem description, root cause analysis (files, functions, lines, why), proposed approach, requirements, and a `##
+  Done` checklist (`- [ ] Deliverable ...`).
 
-- Trivial fixes (typos, single-line changes)
-- Questions, explanations, exploration (no code changes)
-- User says "just do it" / "quick fix"
-- Urgent hotfixes with time pressure
+## Tracking Progress & Completion
 
----
-
-## Branch Workflow
-
-When user confirms, **delegate to git-expert**: fetch main (`git fetch origin main`), create branch (`git checkout -b <type>/issue-<N>-<short-desc> origin/main`).
-
-Branch types: `feat/`, `fix/`, `refactor/`, `docs/` — always prefixed with `issue-<N>-`.
-
-After creating the issue, present the issue number, title, and URL, then ask:
-'Do you want to work on it now?' Wait for explicit confirmation before creating the branch or starting implementation.
-
----
-
-## Issue Format
-
-Delegate to `github-expert` with: type (fix/feat/refactor/docs), problem description, root cause analysis for bugs/fixes
-(affected files, functions, lines, and why), proposed approach, and requirements.
-
-**Every issue MUST include a `## Done` section with checkboxes** — the contract for when the issue can be closed:
-
-```markdown
-## Done
-
-- [ ] Deliverable 1
-- [ ] Deliverable 2
-- [ ] Deliverable 3
-```
-
----
-
-## Tracking Progress
-
-Check off deliverables in the issue as you complete them.
-All code changes go through the review loop (see `rules/20-code-review-loop.md`).
-When all deliverables are complete, verify all `## Done` checkboxes are checked, ensure reviews/tests pass, then close with a summary comment.
-🚨 **NEVER close an issue with unchecked deliverables** — remove or mark N/A first if no longer needed.
-
----
-
-## Integration with Code Review Loop
-
-Each deliverable follows the code review loop defined in `rules/20-code-review-loop.md`; once all deliverables pass review, close the issue.
-
----
-
-## Edge Cases
-
-| Scenario | Behavior |
-|---|---|
-| User says "just fix it" | Skip workflow, do directly |
-| Partial requirements | Ask clarifying questions, then create issue |
-| Issue already exists | Ask to continue existing issue |
-| Urgent/hotfix | Skip workflow, note in commit message |
-| Multiple unrelated requests | Create separate issues for each |
+Check off deliverables as completed; each deliverable follows `rules/20-code-review-loop.md`. Once all `## Done` boxes are checked (mark N/A or remove obsolete ones first
+— 🚨 **NEVER close an issue with unchecked deliverables**) and reviews/tests pass, close with a summary comment.
