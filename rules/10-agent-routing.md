@@ -14,7 +14,7 @@
 | Kubernetes/OpenShift | `kubernetes-expert` |
 | Jenkins/CI/Groovy | `jenkins-expert` |
 | Git operations (local) | `git-expert` |
-| Git merge/rebase/cherry-pick conflicts | `conflict-resolver` (git-expert is blocked from resolving them) |
+| Git merge/rebase/cherry-pick conflicts | `conflict-resolver` (`git-expert` is blocked from resolving them) |
 | GitHub (PRs, issues, releases, workflows) | `github-expert` |
 | Running existing tests / analyzing failures | `test-runner` |
 | Creating or modifying tests / test strategy | `test-automator` |
@@ -26,49 +26,23 @@
 
 ## Routing by Intent, Not Tool
 
-Route based on the task intent, not just the tool being used.
+Route by intent, not just tool:
 
-- Running existing tests (including Python) or analyzing failures? → `test-runner`
-- Fixing Python production code after test failures? → `python-expert`
-- Creating or changing Python tests? → `test-automator`
-- Editing Python production files? → `python-expert` (even with sed/awk)
-- Creating a PR? → `github-expert` (not git-expert)
-- A merge/rebase/cherry-pick left unmerged paths? → `conflict-resolver` (git-expert is mechanically blocked from resolving them; report the conflict and delegate)
-- External library docs? → `docs-fetcher` (not direct fetch)
+- Running tests / analyzing failures (incl. Python) → `test-runner`; changing Python tests → `test-automator`; editing Python production code (even via sed/awk) →
+  `python-expert`.
+- Creating a PR → `github-expert` (not `git-expert`).
+- Unmerged paths from merge/rebase/cherry-pick → `conflict-resolver` (`git-expert` is mechanically blocked).
+- **External library/framework docs (MANDATORY):** never fetch directly — delegate to `docs-fetcher` (uses `llms.txt` first). Skip for stdlib-only or docs already fetched
+  in this conversation.
 
-## Documentation Routing (MANDATORY)
+## Internal Agents & Fallback
 
-The orchestrator MUST NEVER fetch external docs directly — always delegate to `docs-fetcher`, which tries `llms.txt` first and extracts only relevant sections.
-
-**Spawn `docs-fetcher` when:**
-
-- Fetching library/framework docs (React, FastAPI, Django, etc.)
-- Looking up config guides or API references for external tools
-
-**Skip when:**
-
-- Standard library only (no external dependencies)
-- Already fetched docs in current conversation
-
-## Agents Not in Routing Table
-
-Some agents are dispatched internally by rules or prompt templates, not by the routing table:
-
-- `code-reviewer-quality`, `code-reviewer-guidelines`, `code-reviewer-security`, `code-reviewer-docs`, `code-reviewer-spec` — dispatched via `rules/20-code-review-loop.md`
-- `issue-reviewer-spec`, `issue-reviewer-feasibility`, `issue-reviewer-scope` — dispatched via `prompts/issue-review.md`
-- `reviewer` — dispatched via prompt templates
-
-## Fallback
-
-**Fallback:** No specialist? → `worker` agent
+- **Dispatched by rules/prompts only:** `code-reviewer-{quality,guidelines,security,docs,spec}` (`rules/20-code-review-loop.md`),
+  `issue-reviewer-{spec,feasibility,scope}` (`prompts/issue-review.md`), `reviewer` (prompt templates).
+- **Fallback:** no specialist? → `worker` agent.
 
 ## Model Override
 
-When the user asks to run an agent with a specific model:
-
-1. Use `list_models` tool to discover available providers and models.
-2. Pass the model to `subagent(model="provider/model-id")`.
-3. Format: `provider/model-id` (e.g., `litellm/claude-opus-4-6-1m`) or just `model-id` (overrides model only; provider follows normal resolution chain).
-4. For parallel tasks, set `model` per-task in the tasks array. Top-level `model` is used as fallback for tasks without their own.
-5. Chain steps share the top-level `model` — no per-step override.
-6. Explicit `model` param overrides agent_overrides, frontmatter, and settings.
+When asked to run an agent with a specific model: call `list_models` to discover `provider/model-id` pairs, then pass `subagent(model="provider/model-id")` (or bare
+`model-id` to inherit provider). In `tasks` arrays, per-task `model` overrides top-level fallback; chain steps share the top-level `model`. Explicit `model` overrides
+`agent_overrides`, frontmatter, and settings.

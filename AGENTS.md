@@ -8,487 +8,141 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
 - Pre-commit: `prek run --all-files`
 - Python tests: `uv run --group tests pytest`
 - Node tests: `npx tsx --test tests/node/**/*.test.ts`
-- TypeScript type-check gate: `npm run typecheck` (tsc --noEmit, strict, all seven projects, including
-  `tests/node/**/*.ts` via `tsconfig.tests.json` — issues #951, #1094)
-- Test tree only: `npm run typecheck:tests` (same project as the gate's test step)
-- Overlay/TUI test fakes live in `tests/node/helpers/` (`fake-tui.ts`, `fake-extension-ctx.ts`); the
-  harness `spec`/ctx values are typed by the real interfaces, so contract drift fails the gate
+- TypeScript gate: `npm run typecheck` (strict across all 7 projects incl. `tests/node/**/*.ts` via `tsconfig.tests.json`; test-only: `npm run typecheck:tests`; TUI fakes
+  in `tests/node/helpers/`)
 - Full verify: `prek run --all-files && tox && npm run typecheck`
 
 ## pi-sidecar (Monorepo Workspace)
 
-pi-sidecar lives under `packages/pi-sidecar/` as an npm workspace package. It is the ONLY external consumer of pi-config extensions (acpx-provider, cli-provider, providers).
-`extensions/pidiff/pidiff-ui` is also a workspace so root `npm install` provides React for Node pidiff-ui tests.
+`packages/pi-sidecar/` is an npm workspace and the ONLY external consumer of pi-config extensions (`acpx-provider`, `cli-provider`, `providers`).
+`extensions/pidiff/pidiff-ui` is also a workspace (provides React for Node pidiff-ui tests).
 
-**When changing pi-config code, you MUST verify pi-sidecar is not broken:**
-
-- Extensions (`extensions/acpx-provider/`, `extensions/cli-provider/`, `extensions/providers/`, `extensions/shared/`): run pi-sidecar tests — `npx tsx --test packages/pi-sidecar/tests/test_ts/*.test.ts`
-- Shared types or re-exports: check `packages/pi-sidecar/src/sessions.ts` imports
-- Before release: run live sidecar smoke test (see `.pi/skills/sidecar-test/`)
-
-**CLI commands:** `npx pi-sidecar` (start server), `npx pi-sidecar-start` (background start/stop).
-
-The sidecar's internal agent dir is configurable (startSidecar `agentDir` option / `PI_SIDECAR_AGENT_DIR`, default
-`/tmp/pi-sidecar-agent`) so deployments can supply custom providers, auth, and settings; settings are read once at
-process start from the configured dir — see `packages/pi-sidecar/README.md`.
-
-**Public API contract:** The HTTP REST API (`/health`, `/models`, `/providers`, `/sessions`,
-`/sessions/:id/events`, `/transcripts/recording`) and the Python client (`pi_sidecar_client`) are the external contract — never break these.
-Internal code, imports, and structure can change freely.
-
-`prompt` usage reports `cost_usd` as the accumulation of driver-reported costs: a number means costs
-were reported, `null` means nothing usable was reported, and a number with `cost_partial: true` is a lower
-bound because at least one turn's cost was unknowable. A model whose source published no price has
-all-zero Pi price metadata, which means *unknown pricing* rather than *free*, so the sidecar cannot derive a
-cost for those turns — but a driver may still report one, and that reported amount is always kept. A
-catalog all-zero cost is authoritative: that model is free and reports `cost_usd: 0` with
-`cost_partial: false`. Provenance is carried by `Symbol.for("pi-config.pricingUnknown")`
-(`extensions/shared/pricing-provenance.ts`), never inferred from the value, so no model or provider id is
-special-cased. Read `cost_usd` together with `cost_partial`; consumers must not coalesce `null` to `0` nor
-present a partial total as complete — see `packages/pi-sidecar/CONSUMER-GUIDE.md`.
-
-Pi 1.5.0 adds `Usage.cost.totalFromProvider`: true when `cost.total` is the provider's billed
-amount, false or absent when it is a catalog estimate. A provider-billed total is authoritative
-exactly as sent — including a billed `0` — and is kept even when the model's catalog pricing is
-unknown, so unknown spend and free spend are told apart by provenance, not by the number. A
-catalog estimate on an unknown-pricing model still yields `cost_usd: null`, or a lower bound
-with `cost_partial: true`; the consumer rule above covers both kinds of total.
-
-`GET /providers` lists all provider IDs registered in the initialized runtime,
-including built-ins and extensions, regardless of ambient auth or whether
-`GET /models` includes their models. It returns `{ "providers": [...] }` with
-records containing `provider` (exact ID) and `supportsSessionApiKey` (boolean capability, not
-credential availability); no credentials or auth diagnostics. Python
-`SidecarClient.get_providers()` returns a typed list of the same records.
-Use discovery to enumerate providers and `/models/:provider/status` for details
-about a known ID.
-
-`GET /models/:provider/status` includes public boolean `supportsSessionApiKey`
-(including on non-loopback and unknown-provider 404 responses). It reflects
-provider API-key capability independent of server auth; headless-excluded and
-ambient CLI/ACPX providers report false.
-
-`POST /models/for-api-key` accepts `{ "provider": string, "api_key": string }` for
-key-capable providers. Python `await SidecarClient.get_models_for_api_key(provider, api_key)`
-returns `{ "models": [...], "modelListingSupported": boolean }`. `true` means native
-key-scoped listing ran (an empty list means no models); `false` means no native
-listing, so the user must supply a model ID. A custom models.json provider the
-admin flagged `trustKeyScopedListing` (agent-dir manifest only — never request or
-session input) also lists, against exactly its configured `baseUrl`; for such
-a provider `models` is the union of the live listing and the provider's
-manifest-configured `models[]` (manifest entry wins on id collision). Each entry
-carries `source: "listing" | "manifest"`: "listing" = the gateway listed the id
-for this key (verified for the credential; manifest-wins collision entries are
-"listing" — the gateway did list the id, the manifest only supplied name/limits);
-"manifest" = admin-declared only, NOT verified for this key. The key and
-result are request-local:
-never cache them or add key-listed models to the shared catalog. Listing does
-not verify that a model can complete a prompt.
-
-`POST /sessions` and `pi_sidecar_client` optionally accept a non-empty `api_key`
-(at most 1,024 UTF-16 code units). It overrides stored/environment credentials
-only for the selected API-key-capable provider and session; omission preserves
-fallback. Reject unsupported auth (including CLI/ACPX ambient-login markers);
-delete/expiry removes the in-memory key. Never log, return, persist, or pass it
-to nested agents. See `packages/pi-sidecar/README.md` for usage.
-
-pi-sidecar tests are part of the test suite. Breaking pi-sidecar is breaking the project.
+- **Required checks:** changes to `extensions/{acpx-provider,cli-provider,providers,shared}/` must pass `npx tsx --test packages/pi-sidecar/tests/test_ts/*.test.ts`;
+  shared types/re-exports must preserve `packages/pi-sidecar/src/sessions.ts`; run `.pi/skills/sidecar-test/` before release.
+- **CLI & config:** `npx pi-sidecar` / `npx pi-sidecar-start`. Agent dir (`startSidecar` `agentDir` / `PI_SIDECAR_AGENT_DIR`, default `/tmp/pi-sidecar-agent`) is read
+  once at startup.
+- **Public API contract (never break):** HTTP REST (`/health`, `/models`, `/providers`, `/sessions`, `/sessions/:id/events`, `/transcripts/recording`) and
+  `pi_sidecar_client`.
+- **Contracts (see `packages/pi-sidecar/README.md` & `packages/pi-sidecar/CONSUMER-GUIDE.md`):**
+  - `cost_usd` (`number | null`) + `cost_partial`: unknown pricing uses `Symbol.for("pi-config.pricingUnknown")` (`extensions/shared/pricing-provenance.ts`), never
+    inferred; `Usage.cost.totalFromProvider: true` is authoritative (incl. `0`), while catalog estimates on unknown-pricing models yield `null` / `cost_partial: true`.
+    Never coalesce `null` to `0`.
+  - `GET /providers` returns all registered provider IDs (`{ provider, supportsSessionApiKey }`, no credentials); `GET /models/:provider/status` always returns public
+    `supportsSessionApiKey` (even on non-loopback/404; CLI/ACPX/headless-excluded report `false`).
+  - `POST /models/for-api-key` & `SidecarClient.get_models_for_api_key` return request-local `{ models, modelListingSupported }` (never cached/shared);
+    `trustKeyScopedListing` in agent-dir `models.json` unions live `baseUrl`-pinned results with manifest `models[]` (manifest wins on id collision; `source: "listing" |
+    "manifest"`).
+  - `POST /sessions` & `pi_sidecar_client` optional `api_key` (≤1,024 UTF-16 units) overrides credentials for key-capable providers only; reject unsupported/ambient
+    CLI/ACPX; delete/expiry clears it; never log, return, persist, or forward to nested agents.
 
 ## Tests
 
-- **No suite may depend on ambient env for a code path it asserts.** A suite that asserts
-  parent-process behaviour must make that true itself — scope the variable to synchronous
-  setup and restore it immediately. `PI_SUBAGENT_CHILD` is the classic trap:
-  `registerSubagentTool` and a dozen other extensions early-return when it is `1`,
-  so the same suite run from a subagent child
-  silently registers nothing and fails later as `undefined.execute`. Use
-  `withSubagentChildEnv` (`tests/node/helpers/subagent-env.ts`) only around synchronous
-  registration, then `assert.ok(tool)` right where the tool is constructed, so a future
-  early-return names itself. Callbacks must return nothing; async callbacks or detached
-  async work that depends on this env scope are unsupported. Do not wrap an async test
-  body: the process-global env is restored as soon as the callback returns. Cover the
-  guarded side with its own test (var set → nothing registered), not by inheritance.
+- **No suite may depend on ambient env for asserted behavior:** wrap synchronous registration in `withSubagentChildEnv` (`tests/node/helpers/subagent-env.ts`), assert
+  `assert.ok(tool)` immediately, never wrap async bodies, and cover `PI_SUBAGENT_CHILD=1` in its own test.
 
 ## Definition of Done
 
-A change is complete when ALL pass:
+1. All gates pass: `prek run --all-files`, `uv run --group tests pytest`, `npx tsx --test tests/node/**/*.test.ts`, `npm run typecheck`.
+2. Update docs when code/features change: new feature/command/tool → `README.md` feature table; new prompt template → `README.md` prompt table; new CLI tool/dep →
+   `README.md` tools table + `Dockerfile`; new/modified extension module → `contributing/repo-structure.md`; new/removed agent → `contributing/repo-structure.md` +
+   `rules/10-agent-routing.md` + `rules/50-agent-bug-reporting.md`; dev workflow change → `DEVELOPMENT.md`; plus `AGENTS.md` as needed.
+3. **LLM-facing capability is TAUGHT, not just built:** new tools, params, keys, or modes must be documented in BOTH `rules/` (injected every turn) and the tool/schema
+   description (`docs/` alone is for humans).
+4. Committed as `type(scope): description`.
 
-1. `prek run --all-files` exits 0
-2. `uv run --group tests pytest` exits 0
-3. `npx tsx --test tests/node/**/*.test.ts` exits 0
-4. `npm run typecheck` exits 0
-5. AGENTS.md / README.md updated if structure/commands/features changed
-6. **LLM-facing capability is TAUGHT, not just built**: a new tool, parameter, key or mode the
-   model must use is incomplete until (a) the rule that governs when to use it lives in
-   `rules/` (injected every turn), and (b) the tool/schema description says what it is for.
-   `docs/` alone does not count — docs are for humans. Ask at PR time: "how would I know this
-   exists?" If the answer is "I read the diff", the feature is unfinished.
-7. Files committed with message: `type(scope): description`
+## Task Completion Contract
 
-## Task completion contract
-
-TaskUpdate, TaskBulkUpdate and orchestrator lifecycle helpers refuse agent start/completion
-of user-assigned tasks, including reassignment combined with status. Reassignment alone,
-content edits and deletion remain supported. Manual `/tasks done`, browser task-panel completion and overlay completion
-record `completedBy: user` independently of assignee. Only user-assigned completions send
-a follow-up notice, without automatic retries. TaskGet and task details expose the note;
-logs must never contain it. Reopening clears the outcome in single and bulk store updates.
-
-Task storage defaults to `PI_TASK_SCOPE=session` at `.pi/tasks/tasks-<sessionId>.json`, while `PI_TASK_SCOPE=project`
-uses `.pi/tasks/tasks.json`. `PI_TASKS` overrides the store with an absolute or `./`-relative file path, a bare list id
-under `~/.pi/tasks/<id>.json`, or `off` for in-memory storage only. Peer `coms_task*` tools use the target peer's
-advertised `task_store_path` captured at startup.
+- `TaskUpdate`, `TaskBulkUpdate`, and lifecycle helpers refuse starting or completing `assignee: "user"` tasks (even combined with reassignment); reassignment alone,
+  content edits, and deletion remain supported.
+- Manual `/tasks done`, browser panel, and overlay set `completedBy: user` regardless of assignee; only user-assigned completions send a follow-up notice (no retries).
+  `TaskGet`/details expose `completionNote`; logs must never contain it. Reopening clears the outcome in single and bulk updates.
+- Storage: `PI_TASK_SCOPE=session` (default, `.pi/tasks/tasks-<sessionId>.json`), `project` (`.pi/tasks/tasks.json`), or `PI_TASKS` override (path, bare id
+  `~/.pi/tasks/<id>.json`, or `off`). Peer `coms_task*` uses the target peer's advertised `task_store_path`.
 
 ## Logging Requirements
 
-All new or modified code MUST include proper `log.debug/info/warn/error` calls via `createLogger`. No code change is complete without logging.
+All new/modified runtime code (extensions, sidecar, CLI, scripts) MUST log via `createLogger` (`info` key events, `debug` internal flow, `warn` recoverable issues,
+`error` failures; never `console.*`).
+**Exempt:** static browser assets under `*/renderer/static/` (use `console.*`) and test files (`createLogger` only when injecting a required logger, never in assertions).
 
-**Scope:** pi runtime and Node processes — extensions, sidecar, CLI tools, scripts.
-**Exempt:** static browser assets under `*/renderer/static/` copied verbatim into a docs site
-(no bundler, no pi runtime, no session id). Use `console.*` there — a browser page has no chat
-TUI to leak into. Keep such assets consistent with their siblings.
-Also exempt: test files (`tests/`, `packages/*/tests/`, `packages/*/test/`) — tests are not
-runtime code. Use `createLogger` in a test ONLY to inject a logger into code under test that
-requires one (the packaging and pidiff suites do); assertion callbacks never log.
+## Project & Docs
 
-- **info**: key events (boot, shutdown, peer joined/left, connections, state changes)
-- **debug**: internal flow (function entry/exit, decisions, variable state)
-- **warn**: recoverable issues (timeouts, retries, self-heal)
-- **error**: failures (crashes, broken connections, data corruption)
+- **Stack & structure:** TypeScript (extensions), Python (`myk_pi_tools`), Markdown (agents, rules, prompts); structure in `contributing/repo-structure.md`. Container:
+  `ghcr.io/myk-org/pi-config:latest` (`Dockerfile`).
+- **Additional suites:** `packages/pi-sidecar/tests/`, `packages/pi-vertex-claude/test/` (vitest), `packages/pi-docsite/tests/`.
+- **User install/runtime is npm + PyPI only** (`npm:pi-orchestrator-config`, `npm:@myk-org/pi-vertex-claude`, `npm:pi-web-access`, PyPI `myk-pi-tools`; container
+  specialists/`httpd.py` read from `~/.pi/agent/npm/node_modules/pi-orchestrator-config`). NEVER add `pi install git:github.com/myk-org/pi-config` or `git+https`
+  `myk-pi-tools` (tested in `tests/python/test_install.py`).
+- **Docs (`docs/*.md`):** hand-written source; `.github/workflows/docs.yml` builds the site on `main` and `docs-guard.yml` rejects generated output in PRs. **NEVER run
+  `pi-docsite` in a PR or commit generated `.html`, `llms*.txt`, `search-index.json`, or `assets/`.** Inter-page links use `.html`; one H1 per page; output is
+  deterministic. Local preview (discard output): `uv run --package pi-docsite pi-docsite --docs-dir docs --tagline "Agent orchestration for pi: routing, subagents,
+  background work, memory, providers, and sidecar."` (`--tagline` required; see `.pi/skills/pi-docsite/` or `~/.pi/agent/skills/pi-docsite/`).
+- **CLI specialists (container):** `entrypoint.sh` runs `scripts/symlink-cli-specialists.sh` from npm unpack into `.cursor/agents/`, `.claude/agents/`, `.gemini/agents/`
+  (gitignored); native installs do not auto-sync (see `docs/cli-provider.md`).
 
-User switches log level on the fly via settings — debug must show everything needed for root cause analysis without adding manual debug logs.
+## Agents, Rules, Prompts & Docker
 
-## When Blocked
+- **Add/remove agent:** manage `agents/<name>.md` (one-sentence `description` frontmatter; resolve packaged skills via
+  `~/.pi/agent/npm/node_modules/pi-orchestrator-config/skills/<name>/SKILL.md` with local fallback) and update `rules/10-agent-routing.md` (+
+  `rules/50-agent-bug-reporting.md` if needed).
+- **Conflicts:** `git-expert` is blocked by `enforcement.ts` from conflict resolution/sequencer flags while unmerged paths exist — delegate to `conflict-resolver`
+  (`rules/10-agent-routing.md`).
+- **Model override:** `list_models` + `subagent(model="provider/model-id")` (`rules/10-agent-routing.md`).
+- **Rules (`rules/` `00-69`, `~/.pi/agent/rules/` `70-89`, `<project>/.pi/rules/` `90-99`):** conditional assembly (`{{IF:key}}`, `{{IFNOT:key}}`, `==`/`!=`,
+  `requires_setting`/`requires`; unknown keys fail closed) — see `docs/project-settings.md`. Keep rules tight (1 sentence/concept, gate off-settings, reserve
+  MANDATORY/NEVER for data loss/security/irreversibility).
+- **Local review:** `/qodo-review [--autofix] [--fast|--deep] [--ticket <url>] [path ...]` (max 3 autofix cycles; does not commit/push/create PR).
+- **Prompts & templates:** `prompts/<name>.md` (`description` frontmatter) + autocomplete in `extensions/orchestrator/extended-autocomplete.ts` (when args are
+  completable); source templates `prompts/create-X.md` → `templates/X-prompt.md` (`{{PLACEHOLDER}}`, no frontmatter).
+- **Docker:** update `Dockerfile` + `README.md` Docker section when changing CLI tools/deps; never `git clone` `myk-org/pi-config` in `entrypoint.sh`.
 
-- Tests fail after 3 attempts → stop, report with full output
-- Pre-commit hook fails → fix the specific issue, don't bypass with --no-verify
-- Missing dependency → check package.json/pyproject.toml first, then ask
-- NEVER: use `git add .`, force push, skip tests, bypass hooks, commit to protected branches
+## Extensions & Tooling Invariants
 
-## Project
+- **pidiff:** per-project server (free port, `.pi/run/pidiff.{port,pid}`, `.pi/tmp` legacy read); Refresh reloads in place (disabled when WS down); nested gitignores do
+  not skip top-level dirs; daemon scripts include `scripts/pidiff-git-ignore.ts`.
+- **Timers & reload:** guard callbacks with `isLiveExtensionCtx` (`extensions/shared/live-ctx.ts`) and clear intervals on `session_shutdown`.
+- **npm pack:** keep explicit daemon scripts (`scripts/pidash-server.ts`, `pidiff-server.ts`, `pidiff-git-ignore.ts`, `daemon-shared.ts`, `serve-ui.ts`,
+  `pidash-discord.ts`, `httpd.py`) and UI `src/`+`dist/` (never whole `extensions/pidash/`); `prepack` runs `npm run build:extension-uis`.
+- **Oneshot (`-p`/`--print`/`--mode json`):** pitasks, pidash, pidiff, coms, and shutdown dream skip via `extensions/shared/oneshot.ts` (`--mode rpc` is not oneshot; see
+  `docs/async-internals.md`). Commands: `docs/extension-commands.md`.
+- **Trail (`trail_enable`):** gates first project nav of substantive turn on `trail_*` (children get 5 read-only tools); map in `graft/` or `.trail/cache/` from worktree
+  root; never write main map; fail open.
+- **coms:** `steer: true` (mid-turn, ack-only, 5/turn cap), `priority: true`, `coms_broadcast`, `coms_history` (`~/.pi/coms/history.jsonl`), `⚙busy` + ~60s signals.
+  `/coms tell` and `m` composer set `origin: "user"` via `globalThis.__comsUserSend` (`resolvePromptOrigin` accepts literal `true` only; display-only, unauthenticated).
+  Queue recovery: `coms_queue_inspect` → 5m owner-bound `preview_id` → `coms_queue_clear`/`delete` (never `clearPrevious`; RPC providers keep ≤20 previews and atomic
+  `clearQueueIfSnapshot`).
+- **Async & CLI/ACPX providers (`docs/async-internals.md`, `docs/cli-provider.md`):** native `cli-*`/`acpx-*` providers MUST use
+  `extensions/shared/create-runtime-provider.ts` (`createProvider` + `/login` + fetch/filter) — **never legacy `registerProvider(name, bag)`**; `models.dev` cached at
+  `~/.pi/pi-config/models.dev.json` (1d TTL; thinking from id); cold-start restore on `startup`/`resume` (skips non-empty `enabledModels`); spawn cwd uses session cwd
+  (`Symbol.for("pi-config.sessionCwdAls")` synced between `extensions/shared/session-cwd.ts` and `packages/pi-sidecar/src/session-cwd.ts`); Cursor `--approve-mcps`
+  (`CLI_APPROVE_MCPS` > `SIDECAR_PORT`; `bindSidecarListenExit()` exits 1 on fatal errors); Gemini defaults `GEMINI_CLI_TRUST_WORKSPACE=true`; ops logs in `~/.pi/logs/`.
+- **Self-reload handshake (`docs/configuration.md#reload-handshake`):** deploy writes nonce to `.pi/run/reload.flag` via same-dir atomic rename; `extensions/reload-flag/`
+  awaits `ctx.waitForIdle()`, calls `ctx.reload()`, and writes `.pi/run/reload.done` (+ `.pi/tmp/reload.done` mirror). Confirm reload by comparing `.pi/run/reload.done`
+  to flag nonce. Live foreign `reload.pending` survives (OS `startToken` catches PID reuse); oneshot/headless never touches handshake; worktrees do NOT auto-reload.
+- **MCP (`builtin:mcp`, `docs/mcp-servers.md`):** `mcp.json` via `/mcp` or `pi mcp ...`, surfaced via `codemode`/`deferred`; extensions must not collide with built-in
+  replaceable MCP tool/command names.
+- **Stream logging:** shared `provider_stream_event` (`extensions/shared/provider-stream-log.ts`) gated on `log_providers` `debug`.
+- **Memory & enforcement:** `docs/memory-architecture.md` (conflict gate allows distinct targets/quoted examples, rejects polarity flips until `overrideConflicts`);
+  `contributing/enforcement-honesty-map.md`; `*(enforced)*` entries are hash-keyed (never mutate text); `checkRemoteExecBlock` (`enforcement-helpers.ts`) blocks `curl |
+  bash`, `eval $(curl)`, nested `$(bash -c "$(curl)")`, prefix assignments (`VAR=$(curl) cmd`), and path-prefixed exec (`/bin/bash -c`), while allowing a safe `VAR=$(curl
+  ...)` capture followed by an unrelated interpreter/`eval` call (blocking if exec consumes the captured var or reads untrackable stdin/file input).
+- **CLI & settings:** always `uvx myk-pi-tools@latest <subcommand>` in prompts/rules (runs published PyPI, so verify local CLI fixes against working tree; release scripts
+  use local build). `settings-keys.json` is single source of truth for TS + Python; TUI `/pi-config-settings [project|global]`; agents use `{{SETTINGS:key1,key2}}` (never
+  read JSON manually).
+- **Skill maintenance (`docs/skill-self-improvement.md`):** `extensions/orchestrator/skill-maintenance.ts` (non-blocking; `pi.getCommands()` + `.pi/skills/` fallback;
+  `/adopt-skill`; provenance `.pi/data/skill-review.jsonl`).
+- **Reviews & learning (`README.md#qodo-cli-read-source-qodo_cli_state`):** `reviews address` applies `<path>:<line>|<reply>` / `*|<reply>` atomically;
+  `reviews fetch`/`poll --source qodo` uses `qodo` CLI when authed (fail-open to GitHub sticky scrape; read-only, replies via `reviews address`; see `README.md` for
+  `qodo_cli_state.approved`, `reviewing`, `review_complete`, and `reason` semantics); `reviews store-session <json>` stores `qodo-<pr>-<sha>.json` idempotently.
+  **MANDATORY coupling:** `.pi/data/reviews.db` feeds `extensions/orchestrator/review-learning.ts` (`getAddressedComments`/`getLatestReview`) — store/schema/status changes
+  must preserve distillation.
 
-- Stack: TypeScript (extensions), Python (myk_pi_tools CLI), Markdown (agents, rules, prompts)
-- Structure: see `contributing/repo-structure.md`
-- Test: `tests/node/` (tsx + node:test), `tests/python/` (pytest), `packages/pi-sidecar/tests/` (sidecar TS + Python), `packages/pi-vertex-claude/test/` (vitest),
-  `packages/pi-docsite/tests/` (pytest for the generator, jsdom + node:test for the shipped browser assets)
-- Key packages: `pi-web-access`, `@myk-org/pi-sidecar`, `pi-sidecar-client`, `@myk-org/pi-vertex-claude`
-- Container: `ghcr.io/myk-org/pi-config:latest` (see Dockerfile)
-- **User install/runtime is npm + PyPI only — never a `myk-org/pi-config` git clone.**
-  `pi install git:github.com/myk-org/pi-config` (and the vertex git-subdir) is forbidden
-  in entrypoint, `scripts/install.py`, session hints, prompts, and user-facing docs.
-  Sources: `npm:pi-orchestrator-config`, `npm:@myk-org/pi-vertex-claude`,
-  `npm:pi-web-access`, PyPI `myk-pi-tools`. Container specialists and `httpd.py`
-  come from `~/.pi/agent/npm/node_modules/pi-orchestrator-config`. Tests:
-  `tests/python/test_install.py`. Allowed: this repo for *developers*; optional
-  `docker build` from a clone; third-party git (e.g. mcp-proxy).
-- Docs: `docs/*.md` are the hand-written source and the only docs files in the tree —
-  `.github/workflows/docs.yml` builds the site from them on `main`, and
-  `.github/workflows/docs-guard.yml` rejects any PR that adds or modifies a generated path.
-  - **NEVER run `pi-docsite` in a PR and never commit its output.** Editing `docs/*.md` is the
-    whole change; the Action builds the site. Generated `.html`, `llms.txt`, `llms-full.txt`,
-    `search-index.json`, and `assets/` are gitignored.
-  - Links **between** pages use the `.html` extension: the published site uses it, even though the
-    source file is `docs/<slug>.md`.
-  - To preview locally, run the workspace generator and discard the output:
-    `uv run --package pi-docsite pi-docsite --docs-dir docs --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."`
-    Omitting `--tagline` blanks the meta description and tagline on every page, so it is not optional.
-  - The site is built from this repo's own generator (`packages/pi-docsite`), not a PyPI release,
-    so a template change lands on the site with the commit that carries it.
-  - The output is deterministic: repeated runs are byte-identical. If a rebuild shows unrelated
-    churn, that is a real regression from your edit — investigate it. Each page must have exactly one
-    H1, which becomes its title and sidebar entry; headings inside code fences are ignored.
-  - Use the `pi-docsite` skill (`.pi/skills/` or `~/.pi/agent/skills/pi-docsite/`) when
-    you need to build, rebuild, or debug the docs site, or add a docs page.
-- **CLI specialist agents (container):** `entrypoint.sh` runs
-  `scripts/symlink-cli-specialists.sh` from the npm unpack
-  (`~/.pi/agent/npm/node_modules/pi-orchestrator-config`) to `ln -sfn`
-  package `agents/*.md` into the mounted project’s `.cursor/agents/`,
-  `.claude/agents/`, and `.gemini/agents/` (all gitignored). Native installs
-  do not auto-sync — see `docs/cli-provider.md` / README Docker section.
+## Boundaries & When Blocked
 
-## When Adding an Agent
-
-1. Create `agents/<name>.md` with YAML frontmatter (name, description, tools)
-2. Add routing in `rules/10-agent-routing.md`
-3. Add to agent list in `rules/50-agent-bug-reporting.md`
-4. Test: start pi session, verify orchestrator routes to new agent
-
-Frontmatter `description` is one sentence. If the agent points at a packaged
-skill, resolve the path at runtime (`ls ~/.pi/agent/npm/node_modules/pi-orchestrator-config/skills/<name>/SKILL.md`
-with a local fallback) — a bare relative path breaks outside this checkout.
-
-## Delegating Conflicts
-
-`git-expert` never resolves merge, rebase, or cherry-pick conflicts: it is routinely pinned to a
-small model, so `enforcement.ts` blocks `git add`, `git restore`, `git rm`, `git update-index`,
-`git reset`, `git checkout --ours|--theirs`, and the `--continue`/`--skip`/`--quit` flags of
-`merge|rebase|cherry-pick|revert|am` in its process while `git ls-files --unmerged` reports
-anything, and refuses a command that starts one of those sequencers and then stages in the same
-line. Delegate to `conflict-resolver` (`subagent(agent="conflict-resolver")`) whenever
-a merge, rebase, or cherry-pick leaves unmerged paths. Do not work around the block.
-
-## When Removing an Agent
-
-1. Delete `agents/<name>.md`
-2. Remove from `rules/10-agent-routing.md`
-3. Remove from `rules/50-agent-bug-reporting.md`
-
-## When Modifying Rules
-
-Rules load from 3 layers (later overrides earlier):
-
-| Layer | Path | Range |
-|-------|------|-------|
-| Package | `rules/` | `00-69` |
-| User | `~/.pi/agent/rules/` | `70-89` |
-| Project | `<project>/.pi/rules/` | `90-99` |
-
-Rules auto-load alphabetically. Changes take effect on next pi session.
-
-**Conditional assembly** — see `docs/project-settings.md` (Rules assembly). Essentials:
-
-- `{{IF:key}}` / `{{IFNOT:key}}` — settings truthiness (`isSettingTruthy`: empty object/array falsy)
-  or feature predicates (`coms_active`, `external_ai_agents`). Unknown setting keys fail closed
-  (strip block + warn), including `{{IFNOT:typo}}`.
-- `{{IF:key==value}}` / `{{IF:key!=value}}` — literal compare
-- Frontmatter: `requires_setting` / `requires` (AND). Per-file conditionals then join then placeholders.
-
-Writing effective rules:
-
-- Fewer lines = more compliance. One sentence per concept.
-- Reserve MANDATORY/NEVER for data loss, security, or irreversible changes.
-- Use precise, scoped language — ambiguous rules get exploited.
-- Numbered checklists over flowcharts. Merge overlapping sub-sections.
-- Gate setting/feature-specific prose with `{{IF}}`/`{{IFNOT}}` or frontmatter so off settings do not inject dead tokens.
-
-## When Reviewing Local Changes
-
-Use `/qodo-review [--autofix] [--fast|--deep] [--ticket <url>] [path ...]` before committing
-or opening a PR to review local changes with Qodo and session context. Repeat `--ticket <url>`
-for multiple tickets; paths are optional git pathspecs. Default mode asks which findings to fix;
-`--autofix` fixes findings without approval, stopping after at most 3 cycles or sooner on no
-progress. It does not commit, push, create a PR, or post results.
-
-## When Adding a Prompt Template
-
-1. Create `prompts/<name>.md` with YAML frontmatter (`description: "..."`)
-2. Add autocomplete in `extensions/orchestrator/extended-autocomplete.ts` (only when the prompt has completable arguments — skip for free-text-only prompts)
-
-## When Adding a Source Template
-
-- `prompts/create-X.md` (prompt) → `templates/X-prompt.md` (template)
-- Templates use `{{PLACEHOLDER}}` for dynamic values, no YAML frontmatter
-
-## When Overriding Subagent Models
-
-- `list_models` — discover available models and providers (optional `provider` filter). Returns `provider/model-id` pairs for subagent overrides.
-- `subagent(model="provider/model-id")` — explicit model override for a subagent call.
-  Bare `model-id` overrides model only; provider follows the normal resolution chain
-  (overrides > frontmatter > settings > parent). `provider/model-id` selects both.
-
-## When Modifying Extensions
-
-- **pidiff** runs as a per-project server (one per cwd, not shared).
-  Random free port, tracked via `.pi/run/pidiff.port` and `.pi/run/pidiff.pid`
-  (runtime state, so it survives a `.pi/tmp` sweep; the pre-#1020 `.pi/tmp`
-  copies are still read for a daemon started before the move).
-  Header and stale-banner **Refresh** reload the current diff in place (tree and
-  panes stay mounted). Refresh is disabled while the WebSocket is down.
-  Nested gitignores do not skip whole top-level dirs
-  (`extensions/foo/node_modules` does not ignore `extensions/`).
-  Daemon scripts include `scripts/pidiff-git-ignore.ts` (chokidar skip filter).
-- Timers (`setInterval`/`setTimeout`) must not read captured `ctx.mode` unguarded —
-  getters call `assertActive()` and crash the process after `/reload`. Use
-  `isLiveExtensionCtx` (`extensions/shared/live-ctx.ts`) and clear intervals on
-  `session_shutdown`.
-- npm pack of `pi-orchestrator-config` must include daemon scripts
-  (`scripts/pidash-server.ts`, `pidiff-server.ts`, `pidiff-git-ignore.ts`, `daemon-shared.ts`,
-  `serve-ui.ts`, `pidash-discord.ts`, `httpd.py`) and pidash/pidiff UI `src/` + `dist/` —
-  never a whole-tree `extensions/pidash/` entry (that packs `node_modules`).
-  Pre-publish: `prepack` runs `npm run build:extension-uis` so gitignored `dist/`
-  exists before `npm pack` / `npm publish` (`prepack` covers both).
-- Oneshot (`-p` / `--print` / `--mode json`): pitasks, pidash, pidiff, and coms
-  skip register via `extensions/shared/oneshot.ts`; shutdown dream also skipped.
-  See `docs/async-internals.md` (Oneshot invocations). `--mode rpc` is not oneshot.
-- Extension commands: see `docs/extension-commands.md`
-- Trail (`trail_enable`, default true when the `trail` binary exists) covers main agents and subagents: the first project navigation of a
-  substantive turn is gated on a `trail_*` query. Children get the 5 read-only query tools; stale maps stay usable and failures fail open.
-  Map lives in `graft/` or `.trail/cache/` (upstream-owned, gitignored) — resolve from the worktree root, never write the main map, no learnings.
-- coms messaging (#924): `coms_send` supports `steer: true` (mid-turn course correction on a busy peer — ack-only, 5/turn cap) and
-  `priority: true` (jump the peer's queued backlog). `coms_broadcast(targets, prompt)` fans out to multiple peers (`["*"]` = project);
-  `coms_history` queries the per-session JSONL trail in `~/.pi/coms/history.jsonl`. Peers emit `⚙busy` state and ~60s progress signals
-  while processing inbound work.
-- User-authored messages (#1077): `/coms tell <peer> <message>` and the `m` composer in `/coms list` stamp envelope `origin: "user"`
-  through the `globalThis.__comsUserSend` bridge coms-p2p publishes; `coms_send`/`coms_broadcast` never pass it (schemas carry no
-  `origin`), and `resolvePromptOrigin` accepts only the literal `true`, so a tool call cannot claim human authorship — that is the
-  whole guarantee. The receiver's header marker `(from the USER)` and history's `(USER)` are display only and unauthenticated: any
-  process that can write to the peer's socket can set `origin: "user"`. Verifying authorship needs signed identities, out of scope.
-- COMS queue recovery is irreversible: call `coms_queue_inspect`, review its body-free result, then pass its one-time `preview_id` to
-  `coms_queue_clear` or `coms_queue_delete`. Never use `coms_send.clearPrevious`; it is rejected. Preview tokens are owner-bound and
-  expire after five minutes. RPC recovery providers retain at most 20 previews per provider and must implement an atomic
-  `clearQueueIfSnapshot(snapshot)` operation; clients never call an unconditional clear after validating a preview.
-- Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `docs/async-internals.md`
-- CLI providers (`cli-*`): see `docs/cli-provider.md`
-- **Self-reload after a deploy**: the deploy tooling writes a nonce to `.pi/run/reload.flag`.
-  The `extensions/reload-flag/` extension consumes it and calls `ctx.reload()` — the same public API `/reload` uses,
-  nothing in pi is patched — then the new runtime publishes the nonce to `.pi/run/reload.done`
-  (mirrored into `.pi/tmp/reload.done` so a pre-#1020 requester polling the old path still sees it).
-  The reload runs at the session's **next idle point** (~0.5s after the turn ends), never mid-turn: the handler
-  awaits `ctx.waitForIdle()` first. A busy session must END ITS TURN to receive it.
-  To confirm a reload landed: read `.pi/run/reload.done` and compare with the newest flag nonce. Verifying
-  anything against a runtime that has not reloaded proves nothing — the old code is still loaded.
-  A flag parked in `.pi/tmp/reload.flag` by a pre-#1020 requester is still consumed, and legacy `.pi/tmp/reload.done`
-  mirror write failures log `reload_legacy_mirror_failed` (`debug` when `.pi/tmp` is absent, `warn` otherwise) without
-  failing completion or retaining `reload.pending`.
-  Fresh session starts (`reconcileStartupHandshake`) remove only corrupt `reload.pending` files (empty or missing a valid
-  `pid:session` owner); unconfirmed requests and `reload.done` completion markers survive regardless of age so a requester
-  polling after a long turn never loses completion proof. `reload.pending` also records the owner's OS `startToken` so a
-  reused PID with a mismatched `startToken` is reclaimable (`reload_pending_pid_reused`), while a live other session's
-  handshake is never deleted, and a process that does not
-  register the watcher (oneshot `pi -p`, `--mode json`, piped print, headless `--mode rpc`) never touches
-  flag/pending/done at all (#1091). A flag that appears while a reload is in flight is a newer request: it is left for
-  the watcher and triggers a second reload, so `reload.done` converges on the newest nonce instead of reporting the older
-  one. A manual `/reload` cannot prove a sitting flag preceded code loading, so it leaves the flag for a conservative
-  extra reload instead of publishing an unproven nonce.
-  Writers must publish complete nonces using same-directory temporary-file atomic rename. In-place writers are
-  unsupported because an open FD can mutate a claimed inode. See `docs/configuration.md#reload-handshake`.
-  Failed commands retry through the owner's watcher with exponential backoff (`1s` up to `30s`, reset immediately when a
-  new flag nonce appears); non-reload shutdown atomically releases only that owner's pending request into a recoverable
-  claim. Retained flag/pending claims retry deterministically without overwriting newer publications. Recovery requires
-  another reload, never confirmation on discovery. Live foreign pending owners remain protected regardless of age.
-  Flag consumption renames a concrete request before reading it and never removes the other directory's request.
-  Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
-- **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —
-  user `~/.pi/agent/mcp.json`, project `mcp.json` once trusted. Managed with
-  `/mcp` and `pi mcp add|remove|list|login|logout`; no external binary, no
-  `mcpc` bridge, no separate OAuth store. Tools reach the model through
-  `codemode` (default) or `deferred`, so an unused server costs no context.
-  See `docs/mcp-servers.md`. Our extensions register none of the built-in
-  MCP tool or command names, and all three built-ins are `replaceable` — a
-  collision would displace the built-in silently, so keep it that way.
-- **Provider stream logging** (#848): one shared
-  `provider_stream_event` hook (`extensions/shared/provider-stream-log.ts`)
-  replaces per-provider stream logging. The event fires per parsed chunk and
-  pi awaits handlers in stream order, so the gate is mandatory — it is
-  `log_providers` at its non-default `debug` level. Never `console.*`.
-- CLI/ACPX model metadata (context window, maxTokens, cost): cached from
-  `https://models.dev/api.json` at `~/.pi/pi-config/models.dev.json` (refresh after
-  1 day). Mapping is CLI/ACPX only — native pi models are untouched. Thinking
-  from id (`-high`, `[effort=xhigh]`), not catalog `reasoning`. See
-  `extensions/shared/models-dev.ts`
-- Cold-start default model restore (#753): `startup`|`resume` (`new` only when no model is selected); skips non-empty `enabledModels`; trusted project merge — see `docs/cli-provider.md`
-- CLI/ACPX spawn cwd (#768): session cwd (`POST /sessions` / `ctx.cwd`), not
-  sidecar `process.cwd()`. Cursor `--workspace` matches that folder. Dual
-  `session-cwd.ts` copies (extensions/shared + packages/pi-sidecar/src) must
-  keep `Symbol.for("pi-config.sessionCwdAls")` in sync — sidecar cannot import
-  the extension file (`tsconfig` rootDir). See `docs/cli-provider.md`.
-  Headless Cursor `--approve-mcps`: `CLI_APPROVE_MCPS` wins (`false` opts out);
-  otherwise sidecar (`SIDECAR_PORT` — `startSidecar()` stamps it while running,
-  including default 9100, `options.port`, and ephemeral `0`; `close()` restores
-  the inherited value). Executable consumers should call `bindSidecarListenExit()`
-  so `StartedSidecarHandle.ready` / `.stopped` fatal failures exit 1. Headless Gemini defaults
-  `GEMINI_CLI_TRUST_WORKSPACE=true` but preserves an explicit parent value.
-- Extension ops logs (cli-provider, dreaming): `~/.pi/logs/` — never `console.*` (leaks into chat). See `docs/cli-provider.md` Logging
-- Memory system: see `docs/memory-architecture.md`. The write path has a conflict gate: complementary rules (different targets,
-  restatements, quoted examples) coexist; genuine same-action polarity flips reject with an ask-first message and supersede via
-  `overrideConflicts`
-- Enforcement honesty (code vs injected): see `contributing/enforcement-honesty-map.md`
-- CLI invocation form: `uvx myk-pi-tools@latest <subcommand>` in every prompt and rule (never bare `myk-pi-tools`) — self-installing,
-  so prompts carry no `--version` precheck. `@latest` is required: `uvx` reuses its cached tool environment, so a bare
-  `uvx myk-pi-tools` keeps running the version installed on first use. Consequence: this runs the **published PyPI build, not the
-  working tree** — while developing `myk-pi-tools` here, a prompt rewritten this way exercises the released binary rather than the
-  code under review, so verify local CLI fixes against the working tree. Release scripts keep the local build deliberately: a
-  release must be planned and published by the code being released, not by the previously published version.
-- Memory inventory CLI: `uvx myk-pi-tools@latest memory status`
-- Skill maintenance (issues #1074, #1147, #1155): `extensions/orchestrator/skill-maintenance.ts`. Non-blocking — no `write`/`edit`
-  or `bash` tool calls are ever blocked. Uses `pi.getCommands()` to discover loaded skills (falling back to `.pi/skills/` only when
-  `pi.getCommands()` is unavailable); `/adopt-skill <name>` stamps `skill-maintenance: auto` and the maintainer instruction on any
-  non-package skill (brand-new `.pi/skills/<name>/SKILL.md` writes auto-adopt). Failed adopted skills steer mid-turn; provenance
-  (`.pi/data/skill-review.jsonl`) and the turn-end notice cover `write`/`edit`/`multi_edit` tool changes across all scopes plus
-  direct `.pi/skills/` tree diffs (shell edits to external/global/symlinked skill paths are not snapshotted) — see
-  `docs/skill-self-improvement.md`.
-- Project settings: see `docs/project-settings.md`
-- Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
-  Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
-- Settings CLI: `uvx myk-pi-tools@latest settings get [key ...]` — resolve settings (project → global → env → default). No args = all keys.
-- Reviews address CLI: `uvx myk-pi-tools@latest reviews address` — apply `<path>:<line>|<reply>` mapping rules (or `*|<reply>`) to the newest
-  `pr-*-reviews.json` in `.pi/tmp`, flip statuses (`--set`), then run post + store; validation errors (ambiguous rule, invalid status for
-  Qodo sticky findings) leave the JSON unchanged. Options and exit codes: see README `myk-pi-tools` subcommands.
-- Qodo CLI read source: `reviews fetch` / `reviews poll --source qodo` read Qodo findings through the `qodo` CLI's structured
-  pr-review-session tool when the binary is installed and authenticated (probed per process; stdout shows `via CLI`, the JSON carries
-  `qodo_cli_state`). Missing/unauthenticated bin, a failed read, or an unknown PR head falls back to the GitHub sticky scrape (fail
-  open). Read-only: replies are always GitHub comments via `reviews address` — never mark-implemented/dismiss. In CLI mode GitHub
-  review threads duplicating CLI findings (same thread id) are deduped. `qodo_cli_state.approved` = review `commit_sha` equals the PR
-  head AND zero open findings AND `reviewing` is false (a `skipped` auto-run at head with a clean catalog counts as approved).
-  `reviewing` is true until a settled run (`completed`/`skipped`) covers the head, so an in-progress run, a missing or unrecognized
-  status, or any session behind head never approves — and stays on the poller's stuck-review retrigger path. `review_complete` is
-  surfaced so a skipped/incomplete run is visible without blocking approval; `reason` describes the findings catalog (`no_findings`,
-  `open_findings`, `not_at_head`, or `all_resolved`) and can be `all_resolved` while `approved` is false.
-- Reviews store-session CLI: `uvx myk-pi-tools@latest reviews store-session <json>` — store a Qodo pr-review-session findings JSON (the
-  `qodo-<pr>-<sha>.json` a session-loop poll saves) into the reviews DB after every completed round; idempotent per finding UUID, and the
-  input JSON is kept. See README `myk-pi-tools` subcommands.
-- **Reviews DB ↔ review-learning coupling (MANDATORY)**: `.pi/data/reviews.db` is the single source for review-learning
-  (`extensions/orchestrator/review-learning.ts` reads addressed findings via `getAddressedComments`/`getLatestReview` and distills them into
-  memory lessons; write-time injection queries it per path). Any change to the store path — schema, status vocabulary, a new store entry point —
-  MUST keep those queries working, and any NEW way of putting rows in the DB MUST trigger or feed distillation. Breaking this silently stops
-  all review learning (it happened: session-loop PRs stored nothing and taught nothing — issue #942).
-- Settings TUI: `/pi-config-settings [project|global]` — interactive settings editor in the pi session.
-- Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — `substituteSettingsPlaceholders` only (not rules `assembleRuleText`). See `docs/project-settings.md`.
-  Never instruct agents to read `pi-config-settings.json` manually.
-- When adding slash command arguments: update autocomplete in `extended-autocomplete.ts`
-- Memory `*(enforced)*` marker: entries with this marker are hash-keyed — never change their text, only add/remove whole entries
-- Remote script exec enforcement (`checkRemoteExecBlock` in `enforcement-helpers.ts`):
-  blocks `curl | bash`, `eval $(curl)`, nested `$(bash -c "$(curl)")`,
-  prefix assignments (`VAR=$(curl) cmd`), path-prefixed exec (`/bin/bash -c`).
-  Uses variable-flow analysis: allows a safe `VAR=$(curl ...)` capture followed by an
-  UNRELATED interpreter/`eval` call (e.g. `code=$(curl ...); uv run python3 -c '...'`), but still
-  blocks when the exec consumes the curl output — inline `$(curl)`, a captured var fed to
-  exec (`x=$(curl ...); uv run python3 -c "$x"`), or a shell reading untrackable stdin/file input.
-- Native `cli-*` / `acpx-*` providers: use `extensions/shared/create-runtime-provider.ts`
-  (`createProvider` + `/login` + fetch/filter) — never legacy `registerProvider(name, bag)`
-
-## When Modifying Docker
-
-Update `Dockerfile` AND `README.md` Docker section when adding CLI tools or system deps.
-Never assume a tool exists in the container.
-`entrypoint.sh` must not `git clone` `myk-org/pi-config`; register via `npm:…` and read
-agents/`httpd.py` from the npm unpack.
-
-## Boundaries
-
-- ✅ Always: run `tox` before committing; update AGENTS.md/README.md when structure changes
-- ✅ Always: use `uv run` for Python, never bare `python`/`pip`
-- ⚠️ Ask first: modifying rules (affects all users), changing enforcement logic
-- 🚫 Never: `git add .`, `--no-verify`, commit to main/protected branches, hand-edit the
-  generated `docs/*.html`, add `pi install git:github.com/myk-org/pi-config`
-  (or git+https install of `myk-pi-tools` from this repo) for users
-- 🚫 Never: edit the settings files (`.pi/pi-config-settings.json(c)`,
-  `~/.pi/...`) via agent tools — they carry the `dangerous_command_allowlist`;
-  approvals flow only through the interactive dangerous-command prompt, and
-  settings changes go through `/pi-config-settings` or the user's own editor
-  (code-enforced: write/edit and write-shaped bash targeting them are blocked)
-
-## Documentation
-
-`docs/*.md` are hand-written and are the single source of truth. Everything else in `docs/` —
-`*.html`, `llms.txt`, `llms-full.txt`, `search-index.json`, `assets/` — is build output: produced by
-`.github/workflows/docs.yml` on `main`, gitignored locally, and kept in history at the pre-migration
-commit.
-
-Edit the markdown and let the Action build the site. Never run the generator in a PR and never commit
-its output — `.github/workflows/docs-guard.yml` fails such a PR by design. Preview locally only:
-
-```bash
-uv run --package pi-docsite pi-docsite --docs-dir docs \
-  --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."
-```
-
-That runs this repo's own generator (`packages/pi-docsite`), which is also what CI builds with —
-never a PyPI release, so a template change lands with the commit that carries it.
-
-The output is deterministic: repeated runs are byte-identical, so a rebuild that shows
-unrelated churn means a real change. Each page must have exactly one H1, which becomes
-its title and its sidebar entry; headings inside code fences are ignored. Inter-page links
-use `.html`.
-
-If a page renders wrong, fix the markdown or the templates in `packages/pi-docsite/`.
+- **Blocked:** stop after 3 failed test attempts with full output; fix pre-commit issues directly; check `package.json`/`pyproject.toml` before asking about missing deps.
+- **Always:** run `tox` + full gates before commit; use `uv run` for Python (never bare `python`/`pip`); update `AGENTS.md`/`README.md` when structure/commands/features
+  change.
+- **Ask first:** modifying `rules/` (affects all users), changing enforcement logic.
+- **Never:** `git add .`, `--no-verify`, force push, commit to `main`/protected branches, hand-edit generated `docs/*.html` or run `pi-docsite` in PRs, add
+  `git:github.com/myk-org/pi-config` installs, or edit `.pi/pi-config-settings.json(c)` / `~/.pi/...` settings via agent tools (`dangerous_command_allowlist` protection;
+  code-enforced).
