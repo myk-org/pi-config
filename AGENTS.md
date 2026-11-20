@@ -131,13 +131,11 @@ All new/modified runtime code (extensions, sidecar, CLI, scripts) MUST log via `
   read JSON manually).
 - **Skill maintenance (`docs/skill-self-improvement.md`):** `extensions/orchestrator/skill-maintenance.ts` (non-blocking; `pi.getCommands()` + `.pi/skills/` fallback;
   `/adopt-skill`; provenance `.pi/data/skill-review.jsonl`).
-- **Reviews & learning (`README.md` `myk-pi-tools`):** `reviews address` applies `<path>:<line>|<reply>` / `*|<reply>` atomically; `reviews fetch`/`poll --source qodo`
-  reads `qodo` CLI when authed (fail-open to GitHub sticky scrape; read-only, replies via `reviews address`). `qodo_cli_state.approved` = `commit_sha == head` + 0 open
-  findings + `reviewing == false`; `reviewing` stays `true` until a settled `completed`/`skipped` run covers head (in-progress, missing, unrecognized, or behind-head sessions
-  never approve and stay on the retrigger path); `review_complete` surfaces skipped/incomplete runs without blocking approval; `reason` (`no_findings`, `open_findings`,
-  `not_at_head`, `all_resolved`) can be `all_resolved` while `approved` is `false`. `reviews store-session <json>` stores `qodo-<pr>-<sha>.json` idempotently. **MANDATORY
-  coupling:** `.pi/data/reviews.db` feeds `extensions/orchestrator/review-learning.ts` (`getAddressedComments`/`getLatestReview`) — store/schema/status changes must preserve
-  distillation.
+- **Reviews & learning (`README.md#qodo-cli-read-source-qodo_cli_state`):** `reviews address` applies `<path>:<line>|<reply>` / `*|<reply>` atomically;
+  `reviews fetch`/`poll --source qodo` uses `qodo` CLI when authed (fail-open to GitHub sticky scrape; read-only, replies via `reviews address`; see `README.md` for
+  `qodo_cli_state.approved`, `reviewing`, `review_complete`, and `reason` semantics); `reviews store-session <json>` stores `qodo-<pr>-<sha>.json` idempotently.
+  **MANDATORY coupling:** `.pi/data/reviews.db` feeds `extensions/orchestrator/review-learning.ts` (`getAddressedComments`/`getLatestReview`) — store/schema/status changes
+  must preserve distillation.
 
 ## Boundaries & When Blocked
 
