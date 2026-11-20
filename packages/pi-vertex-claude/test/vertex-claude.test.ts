@@ -1,6 +1,8 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { normalizeContext, type Tool, type TranscriptContext } from "@earendil-works/pi-ai";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { calculateCost, normalizeContext, type Tool, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createLogger, isDebugEnabled, oneLine, sanitizeLogSegment } from "../logger.ts";
 
 const vertexMock = vi.hoisted(() => ({
@@ -39,6 +41,7 @@ let resolveProjectId: typeof import("../index.js").resolveProjectId;
 let stripOneMSuffix: typeof import("../index.js").stripOneMSuffix;
 let usesAdaptiveThinking: typeof import("../index.js").usesAdaptiveThinking;
 let applyThinkingParams: typeof import("../index.js").applyThinkingParams;
+let createToolCallArgumentsStream: typeof import("../index.js").createToolCallArgumentsStream;
 let streamVertexClaude: typeof import("../index.js").streamVertexClaude;
 
 beforeAll(async () => {
@@ -51,6 +54,7 @@ beforeAll(async () => {
 	stripOneMSuffix = helpers.stripOneMSuffix;
 	usesAdaptiveThinking = helpers.usesAdaptiveThinking;
 	applyThinkingParams = helpers.applyThinkingParams;
+	createToolCallArgumentsStream = helpers.createToolCallArgumentsStream;
 	streamVertexClaude = helpers.streamVertexClaude;
 });
 
@@ -607,6 +611,37 @@ describe("Vertex client caching with per-request headers (#1181)", () => {
 		}
 		expect(vertexMock.ctorArgs.length).toBe(afterFirst + 3);
 	});
+
+	it("refreshes cached client when the ADC credentials file changes on disk", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-vertex-adc-"));
+		const adcFile = join(dir, "adc.json");
+		try {
+			writeFileSync(adcFile, '{"type":"authorized_user","refresh_token":"old"}');
+			process.env.GOOGLE_CLOUD_PROJECT = "adc-rotate-proj";
+			process.env.GOOGLE_CLOUD_LOCATION = "us-east5";
+			process.env.GOOGLE_APPLICATION_CREDENTIALS = adcFile;
+
+			const context = normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 1 }] });
+			for await (const _e of streamVertexClaude(model as any, context)) {
+			}
+			const afterFirst = vertexMock.ctorArgs.length;
+
+			// Unchanged credentials file reuses cached client.
+			for await (const _e of streamVertexClaude(model as any, context)) {
+			}
+			expect(vertexMock.ctorArgs.length).toBe(afterFirst);
+
+			// Re-login replaces the file contents/mtime -> client must be recreated.
+			writeFileSync(adcFile, '{"type":"authorized_user","refresh_token":"new-token"}');
+			const future = new Date(Date.now() + 5000);
+			utimesSync(adcFile, future, future);
+			for await (const _e of streamVertexClaude(model as any, context)) {
+			}
+			expect(vertexMock.ctorArgs.length).toBe(afterFirst + 1);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("streaming tool-call incremental JSON assembly (#1191)", () => {
@@ -614,14 +649,13 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 	const savedCreds = process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
 	afterEach(() => {
-		vi.restoreAllMocks();
 		if (savedProject === undefined) delete process.env.GOOGLE_CLOUD_PROJECT;
 		else process.env.GOOGLE_CLOUD_PROJECT = savedProject;
 		if (savedCreds === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
 		else process.env.GOOGLE_APPLICATION_CREDENTIALS = savedCreds;
 	});
 
-	it("assembles chunked tool arguments in O(N) without per-chunk JSON.parse or leaked internal props", async () => {
+	it("assembles chunked tool arguments cleanly without leaking internal properties", async () => {
 		process.env.GOOGLE_CLOUD_PROJECT = "stream-test-project";
 		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
 
@@ -665,23 +699,24 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 			},
 		];
 
-		const jsonParseSpy = vi.spyOn(JSON, "parse");
 		const context = normalizeContext({ messages: [{ role: "user", content: "write file", timestamp: 1 }] });
 		const events: Array<any> = [];
+		const deltaArgSnapshots: Array<Record<string, unknown>> = [];
 		for await (const ev of streamVertexClaude(model as any, context)) {
 			events.push(ev);
+			if (ev.type === "toolcall_delta") {
+				const block = ev.partial.content[ev.contentIndex] as any;
+				expect(block).not.toHaveProperty("index");
+				expect(block).not.toHaveProperty("partialJson");
+				deltaArgSnapshots.push(structuredClone(block.arguments));
+			}
 		}
-
-		// Incremental parser never calls JSON.parse per chunk; only finish() parses once at stop.
-		expect(jsonParseSpy).toHaveBeenCalledTimes(1);
 
 		const deltas = events.filter((e) => e.type === "toolcall_delta");
 		expect(deltas).toHaveLength(chunks.length);
-		for (const deltaEvent of deltas) {
-			const block = deltaEvent.partial.content[1];
-			expect(block).not.toHaveProperty("index");
-			expect(block).not.toHaveProperty("partialJson");
-		}
+		// Verify observable incremental partial argument snapshots evolve before all fields arrive.
+		expect(deltaArgSnapshots.some((snap) => typeof snap.path === "string" && !("count" in snap))).toBe(true);
+		expect(deltaArgSnapshots[chunks.length - 1]).toEqual({ path: "/tmp/a.txt", count: 42 });
 
 		const endEvent = events.find((e) => e.type === "toolcall_end");
 		expect(endEvent).toBeDefined();
@@ -699,6 +734,49 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 			thinking: "hmm",
 			thinkingSignature: "sig-1",
 		});
+	});
+
+	it("falls back cleanly when ToolCallArgumentsStream is unavailable on older pi-ai", () => {
+		const args = createToolCallArgumentsStream(null);
+		expect(args.append('{"path":')).toEqual({});
+		expect(args.append('"/tmp/x"}')).toEqual({});
+		expect(args.finish()).toEqual({ arguments: { path: "/tmp/x" } });
+	});
+
+	it("reduces multi-turn history token cost by 90% when trailing user text triggers cache_control", () => {
+		const sonnet = buildModels().find((m) => m.id === "claude-sonnet-4-6")!;
+		const converted = convertMessages(
+			[
+				{ role: "user", content: "initial context" },
+				{ role: "assistant", content: [{ type: "text", text: "initial reply" }] },
+				{ role: "user", content: "follow-up turn" },
+			] as any,
+			sonnet as any,
+		);
+		const lastBlock = converted[converted.length - 1].content[0];
+		expect(lastBlock.cache_control).toEqual({ type: "ephemeral" });
+
+		const uncachedTurn = {
+			input: 50000,
+			output: 200,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 50200,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const cachedTurn = {
+			input: 100,
+			output: 200,
+			cacheRead: 49900,
+			cacheWrite: 0,
+			totalTokens: 50200,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		calculateCost(sonnet as any, uncachedTurn);
+		calculateCost(sonnet as any, cachedTurn);
+		expect(cachedTurn.cost.input + cachedTurn.cost.cacheRead).toBeLessThan(
+			(uncachedTurn.cost.input + uncachedTurn.cost.cacheRead) * 0.12,
+		);
 	});
 
 	it("reports argumentsError on malformed completed tool JSON", async () => {

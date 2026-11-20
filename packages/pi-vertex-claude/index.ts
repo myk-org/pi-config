@@ -24,33 +24,37 @@
 
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/messages.js";
-import {
-	type Api,
-	type AssistantMessage,
-	type AssistantMessageEventStream,
-	calculateCost,
-	createAssistantMessageEventStream,
-	getCurrentSystemPrompt,
-	getCurrentTools,
-	type ImageContent,
-	type Message,
-	type Model,
-	type SimpleStreamOptions,
-	type StopReason,
-	type TextContent,
-	type ThinkingContent,
-	type Tool,
-	type ToolCall,
-	ToolCallArgumentsStream,
-	type ToolResultMessage,
-	type TranscriptContext,
+import * as piAi from "@earendil-works/pi-ai";
+import type {
+	Api,
+	AssistantMessage,
+	AssistantMessageEventStream,
+	ImageContent,
+	Message,
+	Model,
+	SimpleStreamOptions,
+	StopReason,
+	TextContent,
+	ThinkingContent,
+	Tool,
+	ToolCall,
+	ToolCallArgumentsStream as ToolCallArgumentsStreamType,
+	ToolResultMessage,
+	TranscriptContext,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as partialParse } from "partial-json";
 import { createLogger } from "./logger.ts";
+
+const {
+	calculateCost,
+	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
+	getCurrentTools,
+} = piAi;
 
 const log = createLogger("pi-vertex-claude");
 
@@ -200,29 +204,46 @@ export function buildModels(): typeof VERTEX_CLAUDE_MODELS {
 type ProjectEnvVar = "GOOGLE_CLOUD_PROJECT" | "GCLOUD_PROJECT" | "ANTHROPIC_VERTEX_PROJECT_ID";
 
 const DEFAULT_ADC_PATH = join(homedir(), ".config", "gcloud", "application_default_credentials.json");
-let cachedAdcExists: boolean | null = null;
-const vertexClients = new Map<string, AnthropicVertex>();
+
+type CachedVertexClient = { credentialsStamp: string; client: AnthropicVertex };
+const vertexClients = new Map<string, CachedVertexClient>();
+
+function resolveAdcPath(): string {
+	return process.env.GOOGLE_APPLICATION_CREDENTIALS || DEFAULT_ADC_PATH;
+}
+
+function getCredentialsStamp(adcPath: string): string {
+	try {
+		const st = statSync(adcPath);
+		return `${st.mtimeMs}:${st.size}:${st.ino}`;
+	} catch {
+		return "missing";
+	}
+}
 
 function getVertexClient(projectId: string, region: string): AnthropicVertex {
-	const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS ?? "";
+	const adcPath = resolveAdcPath();
+	const credentialsStamp = getCredentialsStamp(adcPath);
 	const baseUrl = process.env.ANTHROPIC_VERTEX_BASE_URL ?? "";
-	const cacheKey = `${projectId}\0${region}\0${credentialsPath}\0${baseUrl}`;
+	const cacheKey = `${projectId}\0${region}\0${adcPath}\0${baseUrl}`;
 	const cached = vertexClients.get(cacheKey);
-	if (cached) {
+	if (cached && cached.credentialsStamp === credentialsStamp) {
 		log.debug("getVertexClient: cache hit", { projectId, region });
-		return cached;
+		return cached.client;
 	}
-	log.debug("getVertexClient: creating client", { projectId, region });
+	log.debug(
+		cached
+			? "getVertexClient: refreshing client after credentials update"
+			: "getVertexClient: creating client",
+		{ projectId, region },
+	);
 	const client = new AnthropicVertex({ projectId, region });
-	vertexClients.set(cacheKey, client);
+	vertexClients.set(cacheKey, { credentialsStamp, client });
 	return client;
 }
 
 function hasAdcCredentials(): boolean {
-	if (cachedAdcExists !== null) return cachedAdcExists;
-	const adcPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || DEFAULT_ADC_PATH;
-	cachedAdcExists = existsSync(adcPath);
-	return cachedAdcExists;
+	return existsSync(resolveAdcPath());
 }
 
 export function resolveProjectId(): { id: string; envVar: ProjectEnvVar } | undefined {
@@ -538,6 +559,36 @@ export function parseStreamingJson(partialJson: string): Record<string, any> {
 	}
 }
 
+export interface StreamingToolArgs {
+	append(delta: string): Record<string, any>;
+	finish(): { arguments: Record<string, any>; argumentsError?: string };
+}
+
+/**
+ * Use pi-ai >=1.5.0 ToolCallArgumentsStream when present; fall back to single-parse-on-finish
+ * on older pi-ai releases so extension loading never fails with a missing named export.
+ */
+export function createToolCallArgumentsStream(
+	StreamCtor: (new () => ToolCallArgumentsStreamType) | null = (
+		piAi as { ToolCallArgumentsStream?: new () => ToolCallArgumentsStreamType }
+	).ToolCallArgumentsStream ?? null,
+): StreamingToolArgs {
+	if (StreamCtor) {
+		return new StreamCtor();
+	}
+	log.debug("createToolCallArgumentsStream: ToolCallArgumentsStream unavailable, using fallback");
+	let raw = "";
+	return {
+		append(delta: string) {
+			raw += delta;
+			return {};
+		},
+		finish() {
+			return { arguments: parseStreamingJson(raw) };
+		},
+	};
+}
+
 // =============================================================================
 // Streaming Implementation
 // =============================================================================
@@ -656,7 +707,7 @@ export function streamVertexClaude(
 			type OpenBlock = {
 				block: ThinkingContent | TextContent | ToolCall;
 				contentIndex: number;
-				arguments?: ToolCallArgumentsStream;
+				arguments?: StreamingToolArgs;
 			};
 			const openBlocks = new Map<number, OpenBlock>();
 
@@ -698,7 +749,7 @@ export function streamVertexClaude(
 						openBlocks.set(event.index, {
 							block,
 							contentIndex,
-							arguments: new ToolCallArgumentsStream(),
+							arguments: createToolCallArgumentsStream(),
 						});
 						stream.push({ type: "toolcall_start", contentIndex, partial: output });
 					}
