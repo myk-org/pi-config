@@ -10,6 +10,7 @@ import { execSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  getScoresRevision,
   loadScores,
   entryHash,
   isEntryActiveForSession,
@@ -63,6 +64,7 @@ const REGEX_CACHE_MAX = 64;
 
 interface CachedEntries<T> {
   scoresRef: ScoresFile;
+  scoresRevision: number;
   topicsStamp: string;
   minExpiresAtMs: number;
   result: T[];
@@ -159,13 +161,19 @@ export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEn
   // Load ALL entries with trigger+action, not just active/provisional.
   // Enforced rules are code-checked — lifecycle decay should not disable them.
   const scores = loadScores(cwd);
+  const scoresRevision = getScoresRevision(cwd);
   const rawEntries = Object.entries(scores.entries);
   if (rawEntries.length === 0) return [];
 
   const cacheKey = `${resolve(cwd)}\0${sessionId ?? ""}`;
   const now = Date.now();
   const cached = enforcedEntriesCache.get(cacheKey);
-  if (cached && cached.scoresRef === scores && now < cached.minExpiresAtMs) {
+  if (
+    cached &&
+    cached.scoresRef === scores &&
+    cached.scoresRevision === scoresRevision &&
+    now < cached.minExpiresAtMs
+  ) {
     if (cached.result.length === 0 || cached.topicsStamp === getTopicsStamp(cwd)) {
       log.debug("enforced_entries_cache_hit", { count: cached.result.length });
       return cached.result;
@@ -195,7 +203,7 @@ export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEn
     setBounded(
       enforcedEntriesCache,
       cacheKey,
-      { scoresRef: scores, topicsStamp: "", minExpiresAtMs: Infinity, result: [] },
+      { scoresRef: scores, scoresRevision, topicsStamp: "", minExpiresAtMs: Infinity, result: [] },
       ENTRIES_CACHE_MAX,
     );
     log.debug("enforced_entries_loaded", { count: 0 });
@@ -224,6 +232,7 @@ export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEn
     cacheKey,
     {
       scoresRef: scores,
+      scoresRevision,
       topicsStamp,
       minExpiresAtMs: minExpiryFromCandidates(candidates),
       result,
@@ -243,13 +252,19 @@ export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEn
 export function loadVerifierEntries(cwd: string, sessionId?: string): VerifierEntry[] {
   // Same as loadEnforcedEntries — enforced rules bypass lifecycle decay
   const scores = loadScores(cwd);
+  const scoresRevision = getScoresRevision(cwd);
   const rawEntries = Object.entries(scores.entries);
   if (rawEntries.length === 0) return [];
 
   const cacheKey = `${resolve(cwd)}\0${sessionId ?? ""}`;
   const now = Date.now();
   const cached = verifierEntriesCache.get(cacheKey);
-  if (cached && cached.scoresRef === scores && now < cached.minExpiresAtMs) {
+  if (
+    cached &&
+    cached.scoresRef === scores &&
+    cached.scoresRevision === scoresRevision &&
+    now < cached.minExpiresAtMs
+  ) {
     if (cached.result.length === 0 || cached.topicsStamp === getTopicsStamp(cwd)) {
       log.debug("verifier_entries_cache_hit", { count: cached.result.length });
       return cached.result;
@@ -268,7 +283,7 @@ export function loadVerifierEntries(cwd: string, sessionId?: string): VerifierEn
     setBounded(
       verifierEntriesCache,
       cacheKey,
-      { scoresRef: scores, topicsStamp: "", minExpiresAtMs: Infinity, result: [] },
+      { scoresRef: scores, scoresRevision, topicsStamp: "", minExpiresAtMs: Infinity, result: [] },
       ENTRIES_CACHE_MAX,
     );
     log.debug("verifier_entries_loaded", { count: 0 });
@@ -295,6 +310,7 @@ export function loadVerifierEntries(cwd: string, sessionId?: string): VerifierEn
     cacheKey,
     {
       scoresRef: scores,
+      scoresRevision,
       topicsStamp,
       minExpiresAtMs: minExpiryFromCandidates(candidates),
       result,

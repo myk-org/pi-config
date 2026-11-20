@@ -63,6 +63,7 @@ export class JsonlStateStore<T> {
   private cachedState: T | null = null;
   private cachedMtimeMs = 0;
   private cachedSize = -1;
+  private revision = 0;
 
   constructor(filePath: string, options?: JsonlStateStoreOptions) {
     this.filePath = filePath;
@@ -87,10 +88,16 @@ export class JsonlStateStore<T> {
     }
   }
 
+  /** Monotonic counter bumped on every fresh disk read or in-process write/invalidation. */
+  getRevision(): number {
+    return this.revision;
+  }
+
   /** Read the latest state from the JSONL file. Returns null if no valid state exists.
    *  Cached by mtime+size — repeated reads of an unchanged file do not re-parse. */
   read(): T | null {
     if (!existsSync(this.filePath)) {
+      if (this.cachedState !== null || this.cachedSize !== -1) this.revision++;
       this.cachedState = null;
       this.cachedSize = -1;
       return null;
@@ -110,10 +117,12 @@ export class JsonlStateStore<T> {
       this.cachedState = state;
       this.cachedMtimeMs = st.mtimeMs;
       this.cachedSize = st.size;
+      this.revision++;
       return state;
     } catch {
       this.cachedState = null;
       this.cachedSize = -1;
+      this.revision++;
       return null;
     }
   }
@@ -121,6 +130,7 @@ export class JsonlStateStore<T> {
   /** Update the read cache after a write or compaction. */
   private refreshWriteCache(state: T): void {
     this.cachedState = state;
+    this.revision++;
     try {
       const st = statSync(this.filePath);
       this.cachedMtimeMs = st.mtimeMs;
@@ -160,6 +170,7 @@ export class JsonlStateStore<T> {
       // let the next read parse the file fresh (Qodo #7, PR #916).
       this.cachedState = null;
       this.cachedSize = -1;
+      this.revision++;
       log.warn("write lock unavailable — appended unlocked, read cache invalidated", { path: this.filePath });
     }
   }

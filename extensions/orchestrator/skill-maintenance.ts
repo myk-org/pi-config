@@ -84,7 +84,7 @@ interface SkillTable {
   packageBases: string[];
 }
 
-const skillTableByRef = new WeakMap<readonly RegisteredSkillInfo[], SkillTable>();
+let skillTableByRef = new WeakMap<readonly RegisteredSkillInfo[], SkillTable>();
 const skillTableCache = new Map<string, SkillTable>();
 const markedFileCache = new Map<string, { mtimeMs: number; ctimeMs: number; size: number; marked: boolean }>();
 const projectRootsCache = new Map<string, string[]>();
@@ -101,6 +101,7 @@ function setBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
 
 /** Clear cached skill metadata (for session boundaries and tests). */
 export function invalidateSkillMaintenanceCache(projectCwd?: string): void {
+  skillTableByRef = new WeakMap<readonly RegisteredSkillInfo[], SkillTable>();
   skillTableCache.clear();
   markedFileCache.clear();
   if (projectCwd) {
@@ -249,10 +250,14 @@ export function isRegisteredPackageTarget(targetPath: string, skills?: readonly 
   if (!skills?.length || typeof targetPath !== "string" || targetPath.trim() === "") return false;
   const resolved = path.resolve(targetPath);
   const realTarget = realpathNearestExisting(resolved) ?? resolved;
-  const table = getSkillTable(skills);
-  if (table.packageFiles.has(realTarget)) return true;
-  for (const pkgBase of table.packageBases) {
-    if (isAtOrUnder(pkgBase, realTarget)) return true;
+  for (const skill of skills) {
+    if (skill.origin !== "package") continue;
+    const realFile = realpathNearestExisting(skill.filePath) ?? path.resolve(skill.filePath);
+    if (realTarget === realFile) return true;
+    if (path.basename(skill.filePath) === "SKILL.md") {
+      const realBase = realpathNearestExisting(skill.baseDir) ?? path.resolve(skill.baseDir);
+      if (isAtOrUnder(realBase, realTarget)) return true;
+    }
   }
   return false;
 }
@@ -291,13 +296,7 @@ export function skillsFromCommands(
 
 /** True when a skill may be adopted (excludes shipped package skills and symlinks to them). */
 export function isAdoptableSkill(skill: RegisteredSkillInfo, allSkills?: readonly RegisteredSkillInfo[]): boolean {
-  if (allSkills?.length) {
-    const table = getSkillTable(allSkills);
-    const hit = table.byName.get(skill.name);
-    if (hit && hit.skill.filePath === skill.filePath && hit.skill.origin === skill.origin) {
-      return hit.adoptable;
-    }
-  }
+  // Always verify against live filesystem targets so retargeted symlinks cannot pass a stale cache.
   if (skill.origin === "package" || isPackageSkillPath(skill.filePath) || isPackageSkillPath(skill.baseDir)) {
     return false;
   }
@@ -346,11 +345,31 @@ function isSkillFileMarked(filePath: string): boolean | null {
 
 function dirStatStamp(dir: string): string {
   try {
-    const st = fs.statSync(dir);
-    return `${st.mtimeMs}:${st.ctimeMs}:${st.size}`;
+    const st = fs.statSync(dir, { bigint: true });
+    return `${st.mtimeNs}:${st.ctimeNs}:${st.size}`;
   } catch {
     return "missing";
   }
+}
+
+function fallbackSignature(roots: readonly string[], fp: string): string {
+  const parts: string[] = [];
+  for (const root of roots) {
+    parts.push(`${root}=${dirStatStamp(root)}`);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const dir = path.join(root, entry.name);
+      const skillMd = path.join(dir, "SKILL.md");
+      parts.push(`${entry.name}:${dirStatStamp(dir)}:${dirStatStamp(skillMd)}`);
+    }
+  }
+  return `${parts.join("|")}\0${fp}`;
 }
 
 function fallbackProjectSkill(
@@ -399,7 +418,7 @@ function getFallbackSkillTable(projectCwd: string, allSkills?: readonly Register
   const roots = projectSkillsRoots(projectCwd);
   const fp = skillsFingerprint(allSkills);
   const cacheKey = `${path.resolve(projectCwd)}\0${fp}`;
-  const signature = `${roots.map((r) => `${r}=${dirStatStamp(r)}`).join("|")}\0${fp}`;
+  const signature = fallbackSignature(roots, fp);
   const cached = fallbackTableCache.get(cacheKey);
   if (cached && cached.signature === signature) {
     return cached.table;
@@ -442,19 +461,12 @@ function matchSkillPath(
   skills?: readonly RegisteredSkillInfo[],
 ): { skill: RegisteredSkillInfo; file: string; adoptable: boolean } | null {
   const realAbs = realpathNearestExisting(abs) ?? abs;
-  if (skills?.length) {
-    const hit = searchSkillTable(getSkillTable(skills), abs, realAbs);
-    if (hit) return hit;
-  }
-  // When pi.getCommands() supplied the live skills list, skip the fallback
-  // .pi/skills/ directory scan unless the target actually lives under a
-  // project skills root (e.g., a brand-new skill created mid-session).
+  // Use the .pi/skills/ filesystem fallback ONLY when pi.getCommands() is unavailable (`skills === undefined`).
   if (skills !== undefined) {
-    const roots = projectSkillsRoots(projectCwd);
-    const underProjectSkills = roots.some((root) => isAtOrUnder(root, abs) || isAtOrUnder(root, realAbs));
-    if (!underProjectSkills) return null;
+    if (skills.length === 0) return null;
+    return searchSkillTable(getSkillTable(skills), abs, realAbs);
   }
-  return searchSkillTable(getFallbackSkillTable(projectCwd, skills), abs, realAbs);
+  return searchSkillTable(getFallbackSkillTable(projectCwd), abs, realAbs);
 }
 
 function isBrandNewSkillFile(abs: string): boolean {
