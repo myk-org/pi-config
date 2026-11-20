@@ -149,6 +149,81 @@ function compileBashRegex(pattern: string): RegExp | null {
 
 // ── Loading ────────────────────────────────────────────────────────────────
 
+function loadEligibleScoreEntries<T>(
+  cwd: string,
+  sessionId: string | undefined,
+  cache: Map<string, CachedEntries<T>>,
+  label: string,
+  include: (hash: string, entry: ScoredEntry) => boolean,
+  mapEntry: (hash: string, text: string, entry: ScoredEntry) => T,
+): T[] {
+  // Load ALL matching entries, not just active/provisional.
+  // Enforced rules are code-checked — lifecycle decay should not disable them.
+  const scores = loadScores(cwd);
+  const scoresRevision = getScoresRevision(cwd);
+  const rawEntries = Object.entries(scores.entries);
+  if (rawEntries.length === 0) return [];
+
+  const cacheKey = `${resolve(cwd)}\0${sessionId ?? ""}`;
+  const now = Date.now();
+  const cached = cache.get(cacheKey);
+  if (
+    cached &&
+    cached.scoresRef === scores &&
+    cached.scoresRevision === scoresRevision &&
+    now < cached.minExpiresAtMs
+  ) {
+    if (cached.result.length === 0 || cached.topicsStamp === getTopicsStamp(cwd)) {
+      log.debug(`${label}_cache_hit`, { count: cached.result.length });
+      return cached.result;
+    }
+  }
+
+  // Filter FIRST before touching topic files or computing SHA-256 hashes.
+  const candidates: Array<{ hash: string; entry: ScoredEntry }> = [];
+  for (const [hash, entry] of rawEntries) {
+    if (entry.lifecycle === "dropped" || entry.userState === "forgotten") continue;
+    if (!isEntryActiveForSession(entry, sessionId)) continue;
+    if (!include(hash, entry)) continue;
+    candidates.push({ hash, entry });
+  }
+
+  if (candidates.length === 0) {
+    setBounded(
+      cache,
+      cacheKey,
+      { scoresRef: scores, scoresRevision, topicsStamp: "", minExpiresAtMs: Infinity, result: [] },
+      ENTRIES_CACHE_MAX,
+    );
+    log.debug(`${label}_loaded`, { count: 0 });
+    return [];
+  }
+
+  const topicsStamp = getTopicsStamp(cwd);
+  const neededHashes = new Set(candidates.map((c) => c.hash));
+  const hashToText = buildHashToTextLookup(cwd, neededHashes);
+
+  const result: T[] = [];
+  for (const { hash, entry } of candidates) {
+    result.push(mapEntry(hash, hashToText.get(hash) || hash, entry));
+  }
+
+  setBounded(
+    cache,
+    cacheKey,
+    {
+      scoresRef: scores,
+      scoresRevision,
+      topicsStamp,
+      minExpiresAtMs: minExpiryFromCandidates(candidates),
+      result,
+    },
+    ENTRIES_CACHE_MAX,
+  );
+  log.debug(`${label}_loaded`, { count: result.length });
+  return result;
+}
+
 /**
  * Load all active memory entries that have enforcement fields.
  * Reads from the existing memory-scores.jsonl — no separate storage.
@@ -158,89 +233,35 @@ function compileBashRegex(pattern: string): RegExp | null {
  * excluded entirely (fail closed — they are transient by design).
  */
 export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEntry[] {
-  // Load ALL entries with trigger+action, not just active/provisional.
-  // Enforced rules are code-checked — lifecycle decay should not disable them.
-  const scores = loadScores(cwd);
-  const scoresRevision = getScoresRevision(cwd);
-  const rawEntries = Object.entries(scores.entries);
-  if (rawEntries.length === 0) return [];
-
-  const cacheKey = `${resolve(cwd)}\0${sessionId ?? ""}`;
-  const now = Date.now();
-  const cached = enforcedEntriesCache.get(cacheKey);
-  if (
-    cached &&
-    cached.scoresRef === scores &&
-    cached.scoresRevision === scoresRevision &&
-    now < cached.minExpiresAtMs
-  ) {
-    if (cached.result.length === 0 || cached.topicsStamp === getTopicsStamp(cwd)) {
-      log.debug("enforced_entries_cache_hit", { count: cached.result.length });
-      return cached.result;
-    }
-  }
-
-  // Filter for trigger+action FIRST before touching topic files or computing SHA-256 hashes.
-  const candidates: Array<{ hash: string; entry: ScoredEntry }> = [];
-  for (const [hash, entry] of rawEntries) {
-    if (!entry.trigger || !entry.action) continue;
-    if (entry.lifecycle === "dropped" || entry.userState === "forgotten") continue;
-    if (!isEntryActiveForSession(entry, sessionId)) continue;
-    // A `tool_name bash` rule fires on every command: block stops the session dead, warn
-    // buries every result under a banner. Both happened with entries already in the store,
-    // so the guard lives at load time as well as write time.
-    if (
-      entry.trigger.trim().toLowerCase() === "tool_name bash" &&
-      ["block", "warn"].includes(entry.action.trim().split(/\s+/)[0])
-    ) {
-      log.warn("enforcement_rule_unscoped_bash_ignored", { hash, action: entry.action });
-      continue;
-    }
-    candidates.push({ hash, entry });
-  }
-
-  if (candidates.length === 0) {
-    setBounded(
-      enforcedEntriesCache,
-      cacheKey,
-      { scoresRef: scores, scoresRevision, topicsStamp: "", minExpiresAtMs: Infinity, result: [] },
-      ENTRIES_CACHE_MAX,
-    );
-    log.debug("enforced_entries_loaded", { count: 0 });
-    return [];
-  }
-
-  const topicsStamp = getTopicsStamp(cwd);
-  const neededHashes = new Set(candidates.map((c) => c.hash));
-  const hashToText = buildHashToTextLookup(cwd, neededHashes);
-
-  const result: EnforcedEntry[] = [];
-  for (const { hash, entry } of candidates) {
-    result.push({
+  return loadEligibleScoreEntries(
+    cwd,
+    sessionId,
+    enforcedEntriesCache,
+    "enforced_entries",
+    (hash, entry) => {
+      if (!entry.trigger || !entry.action) return false;
+      // A `tool_name bash` rule fires on every command: block stops the session dead, warn
+      // buries every result under a banner. Both happened with entries already in the store,
+      // so the guard lives at load time as well as write time.
+      if (
+        entry.trigger.trim().toLowerCase() === "tool_name bash" &&
+        ["block", "warn"].includes(entry.action.trim().split(/\s+/)[0])
+      ) {
+        log.warn("enforcement_rule_unscoped_bash_ignored", { hash, action: entry.action });
+        return false;
+      }
+      return true;
+    },
+    (hash, text, entry) => ({
       hash,
-      text: hashToText.get(hash) || hash,
+      text,
       trigger: entry.trigger!,
       action: entry.action!,
       actionCommand: entry.actionCommand,
       verifier: entry.verifier,
       entry,
-    });
-  }
-
-  setBounded(
-    enforcedEntriesCache,
-    cacheKey,
-    {
-      scoresRef: scores,
-      scoresRevision,
-      topicsStamp,
-      minExpiresAtMs: minExpiryFromCandidates(candidates),
-      result,
-    },
-    ENTRIES_CACHE_MAX,
+    }),
   );
-  log.debug("enforced_entries_loaded", { count: result.length });
-  return result;
 }
 
 /**
@@ -250,75 +271,20 @@ export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEn
  * session/expiry eligibility as loadEnforcedEntries (Qodo #8, PR #916).
  */
 export function loadVerifierEntries(cwd: string, sessionId?: string): VerifierEntry[] {
-  // Same as loadEnforcedEntries — enforced rules bypass lifecycle decay
-  const scores = loadScores(cwd);
-  const scoresRevision = getScoresRevision(cwd);
-  const rawEntries = Object.entries(scores.entries);
-  if (rawEntries.length === 0) return [];
-
-  const cacheKey = `${resolve(cwd)}\0${sessionId ?? ""}`;
-  const now = Date.now();
-  const cached = verifierEntriesCache.get(cacheKey);
-  if (
-    cached &&
-    cached.scoresRef === scores &&
-    cached.scoresRevision === scoresRevision &&
-    now < cached.minExpiresAtMs
-  ) {
-    if (cached.result.length === 0 || cached.topicsStamp === getTopicsStamp(cwd)) {
-      log.debug("verifier_entries_cache_hit", { count: cached.result.length });
-      return cached.result;
-    }
-  }
-
-  const candidates: Array<{ hash: string; entry: ScoredEntry }> = [];
-  for (const [hash, entry] of rawEntries) {
-    if (!entry.verifier) continue;
-    if (entry.lifecycle === "dropped" || entry.userState === "forgotten") continue;
-    if (!isEntryActiveForSession(entry, sessionId)) continue;
-    candidates.push({ hash, entry });
-  }
-
-  if (candidates.length === 0) {
-    setBounded(
-      verifierEntriesCache,
-      cacheKey,
-      { scoresRef: scores, scoresRevision, topicsStamp: "", minExpiresAtMs: Infinity, result: [] },
-      ENTRIES_CACHE_MAX,
-    );
-    log.debug("verifier_entries_loaded", { count: 0 });
-    return [];
-  }
-
-  const topicsStamp = getTopicsStamp(cwd);
-  const neededHashes = new Set(candidates.map((c) => c.hash));
-  const hashToText = buildHashToTextLookup(cwd, neededHashes);
-
-  const result: VerifierEntry[] = [];
-  for (const { hash, entry } of candidates) {
-    result.push({
+  return loadEligibleScoreEntries(
+    cwd,
+    sessionId,
+    verifierEntriesCache,
+    "verifier_entries",
+    (_hash, entry) => Boolean(entry.verifier),
+    (hash, text, entry) => ({
       hash,
-      text: hashToText.get(hash) || hash,
+      text,
       trigger: entry.trigger,
       verifier: entry.verifier!,
       entry,
-    });
-  }
-
-  setBounded(
-    verifierEntriesCache,
-    cacheKey,
-    {
-      scoresRef: scores,
-      scoresRevision,
-      topicsStamp,
-      minExpiresAtMs: minExpiryFromCandidates(candidates),
-      result,
-    },
-    ENTRIES_CACHE_MAX,
+    }),
   );
-  log.debug("verifier_entries_loaded", { count: result.length });
-  return result;
 }
 
 // ── Trigger Matching ───────────────────────────────────────────────────────

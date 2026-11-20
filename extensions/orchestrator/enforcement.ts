@@ -12,12 +12,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
-import { readFileSync, writeFileSync, realpathSync } from "node:fs";
-import path, { basename, join, resolve, dirname } from "node:path";
+import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import path, { join, resolve, dirname } from "node:path";
 import { supportsAsyncLlm } from "./async-capability.js";
 import { getGlobalSettingsPath, getSetting, getSettingsPath } from "./project-settings.js";
 import { LEGACY_SETTINGS_FILENAME, SETTINGS_FILENAMES } from "./settings-source.js";
-import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
+import { escapeRegExp, getProjectTmpDir, realpathNearestExisting, resolveWorktreeRoot, sanitizeModelId } from "./utils.js";
 import {
   conflictCandidateDirs,
   pushTargetsProtectedBranch,
@@ -142,7 +142,7 @@ export function commitTrailerModelId(ctx: any): string {
       log.debug("commit_trailer: skipped placeholder model id", trimmed);
       continue;
     }
-    const clean = trimmed.replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim();
+    const clean = sanitizeModelId(trimmed);
     if (clean) return clean;
   }
   log.warn("commit_trailer: no model id resolved — trailer identity is unknown");
@@ -256,7 +256,7 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
       ].filter((p) => p && p !== "."),
     )];
     const maskedCommand = maskQuotedRegions(command);
-    if (candidatePaths.some((p) => bashWritesToPath(command, maskedCommand, p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))) {
+    if (candidatePaths.some((p) => bashWritesToPath(command, maskedCommand, escapeRegExp(p)))) {
       log.warn("commit_trailer: message file is written by the same command", fileMessage);
       return {
         block: true,
@@ -519,12 +519,9 @@ function approvalFailureMessage(reason: "corrupt" | "write_failed" | "trust_unkn
  * explicitly in the prompt (PR #950 R8; the old silent-fallback notice is
  * gone along with the fallback itself). */
 async function notifyApprovalResults(
-  saved: number,
   failed: number,
-  _scopes: string[],
   ui?: { notify: (msg: string, level: "info" | "warning" | "error") => Promise<void> | void },
 ): Promise<void> {
-  void _scopes;
   if (failed > 0) {
     await ui?.notify(
       `⚠️ ${failed} approval${failed > 1 ? "s" : ""} could not be saved — treated as run-once (see the enforcement log for the reason).`,
@@ -771,7 +768,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
             failed,
             storedIn: scopes.length === 1 ? `${scopes[0]} settings (dangerous_command_allowlist)` : scopes.join("+"),
           });
-          await notifyApprovalResults(saved.length, failed, scopes, ctx.ui);
+          await notifyApprovalResults(failed, ctx.ui);
         }
         return undefined;
       }
@@ -834,7 +831,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     cachedTrailerSelection = null;
     // Set comment signature env var for CLI tools to read
     if (getSetting(ctx.cwd, "comment_signature")) {
-      const modelId = ((ctx as any).model?.id || process.env.PI_MODEL || process.env.PI_PRIMARY_MODEL || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
+      const modelId = sanitizeModelId((ctx as any).model?.id || process.env.PI_MODEL || process.env.PI_PRIMARY_MODEL) || "unknown";
       process.env.PI_COMMENT_SIGNATURE = `Assisted-by: PI (${modelId})`;
     } else {
       delete process.env.PI_COMMENT_SIGNATURE;
@@ -906,42 +903,11 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
       const filePath: string | undefined = (event as any).input?.path;
       if (filePath) {
-        // resolve() does not follow symlinks — a symlinked alias of .pi (or
-        // of the file itself) must not slip past the comparison (Qodo PR
-        // #950 R3). Compare BOTH the lexical resolve and the realpath (of the
-        // target and of each protected path, best-effort — the file may not
-        // exist yet).
-        const toReal = (p: string): string => {
-          try {
-            return realpathSync(p);
-          } catch {
-            // The file may not exist yet — resolve the nearest existing
-            // ancestor (a symlinked DIRECTORY alias still resolves) and
-            // rejoin the remainder.
-            const parent = dirname(p);
-            if (parent === p) return p;
-            try {
-              return join(realpathSync(parent), basename(p));
-            } catch {
-              return p;
-            }
-          }
-        };
+        const toReal = (p: string): string => realpathNearestExisting(p) ?? p;
         const resolved = resolve(ctx.cwd, filePath);
-        // The single settings filename in both scopes, PLUS the resolved global path itself —
-        // its basename may differ from the standard filename (e.g. the test-runner sandbox),
-        // and the global file carries the machine-wide allowlist either way. The legacy
-        // `.jsonc` is guarded too: until it is migrated away it can still feed the `.json`.
-        const settingsTargets = new Set<string>();
-        for (const base of [dirname(getSettingsPath(ctx.cwd)), dirname(getGlobalSettingsPath())]) {
-          for (const name of [...SETTINGS_FILENAMES, LEGACY_SETTINGS_FILENAME]) {
-            settingsTargets.add(join(base, name));
-            settingsTargets.add(toReal(join(base, name)));
-          }
-        }
-        settingsTargets.add(getGlobalSettingsPath());
-        settingsTargets.add(toReal(getGlobalSettingsPath()));
-        if (settingsTargets.has(resolved) || settingsTargets.has(toReal(resolved))) {
+        const realResolved = toReal(resolved);
+        const settingsTargets = getProtectedSettingsTargets(ctx.cwd);
+        if (settingsTargets.has(resolved) || settingsTargets.has(realResolved)) {
           return {
             block: true,
             reason:
@@ -951,7 +917,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         // Git identity config is off-limits to agents too (issue #995): the
         // identity a commit is recorded under belongs to the human, so no agent
         // writes it by hand — same alias-proof resolution as the settings guard.
-        if (isGitIdentityConfigPath(resolved) || isGitIdentityConfigPath(toReal(resolved))) {
+        if (isGitIdentityConfigPath(resolved) || isGitIdentityConfigPath(realResolved)) {
           return {
             block: true,
             reason:
@@ -977,43 +943,27 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     // Block bash WRITES targeting the settings files (issue #949 / Qodo
-    // PR #950) — same rationale as the edit/write block above: the
-    // dangerous-command allowlist lives there. Deliberately NARROW (user
-    // decision, R3): only a redirect INTO the file (>, >>, >|) or tee/sponge
-    // taking the path as an argument blocks. Broad write-verb/interpreter
-    // co-occurrence was tried and rejected — it taxed legitimate work on
-    // this repo (heredocs editing source/docs that mention the filename)
-    // while a determined agent bypasses any text guard anyway (variables,
-    // concatenation). The tripwire catches the lazy one-liner; the tool
-    // guard and the tracked-file guard carry the real protection.
-    // Quoted regions carry PROSE, not structure — mask their content before
-    // the redirect/tee tripwire (Qodo PR #950 R5: a PR body mentioning
-    // "settings => pi-config-settings.json" must not be blocked).
-    const maskedCmd = maskQuotedRegions(command);
-    if (
-      cmdLower.includes("pi-config-settings") &&
-      bashWritesToPath(command, maskedCmd, "pi-config-settings")
-    ) {
-      return {
-        block: true,
-        reason:
-          "\u26d4 Bash command writing pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor.",
-      };
-    }
-
-    // Block bash WRITES targeting a git identity config file (issue #995) —
-    // same narrow tripwire shape as the settings one above. The home files
-    // count only under THIS user's home: a `.gitconfig` in /tmp is not the
-    // identity git reads (Qodo, PR #996). One pattern, shared with the tests.
-    const IDENTITY_CONFIG_SRC = gitIdentityConfigSrc();
-    if (bashWritesToPath(command, maskedCmd, IDENTITY_CONFIG_SRC)) {
-      log.error("git_identity_config_write_blocked");
-      return {
-        block: true,
-        reason:
-          "\u26d4 Bash command writing a git identity config (~/.gitconfig, ~/.config/git/config, .git/config) blocked. " +
-          "The git identity belongs to the human — if it is wrong, tell the user to fix their own git config.",
-      };
+    // PR #950) and git identity config files (issue #995).
+    const maybeSettingsWrite = cmdLower.includes("pi-config-settings");
+    const maybeIdentityWrite = cmdLower.includes("gitconfig") || cmdLower.includes("git/config");
+    if (maybeSettingsWrite || maybeIdentityWrite) {
+      const maskedCmd = maskQuotedRegions(command);
+      if (maybeSettingsWrite && bashWritesToPath(command, maskedCmd, "pi-config-settings")) {
+        return {
+          block: true,
+          reason:
+            "\u26d4 Bash command writing pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor.",
+        };
+      }
+      if (maybeIdentityWrite && bashWritesToPath(command, maskedCmd, gitIdentityConfigSrc())) {
+        log.error("git_identity_config_write_blocked");
+        return {
+          block: true,
+          reason:
+            "\u26d4 Bash command writing a git identity config (~/.gitconfig, ~/.config/git/config, .git/config) blocked. " +
+            "The git identity belongs to the human — if it is wrong, tell the user to fix their own git config.",
+        };
+      }
     }
 
     // Block repeated identical commands (polling-by-spam) — orchestrator only.
@@ -1100,12 +1050,11 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     // comment_signature: inject Assisted-by footer into gh pr/issue create|comment|edit bodies
     if (getSetting(ctx.cwd, "comment_signature")) {
-      const modelId = (
+      const modelId = sanitizeModelId(
         (ctx as any).model?.id ||
         process.env.PI_MODEL ||
-        process.env.PI_PRIMARY_MODEL ||
-        "unknown"
-      ).replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
+        process.env.PI_PRIMARY_MODEL,
+      ) || "unknown";
       const signature = `Assisted-by: PI (${modelId})`;
       const injected = injectGhBodySignature(event.input.command, signature);
       if (injected !== event.input.command) {
@@ -1191,7 +1140,6 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         };
       }
       const conflicted: string[] = [];
-      let readable = 0;
       const unreadable: string[] = [];
       for (const dir of all) {
         const lookup = listUnmergedFiles(dir);
@@ -1201,7 +1149,6 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           if (isInsideGitWorkTree(dir)) unreadable.push(dir);
           continue;
         }
-        readable++;
         // Paths are repo-relative; the directory names the repository checked.
         for (const file of lookup.files) conflicted.push(dir === ctx.cwd ? file : `${dir} → ${file}`);
       }
@@ -1546,20 +1493,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const targetCwd = worktreePath ? resolve(ctx.cwd, worktreePath) : ctx.cwd;
       const state = readReviewState(targetCwd);
       const enabled = getSetting(ctx.cwd, "review_loop_enforcement");
-      const worktreeLabel = worktreePath ? ` (worktree: ${worktreePath})` : "";
-      const lines = [
-        `Review Loop Enforcement: ${enabled ? "enabled" : "disabled"}${worktreeLabel}`,
-        `Status: ${state.status}`,
-        `Subject: ${subjectLabel(state.subject)}`,
-        `Cycle: ${state.cycle}`,
-        `Findings: ${state.findings_count}`,
-        `Reviewers pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
-        `Edited during cycle: ${state.edited_during_cycle}`,
-        `Tests passed: ${state.tests_passed}`,
-        `Last edit: ${state.last_edit_at || "none"}`,
-        `Last clean: ${state.last_clean_at || "none"}`,
-      ];
-      ctx.ui.notify(lines.join("\n"), "info");
+      ctx.ui.notify(formatReviewStateSummary(state, enabled, { mode: "ui", worktreePath }), "info");
     },
   });
 
@@ -1575,24 +1509,98 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const targetCwd = params.worktree_path ? resolve(ctx.cwd, params.worktree_path) : ctx.cwd;
       const state = readReviewState(targetCwd);
       const enabled = getSetting(ctx.cwd, "review_loop_enforcement");
-      const prefix = params.worktree_path ? `worktree: ${params.worktree_path}\n` : "";
-      const summary = [
-        `${prefix}enforcement: ${enabled ? "enabled" : "disabled"}`,
-        `status: ${state.status}`,
-        `cycle: ${state.cycle}`,
-        `findings: ${state.findings_count}`,
-        `pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
-        `edited_during_cycle: ${state.edited_during_cycle}`,
-        `tests_passed: ${state.tests_passed}`,
-        `last_edit: ${state.last_edit_at || "none"}`,
-        `last_clean: ${state.last_clean_at || "none"}`,
-      ].join("\n");
+      const summary = formatReviewStateSummary(state, enabled, { mode: "tool", worktreePath: params.worktree_path });
       return {
         content: [{ type: "text" as const, text: summary }],
         details: { state, enabled, worktree_path: params.worktree_path || null },
       };
     },
   });
+}
+
+function formatReviewStateSummary(
+  state: ReturnType<typeof readReviewState>,
+  enabled: boolean,
+  opts: { mode: "ui" | "tool"; worktreePath?: string },
+): string {
+  const pendingStr = `${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`;
+  const enabledStr = enabled ? "enabled" : "disabled";
+  if (opts.mode === "ui") {
+    const worktreeLabel = opts.worktreePath ? ` (worktree: ${opts.worktreePath})` : "";
+    return [
+      `Review Loop Enforcement: ${enabledStr}${worktreeLabel}`,
+      `Status: ${state.status}`,
+      `Subject: ${subjectLabel(state.subject)}`,
+      `Cycle: ${state.cycle}`,
+      `Findings: ${state.findings_count}`,
+      `Reviewers pending: ${pendingStr}`,
+      `Edited during cycle: ${state.edited_during_cycle}`,
+      `Tests passed: ${state.tests_passed}`,
+      `Last edit: ${state.last_edit_at || "none"}`,
+      `Last clean: ${state.last_clean_at || "none"}`,
+    ].join("\n");
+  }
+  const prefix = opts.worktreePath ? `worktree: ${opts.worktreePath}\n` : "";
+  return [
+    `${prefix}enforcement: ${enabledStr}`,
+    `status: ${state.status}`,
+    `cycle: ${state.cycle}`,
+    `findings: ${state.findings_count}`,
+    `pending: ${pendingStr}`,
+    `edited_during_cycle: ${state.edited_during_cycle}`,
+    `tests_passed: ${state.tests_passed}`,
+    `last_edit: ${state.last_edit_at || "none"}`,
+    `last_clean: ${state.last_clean_at || "none"}`,
+  ].join("\n");
+}
+
+function lstatStamp(p: string): string {
+  try {
+    const st = lstatSync(p, { bigint: true });
+    return `${st.dev}:${st.ino}:${st.mtimeNs}:${st.ctimeNs}:${st.isSymbolicLink()}`;
+  } catch {
+    return "missing";
+  }
+}
+
+let cachedProtectedSettings: {
+  key: string;
+  projectStamp: string;
+  globalStamp: string;
+  globalFileStamp: string;
+  targets: Set<string>;
+} | null = null;
+
+function getProtectedSettingsTargets(cwd: string): Set<string> {
+  const projectBase = dirname(getSettingsPath(cwd));
+  const globalPath = getGlobalSettingsPath();
+  const globalBase = dirname(globalPath);
+  const key = `${projectBase}\0${globalBase}\0${globalPath}`;
+  const projectStamp = lstatStamp(projectBase);
+  const globalStamp = lstatStamp(globalBase);
+  const globalFileStamp = lstatStamp(globalPath);
+  if (
+    cachedProtectedSettings &&
+    cachedProtectedSettings.key === key &&
+    cachedProtectedSettings.projectStamp === projectStamp &&
+    cachedProtectedSettings.globalStamp === globalStamp &&
+    cachedProtectedSettings.globalFileStamp === globalFileStamp
+  ) {
+    return cachedProtectedSettings.targets;
+  }
+  const toReal = (p: string): string => realpathNearestExisting(p) ?? p;
+  const targets = new Set<string>();
+  for (const base of [projectBase, globalBase]) {
+    for (const name of [...SETTINGS_FILENAMES, LEGACY_SETTINGS_FILENAME]) {
+      const full = join(base, name);
+      targets.add(full);
+      targets.add(toReal(full));
+    }
+  }
+  targets.add(globalPath);
+  targets.add(toReal(globalPath));
+  cachedProtectedSettings = { key, projectStamp, globalStamp, globalFileStamp, targets };
+  return targets;
 }
 
 // trigger re-scan

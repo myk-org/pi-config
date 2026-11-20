@@ -10,10 +10,11 @@ import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { join } from "node:path";
-import { getProjectDataDir } from "./utils.js";
+import { acquireDirLock } from "../shared/file-lock.js";
+import { escapeRegExp, getProjectDataDir } from "./utils.js";
 import { getGlobalSettingsPath, getSettingsPath, loadGlobalSettings, loadProjectSettings } from "./project-settings.js";
 import { readSettingsFile, writeSettingsFile } from "./settings-tui-helpers.js";
-import { DANGEROUS, WRAPPER_VALUE_OPTIONS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
+import { DANGEROUS, WRAPPER_VALUE_OPTIONS, executableText, getCurrentBranch, isConflictResolutionCommand, matchHeredocOpener, segmentRunsGit, skipHeredocBody, tokenize, type HeredocSpec } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -57,7 +58,7 @@ export function escapeForSingleQuote(s: string): string {
  * sequence, or a quote/whitespace character.
  */
 export function commandHasTrailerByName(command: string, trailerName: string): boolean {
-  const escName = trailerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escName = escapeRegExp(trailerName);
   // (^|\n real newline|\\n literal backslash-n|quote/space) + name + ":" + space
   const trailerNameRe = new RegExp(String.raw`(^|\n|\\n|["'\s])` + escName + String.raw`:\s`);
   const result = trailerNameRe.test(command);
@@ -69,30 +70,11 @@ export function commandHasTrailerByName(command: string, trailerName: string): b
 function consumeShellHeredocBodies(
   cmd: string,
   start: number,
-  pending: Array<{ delim: string; stripTabs: boolean }>,
+  pending: ReadonlyArray<HeredocSpec>,
 ): { text: string; next: number } {
-  let cursor = start;
-  for (const h of pending) {
-    let closed = false;
-    while (cursor <= cmd.length) {
-      let lineEnd = cmd.indexOf("\n", cursor);
-      const atEnd = lineEnd === -1;
-      if (atEnd) lineEnd = cmd.length;
-      const line = cmd.slice(cursor, lineEnd).replace(/\r$/, "");
-      const bodyMatch = h.stripTabs ? line.replace(/^\t+/, "") === h.delim : line === h.delim;
-      cursor = atEnd ? cmd.length : lineEnd + 1;
-      if (bodyMatch) {
-        closed = true;
-        break;
-      }
-      if (atEnd) break;
-    }
-    if (!closed) {
-      enfLog.debug("consumeShellHeredocBodies unclosed heredoc", h.delim);
-      break;
-    }
-  }
-  return { text: cmd.slice(start, cursor), next: cursor };
+  const { next, closed } = skipHeredocBody(cmd, start, pending, { stripCr: true });
+  if (!closed) enfLog.debug("consumeShellHeredocBodies unclosed heredoc", pending[0]?.delim);
+  return { text: cmd.slice(start, next), next };
 }
 
 function scanBacktickShellComments(cmd: string, start: number): { text: string; next: number } {
@@ -282,12 +264,11 @@ function scanUnquotedShellComments(
     }
 
     if (ch === "<" && cmd[i + 1] === "<" && cmd[i + 2] !== "<") {
-      const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|((?:\\.|[^\s;&|)'"\\`\n])+))/.exec(cmd.slice(i));
+      const m = matchHeredocOpener(cmd.slice(i));
       if (m) {
-        const delim = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4]!.replace(/\\(.)/g, "$1");
-        pendingHeredocs.push({ delim, stripTabs: m[1] === "-" });
-        out += m[0];
-        i += m[0].length;
+        pendingHeredocs.push({ delim: m.delim, stripTabs: m.stripTabs });
+        out += cmd.slice(i, i + m.length);
+        i += m.length;
         atWordStart = false;
         continue;
       }
@@ -780,6 +761,23 @@ const CONFIG_READ_FLAGS = new Set(["--get", "--get-all", "--get-regexp", "--list
 /** `git config` flags that remove a key: no value follows, yet the identity moves. */
 const CONFIG_UNSET_FLAGS = new Set(["--unset", "--unset-all"]);
 
+const bashWritesReCache = new Map<string, { structural: RegExp; quoted: RegExp }>();
+const BASH_WRITES_RE_CACHE_MAX = 32;
+
+function getBashWritesRegexes(targetSrc: string): { structural: RegExp; quoted: RegExp } {
+  const cached = bashWritesReCache.get(targetSrc);
+  if (cached) return cached;
+  const structuralSrc = String.raw`>+\|?\s*\S*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)(?:\s+-[A-Za-z-]+)*\s+\S*${targetSrc}`;
+  const quotedSrc = String.raw`>+\s*["'][^"']*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)(?:\s+-[A-Za-z-]+)*\s+["'][^"']*${targetSrc}`;
+  const pair = { structural: new RegExp(structuralSrc, "i"), quoted: new RegExp(quotedSrc, "i") };
+  if (bashWritesReCache.size >= BASH_WRITES_RE_CACHE_MAX) {
+    const oldest = bashWritesReCache.keys().next().value;
+    if (oldest !== undefined) bashWritesReCache.delete(oldest);
+  }
+  bashWritesReCache.set(targetSrc, pair);
+  return pair;
+}
+
 /**
  * True when a bash command WRITES into a path matching `targetSrc` (a regex
  * source): a redirect (`>`, `>>`, `>|`) or `tee`/`sponge` taking it as an
@@ -791,11 +789,8 @@ const CONFIG_UNSET_FLAGS = new Set(["--unset", "--unset-all"]);
  * invisible once masked, so those are matched on the raw command (Qodo #950 R5).
  */
 export function bashWritesToPath(command: string, maskedCommand: string, targetSrc: string): boolean {
-  // `tee -a <path>` / `tee --append <path>`: tee's own options sit between it and
-  // the path it writes.
-  const STRUCTURAL = String.raw`>+\|?\s*\S*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)(?:\s+-[A-Za-z-]+)*\s+\S*${targetSrc}`;
-  const QUOTED = String.raw`>+\s*["'][^"']*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)(?:\s+-[A-Za-z-]+)*\s+["'][^"']*${targetSrc}`;
-  let result = new RegExp(STRUCTURAL, "i").test(maskedCommand) || new RegExp(QUOTED, "i").test(command);
+  const { structural, quoted } = getBashWritesRegexes(targetSrc);
+  let result = structural.test(maskedCommand) || quoted.test(command);
   if (!result) {
     // A nested shell's script is code, not prose, so a redirect inside it
     // (`bash -c 'echo x >> .git/config'`) still writes the file. Only segments
@@ -803,7 +798,7 @@ export function bashWritesToPath(command: string, maskedCommand: string, targetS
     // a command stays prose (Qodo, PR #996).
     for (const seg of unquotedSegments(command)) {
       if (!runsNestedShell(tokenize(seg.text))) continue;
-      if (new RegExp(STRUCTURAL, "i").test(executableText(seg.text))) {
+      if (structural.test(executableText(seg.text))) {
         result = true;
         break;
       }
@@ -900,9 +895,17 @@ function identityWritesIn(command: string): string | null {
  * command — `$HOME`/`~`/absolute home forms and repo-local `.git/config`.
  * One source of truth for the tripwire and its tests (Qodo, PR #996).
  */
+let cachedIdentityConfigSrc: { home: string; src: string } | null = null;
+
 export function gitIdentityConfigSrc(): string {
-  const homeSrc = homedir().replace(/\\/g, "/").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return String.raw`(?:(?:~|\$HOME|\$\{HOME\}|${homeSrc})/(?:\.gitconfig|\.config/git/config)|\.git/config)(?![A-Za-z0-9._-])`;
+  const home = homedir();
+  if (cachedIdentityConfigSrc && cachedIdentityConfigSrc.home === home) {
+    return cachedIdentityConfigSrc.src;
+  }
+  const homeSrc = escapeRegExp(home.replace(/\\/g, "/"));
+  const src = String.raw`(?:(?:~|\$HOME|\$\{HOME\}|${homeSrc})/(?:\.gitconfig|\.config/git/config)|\.git/config)(?![A-Za-z0-9._-])`;
+  cachedIdentityConfigSrc = { home, src };
+  return src;
 }
 
 export function isGitIdentityConfigPath(p: string): boolean {
@@ -1222,162 +1225,120 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
   return undefined;
 }
 
-/** Block remote script execution (pipe to shell, process substitution, command substitution/eval) */
-export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
-  const cmdForExecCheck = cmdLower.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*/m, "");
-  const remoteExecReason = "\u26d4 Remote script execution is forbidden. Download the script first, audit it with security-auditor, then run if safe.";
-  if (/\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*|uv\s+run\s+)*(?:\/\S+\/)*(ba|c|da|[akz]|fi|tc)?sh\b/.test(cmdForExecCheck) ||
-      /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*|uv\s+run\s+)*(?:\/\S+\/)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
-    enfLog.debug("remote_exec_block", "pipe");
-    return { block: true, reason: remoteExecReason };
-  }
-  // Match curl/wget anywhere inside process substitution <(...), not just as first token
-  // Allow quoted strings to handle quoted ) characters inside <(...)
-  if (/\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /\bsource\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /(?:^|[\s;&|])\.\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck)) {
-    enfLog.debug("remote_exec_block", "proc-sub");
-    return { block: true, reason: remoteExecReason };
-  }
-  // Block when curl/wget is inside a command substitution AND an execution primitive
-  // (eval, bash -c, sh -c, etc.) CONSUMES that curl output — either inline
-  // ($(curl ...)/`curl ...` passed directly to the primitive) or via a variable
-  // that was assigned from curl.
-  //
-  // FALSE-POSITIVE FIX: A SAFE capture `VAR=$(curl ...)` at a statement boundary,
-  // followed by an UNRELATED exec primitive that does NOT reference that variable,
-  // is not a remote exec. Example (now ALLOWED):
-  //   code=$(curl -s -w "%{http_code}" https://x/json); python3 -c "import json"
-  // Here $code never flows into python3, so there is no remote code execution.
-  //
-  // To avoid opening a bypass we:
-  //   1. Record the set of variable names assigned from curl/wget captures.
-  //   2. Strip SAFE curl assignments before the inline-substitution exec check, so a
-  //      captured-but-unused curl output no longer counts as "curl feeding an exec".
-  //   3. Separately block when an exec primitive REFERENCES a curl-assigned variable
-  //      (e.g. x=$(curl ...); eval "$x") — stripping alone would miss this.
-  //
-  // Allow quoted strings inside $() to handle quoted ) characters. Matching curl/wget
-  // as a word anywhere inside the substitution is intentional — it trades rare false
-  // positives for stronger security against obfuscated curl invocations.
-  //
-  // Safe-assignment shape: VAR=$(...) / VAR=`...` at a statement boundary, terminated
-  // by a statement separator / comment / end. CRITICAL: the captured value must NOT
-  // itself contain a NESTED command substitution ($( or backtick) — even inside quotes.
-  // Otherwise `var=$(bash -c "$(curl ...)")` (a REAL remote exec) would be treated as a
-  // simple safe capture and stripped, opening a bypass. Quoted branches therefore
-  // forbid `$(` and backtick, and the unquoted branch forbids them too.
+const REMOTE_EXEC_REASON = "\u26d4 Remote script execution is forbidden. Download the script first, audit it with security-auditor, then run if safe.";
+const REMOTE_PIPE_SHELL_RE = /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*|uv\s+run\s+)*(?:\/\S+\/)*(ba|c|da|[akz]|fi|tc)?sh\b/;
+const REMOTE_PIPE_INTERP_RE = /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*|uv\s+run\s+)*(?:\/\S+\/)*(python[23]?|perl|ruby|node|deno|bun)\b/;
+const REMOTE_PROCSUB_CMD_RE = /\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/;
+const REMOTE_PROCSUB_SRC_RE = /\bsource\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/;
+const REMOTE_PROCSUB_DOT_RE = /(?:^|[\s;&|])\.\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/;
+const REMOTE_HEREDOC_TAIL_RE = /<<-?\s*['"]?(\w+)['"]?[\s\S]*/m;
+
+const REMOTE_SAFE_ASSIGN_SRC = (() => {
   const qDouble = /"(?:(?!\$\()[^"`])*"/.source;
   const qSingle = /'(?:(?!\$\()[^'`])*'/.source;
   const dollarSub = String.raw`\$\((?:` + qDouble + `|` + qSingle + String.raw`|(?!\$\()(?!` + "`" + String.raw`)[^)])*\)`;
   const backtickSub = "`(?:(?!\\$\\()[^`])*`";
   const captureValue = `(?:${dollarSub}|${backtickSub})`;
-  const safeAssignmentSrc =
+  return (
     String.raw`(?:^|(?<=[;&|\n({])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?([a-z_]\w*)=(` +
-    captureValue + String.raw`)(?=\s*(?:$|[;&|#\n)}]))`;
-  // Collect variable names whose SAFE assignment substitution contains curl/wget.
+    captureValue + String.raw`)(?=\s*(?:$|[;&|#\n)}]))`
+  );
+})();
+const REMOTE_SAFE_ASSIGN_RE = new RegExp(REMOTE_SAFE_ASSIGN_SRC, "gi");
+const REMOTE_CURL_DOLLAR_SUB_RE = /\$\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/;
+const REMOTE_CURL_BACKTICK_SUB_RE = /`[^`]*\b(curl|wget)\b/;
+
+const {
+  INLINE_EVAL_RE,
+  INLINE_SHELL_RE,
+  INLINE_INTERP_RE,
+  VAR_FLOW_EVAL_RE,
+  VAR_FLOW_SHELL_RE,
+  VAR_FLOW_INTERP_RE,
+  UNTRACKABLE_SHELL_RE,
+  UNTRACKABLE_INTERP_RE,
+} = (() => {
+  const assignPrefix = /(?:[a-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)*/.source;
+  const cmdPos = /(?:^|[;&|\n({]|&&|\|\||\$\(|\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*/.source + assignPrefix;
+  const redirections = /(?:(?:[0-9]*>[>&]?|<)\s*\S+\s+)*/.source;
+  const pathPrefix = /(?:\/\S+\/)*/.source;
+  const wrappers = /(?:(?:command|builtin|exec)\s+|uv\s+run\s+)*/.source;
+  const execPrefix = cmdPos + redirections + wrappers;
+  const shellExec = /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+-c\b|\s+<<<|\s+<[^<])/.source;
+  const interpExec = /(?:python[23]?|perl|ruby|node|deno|bun)(?:\s+-[ce]\b|\s+<\()/.source;
+  const dollarArg = /[^\n;&|]*\$/.source;
+  const shellStdin = /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+<<<|\s+<[^<]|\s+<\()/.source;
+  const interpStdin = /(?:python[23]?|perl|ruby|node|deno|bun)\s+<\(/.source;
+  return {
+    INLINE_EVAL_RE: new RegExp(execPrefix + /eval(?:\s|$)/.source),
+    INLINE_SHELL_RE: new RegExp(execPrefix + pathPrefix + shellExec),
+    INLINE_INTERP_RE: new RegExp(execPrefix + pathPrefix + interpExec),
+    VAR_FLOW_EVAL_RE: new RegExp(execPrefix + /eval\b/.source + dollarArg),
+    VAR_FLOW_SHELL_RE: new RegExp(execPrefix + pathPrefix + shellExec + dollarArg),
+    VAR_FLOW_INTERP_RE: new RegExp(execPrefix + pathPrefix + interpExec + dollarArg),
+    UNTRACKABLE_SHELL_RE: new RegExp(execPrefix + pathPrefix + shellStdin),
+    UNTRACKABLE_INTERP_RE: new RegExp(execPrefix + pathPrefix + interpStdin),
+  };
+})();
+
+const REMOTE_BARE_SUB_DOLLAR_RE = /\$\(\s*\b(curl|wget)\b/;
+const REMOTE_BARE_SUB_BACKTICK_RE = /`\s*\b(curl|wget)\b/;
+const REMOTE_ENV_VAR_SUB_RE = /\benv\s+.*[a-z_]\w*=(?:\$\(|`).*\b(curl|wget)\b/;
+const REMOTE_SAFE_ASSIGN_BARE_RE = /(?:^|(?<=[;&|\n({])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:"[^"]*"|'[^']*'|(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n)}]))/gi;
+const REMOTE_WORD_RE = /\b(curl|wget)\b/;
+
+/** Block remote script execution (pipe to shell, process substitution, command substitution/eval) */
+export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
+  if (!cmdLower.includes("curl") && !cmdLower.includes("wget")) return undefined;
+  const cmdForExecCheck = cmdLower.replace(REMOTE_HEREDOC_TAIL_RE, "");
+  if (REMOTE_PIPE_SHELL_RE.test(cmdForExecCheck) || REMOTE_PIPE_INTERP_RE.test(cmdForExecCheck)) {
+    enfLog.debug("remote_exec_block", "pipe");
+    return { block: true, reason: REMOTE_EXEC_REASON };
+  }
+  if (REMOTE_PROCSUB_CMD_RE.test(cmdForExecCheck) ||
+      REMOTE_PROCSUB_SRC_RE.test(cmdForExecCheck) ||
+      REMOTE_PROCSUB_DOT_RE.test(cmdForExecCheck)) {
+    enfLog.debug("remote_exec_block", "proc-sub");
+    return { block: true, reason: REMOTE_EXEC_REASON };
+  }
   const curlVars = new Set<string>();
-  for (const m of cmdForExecCheck.matchAll(new RegExp(safeAssignmentSrc, "gi"))) {
-    if (/\b(curl|wget)\b/.test(m[2])) curlVars.add(m[1]);
+  REMOTE_SAFE_ASSIGN_RE.lastIndex = 0;
+  for (const m of cmdForExecCheck.matchAll(REMOTE_SAFE_ASSIGN_RE)) {
+    if (REMOTE_WORD_RE.test(m[2])) curlVars.add(m[1]);
   }
-  // Strip ALL safe assignments (curl or not) for the inline-substitution exec check,
-  // so a curl output safely captured into a variable no longer counts as an inline
-  // substitution feeding an exec primitive.
-  const strippedForSub = cmdForExecCheck.replace(new RegExp(safeAssignmentSrc, "gi"), " ");
-  // Curl still inside a substitution AFTER stripping safe captures = inline/consumed curl.
-  const hasCurlSub = /\$\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(strippedForSub) || /`[^`]*\b(curl|wget)\b/.test(strippedForSub);
-  // Anchor exec primitives to command position (start-of-string or after statement separator)
-  // to avoid matching inside URLs/arguments (e.g., https://host/eval)
+  const strippedForSub = cmdForExecCheck.replace(REMOTE_SAFE_ASSIGN_RE, " ");
+  const hasCurlSub = REMOTE_CURL_DOLLAR_SUB_RE.test(strippedForSub) || REMOTE_CURL_BACKTICK_SUB_RE.test(strippedForSub);
   if (hasCurlSub || curlVars.size > 0) {
-    // Allow assignment prefixes (VAR=val, VAR="a b"), sudo, and env before exec primitives.
-    // Shell allows VAR="a b" bash -c "cmd" — the assignment sets env for the command.
-    const assignPrefix = /(?:[a-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)*/.source;
-    // Include (, {, $( as command-start boundaries for subshells/grouping/command substitution.
-    // Use quoted-value-capable env prefix to handle env FOO="a b" bash -c ...
-    // Include shell control-flow keywords (then, do, else, elif) as command boundaries
-    const cmdPos = /(?:^|[;&|\n({]|&&|\|\||\$\(|\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*/.source + assignPrefix;
-    // Allow optional path prefix (/bin/, /usr/bin/, etc.) before shell/interpreter names
-    // Allow leading redirections (>file, 2>/dev/null, etc.), shell wrappers (command, builtin, exec)
-    const redirections = /(?:(?:[0-9]*>[>&]?|<)\s*\S+\s+)*/.source;
-    const pathPrefix = /(?:\/\S+\/)*/.source;
-    // Wrappers/prefixes that may precede the interpreter name at a command position:
-    // command/builtin/exec shell builtins, and `uv run` (the test harness rewrites
-    // `python3` -> `uv run python3`, so `uv run python3 -c "$x"` must also be detected).
-    const wrappers = /(?:(?:command|builtin|exec)\s+|uv\s+run\s+)*/.source;
-    const execPrefix = cmdPos + redirections + wrappers;
-    // Exec-primitive cores (shell/interpreter with a code-carrying flag or stdin/procsub).
-    const shellExec = /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+-c\b|\s+<<<|\s+<[^<])/.source;
-    const interpExec = /(?:python[23]?|perl|ruby|node|deno|bun)(?:\s+-[ce]\b|\s+<\()/.source;
-    // (a)/(b) INLINE: curl substitution survives safe-assignment stripping AND an exec
-    // primitive appears at command position — the curl output feeds the primitive.
-    // Match shells with -c flag, stdin (<<<, <), or process substitution <(...)
-    // Match interpreters with -c/-e flag or process substitution <(...)
     if (hasCurlSub && (
-        new RegExp(execPrefix + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
-        new RegExp(execPrefix + pathPrefix + shellExec).test(cmdForExecCheck) ||
-        new RegExp(execPrefix + pathPrefix + interpExec).test(cmdForExecCheck))) {
+        INLINE_EVAL_RE.test(cmdForExecCheck) ||
+        INLINE_SHELL_RE.test(cmdForExecCheck) ||
+        INLINE_INTERP_RE.test(cmdForExecCheck))) {
       enfLog.debug("remote_exec_block", "inline-sub");
-      return { block: true, reason: remoteExecReason };
+      return { block: true, reason: REMOTE_EXEC_REASON };
     }
-    // (c) CONSERVATIVE VARIABLE-FLOW (SECURITY HARDENING): the previous logic only
-    // tracked the DIRECT curl-assigned variable name and was bypassable via aliasing
-    // (`x=$(curl); y=$x; bash -c "$y"`), quoted aliasing (`y="$x"; eval "$y"`), and
-    // indirect expansion (`bash -c "${!x}"`). We cannot statically track how curl output
-    // flows through arbitrary variable aliases/indirection, so we take the conservative
-    // direction: once curl output has been CAPTURED into the shell (curlVars.size > 0),
-    // ANY exec primitive whose command/argument region references ANY shell variable
-    // (contains a `$` — `$x`, `${x}`, `${!x}`, `"$x"`, ...) is assumed to potentially
-    // carry the curl output and is BLOCKED. Only an exec whose argument region contains
-    // NO `$` at all (e.g. `python3 -c "import json"`) is allowed to pass this rule.
     if (curlVars.size > 0) {
-      // Argument/target region after the primitive, within the same statement (stops at
-      // ; & | newline), that contains at least one `$` variable reference.
-      const dollarArg = /[^\n;&|]*\$/.source;
-      if (new RegExp(execPrefix + /eval\b/.source + dollarArg).test(cmdForExecCheck) ||
-          new RegExp(execPrefix + pathPrefix + shellExec + dollarArg).test(cmdForExecCheck) ||
-          new RegExp(execPrefix + pathPrefix + interpExec + dollarArg).test(cmdForExecCheck)) {
+      if (VAR_FLOW_EVAL_RE.test(cmdForExecCheck) ||
+          VAR_FLOW_SHELL_RE.test(cmdForExecCheck) ||
+          VAR_FLOW_INTERP_RE.test(cmdForExecCheck)) {
         enfLog.debug("remote_exec_block", "var-flow");
-        return { block: true, reason: remoteExecReason };
+        return { block: true, reason: REMOTE_EXEC_REASON };
       }
-      // (d) UNTRACKABLE INPUT: when a curl capture exists, a shell/interpreter that reads
-      // its program from stdin / a file / process-substitution / here-string is blocked
-      // regardless of variable reference — the curl output could have been redirected to a
-      // file that is then executed, which cannot be tracked statically. This is the
-      // conservative direction: only the inline `-c`/`-e` form (which needs an explicit
-      // `$` reference to consume curl output, handled by (c)) is allowed to pass through.
-      const shellStdin = /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+<<<|\s+<[^<]|\s+<\()/.source;
-      const interpStdin = /(?:python[23]?|perl|ruby|node|deno|bun)\s+<\(/.source;
-      if (new RegExp(execPrefix + pathPrefix + shellStdin).test(cmdForExecCheck) ||
-          new RegExp(execPrefix + pathPrefix + interpStdin).test(cmdForExecCheck)) {
+      if (UNTRACKABLE_SHELL_RE.test(cmdForExecCheck) ||
+          UNTRACKABLE_INTERP_RE.test(cmdForExecCheck)) {
         enfLog.debug("remote_exec_block", "untrackable");
-        return { block: true, reason: remoteExecReason };
+        return { block: true, reason: REMOTE_EXEC_REASON };
       }
     }
   }
-  // Block $(curl ...) and `curl ...` UNLESS every occurrence is a safe shell variable assignment.
-  // Safe: VAR=$(curl ...), export VAR=$(curl ...) — only when followed by ; && || or end-of-string
-  // Unsafe: bare $(curl), --flag=$(curl), VAR=$(curl ...) cmd (prefix assignment runs cmd)
-  if (/\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
-    // Block env VAR=$(curl ...) cmd — env runs a command with the var, so curl output could influence execution
-    // Note: [a-z_] without /i is fine — cmdLower (the parameter) is already lowercased
-    if (/\benv\s+.*[a-z_]\w*=(?:\$\(|`).*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+  if (REMOTE_BARE_SUB_DOLLAR_RE.test(cmdForExecCheck) || REMOTE_BARE_SUB_BACKTICK_RE.test(cmdForExecCheck)) {
+    if (REMOTE_ENV_VAR_SUB_RE.test(cmdForExecCheck)) {
       enfLog.debug("remote_exec_block", "env-var-sub");
-      return { block: true, reason: remoteExecReason };
+      return { block: true, reason: REMOTE_EXEC_REASON };
     }
-    // Strip safe assignment patterns at statement boundaries only.
-    // Left boundary: start-of-string or after a statement separator (;, &&, ||, |, &, newline).
-    // Right boundary: followed by statement separator, newline, # comment, or end-of-string.
-    // This prevents stripping argument-position assignments like echo x=$(curl ...)
-    // and prefix assignments like VAR=$(curl ...) cmd.
-    // Use negative lookahead to reject nested command substitution (both $( and backticks) inside $() content.
-    // Also reject backticks inside $() to prevent var=$(bash -c "`curl ...`") bypass.
-    // Allow quoted strings ("..." and '...') inside $() to handle quoted ) characters.
-    // Left boundary includes (, { for subshell/brace-group starts. Right boundary includes ), } as terminators.
-    const safeAssignment = /(?:^|(?<=[;&|\n({])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:"[^"]*"|'[^']*'|(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n)}]))/gi;
-    const stripped = cmdForExecCheck.replace(safeAssignment, " ");
-    if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
+    const stripped = cmdForExecCheck.replace(REMOTE_SAFE_ASSIGN_BARE_RE, " ");
+    if (REMOTE_BARE_SUB_DOLLAR_RE.test(stripped) || REMOTE_BARE_SUB_BACKTICK_RE.test(stripped)) {
       enfLog.debug("remote_exec_block", "bare-sub");
-      return { block: true, reason: remoteExecReason };
+      return { block: true, reason: REMOTE_EXEC_REASON };
     }
   }
   return undefined;
@@ -1653,13 +1614,13 @@ export function allowlistGlobToRegExp(pattern: string): RegExp {
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i];
     if (c === "\\" && i + 1 < pattern.length) {
-      re += (pattern[++i] as string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      re += escapeRegExp(pattern[++i] as string);
     } else if (c === "*") {
       re += ".*";
     } else if (c === "?") {
       re += ".";
     } else {
-      re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      re += escapeRegExp(c);
     }
   }
   // `s` flag: multi-line commands — `*` must span newlines
@@ -2071,14 +2032,7 @@ export function addDangerousAllowlistEntry(
   try {
     // The lock dir's parent may not exist yet on a first-ever write
     mkdirSync(path.dirname(file), { recursive: true });
-    for (let attempt = 0; attempt < 10 && !locked; attempt++) {
-      try {
-        mkdirSync(lockDir);
-        locked = true;
-      } catch {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); // 50ms backoff
-      }
-    }
+    locked = acquireDirLock(lockDir, 10, 50);
     const data = readSettingsFile(file);
     if (data === null) {
       // Corrupt/unparseable settings file — NEVER overwrite it with just the
@@ -2661,11 +2615,51 @@ function maskQuotedProse(command: string): string {
   return out.join("");
 }
 
+const realGitSubRegexCache = new Map<string, RegExp>();
+const subScanReCache = new Map<string, RegExp>();
+let lastStrippedAndMasked: { command: string; stripped: string; masked: string } | null = null;
+
+function getStrippedAndMasked(command: string): { stripped: string; masked: string } {
+  if (lastStrippedAndMasked && lastStrippedAndMasked.command === command) {
+    return lastStrippedAndMasked;
+  }
+  const stripped = stripHeredocBodies(command);
+  const masked = maskQuotedProse(stripped);
+  lastStrippedAndMasked = { command, stripped, masked };
+  return lastStrippedAndMasked;
+}
+
 /** Regex matching a REAL `git <sub>` invocation at a shell command position. */
 export function realGitSubRegex(sub: string, capture = false): RegExp {
+  const key = `${sub}\0${capture ? "1" : "0"}`;
+  const cached = realGitSubRegexCache.get(key);
+  if (cached) return cached;
   const body = `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b`;
   const re = new RegExp(capture ? `(${body})` : body);
+  if (realGitSubRegexCache.size >= 32) {
+    const oldest = realGitSubRegexCache.keys().next().value;
+    if (oldest !== undefined) realGitSubRegexCache.delete(oldest);
+  }
+  realGitSubRegexCache.set(key, re);
   enfLog.debug("realGitSubRegex built", sub, `capture=${capture}`);
+  return re;
+}
+
+function getSubScanRegex(sub: string): RegExp {
+  const cached = subScanReCache.get(sub);
+  if (cached) {
+    cached.lastIndex = 0;
+    return cached;
+  }
+  const re = new RegExp(
+    `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b`,
+    "g",
+  );
+  if (subScanReCache.size >= 32) {
+    const oldest = subScanReCache.keys().next().value;
+    if (oldest !== undefined) subScanReCache.delete(oldest);
+  }
+  subScanReCache.set(sub, re);
   return re;
 }
 
@@ -2679,7 +2673,7 @@ export function realGitSubRegex(sub: string, capture = false): RegExp {
  * the use_worktrees checkout block).
  */
 export function realGitSub(command: string, sub: string): boolean {
-  const result = realGitSubRegex(sub).test(maskQuotedProse(stripHeredocBodies(command)));
+  const result = realGitSubRegex(sub).test(getStrippedAndMasked(command).masked);
   enfLog.debug("realGitSub", sub, result);
   return result;
 }
@@ -2707,12 +2701,8 @@ export function gitSubArgRegions(command: string, sub: string): string[] {
  *  consumers that must distinguish substitution syntax from refspec content
  *  use the masked slice (Qodo round 6, PR #916). */
 function subArgSpans(command: string, sub: string): Array<{ start: number; end: number; text: string; maskedText: string; stripped: string; masked: string }> {
-  const stripped = stripHeredocBodies(command);
-  const masked = maskQuotedProse(stripped);
-  const re = new RegExp(
-    `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b`,
-    "g",
-  );
+  const { stripped, masked } = getStrippedAndMasked(command);
+  const re = getSubScanRegex(sub);
   const spans: Array<{ start: number; end: number; text: string; maskedText: string; stripped: string; masked: string }> = [];
   for (const m of masked.matchAll(re)) {
     const start = (m.index ?? 0) + m[0].length;
@@ -2762,12 +2752,14 @@ function gitAddTokens(region: string): string[] {
  *  gitSubArgRegions, so a bulk `git add .` inside `$(...)` is not read as
  *  the pathspec `.)` while a quoted `foo)` ref is not truncated. */
 export function gitSubParseRegions(command: string, sub: string): string[] {
-  return subArgSpans(command, sub).map((s) =>
-    s.text
-      .split("")
-      .map((ch, idx) => (s.maskedText[idx] === "\x00" ? " " : ch))
-      .join(""),
-  );
+  return subArgSpans(command, sub).map((s) => {
+    if (!s.maskedText.includes("\x00")) return s.text;
+    let out = "";
+    for (let idx = 0; idx < s.text.length; idx++) {
+      out += s.maskedText[idx] === "\x00" ? " " : s.text[idx];
+    }
+    return out;
+  });
 }
 
 /** Destination refs of every real `git push` invocation (Qodo #5, PR #916).
@@ -3363,7 +3355,6 @@ export function injectSignoff(command: string): string {
   // masking is length-preserving.
   const pipeIdx = command.lastIndexOf("|");
   if (pipeIdx !== -1) {
-    const echoPart = command.slice(0, pipeIdx);
     const gitPart = command.slice(pipeIdx);
     const maskedGit = maskQuotedProse(gitPart);
     if (/git\s+commit\s+.*-F\s*-/.test(maskedGit)) {
@@ -3469,13 +3460,17 @@ export function hasGitAddBulk(command: string): boolean {
   return false;
 }
 
+const HEREDOC_DASH_BODY_RE = /<<-(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n[ \t]*\2\s*(?=\n|$)/gm;
+const HEREDOC_STD_BODY_RE = /<<(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\2\s*(?=\n|$)/gm;
+
+function replaceHeredocBodies(cmd: string, replacer: string | ((m: string) => string)): string {
+  const fn = typeof replacer === "function" ? replacer : () => replacer;
+  return cmd.replace(HEREDOC_DASH_BODY_RE, fn).replace(HEREDOC_STD_BODY_RE, fn);
+}
+
 /** Strip heredoc bodies from command string, preserving commands after the closing delimiter */
 export function stripHeredocBodies(cmd: string): string {
-  // Match heredoc: <<DELIM ... DELIM and <<-DELIM ... (tab-indented) DELIM
-  // For <<- (dash form), the closing delimiter can be preceded by tabs only.
-  // Closing delimiter must be on its own line with no trailing content (except newline).
-  return cmd.replace(/<<-(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n[ \t]*\2\s*(?=\n|$)/gm, "")
-    .replace(/<<(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\2\s*(?=\n|$)/gm, "");
+  return replaceHeredocBodies(cmd, "");
 }
 
 /**
@@ -3995,10 +3990,10 @@ function findPipedCommitSpans(command: string): PipedCommitSpan[] | null {
 			continue;
 		}
 		if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
-			const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s;&|()<>'"`]+))/.exec(command.slice(i));
+			const m = matchHeredocOpener(command.slice(i));
 			if (m) {
-				pendingHeredocs.push({ delim: m[2] ?? m[3] ?? m[4]!, stripTabs: m[1] === "-" });
-				i += m[0].length - 1;
+				pendingHeredocs.push({ delim: m.delim, stripTabs: m.stripTabs });
+				i += m.length - 1;
 				continue;
 			}
 		}
@@ -4051,24 +4046,11 @@ function findPipedCommitSpans(command: string): PipedCommitSpan[] | null {
 		if (ch === "\n") {
 			if (!finishStatement(i)) return null;
 			if (pendingHeredocs.length > 0) {
-				let cursor = i + 1;
-				for (const h of pendingHeredocs) {
-					let closed = false;
-					while (cursor <= command.length) {
-						let lineEnd = command.indexOf("\n", cursor);
-						const atEnd = lineEnd === -1;
-						if (atEnd) lineEnd = command.length;
-						const line = command.slice(cursor, lineEnd).replace(/\r$/, "");
-						const matchesDelim = h.stripTabs ? line.replace(/^\t+/, "") === h.delim : line === h.delim;
-						cursor = atEnd ? command.length : lineEnd + 1;
-						if (matchesDelim) { closed = true; break; }
-						if (atEnd) break;
-					}
-					if (!closed) return null;
-				}
+				const { next, closed } = skipHeredocBody(command, i + 1, pendingHeredocs, { stripCr: true });
+				if (!closed) return null;
 				pendingHeredocs.length = 0;
-				stmtStart = cursor;
-				i = cursor - 1;
+				stmtStart = next;
+				i = next - 1;
 				continue;
 			}
 			stmtStart = i + 1;
@@ -4110,9 +4092,7 @@ function realCommitEndOffsets(command: string): number[] {
 		const nl = m.indexOf("\n");
 		return nl === -1 ? m : m.slice(0, nl + 1) + m.slice(nl + 1).replace(/[^\n]/g, " ");
 	};
-	const heredocBlanked = command
-		.replace(/<<-(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n[ \t]*\2\s*(?=\n|$)/gm, blankBodyOnly)
-		.replace(/<<(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\2\s*(?=\n|$)/gm, blankBodyOnly);
+	const heredocBlanked = replaceHeredocBodies(command, blankBodyOnly);
 	const masked = maskQuotedProse(heredocBlanked);
 	const re = new RegExp(realGitSubRegex("commit").source, "g");
 	return [...masked.matchAll(re)].map((m) => (m.index ?? 0) + m[0].length);

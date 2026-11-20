@@ -62,9 +62,10 @@ export function isArgumentRejection(isError: boolean, text: string): boolean {
 
 export function registerToolArgGuard(pi: ExtensionAPI): void {
   pi.on("tool_execution_end", async (event: any) => {
+    if (!event?.isError) return;
     // durationMs is absent when the tool never executed.
     const text = resultText(event?.result).trim();
-    if (!isArgumentRejection(Boolean(event?.isError), text)) return;
+    if (!isArgumentRejection(true, text)) return;
 
     const reason = rejectionReason(text);
     log.warn("tool_call_rejected_before_run", {

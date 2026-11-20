@@ -11,6 +11,7 @@ import type {
   ExtensionAPI,
   MarkdownTransformContext,
 } from "@earendil-works/pi-coding-agent";
+import { escapeRegExp } from "./utils.js";
 
 // ── Badge definitions ──
 
@@ -97,22 +98,36 @@ function inlineCode(text: string): string {
   return needsSpace ? `${delim} ${text} ${delim}` : `${delim}${text}${delim}`;
 }
 
+const SECTION_HEADER_RE = new RegExp(
+  `^(#{1,3}) (${Object.keys(SECTION_ICONS).map(escapeRegExp).join("|")})(?= \\[|$)`,
+  "gm",
+);
+
 // ── Transform functions (exported for testing) ──
+
+function applyMemoryBadges(text: string): string {
+  return text.replace(
+    /^(- )\[(preference|lesson|mistake|pattern|decision|done)\] /gm,
+    (_match, prefix, category) => {
+      const badge = MEMORY_BADGES[category];
+      return badge ? `${prefix}${badge} ` : _match;
+    },
+  );
+}
 
 /**
  * Transform memory category tags into styled badges.
  * Matches `- [category] text` in memory list items.
  */
 export function transformMemoryBadges(markdown: string): string {
-  return transformOutsideCodeBlocks(markdown, (text) =>
-    text.replace(
-      /^(- )\[(preference|lesson|mistake|pattern|decision|done)\] /gm,
-      (_match, prefix, category) => {
-        const badge = MEMORY_BADGES[category];
-        return badge ? `${prefix}${badge} ` : _match;
-      },
-    ),
-  );
+  return transformOutsideCodeBlocks(markdown, applyMemoryBadges);
+}
+
+function applyMemorySectionHeaders(text: string): string {
+  return text.replace(SECTION_HEADER_RE, (_match, hashes, section) => {
+    const icon = SECTION_ICONS[section];
+    return icon ? `${hashes} ${icon} ${section}` : _match;
+  });
 }
 
 /**
@@ -123,18 +138,19 @@ export function transformMemoryBadges(markdown: string): string {
  * for the Project Memory capacity header).
  */
 export function transformMemorySectionHeaders(markdown: string): string {
-  const sectionPattern = Object.keys(SECTION_ICONS)
-    .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("|");
-  const re = new RegExp(
-    `^(#{1,3}) (${sectionPattern})(?= \\[|$)`,
-    "gm",
-  );
-  return transformOutsideCodeBlocks(markdown, (text) =>
-    text.replace(re, (_match, hashes, section) => {
-      const icon = SECTION_ICONS[section];
-      return icon ? `${hashes} ${icon} ${section}` : _match;
-    }),
+  return transformOutsideCodeBlocks(markdown, applyMemorySectionHeaders);
+}
+
+function applyComsHeaders(text: string): string {
+  return text.replace(
+    /\[from (USER \(a human\), via )?(\S+)(?: → (\S+))? @ ([^\]]+)\]/g,
+    (_match, fromUser, peer, self, cwd) => {
+      const arrow = self ? ` → **${escapeMarkdown(self)}**` : "";
+      const lead = fromUser
+        ? `👤 **USER** via **${escapeMarkdown(peer)}**`
+        : `📨 **${escapeMarkdown(peer)}**`;
+      return `${lead}${arrow} ${inlineCode(`@ ${cwd.trim()}`)}`;
+    },
   );
 }
 
@@ -145,18 +161,7 @@ export function transformMemorySectionHeaders(markdown: string): string {
  * `[from USER (a human), via peer → self @ /path/to/cwd]` → `👤 **USER** via **peer** → **self** \`@ /path/…\``
  */
 export function transformComsHeaders(markdown: string): string {
-  return transformOutsideCodeBlocks(markdown, (text) =>
-    text.replace(
-      /\[from (USER \(a human\), via )?(\S+)(?: → (\S+))? @ ([^\]]+)\]/g,
-      (_match, fromUser, peer, self, cwd) => {
-        const arrow = self ? ` → **${escapeMarkdown(self)}**` : "";
-        const lead = fromUser
-          ? `👤 **USER** via **${escapeMarkdown(peer)}**`
-          : `📨 **${escapeMarkdown(peer)}**`;
-        return `${lead}${arrow} ${inlineCode(`@ ${cwd.trim()}`)}`;
-      },
-    ),
-  );
+  return transformOutsideCodeBlocks(markdown, applyComsHeaders);
 }
 
 // ── Review findings (Deliverable 3) ──
@@ -207,25 +212,47 @@ export function transformReviewFindings(markdown: string): string {
 
 // ── Settings display (Deliverable 4) ──
 
+function applySettingsDisplay(text: string): string {
+  // Match blocks of settings lines: `key = value (source: ...)` pattern
+  return text.replace(
+    /^([ \t]*)([\w.]+)\s*=\s*(.+?)\s*\(source:\s*(\w+)\)\s*$/gm,
+    (_match, indent, key, value, source) => {
+      const sourceIcon = source === "project" ? "📁" : source === "global" ? "🌐" : source === "env" ? "🔧" : "⚙️";
+      return `${indent}\`${key}\` = **${value.trim()}** ${sourceIcon} _${source}_`;
+    },
+  );
+}
+
 /**
  * Transform settings display output into a styled table.
  * Matches lines like `key = value (source: project)` or `key: value`
  * from settings get output.
  */
 export function transformSettingsDisplay(markdown: string): string {
-  return transformOutsideCodeBlocks(markdown, (text) => {
-    // Match blocks of settings lines: `key = value (source: ...)` pattern
-    return text.replace(
-      /^([ \t]*)([\w.]+)\s*=\s*(.+?)\s*\(source:\s*(\w+)\)\s*$/gm,
-      (_match, indent, key, value, source) => {
-        const sourceIcon = source === "project" ? "📁" : source === "global" ? "🌐" : source === "env" ? "🔧" : "⚙️";
-        return `${indent}\`${key}\` = **${value.trim()}** ${sourceIcon} _${source}_`;
-      },
-    );
-  });
+  return transformOutsideCodeBlocks(markdown, applySettingsDisplay);
 }
 
 // ── Task list formatting (Deliverable 5) ──
+
+function applyTaskStatus(text: string): string {
+  // Match `status: <value>` patterns
+  let result = text.replace(
+    /\bstatus:\s*(pending|in_progress|completed|deleted)\b/g,
+    (_match, status) => {
+      const badge = TASK_STATUS_BADGES[status];
+      return badge ? `status: ${badge} ${status}` : _match;
+    },
+  );
+  // Match `[pending]`, `[in_progress]`, `[completed]` standalone markers
+  result = result.replace(
+    /\[(pending|in_progress|completed|deleted)\](?!\()/g,
+    (_match, status) => {
+      const badge = TASK_STATUS_BADGES[status];
+      return badge ? `${badge} ${status}` : _match;
+    },
+  );
+  return result;
+}
 
 /**
  * Transform task list status markers into styled badges.
@@ -233,28 +260,30 @@ export function transformSettingsDisplay(markdown: string): string {
  * in task list output lines, and also `[pending]`, `[in_progress]`, `[completed]` markers.
  */
 export function transformTaskStatus(markdown: string): string {
-  return transformOutsideCodeBlocks(markdown, (text) => {
-    // Match `status: <value>` patterns
-    let result = text.replace(
-      /\bstatus:\s*(pending|in_progress|completed|deleted)\b/g,
-      (_match, status) => {
-        const badge = TASK_STATUS_BADGES[status];
-        return badge ? `status: ${badge} ${status}` : _match;
-      },
-    );
-    // Match `[pending]`, `[in_progress]`, `[completed]` standalone markers
-    result = result.replace(
-      /\[(pending|in_progress|completed|deleted)\](?!\()/g,
-      (_match, status) => {
-        const badge = TASK_STATUS_BADGES[status];
-        return badge ? `${badge} ${status}` : _match;
-      },
-    );
-    return result;
-  });
+  return transformOutsideCodeBlocks(markdown, applyTaskStatus);
 }
 
 // ── Async agent status formatting (Deliverable 6) ──
+
+function applyAsyncStatus(text: string): string {
+  // Match `status: <value>` patterns for async agents
+  let result = text.replace(
+    /\bstatus:\s*(running|queued|complete|failed|killed)\b/g,
+    (_match, status) => {
+      const badge = ASYNC_STATUS_BADGES[status];
+      return badge ? `status: ${badge}` : _match;
+    },
+  );
+  // Match `[running]`, `[complete]`, `[failed]` standalone markers
+  result = result.replace(
+    /\[(running|queued|complete|failed|killed)\](?!\()/g,
+    (_match, status) => {
+      const badge = ASYNC_STATUS_BADGES[status];
+      return badge ? badge : _match;
+    },
+  );
+  return result;
+}
 
 /**
  * Transform async agent status indicators into styled badges.
@@ -262,25 +291,7 @@ export function transformTaskStatus(markdown: string): string {
  * Also formats duration strings like `duration: 45s` or `(12.3s)`.
  */
 export function transformAsyncStatus(markdown: string): string {
-  return transformOutsideCodeBlocks(markdown, (text) => {
-    // Match `status: <value>` patterns for async agents
-    let result = text.replace(
-      /\bstatus:\s*(running|queued|complete|failed|killed)\b/g,
-      (_match, status) => {
-        const badge = ASYNC_STATUS_BADGES[status];
-        return badge ? `status: ${badge}` : _match;
-      },
-    );
-    // Match `[running]`, `[complete]`, `[failed]` standalone markers
-    result = result.replace(
-      /\[(running|queued|complete|failed|killed)\](?!\()/g,
-      (_match, status) => {
-        const badge = ASYNC_STATUS_BADGES[status];
-        return badge ? badge : _match;
-      },
-    );
-    return result;
-  });
+  return transformOutsideCodeBlocks(markdown, applyAsyncStatus);
 }
 
 // ── Main dispatcher ──
@@ -297,13 +308,15 @@ export function transformMarkdown(
     return markdown;
   }
 
-  let result = markdown;
-  result = transformMemoryBadges(result);
-  result = transformMemorySectionHeaders(result);
-  result = transformComsHeaders(result);
-  result = transformSettingsDisplay(result);
-  result = transformTaskStatus(result);
-  result = transformAsyncStatus(result);
+  let result = transformOutsideCodeBlocks(markdown, (text) => {
+    let chunk = applyMemoryBadges(text);
+    chunk = applyMemorySectionHeaders(chunk);
+    chunk = applyComsHeaders(chunk);
+    chunk = applySettingsDisplay(chunk);
+    chunk = applyTaskStatus(chunk);
+    chunk = applyAsyncStatus(chunk);
+    return chunk;
+  });
   // Review findings last — its output should not be mutated by other transforms
   result = transformReviewFindings(result);
   return result;

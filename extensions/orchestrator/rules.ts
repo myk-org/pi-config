@@ -24,6 +24,254 @@ import { JsonlAppendLog } from "./state-jsonl.js";
 import { getProjectDataDir, getProjectMemoryDir } from "./utils.js";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PACKAGE_RULES_DIR = path.resolve(MODULE_DIR, "..", "..", "rules");
+const KNOWN_SETTING_KEYS = new Set(Object.keys(SETTINGS_KEYS));
+const RULE_MAX_BYTES = 128 * 1024;
+const RAW_RULE_FILE_CACHE_MAX = 128;
+const ASSEMBLED_RULES_CACHE_MAX = 16;
+
+interface CachedRawRuleFile {
+  stamp: string;
+  content: string | null; // null when skipped (>128KB)
+}
+
+interface PackageRuleEntry {
+  fileName: string;
+  filePath: string;
+  stamp: string;
+  content: string | null;
+}
+
+interface AssembledRulesCacheEntry {
+  accessedSettings: Array<[string, unknown]>;
+  comsActive: boolean;
+  externalAiAgents: boolean;
+  reviewLoopMaxCycles: number;
+  joined: string;
+  fileCount: number;
+  includedCount: number;
+  skippedCount: number;
+}
+
+let cachedPackageRules: PackageRuleEntry[] | null = null;
+const rawRuleFileCache = new Map<string, CachedRawRuleFile>();
+const assembledRulesCache = new Map<string, AssembledRulesCacheEntry>();
+
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  if (map.has(key)) map.delete(key);
+  else if (map.size >= max) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
+}
+
+/** Clear rule file and assembly caches (tests). */
+export function clearRulesCache(): void {
+  cachedPackageRules = null;
+  rawRuleFileCache.clear();
+  assembledRulesCache.clear();
+}
+
+function statStamp(filePath: string): { stamp: string; size: number } {
+  const st = fs.statSync(filePath, { bigint: true });
+  return {
+    stamp: `${st.mtimeNs}:${st.ctimeNs}:${st.size}`,
+    size: Number(st.size),
+  };
+}
+
+function readRuleFileCached(fileName: string, filePath: string): { stamp: string; content: string | null } | null {
+  try {
+    const { stamp, size } = statStamp(filePath);
+    const cached = rawRuleFileCache.get(filePath);
+    if (cached && cached.stamp === stamp) {
+      return cached;
+    }
+    if (size > RULE_MAX_BYTES) {
+      log.debug(`${fileName} skipped (${Math.round(size / 1024)}KB > 128KB limit)`);
+      const entry = { stamp, content: null };
+      setBounded(rawRuleFileCache, filePath, entry, RAW_RULE_FILE_CACHE_MAX);
+      return entry;
+    }
+    const entry = { stamp, content: fs.readFileSync(filePath, "utf-8") };
+    setBounded(rawRuleFileCache, filePath, entry, RAW_RULE_FILE_CACHE_MAX);
+    return entry;
+  } catch (e: any) {
+    rawRuleFileCache.delete(filePath);
+    log.debug(`${fileName} failed from ${filePath}:`, e?.message?.slice(0, 100));
+    return null;
+  }
+}
+
+function getPackageRules(): PackageRuleEntry[] {
+  if (cachedPackageRules !== null) return cachedPackageRules;
+  const entries: PackageRuleEntry[] = [];
+  try {
+    for (const entry of fs.readdirSync(PACKAGE_RULES_DIR, { withFileTypes: true })) {
+      if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.endsWith(".md")) continue;
+      const filePath = path.join(PACKAGE_RULES_DIR, entry.name);
+      try {
+        const { stamp, size } = statStamp(filePath);
+        if (size > RULE_MAX_BYTES) {
+          log.debug(`${entry.name} skipped (${Math.round(size / 1024)}KB > 128KB limit)`);
+          entries.push({ fileName: entry.name, filePath, stamp, content: null });
+          continue;
+        }
+        entries.push({ fileName: entry.name, filePath, stamp, content: fs.readFileSync(filePath, "utf-8") });
+      } catch (e: any) {
+        log.debug(`${entry.name} failed from ${filePath}:`, e?.message?.slice(0, 100));
+      }
+    }
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") log.debug("failed to read", PACKAGE_RULES_DIR, e?.message?.slice(0, 100));
+  }
+  cachedPackageRules = entries;
+  return entries;
+}
+
+function sameSettingValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a === "object" && typeof b === "object" && a !== null && b !== null) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return false;
+}
+
+function loadOrAssembleRules(cwd: string): string {
+  const userRulesDir = path.join(os.homedir(), ".pi", "agent", "rules");
+  const projectRulesDir = path.join(cwd, ".pi", "rules");
+
+  type Candidate = { filePath: string; pkgEntry?: PackageRuleEntry };
+  const ruleCandidates = new Map<string, Candidate[]>();
+
+  for (const pkgEntry of getPackageRules()) {
+    const existing = ruleCandidates.get(pkgEntry.fileName) || [];
+    existing.push({ filePath: pkgEntry.filePath, pkgEntry });
+    ruleCandidates.set(pkgEntry.fileName, existing);
+  }
+
+  for (const dir of [userRulesDir, projectRulesDir]) {
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.endsWith(".md")) continue;
+        const f = entry.name;
+        const existing = ruleCandidates.get(f) || [];
+        existing.push({ filePath: path.join(dir, f) });
+        ruleCandidates.set(f, existing);
+      }
+    } catch (e: any) {
+      if (e?.code !== "ENOENT") log.debug("failed to read", dir, e?.message?.slice(0, 100));
+    }
+  }
+
+  if (ruleCandidates.size === 0) {
+    return "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
+  }
+
+  const sorted = [...ruleCandidates.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const ruleContents: string[] = [];
+  const sigParts: string[] = [];
+
+  for (const [fileName, candidates] of sorted) {
+    let loaded = false;
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const cand = candidates[i];
+      const loadedEntry = cand.pkgEntry ?? readRuleFileCached(fileName, cand.filePath);
+      if (!loadedEntry) continue;
+      sigParts.push(`${fileName}:${cand.filePath}:${loadedEntry.stamp}`);
+      if (loadedEntry.content !== null) {
+        ruleContents.push(loadedEntry.content);
+      }
+      loaded = true;
+      break;
+    }
+    if (!loaded) {
+      log.debug(`${fileName}: all candidates failed, skipping`);
+    }
+  }
+
+  if (ruleContents.length === 0) {
+    return "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
+  }
+
+  const comsActive = isComsActive();
+  const externalAiAgents =
+    isSettingTruthy(getSetting(cwd, "acpx_agents")) ||
+    isSettingTruthy(getSetting(cwd, "cli_agents"));
+  const reviewLoopMaxCycles = Number(getSetting(cwd, "review_loop_max_cycles"));
+  const cacheKey = `${path.resolve(cwd)}\0${sigParts.join("|")}`;
+  const cached = assembledRulesCache.get(cacheKey);
+  if (
+    cached &&
+    cached.comsActive === comsActive &&
+    cached.externalAiAgents === externalAiAgents &&
+    cached.reviewLoopMaxCycles === reviewLoopMaxCycles &&
+    cached.accessedSettings.every(([k, v]) => sameSettingValue(getSettingDynamic(cwd, k), v))
+  ) {
+    // Touch LRU position
+    assembledRulesCache.delete(cacheKey);
+    assembledRulesCache.set(cacheKey, cached);
+    log.info("rules assembled", {
+      chars: cached.joined.length,
+      files: cached.fileCount,
+      included: cached.includedCount,
+      skipped: cached.skippedCount,
+      cached: true,
+    });
+    return "\n\n" + cached.joined;
+  }
+
+  log.debug("assembling rules", { count: ruleContents.length, reviewLoopMaxCycles });
+  let includedCount = 0;
+  let skippedCount = 0;
+  const accessed = new Map<string, unknown>();
+  const resolveTracked = (key: string): unknown => {
+    const val = getSettingDynamic(cwd, key);
+    if (!accessed.has(key)) accessed.set(key, val);
+    return val;
+  };
+  const joined = assembleRuleText(ruleContents, {
+    resolve: resolveTracked,
+    knownKeys: KNOWN_SETTING_KEYS,
+    featurePredicates: {
+      coms_active: () => comsActive,
+      external_ai_agents: () => externalAiAgents,
+    },
+    reviewLoopMaxCycles,
+    onWarn: (msg) => log.warn("rule assembly:", msg),
+    onSkip: ({ attrs, index }) => {
+      skippedCount += 1;
+      log.debug("rule skipped by frontmatter gate", { index, attrs });
+    },
+    onInclude: ({ attrs, index }) => {
+      includedCount += 1;
+      log.debug("rule included", { index, attrs });
+    },
+  });
+  setBounded(
+    assembledRulesCache,
+    cacheKey,
+    {
+      accessedSettings: [...accessed.entries()],
+      comsActive,
+      externalAiAgents,
+      reviewLoopMaxCycles,
+      joined,
+      fileCount: ruleContents.length,
+      includedCount,
+      skippedCount,
+    },
+    ASSEMBLED_RULES_CACHE_MAX,
+  );
+  log.info("rules assembled", {
+    chars: joined.length,
+    files: ruleContents.length,
+    included: includedCount,
+    skipped: skippedCount,
+  });
+  return "\n\n" + joined;
+}
 
 /** Per-cwd telemetry log cache — avoids re-creating on every call. */
 const telemetryLogCache = new Map<string, JsonlAppendLog<Record<string, unknown>>>();
@@ -134,91 +382,7 @@ export function registerRules(
     // Load from: package rules/ → user ~/.pi/agent/rules/ → project .pi/rules/
     // Same-filename override: project > user > package
     if (!isSubagent) {
-      const packageRulesDir = path.resolve(MODULE_DIR, "..", "..", "rules");
-      const userRulesDir = path.join(os.homedir(), ".pi", "agent", "rules");
-      const projectRulesDir = path.join(ctx.cwd, ".pi", "rules");
-
-      // Collect rules from all layers — later layers override same-filename entries
-      const ruleCandidates = new Map<string, string[]>(); // filename → paths in precedence order
-      for (const dir of [packageRulesDir, userRulesDir, projectRulesDir]) {
-        try {
-          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-            if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.endsWith(".md")) continue;
-            const f = entry.name;
-            const existing = ruleCandidates.get(f) || [];
-            existing.push(path.join(dir, f));
-            ruleCandidates.set(f, existing);
-          }
-        } catch (e: any) {
-          if (e?.code !== "ENOENT") log.debug("failed to read", dir, e?.message?.slice(0, 100));
-        }
-      }
-
-      if (ruleCandidates.size > 0) {
-        const sorted = [...ruleCandidates.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-        const ruleContents: string[] = [];
-        for (const [fileName, candidates] of sorted) {
-          // Try from highest precedence (last) to lowest (first)
-          let loaded = false;
-          for (let i = candidates.length - 1; i >= 0; i--) {
-            try {
-              const stat = fs.statSync(candidates[i]);
-              if (stat.size > 128 * 1024) {
-                log.debug(`${fileName} skipped (${Math.round(stat.size / 1024)}KB > 128KB limit)`);
-                loaded = true; // Mark as loaded to prevent lower-precedence fallback
-                break;
-              }
-              ruleContents.push(fs.readFileSync(candidates[i], "utf-8"));
-              loaded = true;
-              break;
-            } catch (e: any) {
-              log.debug(`${fileName} failed from ${candidates[i]}:`, e?.message?.slice(0, 100));
-            }
-          }
-          if (!loaded) {
-            log.debug(`${fileName}: all candidates failed, skipping`);
-          }
-        }
-        if (ruleContents.length > 0) {
-          const reviewLoopMaxCycles = getSetting(ctx.cwd, "review_loop_max_cycles");
-          log.debug("assembling rules", { count: ruleContents.length, reviewLoopMaxCycles });
-          let includedCount = 0;
-          let skippedCount = 0;
-          const joined = assembleRuleText(ruleContents, {
-            resolve: (key) => getSettingDynamic(ctx.cwd, key),
-            knownKeys: Object.keys(SETTINGS_KEYS),
-            featurePredicates: {
-              coms_active: () => isComsActive(),
-              external_ai_agents: () =>
-                isSettingTruthy(getSetting(ctx.cwd, "acpx_agents")) ||
-                isSettingTruthy(getSetting(ctx.cwd, "cli_agents")),
-            },
-            reviewLoopMaxCycles: Number(reviewLoopMaxCycles),
-            onWarn: (msg) => log.warn("rule assembly:", msg),
-            onSkip: ({ attrs, index }) => {
-              skippedCount += 1;
-              log.debug("rule skipped by frontmatter gate", { index, attrs });
-            },
-            onInclude: ({ attrs, index }) => {
-              includedCount += 1;
-              log.debug("rule included", { index, attrs });
-            },
-          });
-          log.info("rules assembled", {
-            chars: joined.length,
-            files: ruleContents.length,
-            included: includedCount,
-            skipped: skippedCount,
-          });
-          extra += "\n\n" + joined;
-        } else {
-          extra +=
-            "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
-        }
-      } else {
-        extra +=
-          "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
-      }
+      extra += loadOrAssembleRules(ctx.cwd);
     }
 
     // Async agent status — always show so the AI knows what's running.
