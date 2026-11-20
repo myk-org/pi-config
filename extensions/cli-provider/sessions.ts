@@ -245,23 +245,20 @@ export function migrateCliSessionMarker(
   return false;
 }
 
-/**
- * Migrate every marker for `fromPiSessionId` in `cwd` onto `toPiSessionId`.
- * On conflict, prefer the newer lastSeenAt (keeps pre-bind first-turn session).
- */
-export function migrateAllCliSessionMarkers(
+export function migrateAllCliSessionMarkersDetailed(
   cwd: string,
   fromPiSessionId: string,
   toPiSessionId: string,
-): number {
+): { migrated: number; remaining: number } {
   if (
     !fromPiSessionId ||
     !toPiSessionId ||
     fromPiSessionId === toPiSessionId
   ) {
-    return 0;
+    return { migrated: 0, remaining: 0 };
   }
-  let n = 0;
+  let migrated = 0;
+  let remaining = 0;
   for (const { path, record } of listCliSessions()) {
     if (record.cwd !== cwd) continue;
     if (record.piSessionId !== fromPiSessionId) continue;
@@ -274,13 +271,16 @@ export function migrateAllCliSessionMarkers(
     const toRec = loadCliSessionRecord(toKey);
     if (preferCliSessionRecord(record, toRec) === "source") {
       const ok = saveCliSessionId(toKey, record.sessionId);
-      if (!ok) continue;
+      if (!ok) {
+        remaining += 1;
+        continue;
+      }
       try {
         unlinkSync(path);
       } catch {
         /* ignore */
       }
-      n += 1;
+      migrated += 1;
     } else {
       try {
         unlinkSync(path);
@@ -289,7 +289,23 @@ export function migrateAllCliSessionMarkers(
       }
     }
   }
-  return n;
+  return { migrated, remaining };
+}
+
+/**
+ * Migrate every marker for `fromPiSessionId` in `cwd` onto `toPiSessionId`.
+ * On conflict, prefer the newer lastSeenAt (keeps pre-bind first-turn session).
+ */
+export function migrateAllCliSessionMarkers(
+  cwd: string,
+  fromPiSessionId: string,
+  toPiSessionId: string,
+): number {
+  return migrateAllCliSessionMarkersDetailed(
+    cwd,
+    fromPiSessionId,
+    toPiSessionId,
+  ).migrated;
 }
 
 /**

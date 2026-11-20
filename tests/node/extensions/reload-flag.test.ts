@@ -1338,6 +1338,51 @@ describe("reload-flag", () => {
     }
   });
 
+  test("maybeTrigger rescans and preserves a foreign claim retained after EEXIST during corrupt sweep (#1182)", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const pendingFile = reloadPendingPath(cwd);
+    const foreignValid = JSON.stringify({ nonce: "foreign-claim-nonce", owner: "1:foreign-session" });
+    try {
+      const ctx = makeCtx(cwd, { count: 0 });
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      writeFileSync(pendingFile, "");
+      writeFileSync(reloadFlagPath(cwd), "new-flag-nonce");
+
+      const rename = fs.renameSync;
+      const link = fs.linkSync;
+      let collided = false;
+      t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+        if (String(from) === pendingFile && !collided) {
+          // Concurrent valid write replaced pendingFile just before quarantine rename
+          writeFileSync(pendingFile, foreignValid);
+        }
+        return rename(from, to);
+      });
+      t.mock.method(fs, "linkSync", (existingPath: fs.PathLike, newPath: fs.PathLike) => {
+        if (String(newPath) === pendingFile && !collided) {
+          collided = true;
+          // Another writer populated pendingFile first; linkSync throws EEXIST so quarantine moves to .claim
+          writeFileSync(pendingFile, JSON.stringify({ nonce: "other-valid", owner: "1:other-foreign" }));
+        }
+        return link(existingPath, newPath);
+      });
+      syncBuiltinESMExports();
+
+      await reg.handlers.get("turn_end")!({}, ctx);
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+
+      assert.equal(collided, true);
+      assert.equal(reg.sent.length, 0, "must not dispatch over a retained foreign pending claim");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("reconcileStartupHandshake replaces pruneStaleHandshake without age-pruning branches (f2742a50)", () => {
     assert.equal(typeof reconcileStartupHandshake, "function");
     assert.equal("pruneStaleHandshake" in reloadFlagModule, false);

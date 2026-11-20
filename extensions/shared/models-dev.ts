@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "./logger.js";
@@ -73,7 +73,7 @@ export function clearModelsDevCatalogCache(): void {
 
 async function readCache(path: string): Promise<ModelsDevCatalog | null> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    const parsed: unknown = JSON.parse(await fsPromises.readFile(path, "utf8"));
     if (!isCatalog(parsed)) {
       log.warn("models.dev cache is not an object", path);
       return null;
@@ -88,7 +88,7 @@ async function readCache(path: string): Promise<ModelsDevCatalog | null> {
 
 async function cacheMtimeMs(path: string): Promise<number | null> {
   try {
-    return (await stat(path)).mtimeMs;
+    return (await fsPromises.stat(path)).mtimeMs;
   } catch {
     return null;
   }

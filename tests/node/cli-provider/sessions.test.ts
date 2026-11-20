@@ -863,4 +863,50 @@ describe("cli-provider sessions", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it("reapStaleCliSessionsAsync preserves a marker rewritten to running mid-sweep (#1167)", async (t) => {
+    const fsPromises = await import("node:fs/promises");
+    const { syncBuiltinESMExports } = await import("node:module");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = makeTempDir("cli-reap-race-");
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m1",
+        piSessionId: "race-sid",
+      };
+      saveCliSessionId(key, "stale-cli");
+      setCliSessionMarkerMeta(key, { status: "stopped", idleMs: 60_000 });
+
+      let injected = false;
+      const origReadFile = fsPromises.default.readFile;
+      t.mock.method(fsPromises.default, "readFile", async (target: any, ...args: any[]) => {
+        const res = await (origReadFile as any)(target, ...args);
+        if (!injected && String(target).endsWith(".json")) {
+          injected = true;
+          // Simulate concurrent saveCliSessionId turning the stopped marker into running
+          saveCliSessionId(key, "fresh-running-cli");
+        }
+        return res;
+      });
+      syncBuiltinESMExports();
+
+      const n = await reapStaleCliSessionsAsync({ inactivityThresholdMs: 1_000 });
+      assert.equal(injected, true);
+      assert.equal(n, 0);
+      assert.equal(loadCliSessionId(key), "fresh-running-cli");
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

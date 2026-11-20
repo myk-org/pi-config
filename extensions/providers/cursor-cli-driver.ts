@@ -41,7 +41,7 @@ import {
   createProvisionalPiSessionId,
   isProvisionalPiSessionId,
   migrateCliSessionMarker,
-  migrateAllCliSessionMarkers,
+  migrateAllCliSessionMarkersDetailed,
   shouldAdoptLegacyCliMarker,
   resolveCliHistorySeed,
   touchCliSession,
@@ -221,11 +221,16 @@ export function createCursorCliAdapter(
   function migrateMarkersToRealPiSessionId(sid: string): void {
     if (!sid || sid === provisionalPiSessionId) return;
     const hadProvisionalMarker = provisionalMarkerWritten;
+    let remainingProvisional = 0;
     if (hadProvisionalMarker) {
       for (const markerCwd of markerCwds()) {
-        migrateAllCliSessionMarkers(markerCwd, provisionalPiSessionId, sid);
+        const res = migrateAllCliSessionMarkersDetailed(
+          markerCwd,
+          provisionalPiSessionId,
+          sid,
+        );
+        remainingProvisional += res.remaining;
       }
-      provisionalMarkerWritten = false;
     }
     for (const [handleKey, prevKey] of sessionKeys) {
       if (
@@ -242,9 +247,16 @@ export function createCursorCliAdapter(
         if (!migrated && loadCliSessionId(prevKey)) {
           fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
             `CLI marker migration failed; keeping source under ${prevKey.piSessionId}`);
+          if (prevKey.piSessionId === provisionalPiSessionId) {
+            remainingProvisional += 1;
+          }
+          continue;
         }
       }
       sessionKeys.set(handleKey, nextKey);
+    }
+    if (hadProvisionalMarker) {
+      provisionalMarkerWritten = remainingProvisional > 0;
     }
   }
 

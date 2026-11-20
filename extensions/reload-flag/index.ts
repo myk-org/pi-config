@@ -326,7 +326,7 @@ function removeCorruptPendingFile(cwd: string, file: string): boolean {
   return true;
 }
 
-function sweepCorruptPending(cwd: string, preScannedCandidates?: readonly string[]): number {
+function sweepCorruptPending(cwd: string, preScannedCandidates?: readonly string[]): boolean {
   const candidates = preScannedCandidates ?? (() => {
     const runPending = path.join(reloadRunDir(cwd), RELOAD_PENDING_FILENAME);
     const legacyPending = path.join(reloadLegacyDir(cwd), RELOAD_PENDING_FILENAME);
@@ -336,13 +336,14 @@ function sweepCorruptPending(cwd: string, preScannedCandidates?: readonly string
       ...retainedRequests(cwd).filter((file) => path.basename(file).startsWith("reload.pending.")),
     ];
   })();
-  let removed = 0;
+  let touchedCorrupt = false;
   for (const file of candidates) {
     if (inspectPendingFile(file).status === "corrupt") {
-      if (removeCorruptPendingFile(cwd, file)) removed += 1;
+      touchedCorrupt = true;
+      removeCorruptPendingFile(cwd, file);
     }
   }
-  return removed;
+  return touchedCorrupt;
 }
 
 /** Read validated pending ownership. Null means absent, unreadable, or corrupt. */
@@ -720,7 +721,7 @@ export default function (pi: ExtensionAPI) {
     if (Date.now() < nextRetryAt) return;
 
     if (state.pendingCandidates.length > 0) {
-      if (sweepCorruptPending(liveCwd, state.pendingCandidates) > 0) {
+      if (sweepCorruptPending(liveCwd, state.pendingCandidates)) {
         state = scanReloadControlState(liveCwd);
       }
     }

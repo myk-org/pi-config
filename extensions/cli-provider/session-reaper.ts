@@ -4,8 +4,9 @@
  * pi sessions in the same cwd keep CLI --resume continuity.
  */
 
+import { randomUUID } from "node:crypto";
 import { unlinkSync } from "node:fs";
-import { readdir, readFile, unlink } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
 import { join } from "node:path";
 import { createLogger } from "../shared/logger.js";
 import {
@@ -95,7 +96,7 @@ export async function reapStaleCliSessionsAsync(
   const dir = cliSessionsDir();
   let names: string[];
   try {
-    names = await readdir(dir);
+    names = await fsPromises.readdir(dir);
   } catch {
     return 0;
   }
@@ -113,7 +114,7 @@ export async function reapStaleCliSessionsAsync(
         const path = join(dir, name);
         let raw: string;
         try {
-          raw = await readFile(path, "utf-8");
+          raw = await fsPromises.readFile(path, "utf-8");
         } catch {
           return 0;
         }
@@ -121,11 +122,34 @@ export async function reapStaleCliSessionsAsync(
         if (!record || !shouldReapRecord(record, now, threshold, options?.cwd)) {
           return 0;
         }
+        // Atomic claim-and-verify: if a writer refreshed the marker to running
+        // concurrently, restore via link (never clobbering newer writes) instead of deleting.
+        const claimPath = `${path}.${randomUUID()}.reap-claim`;
         try {
-          await unlink(path);
-          log.info(`reaped session ${record.agent}/${record.model} ` +
-              `(status=${record.status}, piSessionId=${record.piSessionId}, ` +
-              `lastSeen=${record.lastSeenAt})`,
+          await fsPromises.rename(path, claimPath);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+          log.error(`failed to claim session ${record.agent}/${record.model} at ${path}`, err);
+          return 0;
+        }
+
+        try {
+          const claimedRaw = await fsPromises.readFile(claimPath, "utf-8");
+          const recheck = parseCliSessionRecord(claimedRaw);
+          if (!recheck || !shouldReapRecord(recheck, Date.now(), threshold, options?.cwd)) {
+            try {
+              await fsPromises.link(claimPath, path);
+            } catch (linkErr) {
+              if ((linkErr as NodeJS.ErrnoException).code !== "EEXIST") {
+                log.warn(`failed to restore refreshed session marker at ${path}`, linkErr);
+              }
+            }
+            return 0;
+          }
+          await fsPromises.unlink(claimPath);
+          log.info(`reaped session ${recheck.agent}/${recheck.model} ` +
+              `(status=${recheck.status}, piSessionId=${recheck.piSessionId}, ` +
+              `lastSeen=${recheck.lastSeenAt})`,
           );
           return 1;
         } catch (err) {
@@ -133,6 +157,8 @@ export async function reapStaleCliSessionsAsync(
             err,
           );
           return 0;
+        } finally {
+          await fsPromises.unlink(claimPath).catch(() => {});
         }
       }),
     );

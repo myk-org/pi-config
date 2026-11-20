@@ -68,28 +68,83 @@ describe("loadModelsDevCatalog", () => {
     clearModelsDevCatalogCache();
   });
 
-  it("memoizes catalog object reference in memory when disk mtimeMs is unchanged (#1177)", async () => {
+  it("reuses in-memory catalog without re-reading disk or re-parsing JSON when mtimeMs is unchanged (#1177)", async (t) => {
+    const fsPromises = await import("node:fs/promises");
+    const { syncBuiltinESMExports } = await import("node:module");
     const dir = makeTempDir("models-dev-memo-");
     const cachePath = join(dir, "models.dev.json");
     writeFileSync(cachePath, JSON.stringify(SAMPLE_CATALOG));
     const t1 = (Date.now() - 5_000) / 1000;
     utimesSync(cachePath, t1, t1);
+
+    let readCalls = 0;
+    let parseCalls = 0;
+    const origReadFile = fsPromises.default.readFile;
+    const origParse = JSON.parse;
+    t.mock.method(fsPromises.default, "readFile", async (target: any, ...args: any[]) => {
+      if (String(target) === cachePath) readCalls += 1;
+      return (origReadFile as any)(target, ...args);
+    });
+    t.mock.method(JSON, "parse", (text: string, ...args: any[]) => {
+      if (typeof text === "string" && text.includes("grok-4.6")) parseCalls += 1;
+      return origParse(text, ...args);
+    });
+    syncBuiltinESMExports();
+
     try {
       const first = await loadModelsDevCatalog({ cachePath });
       const second = await loadModelsDevCatalog({ cachePath });
       assert.ok(first);
       assert.equal(first, second);
+      assert.equal(readCalls, 1);
+      assert.equal(parseCalls, 1);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
-      // Concurrent loads share one in-flight promise and object reference
-      clearModelsDevCatalogCache();
+  it("deduplicates concurrent in-flight loadModelsDevCatalog calls (#1177)", async (t) => {
+    const fsPromises = await import("node:fs/promises");
+    const { syncBuiltinESMExports } = await import("node:module");
+    const dir = makeTempDir("models-dev-inflight-");
+    const cachePath = join(dir, "models.dev.json");
+    writeFileSync(cachePath, JSON.stringify(SAMPLE_CATALOG));
+
+    let readCalls = 0;
+    const origReadFile = fsPromises.default.readFile;
+    t.mock.method(fsPromises.default, "readFile", async (target: any, ...args: any[]) => {
+      if (String(target) === cachePath) readCalls += 1;
+      return (origReadFile as any)(target, ...args);
+    });
+    syncBuiltinESMExports();
+
+    try {
       const [c1, c2] = await Promise.all([
         loadModelsDevCatalog({ cachePath }),
         loadModelsDevCatalog({ cachePath }),
       ]);
       assert.ok(c1);
       assert.equal(c1, c2);
+      assert.equal(readCalls, 1);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
-      // Updating disk file with a new mtimeMs invalidates the in-memory entry
+  it("invalidates in-memory catalog cache when disk mtimeMs changes (#1177)", async () => {
+    const dir = makeTempDir("models-dev-mtime-");
+    const cachePath = join(dir, "models.dev.json");
+    writeFileSync(cachePath, JSON.stringify(SAMPLE_CATALOG));
+    const t1 = (Date.now() - 5_000) / 1000;
+    utimesSync(cachePath, t1, t1);
+    try {
+      const first = await loadModelsDevCatalog({ cachePath });
+      assert.ok(first);
+
       const updated = {
         ...SAMPLE_CATALOG,
         xai: {
@@ -105,9 +160,9 @@ describe("loadModelsDevCatalog", () => {
       const t2 = (Date.now() - 1_000) / 1000;
       utimesSync(cachePath, t2, t2);
 
-      const third = await loadModelsDevCatalog({ cachePath });
-      assert.notEqual(third, c1);
-      assert.equal(third?.xai?.models?.["grok-4.6"]?.limit?.context, 999_000);
+      const second = await loadModelsDevCatalog({ cachePath });
+      assert.notEqual(second, first);
+      assert.equal(second?.xai?.models?.["grok-4.6"]?.limit?.context, 999_000);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
