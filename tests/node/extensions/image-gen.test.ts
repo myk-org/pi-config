@@ -96,4 +96,122 @@ describe("image-gen tool guard paths", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("tightens tool description and schema descriptions without duplicating enum values (#1193)", () => {
+    const tool = createImageGenTool();
+    assert.ok(tool.description.length < 100, `expected concise description, got ${tool.description.length} chars`);
+    assert.doesNotMatch(tool.description, /GEMINI_API_KEY|pi-config-settings/);
+    const props = (tool.parameters as any).properties;
+    assert.equal(props.aspect_ratio.description, "Image aspect ratio");
+    assert.deepEqual(props.aspect_ratio.enum, ["1:1", "3:4", "4:3", "9:16", "16:9"]);
+  });
+
+  it("bounds raw HTML error body from non-2xx response to 500 chars (#1193)", async (t) => {
+    const cwd = makeTempDir("image-gen-http-html-");
+    const globalFile = join(cwd, "global-settings.json");
+    writeFileSync(globalFile, JSON.stringify({ image_model: "gemini-2.5-flash-image" }));
+    const prevGemini = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "test-key"; // pragma: allowlist secret — synthetic test fixture
+    setGlobalSettingsPath(globalFile);
+
+    try {
+      const htmlBody = `  <html><body><h1>502 Bad Gateway</h1>${"x".repeat(6000)}</body></html>  `;
+      t.mock.method(globalThis, "fetch", async () =>
+        new Response(htmlBody, { status: 502, headers: { "content-type": "text/html" } }),
+      );
+      const htmlText = await runExecute(cwd);
+      assert.match(htmlText, /^Error: Gemini image request failed \(502\): <html>/);
+      const htmlDetail = htmlText.replace(/^Error: Gemini image request failed \(502\): /, "");
+      assert.equal(htmlDetail.length, 500);
+    } finally {
+      t.mock.restoreAll();
+      setGlobalSettingsPath(null);
+      if (prevGemini === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevGemini;
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds large JSON error message from non-2xx response to 500 chars (#1193)", async (t) => {
+    const cwd = makeTempDir("image-gen-http-json-");
+    const globalFile = join(cwd, "global-settings.json");
+    writeFileSync(globalFile, JSON.stringify({ image_model: "gemini-2.5-flash-image" }));
+    const prevGemini = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "test-key"; // pragma: allowlist secret — synthetic test fixture
+    setGlobalSettingsPath(globalFile);
+
+    try {
+      const longJsonMsg = `  ${"E".repeat(2000)}  `;
+      t.mock.method(globalThis, "fetch", async () =>
+        new Response(JSON.stringify({ error: { message: longJsonMsg } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+      const jsonText = await runExecute(cwd);
+      assert.match(jsonText, /^Error: Gemini image request failed \(400\): E+/);
+      const jsonDetail = jsonText.replace(/^Error: Gemini image request failed \(400\): /, "");
+      assert.equal(jsonDetail.length, 500);
+    } finally {
+      t.mock.restoreAll();
+      setGlobalSettingsPath(null);
+      if (prevGemini === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevGemini;
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("logs warning with status and messageLength on non-2xx HTTP response (#1193)", async (t) => {
+    const fs = await import("node:fs");
+    const { syncBuiltinESMExports } = await import("node:module");
+    const { clearLogLevelCache, setLogLevelPin } = await import(
+      "../../../extensions/shared/file-logger.js"
+    );
+
+    const cwd = makeTempDir("image-gen-http-log-");
+    const globalFile = join(cwd, "global-settings.json");
+    writeFileSync(globalFile, JSON.stringify({ image_model: "gemini-2.5-flash-image" }));
+    const prevGemini = process.env.GEMINI_API_KEY;
+    const prevSid = (globalThis as any).__piConfigSessionId;
+    process.env.GEMINI_API_KEY = "test-key"; // pragma: allowlist secret — synthetic test fixture
+    (globalThis as any).__piConfigSessionId = prevSid || "image-gen-log-test";
+    setGlobalSettingsPath(globalFile);
+    setLogLevelPin("image_gen", "warn");
+    clearLogLevelCache();
+
+    const records: string[] = [];
+    t.mock.method(fs.default, "appendFileSync", (_target: any, data: any) => {
+      records.push(String(data));
+    });
+    t.mock.method(globalThis, "fetch", async () =>
+      new Response("x".repeat(1200), { status: 503, headers: { "content-type": "text/plain" } }),
+    );
+    syncBuiltinESMExports();
+
+    try {
+      await runExecute(cwd);
+      assert.ok(
+        records.some(
+          (line) =>
+            line.includes("[warn]") &&
+            line.includes("[image_gen]") &&
+            line.includes("generate_image HTTP error") &&
+            line.includes('"status":503') &&
+            line.includes('"messageLength":1200'),
+        ),
+        `expected warn log with status and messageLength, got: ${records.join("")}`,
+      );
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      setLogLevelPin("image_gen", null);
+      clearLogLevelCache();
+      setGlobalSettingsPath(null);
+      if (prevSid === undefined) delete (globalThis as any).__piConfigSessionId;
+      else (globalThis as any).__piConfigSessionId = prevSid;
+      if (prevGemini === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevGemini;
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

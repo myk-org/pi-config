@@ -445,3 +445,89 @@ describe("cli-* supports async LLM", () => {
     }
   });
 });
+
+describe("async cursor model discovery (#1171)", () => {
+  it("runs agent --list-models asynchronously without blocking the event loop", async () => {
+    const { chmodSync } = await import("node:fs");
+    const { clearResolveBinaryCache } = await import(
+      "../../../extensions/cli-provider/shared/discover-cache.js"
+    );
+    const { discoverCliModelsDetailed } = await import(
+      "../../../extensions/cli-provider/discover.js"
+    );
+
+    const binDir = makeTempDir("cursor-async-bin-");
+    const prevPath = process.env.PATH;
+    try {
+      const agentBin = join(binDir, "agent");
+      writeFileSync(
+        agentBin,
+        [
+          "#!/usr/bin/env sh",
+          "sleep 0.08",
+          "printf '%s\\n' 'gpt-5 - GPT 5 (default)'",
+          "printf '%s\\n' 'sonnet-4.5 - Sonnet 4.5'",
+        ].join("\n"),
+        "utf-8",
+      );
+      chmodSync(agentBin, 0o755);
+
+      process.env.PATH = `${binDir}:${prevPath ?? ""}`;
+      clearResolveBinaryCache();
+
+      let timerFiredBeforeResolve = false;
+      const discoveryPromise = discoverCliModelsDetailed("cursor");
+      const timerPromise = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          timerFiredBeforeResolve = true;
+          resolve();
+        }, 10);
+      });
+
+      const [models] = await Promise.all([discoveryPromise, timerPromise]);
+      assert.equal(timerFiredBeforeResolve, true);
+      assert.deepEqual(models, [
+        { id: "gpt-5", name: "GPT 5" },
+        { id: "sonnet-4.5", name: "Sonnet 4.5" },
+      ]);
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      clearResolveBinaryCache();
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns [] when agent --list-models exits non-zero with no models", async () => {
+    const { chmodSync } = await import("node:fs");
+    const { clearResolveBinaryCache } = await import(
+      "../../../extensions/cli-provider/shared/discover-cache.js"
+    );
+    const { discoverCliModelsDetailed } = await import(
+      "../../../extensions/cli-provider/discover.js"
+    );
+
+    const binDir = makeTempDir("cursor-fail-bin-");
+    const prevPath = process.env.PATH;
+    try {
+      const agentBin = join(binDir, "agent");
+      writeFileSync(
+        agentBin,
+        "#!/usr/bin/env sh\necho 'not logged in' >&2\nexit 1\n",
+        "utf-8",
+      );
+      chmodSync(agentBin, 0o755);
+
+      process.env.PATH = `${binDir}:${prevPath ?? ""}`;
+      clearResolveBinaryCache();
+
+      const models = await discoverCliModelsDetailed("cursor");
+      assert.deepEqual(models, []);
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      clearResolveBinaryCache();
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+});

@@ -226,6 +226,39 @@ describe("file-logger", () => {
     assert.match(body, /second/);
   });
 
+  it("skips mkdirSync on subsequent writes once directory exists (#1188)", async (t) => {
+    const fs = await import("node:fs");
+    const { syncBuiltinESMExports } = await import("node:module");
+    tmpHome = makeTempDir("pi-file-log-nomkdir-");
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+
+    const { fileLog, getPiLogPath, setGlobalSessionId } = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 50}`
+    );
+    setGlobalSessionId("test-session-nomkdir");
+
+    let mkdirCalls = 0;
+    const origMkdir = fs.default.mkdirSync;
+    t.mock.method(fs.default, "mkdirSync", (target: any, opts: any) => {
+      mkdirCalls += 1;
+      return origMkdir(target, opts);
+    });
+    syncBuiltinESMExports();
+    try {
+      for (let i = 0; i < 5; i++) {
+        assert.equal(fileLog("cli-provider", "info", "cli-provider", `line-${i}`), true);
+      }
+      assert.equal(mkdirCalls, 1, "mkdirSync only called on initial ENOENT");
+      const body = readFileSync(getPiLogPath("cli-provider")!, "utf-8");
+      assert.match(body, /line-0/);
+      assert.match(body, /line-4/);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+
   it("dreaming and cli-provider sources have no executable console.* ops calls", () => {
     const files = [
       join(REPO, "extensions/orchestrator/dreaming.ts"),

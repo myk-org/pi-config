@@ -156,7 +156,7 @@ describe("provider-stream-log", () => {
     assert.match(body, /\(\+4800\)/); // truncated marker: …(+4800)
   });
 
-  it("bounds cyclic payloads by depth and survives uncloneable data", async () => {
+  it("bounds cyclic payloads by depth and logs uncloneable data directly (#1188)", async () => {
     const { mod, home } = await loadModule("debug");
     const pi = fakePi();
     mod.registerProviderStreamLog(pi.api);
@@ -164,15 +164,56 @@ describe("provider-stream-log", () => {
     const cyclic: Record<string, unknown> = { name: "loop" };
     cyclic.self = cyclic;
     const handler = pi.handlers.get("provider_stream_event")![0]!;
-    // structuredClone preserves cycles but they must not recurse forever.
     handler({ type: "provider_stream_event", provider: "p", api: "a", model: "m", data: cyclic });
-    // A function is not structured-cloneable — handler must log, not throw.
     handler({ type: "provider_stream_event", provider: "p", api: "a", model: "m", data: { fn: () => "boom" } });
 
     const body = readFileSync(logFile(home), "utf-8");
-    assert.match(body, /stream event data not cloneable, logged un-cloned/);
-    assert.match(body, /\[function\]/);
+    assert.match(body, /name:loop/);
+    assert.match(body, /fn:\[function\]/);
+    assert.doesNotMatch(body, /not cloneable/);
     assert.ok(body.split("\n").length <= 10);
+  });
+
+  it("previewStreamData stops after MAX_ITEMS own keys without invoking trailing getters (#1188)", async () => {
+    const { mod } = await loadModule("debug");
+    let trailingGetterCalled = false;
+    const payload: Record<string, unknown> = {};
+    for (let i = 0; i < 12; i++) {
+      payload[`k${i}`] = i;
+    }
+    Object.defineProperty(payload, "k99", {
+      enumerable: true,
+      get() {
+        trailingGetterCalled = true;
+        return "should-not-read";
+      },
+    });
+    const out = mod.previewStreamData(payload);
+    assert.equal(trailingGetterCalled, false);
+    assert.match(out, /^\{k0:0,.*,k7:7,…\}$/);
+  });
+
+  it("does not invoke structuredClone on stream chunks (#1188)", async (t) => {
+    const { mod, home } = await loadModule("debug");
+    const pi = fakePi();
+    mod.registerProviderStreamLog(pi.api);
+
+    let cloneCalls = 0;
+    t.mock.method(globalThis, "structuredClone", (val: unknown) => {
+      cloneCalls += 1;
+      return val;
+    });
+
+    pi.handlers.get("provider_stream_event")![0]!({
+      type: "provider_stream_event",
+      provider: "p",
+      api: "a",
+      model: "m",
+      data: { ok: true },
+    });
+
+    assert.equal(cloneCalls, 0);
+    assert.match(readFileSync(logFile(home), "utf-8"), /ok:true/);
   });
 
   it("has no executable console.* calls", () => {

@@ -41,7 +41,7 @@ import {
   createProvisionalPiSessionId,
   isProvisionalPiSessionId,
   migrateCliSessionMarker,
-  migrateAllCliSessionMarkers,
+  migrateAllCliSessionMarkersDetailed,
   shouldAdoptLegacyCliMarker,
   resolveCliHistorySeed,
   touchCliSession,
@@ -183,6 +183,7 @@ export function createCursorCliAdapter(
     `createCursorCliAdapter bootCwdBound=${Boolean(cwd)} instance=${instanceId}`);
   let activePiSessionId: string | null = null;
   const provisionalPiSessionId = createProvisionalPiSessionId();
+  let provisionalMarkerWritten = false;
   let forceHistorySeed = false;
   const forceHistorySeedCwds = new Set<string>();
   const appliedSystemPrompts = new Map<string, string | undefined>();
@@ -209,10 +210,27 @@ export function createCursorCliAdapter(
     return { cwd: turnCwd, agent: "cursor", model, piSessionId: resolvedPiSessionId() };
   }
 
+  function saveCliMarker(key: CliSessionKey, sessionId: string): boolean {
+    const saved = saveCliSessionId(key, sessionId);
+    if (saved && key.piSessionId === provisionalPiSessionId) {
+      provisionalMarkerWritten = true;
+    }
+    return saved;
+  }
+
   function migrateMarkersToRealPiSessionId(sid: string): void {
     if (!sid || sid === provisionalPiSessionId) return;
-    for (const markerCwd of markerCwds()) {
-      migrateAllCliSessionMarkers(markerCwd, provisionalPiSessionId, sid);
+    const hadProvisionalMarker = provisionalMarkerWritten;
+    let remainingProvisional = 0;
+    if (hadProvisionalMarker) {
+      for (const markerCwd of markerCwds()) {
+        const res = migrateAllCliSessionMarkersDetailed(
+          markerCwd,
+          provisionalPiSessionId,
+          sid,
+        );
+        remainingProvisional += res.remaining;
+      }
     }
     for (const [handleKey, prevKey] of sessionKeys) {
       if (
@@ -224,17 +242,29 @@ export function createCursorCliAdapter(
         continue;
       }
       const nextKey: CliSessionKey = { ...prevKey, piSessionId: sid };
-      const migrated = migrateCliSessionMarker(nextKey, prevKey.piSessionId);
-      if (!migrated && loadCliSessionId(prevKey)) {
-        fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-          `CLI marker migration failed; keeping source under ${prevKey.piSessionId}`);
+      if (prevKey.piSessionId !== provisionalPiSessionId || hadProvisionalMarker) {
+        const migrated = migrateCliSessionMarker(nextKey, prevKey.piSessionId);
+        if (!migrated && loadCliSessionId(prevKey)) {
+          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
+            `CLI marker migration failed; keeping source under ${prevKey.piSessionId}`);
+          if (prevKey.piSessionId === provisionalPiSessionId) {
+            remainingProvisional += 1;
+          }
+          continue;
+        }
       }
       sessionKeys.set(handleKey, nextKey);
+    }
+    if (hadProvisionalMarker) {
+      provisionalMarkerWritten = remainingProvisional > 0;
     }
   }
 
   return {
     bindPiSessionId: (sid: string) => {
+      if (!sid) return;
+      if (sid === activePiSessionId && !provisionalMarkerWritten) return;
+      log.debug("binding pi session id", { sid, hadProvisionalMarker: provisionalMarkerWritten });
       activePiSessionId = sid;
       migrateMarkersToRealPiSessionId(sid);
     },
@@ -360,7 +390,7 @@ export function createCursorCliAdapter(
       const onEvent = opts?.onEvent
         ? (ev: { kind: string; text?: string; sessionId?: string }) => {
             if (ev.kind === "session" && ev.sessionId) {
-              saveCliSessionId(key, ev.sessionId);
+              saveCliMarker(key, ev.sessionId);
               opts.onEvent!({ kind: "session", sessionId: ev.sessionId });
             } else if (ev.kind === "thinking_delta" && ev.text) {
               opts.onEvent!({ kind: "thinking_delta", text: ev.text });
@@ -386,7 +416,7 @@ export function createCursorCliAdapter(
         const result = await runOnce(effectiveSessionId, finalPrompt);
 
         if (result.sessionId) {
-          saveCliSessionId(key, result.sessionId);
+          saveCliMarker(key, result.sessionId);
         } else if (effectiveSessionId) {
           touchCliSession(key);
         }
@@ -421,7 +451,7 @@ export function createCursorCliAdapter(
           }
           const result = await runOnce(null, retryPrompt);
           if (result.sessionId) {
-            saveCliSessionId(key, result.sessionId);
+            saveCliMarker(key, result.sessionId);
           }
           if (needsSystemPrompt) {
             appliedSystemPrompts.set(handleKey, systemPrompt);
