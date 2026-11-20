@@ -531,4 +531,15 @@ describe("async kill origin attribution (issue #816)", () => {
       );
     } finally { h.restore(); }
   });
+
+  it("leaves a corrupt status.json untouched when killing a job", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      const statusPath = join(h.cwd, ".pi", "tmp", job.id, "status.json");
+      writeFileSync(statusPath, "{corrupt-json", "utf8");
+      h.api.killAsyncAgent(job.id, "user");
+      assert.equal(readFileSync(statusPath, "utf8"), "{corrupt-json");
+    } finally { h.restore(); }
+  });
 });

@@ -258,4 +258,78 @@ describe("openCronStatusOverlay multi-select (#1087)", () => {
       { message: "paused 1 of 2 crons — failed: #session:1", level: "warning" },
     ]);
   });
+
+  it("renders sessionLabel on rows that define one (#1270)", async () => {
+    const tasks = [
+      { ...row({ id: "1", description: "with session" }), sessionLabel: "this session" },
+      row({ id: "2", description: "without session" }),
+    ];
+    let rendered = "";
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify: () => {},
+        custom: async (factory: any) => {
+          const fakeTui = { terminal: { rows: 24 }, requestRender: () => {} };
+          const fakeTheme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+          const comp = factory(fakeTui, fakeTheme, {}, () => {});
+          try {
+            rendered = comp.render(120).join("\n");
+          } finally {
+            comp.dispose?.();
+          }
+          return undefined;
+        },
+      },
+    } as any;
+
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => tasks,
+      removeTask: () => true,
+      togglePaused: () => ({ ok: true, paused: true }),
+    });
+
+    const lines = rendered.split("\n");
+    const withLine = lines.find((l) => l.includes("with session")) ?? "";
+    const withoutLine = lines.find((l) => l.includes("without session")) ?? "";
+    assert.match(withLine, /this session/);
+    assert.doesNotMatch(withoutLine, /this session/);
+  });
+
+  it("does not scale listTasks() calls linearly with row count when rendering (#1270)", async () => {
+    const measureCalls = async (count: number) => {
+      let calls = 0;
+      const tasks = Array.from({ length: count }, (_, idx) => ({
+        ...row({ id: String(idx + 1), description: `task ${idx + 1}` }),
+        sessionLabel: "this session",
+      }));
+      const ctx = {
+        hasUI: true,
+        ui: {
+          notify: () => {},
+          custom: async (factory: any) => {
+            const fakeTui = { terminal: { rows: 30 }, requestRender: () => {} };
+            const fakeTheme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+            const comp = factory(fakeTui, fakeTheme, {}, () => {});
+            try {
+              comp.render(120);
+            } finally {
+              comp.dispose?.();
+            }
+            return undefined;
+          },
+        },
+      } as any;
+      await openCronStatusOverlay(ctx, {
+        listTasks: () => { calls++; return tasks; },
+        removeTask: () => true,
+        togglePaused: () => ({ ok: true, paused: true }),
+      });
+      return calls;
+    };
+
+    const callsFor1 = await measureCalls(1);
+    const callsFor10 = await measureCalls(10);
+    assert.equal(callsFor10, callsFor1);
+  });
 });

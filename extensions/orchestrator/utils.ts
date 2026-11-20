@@ -46,6 +46,16 @@ export function ensureGitSshTimeout(): void {
 export const clockHHMM = (d: Date = new Date()): string =>
   `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 
+/** Format elapsed milliseconds as compact whole-unit duration (`45s`, `3m12s`, `1h5m`). */
+export function formatElapsedDuration(ms: number): string {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60}m`;
+}
+
 export function isRunningInContainer(): boolean {
   try {
     // Check for /.dockerenv (Docker) or /run/.containerenv (Podman)

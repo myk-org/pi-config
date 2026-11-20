@@ -30,6 +30,7 @@ import { discoverAgents } from "./agents.js";
 import {
   CATEGORIES,
   detectSource,
+  loadSettingsSourceSnapshot,
   formatValue,
   parseRawValue,
   getFilePathForScope,
@@ -43,6 +44,7 @@ import {
   sourceGlyph,
   resolveModelKeySubmenu,
   type ModelSelectItem,
+  type SettingsSourceSnapshot,
 } from "./settings-tui-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -151,26 +153,51 @@ function refreshItem(item: SettingItem, cwd: string, theme: Theme): void {
 
 // ── Build setting items for a single category ───────────────────────
 
+export interface BuildCategoryItemsOptions {
+  snapshot?: SettingsSourceSnapshot;
+  getProviderModelInfo?: () => ProviderModelInfo;
+  getAvailableAgents?: () => string[];
+}
+
 export function buildCategoryItems(
   categoryIndex: number,
   cwd: string,
   editScope: "project" | "global",
   theme: Theme,
   modelRegistry?: ModelRegistry,
+  options?: BuildCategoryItemsOptions,
 ): SettingItem[] {
   const category = CATEGORIES[categoryIndex];
   if (!category) return [];
 
   const items: SettingItem[] = [];
-  const pmInfo = getProviderModelInfo(modelRegistry);
-  const availableAgents = getAvailableAgentNames(cwd);
+  const snapshot = options?.snapshot ?? loadSettingsSourceSnapshot(cwd);
+  const scopeRaw = editScope === "project" ? snapshot.project : snapshot.global;
+  let pmInfoCache: ProviderModelInfo | undefined;
+  const resolvePmInfo = (): ProviderModelInfo => {
+    if (pmInfoCache === undefined) {
+      pmInfoCache = options?.getProviderModelInfo
+        ? options.getProviderModelInfo()
+        : getProviderModelInfo(modelRegistry);
+    }
+    return pmInfoCache;
+  };
+  let agentsCache: string[] | undefined;
+  const resolveAvailableAgents = (): string[] => {
+    if (agentsCache === undefined) {
+      agentsCache = options?.getAvailableAgents
+        ? options.getAvailableAgents()
+        : getAvailableAgentNames(cwd);
+    }
+    return agentsCache;
+  };
 
   for (const key of category.keys) {
     const def = SETTINGS_KEYS[key];
     if (!def) continue;
 
     const effectiveValue = getSetting(cwd, key as any);
-    const source = detectSource(key, def, cwd);
+    const source = detectSource(key, def, cwd, snapshot);
     const displayValue = formatValue(key, effectiveValue, def);
     const glyph = sourceGlyph(source, theme);
 
@@ -186,11 +213,13 @@ export function buildCategoryItems(
     const isModelKey =
       key === "agent_model" || key === "internal_operations_model" || key === "image_model";
 
-    if (isProviderKey && pmInfo.providers.length > 0) {
+    if (isProviderKey && resolvePmInfo().providers.length > 0) {
+      const pmInfo = resolvePmInfo();
       item.submenu = (_current: string, done: (val?: string) => void): Component => {
         return new PickerSubmenu(`Select provider for ${key}`, pmInfo.providers, theme, done);
       };
-    } else if (isModelKey && pmInfo.models.length > 0) {
+    } else if (isModelKey && resolvePmInfo().models.length > 0) {
+      const pmInfo = resolvePmInfo();
       // Resolve provider/models inside the callback so refreshItem after
       // agent_provider / internal_operations_provider changes does not leave a stale list.
       item.submenu = (current: string, done: (val?: string) => void): Component => {
@@ -242,7 +271,7 @@ export function buildCategoryItems(
 
           const SECRET_PATTERN = /token|secret|password|auth/i;
           const isSecret = SECRET_PATTERN.test(key) || (typeof def?.env === "string" && SECRET_PATTERN.test(def.env));
-          const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd) : null;
+          const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd, scopeRaw) : null;
           item.submenu = (current: string, done: (val?: string) => void): Component => {
             const prefill = secretInfo ? secretInfo.prefill : current;
             const hint = secretInfo ? secretInfo.hint : "Enter new value (empty to clear)";
@@ -299,7 +328,9 @@ export function buildCategoryItems(
           break;
         }
 
-        case "agent_overrides":
+        case "agent_overrides": {
+          const pmInfo = resolvePmInfo();
+          const availableAgents = resolveAvailableAgents();
           item.submenu = (_current: string, done: (val?: string) => void): Component => {
             const currentOverrides = (typeof effectiveValue === "object" && effectiveValue !== null && !Array.isArray(effectiveValue))
               ? effectiveValue as Record<string, { provider?: string | null; model?: string | null }>
@@ -315,6 +346,7 @@ export function buildCategoryItems(
             );
           };
           break;
+        }
       }
     }
 
@@ -331,9 +363,17 @@ export function buildSettingItems(
   theme: Theme,
   modelRegistry?: ModelRegistry,
 ): SettingItem[] {
+  const snapshot = loadSettingsSourceSnapshot(cwd);
+  let pmInfoCache: ProviderModelInfo | undefined;
+  let agentsCache: string[] | undefined;
+  const sharedOptions: BuildCategoryItemsOptions = {
+    snapshot,
+    getProviderModelInfo: () => (pmInfoCache ??= getProviderModelInfo(modelRegistry)),
+    getAvailableAgents: () => (agentsCache ??= getAvailableAgentNames(cwd)),
+  };
   const all: SettingItem[] = [];
   for (let i = 0; i < CATEGORIES.length; i++) {
-    all.push(...buildCategoryItems(i, cwd, editScope, theme, modelRegistry));
+    all.push(...buildCategoryItems(i, cwd, editScope, theme, modelRegistry, sharedOptions));
   }
   return all;
 }
@@ -386,18 +426,7 @@ function saveChange(key: string, value: unknown, scope: "project" | "global", cw
 // ── Delete a key from the current scope ─────────────────────────
 
 function deleteFromScope(key: string, scope: "project" | "global", cwd: string): SaveResult {
-  const filePath = getFilePathForScope(scope, cwd);
-  const current = readSettingsFile(filePath);
-  if (current === null) return { ok: false, reason: "corrupt" };
-  if (!(key in current)) return { ok: true };
-  delete current[key];
-  try {
-    writeSettingsFile(filePath, current, { dedupeBackup: true });
-  } catch (e) {
-    return { ok: false, reason: "write_error", error: e };
-  }
-  clearSettingsCache();
-  return { ok: true };
+  return saveChange(key, undefined, scope, cwd);
 }
 
 // ── Parse value for agent_overrides ─────────────────────────────
@@ -425,6 +454,7 @@ class SettingsOverlay implements Component {
   private notify: (msg: string, level: "info" | "error") => void;
   private settingsList!: SettingsList;
   private currentItems: SettingItem[];
+  private cachedAvailableAgents?: string[];
   private cachedWidth?: number;
   private cachedLines?: string[];
 
@@ -450,7 +480,18 @@ class SettingsOverlay implements Component {
   }
 
   private rebuild(): void {
-    this.currentItems = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
+    // Provider/model metadata is resolved lazily per rebuild (never pinned for the whole overlay
+    // visit) so models discovered asynchronously while the overlay is open appear on tab switch.
+    this.currentItems = buildCategoryItems(
+      this.categoryIndex,
+      this.cwd,
+      this.editScope,
+      this.theme,
+      this.modelRegistry,
+      {
+        getAvailableAgents: () => (this.cachedAvailableAgents ??= getAvailableAgentNames(this.cwd)),
+      },
+    );
 
     this.settingsList = new SettingsList(
       this.currentItems,

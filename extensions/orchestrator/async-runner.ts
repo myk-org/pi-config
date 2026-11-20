@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { getSetting } from "./project-settings.js";
 import { createLogger } from "../shared/logger.js";
+import { extractAsyncFallbackOutput } from "./async-status-parse.js";
 import { archiveReviewerOutput } from "./reviewer-output-archive.js";
 
 const log = createLogger("async_agents");
@@ -218,7 +219,8 @@ async function run(config: RunConfig): Promise<void> {
   // For code reviewers: validate output is JSON, retry if not
   if (config.agent.startsWith("code-reviewer-") && exitCode === 0) {
     let validJson = false;
-    let retryOutput = finalOutput || stdoutTail.slice(-2000);
+    // Extract only assistant text deltas so tool/agent annotations do not corrupt valid JSON.
+    let retryOutput = finalOutput || extractAsyncFallbackOutput(stdoutTail, 2000, { textOnly: true });
     let jsonRetryCount = 0;
     while (!validJson) {
       jsonRetryCount++;
@@ -302,12 +304,16 @@ async function run(config: RunConfig): Promise<void> {
   }
 
   // Write result for the watcher to pick up
+  const resolvedOutput = finalOutput || extractAsyncFallbackOutput(stdoutTail);
+  if (!finalOutput && resolvedOutput) {
+    log.debug("async_fallback_output_extracted", { id: config.id, rawLen: stdoutTail.length, outLen: resolvedOutput.length });
+  }
   writeJson(config.resultPath, {
     id: config.id,
     agent: config.agent,
     task: config.task,
     success: exitCode === 0,
-    output: finalOutput || stdoutTail.slice(-2000),
+    output: resolvedOutput,
     exitCode,
     startedAt,
     endedAt,

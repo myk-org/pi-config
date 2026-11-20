@@ -81,6 +81,7 @@ pi-config/
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
 │   │   ├── project-settings.ts        # Project-level settings (.pi/pi-config-settings.json)
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
+│   │   ├── subagent-child-spec.ts     # Shared sync/async subagent child CLI args, prompt, and env builder
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
 │   │   └── utils.ts                 # Shared utilities (getProjectTmpDir, tryGetSystemPromptOptions, etc.)
 │   ├── coms/                        # Inter-agent communication extension (standalone)
