@@ -821,41 +821,67 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 		]);
 	});
 
-	it("records 89.8% lower input cost in streamVertexClaude when cache_read_input_tokens hits", async () => {
-		// Measured cost impact on claude-sonnet-4-6 across a 50,000-token multi-turn history:
-		// uncached (0 breakpoints -> 50,000 input): $0.1500/turn
-		// cached   (1 breakpoint  -> 49,900 cacheRead + 100 input): $0.01527/turn (89.8% reduction).
+	it("derives lower streamVertexClaude input cost from outgoing plain-string cache_control prefix", async () => {
 		process.env.GOOGLE_CLOUD_PROJECT = "cache-usage-proj";
 		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
-		const sonnet = buildModels().find((m) => m.id === "claude-sonnet-4-6")!;
-		const context = normalizeContext({ messages: [{ role: "user", content: "follow-up", timestamp: 1 }] });
+		const pricedModel = {
+			...model,
+			cost: { input: 10, output: 0, cacheRead: 1, cacheWrite: 0 },
+		};
+		const priorHistory = "context ".repeat(500);
+		const multiTurnMessages = [
+			{ role: "user", content: `turn 1: ${priorHistory}`, timestamp: 1 },
+			{ role: "assistant", content: [{ type: "text", text: `reply 1: ${priorHistory}` }], timestamp: 2 },
+			{ role: "user", content: "follow-up", timestamp: 3 },
+		];
 
+		// First verify outgoing request without trailing user string breakpoint (assistant-ending history).
+		const baselineContext = normalizeContext({ messages: multiTurnMessages.slice(0, 2) as any });
+		for await (const _ev of streamVertexClaude(pricedModel as any, baselineContext)) {
+		}
+		const baselineCachedChars = countCachedPrefixChars(vertexMock.request.messages);
+		expect(baselineCachedChars).toBe(0);
+
+		// Now send the plain-string trailing user turn and compute cached vs uncached tokens from the actual request.
+		const cachedContext = normalizeContext({ messages: multiTurnMessages as any });
+		for await (const _ev of streamVertexClaude(pricedModel as any, cachedContext)) {
+		}
+		const actualCachedChars = countCachedPrefixChars(vertexMock.request.messages);
+		expect(actualCachedChars).toBeGreaterThan(8000);
+		const estimatedHistoryTokens = Math.ceil(actualCachedChars / 4);
+
+		// Drive streamVertexClaude usage events from the measured request's cached prefix token count.
 		vertexMock.events = [
-			{ type: "message_start", message: { usage: { input_tokens: 50000, output_tokens: 0 } } },
+			{ type: "message_start", message: { usage: { input_tokens: estimatedHistoryTokens, output_tokens: 0 } } },
 			{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 100 } },
 		];
 		let uncachedDone: any;
-		for await (const ev of streamVertexClaude(sonnet as any, context)) {
+		for await (const ev of streamVertexClaude(pricedModel as any, cachedContext)) {
 			if (ev.type === "done") uncachedDone = ev.message;
 		}
 
+		const uncachedTailTokens = 10;
 		vertexMock.events = [
 			{
 				type: "message_start",
-				message: { usage: { input_tokens: 100, cache_read_input_tokens: 49900, output_tokens: 0 } },
+				message: {
+					usage: {
+						input_tokens: uncachedTailTokens,
+						cache_read_input_tokens: estimatedHistoryTokens - uncachedTailTokens,
+						output_tokens: 0,
+					},
+				},
 			},
 			{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 100 } },
 		];
 		let cachedDone: any;
-		for await (const ev of streamVertexClaude(sonnet as any, context)) {
+		for await (const ev of streamVertexClaude(pricedModel as any, cachedContext)) {
 			if (ev.type === "done") cachedDone = ev.message;
 		}
 
-		const uncachedInputCost = uncachedDone.usage.cost.input + uncachedDone.usage.cost.cacheRead;
-		const cachedInputCost = cachedDone.usage.cost.input + cachedDone.usage.cost.cacheRead;
-		expect(uncachedInputCost).toBeCloseTo(0.15, 4);
-		expect(cachedInputCost).toBeCloseTo(0.01527, 4);
-		expect(1 - cachedInputCost / uncachedInputCost).toBeGreaterThan(0.89);
+		const uncachedCost = uncachedDone.usage.cost.input + uncachedDone.usage.cost.cacheRead;
+		const cachedCost = cachedDone.usage.cost.input + cachedDone.usage.cost.cacheRead;
+		expect(cachedCost).toBeLessThan(uncachedCost * 0.15);
 	});
 
 	it("reports argumentsError on malformed completed tool JSON", async () => {
