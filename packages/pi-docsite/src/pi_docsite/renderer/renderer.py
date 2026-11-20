@@ -25,6 +25,7 @@ import hashlib
 import html as _html_mod
 import logging
 import re
+import threading
 import urllib.parse
 from html.parser import HTMLParser
 from pathlib import Path
@@ -529,18 +530,22 @@ _MARKDOWN = markdown.Markdown(
         "toc": {"toc_depth": "2-3"},
     },
 )
+_MARKDOWN_LOCK = threading.Lock()
 
 
 def _md_to_html(md_text: str) -> tuple[str, str]:
     """Convert markdown to HTML. Returns (content_html, toc_html)."""
     md_text = _clean_code_fence_annotations(md_text)
     md_text = _ensure_blank_lines(md_text)
-    content_html = _sanitize_html(_MARKDOWN.reset().convert(md_text))
+    with _MARKDOWN_LOCK:
+        raw_html = _MARKDOWN.reset().convert(md_text)
+        raw_toc = getattr(_MARKDOWN, "toc", "")
+    content_html = _sanitize_html(raw_html)
     content_html = _wrap_tables(content_html)
     # The TOC is separately generated and reaches the page through ``|safe``,
     # so it needs the same allowlist as the body. Its ``<a href="#id">`` links
     # and the body heading ``id``s they point at both survive the allowlist.
-    toc_html = _sanitize_html(getattr(_MARKDOWN, "toc", ""))
+    toc_html = _sanitize_html(raw_toc)
     return content_html, toc_html
 
 

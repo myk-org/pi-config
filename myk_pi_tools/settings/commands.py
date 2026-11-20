@@ -423,7 +423,7 @@ def _read_settings_raw(path: Path) -> dict[str, Any] | None:
         return None
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         log.debug("settings_file_read_failed path=%s", path, exc_info=True)
         return None
     try:

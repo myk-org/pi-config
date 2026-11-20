@@ -162,7 +162,7 @@ def _prefetch_inline_locations(
             line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) else None
             _INLINE_LOCATION_CACHE[cid_str] = (path, line)
     except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as e:
-        log.debug(f"Batch inline location prefetch failed for {owner}/{repo}#{pr_number}: {e}")
+        log.warning(f"Batch inline location prefetch failed for {owner}/{repo}#{pr_number}: {e}")
 
     for inline_id in uncached_inline_ids:
         rest_id = _inline_rest_id(inline_id)

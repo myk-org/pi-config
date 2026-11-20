@@ -201,27 +201,26 @@ def run(args: list[str]) -> None:
     """
     pr_info = parse_args(args)
 
-    # Fetch PR metadata, diff, and files concurrently
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        meta_future = executor.submit(fetch_pr_metadata, pr_info)
+    # Fetch and validate PR metadata before starting diff & files workers
+    metadata = fetch_pr_metadata(pr_info)
+
+    head_sha = metadata.get("head", {}).get("sha")
+    base_ref = metadata.get("base", {}).get("ref")
+    pr_title = metadata.get("title")
+    pr_state = metadata.get("state")
+
+    if not head_sha:
+        print("Error: Failed to extract head SHA from PR metadata", file=sys.stderr)
+        sys.exit(1)
+
+    if not base_ref:
+        print("Error: Failed to extract base ref from PR metadata", file=sys.stderr)
+        sys.exit(1)
+
+    # Fetch diff and files concurrently
+    with ThreadPoolExecutor(max_workers=2) as executor:
         diff_future = executor.submit(fetch_pr_diff, pr_info)
         files_future = executor.submit(fetch_pr_files, pr_info)
-
-        # Validate metadata first before collecting diff & files
-        metadata = meta_future.result()
-
-        head_sha = metadata.get("head", {}).get("sha")
-        base_ref = metadata.get("base", {}).get("ref")
-        pr_title = metadata.get("title")
-        pr_state = metadata.get("state")
-
-        if not head_sha:
-            print("Error: Failed to extract head SHA from PR metadata", file=sys.stderr)
-            sys.exit(1)
-
-        if not base_ref:
-            print("Error: Failed to extract base ref from PR metadata", file=sys.stderr)
-            sys.exit(1)
 
         pr_diff = diff_future.result()
         files = files_future.result()

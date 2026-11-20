@@ -553,6 +553,32 @@ def test_md_to_html_does_not_leak_previous_toc_entries() -> None:
     assert "Second Page Heading" in second_toc
 
 
+def test_md_to_html_concurrent_calls_isolate_per_thread_output() -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    num_threads = 6
+    barrier = threading.Barrier(num_threads, timeout=2.0)
+
+    def render_worker(idx: int) -> tuple[int, str, str]:
+        md = f"## Thread {idx} Heading Alpha\n\n### Thread {idx} Subheading Beta\n\nBody {idx}.\n"
+        barrier.wait()
+        return idx, *_md_to_html(md)
+
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        results = list(executor.map(render_worker, range(num_threads)))
+
+    for idx, content_html, toc_html in results:
+        assert f'id="thread-{idx}-heading-alpha"' in content_html
+        assert f'href="#thread-{idx}-heading-alpha"' in toc_html
+        assert f'href="#thread-{idx}-subheading-beta"' in toc_html
+        for other in range(num_threads):
+            if other != idx:
+                assert f"Thread {other}" not in content_html
+                assert f"Thread {other}" not in toc_html
+                assert f"thread-{other}-" not in toc_html
+
+
 def test_render_page_uses_passed_asset_version_without_rehashing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         renderer_module,

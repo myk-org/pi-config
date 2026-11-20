@@ -280,7 +280,8 @@ class MemoryFile:
         for category, entries in grouped.values():
             path = self._ensure_topic(category)
             content = path.read_text()
-            content = content.rstrip() + "\n" + "\n".join(entries) + "\n"
+            for entry in entries:
+                content = content.rstrip() + "\n" + entry + "\n"
             path.write_text(content)
 
         # Clean up DB files

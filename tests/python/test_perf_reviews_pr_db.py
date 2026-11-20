@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import sys
 import threading
 from collections.abc import Set as AbstractSet
 from pathlib import Path
@@ -145,10 +146,10 @@ class TestTokenSimilarity1180:
 
 
 class TestReviewDB1180:
-    """Tests for ReviewDB clustering/matching and exclude_qodo filtering."""
+    """Tests for ReviewDB clustering and dismissed-comment matching."""
 
-    def test_duplicate_patterns_and_find_similar_comment(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "reviews.db"
+    @staticmethod
+    def _seed_pattern_db(db_path: Path) -> ReviewDB:
         _seed_reviews_db(
             db_path,
             [
@@ -178,14 +179,19 @@ class TestReviewDB1180:
                 },
             ],
         )
+        return ReviewDB(db_path=db_path)
 
-        db = ReviewDB(db_path=db_path)
+    def test_get_duplicate_patterns_clusters_similar_dismissed(self, tmp_path: Path) -> None:
+        db = self._seed_pattern_db(tmp_path / "reviews.db")
 
         patterns = db.get_duplicate_patterns(min_occurrences=2)
         assert len(patterns) == 1
         assert patterns[0]["path"] == "src/a.py"
         assert patterns[0]["occurrences"] == 2
         assert patterns[0]["reason"] == "Already validated upstream"
+
+    def test_find_similar_comment_matches_dismissed_body(self, tmp_path: Path) -> None:
+        db = self._seed_pattern_db(tmp_path / "reviews.db")
 
         match = db.find_similar_comment(
             "org", "repo", "src/a.py", "Add null check before accessing user profile", threshold=0.6
@@ -195,62 +201,19 @@ class TestReviewDB1180:
         assert match["reply"] == "Already validated upstream"
         assert match["similarity"] == pytest.approx(1.0)
 
-        # Same body on addressed-only path should not match
+    def test_find_similar_comment_skips_addressed_only_path(self, tmp_path: Path) -> None:
+        db = self._seed_pattern_db(tmp_path / "reviews.db")
         assert (
             db.find_similar_comment("org", "repo", "src/b.py", "Add null check before accessing user profile") is None
         )
-        # Dissimilar body below threshold should not match
+
+    def test_find_similar_comment_skips_dissimilar_body(self, tmp_path: Path) -> None:
+        db = self._seed_pattern_db(tmp_path / "reviews.db")
         assert db.find_similar_comment("org", "repo", "src/a.py", "Refactor database connection pool") is None
-
-    def test_get_dismissed_comments_exclude_qodo(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "reviews.db"
-        _seed_reviews_db(
-            db_path,
-            [
-                {
-                    "source": "qodo",
-                    "path": "src/q.py",
-                    "body": "Qodo dismissed finding",
-                    "status": "skipped",
-                    "skip_reason": "false positive",
-                },
-                {
-                    "source": "qodo",
-                    "path": "src/q2.py",
-                    "body": "Qodo sticky addressed",
-                    "status": "addressed",
-                    "type": "qodo_bug",
-                    "reply": "fixed",
-                },
-                {
-                    "source": "coderabbit",
-                    "path": "src/cr.py",
-                    "body": "CodeRabbit dismissed finding",
-                    "status": "not_addressed",
-                    "reply": "by design",
-                },
-                {
-                    "source": "human",
-                    "path": "src/h.py",
-                    "body": "Human body comment",
-                    "status": "addressed",
-                    "type": "outside_diff_comment",
-                    "reply": "done",
-                },
-            ],
-        )
-
-        db = ReviewDB(db_path=db_path)
-
-        default_rows = db.get_dismissed_comments("org", "repo")
-        assert {r["path"] for r in default_rows} == {"src/q.py", "src/q2.py", "src/cr.py", "src/h.py"}
-
-        filtered_rows = db.get_dismissed_comments("org", "repo", exclude_qodo=True)
-        assert {r["path"] for r in filtered_rows} == {"src/cr.py", "src/h.py"}
 
 
 class TestFetchProcessAndCategorize1180:
-    """Tests for process_and_categorize dismissed-comment query skipping & fallback."""
+    """Tests for process_and_categorize dismissed-comment query skipping & matching."""
 
     def test_skips_dismissed_query_when_only_qodo_threads(self) -> None:
         mock_db = MagicMock()
@@ -283,7 +246,7 @@ class TestFetchProcessAndCategorize1180:
 
         mock_db.get_dismissed_comments.assert_not_called()
 
-    def test_calls_exclude_qodo_true_when_non_qodo_pending_exists(self) -> None:
+    def test_calls_get_dismissed_comments_when_non_qodo_pending_exists(self) -> None:
         mock_db = MagicMock()
         mock_db.get_replied_sticky_findings.return_value = []
         mock_db.get_dismissed_comments.return_value = [
@@ -306,43 +269,82 @@ class TestFetchProcessAndCategorize1180:
         with patch.object(reviews_fetch, "_load_review_db", return_value=(mock_db_cls, _body_similarity)):
             result = reviews_fetch.process_and_categorize(threads, "org", "repo", pr_number=1)
 
-        mock_db.get_dismissed_comments.assert_called_once_with("org", "repo", exclude_qodo=True)
+        mock_db.get_dismissed_comments.assert_called_once_with("org", "repo")
         assert result["coderabbit"][0]["is_auto_skipped"] is True
         assert result["coderabbit"][0]["status"] == "skipped"
 
-    def test_falls_back_gracefully_if_exclude_qodo_raises_type_error(self) -> None:
-        calls: list[tuple[str, str]] = []
+    def test_pending_coderabbit_auto_skipped_by_dismissed_qodo_comment(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "reviews.db"
+        _seed_reviews_db(
+            db_path,
+            [
+                {
+                    "source": "qodo",
+                    "author": "qodo-code-review[bot]",
+                    "path": "src/handler.py",
+                    "body": "Avoid broad exception catch in request handler",
+                    "status": "skipped",
+                    "skip_reason": "false positive",
+                }
+            ],
+        )
 
-        class _LegacyDB:
-            def __init__(self, db_path: Path | None = None) -> None:
-                pass
+        threads = [
+            {
+                "author": "coderabbitai[bot]",
+                "path": "src/handler.py",
+                "body": "Avoid broad exception catch in request handler function",
+                "status": "pending",
+            }
+        ]
 
-            def get_dismissed_comments(self, owner: str, repo: str) -> list[dict[str, Any]]:
-                calls.append((owner, repo))
-                return [
-                    {
-                        "path": "a.py",
-                        "line": 5,
-                        "body": "Missing docstring on helper",
-                        "status": "skipped",
-                        "reply": "internal helper",
-                        "skip_reason": "internal helper",
-                        "comment_id": 55,
-                    }
-                ]
+        with patch.object(
+            reviews_fetch,
+            "_load_review_db",
+            return_value=(lambda db_path=None: ReviewDB(db_path=tmp_path / "reviews.db"), _body_similarity),  # noqa: ARG005
+        ):
+            result = reviews_fetch.process_and_categorize(threads, "org", "repo", pr_number=10)
 
-            def get_replied_sticky_findings(self, owner: str, repo: str, pr_number: int) -> list[dict[str, Any]]:
-                _ = (owner, repo, pr_number)
-                return []
+        assert len(result["coderabbit"]) == 1
+        assert result["coderabbit"][0]["is_auto_skipped"] is True
+        assert result["coderabbit"][0]["status"] == "skipped"
+        assert result["coderabbit"][0]["skip_reason"] == "false positive"
 
-        threads = [{"author": "alice", "path": "a.py", "body": "Missing docstring on helper"}]
 
-        with patch.object(reviews_fetch, "_load_review_db", return_value=(_LegacyDB, _body_similarity)):
-            result = reviews_fetch.process_and_categorize(threads, "org", "repo", pr_number=1)
+class TestStickyThreadKeyNormalization:
+    """Tests for HTML entity normalization in sticky thread keys without bs4."""
 
-        assert calls == [("org", "repo")]
-        assert result["human"][0]["is_auto_skipped"] is True
-        assert result["human"][0]["skip_reason"] == "internal helper"
+    @staticmethod
+    def _sticky_pair() -> tuple[dict[str, Any], dict[str, Any]]:
+        encoded = {
+            "type": "qodo_bug",
+            "path": "src/app.py",
+            "body": "Validate input &amp; output values\nMore details",
+        }
+        plain = {
+            "type": "qodo_bug",
+            "path": "src/app.py",
+            "body": "Validate input & output values\nMore details",
+        }
+        return encoded, plain
+
+    def test_get_thread_key_normalizes_html_entities_without_bs4(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(sys.modules, "bs4", None)
+        encoded, plain = self._sticky_pair()
+
+        key_encoded = reviews_fetch.get_thread_key(encoded)
+        key_plain = reviews_fetch.get_thread_key(plain)
+
+        assert key_encoded is not None
+        assert key_encoded == key_plain
+
+    def test_merge_threads_deduplicates_html_entity_sticky_titles(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(sys.modules, "bs4", None)
+        encoded, plain = self._sticky_pair()
+
+        merged = reviews_fetch.merge_threads([encoded], [plain])
+
+        assert len(merged) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -377,30 +379,33 @@ class TestClaudeMdCollectRemote1174:
 class TestPrDiffRun1174:
     """Tests for pr.diff.run()."""
 
-    def test_pr_diff_run_compact_json_and_keys(self, capsys: pytest.CaptureFixture[str]) -> None:
-        meta = {
-            "head": {"sha": "deadbeef"},
-            "base": {"ref": "main"},
-            "title": "Perf improvements",
-            "state": "open",
-        }
-        files = [{"path": "a.py", "status": "modified", "additions": 3, "deletions": 1, "patch": "@@"}]
+    _SAMPLE_META: dict[str, Any] = {
+        "head": {"sha": "deadbeef"},
+        "base": {"ref": "main"},
+        "title": "Perf improvements",
+        "state": "open",
+    }
+    _SAMPLE_FILES: list[dict[str, Any]] = [
+        {"path": "a.py", "status": "modified", "additions": 3, "deletions": 1, "patch": "@@"}
+    ]
 
+    def _run_sample(self, capsys: pytest.CaptureFixture[str]) -> str:
         with (
-            patch.object(pr_diff, "fetch_pr_metadata", return_value=meta) as m_meta,
-            patch.object(pr_diff, "fetch_pr_diff", return_value="diff --git a/a.py b/a.py") as m_diff,
-            patch.object(pr_diff, "fetch_pr_files", return_value=files) as m_files,
+            patch.object(pr_diff, "fetch_pr_metadata", return_value=self._SAMPLE_META),
+            patch.object(pr_diff, "fetch_pr_diff", return_value="diff --git a/a.py b/a.py"),
+            patch.object(pr_diff, "fetch_pr_files", return_value=self._SAMPLE_FILES),
         ):
             pr_diff.run(["org/repo", "42"])
+        return capsys.readouterr().out.strip()
 
-        m_meta.assert_called_once()
-        m_diff.assert_called_once()
-        m_files.assert_called_once()
-
-        raw = capsys.readouterr().out.strip()
+    def test_pr_diff_run_outputs_compact_json(self, capsys: pytest.CaptureFixture[str]) -> None:
+        raw = self._run_sample(capsys)
         assert "\n" not in raw
         parsed = json.loads(raw)
         assert raw == json.dumps(parsed, separators=(",", ":"))
+
+    def test_pr_diff_run_includes_expected_keys(self, capsys: pytest.CaptureFixture[str]) -> None:
+        parsed = json.loads(self._run_sample(capsys))
         assert set(parsed.keys()) == {"metadata", "diff", "files"}
         assert parsed["metadata"] == {
             "owner": "org",
@@ -412,7 +417,7 @@ class TestPrDiffRun1174:
             "state": "open",
         }
         assert parsed["diff"] == "diff --git a/a.py b/a.py"
-        assert parsed["files"] == files
+        assert parsed["files"] == self._SAMPLE_FILES
 
     def test_pr_diff_run_metadata_failure_exits_1(self) -> None:
         with (
@@ -424,6 +429,19 @@ class TestPrDiffRun1174:
             pr_diff.run(["org/repo", "42"])
 
         assert exc_info.value.code == 1
+
+    def test_pr_diff_run_metadata_failure_skips_worker_fetches(self) -> None:
+        with (
+            patch.object(pr_diff, "fetch_pr_metadata", side_effect=SystemExit(1)),
+            patch.object(pr_diff, "fetch_pr_diff") as m_diff,
+            patch.object(pr_diff, "fetch_pr_files") as m_files,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            pr_diff.run(["org/repo", "42"])
+
+        assert exc_info.value.code == 1
+        m_diff.assert_not_called()
+        m_files.assert_not_called()
 
     def test_pr_diff_run_missing_head_sha_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
@@ -441,7 +459,8 @@ class TestPrDiffRun1174:
 class TestPendingFetchRun1174:
     """Tests for reviews.pending_fetch.run()."""
 
-    def test_pending_fetch_concurrent_and_writes_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    @staticmethod
+    def _run_concurrent(tmp_path: Path) -> int:
         barrier = threading.Barrier(2, timeout=2.0)
 
         def fake_comments(_owner: str, _repo: str, _pr_number: str, _review_id: int) -> list[dict[str, Any]]:
@@ -459,9 +478,13 @@ class TestPendingFetchRun1174:
             patch.object(pending_fetch, "fetch_pending_review_comments", side_effect=fake_comments),
             patch.object(pending_fetch, "fetch_pr_diff", side_effect=fake_diff),
         ):
-            rc = pending_fetch.run("https://github.com/org/repo/pull/123", output_dir=str(tmp_path))
+            return pending_fetch.run("https://github.com/org/repo/pull/123", output_dir=str(tmp_path))
 
-        assert rc == 0
+    def test_pending_fetch_runs_fetches_concurrently(self, tmp_path: Path) -> None:
+        assert self._run_concurrent(tmp_path) == 0
+
+    def test_pending_fetch_writes_expected_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert self._run_concurrent(tmp_path) == 0
         out_path = Path(capsys.readouterr().out.strip())
         assert out_path == tmp_path / "pr-org-repo-123-pending-review.json"
         assert out_path.exists()
@@ -587,7 +610,8 @@ class TestStoreSessionPrefetch1174:
 class TestReviewsFetchRun1174:
     """Tests for reviews.fetch.run() parallel execution & deterministic merge order."""
 
-    def test_fetch_run_parallelizes_gh_calls_and_merges_deterministically(self, tmp_path: Path) -> None:
+    @staticmethod
+    def _run_fetch_with_barrier(tmp_path: Path) -> dict[str, Any]:
         barrier = threading.Barrier(3, timeout=2.0)
 
         def fake_run_gh_api(endpoint: str, *, paginate: bool = False) -> Any:  # noqa: ARG001
@@ -665,10 +689,17 @@ class TestReviewsFetchRun1174:
             patch.object(reviews_fetch, "_load_review_db", return_value=(None, _body_similarity)),
         ):
             result = reviews_fetch.run(output_dir=str(tmp_path))
+        assert isinstance(result, dict)
+        return result
 
+    def test_fetch_run_parallelizes_gh_calls(self, tmp_path: Path) -> None:
+        result = self._run_fetch_with_barrier(tmp_path)
         assert isinstance(result, dict)
         assert result["metadata"]["owner"] == "org"
         assert result["metadata"]["pr_number"] == 77
+
+    def test_fetch_run_merges_threads_deterministically(self, tmp_path: Path) -> None:
+        result = self._run_fetch_with_barrier(tmp_path)
         assert [t["thread_id"] for t in result["human"]] == ["T_HUMAN"]
         assert [t["node_id"] for t in result["coderabbit"]] == ["N_CR_THREAD", "N_CR_BODY"]
         assert [t["thread_id"] for t in result["qodo"]] == ["T_QODO"]

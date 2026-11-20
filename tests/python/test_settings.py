@@ -488,10 +488,10 @@ def test_pidash_port_0_falls_through_to_default(_isolated_settings: Path) -> Non
     assert get_setting("pidash_port", cwd=_isolated_settings) == 19190
 
 
-def test_get_settings_resolves_root_and_reads_files_once(
+def _setup_counting_settings_reads(
     _isolated_settings: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+) -> tuple[Path, Path, dict[str, int], list[Path]]:
     project_file = _isolated_settings / ".pi" / "pi-config-settings.json"
     project_file.parent.mkdir()
     project_file.write_text(json.dumps({"dco": True}), encoding="utf-8")
@@ -500,15 +500,13 @@ def test_get_settings_resolves_root_and_reads_files_once(
     global_file.parent.mkdir()
     global_file.write_text(json.dumps({"commit_trailer": True}), encoding="utf-8")
 
-    root_calls = 0
-
-    def counting_root(_cwd: Path | None = None) -> Path:
-        nonlocal root_calls
-        root_calls += 1
-        return _isolated_settings
-
+    counts = {"root_calls": 0}
     read_paths: list[Path] = []
     real_read_raw = settings_commands._read_settings_raw
+
+    def counting_root(_cwd: Path | None = None) -> Path:
+        counts["root_calls"] += 1
+        return _isolated_settings
 
     def counting_read_raw(path: Path) -> dict[str, object] | None:
         read_paths.append(path)
@@ -516,12 +514,39 @@ def test_get_settings_resolves_root_and_reads_files_once(
 
     monkeypatch.setattr(settings_commands, "_resolve_repo_root", counting_root)
     monkeypatch.setattr(settings_commands, "_read_settings_raw", counting_read_raw)
+    return project_file, global_file, counts, read_paths
+
+
+def test_get_settings_resolves_repo_root_once(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, counts, _ = _setup_counting_settings_reads(_isolated_settings, monkeypatch)
 
     result = get_settings((), cwd=_isolated_settings)
 
     assert len(result) == len(SETTINGS_KEYS) == 71
-    assert root_calls == 1
+    assert counts["root_calls"] == 1
+
+
+def test_get_settings_reads_each_file_once(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_file, global_file, _, read_paths = _setup_counting_settings_reads(_isolated_settings, monkeypatch)
+
+    get_settings((), cwd=_isolated_settings)
+
     assert read_paths == [project_file, global_file]
+
+
+def test_invalid_utf8_settings_file_falls_back_to_defaults(_isolated_settings: Path) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.json").write_bytes(b"\xff\xfe")
+
+    expected = {key: meta["default"] for key, meta in json.loads(_KEYS_FILE.read_text(encoding="utf-8")).items()}
+    assert get_settings(()) == expected
 
 
 def test_plain_json_settings_do_not_import_commentjson(
@@ -556,6 +581,23 @@ def test_commented_json_settings_fall_back_to_commentjson(
     assert "commentjson" in sys.modules
 
 
+def _write_pi_settings(base_dir: Path, payload: dict[str, object]) -> None:
+    pi_dir = base_dir / ".pi"
+    pi_dir.mkdir(exist_ok=True)
+    (pi_dir / "pi-config-settings.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize("key", ["acpx_agents", "cli_agents"])
+def test_project_empty_agent_list_overrides_global(
+    _isolated_settings: Path,
+    key: str,
+) -> None:
+    _write_pi_settings(Path.home(), {key: ["cursor", "claude"]})
+    _write_pi_settings(_isolated_settings, {key: []})
+
+    assert get_setting(key, cwd=_isolated_settings) == []
+
+
 @pytest.mark.parametrize(
     ("key", "env_name"),
     [
@@ -563,26 +605,14 @@ def test_commented_json_settings_fall_back_to_commentjson(
         ("cli_agents", "PI_CLI_AGENTS"),
     ],
 )
-def test_project_empty_agent_list_overrides_global_and_env(
+def test_project_empty_agent_list_overrides_env(
     _isolated_settings: Path,
     monkeypatch: pytest.MonkeyPatch,
     key: str,
     env_name: str,
 ) -> None:
-    global_pi = Path.home() / ".pi"
-    global_pi.mkdir()
-    (global_pi / "pi-config-settings.json").write_text(
-        json.dumps({key: ["cursor", "claude"]}),
-        encoding="utf-8",
-    )
     monkeypatch.setenv(env_name, "gemini")
-
-    project_pi = _isolated_settings / ".pi"
-    project_pi.mkdir()
-    (project_pi / "pi-config-settings.json").write_text(
-        json.dumps({key: []}),
-        encoding="utf-8",
-    )
+    _write_pi_settings(_isolated_settings, {key: []})
 
     assert get_setting(key, cwd=_isolated_settings) == []
 

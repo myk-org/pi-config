@@ -10,6 +10,7 @@ Output: JSON with metadata and categorized comments saved to <output_dir>/pr-<nu
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import logging
 import os
@@ -957,10 +958,7 @@ def process_and_categorize(
     )
     if db and needs_dismissed:
         try:
-            try:
-                dismissed_comments = db.get_dismissed_comments(owner, repo, exclude_qodo=True)
-            except TypeError:
-                dismissed_comments = db.get_dismissed_comments(owner, repo)
+            dismissed_comments = db.get_dismissed_comments(owner, repo)
             for c in dismissed_comments:
                 b = (c.get("body") or "").strip()
                 if not b:
@@ -1145,7 +1143,7 @@ def _extract_sticky_title(body: str) -> str:
 
         plain = BeautifulSoup(body, "html.parser").get_text()
     else:
-        plain = body
+        plain = html.unescape(body)
     for line in plain.split("\n"):
         clean = line.strip()
         clean = clean.replace("**", "").replace("*", "").replace("`", "").strip()

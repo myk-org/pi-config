@@ -246,7 +246,7 @@ class ReviewDB:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def get_dismissed_comments(self, owner: str, repo: str, *, exclude_qodo: bool = False) -> list[dict[str, Any]]:
+    def get_dismissed_comments(self, owner: str, repo: str) -> list[dict[str, Any]]:
         """Get dismissed comments for a repository, constrained by type for safety.
 
         Retrieves comments that were dismissed during review processing:
@@ -266,7 +266,6 @@ class ReviewDB:
         Args:
             owner: GitHub repository owner (org or user).
             repo: GitHub repository name.
-            exclude_qodo: If True, exclude rows with ``source == 'qodo'`` in SQL.
 
         Returns:
             List of dicts with keys: path, line, body, status, reply (reason for dismissal),
@@ -286,14 +285,13 @@ class ReviewDB:
         conn = self._connect()
         try:
             cursor = conn.cursor()
-            exclude_clause = "  AND c.source != 'qodo'\n                " if exclude_qodo else ""
             cursor.execute(
-                f"""
+                """
                 SELECT c.path, c.line, c.body, c.status, c.reply, c.skip_reason, c.author, c.type, c.comment_id
                 FROM comments c
                 JOIN reviews r ON c.review_id = r.id
                 WHERE r.owner = ? AND r.repo = ?
-                {exclude_clause}  AND (
+                  AND (
                       c.status IN ('not_addressed', 'skipped')
                       OR (c.status = 'addressed'
                           -- Body comment types (no GitHub thread) + Qodo sticky types
