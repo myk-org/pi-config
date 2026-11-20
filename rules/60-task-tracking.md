@@ -1,12 +1,5 @@
 # Task Tracking (MANDATORY)
 
-## Scope
-
-> **If you are a SPECIALIST AGENT:**
-> IGNORE this rule. This is for the ORCHESTRATOR only.
-
----
-
 ## When Tasks Are Required
 
 The request — **or work any step sets in motion** — needs **2+ distinct actions** — then tasks are required:
