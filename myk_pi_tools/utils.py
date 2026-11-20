@@ -149,7 +149,7 @@ def atomic_write_json(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=indent)
         os.replace(tmp_name, path)
-    except Exception:
+    except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
 

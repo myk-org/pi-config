@@ -30,7 +30,7 @@ from myk_pi_tools.coderabbit.rate_limit import (
     compute_remaining_wait,
     run_trigger,
 )
-from myk_pi_tools.coderabbit.utils import find_summary_comment, validate_owner_repo
+from myk_pi_tools.coderabbit.utils import SUMMARY_MARKER, find_summary_comment, validate_owner_repo
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.ask_qodo import post_and_wait_for_qodo_reply
 from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
@@ -416,6 +416,22 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
     return 0
 
 
+def _extract_coderabbit_summary(
+    comments: list[dict[str, Any]],
+) -> tuple[int | None, str | None, str | None, str]:
+    """Extract the latest CodeRabbit summary comment from already-fetched issue comments."""
+    matches = [c for c in comments if SUMMARY_MARKER in (c.get("body") or "")]
+    if not matches:
+        return None, None, None, "No CodeRabbit summary comment found on this PR"
+    latest = matches[-1]
+    comment_id = latest.get("id")
+    body = latest.get("body")
+    updated_at = latest.get("updated_at")
+    if comment_id is None or body is None:
+        return None, None, None, "No CodeRabbit summary comment found on this PR"
+    return comment_id, body, updated_at, ""
+
+
 def _emit_approval_if_ready(
     owner_repo: str,
     pr_number: int,
@@ -476,9 +492,9 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
         cycle += 1
         log.debug("[poll] Cycle %d for %s#%s...", cycle, owner_repo, pr_number)
 
-        # Step 2: Check if CodeRabbit approved (and keep summary_comment for Step 4)
+        # Step 2: Check if CodeRabbit approved
         log.debug("[poll] Checking CodeRabbit approval...")
-        emitted, summary_comment = _emit_approval_if_ready(owner_repo, pr_num_int, review_url, output_dir)
+        emitted, _ = _emit_approval_if_ready(owner_repo, pr_num_int, review_url, output_dir)
         if emitted:
             return 0
 
@@ -486,6 +502,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
         log.debug("[poll] Fetching reviews...")
         fetch_result = _run_fetch_quiet(review_url, output_dir=output_dir)
         fetch_ok = isinstance(fetch_result, dict)
+        fetch_ctx = consume_fetch_context(owner, repo, pr_number) if fetch_ok else None
 
         if fetch_ok:
             assert isinstance(fetch_result, dict)
@@ -500,10 +517,11 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
         else:
             print_stderr(f"[poll] Fetch failed (exit code {fetch_result}). Will retry in {_POLL_SLEEP_SECONDS}s...")
 
-        # Step 4: Check CodeRabbit rate limit (reusing Step 2's summary_comment)
+        # Step 4: Check CodeRabbit rate limit using post-fetch summary state
         log.debug("[poll] Checking CodeRabbit rate limit...")
-        if summary_comment is not None:
-            comment_id, body, updated_at, error = summary_comment
+        issue_comments = fetch_ctx.get("issue_comments") if fetch_ctx is not None else None
+        if isinstance(issue_comments, list):
+            comment_id, body, updated_at, error = _extract_coderabbit_summary(issue_comments)
         else:
             comment_id, body, updated_at, error = find_summary_comment(owner_repo, pr_num_int)
 

@@ -7,8 +7,8 @@ Covers:
 - #1285: RO SQLite opens on read-only paths and missing indexes in store.py
 - #1290: single-pass DOM classification in coderabbit_parser and skip-resolved in qodo_parser
 - #1294: shared find_git_root, run_gh, post_issue_comment, fetch_pr_metadata
-- #1296: atomic_write_json, parse_pr_url, get_thread_key prefixes, code approval helper
-- #1298: compute_remaining_wait and validate_repo_format / validate_pr_number
+- #1296: atomic_write_json, parse_pr_url, get_thread_key prefixes, approval helper
+- #1298: compute_remaining_wait, validate_repo_format, validate_pr_number
 - #1300: strip _enrichment_checked, route per-item chatter to debug, rstrip tables
 """
 
@@ -18,6 +18,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from unittest.mock import patch
 import pytest
 
 from myk_pi_tools.coderabbit.rate_limit import compute_remaining_wait
+from myk_pi_tools.coderabbit.utils import SUMMARY_MARKER
 from myk_pi_tools.db.query import ReviewDB, _format_table
 from myk_pi_tools.pr import resolved_threads
 from myk_pi_tools.pr.common import PRInfo, validate_pr_number, validate_repo_format
@@ -38,10 +40,10 @@ from myk_pi_tools.reviews.status import run as status_run
 from myk_pi_tools.utils import atomic_write_json, parse_pr_url, post_issue_comment, run_gh
 
 
-class TestCombinedReplyAndResolve1271:
+class TestCombinedReplyResolve1271:
     """#1271: Combined reply+resolve GraphQL mutation and parallel dispatch."""
 
-    def test_reply_and_resolve_thread_both_succeed(self) -> None:
+    def test_combined_mutation_succeeds_for_reply_resolve(self) -> None:
         gql_body = json.dumps({
             "data": {
                 "addPullRequestReviewThreadReply": {"comment": {"id": "C1"}},
@@ -58,7 +60,7 @@ class TestCombinedReplyAndResolve1271:
         assert "addPullRequestReviewThreadReply" in payload["query"]
         assert "resolveReviewThread" in payload["query"]
 
-    def test_reply_and_resolve_partial_failure_preserves_reply_status(self) -> None:
+    def test_combined_mutation_partial_failure_preserves_reply_status(self) -> None:
         gql_body = json.dumps({
             "data": {
                 "addPullRequestReviewThreadReply": {"comment": {"id": "C1"}},
@@ -66,13 +68,37 @@ class TestCombinedReplyAndResolve1271:
             },
             "errors": [{"message": "Viewer cannot resolve thread"}],
         })
-        proc = subprocess.CompletedProcess(["gh"], 0, stdout=f"HTTP/1.1 200 OK\r\n\r\n{gql_body}".encode(), stderr=b"")
+        proc = subprocess.CompletedProcess(
+            ["gh"], 1, stdout=f"HTTP/1.1 200 OK\r\n\r\n{gql_body}".encode(), stderr=b"GraphQL error"
+        )
         with patch("myk_pi_tools.reviews.post.subprocess.run", return_value=proc):
             reply_ok, resolve_ok = post.reply_and_resolve_thread("T1", "Fixed")
 
         assert (reply_ok, resolve_ok) == (True, False)
 
-    def test_post_run_combines_and_parallelizes_threads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_combined_mutation_reopens_thread_when_reply_fails_after_resolve(self) -> None:
+        gql_body = json.dumps({
+            "data": {
+                "addPullRequestReviewThreadReply": None,
+                "resolveReviewThread": {"thread": {"id": "T1", "isResolved": True}},
+            },
+            "errors": [{"message": "Reply rejected"}],
+        })
+        proc = subprocess.CompletedProcess(
+            ["gh"], 1, stdout=f"HTTP/1.1 200 OK\r\n\r\n{gql_body}".encode(), stderr=b"GraphQL error"
+        )
+        with (
+            patch("myk_pi_tools.reviews.post.subprocess.run", return_value=proc),
+            patch.object(post, "unresolve_thread", return_value=True) as mock_unresolve,
+        ):
+            reply_ok, resolve_ok = post.reply_and_resolve_thread("T1", "Fixed")
+
+        assert (reply_ok, resolve_ok) == (False, False)
+        mock_unresolve.assert_called_once_with("T1")
+
+    def test_post_run_combines_reply_resolve_for_multiple_threads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         review_path = tmp_path / "reviews.json"
         review_path.write_text(
             json.dumps({
@@ -92,7 +118,7 @@ class TestCombinedReplyAndResolve1271:
 
         def fake_reply_and_resolve(tid: str, _body: str) -> tuple[bool, bool]:
             gql_calls.append(tid)
-            return (True, tid == "T1")  # T2 fails resolve only
+            return (True, tid == "T1")
 
         with (
             patch.object(post, "reply_and_resolve_thread", side_effect=fake_reply_and_resolve),
@@ -108,7 +134,44 @@ class TestCombinedReplyAndResolve1271:
         assert updated["qodo"][1]["posted_at"]
         assert "resolved_at" not in updated["qodo"][1]
 
-    def test_pending_update_parallel_not_found_aborts(self, tmp_path: Path) -> None:
+    def test_post_run_records_posted_at_on_nonzero_graphql_partial_response(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        review_path = tmp_path / "reviews.json"
+        review_path.write_text(
+            json.dumps({
+                "metadata": {"owner": "o", "repo": "r", "pr_number": 7},
+                "human": [],
+                "qodo": [{"thread_id": "T1", "path": "a.py", "status": "addressed", "reply": "Fixed a in abc"}],
+                "coderabbit": [],
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(post, "check_dependencies", lambda: None)
+        gql_body = json.dumps({
+            "data": {
+                "addPullRequestReviewThreadReply": {"comment": {"id": "x"}},
+                "resolveReviewThread": None,
+            },
+            "errors": [{"message": "Resolve denied"}],
+        })
+        proc = subprocess.CompletedProcess(
+            ["gh"], 1, stdout=f"HTTP/1.1 200 OK\r\n\r\n{gql_body}".encode(), stderr=b"GraphQL error"
+        )
+        with (
+            patch("myk_pi_tools.reviews.post.subprocess.run", return_value=proc),
+            pytest.raises(SystemExit) as exc,
+        ):
+            post.run(str(review_path))
+
+        assert exc.value.code == 1
+        updated = json.loads(review_path.read_text(encoding="utf-8"))
+        assert updated["qodo"][0]["posted_at"]
+        assert "resolved_at" not in updated["qodo"][0]
+
+    def test_pending_update_parallel_not_found_reports_completed_before_abort(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         review_path = tmp_path / "pending.json"
         review_path.write_text(
             json.dumps({
@@ -134,19 +197,28 @@ class TestCombinedReplyAndResolve1271:
             }),
             encoding="utf-8",
         )
+        barrier = threading.Barrier(2, timeout=2.0)
+
+        def fake_update(node_id: str | None, _body: str) -> str:
+            barrier.wait()
+            return "not_found" if node_id == "N1" else "success"
+
         with (
             patch.object(pending_update, "check_dependencies"),
-            patch.object(pending_update, "update_comment_body", return_value="not_found"),
+            patch.object(pending_update, "update_comment_body", side_effect=fake_update),
         ):
             rc = pending_update.run(str(review_path))
+
         assert rc == 1
+        err = capsys.readouterr().err
+        assert "Updated 1 comment(s) before abort" in err
+        assert "[1] (b.py)" in err
 
 
-class TestPollAndAddressReuse1276:
+class TestPollAddressReuse1276:
     """#1276: Reuse in-memory fetch data and summary comment."""
 
     def test_poll_helpers_accept_in_memory_data_without_disk_read(self, tmp_path: Path) -> None:
-        # No pr-99-reviews.json on disk!
         data = {
             "human": [],
             "qodo": [{"is_auto_skipped": False, "already_replied": False, "status": "pending"}],
@@ -156,13 +228,13 @@ class TestPollAndAddressReuse1276:
         assert poll._has_actionable_qodo_comments("99", str(tmp_path), data=data) is True
         poll._print_poll_summary("99", str(tmp_path), data=data)
 
-    def test_coderabbit_poll_calls_find_summary_comment_once_per_cycle(self, tmp_path: Path) -> None:
+    def test_coderabbit_poll_reuses_post_fetch_issue_comments_for_rate_limit(self, tmp_path: Path) -> None:
         find_calls = 0
 
         def fake_find(_owner_repo: str, _pr: int) -> tuple[int, str, str, str]:
             nonlocal find_calls
             find_calls += 1
-            return (10, "Not approved and not rate limited", "2026-01-01T00:00:00Z", "")
+            return (10, "Not approved", "2026-01-01T00:00:00Z", "")
 
         fetch_calls = 0
 
@@ -170,7 +242,12 @@ class TestPollAndAddressReuse1276:
             nonlocal fetch_calls
             fetch_calls += 1
             if fetch_calls == 1:
-                return {"human": [], "qodo": [], "coderabbit": []}  # 0 actionable
+                fetch._LAST_FETCH_CONTEXT = {
+                    "key": ("o", "r", "5"),
+                    "issue_comments": [{"id": 10, "body": SUMMARY_MARKER, "updated_at": "2026-01-01T00:00:00Z"}],
+                    "approval_detail": None,
+                }
+                return {"human": [], "qodo": [], "coderabbit": []}
             return {"human": [{"is_auto_skipped": False}], "qodo": [], "coderabbit": []}
 
         with (
@@ -184,8 +261,40 @@ class TestPollAndAddressReuse1276:
             rc = poll.run(source="coderabbit", output_dir=str(tmp_path))
 
         assert rc == 0
-        # 1st cycle checks approval + rate limit from a single find_summary_comment call; 2nd cycle checks once
+        # Cycle 1 Step 2 calls find_summary_comment once; Step 4 reuses post-fetch issue_comments;
+        # Cycle 2 Step 2 calls find_summary_comment once.
         assert find_calls == 2
+
+    def test_coderabbit_poll_fetches_fresh_summary_when_fetch_ctx_missing(self, tmp_path: Path) -> None:
+        find_calls = 0
+
+        def fake_find(_owner_repo: str, _pr: int) -> tuple[int, str, str, str]:
+            nonlocal find_calls
+            find_calls += 1
+            return (10, "Not approved", "2026-01-01T00:00:00Z", "")
+
+        fetch_calls = 0
+
+        def fake_fetch(_url: str, *, output_dir: str) -> dict[str, Any]:  # noqa: ARG001
+            nonlocal fetch_calls
+            fetch_calls += 1
+            if fetch_calls == 1:
+                return {"human": [], "qodo": [], "coderabbit": []}
+            return {"human": [{"is_auto_skipped": False}], "qodo": [], "coderabbit": []}
+
+        with (
+            patch.object(poll, "get_pr_info", return_value=("o", "r", "5")),
+            patch.object(poll, "validate_owner_repo", return_value=True),
+            patch.object(poll, "find_summary_comment", side_effect=fake_find),
+            patch.object(poll, "fetch_run", side_effect=fake_fetch),
+            patch.object(poll.time, "sleep"),
+            patch("builtins.print"),
+        ):
+            rc = poll.run(source="coderabbit", output_dir=str(tmp_path))
+
+        assert rc == 0
+        # Cycle 1 checks pre-fetch AND fresh post-fetch summary; Cycle 2 checks pre-fetch summary.
+        assert find_calls == 3
 
     def test_address_reuses_posted_data_without_double_read(self, tmp_path: Path) -> None:
         review_path = tmp_path / "pr-5-reviews.json"
@@ -225,14 +334,14 @@ class TestPollAndAddressReuse1276:
             rc = address.run(str(review_path), str(replies_path))
 
         assert rc == 0
-        # 1 initial read + 1 post-run read (no 3rd redundant read)
         assert read_count == 2
 
 
 class TestResolvedThreadsCache1280:
     """#1280: Shallow boundary and per-path git checks cached across threads in run()."""
 
-    def test_run_caches_shallow_boundary_and_per_path_checks(self, tmp_path: Path) -> None:
+    @staticmethod
+    def _run_cached_threads(tmp_path: Path) -> tuple[int, list[dict[str, Any]], list[tuple[str, ...]]]:
         threads_file = tmp_path / "threads.json"
         threads_file.write_text(
             json.dumps({
@@ -264,17 +373,24 @@ class TestResolvedThreadsCache1280:
 
         with patch.object(resolved_threads, "_git", side_effect=fake_git), patch("builtins.print") as mock_print:
             rc = resolved_threads.run(str(tmp_path), str(threads_file))
-
-        assert rc == 0
         verdicts = json.loads(mock_print.call_args[0][0])
+        return rc, verdicts, git_calls
+
+    def test_run_caches_shallow_boundary_checks(self, tmp_path: Path) -> None:
+        rc, verdicts, git_calls = self._run_cached_threads(tmp_path)
+        assert rc == 0
         assert all(v["suppressed"] is True for v in verdicts)
-        # Shallow boundary checked once; cat-file once for a.py; git log twice (2 distinct since values)
         assert sum(1 for c in git_calls if c[:2] == ("rev-parse", "--is-shallow-repository")) == 1
+
+    def test_run_caches_per_path_git_checks(self, tmp_path: Path) -> None:
+        rc, verdicts, git_calls = self._run_cached_threads(tmp_path)
+        assert rc == 0
+        assert all(v["suppressed"] is True for v in verdicts)
         assert sum(1 for c in git_calls if c[:2] == ("cat-file", "-e")) == 1
         assert sum(1 for c in git_calls if c[0] == "log" and c[1].startswith("--since=")) == 2
 
 
-class TestReadOnlySqliteAndIndexes1285:
+class TestReadOnlySqliteIndexes1285:
     """#1285: Avoid RW SQLite opens on read-only paths and verify indexes."""
 
     def test_store_schema_has_missing_indexes(self, tmp_path: Path) -> None:
@@ -362,23 +478,27 @@ class TestReadOnlySqliteAndIndexes1285:
 class TestParsers1290:
     """#1290: Single-pass CodeRabbit parser and skip-resolved Qodo parser."""
 
-    def test_coderabbit_single_pass_parses_all_sections_and_strips_ai_prompts(self) -> None:
-        body = (
-            "<details><summary>⚠️ Outside diff range comments (1)</summary><blockquote>"
-            "<details><summary>a.py (1)</summary><blockquote>"
-            "`10` _Potential issue_ | _Major_\n\n**Outside**\n\nDesc"
-            "<details><summary>🤖 Prompt for AI Agents</summary>ignored</details>"
-            "</blockquote></details></blockquote></details>"
-            "<details><summary>🛠️ Major comments (1)</summary><blockquote>"
-            "<details><summary>b.py (1)</summary><blockquote>"
-            "`20` _Potential issue_ | _Major_\n\n**Major**\n\nDesc"
-            "</blockquote></details></blockquote></details>"
-        )
-        parsed = parse_review_body_comments(body)
+    _SAMPLE_CR_BODY = (
+        "<details><summary>⚠️ Outside diff range comments (1)</summary><blockquote>"
+        "<details><summary>a.py (1)</summary><blockquote>"
+        "`10` _Potential issue_ | _Major_\n\n**Outside**\n\nDesc"
+        "<details><summary>🤖 Prompt for AI Agents</summary>ignored</details>"
+        "</blockquote></details></blockquote></details>"
+        "<details><summary>🛠️ Major comments (1)</summary><blockquote>"
+        "<details><summary>b.py (1)</summary><blockquote>"
+        "`20` _Potential issue_ | _Major_\n\n**Major**\n\nDesc"
+        "</blockquote></details></blockquote></details>"
+    )
+
+    def test_coderabbit_single_pass_parses_all_sections(self) -> None:
+        parsed = parse_review_body_comments(self._SAMPLE_CR_BODY)
         assert len(parsed["outside_diff"]) == 1
-        assert "ignored" not in parsed["outside_diff"][0]["body"]
         assert len(parsed["major"]) == 1
         assert parsed["minor"] == []
+
+    def test_coderabbit_single_pass_strips_ai_prompts(self) -> None:
+        parsed = parse_review_body_comments(self._SAMPLE_CR_BODY)
+        assert "ignored" not in parsed["outside_diff"][0]["body"]
 
     def test_qodo_parser_skips_resolved_without_bs4_on_title(self, monkeypatch: pytest.MonkeyPatch) -> None:
         html_body = (
@@ -405,33 +525,48 @@ class TestParsers1290:
         findings = parse_qodo_sticky_comment(html_body)
         assert len(findings) == 1
         assert findings[0]["title"] == "Plain open title & more"
-        # Only 1 BS4 call for the open finding's inner block (0 for codes_str, 0 for resolved, 0 for plain title)
         assert bs4_calls == 1
 
 
-class TestSharedHelpersAndTokenCleanup1294_1296_1298_1300:
+class TestSharedHelpersTokenCleanup1294To1300:
     """#1294, #1296, #1298, #1300."""
 
-    def test_utils_helpers_and_validation(self, tmp_path: Path) -> None:
+    def test_parse_pr_url_extracts_parts(self) -> None:
         assert parse_pr_url("https://github.com/myk-org/pi-config/pull/123#discussion_r1") == (
             "myk-org",
             "pi-config",
             "123",
         )
+
+    def test_validate_repo_format(self) -> None:
         assert validate_repo_format("myk-org/pi-config") is True
         assert validate_repo_format("invalid") is False
+
+    def test_validate_pr_number(self) -> None:
         assert validate_pr_number("42") is True
         assert validate_pr_number("abc") is False
 
+    def test_atomic_write_json_writes_file(self, tmp_path: Path) -> None:
         out = tmp_path / "data.json"
         atomic_write_json(out, {"ok": True})
         assert json.loads(out.read_text(encoding="utf-8")) == {"ok": True}
 
+    def test_atomic_write_json_cleans_temp_file_on_keyboard_interrupt(self, tmp_path: Path) -> None:
+        out = tmp_path / "data.json"
+        with (
+            patch("myk_pi_tools.utils.json.dump", side_effect=KeyboardInterrupt),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            atomic_write_json(out, {"ok": True})
+        assert list(tmp_path.iterdir()) == []
+
+    def test_run_gh_missing_binary_returns_error(self) -> None:
         with patch("myk_pi_tools.utils.subprocess.run", side_effect=FileNotFoundError):
             code, _out, err = run_gh(["--version"])
             assert code == 1
             assert "gh CLI not found" in err
 
+    def test_post_issue_comment_returns_stdout(self) -> None:
         ok_proc = subprocess.CompletedProcess(["gh"], 0, stdout='{"id": 7}', stderr="")
         with patch("myk_pi_tools.utils.subprocess.run", return_value=ok_proc):
             ok, stdout, err = post_issue_comment("o", "r", 1, "hi")
@@ -507,7 +642,7 @@ class TestSharedHelpersAndTokenCleanup1294_1296_1298_1300:
         for line in t2.splitlines():
             assert line == line.rstrip()
 
-    def test_post_and_pending_update_do_not_spam_skip_to_stderr(
+    def test_post_suppresses_skip_chatter_on_stderr(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         review_path = tmp_path / "reviews.json"
@@ -528,12 +663,22 @@ class TestSharedHelpersAndTokenCleanup1294_1296_1298_1300:
         assert "Skipping qodo[0]" not in err
         assert "=== Summary ===" in err
 
+    def test_pending_update_suppresses_skip_chatter_on_stderr(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         pending_path = tmp_path / "pending.json"
         pending_path.write_text(
             json.dumps({
                 "metadata": {"owner": "o", "repo": "r", "pr_number": 1, "review_id": 2},
                 "comments": [
-                    {"id": 1, "node_id": "N1", "path": "a.py", "body": "old", "refined_body": None, "status": "pending"}
+                    {
+                        "id": 1,
+                        "node_id": "N1",
+                        "path": "a.py",
+                        "body": "old",
+                        "refined_body": None,
+                        "status": "pending",
+                    }
                 ],
             }),
             encoding="utf-8",
@@ -541,11 +686,11 @@ class TestSharedHelpersAndTokenCleanup1294_1296_1298_1300:
         with patch.object(pending_update, "check_dependencies"):
             rc = pending_update.run(str(pending_path))
         assert rc == 0
-        err2 = capsys.readouterr().err
-        assert "Skipping comment [0]" not in err2
-        assert "=== Summary ===" in err2
+        err = capsys.readouterr().err
+        assert "Skipping comment [0]" not in err
+        assert "=== Summary ===" in err
 
-    def test_pr_info_unused_import_check(self) -> None:
+    def test_pr_info_model_smoke(self) -> None:
         info = PRInfo(owner="o", repo="r", pr_number="1")
         assert info.repo_full_name == "o/r"
         assert sys.version_info >= (3, 11)

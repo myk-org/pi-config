@@ -281,7 +281,21 @@ def _run_graphql_raw(query: str, variables: dict[str, str]) -> tuple[bool, dict[
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     error_output = (stdout + ("\n" + stderr if stderr else "")).strip()
+    _, body, _ = _split_http_response(stdout)
     if result.returncode != 0:
+        # `gh api graphql` exits nonzero on GraphQL errors even when partial `data`
+        # is present in stdout (e.g. reply succeeded, resolve failed). Preserve the
+        # JSON payload when usable `data` exists so callers can inspect mutations.
+        try:
+            partial = json.loads(body)
+        except json.JSONDecodeError:
+            partial = None
+        if isinstance(partial, dict) and isinstance(partial.get("data"), dict):
+            log.warning(
+                "GraphQL request exited nonzero with partial data",
+                extra={"returncode": result.returncode, "response_bytes": len(stdout_bytes)},
+            )
+            return True, partial, error_output
         log.error(
             "GraphQL request failed",
             extra={
@@ -297,7 +311,6 @@ def _run_graphql_raw(query: str, variables: dict[str, str]) -> tuple[bool, dict[
         extra={"returncode": result.returncode, "response_bytes": len(stdout_bytes), "stderr_bytes": len(stderr_bytes)},
     )
 
-    _, body, _ = _split_http_response(stdout)
     # Validate JSON response - parse the body only, not --include headers.
     try:
         data = json.loads(body)
@@ -389,13 +402,36 @@ def resolve_thread(thread_id: str) -> bool:
     return True
 
 
+def unresolve_thread(thread_id: str) -> bool:
+    """Reopen a review thread when resolution ran without a successful reply."""
+    query = """
+    mutation($threadId: ID!) {
+      unresolveReviewThread(input: {threadId: $threadId}) {
+        thread {
+          id
+          isResolved
+        }
+      }
+    }
+    """
+
+    success, result = run_graphql(query, {"threadId": thread_id})
+    if not success:
+        eprint(f"Error unresolving thread: {result}")
+        return False
+
+    return True
+
+
 def reply_and_resolve_thread(thread_id: str, body: str) -> tuple[bool, bool]:
     """Post a reply and resolve the thread in a single GraphQL request.
 
     Inspects ``data["addPullRequestReviewThreadReply"]`` and
     ``data["resolveReviewThread"]`` independently so a partial failure (reply
-    succeeded, resolve failed) still reports ``(True, False)`` and records
-    ``posted_at``.
+    succeeded, resolve failed) returns ``(True, False)`` and records
+    ``posted_at``. If the reply failed while ``resolveReviewThread`` succeeded,
+    reopens the thread via ``unresolve_thread`` so the thread never closes
+    without a reply.
     """
     body = _prepare_reply_body(body)
     log.debug(
@@ -438,6 +474,11 @@ def reply_and_resolve_thread(thread_id: str, body: str) -> tuple[bool, bool]:
             eprint(f"Error posting reply: {first_err}")
         elif not resolve_ok:
             eprint(f"Error resolving thread: {first_err}")
+
+    if not reply_ok and resolve_ok:
+        log.warning("Reply failed while resolve succeeded; reopening thread %s", thread_id)
+        unresolve_thread(thread_id)
+        return False, False
 
     return reply_ok, resolve_ok
 

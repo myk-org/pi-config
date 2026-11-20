@@ -44,7 +44,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -364,26 +364,38 @@ def run(json_path: str, *, submit: bool = False) -> int:
             log.debug("Updating comment [%d] (%s, node_id=%s)...", idx, item_path, item_node_id)
             return idx, item_path, update_comment_body(item_node_id, item_body)
 
+        aborted = False
+        updated_paths: list[str] = []
         with ThreadPoolExecutor(max_workers=min(4, len(update_tasks))) as executor:
             futures = [executor.submit(_worker, task) for task in update_tasks]
-            for fut in futures:
-                idx, item_path, result = fut.result()
+            for fut in as_completed(futures):
+                try:
+                    idx, item_path, result = fut.result()
+                except CancelledError:
+                    continue
                 if result == "not_found":
-                    abort_event.set()
-                    for pending_fut in futures:
-                        pending_fut.cancel()
-                    print_stderr(
-                        "  Error: Comment not found (404). "
-                        "Pending review may have been submitted or deleted externally."
-                    )
-                    print_stderr("Aborting remaining updates.")
-                    return 1
-                if result == "success":
+                    if not aborted:
+                        aborted = True
+                        abort_event.set()
+                        for pending_fut in futures:
+                            pending_fut.cancel()
+                        print_stderr(
+                            "  Error: Comment not found (404). "
+                            "Pending review may have been submitted or deleted externally."
+                        )
+                        print_stderr("Aborting remaining updates.")
+                elif result == "success":
                     success_count += 1
+                    updated_paths.append(f"[{idx}] ({item_path})")
                     log.debug("Updated comment [%d] successfully", idx)
                 elif result != "aborted":
                     fail_count += 1
                     print_stderr(f"  Failed to update comment [{idx}] ({item_path})")
+
+        if aborted:
+            if updated_paths:
+                print_stderr(f"Updated {success_count} comment(s) before abort: {', '.join(updated_paths)}")
+            return 1
 
     # Optionally submit the review (requires both JSON submit_action AND --submit flag)
     submit_action = metadata.get("submit_action")
