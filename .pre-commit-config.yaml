@@ -10,6 +10,9 @@ default_language_version:
 ci:
   autofix_prs: false
   autoupdate_commit_msg: "ci: [pre-commit.ci] pre-commit autoupdate"
+  # pre-commit.ci runs offline without `npm install`, so hooks that depend on
+  # local `node_modules/` are skipped there (they still run locally via `prek`).
+  skip: [node-tests, sidecar-tests, tsc-typecheck]
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
