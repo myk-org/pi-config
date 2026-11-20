@@ -14,12 +14,13 @@ const MAX_BODY_SIZE = 1_048_576;
 // Simple JSON body parser
 export async function parseBody(req: IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
-    let body = "";
+    const chunks: Buffer[] = [];
     let bodySizeBytes = 0;
     let rejected = false;
-    req.on("data", (chunk: Buffer) => {
+    req.on("data", (chunk: Buffer | string) => {
       if (rejected) return;
-      bodySizeBytes += chunk.length;
+      const buf = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+      bodySizeBytes += buf.length;
       if (bodySizeBytes > MAX_BODY_SIZE) {
         rejected = true;
         req.resume();
@@ -27,18 +28,112 @@ export async function parseBody(req: IncomingMessage): Promise<any> {
         reject(new Error("Payload too large"));
         return;
       }
-      body += chunk.toString();
+      chunks.push(buf);
     });
     req.on("end", () => {
+      if (rejected) return;
+      const body = bodySizeBytes === 0 ? "" : Buffer.concat(chunks, bodySizeBytes).toString("utf8");
       try {
         resolve(body ? JSON.parse(body) : {});
-      } catch (e) {
+      } catch {
         logger.warn(`[sidecar] Invalid JSON body: size=${body.length}`);
         reject(new Error("Invalid JSON body"));
       }
     });
-    req.on("error", reject);
+    req.on("error", (err) => {
+      if (rejected) return;
+      rejected = true;
+      reject(err);
+    });
   });
+}
+
+/** Thrown by readBoundedResponseBytes when a non-truncating read exceeds maxBytes. */
+export class ResponseTooLargeError extends Error {
+  constructor(maxBytes: number) {
+    super(`Response exceeded ${maxBytes} bytes`);
+    this.name = "ResponseTooLargeError";
+  }
+}
+
+export interface ReadBoundedResponseOptions {
+  /** Stop at maxBytes and return truncated bytes instead of throwing ResponseTooLargeError. */
+  truncate?: boolean;
+  /** Catch stream read errors and return bytes collected so far. */
+  allowPartialOnError?: boolean;
+  onReadError?: (err: unknown) => void;
+}
+
+/**
+ * Read a Fetch `Response` body up to `maxBytes`.
+ * Always cancels the reader in `finally` to release sockets/streams cleanly.
+ */
+export async function readBoundedResponseBytes(
+  response: Response,
+  maxBytes: number,
+  options?: ReadBoundedResponseOptions,
+): Promise<{ bytes: Uint8Array; truncated: boolean; hasBody: boolean }> {
+  const reader = response.body?.getReader();
+  if (!reader) return { bytes: new Uint8Array(0), truncated: false, hasBody: false };
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (totalBytes + value.byteLength > maxBytes) {
+        if (options?.truncate) {
+          const remaining = maxBytes - totalBytes;
+          if (remaining > 0) {
+            chunks.push(value.subarray(0, remaining));
+            totalBytes += remaining;
+          }
+          truncated = true;
+          break;
+        }
+        throw new ResponseTooLargeError(maxBytes);
+      }
+      chunks.push(value);
+      totalBytes += value.byteLength;
+    }
+  } catch (err) {
+    if (options?.allowPartialOnError && !(err instanceof ResponseTooLargeError)) {
+      options.onReadError?.(err);
+    } else {
+      throw err;
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+
+  const combined = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { bytes: combined, truncated, hasBody: true };
+}
+
+/**
+ * Log-safe form of a URL.
+ * Defaults to origin-only (strictest — omits pathname, userinfo, query, hash).
+ * Pass `{ includePath: true }` to keep `origin + pathname` (still strips userinfo, query, hash).
+ */
+export function sanitizeUrlForLog(
+  raw: string | undefined,
+  options?: { includePath?: boolean; fallback?: string },
+): string {
+  const fallback = options?.fallback ?? "(unparseable)";
+  if (!raw) return fallback;
+  try {
+    const parsed = new URL(raw);
+    return options?.includePath ? `${parsed.origin}${parsed.pathname}` : parsed.origin;
+  } catch {
+    return fallback;
+  }
 }
 
 export function sendJson(res: ServerResponse, status: number, data: any): void {

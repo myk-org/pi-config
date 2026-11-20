@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -1848,3 +1849,80 @@ class TestLogLevelFromEnv:
         assert result.stdout.strip() == "20"
         if value.strip():
             assert "PI_SIDECAR_LOG_LEVEL" in result.stderr, "the warning must name the variable"
+
+
+class TestPerfAndDedupR2:
+    """Regression tests for #1250 and #1257 (redaction fast paths, debug guards, validation dedup)."""
+
+    def test_redact_api_key_fast_paths_match_dp(self) -> None:
+        key = "sk-secret-12345"
+        # Shorter than api_key -> unchanged
+        assert pi_sidecar_client._redact_api_key("short", key) == "short"
+        # No "%" or "\\" -> literal replacement
+        assert pi_sidecar_client._redact_api_key(f"err: {key} and {key}", key) == "err: [redacted] and [redacted]"
+        # Oversized still omitted even without "%" or "\\"
+        huge = "a" * (pi_sidecar_client.MAX_ERROR_DETAIL_LENGTH + 1)
+        assert pi_sidecar_client._redact_api_key(huge, key) == "[error detail omitted]"
+        # Percent/JSON-escaped still redacted by DP
+        assert pi_sidecar_client._redact_api_key("err: sk%2Dsecret-12345", key) == "err: [redacted]"
+        unicode_key = "sk-caf\u00e9-12345"
+        assert pi_sidecar_client._redact_api_key(r"err: sk-caf\u00e9-12345", unicode_key) == "err: [redacted]"
+
+    @pytest.mark.asyncio
+    async def test_info_level_skips_debug_redaction_and_validates_key_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = SidecarClient(base_url="http://127.0.0.1:9999")
+        try:
+            create_resp = _mock_response(201, {"session_id": "s-once"})
+            prompt_resp = _mock_response(200, {"text": "ok", "usage": {}})
+            delete_resp = _mock_response(200, {"deleted": True})
+            client._client.post = AsyncMock(side_effect=[create_resp, prompt_resp])
+            client._client.delete = AsyncMock(return_value=delete_resp)
+            monkeypatch.setattr(pi_sidecar_client, "get_sidecar_client", lambda: client)
+
+            validate_calls = 0
+            orig_validate = pi_sidecar_client._validate_api_key
+
+            def spy_validate(api_key: str) -> str | None:
+                nonlocal validate_calls
+                validate_calls += 1
+                return orig_validate(api_key)
+
+            redact_calls = 0
+            orig_redact = pi_sidecar_client._redact_api_key
+
+            def spy_redact(value: str, api_key: str | None) -> str:
+                nonlocal redact_calls
+                redact_calls += 1
+                return orig_redact(value, api_key)
+
+            monkeypatch.setattr(pi_sidecar_client, "_validate_api_key", spy_validate)
+            monkeypatch.setattr(pi_sidecar_client, "_redact_api_key", spy_redact)
+            prev_level = pi_sidecar_client.logger.level
+            pi_sidecar_client.logger.setLevel(logging.INFO)
+            try:
+                res = await call_ai_once(
+                    "hello",
+                    ai_provider="gemini",
+                    ai_model="gemini-2.5-pro",
+                    api_key="synthetic-test-key-value",  # pragma: allowlist secret — synthetic test fixture
+                )
+            finally:
+                pi_sidecar_client.logger.setLevel(prev_level)
+
+            assert res.success is True
+            assert res.text == "ok"
+            # Validated exactly once (not 3x across call_ai_once -> call_ai -> create_session)
+            assert validate_calls == 1
+            # Only the 2 INFO-level redactions in Session created (not 17 DEBUG redactions)
+            assert redact_calls == 2
+        finally:
+            await client.close()
+
+    def test_extract_error_detail_variants(self) -> None:
+        assert pi_sidecar_client._extract_error_detail(_mock_response(400, {"error": "bad"}), "fb") == "bad"
+        raw_resp = httpx.Response(502, text="bad gateway")
+        assert pi_sidecar_client._extract_error_detail(raw_resp, "fb") == "bad gateway"
+        empty_resp = httpx.Response(500, text="")
+        assert pi_sidecar_client._extract_error_detail(empty_resp, "HTTP 500") == "HTTP 500"
