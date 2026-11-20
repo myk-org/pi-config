@@ -237,4 +237,28 @@ describe("async-agents optimizations (#1206)", () => {
 			h.shutdown();
 		}
 	});
+
+	it("evaluates {{IF:...}} conditionals and substitutes {{SETTINGS:...}} in async agent system-prompt.md (#1255)", () => {
+		const h = createHarness();
+		try {
+			h.startSession();
+			const conditionalAgent = {
+				...fakeAgent("git-expert"),
+				systemPrompt: "{{IF:review_loop_enforcement}}REVIEW_ON{{/IF}}\n{{IFNOT:allow_push_to_protected_branches}}NO_MAIN{{/IFNOT}}\n{{SETTINGS:dco}}",
+			};
+			const res = h.api.spawnAsyncAgent("git-expert", "check status", h.cwd, [conditionalAgent]);
+			assert.equal(res.error, undefined);
+			const configPath = h.spawnCalls[0].args.find((a) => a.endsWith(".json"));
+			assert.ok(configPath);
+			const config = JSON.parse(readFileSync(configPath, "utf-8"));
+			const promptArgIdx = config.piArgs.indexOf("--append-system-prompt");
+			assert.ok(promptArgIdx >= 0);
+			const writtenPrompt = readFileSync(config.piArgs[promptArgIdx + 1], "utf-8");
+			assert.doesNotMatch(writtenPrompt, /REVIEW_ON/);
+			assert.match(writtenPrompt, /NO_MAIN/);
+			assert.match(writtenPrompt, /\{"dco":false\}/);
+		} finally {
+			h.shutdown();
+		}
+	});
 });

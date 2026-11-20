@@ -56,56 +56,18 @@ Read the issue(s) or task the user wants to work on. Analyze:
   - A single **coder** for simple tasks
 - **Name each peer** with a meaningful name reflecting its role (e.g., `coder-api`, `coder-frontend`, `planner`, `test-writer`)
 
-### Step 2: Start Coms Yourself
+### Step 2: Start Coms, Spawn & Verify Peers
 
-You do not need a human to type slash commands. Call `coms_start` (tool) with your manager
-identity:
+1. Call `coms_start({ cname: "manager", purpose: "<what you are coordinating>" })` (if already active, continue).
+2. Spawn each planned peer via `coms_peer_spawn` (`cname`, `purpose`, optional `project`, `cwd`).
+3. Verify with `coms_peers` (every peer listed with `pid`) and `coms_list` (all connected).
+4. If a peer fails to appear, inspect `~/.pi/logs/coms-peers/<name>@<project>.log` and stop it with `coms_peer_kill` before retrying.
+5. **Do NOT proceed without all expected peers connected.**
 
-```text
-coms_start({ cname: "manager", purpose: "<what you are coordinating>" })
-```
+### Step 3: Report the Pool
 
-If you are already active, `coms_start` answers "already active" — that is fine, continue.
-
-### Step 3: Spawn the Peers Yourself
-
-Each peer is a real pi process with its own session, started under the supervisor:
-
-```bash
-# background it: the supervisor lives as long as the peer, so a foreground call never returns
-nohup node "$SUPERVISOR" <peer-name> --project "<project namespace>" --cwd "<checkout>" \
-  --purpose "<role>" >/dev/null 2>&1 &
-```
-
-```bash
-SUPERVISOR="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/coms-peer-supervisor.mjs"
-[ -f "$SUPERVISOR" ] || SUPERVISOR="$PWD/scripts/coms-peer-supervisor.mjs"
-```
-
-(The supervisor falls back to this checkout's `scripts/coms-peer-supervisor.mjs` when the package
-copy is absent.) It keeps the peer alive (a peer has no lifetime of its own — it lives until
-killed), scrubs the session identity so the peer gets its own session, and records its pids in
-`~/.pi/coms/peers/<peer-name>.json`.
-
-### Step 4: Verify the Peers
-
-1. `coms_peers` — every spawned peer must appear as `● <name> · <project> (idle|busy ctx:N% pid:<peer pid>)`.
-   The list shows the PEER's pid, not the supervisor's; the supervisor pid lives in
-   `~/.pi/coms/peers/<name>@<project>.json`.
-2. `coms_list` — the same names must appear as connected peers.
-3. `~/.pi/logs/coms-peers/<name>@<project>.log` — the supervisor's own account of the start; a peer
-   has no screen to watch, so this log and the live state in `coms_peers` are what you inspect.
-4. A peer missing from either list is a failed spawn: report it and stop it with `coms_peer_kill`
-   before retrying.
-
-**Do NOT proceed without all expected peers connected.**
-
-### Step 5: Report the Pool
-
-In one short message to the user, state which peers you spawned (names + pids from `coms_peers`),
-then get to work. Peers are independent processes with full user privileges: anything you spawn,
-you must be able to account for, and stop with `coms_peer_kill` when the work is done or abandoned. Print the spawn plan first (the Step 1
-roles and names) so the user sees what was started and why.
+Print the spawn plan (Step 1 roles/names) and which peers were spawned (names + pids from `coms_peers`), then get to work.
+Peers are independent processes with full user privileges — account for every spawned peer and stop it with `coms_peer_kill` when work is done or abandoned.
 
 ## Getting Started
 

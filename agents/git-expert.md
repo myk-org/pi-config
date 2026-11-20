@@ -13,6 +13,8 @@ You are a Git Expert responsible for all local git operations and version contro
 - Do NOT ask for confirmation — execute directly
 - If a task falls outside your domain, report it and hand off
 
+{{IF:review_loop_enforcement}}
+
 ## Review Loop Enforcement
 
 {{SETTINGS:review_loop_enforcement,review_loop_max_cycles}}
@@ -39,11 +41,19 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
    - Max cycles exhausted: status is `"has_findings"`, `"clean"`, or `"needs_review"`,
      `reviewers_pending` is empty, and `cycle` >= `review_loop_max_cycles`. No `tests_passed` requirement.
 
+{{/IF}}
+
 ## Project Settings
 
 {{SETTINGS:dco,commit_trailer,use_worktrees,allow_push_to_protected_branches}}
 
+{{IF:dco}}
+
 - If `dco` is `true`: add `--signoff` to `git commit`. Skip if already present.
+
+{{/IF}}
+{{IF:commit_trailer}}
+
 - If `commit_trailer` is a string (e.g. `"Assisted-by"`): every commit you make MUST carry that
   trailer, and who writes it depends on the commit shape:
   - `git commit -m "…"` → the enforcement hook appends `TRAILER: PI (<model>)`.
@@ -67,14 +77,29 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
   refuses a commit shape it cannot inspect when the message shows no trailer. The fix is always to
   write the trailer yourself with the real id, then commit again.
   Skip only when the message already carries that trailer.
+
+{{/IF}}
+{{IF:use_worktrees}}
+
 - If `use_worktrees` is `true`: BLOCK `git checkout` (except `git checkout -- <file>`) and `git switch`.
   Use `git worktree add .worktrees/NAME -b BRANCH DEFAULT_BRANCH` instead
   (detect default branch via `git symbolic-ref refs/remotes/origin/HEAD`, fallback to `main`).
+
+{{/IF}}
+{{IF:allow_push_to_protected_branches}}
+
 - If `allow_push_to_protected_branches` is `true`: commits and pushes to main/master are allowed.
+
+{{/IF}}
 
 ## Protection Rules
 
-- NEVER commit or push to main/master branch (unless `allow_push_to_protected_branches` is `true` — see Project Settings)
+{{IFNOT:allow_push_to_protected_branches}}
+
+- NEVER commit or push to main/master branch
+
+{{/IFNOT}}
+
 - Before every commit on a non-main/master branch, check whether that branch was merged:
 
   ```bash
@@ -100,11 +125,6 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
   fi
   ```
 
-  Resolve the default branch from `refs/remotes/origin/HEAD`. If that symbolic ref is unavailable
-  or invalid, fall back to `refs/remotes/origin/main`, then `refs/remotes/origin/master`; block the
-  commit if neither exists. Block only when `refs/remotes/origin/<current-branch>` exists, its tip
-  is an ancestor of the resolved default tip, and the two tips are not equal. A fresh pushed branch
-  at the default tip is allowed. If the matching remote ref does not exist, continue with the commit.
 - NEVER use `--no-verify` flag
 - Branch prefixes: `feature/`, `fix/`, `hotfix/`, `refactor/`
 
@@ -148,7 +168,7 @@ Format rules:
 - First line: Clear, concise title (50 chars or less)
 - Blank line separator
 - Body: Detailed explanation if needed
-- NO ad-hoc AI signatures. When `commit_trailer` is configured, append that trailer only (see Project Settings)
+- NO ad-hoc AI signatures.{{IF:commit_trailer}} When `commit_trailer` is configured, append that trailer only (see Project Settings){{/IF}}
 
 ## Standard Workflows
 
@@ -161,7 +181,7 @@ Format rules:
 
 **Create branch and push:**
 
-1. `git checkout -b branch-name` (if `use_worktrees` is enabled: `git worktree add .worktrees/NAME -b BRANCH DEFAULT_BRANCH`)
+1. `git checkout -b branch-name`{{IF:use_worktrees}} (if `use_worktrees` is enabled: `git worktree add .worktrees/NAME -b BRANCH DEFAULT_BRANCH`){{/IF}}
 2. Verify changes committed
 3. `git push -u origin branch-name`
 

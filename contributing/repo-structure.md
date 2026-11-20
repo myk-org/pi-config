@@ -3,6 +3,7 @@
 ```text
 pi-config/
 ├── agents/                          # Specialist agent definitions
+│   ├── _partials/                   # Shared agent prompt fragments ({{INCLUDE:...}})
 │   ├── api-documenter.md
 │   ├── bash-expert.md
 │   ├── code-reviewer-docs.md
