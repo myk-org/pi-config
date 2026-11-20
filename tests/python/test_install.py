@@ -427,6 +427,26 @@ def test_trail_script_audit_rejects_missing_required_dependency(tmp_path: Path) 
         install._install_script_packages(root, tmp_path / "node_modules")
 
 
+def test_trail_script_audit_standalone_fallback_without_sibling_auditor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    standalone_script = tmp_path / "standalone/install.py"
+    standalone_script.parent.mkdir(parents=True)
+    standalone_script.write_text("# standalone\n")
+    monkeypatch.setattr(install, "__file__", str(standalone_script))
+
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"native-dependency": "1"}})
+    _write_package(
+        tmp_path / "node_modules/native-dependency",
+        {"name": "native-dependency", "scripts": {"install": "build"}},
+    )
+
+    assert install._install_script_packages(root, tmp_path / "node_modules") == ["native-dependency"]
+
+
 def _run_trail_auditor(root: Path, *, debug: bool = True) -> subprocess.CompletedProcess[str]:
     env = os.environ | {
         "HOME": str(root.parents[2]),
@@ -529,11 +549,14 @@ def _successful_trail_install(
     calls: list[list[str]] = []
     stages: list[Path] = []
     observations: set[str] = set()
+    real_run = subprocess.run
 
-    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
         if cmd == ["npm", "prefix", "-g"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=str(prefix))
+        if len(cmd) >= 2 and cmd[0] == "node" and cmd[1].endswith("trail-allow-scripts.mjs"):
+            return real_run(cmd, **kwargs)
         if cmd[:3] == ["npm", "install", "-g"]:
             stage = Path(cmd[cmd.index("--prefix") + 1])
             stages.append(stage)
@@ -568,8 +591,10 @@ def test_trail_native_install_uses_two_fresh_prefixes(tmp_path: Path, monkeypatc
 def test_trail_native_install_preserves_secure_npm_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _prefix, calls, stages, _observations = _successful_trail_install(tmp_path, monkeypatch)
     assert calls[0] == ["npm", "prefix", "-g"]
-    audit_cmd, install_cmd = calls[1:3]
+    audit_cmd, auditor_cmd, install_cmd = calls[1:4]
     assert audit_cmd[5:] == ["@trailhq/trail-code@latest", "--ignore-scripts"]
+    assert auditor_cmd[0] == "node"
+    assert auditor_cmd[1].endswith("trail-allow-scripts.mjs")
     assert install_cmd == [
         "npm",
         "install",
@@ -587,7 +612,7 @@ def test_trail_native_install_publishes_verified_install(tmp_path: Path, monkeyp
     published = prefix / "lib/trail-prefix"
     assert (published / "lib/node_modules/@trailhq/trail-code/package.json").is_file()
     assert (prefix / "bin/trail").readlink() == Path("../lib/trail-prefix/bin/trail")
-    assert calls[3] == [str(stages[1] / "bin/trail"), "--version"]
+    assert calls[4] == [str(stages[1] / "bin/trail"), "--version"]
     assert "verified-before-publication" in observations
 
 
@@ -602,10 +627,13 @@ def _failed_second_trail_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     trail_bin.parent.mkdir(parents=True)
     trail_bin.symlink_to("../lib/trail-prefix/bin/trail")
     stages: list[Path] = []
+    real_run = subprocess.run
 
-    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         if cmd == ["npm", "prefix", "-g"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=str(prefix))
+        if len(cmd) >= 2 and cmd[0] == "node" and cmd[1].endswith("trail-allow-scripts.mjs"):
+            return real_run(cmd, **kwargs)
         if cmd[:3] == ["npm", "install", "-g"]:
             stage = Path(cmd[cmd.index("--prefix") + 1])
             stages.append(stage)

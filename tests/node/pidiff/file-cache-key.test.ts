@@ -46,4 +46,23 @@ describe("pierreFileCacheKey", () => {
   it("does not collide on djb2 pairs such as Aa vs BB", () => {
     assert.notEqual(pierreFileCacheKey("f.ts", "Aa"), pierreFileCacheKey("f.ts", "BB"));
   });
+
+  it("guards debug logging behind __PIDIFF_DEBUG (#1278)", () => {
+    const state = globalThis as { __pidiffUiLogs?: unknown[]; __PIDIFF_DEBUG?: boolean };
+    const prevFlag = state.__PIDIFF_DEBUG;
+    const prevLogs = state.__pidiffUiLogs;
+    try {
+      state.__PIDIFF_DEBUG = false;
+      state.__pidiffUiLogs = [];
+      pierreFileCacheKey("quiet.ts", "hello");
+      assert.equal(state.__pidiffUiLogs.length, 0);
+
+      state.__PIDIFF_DEBUG = true;
+      pierreFileCacheKey("loud.ts", "hello");
+      assert.ok(state.__pidiffUiLogs.length >= 3);
+    } finally {
+      state.__PIDIFF_DEBUG = prevFlag;
+      state.__pidiffUiLogs = prevLogs;
+    }
+  });
 });

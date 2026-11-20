@@ -7,6 +7,38 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import type { ServerResponse } from "node:http";
+import { createLogger } from "../extensions/shared/logger.ts";
+
+const serveLog = createLogger("serve-ui");
+
+/**
+ * Build a daemon UI bundle (`npm install --production=false && npm run build`)
+ * when its package.json exists. Shared by serveUi and daemon-manager ensureUiBuilt.
+ */
+export function buildUiDist(
+  uiSrcDir: string,
+  name: string,
+  log: (msg: string) => void,
+  execFn: typeof execSync = execSync,
+): boolean {
+  if (!fs.existsSync(path.join(uiSrcDir, "package.json"))) return false;
+  log(`dist/ missing, building ${name}...`);
+  serveLog.info("building UI dist", { name, uiSrcDir });
+  try {
+    execFn("npm install --production=false && npm run build", {
+      cwd: uiSrcDir,
+      stdio: "ignore",
+      timeout: 60000,
+    });
+    log(`${name} build complete`);
+    serveLog.info("UI build complete", { name });
+    return true;
+  } catch (buildErr: any) {
+    log(`${name} build failed: ${buildErr.message}`);
+    serveLog.warn("UI build failed", { name, err: buildErr?.message });
+    return false;
+  }
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html", ".js": "application/javascript",
@@ -73,21 +105,14 @@ export function serveUi(
         opts.log(`index.html unreadable: ${err.code}, attempting build`);
       }
       const uiSrcDir = path.join(opts.uiDir, "..");
-      if (fs.existsSync(path.join(uiSrcDir, "package.json"))) {
+      if (buildUiDist(uiSrcDir, opts.name, opts.log)) {
         try {
-          opts.log(`dist/ missing, building ${opts.name}...`);
-          execSync("npm install --production=false && npm run build", {
-            cwd: uiSrcDir,
-            stdio: "ignore",
-            timeout: 60000,
-          });
-          opts.log(`${opts.name} build complete`);
           const html = fs.readFileSync(path.join(opts.uiDir, "index.html"));
           res.writeHead(200, { "Content-Type": "text/html" });
           res.end(html);
           return;
-        } catch (buildErr: any) {
-          opts.log(`${opts.name} build failed: ${buildErr.message}`);
+        } catch (readErr: any) {
+          opts.log(`${opts.name} build succeeded but index.html unreadable: ${readErr.message}`);
         }
       }
       res.writeHead(200, { "Content-Type": "text/html" });

@@ -89,7 +89,41 @@ export async function findRunningPidiffPort(
   preferred = 0,
 ): Promise<number | null> {
   if (preferred && await checkHealth(preferred)) return preferred;
-  return findLiveLockfile([lockDir, legacyLockDir]);
+  const skipPorts = preferred ? new Set([preferred]) : undefined;
+  return findLiveLockfile([lockDir, legacyLockDir], skipPorts);
+}
+
+/**
+ * Format a pidiff `publish-review` payload into a compact follow-up message.
+ *
+ * Hoists `branch` and `worktreePath` once to the top-level object whenever all
+ * comments share the same value, omits redundant `source`/`type` metadata
+ * already stated by the heading, and serializes compactly (no pretty-printing)
+ * to save LLM input tokens.
+ */
+export function formatReviewMessage(parsed: { comments: any[]; summary?: string }): string {
+  const comments = parsed.comments;
+  const firstBranch = comments[0]?.branch;
+  const sharedBranch = firstBranch && comments.every((c: any) => c.branch === firstBranch) ? firstBranch : undefined;
+  const firstWorktree = comments[0]?.worktreePath;
+  const sharedWorktreePath = firstWorktree && comments.every((c: any) => c.worktreePath === firstWorktree) ? firstWorktree : undefined;
+
+  const review: Record<string, unknown> = {
+    ...(sharedBranch ? { branch: sharedBranch } : {}),
+    ...(sharedWorktreePath ? { worktreePath: sharedWorktreePath } : {}),
+    comments: comments.map((c: any) => ({
+      file: c.file,
+      line: c.line,
+      side: c.side,
+      body: c.body,
+      ...(!sharedBranch && c.branch ? { branch: c.branch } : {}),
+      ...(!sharedWorktreePath && c.worktreePath ? { worktreePath: c.worktreePath } : {}),
+      ...(c.replies?.length ? { replies: c.replies } : {}),
+      ...(c.resolved ? { resolved: true } : {}),
+    })),
+    ...(parsed.summary ? { summary: parsed.summary } : {}),
+  };
+  return `## pidiff: Code Review Comments\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\`\n\nPlease address these review comments.`;
 }
 
 export function registerPidiff(pi: ExtensionAPI): void {
@@ -259,22 +293,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
           const parsed = JSON.parse(data.toString());
           if (parsed.type === "publish-review" && parsed.comments?.length > 0) {
             log.debug(`review received: ${parsed.comments.length} comments`);
-            const review = {
-              source: "pidiff",
-              type: "code-review",
-              comments: parsed.comments.map((c: any) => ({
-                file: c.file,
-                line: c.line,
-                side: c.side,
-                body: c.body,
-                ...(c.branch ? { branch: c.branch } : {}),
-                ...(c.worktreePath ? { worktreePath: c.worktreePath } : {}),
-                ...(c.replies?.length ? { replies: c.replies } : {}),
-                ...(c.resolved ? { resolved: true } : {}),
-              })),
-              ...(parsed.summary ? { summary: parsed.summary } : {}),
-            };
-            const message = `## pidiff: Code Review Comments\n\n\`\`\`json\n${JSON.stringify(review, null, 2)}\n\`\`\`\n\nPlease address these review comments.`;
+            const message = formatReviewMessage(parsed);
             pi.sendUserMessage(message, { deliverAs: "followUp" });
           }
         } catch (e: any) { log.debug(`message handler error: ${e.message}`); }
