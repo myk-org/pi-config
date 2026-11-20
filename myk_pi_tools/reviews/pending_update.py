@@ -43,10 +43,15 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.fetch import print_stderr, run_gh_api
+
+log = create_logger(__name__)
 
 # Valid submit actions for a review
 VALID_SUBMIT_ACTIONS = {"COMMENT", "APPROVE", "REQUEST_CHANGES"}
@@ -105,7 +110,7 @@ def backfill_node_ids(
         if cid in id_to_node:
             comment["node_id"] = id_to_node[cid]
             path = comment.get("path", "unknown")
-            print_stderr(f"  Backfilled node_id for comment {comment_id} ({path})")
+            log.debug("Backfilled node_id for comment %s (%s)", comment_id, path)
             filled += 1
 
     if filled == 0:
@@ -291,7 +296,7 @@ def run(json_path: str, *, submit: bool = False) -> int:
         print_stderr("Error: pr_number and review_id must be integers")
         return 1
 
-    print_stderr(f"Processing pending review {review_id} for {owner}/{repo}#{pr_number}")
+    log.debug("Processing pending review %d for %s/%s#%d", review_id, owner, repo, pr_number)
 
     # Backfill missing node_ids before processing
     comments = data.get("comments", [])
@@ -305,6 +310,7 @@ def run(json_path: str, *, submit: bool = False) -> int:
     success_count = 0
     skip_count = 0
     fail_count = 0
+    update_tasks: list[tuple[int, str, str, str]] = []
 
     for i, comment in enumerate(comments):
         node_id = comment.get("node_id")
@@ -316,13 +322,13 @@ def run(json_path: str, *, submit: bool = False) -> int:
         if not refined_body or status != "accepted":
             skip_count += 1
             has_body = "set" if refined_body else "null"
-            print_stderr(f"Skipping comment [{i}] ({path}): status={status}, refined_body={has_body}")
+            log.debug("Skipping comment [%d] (%s): status=%s, refined_body=%s", i, path, status, has_body)
             continue
 
         original_body = comment.get("body", "")
         if refined_body.strip() == str(original_body).strip():
             skip_count += 1
-            print_stderr(f"Skipping comment [{i}] ({path}): refined_body unchanged")
+            log.debug("Skipping comment [%d] (%s): refined_body unchanged", i, path)
             continue
 
         if not node_id:
@@ -330,12 +336,15 @@ def run(json_path: str, *, submit: bool = False) -> int:
             print_stderr(f"Error: Comment [{i}] ({path}) has no node_id. Re-run 'reviews pending-fetch' to refresh.")
             continue
 
-        print_stderr(f"Updating comment [{i}] ({path}, node_id={node_id})...")
+        update_tasks.append((i, path, str(node_id), str(refined_body)))
 
+    if len(update_tasks) == 1:
+        i, path, node_id, refined_body = update_tasks[0]
+        log.debug("Updating comment [%d] (%s, node_id=%s)...", i, path, node_id)
         result = update_comment_body(node_id, refined_body)
         if result == "success":
             success_count += 1
-            print_stderr("  Updated successfully")
+            log.debug("Updated comment [%d] successfully", i)
         elif result == "not_found":
             print_stderr(
                 "  Error: Comment not found (404). Pending review may have been submitted or deleted externally."
@@ -344,7 +353,49 @@ def run(json_path: str, *, submit: bool = False) -> int:
             return 1
         else:
             fail_count += 1
-            print_stderr("  Failed to update")
+            print_stderr(f"  Failed to update comment [{i}] ({path})")
+    elif len(update_tasks) > 1:
+        abort_event = threading.Event()
+
+        def _worker(task: tuple[int, str, str, str]) -> tuple[int, str, str]:
+            idx, item_path, item_node_id, item_body = task
+            if abort_event.is_set():
+                return idx, item_path, "aborted"
+            log.debug("Updating comment [%d] (%s, node_id=%s)...", idx, item_path, item_node_id)
+            return idx, item_path, update_comment_body(item_node_id, item_body)
+
+        aborted = False
+        updated_paths: list[str] = []
+        with ThreadPoolExecutor(max_workers=min(4, len(update_tasks))) as executor:
+            futures = [executor.submit(_worker, task) for task in update_tasks]
+            for fut in as_completed(futures):
+                try:
+                    idx, item_path, result = fut.result()
+                except CancelledError:
+                    continue
+                if result == "not_found":
+                    if not aborted:
+                        aborted = True
+                        abort_event.set()
+                        for pending_fut in futures:
+                            pending_fut.cancel()
+                        print_stderr(
+                            "  Error: Comment not found (404). "
+                            "Pending review may have been submitted or deleted externally."
+                        )
+                        print_stderr("Aborting remaining updates.")
+                elif result == "success":
+                    success_count += 1
+                    updated_paths.append(f"[{idx}] ({item_path})")
+                    log.debug("Updated comment [%d] successfully", idx)
+                elif result != "aborted":
+                    fail_count += 1
+                    print_stderr(f"  Failed to update comment [{idx}] ({item_path})")
+
+        if aborted:
+            if updated_paths:
+                print_stderr(f"Updated {success_count} comment(s) before abort: {', '.join(updated_paths)}")
+            return 1
 
     # Optionally submit the review (requires both JSON submit_action AND --submit flag)
     submit_action = metadata.get("submit_action")

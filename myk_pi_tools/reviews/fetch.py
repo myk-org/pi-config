@@ -12,32 +12,27 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import logging
-import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
-
-# Map Qodo finding types to our type field
-from myk_pi_tools.reviews.constants import QODO_TYPE_MAP as _QODO_TYPE_MAP  # noqa: E402
-from myk_pi_tools.reviews.qodo_cli import fetch_qodo_cli_threads  # noqa: E402
+from myk_pi_tools.reviews.constants import (
+    CODERABBIT_USERS,
+    PREVIOUS_RESULTS_RE,
+    QODO_STICKY_TYPES,  # noqa: F401 — re-exported for backwards compat
+    QODO_USERS,
+)
+from myk_pi_tools.reviews.constants import QODO_TYPE_MAP as _QODO_TYPE_MAP
+from myk_pi_tools.reviews.qodo_cli import fetch_qodo_cli_threads
 from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
-from myk_pi_tools.utils import merge_paginated_json
-
-# Known AI reviewer usernames
-QODO_USERS = ["qodo-code-review", "qodo-code-review[bot]"]
-
-from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES  # noqa: E402 — re-export for backwards compat
-
-CODERABBIT_USERS = ["coderabbitai", "coderabbitai[bot]"]
+from myk_pi_tools.utils import atomic_write_json, merge_paginated_json, parse_pr_url
 
 # Priority classification keywords
 HIGH_PRIORITY_KEYWORDS = re.compile(
@@ -49,48 +44,26 @@ LOW_PRIORITY_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-# Track temp files for cleanup
-TEMP_FILES: list[Path] = []
-log = logging.getLogger(__name__)
+log = create_logger(__name__)
+
+# Transient per-run context shared with poll.py in the same process so poll does
+# not re-fetch issue comments or re-run is_qodo_approved() right after fetch.run().
+_LAST_FETCH_CONTEXT: dict[str, Any] | None = None
 
 
-def cleanup() -> None:
-    """Remove tracked temp files and any orphaned .new files from atomic updates."""
-    for f in TEMP_FILES:
-        try:
-            f.unlink(missing_ok=True)
-            Path(str(f) + ".new").unlink(missing_ok=True)
-        except OSError:
-            pass
+def consume_fetch_context(owner: str, repo: str, pr_number: str) -> dict[str, Any] | None:
+    """Return and clear the transient context from the matching fetch.run() call."""
+    global _LAST_FETCH_CONTEXT
+    ctx = _LAST_FETCH_CONTEXT
+    _LAST_FETCH_CONTEXT = None
+    if ctx is not None and ctx.get("key") == (owner, repo, str(pr_number)):
+        return ctx
+    return None
 
 
 def print_stderr(msg: str) -> None:
     """Print message to stderr."""
     print(msg, file=sys.stderr)
-
-
-def _fallback_body_similarity(body1: str, body2: str) -> float:
-    """Calculate word overlap ratio between two bodies using Jaccard similarity."""
-    tokens1 = set(re.findall(r"[a-z0-9]+", body1.lower()))
-    tokens2 = set(re.findall(r"[a-z0-9]+", body2.lower()))
-    if not tokens1 or not tokens2:
-        return 0.0
-
-    # Guard against huge bodies (e.g., pasted logs)
-    # Sort before truncating for deterministic behavior
-    if len(tokens1) > 2000:
-        tokens1 = set(sorted(tokens1)[:2000])
-    if len(tokens2) > 2000:
-        tokens2 = set(sorted(tokens2)[:2000])
-
-    intersection = tokens1 & tokens2
-    union = tokens1 | tokens2
-    return len(intersection) / len(union)
-
-
-def _load_review_db() -> tuple[type | None, Any | None]:
-    """Try to load ReviewDB from db module."""
-    return ReviewDB, _body_similarity
 
 
 def check_dependencies() -> None:
@@ -99,23 +72,6 @@ def check_dependencies() -> None:
         if shutil.which(cmd) is None:
             print_stderr(f"Error: '{cmd}' is required but not installed.")
             sys.exit(1)
-
-
-def parse_pr_url(url: str) -> tuple[str, str, str] | None:
-    """Parse a GitHub PR URL into (owner, repo, pr_number).
-
-    Supports formats:
-        https://github.com/OWNER/REPO/pull/NUMBER
-        https://github.com/OWNER/REPO/pull/NUMBER#pullrequestreview-XXX
-        https://github.com/OWNER/REPO/pull/NUMBER#discussion_rXXX
-
-    Returns:
-        Tuple of (owner, repo, pr_number) or None if URL doesn't match.
-    """
-    match = re.match(r"https?://github\.com/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/pull/(\d+)", url)
-    if match:
-        return match.group(1), match.group(2), match.group(3)
-    return None
 
 
 def _get_upstream_repo() -> str | None:
@@ -706,7 +662,7 @@ def fetch_qodo_reply_comments(
 
     for comment in comments:
         author = comment.get("user", {}).get("login") if comment.get("user") else None
-        if author not in ("qodo-code-review[bot]", "qodo-code-review"):
+        if author not in QODO_USERS:
             continue
 
         body = comment.get("body", "")
@@ -802,7 +758,7 @@ def fetch_qodo_sticky_findings(
 
     for comment in comments:
         author = comment.get("user", {}).get("login") if comment.get("user") else None
-        if author not in ("qodo-code-review[bot]", "qodo-code-review"):
+        if author not in QODO_USERS:
             continue
 
         body = comment.get("body", "")
@@ -937,15 +893,13 @@ def process_and_categorize(
     qodo: list[dict[str, Any]] = []
     coderabbit: list[dict[str, Any]] = []
 
-    # Lazily load ReviewDB and instantiate once outside the loop for performance
-    ReviewDB, sim_fn = _load_review_db()
-    similarity = sim_fn or _fallback_body_similarity  # Use imported or fallback
+    # Instantiate ReviewDB once outside the loop for performance
+    similarity = _body_similarity
     db = None
-    if ReviewDB:
-        try:
-            db = ReviewDB(db_path=None)  # Auto-detect path
-        except Exception as e:
-            print_stderr(f"Warning: Failed to initialize ReviewDB: {e}")
+    try:
+        db = ReviewDB(db_path=None)  # Auto-detect path
+    except Exception as e:
+        print_stderr(f"Warning: Failed to initialize ReviewDB: {e}")
 
     # Preload and index dismissed comments once per run for performance
     # Skip dismissed scan entirely when no non-qodo pending threads exist
@@ -1152,6 +1106,15 @@ def _extract_sticky_title(body: str) -> str:
     return body[:60].lower()
 
 
+_BODY_KEY_PREFIXES = {
+    "outside_diff_comment": "odc",
+    "major_comment": "mjc",
+    "minor_comment": "mnc",
+    "nitpick_comment": "npc",
+    "duplicate_comment": "dpc",
+}
+
+
 def get_thread_key(thread: dict[str, Any]) -> str | None:
     """Generate a unique key for deduplication."""
     # Qodo sticky findings use type + path + normalized title as composite key
@@ -1166,50 +1129,15 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
             stable = hashlib.sha256(material.encode()).hexdigest()[:12]
             return f"qs:{path}:{stable}"
 
-    # Outside diff comments use review_id + location as composite key (stable across reordering)
-    if thread.get("type") == "outside_diff_comment":
+    # Body-embedded comments use review_id + location as composite key (stable across reordering)
+    prefix = _BODY_KEY_PREFIXES.get(qodo_type or "")
+    if prefix is not None:
         review_id = thread.get("review_id")
         path = thread.get("path")
         line = thread.get("line")
         end_line = thread.get("end_line")
         if review_id is not None and path and line is not None:
-            return f"odc:{review_id}:{path}:{line}:{end_line}"
-
-    # Major comments use review_id + location as composite key (stable across reordering)
-    if thread.get("type") == "major_comment":
-        review_id = thread.get("review_id")
-        path = thread.get("path")
-        line = thread.get("line")
-        end_line = thread.get("end_line")
-        if review_id is not None and path and line is not None:
-            return f"mjc:{review_id}:{path}:{line}:{end_line}"
-
-    # Minor comments use review_id + location as composite key (stable across reordering)
-    if thread.get("type") == "minor_comment":
-        review_id = thread.get("review_id")
-        path = thread.get("path")
-        line = thread.get("line")
-        end_line = thread.get("end_line")
-        if review_id is not None and path and line is not None:
-            return f"mnc:{review_id}:{path}:{line}:{end_line}"
-
-    # Nitpick comments use review_id + location as composite key (stable across reordering)
-    if thread.get("type") == "nitpick_comment":
-        review_id = thread.get("review_id")
-        path = thread.get("path")
-        line = thread.get("line")
-        end_line = thread.get("end_line")
-        if review_id is not None and path and line is not None:
-            return f"npc:{review_id}:{path}:{line}:{end_line}"
-
-    # Duplicate comments use review_id + location as composite key
-    if thread.get("type") == "duplicate_comment":
-        review_id = thread.get("review_id")
-        path = thread.get("path")
-        line = thread.get("line")
-        end_line = thread.get("end_line")
-        if review_id is not None and path and line is not None:
-            return f"dpc:{review_id}:{path}:{line}:{end_line}"
+            return f"{prefix}:{review_id}:{path}:{line}:{end_line}"
 
     thread_id = thread.get("thread_id")
     if thread_id:
@@ -1356,11 +1284,9 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
     if not comments or not isinstance(comments, list):
         return None
 
-    _QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
-
     for comment in comments:
         author = comment.get("user", {}).get("login") if comment.get("user") else None
-        if author not in _QODO_USERS:
+        if author not in QODO_USERS:
             continue
 
         body = comment.get("body", "")
@@ -1377,10 +1303,7 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
         unresolved = parse_qodo_sticky_comment(body)
 
         # Count resolved findings from the sticky body
-        import re as _re
-
-        _prev_re = _re.compile(r"^\s*<!-- FOLDED_SECTION_START -->\s*$", _re.MULTILINE)
-        _prev_match = _prev_re.search(body)
+        _prev_match = PREVIOUS_RESULTS_RE.search(body)
         current_body = body[: _prev_match.start()] if _prev_match else body
         resolved_count = current_body.count("Resolved</code>") + current_body.count("Dismissed</code>")
         total_findings = resolved_count + len(unresolved)
@@ -1464,282 +1387,278 @@ def run(
         dict with keys (metadata, human, qodo, coderabbit) on success,
         or int exit code (1) on error.
     """
-    try:
-        check_dependencies()
+    global _LAST_FETCH_CONTEXT
+    _LAST_FETCH_CONTEXT = None
+    check_dependencies()
 
-        # Get PR info
-        print_stderr("Getting PR information...")
-        owner, repo, pr_number = get_pr_info(pr_url=review_url)
+    # Get PR info
+    print_stderr("Getting PR information...")
+    owner, repo, pr_number = get_pr_info(pr_url=review_url)
 
-        print_stderr(f"Repository: {owner}/{repo}, PR: {pr_number}")
+    print_stderr(f"Repository: {owner}/{repo}, PR: {pr_number}")
 
-        # Ensure output directory exists
-        out_dir = Path(output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Ensure output directory exists
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-        json_path = out_dir / f"pr-{pr_number}-reviews.json"
+    json_path = out_dir / f"pr-{pr_number}-reviews.json"
 
-        label = "review" if include_resolved else "unresolved review"
-        pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+    label = "review" if include_resolved else "unresolved review"
+    pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            author_future = executor.submit(run_gh_api, f"/repos/{owner}/{repo}/pulls/{pr_number}")
-            threads_future = executor.submit(
-                fetch_review_threads, owner, repo, pr_number, include_resolved=include_resolved, user=user
-            )
-            body_comments_future = (
-                executor.submit(fetch_coderabbit_body_comments, owner, repo, pr_number) if not user else None
-            )
-            issue_comments_future = (
-                executor.submit(
-                    run_gh_api, f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True
-                )
-                if not user
-                else None
-            )
-
-            # Fetch PR author and head SHA first so Qodo CLI can run concurrently with remaining futures
-            pr_author: str | None = None
-            head_sha: str | None = None
-            author_data = author_future.result()
-            if isinstance(author_data, dict):
-                pr_author = author_data.get("user", {}).get("login") if author_data.get("user") else None
-                head_sha = author_data.get("head", {}).get("sha") or None
-            else:
-                print_stderr(f"Warning: Could not fetch PR author (API returned {type(author_data).__name__})")
-
-            cli_future = executor.submit(fetch_qodo_cli_threads, pr_url, head_sha) if not user else None
-
-            # Collect all unresolved threads in deterministic order
-            print_stderr(f"Fetching {label} threads...")
-            all_threads = threads_future.result()
-            print_stderr(f"Found {len(all_threads)} {label} thread(s)")
-
-            body_comment_threads: list[dict[str, Any]] = []
-            issue_comments: list[dict[str, Any]] | None = None
-            cli_threads: list[dict[str, Any]] | None = None
-            qodo_cli_state: dict[str, Any] | None = None  # set when the qodo CLI branch ran (issue #958)
-            if not user:
-                assert body_comments_future is not None
-                assert issue_comments_future is not None
-                assert cli_future is not None
-                body_comment_threads = body_comments_future.result()
-                issue_comments = issue_comments_future.result()
-                cli_threads, qodo_cli_state = cli_future.result()
-
-        # Skip bot comment fetching when filtering by specific user
-        qodo_replies: list[dict[str, Any]] | None = None
-        if not user:
-            # Merge CodeRabbit body-embedded comments from review bodies
-            print_stderr("Fetching CodeRabbit body-embedded comments...")
-            if body_comment_threads:
-                print_stderr(f"Found {len(body_comment_threads)} body-embedded comment(s)")
-                all_threads = merge_threads(all_threads, body_comment_threads)
-
-            # Qodo source: CLI-first (issue #958). Structured read through the
-            # qodo CLI when it is installed and authenticated; the GitHub
-            # sticky scrape below is unchanged and remains the fallback for a
-            # missing bin, a failed probe, or any per-cycle CLI failure (fail
-            # open). READ ONLY — replies stay GitHub comments via `reviews
-            # address`; this branch never writes to Qodo's DB.
-            if cli_threads is not None:
-                # Dedup (issue #958): Qodo's GitHub review threads duplicate the
-                # CLI findings — same PRRT thread_id, worse data (raw HTML
-                # bodies, approximate spans). The CLI entries are canonical
-                # (real spans, UUIDs, structured titles) and carry the same
-                # thread_id, so replies and thread resolution still work —
-                # post.py prefers thread_id and only falls back to node_id.
-                # Drop the GitHub twins so each finding appears exactly once;
-                # threads NOT covered by a CLI finding (human authors, or a
-                # truncated CLI read) are kept untouched.
-                cli_thread_ids = {t.get("thread_id") for t in cli_threads if t.get("thread_id")}
-                if cli_thread_ids:
-                    # Issue #1033: take the twins' spans and state BEFORE dropping them,
-                    # otherwise a CLI finding Qodo closed is left spanless and unaddressable.
-                    cli_threads = _reconcile_cli_threads_with_github(cli_threads, all_threads)
-                    before = len(all_threads)
-                    all_threads = [
-                        t
-                        for t in all_threads
-                        if not (
-                            t.get("author") in ("qodo-code-review", "qodo-code-review[bot]")
-                            and t.get("thread_id") in cli_thread_ids
-                        )
-                    ]
-                    dropped = before - len(all_threads)
-                    if dropped:
-                        log.info("deduped GitHub threads covered by CLI findings", extra={"dropped": dropped})
-                        print_stderr(f"Deduped {dropped} GitHub thread(s) covered by CLI findings")
-                open_count = qodo_cli_state.get("unresolved_count", 0) if qodo_cli_state else 0
-                print_stderr(f"Found {open_count} open Qodo finding(s) via CLI")
-                if cli_threads:
-                    all_threads = merge_threads(all_threads, cli_threads)
-            else:
-                # Fetch Qodo sticky comment findings
-                print_stderr("Fetching Qodo sticky comment findings...")
-                qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number, comments=issue_comments)
-                if qodo_sticky_findings:
-                    print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
-
-                    all_threads = merge_threads(all_threads, qodo_sticky_findings)
-
-            # Fetch Qodo replies to our consolidated comments (independent of sticky findings)
-            print_stderr("Fetching Qodo reply comments...")
-            qodo_replies = fetch_qodo_reply_comments(owner, repo, pr_number, comments=issue_comments)
-            if qodo_replies:
-                print_stderr(f"Found {len(qodo_replies)} Qodo reply comment(s)")
-                all_threads = merge_threads(all_threads, qodo_replies)
-
-        # If review URL provided, also fetch specific thread(s)
-        specific_threads: list[dict[str, Any]] = []
-        if review_url:
-            # Match pullrequestreview-NNN
-            match = re.search(r"pullrequestreview-(\d+)", review_url)
-            if match:
-                review_id = match.group(1)
-                print_stderr(f"Fetching comments from PR review {review_id}...")
-                specific_threads = fetch_review_comments(owner, repo, pr_number, review_id)
-                print_stderr(f"Found {len(specific_threads)} inline comment(s) from review {review_id}")
-
-                # Also fetch body-embedded comments for CodeRabbit reviews
-                try:
-                    review_meta = fetch_review_body(owner, repo, pr_number, review_id)
-                except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-                    print_stderr(f"Warning: Failed to fetch review body for {review_id}: {exc}")
-                    review_meta = None
-                if review_meta:
-                    review_author = review_meta.get("user", {}).get("login") if review_meta.get("user") else None
-                    if review_author in CODERABBIT_USERS:
-                        review_body = review_meta.get("body", "")
-                        if review_body:
-                            parsed = parse_review_body_comments(review_body)
-                            try:
-                                review_id_int = int(review_id)
-                            except (TypeError, ValueError):
-                                review_id_int = None
-                            if review_id_int is not None:
-                                node_id = review_meta.get("node_id")
-                                body_threads = _build_body_comment_threads(
-                                    parsed,
-                                    review_id_int,
-                                    node_id,
-                                    review_author,
-                                )
-                                if body_threads:
-                                    msg = f"Found {len(body_threads)} body-embedded comment(s) from review {review_id}"
-                                    print_stderr(msg)
-                                    specific_threads = merge_threads(specific_threads, body_threads)
-
-            # Match discussion_rNNN
-            elif match := re.search(r"discussion_r(\d+)", review_url):
-                discussion_id = match.group(1)
-                print_stderr(f"Fetching discussion {discussion_id}...")
-                specific_threads = fetch_specific_discussion(owner, repo, pr_number, discussion_id)
-                print_stderr(f"Found {len(specific_threads)} comment(s) from discussion {discussion_id}")
-
-            # Match raw numeric review ID
-            elif review_url.isdigit():
-                review_id = review_url
-                print_stderr(f"Fetching comments from PR review {review_id} (raw ID)...")
-                specific_threads = fetch_review_comments(owner, repo, pr_number, review_id)
-                print_stderr(f"Found {len(specific_threads)} comment(s) from review {review_id}")
-
-            elif parse_pr_url(review_url) is None or "#" in review_url:
-                log.warning("unrecognized review URL fragment", extra={"review_url": review_url})
-                print_stderr(f"Warning: Unrecognized URL fragment in: {review_url}")
-
-        # Merge specific threads with all threads, deduplicating
-        if specific_threads:
-            all_threads = merge_threads(all_threads, specific_threads)
-
-        # Process and categorize threads
-        print_stderr("Categorizing threads by source...")
-        categorized = process_and_categorize(all_threads, owner, repo, pr_number=int(pr_number))
-
-        # Enrich qodo findings with Qodo replies AFTER process_and_categorize sets already_replied
-        # Only run enrichment when reply fetch was actually attempted (not user-specific mode).
-        # When qodo_replies is None (fetch skipped), enrichment doesn't run and
-        # _enrichment_checked isn't set, preventing incorrect auto-skip.
-        if qodo_replies is not None:
-            _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies)
-
-        # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
-        auto_skip_replied_findings(categorized.get("qodo", []))
-
-        # Check Qodo approval status — CLI state is authoritative when the
-        # CLI branch ran this cycle; otherwise the GitHub sticky heuristic.
-        if qodo_cli_state is not None:
-            _is_approved = bool(qodo_cli_state.get("approved"))
-            if _is_approved:
-                # Freshness re-check (Qodo PR #959): the head SHA was read
-                # BEFORE the CLI/GitHub reads — a push during the fetch would
-                # let a stale review approve code it never saw. Re-read the
-                # head now; a mismatch downgrades this cycle to reviewing
-                # (the next cycle re-reads the CLI state against the new head).
-                _fresh_head = None
-                _fresh_pr = run_gh_api(f"/repos/{owner}/{repo}/pulls/{pr_number}")
-                if isinstance(_fresh_pr, dict):
-                    _fresh_head = _fresh_pr.get("head", {}).get("sha") or None
-                if _fresh_head and _fresh_head != qodo_cli_state.get("head_sha"):
-                    log.info(
-                        "PR head moved during fetch — CLI approval is stale, treating as reviewing",
-                        extra={"state_head": qodo_cli_state.get("head_sha"), "fresh_head": _fresh_head},
-                    )
-                    print_stderr("[fetch] PR head moved during fetch — CLI approval stale, re-review pending.")
-                    qodo_cli_state = {**qodo_cli_state, "approved": False, "reviewing": True}
-                    _is_approved = False
-            _approval: dict[str, Any] | None = qodo_cli_state if _is_approved else None
-        else:
-            _approval = is_qodo_approved(owner, repo, str(pr_number), comments=issue_comments)
-            _is_approved = bool(_approval and _approval.get("approved"))
-
-        # Build final output
-        final_output = {
-            "metadata": {
-                "owner": owner,
-                "repo": repo,
-                "pr_number": int(pr_number),
-                "author": pr_author,
-                "json_path": str(json_path),
-            },
-            "human": categorized["human"],
-            "qodo": categorized["qodo"],
-            "coderabbit": categorized["coderabbit"],
-            "approved": _is_approved,
-            "qodo_cleanup_response": "",
-            "qodo_cli_state": qodo_cli_state,
-        }
-
-        # Save to file atomically
-        fd, tmp_json_path = tempfile.mkstemp(
-            prefix=f"pr-{pr_number}-reviews.json.",
-            dir=str(out_dir),
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        author_future = executor.submit(run_gh_api, f"/repos/{owner}/{repo}/pulls/{pr_number}")
+        threads_future = executor.submit(
+            fetch_review_threads, owner, repo, pr_number, include_resolved=include_resolved, user=user
         )
-        tmp_path = Path(tmp_json_path)
-        TEMP_FILES.append(tmp_path)
+        body_comments_future = (
+            executor.submit(fetch_coderabbit_body_comments, owner, repo, pr_number) if not user else None
+        )
+        issue_comments_future = (
+            executor.submit(
+                run_gh_api, f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True
+            )
+            if not user
+            else None
+        )
 
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(final_output, f, indent=2)
-            os.replace(tmp_path, json_path)
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
-            raise
+        # Fetch PR author and head SHA first so Qodo CLI can run concurrently with remaining futures
+        pr_author: str | None = None
+        head_sha: str | None = None
+        author_data = author_future.result()
+        if isinstance(author_data, dict):
+            pr_author = author_data.get("user", {}).get("login") if author_data.get("user") else None
+            head_sha = author_data.get("head", {}).get("sha") or None
+        else:
+            print_stderr(f"Warning: Could not fetch PR author (API returned {type(author_data).__name__})")
 
-        print_stderr(f"Saved to: {json_path}")
+        cli_future = executor.submit(fetch_qodo_cli_threads, pr_url, head_sha) if not user else None
 
-        # Count by category
-        human_count = len(categorized["human"])
-        qodo_count = len(categorized["qodo"])
-        coderabbit_count = len(categorized["coderabbit"])
-        print_stderr(f"Categories: human={human_count}, qodo={qodo_count}, coderabbit={coderabbit_count}")
+        # Collect all unresolved threads in deterministic order
+        print_stderr(f"Fetching {label} threads...")
+        all_threads = threads_future.result()
+        print_stderr(f"Found {len(all_threads)} {label} thread(s)")
 
-        # Count auto-skipped comments
-        auto_skipped = sum(1 for cat in categorized.values() for c in cat if c.get("is_auto_skipped"))
-        if auto_skipped:
-            print_stderr(f"Auto-skipped {auto_skipped} previously dismissed comment(s)")
+        body_comment_threads: list[dict[str, Any]] = []
+        issue_comments: list[dict[str, Any]] | None = None
+        cli_threads: list[dict[str, Any]] | None = None
+        qodo_cli_state: dict[str, Any] | None = None  # set when the qodo CLI branch ran (issue #958)
+        if not user:
+            assert body_comments_future is not None
+            assert issue_comments_future is not None
+            assert cli_future is not None
+            body_comment_threads = body_comments_future.result()
+            issue_comments = issue_comments_future.result()
+            cli_threads, qodo_cli_state = cli_future.result()
 
-        return final_output
+    # Skip bot comment fetching when filtering by specific user
+    qodo_replies: list[dict[str, Any]] | None = None
+    if not user:
+        # Merge CodeRabbit body-embedded comments from review bodies
+        print_stderr("Fetching CodeRabbit body-embedded comments...")
+        if body_comment_threads:
+            print_stderr(f"Found {len(body_comment_threads)} body-embedded comment(s)")
+            all_threads = merge_threads(all_threads, body_comment_threads)
 
-    finally:
-        cleanup()
+        # Qodo source: CLI-first (issue #958). Structured read through the
+        # qodo CLI when it is installed and authenticated; the GitHub
+        # sticky scrape below is unchanged and remains the fallback for a
+        # missing bin, a failed probe, or any per-cycle CLI failure (fail
+        # open). READ ONLY — replies stay GitHub comments via `reviews
+        # address`; this branch never writes to Qodo's DB.
+        if cli_threads is not None:
+            # Dedup (issue #958): Qodo's GitHub review threads duplicate the
+            # CLI findings — same PRRT thread_id, worse data (raw HTML
+            # bodies, approximate spans). The CLI entries are canonical
+            # (real spans, UUIDs, structured titles) and carry the same
+            # thread_id, so replies and thread resolution still work —
+            # post.py prefers thread_id and only falls back to node_id.
+            # Drop the GitHub twins so each finding appears exactly once;
+            # threads NOT covered by a CLI finding (human authors, or a
+            # truncated CLI read) are kept untouched.
+            cli_thread_ids = {t.get("thread_id") for t in cli_threads if t.get("thread_id")}
+            if cli_thread_ids:
+                # Issue #1033: take the twins' spans and state BEFORE dropping them,
+                # otherwise a CLI finding Qodo closed is left spanless and unaddressable.
+                cli_threads = _reconcile_cli_threads_with_github(cli_threads, all_threads)
+                before = len(all_threads)
+                all_threads = [
+                    t
+                    for t in all_threads
+                    if not (t.get("author") in QODO_USERS and t.get("thread_id") in cli_thread_ids)
+                ]
+                dropped = before - len(all_threads)
+                if dropped:
+                    log.info("deduped GitHub threads covered by CLI findings", extra={"dropped": dropped})
+                    print_stderr(f"Deduped {dropped} GitHub thread(s) covered by CLI findings")
+            open_count = qodo_cli_state.get("unresolved_count", 0) if qodo_cli_state else 0
+            print_stderr(f"Found {open_count} open Qodo finding(s) via CLI")
+            if cli_threads:
+                all_threads = merge_threads(all_threads, cli_threads)
+        else:
+            # Fetch Qodo sticky comment findings
+            print_stderr("Fetching Qodo sticky comment findings...")
+            qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number, comments=issue_comments)
+            if qodo_sticky_findings:
+                print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
+
+                all_threads = merge_threads(all_threads, qodo_sticky_findings)
+
+        # Fetch Qodo replies to our consolidated comments (independent of sticky findings)
+        print_stderr("Fetching Qodo reply comments...")
+        qodo_replies = fetch_qodo_reply_comments(owner, repo, pr_number, comments=issue_comments)
+        if qodo_replies:
+            print_stderr(f"Found {len(qodo_replies)} Qodo reply comment(s)")
+            all_threads = merge_threads(all_threads, qodo_replies)
+
+    # If review URL provided, also fetch specific thread(s)
+    specific_threads: list[dict[str, Any]] = []
+    if review_url:
+        # Match pullrequestreview-NNN
+        match = re.search(r"pullrequestreview-(\d+)", review_url)
+        if match:
+            review_id = match.group(1)
+            print_stderr(f"Fetching comments from PR review {review_id}...")
+            specific_threads = fetch_review_comments(owner, repo, pr_number, review_id)
+            print_stderr(f"Found {len(specific_threads)} inline comment(s) from review {review_id}")
+
+            # Also fetch body-embedded comments for CodeRabbit reviews
+            try:
+                review_meta = fetch_review_body(owner, repo, pr_number, review_id)
+            except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+                print_stderr(f"Warning: Failed to fetch review body for {review_id}: {exc}")
+                review_meta = None
+            if review_meta:
+                review_author = review_meta.get("user", {}).get("login") if review_meta.get("user") else None
+                if review_author in CODERABBIT_USERS:
+                    review_body = review_meta.get("body", "")
+                    if review_body:
+                        parsed = parse_review_body_comments(review_body)
+                        try:
+                            review_id_int = int(review_id)
+                        except (TypeError, ValueError):
+                            review_id_int = None
+                        if review_id_int is not None:
+                            node_id = review_meta.get("node_id")
+                            body_threads = _build_body_comment_threads(
+                                parsed,
+                                review_id_int,
+                                node_id,
+                                review_author,
+                            )
+                            if body_threads:
+                                msg = f"Found {len(body_threads)} body-embedded comment(s) from review {review_id}"
+                                print_stderr(msg)
+                                specific_threads = merge_threads(specific_threads, body_threads)
+
+        # Match discussion_rNNN
+        elif match := re.search(r"discussion_r(\d+)", review_url):
+            discussion_id = match.group(1)
+            print_stderr(f"Fetching discussion {discussion_id}...")
+            specific_threads = fetch_specific_discussion(owner, repo, pr_number, discussion_id)
+            print_stderr(f"Found {len(specific_threads)} comment(s) from discussion {discussion_id}")
+
+        # Match raw numeric review ID
+        elif review_url.isdigit():
+            review_id = review_url
+            print_stderr(f"Fetching comments from PR review {review_id} (raw ID)...")
+            specific_threads = fetch_review_comments(owner, repo, pr_number, review_id)
+            print_stderr(f"Found {len(specific_threads)} comment(s) from review {review_id}")
+
+        elif parse_pr_url(review_url) is None or "#" in review_url:
+            log.warning("unrecognized review URL fragment", extra={"review_url": review_url})
+            print_stderr(f"Warning: Unrecognized URL fragment in: {review_url}")
+
+    # Merge specific threads with all threads, deduplicating
+    if specific_threads:
+        all_threads = merge_threads(all_threads, specific_threads)
+
+    # Process and categorize threads
+    print_stderr("Categorizing threads by source...")
+    categorized = process_and_categorize(all_threads, owner, repo, pr_number=int(pr_number))
+
+    # Enrich qodo findings with Qodo replies AFTER process_and_categorize sets already_replied
+    # Only run enrichment when reply fetch was actually attempted (not user-specific mode).
+    # When qodo_replies is None (fetch skipped), enrichment doesn't run and
+    # _enrichment_checked isn't set, preventing incorrect auto-skip.
+    if qodo_replies is not None:
+        _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies)
+
+    # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
+    auto_skip_replied_findings(categorized.get("qodo", []))
+
+    # Strip internal enrichment scratch flag before persisting/returning JSON
+    for finding in categorized.get("qodo", []):
+        finding.pop("_enrichment_checked", None)
+
+    # Check Qodo approval status — CLI state is authoritative when the
+    # CLI branch ran this cycle; otherwise the GitHub sticky heuristic.
+    if qodo_cli_state is not None:
+        _is_approved = bool(qodo_cli_state.get("approved"))
+        if _is_approved:
+            # Freshness re-check (Qodo PR #959): the head SHA was read
+            # BEFORE the CLI/GitHub reads — a push during the fetch would
+            # let a stale review approve code it never saw. Re-read the
+            # head now; a mismatch downgrades this cycle to reviewing
+            # (the next cycle re-reads the CLI state against the new head).
+            _fresh_head = None
+            _fresh_pr = run_gh_api(f"/repos/{owner}/{repo}/pulls/{pr_number}")
+            if isinstance(_fresh_pr, dict):
+                _fresh_head = _fresh_pr.get("head", {}).get("sha") or None
+            if _fresh_head and _fresh_head != qodo_cli_state.get("head_sha"):
+                log.info(
+                    "PR head moved during fetch — CLI approval is stale, treating as reviewing",
+                    extra={"state_head": qodo_cli_state.get("head_sha"), "fresh_head": _fresh_head},
+                )
+                print_stderr("[fetch] PR head moved during fetch — CLI approval stale, re-review pending.")
+                qodo_cli_state = {**qodo_cli_state, "approved": False, "reviewing": True}
+                _is_approved = False
+        _approval: dict[str, Any] | None = qodo_cli_state if _is_approved else None
+    else:
+        _approval = is_qodo_approved(owner, repo, str(pr_number), comments=issue_comments)
+        _is_approved = bool(_approval and _approval.get("approved"))
+
+    # Build final output
+    final_output = {
+        "metadata": {
+            "owner": owner,
+            "repo": repo,
+            "pr_number": int(pr_number),
+            "author": pr_author,
+            "json_path": str(json_path),
+        },
+        "human": categorized["human"],
+        "qodo": categorized["qodo"],
+        "coderabbit": categorized["coderabbit"],
+        "approved": _is_approved,
+        "qodo_cleanup_response": "",
+        "qodo_cli_state": qodo_cli_state,
+    }
+
+    # Save to file atomically
+    atomic_write_json(
+        json_path,
+        final_output,
+        indent=2,
+        prefix=f"pr-{pr_number}-reviews.json.",
+    )
+
+    print_stderr(f"Saved to: {json_path}")
+
+    # Count by category
+    human_count = len(categorized["human"])
+    qodo_count = len(categorized["qodo"])
+    coderabbit_count = len(categorized["coderabbit"])
+    print_stderr(f"Categories: human={human_count}, qodo={qodo_count}, coderabbit={coderabbit_count}")
+
+    # Count auto-skipped comments
+    auto_skipped = sum(1 for cat in categorized.values() for c in cat if c.get("is_auto_skipped"))
+    if auto_skipped:
+        print_stderr(f"Auto-skipped {auto_skipped} previously dismissed comment(s)")
+
+    _LAST_FETCH_CONTEXT = {
+        "key": (owner, repo, str(pr_number)),
+        "issue_comments": issue_comments,
+        "approval_detail": _approval,
+    }
+    return final_output

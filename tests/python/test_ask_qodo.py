@@ -15,7 +15,7 @@ class TestAskQodo:
         """Posts comment, receives matching Qodo reply → returns reply body."""
         question = "What does this function do?"
         with (
-            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("subprocess.run") as mock_run,
             patch("myk_pi_tools.reviews.ask_qodo.run_gh_api") as mock_api,
             patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
         ):
@@ -38,7 +38,7 @@ class TestAskQodo:
         """All non-empty stripped lines from question must appear in reply body."""
         question = "Line one\nLine two\n\nLine three"
         with (
-            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("subprocess.run") as mock_run,
             patch("myk_pi_tools.reviews.ask_qodo.run_gh_api") as mock_api,
             patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
         ):
@@ -59,7 +59,7 @@ class TestAskQodo:
         """Reply missing some match lines is not accepted → timeout."""
         question = "Line one\nLine two"
         with (
-            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("subprocess.run") as mock_run,
             patch("myk_pi_tools.reviews.ask_qodo.run_gh_api") as mock_api,
             patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
             patch("myk_pi_tools.reviews.ask_qodo.time.time") as mock_time,
@@ -81,7 +81,7 @@ class TestAskQodo:
     def test_timeout_returns_empty_string(self) -> None:
         """No matching reply within timeout → returns empty string."""
         with (
-            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("subprocess.run") as mock_run,
             patch("myk_pi_tools.reviews.ask_qodo.run_gh_api", return_value=[]),
             patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
             patch("myk_pi_tools.reviews.ask_qodo.time.time") as mock_time,
@@ -96,7 +96,7 @@ class TestAskQodo:
     def test_post_failure_called_process_error(self) -> None:
         """gh api post fails with CalledProcessError → returns empty string."""
         with patch(
-            "myk_pi_tools.reviews.ask_qodo.subprocess.run",
+            "subprocess.run",
             side_effect=subprocess.CalledProcessError(1, "gh", stderr="forbidden"),
         ):
             result = ask_qodo("org", "repo", "42", "Hello?")
@@ -106,7 +106,7 @@ class TestAskQodo:
     def test_post_failure_timeout_expired(self) -> None:
         """gh api post times out → returns empty string."""
         with patch(
-            "myk_pi_tools.reviews.ask_qodo.subprocess.run",
+            "subprocess.run",
             side_effect=subprocess.TimeoutExpired("gh", 30),
         ):
             result = ask_qodo("org", "repo", "42", "Hello?")
@@ -116,7 +116,7 @@ class TestAskQodo:
     def test_post_failure_file_not_found(self) -> None:
         """gh binary not found → returns empty string."""
         with patch(
-            "myk_pi_tools.reviews.ask_qodo.subprocess.run",
+            "subprocess.run",
             side_effect=FileNotFoundError,
         ):
             result = ask_qodo("org", "repo", "42", "Hello?")
@@ -126,7 +126,7 @@ class TestAskQodo:
     def test_ignores_non_qodo_comments(self) -> None:
         """Comments from other users are ignored."""
         with (
-            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("subprocess.run") as mock_run,
             patch("myk_pi_tools.reviews.ask_qodo.run_gh_api") as mock_api,
             patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
             patch("myk_pi_tools.reviews.ask_qodo.time.time") as mock_time,
@@ -147,7 +147,7 @@ class TestAskQodo:
     def test_ignores_old_qodo_comments(self) -> None:
         """Qodo comments created before the post time are ignored."""
         with (
-            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("subprocess.run") as mock_run,
             patch("myk_pi_tools.reviews.ask_qodo.run_gh_api") as mock_api,
             patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
             patch("myk_pi_tools.reviews.ask_qodo.time.time") as mock_time,
@@ -169,7 +169,7 @@ class TestAskQodo:
     def test_accepts_qodo_code_review_login(self) -> None:
         """Accepts replies from 'qodo-code-review' (without [bot] suffix)."""
         with (
-            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("subprocess.run") as mock_run,
             patch("myk_pi_tools.reviews.ask_qodo.run_gh_api") as mock_api,
             patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
         ):

@@ -1,5 +1,26 @@
 """Shared constants for the reviews subsystem."""
 
+from __future__ import annotations
+
+import re
+
+# Known AI reviewer usernames
+QODO_USERS = ("qodo-code-review", "qodo-code-review[bot]")
+CODERABBIT_USERS = ("coderabbitai", "coderabbitai[bot]")
+
+# Qodo action_level -> review priority
+ACTION_LEVEL_PRIORITY = {
+    "action_required": "HIGH",
+    "remediation_recommended": "MEDIUM",
+    "informational": "LOW",
+}
+
+# Boundary marking previous Qodo review iterations in sticky comments
+PREVIOUS_RESULTS_RE = re.compile(
+    r"^\s*<!-- FOLDED_SECTION_START -->\s*$",
+    re.MULTILINE,
+)
+
 # Qodo sticky finding types (NOT qodo_reply which is informational)
 QODO_STICKY_TYPES = frozenset({
     "qodo_bug",

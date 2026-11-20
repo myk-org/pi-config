@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from myk_pi_tools.utils import strip_blockquote_prefix
+
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup, Tag
 
@@ -68,22 +70,6 @@ _FILE_PATH_COUNT_RE = re.compile(r"\s*\(\d+\)\s*$")
 # ---------------------------------------------------------------------------
 
 
-def _strip_blockquote_prefix(text: str) -> str:
-    """Strip the ``>`` prefix from each line of a blockquoted section.
-
-    Handles varying whitespace between ``>`` and the content.
-    """
-    lines: list[str] = []
-    for line in text.splitlines():
-        stripped = line.lstrip()
-        if stripped.startswith(">"):
-            # Remove ">" and any whitespace after it
-            lines.append(stripped[1:].lstrip())
-        else:
-            lines.append(line)
-    return "\n".join(lines)
-
-
 def _remove_ai_prompts(soup: BeautifulSoup) -> None:
     """Remove all 'Prompt for AI Agents' details blocks from the soup.
 
@@ -99,21 +85,39 @@ def _remove_ai_prompts(soup: BeautifulSoup) -> None:
 
 
 def _find_sections(soup: BeautifulSoup, keyword: str) -> list[Tag]:
-    """Find all ``<details>`` tags whose ``<summary>`` text contains *keyword*.
-
-    Args:
-        soup: Parsed HTML tree.
-        keyword: Text to search for in ``<summary>`` content (e.g. ``"Major"``).
-
-    Returns:
-        List of matching ``<details>`` :class:`Tag` objects.
-    """
+    """Find all ``<details>`` tags whose ``<summary>`` text contains *keyword*."""
     results: list[Tag] = []
+    needle = keyword.lower() + " comment"
     for details in soup.find_all("details"):
         summary = details.find("summary", recursive=False)
-        if summary and keyword.lower() + " comment" in summary.get_text().lower():
+        if summary and needle in summary.get_text().lower():
             results.append(details)
     return results
+
+
+def _classify_sections_single_pass(soup: BeautifulSoup) -> dict[str, list[Tag]]:
+    """Remove AI prompt blocks and classify all section ``<details>`` tags in one pass."""
+    to_remove: list[Tag] = []
+    sections: dict[str, list[Tag]] = {key: [] for key in _SECTION_KEYWORDS}
+    needles = [(key, kw.lower() + " comment") for key, kw in _SECTION_KEYWORDS.items()]
+
+    for details in soup.find_all("details"):
+        summary = details.find("summary", recursive=False)
+        if not summary:
+            continue
+        summary_text = summary.get_text()
+        if "Prompt for AI Agents" in summary_text:
+            to_remove.append(details)
+            continue
+        summary_lower = summary_text.lower()
+        for key, needle in needles:
+            if needle in summary_lower:
+                sections[key].append(details)
+
+    for details in to_remove:
+        details.decompose()
+
+    return sections
 
 
 def _find_file_blocks(section_bq: Tag) -> list[tuple[str, Tag]]:
@@ -140,17 +144,18 @@ def _find_file_blocks(section_bq: Tag) -> list[tuple[str, Tag]]:
     return results
 
 
-def _prepare_soup(body: str) -> BeautifulSoup:
+def _prepare_soup(body: str, *, remove_ai_prompts: bool = True) -> BeautifulSoup:
     """Prepare a :class:`BeautifulSoup` tree from a review body string.
 
-    Strips markdown blockquote ``>`` prefixes, parses the HTML, and removes
-    any "Prompt for AI Agents" ``<details>`` blocks.
+    Strips markdown blockquote ``>`` prefixes, parses the HTML, and optionally
+    removes any "Prompt for AI Agents" ``<details>`` blocks.
     """
     from bs4 import BeautifulSoup
 
-    cleaned = _strip_blockquote_prefix(body)
+    cleaned = strip_blockquote_prefix(body, strip_all=True)
     soup = BeautifulSoup(cleaned, "html.parser")
-    _remove_ai_prompts(soup)
+    if remove_ai_prompts:
+        _remove_ai_prompts(soup)
     return soup
 
 
@@ -224,29 +229,11 @@ def _parse_single_comment(raw: str) -> dict[str, Any] | None:
     }
 
 
-def _parse_section_comments(soup: BeautifulSoup, keyword: str) -> list[dict[str, Any]]:
-    """Extract and parse comments from sections matching *keyword*.
-
-    Finds all ``<details>`` blocks whose ``<summary>`` contains *keyword*,
-    then iterates their file-level sub-blocks and parses individual
-    comments separated by ``---`` dividers.
-
-    Args:
-        soup: Parsed and AI-prompt-cleaned HTML tree.
-        keyword: Section keyword (e.g. ``"Major"``).
-
-    Returns:
-        List of dicts, each with keys:
-        - path: str (file path)
-        - line: int (start line)
-        - end_line: int | None (end line, or None if single line)
-        - body: str (comment body including title, excluding AI prompt sections)
-        - category: str (e.g., "Potential issue", "Nitpick")
-        - severity: str (e.g., "Major", "Trivial")
-    """
+def _parse_sections(sections: list[Tag]) -> list[dict[str, Any]]:
+    """Parse comments from an already-located list of section ``<details>`` tags."""
     results: list[dict[str, Any]] = []
 
-    for section in _find_sections(soup, keyword):
+    for section in sections:
         section_bq = section.find("blockquote", recursive=False)
         if section_bq is None:
             continue
@@ -264,6 +251,11 @@ def _parse_section_comments(soup: BeautifulSoup, keyword: str) -> list[dict[str,
                     results.append(parsed)
 
     return results
+
+
+def _parse_section_comments(soup: BeautifulSoup, keyword: str) -> list[dict[str, Any]]:
+    """Extract and parse comments from sections matching *keyword*."""
+    return _parse_sections(_find_sections(soup, keyword))
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +379,7 @@ def parse_review_body_comments(body: str) -> dict[str, list[dict[str, Any]]]:
     if not body:
         return {"outside_diff": [], "major": [], "minor": [], "nitpick": [], "duplicate": []}
 
-    soup = _prepare_soup(body)
+    soup = _prepare_soup(body, remove_ai_prompts=False)
+    sections_by_key = _classify_sections_single_pass(soup)
 
-    return {key: _parse_section_comments(soup, keyword) for key, keyword in _SECTION_KEYWORDS.items()}
+    return {key: _parse_sections(sections_by_key[key]) for key in _SECTION_KEYWORDS}

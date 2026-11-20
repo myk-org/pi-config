@@ -21,7 +21,6 @@ The database is stored at: <project-root>/.pi/data/reviews.db
 """
 
 import json
-import re
 import sqlite3
 import subprocess
 import sys
@@ -30,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.logger import create_logger
+from myk_pi_tools.reviews.constants import ACTION_LEVEL_PRIORITY
 from myk_pi_tools.reviews.store import (
     create_tables,
     ensure_database_directory,
@@ -38,11 +38,9 @@ from myk_pi_tools.reviews.store import (
     insert_review,
     run_title_backfill_once,
 )
-from myk_pi_tools.utils import merge_paginated_json
+from myk_pi_tools.utils import merge_paginated_json, parse_pr_url
 
 log = create_logger(__name__)
-
-_PR_URL_RE = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)/?$")
 
 
 def _parse_pr_url(pr_url: str) -> tuple[str, str, int]:
@@ -50,11 +48,11 @@ def _parse_pr_url(pr_url: str) -> tuple[str, str, int]:
 
     Exits with code 1 when the URL is missing or malformed.
     """
-    match = _PR_URL_RE.match(pr_url.strip())
-    if not match:
+    parsed = parse_pr_url(pr_url.strip())
+    if not parsed:
         log.error(f"Error: could not parse owner/repo/pr_number from pr_url: {pr_url!r}")
         sys.exit(1)
-    owner, repo, pr_number = match.groups()
+    owner, repo, pr_number = parsed
     return owner, repo, int(pr_number)
 
 
@@ -185,11 +183,7 @@ def _attribution(finding: dict[str, Any]) -> tuple[str, str]:
         "dismissed": "skipped",
     }.get(attribution if isinstance(attribution, str) else "", "pending")
     level = finding.get("action_level")
-    priority = {
-        "action_required": "HIGH",
-        "remediation_recommended": "MEDIUM",
-        "informational": "LOW",
-    }.get(level if isinstance(level, str) else "", "MEDIUM")
+    priority = ACTION_LEVEL_PRIORITY.get(level if isinstance(level, str) else "", "MEDIUM")
     return status, priority
 
 

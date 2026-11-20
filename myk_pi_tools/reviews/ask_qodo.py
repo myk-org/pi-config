@@ -10,14 +10,13 @@ Usage:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import time
 from datetime import UTC, datetime
 
+from myk_pi_tools.reviews.constants import QODO_USERS
 from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr, run_gh_api
-
-_QODO_AUTHORS = {"qodo-code-review[bot]", "qodo-code-review"}
+from myk_pi_tools.utils import post_issue_comment
 
 
 def post_and_wait_for_qodo_reply(
@@ -47,29 +46,11 @@ def post_and_wait_for_qodo_reply(
     """
     post_time = datetime.now(UTC).isoformat()
 
-    try:
-        subprocess.run(
-            [
-                "gh",
-                "api",
-                f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
-                "-X",
-                "POST",
-                "-f",
-                f"body={message}",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        )
+    ok, _, err = post_issue_comment(owner, repo, pr_number, message, timeout=30)
+    if ok:
         print_stderr(f"[{label}] Posted /qodo comment.")
-    except subprocess.CalledProcessError as e:
-        stderr = e.stderr.strip() if e.stderr else ""
-        print_stderr(f"[{label}] Failed to post comment (rc={e.returncode}): {stderr}")
-        return ""
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print_stderr(f"[{label}] Failed to post comment: {e}")
+    else:
+        print_stderr(f"[{label}] Failed to post comment: {err}")
         return ""
 
     print_stderr(f"[{label}] Waiting for Qodo reply (up to {timeout // 60} min)...")
@@ -84,7 +65,7 @@ def post_and_wait_for_qodo_reply(
 
             for comment in comments:
                 author = comment.get("user", {}).get("login") if comment.get("user") else None
-                if author not in _QODO_AUTHORS:
+                if author not in QODO_USERS:
                     continue
                 created = comment.get("created_at", "")
                 if not created:

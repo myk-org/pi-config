@@ -24,6 +24,7 @@ import subprocess
 from typing import Any
 
 from myk_pi_tools.logger import create_logger
+from myk_pi_tools.reviews.constants import ACTION_LEVEL_PRIORITY
 
 log = create_logger(__name__)
 
@@ -41,13 +42,6 @@ OPEN_ATTRIBUTION_STATUSES = frozenset({"pending", "partial_implementation", "not
 # is still pending: an unreported run has not raised its findings yet, and
 # approving on its empty catalog would merge unreviewed code (issue #1027).
 TERMINAL_STATUSES = frozenset({"completed", "skipped"})
-
-# action_level is severity, not open-vs-closed.
-ACTION_LEVEL_PRIORITY = {
-    "action_required": "HIGH",
-    "remediation_recommended": "MEDIUM",
-    "informational": "LOW",
-}
 
 # CLI category -> our sticky finding type (mirrors QODO_TYPE_MAP semantics).
 CATEGORY_TYPE_MAP = {

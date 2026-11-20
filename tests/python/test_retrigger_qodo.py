@@ -46,7 +46,7 @@ class TestRequestQodoStickyCleanup:
     def test_returns_reply_on_successful_cleanup(self) -> None:
         """Returns reply body when Qodo responds to cleanup request."""
         with (
-            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("subprocess.run") as mock_run,
             patch("myk_pi_tools.reviews.ask_qodo.run_gh_api") as mock_api,
             patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
         ):
@@ -71,14 +71,14 @@ class TestRequestQodoStickyCleanup:
 
     def test_returns_empty_on_post_failure(self) -> None:
         """Returns empty string when comment post fails."""
-        with patch("myk_pi_tools.reviews.ask_qodo.subprocess.run", side_effect=subprocess.CalledProcessError(1, "gh")):
+        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "gh")):
             result = _request_qodo_sticky_cleanup("org", "repo", "1")
         assert result == ""
 
     def test_returns_empty_on_timeout(self) -> None:
         """Returns empty string when no reply within timeout."""
         with (
-            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("subprocess.run") as mock_run,
             patch("myk_pi_tools.reviews.ask_qodo.run_gh_api", return_value=[]),
             patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
             patch("myk_pi_tools.reviews.ask_qodo.time.time") as mock_time,

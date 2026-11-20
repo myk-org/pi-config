@@ -7,21 +7,18 @@ This module parses that comment to extract unresolved findings.
 
 from __future__ import annotations
 
+import html
 import re
 from typing import TYPE_CHECKING, Any
+
+from myk_pi_tools.reviews.constants import PREVIOUS_RESULTS_RE
+from myk_pi_tools.utils import strip_blockquote_prefix
 
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup, Tag
 
 # Header that identifies a Qodo sticky comment
 QODO_STICKY_HEADER = "Code Review by Qodo"
-
-# Boundary marking previous review iterations (duplicates of current findings)
-# Match the real fold marker — must be on its own line (not inside backtick quotes).
-_PREVIOUS_RESULTS_RE = re.compile(
-    r"^\s*<!-- FOLDED_SECTION_START -->\s*$",
-    re.MULTILINE,
-)
 
 # Pattern matching individual finding summary lines
 # Captures: number, optional strikethrough, title, codes (type, category)
@@ -32,6 +29,9 @@ _FINDING_SUMMARY_RE = re.compile(
     r"</summary>",
     re.DOTALL,
 )
+_CODE_TAG_RE = re.compile(r"<code>(.*?)</code>", re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_TYPE_EMOJIS = ("🐞", "📘", "📎", "📜", "⚠")
 
 # Pattern for code references like [file[R28-52]](url) or [file[28-52]](url)
 _CODE_REF_RE = re.compile(
@@ -44,18 +44,6 @@ _FENCED_DIFF_RE = re.compile(r"```diff\n(.*?)```", re.DOTALL)
 
 # Pattern to extract fenced code blocks (``` ... ```)
 _FENCED_CODE_RE = re.compile(r"```(?!\w)\n(.*?)```", re.DOTALL)
-
-
-def _strip_blockquote_prefix(text: str) -> str:
-    """Strip leading `> ` or `>` markdown blockquote prefix from each line."""
-    lines = []
-    for line in text.splitlines():
-        if line.startswith(">"):
-            line = line[1:]
-            if line.startswith(" "):
-                line = line[1:]
-        lines.append(line)
-    return "\n".join(lines)
 
 
 def _find_inner_section(soup: BeautifulSoup | Tag, section_name: str) -> Tag | None:
@@ -132,7 +120,7 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
     from bs4 import BeautifulSoup
 
     # Truncate at "Previous review results" to avoid duplicates from older iterations
-    prev_match = _PREVIOUS_RESULTS_RE.search(body)
+    prev_match = PREVIOUS_RESULTS_RE.search(body)
     if prev_match:
         body = body[: prev_match.start()]
 
@@ -151,16 +139,15 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
         plain_title = summary_match.group(3)
         codes_str = summary_match.group(4)
 
-        # Parse code tags with BeautifulSoup to determine status, type, category
+        # Parse code tags via regex + html.unescape to determine status, type, category
         is_resolved = False
         is_dismissed = False
         finding_type = ""
         category = ""
 
         if codes_str:
-            codes_soup = BeautifulSoup(codes_str, "html.parser")
-            for code_tag in codes_soup.find_all("code"):
-                text = code_tag.get_text()
+            for raw_code in _CODE_TAG_RE.findall(codes_str):
+                text = html.unescape(_HTML_TAG_RE.sub("", raw_code))
                 if "Resolved" in text:
                     is_resolved = True
                 elif "Dismissed" in text:
@@ -172,19 +159,14 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
                     cleaned = re.sub(r"[^\w\s-]", "", text).strip()
                     if not cleaned:
                         continue
-                    # Check for type-indicator emojis in raw text
-                    _type_emojis = ("🐞", "📘", "📎", "📜", "⚠")
-                    _has_type_emoji = any(e in text for e in _type_emojis)
-                    if _has_type_emoji and not finding_type:
+                    has_type_emoji = any(e in text for e in _TYPE_EMOJIS)
+                    if has_type_emoji and not finding_type:
                         finding_type = cleaned
-                    elif not _has_type_emoji and finding_type and not category:
-                        # Known type already found; non-type-emoji tag is category
+                    elif not has_type_emoji and finding_type and not category:
                         category = cleaned
                     elif not finding_type:
-                        # Positional fallback: first unassigned tag → type
                         finding_type = cleaned
                     elif not category:
-                        # Positional fallback: second unassigned tag → category
                         category = cleaned
 
         if strikethrough_title is not None:
@@ -194,11 +176,15 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
         else:
             title = plain_title or ""
 
-        # Strip HTML from title
-        title = BeautifulSoup(title, "html.parser").get_text().strip()
-
+        # Skip resolved/dismissed findings before running BeautifulSoup on title/body
         if is_resolved or is_dismissed:
             continue
+
+        # Strip HTML from title
+        if "<" in title:
+            title = BeautifulSoup(title, "html.parser").get_text().strip()
+        else:
+            title = html.unescape(title).strip()
 
         # Extract first code reference from raw block (markdown construct)
         path = ""
@@ -212,7 +198,7 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
                 end_line = int(code_ref.group(3))
 
         # Strip blockquote prefixes and parse inner sections with BeautifulSoup
-        stripped_block = _strip_blockquote_prefix(block)
+        stripped_block = strip_blockquote_prefix(block)
         soup = BeautifulSoup(stripped_block, "html.parser")
 
         # Extract description

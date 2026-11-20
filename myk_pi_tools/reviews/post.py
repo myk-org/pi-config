@@ -43,14 +43,15 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.logger import create_logger
-from myk_pi_tools.reviews.constants import BODY_EMBEDDED_COMMENT_TYPES, QODO_STICKY_TYPES
+from myk_pi_tools.reviews.constants import BODY_EMBEDDED_COMMENT_TYPES, QODO_STICKY_TYPES, QODO_USERS
+from myk_pi_tools.utils import atomic_write_json, post_issue_comment
 
 log = create_logger(__name__)
 
@@ -254,11 +255,8 @@ def _graphql_parse_error(
     return diagnostic
 
 
-def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, Any] | str]:
-    """Run a GraphQL query via gh api graphql.
-
-    Returns (success, result) where result is parsed JSON on success or error string on failure.
-    """
+def _run_graphql_raw(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, Any] | None, str]:
+    """Run a GraphQL query via ``gh api graphql`` and return ``(transport_ok, parsed_json, error_msg)``."""
     payload = {"query": query, "variables": variables}
     cmd = ["gh", "api", "graphql", "--include", "--input", "-"]
     log.debug("Running GraphQL request", extra={"variable_count": len(variables)})
@@ -271,7 +269,7 @@ def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, 
             timeout=120,
         )
     except subprocess.TimeoutExpired:
-        return False, "GraphQL query timed out after 120 seconds"
+        return False, None, "GraphQL query timed out after 120 seconds"
 
     # Preserve raw bytes for exact response-length diagnostics; decode only for parsing/display.
     stdout_bytes = result.stdout or b""
@@ -283,7 +281,21 @@ def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     error_output = (stdout + ("\n" + stderr if stderr else "")).strip()
+    _, body, _ = _split_http_response(stdout)
     if result.returncode != 0:
+        # `gh api graphql` exits nonzero on GraphQL errors even when partial `data`
+        # is present in stdout (e.g. reply succeeded, resolve failed). Preserve the
+        # JSON payload when usable `data` exists so callers can inspect mutations.
+        try:
+            partial = json.loads(body)
+        except json.JSONDecodeError:
+            partial = None
+        if isinstance(partial, dict) and isinstance(partial.get("data"), dict):
+            log.warning(
+                "GraphQL request exited nonzero with partial data",
+                extra={"returncode": result.returncode, "response_bytes": len(stdout_bytes)},
+            )
+            return True, partial, error_output
         log.error(
             "GraphQL request failed",
             extra={
@@ -292,27 +304,49 @@ def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, 
                 "stderr_bytes": len(stderr_bytes),
             },
         )
-        return False, error_output
+        return False, None, error_output
 
     log.debug(
         "GraphQL request completed",
         extra={"returncode": result.returncode, "response_bytes": len(stdout_bytes), "stderr_bytes": len(stderr_bytes)},
     )
 
-    _, body, _ = _split_http_response(stdout)
     # Validate JSON response - parse the body only, not --include headers.
     try:
         data = json.loads(body)
     except json.JSONDecodeError as error:
-        return False, _graphql_parse_error(stdout, len(_response_body_bytes(stdout_bytes)), error, variables)
+        return False, None, _graphql_parse_error(stdout, len(_response_body_bytes(stdout_bytes)), error, variables)
+
+    return True, data, ""
+
+
+def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, Any] | str]:
+    """Run a GraphQL query via gh api graphql.
+
+    Returns (success, result) where result is parsed JSON on success or error string on failure.
+    """
+    ok, data, error_msg = _run_graphql_raw(query, variables)
+    if not ok or data is None:
+        return False, error_msg
 
     # Check for GraphQL errors
     if data.get("errors") and len(data["errors"]) > 0:
         error_msg = data["errors"][0].get("message", "Unknown error")
         return False, error_msg
 
-    log.debug("GraphQL response parsed", extra={"response_bytes": len(stdout_bytes), "has_errors": False})
+    log.debug("GraphQL response parsed", extra={"has_errors": False})
     return True, data
+
+
+def _prepare_reply_body(body: str) -> str:
+    """Sign and truncate a review thread reply body."""
+    from myk_pi_tools.comment_signature import append_signature
+
+    signed = append_signature(body)
+    max_len = 60000
+    if len(signed) > max_len:
+        signed = signed[:max_len] + "\n...[truncated]"
+    return signed
 
 
 def post_thread_reply(thread_id: str, body: str) -> bool:
@@ -320,17 +354,11 @@ def post_thread_reply(thread_id: str, body: str) -> bool:
 
     Returns True on success, False on failure.
     """
-    from myk_pi_tools.comment_signature import append_signature
-
-    body = append_signature(body)
+    body = _prepare_reply_body(body)
     log.debug(
         "Prepared signed review thread reply",
         extra={"thread_id": thread_id, "operation_model_present": bool(os.environ.get("PI_MODEL"))},
     )
-    # GitHub comment bodies have a size limit (~65KB); truncate to avoid failures
-    max_len = 60000
-    if len(body) > max_len:
-        body = body[:max_len] + "\n...[truncated]"
 
     query = """
     mutation($threadId: ID!, $body: String!) {
@@ -372,6 +400,91 @@ def resolve_thread(thread_id: str) -> bool:
         return False
 
     return True
+
+
+def unresolve_thread(thread_id: str) -> bool:
+    """Reopen a review thread when resolution ran without a successful reply."""
+    query = """
+    mutation($threadId: ID!) {
+      unresolveReviewThread(input: {threadId: $threadId}) {
+        thread {
+          id
+          isResolved
+        }
+      }
+    }
+    """
+
+    success, result = run_graphql(query, {"threadId": thread_id})
+    if not success:
+        eprint(f"Error unresolving thread: {result}")
+        return False
+
+    return True
+
+
+def reply_and_resolve_thread(thread_id: str, body: str) -> tuple[bool, bool]:
+    """Post a reply and resolve the thread in a single GraphQL request.
+
+    Inspects ``data["addPullRequestReviewThreadReply"]`` and
+    ``data["resolveReviewThread"]`` independently so a partial failure (reply
+    succeeded, resolve failed) returns ``(True, False)`` and records
+    ``posted_at``. If the reply failed while ``resolveReviewThread`` succeeded,
+    reopens the thread via ``unresolve_thread`` so the thread never closes
+    without a reply.
+    """
+    body = _prepare_reply_body(body)
+    log.debug(
+        "Prepared combined reply+resolve mutation",
+        extra={"thread_id": thread_id, "operation_model_present": bool(os.environ.get("PI_MODEL"))},
+    )
+
+    query = """
+    mutation($threadId: ID!, $body: String!) {
+      addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+        comment {
+          id
+        }
+      }
+      resolveReviewThread(input: {threadId: $threadId}) {
+        thread {
+          id
+          isResolved
+        }
+      }
+    }
+    """
+
+    ok, data, err = _run_graphql_raw(query, {"threadId": thread_id, "body": body})
+    if not ok or data is None:
+        eprint(f"Error posting reply and resolving thread: {err}")
+        return False, False
+
+    gql_data = data.get("data") or {}
+    reply_node = gql_data.get("addPullRequestReviewThreadReply")
+    resolve_node = gql_data.get("resolveReviewThread")
+
+    reply_ok = isinstance(reply_node, dict) and reply_node.get("comment") is not None
+    resolve_ok = isinstance(resolve_node, dict) and resolve_node.get("thread") is not None
+
+    errors = data.get("errors") or []
+    if errors and (not reply_ok or not resolve_ok):
+        first_err = errors[0].get("message", "Unknown error")
+        if not reply_ok:
+            eprint(f"Error posting reply: {first_err}")
+        elif not resolve_ok:
+            eprint(f"Error resolving thread: {first_err}")
+
+    if not reply_ok and resolve_ok:
+        log.warning("Reply failed while resolve succeeded; reopening thread %s", thread_id)
+        unresolve_thread(thread_id)
+        return False, False
+
+    return reply_ok, resolve_ok
+
+
+_DEFAULT_POST_THREAD_REPLY = post_thread_reply
+_DEFAULT_RESOLVE_THREAD = resolve_thread
 
 
 def lookup_thread_id_from_node_id(node_id: str) -> str | None:
@@ -416,8 +529,7 @@ def apply_updates_to_json(json_path: Path, updates: list[dict[str, Any]]) -> Non
     if not updates:
         return
 
-    eprint("")
-    eprint(f"Updating JSON file with {len(updates)} timestamps...")
+    log.debug("Updating JSON file with %d timestamps", len(updates))
 
     # Read current JSON
     with open(json_path, encoding="utf-8") as f:
@@ -456,17 +568,9 @@ def apply_updates_to_json(json_path: Path, updates: list[dict[str, Any]]) -> Non
         data[cat][idx][field] = ts
 
     # Write atomically via temp file
-    fd, tmp_path = tempfile.mkstemp(dir=json_path.parent, suffix=".json")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, json_path)
+        atomic_write_json(json_path, data, indent=2, suffix=".json")
     except (json.JSONDecodeError, OSError, KeyError) as exc:
-        # Clean up temp file on error
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
         eprint(f"Error: Failed to apply JSON updates: {exc}")
         sys.exit(1)
 
@@ -588,31 +692,21 @@ def _post_chunk(
         chunk_body = chunk_body[:keep] + truncated_suffix
 
     posted_updates: list[dict[str, Any]] = []
-    try:
-        result = subprocess.run(
-            ["gh", "api", f"repos/{owner}/{repo}/issues/{pr_number}/comments", "-f", f"body={chunk_body}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if result.returncode == 0:
-            chunk_count = len(chunk)
-            eprint(f"Posted consolidated reply for {chunk_count} body comment(s) mentioning {reviewer}")
-            ts = get_utc_timestamp()
-            for _, entry in chunk:
-                posted_updates.append({
-                    "cat": entry["cat"],
-                    "idx": entry["idx"],
-                    "field": "posted_at",
-                    "ts": ts,
-                })
-            return True, posted_updates
-        eprint(f"Error posting consolidated reply for {reviewer}: {result.stderr}")
-        return False, []
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        eprint(f"Error posting consolidated reply for {reviewer}: {e}")
-        return False, []
+    ok, _stdout, err = post_issue_comment(owner, repo, pr_number, chunk_body, timeout=30)
+    if ok:
+        chunk_count = len(chunk)
+        log.debug("Posted consolidated reply for %d body comment(s) mentioning %s", chunk_count, reviewer)
+        ts = get_utc_timestamp()
+        for _, entry in chunk:
+            posted_updates.append({
+                "cat": entry["cat"],
+                "idx": entry["idx"],
+                "field": "posted_at",
+                "ts": ts,
+            })
+        return True, posted_updates
+    eprint(f"Error posting consolidated reply for {reviewer}: {err}")
+    return False, []
 
 
 def post_body_comment_replies(
@@ -639,7 +733,6 @@ def post_body_comment_replies(
     """
     max_len = 55000  # Leave margin below GitHub's ~65KB limit
     header_template = "@{reviewer}\n\nThe following review comments were reviewed and a decision was made:\n\n"
-    _QODO_AUTHORS = {"qodo-code-review[bot]", "qodo-code-review"}
     posted = 0
     posted_updates: list[dict[str, Any]] = []
 
@@ -648,7 +741,7 @@ def post_body_comment_replies(
             continue
 
         # Qodo v2 responds to /qodo, not @qodo-code-review[bot]
-        if reviewer in _QODO_AUTHORS:
+        if reviewer in QODO_USERS:
             header = "/qodo\n\nThe following review comments were reviewed and a decision was made:\n\n"
         else:
             header = header_template.format(reviewer=reviewer)
@@ -674,6 +767,70 @@ def post_body_comment_replies(
                 posted_updates.extend(chunk_updates)
 
     return posted, posted_updates
+
+
+def _process_one_thread(task: dict[str, Any]) -> dict[str, Any]:
+    """Execute GraphQL lookup/post/resolve for a single review thread."""
+    category = task["category"]
+    idx = task["idx"]
+    thread_id = task["thread_id"]
+    node_id = task["node_id"]
+    path = task["path"]
+    status = task["status"]
+    reply_message = task["reply_message"]
+    should_resolve = task["should_resolve"]
+    resolve_only_retry = task["resolve_only_retry"]
+
+    effective_thread_id = ""
+    if thread_id and thread_id != "null":
+        effective_thread_id = thread_id
+    elif node_id and node_id != "null":
+        looked_up_id = lookup_thread_id_from_node_id(node_id)
+        if looked_up_id is None:
+            eprint(f"Warning: Failed to look up thread_id from node_id for {category}[{idx}] ({path})")
+        else:
+            effective_thread_id = looked_up_id
+
+    if not effective_thread_id:
+        eprint(f"Warning: No resolvable thread_id for {category}[{idx}] ({path}) - cannot post reply")
+        return {"outcome": "no_thread_id"}
+
+    use_combined = (
+        not resolve_only_retry
+        and should_resolve
+        and post_thread_reply is _DEFAULT_POST_THREAD_REPLY
+        and resolve_thread is _DEFAULT_RESOLVE_THREAD
+    )
+
+    if use_combined:
+        reply_ok, resolve_ok = reply_and_resolve_thread(effective_thread_id, reply_message)
+        if not reply_ok:
+            eprint(f"Failed to post reply for {category}[{idx}] ({path})")
+            return {"outcome": "reply_failed"}
+        posted_ts = get_utc_timestamp()
+        if not resolve_ok:
+            eprint(f"Failed to resolve {category}[{idx}] ({path}) - reply was posted but thread not resolved")
+            return {"outcome": "resolve_failed", "posted_ts": posted_ts}
+        resolved_ts = get_utc_timestamp()
+        log.debug("Resolved %s[%d] (%s)", category, idx, path)
+        return {"outcome": "resolved", "posted_ts": posted_ts, "resolved_ts": resolved_ts, "status": status}
+
+    if not resolve_only_retry:
+        if not post_thread_reply(effective_thread_id, reply_message):
+            eprint(f"Failed to post reply for {category}[{idx}] ({path})")
+            return {"outcome": "reply_failed"}
+
+    fallback_posted_ts: str | None = get_utc_timestamp() if not resolve_only_retry else None
+    if should_resolve:
+        if not resolve_thread(effective_thread_id):
+            eprint(f"Failed to resolve {category}[{idx}] ({path}) - reply was posted but thread not resolved")
+            return {"outcome": "resolve_failed", "posted_ts": fallback_posted_ts}
+        resolved_ts = get_utc_timestamp()
+        log.debug("Resolved %s[%d] (%s)", category, idx, path)
+        return {"outcome": "resolved", "posted_ts": fallback_posted_ts, "resolved_ts": resolved_ts, "status": status}
+
+    log.debug("Replied to %s[%d] (%s) (not resolved)", category, idx, path)
+    return {"outcome": "replied_only", "posted_ts": fallback_posted_ts}
 
 
 def run(json_path: str) -> None:
@@ -709,9 +866,6 @@ def run(json_path: str) -> None:
         eprint("Error: Missing metadata in JSON file (owner, repo, or pr_number)")
         sys.exit(1)
 
-    eprint("Posting review comments...")
-    eprint(f"Processing reviews for {owner}/{repo}#{pr_number}")
-
     # Categories to process
     categories = ["human", "qodo", "coderabbit"]
 
@@ -722,7 +876,7 @@ def run(json_path: str) -> None:
         eprint("No threads to process")
         sys.exit(0)
 
-    eprint(f"Processing {total_thread_count} threads sequentially...")
+    log.debug("Posting review comments for %s/%s#%s (%d threads)", owner, repo, pr_number, total_thread_count)
 
     # Validate replies — block lazy/vague replies before posting
     lazy_errors: list[str] = []
@@ -814,6 +968,9 @@ def run(json_path: str) -> None:
     # Track updates for atomic application
     updates: list[dict[str, Any]] = []
 
+    # Collect threaded work items for bounded parallel execution
+    thread_tasks: list[dict[str, Any]] = []
+
     # Process each category
     for category in categories:
         category_threads = data.get(category, [])
@@ -822,7 +979,7 @@ def run(json_path: str) -> None:
         if thread_count == 0:
             continue
 
-        eprint(f"Processing {thread_count} threads in {category}...")
+        log.debug("Processing %d threads in %s", thread_count, category)
 
         for i, thread_data in enumerate(category_threads):
             # Extract fields
@@ -842,21 +999,31 @@ def run(json_path: str) -> None:
             if comment_type in BODY_EMBEDDED_COMMENT_TYPES:
                 if status == "pending":
                     pending_count += 1
-                    eprint(f"Skipping {category}[{i}] ({path}): {comment_type} status is pending")
+                    log.debug("Skipping %s[%d] (%s): %s status is pending", category, i, path, comment_type)
                     continue
                 if status in ("addressed", "not_addressed", "skipped", "failed"):
                     # Skip if already posted (idempotency)
                     if posted_at:
                         already_posted_count += 1
-                        eprint(f"Skipping {category}[{i}] ({path}): {comment_type} already posted at {posted_at}")
+                        log.debug(
+                            "Skipping %s[%d] (%s): %s already posted at %s",
+                            category,
+                            i,
+                            path,
+                            comment_type,
+                            posted_at,
+                        )
                         continue
 
                     # Skip auto-skipped entries — they were already replied to in a previous cycle
                     if _is_auto_skipped(thread_data):
                         already_posted_count += 1
-                        eprint(
-                            f"Skipping {category}[{i}] ({path}): {comment_type}"
-                            " auto-skipped (already replied in previous cycle)"
+                        log.debug(
+                            "Skipping %s[%d] (%s): %s auto-skipped (already replied in previous cycle)",
+                            category,
+                            i,
+                            path,
+                            comment_type,
                         )
                         continue
 
@@ -867,9 +1034,12 @@ def run(json_path: str) -> None:
                         body_comments_by_reviewer[author] = []
                     body_comments_by_reviewer[author].append({"data": thread_data, "cat": category, "idx": i})
 
-                    eprint(
-                        f"{comment_type.replace('_', ' ').title()} {category}[{i}] ({path})"
-                        " - collected for consolidated PR comment"
+                    log.debug(
+                        "%s %s[%d] (%s) - collected for consolidated PR comment",
+                        comment_type.replace("_", " ").title(),
+                        category,
+                        i,
+                        path,
                     )
                     continue
                 # Unknown status - skip with warning
@@ -886,24 +1056,33 @@ def run(json_path: str) -> None:
             if posted_at and not resolved_at:
                 if should_resolve:
                     resolve_only_retry = True
-                    eprint(f"Retrying resolve for {category}[{i}] ({path}): posted at {posted_at} but not resolved")
+                    log.debug(
+                        "Retrying resolve for %s[%d] (%s): posted at %s but not resolved",
+                        category,
+                        i,
+                        path,
+                        posted_at,
+                    )
                 else:
                     already_posted_count += 1
-                    eprint(
-                        f"Skipping {category}[{i}] ({path}): reply already posted at "
-                        f"{posted_at} (not resolving by policy)"
+                    log.debug(
+                        "Skipping %s[%d] (%s): reply already posted at %s (not resolving by policy)",
+                        category,
+                        i,
+                        path,
+                        posted_at,
                     )
                     continue
             elif posted_at:
                 # Already fully processed (posted and resolved)
                 already_posted_count += 1
-                eprint(f"Skipping {category}[{i}] ({path}): already posted at {posted_at}")
+                log.debug("Skipping %s[%d] (%s): already posted at %s", category, i, path, posted_at)
                 continue
 
             # Skip pending threads
             if status == "pending":
                 pending_count += 1
-                eprint(f"Skipping {category}[{i}] ({path}): status is pending")
+                log.debug("Skipping %s[%d] (%s): status is pending", category, i, path)
                 continue
 
             # Auto-skipped entries with nothing to say are skipped: the threaded path
@@ -913,25 +1092,6 @@ def run(json_path: str) -> None:
             if _is_auto_skipped(thread_data) and not (reply.strip() or skip_reason.strip()):
                 already_posted_count += 1
                 log.debug("Skipping threaded auto-skipped entry", extra={"category": category, "path": path})
-                eprint(f"Skipping {category}[{i}] ({path}): auto-skipped (already replied in previous cycle)")
-                continue
-
-            # Determine which ID to use for GraphQL
-            effective_thread_id = ""
-            if thread_id and thread_id != "null":
-                effective_thread_id = thread_id
-            elif node_id and node_id != "null":
-                # Try to derive thread_id from the review comment node id
-                looked_up_id = lookup_thread_id_from_node_id(node_id)
-                if looked_up_id is None:
-                    eprint(f"Warning: Failed to look up thread_id from node_id for {category}[{i}] ({path})")
-                else:
-                    effective_thread_id = looked_up_id
-
-            # Check if we have a usable thread ID
-            if not effective_thread_id:
-                no_thread_id_count += 1
-                eprint(f"Warning: No resolvable thread_id for {category}[{i}] ({path}) - cannot post reply")
                 continue
 
             # Build reply message based on status
@@ -953,49 +1113,54 @@ def run(json_path: str) -> None:
                 eprint(f"Warning: Unknown status for {category}[{i}] ({path}): {status}")
                 continue
 
-            # Post reply only if not already posted
-            if not resolve_only_retry:
-                if not post_thread_reply(effective_thread_id, reply_message):
-                    failed_count += 1
-                    eprint(f"Failed to post reply for {category}[{i}] ({path})")
-                    continue
+            thread_tasks.append({
+                "category": category,
+                "idx": i,
+                "thread_id": thread_id,
+                "node_id": node_id,
+                "path": path,
+                "status": status,
+                "reply_message": reply_message,
+                "should_resolve": should_resolve,
+                "resolve_only_retry": resolve_only_retry,
+            })
 
-            # Resolve thread only if appropriate
-            if should_resolve:
-                if not resolve_thread(effective_thread_id):
-                    # Record posted_at if we just posted (so next run can retry resolve only)
-                    if not resolve_only_retry:
-                        posted_at_timestamp = get_utc_timestamp()
-                        updates.append({"cat": category, "idx": i, "field": "posted_at", "ts": posted_at_timestamp})
-                    failed_count += 1
-                    eprint(f"Failed to resolve {category}[{i}] ({path}) - reply was posted but thread not resolved")
-                    continue
+    if thread_tasks:
+        if len(thread_tasks) == 1:
+            thread_results = [_process_one_thread(thread_tasks[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=min(4, len(thread_tasks))) as executor:
+                thread_results = list(executor.map(_process_one_thread, thread_tasks))
 
-                # Record both timestamps after successful resolve
-                if not resolve_only_retry:
-                    posted_at_timestamp = get_utc_timestamp()
-                    updates.append({"cat": category, "idx": i, "field": "posted_at", "ts": posted_at_timestamp})
-                resolved_at_timestamp = get_utc_timestamp()
-                updates.append({"cat": category, "idx": i, "field": "resolved_at", "ts": resolved_at_timestamp})
-
-                if status in ("addressed", "not_addressed", "failed"):
+        for task, res in zip(thread_tasks, thread_results, strict=True):
+            outcome = res["outcome"]
+            category = task["category"]
+            idx = task["idx"]
+            if outcome == "no_thread_id":
+                no_thread_id_count += 1
+            elif outcome == "reply_failed":
+                failed_count += 1
+            elif outcome == "resolve_failed":
+                if res.get("posted_ts"):
+                    updates.append({"cat": category, "idx": idx, "field": "posted_at", "ts": res["posted_ts"]})
+                failed_count += 1
+            elif outcome == "resolved":
+                if res.get("posted_ts"):
+                    updates.append({"cat": category, "idx": idx, "field": "posted_at", "ts": res["posted_ts"]})
+                updates.append({"cat": category, "idx": idx, "field": "resolved_at", "ts": res["resolved_ts"]})
+                if res["status"] in ("addressed", "not_addressed", "failed"):
                     addressed_count += 1
-                elif status == "skipped":
+                elif res["status"] == "skipped":
                     skipped_count += 1
-
-                eprint(f"Resolved {category}[{i}] ({path})")
-            else:
-                # For threads we don't resolve, record posted_at after successful reply
-                if not resolve_only_retry:
-                    posted_at_timestamp = get_utc_timestamp()
-                    updates.append({"cat": category, "idx": i, "field": "posted_at", "ts": posted_at_timestamp})
+            elif outcome == "replied_only":
+                if res.get("posted_ts"):
+                    updates.append({"cat": category, "idx": idx, "field": "posted_at", "ts": res["posted_ts"]})
                 replied_not_resolved_count += 1
-                eprint(f"Replied to {category}[{i}] ({path}) (not resolved)")
 
     # Post consolidated PR comments for body comments
     if body_comments_by_reviewer:
         total_body = sum(len(c) for c in body_comments_by_reviewer.values())
-        eprint(f"\nPosting consolidated replies for {total_body} body comment(s)...")
+        log.debug("Posting consolidated replies for %d body comment(s)", total_body)
         _, body_updates = post_body_comment_replies(owner, repo, pr_number, body_comments_by_reviewer)
         updates.extend(body_updates)
 

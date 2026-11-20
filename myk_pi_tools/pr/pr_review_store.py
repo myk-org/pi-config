@@ -15,6 +15,9 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+from myk_pi_tools.utils import find_git_root
 
 VALID_STATUSES = {"posted", "skipped", "resolved_external"}
 VALID_RESOLUTION_STATUSES = {"resolved_fixed", "resolved_accepted", "resolved_bad_fix", "resolved_no_fix"}
@@ -67,12 +70,30 @@ def log(message: str) -> None:
 
 def _get_project_root() -> Path:
     """Detect main project root (resolves through git worktrees)."""
-    from myk_pi_tools.reviews.store import get_project_root
-
     try:
-        return get_project_root()
-    except SystemExit as e:
+        return find_git_root()
+    except RuntimeError as e:
         raise RuntimeError("Failed to detect project root — git not available or not in a repo") from e
+
+
+def _connect_ro(db_path: Path) -> sqlite3.Connection:
+    """Open ``db_path`` read-only with ``sqlite3.Row`` factory."""
+    resolved = db_path.resolve()
+    db_uri = f"file:{quote(resolved.as_posix(), safe='/:')}?mode=ro"
+    conn = sqlite3.connect(db_uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _has_all_migration_columns(conn: sqlite3.Connection) -> bool:
+    """Return True when all migration-added columns already exist."""
+    table_columns: dict[str, set[str]] = {}
+    for table, col_name, _sql in _MIGRATIONS:
+        if table not in table_columns:
+            table_columns[table] = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col_name not in table_columns[table]:
+            return False
+    return True
 
 
 def _get_db_path() -> Path:
@@ -303,11 +324,17 @@ def get_skipped_comments(
     if not db_path.exists():
         return []
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_ro(db_path)
     try:
-        _run_migrations(conn)
-        conn.commit()
+        if not _has_all_migration_columns(conn):
+            conn.close()
+            rw_conn = sqlite3.connect(str(db_path))
+            try:
+                _run_migrations(rw_conn)
+                rw_conn.commit()
+            finally:
+                rw_conn.close()
+            conn = _connect_ro(db_path)
         cursor = conn.execute(
             """
             SELECT c.path, c.line, c.body, c.severity, c.skip_reason, r.head_sha
@@ -422,11 +449,17 @@ def get_review_history(
     if not db_path.exists():
         return []
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_ro(db_path)
     try:
-        _run_migrations(conn)
-        conn.commit()
+        if not _has_all_migration_columns(conn):
+            conn.close()
+            rw_conn = sqlite3.connect(str(db_path))
+            try:
+                _run_migrations(rw_conn)
+                rw_conn.commit()
+            finally:
+                rw_conn.close()
+            conn = _connect_ro(db_path)
         cursor = conn.execute(
             """
             SELECT c.path, c.line, c.body, c.severity, c.status,

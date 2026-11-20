@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from myk_pi_tools.logger import create_logger
+from myk_pi_tools.utils import find_git_root
 
 logger = create_logger(__name__)
 
@@ -30,20 +31,19 @@ def log(message: str) -> None:
 def get_project_root() -> Path:
     """Get main project root (resolves through git worktrees)."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            log(f"Error: git rev-parse failed: {result.stderr.strip()}")
-            sys.exit(1)
-        git_common = Path(result.stdout.strip()).resolve()
-        return git_common.parent
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return find_git_root()
+    except RuntimeError as e:
         log(f"Error: {e}")
         sys.exit(1)
+
+
+def _connect_ro(db_path: Path) -> sqlite3.Connection:
+    """Open ``db_path`` read-only with ``sqlite3.Row`` factory."""
+    resolved = db_path.resolve()
+    db_uri = f"file:{quote(resolved.as_posix(), safe='/:')}?mode=ro"
+    conn = sqlite3.connect(db_uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def get_current_pr() -> dict | None:
@@ -79,29 +79,32 @@ def get_current_pr() -> dict | None:
         return None
 
 
+def _query_comments_with_conn(conn: sqlite3.Connection, pr_number: int) -> list[dict]:
+    cursor = conn.execute(
+        """
+        SELECT c.source, c.path, c.line, c.body, c.status, c.reply,
+               c.priority, c.skip_reason, c.type, c.quality_label,
+               c.node_id, r.commit_sha, r.created_at
+        FROM comments c
+        JOIN reviews r ON c.review_id = r.id
+        WHERE r.pr_number = ?
+        ORDER BY r.created_at ASC, c.id ASC
+        """,
+        (pr_number,),
+    )
+    rows = [dict(row) for row in cursor.fetchall()]
+    logger.debug("query_comments pr=%d rows=%d", pr_number, len(rows))
+    return rows
+
+
 def query_comments(db_path: Path, pr_number: int) -> list[dict]:
     """Query all comments for a PR from the reviews DB."""
     if not db_path.exists():
         return []
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_ro(db_path)
     try:
-        cursor = conn.execute(
-            """
-            SELECT c.source, c.path, c.line, c.body, c.status, c.reply,
-                   c.priority, c.skip_reason, c.type, c.quality_label,
-                   c.node_id, r.commit_sha, r.created_at
-            FROM comments c
-            JOIN reviews r ON c.review_id = r.id
-            WHERE r.pr_number = ?
-            ORDER BY r.created_at ASC, c.id ASC
-            """,
-            (pr_number,),
-        )
-        rows = [dict(row) for row in cursor.fetchall()]
-        logger.debug("query_comments pr=%d rows=%d", pr_number, len(rows))
-        return rows
+        return _query_comments_with_conn(conn, pr_number)
     except sqlite3.Error as e:
         logger.error("query_comments failed pr=%d: %s", pr_number, e)
         log(f"Database error: {e}")
@@ -114,7 +117,7 @@ def get_pr_repo_info(db_path: Path, pr_number: int) -> tuple[str, str]:
     """Get owner/repo for a PR from the reviews DB."""
     if not db_path.exists():
         return ("", "")
-    conn = sqlite3.connect(str(db_path))
+    conn = _connect_ro(db_path)
     try:
         row = conn.execute(
             "SELECT owner, repo FROM reviews WHERE pr_number = ? LIMIT 1",
@@ -123,6 +126,30 @@ def get_pr_repo_info(db_path: Path, pr_number: int) -> tuple[str, str]:
         return (row[0], row[1]) if row else ("", "")
     except sqlite3.Error:
         return ("", "")
+    finally:
+        conn.close()
+
+
+def _fetch_pr_status_data(db_path: Path, pr_number: int) -> tuple[str, str, list[dict]]:
+    """Fetch ``(owner, repo, comments)`` for ``pr_number`` on a single RO connection."""
+    if not db_path.exists():
+        return ("", "", [])
+    conn = _connect_ro(db_path)
+    try:
+        row = conn.execute(
+            "SELECT owner, repo FROM reviews WHERE pr_number = ? LIMIT 1",
+            (pr_number,),
+        ).fetchone()
+        owner, repo = (row[0], row[1]) if row else ("", "")
+        try:
+            comments = _query_comments_with_conn(conn, pr_number)
+        except sqlite3.Error as e:
+            logger.error("query_comments failed pr=%d: %s", pr_number, e)
+            log(f"Database error: {e}")
+            comments = []
+        return (owner, repo, comments)
+    except sqlite3.Error:
+        return ("", "", [])
     finally:
         conn.close()
 
@@ -225,7 +252,7 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
         f"{'Summary':<{col_widths['Summary']}} "
         f"{'Status':<{col_widths['Status']}} "
         f"{'Reply':<{col_widths['Reply']}}"
-    )
+    ).rstrip()
     separator = "  " + "─" * (sum(col_widths.values()) + len(col_widths) - 1)
 
     lines.append(header)
@@ -250,7 +277,7 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
             f"{pad(summary, col_widths['Summary'])} "
             f"{pad(status, col_widths['Status'])} "
             f"{pad(reply, col_widths['Reply'])}"
-        )
+        ).rstrip()
         lines.append(row)
 
     # Summary counts
@@ -390,7 +417,7 @@ def list_prs_from_db(db_path: Path) -> None:
         print("No reviews database found.")
         return
 
-    conn = sqlite3.connect(str(db_path))
+    conn = _connect_ro(db_path)
     try:
         cursor = conn.execute(
             """
@@ -464,10 +491,10 @@ def run(pr_number: int | None = None, *, output_dir: str) -> None:
         pr_info = detected
 
     pr_num = int(str(pr_info["number"]))
-    owner, repo = get_pr_repo_info(db_path, pr_num)
+    owner, repo, raw_comments = _fetch_pr_status_data(db_path, pr_num)
     pr_info["owner"] = owner
     pr_info["repo"] = repo
-    comments = deduplicate_comments(query_comments(db_path, pr_num))
+    comments = deduplicate_comments(raw_comments)
 
     # HTML output
     html = generate_html(comments, pr_info)
