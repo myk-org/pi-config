@@ -237,6 +237,7 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
     let maxConcurrent = 0;
     let totalCalls = 0;
     const pending: Array<(res: { stdout: string; code: number }) => void> = [];
+    const waiters: Array<() => void> = [];
     const gitStatusAsync: AsyncGitStatusRunner = (_cwd, cb) => {
       activeCalls += 1;
       totalCalls += 1;
@@ -245,6 +246,7 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
         activeCalls -= 1;
         cb(res);
       });
+      while (waiters.length > 0) waiters.shift()!();
     };
     registerReviewUI(pi as any, { gitStatusAsync, gitPollIntervalMs: 15 });
     const ctx = {
@@ -254,6 +256,16 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
       ui: { theme: { fg: (_c: string, s: string) => s } },
     };
     for (const h of handlers.get("session_start") ?? []) h({}, ctx);
+    const nextCallback = async (): Promise<(res: { stdout: string; code: number }) => void> => {
+      if (pending.length === 0) {
+        await new Promise<void>((resolve) => waiters.push(resolve));
+      }
+      return pending.shift()!;
+    };
+    const resolveNext = async (res: { stdout: string; code: number }) => {
+      const cb = await nextCallback();
+      cb(res);
+    };
     const shutdown = () => {
       for (const h of handlers.get("session_shutdown") ?? []) h({}, ctx);
     };
@@ -263,7 +275,8 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
     };
     return {
       tmp,
-      pending,
+      nextCallback,
+      resolveNext,
       shutdown,
       cleanup,
       getTotalCalls: () => totalCalls,
@@ -285,9 +298,7 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
   it("transitions dirty tree to needs_review via async poll", async () => {
     const h = setupPollerHarness();
     try {
-      await new Promise((r) => setTimeout(r, 35));
-      assert.ok(h.pending.length >= 1);
-      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
       assert.equal(readReviewState(h.tmp).status, "needs_review");
     } finally {
       h.cleanup();
@@ -297,18 +308,13 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
   it("resets review state to none after revalidating a clean tree", async () => {
     const h = setupPollerHarness();
     try {
-      await new Promise((r) => setTimeout(r, 35));
-      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
       assert.equal(readReviewState(h.tmp).status, "needs_review");
 
-      // Wait briefly so the next poll starts strictly after last_edit_at
-      await new Promise((r) => setTimeout(r, 40));
-      assert.ok(h.pending.length >= 1);
-      // First clean poll triggers a revalidation check before resetting
-      h.pending.shift()!({ stdout: "", code: 0 });
+      // First clean poll keeps needs_review until confirmation resolves clean
+      await h.resolveNext({ stdout: "", code: 0 });
       assert.equal(readReviewState(h.tmp).status, "needs_review");
-      assert.equal(h.pending.length, 1, "revalidation poll must run before resetting state");
-      h.pending.shift()!({ stdout: "", code: 0 });
+      await h.resolveNext({ stdout: "", code: 0 });
       assert.equal(readReviewState(h.tmp).status, "none");
     } finally {
       h.cleanup();
@@ -318,14 +324,11 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
   it("does not clear needs_review when an edit lands while a clean poll is in flight", async () => {
     const h = setupPollerHarness();
     try {
-      await new Promise((r) => setTimeout(r, 35));
-      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
       assert.equal(readReviewState(h.tmp).status, "needs_review");
 
       // Next poll starts while tree was transiently clean
-      await new Promise((r) => setTimeout(r, 40));
-      assert.ok(h.pending.length >= 1);
-      const staleCleanCallback = h.pending.shift()!;
+      const staleCleanCallback = await h.nextCallback();
 
       // Intervening edit occurs before the clean callback completes
       markNeedsReview(h.tmp);
@@ -339,20 +342,18 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
   it("revalidates a clean poll during in_progress so an edit before confirmation sets edited_during_cycle", async () => {
     const h = setupPollerHarness();
     try {
-      await new Promise((r) => setTimeout(r, 35));
-      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
       addReviewerPending(h.tmp, "reviewer-a", SUBJECT);
       assert.equal(readReviewState(h.tmp).status, "in_progress");
       assert.equal(readReviewState(h.tmp).edited_during_cycle, false);
 
-      await new Promise((r) => setTimeout(r, 40));
-      assert.ok(h.pending.length >= 1);
-      // Clean poll during in_progress must trigger revalidation rather than clearing snapshot immediately
-      h.pending.shift()!({ stdout: "", code: 0 });
-      assert.equal(h.pending.length, 1, "clean poll during in_progress must revalidate");
+      await new Promise((r) => setTimeout(r, 20));
+      // Clean poll during in_progress stays in_progress without flagging an edit yet
+      await h.resolveNext({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).edited_during_cycle, false);
 
       // Edit lands before confirmation completes
-      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
       const state = readReviewState(h.tmp);
       assert.equal(state.status, "in_progress");
       assert.equal(state.edited_during_cycle, true);
@@ -364,18 +365,17 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
   it("keeps needs_review when an edit is recorded during clean revalidation", async () => {
     const h = setupPollerHarness();
     try {
-      await new Promise((r) => setTimeout(r, 35));
-      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
       assert.equal(readReviewState(h.tmp).status, "needs_review");
 
-      await new Promise((r) => setTimeout(r, 40));
-      h.pending.shift()!({ stdout: "", code: 0 });
-      assert.equal(h.pending.length, 1);
+      await new Promise((r) => setTimeout(r, 20));
+      await h.resolveNext({ stdout: "", code: 0 });
+      const confirmCallback = await h.nextCallback();
 
       // Edit lands strictly after revalidation started, before confirmation resolves
       await new Promise((r) => setTimeout(r, 10));
       markNeedsReview(h.tmp);
-      h.pending.shift()!({ stdout: "", code: 0 });
+      confirmCallback({ stdout: "", code: 0 });
       assert.equal(readReviewState(h.tmp).status, "needs_review");
     } finally {
       h.cleanup();
@@ -385,7 +385,7 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
   it("stops scheduling polls after session_shutdown", async () => {
     const h = setupPollerHarness();
     try {
-      await new Promise((r) => setTimeout(r, 35));
+      await h.nextCallback();
       h.shutdown();
       const callsAtShutdown = h.getTotalCalls();
       await new Promise((r) => setTimeout(r, 50));
@@ -398,11 +398,9 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
   it("ignores late-resolving poll callbacks after session_shutdown", async () => {
     const h = setupPollerHarness();
     try {
-      await new Promise((r) => setTimeout(r, 35));
-      const inFlight = h.pending.splice(0);
-      assert.ok(inFlight.length >= 1);
+      const inFlight = await h.nextCallback();
       h.shutdown();
-      for (const cb of inFlight) cb({ stdout: " M late.ts", code: 0 });
+      inFlight({ stdout: " M late.ts", code: 0 });
       assert.equal(readReviewState(h.tmp).status, "none");
     } finally {
       h.cleanup();

@@ -230,18 +230,13 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
   if (reviewPoller.unref) reviewPoller.unref();
 
   // Poll git status asynchronously to detect file changes from CLI/ACPX agents without blocking TUI.
-  // Track state-transition generation and poll start time so an in-flight clean snapshot can never
-  // reset a review state after an intervening edit occurred while git was running.
+  // Track state-transition generation and pre-poll last_edit_at so an in-flight clean snapshot can
+  // never clear a review state after an intervening edit (in-process or cross-process) landed.
   let gitPollInFlight = false;
   let editGeneration = 0;
 
-  function hasInterveningEdit(state: ReviewState, pollStartedAt: number, startGen: number): boolean {
-    if (editGeneration !== startGen) return true;
-    if (state.last_edit_at) {
-      const editMs = Date.parse(state.last_edit_at);
-      if (!Number.isNaN(editMs) && editMs >= pollStartedAt) return true;
-    }
-    return false;
+  function hasInterveningEdit(state: ReviewState, startGen: number, startEditAt: string | null): boolean {
+    return editGeneration !== startGen || state.last_edit_at !== startEditAt;
   }
 
   const gitDirtyPoller = setInterval(() => {
@@ -249,16 +244,17 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
     if (!isLiveExtensionCtx(lastCtx)) { lastCtx = null; return; }
     const ctx = lastCtx;
     const cwd = ctx.cwd;
+    let startEditAt: string | null;
     try {
       if (!getSetting(cwd, "review_loop_enforcement")) return;
       // Skip on version bump branches (release workflow only)
       if (isBumpVersionBranch(getCachedBranch(cwd))) return;
+      startEditAt = readReviewState(cwd).last_edit_at;
     } catch (e: any) {
       log.warn("gitDirtyPoller precheck error", { error: e?.message });
       return;
     }
 
-    const pollStartedAt = Date.now();
     const startGen = editGeneration;
     gitPollInFlight = true;
     gitStatusAsync(cwd, (result) => {
@@ -292,13 +288,12 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
         }
         // Tree appeared clean — reject stale snapshots if any edit landed after the poll started.
         const state = readReviewState(cwd);
-        if (hasInterveningEdit(state, pollStartedAt, startGen)) {
+        if (hasInterveningEdit(state, startGen, startEditAt)) {
           gitPollInFlight = false;
           return;
         }
         // Always revalidate cleanliness (including during in_progress/none) before clearing
         // lastGitSnapshot or resetting review state, so an edit landing between checks is never hidden.
-        const revalidateStartedAt = Date.now();
         const revalidateGen = editGeneration;
         const preRevalidateEditAt = state.last_edit_at;
         gitStatusAsync(cwd, (confirm) => {
@@ -315,9 +310,8 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
             if (confirm.code !== 0) return;
             const freshState = readReviewState(cwd);
             if (
-              hasInterveningEdit(freshState, pollStartedAt, startGen) ||
-              hasInterveningEdit(freshState, revalidateStartedAt, revalidateGen) ||
-              freshState.last_edit_at !== preRevalidateEditAt
+              hasInterveningEdit(freshState, startGen, startEditAt) ||
+              hasInterveningEdit(freshState, revalidateGen, preRevalidateEditAt)
             ) {
               return;
             }

@@ -2092,6 +2092,16 @@ async function findContradictionWithVector(
   let matchedKeys = new Set<string>();
   const similarKeys = new Set<string>();
   let similarityByText = new Map<string, number>();
+  // Lazily cache sharedContentWords per pool entry so candidates evaluated in
+  // the narrowing filter are not re-scored in the candidate loop below.
+  const sharedCounts = new Map<string, number>();
+  const getSharedCount = (key: string, candText: string): number => {
+    const cached = sharedCounts.get(key);
+    if (cached !== undefined) return cached;
+    const count = sharedContentWords(text, candText);
+    sharedCounts.set(key, count);
+    return count;
+  };
   try {
     vectorMatches = await vectorSearch(
       cwd,
@@ -2113,12 +2123,10 @@ async function findContradictionWithVector(
       // Keep vector-similar entries, unembedded entries, AND entries with
       // strong lexical overlap (multi-clause entries can have low whole-sentence
       // cosine similarity even when one clause directly contradicts the text).
-      candidates = pool.filter(
-        (p) =>
-          similarKeys.has(`${p.category}:${p.text}`) ||
-          !matchedKeys.has(`${p.category}:${p.text}`) ||
-          sharedContentWords(text, p.text) >= 2,
-      );
+      candidates = pool.filter((p) => {
+        const key = `${p.category}:${p.text}`;
+        return similarKeys.has(key) || !matchedKeys.has(key) || getSharedCount(key, p.text) >= 2;
+      });
     }
   } catch (err) {
     log.debug("memory-write: conflict vector search unavailable, using overlap fallback", err);
@@ -2137,9 +2145,10 @@ async function findContradictionWithVector(
     // expensive step (quotedMask retries, four splitClauses passes, nested
     // clause loops) and the overlap counts are trivial — running the gate
     // before the clash check skips it for every unrelated candidate.
-    const shared = sharedContentWords(text, candidate.text);
+    const candKey = `${candidate.category}:${candidate.text}`;
+    const shared = getSharedCount(candKey, candidate.text);
     if (shared === 0) continue;
-    const vectorConfirmed = similarKeys.has(`${candidate.category}:${candidate.text}`);
+    const vectorConfirmed = similarKeys.has(candKey);
     let corroborated = shared >= 2 || vectorConfirmed;
     if (!corroborated) {
       // Short rules (Qodo 2c16ab75, PR #956 R2/R4), time-scoped rules (Qodo
