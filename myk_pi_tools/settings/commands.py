@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import errno
 import json
-import logging
 import math
 import os
 import re
@@ -16,9 +15,10 @@ from typing import Any
 
 import click
 
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.utils import find_git_root
 
-log = logging.getLogger(__name__)
+log = create_logger(__name__)
 
 SETTINGS_FILENAMES = ("pi-config-settings.json",)
 
@@ -396,9 +396,7 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
             filtered = [e for e in value if isinstance(e, str) and e]
             rejected = len(value) - len(filtered)
             if rejected:
-                logging.getLogger(__name__).debug(
-                    "settings: dropped %d invalid string_list entrie(s) for %s", rejected, key
-                )
+                log.debug("settings: dropped %d invalid string_list entrie(s) for %s", rejected, key)
             if filtered:
                 return filtered
         return None

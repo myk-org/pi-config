@@ -19,11 +19,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.release._common import (
     extract_json_version,
     extract_py_version,
     extract_toml_version,
 )
+
+log = create_logger(__name__)
 
 EXCLUDED_DIRS = frozenset({
     ".git",
@@ -190,7 +193,7 @@ def _uv_members(data: dict) -> object:
 _UNSET: object = object()
 
 
-def _load_root_pyproject(pyproject: Path) -> dict[str, Any] | None:
+def _load_root_pyproject(pyproject: Path, *, quiet: bool = False) -> dict[str, Any] | None:
     """Load root pyproject.toml once; warn on parse/read error and return None."""
     if not pyproject.is_file():
         return None
@@ -201,7 +204,9 @@ def _load_root_pyproject(pyproject: Path) -> dict[str, Any] | None:
         # Not fatal: the other scans still run. Say so, because a silently
         # skipped uv workspace is how a member's version stopped tracking a
         # release in the first place.
-        print(f"Could not read {pyproject} for uv workspace members: {exc}", file=sys.stderr)
+        log.warning("Could not read %s for uv workspace members: %s", pyproject, exc)
+        if not quiet:
+            print(f"Could not read {pyproject} for uv workspace members: {exc}", file=sys.stderr)
         return None
 
 
@@ -211,12 +216,18 @@ def _load_root_package_json(package_json: Path) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(package_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        log.debug("Could not read %s: %s", package_json, exc)
         return None
     return data if isinstance(data, dict) else None
 
 
-def _find_uv_workspace_members(root: Path, *, pyproject_data: object = _UNSET) -> list[Path]:
+def _find_uv_workspace_members(
+    root: Path,
+    *,
+    pyproject_data: object = _UNSET,
+    quiet: bool = False,
+) -> list[Path]:
     """Directories declared as uv workspace members in the root pyproject.toml.
 
     uv workspaces are separate from npm's, and this repo has one: pi-docsite is
@@ -224,22 +235,30 @@ def _find_uv_workspace_members(root: Path, *, pyproject_data: object = _UNSET) -
     pyproject.toml and its version silently stopped tracking the release.
     """
     pyproject = root / "pyproject.toml"
-    data = _load_root_pyproject(pyproject) if pyproject_data is _UNSET else pyproject_data
+    data = _load_root_pyproject(pyproject, quiet=quiet) if pyproject_data is _UNSET else pyproject_data
     if not isinstance(data, dict):
         return []
     members = _uv_members(data)
     if members is None:
         return []
     if not isinstance(members, list):
-        print(
-            f"Ignoring [tool.uv.workspace] members in {pyproject}: expected a list, got {type(members).__name__}",
-            file=sys.stderr,
+        log.warning(
+            "Ignoring [tool.uv.workspace] members in %s: expected a list, got %s",
+            pyproject,
+            type(members).__name__,
         )
+        if not quiet:
+            print(
+                f"Ignoring [tool.uv.workspace] members in {pyproject}: expected a list, got {type(members).__name__}",
+                file=sys.stderr,
+            )
         return []
     found: list[Path] = []
     for pattern in members:
         if not isinstance(pattern, str):
-            print(f"Ignoring non-string uv workspace member in {pyproject}: {pattern!r}", file=sys.stderr)
+            log.warning("Ignoring non-string uv workspace member in %s: %r", pyproject, pattern)
+            if not quiet:
+                print(f"Ignoring non-string uv workspace member in {pyproject}: {pattern!r}", file=sys.stderr)
             continue
         for match in sorted(glob.glob(str(root / pattern))):
             if Path(match).is_dir():
@@ -267,7 +286,7 @@ def detect_version_files(root: Path | None = None, *, quiet: bool = False) -> li
         return []
 
     # Parse root pyproject.toml and package.json once and share with workspace scanners.
-    root_pyproject_data = _load_root_pyproject(root / "pyproject.toml")
+    root_pyproject_data = _load_root_pyproject(root / "pyproject.toml", quiet=quiet)
     root_pkg_data = _load_root_package_json(root / "package.json")
 
     results: list[VersionFile] = []
@@ -309,7 +328,7 @@ def detect_version_files(root: Path | None = None, *, quiet: bool = False) -> li
     # Scan uv workspace members. A package can be in either workspace or both;
     # a path already recorded is skipped so it is not listed twice.
     seen_paths = {vf.path for vf in results}
-    for ws_path in _find_uv_workspace_members(root, pyproject_data=root_pyproject_data):
+    for ws_path in _find_uv_workspace_members(root, pyproject_data=root_pyproject_data, quiet=quiet):
         for filename, parser, file_type in _ROOT_SCANNERS:
             filepath = ws_path / filename
             if not filepath.is_file():
@@ -323,6 +342,7 @@ def detect_version_files(root: Path | None = None, *, quiet: bool = False) -> li
                 results.append(VersionFile(path=rel, current_version=version, file_type=file_type))
 
     results.extend(_find_python_version_files(root))
+    log.debug("Detected %d version file(s) under %s", len(results), root)
 
     if not quiet:
         for vf in results:

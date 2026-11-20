@@ -207,21 +207,32 @@ def _iter_file_blobs(
     Lockstep request/response lets callers short-circuit on ``break`` without
     reading older commits, while keeping process count at O(1) per file.
     """
-    proc = subprocess.Popen(
-        ["git", "-C", str(repo_root), "cat-file", "--batch"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+    try:
+        proc = subprocess.Popen(
+            ["git", "-C", str(repo_root), "cat-file", "--batch"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"git cat-file failed: {exc}") from exc
+
+    stdin = proc.stdin
+    stdout = proc.stdout
+    if stdin is None or stdout is None:
+        proc.kill()
+        proc.wait()
+        raise RuntimeError("git cat-file pipes unavailable")
+
+    completed_loop = False
     try:
         for sha in shas:
             try:
-                proc.stdin.write(f"{sha}:{version_file}\n".encode())
-                proc.stdin.flush()
+                stdin.write(f"{sha}:{version_file}\n".encode())
+                stdin.flush()
             except BrokenPipeError:
                 break
-            header = proc.stdout.readline()
+            header = stdout.readline()
             if not header:
                 break
             parts = header.rstrip(b"\r\n").decode("utf-8", errors="replace").split()
@@ -234,25 +245,31 @@ def _iter_file_blobs(
                 size = int(parts[2])
             except ValueError:
                 break
-            raw = proc.stdout.read(size)
-            proc.stdout.read(1)  # trailing LF emitted by cat-file --batch
+            raw = stdout.read(size)
+            stdout.read(1)  # trailing LF emitted by cat-file --batch
             if len(raw) != size:
                 break
             if obj_type != "blob":
                 continue
             yield sha, raw.decode("utf-8", errors="replace")
+        completed_loop = True
     finally:
         with contextlib.suppress(OSError):
-            proc.stdin.close()
+            stdin.close()
+        timed_out = False
         try:
             proc.wait(timeout=GIT_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
+            timed_out = True
             proc.kill()
             proc.wait()
         with contextlib.suppress(OSError):
-            proc.stdout.close()
-        with contextlib.suppress(OSError):
-            proc.stderr.close()
+            stdout.close()
+        if completed_loop:
+            if timed_out:
+                raise RuntimeError(f"git cat-file timed out for {version_file}")
+            if proc.returncode != 0:
+                raise RuntimeError(f"git cat-file failed ({version_file}): exit code {proc.returncode}")
 
 
 def _find_anchor(repo_root: Path, version_files: tuple[str, ...], published: str) -> str:
@@ -452,7 +469,9 @@ class ReleasePlanner:
             if err is not None:
                 errors.append(f"{registry}:{name}: {err}")
                 continue
-            assert version is not None
+            if version is None:
+                errors.append(f"{registry}:{name}: empty version")
+                continue
             if published is None:
                 published = version
             elif version != published:

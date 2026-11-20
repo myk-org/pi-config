@@ -10,7 +10,11 @@ import re
 import sys
 from dataclasses import dataclass
 
-from myk_pi_tools.release._common import check_dependencies, run_command
+from myk_pi_tools.logger import create_logger
+from myk_pi_tools.release._common import check_dependencies, run_subprocess
+
+log = create_logger(__name__)
+_VALID_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 
 @dataclass
@@ -117,8 +121,8 @@ class ReleaseInfo:
 
 def _run_command(cmd: list[str], capture_stderr: bool = False, timeout: int = 60) -> tuple[int, str]:
     """Run a command and return exit code and output."""
-    code, stdout, stderr = run_command(cmd, timeout=timeout)
-    if code != 0 and stderr.startswith(("Command not found:", "Command timed out")):
+    code, stdout, stderr, err_kind = run_subprocess(cmd, timeout=timeout)
+    if err_kind is not None:
         return 1, ""
     output = stderr if (capture_stderr and code != 0) else stdout
     return code, output
@@ -146,31 +150,39 @@ def _get_current_branch() -> str:
     return output if code == 0 else ""
 
 
-def _get_default_branch() -> str:
+def _get_default_branch(repo: str | None = None) -> str:
     """Get the default branch from GitHub."""
-    code, output = _run_command(["gh", "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])
+    cmd = ["gh", "repo", "view"]
+    if repo and _VALID_REPO_RE.match(repo):
+        cmd.append(repo)
+    cmd.extend(["--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])
+    code, output = _run_command(cmd)
     return output if code == 0 and output else "main"
 
 
 def _get_repo_and_default_branch(repo: str | None) -> tuple[str | None, str]:
     """Fetch ``(owner/repo, default_branch)`` in one ``gh repo view`` call when ``repo`` is omitted."""
     if repo:
-        return repo, _get_default_branch()
+        return repo, _get_default_branch(repo)
 
     code, output = _run_command(["gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef"])
     if code != 0 or not output:
+        log.debug("gh repo view failed (code=%d) while detecting repo and default branch", code)
         return None, "main"
     try:
         data = json.loads(output)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        log.warning("Invalid JSON from gh repo view: %s", exc)
         return None, "main"
     if not isinstance(data, dict):
+        log.warning("Unexpected payload type from gh repo view: %s", type(data).__name__)
         return None, "main"
     name_with_owner = data.get("nameWithOwner")
     detected_repo = name_with_owner if isinstance(name_with_owner, str) and name_with_owner else None
     default_ref = data.get("defaultBranchRef")
     branch = default_ref.get("name") if isinstance(default_ref, dict) else None
     default_branch = branch if isinstance(branch, str) and branch else "main"
+    log.debug("Detected repo=%s default_branch=%s", detected_repo, default_branch)
     return detected_repo, default_branch
 
 

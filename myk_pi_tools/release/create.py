@@ -11,7 +11,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.release._common import RELEASE_TAG_RE, check_dependencies, run_command
+
+log = create_logger(__name__)
 
 
 @dataclass
@@ -155,6 +158,7 @@ def create_release(
 
     if exit_code != 0:
         error_msg = stderr if stderr else stdout
+        log.error("gh release create failed for %s (%s): %s", owner_repo, tag, error_msg)
         return ReleaseResult(
             status="failed",
             error=f"gh release create failed: {error_msg}",
@@ -163,6 +167,7 @@ def create_release(
     # Extract URL from output
     combined_output = f"{stdout}\n{stderr}"
     release_url = _extract_release_url(combined_output, owner_repo, tag)
+    log.info("Created release %s for %s: %s", tag, owner_repo, release_url)
     print(f"Release created: {release_url}", file=sys.stderr)
 
     return ReleaseResult(

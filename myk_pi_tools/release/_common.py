@@ -8,7 +8,7 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.release.release_map import ReleaseMap, ReleaseMapError, load_release_map
@@ -26,13 +26,16 @@ RELEASE_TAG_RE = re.compile(r"^(v|[A-Za-z0-9._-]+@)[0-9]+\.[0-9]+\.[0-9]+(-[A-Za
 PY_VERSION_RE = re.compile(r'^(\s*__version__\s*=\s*["\'])([^"\']+)(["\'])', re.MULTILINE)
 
 
-def run_command(
+SubprocessErrorKind = Literal["not_found", "timeout"] | None
+
+
+def run_subprocess(
     cmd: list[str],
     *,
     timeout: int = 60,
     cwd: Path | None = None,
-) -> tuple[int, str, str]:
-    """Run a command and return ``(returncode, stdout, stderr)`` (stripped)."""
+) -> tuple[int, str, str, SubprocessErrorKind]:
+    """Run a command and return ``(returncode, stdout, stderr, error_kind)``."""
     try:
         result = subprocess.run(
             cmd,
@@ -42,18 +45,31 @@ def run_command(
             check=False,
             timeout=timeout,
         )
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
+        return result.returncode, result.stdout.strip(), result.stderr.strip(), None
     except FileNotFoundError:
-        return 1, "", f"Command not found: {cmd[0]}"
+        log.debug("Command not found: %s", cmd[0])
+        return 1, "", f"Command not found: {cmd[0]}", "not_found"
     except subprocess.TimeoutExpired:
-        return 1, "", f"Command timed out after {timeout} seconds"
+        log.warning("Command timed out after %ss: %s", timeout, cmd[0])
+        return 1, "", f"Command timed out after {timeout} seconds", "timeout"
+
+
+def run_command(
+    cmd: list[str],
+    *,
+    timeout: int = 60,
+    cwd: Path | None = None,
+) -> tuple[int, str, str]:
+    """Run a command and return ``(returncode, stdout, stderr)`` (stripped)."""
+    code, stdout, stderr, _ = run_subprocess(cmd, timeout=timeout, cwd=cwd)
+    return code, stdout, stderr
 
 
 def run_git(repo_root: Path, args: list[str], timeout: int = 60) -> str:
     """Run git in ``repo_root``; raise ``RuntimeError`` with context on failure."""
-    code, stdout, stderr = run_command(["git", "-C", str(repo_root), *args], timeout=timeout)
+    code, stdout, stderr, err_kind = run_subprocess(["git", "-C", str(repo_root), *args], timeout=timeout)
     if code != 0:
-        if stderr.startswith("Command timed out"):
+        if err_kind == "timeout":
             raise RuntimeError(f"git timed out: {' '.join(args[:3])}…")
         raise RuntimeError(f"git failed ({' '.join(args[:3])}…): {stderr or code}")
     return stdout

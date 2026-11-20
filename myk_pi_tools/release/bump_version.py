@@ -17,8 +17,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.release._common import PY_VERSION_RE
 from myk_pi_tools.release.detect_versions import VersionFile, detect_version_files
+
+log = create_logger(__name__)
 
 
 def _atomic_write(filepath: Path, content: str) -> None:
@@ -282,10 +285,12 @@ def bump_version_files(
             skipped.append({"path": vf.path, "reason": f"I/O error: {e}"})
             continue
         if old_version is not None:
+            log.debug("Updated %s (%s -> %s)", vf.path, old_version, new_version)
             if not quiet:
                 print(f"Updated: {vf.path} ({old_version} → {new_version})", file=sys.stderr)
             updated.append({"path": vf.path, "old_version": old_version, "new_version": new_version})
         else:
+            log.warning("Could not find version pattern in %s", vf.path)
             if not quiet:
                 print(f"Skipped: {vf.path} (Could not find version pattern in file)", file=sys.stderr)
             skipped.append({"path": vf.path, "reason": "Could not find version pattern in file"})

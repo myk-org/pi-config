@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import subprocess
 import threading
 import types
@@ -152,6 +153,23 @@ class TestReleasePlannerPerf1275:
         assert len(cat_file_cmds) == 1
         assert show_cmds == []
 
+    def test_iter_file_blobs_surfaces_popen_oserror_and_nonzero_exit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def failing_popen(*_args: Any, **_kwargs: Any) -> Any:
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(plan.subprocess, "Popen", failing_popen)
+        with pytest.raises(RuntimeError, match="git cat-file failed"):
+            list(plan._iter_file_blobs(tmp_path, "package.json", ["deadbeef"]))
+
+        # Non-zero exit from git cat-file --batch surfaces RuntimeError instead of empty stream.
+        not_a_repo = tmp_path / "empty"
+        not_a_repo.mkdir()
+        monkeypatch.undo()
+        with pytest.raises(RuntimeError, match="git cat-file failed"):
+            list(plan._iter_file_blobs(not_a_repo, "package.json", ["deadbeef"]))
+
 
 class TestReleaseInfoPerf1281:
     """#1281: Combined gh repo/branch query and single git rev-list --left-right --count."""
@@ -177,8 +195,17 @@ class TestReleaseInfoPerf1281:
         monkeypatch.setattr(info, "_run_command", lambda *_a, **_k: (0, "not-json"))
         assert info._get_repo_and_default_branch(None) == (None, "main")
 
-        monkeypatch.setattr(info, "_run_command", lambda *_a, **_k: (0, "trunk"))
+        seen_cmds: list[list[str]] = []
+
+        def spy_run(cmd: list[str], capture_stderr: bool = False, timeout: int = 60) -> tuple[int, str]:  # noqa: ARG001
+            seen_cmds.append(cmd)
+            return 0, "trunk"
+
+        monkeypatch.setattr(info, "_run_command", spy_run)
         assert info._get_repo_and_default_branch("org/explicit") == ("org/explicit", "trunk")
+        assert seen_cmds == [
+            ["gh", "repo", "view", "org/explicit", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"]
+        ]
 
     def test_perform_validations_uses_single_left_right_rev_list(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -418,6 +445,22 @@ class TestDetectVersionsQuietAndSingleParse1291And1297:
         assert captured.err == ""
         assert json.loads(captured.out)["count"] == 1
 
+    def test_detect_version_files_quiet_silences_malformed_pyproject_stderr_and_logs(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text("not = [valid toml", encoding="utf-8")
+        (tmp_path / "package.json").write_text(json.dumps({"name": "x", "version": "1.0.0"}), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="myk_pi_tools.release.detect_versions"):
+            found = detect_versions.detect_version_files(tmp_path, quiet=True)
+
+        assert capsys.readouterr().err == ""
+        assert [vf.path for vf in found] == ["package.json"]
+        assert any("Could not read" in rec.getMessage() for rec in caplog.records)
+
     def test_bump_scoped_emits_no_detect_stderr(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -478,3 +521,20 @@ class TestSharedPlumbing1299:
         with pytest.raises(RuntimeError, match="not a git repository"):
             find_git_root(plain)
         assert settings_commands._resolve_repo_root(plain) == plain
+
+    def test_structured_subprocess_errors_in_run_git_and_info(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def raise_timeout(*_args: Any, **_kwargs: Any) -> Any:
+            raise subprocess.TimeoutExpired(cmd=["git"], timeout=1)
+
+        def raise_missing(*_args: Any, **_kwargs: Any) -> Any:
+            raise FileNotFoundError("gh")
+
+        monkeypatch.setattr(_common.subprocess, "run", raise_timeout)
+        with pytest.raises(RuntimeError, match="git timed out"):
+            _common.run_git(tmp_path, ["status"], timeout=1)
+        assert info._run_command(["gh", "repo", "view"], capture_stderr=True, timeout=1) == (1, "")
+
+        monkeypatch.setattr(_common.subprocess, "run", raise_missing)
+        assert info._run_command(["gh", "repo", "view"], capture_stderr=True, timeout=1) == (1, "")
