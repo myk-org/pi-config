@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from myk_pi_tools.release._common import PY_VERSION_RE
 from myk_pi_tools.release.detect_versions import VersionFile, detect_version_files
 
 
@@ -61,15 +62,17 @@ class BumpResult:
         return result
 
 
-def _bump_pyproject_toml(filepath: Path, new_version: str) -> str | None:
+def _bump_toml_section(filepath: Path, section: str, new_version: str) -> str | None:
+    """Update ``version`` inside ``[section]`` of a TOML manifest."""
     content = filepath.read_text(encoding="utf-8")
-    # Find the [project] section (tolerant of whitespace around header)
-    project_match = re.search(r"^\[\s*project\s*\]", content, re.MULTILINE)
-    if not project_match:
+    escaped = re.escape(section)
+    # Find the [section] header (tolerant of whitespace around header)
+    section_match = re.search(rf"^\[\s*{escaped}\s*\]", content, re.MULTILINE)
+    if not section_match:
         return None
-    section_start = project_match.end()
-    # Match next top-level section (not sub-tables like [project.urls])
-    next_section = re.search(r"^\[(?!project[.\]])", content[section_start:], re.MULTILINE)
+    section_start = section_match.end()
+    # Match next top-level section (not sub-tables like [project.urls] / [package.metadata])
+    next_section = re.search(rf"^\[(?!{escaped}[.\]])", content[section_start:], re.MULTILINE)
     if next_section:
         section_content = content[section_start : section_start + next_section.start()]
     else:
@@ -84,6 +87,10 @@ def _bump_pyproject_toml(filepath: Path, new_version: str) -> str | None:
     new_content = content[:abs_start] + new_version + content[abs_end:]
     _atomic_write(filepath, new_content)
     return old_version
+
+
+def _bump_pyproject_toml(filepath: Path, new_version: str) -> str | None:
+    return _bump_toml_section(filepath, "project", new_version)
 
 
 def _bump_package_json(filepath: Path, new_version: str) -> str | None:
@@ -139,28 +146,7 @@ def _bump_setup_cfg(filepath: Path, new_version: str) -> str | None:
 
 
 def _bump_cargo_toml(filepath: Path, new_version: str) -> str | None:
-    content = filepath.read_text(encoding="utf-8")
-    # Find the [package] section (tolerant of whitespace around header)
-    package_match = re.search(r"^\[\s*package\s*\]", content, re.MULTILINE)
-    if not package_match:
-        return None
-    section_start = package_match.end()
-    # Match next top-level section (not sub-tables like [package.metadata])
-    next_section = re.search(r"^\[(?!package[.\]])", content[section_start:], re.MULTILINE)
-    if next_section:
-        section_content = content[section_start : section_start + next_section.start()]
-    else:
-        section_content = content[section_start:]
-    match = re.search(r'^(\s*version\s*=\s*["\'])([^"\']+)(["\'])', section_content, re.MULTILINE)
-    if not match:
-        return None
-    old_version = match.group(2)
-    # Adjust match positions to full file offsets
-    abs_start = section_start + match.start(2)
-    abs_end = section_start + match.end(2)
-    new_content = content[:abs_start] + new_version + content[abs_end:]
-    _atomic_write(filepath, new_content)
-    return old_version
+    return _bump_toml_section(filepath, "package", new_version)
 
 
 def _bump_gradle(filepath: Path, new_version: str) -> str | None:
@@ -176,7 +162,7 @@ def _bump_gradle(filepath: Path, new_version: str) -> str | None:
 
 def _bump_python_version(filepath: Path, new_version: str) -> str | None:
     content = filepath.read_text(encoding="utf-8")
-    match = re.search(r'^(\s*__version__\s*=\s*["\'])([^"\']+)(["\'])', content, re.MULTILINE)
+    match = PY_VERSION_RE.search(content)
     if not match:
         return None
     old_version = match.group(2)
@@ -242,7 +228,7 @@ def bump_version_files(
         return BumpResult(status="failed", error=f"Root path is not a directory: {root}")
 
     if detected is None:
-        detected = detect_version_files(root)
+        detected = detect_version_files(root, quiet=quiet)
     if not detected:
         return BumpResult(status="failed", error="No version files found in repository.")
 

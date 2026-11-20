@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import traceback
 from pathlib import Path
@@ -10,8 +11,12 @@ from typing import TYPE_CHECKING
 
 import click
 
+from myk_pi_tools.logger import create_logger
+
 if TYPE_CHECKING:
     from ai_cli_runner import AIResult
+
+log = create_logger("myk_pi_tools.ai_cli.run")
 
 # Default models per provider — matches each CLI's default behavior
 _DEFAULT_MODELS: dict[str, str] = {
@@ -35,20 +40,44 @@ async def _run_async(
     session_id: str | None = None,
     continue_session: bool = False,
 ) -> AIResult:
-    """Load pricing and run the AI CLI call in a single event loop."""
+    """Load pricing concurrently with the AI CLI call in a single event loop."""
     from ai_cli_runner import call_ai_cli, pricing_cache
 
-    await pricing_cache.load()
-    return await call_ai_cli(
-        prompt=prompt,
-        cwd=cwd,
-        ai_provider=provider,
-        ai_model=model,
-        cli_flags=cli_flags,
-        output_format="json",
-        session_id=session_id,
-        continue_session=continue_session,
-    )
+    pricing_task = asyncio.create_task(pricing_cache.load())
+    try:
+        result = await call_ai_cli(
+            prompt=prompt,
+            cwd=cwd,
+            ai_provider=provider,
+            ai_model=model,
+            cli_flags=cli_flags,
+            output_format="json",
+            session_id=session_id,
+            continue_session=continue_session,
+        )
+        if result.success and result.usage is not None and result.usage.cost_usd is None:
+            try:
+                await pricing_task
+            except Exception as exc:  # noqa: BLE001 — pricing load is best-effort
+                log.warning("pricing_cache.load() failed: %s", exc)
+            else:
+                result.usage.cost_usd = pricing_cache.calculate_cost(
+                    provider=result.usage.provider or provider,
+                    model=result.usage.model or model,
+                    input_tokens=result.usage.input_tokens,
+                    output_tokens=result.usage.output_tokens,
+                    cache_read_tokens=result.usage.cache_read_tokens,
+                    cache_write_tokens=result.usage.cache_write_tokens,
+                )
+        return result
+    finally:
+        if not pricing_task.done():
+            pricing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await pricing_task
+        elif not pricing_task.cancelled():
+            # Retrieve any unhandled exception so asyncio does not warn on GC.
+            pricing_task.exception()
 
 
 def run(

@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from myk_pi_tools.db.query import _get_git_root
+from myk_pi_tools.utils import find_git_root
 
 
 def log(message: str) -> None:
@@ -178,7 +178,7 @@ class MemoryFile:
 
     def __init__(self, file_path: Path | None = None) -> None:
         if file_path is None:
-            git_root = _get_git_root()
+            git_root = find_git_root()
             self.file_path = git_root / ".pi" / "memory" / "topics"
         else:
             self.file_path = file_path

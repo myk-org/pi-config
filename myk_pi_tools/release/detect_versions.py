@@ -13,14 +13,17 @@ import json
 import os
 import re
 import sys
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore[no-redef]
+from myk_pi_tools.release._common import (
+    extract_json_version,
+    extract_py_version,
+    extract_toml_version,
+)
 
 EXCLUDED_DIRS = frozenset({
     ".git",
@@ -69,11 +72,7 @@ def _parse_pyproject_toml(filepath: Path) -> str | None:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return None
-    try:
-        version = data["project"]["version"]
-    except (KeyError, TypeError):
-        return None
-    return version if isinstance(version, str) else None
+    return extract_toml_version(data, "project")
 
 
 def _parse_package_json(filepath: Path) -> str | None:
@@ -82,8 +81,7 @@ def _parse_package_json(filepath: Path) -> str | None:
         data = json.loads(filepath.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    version = data.get("version")
-    return version if isinstance(version, str) else None
+    return extract_json_version(data)
 
 
 def _parse_setup_cfg(filepath: Path) -> str | None:
@@ -112,11 +110,7 @@ def _parse_cargo_toml(filepath: Path) -> str | None:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return None
-    try:
-        version = data["package"]["version"]
-    except (KeyError, TypeError):
-        return None
-    return version if isinstance(version, str) else None
+    return extract_toml_version(data, "package")
 
 
 def _parse_gradle(filepath: Path) -> str | None:
@@ -135,8 +129,7 @@ def _parse_python_version(filepath: Path) -> str | None:
         content = filepath.read_text(encoding="utf-8")
     except OSError:
         return None
-    match = re.search(r'^\s*__version__\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
-    return match.group(1) if match else None
+    return extract_py_version(content)
 
 
 def _should_skip_dir(dir_name: str) -> bool:
@@ -194,7 +187,36 @@ def _uv_members(data: dict) -> object:
     return current.get("members")
 
 
-def _find_uv_workspace_members(root: Path) -> list[Path]:
+_UNSET: object = object()
+
+
+def _load_root_pyproject(pyproject: Path) -> dict[str, Any] | None:
+    """Load root pyproject.toml once; warn on parse/read error and return None."""
+    if not pyproject.is_file():
+        return None
+    try:
+        with pyproject.open("rb") as fh:
+            return tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        # Not fatal: the other scans still run. Say so, because a silently
+        # skipped uv workspace is how a member's version stopped tracking a
+        # release in the first place.
+        print(f"Could not read {pyproject} for uv workspace members: {exc}", file=sys.stderr)
+        return None
+
+
+def _load_root_package_json(package_json: Path) -> dict[str, Any] | None:
+    """Load root package.json once; return None if absent or invalid."""
+    if not package_json.is_file():
+        return None
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _find_uv_workspace_members(root: Path, *, pyproject_data: object = _UNSET) -> list[Path]:
     """Directories declared as uv workspace members in the root pyproject.toml.
 
     uv workspaces are separate from npm's, and this repo has one: pi-docsite is
@@ -202,18 +224,12 @@ def _find_uv_workspace_members(root: Path) -> list[Path]:
     pyproject.toml and its version silently stopped tracking the release.
     """
     pyproject = root / "pyproject.toml"
-    if not pyproject.is_file():
-        return []
-    try:
-        with pyproject.open("rb") as fh:
-            data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        # Not fatal: the other scans still run. Say so, because a silently
-        # skipped uv workspace is how a member's version stopped tracking a
-        # release in the first place.
-        print(f"Could not read {pyproject} for uv workspace members: {exc}", file=sys.stderr)
+    data = _load_root_pyproject(pyproject) if pyproject_data is _UNSET else pyproject_data
+    if not isinstance(data, dict):
         return []
     members = _uv_members(data)
+    if members is None:
+        return []
     if not isinstance(members, list):
         print(
             f"Ignoring [tool.uv.workspace] members in {pyproject}: expected a list, got {type(members).__name__}",
@@ -231,11 +247,12 @@ def _find_uv_workspace_members(root: Path) -> list[Path]:
     return found
 
 
-def detect_version_files(root: Path | None = None) -> list[VersionFile]:
+def detect_version_files(root: Path | None = None, *, quiet: bool = False) -> list[VersionFile]:
     """Detect version files in a repository.
 
     Args:
         root: Repository root directory. Defaults to current working directory.
+        quiet: Suppress progress output on stderr.
 
     Returns:
         List of detected version files with their current versions.
@@ -243,51 +260,56 @@ def detect_version_files(root: Path | None = None) -> list[VersionFile]:
     if root is None:
         root = Path.cwd()
 
-    print("Scanning for version files...", file=sys.stderr)
+    if not quiet:
+        print("Scanning for version files...", file=sys.stderr)
 
     if not root.is_dir():
         return []
 
+    # Parse root pyproject.toml and package.json once and share with workspace scanners.
+    root_pyproject_data = _load_root_pyproject(root / "pyproject.toml")
+    root_pkg_data = _load_root_package_json(root / "package.json")
+
     results: list[VersionFile] = []
 
     for filename, parser, file_type in _ROOT_SCANNERS:
-        filepath = root / filename
-        if filepath.is_file():
-            version = parser(filepath)
-            if version:
-                results.append(VersionFile(path=filename, current_version=version, file_type=file_type))
+        if filename == "pyproject.toml":
+            version = extract_toml_version(root_pyproject_data, "project")
+        elif filename == "package.json":
+            version = extract_json_version(root_pkg_data)
+        else:
+            filepath = root / filename
+            version = parser(filepath) if filepath.is_file() else None
+        if version:
+            results.append(VersionFile(path=filename, current_version=version, file_type=file_type))
 
     # Scan npm workspace packages for version files
-    root_pkg_json = root / "package.json"
-    if root_pkg_json.is_file():
-        try:
-            root_pkg_data = json.loads(root_pkg_json.read_text(encoding="utf-8"))
-            workspaces = root_pkg_data.get("workspaces", [])
-            if isinstance(workspaces, list):
-                for workspace_pattern in workspaces:
-                    for workspace_dir in sorted(glob.glob(str(root / workspace_pattern))):
-                        ws_path = Path(workspace_dir)
-                        if not ws_path.is_dir():
-                            continue
-                        for filename, parser, file_type in _ROOT_SCANNERS:
-                            filepath = ws_path / filename
-                            if filepath.is_file():
-                                version = parser(filepath)
-                                if version:
-                                    results.append(
-                                        VersionFile(
-                                            path=filepath.relative_to(root).as_posix(),
-                                            current_version=version,
-                                            file_type=file_type,
-                                        )
-                                    )
-        except (OSError, json.JSONDecodeError):
-            pass
+    workspaces = root_pkg_data.get("workspaces", []) if root_pkg_data is not None else []
+    if isinstance(workspaces, list):
+        for workspace_pattern in workspaces:
+            if not isinstance(workspace_pattern, str):
+                continue
+            for workspace_dir in sorted(glob.glob(str(root / workspace_pattern))):
+                ws_path = Path(workspace_dir)
+                if not ws_path.is_dir():
+                    continue
+                for filename, parser, file_type in _ROOT_SCANNERS:
+                    filepath = ws_path / filename
+                    if filepath.is_file():
+                        version = parser(filepath)
+                        if version:
+                            results.append(
+                                VersionFile(
+                                    path=filepath.relative_to(root).as_posix(),
+                                    current_version=version,
+                                    file_type=file_type,
+                                )
+                            )
 
     # Scan uv workspace members. A package can be in either workspace or both;
     # a path already recorded is skipped so it is not listed twice.
     seen_paths = {vf.path for vf in results}
-    for ws_path in _find_uv_workspace_members(root):
+    for ws_path in _find_uv_workspace_members(root, pyproject_data=root_pyproject_data):
         for filename, parser, file_type in _ROOT_SCANNERS:
             filepath = ws_path / filename
             if not filepath.is_file():
@@ -302,16 +324,17 @@ def detect_version_files(root: Path | None = None) -> list[VersionFile]:
 
     results.extend(_find_python_version_files(root))
 
-    for vf in results:
-        print(f"Found: {vf.path} (v{vf.current_version})", file=sys.stderr)
-    print(f"Detected {len(results)} version file(s)", file=sys.stderr)
+    if not quiet:
+        for vf in results:
+            print(f"Found: {vf.path} (v{vf.current_version})", file=sys.stderr)
+        print(f"Detected {len(results)} version file(s)", file=sys.stderr)
 
     return results
 
 
 def run() -> None:
     """Entry point for CLI command."""
-    results = detect_version_files()
+    results = detect_version_files(quiet=not sys.stderr.isatty())
     output = {
         "version_files": [r.to_dict() for r in results],
         "count": len(results),
