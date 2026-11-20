@@ -14,9 +14,11 @@
  */
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { createLogger } from "../shared/logger.js";
+import { resolvePiAgentDir } from "../shared/pi-agent-dir.js";
+
+export { resolvePiAgentDir };
 
 const log = createLogger("providers");
 
@@ -147,22 +149,6 @@ export type PiAgentDefaults = {
   /** When non-empty, pi scopes models (same class as --models). */
   enabledModels?: string[];
 };
-
-/**
- * Resolve pi agent config directory.
- * Prefer explicit agentDir; else PI_CODING_AGENT_DIR; else ~/.pi/agent.
- * ExtensionContext has cwd but no agentDir — callers should not cast agentDir
- * from ctx; pass agentDir only for tests or explicit override.
- */
-export function resolvePiAgentDir(agentDir?: string | null): string {
-  const explicit = typeof agentDir === "string" ? agentDir.trim() : "";
-  if (explicit) return explicit;
-  const envDir = typeof process.env.PI_CODING_AGENT_DIR === "string"
-    ? process.env.PI_CODING_AGENT_DIR.trim()
-    : "";
-  if (envDir) return envDir;
-  return join(homedir(), ".pi", "agent");
-}
 
 /** Resolve path to settings.json under the agent dir (global settings). */
 export function resolvePiAgentSettingsPath(agentDir?: string | null): string {

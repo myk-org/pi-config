@@ -8,6 +8,7 @@ import { ClaudeDriver } from "../../../extensions/providers/claude-driver.js";
 import { GeminiDriver } from "../../../extensions/providers/gemini-driver.js";
 import { CursorCliDriver } from "../../../extensions/providers/cursor-cli-driver.js";
 import { AcpxDriver } from "../../../extensions/providers/acpx-driver.js";
+import { createCliStreamEventForwarder } from "../../../extensions/providers/cli-driver-shared.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -179,5 +180,26 @@ describe("driver create lifecycle", () => {
     assert.equal(instance.instanceId, "test-cursor");
     assert.equal(typeof instance.dispose, "function");
     await instance.dispose();
+  });
+
+  it("createCliStreamEventForwarder forwards delta events directly without reallocation (#1237)", () => {
+    const saved: string[] = [];
+    const forwarded: any[] = [];
+    const key = { cwd: "/tmp", agent: "claude" as const, model: "default", piSessionId: "pi-1" };
+    const forward = createCliStreamEventForwarder(
+      key,
+      (_k, sid) => { saved.push(sid); },
+      (ev) => { forwarded.push(ev); },
+    )!;
+    const textEv = { kind: "text_delta" as const, text: "hi" };
+    const thinkEv = { kind: "thinking_delta" as const, text: "hmm" };
+    const sessEv = { kind: "session" as const, sessionId: "ext-1" };
+    forward(textEv);
+    forward(thinkEv);
+    forward(sessEv);
+    assert.strictEqual(forwarded[0], textEv);
+    assert.strictEqual(forwarded[1], thinkEv);
+    assert.strictEqual(forwarded[2], sessEv);
+    assert.deepEqual(saved, ["ext-1"]);
   });
 });

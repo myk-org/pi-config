@@ -12,9 +12,9 @@
  */
 
 import type { ProviderSnapshot, DiscoveredModel } from "./provider-driver.js";
-import { fileLog } from "./file-logger.js";
+import { createLogger } from "./logger.js";
 
-const LOG_DOMAIN = "managed-refresh";
+const log = createLogger("managed-refresh");
 
 // ---------------------------------------------------------------------------
 // Types
@@ -137,8 +137,7 @@ export function makeManagedSnapshot<Settings = unknown>(
           publishSnapshot,
         }).catch((err) => {
           if (!disposed) {
-            fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-              `enrichment failed: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(`enrichment failed: ${err instanceof Error ? err.message : String(err)}`);
           }
         });
       }
@@ -146,8 +145,7 @@ export function makeManagedSnapshot<Settings = unknown>(
       return nextSnapshot;
     } catch (err) {
       if (!disposed) {
-        fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-          `refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`refresh failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       return currentSnapshot;
     } finally {
@@ -160,16 +158,14 @@ export function makeManagedSnapshot<Settings = unknown>(
   // them via initialSnapshot — avoids duplicate discovery on startup.
   if (!opts.skipInitialRefresh) {
     doRefresh(true).catch((err) => {
-      fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-        `initial refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`initial refresh failed: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 
   // Periodic refresh
   const timer = setInterval(() => {
     doRefresh(true).catch((err) => {
-      fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-        `periodic refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`periodic refresh failed: ${err instanceof Error ? err.message : String(err)}`);
     });
   }, refreshIntervalMs);
 

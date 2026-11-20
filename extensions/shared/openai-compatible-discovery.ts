@@ -1,13 +1,12 @@
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
 import { createLogger } from "./logger.js";
+import { resolvePiAgentDir } from "./pi-agent-dir.js";
 import {
   classifyCostRecord,
-  isPricingUnknown,
   markPricingKnown,
   markPricingUnknown,
   priceOrFallback,
@@ -15,8 +14,6 @@ import {
 } from "./pricing-provenance.js";
 
 const log = createLogger("openai-compatible-discovery");
-
-export const OPENAI_COMPATIBLE_DISCOVERY_TTL_MS = 5 * 60 * 1000;
 
 export interface ResolvedOpenAiCompatibleConnection {
   baseUrl?: string;
@@ -87,7 +84,7 @@ function materializeInput(value: unknown): ("text" | "image")[] {
   return ["text", "image"];
 }
 
-function materializeCost(value: unknown, context?: Record<string, unknown>): Model<Api>["cost"] {
+function materializeCost(value: unknown, priced: boolean, context?: Record<string, unknown>): Model<Api>["cost"] {
   const source = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
@@ -103,14 +100,10 @@ function materializeCost(value: unknown, context?: Record<string, unknown>): Mod
     cacheRead: priceOrFallback(source.cacheRead, PI_STATIC_MODEL_DEFAULTS.cost.cacheRead),
     cacheWrite: priceOrFallback(source.cacheWrite, PI_STATIC_MODEL_DEFAULTS.cost.cacheWrite),
   };
-  log.debug("Materialized discovery cost", { components: Object.keys(cost).length, priced: classifyCostRecord(source, ["input", "output", "cacheRead", "cacheWrite"], context) === "known", ...context });
+  if (log.isDebugEnabled()) {
+    log.debug("Materialized discovery cost", { components: Object.keys(cost).length, priced, ...context });
+  }
   return cost;
-}
-export interface CachedOpenAiCompatibleDiscovery<T> {
-  models: readonly T[];
-  /** A successful refresh produced this cache entry, even if it found no models. */
-  hasSnapshot: boolean;
-  stale: boolean;
 }
 export interface EligibleOpenAiCompatibleProvider {
   id: string;
@@ -131,16 +124,7 @@ export function formatOpenAiCompatibleDiscoverySummary(
 export function resolveOpenAiCompatibleModelsPath(
   agentDir?: string | null,
 ): string {
-  const configuredAgentDir =
-    typeof agentDir === "string" ? agentDir.trim() : "";
-  const envAgentDir =
-    typeof process.env.PI_CODING_AGENT_DIR === "string"
-      ? process.env.PI_CODING_AGENT_DIR.trim()
-      : "";
-  return join(
-    configuredAgentDir || envAgentDir || join(homedir(), ".pi", "agent"),
-    "models.json",
-  );
+  return join(resolvePiAgentDir(agentDir), "models.json");
 }
 
 /** Pi accepts a BOM, // comments, and trailing commas in models.json. */
@@ -535,6 +519,14 @@ export function materializeOpenAiCompatibleModels(
   for (const record of records) {
     if (typeof record.id !== "string" || seenIds.has(record.id)) continue;
     seenIds.add(record.id);
+    const debugContext = log.isDebugEnabled()
+      ? { provider: providerId, model: safeModelRef(record.id) }
+      : undefined;
+    const knownPricing = classifyCostRecord(
+      record.cost,
+      ["input", "output", "cacheRead", "cacheWrite"],
+      () => ({ source: "openai-compatible", ...(debugContext ?? { provider: providerId, model: safeModelRef(record.id) }) }),
+    ) === "known";
     const model: Model<Api> = {
       id: record.id,
       name: typeof record.name === "string" ? record.name : record.id,
@@ -545,7 +537,7 @@ export function materializeOpenAiCompatibleModels(
         ? record.reasoning
         : PI_STATIC_MODEL_DEFAULTS.reasoning,
       input: materializeInput(record.input),
-      cost: materializeCost(record.cost, { provider: providerId, model: safeModelRef(record.id) }),
+      cost: materializeCost(record.cost, knownPricing, debugContext),
       // Native Pi metadata wins. OpenAI-compatible gateways (LiteLLM et al.)
       // publish max_input_tokens as the input capacity — for shared-window
       // providers (OpenAI, Anthropic, GLM) that IS the context window, with
@@ -568,7 +560,7 @@ export function materializeOpenAiCompatibleModels(
     // are absent from it, so that provenance is marked explicitly. A record with no
     // valid component, or one mixing a valid price with an invalid one, is a
     // placeholder or malformed and stays unknown-priced.
-    if (classifyCostRecord(record.cost, ["input", "output", "cacheRead", "cacheWrite"], { source: "openai-compatible", provider: providerId, model: safeModelRef(record.id) }) === "known") {
+    if (knownPricing) {
       markPricingKnown(model);
     } else {
       markPricingUnknown(model);
@@ -576,77 +568,4 @@ export function materializeOpenAiCompatibleModels(
     models.push(model);
   }
   return models;
-}
-
-/** In-memory, bounded last-known-good cache. Failed results never replace it. */
-export class OpenAiCompatibleDiscoveryCache<T> {
-  private readonly entries = new Map<
-    string,
-    {
-      result: readonly T[];
-      hasSnapshot: boolean;
-      updatedAt: number;
-      refreshing?: Promise<CachedOpenAiCompatibleDiscovery<T>>;
-    }
-  >();
-  constructor(
-    private readonly options: {
-      ttlMs?: number;
-      maxScopes?: number;
-    } = {},
-  ) {}
-
-  clear(): void {
-    this.entries.clear();
-  }
-
-  async get(
-    refresh: () => Promise<readonly T[]>,
-    options: { forceRefresh?: boolean; nowMs?: number; cacheKey?: string } = {},
-  ): Promise<CachedOpenAiCompatibleDiscovery<T>> {
-    const nowMs = options.nowMs ?? Date.now();
-    const cacheKey = options.cacheKey ?? "default";
-    const ttlMs = this.options.ttlMs ?? OPENAI_COMPATIBLE_DISCOVERY_TTL_MS;
-    let entry = this.entries.get(cacheKey);
-    if (!entry) {
-      const maxScopes = this.options.maxScopes ?? 32;
-      if (this.entries.size >= maxScopes)
-        this.entries.delete(this.entries.keys().next().value!);
-      entry = { result: [], hasSnapshot: false, updatedAt: 0 };
-      this.entries.set(cacheKey, entry);
-    }
-    if (
-      !options.forceRefresh &&
-      entry.updatedAt > 0 &&
-      nowMs - entry.updatedAt <= ttlMs
-    ) {
-      return {
-        models: entry.result,
-        hasSnapshot: entry.hasSnapshot,
-        stale: false,
-      };
-    }
-    if (entry.refreshing) return entry.refreshing;
-
-    entry.refreshing = (async () => {
-      try {
-        const next = await refresh();
-        // The configured provider decides the catalog. The response byte limit
-        // protects memory without dropping valid model IDs.
-        entry!.result = next;
-        entry!.hasSnapshot = true;
-        entry!.updatedAt = nowMs;
-        return { models: entry!.result, hasSnapshot: true, stale: false };
-      } catch {
-        return {
-          models: entry!.result,
-          hasSnapshot: entry!.hasSnapshot,
-          stale: entry!.hasSnapshot,
-        };
-      } finally {
-        entry!.refreshing = undefined;
-      }
-    })();
-    return entry.refreshing;
-  }
 }

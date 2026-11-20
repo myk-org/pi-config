@@ -120,6 +120,7 @@ pi-config/
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
+│   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model + openai-compatible-discovery)
 │   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
 │   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
 │   ├── acpx-provider/              # ACPX provider — backward-compatible shim (re-exports for pi-sidecar)
@@ -139,6 +140,7 @@ pi-config/
 │   │   ├── session-shutdown.ts     # Teardown: stop reaper, clear maps, reset initialized (#752)
 │   │   ├── restore-default-model.ts # Cold-start restore of saved default (provider-agnostic) after auth-race fallback (#753)
 │   │   ├── built-in-drivers.ts     # Static driver list + agent→driver mappings
+│   │   ├── cli-driver-shared.ts    # Shared CLI driver/adapter factory + event forwarder (Claude, Gemini, Cursor CLI)
 │   │   ├── claude-driver.ts        # ClaudeDriver — ProviderDriver<ClaudeCliConfig> (CLI)
 │   │   ├── gemini-driver.ts        # GeminiDriver — ProviderDriver<GeminiCliConfig> (CLI)
 │   │   ├── cursor-cli-driver.ts    # CursorCliDriver — ProviderDriver<CursorCliConfig> (CLI)

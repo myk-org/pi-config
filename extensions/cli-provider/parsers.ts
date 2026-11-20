@@ -87,14 +87,66 @@ function assistantTextFromEvent(ev: any): string {
  * Handles both pure deltas and cumulative snapshots (cursor emits both).
  */
 export class StreamJsonAccumulator {
-  text = "";
+  private textParts: string[] = [];
+  private textLength = 0;
   thinking = "";
   sessionId?: string;
   usage?: CliUsage;
 
+  get text(): string {
+    if (this.textParts.length === 0) return "";
+    if (this.textParts.length === 1) return this.textParts[0];
+    const joined = this.textParts.join("");
+    this.textParts = [joined];
+    return joined;
+  }
+
+  set text(value: string) {
+    this.textParts = value ? [value] : [];
+    this.textLength = value.length;
+  }
+
+  private appendText(delta: string): void {
+    if (!delta) return;
+    this.textParts.push(delta);
+    this.textLength += delta.length;
+  }
+
+  private setText(value: string): void {
+    this.textParts = value ? [value] : [];
+    this.textLength = value.length;
+  }
+
+  private startsWithCurrentText(candidate: string): boolean {
+    if (candidate.length < this.textLength) return false;
+    if (this.textLength === 0) return true;
+    let offset = 0;
+    for (let i = 0; i < this.textParts.length; i++) {
+      const part = this.textParts[i];
+      if (!candidate.startsWith(part, offset)) return false;
+      offset += part.length;
+    }
+    return true;
+  }
+
+  private endsWithCurrentText(suffix: string): boolean {
+    if (suffix.length > this.textLength) return false;
+    if (suffix.length === 0) return true;
+    let remaining = suffix.length;
+    for (let i = this.textParts.length - 1; i >= 0 && remaining > 0; i--) {
+      const part = this.textParts[i];
+      if (part.length >= remaining) {
+        return part.endsWith(suffix.slice(0, remaining));
+      }
+      const tailOffset = remaining - part.length;
+      if (!suffix.startsWith(part, tailOffset)) return false;
+      remaining = tailOffset;
+    }
+    return remaining === 0;
+  }
+
   /** Feed one NDJSON object; returns events to emit to pi. */
-  push(ev: any): CliStreamEvent[] {
-    const out: CliStreamEvent[] = [];
+  push(ev: any, out: CliStreamEvent[] = []): CliStreamEvent[] {
     if (!ev || typeof ev !== "object") return out;
 
     if (typeof ev.session_id === "string") {
@@ -112,7 +164,7 @@ export class StreamJsonAccumulator {
 
     if (ev.type === "content_block_delta" && typeof ev.delta?.text === "string") {
       const delta = ev.delta.text;
-      this.text += delta;
+      this.appendText(delta);
       out.push({ kind: "text_delta", text: delta });
       return out;
     }
@@ -125,14 +177,14 @@ export class StreamJsonAccumulator {
       ev.content.length > 0
     ) {
       if (ev.delta === true) {
-        this.text += ev.content;
+        this.appendText(ev.content);
         out.push({ kind: "text_delta", text: ev.content });
-      } else if (ev.content.startsWith(this.text)) {
-        const delta = ev.content.slice(this.text.length);
-        this.text = ev.content;
+      } else if (this.startsWithCurrentText(ev.content)) {
+        const delta = ev.content.slice(this.textLength);
+        this.setText(ev.content);
         if (delta) out.push({ kind: "text_delta", text: delta });
-      } else if (!this.text) {
-        this.text = ev.content;
+      } else if (this.textLength === 0) {
+        this.setText(ev.content);
         out.push({ kind: "text_delta", text: ev.content });
       }
       return out;
@@ -140,12 +192,12 @@ export class StreamJsonAccumulator {
 
     const piece = assistantTextFromEvent(ev);
     if (piece) {
-      if (piece.startsWith(this.text)) {
-        const delta = piece.slice(this.text.length);
-        this.text = piece;
+      if (this.startsWithCurrentText(piece)) {
+        const delta = piece.slice(this.textLength);
+        this.setText(piece);
         if (delta) out.push({ kind: "text_delta", text: delta });
-      } else if (!this.text.endsWith(piece)) {
-        this.text += piece;
+      } else if (!this.endsWithCurrentText(piece)) {
+        this.appendText(piece);
         out.push({ kind: "text_delta", text: piece });
       }
     }
@@ -158,17 +210,17 @@ export class StreamJsonAccumulator {
             ? ev.text
             : undefined;
       if (finalText !== undefined) {
-        if (finalText.startsWith(this.text)) {
-          const delta = finalText.slice(this.text.length);
-          this.text = finalText;
+        if (this.startsWithCurrentText(finalText)) {
+          const delta = finalText.slice(this.textLength);
+          this.setText(finalText);
           if (delta) out.push({ kind: "text_delta", text: delta });
         } else if (this.text !== finalText) {
           // Prefer authoritative result if stream was wrong/empty
-          if (!this.text) {
-            this.text = finalText;
+          if (this.textLength === 0) {
+            this.setText(finalText);
             out.push({ kind: "text_delta", text: finalText });
           } else {
-            this.text = finalText;
+            this.setText(finalText);
           }
         }
       }
@@ -189,17 +241,22 @@ export class StreamJsonAccumulator {
   feedChunk(chunk: string, lineBuffer: { value: string }): CliStreamEvent[] {
     lineBuffer.value += chunk;
     const events: CliStreamEvent[] = [];
-    const lines = lineBuffer.value.split("\n");
-    lineBuffer.value = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        events.push(...this.push(JSON.parse(trimmed)));
-      } catch {
-        /* incomplete / non-json line */
+    const buf = lineBuffer.value;
+    let start = 0;
+    let nl = buf.indexOf("\n");
+    while (nl !== -1) {
+      const trimmed = buf.slice(start, nl).trim();
+      if (trimmed) {
+        try {
+          this.push(JSON.parse(trimmed), events);
+        } catch {
+          /* incomplete / non-json line */
+        }
       }
+      start = nl + 1;
+      nl = buf.indexOf("\n", start);
     }
+    lineBuffer.value = start === 0 ? buf : buf.slice(start);
     return events;
   }
 

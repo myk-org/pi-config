@@ -5,9 +5,11 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { entryHash } from "../../../extensions/orchestrator/memory-scoring.js";
+import { clearEnforcementRulesCache } from "../../../extensions/orchestrator/enforcement-rules.js";
 import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../../../extensions/shared/build-system-prompt.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -81,6 +83,72 @@ describe("buildExternalSystemPrompt", () => {
       // Should not crash, should not include enforced rules section
       assert.ok(!result.includes("Enforced Rules"));
     } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips enforced rules already present verbatim in systemPrompt (#1242)", () => {
+    const tmpDir = makeTempDir("build-prompt-dedup-");
+    const now = new Date().toISOString();
+    const ruleAlreadyInPrompt = "never use git add dot";
+    const ruleMissingFromPrompt = "run typecheck after ts edit";
+    const lineA = `- [lesson] ${ruleAlreadyInPrompt}`;
+    const lineB = `- [lesson] ${ruleMissingFromPrompt}`;
+    try {
+      mkdirSync(join(tmpDir, ".pi", "memory", "topics"), { recursive: true });
+      writeFileSync(
+        join(tmpDir, ".pi", "memory", "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [entryHash(lineA)]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+              trigger: "bash_contains git add .",
+              action: "block",
+            },
+            [entryHash(lineB)]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+              trigger: "file_modified *.ts",
+              action: "run_after npm run typecheck",
+            },
+          },
+          lastRebuild: now,
+        }) + "\n",
+      );
+      writeFileSync(
+        join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
+        `# Lessons\n${lineA}\n${lineB}\n`,
+      );
+      clearEnforcementRulesCache();
+
+      // When only ruleAlreadyInPrompt is in systemPrompt, only ruleMissingFromPrompt is appended
+      const partial = buildExternalSystemPrompt({
+        messages: [{ role: "system", content: `<project_memory>\n${ruleAlreadyInPrompt}\n</project_memory>`, timestamp: 1 }],
+      } as TranscriptContext, tmpDir)!;
+      assert.ok(partial.includes("## Enforced Rules (MANDATORY)"));
+      assert.ok(!partial.includes("bash_contains git add .") && !partial.includes("- NEVER: git add ."));
+      assert.ok(partial.includes(ruleMissingFromPrompt) || partial.includes("npm run typecheck"));
+
+      // When BOTH rules are already in systemPrompt, the Enforced Rules section is omitted entirely
+      const full = buildExternalSystemPrompt({
+        messages: [{ role: "system", content: `<project_memory>\n${ruleAlreadyInPrompt}\n${ruleMissingFromPrompt}\n</project_memory>`, timestamp: 1 }],
+      } as TranscriptContext, tmpDir)!;
+      assert.ok(!full.includes("## Enforced Rules (MANDATORY)"));
+    } finally {
+      clearEnforcementRulesCache();
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });

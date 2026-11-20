@@ -12,10 +12,9 @@
  * @module providers/acpx-driver
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { rm } from "node:fs/promises";
 import type {
   ConfigSchema,
   DiscoveredModel,
@@ -30,16 +29,14 @@ import type {
   TurnResult,
 } from "../shared/provider-driver.js";
 import { makeManagedSnapshot, buildInitialSnapshot } from "../shared/managed-refresh.js";
+import { discoverAcpxModelIds } from "../acpx-provider/index.js";
 import { loadAcpxRuntime, type AcpxRuntimeModule } from "../acpx-provider/load-runtime.js";
 import { modelIdToDisplayName } from "../acpx-provider/runtime-models.js";
-import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../shared/build-system-prompt.js";
-import { fileLog } from "../shared/file-logger.js";
 import { createLogger } from "../shared/logger.js";
 import { resolveAdapterCwd, adapterMemoryKey } from "../shared/session-cwd.js";
 import { resolveBinary } from "../shared/resolve-binary.js";
 
-const LOG_DOMAIN = "acpx-driver";
-const log = createLogger(LOG_DOMAIN);
+const log = createLogger("acpx-driver");
 const DRIVER_KIND = "acpx";
 
 // ---------------------------------------------------------------------------
@@ -81,8 +78,7 @@ export function createAcpxAdapter(
   runtime: AcpxRuntime,
   initialHandle?: AcpRuntimeHandle,
 ): ProviderAdapterShape {
-  fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-    `createAcpxAdapter bootCwdBound=${Boolean(cwd)} agent=${config.agent}`);
+  log.debug(`createAcpxAdapter bootCwdBound=${Boolean(cwd)} agent=${config.agent}`);
   const handles = new Map<string, AcpRuntimeHandle>();
   const prevCumulative = new Map<string, { inputTokens?: number; outputTokens?: number; totalTokens?: number }>();
   // Seed with the discovery handle so the first turn reuses it when cwd matches boot
@@ -192,9 +188,7 @@ export function createAcpxAdapter(
       const model = opts.model || "default";
       const turnCwd = resolveAdapterCwd(opts, cwd);
       log.debug("building start-session system prompt", { model, turnCwd, supplied: Boolean(opts.systemPrompt) });
-      const systemPrompt = opts.systemPrompt
-        ? opts.systemPrompt
-        : buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
+      const systemPrompt = opts.systemPrompt || undefined;
       const key = handleMapKey(model, turnCwd);
       const epoch = handleEpochs.get(key) ?? 0;
       await runExclusive(key, async () => {
@@ -221,7 +215,7 @@ export function createAcpxAdapter(
       const epoch = handleEpochs.get(handleKey) ?? 0;
       return runExclusive(handleKey, async () => {
       assertCurrent(handleKey, epoch, opts?.signal);
-      const systemPrompt = requestedSystemPrompts.get(handleKey) ?? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
+      const systemPrompt = requestedSystemPrompts.get(handleKey);
       const promptChanged = appliedSystemPrompts.has(handleKey) && appliedSystemPrompts.get(handleKey) !== systemPrompt;
       log.debug("building turn system prompt", { model: handle.model, turnCwd, promptChanged });
       const acpxHandle = await ensureHandle(handle.model, systemPrompt, turnCwd, epoch, opts?.signal);
@@ -410,49 +404,6 @@ export function createAcpxAdapter(
 }
 
 // ---------------------------------------------------------------------------
-// Discovery helper
-// ---------------------------------------------------------------------------
-
-async function discoverAcpxModelsInternal(
-  agent: string,
-  cwd: string,
-): Promise<string[]> {
-  const { createAcpRuntime, createFileSessionStore, createAgentRegistry } =
-    await loadAcpxRuntime();
-
-  const uid = randomUUID().slice(0, 8);
-  const stateDir = path.join(os.homedir(), ".acpx", `discover-${process.pid}-${uid}`);
-  const runtime = createAcpRuntime({
-    cwd,
-    sessionStore: createFileSessionStore({ stateDir }),
-    agentRegistry: createAgentRegistry(),
-    permissionMode: "deny-all",
-  });
-
-  let handle: AcpRuntimeHandle | undefined;
-  try {
-    handle = await runtime.ensureSession({
-      sessionKey: `discover-${agent}-${uid}`,
-      agent,
-      mode: "oneshot",
-      cwd,
-    });
-
-    const status = await runtime.getStatus({ handle });
-    return status.models?.availableModelIds || [];
-  } catch (err) {
-    fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-      `model discovery failed for ${agent}: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
-  } finally {
-    if (handle) {
-      await runtime.close({ handle, reason: "discovery complete" }).catch(() => {});
-    }
-    await rm(stateDir, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
 
@@ -517,8 +468,7 @@ export const AcpxDriver: ProviderDriver<AcpxConfig> = {
       const status = await runtime.getStatus({ handle: initialHandle });
       discoveredModelIds = status.models?.availableModelIds || [];
     } catch (err) {
-      fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-        `initial model discovery failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`initial model discovery failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     const discoveredModels: DiscoveredModel[] = discoveredModelIds.map((id) => ({
@@ -532,7 +482,7 @@ export const AcpxDriver: ProviderDriver<AcpxConfig> = {
       initialSnapshot: () => buildInitialSnapshot(true, discoveredModels),
       checkProvider: async () => {
         try {
-          const modelIds = await discoverAcpxModelsInternal(config.agent, cwd);
+          const modelIds = await discoverAcpxModelIds(config.agent, cwd);
           const models = modelIds.map((id) => ({
             id,
             name: modelIdToDisplayName(id),
