@@ -22,36 +22,49 @@ _PR_URL_OPTIONAL_SCHEME_RE = re.compile(
 )
 
 
-def find_git_root() -> Path:
+def find_git_root(cwd: Path | None = None) -> Path:
     """Detect the main git repo root (resolving through git worktrees).
 
     Uses ``--git-common-dir`` so worktrees resolve to the shared main repo root,
     falling back to ``--show-toplevel`` and walking up to find ``.pi/``.
 
+    Args:
+        cwd: Optional working directory to resolve from (defaults to current directory).
+
     Raises:
         RuntimeError: If git fails, times out, or is not installed.
     """
+    work_dir = str(cwd) if cwd is not None else None
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=work_dir,
             capture_output=True,
             text=True,
             timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             return Path(result.stdout.strip()).parent
+        if result.returncode == 128 and "not a git repository" in result.stderr.lower():
+            raise RuntimeError(f"git rev-parse failed: {result.stderr.strip()}")
 
         result = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
+            cwd=work_dir,
             capture_output=True,
             text=True,
             timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
-            return Path(result.stdout.strip()).resolve().parent
+            git_dir = Path(result.stdout.strip())
+            if not git_dir.is_absolute():
+                base = cwd if cwd is not None else Path.cwd()
+                git_dir = (base / git_dir).resolve()
+            return git_dir.parent
 
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
+            cwd=work_dir,
             capture_output=True,
             text=True,
             timeout=5,
@@ -71,6 +84,8 @@ def find_git_root() -> Path:
         raise RuntimeError("git command timed out") from exc
     except FileNotFoundError as exc:
         raise RuntimeError("git command not found") from exc
+    except OSError as exc:
+        raise RuntimeError(f"git command failed: {exc}") from exc
 
 
 def run_gh(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import errno
 import json
-import logging
 import math
 import os
 import re
@@ -16,7 +15,10 @@ from typing import Any
 
 import click
 
-log = logging.getLogger(__name__)
+from myk_pi_tools.logger import create_logger
+from myk_pi_tools.utils import find_git_root
+
+log = create_logger(__name__)
 
 SETTINGS_FILENAMES = ("pi-config-settings.json",)
 
@@ -296,24 +298,10 @@ AGENT_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
 def _resolve_repo_root(cwd: Path | None = None) -> Path:
     """Resolve main repo root via git-common-dir (matches TS resolveRepoRoot)."""
-    work_dir = str(cwd) if cwd is not None else None
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            cwd=work_dir,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            git_dir = Path(result.stdout.strip())
-            if not git_dir.is_absolute():
-                base = Path(work_dir) if work_dir else Path.cwd()
-                git_dir = (base / git_dir).resolve()
-            return git_dir.parent
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return Path(work_dir) if work_dir else Path.cwd()
+        return find_git_root(cwd)
+    except RuntimeError:
+        return Path(cwd) if cwd is not None else Path.cwd()
 
 
 def _is_number(value: Any) -> bool:
@@ -408,9 +396,7 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
             filtered = [e for e in value if isinstance(e, str) and e]
             rejected = len(value) - len(filtered)
             if rejected:
-                logging.getLogger(__name__).debug(
-                    "settings: dropped %d invalid string_list entrie(s) for %s", rejected, key
-                )
+                log.debug("settings: dropped %d invalid string_list entrie(s) for %s", rejected, key)
             if filtered:
                 return filtered
         return None
