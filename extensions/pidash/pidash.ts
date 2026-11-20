@@ -111,6 +111,21 @@ export function gitStatusEqual(a: GitStatus | null, b: GitStatus): boolean {
   return a !== null && a.branch === b.branch && a.dirty === b.dirty && a.changes === b.changes;
 }
 
+/** True only when an async git status check still belongs to the active connection and session epoch. */
+export function shouldPublishPeriodicGitStatus(opts: {
+  shuttingDown: boolean;
+  connected: boolean;
+  sameSocket: boolean;
+  startEpoch: number;
+  currentEpoch: number;
+  lastGitStatus: GitStatus | null;
+  nextGitStatus: GitStatus;
+}): boolean {
+  if (opts.shuttingDown || !opts.connected || !opts.sameSocket) return false;
+  if (opts.startEpoch !== opts.currentEpoch) return false;
+  return !gitStatusEqual(opts.lastGitStatus, opts.nextGitStatus);
+}
+
 export async function getGitStatus(cwd: string): Promise<GitStatus> {
   try {
     const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "-b"], {
@@ -169,6 +184,7 @@ export function registerPidash(
   let comsIdentityProject: string | undefined;
   let trailTokenSavings: number | undefined;
   let lastGitStatus: GitStatus | null = null;
+  let sessionEpoch = 0;
   const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
 
   // Listen for coms identity — coms ext emits this after boot
@@ -702,8 +718,9 @@ export function registerPidash(
     }
 
     try {
+      const startEpoch = sessionEpoch;
       const git = await getGitStatus(ctx.cwd);
-      if (shuttingDown || !isLiveExtensionCtx(ctx)) {
+      if (shuttingDown || !isLiveExtensionCtx(ctx) || startEpoch !== sessionEpoch) {
         connecting = false;
         return;
       }
@@ -1032,6 +1049,7 @@ export function registerPidash(
       if (shuttingDown || !ws || !connected || !lastCtx || inFlight) return;
       const ctx = lastCtx;
       const activeWs = ws;
+      const startEpoch = sessionEpoch;
       if (!isLiveExtensionCtx(ctx)) {
         log.debug("periodic status stopped — stale ctx after session replacement");
         lastCtx = null;
@@ -1041,8 +1059,15 @@ export function registerPidash(
       inFlight = true;
       try {
         const git = await getGitStatus(ctx.cwd);
-        if (shuttingDown || !connected || ws !== activeWs) return;
-        if (gitStatusEqual(lastGitStatus, git)) return;
+        if (!shouldPublishPeriodicGitStatus({
+          shuttingDown,
+          connected,
+          sameSocket: ws === activeWs,
+          startEpoch,
+          currentEpoch: sessionEpoch,
+          lastGitStatus,
+          nextGitStatus: git,
+        })) return;
         lastGitStatus = git;
         activeWs.send(JSON.stringify({
           type: "update_info",
@@ -1086,6 +1111,7 @@ export function registerPidash(
         return;
       }
       // Already connected — session switched (e.g., /resume, /new)
+      sessionEpoch++;
       eventBuffer.length = 0; // Clear stale events to prevent cross-session replay on reconnect
       activitySequence = 0;
       activity = "idle";

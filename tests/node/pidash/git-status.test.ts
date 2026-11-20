@@ -10,6 +10,7 @@ import {
   getGitStatus,
   gitStatusEqual,
   parseGitStatusPorcelainB,
+  shouldPublishPeriodicGitStatus,
 } from "../../../extensions/pidash/pidash.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -61,6 +62,27 @@ describe("gitStatusEqual", () => {
     assert.equal(gitStatusEqual(base, { branch: "main", dirty: false, changes: 0 }), true);
     assert.equal(gitStatusEqual(base, { branch: "dev", dirty: false, changes: 0 }), false);
     assert.equal(gitStatusEqual(base, { branch: "main", dirty: true, changes: 1 }), false);
+  });
+});
+
+describe("shouldPublishPeriodicGitStatus", () => {
+  it("drops stale async results when sessionEpoch changed during await", () => {
+    const base = {
+      shuttingDown: false,
+      connected: true,
+      sameSocket: true,
+      startEpoch: 1,
+      currentEpoch: 1,
+      lastGitStatus: { branch: "old", dirty: false, changes: 0 },
+      nextGitStatus: { branch: "new", dirty: true, changes: 1 },
+    };
+    assert.equal(shouldPublishPeriodicGitStatus(base), true);
+    assert.equal(shouldPublishPeriodicGitStatus({ ...base, currentEpoch: 2 }), false);
+    assert.equal(shouldPublishPeriodicGitStatus({ ...base, sameSocket: false }), false);
+    assert.equal(
+      shouldPublishPeriodicGitStatus({ ...base, nextGitStatus: { branch: "old", dirty: false, changes: 0 } }),
+      false,
+    );
   });
 });
 
