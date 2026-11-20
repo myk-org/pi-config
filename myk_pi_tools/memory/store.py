@@ -27,6 +27,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from myk_pi_tools.db.query import _get_git_root
 
@@ -55,6 +56,58 @@ def _legacy_fnv_hash(text: str) -> str:
         h ^= ord(ch)
         h = (h * 0x01000193) & 0xFFFFFFFF
     return f"{h:08x}"
+
+
+def _read_latest_jsonl_dict(jsonl_path: Path, chunk_size: int = 65536) -> dict[str, Any] | None:
+    """Read the last valid JSON object line from a JSONL file using reverse chunked I/O."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    with jsonl_path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        if pos == 0:
+            return None
+
+        tail_chunks: list[bytes] = []
+        while pos > 0:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            chunk = f.read(read_size)
+            if not chunk:
+                break
+            if pos > 0 and b"\n" not in chunk:
+                tail_chunks.append(chunk)
+                continue
+
+            if tail_chunks:
+                buf = chunk + b"".join(reversed(tail_chunks))
+                tail_chunks.clear()
+            else:
+                buf = chunk
+
+            parts = buf.split(b"\n")
+            if pos > 0:
+                tail_chunks.append(parts[0])
+                lines = parts[1:]
+            else:
+                lines = parts
+
+            for raw_bytes in reversed(lines):
+                try:
+                    raw = raw_bytes.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    continue
+                if not raw:
+                    continue
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+
+    return None
 
 
 @contextmanager
@@ -212,9 +265,23 @@ class MemoryFile:
             self._cleanup_db_files()
             return 0
 
-        # Add all DB memories to topic files as learned entries
+        # Group entries by topic file so each file is read and written once
+        # while preserving row order and exact add_learned() formatting.
+        grouped: dict[Path, tuple[str, list[str]]] = {}
         for row in rows:
-            self.add_learned(row["category"], row["summary"])
+            category = row["category"]
+            entry = f"- [{category}] {row['summary']}"
+            topic_path = self._topic_path(category)
+            if topic_path not in grouped:
+                grouped[topic_path] = (category, [entry])
+            else:
+                grouped[topic_path][1].append(entry)
+
+        for category, entries in grouped.values():
+            path = self._ensure_topic(category)
+            content = path.read_text()
+            content = content.rstrip() + "\n" + "\n".join(entries) + "\n"
+            path.write_text(content)
 
         # Clean up DB files
         self._cleanup_db_files()
@@ -277,17 +344,7 @@ class MemoryFile:
         if jsonl_path.exists():
             try:
                 with _jsonl_score_lock(jsonl_path):
-                    latest = None
-                    for raw in jsonl_path.read_text().splitlines():
-                        raw = raw.strip()
-                        if not raw:
-                            continue
-                        try:
-                            parsed = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        if isinstance(parsed, dict):
-                            latest = parsed
+                    latest = _read_latest_jsonl_dict(jsonl_path)
                     if latest is not None and (h in latest.get("entries", {}) or legacy_h in latest.get("entries", {})):
                         latest.get("entries", {}).pop(h, None)
                         latest.get("entries", {}).pop(legacy_h, None)

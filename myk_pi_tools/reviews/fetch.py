@@ -18,10 +18,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
-
-from bs4 import BeautifulSoup
 
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
@@ -948,12 +947,21 @@ def process_and_categorize(
             print_stderr(f"Warning: Failed to initialize ReviewDB: {e}")
 
     # Preload and index dismissed comments once per run for performance
+    # Skip dismissed scan entirely when no non-qodo pending threads exist
     dismissed_by_path: dict[str, list[dict[str, Any]]] = {}
     dismissed_by_comment_id: dict[int, list[dict[str, Any]]] = {}
     dismissed_by_key: dict[str, dict[str, Any]] = {}
-    if db:
+    needs_dismissed = any(
+        (t.get("source") or detect_source(t.get("author"))) != "qodo" and t.get("status", "pending") == "pending"
+        for t in threads
+    )
+    if db and needs_dismissed:
         try:
-            for c in db.get_dismissed_comments(owner, repo):
+            try:
+                dismissed_comments = db.get_dismissed_comments(owner, repo, exclude_qodo=True)
+            except TypeError:
+                dismissed_comments = db.get_dismissed_comments(owner, repo)
+            for c in dismissed_comments:
                 b = (c.get("body") or "").strip()
                 if not b:
                     continue
@@ -1132,7 +1140,12 @@ def _extract_sticky_title(body: str) -> str:
         return m.group(1).strip().lower()
     # Fallback: first non-empty line, stripped of HTML/markdown
     # Strip HTML once, then scan lines
-    plain = BeautifulSoup(body, "html.parser").get_text()
+    if re.search(r"<[a-zA-Z/]", body):
+        from bs4 import BeautifulSoup
+
+        plain = BeautifulSoup(body, "html.parser").get_text()
+    else:
+        plain = body
     for line in plain.split("\n"):
         clean = line.strip()
         clean = clean.replace("**", "").replace("*", "").replace("`", "").strip()
@@ -1462,44 +1475,68 @@ def run(
 
         print_stderr(f"Repository: {owner}/{repo}, PR: {pr_number}")
 
-        # Fetch PR author
-        pr_author: str | None = None
-        head_sha: str | None = None
-        author_data = run_gh_api(f"/repos/{owner}/{repo}/pulls/{pr_number}")
-        if isinstance(author_data, dict):
-            pr_author = author_data.get("user", {}).get("login") if author_data.get("user") else None
-            head_sha = author_data.get("head", {}).get("sha") or None
-        else:
-            print_stderr(f"Warning: Could not fetch PR author (API returned {type(author_data).__name__})")
-
         # Ensure output directory exists
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
         json_path = out_dir / f"pr-{pr_number}-reviews.json"
 
-        # Fetch all unresolved threads
         label = "review" if include_resolved else "unresolved review"
-        print_stderr(f"Fetching {label} threads...")
-        all_threads = fetch_review_threads(owner, repo, pr_number, include_resolved=include_resolved, user=user)
-        print_stderr(f"Found {len(all_threads)} {label} thread(s)")
+        pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            author_future = executor.submit(run_gh_api, f"/repos/{owner}/{repo}/pulls/{pr_number}")
+            threads_future = executor.submit(
+                fetch_review_threads, owner, repo, pr_number, include_resolved=include_resolved, user=user
+            )
+            body_comments_future = (
+                executor.submit(fetch_coderabbit_body_comments, owner, repo, pr_number) if not user else None
+            )
+            issue_comments_future = (
+                executor.submit(
+                    run_gh_api, f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True
+                )
+                if not user
+                else None
+            )
+
+            # Fetch PR author and head SHA first so Qodo CLI can run concurrently with remaining futures
+            pr_author: str | None = None
+            head_sha: str | None = None
+            author_data = author_future.result()
+            if isinstance(author_data, dict):
+                pr_author = author_data.get("user", {}).get("login") if author_data.get("user") else None
+                head_sha = author_data.get("head", {}).get("sha") or None
+            else:
+                print_stderr(f"Warning: Could not fetch PR author (API returned {type(author_data).__name__})")
+
+            cli_future = executor.submit(fetch_qodo_cli_threads, pr_url, head_sha) if not user else None
+
+            # Collect all unresolved threads in deterministic order
+            print_stderr(f"Fetching {label} threads...")
+            all_threads = threads_future.result()
+            print_stderr(f"Found {len(all_threads)} {label} thread(s)")
+
+            body_comment_threads: list[dict[str, Any]] = []
+            issue_comments: list[dict[str, Any]] | None = None
+            cli_threads: list[dict[str, Any]] | None = None
+            qodo_cli_state: dict[str, Any] | None = None  # set when the qodo CLI branch ran (issue #958)
+            if not user:
+                assert body_comments_future is not None
+                assert issue_comments_future is not None
+                assert cli_future is not None
+                body_comment_threads = body_comments_future.result()
+                issue_comments = issue_comments_future.result()
+                cli_threads, qodo_cli_state = cli_future.result()
 
         # Skip bot comment fetching when filtering by specific user
         qodo_replies: list[dict[str, Any]] | None = None
-        qodo_cli_state: dict[str, Any] | None = None  # set when the qodo CLI branch ran (issue #958)
-        issue_comments: list[dict[str, Any]] | None = None
         if not user:
-            # Fetch CodeRabbit body-embedded comments from review bodies
+            # Merge CodeRabbit body-embedded comments from review bodies
             print_stderr("Fetching CodeRabbit body-embedded comments...")
-            body_comment_threads = fetch_coderabbit_body_comments(owner, repo, pr_number)
             if body_comment_threads:
                 print_stderr(f"Found {len(body_comment_threads)} body-embedded comment(s)")
                 all_threads = merge_threads(all_threads, body_comment_threads)
-
-            # Fetch issue comments once for both sticky and reply parsing
-            issue_comments = run_gh_api(
-                f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True
-            )
 
             # Qodo source: CLI-first (issue #958). Structured read through the
             # qodo CLI when it is installed and authenticated; the GitHub
@@ -1507,8 +1544,6 @@ def run(
             # missing bin, a failed probe, or any per-cycle CLI failure (fail
             # open). READ ONLY — replies stay GitHub comments via `reviews
             # address`; this branch never writes to Qodo's DB.
-            pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
-            cli_threads, qodo_cli_state = fetch_qodo_cli_threads(pr_url, head_sha)
             if cli_threads is not None:
                 # Dedup (issue #958): Qodo's GitHub review threads duplicate the
                 # CLI findings — same PRRT thread_id, worse data (raw HTML

@@ -522,23 +522,25 @@ def _wrap_tables(content_html: str) -> str:
     )
 
 
+_MARKDOWN = markdown.Markdown(
+    extensions=["fenced_code", "codehilite", "tables", "toc"],
+    extension_configs={
+        "codehilite": {"css_class": "highlight", "guess_lang": False},
+        "toc": {"toc_depth": "2-3"},
+    },
+)
+
+
 def _md_to_html(md_text: str) -> tuple[str, str]:
     """Convert markdown to HTML. Returns (content_html, toc_html)."""
-    md = markdown.Markdown(
-        extensions=["fenced_code", "codehilite", "tables", "toc"],
-        extension_configs={
-            "codehilite": {"css_class": "highlight", "guess_lang": False},
-            "toc": {"toc_depth": "2-3"},
-        },
-    )
     md_text = _clean_code_fence_annotations(md_text)
     md_text = _ensure_blank_lines(md_text)
-    content_html = _sanitize_html(md.convert(md_text))
+    content_html = _sanitize_html(_MARKDOWN.reset().convert(md_text))
     content_html = _wrap_tables(content_html)
     # The TOC is separately generated and reaches the page through ``|safe``,
     # so it needs the same allowlist as the body. Its ``<a href="#id">`` links
     # and the body heading ``id``s they point at both survive the allowlist.
-    toc_html = _sanitize_html(getattr(md, "toc", ""))
+    toc_html = _sanitize_html(getattr(_MARKDOWN, "toc", ""))
     return content_html, toc_html
 
 
@@ -571,6 +573,7 @@ def render_page(
     version: str | None = None,
     search_index: str | None = None,
     badge_label: str = DEFAULT_BADGE_LABEL,
+    asset_version: str | None = None,
 ) -> str:
     env = _get_jinja_env()
     template = env.get_template("page.html")
@@ -591,7 +594,7 @@ def render_page(
         BADGE_HEAD=BADGE_HEAD,
         BADGE_ACCENT=BADGE_ACCENT,
         search_index=search_index,
-        asset_version=_asset_version(),
+        asset_version=_asset_version() if asset_version is None else asset_version,
         version=version,
     )
 
@@ -604,6 +607,7 @@ def render_index(
     version: str | None = None,
     search_index: str | None = None,
     badge_label: str = DEFAULT_BADGE_LABEL,
+    asset_version: str | None = None,
 ) -> str:
     env = _get_jinja_env()
     template = env.get_template("index.html")
@@ -618,7 +622,7 @@ def render_index(
         badge_url=_safe_badge_url(repo_url),
         BADGE_HEAD=BADGE_HEAD,
         BADGE_ACCENT=BADGE_ACCENT,
-        asset_version=_asset_version(),
+        asset_version=_asset_version() if asset_version is None else asset_version,
         search_index=search_index,
         version=version,
     )

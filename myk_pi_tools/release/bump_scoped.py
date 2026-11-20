@@ -183,7 +183,7 @@ def run(
 
     if not affected:
         if as_json:
-            print(json.dumps({"status": "nothing-to-bump", "packages": []}))
+            print(json.dumps({"status": "nothing-to-bump", "packages": []}, separators=(",", ":")))
         else:
             print("Nothing to bump — no package changed since its last publish.")
         return
@@ -320,7 +320,7 @@ def run(
     if lock is not None:
         payload["lockfile"] = lock
     if as_json:
-        print(json.dumps(payload))
+        print(json.dumps(payload, separators=(",", ":")))
     else:
         print("Scoped bump — per-package tags:")
         for pkg in packages_out:

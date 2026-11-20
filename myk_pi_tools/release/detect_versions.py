@@ -316,4 +316,4 @@ def run() -> None:
         "version_files": [r.to_dict() for r in results],
         "count": len(results),
     }
-    print(json.dumps(output, indent=2))
+    print(json.dumps(output, separators=(",", ":")))

@@ -121,4 +121,4 @@ def run(args: list[str]) -> None:
         "body": body,
     }
 
-    print(json.dumps(output, indent=2))
+    print(json.dumps(output, separators=(",", ":")))

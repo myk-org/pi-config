@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
-from myk_pi_tools.memory.store import MemoryFile
+if TYPE_CHECKING:
+    from myk_pi_tools.memory.store import MemoryFile
 
 
 @click.group()
@@ -15,6 +17,8 @@ from myk_pi_tools.memory.store import MemoryFile
 @click.pass_context
 def memory(ctx: click.Context, file_path: str | None) -> None:
     """Project memory commands — persistent per-repo learning."""
+    from myk_pi_tools.memory.store import MemoryFile
+
     ctx.ensure_object(dict)
     ctx.obj["mem"] = MemoryFile(file_path=Path(file_path) if file_path else None)
 

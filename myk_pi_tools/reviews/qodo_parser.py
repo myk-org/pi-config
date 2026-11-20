@@ -8,9 +8,10 @@ This module parses that comment to extract unresolved findings.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from bs4 import BeautifulSoup, Tag
+if TYPE_CHECKING:
+    from bs4 import BeautifulSoup, Tag
 
 # Header that identifies a Qodo sticky comment
 QODO_STICKY_HEADER = "Code Review by Qodo"
@@ -127,6 +128,8 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
     """
     if not is_qodo_sticky_comment(body):
         return []
+
+    from bs4 import BeautifulSoup
 
     # Truncate at "Previous review results" to avoid duplicates from older iterations
     prev_match = _PREVIOUS_RESULTS_RE.search(body)

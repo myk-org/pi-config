@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -239,14 +240,16 @@ def run(pr_url: str, *, output_dir: str) -> int:
         return 1
     print_stderr(f"Found pending review: {review_id}")
 
-    # Fetch comments for the pending review
+    # Fetch comments for the pending review and PR diff concurrently
     print_stderr("Fetching review comments...")
-    comments = fetch_pending_review_comments(owner, repo, pr_number, review_id)
-    print_stderr(f"Found {len(comments)} comment(s)")
-
-    # Fetch PR diff for context
     print_stderr("Fetching PR diff...")
-    diff = fetch_pr_diff(owner, repo, pr_number)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        comments_future = executor.submit(fetch_pending_review_comments, owner, repo, pr_number, review_id)
+        diff_future = executor.submit(fetch_pr_diff, owner, repo, pr_number)
+        comments = comments_future.result()
+        diff = diff_future.result()
+
+    print_stderr(f"Found {len(comments)} comment(s)")
     if diff is None:
         diff = ""
         print_stderr("Warning: Could not fetch diff, continuing without it")

@@ -38,7 +38,7 @@ def reviews_fetch(review_url: str, include_resolved: bool, user: str | None, out
 
     result = run(review_url, include_resolved=include_resolved, user=user, output_dir=output_dir)
     if isinstance(result, dict):
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result, separators=(",", ":")))
         sys.exit(0)
     else:
         sys.exit(result)

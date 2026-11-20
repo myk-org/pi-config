@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from myk_pi_tools.pr.common import PRInfo
@@ -200,25 +201,30 @@ def run(args: list[str]) -> None:
     """
     pr_info = parse_args(args)
 
-    # Fetch PR metadata
-    metadata = fetch_pr_metadata(pr_info)
+    # Fetch PR metadata, diff, and files concurrently
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        meta_future = executor.submit(fetch_pr_metadata, pr_info)
+        diff_future = executor.submit(fetch_pr_diff, pr_info)
+        files_future = executor.submit(fetch_pr_files, pr_info)
 
-    head_sha = metadata.get("head", {}).get("sha")
-    base_ref = metadata.get("base", {}).get("ref")
-    pr_title = metadata.get("title")
-    pr_state = metadata.get("state")
+        # Validate metadata first before collecting diff & files
+        metadata = meta_future.result()
 
-    if not head_sha:
-        print("Error: Failed to extract head SHA from PR metadata", file=sys.stderr)
-        sys.exit(1)
+        head_sha = metadata.get("head", {}).get("sha")
+        base_ref = metadata.get("base", {}).get("ref")
+        pr_title = metadata.get("title")
+        pr_state = metadata.get("state")
 
-    if not base_ref:
-        print("Error: Failed to extract base ref from PR metadata", file=sys.stderr)
-        sys.exit(1)
+        if not head_sha:
+            print("Error: Failed to extract head SHA from PR metadata", file=sys.stderr)
+            sys.exit(1)
 
-    # Fetch diff and files
-    pr_diff = fetch_pr_diff(pr_info)
-    files = fetch_pr_files(pr_info)
+        if not base_ref:
+            print("Error: Failed to extract base ref from PR metadata", file=sys.stderr)
+            sys.exit(1)
+
+        pr_diff = diff_future.result()
+        files = files_future.result()
 
     # Build output JSON
     output = {
@@ -235,4 +241,4 @@ def run(args: list[str]) -> None:
         "files": files,
     }
 
-    print(json.dumps(output, indent=2))
+    print(json.dumps(output, separators=(",", ":")))

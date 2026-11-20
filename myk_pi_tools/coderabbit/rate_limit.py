@@ -208,7 +208,7 @@ def run_check(owner_repo: str, pr_number: int) -> int:
         return 1
 
     if _RATE_LIMITED_MARKER not in body:
-        print(json.dumps({"rate_limited": False}))
+        print(json.dumps({"rate_limited": False}, separators=(",", ":")))
         return 0
 
     wait_seconds = _parse_wait_seconds(body)
@@ -236,7 +236,7 @@ def run_check(owner_repo: str, pr_number: int) -> int:
     }
     if fallback:
         result["fallback"] = True
-    print(json.dumps(result))
+    print(json.dumps(result, separators=(",", ":")))
     return 0
 
 
@@ -315,7 +315,7 @@ def run_retry(owner_repo: str, pr_number: int) -> int:
         return 1
 
     if _RATE_LIMITED_MARKER not in body:
-        print(json.dumps({"status": "not_rate_limited"}))
+        print(json.dumps({"status": "not_rate_limited"}, separators=(",", ":")))
         return 0
 
     parsed_wait = _parse_wait_seconds(body)
@@ -363,11 +363,14 @@ def run_retry(owner_repo: str, pr_number: int) -> int:
         return exit_code
 
     print(
-        json.dumps({
-            "status": "triggered",
-            "comment_id": comment_id,
-            "trigger_comment_id": trigger_id,
-            "waited_seconds": remaining,
-        })
+        json.dumps(
+            {
+                "status": "triggered",
+                "comment_id": comment_id,
+                "trigger_comment_id": trigger_id,
+                "waited_seconds": remaining,
+            },
+            separators=(",", ":"),
+        )
     )
     return 0

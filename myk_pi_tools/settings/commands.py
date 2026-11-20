@@ -10,11 +10,11 @@ import os
 import re
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import click
-import commentjson
 
 log = logging.getLogger(__name__)
 
@@ -203,6 +203,8 @@ def _migrate_legacy_settings(settings_dir: Path, scope: str = "project") -> None
         payload = json.dumps(data, indent=2, allow_nan=False) + "\n"
         # Refuse anything the `.json` reader itself cannot parse: commentjson recurses per nesting
         # level, so a deeply nested file would crash the next resolution instead of resolving.
+        import commentjson
+
         commentjson.loads(payload)
     except (ValueError, RecursionError):
         _warn_legacy_once("corrupt", "settings_legacy_jsonc_corrupt", legacy)
@@ -415,17 +417,33 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
     return None
 
 
-def _load_settings_file(path: Path) -> dict[str, Any]:
-    """Load and validate a settings JSON file (matches TS parseSettingsFile). Missing/invalid → {}."""
+def _read_settings_raw(path: Path) -> dict[str, Any] | None:
+    """Read and parse a settings file as JSON, falling back to commentjson for JSONC."""
     if not path.is_file():
-        return {}
+        return None
     try:
-        raw = commentjson.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError, RecursionError):
-        return {}
-    if not isinstance(raw, dict):
-        return {}
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        log.debug("settings_file_read_failed path=%s", path, exc_info=True)
+        return None
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        import commentjson
 
+        try:
+            raw = commentjson.loads(text)
+        except (ValueError, RecursionError, commentjson.JSONLibraryException):
+            log.debug("settings_file_parse_failed path=%s", path, exc_info=True)
+            return None
+    except (ValueError, RecursionError):
+        log.debug("settings_file_parse_failed path=%s", path, exc_info=True)
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _coerce_settings_dict(raw: dict[str, Any]) -> dict[str, Any]:
+    """Validate and coerce raw JSON dict entries against SETTINGS_KEYS."""
     result: dict[str, Any] = {}
     for key, meta in SETTINGS_KEYS.items():
         coerced = _coerce_file_value(key, meta, raw)
@@ -434,15 +452,10 @@ def _load_settings_file(path: Path) -> dict[str, Any]:
     return result
 
 
-def _settings_file_has_key(path: Path, key: str) -> bool:
-    """True if raw JSON object contains key (matches TS projectSettingsFileHasKey)."""
-    if not path.is_file():
-        return False
-    try:
-        raw = commentjson.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError, RecursionError):
-        return False
-    return isinstance(raw, dict) and key in raw
+def _load_settings_file(path: Path) -> dict[str, Any]:
+    """Load and validate a settings JSON file (matches TS parseSettingsFile). Missing/invalid → {}."""
+    raw = _read_settings_raw(path)
+    return _coerce_settings_dict(raw) if raw is not None else {}
 
 
 def _parse_bool_env(name: str) -> bool | None:
@@ -533,13 +546,13 @@ def parse_agent_name_list(value: str | list[Any] | None) -> list[str]:
 def _resolve_agent_list(
     key: str,
     *,
-    project_path: Path,
+    project_raw_keys: frozenset[str] | set[str],
     project: dict[str, Any],
     global_settings: dict[str, Any],
     env_name: str,
 ) -> list[str]:
     """Resolve acpx_agents / cli_agents with per-key project presence check."""
-    if _settings_file_has_key(project_path, key):
+    if key in project_raw_keys:
         project_value = project.get(key)
         if project_value is not None:
             return parse_agent_name_list(project_value)
@@ -626,37 +639,57 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
     return default
 
 
-def get_setting(key: str, cwd: Path | None = None) -> SettingValue:
-    """Resolve one setting: project → global → env → default."""
-    if key not in SETTINGS_KEYS:
-        raise ValueError(f"Unknown settings key: {key}")
+@dataclass(frozen=True, slots=True)
+class _SettingsContext:
+    root: Path
+    project_path: Path
+    project_raw_keys: frozenset[str]
+    project: dict[str, Any]
+    global_settings: dict[str, Any]
+    merged: dict[str, Any]
 
-    meta = SETTINGS_KEYS[key]
-    typ = meta["type"]
 
+def _load_settings_context(cwd: Path | None = None) -> _SettingsContext:
+    """Resolve repo root and load project/global settings in a single pass."""
     root = _resolve_repo_root(cwd)
     pi_dir = root / ".pi"
     project_path = _find_settings_file(pi_dir) or (pi_dir / SETTINGS_FILENAMES[0])
-    project = _load_settings_file(project_path)
+    project_raw = _read_settings_raw(project_path)
+    project_raw_keys = frozenset(project_raw.keys()) if project_raw is not None else frozenset()
+    project = _coerce_settings_dict(project_raw) if project_raw is not None else {}
+
     global_path = _find_settings_file(Path.home() / ".pi", scope="global") or (
         Path.home() / ".pi" / SETTINGS_FILENAMES[0]
     )
     global_settings = _load_settings_file(global_path)
-    merged = {**global_settings, **project}
+    return _SettingsContext(
+        root=root,
+        project_path=project_path,
+        project_raw_keys=project_raw_keys,
+        project=project,
+        global_settings=global_settings,
+        merged={**global_settings, **project},
+    )
+
+
+def _resolve_key(key: str, ctx: _SettingsContext) -> SettingValue:
+    """Resolve one setting from a pre-loaded settings context."""
+    meta = SETTINGS_KEYS[key]
+    typ = meta["type"]
 
     # Special-case: agent lists use per-key project presence (not simple merge)
     if typ == "agent_list" and meta.get("per_key_resolution"):
         env_name = meta.get("env", "")
         return _resolve_agent_list(
             key,
-            project_path=project_path,
-            project=project,
-            global_settings=global_settings,
+            project_raw_keys=ctx.project_raw_keys,
+            project=ctx.project,
+            global_settings=ctx.global_settings,
             env_name=env_name,
         )
 
-    if key in merged:
-        value = merged[key]
+    if key in ctx.merged:
+        value = ctx.merged[key]
         if typ == "port":
             min_port = meta.get("min", 0)
             if isinstance(value, int) and not isinstance(value, bool) and min_port <= value <= 65535:
@@ -672,6 +705,14 @@ def get_setting(key: str, cwd: Path | None = None) -> SettingValue:
     return _resolve_env_or_default(meta)
 
 
+def get_setting(key: str, cwd: Path | None = None) -> SettingValue:
+    """Resolve one setting: project → global → env → default."""
+    if key not in SETTINGS_KEYS:
+        raise ValueError(f"Unknown settings key: {key}")
+    ctx = _load_settings_context(cwd)
+    return _resolve_key(key, ctx)
+
+
 def get_settings(
     keys: tuple[str, ...] | list[str],
     cwd: Path | None = None,
@@ -681,7 +722,8 @@ def get_settings(
     unknown = [k for k in selected if k not in SETTINGS_KEYS]
     if unknown:
         raise ValueError(f"Unknown settings key(s): {', '.join(unknown)}")
-    return {key: get_setting(key, cwd=cwd) for key in selected}
+    ctx = _load_settings_context(cwd)
+    return {key: _resolve_key(key, ctx) for key in selected}
 
 
 @click.group()
@@ -709,4 +751,4 @@ def settings_get(keys: tuple[str, ...]) -> None:
         result = get_settings(keys)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
-    click.echo(json.dumps(result))
+    click.echo(json.dumps(result, separators=(",", ":")))

@@ -87,23 +87,40 @@ def _get_git_root() -> Path:
         raise RuntimeError("git command not found") from exc
 
 
-def _body_similarity(body1: str, body2: str) -> float:
-    """Calculate word overlap ratio between two bodies using Jaccard similarity."""
-    tokens1 = set(re.findall(r"[a-z0-9]+", body1.lower()))
-    tokens2 = set(re.findall(r"[a-z0-9]+", body2.lower()))
-    if not tokens1 or not tokens2:
-        return 0.0
+_WORD_RE = re.compile(r"[a-z0-9]+")
 
+
+def _tokenize_body(body: str) -> set[str]:
+    """Extract normalized word tokens from body, capped at 2000 sorted tokens."""
+    tokens = set(_WORD_RE.findall(body.lower()))
     # Guard against huge bodies (e.g., pasted logs)
     # Sort before truncating for deterministic behavior
-    if len(tokens1) > 2000:
-        tokens1 = set(sorted(tokens1)[:2000])
-    if len(tokens2) > 2000:
-        tokens2 = set(sorted(tokens2)[:2000])
+    if len(tokens) > 2000:
+        tokens = set(sorted(tokens)[:2000])
+    return tokens
 
-    intersection = tokens1 & tokens2
-    union = tokens1 | tokens2
-    return len(intersection) / len(union)
+
+def _token_similarity(tokens1: set[str], tokens2: set[str], threshold: float = 0.0) -> float:
+    """Calculate Jaccard similarity between pre-tokenized sets with length-ratio short-circuit."""
+    len_a = len(tokens1)
+    len_b = len(tokens2)
+    if not len_a or not len_b:
+        return 0.0
+    if threshold > 0.0:
+        min_len, max_len = (len_a, len_b) if len_a <= len_b else (len_b, len_a)
+        if min_len / max_len < threshold:
+            return 0.0
+    inter_len = len(tokens1 & tokens2)
+    return inter_len / (len_a + len_b - inter_len)
+
+
+def _body_similarity(body1: str, body2: str) -> float:
+    """Calculate word overlap ratio between two bodies using Jaccard similarity."""
+    tokens1 = _tokenize_body(body1)
+    tokens2 = _tokenize_body(body2)
+    if not tokens1 or not tokens2:
+        return 0.0
+    return _token_similarity(tokens1, tokens2)
 
 
 def _format_table(data: list[dict[str, Any]], columns: list[str] | None = None) -> str:
@@ -229,7 +246,7 @@ class ReviewDB:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def get_dismissed_comments(self, owner: str, repo: str) -> list[dict[str, Any]]:
+    def get_dismissed_comments(self, owner: str, repo: str, *, exclude_qodo: bool = False) -> list[dict[str, Any]]:
         """Get dismissed comments for a repository, constrained by type for safety.
 
         Retrieves comments that were dismissed during review processing:
@@ -249,6 +266,7 @@ class ReviewDB:
         Args:
             owner: GitHub repository owner (org or user).
             repo: GitHub repository name.
+            exclude_qodo: If True, exclude rows with ``source == 'qodo'`` in SQL.
 
         Returns:
             List of dicts with keys: path, line, body, status, reply (reason for dismissal),
@@ -268,13 +286,14 @@ class ReviewDB:
         conn = self._connect()
         try:
             cursor = conn.cursor()
+            exclude_clause = "  AND c.source != 'qodo'\n                " if exclude_qodo else ""
             cursor.execute(
-                """
+                f"""
                 SELECT c.path, c.line, c.body, c.status, c.reply, c.skip_reason, c.author, c.type, c.comment_id
                 FROM comments c
                 JOIN reviews r ON c.review_id = r.id
                 WHERE r.owner = ? AND r.repo = ?
-                  AND (
+                {exclude_clause}  AND (
                       c.status IN ('not_addressed', 'skipped')
                       OR (c.status = 'addressed'
                           -- Body comment types (no GitHub thread) + Qodo sticky types
@@ -423,11 +442,17 @@ class ReviewDB:
                 (owner, repo, path),
             )
 
+            query_tokens = _tokenize_body(body)
+            if not query_tokens:
+                return None
+
             best_match: dict[str, Any] | None = None
             best_similarity = 0.0
 
             for row in cursor.fetchall():
-                similarity = _body_similarity(body, row["body"])
+                similarity = _token_similarity(
+                    query_tokens, _tokenize_body(row["body"]), threshold=max(threshold, best_similarity)
+                )
                 if similarity >= threshold and similarity > best_similarity:
                     best_similarity = similarity
                     best_match = {
@@ -553,6 +578,7 @@ class ReviewDB:
             for row in cursor.fetchall():
                 path_comments[row["path"]].append({
                     "body": row["body"],
+                    "tokens": _tokenize_body(row["body"]),
                     "reason": row["reply"] or row["skip_reason"],
                 })
 
@@ -565,7 +591,7 @@ class ReviewDB:
                     added_to_cluster = False
                     for cluster in clusters:
                         # Compare with first item in cluster
-                        if _body_similarity(comment["body"], cluster[0]["body"]) >= 0.6:
+                        if _token_similarity(comment["tokens"], cluster[0]["tokens"], threshold=0.6) >= 0.6:
                             cluster.append(comment)
                             added_to_cluster = True
                             break

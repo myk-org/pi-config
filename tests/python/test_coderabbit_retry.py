@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC
 from typing import Any
 from unittest.mock import patch
@@ -43,9 +44,10 @@ def test_rate_limited_wait_elapsed(capsys: pytest.CaptureFixture[str]) -> None:
         assert run_retry("owner/repo", 1) == 0
         mock_time.sleep.assert_not_called()
         mock_find_reply.assert_called_with("owner/repo", 1, 99)
-    out = capsys.readouterr().out
-    assert '"triggered"' in out
-    assert '"comment_id": 42' in out
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["status"] == "triggered"
+    assert parsed["comment_id"] == 42
+    assert parsed["trigger_comment_id"] == 99
 
 
 def test_rate_limited_wait_remaining() -> None:

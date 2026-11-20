@@ -9,7 +9,13 @@ import pytest
 from click.testing import CliRunner
 
 from myk_pi_tools.memory.commands import memory
-from myk_pi_tools.memory.store import CATEGORY_TO_TOPIC, MemoryFile, _entry_hash, _topic_template
+from myk_pi_tools.memory.store import (
+    CATEGORY_TO_TOPIC,
+    MemoryFile,
+    _entry_hash,
+    _read_latest_jsonl_dict,
+    _topic_template,
+)
 
 
 @pytest.fixture
@@ -275,6 +281,48 @@ class TestMigration:
         count = mem.migrate_from_db()
         assert count == 0
 
+    def test_migrate_groups_rows_per_topic_in_single_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        memory_dir = tmp_path / "memory"
+        memory_dir.mkdir(parents=True)
+        db_path = memory_dir / "memories.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, date TEXT, category TEXT, summary TEXT)")
+        rows = [
+            ("2026-01-01 00:00:00", "lesson", "First lesson"),
+            ("2026-01-02 00:00:00", "preference", "First preference"),
+            ("2026-01-03 00:00:00", "lesson", "Second lesson"),
+            ("2026-01-04 00:00:00", "preference", "Second preference"),
+            ("2026-01-05 00:00:00", "mistake", "Only mistake"),
+        ]
+        conn.executemany("INSERT INTO memories (date, category, summary) VALUES (?, ?, ?)", rows)
+        conn.commit()
+        conn.close()
+
+        topics_dir = memory_dir / "topics"
+        mem = MemoryFile(file_path=topics_dir)
+        ensure_calls: list[str] = []
+        orig_ensure = MemoryFile._ensure_topic
+
+        def counting_ensure(self: MemoryFile, category: str) -> Path:
+            ensure_calls.append(category)
+            return orig_ensure(self, category)
+
+        monkeypatch.setattr(MemoryFile, "_ensure_topic", counting_ensure)
+
+        count = mem.migrate_from_db()
+
+        assert count == 5
+        assert ensure_calls == ["lesson", "preference", "mistake"]
+        assert (topics_dir / "lessons.md").read_text(encoding="utf-8") == (
+            "# Lessons\n- [lesson] First lesson\n- [lesson] Second lesson\n"
+        )
+        assert (topics_dir / "preferences.md").read_text(encoding="utf-8") == (
+            "# Preferences\n- [preference] First preference\n- [preference] Second preference\n"
+        )
+        assert (topics_dir / "mistakes.md").read_text(encoding="utf-8") == ("# Mistakes\n- [mistake] Only mistake\n")
+
 
 class TestMemoryStatus:
     def test_status_reports_code_tier_counts(self, tmp_path: Path) -> None:
@@ -344,3 +392,63 @@ class TestEntryHashParity:
         )
         assert memory_file.forget("lesson", "Never force-push") is True
         assert "Never force-push" not in (topics_dir / "lessons.md").read_text()
+
+
+class TestReadLatestJsonlDict:
+    def test_empty_file_returns_none(self, tmp_path: Path) -> None:
+        jsonl_path = tmp_path / "scores.jsonl"
+        jsonl_path.write_bytes(b"")
+        assert _read_latest_jsonl_dict(jsonl_path) is None
+
+    def test_trailing_blank_and_whitespace_lines(self, tmp_path: Path) -> None:
+        jsonl_path = tmp_path / "scores.jsonl"
+        jsonl_path.write_text('{"a": 1}\n{"a": 2}\n   \n\t\n\n', encoding="utf-8")
+        assert _read_latest_jsonl_dict(jsonl_path) == {"a": 2}
+
+    def test_trailing_corrupt_and_non_dict_json_lines(self, tmp_path: Path) -> None:
+        jsonl_path = tmp_path / "scores.jsonl"
+        jsonl_path.write_text(
+            '{"valid": true}\n[1, 2, 3]\n"just-a-string"\n42\n{not valid json\n',
+            encoding="utf-8",
+        )
+        assert _read_latest_jsonl_dict(jsonl_path) == {"valid": True}
+
+    def test_line_larger_than_chunk_size(self, tmp_path: Path) -> None:
+        jsonl_path = tmp_path / "scores.jsonl"
+        large_payload = {"entries": {"big": "x" * 200}}
+        jsonl_path.write_text(
+            '{"entries": {"small": "y"}}\n' + json.dumps(large_payload) + "\n",
+            encoding="utf-8",
+        )
+        assert _read_latest_jsonl_dict(jsonl_path, chunk_size=16) == large_payload
+
+    def test_multibyte_utf8_split_across_chunk_boundaries(self, tmp_path: Path) -> None:
+        jsonl_path = tmp_path / "scores.jsonl"
+        payload = {"entries": {"k1": "🚀 café 日本語 — αβγ"}}
+        jsonl_path.write_text(
+            '{"entries": {"old": "prev"}}\n' + json.dumps(payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        assert _read_latest_jsonl_dict(jsonl_path, chunk_size=7) == payload
+
+    def test_forget_handles_jsonl_trailing_noise_large_line_and_utf8(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "Target rule")
+        h = _entry_hash("- [lesson] Target rule")
+        jsonl_path = memory_file.file_path.parent / "memory-scores.jsonl"
+        large_state = {
+            "entries": {
+                h: {"class": "lesson", "score": 2.0},
+                "keep": {"note": "🚀 café 日本語 " * 4000},
+            }
+        }
+        jsonl_path.write_text(
+            json.dumps(large_state, ensure_ascii=False) + '\n\n   \n[1,2,3]\n{"broken":\n',
+            encoding="utf-8",
+        )
+
+        assert memory_file.forget("lesson", "Target rule") is True
+
+        latest = _read_latest_jsonl_dict(jsonl_path)
+        assert latest is not None
+        assert h not in latest["entries"]
+        assert latest["entries"]["keep"] == large_state["entries"]["keep"]

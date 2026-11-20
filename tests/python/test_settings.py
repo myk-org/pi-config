@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -485,3 +486,124 @@ def test_pidash_port_0_falls_through_to_default(_isolated_settings: Path) -> Non
         encoding="utf-8",
     )
     assert get_setting("pidash_port", cwd=_isolated_settings) == 19190
+
+
+def test_get_settings_resolves_root_and_reads_files_once(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_file = _isolated_settings / ".pi" / "pi-config-settings.json"
+    project_file.parent.mkdir()
+    project_file.write_text(json.dumps({"dco": True}), encoding="utf-8")
+
+    global_file = Path.home() / ".pi" / "pi-config-settings.json"
+    global_file.parent.mkdir()
+    global_file.write_text(json.dumps({"commit_trailer": True}), encoding="utf-8")
+
+    root_calls = 0
+
+    def counting_root(_cwd: Path | None = None) -> Path:
+        nonlocal root_calls
+        root_calls += 1
+        return _isolated_settings
+
+    read_paths: list[Path] = []
+    real_read_raw = settings_commands._read_settings_raw
+
+    def counting_read_raw(path: Path) -> dict[str, object] | None:
+        read_paths.append(path)
+        return real_read_raw(path)
+
+    monkeypatch.setattr(settings_commands, "_resolve_repo_root", counting_root)
+    monkeypatch.setattr(settings_commands, "_read_settings_raw", counting_read_raw)
+
+    result = get_settings((), cwd=_isolated_settings)
+
+    assert len(result) == len(SETTINGS_KEYS) == 71
+    assert root_calls == 1
+    assert read_paths == [project_file, global_file]
+
+
+def test_plain_json_settings_do_not_import_commentjson(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({"image_model": "https://example.com/plain", "coms_max_hops": 9}),
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(sys.modules, "commentjson", None)
+
+    result = get_settings(("image_model", "coms_max_hops"), cwd=_isolated_settings)
+    assert result == {"image_model": "https://example.com/plain", "coms_max_hops": 9}
+
+
+def test_commented_json_settings_fall_back_to_commentjson(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.json").write_text(
+        '{\n  // comment triggers commentjson fallback\n  "coms_max_hops": 8\n}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delitem(sys.modules, "commentjson", raising=False)
+
+    assert get_setting("coms_max_hops", cwd=_isolated_settings) == 8
+    assert "commentjson" in sys.modules
+
+
+@pytest.mark.parametrize(
+    ("key", "env_name"),
+    [
+        ("acpx_agents", "PI_ACPX_AGENTS"),
+        ("cli_agents", "PI_CLI_AGENTS"),
+    ],
+)
+def test_project_empty_agent_list_overrides_global_and_env(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    env_name: str,
+) -> None:
+    global_pi = Path.home() / ".pi"
+    global_pi.mkdir()
+    (global_pi / "pi-config-settings.json").write_text(
+        json.dumps({key: ["cursor", "claude"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(env_name, "gemini")
+
+    project_pi = _isolated_settings / ".pi"
+    project_pi.mkdir()
+    (project_pi / "pi-config-settings.json").write_text(
+        json.dumps({key: []}),
+        encoding="utf-8",
+    )
+
+    assert get_setting(key, cwd=_isolated_settings) == []
+
+
+def test_project_empty_acpx_agents_leaves_cli_agents_from_global(
+    _isolated_settings: Path,
+) -> None:
+    global_pi = Path.home() / ".pi"
+    global_pi.mkdir()
+    (global_pi / "pi-config-settings.json").write_text(
+        json.dumps({"acpx_agents": ["cursor"], "cli_agents": ["claude"]}),
+        encoding="utf-8",
+    )
+    project_pi = _isolated_settings / ".pi"
+    project_pi.mkdir()
+    (project_pi / "pi-config-settings.json").write_text(
+        json.dumps({"acpx_agents": []}),
+        encoding="utf-8",
+    )
+
+    assert get_settings(("acpx_agents", "cli_agents"), cwd=_isolated_settings) == {
+        "acpx_agents": [],
+        "cli_agents": ["claude"],
+    }
