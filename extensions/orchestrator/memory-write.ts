@@ -39,8 +39,18 @@ import {
   isTaskScopedText,
   hasDurabilityMarker,
 } from "./memory-scoring.js";
-import { CATEGORY_TO_TOPIC, topicCharCap, readAllTopicEntries, formatTopicLine, findTopicLine, invalidateTopicFileCache, recordRemoval } from "./memory-tree.js";
-import { embedEntry, removeEmbedding, vectorSearch } from "./memory-embeddings.js";
+import {
+  CATEGORY_TO_TOPIC,
+  topicCharCap,
+  readAllTopicEntries,
+  parseTopicLine,
+  formatTopicLine,
+  findTopicLine,
+  canonicalTopicLine,
+  invalidateTopicFileCache,
+  recordRemoval,
+} from "./memory-tree.js";
+import { embedEntry, removeEmbedding, removeEmbeddings, vectorSearch } from "./memory-embeddings.js";
 import { getSetting } from "./project-settings.js";
 
 const log = createLogger("memory");
@@ -2708,16 +2718,17 @@ export function pruneExpiredEntries(cwd: string): number {
 
   // Remove expired lines from topic files (any category — we do not know
   // which topic file holds which text without scanning).
+  const expiredEntries: { text: string; category: string }[] = [];
   for (const file of readdirSync(topicsDir).filter((f) => f.endsWith(".md"))) {
     const topicPath = join(topicsDir, file);
     const lines = readFileSync(topicPath, "utf-8").split("\n");
     const kept = lines.filter((l) => {
-      const m = l.match(/^- \[(preference|lesson|pattern|decision|done|mistake)\] (.+)$/);
-      if (!m) return true;
-      const rawText = m[2]!.replace(/\s*\*\(pinned\)\*/g, "").replace(/\s*\*\(enforced\)\*/g, "").replace(/\s*\{#[0-9a-f]+\}$/g, "").trim();
-      const hash = entryHash(`- [${m[1]}] ${rawText}`);
+      const parsed = parseTopicLine(l);
+      if (!parsed) return true;
+      const hash = entryHash(canonicalTopicLine(parsed));
       if (!expiredHashes.has(hash)) return true;
       pruned++;
+      expiredEntries.push({ text: parsed.text, category: parsed.category });
       return false;
     });
     const cleaned = kept.join("\n").replace(/\n{3,}/g, "\n\n");
@@ -2731,6 +2742,7 @@ export function pruneExpiredEntries(cwd: string): number {
       delete s.entries[hash];
     }
   });
+  removeEmbeddings(cwd, expiredEntries);
   if (pruned > 0) log.info("memory_prune_expired", pruned);
   return pruned;
 }

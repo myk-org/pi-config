@@ -42,6 +42,7 @@ import { maybePromoteAfterReinforce } from "./memory-promotion.js";
 import { addMemoryEntry } from "./memory-write.js";
 
 const NEAR_DUPLICATE_THRESHOLD = 0.90;
+const CATEGORY_DESC = "preference|lesson|pattern|decision|done|mistake";
 
 // ── memory_search ────────────────────────────────────────────────────
 
@@ -49,16 +50,11 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
   pi.registerTool({
     name: "memory_search",
     label: "Memory Search",
-    description:
-      "Search project memories by keyword. Use before answering questions about " +
-      "prior sessions, user preferences, past decisions, or recurring patterns. " +
-      "Returns matching entries with their scores and categories.",
+    description: "Search memories by keyword and similarity; returns matches with scores and categories.",
     parameters: Type.Object({
-      query: Type.String({ description: "Search keyword or phrase" }),
+      query: Type.String({ description: "Keyword or phrase" }),
       category: Type.Optional(
-        Type.String({
-          description: "Filter by category: preference, lesson, pattern, decision, done, mistake",
-        }),
+        Type.String({ description: CATEGORY_DESC }),
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -185,17 +181,10 @@ function registerMemoryReinforce(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_reinforce",
     label: "Memory Reinforce",
-    description:
-      "Reinforce an existing memory entry — call this when you notice a memory " +
-      "is relevant to the current task. Bumps the evidence count and refreshes " +
-      "the last-reinforced timestamp, increasing its stability score.",
+    description: "Reinforce a relevant memory; bumps evidence count and stability score.",
     parameters: Type.Object({
-      entryText: Type.String({
-        description: "The exact text of the memory entry to reinforce (without category prefix)",
-      }),
-      category: Type.String({
-        description: "Category: preference, lesson, pattern, decision, done, mistake",
-      }),
+      entryText: Type.String({ description: "Exact text (no category prefix)" }),
+      category: Type.String({ description: CATEGORY_DESC }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const entryLine = `- [${params.category}] ${params.entryText}`;
@@ -242,9 +231,7 @@ function registerMemoryTopics(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_topics",
     label: "Memory Topics",
-    description:
-      "List all memory topic files with their hotness scores and entry counts. " +
-      "Use to understand what the project memory covers and which topics are most active.",
+    description: "List topic files with hotness scores, entry counts, and token sizes.",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const topics = listTopics(ctx.cwd);
@@ -269,60 +256,38 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_add",
     label: "Memory Add",
-    description:
-      "Add a new memory entry. Use proactively when you learn something worth " +
-      "remembering: user preferences, environment facts, corrections, conventions, " +
-      "completed work. Keep entries short (one line, ~100 chars max), specific, and actionable. " +
-      "One-off permissions (\"you can merge this PR\") are session instructions, NOT memories — never add them.",
+    description: "Add a short, actionable memory (~100 chars, one line). Never add one-off grants or task-scoped asks.",
     parameters: Type.Object({
-      text: Type.String({ description: "The memory entry text (short, specific, actionable)" }),
-      category: Type.String({
-        description: "Category: preference, lesson, pattern, decision, done, mistake",
-      }),
+      text: Type.String({ description: "One-line actionable text" }),
+      category: Type.String({ description: CATEGORY_DESC }),
       pinned: Type.Optional(
-        Type.Boolean({
-          description: "Pin this memory (never decays, never removed by dreaming). Only when user explicitly says 'remember this'.",
-        }),
+        Type.Boolean({ description: "Pin permanently (user-explicit only)" }),
       ),
       trigger: Type.Optional(
         Type.String({
-          description: "Enforcement trigger (e.g., 'bash_contains git add .', 'tool_name write', 'file_modified *.py'). When set, this memory becomes code-enforced.",
+          description: "'bash_contains <str>'|'bash_regex <re>'|'tool_name <name>'|'file_modified <glob>'",
         }),
       ),
       action: Type.Optional(
-        Type.String({
-          description: "Enforcement action: 'block' (prevent), 'run_after <command>' (execute after), 'warn' (append warning)",
-        }),
+        Type.String({ description: "'block'|'run_after <cmd>'|'warn'" }),
       ),
       verifier: Type.Optional(
-        Type.String({
-          description: "Semantic verifier condition (e.g., 'tool_called ask_user before pushing to main'). Checked at turn_end.",
-        }),
+        Type.String({ description: "Turn-end check, e.g. 'tool_called ask_user before git push'" }),
       ),
       scope: Type.Optional(
-        Type.String({
-          description: "Scope: 'session' (transient — expires, never injected in later sessions), 'task', or 'project' (default: durable). Only set for genuinely non-durable facts; standing rules are project scope.",
-        }),
+        Type.String({ description: "'session'|'task'|'project' (default)" }),
       ),
       overrideConflicts: Type.Optional(
-        Type.Boolean({
-          description: "Confirm a conflict override. Set true ONLY after the user explicitly confirmed the rule changed (ask_user). Supersedes the conflicting non-pinned entry automatically. Never applies to pinned entries — those require the user's own memory_remove/memory_edit.",
-        }),
+        Type.Boolean({ description: "True only after ask_user confirms rule change" }),
       ),
       sourceSession: Type.Optional(
-        Type.String({
-          description: "Optional provenance: session id or basename this memory came from",
-        }),
+        Type.String({ description: "Source session id" }),
       ),
       derivedFrom: Type.Optional(
-        Type.String({
-          description: "Optional provenance: short note or prior entry this was derived from",
-        }),
+        Type.String({ description: "Prior entry or source note" }),
       ),
       informs: Type.Optional(
-        Type.Array(Type.String(), {
-          description: "Optional provenance: what this memory informs (e.g. pr-review, git, skill name)",
-        }),
+        Type.Array(Type.String(), { description: "Targets informed (e.g. git, pr-review)" }),
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -347,16 +312,10 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_remove",
     label: "Memory Remove",
-    description:
-      "Remove a memory entry that is no longer relevant or accurate. " +
-      "Use when information is outdated, wrong, or superseded by a newer entry.",
+    description: "Remove an outdated, wrong, or superseded memory.",
     parameters: Type.Object({
-      text: Type.String({
-        description: "The exact text of the memory entry to remove (without category prefix)",
-      }),
-      category: Type.String({
-        description: "Category: preference, lesson, pattern, decision, done, mistake",
-      }),
+      text: Type.String({ description: "Exact text (no category prefix)" }),
+      category: Type.String({ description: CATEGORY_DESC }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
@@ -425,11 +384,7 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_reflect",
     label: "Memory Reflect",
-    description:
-      "Retrieve memories relevant to a question and return them as structured, " +
-      "ranked context (vector + keyword, with provenance). You synthesize the " +
-      "answer yourself from the returned entries. Use when you need to understand " +
-      "a pattern, process, or context from past sessions.",
+    description: "Recall ranked memories (vector + keyword, with provenance) for a question.",
     parameters: Type.Object({
       query: Type.String({ description: "Question to answer from memory" }),
     }),
@@ -499,22 +454,19 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_edit",
     label: "Memory Edit",
-    description:
-      "Update, invalidate, or supersede a memory entry in-place. " +
-      "Use 'update' to change content, 'invalidate' to mark as superseded by another entry. " +
-      "More precise than remove+add — preserves scoring history.",
+    description: "Update or invalidate a memory in-place, preserving scoring history.",
     parameters: Type.Object({
       op: Type.Union([
         Type.Literal("update"),
         Type.Literal("invalidate"),
-      ], { description: "Operation: update (change content) or invalidate (supersede)" }),
-      text: Type.String({ description: "Exact text of the memory entry to edit" }),
-      category: Type.String({ description: "Category: preference, lesson, pattern, decision, done, mistake" }),
-      newText: Type.Optional(Type.String({ description: "New text content (for update)" })),
-      supersededBy: Type.Optional(Type.String({ description: "Text of the replacement entry (for invalidate)" })),
-      sourceSession: Type.Optional(Type.String({ description: "Optional provenance: session id" })),
-      derivedFrom: Type.Optional(Type.String({ description: "Optional provenance: derived-from note" })),
-      informs: Type.Optional(Type.Array(Type.String(), { description: "Optional provenance: informs targets" })),
+      ], { description: "'update'|'invalidate'" }),
+      text: Type.String({ description: "Exact entry text" }),
+      category: Type.String({ description: CATEGORY_DESC }),
+      newText: Type.Optional(Type.String({ description: "New text (update)" })),
+      supersededBy: Type.Optional(Type.String({ description: "Replacement text (invalidate)" })),
+      sourceSession: Type.Optional(Type.String({ description: "Source session id" })),
+      derivedFrom: Type.Optional(Type.String({ description: "Derived-from note" })),
+      informs: Type.Optional(Type.Array(Type.String(), { description: "Targets informed" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
@@ -628,11 +580,7 @@ function registerMemoryConsolidate(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_consolidate",
     label: "Memory Consolidate",
-    description:
-      "Analyze all memories and produce a consolidated summary. " +
-      "Identifies patterns, removes contradictions, merges related entries, " +
-      "and generates reusable skills from recurring multi-step workflows. " +
-      "Run periodically or when memory is getting large.",
+    description: "Group all memories by category for conflict resolution, merging, pruning, and promotion.",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;

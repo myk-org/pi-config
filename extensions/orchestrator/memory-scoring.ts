@@ -17,6 +17,7 @@ import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectMemoryDir } from "./utils.js";
+import { parseTopicLine } from "./memory-line.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -321,9 +322,8 @@ export function loadScores(cwd: string): ScoresFile {
 }
 
 /**
- * Minimal topic-line parser used only for key migration. Intentionally
- * local — importing memory-tree here would create a cycle (memory-tree
- * imports loadScores/entryHash from this module).
+ * Parse topic lines for score-key migration using the shared leaf parser
+ * (`memory-line.ts`, zero runtime cycle).
  */
 function parseTopicLinesForMigration(cwd: string): { category: string; text: string }[] {
   const topicsDir = join(getProjectMemoryDir(cwd), "topics");
@@ -333,14 +333,8 @@ function parseTopicLinesForMigration(cwd: string): { category: string; text: str
     for (const file of readdirSync(topicsDir).filter((f) => f.endsWith(".md"))) {
       const content = readFileSync(join(topicsDir, file), "utf-8");
       for (const line of content.split("\n")) {
-        const m = line.match(/^- \[(preference|lesson|pattern|decision|done|mistake)\] (.+)$/);
-        if (!m) continue;
-        const rawText = m[2]!
-          .replace(/\s*\*\(pinned\)\*/g, "")
-          .replace(/\s*\*\(enforced\)\*/g, "")
-          .replace(/\s*\{#[0-9a-f]+\}$/g, "")
-          .trim();
-        out.push({ category: m[1]!, text: rawText });
+        const parsed = parseTopicLine(line);
+        if (parsed) out.push({ category: parsed.category, text: parsed.text });
       }
     }
   } catch {

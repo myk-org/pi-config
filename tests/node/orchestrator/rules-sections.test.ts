@@ -184,4 +184,41 @@ describe("before_agent_start section injection", () => {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("deduplicates contextual_memories against entries already emitted in project_memory (#1199)", async () => {
+    const cwd = makeTempDir("rules-dedup-");
+    try {
+      const { isVectorSearchAvailable, embedEntry } = await import(
+        "../../../extensions/orchestrator/memory-embeddings.js"
+      );
+      if (!(await isVectorSearchAvailable())) return;
+
+      const topicsDir = path.join(cwd, ".pi", "memory", "topics");
+      fs.mkdirSync(topicsDir, { recursive: true });
+      const pinnedRule = "Always run tox before pushing changes to the branch";
+      fs.writeFileSync(
+        path.join(topicsDir, "preferences.md"),
+        `# Preferences\n\n- [preference] ${pinnedRule} *(pinned)*\n`,
+      );
+      await embedEntry(cwd, pinnedRule, "preference");
+
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+
+      const event = makeEvent(cwd);
+      event.prompt = "Always run tox before pushing changes to the branch";
+      await h.fn(event, { cwd });
+
+      const sections = event.systemPromptOptions.sections;
+      assert.ok(sections.project_memory?.includes(pinnedRule), "pinned rule is in project_memory");
+      assert.equal(
+        sections.contextual_memories,
+        undefined,
+        "pinned rule already in project_memory must not be duplicated in contextual_memories",
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

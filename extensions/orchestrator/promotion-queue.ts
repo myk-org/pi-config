@@ -5,10 +5,13 @@
  * Storage: `.pi/memory/promotions.md` (human + agent readable).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
+import { createLogger } from "../shared/logger.js";
 import { getProjectMemoryDir } from "./utils.js";
+
+const log = createLogger("memory");
 
 export type PromotionDestination =
   | "memory"
@@ -84,10 +87,24 @@ export function formatPromotionBlock(c: PromotionCandidate): string {
   return lines.join("\n") + "\n";
 }
 
-function parseField(block: string, key: string): string | undefined {
-  const re = new RegExp(`^- ${key}: (.+)$`, "m");
-  const m = block.match(re);
-  return m?.[1]?.trim();
+const promotionsCache = new Map<
+  string,
+  { mtimeMs: number; size: number; candidates: PromotionCandidate[] }
+>();
+
+function parseBlockFields(lines: string[]): Map<string, string> {
+  const fields = new Map<string, string>();
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!line.startsWith("- ")) continue;
+    const colonIdx = line.indexOf(": ", 2);
+    if (colonIdx === -1) continue;
+    const key = line.slice(2, colonIdx);
+    if (!fields.has(key) && line.length > colonIdx + 2) {
+      fields.set(key, line.slice(colonIdx + 2).trim());
+    }
+  }
+  return fields;
 }
 
 export function parsePromotionsMarkdown(content: string): PromotionCandidate[] {
@@ -101,20 +118,20 @@ export function parsePromotionsMarkdown(content: string): PromotionCandidate[] {
     const id = lines[0]?.trim();
     if (!id) continue;
 
-    const body = chunk;
-    const destination = parseField(body, "destination") as PromotionDestination | undefined;
-    const status = parseField(body, "status") as PromotionStatus | undefined;
-    const category = parseField(body, "category");
-    const text = parseField(body, "text");
-    const reason = parseField(body, "reason");
-    const createdAt = parseField(body, "created");
+    const fields = parseBlockFields(lines);
+    const destination = fields.get("destination") as PromotionDestination | undefined;
+    const status = fields.get("status") as PromotionStatus | undefined;
+    const category = fields.get("category");
+    const text = fields.get("text");
+    const reason = fields.get("reason");
+    const createdAt = fields.get("created");
 
     if (!destination || !DESTINATIONS.includes(destination)) continue;
     if (!status || !STATUSES.includes(status)) continue;
     if (!category || !text || !reason || !createdAt) continue;
 
-    const evidenceRaw = parseField(body, "evidence_count");
-    const skillCreatedRaw = parseField(body, "skill_created");
+    const evidenceRaw = fields.get("evidence_count");
+    const skillCreatedRaw = fields.get("skill_created");
 
     results.push({
       id,
@@ -125,10 +142,10 @@ export function parsePromotionsMarkdown(content: string): PromotionCandidate[] {
       reason,
       createdAt,
       evidenceCount: evidenceRaw !== undefined ? Number(evidenceRaw) : undefined,
-      trigger: parseField(body, "trigger"),
-      action: parseField(body, "action"),
-      verifier: parseField(body, "verifier"),
-      skillName: parseField(body, "skill_name"),
+      trigger: fields.get("trigger"),
+      action: fields.get("action"),
+      verifier: fields.get("verifier"),
+      skillName: fields.get("skill_name"),
       skillCreated:
         skillCreatedRaw === undefined
           ? undefined
@@ -141,10 +158,22 @@ export function parsePromotionsMarkdown(content: string): PromotionCandidate[] {
 
 export function loadPromotions(cwd: string): PromotionCandidate[] {
   const path = getPromotionsPath(cwd);
-  if (!existsSync(path)) return [];
+  if (!existsSync(path)) {
+    promotionsCache.delete(path);
+    return [];
+  }
   try {
-    return parsePromotionsMarkdown(readFileSync(path, "utf-8"));
+    const st = statSync(path);
+    const cached = promotionsCache.get(path);
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+      return cached.candidates.map((c) => ({ ...c }));
+    }
+    const candidates = parsePromotionsMarkdown(readFileSync(path, "utf-8"));
+    promotionsCache.set(path, { mtimeMs: st.mtimeMs, size: st.size, candidates });
+    log.debug("promotions_loaded", { count: candidates.length });
+    return candidates.map((c) => ({ ...c }));
   } catch {
+    promotionsCache.delete(path);
     return [];
   }
 }
@@ -162,6 +191,7 @@ export function writePromotions(cwd: string, candidates: PromotionCandidate[]): 
 
   const body = candidates.map(formatPromotionBlock).join("\n");
   writeFileSync(path, header + body, "utf-8");
+  promotionsCache.delete(path);
 }
 
 /**
@@ -287,7 +317,8 @@ export function formatPromotionsForReport(
   cwd: string,
   maxItems: number = 5,
 ): string {
-  const proposed = listProposedPromotions(cwd).slice(0, maxItems);
+  const allProposed = listProposedPromotions(cwd);
+  const proposed = allProposed.slice(0, maxItems);
   if (proposed.length === 0) return "";
 
   const lines = proposed.map((c) => {
@@ -298,14 +329,14 @@ export function formatPromotionsForReport(
     return `- [${dest}] ${c.text}`;
   });
 
-  const omitted = listProposedPromotions(cwd).length - proposed.length;
+  const omitted = allProposed.length - proposed.length;
   if (omitted > 0) {
     lines.push(`- ... ${omitted} more proposed`);
   }
 
   return (
     `## Promotion Candidates\n` +
-    `Open promotions in \`.pi/memory/promotions.md\` — apply safe ones; never auto-write package rules.\n` +
+    `\`.pi/memory/promotions.md\` (never auto-write rules/):\n` +
     lines.join("\n") +
     "\n"
   );

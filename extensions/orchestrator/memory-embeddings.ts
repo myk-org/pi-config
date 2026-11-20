@@ -15,6 +15,9 @@ import { createHash } from "node:crypto";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 import { getProjectMemoryDir } from "./utils.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("memory");
 
 const EMBEDDING_DIM = 384;
 export const EMBEDDING_POOLING = "mean";
@@ -43,7 +46,7 @@ const LEGACY_STORE_FILENAME = "embeddings.json";
 
 function getEmbeddingStore(cwd: string): JsonlStateStore<EmbeddingStore> {
   return createCachedStore<EmbeddingStore>(
-    getProjectMemoryDir(cwd), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 30 },
+    getProjectMemoryDir(cwd), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 3 },
   );
 }
 
@@ -194,18 +197,69 @@ export async function embedEntry(cwd: string, text: string, category?: string): 
 }
 
 /**
+ * Remove one or more entries' embeddings from the store in a single load/save.
+ */
+export function removeEmbeddings(
+  cwd: string,
+  entries: { text: string; category?: string }[],
+): number {
+  if (entries.length === 0) return 0;
+  try {
+    const store = loadStore(cwd);
+    if (Object.keys(store.entries).length === 0) return 0;
+    let removed = 0;
+    for (const e of entries) {
+      const hash = embeddingKey(e.text, e.category);
+      if (store.entries[hash]) {
+        delete store.entries[hash];
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      saveStore(cwd, store);
+      log.debug("embeddings_removed", { removed });
+    }
+    return removed;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Remove an entry's embedding from the store. Called on memory_remove.
  */
 export function removeEmbedding(cwd: string, text: string, category?: string): void {
+  removeEmbeddings(cwd, [{ text, category }]);
+}
+
+/**
+ * Prune orphaned embeddings whose keys no longer match any live topic entry.
+ * Called during rebuildAndOrganize() to prevent unbounded embeddings.jsonl growth.
+ */
+export function pruneEmbeddings(
+  cwd: string,
+  liveEntries: { text: string; category: string }[],
+): number {
   try {
     const store = loadStore(cwd);
-    const hash = embeddingKey(text, category);
-    if (store.entries[hash]) {
-      delete store.entries[hash];
-      saveStore(cwd, store);
+    const existingKeys = Object.keys(store.entries);
+    if (existingKeys.length === 0) return 0;
+
+    const liveKeys = new Set(liveEntries.map((e) => embeddingKey(e.text, e.category)));
+    let pruned = 0;
+    for (const key of existingKeys) {
+      if (!liveKeys.has(key)) {
+        delete store.entries[key];
+        pruned++;
+      }
     }
+    if (pruned > 0) {
+      saveStore(cwd, store);
+      log.info("embeddings_pruned", { pruned, remaining: existingKeys.length - pruned });
+    }
+    return pruned;
   } catch {
-    // removeEmbedding failed — non-fatal, stale embedding is harmless
+    return 0;
   }
 }
 
@@ -224,15 +278,36 @@ export async function vectorSearch(
   if (Object.keys(store.entries).length === 0) return [];
 
   const queryVec = await embedQuery(query);
-  if (!queryVec) return [];
+  if (!queryVec || queryVec.length === 0) return [];
+
+  // Precompute query norm once outside the entry loop
+  let normQuery = 0;
+  for (let i = 0; i < queryVec.length; i++) {
+    const q = queryVec[i]!;
+    normQuery += q * q;
+  }
+  if (normQuery === 0) return [];
+  const sqrtNormQuery = Math.sqrt(normQuery);
 
   // Score all entries that have embeddings
   const scored: { text: string; category: string; pinned: boolean; similarity: number }[] = [];
   for (const entry of entries) {
     const hash = embeddingKey(entry.text, entry.category);
     const entryVec = store.entries[hash];
-    if (!entryVec) continue;
-    const similarity = cosineSimilarity(queryVec, entryVec);
+    if (!entryVec || entryVec.length === 0) continue;
+    let similarity: number;
+    if (entryVec.length === queryVec.length) {
+      let dot = 0;
+      let normEntry = 0;
+      for (let i = 0; i < queryVec.length; i++) {
+        const e = entryVec[i]!;
+        dot += queryVec[i]! * e;
+        normEntry += e * e;
+      }
+      similarity = normEntry === 0 ? 0 : dot / (sqrtNormQuery * Math.sqrt(normEntry));
+    } else {
+      similarity = cosineSimilarity(queryVec, entryVec);
+    }
     scored.push({ ...entry, similarity });
   }
 

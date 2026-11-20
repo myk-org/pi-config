@@ -807,3 +807,48 @@ describe("subagent dispatch rewrite", () => {
     assert.equal(input.task, "Fix src/api.py");
   });
 });
+
+describe("review-learning per-turn cache invalidation (#1197)", () => {
+  it("invalidates cached DatabaseSync handle when reviews.db changes or is removed", () => {
+    const cwd = cwdWithDb([[{ path: "src/api.py", body: "Initial finding on api" }]]);
+    assert.equal(collectPathFindings(cwd, ["src/api.py"], repoInfo).length, 1);
+
+    // Insert a second finding — DB mtime/size change invalidates cached handle
+    const dbPath = path.join(cwd, ".pi", "data", "reviews.db");
+    const db = new DatabaseSync(dbPath);
+    db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (1, 'qodo', 'src/other.py', 1, 'Second finding on other', 'high', 'addressed')",
+    ).run();
+    db.close();
+
+    const afterInsert = collectPathFindings(cwd, ["src/api.py", "src/other.py"], repoInfo);
+    assert.equal(afterInsert.length, 2);
+
+    // Deleting the DB invalidates and clears the cached handle cleanly
+    fs.rmSync(dbPath);
+    assert.deepEqual(collectPathFindings(cwd, ["src/api.py"], repoInfo), []);
+  });
+
+  it("invalidates cached branchDiffPaths when HEAD advances", () => {
+    const repo = gitRepoWithBranch();
+    assert.deepEqual(branchDiffPaths(repo), ["src/api.py"]);
+
+    // Add a second commit on the feature branch — HEAD ref change invalidates cache
+    fs.writeFileSync(path.join(repo, "src", "second.py"), "z = 3\n");
+    execFileSync("git", ["add", "src/second.py"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-q", "-m", "second"], { cwd: repo, stdio: "ignore" });
+
+    assert.deepEqual(branchDiffPaths(repo), ["src/api.py", "src/second.py"]);
+  });
+
+  it("invalidates memoized commentId->lessonText map when a new lesson is seeded", () => {
+    const cwd = cwdWithDb([[{ path: "src/api.py", body: "Raw DB comment body about validation" }]]);
+    const before = collectPathFindings(cwd, ["src/api.py"], repoInfo);
+    assert.equal(before[0]!.text, "Raw DB comment body about validation");
+
+    // Seed a provenance-linked lesson for comment id 1
+    seedLessonEntry(cwd, "src/api.py: Validate inputs at boundary", "reviews.db:1;myk-org/demo");
+    const after = collectPathFindings(cwd, ["src/api.py"], repoInfo);
+    assert.equal(after[0]!.text, "src/api.py: Validate inputs at boundary");
+  });
+});

@@ -24,7 +24,7 @@ import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
 import { setSlot } from "./status-bar.js";
 import { distilledLessonTextList } from "./review-learning.js";
-import { invalidateTopicFileCache, removalsSince, topicCharCap } from "./memory-tree.js";
+import { canonicalTopicLine, invalidateTopicFileCache, parseTopicLine, removalsSince, stripTopicMarkers, topicCharCap } from "./memory-tree.js";
 import { entryHash } from "./memory-scoring.js";
 
 /** Topic files memory maintenance rewrites. */
@@ -32,11 +32,9 @@ const MEMORY_TOPIC_FILES = ["lessons", "preferences", "patterns", "decisions", "
 
 /** Line text without its `- [category] ` prefix, lock markers, or `{#id}` suffix. */
 function topicLineText(line: string): string {
-  return line
-    .replace(/^- \[[a-z]+\] /, "")
-    .replace(/\s*\*\((?:pinned|enforced)\)\*/g, "")
-    .replace(/\s*\{#[0-9a-f]+\}\s*$/, "")
-    .trim();
+  const parsed = parseTopicLine(line);
+  if (parsed) return parsed.text;
+  return stripTopicMarkers(line.replace(/^- \[[a-z]+\] /, ""));
 }
 
 /**
@@ -75,6 +73,8 @@ export function snapshotTopicLines(topicsDir: string): Record<string, string[]> 
  */
 /** Canonical `- [category] text` form used as the memory score key. */
 export function topicLineCanonical(line: string): string {
+  const parsed = parseTopicLine(line);
+  if (parsed) return canonicalTopicLine(parsed);
   const category = /^- \[([a-z]+)\] /.exec(line)?.[1] ?? "";
   return `- [${category}] ${topicLineText(line)}`;
 }

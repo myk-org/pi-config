@@ -193,4 +193,26 @@ describe("updatePromotionCandidates", () => {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("loadPromotions returns cloned objects and invalidates cache on write (#1204)", () => {
+    const cwd = makeTempDir("promo-cache-");
+    try {
+      const a = makeCandidate({ text: "First rule" });
+      appendPromotions(cwd, [a]);
+      const first = loadPromotions(cwd);
+      assert.equal(first.length, 1);
+      // Mutating caller's copy must not corrupt the cached array
+      first[0]!.text = "mutated-in-memory";
+      const second = loadPromotions(cwd);
+      assert.equal(second[0]!.text, "First rule");
+
+      // Appending another candidate invalidates the cache
+      const b = makeCandidate({ text: "Second rule" });
+      appendPromotions(cwd, [b]);
+      const third = loadPromotions(cwd);
+      assert.equal(third.length, 2);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
