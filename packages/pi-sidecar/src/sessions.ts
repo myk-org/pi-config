@@ -33,6 +33,9 @@ import { drainTranscriptWrites, maybeEnforceRetention, queueLazySessionHeader, q
 const fixtureLog = createLogger("session-store");
 const pricingLog = createLogger("session-store");
 const recordingLog = createLogger("session-store");
+const redactorLog = createLogger("api-key-redactor");
+const redactApiKeyLog = createLogger("redact-api-key");
+const isRedactorDebug = process.env.PI_SIDECAR_LOG_LEVEL?.toLowerCase().trim() === "debug";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -154,13 +157,12 @@ export function redactorLiteralHoldback(redact: (value: string) => string): numb
 
 /** Compile key representations once per session, never per log or response. */
 export function createApiKeyRedactor(apiKey?: string): (value: string) => string {
-  const log = createLogger("api-key-redactor");
-  log.debug(`Creating API key redactor: hasKey=${Boolean(apiKey)}`);
+  if (isRedactorDebug) redactorLog.debug(`Creating API key redactor: hasKey=${Boolean(apiKey)}`);
   if (!apiKey) return (value) => value;
   if (apiKey.length > MAX_API_KEY_LENGTH) throw new RangeError("API key exceeds maximum length");
   const escapes: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
   const redact = (value: string): string => {
-    log.debug(`Redacting API key: inputLength=${value.length}, hasKey=true`);
+    if (isRedactorDebug) redactorLog.debug(`Redacting API key: inputLength=${value.length}, hasKey=true`);
     if (!value.includes("\\") && !value.includes("%")) return value.replaceAll(apiKey, "[REDACTED]");
     const parts: string[] = [];
     // One key unit expands to at most 8 source units (JSON-escaped percent byte),
@@ -175,61 +177,80 @@ export function createApiKeyRedactor(apiKey?: string): (value: string) => string
       for (let at = raw.indexOf(apiKey); at !== -1; at = raw.indexOf(apiKey, at + apiKey.length)) {
         matches.push([at, at + apiKey.length]);
       }
-      let decoded = "";
-      const starts: number[] = [];
-      const ends: number[] = [];
-      for (let i = 0; i < raw.length;) {
-        const start = i;
-        let char = raw[i++];
-        if (char === "\\" && i < raw.length) {
-          const next = raw[i];
-          if (next === "u" && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 1, i + 5))) {
-            char = String.fromCharCode(parseInt(raw.slice(i + 1, i + 5), 16));
-            i += 5;
-          } else if (Object.hasOwn(escapes, next)) {
-            char = escapes[next];
-            i++;
+      const hasBackslash = raw.includes("\\");
+      if (hasBackslash || raw.includes("%")) {
+        let decoded: string;
+        let starts: number[] | undefined;
+        let ends: number[] | undefined;
+        if (hasBackslash) {
+          decoded = "";
+          starts = [];
+          ends = [];
+          for (let i = 0; i < raw.length;) {
+            const start = i;
+            let char = raw[i++];
+            if (char === "\\" && i < raw.length) {
+              const next = raw[i];
+              if (next === "u" && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 1, i + 5))) {
+                char = String.fromCharCode(parseInt(raw.slice(i + 1, i + 5), 16));
+                i += 5;
+              } else if (Object.hasOwn(escapes, next)) {
+                char = escapes[next];
+                i++;
+              }
+            }
+            decoded += char;
+            starts.push(start);
+            ends.push(i);
+          }
+        } else {
+          decoded = raw;
+        }
+        if (!decoded.includes("%")) {
+          // Only reachable when hasBackslash was true (since !hasBackslash && !raw.includes("%") skips this branch).
+          for (let at = decoded.indexOf(apiKey); at !== -1; at = decoded.indexOf(apiKey, at + apiKey.length)) {
+            matches.push([starts![at], ends![at + apiKey.length - 1]]);
+          }
+        } else {
+          let text = "";
+          const percentStarts: number[] = [];
+          const percentEnds: number[] = [];
+          for (let i = 0; i < decoded.length;) {
+            let char = decoded[i];
+            let end = i + 1;
+            if (char === "%" && /^%[0-9a-fA-F]{2}$/.test(decoded.slice(i, i + 3))) {
+              const lead = parseInt(decoded.slice(i + 1, i + 3), 16);
+              const count = lead < 0x80 ? 1 : lead >= 0xc2 && lead <= 0xdf ? 2
+                : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0;
+              let valid = count > 0 && i + count * 3 <= decoded.length;
+              for (let byte = 1; valid && byte < count; byte++) {
+                const offset = i + byte * 3;
+                if (!/^%[0-9a-fA-F]{2}$/.test(decoded.slice(offset, offset + 3))) { valid = false; break; }
+                const continuation = parseInt(decoded.slice(offset + 1, offset + 3), 16);
+                valid = continuation >= 0x80 && continuation <= 0xbf
+                  && (byte !== 1 || !(lead === 0xe0 && continuation < 0xa0
+                    || lead === 0xed && continuation > 0x9f
+                    || lead === 0xf0 && continuation < 0x90
+                    || lead === 0xf4 && continuation > 0x8f));
+              }
+              if (valid) {
+                end = i + count * 3;
+                char = decodeURIComponent(decoded.slice(i, end));
+              }
+            }
+            text += char;
+            const srcStart = starts ? starts[i] : i;
+            const srcEnd = ends ? ends[end - 1] : end;
+            for (let j = 0; j < char.length; j++) {
+              percentStarts.push(srcStart);
+              percentEnds.push(srcEnd);
+            }
+            i = end;
+          }
+          for (let at = text.indexOf(apiKey); at !== -1; at = text.indexOf(apiKey, at + apiKey.length)) {
+            matches.push([percentStarts[at], percentEnds[at + apiKey.length - 1]]);
           }
         }
-        decoded += char;
-        starts.push(start);
-        ends.push(i);
-      }
-      let text = "";
-      const percentStarts: number[] = [];
-      const percentEnds: number[] = [];
-      for (let i = 0; i < decoded.length;) {
-        let char = decoded[i];
-        let end = i + 1;
-        if (char === "%" && /^%[0-9a-fA-F]{2}$/.test(decoded.slice(i, i + 3))) {
-          const lead = parseInt(decoded.slice(i + 1, i + 3), 16);
-          const count = lead < 0x80 ? 1 : lead >= 0xc2 && lead <= 0xdf ? 2
-            : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0;
-          let valid = count > 0 && i + count * 3 <= decoded.length;
-          for (let byte = 1; valid && byte < count; byte++) {
-            const offset = i + byte * 3;
-            if (!/^%[0-9a-fA-F]{2}$/.test(decoded.slice(offset, offset + 3))) { valid = false; break; }
-            const continuation = parseInt(decoded.slice(offset + 1, offset + 3), 16);
-            valid = continuation >= 0x80 && continuation <= 0xbf
-              && (byte !== 1 || !(lead === 0xe0 && continuation < 0xa0
-                || lead === 0xed && continuation > 0x9f
-                || lead === 0xf0 && continuation < 0x90
-                || lead === 0xf4 && continuation > 0x8f));
-          }
-          if (valid) {
-            end = i + count * 3;
-            char = decodeURIComponent(decoded.slice(i, end));
-          }
-        }
-        text += char;
-        for (let j = 0; j < char.length; j++) {
-          percentStarts.push(starts[i]);
-          percentEnds.push(ends[end - 1]);
-        }
-        i = end;
-      }
-      for (let at = text.indexOf(apiKey); at !== -1; at = text.indexOf(apiKey, at + apiKey.length)) {
-        matches.push([percentStarts[at], percentEnds[at + apiKey.length - 1]]);
       }
       matches.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
       let consumed = 0;
@@ -252,8 +273,7 @@ export function createApiKeyRedactor(apiKey?: string): (value: string) => string
 }
 
 export function redactApiKey(value: string, apiKey?: string): string {
-  const log = createLogger("redact-api-key");
-  log.debug(`Redacting API key value: inputLength=${value.length}, hasKey=${Boolean(apiKey)}`);
+  if (isRedactorDebug) redactApiKeyLog.debug(`Redacting API key value: inputLength=${value.length}, hasKey=${Boolean(apiKey)}`);
   return createApiKeyRedactor(apiKey)(value);
 }
 
@@ -447,6 +467,9 @@ interface ResolvedExtensions {
   subagentPathFound: boolean;
 }
 
+const extensionPathExistsCache = new Map<string, boolean>();
+let cachedSubagentExtensions: ResolvedExtensions | undefined;
+
 /** Resolve a list of candidate extension paths to existing files, logging each outcome. */
 function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
   const paths: string[] = [];
@@ -456,12 +479,18 @@ function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
       logger.warn(`[sidecar] EXTENSION_RESOLVE_EMPTY: label=${label}`);
       continue;
     }
+    if (extensionPathExistsCache.get(path)) {
+      paths.push(path);
+      if (isSubagent) subagentPathFound = true;
+      continue;
+    }
     try {
       const stat = statSync(path);
       if (!stat.isFile()) {
         logger.warn(`[sidecar] EXTENSION_NOT_FILE: label=${label}, path=${path}`);
         continue;
       }
+      extensionPathExistsCache.set(path, true);
       paths.push(path);
       logger.log(`[sidecar] EXTENSION_FOUND: label=${label}, path=${path}`);
       if (isSubagent) subagentPathFound = true;
@@ -471,6 +500,18 @@ function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
     }
   }
   return { paths, subagentPathFound };
+}
+
+function resolveSubagentExtensionOnce(): ResolvedExtensions {
+  if (cachedSubagentExtensions) return cachedSubagentExtensions;
+  const resolved = resolveExtensionPaths([
+    { path: SUBAGENT_EXTENSION, label: "Subagent", isSubagent: true },
+  ]);
+  // Cache only positive resolutions so a transient stat failure can recover.
+  if (resolved.subagentPathFound) {
+    cachedSubagentExtensions = resolved;
+  }
+  return resolved;
 }
 
 /**
@@ -1001,9 +1042,15 @@ function sseFrame(event: SessionStreamEvent): string {
 class SessionEventStreams {
   private subscribers = new Set<StreamSubscriber>();
   private turnSeq = 0;
+  private _attachGeneration = 0;
 
   get size(): number {
     return this.subscribers.size;
+  }
+
+  /** Incremented whenever subscribers transitions 0 -> 1 so active turns detect attach/re-attach. */
+  get attachGeneration(): number {
+    return this._attachGeneration;
   }
 
   /** Monotonic per-session turn id. */
@@ -1024,6 +1071,7 @@ class SessionEventStreams {
     sub.idle = setTimeout(() => this.drop(sub, "idle_timeout"), STREAM_IDLE_MS);
     sub.keepalive.unref?.();
     sub.idle.unref?.();
+    if (this.subscribers.size === 0) this._attachGeneration++;
     this.subscribers.add(sub);
     if (greeting) this.write(sub, sseFrame(greeting));
     return () => this.drop(sub, "detached");
@@ -1241,7 +1289,8 @@ export class SessionStore {
    * never be recreated to "refresh" discovery (see refreshModels()).
    *
    * User sessions created via create() never load the unified Providers
-   * extension (only Subagent and Vertex, which have no such shared state) and
+   * extension or Vertex (already registered on the shared modelRuntime), and
+   * only load Subagent when "subagent" is in the session's tools. They
    * resolve acpx-* / cli-* models directly via `modelRuntime.getModel()`. This
    * intentionally bypasses `ModelRuntime.getAvailable()`/`ModelRegistry.getAvailable()`,
    * whose `filterModels()` call would read `isConfigured()` from the *internal*
@@ -2127,15 +2176,25 @@ export class SessionStore {
       },
     });
 
+    const tools = options.tools ?? [...DEFAULT_TOOLS];
+    const needsSubagent = tools.includes("subagent");
     // User sessions deliberately never load the unified Providers extension
-    // here: it owns module-level state (acpx runtime sessions, CLI --resume
-    // markers) that is only correct with a single loaded instance — the
-    // internal runtime's (see the internalRuntime field docstring). Subagent
-    // and Vertex have no such shared state and are safe to load per user session.
-    const { paths: extensionPaths, subagentPathFound } = resolveExtensionPaths([
-      { path: VERTEX_EXTENSION, label: "Vertex" },
-      { path: SUBAGENT_EXTENSION, label: "Subagent", isSubagent: true },
-    ]);
+    // (it owns module-level acpx/CLI state) or Vertex (google-vertex-claude is
+    // already registered on the shared this.modelRuntime). Subagent only
+    // registers the `subagent` tool, so omit it unless requested in `tools`.
+    let extensionPaths: string[] = [];
+    if (needsSubagent) {
+      const { paths, subagentPathFound } = resolveSubagentExtensionOnce();
+      // Fast-fail when the subagent extension file is missing before we build a loader.
+      // Actual load success is verified after reload() below.
+      if (!subagentPathFound) {
+        throw httpError(
+          "Tool 'subagent' was requested but the subagent extension could not be loaded. Check logs for details.",
+          400,
+        );
+      }
+      extensionPaths = paths;
+    }
     log.debug(`[sidecar] EXTENSIONS_LOADING: count=${extensionPaths.length}`);
 
     // Build custom tools from config — result is cast to any[] for Pi SDK ToolDefinition compatibility
@@ -2170,15 +2229,6 @@ export class SessionStore {
       return tool;
     }).filter((t): t is NonNullable<typeof t> => t != null);
 
-    const tools = options.tools ?? [...DEFAULT_TOOLS];
-    // Fast-fail when the subagent extension file is missing before we build a loader.
-    // Actual load success is verified after reload() below.
-    if (tools.includes("subagent") && !subagentPathFound) {
-      throw httpError(
-        "Tool 'subagent' was requested but the subagent extension could not be loaded. Check logs for details.",
-        400,
-      );
-    }
     // Include custom tool names in the allowed tools list so the SDK
     // doesn't filter them out via allowedToolNames.
     const customToolNames = customTools.map((t: any) => t.name as string);
@@ -2396,13 +2446,52 @@ export class SessionStore {
     const hold = redactorHoldback(entry.redact);
     const literalHold = redactorLiteralHoldback(entry.redact);
     let heldText = "";
+    // Redacted pre-attach context prefix kept only so a secret split across a
+    // late attach boundary still matches as a whole without emitting pre-attach text.
+    let preAttachSafePrefix = "";
+    let seenAttachGen = entry.streams.attachGeneration;
     const emitHeldText = (flush: boolean) => {
+      if (entry.streams.size === 0) {
+        heldText = "";
+        preAttachSafePrefix = "";
+        return;
+      }
+      if (entry.streams.attachGeneration !== seenAttachGen) {
+        // Subscriber attached (or re-attached after detach) during a quiet gap:
+        // discard any stale holdback left over from an earlier subscriber.
+        seenAttachGen = entry.streams.attachGeneration;
+        heldText = "";
+        preAttachSafePrefix = "";
+        return;
+      }
       if (heldText === "") return;
       const safe = entry.redact(heldText);
+      if (preAttachSafePrefix && !safe.startsWith(preAttachSafePrefix)) {
+        // Post-attach text completed a key that started inside the pre-attach tail:
+        // keep only the common prefix before the new [REDACTED] token as pre-attach skip.
+        let lcp = 0;
+        const minLen = Math.min(preAttachSafePrefix.length, safe.length);
+        while (lcp < minLen && preAttachSafePrefix.charCodeAt(lcp) === safe.charCodeAt(lcp)) lcp++;
+        const markerStart = Math.max(0, lcp - "[REDACTED]".length + 1);
+        for (let k = markerStart; k <= lcp; k++) {
+          if (safe.startsWith("[REDACTED]", k) && !preAttachSafePrefix.startsWith("[REDACTED]", k)) {
+            lcp = k;
+            break;
+          }
+        }
+        preAttachSafePrefix = preAttachSafePrefix.slice(0, lcp);
+      }
       const window = hold > literalHold && /[%\\]/.test(safe.slice(-hold)) ? hold : literalHold;
       const cut = flush ? safe.length : Math.max(0, safe.length - window);
+      if (cut <= preAttachSafePrefix.length) {
+        preAttachSafePrefix = preAttachSafePrefix.slice(cut);
+        heldText = safe.slice(cut);
+        return;
+      }
+      const deltaOut = safe.slice(preAttachSafePrefix.length, cut);
+      preAttachSafePrefix = "";
       heldText = safe.slice(cut);
-      if (cut > 0) entry.streams.emit({ type: "text_delta", turnId, delta: safe.slice(0, cut) });
+      if (deltaOut.length > 0) entry.streams.emit({ type: "text_delta", turnId, delta: deltaOut });
     };
     const emitTurnEnd = (aborted: boolean) => {
       if (turnEnded) return;
@@ -2470,13 +2559,35 @@ export class SessionStore {
         }
       }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+        const prevLen = responseText.length;
         responseText += event.assistantMessageEvent.delta;
         textDeltaCount++;
         // #1019: redact per delta — this is the only redaction point in the
         // prompt path (:2360) and a raw delta can echo a request api_key.
         // Through the holdback, so a key split across deltas is redacted whole.
-        heldText += event.assistantMessageEvent.delta;
-        emitHeldText(false);
+        // #1161: skip holdback buffering & per-delta redaction when no SSE
+        // subscribers are attached (non-streaming prompt path); on mid-turn
+        // attach/re-attach, seed from the pre-attach tail so a key spanning
+        // the attach boundary is redacted without emitting pre-attach text.
+        if (entry.streams.size > 0) {
+          if (entry.streams.attachGeneration !== seenAttachGen) {
+            seenAttachGen = entry.streams.attachGeneration;
+            if (prevLen > 0 && hold > 0) {
+              const preTail = responseText.slice(Math.max(0, prevLen - hold), prevLen);
+              preAttachSafePrefix = entry.redact(preTail);
+              heldText = preAttachSafePrefix + event.assistantMessageEvent.delta;
+            } else {
+              preAttachSafePrefix = "";
+              heldText = event.assistantMessageEvent.delta;
+            }
+          } else {
+            heldText += event.assistantMessageEvent.delta;
+          }
+          emitHeldText(false);
+        } else if (heldText !== "" || preAttachSafePrefix !== "") {
+          heldText = "";
+          preAttachSafePrefix = "";
+        }
       }
       if (event.type === "agent_end" && event.messages) {
         for (const msg of event.messages) {
