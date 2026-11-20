@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { SessionStore } from "../../src/sessions.js";
 
 describe("message boundary separator", () => {
   /**
@@ -389,5 +390,42 @@ describe("message boundary separator", () => {
     assert.doesNotThrow(() => JSON.parse(result), `JSON must be valid, got: ${result}`);
     const parsed = JSON.parse(result);
     assert.equal(parsed.name, "docsite", "value must not be split");
+  });
+
+  it("SessionStore.prompt handles pathological unclosed braces in linear time and protects inner JSON (#1256)", async () => {
+    const store = new SessionStore();
+    const unclosedPrefix = "{ ".repeat(4000);
+    const trailingTail = "x".repeat(4000);
+    let listener: ((event: any) => void) | undefined;
+    store.putSessionFixture(
+      "sess-boundary-perf",
+      {
+        subscribe(cb) {
+          listener = cb;
+          return () => { listener = undefined; };
+        },
+        async prompt() {
+          listener?.({ type: "message_start", message: { role: "assistant" } });
+          listener?.({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${unclosedPrefix}{"key":` } });
+          listener?.({ type: "message_start", message: { role: "assistant" } });
+          listener?.({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: ` "val"} tail ` } });
+          listener?.({ type: "message_start", message: { role: "assistant" } });
+          listener?.({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `after ${trailingTail}` } });
+          listener?.({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+        },
+        async abort() {},
+        dispose() {},
+      },
+      "/tmp",
+    );
+
+    const start = Date.now();
+    const res = await store.prompt("sess-boundary-perf", "go");
+    const elapsed = Date.now() - start;
+
+    assert.ok(elapsed < 500, `expected linear-time boundary scan (<500ms), took ${elapsed}ms`);
+    assert.ok(res.text.includes('{"key": "val"}'), "inner JSON spanning boundary must remain intact");
+    assert.ok(res.text.includes('tail \n\nafter '), "prose boundary outside JSON must receive separator");
+    await store.disposeAll();
   });
 });

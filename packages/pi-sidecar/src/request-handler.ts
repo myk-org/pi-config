@@ -6,7 +6,7 @@
  * arrive through {@link RequestHandlerDeps}.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 
 import {
@@ -25,6 +25,9 @@ import {
   sanitizeForLog,
   sendJson,
 } from "./http-helpers.js";
+
+const recLog = createLogger("recording-routes");
+const keyDiscoveryRouteLog = createLogger("key-model-discovery-route");
 
 /**
  * Everything the request handler needs, passed explicitly: it must not close
@@ -99,7 +102,6 @@ export function createRequestHandler(
       // GET /transcripts/recording (#935) — effective recording state.
       // Exact-URL match: "/transcripts/recording/reset" (POST) never lands here.
       if (method === "GET" && url === "/transcripts/recording") {
-        const recLog = createLogger("recording-routes");
         const state = store.recordingState();
         recLog.debug(`GET /transcripts/recording 200: enabled=${state.enabled}, source=${state.source}`);
         sendJson(res, 200, state);
@@ -110,7 +112,6 @@ export function createRequestHandler(
       // Affects subsequent turns only; in-flight turns complete under the
       // state captured at their prompt start. Env stays the boot default.
       if (method === "POST" && url === "/transcripts/recording") {
-        const recLog = createLogger("recording-routes");
         const body = await parseBody(req);
         if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.enabled !== "boolean") {
           recLog.warn(`POST /transcripts/recording 400: invalid body`);
@@ -128,7 +129,6 @@ export function createRequestHandler(
       // boot-time env default governs again. Idempotent: resetting with no
       // override set still returns the env-governed state.
       if (method === "POST" && url === "/transcripts/recording/reset") {
-        const recLog = createLogger("recording-routes");
         store.clearRecordingOverride();
         const state = store.recordingState();
         recLog.info(`POST /transcripts/recording/reset 200: enabled=${state.enabled}, source=${state.source}`);
@@ -146,17 +146,16 @@ export function createRequestHandler(
 
       // POST /models/for-api-key
       if (method === "POST" && url === "/models/for-api-key") {
-        const log = createLogger("key-model-discovery-route");
         const body = await parseBody(req);
         if (!body || typeof body !== "object" || Array.isArray(body) ||
             typeof body.provider !== "string" || !body.provider.trim() || !isValidApiKey(body.api_key)) {
-          log.debug("Key model discovery request rejected", { validation: "invalid" });
+          keyDiscoveryRouteLog.debug("Key model discovery request rejected", { validation: "invalid" });
           sendJson(res, 400, { error: "Invalid provider or api_key" });
           return;
         }
         requestApiKey = body.api_key;
         const result = await store.getModelsForApiKey(body.provider, body.api_key);
-        log.debug("Key model discovery request completed", { count: result.models.length, modelListingSupported: result.modelListingSupported });
+        keyDiscoveryRouteLog.debug("Key model discovery request completed", { count: result.models.length, modelListingSupported: result.modelListingSupported });
         sendJson(res, 200, result);
         return;
       }
@@ -197,34 +196,44 @@ export function createRequestHandler(
       if (method === "POST" && url === "/sessions") {
         const body = await parseBody(req);
         const { provider, model, system_prompt, cwd, custom_tools, tools, agent_dir, api_key } = body;
+        const rejectValidation = (
+          field: string,
+          error: string,
+          opts?: { reason?: string; extraLog?: string; extraBody?: Record<string, unknown> },
+        ) => {
+          const timing = opts?.reason !== undefined ? ` ${Date.now() - requestStart}ms` : "";
+          const reasonPart = opts?.reason !== undefined ? `, reason=${opts.reason}` : "";
+          const extraPart = opts?.extraLog ? `, ${opts.extraLog}` : "";
+          logger.warn(`[sidecar] POST /sessions 400${timing}: validation=failed, field=${field}${reasonPart}${extraPart}`);
+          sendJson(res, 400, { error, ...opts?.extraBody });
+        };
         if (api_key !== undefined) {
           if (!isValidApiKey(api_key)) { // pragma: allowlist secret — field validation, not a credential
-            logger.warn(`[sidecar] POST /sessions 400: validation=failed, field=api_key`);
-            sendJson(res, 400, { error: "api_key must be a non-empty string with well-formed Unicode and at most 1024 characters" });
+            rejectValidation("api_key", "api_key must be a non-empty string with well-formed Unicode and at most 1024 characters");
             return;
           }
           requestApiKey = api_key;
         }
         if (typeof provider !== "string" || provider.length === 0 || typeof system_prompt !== "string" || system_prompt.length === 0) {
-          logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=provider|system_prompt, reason=must be non-empty strings`);
-          sendJson(res, 400, { error: "provider and system_prompt are required and must be non-empty strings" });
+          rejectValidation("provider|system_prompt", "provider and system_prompt are required and must be non-empty strings", {
+            reason: "must be non-empty strings",
+          });
           return;
         }
         if (typeof model !== "string" || model.length === 0) {
-          logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=model, reason=must be non-empty string`);
-          sendJson(res, 400, { error: "model is required and must be a non-empty string. Use GET /models to list available models." });
+          rejectValidation("model", "model is required and must be a non-empty string. Use GET /models to list available models.", {
+            reason: "must be non-empty string",
+          });
           return;
         }
         if (cwd !== undefined && typeof cwd !== "string") {
-          logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=cwd, reason=must be string`);
-          sendJson(res, 400, { error: "cwd must be a string" });
+          rejectValidation("cwd", "cwd must be a string", { reason: "must be string" });
           return;
         }
         let effectiveAgentDir: string | undefined = agent_dir;
         if (agent_dir !== undefined) {
           if (typeof agent_dir !== "string" || agent_dir.trim().length === 0) {
-            logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=agent_dir, reason=must be non-empty string`);
-            sendJson(res, 400, { error: "agent_dir must be a non-empty string" });
+            rejectValidation("agent_dir", "agent_dir must be a non-empty string", { reason: "must be non-empty string" });
             return;
           }
           // DEV_MODE: after non-empty string check, discard value and warn (even on 0.0.0.0).
@@ -235,45 +244,38 @@ export function createRequestHandler(
             effectiveAgentDir = undefined;
           } else if (!isLoopbackBindHost(trustBindHost)) {
             // Non-loopback without DEV_MODE (e.g. SIDECAR_HOST): reject — no silent discard.
-            logger.warn(
-              `[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=agent_dir, reason=not_allowed_on_non_loopback_bind, host=${trustBindHost}`,
-            );
-            sendJson(res, 400, {
-              error: "agent_dir is not allowed when the sidecar is bound to a non-loopback address",
+            rejectValidation("agent_dir", "agent_dir is not allowed when the sidecar is bound to a non-loopback address", {
+              reason: "not_allowed_on_non_loopback_bind",
+              extraLog: `host=${trustBindHost}`,
             });
             return;
           } else {
             if (!isAbsolute(agent_dir)) {
-              logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=agent_dir, reason=must be absolute path`);
-              sendJson(res, 400, { error: "agent_dir must be an absolute path" });
+              rejectValidation("agent_dir", "agent_dir must be an absolute path", { reason: "must be absolute path" });
               return;
             }
             try {
-              const stat = statSync(agent_dir);
-              if (!stat.isDirectory()) {
-                logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=agent_dir, reason=not a directory`);
-                sendJson(res, 400, { error: "agent_dir must be a directory" });
+              const agentDirStat = await stat(agent_dir);
+              if (!agentDirStat.isDirectory()) {
+                rejectValidation("agent_dir", "agent_dir must be a directory", { reason: "not a directory" });
                 return;
               }
             } catch (err: any) {
               const reason = err?.code === "ENOENT" ? "does not exist" : err?.code === "EACCES" ? "permission denied" : `not accessible (${err?.code || "unknown"})`;
-              logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=agent_dir, reason=${reason}`);
-              sendJson(res, 400, { error: `agent_dir ${reason}` });
+              rejectValidation("agent_dir", `agent_dir ${reason}`, { reason });
               return;
             }
           }
         }
         if (tools !== undefined) {
           if (!Array.isArray(tools) || !tools.every((t: any) => typeof t === "string")) {
-            logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=tools, reason=must be array of strings`);
-            sendJson(res, 400, { error: "tools must be an array of strings" });
+            rejectValidation("tools", "tools must be an array of strings", { reason: "must be array of strings" });
             return;
           }
         }
         if (custom_tools !== undefined) {
           if (!Array.isArray(custom_tools)) {
-            logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=custom_tools, reason=must be array`);
-            sendJson(res, 400, { error: "custom_tools must be an array" });
+            rejectValidation("custom_tools", "custom_tools must be an array", { reason: "must be array" });
             return;
           }
           const invalidIndexes: number[] = [];
@@ -290,13 +292,15 @@ export function createRequestHandler(
             }
           }
           if (invalidIndexes.length > 0) {
-            logger.warn(
-              `[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=custom_tools, reason=entries must be plain objects with non-empty name, invalid_indexes=${invalidIndexes.join(",")}`,
+            rejectValidation(
+              "custom_tools",
+              "custom_tools entries must be plain objects with a non-empty string 'name' property",
+              {
+                reason: "entries must be plain objects with non-empty name",
+                extraLog: `invalid_indexes=${invalidIndexes.join(",")}`,
+                extraBody: { invalid_indexes: invalidIndexes },
+              },
             );
-            sendJson(res, 400, {
-              error: "custom_tools entries must be plain objects with a non-empty string 'name' property",
-              invalid_indexes: invalidIndexes,
-            });
             return;
           }
         }
