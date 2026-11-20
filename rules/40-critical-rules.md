@@ -10,9 +10,7 @@ A question mark means answer only — the user will tell you when to act.
 
 ## Task Focus (MANDATORY)
 
-When executing a multi-step workflow, never abandon it for a side question. Answer the question,
-then immediately resume the workflow from where you left off. After every response, ask yourself:
-was I in a workflow? If yes, what's the next step?
+Never abandon a multi-step workflow for a side question — answer it, then resume the next unchecked task (see `60-task-tracking.md` Side Questions).
 
 ---
 
@@ -34,8 +32,7 @@ its output. Use it ONLY for work whose result nobody consumes — in pi-config, 
 dreaming and nothing else. Every watcher, poll, and review agent exists to report
 something back, so leave `fireAndForget` unset for them. If you are about to set it,
 ask whether you will ever read the result; if yes, do not set it.
-**`taskId` is required on every async call** (`-1` only for a single read-only check; anything that edits, pushes, or drives a PR needs a real task id) — a call without
-it is rejected, and the agent does not run.
+**`taskId` is required on every async call** (enforced; see `60-task-tracking.md`).
 
 Do NOT write bash loops, sleep commands, or poll for results after spawning async agents.
 

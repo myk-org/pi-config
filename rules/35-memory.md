@@ -1,274 +1,71 @@
 # Project Memory
 
-Scored, topic-organized memory system with stability-based decay.
-Memories are scored, prioritized, and injected into the system prompt via situation reports.
+Scored, topic-organized memory injected into system prompts (Situation Report, vector recall >0.65, and keyword session recall).
 
 ---
 
-## Memory Tools (MANDATORY)
+## Memory Tools & Proactive Rules (MANDATORY)
 
-You have five memory tools and one session search tool. **USE THEM PROACTIVELY:**
+- **`memory_search`** — **Call first** before answering questions about prior sessions, user preferences, or past decisions.
+- **`memory_reinforce`** — Call whenever an existing memory is relevant to the current task to prevent decay.
+- **`memory_add`** — Save immediately after any turn worth remembering (do NOT wait for `/dream` or shutdown). Duplicates auto-reinforce.
+- **`memory_remove` / `memory_edit`** — Remove or update outdated, inaccurate, or superseded entries.
+- **`memory_topics` / `session_search`** — Inspect topic hotness/counts or search past conversation summaries.
 
-## Auto-Injection (how memories reach you)
+### Quality, Scope & Standing Test
 
-Three mechanisms automatically inject relevant context into your system prompt — you don't need to call tools for these:
+- **One line (~100 chars max)**, specific and actionable ("do X" / "don't do Y").
+- **Preserve context scope:** include tool/project/workflow scope — NEVER generalize a context-specific statement into a universal rule.
+- **Pinned (`pinned: true`):** ONLY when the user explicitly says "remember" / `/remember`. Dream never removes Pinned entries.
+- **Standing test:** would this apply to a future, unrelated task? If no → session instruction or task attribute, NOT memory.
 
-1. **Situation Report** — token-budgeted summary of scored memories (preferences, lessons, mistakes, patterns, decisions, completions). Always present.
-2. **Contextual Memory Recall** — vector similarity search against your current message. Entries with similarity > 0.65 appear as "Contextually Relevant Memories."
-3. **Session History Recall** — keyword search against past conversation summaries. Relevant past sessions appear as "Relevant Past Sessions."
+**NEVER memorize:** rejected/abandoned ideas, unfinished discussions without conclusion, unimplemented requirements,
+one-off permissions ("you can merge this PR"), or task-scoped instructions (deliverable formats, one-time migration steps,
+session config notes). Memorize **outcomes**, not **intentions**.
 
-**Ground Truth:** All injected memories are authoritative. Use them directly —
-do not re-discover or re-verify information already in your context window.
+### Conflict Resolution
 
-**Social closer gate:** Trivial messages ("ok", "thanks", "👍", < 6 chars) skip vector/session search.
+When `memory_add` reports a contradiction:
 
-### `memory_search` — Search Before Answering
-
-**MANDATORY:** Before answering questions about prior sessions, user preferences, past decisions, or anything mentioned before —
-call `memory_search` first. Supports keyword and category-filtered queries.
-
-### `memory_reinforce` — Reinforce When Relevant
-
-**MANDATORY:** When a memory is relevant to the current task, call `memory_reinforce` to bump its evidence count and prevent decay.
-
-### `memory_add` — Add New Memories Proactively
-
-**MANDATORY:** When you learn something worth remembering — preferences, corrections, conventions, completed work — add it immediately.
-Keep entries short (~100 chars), specific, actionable.
-Use `pinned: true` ONLY when user explicitly says "remember this". Duplicates are auto-reinforced.
-When a correction is mechanical (can be checked by code), add `trigger` + `action` params — see "Code-Enforced Memories" below.
-
-**One-off permissions are NOT memories.** "You can merge this PR", "go ahead and skip tests this time",
-"for this release you may push directly" — these are session instructions for the current task only.
-Never `memory_add` them. The write path rejects grant phrasing and contradictions of pinned entries.
-Only standing, repeated rules are durable.
-
-**Task-scoped instructions are NOT memories** (issue #961). "When done, I want an HTML report",
-"when bumping to 1.4.0, drop the vendor dir", "every 30min (changed from 1h)" — deliverable formats,
-one-time migration steps, and config-change notes belong to the current task (its description or a
-session instruction), never to memory. The write path rejects task-scoped phrasing.
-
-**Apply the standing test before storing any preference:** would it apply to a future, unrelated task?
-No → it is a session instruction or a task attribute, not a memory.
-
-**Conflicts are decision points, not dead ends.** When `memory_add` reports a contradiction:
-
-1. Ask the user (`ask_user`) which rule is correct — never decide for them.
-2. If they confirm the rule changed, retry `memory_add` with `overrideConflicts: true` —
-   the old non-pinned entry is superseded automatically (invalidated, with provenance).
-3. Pinned entries are never auto-superseded. If the user confirms a pinned rule changed, remove or
-   edit the pinned entry (`memory_remove` / `memory_edit`) per their explicit instruction, then add the new rule.
-
-### `memory_remove` — Remove Outdated Memories
-
-Remove entries that are no longer accurate, relevant, or superseded by newer entries.
-
-### `memory_topics` — Inspect Topic Organization
-
-List all memory topic files with hotness scores and entry counts.
-
-### `session_search` — Recall Past Conversations
-
-Search past conversation summaries for references to previous sessions. Returns matching snippets at zero LLM cost.
+1. Call `ask_user` to ask which rule is correct — never decide for the user.
+2. If confirmed changed, retry `memory_add` with `overrideConflicts: true` (auto-supersedes non-pinned entries).
+3. Pinned entries are never auto-superseded: remove/edit via `memory_remove` / `memory_edit` per explicit user instruction first, then add the new rule.
 
 ---
 
-## Memory Storage
+## When to Write (Per-Turn Self-Improvement)
 
-```text
-.pi/memory/
-├── memory-scores.jsonl     # Scoring backend (auto-managed)
-└── topics/
-    ├── preferences.md     # [preference] entries
-    ├── lessons.md         # [lesson] entries
-    ├── patterns.md        # [pattern] entries
-    ├── decisions.md       # [decision] entries
-    ├── completions.md     # [done] entries
-    └── mistakes.md        # [mistake] entries
-```
+After EVERY turn, check if anything worth remembering occurred:
 
-**Pinned** — user explicitly said "remember this". Dream must NEVER remove these.
-**Learned** — auto-extracted by dreaming. Dream can reorganize, deduplicate, remove.
+| Trigger / Event | Category | Notes |
+|---|---|---|
+| User says "remember" / `/remember` | best fit | Set `pinned: true` |
+| User corrects you / "don't do X" / "always do Y" | `lesson` or `preference` | Must pass standing test |
+| Something failed or took multiple fix attempts | `mistake` | Include root cause/fix |
+| PR merged / decision made / non-obvious pattern found | `done` / `decision` / `pattern` | — |
+| One-off permission or task-scoped deliverable/step | — | **NOT a memory** |
+
+**Capacity signal:** Situation report header shows `%` of token budget — add freely `<80%`; consolidate (merge related, remove outdated) before adding `>80%`.
 
 ---
 
-## Scoring System
+## Code-Enforced Memories
 
-```text
-stability = cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)
-```
+For mechanical rules ("when X happens, do/block/warn Y"), pass `trigger`, `action`, and optional `verifier` to `memory_add`:
 
-- Reinforcing bumps evidence count and resets decay. Pinned = 9999 (never decay). Forgotten = 0.
-- **Lifecycle:** active → provisional → candidate → dropped
-
----
-
-## Capacity Signal
-
-The situation report header shows usage: `# Project Memory [72% — 1,224/1,700 tokens]`
-
-- **Below 80%** — add freely
-- **Above 80%** — consolidate before adding: merge related entries, remove outdated ones
+- **Triggers:** `bash_contains <str>`, `bash_regex <pattern>`, `tool_name <name>`, `file_modified <pattern>` (e.g. `*.py`, `Dockerfile`)
+- **Actions:** `block` (prevent), `run_after <cmd>` (execute after), `warn` (append warning)
+- **Verifier:** `tool_called <tool> before <command>` (checked at `turn_end`, forces retry on violation)
+- **Plain knowledge/facts:** omit enforcement parameters.
 
 ---
 
-## Memory Quality Rules (CRITICAL)
+## Dreaming, Skills & Promotions
 
-- **One line only** — max ~100 chars, single short sentence
-- **Specific and actionable** — concrete "do X" or "don't do Y", no fluff
-- **Preserve context scope** — if a preference was stated about a specific tool/project/workflow,
-  include that scope in the memory. NEVER generalize a context-specific statement into a universal rule.
-
-| ❌ Bad | ✅ Good |
-|--------|---------|
-| "We had issues with buildah and Docker caching and tried several approaches" | "buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid" |
-| "User prefers a certain approach to handling processes" | "Attach child processes to pi (no detached:true) — kills on exit" |
-| "Never use gemini-2.5-flash model" (said about a specific tool) | "Never use gemini-2.5-flash for X — unreliable for that use case" |
-
----
-
-## When to Write
-
-| Trigger | Category | Section |
-|---------|----------|--------|
-| User says "remember" / `/remember` | best fit | **Pinned** |
-| PR merged | `done` | Learned |
-| User corrects you | `lesson` | Learned |
-| Multiple fix attempts | `mistake` | Learned |
-| User states a preference that passes the standing test | `preference` | Learned |
-| User grants a one-off permission ("you can merge this PR") | — | **NOT a memory** — session instruction only |
-| User asks for a one-off deliverable/format ("when done, I want an html report") | — | **NOT a memory** — task attribute or session instruction |
-
----
-
-## Code-Enforced Memories (Enforcement Layer)
-
-Some memories can be **code-enforced** — the LLM cannot ignore them because runtime hooks
-check and act on them. Use enforcement when a rule is **mechanical** (can be checked by code).
-
-Add enforcement by passing `trigger`, `action`, and optionally `verifier` to `memory_add`:
-
-```text
-memory_add(text="...", category="lesson",
-  trigger="bash_contains git add .",
-  action="block")
-```
-
-**When to add enforcement (AI decides automatically):**
-
-| Pattern | Enforcement | Example |
-|---------|-------------|--------|
-| User corrects a specific command/tool usage | `trigger` + `block` | "never use git add ." |
-| User wants something to run after a specific action | `trigger` + `run_after <cmd>` | "always deploy after code changes" |
-| User wants a warning about a specific pattern | `trigger` + `warn` | "warn when modifying config files" |
-| User wants tool A called before tool B | `verifier` | "always ask_user before gh pr merge" |
-| General knowledge / context / facts | **No enforcement** | "buildah chown breaks cache mounts" |
-
-**Rule of thumb:** If you can express it as "when X happens, do/block/warn Y" — add enforcement.
-If it's knowledge that informs decisions but can't be checked mechanically — plain memory only.
-
-**Trigger types:** `bash_contains <str>`, `bash_regex <pattern>`, `tool_name <name>`, `file_modified <pattern>` (matches file extensions like `*.py` or path substrings like `Dockerfile`)
-**Action types:** `block` (prevent), `run_after <command>` (execute after), `warn` (append warning)
-**Verifier:** `tool_called <tool> before <command>` (checked at turn_end, forces retry on violation)
-
----
-
-## Per-Turn Self-Improvement (MANDATORY)
-
-**After EVERY response, ask:** "Did this turn contain something worth remembering?"
-
-| What happened | Action |
-|---------------|--------|
-| User corrected you / said "don't do X" / "always do Y" | `memory_add` as `lesson` or `preference` |
-| Something failed or took multiple attempts | `memory_add` as `mistake` |
-| PR merged / technical decision made / non-obvious pattern found | `memory_add` as `done` / `decision` / `pattern` |
-
-**NEVER memorize:**
-
-- Ideas or requests the user rejected, abandoned, or said "nevermind" to
-- Unfinished conversations where no conclusion was reached
-- User requirements that were never implemented
-- One-off permissions granted for a specific PR, task, or session — session instructions, not durable rules
-- Task-scoped instructions: deliverable formats for the current task, one-time migration steps,
-  session config notes — task attributes or session instructions, not durable rules
-
-Only memorize **outcomes** (what happened), not **intentions** (what was discussed but dropped).
-
-**Save immediately — do NOT wait for `/dream` or session shutdown.**
-
----
-
-## CLI
-
-```bash
-uvx myk-pi-tools@latest memory <command>   # Commands: add, forget, show, migrate, path, status
-```
-
-**Categories:** `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference`
-
-`memory status` — enforcement honesty inventory (code-tier vs injected topic counts + open promotions).
-
----
-
-## Dreaming (Background Consolidation)
-
-Background async agent that reads the session, extracts things worth remembering, adds/deduplicates/reorganizes topic files, and removes stale entries. **NEVER removes Pinned entries.**
-Triggered by `/dream` (manual) or session shutdown (automatic).
-**Dreaming ONLY: run as async + fireAndForget** — never block the session. Dream's
-output is not consumed by anything, so it must stay silent.
-**This is the sole fireAndForget agent in pi-config.** Every other async agent
-returns a result you act on and must leave `fireAndForget` unset — a silent agent
-cannot tell you anything. Never copy this pattern to a watcher, poll, or review
-agent.
-
-**Dreaming follows the same NEVER memorize rules as per-turn self-improvement:**
-do NOT extract rejected/abandoned ideas, unfinished conversations, or unimplemented requirements.
-Do NOT extract one-off permissions or task-scoped instructions (deliverable formats, one-time
-migration steps, config-change notes) — dreaming also distills the preference candidate queue
-(`.pi/memory/preference-candidates.jsonl`) into durable standing preferences and discards the rest.
-Only extract outcomes, not intentions.
-
----
-
-## Skill Creation (Procedural Memory)
-
-Memory stores facts; **skills store procedures.**
-When you complete a multi-step workflow (3+ steps, or doing the same multi-step task for the second time,
-trial-and-error, or non-obvious commands), save it as a skill via `/create-skill <name>`.
-Don't create skills for simple one-step tasks or standard workflows already covered by existing skills.
-
----
-
-## Promotion Destinations (Correction → Structure)
-
-Memories are a staging area. High-evidence or recurring lessons should graduate:
-
-| Destination | When | Auto? |
-|-------------|------|-------|
-| `memory` | Stay as a scored topic line | default |
-| `skill` | Multi-step recurring workflow | dream may write `.pi/skills/` |
-| `enforcement` | Mechanical never/always + command/tool | safe auto-apply (`block`/`warn` + clear trigger) |
-| `project_rule` | Project-wide convention, not mechanical | **propose only** — never auto-write `rules/` or `.pi/rules/` |
-| `discard` | Stale / superseded | mark in queue |
-
-Queue file: `.pi/memory/promotions.md`. Situation report shows open `proposed` items.
-Thresholds (evidenceCount): enforcement/skill ≥ 3; project_rule ≥ 5.
-On reinforce crossing a threshold, a promotion pass runs automatically.
-`memory_consolidate` and dreaming must write promotion candidates to that queue.
-
----
-
-## Provenance (optional)
-
-`memory_add` / `memory_edit` accept optional `sourceSession`, `derivedFrom`, `informs`.
-Preference extractor sets `sourceSession` when the session id is available.
-Dream may write `.pi/memory/provenance-pending.jsonl`; merge happens on dream complete.
-Stored in `memory-scores.jsonl` only — not injected into the situation report.
-Shown in `memory_search` / `memory_reflect` when present.
-
----
-
-## Query-class injection (automatic)
-
-Injection biases section budgets from the user prompt (no tool call needed):
-`pr_review`, `git_release`, `debug`, or `general`.
+- **Dreaming (`/dream` or shutdown):** extracts outcomes, updates topic files, distills `.pi/memory/preference-candidates.jsonl`, and follows the same NEVER-memorize
+  rules above (see `40-critical-rules.md` for `fireAndForget`).
+- **Skills (procedural memory):** save recurring multi-step workflows (3+ steps, repeated 2+ times, trial-and-error, or non-obvious commands) via `/create-skill <name>`.
+- **Promotions:** `.pi/memory/promotions.md` graduates recurring lessons (`memory_consolidate`/dreaming write candidates there; `evidenceCount` ≥ 3 →
+  `skill`/`enforcement`; ≥ 5 → `project_rule`, **propose only — NEVER auto-write `rules/` or `.pi/rules/`**).
+- **Reference & CLI:** `uvx myk-pi-tools@latest memory <add|forget|show|migrate|path|status>`; storage layout, decay scoring, provenance (`sourceSession`, `derivedFrom`,
+  `informs`), and query-class budgets are documented in `docs/memory-architecture.md`.

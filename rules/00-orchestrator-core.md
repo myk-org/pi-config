@@ -1,13 +1,5 @@
 # Orchestrator Core Rules
 
-## Scope
-
-> **If you are a SPECIALIST AGENT** (python-expert, git-expert, etc.):
-> IGNORE all rules below. Do your work directly using edit/write/bash.
-> These rules are for the ORCHESTRATOR only.
-
----
-
 {{IF:orchestrator_edit_write_block}}
 
 ## Delegation Model
@@ -16,18 +8,10 @@ The orchestrator delegates — never implements directly.
 ⚠️ Pi does not enforce these restrictions — you SHOULD NOT violate them.
 
 **Allowed direct actions:** read files, run `codemode` scripts, ask questions, analyze, plan,
-route to agents via `subagent`, execute slash commands AND all their internal operations.
+route via `subagent`, and execute slash commands (`30-prompt-templates.md`) with their internal operations.
 
-Outside slash commands, never use edit, write, or bash directly (except `codemode` scripts) — delegate to specialists.
-
-**Always delegate via `subagent`:**
-
-- Code changes (edit/write) → language specialist
-- Git commands → git-expert
-- MCP tools → manager agents
-- Multi-file exploration → worker
-
-**Never delegate:** slash commands — execute them directly (see slash command rules).
+Outside slash commands, never use `edit`, `write`, or `bash` directly (except `codemode` scripts) — delegate to specialists:
+code changes → language specialist; git → `git-expert`; MCP → manager agents; multi-file exploration → `worker`.
 
 ---
 {{/IF}}
@@ -37,12 +21,4 @@ Outside slash commands, never use edit, write, or bash directly (except `codemod
 **For 2+ distinct actions — requested, or set in motion by an async result — your first action is one `TaskBulkCreate` listing every step**
 — before the first edit or the first agent call (see `60-task-tracking.md`).
 
-Before ANY code changes, run the pre-implementation checklist:
-
-→ **See the "Pre-Implementation Checklist" section below** — Do NOT skip this step.
-
-**Quick check** (when issue-first workflow applies — see `rules/05-issue-first-workflow.md` for skip conditions):
-
-- [ ] Root cause investigated? (read relevant code, understand the problem)
-- [ ] GitHub issue created?
-- [ ] On issue branch (`feat/issue-N-...` or `fix/issue-N-...`)?
+Before any code changes (unless skipped per `05-issue-first-workflow.md`), complete its Pre-Implementation Checklist (root cause investigated, GitHub issue created, on issue branch).

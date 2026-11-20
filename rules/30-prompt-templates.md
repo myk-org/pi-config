@@ -1,23 +1,6 @@
 # Prompt Template Execution Rules
 
-## When a Prompt Template is Invoked
-
-1. **The prompt template is the authority** — follow its instructions
-2. **NEVER delegate the prompt template itself** to an agent — the orchestrator executes it
-3. **The prompt decides** when to run directly and when to delegate to agents
-4. If the prompt says "run this bash command" — run it directly
-5. If the prompt says "delegate to X agent" — delegate
-{{IF:orchestrator_edit_write_block}}
-6. If the prompt doesn't specify — follow normal orchestrator rules (delegate to specialists)
-{{/IF}}
-
-## Key Rules
-
-- The orchestrator **maintains control** of the prompt workflow
-{{IF:orchestrator_edit_write_block}}
-- The prompt template's instructions **override** general delegation rules when they conflict
-{{/IF}}
-- **NEVER** delegate the `/command` itself to an agent — only delegate sub-tasks when the prompt says to
-
-❌ **WRONG**: `/mycommand` → delegate entire prompt to an agent
-✅ **RIGHT**: `/mycommand` → orchestrator follows the prompt → delegates sub-tasks as the prompt instructs
+1. **The prompt template is the authority** — follow its instructions directly and maintain control of the workflow.
+2. **NEVER delegate a `/command` or prompt template itself** to an agent — only delegate sub-tasks when the prompt instructs.
+3. Run bash commands or delegate to specialists according to what the prompt specifies{{IF:orchestrator_edit_write_block}}; if unspecified, follow normal delegation rules
+   (prompt instructions override general delegation rules on conflict){{/IF}}.
