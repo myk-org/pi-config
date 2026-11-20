@@ -906,3 +906,51 @@ describe("review-learning per-turn cache invalidation (#1197)", () => {
     assert.deepEqual(collectPathFindings(repo, ["src/api.py"]), []);
   });
 });
+
+describe("tightened framing and duplicate path-prefix stripping (#1272)", () => {
+  it("strips redundant leading path prefix in formatFindingsBlock while preserving non-prefixed text", () => {
+    const block = formatFindingsBlock([
+      { path: "extensions/orchestrator/foo.ts", count: 3, text: "extensions/orchestrator/foo.ts: Guard timer against stale ctx" },
+      { path: "extensions/orchestrator/bar.ts", count: 1, text: "Missing null check on response" },
+    ]);
+    assert.ok(block);
+    assert.ok(block.includes("Addressed findings for target files (N× — avoid repeating):"));
+    assert.ok(
+      block.includes("- extensions/orchestrator/foo.ts (3×): Guard timer against stale ctx"),
+      `duplicate path prefix must be stripped: ${block}`,
+    );
+    assert.ok(
+      !block.includes("extensions/orchestrator/foo.ts: Guard"),
+      `must not repeat path twice on the same line: ${block}`,
+    );
+    assert.ok(block.includes("- extensions/orchestrator/bar.ts (1×): Missing null check on response"));
+  });
+
+  it("strips redundant leading path prefix in Surface 2 one-liner hints", () => {
+    const cwd = cwdWithDb([
+      [
+        { path: "src/api.py", body: "api finding" },
+        { path: "src/other.py", body: "raw body" },
+      ],
+    ]);
+    seedLessonEntry(
+      cwd,
+      "src/other.py: Avoid blocking sync exec in poller",
+      `reviews.db:${commentId(cwd, "src/other.py")};${REPO.owner}/${REPO.repo}`,
+    );
+    const { writeHint } = registerHandlers(cwd);
+    writeHint(
+      { toolName: "edit", input: { path: "src/api.py" }, content: [], isError: false },
+      { cwd },
+    );
+    const second = writeHint(
+      { toolName: "edit", input: { path: "src/other.py" }, content: [], isError: false },
+      { cwd },
+    );
+    assert.ok(second);
+    assert.equal(
+      second.content[0].text,
+      "[review-lessons] src/other.py (1×): Avoid blocking sync exec in poller",
+    );
+  });
+});

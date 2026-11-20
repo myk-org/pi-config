@@ -11,7 +11,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { JsonlStateStore, parseLastValidLine, createCachedStore, truncateJsonlFile, withFileLock } from "../../../extensions/orchestrator/state-jsonl.js";
+import { JsonlStateStore, parseLastValidLine, createCachedStore, SKIP_MUTATE, truncateJsonlFile, withFileLock } from "../../../extensions/orchestrator/state-jsonl.js";
 
 interface TestState {
   counter: number;
@@ -531,6 +531,23 @@ describe("JsonlStateStore.mutate — lock contention (Qodo round 2, PR #916)", (
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("skips appending a snapshot when the mutator returns SKIP_MUTATE (#1262)", () => {
+    const dir = makeTempDir("jsonl-skip-mutate-");
+    try {
+      const file = path.join(dir, "state.jsonl");
+      const store = new JsonlStateStore<{ n: number }>(file);
+      store.write({ n: 1 });
+      const linesBefore = fs.readFileSync(file, "utf-8").trim().split("\n").length;
+
+      const out = store.mutate(() => SKIP_MUTATE);
+      assert.deepEqual(out, { n: 1 });
+      const linesAfter = fs.readFileSync(file, "utf-8").trim().split("\n").length;
+      assert.equal(linesAfter, linesBefore, "SKIP_MUTATE must not append a duplicate line");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("lazy lineCount & multi-line parseLastValidLine (#1227)", () => {
@@ -590,5 +607,18 @@ describe("lazy lineCount & multi-line parseLastValidLine (#1227)", () => {
     assert.equal(ok, true);
     assert.equal(lockDuringInner, true);
     assert.equal(fs.existsSync(lockFile), false);
+  });
+
+  it("compact returns without throwing when lock parent directory cannot be created", () => {
+    const dir = makeTempDir("jsonl-compact-blocked-");
+    try {
+      // A regular file blocks creating a child directory beneath it
+      const blocker = path.join(dir, "not-a-dir");
+      fs.writeFileSync(blocker, "file", "utf-8");
+      const store = new JsonlStateStore<{ n: number }>(path.join(blocker, "state.jsonl"));
+      assert.doesNotThrow(() => store.compact({ n: 1 }));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

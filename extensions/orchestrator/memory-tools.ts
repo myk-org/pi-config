@@ -15,7 +15,7 @@
 import { createLogger } from "../shared/logger.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getProjectMemoryDir } from "./utils.js";
 import {
@@ -26,6 +26,7 @@ import {
   mutateScores,
   VALID_CATEGORIES,
   type MemoryCategory,
+  type ScoredEntry,
 } from "./memory-scoring.js";
 import {
   listTopics,
@@ -34,15 +35,53 @@ import {
   topicCharCap,
   findTopicLine,
   invalidateTopicFileCache,
-  recordRemoval,
   type TopicInfo,
 } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
 import { maybePromoteAfterReinforce } from "./memory-promotion.js";
-import { addMemoryEntry } from "./memory-write.js";
+import { addMemoryEntry, removeMemoryEntry } from "./memory-write.js";
 
-const NEAR_DUPLICATE_THRESHOLD = 0.90;
 const CATEGORY_DESC = "preference|lesson|pattern|decision|done|mistake";
+
+// ── Shared search & formatting helpers ──────────────────────────────
+
+interface SearchHit {
+  text: string;
+  category: string;
+  pinned: boolean;
+  similarity?: number;
+}
+
+function mergeSearchHits(
+  vectorMatches: readonly SearchHit[],
+  keywordMatches: readonly SearchHit[],
+): SearchHit[] {
+  const seen = new Set<string>();
+  const merged: SearchHit[] = [];
+  for (const vm of vectorMatches) {
+    const dedupKey = `${vm.category}:${vm.text}`;
+    if (!seen.has(dedupKey)) {
+      seen.add(dedupKey);
+      merged.push(vm);
+    }
+  }
+  for (const km of keywordMatches) {
+    const dedupKey = `${km.category}:${km.text}`;
+    if (!seen.has(dedupKey)) {
+      seen.add(dedupKey);
+      merged.push({ text: km.text, category: km.category, pinned: km.pinned });
+    }
+  }
+  return merged;
+}
+
+function formatProvenance(scored: ScoredEntry | undefined): string {
+  const provParts: string[] = [];
+  if (scored?.sourceSession) provParts.push(`session: ${scored.sourceSession}`);
+  if (scored?.derivedFrom) provParts.push(`from: ${scored.derivedFrom}`);
+  if (scored?.informs?.length) provParts.push(`informs: ${scored.informs.join(", ")}`);
+  return provParts.length ? ` [${provParts.join("; ")}]` : "";
+}
 
 // ── memory_search ────────────────────────────────────────────────────
 
@@ -102,26 +141,11 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
         searchEntries.filter((e) => !params.category || e.category === params.category),
       );
 
-      // Merge: union of keyword + vector results, deduplicated by text
-      const seen = new Set<string>();
-      const merged: { text: string; category: string; pinned: boolean; similarity?: number }[] = [];
-
-      // Add vector results first (sorted by similarity)
-      for (const vm of vectorMatches) {
-        const dedupKey = `${vm.category}:${vm.text}`;
-        if (!seen.has(dedupKey)) {
-          seen.add(dedupKey);
-          merged.push(vm);
-        }
-      }
-      // Add keyword-only results (not already in vector results)
-      for (const km of keywordMatches) {
-        const dedupKey = `${km.category}:${km.text}`;
-        if (!seen.has(dedupKey)) {
-          seen.add(dedupKey);
-          merged.push({ text: km.text, category: km.category, pinned: km.pinned });
-        }
-      }
+      // Merge: union of keyword + vector results, deduplicated by category+text
+      const merged = mergeSearchHits(
+        vectorMatches,
+        keywordMatches.map((km) => ({ text: km.text, category: km.category, pinned: km.pinned })),
+      );
 
       const results = merged
         .map((entry) => {
@@ -160,11 +184,7 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
         const pin = r.pinned ? " (pinned)" : "";
         const sim = r.similarity !== undefined ? `, similarity: ${r.similarity.toFixed(3)}` : "";
         const scored = scores.entries[entryHash(`- [${r.category}] ${r.text}`)];
-        const provParts: string[] = [];
-        if (scored?.sourceSession) provParts.push(`session: ${scored.sourceSession}`);
-        if (scored?.derivedFrom) provParts.push(`from: ${scored.derivedFrom}`);
-        if (scored?.informs?.length) provParts.push(`informs: ${scored.informs.join(", ")}`);
-        const prov = provParts.length ? ` [${provParts.join("; ")}]` : "";
+        const prov = formatProvenance(scored);
         return `- [${r.category}] ${r.text}${pin} — score: ${typeof r.score === "number" ? r.score.toFixed(2) : r.score}, evidence: ${r.evidenceCount}${sim}${prov}`;
       });
 
@@ -322,52 +342,16 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
       const category = params.category;
       const text = params.text;
 
-      // Validate category
-      const validCategories = VALID_CATEGORIES;
-      if (!validCategories.includes(category as MemoryCategory)) {
-        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }], details: undefined };
+      const res = removeMemoryEntry(cwd, category, text, { recordTombstone: true });
+      if (res.status === "invalid_category") {
+        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${VALID_CATEGORIES.join(", ")}` }], details: undefined };
       }
-
-      const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
-      const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
-
-      if (!existsSync(topicPath)) {
+      if (res.status === "topic_missing") {
         return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }], details: undefined };
       }
-
-      const content = readFileSync(topicPath, "utf-8");
-
-      // Marker-agnostic match (pinned/enforced/id combinations, issue #915)
-      const match = findTopicLine(content, category, text);
-      if (!match) {
+      if (res.status === "not_found") {
         return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }], details: undefined };
       }
-
-      // Remove the line and collapse consecutive blank lines
-      const lines = content.split("\n");
-      const newLines = lines.filter((_, i) => i !== match.index);
-      const cleaned = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
-      writeFileSync(topicPath, cleaned, "utf-8");
-      invalidateTopicFileCache(topicPath);
-
-      // Remove embedding
-      removeEmbedding(cwd, text, category);
-
-      // Clean up scores — always use canonical line for hash (no markers).
-      // Locked RMW; also drop an id-bound score entry when the line carried one.
-      const canonicalLine = `- [${category}] ${text}`;
-      const removedId = match.id;
-      mutateScores(cwd, (scores) => {
-        delete scores.entries[entryHash(canonicalLine)];
-        if (removedId) {
-          for (const [hash, entry] of Object.entries(scores.entries)) {
-            if (entry.id === removedId) delete scores.entries[hash];
-          }
-        }
-      });
-
-      // Tombstone the removal: the dream guard must be able to tell this from its own damage.
-      recordRemoval(cwd, canonicalLine);
 
       log.info("memory_remove", category, text.slice(0, 60));
       return {
@@ -410,16 +394,10 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
       );
 
       // Merge and deduplicate
-      const seen = new Set<string>();
-      const relevant: { text: string; category: string; similarity?: number }[] = [];
-      for (const vm of vectorMatches) {
-        const dedupKey = `${vm.category}:${vm.text}`;
-        if (!seen.has(dedupKey)) { seen.add(dedupKey); relevant.push(vm); }
-      }
-      for (const km of keywordMatches) {
-        const dedupKey = `${km.category}:${km.text}`;
-        if (!seen.has(dedupKey)) { seen.add(dedupKey); relevant.push({ text: km.text, category: km.category }); }
-      }
+      const relevant = mergeSearchHits(
+        vectorMatches,
+        keywordMatches.map((km) => ({ text: km.text, category: km.category, pinned: km.pinned })),
+      );
 
       if (relevant.length === 0) {
         return { content: [{ type: "text", text: `No relevant memories found for: "${params.query}"` }], details: undefined };
@@ -432,11 +410,7 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
         .map(r => {
           const sim = r.similarity !== undefined ? ` (${r.similarity.toFixed(3)})` : "";
           const scored = scores.entries[entryHash(`- [${r.category}] ${r.text}`)];
-          const provParts: string[] = [];
-          if (scored?.sourceSession) provParts.push(`session: ${scored.sourceSession}`);
-          if (scored?.derivedFrom) provParts.push(`from: ${scored.derivedFrom}`);
-          if (scored?.informs?.length) provParts.push(`informs: ${scored.informs.join(", ")}`);
-          const prov = provParts.length ? ` [${provParts.join("; ")}]` : "";
+          const prov = formatProvenance(scored);
           return `- [${r.category}] ${r.text}${sim}${prov}`;
         })
         .join("\n");
@@ -471,6 +445,26 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
       const { op, text, category, newText, supersededBy } = params;
+
+      if (op === "invalidate") {
+        // Shared removal path — single read/remove, preserving non-tombstoned semantics.
+        const res = removeMemoryEntry(cwd, category, text, { recordTombstone: false });
+        if (res.status === "invalid_category") {
+          return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${VALID_CATEGORIES.join(", ")}` }], details: undefined };
+        }
+        if (res.status === "topic_missing") {
+          return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }], details: undefined };
+        }
+        if (res.status === "not_found") {
+          return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }], details: undefined };
+        }
+
+        let result = `Invalidated: [${category}] ${text}`;
+        if (supersededBy) {
+          result += `\nSuperseded by: ${supersededBy}`;
+        }
+        return { content: [{ type: "text", text: result }], details: undefined };
+      }
 
       const validCategories = VALID_CATEGORIES;
       if (!validCategories.includes(category as MemoryCategory)) {
@@ -540,33 +534,6 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         await embedEntry(cwd, newText, category);
 
         return { content: [{ type: "text", text: `Updated: [${category}] ${text}\n     → [${category}] ${newText}` }], details: undefined };
-      }
-
-      if (op === "invalidate") {
-        // Remove the old entry
-        lines.splice(matchIndex, 1);
-        const cleaned = lines.join("\n").replace(/\n{3,}/g, "\n\n");
-        writeFileSync(topicPath, cleaned, "utf-8");
-        invalidateTopicFileCache(topicPath);
-
-        // Clean up scores and embeddings for old entry (locked RMW)
-        const oldHash = entryHash(`- [${category}] ${text}`);
-        const removedId = wasId;
-        mutateScores(cwd, (scores) => {
-          delete scores.entries[oldHash];
-          if (removedId) {
-            for (const [hash, entry] of Object.entries(scores.entries)) {
-              if (entry.id === removedId) delete scores.entries[hash];
-            }
-          }
-        });
-        removeEmbedding(cwd, text, category);
-
-        let result = `Invalidated: [${category}] ${text}`;
-        if (supersededBy) {
-          result += `\nSuperseded by: ${supersededBy}`;
-        }
-        return { content: [{ type: "text", text: result }], details: undefined };
       }
 
       return { content: [{ type: "text", text: `Unknown operation: ${op}` }], details: undefined };

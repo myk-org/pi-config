@@ -14,7 +14,15 @@
  */
 import { execFileSync } from "node:child_process";
 import type { Logger } from "../shared/logger.js";
-import { getOpenPr, parseOpenPrJson, refreshOpenPr } from "./git-helpers.js";
+import {
+  getCurrentBranch,
+  getHeadSha,
+  getOriginUrl,
+  getOpenPr,
+  parseOpenPrJson,
+  parseRemoteRepo,
+  refreshOpenPr,
+} from "./git-helpers.js";
 import { subjectKey, type ReviewSubject } from "./pi-config-review-state.js";
 
 /** Injectable lookups, so the subject shapes are testable without git, gh or a network. */
@@ -25,20 +33,11 @@ export interface ReviewSubjectDeps {
   openPrNumber?: (cwd: string) => number | null;
 }
 
-function git(cwd: string, args: string[]): string | null {
-  try {
-    return execFileSync("git", args, { cwd, encoding: "utf-8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 /** `owner/name` from the remote. Only a trailing `.git` is stripped — repository names may contain
  *  dots (`owner/my.repo`), and truncating at the first dot invented a different repository. */
 export function parseRepoSlug(url: string | null): string | null {
-  if (!url) return null;
-  const match = /github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?$/i.exec(url.trim());
-  return match ? `${match[1]}/${match[2]}` : null;
+  const parsed = parseRemoteRepo(url, { githubOnly: true });
+  return parsed ? `${parsed.owner}/${parsed.repo}` : null;
 }
 
 /** Cold-cache fallbacks: one bounded `gh` call per worktree per minute, so the FIRST round of a
@@ -49,7 +48,7 @@ const coldPr = new Map<string, { number: number | null; at: number }>();
 function coldOpenPrNumber(cwd: string): number | null {
   // Keyed by branch as well as cwd (like `getOpenPr`): a cached number must never survive the
   // worktree switching branches, or the next round is attributed to the previous branch's PR.
-  const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) ?? "detached";
+  const branch = getCurrentBranch(cwd) ?? "detached";
   const key = `${cwd}\u0000${branch}`;
   const entry = coldPr.get(key);
   if (entry && Date.now() - entry.at < COLD_LOOKUP_MS) return entry.number;
@@ -71,12 +70,12 @@ function coldOpenPrNumber(cwd: string): number | null {
 /** The subject this worktree is reviewing right now: its open PR at the local head, else the commit.
  *  Returns null only when HEAD cannot be read (not a repo) — the caller then has nothing to count. */
 export function resolveReviewSubject(cwd: string, logger: Logger, deps: ReviewSubjectDeps = {}): ReviewSubject | null {
-  const head = (deps.headSha ?? ((dir: string) => git(dir, ["rev-parse", "HEAD"])))(cwd);
+  const head = (deps.headSha ?? getHeadSha)(cwd);
   if (!head) {
     logger.debug("review_subject_no_head", { cwd });
     return null;
   }
-  const repo = parseRepoSlug((deps.remoteUrl ?? ((dir: string) => git(dir, ["remote", "get-url", "origin"])))(cwd));
+  const repo = parseRepoSlug((deps.remoteUrl ?? getOriginUrl)(cwd));
 
   let number: number | null = null;
   if (repo) {

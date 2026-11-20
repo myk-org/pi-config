@@ -32,4 +32,22 @@ describe("dream prompt", () => {
       "Session file: /sessions/abc.jsonl",
     ));
   });
+
+  it("states each shared constraint once under the top-level Rules block (#1268)", () => {
+    assert.ok(prompt.includes("Rules (apply to all steps):"));
+    const sharedConstraints = [
+      "NEVER remove or modify entries marked with *(pinned)*",
+      "NEVER remove or modify entries marked with *(enforced)*",
+      "NEVER store a PR/issue number list",
+      "NEVER write rules/ or .pi/rules/",
+      "skill-maintenance: auto",
+    ];
+    for (const rule of sharedConstraints) {
+      assert.equal(
+        prompt.split(rule).length - 1,
+        1,
+        `expected shared constraint to appear once: ${rule}`,
+      );
+    }
+  });
 });

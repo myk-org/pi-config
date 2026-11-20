@@ -12,7 +12,7 @@ import {
   type ReviewSubject,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { normalizePorcelain } from "../../../extensions/orchestrator/review-porcelain.js";
-import { reviewStatusLine } from "../../../extensions/orchestrator/review-ui.js";
+import { registerReviewUI, reviewStatusLine, type AsyncGitStatusRunner } from "../../../extensions/orchestrator/review-ui.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 /** Every round must name what it reviews; these suites review one local commit. */
@@ -214,5 +214,218 @@ describe("reviewStatusLine", () => {
 
   it("says so when a legacy entry has no subject", () => {
     assert.match(reviewStatusLine({ ...base, subject: undefined }), /no subject/);
+  });
+});
+
+describe("gitDirtyPoller async behavior (#1264)", () => {
+  function setupPollerHarness() {
+    const tmp = makeTempDir("poller-async-");
+    fs.mkdirSync(path.join(tmp, ".pi", "data"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true, review_loop_max_cycles: 3 }),
+    );
+    const handlers = new Map<string, Array<(event: any, ctx: any) => void>>();
+    const pi = {
+      registerEntryRenderer() {},
+      on(event: string, fn: (event: any, ctx: any) => void) {
+        handlers.set(event, [...(handlers.get(event) ?? []), fn]);
+      },
+      appendEntry() {},
+    };
+    let activeCalls = 0;
+    let maxConcurrent = 0;
+    let totalCalls = 0;
+    const pending: Array<(res: { stdout: string; code: number }) => void> = [];
+    const waiters: Array<() => void> = [];
+    const gitStatusAsync: AsyncGitStatusRunner = (_cwd, cb) => {
+      activeCalls += 1;
+      totalCalls += 1;
+      maxConcurrent = Math.max(maxConcurrent, activeCalls);
+      pending.push((res) => {
+        activeCalls -= 1;
+        cb(res);
+      });
+      while (waiters.length > 0) waiters.shift()!();
+    };
+    registerReviewUI(pi as any, { gitStatusAsync, gitPollIntervalMs: 15 });
+    const ctx = {
+      cwd: tmp,
+      hasUI: false,
+      mode: "interactive",
+      ui: { theme: { fg: (_c: string, s: string) => s } },
+    };
+    for (const h of handlers.get("session_start") ?? []) h({}, ctx);
+    const nextCallback = async (): Promise<(res: { stdout: string; code: number }) => void> => {
+      if (pending.length === 0) {
+        await new Promise<void>((resolve) => waiters.push(resolve));
+      }
+      return pending.shift()!;
+    };
+    const resolveNext = async (res: { stdout: string; code: number }) => {
+      const cb = await nextCallback();
+      cb(res);
+    };
+    const shutdown = () => {
+      for (const h of handlers.get("session_shutdown") ?? []) h({}, ctx);
+    };
+    const cleanup = () => {
+      shutdown();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    };
+    return {
+      tmp,
+      nextCallback,
+      resolveNext,
+      shutdown,
+      cleanup,
+      getTotalCalls: () => totalCalls,
+      getMaxConcurrent: () => maxConcurrent,
+    };
+  }
+
+  it("prevents overlapping git status polls while one is in flight", async () => {
+    const h = setupPollerHarness();
+    try {
+      await new Promise((r) => setTimeout(r, 60));
+      assert.equal(h.getTotalCalls(), 1);
+      assert.equal(h.getMaxConcurrent(), 1);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("transitions dirty tree to needs_review via async poll", async () => {
+    const h = setupPollerHarness();
+    try {
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("resets review state to none after revalidating a clean tree", async () => {
+    const h = setupPollerHarness();
+    try {
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+
+      // First clean poll keeps needs_review until confirmation resolves clean
+      await h.resolveNext({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+      await h.resolveNext({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "none");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("does not clear needs_review when an edit lands while a clean poll is in flight", async () => {
+    const h = setupPollerHarness();
+    try {
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+
+      // Next poll starts while tree was transiently clean
+      const staleCleanCallback = await h.nextCallback();
+
+      // Intervening edit occurs before the clean callback completes
+      markNeedsReview(h.tmp);
+      staleCleanCallback({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("revalidates a clean poll during in_progress so an edit before confirmation sets edited_during_cycle", async () => {
+    const h = setupPollerHarness();
+    try {
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
+      addReviewerPending(h.tmp, "reviewer-a", SUBJECT);
+      assert.equal(readReviewState(h.tmp).status, "in_progress");
+      assert.equal(readReviewState(h.tmp).edited_during_cycle, false);
+
+      await new Promise((r) => setTimeout(r, 20));
+      // Clean poll during in_progress stays in_progress without flagging an edit yet
+      await h.resolveNext({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).edited_during_cycle, false);
+
+      // Edit lands before confirmation completes
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
+      const state = readReviewState(h.tmp);
+      assert.equal(state.status, "in_progress");
+      assert.equal(state.edited_during_cycle, true);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("keeps needs_review when an edit is recorded during clean revalidation", async () => {
+    const h = setupPollerHarness();
+    try {
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+
+      await new Promise((r) => setTimeout(r, 20));
+      await h.resolveNext({ stdout: "", code: 0 });
+      const confirmCallback = await h.nextCallback();
+
+      // Edit lands strictly after revalidation started, before confirmation resolves
+      await new Promise((r) => setTimeout(r, 10));
+      markNeedsReview(h.tmp);
+      confirmCallback({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("keeps needs_review when two edits share the same millisecond timestamp during clean revalidation", async () => {
+    const h = setupPollerHarness();
+    const origToIso = Date.prototype.toISOString;
+    Date.prototype.toISOString = () => "2026-11-20T12:00:00.000Z";
+    try {
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+
+      await h.resolveNext({ stdout: "", code: 0 });
+      const confirmCallback = await h.nextCallback();
+
+      // Repeated edit while already needs_review produces the exact same ISO timestamp
+      // and fires no transition notification; monotonic edit_seq still blocks reset.
+      markNeedsReview(h.tmp);
+      confirmCallback({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+    } finally {
+      Date.prototype.toISOString = origToIso;
+      h.cleanup();
+    }
+  });
+
+  it("stops scheduling polls after session_shutdown", async () => {
+    const h = setupPollerHarness();
+    try {
+      await h.nextCallback();
+      h.shutdown();
+      const callsAtShutdown = h.getTotalCalls();
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(h.getTotalCalls(), callsAtShutdown);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("ignores late-resolving poll callbacks after session_shutdown", async () => {
+    const h = setupPollerHarness();
+    try {
+      const inFlight = await h.nextCallback();
+      h.shutdown();
+      inFlight({ stdout: " M late.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "none");
+    } finally {
+      h.cleanup();
+    }
   });
 });

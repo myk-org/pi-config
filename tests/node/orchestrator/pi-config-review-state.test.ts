@@ -1109,9 +1109,20 @@ describe("resolveReviewSubject — PR identity and its failure modes", () => {
 
   it("strips only a trailing .git from a repository name containing dots", () => {
     assert.equal(parseRepoSlug("git@github.com:owner/my.repo.git"), "owner/my.repo");
+    assert.equal(parseRepoSlug("github.com:owner/my.repo.git"), "owner/my.repo");
     assert.equal(parseRepoSlug("https://github.com/o/r"), "o/r");
     assert.equal(parseRepoSlug("https://gitlab.com/o/r"), null, "only GitHub remotes are PR-addressable");
+    assert.equal(parseRepoSlug("gitlab.com:o/r"), null, "userless non-GitHub SCP remotes are rejected");
     assert.equal(parseRepoSlug(null), null);
+  });
+
+  it("resolves a PR subject for userless SCP-style GitHub remotes", () => {
+    const subject = resolveReviewSubject(
+      "/tmp/any",
+      silent,
+      deps({ remoteUrl: () => "github.com:owner/repo", openPrNumber: () => 77 }),
+    );
+    assert.deepEqual(subject, { kind: "pr", repo: "owner/repo", number: 77, head_sha: head });
   });
 
   it("carries the LOCAL head, so unpushed commits are a new loop", () => {

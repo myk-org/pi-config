@@ -31,6 +31,10 @@ export interface JsonlStateStoreOptions {
 
 const DEFAULT_COMPACT_THRESHOLD = 100;
 
+/** Sentinel returned from a `mutate()` callback to indicate no state change occurred
+ *  and skip appending a duplicate snapshot to disk. */
+export const SKIP_MUTATE: unique symbol = Symbol("state-jsonl.skipMutate");
+
 /** Locked-mutation retry policy (Qodo #6, PR #916): retry the locked RMW
  *  with linear backoff before failing explicitly. Never fall back to an
  *  unlocked read-modify-write — that can erase a concurrent writer's update. */
@@ -193,11 +197,13 @@ export class JsonlStateStore<T> {
    * undefined. Returns the written state, or null when the store is empty
    * and no initial value was provided (nothing written).
    */
-  mutate(fn: (state: T) => T | void, initial?: T): T | null {
+  mutate(fn: (state: T) => T | void | typeof SKIP_MUTATE, initial?: T): T | null {
     const apply = (current: T): T => {
       const out = fn(current);
-      this.write(out === undefined ? current : out);
-      return out === undefined ? current : out;
+      if (out === SKIP_MUTATE) return current;
+      const next = out === undefined ? current : out;
+      this.write(next);
+      return next;
     };
     const seed = (): T | null => {
       if (initial === undefined) return null;
@@ -545,7 +551,13 @@ export function withFileLock(filePath: string, fn: () => void): boolean {
   const lockFile = filePath + ".wlock";
   const depth = fileLockDepth.get(lockFile) || 0;
   if (depth === 0) {
-    if (!acquirePidLock(lockFile, { ensureParent: ensurePrivateParentDir })) {
+    try {
+      ensurePrivateParentDir(lockFile);
+    } catch {
+      // Directory creation failed — treat as failed lock acquisition so callers like compact() stay fail-soft.
+      return false;
+    }
+    if (!acquirePidLock(lockFile)) {
       // Lock acquisition failed — return false so caller can skip compaction.
       return false;
     }

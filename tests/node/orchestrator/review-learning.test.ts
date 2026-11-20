@@ -34,9 +34,11 @@ import {
   emitReviewLearningLoaded,
   markReviewDistilled,
   prNumberFromCommand,
+  prTargetFromCommand,
   type AddressedFinding,
   type DistilledLesson,
 } from "../../../extensions/orchestrator/review-learning.js";
+import { parseRemoteRepo } from "../../../extensions/orchestrator/git-helpers.js";
 import { embedEntry } from "../../../extensions/orchestrator/memory-embeddings.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
@@ -1129,4 +1131,106 @@ it("markReviewDistilled is idempotent — repeated fires never duplicate ids", a
   const distilled = loadDistilledReviews(dataDir);
   assert.equal(distilled.size, 1, "no duplicate ids accumulate across fires");
   assert.ok(distilled.has(42));
+});
+
+describe("unified PR command parser (#1282)", () => {
+  it("prTargetFromCommand parses owner, repo, prNumber from address --json", () => {
+    const cwd = makeCwd();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "addr.json"),
+      JSON.stringify({ metadata: { owner: "up-org", repo: "up-repo", pr_number: 88 } }),
+    );
+    const cmd = "myk-pi-tools reviews address --json .pi/tmp/addr.json --set addressed";
+    assert.deepEqual(prTargetFromCommand(cmd, cwd), { owner: "up-org", repo: "up-repo", prNumber: 88 });
+    assert.equal(prNumberFromCommand(cmd, cwd), 88);
+  });
+
+  it("prTargetFromCommand returns null when address --json omits owner or repo", () => {
+    const cwd = makeCwd();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "addr-partial.json"),
+      JSON.stringify({ metadata: { pr_number: 89 } }),
+    );
+    const cmd = "myk-pi-tools reviews address --json .pi/tmp/addr-partial.json --set addressed";
+    assert.equal(prNumberFromCommand(cmd, cwd), 89);
+    assert.equal(prTargetFromCommand(cmd, cwd), null);
+  });
+
+  it("prTargetFromCommand parses owner, repo, prNumber from store-session pr_url", () => {
+    const cwd = makeCwd();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "sess.json"),
+      JSON.stringify({ pr_url: "https://github.com/up-org/up-repo/pull/91" }),
+    );
+    const cmd = "myk-pi-tools reviews store-session .pi/tmp/sess.json";
+    assert.deepEqual(prTargetFromCommand(cmd, cwd), { owner: "up-org", repo: "up-repo", prNumber: 91 });
+    assert.equal(prNumberFromCommand(cmd, cwd), 91);
+  });
+
+  it("resolves upstream repo from store-session pr_url when combined with partial address --json in a fork checkout", async () => {
+    const cwd = makeCwd();
+    const dbPath = path.join(cwd, ".pi", "data", "reviews.db");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec(SCHEMA);
+    db.prepare(
+      "INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) VALUES (95, 'upstream-org', 'upstream-repo', 'sha-95', '2026-01-01T00:00:00Z')",
+    ).run();
+    db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (1, 'qodo', 'src/fork.ts', 12, 'Validate upstream fork target resolution', 'high', 'addressed')",
+    ).run();
+    db.close();
+
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "partial.json"),
+      JSON.stringify({ metadata: { pr_number: 95 } }),
+    );
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "session.json"),
+      JSON.stringify({ pr_url: "https://github.com/upstream-org/upstream-repo/pull/95" }),
+    );
+    const combinedCmd =
+      "myk-pi-tools reviews address --json .pi/tmp/partial.json --set addressed && " +
+      "myk-pi-tools reviews store-session .pi/tmp/session.json";
+
+    assert.deepEqual(prTargetFromCommand(combinedCmd, cwd), {
+      owner: "upstream-org",
+      repo: "upstream-repo",
+      prNumber: 95,
+    });
+
+    const { distill } = createReviewLearning({ repoInfo: () => ({ owner: "fork-user", repo: "upstream-repo" }) });
+    await distill(cwd, combinedCmd);
+    const lessons = lessonsIn(cwd);
+    assert.equal(lessons.length, 1);
+    assert.match(lessons[0]!.text, /Validate upstream fork target resolution/);
+  });
+});
+
+describe("parseRemoteRepo (#1282)", () => {
+  it("parses non-GitHub hosts by default", () => {
+    assert.deepEqual(parseRemoteRepo("https://gitlab.com/my-org/my-repo.git"), { owner: "my-org", repo: "my-repo" });
+  });
+
+  it("rejects non-GitHub hosts when githubOnly is true", () => {
+    assert.equal(parseRemoteRepo("https://gitlab.com/my-org/my-repo.git", { githubOnly: true }), null);
+  });
+
+  it("parses GitHub remotes with dotted repo names when githubOnly is true", () => {
+    assert.deepEqual(parseRemoteRepo("git@github.com:owner/my.repo.git", { githubOnly: true }), {
+      owner: "owner",
+      repo: "my.repo",
+    });
+  });
+
+  it("parses userless SCP-style GitHub remotes", () => {
+    assert.deepEqual(parseRemoteRepo("github.com:owner/my.repo.git", { githubOnly: true }), {
+      owner: "owner",
+      repo: "my.repo",
+    });
+  });
 });

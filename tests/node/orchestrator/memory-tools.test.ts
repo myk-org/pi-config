@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { registerMemoryTools } from "../../../extensions/orchestrator/memory-tools.js";
 import { registerSessionSearch } from "../../../extensions/orchestrator/session-search.js";
+import { addMemoryEntry } from "../../../extensions/orchestrator/memory-write.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const originalChild = process.env.PI_SUBAGENT_CHILD;
 
@@ -93,4 +96,23 @@ test("enforces tightened schema char budget across 9 memory/session tools (#1198
 
   // Baseline before #1198 was 6412 chars (~1603 tokens); tightened target <= 4100 chars (~1025 tokens)
   assert.ok(totalChars <= 4100, `expected tightened schemas <= 4100 chars, got ${totalChars}`);
+});
+
+test("memory_edit invalidate reports not found when target entry is absent", async () => {
+  const cwd = makeTempDir("memory-edit-inv-");
+  try {
+    await addMemoryEntry(cwd, { text: "Existing lesson in topic file", category: "lesson" });
+    const tools = collectRegisteredTools();
+    const res = await tools.get("memory_edit").execute(
+      "test-inv",
+      { op: "invalidate", category: "lesson", text: "Missing or changed lesson text" },
+      undefined,
+      undefined,
+      { cwd },
+    );
+    assert.match(res.content[0].text, /Memory not found:/);
+    assert.doesNotMatch(res.content[0].text, /^Invalidated:/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

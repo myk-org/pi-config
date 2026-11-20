@@ -3,7 +3,19 @@
  * Cheap heuristics only — no LLM call.
  */
 
+import type { MemoryCategory } from "./memory-scoring.js";
+
 export type QueryClass = "pr_review" | "git_release" | "debug" | "general";
+
+/** Mapping from situation-report section headings to their memory categories. */
+export const SECTION_CATEGORY_MAP: Record<string, MemoryCategory> = {
+  "Active Preferences": "preference",
+  "Active Lessons": "lesson",
+  "Vetoes & Mistakes": "mistake",
+  Patterns: "pattern",
+  "Recent Decisions": "decision",
+  "Recent Completions": "done",
+};
 
 export interface QueryClassBias {
   /** Categories to boost (higher section budget / earlier priority) */
@@ -72,15 +84,7 @@ export function sectionPriorityBoost(
   const bias = getQueryClassBias(queryClass);
   if (bias.boostCategories.length === 0) return basePriority;
 
-  const topicMap: Record<string, string> = {
-    "Active Preferences": "preference",
-    "Active Lessons": "lesson",
-    "Vetoes & Mistakes": "mistake",
-    Patterns: "pattern",
-    "Recent Decisions": "decision",
-    "Recent Completions": "done",
-  };
-  const cat = topicMap[sectionName];
+  const cat = SECTION_CATEGORY_MAP[sectionName];
   if (cat && bias.boostCategories.includes(cat)) {
     // Lower number sorts earlier; allow 0/negative so boosted sections
     // beat unboosted priority-1 sections (e.g. preferences).

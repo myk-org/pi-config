@@ -11,9 +11,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addMemoryEntry, pruneExpiredEntries } from "../../../extensions/orchestrator/memory-write.js";
+import { addMemoryEntry, pruneExpiredEntries, removeMemoryEntry } from "../../../extensions/orchestrator/memory-write.js";
 import {
   entryHash,
+  hasEnforcementFields,
   loadScores,
   saveScores,
   extractPreferences,
@@ -22,7 +23,7 @@ import {
   isEntryActiveForSession,
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
-import { readAllTopicEntries, topicCharCap } from "../../../extensions/orchestrator/memory-tree.js";
+import { readAllTopicEntries, removalsSince, topicCharCap } from "../../../extensions/orchestrator/memory-tree.js";
 import { loadEnforcedEntries } from "../../../extensions/orchestrator/enforcement-rules.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -3566,6 +3567,107 @@ describe("topic size caps (issue #1010)", () => {
         category: "lesson",
       });
       assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("dedup reinforcement, conflict pre-embedding, and shared removal (#1262, #1277)", () => {
+  it("merges scope reconciliation with enforcement fields during dedup reinforcement", async () => {
+    const cwd = makeCwd();
+    try {
+      const text = "Always run unit tests before opening a pull request";
+      const first = await addMemoryEntry(cwd, {
+        text,
+        category: "lesson",
+        scope: "session",
+        sourceSession: "sess-1",
+      });
+      assert.equal(first.status, "added");
+
+      const second = await addMemoryEntry(cwd, {
+        text,
+        category: "lesson",
+        trigger: "bash_contains gh pr create",
+        action: "warn",
+      });
+      assert.equal(second.status, "reinforced");
+
+      const entry = loadScores(cwd).entries[entryHash(`- [lesson] ${text}`)];
+      assert.ok(entry);
+      assert.equal(entry.evidenceCount, 2);
+      assert.equal(entry.scope, undefined, "session scope reconciled to durable");
+      assert.equal(entry.trigger, "bash_contains gh pr create");
+      assert.equal(entry.action, "warn");
+      assert.equal(hasEnforcementFields(entry), true);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("detects a conflict against an unembedded topic entry on addMemoryEntry", async () => {
+    const cwd = makeCwd();
+    try {
+      // Seed directly into topics without embedding first
+      seedEntry(cwd, "lesson", "Never force-push directly to the main branch");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always force-push directly to the main branch",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("removeMemoryEntry reports invalid_category, topic_missing, or not_found for invalid targets", async () => {
+    const cwd = makeCwd();
+    try {
+      assert.equal(
+        removeMemoryEntry(cwd, "bogus", "x", { recordTombstone: true }).status,
+        "invalid_category",
+      );
+      assert.equal(
+        removeMemoryEntry(cwd, "lesson", "missing", { recordTombstone: true }).status,
+        "topic_missing",
+      );
+      await addMemoryEntry(cwd, { text: "Existing lesson in topic file", category: "lesson" });
+      assert.equal(
+        removeMemoryEntry(cwd, "lesson", "not present", { recordTombstone: true }).status,
+        "not_found",
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("removeMemoryEntry records a removal tombstone when recordTombstone is true", async () => {
+    const cwd = makeCwd();
+    try {
+      const text = "First removable lesson for tombstone check";
+      await addMemoryEntry(cwd, { text, category: "lesson" });
+      const startedAt = Date.now() - 1000;
+      const res = removeMemoryEntry(cwd, "lesson", text, { recordTombstone: true });
+      assert.equal(res.status, "removed");
+      assert.ok(removalsSince(cwd, startedAt).has(entryHash(`- [lesson] ${text}`)));
+      assert.equal(readAllTopicEntries(cwd).length, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("removeMemoryEntry skips recording a tombstone when recordTombstone is false", async () => {
+    const cwd = makeCwd();
+    try {
+      const text = "Second removable lesson for non-tombstone invalidate";
+      await addMemoryEntry(cwd, { text, category: "lesson" });
+      const startedAt = Date.now() - 1000;
+      const res = removeMemoryEntry(cwd, "lesson", text, { recordTombstone: false });
+      assert.equal(res.status, "removed");
+      assert.ok(!removalsSince(cwd, startedAt).has(entryHash(`- [lesson] ${text}`)));
+      assert.equal(readAllTopicEntries(cwd).length, 0);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

@@ -11,7 +11,6 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
@@ -40,10 +39,6 @@ function getStore(cwd: string): JsonlStateStore<SessionStore> {
   return createCachedStore<SessionStore>(
     getProjectDataDir(cwd), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 50 },
   );
-}
-
-function getStorePath(cwd: string): string {
-  return join(getProjectDataDir(cwd), STORE_FILENAME_JSONL);
 }
 
 function loadStore(cwd: string): SessionStore {

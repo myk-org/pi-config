@@ -6,8 +6,11 @@
  * no LLM context cost).
  */
 
+import { execFile } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
+import { createLogger } from "../shared/logger.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { onStateTransition, readReviewState, markNeedsReview, resetReviewState, subjectLabel, type ReviewState } from "./pi-config-review-state.js";
 import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIEW_FINDINGS } from "./icons.js";
 import { getSetting } from "./project-settings.js";
@@ -15,6 +18,42 @@ import { setSlot, clearSlot } from "./status-bar.js";
 import { runGit, getCurrentBranch } from "./git-helpers.js";
 import { isBumpVersionBranch, getCachedBranch } from "./enforcement.js";
 import { normalizePorcelain } from "./review-porcelain.js";
+
+const log = createLogger("review-ui");
+
+export type AsyncGitStatusRunner = (
+  cwd: string,
+  cb: (result: { stdout: string; code: number }) => void,
+) => void;
+
+export interface ReviewUIOptions {
+  /** Override async git status runner (tests). */
+  gitStatusAsync?: AsyncGitStatusRunner;
+  /** Override git dirty poll interval in ms (tests). */
+  gitPollIntervalMs?: number;
+}
+
+const defaultGitStatusAsync: AsyncGitStatusRunner = (cwd, cb) => {
+  execFile(
+    "git",
+    ["--no-optional-locks", "status", "--porcelain"],
+    {
+      cwd,
+      timeout: 5000,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        GCM_INTERACTIVE: "Never",
+      },
+    },
+    (err, stdout) => {
+      const out = typeof stdout === "string" ? stdout.trimEnd() : "";
+      const code = err ? (typeof (err as NodeJS.ErrnoException).code === "number" ? Number((err as NodeJS.ErrnoException).code) : 1) : 0;
+      cb({ stdout: out, code });
+    },
+  );
+};
 
 interface ReviewStatusData {
   status: ReviewState["status"];
@@ -63,7 +102,9 @@ export function reviewStatusLine(data: ReviewStatusData): string {
   }
 }
 
-export function registerReviewUI(pi: ExtensionAPI): void {
+export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}): void {
+  const gitStatusAsync = options.gitStatusAsync ?? defaultGitStatusAsync;
+  const gitPollIntervalMs = options.gitPollIntervalMs ?? 3000;
   // Register the entry renderer for "review-status" custom type
   pi.registerEntryRenderer<ReviewStatusData>("review-status", (entry, { expanded }, theme) => {
     const data = entry.data ?? {
@@ -159,7 +200,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     if (lastGitSnapshot && getSetting(ctx.cwd, "review_loop_enforcement") && !isBumpVersionBranch(getCurrentBranch(ctx.cwd))) {
       const state = readReviewState(ctx.cwd);
       if (state.status === "none" || state.status === "clean") {
-        try { markNeedsReview(ctx.cwd); } catch (e: any) { console.debug("[review-ui] markNeedsReview failed:", e?.message); }
+        try { markNeedsReview(ctx.cwd); } catch (e: any) { log.warn("markNeedsReview failed", { error: e?.message }); }
       }
     }
     if (getSetting(ctx.cwd, "review_loop_enforcement")) {
@@ -174,8 +215,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
   // Poll pi-config-review-state.jsonl for cross-process updates (subagents write state too)
   const reviewPoller = setInterval(() => {
     if (!lastCtx) return;
-    // Access a ctx property to detect stale/disposed context (throws if invalidated)
-    try { void lastCtx.ui.theme; } catch { lastCtx = null; return; }
+    if (!isLiveExtensionCtx(lastCtx)) { lastCtx = null; return; }
     try {
       if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) {
         if (lastCtx.hasUI) clearSlot("review", lastCtx);
@@ -184,43 +224,107 @@ export function registerReviewUI(pi: ExtensionAPI): void {
       }
       updateStatusBar(readReviewState(lastCtx.cwd));
     } catch (e: any) {
-      console.debug("[review-ui] poller error:", e?.message);
+      log.warn("poller error", { error: e?.message });
     }
   }, 5000);
   if (reviewPoller.unref) reviewPoller.unref();
 
-  // Poll git status to detect file changes from CLI/ACPX agents
+  // Poll git status asynchronously to detect file changes from CLI/ACPX agents without blocking TUI.
+  // Track the persisted monotonic `edit_seq` revision across both async git status checks so an
+  // intervening edit (in-process or cross-process, even in the same millisecond) is never cleared.
+  let gitPollInFlight = false;
+
   const gitDirtyPoller = setInterval(() => {
-    if (!lastCtx) return;
-    try { void lastCtx.ui.theme; } catch { lastCtx = null; return; }
+    if (!lastCtx || gitPollInFlight) return;
+    if (!isLiveExtensionCtx(lastCtx)) { lastCtx = null; return; }
+    const ctx = lastCtx;
+    const cwd = ctx.cwd;
+    let startEditSeq: number;
     try {
-      if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) return;
+      if (!getSetting(cwd, "review_loop_enforcement")) return;
       // Skip on version bump branches (release workflow only)
-      if (isBumpVersionBranch(getCachedBranch(lastCtx.cwd))) return;
-      const result = runGit(["status", "--porcelain"], lastCtx.cwd);
-      const snapshot = normalizePorcelain(result.stdout);
-      if (snapshot === lastGitSnapshot) return;
-      lastGitSnapshot = snapshot;
-      if (snapshot) {
-        // Dirty tree — markNeedsReview handles all states:
-        // none/clean/has_findings → sets needs_review
-        // in_progress → sets edited_during_cycle + clears tests_passed
-        // needs_review → no-op (deduped internally)
-        try { markNeedsReview(lastCtx.cwd); } catch (e: any) { console.debug("[review-ui] markNeedsReview failed:", e?.message); }
-      } else if (result.code === 0) {
-        // Tree clean AND git succeeded — reset when status is clean (committed-away),
-        // needs_review (edits reverted, nothing left to review), or has_findings
-        // (committed+pushed — fresh start). Skip in_progress (reviewers still running).
-        const state = readReviewState(lastCtx.cwd);
-        if (state.status === "clean" || state.status === "needs_review" || state.status === "has_findings") {
-          try { resetReviewState(lastCtx.cwd); } catch (e: any) { console.debug("[review-ui] resetReviewState failed:", e?.message); }
-        }
+      if (isBumpVersionBranch(getCachedBranch(cwd))) return;
+      startEditSeq = readReviewState(cwd).edit_seq ?? 0;
+    } catch (e: any) {
+      log.warn("gitDirtyPoller precheck error", { error: e?.message });
+      return;
+    }
+
+    gitPollInFlight = true;
+    gitStatusAsync(cwd, (result) => {
+      if (!lastCtx || lastCtx !== ctx || !isLiveExtensionCtx(lastCtx)) {
+        gitPollInFlight = false;
+        return;
       }
-    } catch (e: any) { console.debug("[review-ui] gitDirtyPoller error:", e?.message); }
-  }, 3000);
+      try {
+        if (!getSetting(cwd, "review_loop_enforcement") || isBumpVersionBranch(getCachedBranch(cwd))) {
+          gitPollInFlight = false;
+          return;
+        }
+        const snapshot = normalizePorcelain(result.stdout);
+        if (snapshot === lastGitSnapshot) {
+          gitPollInFlight = false;
+          return;
+        }
+        if (snapshot) {
+          lastGitSnapshot = snapshot;
+          gitPollInFlight = false;
+          // Dirty tree — markNeedsReview handles all states:
+          // none/clean/has_findings → sets needs_review
+          // in_progress → sets edited_during_cycle + clears tests_passed
+          // needs_review → bumps edit_seq without duplicate transition notifications
+          try { markNeedsReview(cwd); } catch (e: any) { log.warn("markNeedsReview failed", { error: e?.message }); }
+          return;
+        }
+        if (result.code !== 0) {
+          gitPollInFlight = false;
+          return;
+        }
+        // Tree appeared clean — reject stale snapshots if any edit landed after the poll started.
+        const state = readReviewState(cwd);
+        const currentEditSeq = state.edit_seq ?? 0;
+        if (currentEditSeq !== startEditSeq) {
+          gitPollInFlight = false;
+          return;
+        }
+        // Always revalidate cleanliness (including during in_progress/none) before clearing
+        // lastGitSnapshot or resetting review state, so an edit landing between checks is never hidden.
+        const preRevalidateEditSeq = currentEditSeq;
+        gitStatusAsync(cwd, (confirm) => {
+          gitPollInFlight = false;
+          if (!lastCtx || lastCtx !== ctx || !isLiveExtensionCtx(lastCtx)) return;
+          try {
+            if (!getSetting(cwd, "review_loop_enforcement") || isBumpVersionBranch(getCachedBranch(cwd))) return;
+            const confirmSnapshot = normalizePorcelain(confirm.stdout);
+            if (confirmSnapshot) {
+              lastGitSnapshot = confirmSnapshot;
+              try { markNeedsReview(cwd); } catch (e: any) { log.warn("markNeedsReview failed", { error: e?.message }); }
+              return;
+            }
+            if (confirm.code !== 0) return;
+            const freshState = readReviewState(cwd);
+            const freshEditSeq = freshState.edit_seq ?? 0;
+            if (freshEditSeq !== startEditSeq || freshEditSeq !== preRevalidateEditSeq) {
+              return;
+            }
+            lastGitSnapshot = "";
+            if (freshState.status === "clean" || freshState.status === "needs_review" || freshState.status === "has_findings") {
+              try { resetReviewState(cwd); } catch (e: any) { log.warn("resetReviewState failed", { error: e?.message }); }
+            }
+          } catch (e: any) {
+            log.warn("gitDirtyPoller confirm error", { error: e?.message });
+          }
+        });
+      } catch (e: any) {
+        gitPollInFlight = false;
+        log.warn("gitDirtyPoller error", { error: e?.message });
+      }
+    });
+  }, gitPollIntervalMs);
   if (gitDirtyPoller.unref) gitDirtyPoller.unref();
 
   pi.on("session_shutdown", () => {
+    lastCtx = null;
     clearInterval(reviewPoller);
     clearInterval(gitDirtyPoller);
   });
