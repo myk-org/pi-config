@@ -191,3 +191,262 @@ describe("release entry regression (requires ONNX model)", () => {
     }
   });
 });
+
+// ── Orphan pruning, expiry cleanup, and snapshot compaction (#1202) ──
+
+describe("embedding pruning and compaction (#1202)", () => {
+  let cwd: string;
+
+  beforeEach(() => {
+    cwd = makeTempDir("embed-prune-");
+    mkdirSync(join(cwd, ".pi", "memory", "topics"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("pruneEmbeddings drops orphan keys", async () => {
+    const { createHash } = await import("node:crypto");
+    const key = (text: string, cat: string) =>
+      createHash("sha256").update(`[${cat}] ${text}`).digest("hex").slice(0, 16);
+
+    const liveKey = key("Keep me", "lesson");
+    const storePath = join(cwd, ".pi", "memory", "embeddings.jsonl");
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        model: "Xenova/bge-small-en-v1.5",
+        dim: 384,
+        pooling: "mean",
+        entries: {
+          [liveKey]: [1, 0, 0],
+          orphan_one: [0, 1, 0],
+          orphan_two: [0, 0, 1],
+        },
+      }) + "\n",
+      "utf-8",
+    );
+
+    const { pruneEmbeddings } = await import("../../../extensions/orchestrator/memory-embeddings.js");
+    const pruned = pruneEmbeddings(cwd, [{ text: "Keep me", category: "lesson" }]);
+    assert.equal(pruned, 2);
+
+    const raw = readFileSync(storePath, "utf-8").trim().split("\n");
+    const latest = JSON.parse(raw[raw.length - 1]!);
+    assert.deepEqual(Object.keys(latest.entries), [liveKey]);
+  });
+
+  it("rebuildAndOrganize prunes orphaned embeddings", async () => {
+    const { createHash } = await import("node:crypto");
+    const key = (text: string, cat: string) =>
+      createHash("sha256").update(`[${cat}] ${text}`).digest("hex").slice(0, 16);
+
+    const liveText = "Live rule";
+    const liveKey = key(liveText, "lesson");
+
+    writeFileSync(
+      join(cwd, ".pi", "memory", "topics", "lessons.md"),
+      `# Lessons\n\n- [lesson] ${liveText}\n`,
+      "utf-8",
+    );
+
+    const { entryHash, saveScores } = await import("../../../extensions/orchestrator/memory-scoring.js");
+    saveScores(cwd, {
+      entries: {
+        [entryHash(`- [lesson] ${liveText}`)]: {
+          class: "lesson",
+          score: 1,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: new Date().toISOString(),
+          lastReinforced: new Date().toISOString(),
+          userState: "auto",
+          lifecycle: "active",
+        },
+      },
+      lastRebuild: new Date().toISOString(),
+    });
+
+    const storePath = join(cwd, ".pi", "memory", "embeddings.jsonl");
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        model: "Xenova/bge-small-en-v1.5",
+        dim: 384,
+        pooling: "mean",
+        entries: {
+          [liveKey]: [1, 0],
+          stale_dream_orphan: [1, 1],
+        },
+      }) + "\n",
+      "utf-8",
+    );
+
+    const { rebuildAndOrganize } = await import("../../../extensions/orchestrator/situation-report.js");
+    rebuildAndOrganize(cwd);
+
+    const raw = readFileSync(storePath, "utf-8").trim().split("\n");
+    const latest = JSON.parse(raw[raw.length - 1]!);
+    assert.deepEqual(Object.keys(latest.entries), [liveKey]);
+  });
+
+  it("pruneExpiredEntries removes expired entry embeddings", async () => {
+    const { createHash } = await import("node:crypto");
+    const key = (text: string, cat: string) =>
+      createHash("sha256").update(`[${cat}] ${text}`).digest("hex").slice(0, 16);
+
+    const liveText = "Live rule";
+    const expiredText = "Expired session rule";
+    const liveKey = key(liveText, "lesson");
+    const expiredKey = key(expiredText, "lesson");
+
+    writeFileSync(
+      join(cwd, ".pi", "memory", "topics", "lessons.md"),
+      `# Lessons\n\n- [lesson] ${liveText}\n- [lesson] ${expiredText}\n`,
+      "utf-8",
+    );
+
+    const { entryHash, saveScores } = await import("../../../extensions/orchestrator/memory-scoring.js");
+    saveScores(cwd, {
+      entries: {
+        [entryHash(`- [lesson] ${liveText}`)]: {
+          class: "lesson",
+          score: 1,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: new Date().toISOString(),
+          lastReinforced: new Date().toISOString(),
+          userState: "auto",
+          lifecycle: "active",
+        },
+        [entryHash(`- [lesson] ${expiredText}`)]: {
+          class: "lesson",
+          score: 1,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: new Date().toISOString(),
+          lastReinforced: new Date().toISOString(),
+          userState: "auto",
+          lifecycle: "active",
+          scope: "session",
+          expiresAt: new Date(Date.now() - 60_000).toISOString(),
+        },
+      },
+      lastRebuild: new Date().toISOString(),
+    });
+
+    const storePath = join(cwd, ".pi", "memory", "embeddings.jsonl");
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        model: "Xenova/bge-small-en-v1.5",
+        dim: 384,
+        pooling: "mean",
+        entries: {
+          [liveKey]: [1, 0],
+          [expiredKey]: [0, 1],
+        },
+      }) + "\n",
+      "utf-8",
+    );
+
+    const { pruneExpiredEntries } = await import("../../../extensions/orchestrator/memory-write.js");
+    assert.equal(pruneExpiredEntries(cwd), 1);
+
+    const raw = readFileSync(storePath, "utf-8").trim().split("\n");
+    const latest = JSON.parse(raw[raw.length - 1]!);
+    assert.deepEqual(Object.keys(latest.entries), [liveKey]);
+  });
+
+  it("rebuildAndOrganize preserves embeddings when topics directory is empty", async () => {
+    const storePath = join(cwd, ".pi", "memory", "embeddings.jsonl");
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        model: "Xenova/bge-small-en-v1.5",
+        dim: 384,
+        pooling: "mean",
+        entries: { existing_key: [1, 0] },
+      }) + "\n",
+      "utf-8",
+    );
+
+    const { rebuildAndOrganize } = await import("../../../extensions/orchestrator/situation-report.js");
+    rebuildAndOrganize(cwd);
+
+    const raw = readFileSync(storePath, "utf-8").trim().split("\n");
+    const latest = JSON.parse(raw[raw.length - 1]!);
+    assert.deepEqual(Object.keys(latest.entries), ["existing_key"]);
+  });
+
+  it("pruneEmbeddings revalidates live entries inside lock via getFreshLiveEntries", async () => {
+    const { createHash } = await import("node:crypto");
+    const key = (text: string, cat: string) =>
+      createHash("sha256").update(`[${cat}] ${text}`).digest("hex").slice(0, 16);
+
+    const liveKey = key("Initial rule", "lesson");
+    const concurrentKey = key("Concurrent add", "lesson");
+    const storePath = join(cwd, ".pi", "memory", "embeddings.jsonl");
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        model: "Xenova/bge-small-en-v1.5",
+        dim: 384,
+        pooling: "mean",
+        entries: {
+          [liveKey]: [1, 0],
+          [concurrentKey]: [0, 1],
+          stale_orphan: [1, 1],
+        },
+      }) + "\n",
+      "utf-8",
+    );
+
+    const { pruneEmbeddings } = await import("../../../extensions/orchestrator/memory-embeddings.js");
+    const pruned = pruneEmbeddings(
+      cwd,
+      [{ text: "Initial rule", category: "lesson" }],
+      () => [
+        { text: "Initial rule", category: "lesson" },
+        { text: "Concurrent add", category: "lesson" },
+      ],
+    );
+    assert.equal(pruned, 1);
+
+    const raw = readFileSync(storePath, "utf-8").trim().split("\n");
+    const latest = JSON.parse(raw[raw.length - 1]!);
+    assert.deepEqual(Object.keys(latest.entries).sort(), [concurrentKey, liveKey].sort());
+  });
+
+  it("compacts embeddings.jsonl at compactThreshold=3", async () => {
+    const { createHash } = await import("node:crypto");
+    const key = (text: string) =>
+      createHash("sha256").update(`[lesson] ${text}`).digest("hex").slice(0, 16);
+
+    const storePath = join(cwd, ".pi", "memory", "embeddings.jsonl");
+    const initialEntries: Record<string, number[]> = {};
+    for (let i = 0; i < 5; i++) initialEntries[key(`item-${i}`)] = [i, 1];
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        model: "Xenova/bge-small-en-v1.5",
+        dim: 384,
+        pooling: "mean",
+        entries: initialEntries,
+      }) + "\n",
+      "utf-8",
+    );
+
+    const { removeEmbedding } = await import("../../../extensions/orchestrator/memory-embeddings.js");
+    // Initial file has 1 line; 2 removals reach compactThreshold=3 -> compacts to 1 line
+    removeEmbedding(cwd, "item-0", "lesson");
+    assert.equal(readFileSync(storePath, "utf-8").trim().split("\n").length, 2);
+    removeEmbedding(cwd, "item-1", "lesson");
+    const linesAfterCompact = readFileSync(storePath, "utf-8").trim().split("\n");
+    assert.equal(linesAfterCompact.length, 1, `expected compacted single line, got ${linesAfterCompact.length}`);
+    // Subsequent removals stay bounded below compactThreshold
+    removeEmbedding(cwd, "item-2", "lesson");
+    assert.equal(readFileSync(storePath, "utf-8").trim().split("\n").length, 2);
+  });
+});

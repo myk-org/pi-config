@@ -202,18 +202,11 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "session_search",
     label: "Session Search",
-    description:
-      "Search past conversation summaries by keyword. Use when the user references " +
-      "something from a past session, or when you need to recall what was discussed " +
-      "previously. Returns matching snippets from past sessions at zero LLM cost.",
+    description: "Search past conversation summaries by keyword; returns matching snippets at zero LLM cost.",
     parameters: Type.Object({
-      query: Type.String({
-        description: "Search query — keywords or phrases to find in past conversations",
-      }),
+      query: Type.String({ description: "Keywords or phrase" }),
       limit: Type.Optional(
-        Type.Number({
-          description: "Max results to return (default: 10)",
-        }),
+        Type.Number({ description: "Max results (default: 10)" }),
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

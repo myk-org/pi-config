@@ -15,13 +15,13 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
-import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize } from "./situation-report.js";
+import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize, type SituationReportOptions } from "./situation-report.js";
 import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
 import { getSetting, getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
 import { assembleRuleText, isSettingTruthy } from "./rule-placeholders.js";
 import { isComsActive } from "../shared/coms-active.js";
 import { JsonlAppendLog } from "./state-jsonl.js";
-import { getProjectDataDir } from "./utils.js";
+import { getProjectDataDir, getProjectMemoryDir } from "./utils.js";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -251,23 +251,46 @@ export function registerRules(
       !isSubagent && prompt && !isSocialCloser(prompt)
         ? classifyQueryClass(prompt)
         : "general";
-    const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget, queryClass);
+    const shouldSearch = !isSubagent && !!prompt && !isSocialCloser(prompt);
+
+    // Load scores + topic entries once per turn when either situation report or
+    // contextual recall needs them, avoiding duplicate disk reads and stat calls.
+    // Fail-soft: a store lock/migration error must never abort the agent turn.
+    let preloaded: SituationReportOptions["preloaded"];
+    if (budget > 0 || shouldSearch) {
+      try {
+        const topicsDir = path.join(getProjectMemoryDir(ctx.cwd), "topics");
+        if (fs.existsSync(topicsDir)) {
+          const { readAllTopicEntries } = await import("./memory-tree.js");
+          const { loadScores } = await import("./memory-scoring.js");
+          preloaded = {
+            scores: loadScores(ctx.cwd),
+            topicEntries: readAllTopicEntries(ctx.cwd),
+          };
+        }
+      } catch (e: any) {
+        log.debug("memory preload failed:", e?.message?.slice(0, 100));
+      }
+    }
+
+    const emittedMemoryKeys = new Set<string>();
+    const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget, queryClass, preloaded, emittedMemoryKeys);
 
     // Auto-inject contextually relevant memories via vector search (~2.5ms, in-process)
-    // Session-scoped/expired entries are filtered out first (Qodo #19, PR #916)
-    // — a session rule must not leak into a later session's context.
-    const shouldSearch = !isSubagent && !!prompt && !isSocialCloser(prompt);
+    // Session-scoped/expired entries AND entries already emitted verbatim in
+    // `# Project Memory` are excluded so pinned/high-score entries are not injected twice.
     let contextMemories = "";
-    if (shouldSearch) {
+    if (shouldSearch && preloaded && preloaded.topicEntries.length > 0) {
       try {
         const { vectorSearch } = await import("./memory-embeddings.js");
-        const { readAllTopicEntries } = await import("./memory-tree.js");
-        const { loadScores, entryHash, isEntryActiveForSession } = await import("./memory-scoring.js");
+        const { canonicalTopicLine } = await import("./memory-tree.js");
+        const { entryHash, isEntryActiveForSession } = await import("./memory-scoring.js");
         const sessionId = (ctx as any).sessionManager?.getSessionId?.();
-        const scores = loadScores(ctx.cwd);
-        const entries = readAllTopicEntries(ctx.cwd).filter(
-          (te) => isEntryActiveForSession(scores.entries[entryHash(`- [${te.category}] ${te.text}`)], sessionId),
-        );
+        const entries = preloaded.topicEntries.filter((te) => {
+          const canon = canonicalTopicLine(te);
+          if (emittedMemoryKeys.has(canon)) return false;
+          return isEntryActiveForSession(preloaded.scores.entries[entryHash(canon)], sessionId);
+        });
         if (entries.length > 0) {
           const topK = getQueryClassBias(queryClass).vectorTopK;
           const boostCats = new Set(getQueryClassBias(queryClass).boostCategories);
@@ -281,11 +304,13 @@ export function registerRules(
               : entries;
           const results = await vectorSearch(ctx.cwd, prompt, searchPool, topK);
           const injectThreshold = Number(getSetting(ctx.cwd, "memory_inject_similarity")) || 0.65;
-          const relevant = results.filter(r => r.similarity > injectThreshold);
+          const relevant = results.filter((r) => {
+            if (r.similarity <= injectThreshold) return false;
+            return !emittedMemoryKeys.has(`- [${r.category}] ${r.text}`);
+          });
           if (relevant.length > 0) {
             log.info("context_injected", "contextual_memories");
             contextMemories = "\n# Contextually Relevant Memories\n\n" +
-              "These memories were automatically retrieved based on your current message:\n\n" +
               relevant.map(r => `- [${r.category}] ${r.text} (similarity: ${r.similarity.toFixed(3)})`).join("\n") +
               "\n\n";
             // Retrieval telemetry — track what was injected
@@ -463,10 +488,12 @@ function loadMemoriesWithScoring(
   isSubagent: boolean,
   tokenBudget?: number,
   queryClass: import("./memory-query-class.js").QueryClass = "general",
+  preloaded?: SituationReportOptions["preloaded"],
+  emittedKeys?: Set<string>,
 ): string {
   if (!tokenBudget || tokenBudget <= 0) return "";
   try {
-    const report = buildSituationReport(cwd, tokenBudget, { queryClass });
+    const report = buildSituationReport(cwd, tokenBudget, { queryClass, preloaded, emittedKeys });
     if (report) {
       let result = "\n" + report + "\n";
       if (isSubagent) {

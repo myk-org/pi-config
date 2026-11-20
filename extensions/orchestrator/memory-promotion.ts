@@ -19,7 +19,14 @@ import {
   loadScores,
   mutateScores,
 } from "./memory-scoring.js";
-import { CATEGORY_TO_TOPIC, readAllTopicEntries, invalidateTopicFileCache } from "./memory-tree.js";
+import {
+  CATEGORY_TO_TOPIC,
+  canonicalTopicLine,
+  findTopicLine,
+  formatTopicLine,
+  invalidateTopicFileCache,
+  readAllTopicEntries,
+} from "./memory-tree.js";
 import {
   type PromotionCandidate,
   type PromotionCandidatePatch,
@@ -167,23 +174,22 @@ export function markTopicEntryEnforced(
   const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
   if (!existsSync(topicPath)) return false;
 
-  let content = readFileSync(topicPath, "utf-8");
-  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const lineRe = new RegExp(
-    `^(- \\[${category}\\] ${escaped})((?: \\*\\(pinned\\)\\*)?)((?: \\*\\(enforced\\)\\*)?)((?: \\{#[0-9a-f]+\\})?)(\\s*)$`,
-    "m",
-  );
-  const m = content.match(lineRe);
-  if (!m) return false;
-  if (m[3]) return true; // already enforced
+  const content = readFileSync(topicPath, "utf-8");
+  const match = findTopicLine(content, category, text);
+  if (!match) return false;
+  if (match.enforced) return true; // already enforced
 
   // Stable id binding marker (issue #915): keep an existing marker, or add
   // one from the score entry so enforcement survives later text edits.
   const scores = loadScores(cwd);
-  const entryId = scores.entries[entryHash(`- [${category}] ${text}`)]?.id;
-  const idMarker = m[4] || (entryId ? ` {#${entryId}}` : "");
-  content = content.replace(lineRe, `$1$2 *(enforced)*${idMarker}$5`);
-  writeFileSync(topicPath, content, "utf-8");
+  const entryId = scores.entries[entryHash(canonicalTopicLine({ category, text }))]?.id;
+  const id = match.id ?? entryId;
+  const lines = content.split("\n");
+  lines[match.index] = formatTopicLine(
+    { category, text, pinned: match.pinned, ...(id ? { id } : {}) },
+    true,
+  );
+  writeFileSync(topicPath, lines.join("\n"), "utf-8");
   invalidateTopicFileCache(topicPath);
   return true;
 }

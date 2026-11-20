@@ -23,8 +23,10 @@ import {
   relevantFindings,
   formatFindingsBlock,
   createReviewLearning,
+  clearReviewLearningCaches,
+  resolveRepoInfo,
 } from "../../../extensions/orchestrator/review-learning.js";
-import { entryHash, loadScores, type MemoryCategory, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
+import { entryHash, getScoresPath, loadScores, type MemoryCategory, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { getProjectDataDir } from "../../../extensions/orchestrator/utils.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -805,5 +807,102 @@ describe("subagent dispatch rewrite", () => {
     const input = { agent: "frontend", task: "Fix src/api.py", cwd };
     subagentRewrite({ toolName: "subagent", input }, { cwd });
     assert.equal(input.task, "Fix src/api.py");
+  });
+});
+
+describe("review-learning per-turn cache invalidation (#1197)", () => {
+  it("invalidates cached DatabaseSync handle when reviews.db changes or is removed", () => {
+    const cwd = cwdWithDb([[{ path: "src/api.py", body: "Initial finding on api" }]]);
+    assert.equal(collectPathFindings(cwd, ["src/api.py"], repoInfo).length, 1);
+
+    // Insert a second finding — DB mtime/size change invalidates cached handle
+    const dbPath = path.join(cwd, ".pi", "data", "reviews.db");
+    const db = new DatabaseSync(dbPath);
+    db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (1, 'qodo', 'src/other.py', 1, 'Second finding on other', 'high', 'addressed')",
+    ).run();
+    db.close();
+
+    const afterInsert = collectPathFindings(cwd, ["src/api.py", "src/other.py"], repoInfo);
+    assert.equal(afterInsert.length, 2);
+
+    // Deleting the DB invalidates and clears the cached handle cleanly
+    fs.rmSync(dbPath);
+    assert.deepEqual(collectPathFindings(cwd, ["src/api.py"], repoInfo), []);
+  });
+
+  it("invalidates cached branchDiffPaths when HEAD advances", () => {
+    const repo = gitRepoWithBranch();
+    assert.deepEqual(branchDiffPaths(repo), ["src/api.py"]);
+
+    // Add a second commit on the feature branch — HEAD ref change invalidates cache
+    fs.writeFileSync(path.join(repo, "src", "second.py"), "z = 3\n");
+    execFileSync("git", ["add", "src/second.py"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-q", "-m", "second"], { cwd: repo, stdio: "ignore" });
+
+    assert.deepEqual(branchDiffPaths(repo), ["src/api.py", "src/second.py"]);
+  });
+
+  it("invalidates memoized commentId->lessonText map when a new lesson is seeded", () => {
+    const cwd = cwdWithDb([[{ path: "src/api.py", body: "Raw DB comment body about validation" }]]);
+    const before = collectPathFindings(cwd, ["src/api.py"], repoInfo);
+    assert.equal(before[0]!.text, "Raw DB comment body about validation");
+
+    // Seed a provenance-linked lesson for comment id 1
+    seedLessonEntry(cwd, "src/api.py: Validate inputs at boundary", "reviews.db:1;myk-org/demo");
+    const after = collectPathFindings(cwd, ["src/api.py"], repoInfo);
+    assert.equal(after[0]!.text, "src/api.py: Validate inputs at boundary");
+  });
+
+  it("invalidates memoized lesson lookup when only memory-scores.jsonl derivedFrom changes", () => {
+    const cwd = cwdWithDb([[{ path: "src/api.py", body: "Raw DB comment body about caching" }]]);
+    const lessonText = "src/api.py: Invalidate score cache on derivedFrom update";
+    seedLessonEntry(cwd, lessonText);
+
+    // Before derivedFrom links to reviews.db:1, raw DB body is shown
+    const before = collectPathFindings(cwd, ["src/api.py"], repoInfo);
+    assert.equal(before[0]!.text, "Raw DB comment body about caching");
+
+    // Mutate only memory-scores.jsonl to attach derivedFrom provenance (topics/*.md untouched)
+    const scoresPath = getScoresPath(cwd);
+    const lines = fs.readFileSync(scoresPath, "utf-8").trim().split("\n");
+    const latest = JSON.parse(lines[lines.length - 1]!);
+    const hash = entryHash(`- [lesson] ${lessonText}`);
+    latest.entries[hash].derivedFrom = "reviews.db:1;myk-org/demo";
+    fs.writeFileSync(scoresPath, JSON.stringify(latest) + "\n", "utf-8");
+
+    const after = collectPathFindings(cwd, ["src/api.py"], repoInfo);
+    assert.equal(after[0]!.text, lessonText);
+  });
+
+  it("clearReviewLearningCaches resets cached lookups", () => {
+    const repo = gitRepoWithBranch();
+    execFileSync("git", ["remote", "add", "origin", "https://github.com/myk-org/demo.git"], {
+      cwd: repo,
+      stdio: "ignore",
+    });
+    const dbCwd = cwdWithDb([[{ path: "src/api.py", body: "Original cached finding" }]]);
+    const dataDir = getProjectDataDir(repo);
+    fs.mkdirSync(dataDir, { recursive: true });
+    const dbPath = path.join(dataDir, "reviews.db");
+    fs.copyFileSync(path.join(dbCwd, ".pi", "data", "reviews.db"), dbPath);
+
+    // Populate repo-info, branch-diff, DB handle, and lesson caches
+    assert.deepEqual(resolveRepoInfo(repo), { owner: "myk-org", repo: "demo" });
+    assert.deepEqual(branchDiffPaths(repo), ["src/api.py"]);
+    assert.equal(collectPathFindings(repo, ["src/api.py"])[0]!.text, "Original cached finding");
+
+    // Mutate remote URL (within 60s TTL, cached until clearReviewLearningCaches)
+    execFileSync("git", ["remote", "set-url", "origin", "https://github.com/other-org/other-repo.git"], {
+      cwd: repo,
+      stdio: "ignore",
+    });
+    assert.deepEqual(resolveRepoInfo(repo), { owner: "myk-org", repo: "demo" }, "still cached before reset");
+
+    clearReviewLearningCaches();
+
+    // After reset, repoInfo re-reads the updated origin remote and DB cache re-opens cleanly
+    assert.deepEqual(resolveRepoInfo(repo), { owner: "other-org", repo: "other-repo" });
+    assert.deepEqual(collectPathFindings(repo, ["src/api.py"]), []);
   });
 });
