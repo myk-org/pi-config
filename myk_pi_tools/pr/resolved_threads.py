@@ -97,23 +97,44 @@ def _parse_ts(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def _predates_shallow_boundary(repo: Path, since: datetime) -> bool:
-    """True when `since` is older than the oldest commit this clone can see."""
+def _shallow_boundary(repo: Path) -> tuple[bool, datetime | None]:
+    """Return ``(is_shallow, oldest_commit_dt)`` for ``repo``.
+
+    If ``is_shallow`` is True and the boundary cannot be determined,
+    ``oldest_commit_dt`` is ``None`` (caller must fail open).
+    """
     if (_git(repo, "rev-parse", "--is-shallow-repository") or "") != "true":
-        return False
+        return False, None
     # In a shallow clone the grafted commits are history roots — their date is the
     # oldest moment the clone covers. Unknown boundary means unknown coverage.
     boundary = (_git(repo, "rev-list", "--max-parents=0", "HEAD") or "").split()
     if not boundary:
-        return True
+        return True, None
     dates = [d for d in (_git(repo, "log", "--no-walk", "--format=%cI", *boundary) or "").split() if d]
     parsed = [p for p in (_parse_ts(d) for d in dates) if p is not None]
     if not parsed:
+        return True, None
+    return True, min(parsed)
+
+
+def _predates_shallow_boundary(
+    repo: Path, since: datetime, shallow_info: tuple[bool, datetime | None] | None = None
+) -> bool:
+    """True when `since` is older than the oldest commit this clone can see."""
+    is_shallow, boundary_dt = _shallow_boundary(repo) if shallow_info is None else shallow_info
+    if not is_shallow:
+        return False
+    if boundary_dt is None:
         return True
-    return since < min(parsed)
+    return since < boundary_dt
 
 
-def check_thread(repo: Path, thread: dict[str, Any]) -> dict[str, Any]:
+def check_thread(
+    repo: Path,
+    thread: dict[str, Any],
+    *,
+    _cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return the suppression verdict for one resolved third-party thread."""
     thread_id = thread.get("thread_id")
     path = str(thread.get("path") or "")
@@ -130,13 +151,28 @@ def check_thread(repo: Path, thread: dict[str, Any]) -> dict[str, Any]:
         return {**verdict, "reason": f"unsafe or missing path {path!r} — not suppressed"}
     if since_dt is None:
         return {**verdict, "reason": "no usable resolution timestamp — not suppressed"}
-    if _predates_shallow_boundary(repo, since_dt):
+    shallow_info = _cache.get("shallow") if _cache is not None else None
+    if _predates_shallow_boundary(repo, since_dt, shallow_info):
         return {**verdict, "reason": f"window since {since} predates the shallow clone boundary — not suppressed"}
-    if _git(repo, "cat-file", "-e", f"HEAD:{path}") is None:
+
+    in_head_cache: dict[str, bool] | None = _cache.get("in_head") if _cache is not None else None
+    in_head = in_head_cache.get(path) if in_head_cache is not None else None
+    if in_head is None:
+        in_head = _git(repo, "cat-file", "-e", f"HEAD:{path}") is not None
+        if in_head_cache is not None:
+            in_head_cache[path] = in_head
+    if not in_head:
         return {**verdict, "reason": f"{path} is not in HEAD (deleted or renamed) — not suppressed"}
 
     # `:(literal)` as its own argv element — Git cannot expand wildcards or magic here.
-    commits = (_git(repo, "log", f"--since={since}", "--format=%H", "--", f":(literal){path}") or "").split()
+    assert since is not None
+    commits_cache: dict[tuple[str, str], list[str]] | None = _cache.get("commits") if _cache is not None else None
+    cache_key = (path, since)
+    commits = commits_cache.get(cache_key) if commits_cache is not None else None
+    if commits is None:
+        commits = (_git(repo, "log", f"--since={since}", "--format=%H", "--", f":(literal){path}") or "").split()
+        if commits_cache is not None:
+            commits_cache[cache_key] = commits
     if commits:
         return {**verdict, "reason": f"{len(commits)} commit(s) touched {path} since {since} — not suppressed"}
     return {**verdict, "suppressed": True, "reason": f"no commit touched {path} since {since}"}
@@ -164,5 +200,11 @@ def run(repo_dir: str, json_path: str) -> int:
         print(f"Error: not a git repository: {repo_dir}", file=sys.stderr)
         return 1
 
-    print(json.dumps([check_thread(repo, t) for t in threads if isinstance(t, dict)], separators=(",", ":")))
+    cache: dict[str, Any] = {
+        "shallow": _shallow_boundary(repo),
+        "in_head": {},
+        "commits": {},
+    }
+    verdicts = [check_thread(repo, t, _cache=cache) for t in threads if isinstance(t, dict)]
+    print(json.dumps(verdicts, separators=(",", ":")))
     return 0

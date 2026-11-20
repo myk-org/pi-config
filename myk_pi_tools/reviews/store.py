@@ -16,6 +16,7 @@ from typing import Any
 
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.title_extraction import extract_finding_title
+from myk_pi_tools.utils import find_git_root
 
 # Schema for the reviews database
 SCHEMA = """
@@ -59,7 +60,10 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
 CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(owner, repo, pr_number);
+CREATE INDEX IF NOT EXISTS idx_reviews_pr_number ON reviews(pr_number);
 CREATE INDEX IF NOT EXISTS idx_reviews_commit ON reviews(commit_sha);
+CREATE INDEX IF NOT EXISTS idx_comments_path ON comments(path);
+CREATE INDEX IF NOT EXISTS idx_comments_node_id ON comments(node_id);
 """
 
 
@@ -74,22 +78,9 @@ def get_project_root() -> Path:
     is shared across all worktrees.
     """
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            log.error(f"Error: git rev-parse failed: {result.stderr.strip()}")
-            sys.exit(1)
-        git_common = Path(result.stdout.strip()).resolve()
-        return git_common.parent
-    except subprocess.TimeoutExpired:
-        log.error("Error: git command timed out")
-        sys.exit(1)
-    except FileNotFoundError:
-        log.error("Error: git command not found")
+        return find_git_root()
+    except RuntimeError as exc:
+        log.error(f"Error: {exc}")
         sys.exit(1)
 
 

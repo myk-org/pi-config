@@ -25,6 +25,7 @@ from myk_pi_tools.coderabbit.utils import (
 from myk_pi_tools.coderabbit.utils import (
     validate_owner_repo as _validate_owner_repo,
 )
+from myk_pi_tools.utils import post_issue_comment
 
 _RATE_LIMITED_MARKER = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->"
 _REVIEWS_PAUSED_MARKER = "<!-- This is an auto-generated comment: reviews paused by coderabbit.ai -->"
@@ -125,21 +126,26 @@ def _parse_wait_seconds(body: str) -> int | None:
     return None
 
 
+def compute_remaining_wait(wait_seconds: int, updated_at: str | None) -> tuple[int, int, bool]:
+    """Compute ``(remaining, elapsed, parsed_ok)`` from ``updated_at`` against ``wait_seconds``."""
+    if not updated_at:
+        return wait_seconds, 0, True
+    try:
+        comment_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        elapsed = max(0, int((datetime.now(UTC) - comment_time).total_seconds()))
+        remaining = max(0, wait_seconds - elapsed)
+        return remaining, elapsed, True
+    except (ValueError, TypeError):
+        return wait_seconds, 0, False
+
+
 def _post_coderabbit_comment(owner_repo: str, pr_number: int, command: str) -> int | None:
     """Post @coderabbitai <command> comment on the PR. Returns comment ID or None."""
     owner, repo = owner_repo.split("/")
-    code, stdout, stderr = _run_gh(
-        [
-            "api",
-            f"repos/{owner}/{repo}/issues/{pr_number}/comments",
-            "-f",
-            f"body=@coderabbitai {command}",
-        ],
-        timeout=30,
-    )
-    if code != 0:
-        if stderr:
-            print(f"Failed to post {command} trigger: {stderr}", file=sys.stderr)
+    ok, stdout, err = post_issue_comment(owner, repo, pr_number, f"@coderabbitai {command}", timeout=30)
+    if not ok:
+        if err:
+            print(f"Failed to post {command} trigger: {err}", file=sys.stderr)
         return None
     try:
         return json.loads(stdout).get("id")
@@ -216,17 +222,12 @@ def run_check(owner_repo: str, pr_number: int) -> int:
     if wait_seconds is None:
         # Compute fallback wait from comment timestamp
         fallback = True
-        wait_seconds = DEFAULT_RATE_LIMIT_WINDOW
-        if updated_at:
-            try:
-                comment_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-                elapsed = max(0, int((datetime.now(UTC) - comment_time).total_seconds()))
-                wait_seconds = max(0, DEFAULT_RATE_LIMIT_WINDOW - elapsed)
-            except (ValueError, TypeError):
-                print(
-                    f"Warning: Could not parse comment timestamp '{updated_at}' — using full fallback window",
-                    file=sys.stderr,
-                )
+        wait_seconds, _, parsed_ok = compute_remaining_wait(DEFAULT_RATE_LIMIT_WINDOW, updated_at)
+        if not parsed_ok:
+            print(
+                f"Warning: Could not parse comment timestamp '{updated_at}' — using full fallback window",
+                file=sys.stderr,
+            )
 
     result: dict[str, Any] = {
         "rate_limited": True,
@@ -323,18 +324,12 @@ def run_retry(owner_repo: str, pr_number: int) -> int:
     wait_seconds: int = DEFAULT_RATE_LIMIT_WINDOW if parsed_wait is None else parsed_wait
 
     # Calculate remaining wait from comment timestamp
-    remaining = wait_seconds
-    elapsed = 0
-    if updated_at:
-        try:
-            comment_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-            elapsed = max(0, int((datetime.now(UTC) - comment_time).total_seconds()))
-            remaining = max(0, wait_seconds - elapsed)
-        except (ValueError, TypeError):
-            print(
-                f"Warning: Could not parse comment timestamp '{updated_at}' — using full wait",
-                file=sys.stderr,
-            )
+    remaining, elapsed, parsed_ok = compute_remaining_wait(wait_seconds, updated_at)
+    if not parsed_ok:
+        print(
+            f"Warning: Could not parse comment timestamp '{updated_at}' — using full wait",
+            file=sys.stderr,
+        )
 
     if is_fallback:
         print(

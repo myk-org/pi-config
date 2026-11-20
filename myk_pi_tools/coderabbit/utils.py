@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
+
+from myk_pi_tools.pr.common import validate_repo_format
+from myk_pi_tools.utils import run_gh as _run_gh
 
 # HTML comment marker in CodeRabbit's summary comment
 SUMMARY_MARKER = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
@@ -12,19 +14,8 @@ SUMMARY_MARKER = "<!-- This is an auto-generated comment: summarize by coderabbi
 
 def run_gh(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
     """Run a gh CLI command and return (exit_code, stdout, stderr)."""
-    try:
-        result = subprocess.run(
-            ["gh", *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
-    except FileNotFoundError:
-        return 1, "", "gh CLI not found. Install from https://cli.github.com/"
-    except subprocess.TimeoutExpired:
-        return 1, "", f"Command timed out after {timeout}s"
+    code, stdout, stderr = _run_gh(args, timeout=timeout)
+    return code, stdout.strip(), stderr.strip()
 
 
 def find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, str | None, str | None, str]:
@@ -64,7 +55,7 @@ def find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, s
 
 def validate_owner_repo(owner_repo: str) -> bool:
     """Validate owner/repo format."""
-    if "/" not in owner_repo or len(owner_repo.split("/")) != 2:
+    if not validate_repo_format(owner_repo):
         print(f"Error: Invalid repository format: {owner_repo}. Expected owner/repo.", file=sys.stderr)
         return False
     return True

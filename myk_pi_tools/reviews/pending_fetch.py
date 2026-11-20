@@ -8,10 +8,7 @@ Output: JSON with metadata and comments saved to <output_dir>/pr-<number>-pendin
 
 from __future__ import annotations
 
-import json
-import os
 import subprocess
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -22,6 +19,7 @@ from myk_pi_tools.reviews.fetch import (
     print_stderr,
     run_gh_api,
 )
+from myk_pi_tools.utils import atomic_write_json
 
 # Maximum diff length to include in output (characters)
 MAX_DIFF_LENGTH = 50000
@@ -275,17 +273,14 @@ def run(pr_url: str, *, output_dir: str) -> int:
     }
 
     # Save to file atomically
-    fd, tmp_json_path = tempfile.mkstemp(
-        prefix=f"pr-{safe_repo}-{pr_number}-pending-review.json.",
-        dir=str(out_dir),
-    )
-
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(final_output, f, indent=2)
-        os.replace(tmp_json_path, json_path)
+        atomic_write_json(
+            json_path,
+            final_output,
+            indent=2,
+            prefix=f"pr-{safe_repo}-{pr_number}-pending-review.json.",
+        )
     except Exception as e:
-        Path(tmp_json_path).unlink(missing_ok=True)
         print_stderr(f"Error: Failed to write JSON file: {e}")
         return 1
 

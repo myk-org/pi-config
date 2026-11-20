@@ -21,10 +21,8 @@ posted entries (``posted_at`` set by post.run) are never touched again.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -32,6 +30,7 @@ from typing import Any
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.constants import BODY_EMBEDDED_COMMENT_TYPES, QODO_STICKY_TYPES, QODO_TYPE_MAP
 from myk_pi_tools.reviews.status import extract_summary
+from myk_pi_tools.utils import atomic_write_json
 
 log = create_logger(__name__)
 
@@ -629,14 +628,7 @@ def format_digest_line(entry: dict[str, Any]) -> str:
 
 def _save_json(path: Path, data: dict[str, Any]) -> None:
     """Save the updated reviews JSON atomically (same pattern as fetch)."""
-    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_name, path)
-    except Exception:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
+    atomic_write_json(path, data, indent=2)
     log.info("Saved updated reviews JSON to %s", path)
 
 
@@ -791,7 +783,7 @@ def run(json_path: str | None = None, replies_file: str | None = None, set_statu
     # same JSON: while findings for later groups are still pending (unposted,
     # not auto-skipped), store must not run — it would delete the JSON and
     # those groups would fail with "reviews JSON not found".
-    pending = _pending_entries(json.loads(path.read_text(encoding="utf-8")))
+    pending = _pending_entries(posted_data)
     if pending:
         log.info("Keeping %s: %d finding(s) still pending for later status groups", path, len(pending))
         print(f"Addressed {len(digest)} finding(s):")

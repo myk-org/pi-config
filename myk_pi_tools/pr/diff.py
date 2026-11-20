@@ -9,14 +9,14 @@ Usage:
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from myk_pi_tools.pr.common import PRInfo
+from myk_pi_tools.pr.common import fetch_pr_metadata as _fetch_pr_metadata
 from myk_pi_tools.pr.common import parse_args as _parse_args
-from myk_pi_tools.utils import merge_paginated_json
+from myk_pi_tools.utils import merge_paginated_json, run_gh
 
 
 def parse_args(args: list[str]) -> PRInfo:
@@ -32,130 +32,49 @@ def parse_args(args: list[str]) -> PRInfo:
 
 
 def fetch_pr_metadata(pr_info: PRInfo) -> dict[str, Any]:
-    """Fetch PR metadata from GitHub API.
+    """Fetch PR metadata from GitHub API."""
+    return _fetch_pr_metadata(pr_info, label="PR metadata")
 
-    Args:
-        pr_info: Parsed PR information.
 
-    Returns:
-        PR metadata dictionary.
-
-    Raises:
-        SystemExit: If API call fails.
-    """
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "api",
-                f"/repos/{pr_info.owner}/{pr_info.repo}/pulls/{pr_info.pr_number}",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=60,
-        )
-        return json.loads(result.stdout)
-    except FileNotFoundError:
-        print(
-            "Error: GitHub CLI (gh) not found. Install gh to fetch PR metadata.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except subprocess.TimeoutExpired:
-        print(
-            f"Error: Timed out fetching PR metadata for {pr_info.repo_full_name}#{pr_info.pr_number}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        print(
-            f"Error: Failed to fetch PR metadata for {pr_info.repo_full_name}#{pr_info.pr_number}",
-            file=sys.stderr,
-        )
-        print(e.stderr, file=sys.stderr)
-        sys.exit(1)
+def _run_gh_or_exit(args: list[str], *, label: str, pr_info: PRInfo, timeout: int = 120) -> str:
+    """Run gh CLI and exit with consistent stderr diagnostics on failure."""
+    code, stdout, stderr = run_gh(args, timeout=timeout)
+    if code == 0:
+        return stdout
+    if "gh CLI not found" in stderr:
+        print(f"Error: GitHub CLI (gh) not found. Install gh to fetch {label}.", file=sys.stderr)
+    elif "timed out" in stderr:
+        print(f"Error: Timed out fetching {label} for {pr_info.repo_full_name}#{pr_info.pr_number}", file=sys.stderr)
+    else:
+        print(f"Error: Failed to fetch {label} for {pr_info.repo_full_name}#{pr_info.pr_number}", file=sys.stderr)
+        if stderr:
+            print(stderr, file=sys.stderr)
+    sys.exit(1)
 
 
 def fetch_pr_diff(pr_info: PRInfo) -> str:
-    """Fetch PR diff.
-
-    Args:
-        pr_info: Parsed PR information.
-
-    Returns:
-        PR diff as a string.
-
-    Raises:
-        SystemExit: If gh pr diff fails.
-    """
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "pr",
-                "diff",
-                pr_info.pr_number,
-                "--repo",
-                pr_info.repo_full_name,
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=120,
-        )
-        return result.stdout
-    except FileNotFoundError:
-        print(
-            "Error: GitHub CLI (gh) not found. Install gh to fetch PR diff.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except subprocess.TimeoutExpired:
-        print(
-            f"Error: Timed out fetching PR diff for {pr_info.repo_full_name}#{pr_info.pr_number}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        print(
-            f"Error: Failed to fetch PR diff for {pr_info.repo_full_name}#{pr_info.pr_number}",
-            file=sys.stderr,
-        )
-        print(e.stderr, file=sys.stderr)
-        sys.exit(1)
+    """Fetch PR diff."""
+    return _run_gh_or_exit(
+        ["pr", "diff", pr_info.pr_number, "--repo", pr_info.repo_full_name],
+        label="PR diff",
+        pr_info=pr_info,
+        timeout=120,
+    )
 
 
 def fetch_pr_files(pr_info: PRInfo) -> list[dict[str, Any]]:
-    """Fetch PR changed files.
-
-    Args:
-        pr_info: Parsed PR information.
-
-    Returns:
-        List of file change dictionaries.
-
-    Raises:
-        SystemExit: If API call fails.
-    """
+    """Fetch PR changed files."""
+    stdout = _run_gh_or_exit(
+        ["api", f"/repos/{pr_info.owner}/{pr_info.repo}/pulls/{pr_info.pr_number}/files", "--paginate"],
+        label="PR files",
+        pr_info=pr_info,
+        timeout=120,
+    )
     try:
-        result = subprocess.run(
-            [
-                "gh",
-                "api",
-                f"/repos/{pr_info.owner}/{pr_info.repo}/pulls/{pr_info.pr_number}/files",
-                "--paginate",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=120,
-        )
         # --paginate returns concatenated JSON arrays, merge them safely.
         # Cannot use naive '][' replacement — it corrupts bracket sequences
         # inside patch content (e.g., dict["key1"]["key2"] → dict["key1","key2"]).
-        files_data = merge_paginated_json(result.stdout)
-        # Extract relevant fields
+        files_data = merge_paginated_json(stdout)
         return [
             {
                 "path": f["filename"],
@@ -166,25 +85,6 @@ def fetch_pr_files(pr_info: PRInfo) -> list[dict[str, Any]]:
             }
             for f in files_data
         ]
-    except FileNotFoundError:
-        print(
-            "Error: GitHub CLI (gh) not found. Install gh to fetch PR files.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except subprocess.TimeoutExpired:
-        print(
-            f"Error: Timed out fetching PR files for {pr_info.repo_full_name}#{pr_info.pr_number}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        print(
-            f"Error: Failed to fetch PR files for {pr_info.repo_full_name}#{pr_info.pr_number}",
-            file=sys.stderr,
-        )
-        print(e.stderr, file=sys.stderr)
-        sys.exit(1)
     except json.JSONDecodeError as e:
         print(
             f"Error: Failed to parse PR files response for {pr_info.repo_full_name}#{pr_info.pr_number}: {e}",

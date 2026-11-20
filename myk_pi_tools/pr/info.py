@@ -9,11 +9,9 @@ Usage:
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from typing import Any
 
-from myk_pi_tools.pr.common import PRInfo
+from myk_pi_tools.pr.common import PRInfo, fetch_pr_metadata
 from myk_pi_tools.pr.common import parse_args as _parse_args
 
 
@@ -41,44 +39,7 @@ def fetch_pr_info(pr_info: PRInfo) -> dict[str, Any]:
     Raises:
         SystemExit: If API call fails.
     """
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "api",
-                f"/repos/{pr_info.owner}/{pr_info.repo}/pulls/{pr_info.pr_number}",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=60,
-        )
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        print(
-            f"Error: Invalid JSON response from GitHub API for {pr_info.repo_full_name}#{pr_info.pr_number}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except FileNotFoundError:
-        print(
-            "Error: GitHub CLI (gh) not found. Install gh to fetch PR info.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except subprocess.TimeoutExpired:
-        print(
-            f"Error: Timed out fetching PR info for {pr_info.repo_full_name}#{pr_info.pr_number}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        print(
-            f"Error: Failed to fetch PR info for {pr_info.repo_full_name}#{pr_info.pr_number}",
-            file=sys.stderr,
-        )
-        print(e.stderr, file=sys.stderr)
-        sys.exit(1)
+    return fetch_pr_metadata(pr_info, label="PR info")
 
 
 def run(args: list[str]) -> None:

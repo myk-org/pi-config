@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.logger import create_logger
+from myk_pi_tools.pr.common import validate_pr_number, validate_repo_format
 
 log = create_logger(__name__)
 
@@ -77,30 +78,6 @@ class ReviewResult:
     posted: list[dict[str, Any]] = field(default_factory=list)
     failed: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
-
-
-def validate_repo_format(repo_full_name: str) -> bool:
-    """Validate repository format (owner/repo).
-
-    Args:
-        repo_full_name: Repository name in owner/repo format.
-
-    Returns:
-        True if valid format.
-    """
-    return bool(re.match(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$", repo_full_name))
-
-
-def validate_pr_number(pr_number: str) -> bool:
-    """Validate PR number is numeric.
-
-    Args:
-        pr_number: PR number string.
-
-    Returns:
-        True if numeric.
-    """
-    return bool(re.match(r"^\d+$", pr_number))
 
 
 def validate_commit_sha(sha: str) -> bool:

@@ -12,32 +12,27 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import logging
-import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
-
-# Map Qodo finding types to our type field
-from myk_pi_tools.reviews.constants import QODO_TYPE_MAP as _QODO_TYPE_MAP  # noqa: E402
-from myk_pi_tools.reviews.qodo_cli import fetch_qodo_cli_threads  # noqa: E402
+from myk_pi_tools.reviews.constants import (
+    CODERABBIT_USERS,
+    PREVIOUS_RESULTS_RE,
+    QODO_STICKY_TYPES,  # noqa: F401 — re-exported for backwards compat
+    QODO_USERS,
+)
+from myk_pi_tools.reviews.constants import QODO_TYPE_MAP as _QODO_TYPE_MAP
+from myk_pi_tools.reviews.qodo_cli import fetch_qodo_cli_threads
 from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
-from myk_pi_tools.utils import merge_paginated_json
-
-# Known AI reviewer usernames
-QODO_USERS = ["qodo-code-review", "qodo-code-review[bot]"]
-
-from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES  # noqa: E402 — re-export for backwards compat
-
-CODERABBIT_USERS = ["coderabbitai", "coderabbitai[bot]"]
+from myk_pi_tools.utils import atomic_write_json, merge_paginated_json, parse_pr_url
 
 # Priority classification keywords
 HIGH_PRIORITY_KEYWORDS = re.compile(
@@ -51,7 +46,21 @@ LOW_PRIORITY_KEYWORDS = re.compile(
 
 # Track temp files for cleanup
 TEMP_FILES: list[Path] = []
-log = logging.getLogger(__name__)
+log = create_logger(__name__)
+
+# Transient per-run context shared with poll.py in the same process so poll does
+# not re-fetch issue comments or re-run is_qodo_approved() right after fetch.run().
+_LAST_FETCH_CONTEXT: dict[str, Any] | None = None
+
+
+def consume_fetch_context(owner: str, repo: str, pr_number: str) -> dict[str, Any] | None:
+    """Return and clear the transient context from the matching fetch.run() call."""
+    global _LAST_FETCH_CONTEXT
+    ctx = _LAST_FETCH_CONTEXT
+    _LAST_FETCH_CONTEXT = None
+    if ctx is not None and ctx.get("key") == (owner, repo, str(pr_number)):
+        return ctx
+    return None
 
 
 def cleanup() -> None:
@@ -69,53 +78,12 @@ def print_stderr(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
-def _fallback_body_similarity(body1: str, body2: str) -> float:
-    """Calculate word overlap ratio between two bodies using Jaccard similarity."""
-    tokens1 = set(re.findall(r"[a-z0-9]+", body1.lower()))
-    tokens2 = set(re.findall(r"[a-z0-9]+", body2.lower()))
-    if not tokens1 or not tokens2:
-        return 0.0
-
-    # Guard against huge bodies (e.g., pasted logs)
-    # Sort before truncating for deterministic behavior
-    if len(tokens1) > 2000:
-        tokens1 = set(sorted(tokens1)[:2000])
-    if len(tokens2) > 2000:
-        tokens2 = set(sorted(tokens2)[:2000])
-
-    intersection = tokens1 & tokens2
-    union = tokens1 | tokens2
-    return len(intersection) / len(union)
-
-
-def _load_review_db() -> tuple[type | None, Any | None]:
-    """Try to load ReviewDB from db module."""
-    return ReviewDB, _body_similarity
-
-
 def check_dependencies() -> None:
     """Check required dependencies."""
     for cmd in ("gh", "git"):
         if shutil.which(cmd) is None:
             print_stderr(f"Error: '{cmd}' is required but not installed.")
             sys.exit(1)
-
-
-def parse_pr_url(url: str) -> tuple[str, str, str] | None:
-    """Parse a GitHub PR URL into (owner, repo, pr_number).
-
-    Supports formats:
-        https://github.com/OWNER/REPO/pull/NUMBER
-        https://github.com/OWNER/REPO/pull/NUMBER#pullrequestreview-XXX
-        https://github.com/OWNER/REPO/pull/NUMBER#discussion_rXXX
-
-    Returns:
-        Tuple of (owner, repo, pr_number) or None if URL doesn't match.
-    """
-    match = re.match(r"https?://github\.com/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/pull/(\d+)", url)
-    if match:
-        return match.group(1), match.group(2), match.group(3)
-    return None
 
 
 def _get_upstream_repo() -> str | None:
@@ -706,7 +674,7 @@ def fetch_qodo_reply_comments(
 
     for comment in comments:
         author = comment.get("user", {}).get("login") if comment.get("user") else None
-        if author not in ("qodo-code-review[bot]", "qodo-code-review"):
+        if author not in QODO_USERS:
             continue
 
         body = comment.get("body", "")
@@ -802,7 +770,7 @@ def fetch_qodo_sticky_findings(
 
     for comment in comments:
         author = comment.get("user", {}).get("login") if comment.get("user") else None
-        if author not in ("qodo-code-review[bot]", "qodo-code-review"):
+        if author not in QODO_USERS:
             continue
 
         body = comment.get("body", "")
@@ -937,15 +905,13 @@ def process_and_categorize(
     qodo: list[dict[str, Any]] = []
     coderabbit: list[dict[str, Any]] = []
 
-    # Lazily load ReviewDB and instantiate once outside the loop for performance
-    ReviewDB, sim_fn = _load_review_db()
-    similarity = sim_fn or _fallback_body_similarity  # Use imported or fallback
+    # Instantiate ReviewDB once outside the loop for performance
+    similarity = _body_similarity
     db = None
-    if ReviewDB:
-        try:
-            db = ReviewDB(db_path=None)  # Auto-detect path
-        except Exception as e:
-            print_stderr(f"Warning: Failed to initialize ReviewDB: {e}")
+    try:
+        db = ReviewDB(db_path=None)  # Auto-detect path
+    except Exception as e:
+        print_stderr(f"Warning: Failed to initialize ReviewDB: {e}")
 
     # Preload and index dismissed comments once per run for performance
     # Skip dismissed scan entirely when no non-qodo pending threads exist
@@ -1152,6 +1118,15 @@ def _extract_sticky_title(body: str) -> str:
     return body[:60].lower()
 
 
+_BODY_KEY_PREFIXES = {
+    "outside_diff_comment": "odc",
+    "major_comment": "mjc",
+    "minor_comment": "mnc",
+    "nitpick_comment": "npc",
+    "duplicate_comment": "dpc",
+}
+
+
 def get_thread_key(thread: dict[str, Any]) -> str | None:
     """Generate a unique key for deduplication."""
     # Qodo sticky findings use type + path + normalized title as composite key
@@ -1166,50 +1141,15 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
             stable = hashlib.sha256(material.encode()).hexdigest()[:12]
             return f"qs:{path}:{stable}"
 
-    # Outside diff comments use review_id + location as composite key (stable across reordering)
-    if thread.get("type") == "outside_diff_comment":
+    # Body-embedded comments use review_id + location as composite key (stable across reordering)
+    prefix = _BODY_KEY_PREFIXES.get(qodo_type or "")
+    if prefix is not None:
         review_id = thread.get("review_id")
         path = thread.get("path")
         line = thread.get("line")
         end_line = thread.get("end_line")
         if review_id is not None and path and line is not None:
-            return f"odc:{review_id}:{path}:{line}:{end_line}"
-
-    # Major comments use review_id + location as composite key (stable across reordering)
-    if thread.get("type") == "major_comment":
-        review_id = thread.get("review_id")
-        path = thread.get("path")
-        line = thread.get("line")
-        end_line = thread.get("end_line")
-        if review_id is not None and path and line is not None:
-            return f"mjc:{review_id}:{path}:{line}:{end_line}"
-
-    # Minor comments use review_id + location as composite key (stable across reordering)
-    if thread.get("type") == "minor_comment":
-        review_id = thread.get("review_id")
-        path = thread.get("path")
-        line = thread.get("line")
-        end_line = thread.get("end_line")
-        if review_id is not None and path and line is not None:
-            return f"mnc:{review_id}:{path}:{line}:{end_line}"
-
-    # Nitpick comments use review_id + location as composite key (stable across reordering)
-    if thread.get("type") == "nitpick_comment":
-        review_id = thread.get("review_id")
-        path = thread.get("path")
-        line = thread.get("line")
-        end_line = thread.get("end_line")
-        if review_id is not None and path and line is not None:
-            return f"npc:{review_id}:{path}:{line}:{end_line}"
-
-    # Duplicate comments use review_id + location as composite key
-    if thread.get("type") == "duplicate_comment":
-        review_id = thread.get("review_id")
-        path = thread.get("path")
-        line = thread.get("line")
-        end_line = thread.get("end_line")
-        if review_id is not None and path and line is not None:
-            return f"dpc:{review_id}:{path}:{line}:{end_line}"
+            return f"{prefix}:{review_id}:{path}:{line}:{end_line}"
 
     thread_id = thread.get("thread_id")
     if thread_id:
@@ -1356,11 +1296,9 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
     if not comments or not isinstance(comments, list):
         return None
 
-    _QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
-
     for comment in comments:
         author = comment.get("user", {}).get("login") if comment.get("user") else None
-        if author not in _QODO_USERS:
+        if author not in QODO_USERS:
             continue
 
         body = comment.get("body", "")
@@ -1377,10 +1315,7 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
         unresolved = parse_qodo_sticky_comment(body)
 
         # Count resolved findings from the sticky body
-        import re as _re
-
-        _prev_re = _re.compile(r"^\s*<!-- FOLDED_SECTION_START -->\s*$", _re.MULTILINE)
-        _prev_match = _prev_re.search(body)
+        _prev_match = PREVIOUS_RESULTS_RE.search(body)
         current_body = body[: _prev_match.start()] if _prev_match else body
         resolved_count = current_body.count("Resolved</code>") + current_body.count("Dismissed</code>")
         total_findings = resolved_count + len(unresolved)
@@ -1464,6 +1399,8 @@ def run(
         dict with keys (metadata, human, qodo, coderabbit) on success,
         or int exit code (1) on error.
     """
+    global _LAST_FETCH_CONTEXT
+    _LAST_FETCH_CONTEXT = None
     try:
         check_dependencies()
 
@@ -1561,10 +1498,7 @@ def run(
                     all_threads = [
                         t
                         for t in all_threads
-                        if not (
-                            t.get("author") in ("qodo-code-review", "qodo-code-review[bot]")
-                            and t.get("thread_id") in cli_thread_ids
-                        )
+                        if not (t.get("author") in QODO_USERS and t.get("thread_id") in cli_thread_ids)
                     ]
                     dropped = before - len(all_threads)
                     if dropped:
@@ -1666,6 +1600,10 @@ def run(
         # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
         auto_skip_replied_findings(categorized.get("qodo", []))
 
+        # Strip internal enrichment scratch flag before persisting/returning JSON
+        for finding in categorized.get("qodo", []):
+            finding.pop("_enrichment_checked", None)
+
         # Check Qodo approval status — CLI state is authoritative when the
         # CLI branch ran this cycle; otherwise the GitHub sticky heuristic.
         if qodo_cli_state is not None:
@@ -1711,20 +1649,12 @@ def run(
         }
 
         # Save to file atomically
-        fd, tmp_json_path = tempfile.mkstemp(
+        atomic_write_json(
+            json_path,
+            final_output,
+            indent=2,
             prefix=f"pr-{pr_number}-reviews.json.",
-            dir=str(out_dir),
         )
-        tmp_path = Path(tmp_json_path)
-        TEMP_FILES.append(tmp_path)
-
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(final_output, f, indent=2)
-            os.replace(tmp_path, json_path)
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
-            raise
 
         print_stderr(f"Saved to: {json_path}")
 
@@ -1739,6 +1669,11 @@ def run(
         if auto_skipped:
             print_stderr(f"Auto-skipped {auto_skipped} previously dismissed comment(s)")
 
+        _LAST_FETCH_CONTEXT = {
+            "key": (owner, repo, str(pr_number)),
+            "issue_comments": issue_comments,
+            "approval_detail": _approval,
+        }
         return final_output
 
     finally:

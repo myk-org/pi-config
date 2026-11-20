@@ -225,7 +225,7 @@ class TestFetchProcessAndCategorize1180:
             {"source": "qodo", "author": "bot", "path": "b.py", "body": "Qodo 2", "status": "pending"},
         ]
 
-        with patch.object(reviews_fetch, "_load_review_db", return_value=(mock_db_cls, _body_similarity)):
+        with patch.object(reviews_fetch, "ReviewDB", mock_db_cls):
             result = reviews_fetch.process_and_categorize(threads, "org", "repo", pr_number=1)
 
         mock_db.get_dismissed_comments.assert_not_called()
@@ -241,7 +241,7 @@ class TestFetchProcessAndCategorize1180:
             {"author": "coderabbitai[bot]", "path": "b.py", "body": "CR note", "status": "skipped"},
         ]
 
-        with patch.object(reviews_fetch, "_load_review_db", return_value=(mock_db_cls, _body_similarity)):
+        with patch.object(reviews_fetch, "ReviewDB", mock_db_cls):
             reviews_fetch.process_and_categorize(threads, "org", "repo", pr_number=1)
 
         mock_db.get_dismissed_comments.assert_not_called()
@@ -266,7 +266,7 @@ class TestFetchProcessAndCategorize1180:
             {"author": "coderabbitai[bot]", "path": "a.py", "body": "Avoid broad exception catch", "status": "pending"}
         ]
 
-        with patch.object(reviews_fetch, "_load_review_db", return_value=(mock_db_cls, _body_similarity)):
+        with patch.object(reviews_fetch, "ReviewDB", mock_db_cls):
             result = reviews_fetch.process_and_categorize(threads, "org", "repo", pr_number=1)
 
         mock_db.get_dismissed_comments.assert_called_once_with("org", "repo")
@@ -300,8 +300,8 @@ class TestFetchProcessAndCategorize1180:
 
         with patch.object(
             reviews_fetch,
-            "_load_review_db",
-            return_value=(lambda db_path=None: ReviewDB(db_path=tmp_path / "reviews.db"), _body_similarity),  # noqa: ARG005
+            "ReviewDB",
+            lambda db_path=None: ReviewDB(db_path=tmp_path / "reviews.db"),  # noqa: ARG005
         ):
             result = reviews_fetch.process_and_categorize(threads, "org", "repo", pr_number=10)
 
@@ -686,7 +686,7 @@ class TestReviewsFetchRun1174:
             patch.object(reviews_fetch, "fetch_coderabbit_body_comments", side_effect=fake_cr_body),
             patch.object(reviews_fetch, "fetch_qodo_cli_threads", return_value=(cli_findings, cli_state)),
             patch.object(reviews_fetch, "fetch_qodo_reply_comments", return_value=[]),
-            patch.object(reviews_fetch, "_load_review_db", return_value=(None, _body_similarity)),
+            patch.object(reviews_fetch, "ReviewDB", side_effect=RuntimeError("disabled in test")),
         ):
             result = reviews_fetch.run(output_dir=str(tmp_path))
         assert isinstance(result, dict)
