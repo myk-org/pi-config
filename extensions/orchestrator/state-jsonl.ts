@@ -17,8 +17,9 @@
  * Part of issue #724: migrate state persistence to JSONL.
  */
 
-import { appendFileSync, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { appendFileSync, readFileSync, writeFileSync, renameSync, existsSync, statSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { acquirePidLock, ensurePrivateParentDir, syncSleep } from "../shared/file-lock.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("state-jsonl");
@@ -36,9 +37,18 @@ const DEFAULT_COMPACT_THRESHOLD = 100;
 const MUTATE_LOCK_RETRY_ATTEMPTS = 5;
 const MUTATE_LOCK_BACKOFF_MS = 25;
 
-/** Synchronous sleep for lock backoff (Atomics.wait works on Node's main thread). */
-function syncSleep(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** Count non-empty lines without allocating a full split array. */
+function countNonEmptyLines(raw: string): number {
+  let count = 0;
+  let start = 0;
+  while (start <= raw.length) {
+    const end = raw.indexOf("\n", start);
+    const line = end === -1 ? raw.slice(start) : raw.slice(start, end);
+    if (line.trim()) count++;
+    if (end === -1) break;
+    start = end + 1;
+  }
+  return count;
 }
 
 /**
@@ -55,7 +65,7 @@ function syncSleep(ms: number): void {
 export class JsonlStateStore<T> {
   private readonly filePath: string;
   private readonly compactThreshold: number;
-  private lineCount: number;
+  private lineCount: number | null = null;
   // mtime+size read cache (issue #915): parsing the whole file on every
   // read() is O(file size) — embeddings stores can be multi-MB. The cache
   // invalidates on our own writes and on external mtime/size changes
@@ -68,21 +78,12 @@ export class JsonlStateStore<T> {
   constructor(filePath: string, options?: JsonlStateStoreOptions) {
     this.filePath = filePath;
     this.compactThreshold = options?.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD;
-    // Initialize lineCount from existing file to ensure compaction triggers
-    // correctly across process restarts and multi-process writers.
-    this.lineCount = this.countExistingLines();
   }
 
   /** Count non-empty lines in the existing JSONL file. Returns 0 if file doesn't exist. */
   private countExistingLines(): number {
-    if (!existsSync(this.filePath)) return 0;
     try {
-      const raw = readFileSync(this.filePath, "utf-8");
-      let count = 0;
-      for (const line of raw.split("\n")) {
-        if (line.trim()) count++;
-      }
-      return count;
+      return countNonEmptyLines(readFileSync(this.filePath, "utf-8"));
     } catch {
       return 0;
     }
@@ -96,13 +97,6 @@ export class JsonlStateStore<T> {
   /** Read the latest state from the JSONL file. Returns null if no valid state exists.
    *  Cached by mtime+size — repeated reads of an unchanged file do not re-parse. */
   read(): T | null {
-    if (!existsSync(this.filePath)) {
-      if (this.cachedState !== null || this.cachedSize !== -1) this.revision++;
-      this.cachedState = null;
-      this.cachedSize = -1;
-      return null;
-    }
-    let raw: string;
     try {
       const st = statSync(this.filePath);
       if (
@@ -112,17 +106,25 @@ export class JsonlStateStore<T> {
       ) {
         return this.cachedState;
       }
-      raw = readFileSync(this.filePath, "utf-8");
+      const raw = readFileSync(this.filePath, "utf-8");
+      if (this.lineCount === null) {
+        this.lineCount = countNonEmptyLines(raw);
+      }
       const state = parseLastValidLine<T>(raw);
       this.cachedState = state;
       this.cachedMtimeMs = st.mtimeMs;
       this.cachedSize = st.size;
       this.revision++;
       return state;
-    } catch {
+    } catch (err: any) {
+      if (err?.code === "ENOENT") {
+        if (this.cachedState !== null || this.cachedSize !== -1) this.revision++;
+        if (this.lineCount === null) this.lineCount = 0;
+      } else {
+        this.revision++;
+      }
       this.cachedState = null;
       this.cachedSize = -1;
-      this.revision++;
       return null;
     }
   }
@@ -143,8 +145,11 @@ export class JsonlStateStore<T> {
   /** Append a new state snapshot as a JSON line. Auto-compacts when threshold is exceeded.
    *  Uses a cross-process lock to prevent concurrent write+compact races. */
   write(state: T): void {
-    ensureDir(this.filePath);
+    ensurePrivateParentDir(this.filePath);
     const locked = withFileLock(this.filePath, () => {
+      if (this.lineCount === null) {
+        this.lineCount = this.countExistingLines();
+      }
       const line = JSON.stringify(state) + "\n";
       appendFileSync(this.filePath, line);
       this.lineCount++;
@@ -162,6 +167,9 @@ export class JsonlStateStore<T> {
     if (!locked) {
       // Lock failed — append-only without compaction to prevent data loss.
       // Compaction will happen on a future write when the lock is available.
+      if (this.lineCount === null) {
+        this.lineCount = this.countExistingLines();
+      }
       const line = JSON.stringify(state) + "\n";
       appendFileSync(this.filePath, line);
       this.lineCount++;
@@ -323,9 +331,23 @@ export function parseLastValidLine<T>(raw: string): T | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
 
-  // Try whole-file parse first — handles both single-line JSON and multi-line
-  // pretty-printed JSON (e.g., from LLM dream agents). For well-formed JSONL
-  // with multiple entries this fails fast (multiple root values → SyntaxError).
+  const lastNewline = trimmed.lastIndexOf("\n");
+  if (lastNewline !== -1) {
+    // Fast path for multi-line JSONL: try the last non-empty line first so we
+    // skip a guaranteed-to-fail whole-file JSON.parse (~0.9ms on multi-MB logs).
+    const lastLine = trimmed.slice(lastNewline + 1).trim();
+    if (lastLine) {
+      try {
+        const parsed = JSON.parse(lastLine);
+        if (isPlainObject(parsed)) return parsed as T;
+      } catch {
+        // Fall through to whole-file parse (pretty-printed JSON) and earlier lines
+      }
+    }
+  }
+
+  // Try whole-file parse — handles single-line JSON and multi-line pretty-printed
+  // JSON (e.g., from LLM dream agents).
   try {
     const parsed = JSON.parse(trimmed);
     if (isPlainObject(parsed)) return parsed as T;
@@ -333,19 +355,24 @@ export function parseLastValidLine<T>(raw: string): T | null {
     // Not a single JSON value — fall through to line-by-line scan
   }
 
-  // Line-by-line scan from end — for JSONL files with multiple entries.
-  // Only accepts plain objects to avoid matching JSON primitives or arrays
-  // that could appear as individual lines inside pretty-printed content.
-  const lines = trimmed.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    try {
-      const parsed = JSON.parse(line);
-      if (isPlainObject(parsed)) return parsed as T;
-    } catch {
-      continue;
+  if (lastNewline === -1) return null;
+
+  // Line-by-line scan from end — for JSONL files with truncated/corrupt tail lines.
+  // Only accepts plain objects to avoid matching JSON primitives or arrays.
+  let end = lastNewline;
+  while (end > 0) {
+    const prevNewline = trimmed.lastIndexOf("\n", end - 1);
+    const line = trimmed.slice(prevNewline + 1, end).trim();
+    if (line) {
+      try {
+        const parsed = JSON.parse(line);
+        if (isPlainObject(parsed)) return parsed as T;
+      } catch {
+        // Continue backward
+      }
     }
+    if (prevNewline === -1) break;
+    end = prevNewline;
   }
   return null;
 }
@@ -417,7 +444,7 @@ export class JsonlAppendLog<T extends object> {
    *  Auto-truncates when file exceeds size limit.
    *  Uses cross-process lock to prevent seq duplicates and protect truncation. */
   append(data: T): void {
-    ensureDir(this.filePath);
+    ensurePrivateParentDir(this.filePath);
     const locked = withFileLock(this.filePath, () => {
       this.seq++;
       const entry = { seq: this.seq, ts: new Date().toISOString(), ...data };
@@ -471,20 +498,37 @@ export class JsonlAppendLog<T extends object> {
 
   /** Truncate file to keepLines if it exceeds maxSizeBytes. */
   private truncateIfNeeded(): void {
-    try {
-      const stat = statSync(this.filePath);
-      if (stat.size <= this.maxSizeBytes) return;
+    truncateJsonlFile(this.filePath, this.maxSizeBytes, this.keepLines);
+  }
+}
 
-      const raw = readFileSync(this.filePath, "utf-8");
-      const lines = raw.split("\n").filter(Boolean);
-      const kept = lines.slice(-this.keepLines);
-      const tmp = `${this.filePath}.${process.pid}.truncate`;
-      writeFileSync(tmp, kept.join("\n") + "\n");
-      renameSync(tmp, this.filePath);
-    } catch {
-      // Truncation failure is non-fatal — log file retains extra entries until next success.
-      // Silent: extensions must not use console.* per AGENTS.md policy.
-    }
+/**
+ * Truncate a JSONL file to its last `keepLines` non-empty lines via atomic rename
+ * if its size exceeds `maxSizeBytes`. Returns kept line count when rotated, or null.
+ */
+export function truncateJsonlFile(
+  filePath: string,
+  maxSizeBytes: number,
+  keepLines: number,
+  mode?: number,
+  onError?: (err: unknown) => void,
+): number | null {
+  try {
+    const stat = statSync(filePath);
+    if (stat.size <= maxSizeBytes) return null;
+
+    const raw = readFileSync(filePath, "utf-8");
+    const lines = raw.split("\n").filter(Boolean);
+    const kept = lines.slice(-keepLines);
+    const tmp = `${filePath}.${process.pid}.truncate`;
+    writeFileSync(tmp, kept.join("\n") + "\n", mode !== undefined ? { mode } : undefined);
+    renameSync(tmp, filePath);
+    return kept.length;
+  } catch (err) {
+    // Truncation failure is non-fatal — log file retains extra entries until next success.
+    // Silent unless caller provides an error callback (extensions must not use console.*).
+    onError?.(err);
+    return null;
   }
 }
 
@@ -497,11 +541,11 @@ const fileLockDepth = new Map<string, number>();
 /** Execute fn while holding a cross-process lock on the JSONL file.
  *  Lock file: <path>.wlock with PID. Uses ".wlock" suffix to avoid collision
  *  with pi-config-review-state's ".lock" suffix (separate depth maps). */
-function withFileLock(filePath: string, fn: () => void): boolean {
+export function withFileLock(filePath: string, fn: () => void): boolean {
   const lockFile = filePath + ".wlock";
   const depth = fileLockDepth.get(lockFile) || 0;
   if (depth === 0) {
-    if (!acquireFileLock(lockFile)) {
+    if (!acquirePidLock(lockFile, { ensureParent: ensurePrivateParentDir })) {
       // Lock acquisition failed — return false so caller can skip compaction.
       return false;
     }
@@ -521,38 +565,6 @@ function withFileLock(filePath: string, fn: () => void): boolean {
   return true;
 }
 
-function acquireFileLock(lockFile: string): boolean {
-  const maxRetries = 50;
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      ensureDir(lockFile);
-      writeFileSync(lockFile, String(process.pid), { flag: "wx" });
-      return true;
-    } catch {
-      try {
-        const pid = parseInt(readFileSync(lockFile, "utf-8").trim(), 10);
-        if (pid === process.pid) return true; // Reentrant
-        if (pid) {
-          try { process.kill(pid, 0); } catch {
-            try { unlinkSync(lockFile); } catch { /* race */ }
-            continue;
-          }
-        }
-      } catch {
-        try { unlinkSync(lockFile); } catch { /* race */ }
-        continue;
-      }
-    }
-  }
-  return false;
-}
-
 function releaseFileLock(lockFile: string): void {
   try { unlinkSync(lockFile); } catch { /* ignore */ }
-}
-
-/** Ensure the parent directory exists. */
-function ensureDir(filePath: string): void {
-  const dir = dirname(filePath);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
 }

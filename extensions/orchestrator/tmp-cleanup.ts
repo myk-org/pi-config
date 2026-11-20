@@ -16,6 +16,7 @@ import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isLiveLegacyDaemonFile } from "../shared/daemon-manager.js";
+import { acquireMtimeFileLock } from "../shared/file-lock.js";
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, SETTINGS_KEYS } from "./project-settings.js";
@@ -239,78 +240,10 @@ export async function sweepProjectTmp(opts: TmpSweepOptions): Promise<TmpSweepRe
 
 /** O_EXCL lock; returns the release callback, or null when another session holds it. */
 function acquireLock(lockPath: string): (() => void) | null {
-  const pid = String(process.pid);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = fs.openSync(lockPath, "wx", 0o600);
-      fs.writeSync(fd, pid);
-      fs.closeSync(fd);
-      return () => {
-        try {
-          // Unlink only our own lock: a stale reclaim may have handed it to another session.
-          if (fs.readFileSync(lockPath, "utf8") !== pid) return;
-          fs.unlinkSync(lockPath);
-        } catch {
-          /* already gone */
-        }
-      };
-    } catch (error: any) {
-      // The run dir vanished after it was created: sweeping without the lock is the one
-      // thing this function must never do, so treat it as contended.
-      if (error?.code === "ENOENT") {
-        log.warn("tmp_sweep_lock_failed", { lockPath, error: error?.message });
-        return null;
-      }
-      if (error?.code !== "EEXIST") {
-        log.warn("tmp_sweep_lock_failed", { lockPath, error: error?.message });
-        return null;
-      }
-      let held: fs.Stats;
-      try {
-        held = fs.statSync(lockPath);
-      } catch {
-        continue; // holder released — retry the create
-      }
-      if (Date.now() - held.mtimeMs <= LOCK_STALE_MS) return null;
-      // Reclaim by rename: exactly one of N racing sessions wins, and the inode check
-      // rejects a lock another session created between our stat and the rename.
-      const reclaimPath = `${lockPath}.${process.pid}.reclaim`;
-      try {
-        fs.renameSync(lockPath, reclaimPath);
-      } catch {
-        continue;
-      }
-      let moved: fs.Stats | undefined;
-      try {
-        moved = fs.statSync(reclaimPath);
-      } catch {
-        moved = undefined;
-      }
-      if (!moved || moved.dev !== held.dev || moved.ino !== held.ino) {
-        // We moved a lock that is not the stale one we stat'ed — it belongs to a session
-        // that took the pathname in between. Restore it without ever overwriting a third
-        // session's lock (`link` refuses an existing path), then treat the lock as held.
-        try {
-          fs.linkSync(reclaimPath, lockPath);
-        } catch {
-          /* a third session holds the pathname; its lock wins */
-        }
-        try {
-          fs.unlinkSync(reclaimPath);
-        } catch {
-          /* already gone */
-        }
-        log.warn("tmp_sweep_lock_reclaim_raced", { lockPath });
-        return null;
-      }
-      try {
-        fs.unlinkSync(reclaimPath);
-      } catch {
-        /* already gone */
-      }
-    }
-  }
-  return null;
+  return acquireMtimeFileLock(lockPath, LOCK_STALE_MS, {
+    onLockFailed: (error) => log.warn("tmp_sweep_lock_failed", { lockPath, error: error?.message }),
+    onReclaimRaced: () => log.warn("tmp_sweep_lock_reclaim_raced", { lockPath }),
+  });
 }
 
 /**
