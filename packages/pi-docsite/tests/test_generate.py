@@ -583,3 +583,41 @@ def test_main_computes_asset_version_once_across_multi_page_build(tmp_path: Path
     assert calls == 1
     assert "assets/style.css?v=deadbeef00" in (docs / "index.html").read_text(encoding="utf-8")
     assert "assets/style.css?v=deadbeef00" in (docs / "gamma.html").read_text(encoding="utf-8")
+
+
+def test_llms_full_txt_strips_page_frontmatter(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha", "beta"])
+    monkeypatch.setattr(generate_docs.Path, "home", _fake_home(tmp_path / "home"))
+
+    assert generate_docs.main([]) == 0
+
+    llms_full = (docs / "llms-full.txt").read_text(encoding="utf-8")
+    assert "nav_group:" not in llms_full
+    assert "nav_order:" not in llms_full
+    assert "# Alpha" in llms_full
+    assert "Body of beta." in llms_full
+
+
+def test_generation_failure_stub_with_frontmatter_excluded_from_ai_indexes(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    (docs / "broken.md").write_text(
+        FRONT + "# Broken\n\n*Documentation generation failed. Please re-run.*\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(generate_docs.Path, "home", _fake_home(tmp_path / "home"))
+
+    assert generate_docs.main([]) == 0
+
+    assert "broken.md" not in (docs / "llms.txt").read_text(encoding="utf-8")
+    assert "Source: broken.md" not in (docs / "llms-full.txt").read_text(encoding="utf-8")
+    assert (docs / "broken.html").is_file()
+
+
+def test_dead_repo_root_constant_removed() -> None:
+    assert not hasattr(generate_docs, "REPO_ROOT")
+
+
+def test_dead_theme_template_removed() -> None:
+    assert not (generate_docs.renderer.TEMPLATES_DIR / "_theme.html").exists()

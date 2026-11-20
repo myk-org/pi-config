@@ -23,17 +23,28 @@ lockstep mode and never reach this code path.
 
 from __future__ import annotations
 
+import contextlib
 import json
-import re
 import subprocess
-import sys
+import threading
+import tomllib
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from myk_pi_tools.logger import create_logger
+from myk_pi_tools.release._common import (
+    PY_VERSION_RE,
+    RELEASE_TAG_RE,
+    extract_json_version,
+    extract_py_version,
+    extract_toml_version,
+    load_and_validate_map,
+    run_git,
+)
 from myk_pi_tools.release.release_map import PackageEntry, ReleaseMap, _path_under_any
 
 log = create_logger("myk_pi_tools.release.plan")
@@ -41,7 +52,8 @@ log = create_logger("myk_pi_tools.release.plan")
 REGISTRY_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 60
 
-_PY_VERSION_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+_PY_VERSION_RE = PY_VERSION_RE
+_RELEASE_TAG_RE = RELEASE_TAG_RE
 
 
 @dataclass
@@ -72,14 +84,7 @@ class PackagePlan:
 
 def _git(repo_root: Path, args: list[str], timeout: int = GIT_TIMEOUT_SECONDS) -> str:
     """Run git in the repo; raise RuntimeError with context on failure."""
-    cmd = ["git", "-C", str(repo_root), *args]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"git timed out: {' '.join(args[:3])}…") from exc
-    if result.returncode != 0:
-        raise RuntimeError(f"git failed ({' '.join(args[:3])}…): {result.stderr.strip() or result.returncode}")
-    return result.stdout.strip()
+    return run_git(repo_root, args, timeout=timeout)
 
 
 def _npm_version(package: str) -> str:
@@ -139,35 +144,21 @@ def registry_version(registry: str, package: str) -> str:
 def _extract_version(content: str, file_name: str) -> str:
     """Read the version string out of a version file's content."""
     if file_name.endswith("package.json"):
-        version = json.loads(content).get("version")
+        version = extract_json_version(json.loads(content))
         if not version:
             raise RuntimeError(f"{file_name}: no .version field")
         return version
     if file_name.endswith(".py"):
-        match = _PY_VERSION_RE.search(content)
-        if not match:
+        version = extract_py_version(content)
+        if not version:
             raise RuntimeError(f"{file_name}: no __version__ assignment")
-        return match.group(1)
+        return version
     if file_name.endswith(".toml"):
-        try:
-            import tomllib
-        except ModuleNotFoundError:  # pragma: no cover
-            import tomli as tomllib  # type: ignore[no-redef]
-        parsed = tomllib.loads(content)
-        version = parsed.get("project", {}).get("version")
+        version = extract_toml_version(tomllib.loads(content), "project")
         if not version:
             raise RuntimeError(f"{file_name}: no [project].version")
         return version
     raise RuntimeError(f"unsupported version file type: {file_name}")
-
-
-# Release-tag shapes: legacy lockstep ``v1.2.3`` and per-package
-# ``name@1.2.3`` (issue #965), both with an optional prerelease suffix
-# (``-rc.1``) — ``create_release()`` accepts the same shapes, so the
-# planner must too or a prerelease release would fall outside every
-# repo-level window (Qodo PR #970 round 2). Anything else (stray
-# personal/experimental tags) must never anchor a window.
-_RELEASE_TAG_RE = re.compile(r"^(v|[A-Za-z0-9._-]+@)[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 
 
 def _last_release_tag(repo_root: Path) -> str:
@@ -207,6 +198,104 @@ def _last_release_tag(repo_root: Path) -> str:
     raise RuntimeError("no release-shaped tag (vX.Y.Z or name@X.Y.Z) reachable from HEAD")
 
 
+def _iter_file_blobs(
+    repo_root: Path,
+    version_file: str,
+    shas: list[str],
+    *,
+    timeout: float = GIT_TIMEOUT_SECONDS,
+) -> Generator[tuple[str, str]]:
+    """Stream ``<sha>:<version_file>`` blobs through one ``git cat-file --batch`` process.
+
+    Lockstep request/response lets callers short-circuit on ``break`` without
+    reading older commits, while keeping process count at O(1) per file.
+    Any startup error, timeout, broken pipe, malformed/truncated response, or
+    non-zero exit status raises ``RuntimeError`` so ``_find_anchor`` never
+    mistakenly treats a failed read as the end of history.
+    """
+    try:
+        proc = subprocess.Popen(
+            ["git", "-C", str(repo_root), "cat-file", "--batch"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"git cat-file failed: {exc}") from exc
+
+    stdin = proc.stdin
+    stdout = proc.stdout
+    if stdin is None or stdout is None:
+        proc.kill()
+        proc.wait()
+        raise RuntimeError("git cat-file pipes unavailable")
+
+    timed_out = threading.Event()
+
+    def _kill_on_timeout() -> None:
+        timed_out.set()
+        with contextlib.suppress(OSError):
+            proc.kill()
+
+    timer = threading.Timer(timeout, _kill_on_timeout)
+    timer.daemon = True
+    timer.start()
+
+    completed_loop = False
+    try:
+        for sha in shas:
+            try:
+                stdin.write(f"{sha}:{version_file}\n".encode())
+                stdin.flush()
+            except BrokenPipeError as exc:
+                if timed_out.is_set():
+                    raise RuntimeError(f"git cat-file timed out for {version_file}") from exc
+                raise RuntimeError(f"git cat-file pipe closed unexpectedly for {version_file}") from exc
+            header = stdout.readline()
+            if not header:
+                if timed_out.is_set():
+                    raise RuntimeError(f"git cat-file timed out for {version_file}")
+                raise RuntimeError(f"git cat-file ended unexpectedly for {version_file}")
+            parts = header.rstrip(b"\r\n").decode("utf-8", errors="replace").split()
+            if len(parts) >= 2 and parts[-1] == "missing":
+                continue
+            if len(parts) != 3:
+                raise RuntimeError(f"git cat-file returned malformed header for {version_file}: {header!r}")
+            obj_type = parts[1]
+            try:
+                size = int(parts[2])
+            except ValueError as exc:
+                raise RuntimeError(f"git cat-file returned invalid size for {version_file}: {header!r}") from exc
+            raw = stdout.read(size)
+            trailer = stdout.read(1)  # trailing LF emitted by cat-file --batch
+            if len(raw) != size or len(trailer) != 1:
+                if timed_out.is_set():
+                    raise RuntimeError(f"git cat-file timed out for {version_file}")
+                raise RuntimeError(f"git cat-file returned truncated blob for {version_file}")
+            if obj_type != "blob":
+                continue
+            yield sha, raw.decode("utf-8", errors="replace")
+        completed_loop = True
+    finally:
+        with contextlib.suppress(OSError):
+            stdin.close()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out.set()
+            proc.kill()
+            proc.wait()
+        finally:
+            timer.cancel()
+        with contextlib.suppress(OSError):
+            stdout.close()
+        if completed_loop:
+            if timed_out.is_set():
+                raise RuntimeError(f"git cat-file timed out for {version_file}")
+            if proc.returncode != 0:
+                raise RuntimeError(f"git cat-file failed ({version_file}): exit code {proc.returncode}")
+
+
 def _find_anchor(repo_root: Path, version_files: tuple[str, ...], published: str) -> str:
     """Commit that introduced ``published`` in one of the version files.
 
@@ -221,22 +310,21 @@ def _find_anchor(repo_root: Path, version_files: tuple[str, ...], published: str
     publish of a previously-shipped number) are walked past.
     """
     for version_file in version_files:
-        log_shas = _git(repo_root, ["log", "--format=%H", "--", version_file]).splitlines()
+        shas = [s for s in _git(repo_root, ["log", "--format=%H", "--", version_file]).splitlines() if s]
+        if not shas:
+            continue
         anchor: str | None = None
-        for sha in (s for s in log_shas if s):
-            try:
-                content = _git(repo_root, ["show", f"{sha}:{version_file}"])
-            except RuntimeError:
-                continue  # file did not exist at that commit (renamed/added later)
-            try:
-                version = _extract_version(content, version_file)
-            except RuntimeError:
-                continue
-            if version != published:
-                if anchor is not None:
-                    break  # walked past the run's oldest entry — that one introduced it
-                continue  # not the publish we look for; an older run may still match
-            anchor = sha
+        with contextlib.closing(_iter_file_blobs(repo_root, version_file, shas)) as blobs:
+            for sha, content in blobs:
+                try:
+                    version = _extract_version(content, version_file)
+                except (RuntimeError, ValueError):
+                    continue
+                if version != published:
+                    if anchor is not None:
+                        break  # walked past the run's oldest entry — that one introduced it
+                    continue  # not the publish we look for; an older run may still match
+                anchor = sha
         if anchor is not None:
             return anchor
     raise RuntimeError(
@@ -263,12 +351,30 @@ class ReleasePlanner:
         # have run()-level (Click command) tests exercise the real default
         # (Qodo PR #966 round 3 — a bound default arg ignored patches).
         self._registry_lookup = registry_lookup or registry_version
+        self._repo_window_cache: tuple[str, list[str], RuntimeError | None] | None = None
+
+    def _repo_window(self) -> tuple[str, list[str]]:
+        """Cached ``(last_release_tag, changed_files)`` shared by repo-level checks."""
+        if self._repo_window_cache is None:
+            try:
+                last_tag = _last_release_tag(self.repo_root)
+                changed = [
+                    c for c in _git(self.repo_root, ["diff", "--name-only", f"{last_tag}..HEAD"]).splitlines() if c
+                ]
+                self._repo_window_cache = (last_tag, changed, None)
+            except RuntimeError as exc:
+                self._repo_window_cache = ("", [], exc)
+        last_tag, changed, err = self._repo_window_cache
+        if err is not None:
+            raise err
+        return last_tag, changed
 
     def plan(self) -> list[PackagePlan]:
-        plans: list[PackagePlan] = []
-        for pkg in self.release_map.packages:
-            plans.append(self._plan_package(pkg))
-        return plans
+        packages = self.release_map.packages
+        if len(packages) <= 1:
+            return [self._plan_package(pkg) for pkg in packages]
+        with ThreadPoolExecutor(max_workers=min(len(packages), 8)) as pool:
+            return list(pool.map(self._plan_package, packages))
 
     def container_rebuild(self, plans: list[PackagePlan]) -> dict[str, object]:
         """Container rebuild decision (Qodo PR #966).
@@ -285,9 +391,8 @@ class ReleasePlanner:
         git_error: str | None = None
         last_tag = ""
         try:
-            last_tag = _last_release_tag(self.repo_root)
-            changed = _git(self.repo_root, ["diff", "--name-only", f"{last_tag}..HEAD"]).splitlines()
-            changed_paths = [c for c in changed if c and _path_under_any(c, self.release_map.container_rebuild_paths)]
+            last_tag, changed = self._repo_window()
+            changed_paths = [c for c in changed if _path_under_any(c, self.release_map.container_rebuild_paths)]
         except RuntimeError as exc:
             # No release-shaped tag yet or git failed. Either way the
             # rebuild-path check could not run — a confident "no rebuild"
@@ -329,8 +434,7 @@ class ReleasePlanner:
         since unmapped files have no per-package anchor by definition.
         """
         try:
-            last_tag = _last_release_tag(self.repo_root)
-            changed = _git(self.repo_root, ["diff", "--name-only", f"{last_tag}..HEAD"]).splitlines()
+            last_tag, changed = self._repo_window()
         except RuntimeError as exc:
             # No release-shaped tag yet or git failure: detection could
             # not run. Report indeterminate rather than a confident empty
@@ -368,19 +472,35 @@ class ReleasePlanner:
         #    multi-registry packages (npm+pypi) EVERY registry is queried:
         #    the artifacts share one version, so a divergence is an error
         #    on the package — not a silent npm-only answer (Qodo PR #966).
+        pairs = pkg.registry_names()
+
+        def _lookup_one(pair: tuple[str, str]) -> tuple[str, str, str | None, str | None]:
+            registry, name = pair
+            try:
+                return registry, name, self._registry_lookup(registry, name), None
+            except RuntimeError as exc:
+                return registry, name, None, str(exc)
+
+        if len(pairs) <= 1:
+            lookup_results = [_lookup_one(pair) for pair in pairs]
+        else:
+            with ThreadPoolExecutor(max_workers=len(pairs)) as pool:
+                lookup_results = list(pool.map(_lookup_one, pairs))
+
         published: str | None = None
         errors: list[str] = []
-        for registry, name in pkg.registry_names():
-            try:
-                version = self._registry_lookup(registry, name)
-            except RuntimeError as exc:
-                errors.append(f"{registry}:{name}: {exc}")
+        for registry, name, version, err in lookup_results:
+            if err is not None:
+                errors.append(f"{registry}:{name}: {err}")
+                continue
+            if version is None:
+                errors.append(f"{registry}:{name}: empty version")
                 continue
             if published is None:
                 published = version
             elif version != published:
                 result.error = (
-                    f"registry divergence: {pkg.registry_names()[0][1]} is {published!r} "
+                    f"registry divergence: {pairs[0][1]} is {published!r} "
                     f"but {name} is {version!r} — the artifacts must share one version"
                 )
                 log.warning("release plan: %s: %s", pkg.name, result.error)
@@ -453,11 +573,7 @@ def run(
     No release-map.toml → lockstep mode message, exit 0 (generic repos
     keep the default behavior; issue #965). Invalid map → hard error.
     """
-    from myk_pi_tools.release.release_map import (
-        ReleaseMapError,
-        find_release_map,
-        load_release_map,
-    )
+    from myk_pi_tools.release.release_map import find_release_map
 
     map_path = find_release_map(repo_root)
     if map_path is None:
@@ -468,16 +584,7 @@ def run(
             print("Nothing to plan. See issue #965 for the scoped-release opt-in.")
         return
 
-    try:
-        release_map = load_release_map(repo_root)
-    except ReleaseMapError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-
-    unknown_forced = [p for p in force_packages if p not in {x.name for x in release_map.packages}]
-    if unknown_forced:
-        print(f"error: --force-package names not in the map: {', '.join(unknown_forced)}", file=sys.stderr)
-        raise SystemExit(1)
+    release_map = load_and_validate_map(repo_root, force_packages)
 
     planner = ReleasePlanner(repo_root, release_map, force_packages=force_packages)
     plans = planner.plan()

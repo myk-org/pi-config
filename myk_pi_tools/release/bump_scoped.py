@@ -20,13 +20,10 @@ import sys
 from pathlib import Path
 
 from myk_pi_tools.logger import create_logger
+from myk_pi_tools.release._common import load_and_validate_map
 from myk_pi_tools.release.bump_version import bump_version_files
 from myk_pi_tools.release.plan import ReleasePlanner
-from myk_pi_tools.release.release_map import (
-    ReleaseMapError,
-    find_release_map,
-    load_release_map,
-)
+from myk_pi_tools.release.release_map import find_release_map
 
 log = create_logger("myk_pi_tools.release.bump_scoped")
 
@@ -128,16 +125,7 @@ def run(
         )
         raise SystemExit(1)
 
-    try:
-        release_map = load_release_map(repo_root)
-    except ReleaseMapError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-
-    unknown_forced = [p for p in force_packages if p not in {x.name for x in release_map.packages}]
-    if unknown_forced:
-        print(f"error: --force-package names not in the map: {', '.join(unknown_forced)}", file=sys.stderr)
-        raise SystemExit(1)
+    release_map = load_and_validate_map(repo_root, force_packages)
 
     # Validate explicit --set names against the map (typo safety) before
     # anything else runs.
@@ -240,7 +228,7 @@ def run(
     # scan runs ONCE for the whole bump, not once per package.
     from myk_pi_tools.release.detect_versions import detect_version_files
 
-    detected_files = detect_version_files(repo_root)
+    detected_files = detect_version_files(repo_root, quiet=True)
     detected_paths = {vf.path for vf in detected_files}
     entries = {pkg.name: pkg for pkg in release_map.packages}
     per_package_files: list[tuple[str, str, list[str]]] = []

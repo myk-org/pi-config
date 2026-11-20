@@ -25,6 +25,7 @@ Schema (see the pi-config repo root for a live example)::
 from __future__ import annotations
 
 import fnmatch
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,11 +33,6 @@ from typing import Any
 from myk_pi_tools.logger import create_logger
 
 log = create_logger("myk_pi_tools.release.map")
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - py<3.11 fallback
-    import tomli as tomllib  # type: ignore[no-redef]
 
 RELEASE_MAP_FILENAME = "release-map.toml"
 

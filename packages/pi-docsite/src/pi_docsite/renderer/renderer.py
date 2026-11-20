@@ -27,6 +27,7 @@ import logging
 import re
 import threading
 import urllib.parse
+from collections.abc import Iterable, Iterator
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -305,6 +306,45 @@ def _fence_marker(line: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2).strip()
 
 
+def _iter_with_fence_state(
+    lines: Iterable[str],
+    *,
+    allow_indented: bool = True,
+    strict_close: bool = True,
+) -> Iterator[tuple[str, str, tuple[str, str] | None]]:
+    """Yield ``(line, state, marker)`` while tracking fenced code blocks.
+
+    ``state`` is ``"outside"``, ``"open"`` (outermost opening fence),
+    ``"inside"`` (body or inner nested fence), or ``"close"`` (closing the
+    active outer fence).
+    """
+    opening_fence = ""
+    opening_fence_len = 0
+
+    for line in lines:
+        candidate = line.lstrip() if allow_indented else line
+        match = _FENCE_RE.match(candidate)
+        marker = (match.group(1), match.group(2).strip()) if match is not None else None
+
+        if marker is not None:
+            fence_run, rest = marker
+            if not opening_fence:
+                opening_fence = fence_run
+                opening_fence_len = len(fence_run)
+                yield line, "open", marker
+                continue
+            closes = fence_run[0] == opening_fence[0] and (
+                not strict_close or (len(fence_run) >= opening_fence_len and not rest)
+            )
+            if closes:
+                opening_fence = ""
+                opening_fence_len = 0
+                yield line, "close", marker
+                continue
+
+        yield line, ("inside" if opening_fence else "outside"), marker
+
+
 _EXT_TO_LANG: dict[str, str] = {
     ".py": "python",
     ".js": "javascript",
@@ -406,38 +446,17 @@ def _clean_code_fence_annotations(md_text: str) -> str:
         lang = _lang_from_filepath(filename)
         return f"{fence}{lang}"
 
-    lines = md_text.split("\n")
     result: list[str] = []
-    fence_depth = 0
-    opening_fence = ""
-    opening_fence_len = 0
-
-    for line in lines:
-        stripped = line.lstrip()
-        marker = _fence_marker(stripped)
-
-        if marker is not None:
+    for line, state, marker in _iter_with_fence_state(md_text.split("\n")):
+        if state == "open" and marker is not None:
             original_line = line
             fence_run, rest = marker
-
-            if fence_depth == 0:
-                # Outermost fence opening: apply annotation cleaning
-                line = _CODE_FENCE_ANNOTATION_RE.sub(_replace_annotated_fence, line)
-                line = _CODE_FENCE_FILEPATH_RE.sub(_replace_filepath_fence, line)
-                line = _CODE_FENCE_BARE_FILE_RE.sub(_replace_bare_file_fence, line)
-                if line == original_line and rest in _FILENAME_TO_LANG:
-                    indent = line[: len(line) - len(stripped)]
-                    line = f"{indent}{fence_run}{_FILENAME_TO_LANG[rest]}"
-                fence_depth = 1
-                opening_fence = fence_run
-                opening_fence_len = len(fence_run)
-            elif fence_run[0] == opening_fence[0] and len(fence_run) >= opening_fence_len and not rest:
-                # Closing the outermost fence (matching character only)
-                fence_depth = 0
-                opening_fence = ""
-                opening_fence_len = 0
-            # else: inner fence marker, ignore
-
+            line = _CODE_FENCE_ANNOTATION_RE.sub(_replace_annotated_fence, line)
+            line = _CODE_FENCE_FILEPATH_RE.sub(_replace_filepath_fence, line)
+            line = _CODE_FENCE_BARE_FILE_RE.sub(_replace_bare_file_fence, line)
+            if line == original_line and rest in _FILENAME_TO_LANG:
+                indent = line[: len(line) - len(line.lstrip())]
+                line = f"{indent}{fence_run}{_FILENAME_TO_LANG[rest]}"
         result.append(line)
 
     return "\n".join(result)
@@ -451,38 +470,14 @@ def _ensure_blank_lines(md_text: str) -> str:
 
     Blank lines are never inserted inside fenced code blocks (``` or ~~~).
     """
-    lines = md_text.split("\n")
     result: list[str] = []
-    fence_depth = 0
-    opening_fence = ""
-    opening_fence_len = 0
-    for i, line in enumerate(lines):
+    for i, (line, state, _marker) in enumerate(_iter_with_fence_state(md_text.split("\n"))):
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
 
-        # Track fence state using fence-length matching so that
-        # inner fences inside an outer block don't toggle the state.
-        # A ~~~ fence is only closed by ~~~ (and vice versa).
-        was_in_fence = fence_depth > 0
-        marker = _fence_marker(stripped)
-        if marker is not None:
-            fence_run, rest = marker
-            if fence_depth == 0:
-                # Opening a new fence
-                fence_depth = 1
-                opening_fence = fence_run
-                opening_fence_len = len(fence_run)
-            elif fence_run[0] == opening_fence[0] and len(fence_run) >= opening_fence_len and not rest:
-                # Closing the current fence (same or more fence chars, nothing after)
-                fence_depth = 0
-                opening_fence = ""
-                opening_fence_len = 0
-            # else: inner fence marker inside outer block, ignore
-
         # Only insert blank lines outside fenced code blocks.
-        # Use was_in_fence so that closing fences (which just toggled
-        # in_fence to False) are still considered "inside" the block.
-        if not was_in_fence and indent == 0 and i > 0 and result and result[-1].strip() != "":
+        # Closing fences (state == "close") are still considered "inside" the block.
+        if state not in ("inside", "close") and indent == 0 and i > 0 and result and result[-1].strip() != "":
             # Check if this line starts a block element
             needs_blank = False
             prev_stripped = result[-1].lstrip()
@@ -707,6 +702,19 @@ def _build_llms_txt(
     return "\n".join(lines)
 
 
+def _iter_indented_fenced_lines(text: str) -> Iterator[str]:
+    """Yield lines of ``text`` with fenced code block bodies indented by 4 spaces."""
+    for line, state, _marker in _iter_with_fence_state(
+        text.split("\n"),
+        allow_indented=False,
+        strict_close=False,
+    ):
+        if state == "inside" and line.strip():
+            yield f"    {line}"
+        else:
+            yield line
+
+
 def _indent_fenced_blocks(text: str) -> str:
     """Indent the body of every fenced code block by 4 spaces, fences unchanged.
 
@@ -722,27 +730,15 @@ def _indent_fenced_blocks(text: str) -> str:
     fence are touched; blank lines inside a fence are left truly empty to avoid
     trailing whitespace.
     """
-    out: list[str] = []
-    in_fence = False
-    fence_char = ""
-    for line in text.split("\n"):
-        match = _FENCE_RE.match(line)
-        char = match.group(1)[0] if match is not None else ""
-        if char and (not in_fence or char == fence_char):
-            # Toggle, but only a matching character closes an open fence.
-            in_fence = not in_fence
-            fence_char = char if in_fence else ""
-        elif in_fence and line.strip():
-            out.append(f"    {line}")
-            continue
-        out.append(line)
-    return "\n".join(out)
+    return "\n".join(_iter_indented_fenced_lines(text))
 
 
 def _build_llms_full_txt(
     plan: dict[str, Any],
     pages: dict[str, str],
     navigation: list[dict[str, Any]] | None = None,
+    *,
+    strip_trailing: bool = False,
 ) -> str:
     """Build llms-full.txt with all content concatenated.
 
@@ -752,24 +748,42 @@ def _build_llms_full_txt(
         navigation: Optional filtered navigation list. When provided, this is
             used instead of ``plan["navigation"]`` so that only pages present
             in ``valid_pages`` are included.
+        strip_trailing: When True, trim trailing whitespace on every line and
+            emit a single trailing newline in the same pass, avoiding a second
+            full-buffer split/join in the writer.
     """
     project_name = plan.get("project_name", "Documentation")
     tagline = plan.get("tagline", "")
     nav = navigation if navigation is not None else plan.get("navigation", [])
-    lines = [f"# {project_name}", ""]
+    lines: list[str] = []
+
+    def _append(raw: str) -> None:
+        if not strip_trailing:
+            lines.append(raw)
+        elif "\n" in raw:
+            lines.extend(part.rstrip() for part in raw.split("\n"))
+        else:
+            lines.append(raw.rstrip())
+
+    _append(f"# {project_name}")
+    lines.append("")
     if tagline:
-        lines.extend([f"> {tagline}", ""])
+        _append(f"> {tagline}")
+        lines.append("")
     lines.extend(["---", ""])
     for group in nav:
         for page in group.get("pages", []):
             slug = page.get("slug", "")
-            content = _indent_fenced_blocks(pages.get(slug, ""))
-            lines.extend([
-                f"Source: {slug}.md",
-                "",
-                content,
-                "",
-                "---",
-                "",
-            ])
+            _append(f"Source: {slug}.md")
+            lines.append("")
+            indented = _iter_indented_fenced_lines(pages.get(slug, ""))
+            if strip_trailing:
+                lines.extend(line.rstrip() for line in indented)
+            else:
+                lines.extend(indented)
+            lines.extend(["", "---", ""])
+    if strip_trailing:
+        while lines and not lines[-1]:
+            lines.pop()
+        return "\n".join(lines) + "\n"
     return "\n".join(lines)
