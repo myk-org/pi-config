@@ -61,6 +61,24 @@ type Ask = { coverage?: number; coverageStrong?: number; hits?: Hit[] };
 type TrailNode = { id: string; name: string; path: string };
 type TrailEdge = { source: string; target: string; relation: string };
 type TrailWiring = { nodes?: TrailNode[]; edges?: TrailEdge[]; meta?: { nodeCount?: number } };
+type CachedWiring = {
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+  size: bigint;
+  graph: TrailWiring;
+  nodeCount: number;
+  mapPaths: Set<string>;
+  mapDirs: Set<string>;
+  nodesById: Map<string, TrailNode>;
+  nodeIdsByPath: Map<string, string[]>;
+  incomingEdgesByTarget: Map<string, Array<{ edge: TrailEdge; index: number }>>;
+};
+const WIRING_CACHE_MAX = 8;
+const wiringCache = new Map<string, CachedWiring>();
+
+export function clearTrailWiringCache(): void {
+  wiringCache.clear();
+}
 
 /**
  * Absolute path of the repo's code map, or null when no map exists yet.
@@ -97,13 +115,104 @@ function mapOnDisk(root: string, logger: Logger = log): boolean {
   const dir = trailMapDir(root, logger);
   return Boolean(dir && existsSync(join(dir, ".graph", "wiring.json")));
 }
-function wiring(root: string, logger: Logger = log): TrailWiring | null {
+function buildCachedWiring(
+  graph: TrailWiring,
+  st: { mtimeNs: bigint; ctimeNs: bigint; size: bigint },
+): CachedWiring {
+  const graphNodes = graph.nodes ?? [];
+  const mapPaths = new Set<string>();
+  const mapDirs = new Set<string>(["."]);
+  const nodesById = new Map<string, TrailNode>();
+  const nodeIdsByPath = new Map<string, string[]>();
+
+  for (const node of graphNodes) {
+    if (!node) continue;
+    if (typeof node.id === "string") nodesById.set(node.id, node);
+    if (typeof node.path === "string") {
+      mapPaths.add(node.path);
+      for (let dir = dirname(node.path); dir && dir !== "." && dir !== "/"; dir = dirname(dir)) {
+        mapDirs.add(dir);
+      }
+      if (typeof node.id === "string") {
+        let list = nodeIdsByPath.get(node.path);
+        if (!list) {
+          list = [];
+          nodeIdsByPath.set(node.path, list);
+        }
+        list.push(node.id);
+      }
+    }
+  }
+
+  const incomingEdgesByTarget = new Map<string, Array<{ edge: TrailEdge; index: number }>>();
+  const edges = graph.edges ?? [];
+  for (let i = 0; i < edges.length; i++) {
+    const edge = edges[i];
+    if (!edge || typeof edge.target !== "string") continue;
+    let list = incomingEdgesByTarget.get(edge.target);
+    if (!list) {
+      list = [];
+      incomingEdgesByTarget.set(edge.target, list);
+    }
+    list.push({ edge, index: i });
+  }
+
+  const nodeCount = Number.isSafeInteger((graph as any)?.meta?.nodeCount)
+    ? (graph as any).meta.nodeCount
+    : mapPaths.size === graphNodes.length
+      ? graphNodes.length
+      : graphNodes.filter((n) => typeof n?.path === "string").length;
+
+  return {
+    mtimeNs: st.mtimeNs,
+    ctimeNs: st.ctimeNs,
+    size: st.size,
+    graph,
+    nodeCount,
+    mapPaths,
+    mapDirs,
+    nodesById,
+    nodeIdsByPath,
+    incomingEdgesByTarget,
+  };
+}
+
+function getCachedWiring(root: string, logger: Logger = log): CachedWiring | null {
   const dir = trailMapDir(root, logger);
   if (!dir) return null;
-  try { return JSON.parse(readFileSync(resolve(dir, ".graph/wiring.json"), "utf8")) as TrailWiring; } catch { return null; }
+  const file = resolve(dir, ".graph/wiring.json");
+  try {
+    const st = statSync(file, { bigint: true });
+    const cached = wiringCache.get(file);
+    if (cached && cached.mtimeNs === st.mtimeNs && cached.ctimeNs === st.ctimeNs && cached.size === st.size) {
+      logger.debug("wiring_cache_hit", { file });
+      return cached;
+    }
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as TrailWiring;
+    const built = buildCachedWiring(parsed, st);
+    if (wiringCache.has(file)) wiringCache.delete(file);
+    else if (wiringCache.size >= WIRING_CACHE_MAX) {
+      const oldest = wiringCache.keys().next().value;
+      if (oldest !== undefined) wiringCache.delete(oldest);
+    }
+    wiringCache.set(file, built);
+    logger.debug("wiring_cache_parsed", { file, nodes: built.nodeCount, edges: parsed.edges?.length ?? 0 });
+    return built;
+  } catch {
+    wiringCache.delete(file);
+    return null;
+  }
 }
-export function trailNodes(root: string, logger: Logger = log): number { const graph = wiring(root, logger); return Number.isSafeInteger((graph as any)?.meta?.nodeCount) ? (graph as any).meta.nodeCount : graph?.nodes?.length ?? 0; }
-function indexedFiles(root: string, logger: Logger = log): Set<string> { return new Set((wiring(root, logger)?.nodes ?? []).map(node => node.path).filter((path): path is string => typeof path === "string")); }
+
+function wiring(root: string, logger: Logger = log): TrailWiring | null {
+  return getCachedWiring(root, logger)?.graph ?? null;
+}
+export function trailNodes(root: string, logger: Logger = log): number {
+  return getCachedWiring(root, logger)?.nodeCount ?? 0;
+}
+function indexedFiles(root: string, logger: Logger = log): Set<string> {
+  return new Set(getCachedWiring(root, logger)?.mapPaths ?? []);
+}
 
 /** Trail's statusline shape, adapted to Pi's theme API. */
 export function formatTrailFooter({ state, nodeCount, tokenSavings, trailReads = 0, sourceReads = 0 }: { state: TrailState; nodeCount: number; tokenSavings: number; trailReads?: number; sourceReads?: number }, theme?: StatusTheme): string {
@@ -658,12 +767,39 @@ function pointerText(hits: Hit[]): string {
   }).join("\n");
 }
 function blastHint(root: string, path: unknown, logger: Logger = log): string | null {
-  const file = typeof path === "string" ? path : null; const graph = file && wiring(root, logger); if (!file || !graph) return null;
-  const graphNodes = graph.nodes ?? [];
-  const names = new Map<string, TrailNode>(graphNodes.map((node) => [node.id, node] as [string, TrailNode]));
-  const ids = new Set(graphNodes.filter((node) => node.path === file || file.endsWith(`/${node.path}`)).map((node) => node.id));
-  const dependents = (graph.edges ?? []).filter((edge) => ids.has(edge.target) && !ids.has(edge.source)).slice(0, 8).map((edge) => { const node = names.get(edge.source); return ` • ${edge.relation} ← ${node ? `${node.name} (${basename(node.path)})` : edge.source}`; });
-  return dependents.length ? `[trail] blast radius for ${basename(file)}, who depends on it:\n${dependents.join("\n")}` : null;
+  const file = typeof path === "string" ? path : null;
+  if (!file) return null;
+  const cached = getCachedWiring(root, logger);
+  if (!cached) return null;
+
+  const ids = new Set<string>();
+  const addIdsForPath = (p: string) => {
+    const matched = cached.nodeIdsByPath.get(p);
+    if (matched) for (const id of matched) ids.add(id);
+  };
+  addIdsForPath(file);
+  for (let idx = file.indexOf("/"); idx !== -1; idx = file.indexOf("/", idx + 1)) {
+    const suffix = file.slice(idx + 1);
+    if (suffix) addIdsForPath(suffix);
+  }
+  if (ids.size === 0) return null;
+
+  const candidateEdges: Array<{ edge: TrailEdge; index: number }> = [];
+  for (const id of ids) {
+    const incoming = cached.incomingEdgesByTarget.get(id);
+    if (!incoming) continue;
+    for (const item of incoming) {
+      if (!ids.has(item.edge.source)) candidateEdges.push(item);
+    }
+  }
+  if (candidateEdges.length === 0) return null;
+  if (candidateEdges.length > 1) candidateEdges.sort((a, b) => a.index - b.index);
+
+  const dependents = candidateEdges.slice(0, 8).map(({ edge }) => {
+    const node = cached.nodesById.get(edge.source);
+    return ` • ${edge.relation} ← ${node ? `${node.name} (${basename(node.path)})` : edge.source}`;
+  });
+  return `[trail] blast radius for ${basename(file)}, who depends on it:\n${dependents.join("\n")}`;
 }
 export function isEligibleTrailStartup(event: any, ctx: any): boolean { return event?.reason === "startup" && ctx?.mode !== "print" && ctx?.mode !== "json" && process.env.PI_SUBAGENT_CHILD !== "1" && !isPiOneshotInvocation(); }
 
@@ -717,17 +853,13 @@ export function createTrailIntegration(options: Options) {
     publishSavings();
   };
   const loadMap = (root: string) => {
-    // One read of the wiring file feeds all three: the node count, the indexed file
+    // One cached parse of wiring.json feeds all three: the node count, the indexed file
     // set, and the directory set. A directory counts as indexed when the map holds
     // any file beneath it, so `find src` cannot walk files the map already answers for.
-    const graph = wiring(root, log);
-    const nodes = (graph?.nodes ?? []).map((node: any) => node?.path).filter((path: any): path is string => typeof path === "string");
-    state.nodeCount = Number.isSafeInteger(graph?.meta?.nodeCount) ? graph!.meta!.nodeCount! : nodes.length;
-    state.mapPaths = new Set(nodes);
-    state.mapDirs = new Set(["."]);
-    for (const path of nodes) {
-      for (let dir = dirname(path); dir && dir !== "." && dir !== "/"; dir = dirname(dir)) state.mapDirs.add(dir);
-    }
+    const cached = getCachedWiring(root, log);
+    state.nodeCount = cached?.nodeCount ?? 0;
+    state.mapPaths = cached?.mapPaths ?? new Set();
+    state.mapDirs = cached?.mapDirs ?? new Set(["."]);
     log.debug("map_loaded", { root, nodes: state.nodeCount, indexed: state.mapPaths.size, dirs: state.mapDirs.size });
   };
   const addSavings = (amount: number) => { if (!amount) return; state.tokenSavings = state.store ? writeSavings(state.store, amount, log) : state.tokenSavings + amount; };
@@ -766,8 +898,8 @@ export function createTrailIntegration(options: Options) {
     let pending!: Promise<boolean>;
     pending = (async () => {
       const result = await run(["build"], { cwd: root });
-      const nodeCount = trailNodes(root, log);
       if (state.generation !== generation || state.root !== root) {
+        const nodeCount = trailNodes(root, log);
         log.info("refresh_end_stale", { root, ok: result.code === 0, nodes: nodeCount, elapsedMs: Date.now() - started });
         return false;
       }

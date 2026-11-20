@@ -17,7 +17,10 @@ import {
   setCliSessionMarkerMeta,
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
-import { reapStaleCliSessions } from "../../../extensions/cli-provider/session-reaper.js";
+import {
+  reapStaleCliSessions,
+  reapStaleCliSessionsAsync,
+} from "../../../extensions/cli-provider/session-reaper.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -807,6 +810,98 @@ describe("cli-provider sessions", () => {
       assert.equal(n, 1);
       assert.equal(loadCliSessionId(key), null);
     } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reapStaleCliSessionsAsync reaps >batch-size stopped markers while preserving running ones (#1167)", async () => {
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = makeTempDir("cli-reap-async-");
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const stoppedKeys: CliSessionKey[] = [];
+      const runningKeys: CliSessionKey[] = [];
+      for (let i = 0; i < 70; i++) {
+        const key: CliSessionKey = {
+          cwd: "/proj",
+          agent: "gemini",
+          model: `m-${i}`,
+          piSessionId: `stopped-${i}`,
+        };
+        saveCliSessionId(key, `cli-s-${i}`);
+        setCliSessionMarkerMeta(key, { status: "stopped", idleMs: 60_000 });
+        stoppedKeys.push(key);
+      }
+      for (let i = 0; i < 10; i++) {
+        const key: CliSessionKey = {
+          cwd: "/proj",
+          agent: "cursor",
+          model: `m-${i}`,
+          piSessionId: `running-${i}`,
+        };
+        saveCliSessionId(key, `cli-r-${i}`);
+        setCliSessionMarkerMeta(key, { status: "running", idleMs: 60_000 });
+        runningKeys.push(key);
+      }
+      const n = await reapStaleCliSessionsAsync({ inactivityThresholdMs: 1_000 });
+      assert.equal(n, 70);
+      for (const k of stoppedKeys) assert.equal(loadCliSessionId(k), null);
+      for (let i = 0; i < runningKeys.length; i++) {
+        assert.equal(loadCliSessionId(runningKeys[i]), `cli-r-${i}`);
+      }
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reapStaleCliSessionsAsync preserves a marker rewritten to running mid-sweep (#1167)", async (t) => {
+    const fsPromises = await import("node:fs/promises");
+    const { syncBuiltinESMExports } = await import("node:module");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = makeTempDir("cli-reap-race-");
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m1",
+        piSessionId: "race-sid",
+      };
+      saveCliSessionId(key, "stale-cli");
+      setCliSessionMarkerMeta(key, { status: "stopped", idleMs: 60_000 });
+
+      let injected = false;
+      const origReadFile = fsPromises.default.readFile;
+      t.mock.method(fsPromises.default, "readFile", async (target: any, ...args: any[]) => {
+        const res = await (origReadFile as any)(target, ...args);
+        if (!injected && String(target).endsWith(".json")) {
+          injected = true;
+          // Simulate concurrent saveCliSessionId turning the stopped marker into running
+          saveCliSessionId(key, "fresh-running-cli");
+        }
+        return res;
+      });
+      syncBuiltinESMExports();
+
+      const n = await reapStaleCliSessionsAsync({ inactivityThresholdMs: 1_000 });
+      assert.equal(injected, true);
+      assert.equal(n, 0);
+      assert.equal(loadCliSessionId(key), "fresh-running-cli");
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
       if (prevProfile === undefined) delete process.env.USERPROFILE;

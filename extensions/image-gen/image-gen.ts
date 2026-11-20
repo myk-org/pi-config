@@ -21,16 +21,16 @@ const IMAGE_TIMEOUT = 3 * 60 * 1000; // 3 minutes
 const log = createLogger("image_gen");
 
 const imageGenSchema = Type.Object({
-    subject: Type.String({ description: "Main subject of the image" }),
-    action: Type.Optional(Type.String({ description: "What the subject is doing" })),
-    scene: Type.Optional(Type.String({ description: "Location or environment" })),
-    composition: Type.Optional(Type.String({ description: "Camera angle and framing" })),
-    lighting: Type.Optional(Type.String({ description: "Lighting setup" })),
-    style: Type.Optional(Type.String({ description: "Artistic style (e.g., photorealistic, watercolor, pixel art)" })),
-    text: Type.Optional(Type.String({ description: "Text to render in the image" })),
+    subject: Type.String({ description: "Main subject" }),
+    action: Type.Optional(Type.String({ description: "Subject action" })),
+    scene: Type.Optional(Type.String({ description: "Location or setting" })),
+    composition: Type.Optional(Type.String({ description: "Camera framing" })),
+    lighting: Type.Optional(Type.String({ description: "Lighting style" })),
+    style: Type.Optional(Type.String({ description: "Artistic style" })),
+    text: Type.Optional(Type.String({ description: "Text to render" })),
     aspect_ratio: Type.Optional(Type.Enum(
         Object.fromEntries(ASPECT_RATIOS.map(r => [r, r])) as Record<string, string>,
-        { description: "Aspect ratio: 1:1, 3:4, 4:3, 9:16, 16:9" }
+        { description: "Image aspect ratio" }
     )),
 });
 
@@ -156,13 +156,8 @@ export function createImageGenTool(): ToolDefinition<typeof imageGenSchema> {
     return {
         name: "generate_image",
         label: "GenerateImage",
-        description: [
-            "Generate an image from a structured description using Gemini.",
-            "Provide a subject (required) and optional parameters for action, scene, composition, lighting, style, and text.",
-            "Returns the file path of the generated image.",
-            "Requires image_model in pi-config-settings.json (or PI_IMAGE_MODEL) and GEMINI_API_KEY/GOOGLE_API_KEY.",
-        ].join("\n"),
-        promptSnippet: "generate_image: Generate images from structured descriptions via Gemini API",
+        description: "Generate an image via Gemini from structured parameters and return its file path.",
+        promptSnippet: "generate_image: Generate an image via Gemini and return its file path",
         parameters: imageGenSchema,
 
         async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -247,10 +242,12 @@ export function createImageGenTool(): ToolDefinition<typeof imageGenSchema> {
                 } catch {
                     // Keep raw text
                 }
+                const bounded = message.trim().slice(0, 500);
+                log.warn("generate_image HTTP error", { status: response.status, messageLength: message.length });
                 return {
                     content: [{
                         type: "text" as const,
-                        text: `Error: Gemini image request failed (${response.status}): ${message}`,
+                        text: `Error: Gemini image request failed (${response.status}): ${bounded}`,
                     }],
                     details: undefined,
                 };
@@ -322,7 +319,7 @@ export function createImageGenTool(): ToolDefinition<typeof imageGenSchema> {
                     savedPaths.push(filepath);
                 } catch (err: any) {
                     // Skip corrupted image data — log but don't crash
-                    console.debug(`[image-gen] Failed to decode/save image: ${err?.message?.slice(0, 100)}`);
+                    log.debug("failed to decode/save image", err?.message?.slice(0, 100));
                 }
             }
 

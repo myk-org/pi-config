@@ -20,6 +20,7 @@ import {
   completeUnmarkedSkills,
   diffSkillTree,
   formatSkillReviewNotice,
+  invalidateSkillMaintenanceCache,
   isAdoptableSkill,
   isMarkedSkill,
   isPackageSkillPath,
@@ -766,6 +767,135 @@ describe("registerSkillMaintenance", () => {
       assert.equal(items.length, 1);
       assert.equal(items[0].value, "fallback-s");
     }
+  });
+
+  it("fires steer nudge after adopting a skill on disk with cached live commands", () => {
+    invalidateSkillMaintenanceCache();
+    const { cwd, root } = project();
+    const f0 = writeSkill(root, "skill-0", MARKED);
+    const f1 = writeSkill(root, "skill-1", UNMARKED);
+    const skills = [
+      makeSkillInfo("skill-0", f0, "project", "top-level"),
+      makeSkillInfo("skill-1", f1, "project", "top-level"),
+    ];
+
+    const { pi, emit, messages } = createMockPi(() => toCommands(skills));
+    registerSkillMaintenance(pi);
+    const ctx = makeCtx(cwd);
+
+    emit("session_start", {}, ctx);
+    emit("turn_start", { turnIndex: 1 }, ctx);
+    emit("tool_result", { toolCallId: "warm", toolName: "bash", input: { command: "echo hi" }, isError: false }, ctx);
+
+    const adopted = adoptSkill(cwd, "skill-1", skills);
+    assert.equal(adopted.ok, true);
+    emit("tool_result", { toolCallId: "use-1", toolName: "bash", input: { command: "bash .pi/skills/skill-1/run.sh" }, isError: false }, ctx);
+    emit("tool_result", { toolCallId: "fail-1", toolName: "bash", input: { command: "false" }, isError: true }, ctx);
+    assert.ok(messages.some((m) => m.msg.customType === "skill-maintenance-nudge" && m.msg.content.includes("skill-1")));
+  });
+
+  it("recognizes a newly created skill once it appears in pi.getCommands()", () => {
+    invalidateSkillMaintenanceCache();
+    const { cwd, root } = project();
+    let currentSkills: RegisteredSkillInfo[] = [
+      makeSkillInfo("skill-0", writeSkill(root, "skill-0", MARKED), "project", "top-level"),
+    ];
+    const { pi, emit, messages } = createMockPi(() => toCommands(currentSkills));
+    registerSkillMaintenance(pi);
+    const ctx = makeCtx(cwd);
+
+    emit("session_start", {}, ctx);
+    emit("turn_start", { turnIndex: 1 }, ctx);
+    emit("tool_result", { toolCallId: "warm", toolName: "read", input: { path: path.join(cwd, "src.ts") }, isError: false }, ctx);
+
+    const newSkillFile = writeSkill(root, "skill-new", MARKED);
+    currentSkills = [...currentSkills, makeSkillInfo("skill-new", newSkillFile, "project", "top-level")];
+    emit("tool_result", { toolCallId: "use-new", toolName: "read", input: { path: newSkillFile }, isError: false }, ctx);
+    emit("tool_result", { toolCallId: "fail-new", toolName: "bash", input: { command: "false" }, isError: true }, ctx);
+    assert.ok(messages.some((m) => m.msg.customType === "skill-maintenance-nudge" && m.msg.content.includes("skill-new")));
+  });
+
+  it("does not fall back to .pi/skills disk scan when pi.getCommands() supplies an empty list", () => {
+    invalidateSkillMaintenanceCache();
+    const { cwd, root } = project();
+    const diskSkill = writeSkill(root, "disk-only", MARKED);
+    const { pi, emit, messages } = createMockPi(() => []);
+    registerSkillMaintenance(pi);
+    const ctx = makeCtx(cwd);
+
+    emit("session_start", {}, ctx);
+    emit("turn_start", { turnIndex: 1 }, ctx);
+    emit("tool_result", { toolCallId: "read-disk", toolName: "read", input: { path: diskSkill }, isError: false }, ctx);
+    emit("tool_result", { toolCallId: "fail", toolName: "bash", input: { command: "false" }, isError: true }, ctx);
+    assert.equal(messages.filter((m) => m.msg.customType === "skill-maintenance-nudge").length, 0);
+  });
+
+  it("updates fallback skill cache when SKILL.md is created inside an existing folder", () => {
+    invalidateSkillMaintenanceCache();
+    const { cwd, root } = project();
+    const existingDir = path.join(root, "late-skill");
+    fs.mkdirSync(existingDir, { recursive: true });
+
+    const { pi, emit, messages } = createMockPi(undefined);
+    registerSkillMaintenance(pi);
+    const ctx = makeCtx(cwd);
+
+    emit("session_start", {}, ctx);
+    emit("turn_start", { turnIndex: 1 }, ctx);
+    // Warm fallback cache while directory exists without SKILL.md
+    assert.deepEqual(listUnmarkedSkills(cwd), []);
+    emit("tool_result", { toolCallId: "warm", toolName: "bash", input: { command: "echo ok" }, isError: false }, ctx);
+
+    // Create SKILL.md inside the pre-existing directory via non-tool write
+    const skillMd = path.join(existingDir, "SKILL.md");
+    fs.writeFileSync(skillMd, MARKED);
+
+    emit("tool_result", { toolCallId: "use-late", toolName: "read", input: { path: skillMd }, isError: false }, ctx);
+    emit("tool_result", { toolCallId: "fail-late", toolName: "bash", input: { command: "false" }, isError: true }, ctx);
+    assert.ok(messages.some((m) => m.msg.customType === "skill-maintenance-nudge" && m.msg.content.includes("late-skill")));
+  });
+
+  it("matches symlinked fallback skills by real target path when pi.getCommands() is unavailable", () => {
+    invalidateSkillMaintenanceCache();
+    const { cwd, root } = project();
+    const sharedDir = tempDir("fallback-sym-");
+    const targetFile = writeSkill(sharedDir, "sym-tool", MARKED);
+    fs.symlinkSync(path.dirname(targetFile), path.join(root, "sym-tool"));
+
+    const { pi, emit, messages } = createMockPi(undefined);
+    registerSkillMaintenance(pi);
+    const ctx = makeCtx(cwd);
+
+    emit("session_start", {}, ctx);
+    emit("turn_start", { turnIndex: 1 }, ctx);
+    emit("tool_result", { toolCallId: "use-real", toolName: "read", input: { path: targetFile }, isError: false }, ctx);
+    emit("tool_result", { toolCallId: "fail-real", toolName: "bash", input: { command: "false" }, isError: true }, ctx);
+    assert.ok(messages.some((m) => m.msg.customType === "skill-maintenance-nudge" && m.msg.content.includes("sym-tool")));
+  });
+
+  it("refuses adoption if a project skill symlink is retargeted into a package skill after caching", () => {
+    invalidateSkillMaintenanceCache();
+    const { cwd, root } = project();
+    const localDir = tempDir("retarget-local-");
+    const localTarget = writeSkill(localDir, "flip-skill", UNMARKED);
+    const pkgDir = path.join(tempDir("retarget-pkg-"), "node_modules", "pkg", "skills");
+    const pkgTarget = writeSkill(pkgDir, "flip-skill", UNMARKED);
+
+    const linkPath = path.join(root, "flip-skill");
+    fs.symlinkSync(path.dirname(localTarget), linkPath);
+    const skills = [makeSkillInfo("flip-skill", path.join(linkPath, "SKILL.md"), "project", "top-level")];
+
+    // Prime skill table cache while symlink points to local skill
+    assert.deepEqual(listUnmarkedSkills(cwd, skills), ["flip-skill"]);
+
+    // Retarget symlink to package skill using the same skills array reference
+    fs.unlinkSync(linkPath);
+    fs.symlinkSync(path.dirname(pkgTarget), linkPath);
+
+    const res = adoptSkill(cwd, "flip-skill", skills);
+    assert.equal(res.ok, false);
+    assert.match(res.message, /package skill/i);
+    assert.equal(isMarkedSkill(fs.readFileSync(pkgTarget, "utf-8")), false);
   });
 });
 

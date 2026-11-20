@@ -4,7 +4,7 @@
  * Model ids from `agent --list-models` (CLI namespace, not acpx).
  */
 
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createLogger } from "../../shared/logger.js";
 const log = createLogger("cli_provider");
 import type { CliProviderDef, DiscoveredCliModel } from "../types.js";
@@ -36,20 +36,49 @@ export function parseAgentListModels(stdout: string): DiscoveredCliModel[] {
   return models;
 }
 
-function discoverCursorModels(): DiscoveredCliModel[] {
+async function discoverCursorModels(): Promise<DiscoveredCliModel[]> {
   const binary = resolveBinary("agent");
   if (!binary) return [];
 
-  const r = spawnSync(binary, ["--list-models"], {
-    encoding: "utf-8",
-    timeout: 25_000,
-    // Prefer plain text; still strip ANSI in parser if CLI ignores NO_COLOR.
-    env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+  const { status, stdout, stderr } = await new Promise<{
+    status: number | string | null;
+    stdout: string;
+    stderr: string;
+  }>((resolve) => {
+    execFile(
+      binary,
+      ["--list-models"],
+      {
+        encoding: "utf-8",
+        timeout: 25_000,
+        // Prefer plain text; still strip ANSI in parser if CLI ignores NO_COLOR.
+        env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+      },
+      (err, outStdout, outStderr) => {
+        const exitCode =
+          err == null
+            ? 0
+            : typeof (err as { code?: unknown }).code === "number" ||
+                typeof (err as { code?: unknown }).code === "string"
+              ? ((err as { code: number | string }).code)
+              : err.killed
+                ? "killed"
+                : null;
+        resolve({
+          status: exitCode,
+          stdout: typeof outStdout === "string" ? outStdout : "",
+          stderr: typeof outStderr === "string" ? outStderr : "",
+        });
+      },
+    );
   });
-  const out = `${r.stdout || ""}\n${r.stderr || ""}`;
+
+  const out = `${stdout}\n${stderr}`;
   const models = parseAgentListModels(out);
   if (models.length === 0) {
-    log.warn(`cursor: --list-models failed (status=${r.status}): ${out.slice(0, 200)}`);
+    log.warn(`cursor: --list-models failed (status=${status}): ${out.slice(0, 200)}`);
+  } else {
+    log.debug(`cursor: --list-models discovered ${models.length} model(s)`);
   }
   return models;
 }

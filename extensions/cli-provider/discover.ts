@@ -42,7 +42,7 @@ export async function discoverCliModelsDetailed(
 
   let discovered: DiscoveredCliModel[] = [];
   try {
-    discovered = CLI_PROVIDERS[agent].discoverModels();
+    discovered = await CLI_PROVIDERS[agent].discoverModels();
   } catch (err) {
     log.error(`${agent}: discovery error`, err);
   }
