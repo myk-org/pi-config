@@ -355,9 +355,21 @@ export function pruneStaleRegistry(comsDir?: string): void {
             const socketsDir = path.join(resolvedComsDir, "sockets");
             if (fs.existsSync(socketsDir)) {
                 try {
-                    const isEndpointRegisteredNow = (targetEndpoint: string): boolean => {
-                        let currentDirs: string[];
-                        try { currentDirs = fs.readdirSync(projectsDir); } catch { return false; }
+                    const orphanCandidates: Array<{ sp: string; parentEndpoint: string }> = [];
+                    for (const sf of fs.readdirSync(socketsDir)) {
+                        if (!sf.endsWith(".sock") && !sf.endsWith(".sock.ping")) continue;
+                        const sp = path.join(socketsDir, sf);
+                        // For .ping files, check if the parent .sock is in the endpoint set
+                        const parentEndpoint = sf.endsWith(".sock.ping") ? sp.slice(0, -5) : sp;
+                        if (!allEndpoints.has(parentEndpoint)) {
+                            orphanCandidates.push({ sp, parentEndpoint });
+                        }
+                    }
+                    if (orphanCandidates.length > 0) {
+                        // One fresh registry scan across all orphan candidates so concurrently registered peers survive
+                        // without rescanning once per orphan socket.
+                        let currentDirs: string[] = [];
+                        try { currentDirs = fs.readdirSync(projectsDir); } catch {}
                         for (const p of currentDirs) {
                             try {
                                 const pd = path.join(projectsDir, p);
@@ -370,22 +382,15 @@ export function pruneStaleRegistry(comsDir?: string): void {
                                         const d = JSON.parse(fs.readFileSync(path.join(ad, f), "utf-8"));
                                         if (typeof d?.endpoint === "string" && d.endpoint) {
                                             allEndpoints.add(d.endpoint);
-                                            if (d.endpoint === targetEndpoint) return true;
                                         }
                                     } catch {}
                                 }
                             } catch {}
                         }
-                        return false;
-                    };
-                    // Remove sockets with no registry entry
-                    for (const sf of fs.readdirSync(socketsDir)) {
-                        if (!sf.endsWith(".sock") && !sf.endsWith(".sock.ping")) continue;
-                        const sp = path.join(socketsDir, sf);
-                        // For .ping files, check if the parent .sock is in the endpoint set
-                        const parentEndpoint = sf.endsWith(".sock.ping") ? sp.slice(0, -5) : sp;
-                        if (!allEndpoints.has(parentEndpoint) && !isEndpointRegisteredNow(parentEndpoint)) {
-                            try { fs.unlinkSync(sp); } catch {}
+                        for (const { sp, parentEndpoint } of orphanCandidates) {
+                            if (!allEndpoints.has(parentEndpoint)) {
+                                try { fs.unlinkSync(sp); } catch {}
+                            }
                         }
                     }
                 } catch {}

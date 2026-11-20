@@ -402,8 +402,8 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		const peer = await startP2pPeer({ name: "card-peer", sessionId: "cp-1", project: "p-1245", cwd: workspace });
 		const sender = await startP2pPeer({ name: "sender-peer", sessionId: "sp-1", project: "p-1245", cwd: workspace });
 
-		// Wait for initial ping worker ready card push to settle.
-		await waitUntil(() => listCalls >= 1);
+		// Wait for both peers' initial ping worker ready card pushes to settle.
+		await waitUntil(() => listCalls >= 2);
 		await new Promise((r) => setTimeout(r, 30));
 		listCalls = 0;
 
