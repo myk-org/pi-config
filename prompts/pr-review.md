@@ -13,37 +13,15 @@ $ARGUMENTS
 
 Reviews a GitHub PR and posts inline review comments on selected findings.
 
-## Prerequisites Check (MANDATORY)
+## Prerequisites & Usage
 
-Before starting, verify the tools are available:
-
-### Step 0: Check uv
-
-```bash
-uv --version
-```
-
-If not found, install from <https://docs.astral.sh/uv/getting-started/installation/>
-
-### Step 1: Continue with workflow
-
-## Usage
-
-- `/pr-review` - Review PR from current branch (auto-detect)
-- `/pr-review 123` - Review PR #123 in current repo
-- `/pr-review https://github.com/owner/repo/pull/123` - Review from URL
-
-Phase 4 asks how you want to decide: `Post all`, `Skip all`, or `Decide one by one`.
-Deciding one by one costs roughly one turn per finding (plus one more when you skip with a
-reason or stop early) — choose it when findings need individual judgment, not on a 20-finding
-wall.
+- **Check `uv`:** `uv --version` (if missing, install from <https://docs.astral.sh/uv/getting-started/installation/>).
+- `/pr-review` — current branch PR | `/pr-review 123` — PR #123 | `/pr-review <PR URL>`
+- Phase 4 offers `Post all`, `Skip all`, or `Decide one by one` (~1 turn per finding, +1 on skip reason/early stop — avoid one-by-one on large finding lists).
 
 ## Task Plan
 
-Before starting any work, create ALL tasks upfront using `TaskCreate`, then set their dependencies
-using `TaskUpdate` with `addBlockedBy`. The task system enforces execution order — blocked tasks cannot start.
-
-### Task List
+Create all 14 tasks upfront via `TaskCreate`, then immediately wire `addBlockedBy` via `TaskUpdate` per the table below (`TaskCreate` does not accept `addBlockedBy`):
 
 | Task | Title | blockedBy |
 |------|-------|-----------|
@@ -62,896 +40,294 @@ using `TaskUpdate` with `addBlockedBy`. The task system enforces execution order
 | 13 | Store comments | 12 |
 | 14 | Summary | 13 |
 
-### Dependency Graph
-
-```text
-Task 1 (PR Detection)
- ├── Task 2 (Clone & checkout PR) ────┐
- │    Task 3 auto-completes instantly  │
- │    Task 2 unblocks:                │
- │    ├── Task 5 (Review: Quality)    │
- │    ├── Task 6 (Review: Guidelines) │
- │    ├── Task 7 (Review: Security)   │
- │    ├── Task 8 (Review: Docs)       │
- │    └── Task 9 (Review: Spec)       │
- └── Task 4 (Past comments) ──────────┤  (also needs Task 2)
-                                       ▼
-                            Task 10 (Merge findings)
-                                       │
-                            Task 11 (User selection)
-                                       │
-                            Task 12 (Post comments)
-                                       │
-                            Task 13 (Store comments)
-                                       │
-                            Task 14 (Summary)
-```
-
-Create all 14 tasks using `TaskCreate` NOW, before starting any work.
-Then IMMEDIATELY set dependencies using `TaskUpdate` with `addBlockedBy` for each task per the table above.
-
-`TaskCreate` does NOT accept `addBlockedBy` — dependencies MUST be set via `TaskUpdate` after creation.
-
-Example two-step flow:
-
-```text
-# Step 1: Create all tasks
-TaskCreate(subject="PR Detection", ...)          → Task 1
-TaskCreate(subject="Fetch PR diff", ...)          → Task 2
-TaskCreate(subject="Fetch AGENTS.md", ...)        → Task 3
-TaskCreate(subject="Review — Docs", ...)         → Task 8
-TaskCreate(subject="Review — Spec", ...)         → Task 9
-...all 14 tasks...
-
-# Step 2: Set dependencies
-TaskUpdate(taskId="2", addBlockedBy=["1"])
-TaskUpdate(taskId="3", addBlockedBy=["1"])
-TaskUpdate(taskId="4", addBlockedBy=["1", "2"])
-TaskUpdate(taskId="5", addBlockedBy=["2"])
-TaskUpdate(taskId="6", addBlockedBy=["2"])
-TaskUpdate(taskId="7", addBlockedBy=["2"])
-TaskUpdate(taskId="8", addBlockedBy=["2"])
-TaskUpdate(taskId="9", addBlockedBy=["2"])
-TaskUpdate(taskId="10", addBlockedBy=["4", "5", "6", "7", "8", "9"])
-TaskUpdate(taskId="11", addBlockedBy=["10"])
-TaskUpdate(taskId="12", addBlockedBy=["11"])
-TaskUpdate(taskId="13", addBlockedBy=["12"])
-TaskUpdate(taskId="14", addBlockedBy=["13"])
-```
-
-> 🚨 **HARD RULE: NEVER start a task while its `blockedBy` tasks are incomplete.**
-> The task system enforces this via `addBlockedBy` — but even if you could bypass it, **DON'T**.
-> Posting comments from partial reviewer results is a **CRITICAL violation**.
-> ALL 5 reviewers (Tasks 5, 6, 7, 8, 9) MUST complete before merging findings (Task 10).
+> 🚨 **HARD RULE: NEVER start a task while its `blockedBy` tasks are incomplete.** ALL 5 reviewers (Tasks 5–9) MUST complete before merging findings (Task 10).
 
 ## Workflow
 
-**PROJECT_TMP_DIR** is the project-scoped temp directory from `getProjectTmpDir(cwd)`.
-All temp files for this workflow go there —
+**`PROJECT_TMP_DIR`** is `getProjectTmpDir(cwd)` — all temp files go there.
 
 ### Phase 0: PR Detection — Task 1
 
-If the raw arguments are empty:
+Let `<TARGET>` be `$(gh pr view --json number --jq '.number')` when raw arguments are empty, otherwise `<cleaned_arguments>`:
 
-1. Detect from current branch and fetch PR metadata:
+1. Fetch PR metadata:
 
    ```bash
-   uvx myk-pi-tools@latest pr info $(gh pr view --json number --jq '.number')
+   uvx myk-pi-tools@latest pr info <TARGET>
    ```
 
-   This returns JSON with all needed fields: `owner`, `repo`, `pr_number`, `author`,
-   `head_sha`, `base_ref`, `title`, `state`, `labels`, `assignees`, `is_fork`, `head_repo`, `body`.
+   Store all returned fields: `owner`, `repo`, `pr_number`, `author`, `head_sha`, `base_ref`, `title`, `state`, `labels`, `assignees`, `is_fork`, `head_repo`, `body`.
 
-2. Extract and store all fields from the JSON output — these are used by Phase 1c and Phase 5.
-
-3. Fetch the latest commit timestamp from `head_sha` (needed by Phase 1c to compare
-   against comment timestamps):
+2. Fetch latest commit timestamp (always query `{owner}/{repo}` — resolves fork PRs via `refs/pull/*/head`):
 
    ```bash
    gh api /repos/{owner}/{repo}/commits/{head_sha} --jq '.commit.committer.date'
    ```
 
-   Always use the base repo (`{owner}/{repo}`) — GitHub resolves fork PR commits
-   from the base repo via `refs/pull/*/head`, so this works for both fork and non-fork PRs.
+   Store as `LATEST_COMMIT_DATE` (ISO 8601).
 
-   Store this as `LATEST_COMMIT_DATE` (ISO 8601 timestamp).
-
-If the raw arguments contain a PR number or URL:
-
-1. Fetch PR metadata using the CLI:
-
-   ```bash
-   uvx myk-pi-tools@latest pr info <cleaned_arguments>
-   ```
-
-   This returns JSON with all needed fields: `owner`, `repo`, `pr_number`, `author`,
-   `head_sha`, `base_ref`, `title`, `state`, `labels`, `assignees`, `is_fork`, `head_repo`, `body`.
-
-2. Extract and store all fields from the JSON output — these are used by Phase 1c and Phase 5.
-
-3. Fetch the latest commit timestamp from `head_sha` (needed by Phase 1c to compare
-   against comment timestamps):
-
-   ```bash
-   gh api /repos/{owner}/{repo}/commits/{head_sha} --jq '.commit.committer.date'
-   ```
-
-   Always use the base repo (`{owner}/{repo}`) — GitHub resolves fork PR commits
-   from the base repo via `refs/pull/*/head`, so this works for both fork and non-fork PRs.
-
-   Store this as `LATEST_COMMIT_DATE` (ISO 8601 timestamp).
-
-Tasks 2 and 3 are independent — execute them in parallel.
-Task 4 depends on Task 2 (needs the diff data) and will start after Task 2 completes.
+3. Run Tasks 2 and 3 in parallel; Task 4 starts after Task 2 completes.
 
 ### Phase 1a: Clone & Checkout PR — Task 2
 
-Clone the target repo and checkout the PR branch. This gives reviewers full repo access
-instead of passing a truncated diff in the prompt.
-
-**Delegate to `git-expert`** with this task:
+Delegate to `git-expert`:
 
 > Clone `https://github.com/{owner}/{repo}.git` (depth 50) to `{PROJECT_TMP_DIR}/pr-review-{owner}-{repo}-{pr_number}`.
-> Then run: gh pr checkout {pr_number}
-> Then get the base branch: gh pr view {pr_number} --json baseRefName --jq '.baseRefName'
-> Then fetch the base: git fetch origin {base_branch} --depth 50
-> Report REVIEW_DIR and BASE_BRANCH.
+> Run `gh pr checkout {pr_number}`, get base branch via `gh pr view {pr_number} --json baseRefName --jq '.baseRefName'`, run `git fetch origin {base_branch} --depth 50`,
+> and report `REVIEW_DIR` and `BASE_BRANCH`.
 
-Store:
+If clone/checkout fails, fall back to `uvx myk-pi-tools@latest pr diff`.
 
-- `REVIEW_DIR` — the clone path (used as `cwd` for reviewers)
-- `BASE_BRANCH` — the PR's target branch (used for `git diff`)
+### Phase 1b: Task 3
 
-If cloning or checkout fails, fall back to `uvx myk-pi-tools@latest pr diff` (original behavior).
-
-### Phase 1b: (Removed — reviewers read AGENTS.md from clone)
-
-Task 3 is no longer needed — reviewers have full repo access via the clone
-and read AGENTS.md independently per their agent instructions.
+Auto-complete Task 3 immediately — reviewers read `AGENTS.md` directly from `REVIEW_DIR`.
 
 ### Phase 1c: Check Past Review Comments — Task 4
 
-Fetch ALL human review threads (resolved + unresolved) from the PR:
+1. Get `{current_github_user}` via `gh api user --jq '.login'`, then run 3 fetches:
 
-Use the `owner`, `repo`, and `pr_number` from Phase 0 to construct the PR URL:
+   ```bash
+   # 1) Our own threads (resolved + unresolved) — used for resolved/unresolved categorization below
+   uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR} --user {current_github_user} --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
+   # 2) All unresolved threads (all authors) — Phase 2 dedup & [AUTHOR-QUESTION] detection
+   uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR}/all-unresolved https://github.com/{owner}/{repo}/pull/{pr_number}
+   # 3) All threads (resolved + unresolved, all authors) — Phase 2 RESOLVED_COMMENTS & Phase 3 third-party dedup ONLY
+   uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR}/all-resolved --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
+   ```
 
-```bash
-uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR} --user {current_github_user} --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
-```
+2. **Check `RESOLVED_EXTERNAL` (from fetch #3 where `is_resolved: true` AND `author != {current_github_user}`):**
+   Never inspect paths with `git log ... -- {path}` in bash (untrusted GitHub filenames). Write `${PROJECT_TMP_DIR}/resolved-external-check.json`:
 
-Where `{current_github_user}` is obtained from:
+   ```json
+   {"threads": [{"thread_id": "{thread_id}", "path": "{path}", "created_at": "{thread created_at}", "replies": [{"created_at": "{reply created_at}"}]}]}
+   ```
 
-```bash
-gh api user --jq '.login'
-```
+   Run:
 
-Also fetch ALL unresolved review threads from all authors (for dedup in Phase 2):
+   ```bash
+   uvx myk-pi-tools@latest pr check-resolved-threads {REVIEW_DIR} ${PROJECT_TMP_DIR}/resolved-external-check.json
+   ```
 
-```bash
-uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR}/all-unresolved https://github.com/{owner}/{repo}/pull/{pr_number}
-```
+   - **Fail-open on older CLI:** if non-zero due to unknown/unsupported `check-resolved-threads`, treat all as `suppressed: false`, print one line noting suppression was
+     skipped, and CONTINUE.
+   - Otherwise read `suppressed` per `thread_id` from output (fails open `false` on unsafe paths, missing timestamps, shallow-clone boundary, or deleted/renamed paths):
+     - `suppressed: true` → unchanged since resolution: include in `RESOLVED_COMMENTS` (Phase 2), drop matching `[NEW]` findings (Phase 3), and persist via
+       `store-pr-review` below.
+     - `suppressed: false` → changed/unproven: include in `RESOLVED_COMMENTS`, do NOT drop matching `[NEW]` findings, do NOT persist suppressing verdict. Never emit
+       `[PREV-BAD-FIX]`/`[PREV-NO-FIX]` for third-party threads.
 
-This second call omits `--user` and `--include-resolved`, so it returns only currently-unresolved
-threads from every author (humans, Qodo, CodeRabbit, etc.). The output is passed to
-reviewers in Phase 2 so they can avoid raising duplicate findings.
+3. **Categorize our own `human` threads (from fetch #1 `--user` only):**
+   - **Unresolved:** check diff at `path:line`:
+     - Code changed & fix correct → set status `addressed` with reply `"Verified fix in code — resolving."` in JSON, mark `"✅ Fixed but not resolved by author — resolved
+       by us"`, store `resolved_fixed`.
+     - Code changed & fix wrong/incomplete → include as `"❌ Code changed but fix is incorrect"` (`[PREV-BAD-FIX]`), store `resolved_bad_fix`.
+     - Code NOT changed & `LATEST_COMMIT_DATE` > comment `created_at` → include as `"⚠️ UNRESOLVED from previous review"` (`[PREV-UNRESOLVED]`).
+     - Code NOT changed & `LATEST_COMMIT_DATE` ≤ comment `created_at` → silently skip.
+   - **Resolved:** read full thread + all replies; check diff at `path:line`:
+     - Code changed & fix correct → `"✅ Resolved — fix verified"` (`resolved_fixed`).
+     - Code changed & fix wrong/incomplete → include as `"❌ Resolved but fix is incorrect"` (`[PREV-BAD-FIX]`, `resolved_bad_fix`).
+     - Code NOT changed & valid author reply → `"✅ Resolved — response accepted"` (`resolved_accepted`).
+     - Code NOT changed & invalid/missing reply → include as `"❌ Resolved without code change or valid response"` (`[PREV-NO-FIX]`, `resolved_no_fix`).
 
-Third, fetch ALL review threads (resolved + unresolved) from every author — this is the only
-source of threads that other reviewers raised and that were later resolved (dedup in Phase 2
-and Phase 3):
+4. **Store our resolution verdicts to DB (MANDATORY):**
+   For each resolved thread posted by us (`--user` fetch): write `{author_response}` to `${PROJECT_TMP_DIR}/resolution-response.txt`, then run:
 
-```bash
-uvx myk-pi-tools@latest reviews fetch --output-dir ${PROJECT_TMP_DIR}/all-resolved --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
-```
+   ```bash
+   uvx myk-pi-tools@latest pr update-resolution {owner} {repo} {pr_number} --path {path} --line {line} --status {resolution_status} --response-file ${PROJECT_TMP_DIR}/resolution-response.txt
+   ```
 
-This call omits `--user`, so it returns threads from every author with `is_resolved` and
-`author` on each thread. From it, isolate the RESOLVED third-party threads:
+   `{resolution_status}` ∈ `resolved_fixed`, `resolved_accepted`, `resolved_bad_fix`, `resolved_no_fix`.
 
-- keep threads where `is_resolved: true` AND `author != {current_github_user}` → the
-  `RESOLVED_EXTERNAL` set. No thread-level resolution timestamp exists in the API — the
-  `check-resolved-threads` CLI below derives one and documents what it falls back to.
-- Threads authored by us are already covered by the first (`--user`) fetch — do NOT use the
-  `all-resolved` fetch for the resolved/unresolved categorization of our own threads.
+5. **Persist `suppressed: true` third-party resolutions (skip if none):**
+   Write `${PROJECT_TMP_DIR}/resolved-external.json` (all `suppressed: true` `RESOLVED_EXTERNAL` threads) and run `uvx myk-pi-tools@latest pr store-pr-review
+${PROJECT_TMP_DIR}/resolved-external.json` (upserted by `thread_id`):
 
-For each `RESOLVED_EXTERNAL` thread, decide mechanically whether its resolution still holds
-by checking the clone from Phase 1a — did anything change at that `path` after the resolution
-timestamp? Do this with the CLI below, NEVER with a `git log ... -- {path}` shell command:
-`path` and the timestamps are fetched GitHub data, so a contributor can name a file with
-shell syntax and get it executed. The CLI passes the path as a separate argument to git.
+   ```json
+   {
+     "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{LATEST_COMMIT_SHA}"},
+     "comments": [{"thread_id": "{thread_id}", "comment_id": {comment_id}, "path": "{path}", "line": {line}, "body": "{body}", "author": "{author}", "posted_at": "{resolved_at}", "status": "resolved_external", "resolution_status": "resolved_accepted", "author_response": "{author's resolving reply, or 'Resolved by author on GitHub'}"}]
+   }
+   ```
 
-1. Write `${PROJECT_TMP_DIR}/resolved-external-check.json` with the `write` tool, holding
-every `RESOLVED_EXTERNAL` thread:
+   Past comment statuses fold into Phase 4's combined findings (not a separate summary).
 
-```json
-{
-  "threads": [
-    {
-      "thread_id": "{thread_id}",
-      "path": "{path}",
-      "created_at": "{thread created_at}",
-      "replies": [{"created_at": "{reply created_at}"}]
-    }
-  ]
-}
-```
-
-1. Run:
-
-```bash
-uvx myk-pi-tools@latest pr check-resolved-threads {REVIEW_DIR} ${PROJECT_TMP_DIR}/resolved-external-check.json
-```
-
-**FAIL-OPEN if the published CLI predates this subcommand.** If the command exits
-non-zero because the published CLI does not know `check-resolved-threads`
-(unknown/unsupported command), skip the suppression gate for this run: treat every
-resolved third-party thread as `suppressed: false`, print one line stating that
-suppression was skipped because the published CLI predates the check, and CONTINUE the
-review. This is deliberate — an unsuppressed finding is only a duplicate the reviewer
-may re-raise, while a hard stop loses the whole review. Once a CLI release containing
-`check-resolved-threads` is published, the gate engages with no further change.
-
-1. Read `suppressed` per `thread_id` from the JSON output — do NOT decide it yourself.
-
-The check fails OPEN (`suppressed: false`) whenever it cannot prove the code is unchanged:
-
-- **Unsafe path** — missing, absolute, containing `..`, or containing control characters
-  (newlines included): treated as not suppressed.
-- **No usable timestamp** — GitHub's review-thread API has no "resolved at" field, so the
-  check prefers an explicit `resolved_at` when the thread carries one and otherwise falls
-  back to the newest reply `created_at`, then to the thread's own `created_at`. Both
-  fallbacks are at or before the real resolution time, so the window they inspect is a
-  superset of the true one: a derived timestamp can only make us keep a finding, never
-  wrongly suppress one. Threads with no timestamp at all (Qodo-CLI findings carry none)
-  are never suppressed — they stay `[NEW]` findings.
-- **Shallow clone** — Phase 1a clones with `--depth 50`; when the timestamp predates the
-  shallow boundary commit, the commits inside the window are absent from the clone and an
-  empty `git log` proves nothing, so the thread is not suppressed.
-- **Path absent from HEAD** — a deleted or renamed file leaves nothing to reason about, and
-  an empty `git log` for a path the clone does not know is not evidence of an unchanged file.
-
-- **No commit touched `path` after resolution** → the finding was accepted/dismissed and the
-  code is unchanged: treat it as suppressed. Mark the thread `suppressed: true`, include it in
-  the `RESOLVED_COMMENTS` block (Phase 2), drop matching `[NEW]` findings in Phase 3, and
-  persist it to the DB as `resolved_accepted` (see "Persist third-party resolutions" below).
-- **A commit touched `path` after resolution** → the code moved on and the fix may be
-  incomplete, so nothing is suppressed: mark `suppressed: false`, still include it in
-  `RESOLVED_COMMENTS` (reviewers apply the "materially changed" rule themselves), but do NOT
-  drop matching `[NEW]` findings and do NOT persist a suppressing verdict.
-
-A third-party thread is NEVER re-raised as `[PREV-BAD-FIX]` / `[PREV-NO-FIX]` — those labels
-belong to our own threads only. If the code at the path changed after resolution and the
-finding is still real, the Phase 2 reviewers re-derive it as a normal `[NEW]` finding.
-
-Parse the JSON output from the `--user` fetch (`${PROJECT_TMP_DIR}`). This file is used
-for resolved/unresolved categorization below. The all-unresolved fetch (`${PROJECT_TMP_DIR}/all-unresolved`)
-is used separately in Phase 2 for dedup context — do NOT use it for the resolved/unresolved
-categorization above. However, it IS used later in this same phase for `[AUTHOR-QUESTION]`
-detection (see "Detect questions directed at us" section below). The all-resolved fetch
-(`${PROJECT_TMP_DIR}/all-resolved`) feeds Phase 2 (`RESOLVED_COMMENTS`) and Phase 3 (resolved
-third-party dedup) only — never the categorization of our own threads.
-
-For the `human` list, categorize each thread:
-
-**Unresolved threads:**
-
-- These are still open on GitHub — but the PR author may have fixed the code without resolving the thread.
-- Check the diff from Phase 1a — did the code at `path:line` change?
-  - **Code changed:** Review the changed code to verify the fix is correct.
-    - Fix looks correct → resolve the thread on GitHub by setting its status to `addressed`
-      with reply "Verified fix in code — resolving." in the JSON, then mark as
-      "✅ Fixed but not resolved by author — resolved by us". Store verdict to DB as `resolved_fixed`.
-    - Fix looks wrong/incomplete → include in findings as "❌ Code changed but fix is incorrect".
-      Store verdict to DB as `resolved_bad_fix`.
-  - **Code NOT changed:** The finding may be genuinely unaddressed — but only re-raise
-    if the PR author has pushed new commits since the comment was posted.
-    - Compare the comment's `created_at` timestamp against `LATEST_COMMIT_DATE` from Phase 0.
-    - **New commits exist after comment** (`LATEST_COMMIT_DATE` > comment `created_at`):
-      The author pushed changes but didn't address this finding.
-      Include in the findings presented to the user in Phase 4.
-      Mark as "⚠️ UNRESOLVED from previous review"
-    - **No new commits after comment** (`LATEST_COMMIT_DATE` ≤ comment `created_at`):
-      The comment is already visible on the PR and the author hasn't pushed any changes yet.
-      Silently skip — do NOT include in findings or auto-post.
-      This avoids replying to our own still-visible unresolved thread with no new information.
-
-**Resolved threads:**
-
-- Read the full thread including ALL replies from the PR author.
-- Check the diff from Phase 1a — did the code at `path:line` change?
-  - **Code changed:** Review the changed code to verify the fix is correct. Don't trust blindly.
-    - Fix looks correct → mark as "✅ Resolved — fix verified"
-    - Fix looks wrong/incomplete → include in findings as "❌ Resolved but fix is incorrect"
-  - **Code NOT changed:** Read the PR author's response/reply.
-    - Valid response (by design, wrong assumption, clarification) → mark as "✅ Resolved — response accepted"
-    - Invalid/missing response → include in findings as "❌ Resolved without code change or valid response"
-
-**Store resolution verdicts to DB (MANDATORY):**
-
-After evaluating each resolved thread, persist YOUR verdict to the PR review database.
-For each resolved thread that was previously posted by us (matched in the `--user` fetch),
-call:
-
-To store the verdict, write the author's response to a temp file first (to avoid shell quoting issues),
-then run the CLI:
-
-1. Write `{author_response}` text to `${PROJECT_TMP_DIR}/resolution-response.txt` using the `write` tool
-2. Run: `uvx myk-pi-tools@latest pr update-resolution {owner} {repo} {pr_number} --path {path} --line {line} --status {resolution_status} --response-file ${PROJECT_TMP_DIR}/resolution-response.txt`
-
-Where:
-
-- `{resolution_status}` is one of:
-  - `resolved_fixed` (code changed, fix verified)
-  - `resolved_accepted` (response accepted, no code change needed)
-  - `resolved_bad_fix` (code changed but fix is incorrect)
-  - `resolved_no_fix` (resolved without code change or valid response)
-- `{author_response}` is the PR author's reply text (why they resolved/dismissed)
-
-This persists resolution decisions to the DB so future review cycles can query them.
-Resolution decisions are OURS (from this LLM evaluation), not the PR author's click.
-
-**Persist third-party resolutions (MANDATORY):**
-
-A resolved third-party thread never reaches the DB through `update-resolution` (that command
-matches only comments **we** posted). Persist the `suppressed: true` `RESOLVED_EXTERNAL`
-threads with a single `store-pr-review` call so `get-review-history` can see them in later
-cycles:
-
-1. Write this JSON to `${PROJECT_TMP_DIR}/resolved-external.json` using the `write` tool:
-
-```json
-{
-  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{LATEST_COMMIT_SHA}"},
-  "comments": [
-    {
-      "thread_id": "{thread_id}",
-      "comment_id": {comment_id},
-      "path": "{path}",
-      "line": {line},
-      "body": "{body}",
-      "author": "{author}",
-      "posted_at": "{resolved_at}",
-      "status": "resolved_external",
-      "resolution_status": "resolved_accepted",
-      "author_response": "{author's resolving reply, or 'Resolved by author on GitHub'}"
-    }
-  ]
-}
-```
-
-1. Run: `uvx myk-pi-tools@latest pr store-pr-review ${PROJECT_TMP_DIR}/resolved-external.json`
-
-Rows are upserted by `thread_id`, so re-running `/pr-review` on the same PR updates the
-existing row instead of duplicating it. Skip this step when the `RESOLVED_EXTERNAL` set is
-empty or when no thread is `suppressed: true`.
-
-**All past comment statuses are included in the combined findings in Phase 4 —
-not presented as a separate summary.**
-
-**Detect questions directed at us (MANDATORY):**
-
-After processing our own threads above, scan for questions/comments from others that need
-our attention. This covers two sources:
-
-**Source 1 — Review thread questions:**
-
-Scan the all-unresolved JSON from `${PROJECT_TMP_DIR}/all-unresolved/`. For each thread:
-
-- Skip threads authored by us (already handled above)
-- Skip threads from bots (Qodo, CodeRabbit, GitHub Actions, dependabot, etc.)
-- Check if ANY comment in the thread **explicitly @mentions** the current user (`@{current_github_user}`)
-
-For each matching @mention comment, include it as an `[AUTHOR-QUESTION]` finding **only if**
-there is no subsequent comment authored by `{current_github_user}` after that mention.
-Compare using the `created_at` field on reply objects (ISO timestamp) — a reply from us
-with a `created_at` later than the @mention comment's `created_at` means we already
-responded. Do NOT rely on array position alone — always compare `created_at` timestamps.
-
-**Do NOT use loose heuristics** (e.g., "thread is on a file we changed") or thread-level
-"no reply anywhere" checks. Only explicit @mentions with no subsequent reply from us qualify —
-this prevents false positives from unrelated reviewer conversations and correctly handles
-late @mentions in threads where we participated earlier.
-
-**Source 2 — General PR issue comments:**
-
-Fetch PR issue comments (standalone PR comments, not tied to code lines):
-
-```bash
-gh api /repos/{owner}/{repo}/issues/{pr_number}/comments --paginate
-```
-
-For each comment:
-
-- Skip comments authored by us
-- Skip bot comments (Qodo, CodeRabbit, GitHub Actions, dependabot, etc.)
-- Check if the comment **explicitly @mentions** the current user (`@{current_github_user}`)
-- Check we haven't responded — no comment from us with a `created_at` later than
-  the @mention comment's `created_at`. Use `created_at` only (not `updated_at`) —
-  edits for typos/formatting shift `updated_at` forward and would cause false positives
-  by making our earlier response appear to predate the mention.
-
-If matched, include it as an `[AUTHOR-QUESTION]` finding.
-
-**Only explicit @mentions qualify.** Do NOT match comments just because they contain a
-question mark — this would produce false positives from conversations between other
-collaborators. Store the original `comment_id` and `comment_url` (from the API's
-`html_url` field) for use in Phase 5 reply formatting.
-
-**For each `[AUTHOR-QUESTION]`, generate a suggested answer:**
-
-Read the relevant code, diff, and surrounding context referenced by the question. Analyze
-what the commenter is asking and draft a concise, technically accurate suggested answer.
-Store the suggested answer alongside the finding for presentation in Phase 4.
-
-The suggested answer should:
-
-- Reference specific code/lines when applicable
-- Be ready to post as-is (the user can approve it directly)
-- Be concise — answer the question, don't lecture
-- If the answer requires a code change, note that explicitly
+6. **Detect `[AUTHOR-QUESTION]` items (MANDATORY):**
+   Scan both (a) `${PROJECT_TMP_DIR}/all-unresolved/` review threads and (b) `gh api /repos/{owner}/{repo}/issues/{pr_number}/comments --paginate` issue comments:
+   - Skip our own comments and bots (Qodo, CodeRabbit, GitHub Actions, dependabot, etc.).
+   - Match ONLY explicit `@{current_github_user}` mentions (never `?` or loose heuristics) with NO subsequent reply from `{current_github_user}` (`reply.created_at >
+     mention.created_at` — use `created_at` only, never `updated_at`).
+   - Store `comment_id` and `comment_url` (`html_url`). Read the referenced code/diff and draft a concise, ready-to-post suggested answer (referencing specific
+     code/lines; note if a code change is required).
 
 ### Phase 2: Code Analysis — Tasks 5, 6, 7, 8, 9
 
-Spawn ALL 5 review agents as async subagents
-with `taskId` linking each to its task:
+Build three context strings first:
 
-Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
+- `EXISTING_COMMENTS`: formatted threads from `${PROJECT_TMP_DIR}/all-unresolved/` (path, line, author, body; use `"(no file)"` / `"(no line)"` if missing/null; or `"No
+  existing unresolved comments found."`).
+- `RESOLVED_COMMENTS`: formatted `RESOLVED_EXTERNAL` threads from `${PROJECT_TMP_DIR}/all-resolved/` with `resolved_at`, `resolved_at_source`, and `(suppressed: true)` /
+  `(suppressed: false)` from `check-resolved-threads` (or `"No resolved third-party comments found."`).
+- `CODE_SUGGESTIONS`: instruct reviewers to attach GitHub ```` ```suggestion ```` blocks only for exact line-replacement fixes (not architectural concerns, missing tests,
+  new files, or design questions). The suggestion must replace the exact lines referenced by the finding.
 
-Before spawning reviewers, read the all-unresolved JSON from `${PROJECT_TMP_DIR}/all-unresolved/`
-(the output of the second `reviews fetch` call — NOT the `--user` fetch used in Phase 1c)
-and format the existing comments as a block of context. Build an `EXISTING_COMMENTS` string
-listing each unresolved thread with its file path, line number, author, and body.
+Define `SHARED_CONTEXT` once, replacing `<EXISTING_COMMENTS>`, `<RESOLVED_COMMENTS>`, `<CODE_SUGGESTIONS>`, `{owner}`, `{repo}`, and `{pr_number}` with the built
+strings/values before appending it to all 5 reviewer tasks:
 
-Then read the all-resolved JSON from `${PROJECT_TMP_DIR}/all-resolved/` (the third fetch) and
-build a `RESOLVED_COMMENTS` string from the `RESOLVED_EXTERNAL` set isolated in Phase 1c.
-List each thread with its file path, line number, author, body, and the `resolved_at` value
-the `check-resolved-threads` output reported (with `resolved_at_source` alongside it), then
-append `(suppressed: true)` or `(suppressed: false)` exactly as that output said, so
-reviewers can weigh them.
+```text
+SHARED_CONTEXT = """
+<review-history>
+MANDATORY — before reviewing any code, run:
+uvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}
+Review the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. Only flag a previously resolved finding if the code at that location materially changed since the resolution.
+</review-history>
 
-> **Note:** Some comment types (e.g., Qodo sticky findings without code refs) may have an empty
-> `path` or `null` line number. Use `"(no file)"` as fallback when path is missing and
-> `"(no line)"` when line is missing or null.
+<existing-unresolved-comments>
+The following unresolved review comments already exist on this PR from other reviewers. Do NOT raise duplicate findings — skip them (or note a reference if adding new context/angle).
 
-Also build a `CODE_SUGGESTIONS` instruction block to include in each reviewer's task:
+<EXISTING_COMMENTS>
+</existing-unresolved-comments>
 
-> When a finding has a concrete code fix, include a GitHub suggestion block showing the
-> corrected code. Use the exact syntax so the PR author can apply it with one click:
->
-> ````text
-> ```suggestion
-> fixed code here
-> ```
-> ````
->
-> Only include suggestions for specific code replacements — not for architectural concerns,
-> missing tests, new files, or design questions where the fix isn't a simple line replacement.
-> The suggestion must replace the exact lines referenced by the finding.
+<resolved-comments>
+The following review comments from OTHER reviewers were resolved. Do NOT re-raise a matching finding unless the code at that path materially changed after the listed resolution timestamp.
 
-Then include `EXISTING_COMMENTS`, `RESOLVED_COMMENTS` and `CODE_SUGGESTIONS` in every
-reviewer's task prompt:
+<RESOLVED_COMMENTS>
+</resolved-comments>
+
+<code-suggestions>
+<CODE_SUGGESTIONS>
+</code-suggestions>
+"""
+```
+
+Spawn ALL 5 reviewers as async subagents using the actual task IDs from `TaskCreate` (never hardcode IDs):
 
 ```text
 subagent(tasks=[
-  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
-  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
-  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
-  {agent: "code-reviewer-docs", task: "Review this PR for documentation quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check all docs for completeness and accuracy.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Docs", taskId: "<task 8 ID>"},
-  {agent: "code-reviewer-spec", task: "Review this PR for spec compliance. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check PR description claims vs diff, issue deliverables vs diff, and scope creep.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nuvx myk-pi-tools@latest pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<resolved-comments>\nThe following review comments were already raised by OTHER reviewers on this PR and have since been resolved. Do NOT re-raise a finding that matches one of these unless the code at that path materially changed after the listed resolution timestamp.\n\n<RESOLVED_COMMENTS>\n</resolved-comments>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Spec", taskId: "<task 9 ID>"},
+  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n" + SHARED_CONTEXT, cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n" + SHARED_CONTEXT, cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
+  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n" + SHARED_CONTEXT, cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
+  {agent: "code-reviewer-docs", task: "Review this PR for documentation quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check all docs for completeness and accuracy.\n\n" + SHARED_CONTEXT, cwd: "<REVIEW_DIR>", name: "Review Docs", taskId: "<task 8 ID>"},
+  {agent: "code-reviewer-spec", task: "Review this PR for spec compliance. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check PR description claims vs diff, issue deliverables vs diff, and scope creep.\n\n" + SHARED_CONTEXT, cwd: "<REVIEW_DIR>", name: "Review Spec", taskId: "<task 9 ID>"}
 ])
 ```
 
-Where `<EXISTING_COMMENTS>` is replaced with the formatted unresolved comments from
-`${PROJECT_TMP_DIR}/all-unresolved/`. If no unresolved comments exist, replace with
-"No existing unresolved comments found."
-
-Where `<RESOLVED_COMMENTS>` is replaced with the formatted resolved third-party comments
-from `${PROJECT_TMP_DIR}/all-resolved/`. If there are none, replace with
-"No resolved third-party comments found."
-
-Each reviewer runs in the cloned repo directory (`REVIEW_DIR`) and has full access to:
-
-- All source files via `read` tool
-- The PR diff via `git diff origin/<BASE_BRANCH>...HEAD`
-- Project guidelines (AGENTS.md/CLAUDE.md) — read independently per agent instructions
-- File history, imports, tests — anything in the repo
-
-Each agent should analyze for security, bugs, error handling, and performance issues
-and return their findings as prose.
-
-**After spawning, verify the response confirms all 5 agents were spawned.**
-If any spawn fails, STOP and report the error — do NOT continue waiting.
-
-**After spawning, your turn is DONE.** Do NOT poll, sleep, call TaskOutput,
-or check status. Results arrive automatically as follow-up messages.
-When each reviewer finishes, its task is auto-completed via `taskId`.
-Task 10 (Merge findings) auto-unblocks when all 5 reviewer tasks complete.
+Confirm all 5 spawned (STOP and report on error), then **end your turn** — do not poll or sleep. Task 10 auto-unblocks when Tasks 5–9 complete.
 
 ### Phase 3: Merge & Deduplicate Findings — Task 10
 
-Merge and deduplicate the findings from all 5 reviewers AND the past review comment analysis from Task 4 into a single combined findings list.
+Merge Task 4 items with Phase 2 findings, then deduplicate `[NEW]` findings against three sources (**NEVER drop `[PREV-UNRESOLVED]`, `[PREV-BAD-FIX]`, or
+`[PREV-NO-FIX]`**):
 
-Reviewers were already instructed in Phase 2 to skip findings that duplicate existing
-unresolved PR comments. However, verify that no duplicates slipped through by comparing
-the merged findings against the all-unresolved list from `${PROJECT_TMP_DIR}/all-unresolved/`.
-Drop any **`[NEW]`** finding (from Phase 2 reviewers) that raises the same issue as an
-existing unresolved comment.
-
-> **IMPORTANT:** `[PREV-UNRESOLVED]`, `[PREV-BAD-FIX]`, and `[PREV-NO-FIX]` items from
-> Task 4 are NEVER dropped by dedup. These represent the current user's own prior review
-> comments that naturally appear in the all-unresolved list — removing them would lose
-> tracking of unresolved prior findings. Dedup applies ONLY to `[NEW]` findings.
-
-**Resolved third-party findings dedup:** For each `[NEW]` finding, also compare against the
-`RESOLVED_EXTERNAL` set from `${PROJECT_TMP_DIR}/all-resolved/` isolated in Phase 1c
-(otherwise accepted findings keep coming back).
-
-- Match on path + body similarity — the same file and a similar description. Do NOT compare
-  line numbers: `reviews fetch` does not fetch `isOutdated`, so lines on resolved or rebased
-  threads are unreliable.
-- Drop the `[NEW]` finding only when the matched thread is `suppressed: true` (as reported
-  by `check-resolved-threads` — no commit touched that path after the thread's resolution
-  timestamp). Record it as
-  `"Auto-skipped (previously raised by <author> and resolved)"`.
-- When the thread is `suppressed: false` (code changed after resolution, an unsafe path —
-  including one starting with `:` — a missing timestamp, or a shallow clone hiding the
-  window), keep the finding. `check-resolved-threads` always queries git with a literal
-  pathspec, so a crafted filename cannot fake "nothing changed".
-  You may note that it re-raises a previously resolved thread.
-- Only `resolved_accepted` / `resolved_fixed` verdicts suppress; a matching thread we
-  evaluated as `resolved_bad_fix` or `resolved_no_fix` per `get-review-history` never drops a
-  `[NEW]` finding.
-
-**Previously skipped findings dedup:** Also check the PR review database for findings
-the user previously skipped on this same PR. Run:
-
-```bash
-uvx myk-pi-tools@latest pr get-skipped-comments {owner} {repo} {pr_number}
-```
-
-This returns a JSON array of previously skipped comments with `path`, `line`, `body`,
-`severity`, `skip_reason`, and `head_sha`.
-
-For each `[NEW]` finding, compare against the skipped list using path + body similarity
-(same file and similar description = match). Matched findings are auto-skipped with
-`"Auto-skipped (previously dismissed): <skip_reason>"`. The user still sees them in the
-Phase 4 table and can override by selecting them explicitly.
+1. **Existing unresolved (`${PROJECT_TMP_DIR}/all-unresolved/`):** drop `[NEW]` findings raising the same issue.
+2. **Resolved third-party (`RESOLVED_EXTERNAL`):** match by path + body similarity (ignore line numbers — outdated/rebased lines are unreliable):
+   - `suppressed: true` AND verdict is not `resolved_bad_fix`/`resolved_no_fix` → drop and record `"Auto-skipped (previously raised by <author> and resolved)"`.
+   - `suppressed: false` → keep (optionally note it re-raises a previously resolved thread).
+3. **Previously skipped (`uvx myk-pi-tools@latest pr get-skipped-comments {owner} {repo} {pr_number}`):** match path + body similarity → mark `"Auto-skipped (previously
+   dismissed): <skip_reason>"` (still display in Phase 4 so user can override).
 
 ### Phase 4: User Selection — Task 11
 
-Present ALL findings to user in one combined list, grouped by severity (CRITICAL, WARNING, SUGGESTION).
-This includes:
+Present ALL findings grouped by severity (`CRITICAL`, `WARNING`, `SUGGESTION`) in three numbered sections:
 
-1. **Past review findings** from Phase 1c (unresolved, incorrectly resolved, or bad fixes)
-2. **New code review findings** from Phase 2
+1. **Previous findings (`P1, P2, ...`)** marked `(auto-post)` (`[PREV-UNRESOLVED]`, `[PREV-BAD-FIX]`, `[PREV-NO-FIX]` — never ask user to select these; silently-skipped
+   items from Phase 1c do not appear).
+2. **Author questions (`Q1, Q2, ...`)** (`[AUTHOR-QUESTION]` — show original question, suggested answer, and require Approve/Edit/Skip).
+3. **New findings (`1, 2, ...`)** (`[NEW]`).
 
-Each finding shows its source:
+- **Zero `[NEW]` and zero `[AUTHOR-QUESTION]`:** skip selection and go straight to Phase 5 (auto-post `[PREV-*]`).
+- **Otherwise:** print the tables, then call `ask_user` once: `{N} findings — how do you want to decide?` with options `Post all`, `Skip all`, `Decide one by one` (typed
+  `all`, `none`, `3,7,12` also work).
 
-- `[PREV-UNRESOLVED]` — unresolved from previous review cycle
-- `[PREV-BAD-FIX]` — resolved but fix is incorrect
-- `[PREV-NO-FIX]` — resolved without code change or valid response
-- `[AUTHOR-QUESTION]` — question/comment from someone on the PR directed at us
-- `[NEW]` — new finding from current code analysis
+**Bulk mode (`Post all` / `Skip all` / numbers):**
 
-**Auto-post previous findings:** `[PREV-UNRESOLVED]`, `[PREV-BAD-FIX]`, and `[PREV-NO-FIX]`
-findings are **automatically included** in the post list — they are the user's own prior
-comments that remain unaddressed and MUST be re-raised. Do NOT ask the user to select these.
-Show them in the list marked as "(auto-post)" so the user knows they'll be re-raised.
+- If `[AUTHOR-QUESTION]` items exist, collect Approve / Edit (plain-text prompt, not `ask_user`) / Skip per question.
+- 🚨 **Skip reason collection (MANDATORY if any `[NEW]` finding is skipped):** print as normal chat text (not `ask_user`) and **STOP your turn**:
 
-> **Note:** `[PREV-UNRESOLVED]` findings where no new commits exist after the comment
-> (silently skipped in Phase 1c) do NOT appear here — they were already filtered out.
+  ```text
+  You skipped findings 2, 4, 5. Why?
+  Give one reason for all, or per-finding (e.g., "2: not relevant, 4 and 5: style only")
+  ```
 
-**Author questions require user approval:** `[AUTHOR-QUESTION]` findings are NOT auto-posted.
-They require user review because the AI-generated answer may need editing or the user may
-choose not to respond. Author questions are presented with approve/edit/skip options (see below).
+  If user gives no reason, store `Skipped — no reason given` (Phase 5b rejects empty `skip_reason`).
 
-**Author question presentation:**
+**Per-finding loop (`Decide one by one`):**
 
-For each `[AUTHOR-QUESTION]` finding, display:
+1. Print once: `N prior finding(s) will be re-raised (auto-post).`
+2. For each `[AUTHOR-QUESTION]` (`Q1..`): print original comment + suggested answer, then `ask_user` (`Question i/N — <one-line summary>`, options `Approve`, `Edit`,
+   `Skip`). `Edit` prints `Answer for Q{i}:` in plain chat and STOPs the turn; `Skip` stores `skip_reason` `Author question — user chose not to respond`.
+3. For each `[NEW]` finding (`1..N`): print `Finding i/N — <severity> — <file>:<line>`, source tag, description, suggestion block, and reviewers; call `ask_user`
+   (`Finding i/N — <one-line summary>`, options `Post`, `Skip`, `Skip + reason`, `Show more context`, `Stop here`):
+   - `Post` → select.
+   - `Skip` → skip with `Skipped — no reason given` (no prompt).
+   - `Skip + reason` → `ask_user` (`Reason for finding i/N:`, no options; or plain chat + STOP if multi-line requested).
+   - `Show more context` → print diff hunk + call sites, re-ask same finding.
+   - `Stop here` → skip remaining; ask once for blanket reason (`ask_user` no options, or plain chat + STOP; default `Skipped — no reason given`).
 
-1. The original question/comment (who asked, where, full text)
-2. The AI-generated **suggested answer** from Phase 1c
-3. An action prompt for the user:
-   - **approve** — post the suggested answer as-is
-   - **edit** — user provides a revised answer (print prompt as regular text, NOT `ask_user`)
-   - **skip** — don't reply to this question
+**Refine & classify all skip reasons (both modes):**
 
-Collect user decisions for all author questions before proceeding. Approved/edited answers
-are included in the Phase 5 post step. Skipped questions are excluded from posting.
-
-**Numbering:** Display three separate numbered sections:
-
-1. Previous findings (P1, P2, ...) marked "(auto-post)"
-2. Author questions (Q1, Q2, ...) with suggested answers and action prompts
-3. New findings (1, 2, ...) for user selection
-
-This avoids ambiguity — user selections for new findings always refer to the `[NEW]` numbering.
-
-**User selects from `[NEW]` findings only:**
-
-- 'all' = Post all new findings (previous findings are always auto-posted regardless)
-- 'none' = Skip posting new findings (previous findings are still auto-posted)
-- Specific numbers = Post only those new findings (numbers refer to the `[NEW]` list)
-
-**One ask decides the mode.** After printing the table, call `ask_user` once with question
-`{N} findings — how do you want to decide?` and options `Post all`, `Skip all`, `Decide one by one`.
-Skip this question entirely when there are ZERO `[NEW]` and ZERO `[AUTHOR-QUESTION]` items —
-go straight to Phase 5 with the auto-posted prior findings (see the zero-item rule below).
-Typed answers (`all`, `none`, `3,7,12`) keep working as free text.
-
-- `Post all` → every `[NEW]` finding is selected. Continue to the refine step in bulk mode.
-- `Skip all` → every `[NEW]` finding is skipped. Collect one blanket reason in bulk mode below.
-- `Decide one by one` → run the per-finding loop below.
-
-**Per-finding loop (chosen by `Decide one by one`):**
-
-Everything after this phase — the JSON, the post step, the replies — is unchanged.
-
-1. Print the auto-post header block ONCE: `N prior finding(s) will be re-raised (auto-post).`
-   `[PREV-*]` findings are never part of the loop.
-2. For each `[AUTHOR-QUESTION]` (Q1..) and then each `[NEW]` finding (1..N), in the stable
-   merged order.
-
-   **`[AUTHOR-QUESTION]` items keep their own flow** — never use the finding template or the
-   finding actions for them:
-   - Print the original comment (who asked, where, full text) and the AI-generated suggested
-     answer from Phase 1c.
-   - `ask_user` with question `Question i/N — <one-line summary>` and options `Approve`, `Edit`,
-     `Skip`. No `Show more context` (the question body is the context) and no `Skip + reason`
-     (the stored reason is `Author question — user chose not to respond`).
-   - `Approve` → the suggested answer is posted as-is in Phase 5.
-   - `Edit` → print `Answer for Q{i}:` as plain chat text and STOP the turn; the user's next
-     message is the revised answer, which Phase 5 posts instead of the suggestion.
-   - `Skip` → the question is not answered; it is stored with `skip_reason`
-     `Author question — user chose not to respond`.
-
-   **`[NEW]` findings:**
-   a. Print `Finding i/N — <severity> — <file>:<line>`, the source tag, the full description,
-      the suggestion block, and which reviewer(s) raised it after dedup.
-   b. Call `ask_user` with question `Finding i/N — <one-line summary>` and exactly these options:
-      `Post`, `Skip`, `Skip + reason`, `Show more context`, `Stop here`.
-   c. Act on the answer:
-      - `Post` → finding is selected for posting.
-      - `Skip` → finding is skipped. Phase 5b still requires a reason, so store the fixed
-        `skip_reason` `Skipped — no reason given`; do not ask the user for one.
-      - `Skip + reason` → re-call `ask_user` with question `Reason for finding i/N:` and no
-        options, so the answer is free text; use it as the reason and continue with the next
-        finding. If the user asks for a multi-line reason, print `Reason for finding i/N:` as
-        plain chat text and STOP the turn instead — their next message is the reason.
-      - `Show more context` → print the surrounding diff hunk and the affected call sites, then
-        re-ask the SAME finding (same index, same options).
-      - `Stop here` → every remaining finding is skipped. Ask once for a blanket reason: use
-        `ask_user` with no options when one line is enough, otherwise print the prompt as plain
-        chat text and STOP the turn. If the user gives no reason, store the fixed
-        `skip_reason` `Skipped — no reason given` (Phase 5b rejects an empty one).
-3. The reasons collected here feed the SAME refine → classify → `review-guidelines.md` steps
-   below. Only the timing differs: the reason is captured while the user is looking at that
-   finding instead of in a later bulk round.
-
-If there are ZERO `[NEW]` findings AND zero `[AUTHOR-QUESTION]` findings, skip user
-selection entirely — auto-post the previous findings and proceed directly to Phase 5
-(the auto-post path still generates the comments JSON and posts them — see Phase 5).
-
-If there are ZERO `[NEW]` findings but `[AUTHOR-QUESTION]` findings exist, skip new
-finding selection but still present author questions with suggested answers for
-user approval/edit/skip.
-
-🚨 **Skip reason collection (MANDATORY — NEVER SKIP THIS STEP):**
-
-In the per-finding loop the reasons were already captured as you went — go straight to
-step 2 (AI refines each reason) and do not prompt again.
-
-**Bulk mode only (Post all / Skip all / numbers) — HARD RULE: If the user skipped ANY finding
-(said 'no' or 'Skip all', selected specific numbers that exclude some findings), you MUST ask
-for skip reasons BEFORE proceeding to Phase 5.** Do NOT continue the workflow without collecting
-skip reasons. Skipping this step is a HARD VIOLATION.
-
-If the user declines to give any reason, still store one — Phase 5b rejects an empty
-`skip_reason` — using the fixed text `Skipped — no reason given`.
-
-After the user selects which findings to post, compute the skipped set (total `[NEW]`
-findings minus user-selected findings). If the skipped set is non-empty:
-
-1. Ask the user for skip reasons as a **normal chat message** (do NOT use `ask_user` — skip
-   reasons are often multiline and `ask_user` only supports single-line input).
-   Print this prompt as regular text:
-
-   ```text
-   You skipped findings 2, 4, 5. Why?
-   Give one reason for all, or per-finding (e.g., "2: not relevant, 4 and 5: style only")
-   ```
-
-   **STOP your turn after printing this prompt.** Do NOT continue the workflow.
-   The user will respond with their skip reasons in their next message.
-   Resume the workflow (step 2 below) only after receiving the user's response.
-
-2. AI refines each reason — make it concise, technical, and useful for future reference:
-   - User: "don't care" → "Style-only finding — no functional impact"
-   - User: "we do it this way" → "Intentional pattern — project convention"
-   - User: "already covered" → "Already validated by existing test coverage"
-
-3. AI classifies each refined reason (no user interaction):
-   - **Finding-specific** — references specific code, line, variable, or one-off context.
-     Store in DB only (same-PR dedup).
-   - **Generalizable** — references a project-wide pattern, convention, or category of
-     findings (e.g., "don't flag snake_case", "print() is intentional in CLI modules").
-     Store in DB AND append to `.pi/data/review-guidelines.md`.
-
-4. For generalizable reasons, append one line per finding to `.pi/data/review-guidelines.md`
-   (create the file if it doesn't exist). Format:
-
-   ```markdown
-   - Do not flag <finding type> — <refined reason>
-   ```
-
-   This file is read by all 5 reviewer agents before reviewing, so the same class of
-   finding won't be raised again on future PRs in this repo.
+1. Refine each reason into concise technical phrasing.
+2. Classify each refined reason:
+   - **Finding-specific** → store in DB only.
+   - **Generalizable** (project-wide pattern/convention) → store in DB AND append `- Do not flag <finding type> — <refined reason>` to `.pi/data/review-guidelines.md`
+     (create if absent).
 
 ### Phase 5: Post Comments — Task 12
 
-**Step 1: Post `[NEW]` and `[PREV-*]` findings as new review comments:**
+1. **Post `[NEW]` (selected) + `[PREV-*]` (auto-posted):** write `${PROJECT_TMP_DIR}/pr-review-comments.json` and run:
 
-Write JSON to temp file for all `[NEW]` (user-selected) and `[PREV-*]` (auto-posted)
-findings. If only `[PREV-*]` findings exist (zero `[NEW]` findings, selection was skipped),
-still generate the JSON for the auto-posted items:
+   ```bash
+   uvx myk-pi-tools@latest pr post-comment {owner}/{repo} {pr_number} {head_sha} ${PROJECT_TMP_DIR}/pr-review-comments.json
+   ```
 
-Use the `owner`, `repo`, `pr_number`, and `head_sha` from Phase 0 or Phase 1a metadata:
+2. **Reply to approved/edited `[AUTHOR-QUESTION]` items:**
+   - **Review thread (`thread_id` present):** write `${PROJECT_TMP_DIR}/author-question-replies.json` using `"human"` with **`status: "not_addressed"`** (NEVER
+     `"addressed"` — don't auto-resolve someone else's thread), then run:
 
-```bash
-uvx myk-pi-tools@latest pr post-comment {owner}/{repo} {pr_number} {head_sha} ${PROJECT_TMP_DIR}/pr-review-comments.json
-```
+     ```bash
+     uvx myk-pi-tools@latest reviews post ${PROJECT_TMP_DIR}/author-question-replies.json
+     ```
 
-**Step 2: Reply to `[AUTHOR-QUESTION]` findings (approved/edited only):**
+     ```json
+     {"metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": "{pr_number}"}, "human": [{"thread_id": "{thread_id}", "status": "not_addressed", "reply": "{approved_answer}"}]}
+     ```
 
-For each approved or edited author question, reply using the appropriate method based on
-the question's source:
+   - **General PR issue comment (no `thread_id`, has `comment_id`):** write raw markdown to `${PROJECT_TMP_DIR}/author-reply-body.md`, encode safely with `jq -Rs '{body:
+     .}'` (never string-interpolate JSON), and post:
 
-**Review thread questions** (have a `thread_id`):
+     ```bash
+     cat > ${PROJECT_TMP_DIR}/author-reply-body.md << 'REPLY_EOF'
+     > @{commenter} [asked]({comment_url}):
+     > {original_question_first_line}
 
-Write a JSON file with the reply and use `reviews post` which correctly replies in the
-existing thread via GraphQL `addPullRequestReviewThreadReply`:
+     {approved_answer}
+     REPLY_EOF
+     jq -Rs '{body: .}' < ${PROJECT_TMP_DIR}/author-reply-body.md > ${PROJECT_TMP_DIR}/author-reply-body.json
+     gh api /repos/{owner}/{repo}/issues/{pr_number}/comments --input ${PROJECT_TMP_DIR}/author-reply-body.json
+     ```
 
-```bash
-uvx myk-pi-tools@latest reviews post ${PROJECT_TMP_DIR}/author-question-replies.json
-```
+### Phase 5b: Store Posted Comments — Task 13 (MANDATORY)
 
-The JSON file MUST use the `reviews post` format with the `"human"` category key:
+Write `${PROJECT_TMP_DIR}/pr-review-store.json` with ALL findings (posted AND skipped; `[AUTHOR-QUESTION]` uses `status: "posted"` or `"skipped"` — never `"answered"` —
+and optional `"source": "author-question"`):
 
 ```json
 {
-  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": "{pr_number}"},
-  "human": [
-    {"thread_id": "{thread_id}", "status": "not_addressed", "reply": "{approved_answer}"}
-  ]
-}
-```
-
-**IMPORTANT:** Use `status: "not_addressed"` (NOT `"addressed"`). These are threads owned
-by someone else — `"addressed"` would auto-resolve their thread, which is inappropriate.
-`"not_addressed"` posts the reply but leaves the thread open for the original author to resolve.
-
-**General PR issue comments** (no `thread_id`, have `comment_id`):
-
-Write the reply body to a temp file to avoid shell injection, then post via the GitHub API
-with a quoted reference to the original question:
-
-Write the raw markdown reply to a plain text file first, then use `jq` to safely
-encode it as valid JSON (handles quotes, backslashes, newlines):
-
-```bash
-# 1. Build the reply body as raw markdown (not JSON)
-cat > ${PROJECT_TMP_DIR}/author-reply-body.md << 'REPLY_EOF'
-> @{commenter} [asked]({comment_url}):
-> {original_question_first_line}
-
-{approved_answer}
-REPLY_EOF
-
-# 2. Encode as valid JSON using jq (handles all special characters safely)
-jq -Rs '{body: .}' < ${PROJECT_TMP_DIR}/author-reply-body.md > ${PROJECT_TMP_DIR}/author-reply-body.json
-
-# 3. Post via gh api
-gh api /repos/{owner}/{repo}/issues/{pr_number}/comments --input ${PROJECT_TMP_DIR}/author-reply-body.json
-```
-
-NEVER build JSON by string interpolation — always write the reply body as raw text
-and use `jq -Rs '{body: .}'` to produce valid JSON. This prevents both shell injection
-and JSON encoding errors from quotes, backslashes, or newlines in the answer.
-
-### Phase 5b: Store Posted Comments — Task 13
-
-After posting comments, store ALL findings (posted AND skipped) in the PR review database
-for future cycle tracking and same-PR dedup of skipped findings.
-
-1. Write a JSON file with ALL findings:
-
-```bash
-cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
-{
   "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}", "author": "{author}"},
   "comments": [
-    {
-      "thread_id": null,
-      "comment_id": null,
-      "path": "file.py",
-      "line": 42,
-      "body": "Comment body as posted",
-      "severity": "WARNING",
-      "posted_at": "<ISO timestamp>",
-      "status": "posted"
-    },
-    {
-      "thread_id": null,
-      "comment_id": null,
-      "path": "file.py",
-      "line": 99,
-      "body": "Finding description that was skipped",
-      "severity": "SUGGESTION",
-      "posted_at": null,
-      "status": "skipped",
-      "skip_reason": "Refined skip reason from Phase 4"
-    },
-    {
-      "thread_id": "thread_abc123",
-      "comment_id": 456,
-      "path": "utils.py",
-      "line": 10,
-      "body": "Author question: should this use sleep=0?",
-      "severity": "QUESTION",
-      "posted_at": "<ISO timestamp>",
-      "status": "posted",
-      "source": "author-question"
-    },
-    {
-      "thread_id": null,
-      "comment_id": 789,
-      "path": null,
-      "line": null,
-      "body": "General PR question that was skipped",
-      "severity": "QUESTION",
-      "posted_at": null,
-      "status": "skipped",
-      "skip_reason": "User chose not to respond",
-      "source": "author-question"
-    }
+    {"thread_id": null, "comment_id": null, "path": "file.py", "line": 42, "body": "Comment body as posted", "severity": "WARNING", "posted_at": "<ISO timestamp>", "status": "posted"},
+    {"thread_id": null, "comment_id": null, "path": "file.py", "line": 99, "body": "Finding description that was skipped", "severity": "SUGGESTION", "posted_at": null, "status": "skipped", "skip_reason": "Refined skip reason from Phase 4"},
+    {"thread_id": "thread_abc123", "comment_id": 456, "path": "utils.py", "line": 10, "body": "Author question: should this use sleep=0?", "severity": "QUESTION", "posted_at": "<ISO timestamp>", "status": "posted", "source": "author-question"}
   ]
 }
-EOF
 ```
 
-Include `[AUTHOR-QUESTION]` findings with `status: "posted"` (approved/edited and posted)
-or `status: "skipped"` (user chose to skip). Use `"posted"` (not `"answered"`) because
-the `pr store-pr-review` CLI only accepts `posted` or `skipped` as valid
-statuses.
-
-**Note on `source` field:** The `source: "author-question"` field in the JSON example is
-for LLM context only — the CLI's DB schema does not have a `source` column and will
-ignore it. Future review cycles detect already-answered questions by matching
-`path`/`line`/`body` similarity against stored comments, same as other finding types.
-
-Use `{author}` from Phase 0 (`pr info` returns `author` field).
-
-1. Store to database:
+Run:
 
 ```bash
 uvx myk-pi-tools@latest pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
 ```
 
-**This step is MANDATORY — never skip it.** The database is used by future `/pr-review`
-runs to track which comments were posted, verify they were addressed, and auto-skip
-previously dismissed findings.
+### Phase 6: Summary & Cleanup — Task 14
 
-### Phase 6: Summary — Task 14
-
-Display final summary with counts and links. Include:
-
-- New findings posted / skipped counts
-- Previous findings re-raised count
-- Author questions answered / skipped counts
-- Total comments posted
-- PR link
-
-### Cleanup
-
-After the review is complete (all phases done):
-
-1. Delete all tasks: `TaskUpdate(taskId="N", status="deleted")` for every task created in this workflow
-2. Delegate to `git-expert`: remove the clone directory `REVIEW_DIR`
+Display counts (new posted/skipped, previous re-raised, author questions answered/skipped, total posted) and PR link. Then delete all workflow tasks
+(`TaskUpdate(taskId="N", status="deleted")`) and delegate to `git-expert` to remove `REVIEW_DIR`.

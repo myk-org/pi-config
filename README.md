@@ -990,6 +990,24 @@ myk-pi-tools reviews address [--json <reviews.json>] [--replies <mapping.txt>] [
   rejects for Qodo sticky findings (`not_addressed`/`failed`; `skipped` only with an issue-spec-update reply),
   exits non-zero before the JSON is saved
 
+#### Qodo CLI read source (`qodo_cli_state`)
+
+`reviews fetch` / `reviews poll --source qodo` read Qodo findings through the `qodo` CLI's structured
+`pr-review-session` tool when the binary is installed and authenticated (probed per process; stdout shows `via CLI`,
+and the JSON carries `qodo_cli_state`). Missing/unauthenticated binary, a failed read, or an unknown PR head falls
+back to the GitHub sticky scrape (fail open). Read-only: replies are always GitHub comments via `reviews address` —
+never `mark-implemented`/`dismiss`. In CLI mode, GitHub review threads duplicating CLI findings (same thread id) are
+deduped.
+
+- `qodo_cli_state.approved`: `true` only when review `commit_sha` equals the PR head AND zero open findings AND
+  `reviewing` is `false` (a `skipped` auto-run at head with a clean catalog counts as approved).
+- `reviewing`: stays `true` until a settled run (`completed`/`skipped`) covers head, so an in-progress run, a missing
+  or unrecognized status, or any session behind head never approves and stays on the poller's stuck-review retrigger
+  path.
+- `review_complete`: surfaced so a skipped/incomplete run is visible without blocking approval.
+- `reason`: describes the findings catalog (`no_findings`, `open_findings`, `not_at_head`, or `all_resolved`) and can
+  be `all_resolved` while `approved` is `false`.
+
 ### What's protected
 
 **Filesystem isolation** — the container cannot access anything outside the mounted volumes:
