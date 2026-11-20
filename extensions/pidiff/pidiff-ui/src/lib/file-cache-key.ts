@@ -22,13 +22,13 @@ function cyrb53(str: string, seed: number): number {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
   h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   const hash = 4294967296 * (2097151 & h2) + (h1 >>> 0);
-  log.debug("cyrb53", { seed, len: str.length });
+  if (log.isDebugEnabled()) log.debug("cyrb53", { seed, len: str.length });
   return hash;
 }
 
 /** Cache key that changes when file contents change. */
 export function pierreFileCacheKey(name: string, contents: string): string {
   const key = `${name}:${cyrb53(contents, 0).toString(16)}:${cyrb53(contents, 1).toString(16)}:${contents.length}`;
-  log.debug("pierreFileCacheKey", name, key.length);
+  if (log.isDebugEnabled()) log.debug("pierreFileCacheKey", name, key.length);
   return key;
 }

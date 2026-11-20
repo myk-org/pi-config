@@ -4,6 +4,25 @@ import { createLogger } from "../extensions/shared/logger.ts";
 
 const log = createLogger("pidash");
 
+export const EVENT_BUFFER_MAX = 10000;
+export const EVENT_BUFFER_TRIM_AT = 12000;
+
+/**
+ * Append a serialized event to a bounded buffer using amortized trimming
+ * (O(1) amortized instead of O(N) Array.shift() on every delta once full).
+ */
+export function appendEventBuffer(
+  buffer: string[],
+  raw: string,
+  max = EVENT_BUFFER_MAX,
+  trimAt = EVENT_BUFFER_TRIM_AT,
+): void {
+  buffer.push(raw);
+  if (buffer.length >= trimAt) {
+    buffer.splice(0, buffer.length - max);
+  }
+}
+
 export interface PiClient {
   ws: any;
   session: SessionInfo;

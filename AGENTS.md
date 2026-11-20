@@ -99,10 +99,10 @@ All new/modified runtime code (extensions, sidecar, CLI, scripts) MUST log via `
 ## Extensions & Tooling Invariants
 
 - **pidiff:** per-project server (free port, `.pi/run/pidiff.{port,pid}`, `.pi/tmp` legacy read); Refresh reloads in place (disabled when WS down); nested gitignores do
-  not skip top-level dirs; daemon scripts include `scripts/pidiff-git-ignore.ts`.
+  not skip top-level dirs; daemon scripts include `scripts/pidiff-git-diff.ts` and `scripts/pidiff-git-ignore.ts`.
 - **Timers & reload:** guard callbacks with `isLiveExtensionCtx` (`extensions/shared/live-ctx.ts`) and clear intervals on `session_shutdown`.
-- **npm pack:** keep explicit daemon scripts (`scripts/pidash-server.ts`, `pidiff-server.ts`, `pidiff-git-ignore.ts`, `daemon-shared.ts`, `serve-ui.ts`,
-  `pidash-discord.ts`, `httpd.py`) and UI `src/`+`dist/` (never whole `extensions/pidash/`); `prepack` runs `npm run build:extension-uis`.
+- **npm pack:** keep explicit daemon scripts (`scripts/pidash-server.ts`, `pidiff-server.ts`, `pidiff-git-diff.ts`, `pidiff-git-ignore.ts`, `daemon-shared.ts`,
+  `serve-ui.ts`, `pidash-discord.ts`, `httpd.py`) and UI `src/`+`dist/` (never whole `extensions/pidash/`); `prepack` runs `npm run build:extension-uis`.
 - **Oneshot (`-p`/`--print`/`--mode json`):** pitasks, pidash, pidiff, coms, and shutdown dream skip via `extensions/shared/oneshot.ts` (`--mode rpc` is not oneshot; see
   `docs/async-internals.md`). Commands: `docs/extension-commands.md`.
 - **Trail (`trail_enable`):** gates first project nav of substantive turn on `trail_*` (children get 5 read-only tools); map in `graft/` or `.trail/cache/` from worktree
