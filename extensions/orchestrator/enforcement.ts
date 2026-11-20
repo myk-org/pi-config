@@ -305,18 +305,27 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
 }
 
 /** Git protection: worktrees, add ., gitignored files, hooks, protected branches, trailers, DCO */
-async function checkGitProtection(command: string, event: any, ctx: any, gitCwd: string): Promise<EnforcementResult> {
+async function checkGitProtection(
+  command: string,
+  event: any,
+  ctx: any,
+  gitCwd: string,
+  prefetchedBranch?: string | null,
+): Promise<EnforcementResult> {
+  if (!/\bgit\b/.test(command)) return undefined;
   if (!isGitRepo(gitCwd)) return undefined;
 
   // Block branch creation AND switching when use_worktrees is enabled
   if (getSetting(gitCwd, "use_worktrees")) {
-    const mb = getMainBranch(gitCwd) || "main";
-    const hint = `Use: git worktree add .worktrees/<name> -b <branch> ${mb}`;
-    if (realGitSub(command, "checkout") && !/\bgit\b.*\bcheckout\b.*\s--\s/.test(command)) {
-      return { block: true, reason: `⛔ git checkout blocked — use_worktrees is enabled. ${hint}` };
-    }
-    if (realGitSub(command, "switch")) {
-      return { block: true, reason: `⛔ git switch blocked — use_worktrees is enabled. ${hint}` };
+    const blockedCheckout = realGitSub(command, "checkout") && !/\bgit\b.*\bcheckout\b.*\s--\s/.test(command);
+    const blockedSwitch = !blockedCheckout && realGitSub(command, "switch");
+    if (blockedCheckout || blockedSwitch) {
+      const mb = getMainBranch(gitCwd) || "main";
+      const hint = `Use: git worktree add .worktrees/<name> -b <branch> ${mb}`;
+      return {
+        block: true,
+        reason: `⛔ git ${blockedCheckout ? "checkout" : "switch"} blocked — use_worktrees is enabled. ${hint}`,
+      };
     }
   }
 
@@ -338,20 +347,38 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   }
 
   // Block staging gitignored files — pathspecs come from the REAL git add
-  // invocation(s) only, statement-scoped and quote-aware. The old loose
-  // extraction captured across statements (`git add f.ts && bash scripts/x.sh`
-  // blocked on scripts/x.sh) and into -m message text (a commit message
-  // mentioning an ignored path blocked the commit).
+  // invocation(s) only, statement-scoped and quote-aware. Batch multi-file
+  // checks via `git check-ignore --stdin -z` to avoid O(N) spawns.
   {
     const staged = gitAddPathspecs(command);
-    if (staged && staged.length > 0) {
-      for (const file of staged) {
-        const checkIgnored = runGit(["check-ignore", "-q", file], gitCwd);
-        if (checkIgnored.code === 0) {
-          return {
-            block: true,
-            reason: `⛔ '${file}' is in .gitignore. Do not stage ignored files.`,
-          };
+    if (staged && staged.length === 1) {
+      const checkIgnored = runGit(["check-ignore", "-q", staged[0]], gitCwd);
+      if (checkIgnored.code === 0) {
+        return {
+          block: true,
+          reason: `⛔ '${staged[0]}' is in .gitignore. Do not stage ignored files.`,
+        };
+      }
+    } else if (staged && staged.length > 1) {
+      const batched = runGit(["check-ignore", "--stdin", "-z"], gitCwd, `${staged.join("\0")}\0`);
+      const firstIgnored = batched.stdout.split("\0").find(Boolean);
+      if (firstIgnored) {
+        return {
+          block: true,
+          reason: `⛔ '${firstIgnored}' is in .gitignore. Do not stage ignored files.`,
+        };
+      }
+      // Exit code 1 means none ignored; any other error (e.g. fatal outside-repo pathspec)
+      // falls back to per-file checks so an earlier invalid path cannot hide a later ignored one.
+      if (batched.code !== 0 && batched.code !== 1) {
+        for (const file of staged) {
+          const checkIgnored = runGit(["check-ignore", "-q", file], gitCwd);
+          if (checkIgnored.code === 0) {
+            return {
+              block: true,
+              reason: `⛔ '${file}' is in .gitignore. Do not stage ignored files.`,
+            };
+          }
         }
       }
     }
@@ -366,8 +393,9 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   }
   // --no-verify must appear in the commit invocation's ARGUMENTS — a
   // message that merely mentions --no-verify is not a hooks bypass.
+  const isCommit = realGitSub(command, "commit");
   if (
-    realGitSub(command, "commit") &&
+    isCommit &&
     gitSubArgRegions(command, "commit").some((r) => /(?:^|\s)--no-verify\b/.test(stripQuotedSpans(r)))
   ) {
     return {
@@ -376,12 +404,15 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
     };
   }
 
-  const branch = getCurrentBranch(gitCwd);
+  const isPush = realGitSub(command, "push");
+  if (!isCommit && !isPush) return undefined;
+
+  const branch = prefetchedBranch !== undefined ? prefetchedBranch : getCurrentBranch(gitCwd);
   const mainBranch = getMainBranch(gitCwd);
   const protectedBranches = getProtectedBranches(gitCwd);
 
   // Block commits to protected branches (unless allow_push_to_protected is set)
-  if (realGitSub(command, "commit")) {
+  if (isCommit) {
     if (!branch)
       return {
         block: true,
@@ -429,7 +460,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   }
 
   // Block pushes to protected branches
-  if (realGitSub(command, "push")) {
+  if (isPush) {
     // Block if currently on a protected branch
     if (!getSetting(gitCwd, "allow_push_to_protected_branches")) {
       if (branch && protectedBranches.has(branch))
@@ -1206,12 +1237,15 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     // Enforce review loop — block commit unless review state is clean
     // Use resolveEffectiveCwd to detect the worktree from cd commands (e.g., cd .worktrees/issue-622 && git commit)
-    if (process.env.PI_AGENT_NAME === "git-expert" && realGitSub(command, "commit")) {
-      const commitCwd = resolveEffectiveCwd(command, ctx.cwd);
+    const hasGitWord = /\bgit\b/.test(command);
+    const isGitExpertCommit = process.env.PI_AGENT_NAME === "git-expert" && realGitSub(command, "commit");
+    const gitCwd = hasGitWord || isGitExpertCommit ? resolveEffectiveCwd(command, ctx.cwd) : ctx.cwd;
+    let prefetchedBranch: string | null | undefined = undefined;
+    if (isGitExpertCommit) {
       // Skip review enforcement on version bump branches (release workflow only)
-      const commitBranch = getCurrentBranch(commitCwd);
-      if (!isBumpVersionBranch(commitBranch) && getSetting(commitCwd, "review_loop_enforcement") && !isCommitAllowed(commitCwd)) {
-        const state = readReviewState(commitCwd);
+      prefetchedBranch = getCurrentBranch(gitCwd);
+      if (!isBumpVersionBranch(prefetchedBranch) && getSetting(gitCwd, "review_loop_enforcement") && !isCommitAllowed(gitCwd)) {
+        const state = readReviewState(gitCwd);
         const testInfo = state.status === "clean" && !state.tests_passed ? " Tests have not passed yet — run tests before committing." : "";
         const reviewAdvice = state.status !== "clean" ? " Fix findings and re-run all reviewers until 0 comments." : "";
         return {
@@ -1222,8 +1256,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     // Git protection
-    const gitCwd = resolveEffectiveCwd(command, ctx.cwd);
-    const gitCheck = await checkGitProtection(command, event, ctx, gitCwd);
+    const gitCheck = hasGitWord ? await checkGitProtection(command, event, ctx, gitCwd, prefetchedBranch) : undefined;
     if (gitCheck) return gitCheck;
 
     const tmpCheck = checkTempFileEnforcement(command, ctx.cwd);

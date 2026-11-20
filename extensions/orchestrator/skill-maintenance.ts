@@ -39,6 +39,10 @@ const SKILL_PATH_RE = /(?:^|[\s"'=:(`])(?:[^\s"'=:(`]*\/)?skills\/([A-Za-z0-9][A
 const PATH_LEFT_BOUNDARY_RE = /[\s"'=:(`]/;
 const PATH_RIGHT_BOUNDARY_RE = /[/\s"'):;|&`]/;
 const MARKER_LINE_RE = new RegExp(`^\\s*${MARKER_KEY}\\s*:\\s*${MARKER_VALUE}\\s*$`);
+const SKILL_TABLE_CACHE_MAX = 16;
+const MARKED_FILE_CACHE_MAX = 256;
+const PROJECT_ROOTS_CACHE_MAX = 32;
+const FALLBACK_CACHE_MAX = 16;
 
 export type SkillChangeAction = "patched" | "written";
 export interface SkillChange {
@@ -61,6 +65,55 @@ export interface RegisteredSkillInfo {
 export interface AdoptResult {
   ok: boolean;
   message: string;
+}
+
+interface ResolvedSkill {
+  skill: RegisteredSkillInfo;
+  realFile: string;
+  realBase: string;
+  isSkillMd: boolean;
+  adoptable: boolean;
+}
+
+interface SkillTable {
+  fingerprint: string;
+  entries: ResolvedSkill[];
+  byName: Map<string, ResolvedSkill>;
+  adoptableByName: Map<string, ResolvedSkill>;
+  packageFiles: Set<string>;
+  packageBases: string[];
+}
+
+const skillTableByRef = new WeakMap<readonly RegisteredSkillInfo[], SkillTable>();
+const skillTableCache = new Map<string, SkillTable>();
+const markedFileCache = new Map<string, { mtimeMs: number; ctimeMs: number; size: number; marked: boolean }>();
+const projectRootsCache = new Map<string, string[]>();
+const fallbackTableCache = new Map<string, { signature: string; table: SkillTable }>();
+
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  if (map.has(key)) map.delete(key);
+  else if (map.size >= max) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
+}
+
+/** Clear cached skill metadata (for session boundaries and tests). */
+export function invalidateSkillMaintenanceCache(projectCwd?: string): void {
+  skillTableCache.clear();
+  markedFileCache.clear();
+  if (projectCwd) {
+    const resolved = path.resolve(projectCwd);
+    projectRootsCache.delete(resolved);
+    for (const key of fallbackTableCache.keys()) {
+      if (key.startsWith(`${resolved}\0`)) fallbackTableCache.delete(key);
+    }
+  } else {
+    projectRootsCache.clear();
+    fallbackTableCache.clear();
+  }
+  log.debug("skill_maintenance_cache_invalidated", { projectCwd: projectCwd ?? "*" });
 }
 
 // ── paths & discovery ───────────────────────────────────────────────────────
@@ -95,6 +148,94 @@ function hasPackageSkillSegments(p: string): boolean {
   return nm >= 0 && segs.indexOf("skills", nm) > nm;
 }
 
+function skillsFingerprint(skills?: readonly RegisteredSkillInfo[]): string {
+  if (!skills || skills.length === 0) return "";
+  return skills.map((s) => `${s.name}\0${s.filePath}\0${s.scope}\0${s.origin}`).join("\n");
+}
+
+function buildSkillTable(
+  skills: readonly RegisteredSkillInfo[],
+  extraPackageReference?: readonly RegisteredSkillInfo[],
+): SkillTable {
+  const packageFiles = new Set<string>();
+  const packageBases: string[] = [];
+
+  const registerPkg = (skill: RegisteredSkillInfo, realFile: string, realBase: string) => {
+    if (skill.origin !== "package") return;
+    packageFiles.add(realFile);
+    if (path.basename(skill.filePath) === "SKILL.md") packageBases.push(realBase);
+  };
+
+  const preResolved = skills.map((skill) => {
+    const realFile = realpathNearestExisting(skill.filePath) ?? path.resolve(skill.filePath);
+    const realBase = realpathNearestExisting(skill.baseDir) ?? path.resolve(skill.baseDir);
+    registerPkg(skill, realFile, realBase);
+    return { skill, realFile, realBase, isSkillMd: path.basename(skill.filePath) === "SKILL.md" };
+  });
+
+  if (extraPackageReference) {
+    for (const skill of extraPackageReference) {
+      if (skill.origin !== "package") continue;
+      const realFile = realpathNearestExisting(skill.filePath) ?? path.resolve(skill.filePath);
+      const realBase = realpathNearestExisting(skill.baseDir) ?? path.resolve(skill.baseDir);
+      registerPkg(skill, realFile, realBase);
+    }
+  }
+
+  const hitsPackageTarget = (realTarget: string): boolean => {
+    if (packageFiles.has(realTarget)) return true;
+    for (const pkgBase of packageBases) {
+      if (isAtOrUnder(pkgBase, realTarget)) return true;
+    }
+    return false;
+  };
+
+  const entries: ResolvedSkill[] = [];
+  const byName = new Map<string, ResolvedSkill>();
+  const adoptableByName = new Map<string, ResolvedSkill>();
+
+  for (const item of preResolved) {
+    const { skill, realFile, realBase, isSkillMd } = item;
+    const isPkg =
+      skill.origin === "package" ||
+      hasPackageSkillSegments(skill.filePath) ||
+      hasPackageSkillSegments(realFile) ||
+      hasPackageSkillSegments(skill.baseDir) ||
+      hasPackageSkillSegments(realBase) ||
+      hitsPackageTarget(realFile) ||
+      (isSkillMd && hitsPackageTarget(realBase));
+    const resolved: ResolvedSkill = {
+      skill,
+      realFile,
+      realBase,
+      isSkillMd,
+      adoptable: !isPkg,
+    };
+    entries.push(resolved);
+    if (!byName.has(skill.name)) byName.set(skill.name, resolved);
+    if (resolved.adoptable && !adoptableByName.has(skill.name)) adoptableByName.set(skill.name, resolved);
+  }
+
+  const fingerprint = skillsFingerprint(skills);
+  log.debug("skill_table_built", { total: entries.length, adoptable: adoptableByName.size });
+  return { fingerprint, entries, byName, adoptableByName, packageFiles, packageBases };
+}
+
+function getSkillTable(skills: readonly RegisteredSkillInfo[]): SkillTable {
+  const byRef = skillTableByRef.get(skills);
+  if (byRef) return byRef;
+  const fp = skillsFingerprint(skills);
+  const cached = skillTableCache.get(fp);
+  if (cached) {
+    skillTableByRef.set(skills, cached);
+    return cached;
+  }
+  const built = buildSkillTable(skills);
+  skillTableByRef.set(skills, built);
+  setBounded(skillTableCache, fp, built, SKILL_TABLE_CACHE_MAX);
+  return built;
+}
+
 /** True when `candidate` (raw or resolved) sits under `node_modules/.../skills/`. */
 export function isPackageSkillPath(candidate: string): boolean {
   if (typeof candidate !== "string" || candidate.trim() === "") return false;
@@ -108,14 +249,10 @@ export function isRegisteredPackageTarget(targetPath: string, skills?: readonly 
   if (!skills?.length || typeof targetPath !== "string" || targetPath.trim() === "") return false;
   const resolved = path.resolve(targetPath);
   const realTarget = realpathNearestExisting(resolved) ?? resolved;
-  for (const skill of skills) {
-    if (skill.origin !== "package") continue;
-    const realFile = realpathNearestExisting(skill.filePath) ?? path.resolve(skill.filePath);
-    if (realTarget === realFile) return true;
-    if (path.basename(skill.filePath) === "SKILL.md") {
-      const realBase = realpathNearestExisting(skill.baseDir) ?? path.resolve(skill.baseDir);
-      if (isAtOrUnder(realBase, realTarget)) return true;
-    }
+  const table = getSkillTable(skills);
+  if (table.packageFiles.has(realTarget)) return true;
+  for (const pkgBase of table.packageBases) {
+    if (isAtOrUnder(pkgBase, realTarget)) return true;
   }
   return false;
 }
@@ -154,6 +291,13 @@ export function skillsFromCommands(
 
 /** True when a skill may be adopted (excludes shipped package skills and symlinks to them). */
 export function isAdoptableSkill(skill: RegisteredSkillInfo, allSkills?: readonly RegisteredSkillInfo[]): boolean {
+  if (allSkills?.length) {
+    const table = getSkillTable(allSkills);
+    const hit = table.byName.get(skill.name);
+    if (hit && hit.skill.filePath === skill.filePath && hit.skill.origin === skill.origin) {
+      return hit.adoptable;
+    }
+  }
   if (skill.origin === "package" || isPackageSkillPath(skill.filePath) || isPackageSkillPath(skill.baseDir)) {
     return false;
   }
@@ -165,20 +309,47 @@ export function isAdoptableSkill(skill: RegisteredSkillInfo, allSkills?: readonl
 }
 
 function projectSkillsRoots(projectCwd: string): string[] {
+  const key = path.resolve(projectCwd);
+  const cached = projectRootsCache.get(key);
+  if (cached) return cached;
   const roots: string[] = [];
   for (const base of [projectCwd, resolveMainCheckoutRoot(projectCwd)]) {
     const dir = path.join(realpathNearestExisting(base) ?? path.resolve(base), ".pi", "skills");
     if (!roots.includes(dir)) roots.push(dir);
   }
+  setBounded(projectRootsCache, key, roots, PROJECT_ROOTS_CACHE_MAX);
   return roots;
 }
 
-function readSkillContent(filePath: string): string | null {
+function isSkillFileMarked(filePath: string): boolean | null {
   try {
-    return fs.readFileSync(filePath, "utf-8");
+    const st = fs.statSync(filePath);
+    const cached = markedFileCache.get(filePath);
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.ctimeMs === st.ctimeMs && cached.size === st.size) {
+      return cached.marked;
+    }
+    const content = fs.readFileSync(filePath, "utf-8");
+    const marked = isMarkedSkill(content);
+    setBounded(
+      markedFileCache,
+      filePath,
+      { mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, size: st.size, marked },
+      MARKED_FILE_CACHE_MAX,
+    );
+    return marked;
   } catch (err) {
+    markedFileCache.delete(filePath);
     log.debug("skill_read_failed", { filePath, reason: errMsg(err) });
     return null;
+  }
+}
+
+function dirStatStamp(dir: string): string {
+  try {
+    const st = fs.statSync(dir);
+    return `${st.mtimeMs}:${st.ctimeMs}:${st.size}`;
+  } catch {
+    return "missing";
   }
 }
 
@@ -224,27 +395,66 @@ function listFallbackProjectSkills(projectCwd: string, allSkills?: readonly Regi
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function getFallbackSkillTable(projectCwd: string, allSkills?: readonly RegisteredSkillInfo[]): SkillTable {
+  const roots = projectSkillsRoots(projectCwd);
+  const fp = skillsFingerprint(allSkills);
+  const cacheKey = `${path.resolve(projectCwd)}\0${fp}`;
+  const signature = `${roots.map((r) => `${r}=${dirStatStamp(r)}`).join("|")}\0${fp}`;
+  const cached = fallbackTableCache.get(cacheKey);
+  if (cached && cached.signature === signature) {
+    return cached.table;
+  }
+  const list = listFallbackProjectSkills(projectCwd, allSkills);
+  const table = buildSkillTable(list, allSkills);
+  setBounded(fallbackTableCache, cacheKey, { signature, table }, FALLBACK_CACHE_MAX);
+  return table;
+}
+
+function searchSkillTable(
+  table: SkillTable,
+  abs: string,
+  realAbs: string,
+): { skill: RegisteredSkillInfo; file: string; adoptable: boolean } | null {
+  for (const entry of table.entries) {
+    const { skill, realBase, realFile, isSkillMd, adoptable } = entry;
+    if (!isSkillMd) {
+      if (abs === skill.filePath || realAbs === realFile) {
+        return { skill, file: path.basename(skill.filePath), adoptable };
+      }
+      continue;
+    }
+    if (isAtOrUnder(skill.baseDir, abs)) {
+      return { skill, file: path.relative(skill.baseDir, abs) || ".", adoptable };
+    }
+    if (isAtOrUnder(realBase, realAbs)) {
+      return { skill, file: path.relative(realBase, realAbs) || ".", adoptable };
+    }
+    if (realAbs === realFile) {
+      return { skill, file: "SKILL.md", adoptable };
+    }
+  }
+  return null;
+}
+
 function matchSkillPath(
   projectCwd: string,
   abs: string,
   skills?: readonly RegisteredSkillInfo[],
-): { skill: RegisteredSkillInfo; file: string } | null {
+): { skill: RegisteredSkillInfo; file: string; adoptable: boolean } | null {
   const realAbs = realpathNearestExisting(abs) ?? abs;
-  const search = (list: readonly RegisteredSkillInfo[]) => {
-    for (const skill of list) {
-      const realBase = realpathNearestExisting(skill.baseDir) ?? skill.baseDir;
-      const realFile = realpathNearestExisting(skill.filePath) ?? skill.filePath;
-      if (path.basename(skill.filePath) !== "SKILL.md") {
-        if (abs === skill.filePath || realAbs === realFile) return { skill, file: path.basename(skill.filePath) };
-        continue;
-      }
-      if (isAtOrUnder(skill.baseDir, abs)) return { skill, file: path.relative(skill.baseDir, abs) || "." };
-      if (isAtOrUnder(realBase, realAbs)) return { skill, file: path.relative(realBase, realAbs) || "." };
-      if (realAbs === realFile) return { skill, file: "SKILL.md" };
-    }
-    return null;
-  };
-  return (skills?.length ? search(skills) : null) ?? search(listFallbackProjectSkills(projectCwd, skills));
+  if (skills?.length) {
+    const hit = searchSkillTable(getSkillTable(skills), abs, realAbs);
+    if (hit) return hit;
+  }
+  // When pi.getCommands() supplied the live skills list, skip the fallback
+  // .pi/skills/ directory scan unless the target actually lives under a
+  // project skills root (e.g., a brand-new skill created mid-session).
+  if (skills !== undefined) {
+    const roots = projectSkillsRoots(projectCwd);
+    const underProjectSkills = roots.some((root) => isAtOrUnder(root, abs) || isAtOrUnder(root, realAbs));
+    if (!underProjectSkills) return null;
+  }
+  return searchSkillTable(getFallbackSkillTable(projectCwd, skills), abs, realAbs);
 }
 
 function isBrandNewSkillFile(abs: string): boolean {
@@ -295,20 +505,20 @@ export function stampSkill(content: string): { content: string; changed: boolean
   return { content: stamped, changed: stamped !== content };
 }
 
-function allAdoptableSkills(projectCwd: string, skills?: readonly RegisteredSkillInfo[]): Map<string, RegisteredSkillInfo> {
-  const byName = new Map<string, RegisteredSkillInfo>();
-  const candidates = skills !== undefined ? skills : listFallbackProjectSkills(projectCwd);
-  for (const skill of candidates) {
-    if (isAdoptableSkill(skill, skills) && !byName.has(skill.name)) byName.set(skill.name, skill);
+function resolvedAdoptableMap(
+  projectCwd: string,
+  skills?: readonly RegisteredSkillInfo[],
+): Map<string, ResolvedSkill> {
+  if (skills !== undefined) {
+    return getSkillTable(skills).adoptableByName;
   }
-  return byName;
+  return getFallbackSkillTable(projectCwd).adoptableByName;
 }
 
 function collectAdoptableUnmarkedSkills(projectCwd: string, skills?: readonly RegisteredSkillInfo[]): RegisteredSkillInfo[] {
   const unmarked: RegisteredSkillInfo[] = [];
-  for (const skill of allAdoptableSkills(projectCwd, skills).values()) {
-    const content = readSkillContent(skill.filePath);
-    if (content !== null && !isMarkedSkill(content)) unmarked.push(skill);
+  for (const resolved of resolvedAdoptableMap(projectCwd, skills).values()) {
+    if (isSkillFileMarked(resolved.skill.filePath) === false) unmarked.push(resolved.skill);
   }
   return unmarked.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -347,6 +557,7 @@ export function adoptSkill(projectCwd: string, name: string, skills?: readonly R
     const { content: stamped, changed } = stampSkill(fs.readFileSync(matched.filePath, "utf-8"));
     if (!changed) return { ok: true, message: `Skill "${name}" is already maintained.` };
     fs.writeFileSync(matched.filePath, stamped, "utf-8");
+    markedFileCache.delete(matched.filePath);
     log.info("adopt_skill_marked", { name, file: matched.filePath, scope: matched.scope });
     return { ok: true, message: `✅ Skill "${name}" is now maintained.` };
   } catch (err) {
@@ -376,26 +587,24 @@ function containsPathBoundary(text: string, target: string): boolean {
 
 export function markedSkillsInText(projectCwd: string, text: string, skills?: readonly RegisteredSkillInfo[]): string[] {
   if (typeof text !== "string" || !text) return [];
-  const byName = allAdoptableSkills(projectCwd, skills);
+  const byName = resolvedAdoptableMap(projectCwd, skills);
   const found = new Set<string>();
-  const addIfMarked = (skill: RegisteredSkillInfo | undefined): void => {
-    if (!skill || found.has(skill.name)) return;
-    const content = readSkillContent(skill.filePath);
-    if (content !== null && isMarkedSkill(content)) found.add(skill.name);
+  const addIfMarked = (resolved: ResolvedSkill | undefined): void => {
+    if (!resolved || found.has(resolved.skill.name)) return;
+    if (isSkillFileMarked(resolved.skill.filePath) === true) found.add(resolved.skill.name);
   };
   for (const match of text.matchAll(SKILL_INVOCATION_RE)) addIfMarked(byName.get(match[1]));
   for (const match of text.matchAll(SKILL_PATH_RE)) addIfMarked(byName.get(match[1]));
-  for (const skill of byName.values()) {
-    if (path.basename(skill.filePath) !== "SKILL.md") {
-      const realFile = realpathNearestExisting(skill.filePath);
-      if (containsPathBoundary(text, skill.filePath) || (realFile !== null && containsPathBoundary(text, realFile))) {
-        addIfMarked(skill);
+  for (const resolved of byName.values()) {
+    const { skill, realFile, realBase, isSkillMd } = resolved;
+    if (!isSkillMd) {
+      if (containsPathBoundary(text, skill.filePath) || containsPathBoundary(text, realFile)) {
+        addIfMarked(resolved);
       }
       continue;
     }
-    const realBase = realpathNearestExisting(skill.baseDir);
-    if (containsPathBoundary(text, skill.baseDir) || (realBase !== null && containsPathBoundary(text, realBase))) {
-      addIfMarked(skill);
+    if (containsPathBoundary(text, skill.baseDir) || containsPathBoundary(text, realBase)) {
+      addIfMarked(resolved);
     }
   }
   const matched = [...found];
@@ -515,16 +724,41 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
   let provenanceFailed = false;
   let snapshotPrimed = false;
 
+  let lastRawCommands: unknown = null;
+  let lastCommandsFingerprint: string | null = null;
+  let lastLiveSkills: RegisteredSkillInfo[] | undefined = undefined;
+
   const getLiveSkills = (): RegisteredSkillInfo[] | undefined => {
     if (typeof pi.getCommands !== "function") {
       log.debug("skills_from_pi_commands_unavailable");
       return undefined;
     }
     try {
-      const skills = skillsFromCommands(pi.getCommands());
+      const commands = pi.getCommands();
+      if (commands === lastRawCommands && lastLiveSkills !== undefined) {
+        return lastLiveSkills;
+      }
+      // Compute lightweight fingerprint from skill commands without allocating RegisteredSkillInfo[]
+      let fp = "";
+      for (const cmd of commands as ReadonlyArray<{ name?: string; source?: string; sourceInfo?: { path?: string; scope?: string; origin?: string } }>) {
+        if (cmd?.source !== "skill") continue;
+        fp += `${cmd.name ?? ""}\0${cmd.sourceInfo?.path ?? ""}\0${cmd.sourceInfo?.scope ?? ""}\0${cmd.sourceInfo?.origin ?? ""}\n`;
+      }
+      if (lastLiveSkills !== undefined && fp === lastCommandsFingerprint) {
+        lastRawCommands = commands;
+        return lastLiveSkills;
+      }
+      const skills = skillsFromCommands(commands);
+      lastRawCommands = commands;
+      lastCommandsFingerprint = fp;
+      lastLiveSkills = skills;
+      getSkillTable(skills);
       log.debug("skills_from_pi_commands", { count: skills.length });
       return skills;
     } catch (err) {
+      lastRawCommands = null;
+      lastCommandsFingerprint = null;
+      lastLiveSkills = undefined;
       log.warn("skills_from_pi_commands_failed", { reason: errMsg(err) });
       return undefined;
     }
@@ -555,6 +789,10 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     currentCwd = ctx.cwd;
+    lastRawCommands = null;
+    lastCommandsFingerprint = null;
+    lastLiveSkills = undefined;
+    invalidateSkillMaintenanceCache(ctx.cwd);
     turnSnapshot = snapshotSkillTree(projectSkillsRoots(ctx.cwd)[0]);
     snapshotPrimed = true;
   });
@@ -610,22 +848,17 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
     const liveSkills = getLiveSkills();
     const input = (event as any)?.input;
     const target = pathFromInput(input);
-    if (target) {
-      const matched = matchSkillPath(ctx.cwd, path.resolve(ctx.cwd, target), liveSkills);
-      if (matched && isAdoptableSkill(matched.skill, liveSkills)) {
-        const content = readSkillContent(matched.skill.filePath);
-        if (content !== null && isMarkedSkill(content)) usedSkills.add(matched.skill.name);
-      }
-    } else if (typeof (input as any)?.command === "string") {
-      for (const name of markedSkillsInText(ctx.cwd, (input as any).command, liveSkills)) usedSkills.add(name);
-    }
-
-    const pending = pendingWrites.get(String((event as any)?.toolCallId ?? ""));
+    const callId = String((event as any)?.toolCallId ?? "");
+    const pending = pendingWrites.get(callId);
     if (pending) {
-      pendingWrites.delete(String((event as any)?.toolCallId ?? ""));
+      pendingWrites.delete(callId);
       if ((event as any)?.isError === true) {
         log.warn("skill_write_failed_not_recorded", { skill: pending.skill, file: pending.file });
       } else {
+        if (target) markedFileCache.delete(path.resolve(ctx.cwd, target));
+        for (const key of fallbackTableCache.keys()) {
+          if (key.startsWith(`${path.resolve(ctx.cwd)}\0`)) fallbackTableCache.delete(key);
+        }
         const action: SkillChangeAction = pending.written ? "written" : "patched";
         recordedChangesThisTurn.push({ skill: pending.skill, action, file: pending.file });
         const sessionId = (ctx as any)?.sessionManager?.getSessionId?.() ?? "";
@@ -635,6 +868,15 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
         if (!ok) provenanceFailed = true;
         log.info("skill_write_recorded", { skill: pending.skill, action, file: pending.file });
       }
+    }
+
+    if (target) {
+      const matched = matchSkillPath(ctx.cwd, path.resolve(ctx.cwd, target), liveSkills);
+      if (matched && matched.adoptable && isSkillFileMarked(matched.skill.filePath) === true) {
+        usedSkills.add(matched.skill.name);
+      }
+    } else if (typeof (input as any)?.command === "string") {
+      for (const name of markedSkillsInText(ctx.cwd, (input as any).command, liveSkills)) usedSkills.add(name);
     }
 
     if ((event as any)?.isError !== true) return;

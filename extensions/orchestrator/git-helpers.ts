@@ -2,7 +2,7 @@
  * Git utility functions for enforcement and status line.
  */
 
-import { execFile, execSync } from "node:child_process";
+import { execFile, execFileSync, execSync } from "node:child_process";
 import { resolve } from "node:path";
 import { createLogger } from "../shared/logger.js";
 
@@ -11,10 +11,12 @@ const gitLog = createLogger("git-helpers");
 export function runGit(
   args: string[],
   cwd?: string,
+  input?: string,
 ): { stdout: string; code: number } {
   try {
-    const stdout = execSync(`git --no-optional-locks ${args.join(" ")}`, {
+    const stdout = execFileSync("git", ["--no-optional-locks", ...args], {
       cwd,
+      input,
       timeout: 5000,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -26,7 +28,12 @@ export function runGit(
     });
     return { stdout: stdout.trimEnd(), code: 0 };
   } catch (e: any) {
-    return { stdout: (e.stdout || "").trimEnd(), code: e.status || 1 };
+    const rawOut = typeof e?.stdout === "string"
+      ? e.stdout
+      : Buffer.isBuffer(e?.stdout)
+        ? e.stdout.toString("utf-8")
+        : "";
+    return { stdout: rawOut.trimEnd(), code: e?.status || 1 };
   }
 }
 
@@ -365,14 +372,9 @@ export function getProtectedBranches(cwd?: string): Set<string> {
 
   const fallback = new Set(["main", "master"]);
 
-  if (!isGithubRepo(cwd)) {
-    protectedBranchesCache.set(repoKey, fallback);
-    return fallback;
-  }
-
-  // Get owner/repo from remote URL
+  // Single git call for remote URL instead of calling isGithubRepo() + runGit()
   const remote = runGit(["remote", "get-url", "origin"], cwd);
-  if (remote.code !== 0) {
+  if (remote.code !== 0 || !remote.stdout.toLowerCase().includes("github.com")) {
     protectedBranchesCache.set(repoKey, fallback);
     return fallback;
   }
@@ -385,8 +387,9 @@ export function getProtectedBranches(cwd?: string): Set<string> {
 
   const repo = match[1];
   try {
-    const out = execSync(
-      `gh api repos/${repo}/branches --paginate --jq '.[] | select(.protected==true) | .name'`,
+    const out = execFileSync(
+      "gh",
+      ["api", `repos/${repo}/branches`, "--paginate", "--jq", ".[] | select(.protected==true) | .name"],
       { cwd, timeout: 10000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     const branches = new Set(

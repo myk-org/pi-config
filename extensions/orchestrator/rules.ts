@@ -221,19 +221,23 @@ export function registerRules(
       }
     }
 
-    // Async agent status — always show so the AI knows what's running
+    // Async agent status — always show so the AI knows what's running.
+    // Built separately from `extra` so ticking durations don't invalidate
+    // `sections.orchestrator_rules` on every turn (#1178).
+    let asyncStatus = "";
     if (!isSubagent && getAsyncJobs) {
       const jobs = getAsyncJobs();
       if (jobs.length === 0) {
-        extra += "\n\n# Async Agents Status\n\nNo async agents running.\n";
+        asyncStatus = "\n\n# Async Agents Status\n\nNo async agents running.\n";
       } else {
         let status = `\n\n# Async Agents Status\n\n${jobs.length} async agent(s) running — kill any that are no longer needed:\n`;
         for (const j of jobs) {
           const elapsed = formatDuration(Date.now() - j.startedAt);
           status += `- ${j.name || j.agent} (${j.agent}) — ${elapsed}\n`;
         }
-        extra += status;
+        asyncStatus = status;
       }
+      log.debug("async_agents_status_built", { jobCount: jobs.length, chars: asyncStatus.length });
     }
 
     // 1.4.0's BeforeAgentStartEvent is a union: `prompt` exists only on the user
@@ -319,7 +323,7 @@ export function registerRules(
       } catch (e: any) { log.debug("session history auto-inject failed:", e?.message?.slice(0, 100)); }
     }
 
-    if (!extra && !memories && !contextMemories && !sessionContext) return;
+    if (!extra && !asyncStatus && !memories && !contextMemories && !sessionContext) return;
 
     // Inject as structured system-prompt sections (issue #915): mutating
     // systemPromptOptions.sections lets pi append a transcript delta that
@@ -332,6 +336,7 @@ export function registerRules(
     const sections = opts?.sections;
     if (!forced && sections && typeof sections === "object") {
       if (extra) sections.orchestrator_rules = extra.trim();
+      if (asyncStatus) sections.async_agents_status = asyncStatus.trim();
       if (memories) sections.project_memory = memories.trim();
       if (contextMemories) sections.contextual_memories = contextMemories.trim();
       if (sessionContext) sections.past_sessions = sessionContext.trim();
@@ -341,7 +346,7 @@ export function registerRules(
     // Fallback: an earlier handler forced the whole prompt, or this pi
     // version does not expose systemPromptOptions — compose on top of the
     // current prompt text the legacy way so our context is not lost.
-    return { systemPrompt: event.systemPrompt + extra + memories + contextMemories + sessionContext };
+    return { systemPrompt: event.systemPrompt + extra + asyncStatus + memories + contextMemories + sessionContext };
   });
 
   // Post-turn memory reminder: after a turn completes, check if any tool

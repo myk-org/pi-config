@@ -740,3 +740,86 @@ describe("Logger injection", () => {
     }
   });
 });
+
+describe("Wiring JSON caching (#1190)", () => {
+  it("parses wiring.json once across session_start, edit blastHint, tool invoke, and refresh, and invalidates on disk change", async () => {
+    trail.clearTrailWiringCache();
+    const root = makeTempDir("trail-wiring-cache-");
+    const wiringPath = join(root, "graft/.graph/wiring.json");
+    try {
+      mkdirSync(join(root, "graft/.graph"), { recursive: true });
+      const writeGraph = (nodes: any[], edges: any[], nodeCount = nodes.length) => {
+        writeFileSync(wiringPath, JSON.stringify({ meta: { nodeCount }, nodes, edges }));
+      };
+      writeGraph(
+        [
+          { id: "t1", name: "fnOne", path: "src/target.ts" },
+          { id: "t2", name: "fnTwo", path: "src/target.ts" },
+          { id: "c1", name: "callerA", path: "src/a.ts" },
+          { id: "c2", name: "callerB", path: "src/b.ts" },
+        ],
+        [
+          { source: "c2", target: "t2", relation: "calls" },
+          { source: "t1", target: "t2", relation: "calls" }, // internal same-file edge must be ignored
+          { source: "c1", target: "t1", relation: "imports" },
+        ],
+      );
+
+      const { logger, entriesFor } = capturingLogger();
+      const r = register({
+        logger,
+        worktree: () => root,
+        results: [
+          { stdout: JSON.stringify({ hits: [{ title: "fnOne", pointer: "src/target.ts:1" }] }) },
+          { stdout: "found" },
+          { stdout: "" }, // refresh build
+        ],
+      });
+      const c = await start(r, ctx(root));
+
+      // session_start loads map twice (once directly, once in graph()); second must hit cache
+      assert.equal(entriesFor("wiring_cache_parsed").length, 1);
+      assert.ok(entriesFor("wiring_cache_hit").length >= 1);
+
+      // before_agent_start retrieval -> calls loadMap() again -> cache hit
+      await r.handlers.get("before_agent_start")![0](promptEvent("find fnOne in target"), c);
+      assert.equal(entriesFor("wiring_cache_parsed").length, 1);
+
+      // edit tool_result -> blastHint() preserves edge order across multiple target nodes and hits cache
+      const hintRes = await r.handlers.get("tool_result")![0](
+        { toolName: "edit", input: { path: "src/target.ts" }, isError: false, content: [] },
+        c,
+      );
+      assert.equal(entriesFor("wiring_cache_parsed").length, 1);
+      assert.ok(hintRes?.content?.[0]?.text);
+      const lines = hintRes.content[0].text.split("\n").slice(1);
+      assert.deepEqual(lines, [
+        " • calls ← callerB (b.ts)",
+        " • imports ← callerA (a.ts)",
+      ]);
+
+      // trail_find_code invoke -> loadMap() -> cache hit
+      await r.tools.get("trail_find_code")!.execute("1", { query: "target" }, undefined, undefined, c);
+      assert.equal(entriesFor("wiring_cache_parsed").length, 1);
+
+      // Modify wiring.json on disk -> cache invalidates and re-parses once
+      writeGraph(
+        [
+          { id: "t1", name: "fnOne", path: "src/target.ts" },
+          { id: "c3", name: "callerC", path: "src/c.ts" },
+        ],
+        [{ source: "c3", target: "t1", relation: "calls" }],
+        42,
+      );
+      const hintRes2 = await r.handlers.get("tool_result")![0](
+        { toolName: "write", input: { path: "src/target.ts" }, isError: false, content: [] },
+        c,
+      );
+      assert.equal(entriesFor("wiring_cache_parsed").length, 2);
+      assert.match(hintRes2.content[0].text, /callerC \(c\.ts\)/);
+      assert.equal(trail.trailNodes(root, logger), 42);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

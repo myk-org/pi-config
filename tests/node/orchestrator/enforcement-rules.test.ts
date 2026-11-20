@@ -8,6 +8,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  clearEnforcementRulesCache,
   matchBashCommand,
   matchToolCall,
   executeAction,
@@ -792,6 +793,135 @@ describe("loadEnforcedEntries / loadVerifierEntries — session & expiry eligibi
       assert.ok(inB.includes("Durable enforced rule"));
       assert.ok(!inB.includes("Session rule from session A"));
       assert.ok(!inB.includes("Expired task rule"));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("loadEnforcedEntries / loadVerifierEntries caching (#1196)", () => {
+  it("skips topic file reads completely when no scores entries have trigger+action or verifier", () => {
+    clearEnforcementRulesCache();
+    const tmpDir = makeTempDir("enf-zero-");
+    try {
+      const memoryDir = path.join(tmpDir, ".pi", "memory");
+      const topicsDir = path.join(memoryDir, "topics");
+      fs.mkdirSync(topicsDir, { recursive: true });
+      const lines: string[] = ["# Lessons"];
+      const entries: Record<string, any> = {};
+      const now = new Date().toISOString();
+      for (let i = 0; i < 50; i++) {
+        const line = `- [lesson] plain lesson ${i}`;
+        lines.push(line);
+        entries[entryHash(line)] = {
+          class: "lesson",
+          score: 1.0,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: now,
+          lastReinforced: now,
+          userState: "auto",
+          lifecycle: "active",
+        };
+      }
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), lines.join("\n") + "\n");
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({ entries, lastRebuild: now, hashAlgo: "sha256-16" }) + "\n",
+      );
+
+      // Prime loadScores cache
+      loadScores(tmpDir);
+
+      const origRead = fs.readFileSync;
+      let topicReads = 0;
+      (fs as any).readFileSync = (...args: Parameters<typeof fs.readFileSync>) => {
+        if (String(args[0]).includes(`${path.sep}topics${path.sep}`)) topicReads++;
+        return origRead(...args);
+      };
+      try {
+        assert.deepEqual(loadEnforcedEntries(tmpDir, "s1"), []);
+        assert.deepEqual(loadVerifierEntries(tmpDir, "s1"), []);
+        assert.deepEqual(loadEnforcedEntries(tmpDir, "s1"), []);
+        assert.deepEqual(loadVerifierEntries(tmpDir, "s1"), []);
+        assert.equal(topicReads, 0, "must not read topic files when zero rules exist");
+      } finally {
+        (fs as any).readFileSync = origRead;
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("caches assembled enforced entries across calls and invalidates on scores, topic mtime, and expiry", async () => {
+    clearEnforcementRulesCache();
+    const tmpDir = makeTempDir("enf-cache-");
+    try {
+      const memoryDir = path.join(tmpDir, ".pi", "memory");
+      const topicsDir = path.join(memoryDir, "topics");
+      fs.mkdirSync(topicsDir, { recursive: true });
+      const ruleText = "never run rm -rf /";
+      const ruleLine = `- [lesson] ${ruleText}`;
+      const hash = entryHash(ruleLine);
+      const now = new Date().toISOString();
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), `# Lessons\n${ruleLine}\n`);
+      const scoresPath = path.join(memoryDir, "memory-scores.jsonl");
+      const writeScores = (extra: Record<string, any> = {}) => {
+        fs.writeFileSync(
+          scoresPath,
+          JSON.stringify({
+            entries: {
+              [hash]: {
+                class: "lesson",
+                score: 1.0,
+                evidenceCount: 1,
+                cue: "explicit",
+                firstSeen: now,
+                lastReinforced: now,
+                userState: "auto",
+                lifecycle: "active",
+                trigger: "bash_contains rm -rf /",
+                action: "block",
+                ...extra,
+              },
+            },
+            lastRebuild: now,
+            hashAlgo: "sha256-16",
+          }) + "\n",
+        );
+      };
+      writeScores();
+
+      const first = loadEnforcedEntries(tmpDir, "s1");
+      assert.equal(first.length, 1);
+      assert.equal(first[0].text, ruleText);
+
+      // Second call hits cache with zero topic reads
+      const origRead = fs.readFileSync;
+      let topicReads = 0;
+      (fs as any).readFileSync = (...args: Parameters<typeof fs.readFileSync>) => {
+        if (String(args[0]).includes(`${path.sep}topics${path.sep}`)) topicReads++;
+        return origRead(...args);
+      };
+      try {
+        const second = loadEnforcedEntries(tmpDir, "s1");
+        assert.strictEqual(second, first, "unchanged scores + topics returns cached array");
+        assert.equal(topicReads, 0);
+      } finally {
+        (fs as any).readFileSync = origRead;
+      }
+
+      // Updating topic file invalidates cache
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), `# Lessons\n${ruleLine}\n- [lesson] extra\n`);
+      const afterTopicEdit = loadEnforcedEntries(tmpDir, "s1");
+      assert.notStrictEqual(afterTopicEdit, first);
+      assert.equal(afterTopicEdit[0].text, ruleText);
+
+      // Entry expiring soon invalidates automatically when expiresAt passes
+      writeScores({ scope: "task", expiresAt: new Date(Date.now() + 40).toISOString() });
+      assert.equal(loadEnforcedEntries(tmpDir, "s1").length, 1);
+      await new Promise((r) => setTimeout(r, 60));
+      assert.equal(loadEnforcedEntries(tmpDir, "s1").length, 0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -126,4 +126,62 @@ describe("before_agent_start section injection", () => {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("splits ticking async agent status into async_agents_status so orchestrator_rules stays byte-identical (#1178)", async () => {
+    const cwd = makeTempDir("rules-async-section-");
+    try {
+      let jobs: Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }> = [];
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi, () => jobs);
+      const h = getBeforeAgentStart(handlers);
+
+      // Turn 1: 0 async jobs
+      const e1 = makeEvent(cwd);
+      await h.fn(e1, { cwd });
+      const s1 = e1.systemPromptOptions.sections;
+      assert.ok(s1.orchestrator_rules && !s1.orchestrator_rules.includes("# Async Agents Status"));
+      assert.equal(s1.async_agents_status, "# Async Agents Status\n\nNo async agents running.");
+
+      // Turn 2: 1 running job (5s elapsed)
+      jobs = [{ id: "j1", agent: "worker", name: "Watcher", task: "watch", status: "running", startedAt: Date.now() - 5_000 }];
+      const e2 = makeEvent(cwd);
+      await h.fn(e2, { cwd });
+      const s2 = e2.systemPromptOptions.sections;
+      assert.equal(s2.orchestrator_rules, s1.orchestrator_rules, "orchestrator_rules stays byte-identical on 0 -> 1 transition");
+      assert.ok(s2.async_agents_status.includes("1 async agent(s) running"));
+      assert.ok(s2.async_agents_status.includes("Watcher (worker)"));
+
+      // Turn 3: same job, elapsed ticked to 65s
+      jobs = [{ id: "j1", agent: "worker", name: "Watcher", task: "watch", status: "running", startedAt: Date.now() - 65_000 }];
+      const e3 = makeEvent(cwd);
+      await h.fn(e3, { cwd });
+      const s3 = e3.systemPromptOptions.sections;
+      assert.equal(s3.orchestrator_rules, s1.orchestrator_rules, "orchestrator_rules stays byte-identical as elapsed ticks");
+      assert.notEqual(s3.async_agents_status, s2.async_agents_status, "async_agents_status reflects updated elapsed time");
+
+      // Fallback forced prompt still concatenates both sections in order
+      const forced = "FORCED";
+      const e4 = makeEvent(cwd, forced);
+      const res4 = await h.fn(e4, { cwd });
+      assert.ok(res4?.systemPrompt.startsWith(forced));
+      assert.ok(res4.systemPrompt.includes("# Async Agents Status"));
+      assert.ok(res4.systemPrompt.includes("Watcher (worker)"));
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("omits async_agents_status when getAsyncJobs is not provided (#1178)", async () => {
+    const cwd = makeTempDir("rules-no-async-");
+    try {
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+      const event = makeEvent(cwd);
+      await h.fn(event, { cwd });
+      assert.equal(event.systemPromptOptions.sections.async_agents_status, undefined);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

@@ -20,6 +20,7 @@ import {
   completeUnmarkedSkills,
   diffSkillTree,
   formatSkillReviewNotice,
+  invalidateSkillMaintenanceCache,
   isAdoptableSkill,
   isMarkedSkill,
   isPackageSkillPath,
@@ -766,6 +767,79 @@ describe("registerSkillMaintenance", () => {
       assert.equal(items.length, 1);
       assert.equal(items[0].value, "fallback-s");
     }
+  });
+
+  it("caches resolved skill metadata across tool calls and invalidates on command list or skill changes (#1185)", () => {
+    invalidateSkillMaintenanceCache();
+    const { cwd, root } = project();
+    const skills: RegisteredSkillInfo[] = [];
+    for (let i = 0; i < 20; i++) {
+      const f = writeSkill(root, `skill-${i}`, i === 0 ? MARKED : UNMARKED);
+      skills.push(makeSkillInfo(`skill-${i}`, f, "project", i % 4 === 0 ? "package" : "top-level"));
+    }
+    const pkgTarget = makeSkillInfo("skill-1", skills[1].filePath, "project", "top-level");
+    skills[1] = pkgTarget;
+
+    // Also create an ordinary non-skill file in cwd
+    const srcFile = path.join(cwd, "src.ts");
+    fs.writeFileSync(srcFile, "export const x = 1;\n");
+
+    let currentSkills = [...skills];
+    const { pi, emit, messages } = createMockPi(() => toCommands(currentSkills));
+    registerSkillMaintenance(pi);
+    const ctx = makeCtx(cwd);
+
+    emit("session_start", {}, ctx);
+    emit("turn_start", { turnIndex: 1 }, ctx);
+
+    // Warm the cache with one bash tool_result
+    emit("tool_result", { toolCallId: "warm", toolName: "bash", input: { command: "echo hi" }, isError: false }, ctx);
+
+    const origRealpath = fs.realpathSync;
+    const origReaddir = fs.readdirSync;
+    let realpathCalls = 0;
+    let readdirCalls = 0;
+    (fs as any).realpathSync = (...args: Parameters<typeof fs.realpathSync>) => {
+      realpathCalls++;
+      return origRealpath(...args);
+    };
+    (fs as any).readdirSync = (...args: Parameters<typeof fs.readdirSync>) => {
+      readdirCalls++;
+      return origReaddir(...args);
+    };
+    try {
+      // 10 bash tool_results + 10 non-skill read/edit tool_results:
+      // bash does 0 realpathSync / 0 readdirSync; non-skill read/edit does <=1 realpathSync (for abs) and 0 readdirSync
+      for (let i = 0; i < 10; i++) {
+        emit("tool_result", { toolCallId: `b-${i}`, toolName: "bash", input: { command: "npm test" }, isError: false }, ctx);
+      }
+      assert.equal(realpathCalls, 0, "bash tool_result must not invoke realpathSync once skill table is cached");
+      assert.equal(readdirCalls, 0, "bash tool_result must not scan .pi/skills/");
+
+      for (let i = 0; i < 10; i++) {
+        emit("tool_call", { toolCallId: `e-${i}`, toolName: "edit", input: { path: srcFile } }, ctx);
+        emit("tool_result", { toolCallId: `e-${i}`, toolName: "edit", input: { path: srcFile }, isError: false }, ctx);
+      }
+      assert.ok(realpathCalls <= 20, `expected <= 1 realpathSync per non-skill tool event, got ${realpathCalls}`);
+      assert.equal(readdirCalls, 0, "non-skill file events must skip fallback .pi/skills/ directory scan");
+    } finally {
+      (fs as any).realpathSync = origRealpath;
+      (fs as any).readdirSync = origReaddir;
+    }
+
+    // Invalidation: adopt skill-2 on disk, then invoke it and verify nudge fires on error
+    const adopted = adoptSkill(cwd, "skill-2", currentSkills);
+    assert.equal(adopted.ok, true);
+    emit("tool_result", { toolCallId: "use-2", toolName: "bash", input: { command: "bash .pi/skills/skill-2/run.sh" }, isError: false }, ctx);
+    emit("tool_result", { toolCallId: "fail-2", toolName: "bash", input: { command: "false" }, isError: true }, ctx);
+    assert.ok(messages.some((m) => m.msg.customType === "skill-maintenance-nudge" && m.msg.content.includes("skill-2")));
+
+    // Invalidation: adding a newly adopted skill to pi.getCommands() updates cached table
+    const newSkillFile = writeSkill(root, "skill-new", MARKED);
+    currentSkills = [...currentSkills, makeSkillInfo("skill-new", newSkillFile, "project", "top-level")];
+    emit("tool_result", { toolCallId: "use-new", toolName: "read", input: { path: newSkillFile }, isError: false }, ctx);
+    emit("tool_result", { toolCallId: "fail-new", toolName: "bash", input: { command: "false" }, isError: true }, ctx);
+    assert.ok(messages.some((m) => m.msg.customType === "skill-maintenance-nudge" && m.msg.content.includes("skill-new")));
   });
 });
 
