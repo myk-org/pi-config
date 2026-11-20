@@ -84,6 +84,9 @@ export interface ReviewState {
   reviewers_total: number;
   findings_count: number;
   last_edit_at: string | null;
+  /** Monotonic revision incremented on every markNeedsReview write (including repeated
+   *  edits in the same millisecond that skip transition notification). */
+  edit_seq?: number;
   last_clean_at: string | null;
   edited_during_cycle: boolean;
   tests_passed: boolean;
@@ -120,6 +123,7 @@ function defaultState(): ReviewState {
     reviewers_total: 0,
     findings_count: 0,
     last_edit_at: null,
+    edit_seq: 0,
     last_clean_at: null,
     edited_during_cycle: false,
     tests_passed: false,
@@ -170,6 +174,7 @@ function normalizeRawState(raw: any): ReviewState {
     reviewers_total: typeof raw.reviewers_total === "number" ? raw.reviewers_total : 0,
     findings_count: typeof raw.findings_count === "number" ? raw.findings_count : 0,
     last_edit_at: typeof raw.last_edit_at === "string" ? raw.last_edit_at : null,
+    edit_seq: typeof raw.edit_seq === "number" && Number.isFinite(raw.edit_seq) ? raw.edit_seq : 0,
     last_clean_at: typeof raw.last_clean_at === "string" ? raw.last_clean_at : null,
     edited_during_cycle: raw.edited_during_cycle === true,
     tests_passed: raw.tests_passed === true,
@@ -270,6 +275,7 @@ export function markNeedsReview(cwd: string): void {
   withStateLock(cwd, (state) => {
     const prevStatus = state.status;
     const prevTestsPassed = state.tests_passed;
+    state.edit_seq = (state.edit_seq ?? 0) + 1;
     if (state.status === "in_progress") {
       state.last_edit_at = new Date().toISOString();
       state.edited_during_cycle = true;
@@ -449,10 +455,12 @@ export function countFindings(output: string): number {
   return -1;
 }
 
-/** Reset review state — for testing or manual override. */
+/** Reset review state — for testing or manual override.
+ *  Preserves monotonic `edit_seq` so concurrent pollers never see an ABA revision collision. */
 export function resetReviewState(cwd: string): void {
-  withStateLock(cwd, () => {
-    writeState(cwd, defaultState());
-    notifyTransition(defaultState());
+  withStateLock(cwd, (prev) => {
+    const next: ReviewState = { ...defaultState(), edit_seq: prev.edit_seq ?? 0 };
+    writeState(cwd, next);
+    notifyTransition(next);
   });
 }

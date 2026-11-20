@@ -230,32 +230,26 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
   if (reviewPoller.unref) reviewPoller.unref();
 
   // Poll git status asynchronously to detect file changes from CLI/ACPX agents without blocking TUI.
-  // Track state-transition generation and pre-poll last_edit_at so an in-flight clean snapshot can
-  // never clear a review state after an intervening edit (in-process or cross-process) landed.
+  // Track the persisted monotonic `edit_seq` revision across both async git status checks so an
+  // intervening edit (in-process or cross-process, even in the same millisecond) is never cleared.
   let gitPollInFlight = false;
-  let editGeneration = 0;
-
-  function hasInterveningEdit(state: ReviewState, startGen: number, startEditAt: string | null): boolean {
-    return editGeneration !== startGen || state.last_edit_at !== startEditAt;
-  }
 
   const gitDirtyPoller = setInterval(() => {
     if (!lastCtx || gitPollInFlight) return;
     if (!isLiveExtensionCtx(lastCtx)) { lastCtx = null; return; }
     const ctx = lastCtx;
     const cwd = ctx.cwd;
-    let startEditAt: string | null;
+    let startEditSeq: number;
     try {
       if (!getSetting(cwd, "review_loop_enforcement")) return;
       // Skip on version bump branches (release workflow only)
       if (isBumpVersionBranch(getCachedBranch(cwd))) return;
-      startEditAt = readReviewState(cwd).last_edit_at;
+      startEditSeq = readReviewState(cwd).edit_seq ?? 0;
     } catch (e: any) {
       log.warn("gitDirtyPoller precheck error", { error: e?.message });
       return;
     }
 
-    const startGen = editGeneration;
     gitPollInFlight = true;
     gitStatusAsync(cwd, (result) => {
       if (!lastCtx || lastCtx !== ctx || !isLiveExtensionCtx(lastCtx)) {
@@ -278,7 +272,7 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
           // Dirty tree — markNeedsReview handles all states:
           // none/clean/has_findings → sets needs_review
           // in_progress → sets edited_during_cycle + clears tests_passed
-          // needs_review → no-op (deduped internally)
+          // needs_review → bumps edit_seq without duplicate transition notifications
           try { markNeedsReview(cwd); } catch (e: any) { log.warn("markNeedsReview failed", { error: e?.message }); }
           return;
         }
@@ -288,14 +282,14 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
         }
         // Tree appeared clean — reject stale snapshots if any edit landed after the poll started.
         const state = readReviewState(cwd);
-        if (hasInterveningEdit(state, startGen, startEditAt)) {
+        const currentEditSeq = state.edit_seq ?? 0;
+        if (currentEditSeq !== startEditSeq) {
           gitPollInFlight = false;
           return;
         }
         // Always revalidate cleanliness (including during in_progress/none) before clearing
         // lastGitSnapshot or resetting review state, so an edit landing between checks is never hidden.
-        const revalidateGen = editGeneration;
-        const preRevalidateEditAt = state.last_edit_at;
+        const preRevalidateEditSeq = currentEditSeq;
         gitStatusAsync(cwd, (confirm) => {
           gitPollInFlight = false;
           if (!lastCtx || lastCtx !== ctx || !isLiveExtensionCtx(lastCtx)) return;
@@ -309,10 +303,8 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
             }
             if (confirm.code !== 0) return;
             const freshState = readReviewState(cwd);
-            if (
-              hasInterveningEdit(freshState, startGen, startEditAt) ||
-              hasInterveningEdit(freshState, revalidateGen, preRevalidateEditAt)
-            ) {
+            const freshEditSeq = freshState.edit_seq ?? 0;
+            if (freshEditSeq !== startEditSeq || freshEditSeq !== preRevalidateEditSeq) {
               return;
             }
             lastGitSnapshot = "";
@@ -340,9 +332,6 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
   // ── Hook into review state transitions ───────────────────────────────
 
   onStateTransition((state: ReviewState) => {
-    if (state.status === "needs_review" || state.edited_during_cycle) {
-      editGeneration += 1;
-    }
     // Always update status bar
     if (lastCtx && getSetting(lastCtx.cwd, "review_loop_enforcement")) {
       updateStatusBar(state);

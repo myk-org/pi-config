@@ -382,6 +382,28 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
     }
   });
 
+  it("keeps needs_review when two edits share the same millisecond timestamp during clean revalidation", async () => {
+    const h = setupPollerHarness();
+    const origToIso = Date.prototype.toISOString;
+    Date.prototype.toISOString = () => "2026-11-20T12:00:00.000Z";
+    try {
+      await h.resolveNext({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+
+      await h.resolveNext({ stdout: "", code: 0 });
+      const confirmCallback = await h.nextCallback();
+
+      // Repeated edit while already needs_review produces the exact same ISO timestamp
+      // and fires no transition notification; monotonic edit_seq still blocks reset.
+      markNeedsReview(h.tmp);
+      confirmCallback({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+    } finally {
+      Date.prototype.toISOString = origToIso;
+      h.cleanup();
+    }
+  });
+
   it("stops scheduling polls after session_shutdown", async () => {
     const h = setupPollerHarness();
     try {
