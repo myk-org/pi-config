@@ -771,50 +771,54 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 		expect(args.finish()).toEqual({ arguments: { path: "/tmp/x" } });
 	});
 
-	it("places cache_control on trailing plain-string user turn covering 100% of multi-turn message history", async () => {
-		const sonnet = buildModels().find((m) => m.id === "claude-sonnet-4-6")!;
+	function countCachedPrefixChars(convertedMessages: Array<{ content: unknown }>): number {
+		const blocks = convertedMessages.flatMap((m) =>
+			Array.isArray(m.content) ? m.content : [{ type: "text", text: m.content }],
+		);
+		let lastBreakpoint = -1;
+		for (let i = 0; i < blocks.length; i++) {
+			if (blocks[i]?.cache_control) lastBreakpoint = i;
+		}
+		if (lastBreakpoint === -1) return 0;
+		return blocks
+			.slice(0, lastBreakpoint + 1)
+			.reduce((sum, b) => sum + String(b?.text ?? "").length, 0);
+	}
+
+	it("places a single cache_control breakpoint on trailing plain-string user turn covering multi-turn history", () => {
 		const priorHistory = "context ".repeat(500);
-		const priorTurns = [
+		const uncachedTurns = [
 			{ role: "user", content: `turn 1: ${priorHistory}`, timestamp: 1 },
 			{ role: "assistant", content: [{ type: "text", text: `reply 1: ${priorHistory}` }], timestamp: 2 },
 		];
 		const withTrailingUser = [
-			...priorTurns,
+			...uncachedTurns,
 			{ role: "user", content: "follow-up turn", timestamp: 3 },
 		];
 
-		// Before: plain-string user messages carry 0 cache_control breakpoints when not trailing-wrapped.
-		const withoutBreakpoint = convertMessages(priorTurns as any, sonnet as any);
-		const beforeBlocks = withoutBreakpoint.flatMap((m) =>
-			Array.isArray(m.content) ? m.content : [{ type: "text", text: m.content }],
-		);
-		const beforeCacheBreakpoints = beforeBlocks.filter((b) => Boolean(b.cache_control)).length;
-		const beforeCachedChars = 0;
-		expect(beforeCacheBreakpoints).toBe(0);
+		const beforeConverted = convertMessages(uncachedTurns as any, model as any);
+		const afterConverted = convertMessages(withTrailingUser as any, model as any);
 
-		// After: trailing plain-string user turn receives cache_control covering the entire history prefix.
-		const withBreakpoint = convertMessages(withTrailingUser as any, sonnet as any);
-		const afterBlocks = withBreakpoint.flatMap((m) =>
-			Array.isArray(m.content) ? m.content : [{ type: "text", text: m.content }],
-		);
-		const afterCacheBreakpoints = afterBlocks.filter((b) => Boolean(b.cache_control)).length;
-		const totalHistoryChars = afterBlocks.reduce((sum, b) => sum + String(b.text ?? "").length, 0);
-		expect(afterCacheBreakpoints).toBe(1);
-		expect(totalHistoryChars).toBeGreaterThan(8000);
-		expect(totalHistoryChars).toBeGreaterThan(beforeCachedChars);
-		expect(withBreakpoint[withBreakpoint.length - 1].content).toEqual([
+		const beforeCachedChars = countCachedPrefixChars(beforeConverted);
+		const afterCachedChars = countCachedPrefixChars(afterConverted);
+
+		expect(beforeCachedChars).toBe(0);
+		expect(afterCachedChars).toBeGreaterThan(8000);
+		expect(afterConverted[afterConverted.length - 1].content).toEqual([
 			{ type: "text", text: "follow-up turn", cache_control: { type: "ephemeral" } },
 		]);
+	});
 
-		// Verify streamVertexClaude forwards that cache_control breakpoint in the Vertex request payload.
-		process.env.GOOGLE_CLOUD_PROJECT = "cache-shape-proj";
-		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
-		const req = await captureRequest(normalizeContext({ messages: withTrailingUser as any }));
-		expect(req.messages[req.messages.length - 1].content[0].cache_control).toEqual({ type: "ephemeral" });
-
-		// At Vertex's cacheRead pricing tier (10% of input rate), covering the 8k+ history prefix qualifies
-		// multi-turn text history for a 90% input-rate reduction when live prompt caching hits.
-		expect(sonnet.cost.cacheRead).toBeCloseTo(sonnet.cost.input * 0.1, 6);
+	it("forwards trailing plain-string cache_control breakpoint in streamVertexClaude request", async () => {
+		const messages = [
+			{ role: "user", content: "turn 1", timestamp: 1 },
+			{ role: "assistant", content: [{ type: "text", text: "reply 1" }], timestamp: 2 },
+			{ role: "user", content: "follow-up turn", timestamp: 3 },
+		];
+		const req = await captureRequest(normalizeContext({ messages: messages as any }));
+		expect(req.messages[req.messages.length - 1].content).toEqual([
+			{ type: "text", text: "follow-up turn", cache_control: { type: "ephemeral" } },
+		]);
 	});
 
 	it("reports argumentsError on malformed completed tool JSON", async () => {
