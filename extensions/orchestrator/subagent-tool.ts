@@ -170,55 +170,57 @@ const AgentScopeSchema = Type.Unsafe<AgentScope>({
   default: "both",
 });
 
-const SubagentParams = Type.Object({
-  agent: Type.Optional(
-    Type.String({ description: "Agent name (single mode)" }),
-  ),
-  task: Type.Optional(
-    Type.String({ description: "Task to delegate (single mode)" }),
-  ),
-  tasks: Type.Optional(
-    Type.Array(TaskItem, { description: "Parallel tasks" }),
-  ),
-  chain: Type.Optional(
-    Type.Array(ChainItem, { description: "Sequential steps" }),
-  ),
-  agentScope: Type.Optional(AgentScopeSchema),
-  confirmProjectAgents: Type.Optional(
-    Type.Boolean({
-      description: "Prompt before project agents (default: true)",
-      default: true,
-    }),
-  ),
-  cwd: Type.Optional(
-    Type.String({ description: "Working directory (required for single/async)" }),
-  ),
-  // Optional at schema level because async mode doesn't need it; runtime enforces for sync
-  estimatedSeconds: Type.Optional(
-    Type.Number({ description: "Estimated seconds (required for sync; use async if >= 30s)" }),
-  ),
-  async: Type.Optional(
-    Type.Boolean({ description: "Run in background; results auto-deliver (default: false)", default: false }),
-  ),
-  fireAndForget: Type.Optional(
-    Type.Boolean({ description: "With async, run silently without conversation delivery (default: false)", default: false }),
-  ),
-  name: Type.Optional(
-    Type.String({ description: "Display name for async status/notifications" }),
-  ),
-  taskId: Type.Optional(
-    Type.String({ description: "Task ID to auto-complete (required for async; '-1' only for read-only check)" }),
-  ),
-  asyncKill: Type.Optional(
-    Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'" }),
-  ),
-  persistSession: Type.Optional(
-    Type.Boolean({ description: "Reuse agent session across calls in this project (default: false)" }),
-  ),
-  model: Type.Optional(
-    Type.String({ description: "Override model ('provider/model-id' or 'model-id')" }),
-  ),
-});
+function createSubagentParams(syncLimit: number) {
+  return Type.Object({
+    agent: Type.Optional(
+      Type.String({ description: "Agent name (single mode)" }),
+    ),
+    task: Type.Optional(
+      Type.String({ description: "Task to delegate (single mode)" }),
+    ),
+    tasks: Type.Optional(
+      Type.Array(TaskItem, { description: "Parallel tasks" }),
+    ),
+    chain: Type.Optional(
+      Type.Array(ChainItem, { description: "Sequential steps" }),
+    ),
+    agentScope: Type.Optional(AgentScopeSchema),
+    confirmProjectAgents: Type.Optional(
+      Type.Boolean({
+        description: "Prompt before project agents (default: true)",
+        default: true,
+      }),
+    ),
+    cwd: Type.Optional(
+      Type.String({ description: "Working directory (required for single/async)" }),
+    ),
+    // Optional at schema level because async mode doesn't need it; runtime enforces for sync
+    estimatedSeconds: Type.Optional(
+      Type.Number({ description: `Estimated seconds (required for sync; use async if >= ${syncLimit}s)` }),
+    ),
+    async: Type.Optional(
+      Type.Boolean({ description: "Run in background; results auto-deliver (default: false)", default: false }),
+    ),
+    fireAndForget: Type.Optional(
+      Type.Boolean({ description: "With async, run silently without conversation delivery (default: false)", default: false }),
+    ),
+    name: Type.Optional(
+      Type.String({ description: "Display name for async status/notifications" }),
+    ),
+    taskId: Type.Optional(
+      Type.String({ description: "Task ID to auto-complete (required for async; '-1' only for read-only check)" }),
+    ),
+    asyncKill: Type.Optional(
+      Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'" }),
+    ),
+    persistSession: Type.Optional(
+      Type.Boolean({ description: "Reuse agent session across calls in this project (default: false)" }),
+    ),
+    model: Type.Optional(
+      Type.String({ description: "Override model ('provider/model-id' or 'model-id')" }),
+    ),
+  });
+}
 
 // ── Interfaces ───────────────────────────────────────────────────────────
 
@@ -1815,6 +1817,7 @@ export function registerSubagentTool(
     return new Text(t, 0, 0);
   }
 
+  const syncLimit = checkSyncLimit(0, process.cwd()).limit;
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
@@ -1825,10 +1828,10 @@ export function registerSubagentTool(
     promptGuidelines: [
       "Delegate specialist work by intent (python → python-expert, git → git-expert, PR → github-expert, etc.).",
       "Use tasks[] for independent parallel work; chain[] with {previous} for sequential steps.",
-      "Use async: true if estimated >= 30s or the next step doesn't need the output immediately; end your turn after spawning async agents (no bash/sleep/poll loops — results auto-deliver).",
+      `Use async: true if estimated >= ${syncLimit}s or the next step doesn't need the output immediately; end your turn after spawning async agents (no bash/sleep/poll loops — results auto-deliver).`,
       "Always pass cwd and (for sync) estimatedSeconds.",
     ],
-    parameters: SubagentParams,
+    parameters: createSubagentParams(syncLimit),
 
     async execute(_id, params, signal, onUpdate, ctx) {
       // Track active subagents for working indicator
