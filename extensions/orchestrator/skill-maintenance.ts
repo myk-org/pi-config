@@ -15,7 +15,8 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { fileLog } from "../shared/file-logger.js";
-import { getProjectDataDir, resolveMainCheckoutRoot } from "./utils.js";
+import { truncateJsonlFile, withFileLock } from "./state-jsonl.js";
+import { getProjectDataDir, realpathNearestExisting, resolveMainCheckoutRoot } from "./utils.js";
 
 const log = createLogger("skill-maintenance");
 const errMsg = (err: unknown): string => String((err as Error)?.message ?? err).slice(0, 200);
@@ -119,24 +120,7 @@ export function invalidateSkillMaintenanceCache(projectCwd?: string): void {
 
 // ── paths & discovery ───────────────────────────────────────────────────────
 
-export function realpathNearestExisting(target: string): string | null {
-  let current = path.resolve(target);
-  const tail: string[] = [];
-  for (;;) {
-    try {
-      const real = fs.realpathSync(current);
-      return tail.length > 0 ? path.join(real, ...tail.reverse()) : real;
-    } catch (err) {
-      const parent = path.dirname(current);
-      if (parent === current) {
-        log.warn("realpath_unsupported", { target, reason: errMsg(err) });
-        return null;
-      }
-      tail.push(path.basename(current));
-      current = parent;
-    }
-  }
-}
+export { realpathNearestExisting };
 
 function isAtOrUnder(root: string, abs: string): boolean {
   const rel = path.relative(root, abs);
@@ -690,9 +674,24 @@ export function provenancePath(projectCwd: string): string {
 export function appendProvenance(projectCwd: string, records: readonly SkillProvenance[]): boolean {
   if (records.length === 0) return true;
   const file = provenancePath(projectCwd);
-  try {
-    fs.appendFileSync(file, records.map((r) => `${JSON.stringify(r)}\n`).join(""), { mode: 0o600 });
+  let writeError: unknown = null;
+  const payload = records.map((r) => `${JSON.stringify(r)}\n`).join("");
+  const doAppend = () => {
+    fs.appendFileSync(file, payload, { mode: 0o600 });
     rotateProvenance(file);
+  };
+  try {
+    const locked = withFileLock(file, () => {
+      try {
+        doAppend();
+      } catch (err) {
+        writeError = err;
+      }
+    });
+    if (writeError) throw writeError;
+    if (!locked) {
+      fs.appendFileSync(file, payload, { mode: 0o600 });
+    }
     return true;
   } catch (err) {
     log.error("provenance_append_failed", { reason: errMsg(err) });
@@ -702,15 +701,15 @@ export function appendProvenance(projectCwd: string, records: readonly SkillProv
 }
 
 export function rotateProvenance(file: string): void {
-  try {
-    if (fs.statSync(file).size <= PROVENANCE_MAX_BYTES) return;
-    const kept = fs.readFileSync(file, "utf-8").split("\n").filter(Boolean).slice(-PROVENANCE_KEEP_LINES);
-    const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(temp, `${kept.join("\n")}\n`, { mode: 0o600 });
-    fs.renameSync(temp, file);
-    log.info("provenance_rotated", { kept: kept.length });
-  } catch (err) {
-    log.warn("provenance_rotate_failed", { reason: errMsg(err) });
+  const kept = truncateJsonlFile(
+    file,
+    PROVENANCE_MAX_BYTES,
+    PROVENANCE_KEEP_LINES,
+    0o600,
+    (err) => log.warn("provenance_rotate_failed", { reason: errMsg(err) }),
+  );
+  if (kept !== null) {
+    log.info("provenance_rotated", { kept });
   }
 }
 

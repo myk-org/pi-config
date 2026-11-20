@@ -16,7 +16,9 @@ import pitasks, {
 	updateTasksForSession,
 } from "../../../extensions/pitasks/index.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
 import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
+import { setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { TASK_STORE_SYMBOL, TASK_TELEMETRY_ACTIVE_SYMBOL } from "../../../extensions/shared/task-store-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -409,6 +411,65 @@ describe("TaskWidget single-snapshot ticks (#1162)", () => {
 			const lines = renderFn();
 			assert.ok(lines.some(l => l.includes("Active")));
 			assert.ok(lines.some(l => l.includes("blocked by #1")));
+		} finally {
+			widget.dispose();
+		}
+	});
+});
+
+describe("WT-13 pitasks optimizations", () => {
+	it("TaskWidget.update() calls store.list() only once per update when debug logging is off", () => {
+		const store = new TaskStore();
+		store.create("Task one", "body", createdBy);
+		let listCalls = 0;
+		const origList = store.list.bind(store);
+		store.list = () => {
+			listCalls++;
+			return origList();
+		};
+		setLogLevelPin("pitasks", "info");
+		const widget = new TaskWidget(store);
+		try {
+			assert.equal(listCalls, 0, "constructor should not call store.list() when debug is off");
+			widget.setUICtx({ setWidget() {} });
+			widget.update();
+			assert.equal(listCalls, 1, "first update() should call store.list() once");
+			widget.update();
+			assert.equal(listCalls, 2, "second update() should call store.list() once");
+		} finally {
+			widget.dispose();
+			setLogLevelPin("pitasks", null);
+		}
+	});
+
+	it("TaskList orders tasks via selectTaskRows and formats open blockers cleanly", async () => {
+		const store = new TaskStore();
+		const widget = new TaskWidget(store);
+		const tools = new Map<string, any>();
+		const fakePi = { registerTool: (tool: any) => { tools.set(tool.name, tool); } };
+		try {
+			registerTaskTools(fakePi as any, () => store, widget);
+			const taskListTool = tools.get("TaskList");
+			assert.ok(taskListTool, "TaskList should be registered");
+
+			const t1 = store.create("Done blocker", "b1", createdBy);
+			store.update(t1.id, { status: "completed" });
+			const t2 = store.create("Open blocker", "b2", createdBy);
+			const t3 = store.create("Blocked llm task", "b3", createdBy);
+			store.update(t3.id, { addBlockedBy: [t1.id, t2.id] });
+			const t4 = store.create("User pending task", "b4", createdBy, undefined, undefined, "user");
+			store.update(t4.id, { owner: "alice" });
+			const t5 = store.create("Active llm task", "b5", createdBy);
+			store.update(t5.id, { status: "in_progress" });
+
+			const result = await taskListTool.execute("call-1", {});
+			const lines = (result.content[0].text as string).split("\n");
+			assert.deepEqual(
+				lines.map((l) => l.split(" ")[0]),
+				[`#${t4.id}`, `#${t2.id}`, `#${t3.id}`, `#${t5.id}`, `#${t1.id}`],
+			);
+			assert.equal(lines[0], `#${t4.id} [pending] [you] User pending task (alice)`);
+			assert.equal(lines[2], `#${t3.id} [pending] [llm] Blocked llm task [blocked by #${t2.id}]`);
 		} finally {
 			widget.dispose();
 		}

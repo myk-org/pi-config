@@ -44,7 +44,7 @@ export class TaskWidget {
 	private disposed = false;
 
 	constructor(private store: TaskStore, private config: Record<string, any> = {}) {
-		log.debug("widget_created", { taskCount: store.list().length });
+		if (log.isDebugEnabled()) log.debug("widget_created", { taskCount: store.list().length });
 	}
 
 	setStore(store: TaskStore): void {
@@ -52,7 +52,7 @@ export class TaskWidget {
 		this.activeTaskIds.clear();
 		this.turnEligibleIds.clear();
 		this.metrics.clear();
-		log.debug("widget_store_set", { taskCount: store.list().length });
+		if (log.isDebugEnabled()) log.debug("widget_store_set", { taskCount: store.list().length });
 	}
 	setUICtx(ctx: any): void { this.uiCtx = ctx; }
 	getActiveTaskIds(): string[] { return [...this.activeTaskIds]; }
@@ -71,7 +71,7 @@ export class TaskWidget {
 	reactivate(ctx: any): void {
 		this.disposed = false;
 		this.uiCtx = ctx;
-		log.debug("widget_reactivated", { taskCount: this.store.list().length });
+		if (log.isDebugEnabled()) log.debug("widget_reactivated", { taskCount: this.store.list().length });
 	}
 
 	deactivate(): void {
@@ -187,7 +187,7 @@ export class TaskWidget {
 		const statusRank = (status: string): number =>
 			status === "in_progress" ? 0 : status === "pending" ? 1 : 2;
 		const snapshot = this.store.list();
-		log.debug("task_widget_render", { taskCount: snapshot.length });
+		if (log.isDebugEnabled()) log.debug("task_widget_render", { taskCount: snapshot.length });
 		if (snapshot.length === 0) return [];
 		const taskById = new Map(snapshot.map((t) => [t.id, t]));
 		const tasks = [...snapshot].sort(
@@ -265,11 +265,11 @@ export class TaskWidget {
 
 	update(): void {
 		if (this.disposed || !this.uiCtx) {
-			log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx });
+			if (log.isDebugEnabled()) log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx });
 			return;
 		}
 		const tasks = this.store.list();
-		log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx, taskCount: tasks.length });
+		if (log.isDebugEnabled()) log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx, taskCount: tasks.length });
 		if (tasks.length === 0) {
 			if (this.widgetRegistered) { this.uiCtx.setWidget("tasks", undefined); this.widgetRegistered = false; }
 			if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }

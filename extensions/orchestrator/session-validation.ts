@@ -2,31 +2,26 @@
  * Session start validation — checks for required/optional CLI tools.
  */
 
-import { execSync, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setUvAvailable, isUvAvailable } from "./enforcement-helpers.js";
 import { checkMinPiVersion } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
+import { resolveBinary } from "../shared/resolve-binary.js";
 
+const execFileAsync = promisify(execFile);
 const log = createLogger("session-validation");
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-/** Check whether a CLI command is available on PATH. */
+/** Check whether a CLI command is available on PATH (in-process lookup, zero shell spawns). */
 function hasCmd(cmd: string): boolean {
-  try {
-    execSync(`command -v ${cmd}`, {
-      timeout: 3000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  return resolveBinary(cmd) !== null;
 }
 
 /** Register the /repair command — fixes orphaned tool calls in session files. */
@@ -312,11 +307,12 @@ async function checkUpgradeChangelog(ctx: any): Promise<void> {
         const releaseUrl = `https://github.com/myk-org/pi-config/releases/tag/${tag}`;
         let notified = false;
         try {
-          const body = execFileSync(
+          const { stdout } = await execFileAsync(
             "gh",
             ["release", "view", "--repo", "myk-org/pi-config", tag, "--json", "body", "--jq", ".body"],
-            { timeout: 5000, stdio: ["pipe", "pipe", "pipe"] },
-          ).toString().trim();
+            { timeout: 5000, encoding: "utf-8" },
+          );
+          const body = stdout.trim();
           if (body) {
             const maxLen = 1500;
             const truncated = body.length > maxLen

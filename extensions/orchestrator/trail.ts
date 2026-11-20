@@ -1,10 +1,11 @@
 /** Local Trail-code integration: code-map tools, per-prompt retrieval, navigation gate. */
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { acquireTokenFileLock } from "../shared/file-lock.js";
 import { unquotedSegments, type ShellSegment } from "./enforcement-helpers.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -210,9 +211,6 @@ function wiring(root: string, logger: Logger = log): TrailWiring | null {
 export function trailNodes(root: string, logger: Logger = log): number {
   return getCachedWiring(root, logger)?.nodeCount ?? 0;
 }
-function indexedFiles(root: string, logger: Logger = log): Set<string> {
-  return new Set(getCachedWiring(root, logger)?.mapPaths ?? []);
-}
 
 /** Trail's statusline shape, adapted to Pi's theme API. */
 export function formatTrailFooter({ state, nodeCount, tokenSavings, trailReads = 0, sourceReads = 0 }: { state: TrailState; nodeCount: number; tokenSavings: number; trailReads?: number; sourceReads?: number }, theme?: StatusTheme): string {
@@ -282,29 +280,28 @@ function readSavings(file: string): number {
 }
 function writeSavings(file: string, delta: number, logger: Logger = log): number {
   if (!file || !delta) return readSavings(file);
-  const lock = `${file}.lock`; const owner = { pid: process.pid, token: randomUUID() }; const ownerTmp = `${lock}.${owner.token}.tmp`; const valueTmp = `${file}.${owner.token}.tmp`;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    let acquired = false;
-    try {
-      writeFileSync(ownerTmp, JSON.stringify(owner), { mode: 0o600, flag: "wx" }); linkSync(ownerTmp, lock); acquired = true; unlinkSync(ownerTmp);
-      const total = readSavings(file) + delta;
-      writeFileSync(valueTmp, JSON.stringify({ tokenSavings: total }), { mode: 0o600 }); renameSync(valueTmp, file);
-      return total;
-    } catch (error: any) {
-      if (error?.code !== "EEXIST") { logger.warn("savings_persist_failed", { code: error?.code }); return readSavings(file); }
-      const existing = lockOwner(lock);
-      if (existing && !ownerAlive(existing)) {
-        const claim = `${lock}.claim-${owner.token}`;
-        try { renameSync(lock, claim); if (lockOwner(claim)?.token === existing.token && !ownerAlive(existing)) unlinkSync(claim); else try { renameSync(claim, lock); } catch {} } catch {}
-      }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
-    } finally {
-      try { unlinkSync(ownerTmp); } catch {}
-      try { unlinkSync(valueTmp); } catch {}
-      if (acquired) try { if (lockOwner(lock)?.token === owner.token) unlinkSync(lock); } catch {}
-    }
+  const lock = `${file}.lock`;
+  const release = acquireTokenFileLock(lock, {
+    attempts: 100,
+    sleepMs: 2,
+    linkTemp: true,
+    uniqueClaim: true,
+    onError: (code) => logger.warn("savings_persist_failed", { code }),
+  });
+  if (!release) return readSavings(file);
+  const valueTmp = `${file}.${randomUUID()}.tmp`;
+  try {
+    const total = readSavings(file) + delta;
+    writeFileSync(valueTmp, JSON.stringify({ tokenSavings: total }), { mode: 0o600 });
+    renameSync(valueTmp, file);
+    return total;
+  } catch (error: any) {
+    logger.warn("savings_persist_failed", { code: error?.code });
+    return readSavings(file);
+  } finally {
+    try { unlinkSync(valueTmp); } catch {}
+    release();
   }
-  logger.warn("savings_persist_failed", { code: "LOCK_BUSY" }); return readSavings(file);
 }
 function toolText(content: unknown): string { return Array.isArray(content) ? content.map((part: any) => typeof part?.text === "string" ? part.text : "").join("\n") : ""; }
 /**
@@ -335,9 +332,7 @@ export function classifyToolUse(name: unknown, input?: any): "trail" | "source" 
   return head.split("/").pop()!.toLowerCase() === "trail" ? "trail" : null;
 }
 const MAP_RULE = "This project has a Trail code map. Start every code exploration with trail_find_code (describe the concept, not an identifier) before read/grep/find/glob or shell searches; it returns ranked file:line hits with source inlined.";
-const TOOL_RULE = "Search concepts, not identifiers; call before read/grep for code navigation.";
 const BUILD_NOTE = "[trail] This project has no code map yet. A bounded background `trail build` is starting now; trail_find_code (and the other trail_* tools) will return ranked file:line hits once it lands. This turn runs without the navigation gate — navigate the source directly.";
-const ALL_TRAIL_TOOLS = [...TRAIL_QUERY_TOOLS, "trail_refresh", "trail_blast_radius"] as const;
 /**
  * This turn's query, and where it came from. A subagent task starts its run as
  * a custom message (`event.prompt` is undefined), and that turn needs the same
@@ -506,8 +501,6 @@ function searchCommand(command: unknown): { binary: string; operands: string[]; 
   return { binary, operands: parsed.operands, directories: [], patternFromFlag: parsed.patternFromFlag };
 }
 function searchBinary(command: unknown): string | null { return searchCommand(command)?.binary ?? null; }
-/** `git` options whose value is the following token. */
-const GIT_VALUE_OPTIONS = new Set(["-c", "-C"]);
 /** `prefix` with exactly one trailing separator — `/` must not become `//`, which made every
  *  ancestor test against the filesystem root answer false. */
 function dirPrefix(directory: string): string {
@@ -728,35 +721,15 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, logger: Lo
   try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; logger.warn("retrieval_timeout", { timeoutMs }); reject(new Error("automatic retrieval timed out")); }, timeoutMs); })]); }
   finally { if (timer) clearTimeout(timer); logger.debug("retrieval_timeout_cleanup", { timeoutMs, timedOut }); }
 }
-type LockOwner = { pid: number; token: string };
-function lockOwner(lock: string): LockOwner | null { try { const raw = readFileSync(lock, "utf8"); const legacyPid = Number(raw); if (Number.isSafeInteger(legacyPid)) return { pid: legacyPid, token: `legacy-${legacyPid}` }; const owner = JSON.parse(raw); return Number.isSafeInteger(owner?.pid) && typeof owner?.token === "string" ? owner : null; } catch { return null; } }
-function ownerAlive(owner: LockOwner | null): boolean { if (!owner) return false; try { process.kill(owner.pid, 0); return true; } catch (error: any) { return error?.code === "EPERM"; } }
 function buildLockPath(root: string, logger: Logger = log): string {
   // No map yet: the lock goes where the new map will land, so a first build does
   // not leave an empty `graft/` behind in a fresh checkout.
   return resolve(trailMapDir(root, logger) ?? join(root, ".trail", "cache"), ".graph/pi-build.lock");
 }
 export function acquireBuildLock(root: string, afterClaim?: () => void, logger: Logger = log): (() => void) | null {
-  const lock = buildLockPath(root, logger); const claim = `${lock}.claim`; const owner = { pid: process.pid, token: randomUUID() };
+  const lock = buildLockPath(root, logger);
   try { mkdirSync(dirname(lock), { recursive: true }); } catch { logger.warn("build_lock_unavailable", { root }); return null; }
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const claimant = lockOwner(claim);
-    if (claimant) { if (ownerAlive(claimant)) return null; try { unlinkSync(claim); } catch { return null; } }
-    try {
-      const fd = openSync(lock, "wx", 0o600); writeFileSync(fd, JSON.stringify(owner)); closeSync(fd);
-      if (lockOwner(claim)) { try { if (lockOwner(lock)?.token === owner.token) unlinkSync(lock); } catch {} return null; }
-      return () => { try { if (lockOwner(lock)?.token === owner.token) unlinkSync(lock); } catch {} };
-    } catch (error: any) {
-      if (error?.code !== "EEXIST") return null;
-      try {
-        renameSync(lock, claim);
-        const claimedOwner = lockOwner(claim);
-        if (ownerAlive(claimedOwner)) { try { renameSync(claim, lock); } catch {} return null; }
-        afterClaim?.(); unlinkSync(claim);
-      } catch { return null; }
-    }
-  }
-  return null;
+  return acquireTokenFileLock(lock, { attempts: 2, afterClaim });
 }
 function trusted(ctx: any): boolean { return typeof ctx?.isProjectTrusted !== "function" || ctx.isProjectTrusted() === true; }
 function relevant(ask: Ask): Hit[] { return (ask.hits ?? []).filter(hit => text(hit.pointer) && text(hit.title)).slice(0, 3); }
@@ -958,9 +931,6 @@ export function createTrailIntegration(options: Options) {
     }
     const add = (list: string[] | undefined, rule: string) => (list ?? []).includes(rule) ? [...(list ?? [])] : [...(list ?? []), rule];
     promptOptions.promptGuidelines = add(promptOptions.promptGuidelines, MAP_RULE);
-    const guidelines: Record<string, string[]> = { ...(promptOptions.toolGuidelines ?? {}) };
-    for (const name of ALL_TRAIL_TOOLS) guidelines[name] = add(guidelines[name], TOOL_RULE);
-    promptOptions.toolGuidelines = guidelines;
     if (section) promptOptions.sections = { ...(promptOptions.sections ?? {}), trail: section };
     log.debug("injection_mode", { mode: "structured", hits: hits.length, section: Boolean(section) });
     return undefined;
@@ -1107,8 +1077,11 @@ export function createTrailIntegration(options: Options) {
           }
         }
       }
-      const guidance = inject(event, []);
-      if (!query || !substantive(query)) { finish("guidance_only_control_prompt"); return guidance; }
+      if (!query || !substantive(query)) {
+        const guidance = inject(event, []);
+        finish("guidance_only_control_prompt");
+        return guidance;
+      }
       state.gate.active = true;
       // One shared budget: a fallback retry must not double the turn's deadline.
       // `warmed` only flips on a successful retrieval, so a cold attempt that

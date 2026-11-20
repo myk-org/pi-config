@@ -12,6 +12,15 @@
 import { formatTaskRowLine } from "../pitasks/tasks-view.js";
 import type { DescribeResult } from "./coms-describe.js";
 import {
+  DESCRIPTION_MAX,
+  ELAPSED_MAX,
+  ID_MAX,
+  NAME_MAX,
+  NEXT_MAX,
+  PURPOSE_MAX,
+  SCHEDULE_MAX,
+  STATE_MAX,
+  SUBJECT_MAX,
   WORKLOAD_NONE_LINE,
   workloadStateLabel,
   workloadUnknownLine,
@@ -26,16 +35,6 @@ import { sanitizePeerText } from "./peer-text.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("coms-drilldown");
-
-const ID_MAX = 40;
-const NAME_MAX = 40;
-const STATE_MAX = 40;
-const ELAPSED_MAX = 16;
-const PURPOSE_MAX = 120;
-const SUBJECT_MAX = 120;
-const SCHEDULE_MAX = 40;
-const NEXT_MAX = 24;
-const DESCRIPTION_MAX = 120;
 
 /** One row inside a section, already reduced to text: `row` is the list line, `detail` the
  *  (label, value) pairs the detail pane shows. Read-only: no action is attached to either.
