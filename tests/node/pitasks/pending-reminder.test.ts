@@ -7,7 +7,7 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
 import {
@@ -185,6 +185,7 @@ function boot(tasks: any[], settingsOverrides: Record<string, unknown> = {}) {
 	};
 	return {
 		sent,
+		storePath,
 		emit,
 		tick: () => { for (const fn of ticks) fn(); },
 		reminders: () => sent.filter(m => m.customType === "task-focus-reminder"),
@@ -345,6 +346,56 @@ describe("#1104 stale in-progress reminder", () => {
 				"⚠️ You have 1 task(s) stuck in progress (>30m, no running async agent: #590). Check your TaskList and update their status.",
 			);
 			assert.equal(h.reminders()[0].content.includes("Secret task"), false);
+		} finally {
+			await h.restore();
+		}
+	});
+});
+
+describe("#1166 batched task GC deletions", () => {
+	it("deletes multiple expired completed tasks in a single store write", async () => {
+		const expiredAt = new Date(Date.now() - 120 * MIN).toISOString();
+		const freshAt = new Date(Date.now() - 1 * MIN).toISOString();
+		const mkCompleted = (id: string, completedAt: string) => ({
+			id,
+			subject: `Task ${id}`,
+			description: "body",
+			status: "completed",
+			assignee: "llm",
+			createdAt: Date.now() - 130 * MIN,
+			updatedAt: Date.now() - 130 * MIN,
+			blocks: [],
+			blockedBy: [],
+			metadata: {},
+			createdBy: { type: "local", origin: "system", session: "", project: "" },
+			statusHistory: {
+				pending_at: expiredAt,
+				in_progress_at: null,
+				completed_at: completedAt,
+				deleted_at: null,
+			},
+		});
+		const h = boot(
+			[
+				mkCompleted("1", expiredAt),
+				mkCompleted("2", expiredAt),
+				mkCompleted("3", expiredAt),
+				mkCompleted("4", freshAt),
+			],
+			{
+				task_reminder_enabled: false,
+				task_stale_in_progress_enabled: false,
+				task_auto_clear_enabled: true,
+				task_auto_clear_minutes: 30,
+			},
+		);
+		try {
+			const inodeBefore = statSync(h.storePath).ino;
+			h.tick();
+			const remaining = JSON.parse(readFileSync(h.storePath, "utf8")).tasks;
+
+			assert.deepEqual(remaining.map((t: any) => t.id), ["4"]);
+			assert.notEqual(statSync(h.storePath).ino, inodeBefore);
 		} finally {
 			await h.restore();
 		}

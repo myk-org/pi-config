@@ -178,7 +178,6 @@ export class TaskWidget {
 	}
 
 	private renderWidget(tui: any, theme: any): string[] {
-		log.debug("task_widget_render", { taskCount: this.store.list().length });
 		try { return this.buildWidgetLines(tui, theme); } catch { return []; }
 	}
 
@@ -187,7 +186,11 @@ export class TaskWidget {
 		// within each status group, the owner's tasks sort before the agent's (#1090).
 		const statusRank = (status: string): number =>
 			status === "in_progress" ? 0 : status === "pending" ? 1 : 2;
-		const tasks = [...this.store.list()].sort(
+		const snapshot = this.store.list();
+		log.debug("task_widget_render", { taskCount: snapshot.length });
+		if (snapshot.length === 0) return [];
+		const taskById = new Map(snapshot.map((t) => [t.id, t]));
+		const tasks = [...snapshot].sort(
 			(a, b) =>
 				statusRank(a.status) - statusRank(b.status) ||
 				taskAssigneeRank(a) - taskAssigneeRank(b) ||
@@ -195,7 +198,6 @@ export class TaskWidget {
 		);
 		const w = tui.terminal.columns;
 		const truncate = (line: string) => truncateToWidth(line, w);
-		if (tasks.length === 0) return [];
 
 		const completed = tasks.filter(t => t.status === "completed");
 		const inProgress = tasks.filter(t => t.status === "in_progress");
@@ -229,7 +231,7 @@ export class TaskWidget {
 			let suffix = "";
 			if (task.status === "pending" && task.blockedBy.length > 0) {
 				const openBlockers = task.blockedBy.filter((bid: string) => {
-					const blocker = this.store.get(bid);
+					const blocker = taskById.get(bid);
 					return blocker && blocker.status !== "completed";
 				});
 				if (openBlockers.length > 0) suffix = theme.fg("dim", ` › blocked by ${openBlockers.map((id: string) => "#" + id).join(", ")}`);
@@ -262,16 +264,20 @@ export class TaskWidget {
 	}
 
 	update(): void {
-		log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx, taskCount: this.store.list().length });
-		if (this.disposed || !this.uiCtx) return;
+		if (this.disposed || !this.uiCtx) {
+			log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx });
+			return;
+		}
 		const tasks = this.store.list();
+		log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx, taskCount: tasks.length });
 		if (tasks.length === 0) {
 			if (this.widgetRegistered) { this.uiCtx.setWidget("tasks", undefined); this.widgetRegistered = false; }
 			if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
 			return;
 		}
+		const taskById = new Map(tasks.map((t) => [t.id, t]));
 		for (const id of this.activeTaskIds) {
-			const t = this.store.get(id);
+			const t = taskById.get(id);
 			if (!t || t.status !== "in_progress") { this.activeTaskIds.delete(id); this.metrics.delete(id); }
 		}
 		const hasActiveSpinner = tasks.some(t => t.status === "in_progress");

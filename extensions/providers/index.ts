@@ -386,13 +386,15 @@ export default async function (
   // ---------------------------------------------------------------------------
   const cliAgentList = asStringArray(getSetting(projectCwd, "cli_agents")).filter(isCliAgentName);
   const acpxAgentList = asStringArray(getSetting(projectCwd, "acpx_agents"));
-  const modelsDevCatalog =
+  const modelsDevCatalogPromise: Promise<ModelsDevCatalog | null> =
     cliAgentList.length > 0 || acpxAgentList.length > 0
-      ? await loadModelsDevCatalog()
-      : null;
-  if (modelsDevCatalog) {
-    log.info("models.dev catalog loaded for cli/acpx model fill");
-  }
+      ? loadModelsDevCatalog().then((catalog) => {
+          if (catalog) {
+            log.info("models.dev catalog loaded for cli/acpx model fill");
+          }
+          return catalog;
+        })
+      : Promise.resolve(null);
 
   if (cliAgentList.length > 0) {
     startCliSessionReaper({
@@ -491,6 +493,7 @@ export default async function (
       }),
     );
 
+    const modelsDevCatalog = await modelsDevCatalogPromise;
     for (const result of cliResults) {
       if (result.status !== "fulfilled" || !result.value) continue;
       const { agent, instance } = result.value;
@@ -574,6 +577,7 @@ export default async function (
       }),
     );
 
+    const modelsDevCatalog = await modelsDevCatalogPromise;
     for (const result of acpxResults) {
       if (result.status !== "fulfilled" || !result.value) continue;
       const { agent, instance } = result.value;

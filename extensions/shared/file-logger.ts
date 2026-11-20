@@ -128,10 +128,15 @@ function recordWriteError(err: unknown): void {
 }
 
 function appendLine(filePath: string, line: string): void {
-  // Always mkdirSync(recursive) — no dir cache. Cached "ensured" dirs go stale
-  // if ~/.pi/logs is deleted mid-process and then skip mkdir → lost logs.
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.appendFileSync(filePath, line, "utf-8");
+  // Fast path: append directly; only mkdirSync on ENOENT so mid-process dir
+  // deletions still recover without a stale dir cache or per-write mkdir syscalls.
+  try {
+    fs.appendFileSync(filePath, line, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(filePath, line, "utf-8");
+  }
 }
 
 /**

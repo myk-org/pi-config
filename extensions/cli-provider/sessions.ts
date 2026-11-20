@@ -4,7 +4,6 @@
  */
 
 import {
-  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -35,8 +34,12 @@ export function isProvisionalPiSessionId(
 ): boolean {
   return typeof id === "string" && id.startsWith(PROVISIONAL_PI_SESSION_PREFIX);
 }
-function sessionsDir(): string {
+export function cliSessionsDir(): string {
   return join(homedir(), ".pi", "cli-sessions");
+}
+
+function sessionsDir(): string {
+  return cliSessionsDir();
 }
 
 function keyHash(key: CliSessionKey): string {
@@ -59,10 +62,9 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function readRecord(path: string): CliSessionRecord | null {
-  if (!existsSync(path)) return null;
+export function parseCliSessionRecord(raw: string): CliSessionRecord | null {
   try {
-    const data = JSON.parse(readFileSync(path, "utf-8"));
+    const data = JSON.parse(raw);
     if (typeof data?.sessionId !== "string" || !data.sessionId) return null;
     return {
       sessionId: data.sessionId,
@@ -83,6 +85,14 @@ function readRecord(path: string): CliSessionRecord | null {
       resumeFailures:
         typeof data.resumeFailures === "number" ? data.resumeFailures : 0,
     };
+  } catch {
+    return null;
+  }
+}
+
+function readRecord(path: string): CliSessionRecord | null {
+  try {
+    return parseCliSessionRecord(readFileSync(path, "utf-8"));
   } catch {
     return null;
   }
@@ -183,7 +193,7 @@ export function markCliSessionStopped(key: CliSessionKey): boolean {
 export function clearCliSessionId(key: CliSessionKey): void {
   const path = sessionFile(key);
   try {
-    if (existsSync(path)) unlinkSync(path);
+    unlinkSync(path);
   } catch {
     /* ignore */
   }
@@ -235,23 +245,20 @@ export function migrateCliSessionMarker(
   return false;
 }
 
-/**
- * Migrate every marker for `fromPiSessionId` in `cwd` onto `toPiSessionId`.
- * On conflict, prefer the newer lastSeenAt (keeps pre-bind first-turn session).
- */
-export function migrateAllCliSessionMarkers(
+export function migrateAllCliSessionMarkersDetailed(
   cwd: string,
   fromPiSessionId: string,
   toPiSessionId: string,
-): number {
+): { migrated: number; remaining: number } {
   if (
     !fromPiSessionId ||
     !toPiSessionId ||
     fromPiSessionId === toPiSessionId
   ) {
-    return 0;
+    return { migrated: 0, remaining: 0 };
   }
-  let n = 0;
+  let migrated = 0;
+  let remaining = 0;
   for (const { path, record } of listCliSessions()) {
     if (record.cwd !== cwd) continue;
     if (record.piSessionId !== fromPiSessionId) continue;
@@ -264,13 +271,16 @@ export function migrateAllCliSessionMarkers(
     const toRec = loadCliSessionRecord(toKey);
     if (preferCliSessionRecord(record, toRec) === "source") {
       const ok = saveCliSessionId(toKey, record.sessionId);
-      if (!ok) continue;
+      if (!ok) {
+        remaining += 1;
+        continue;
+      }
       try {
         unlinkSync(path);
       } catch {
         /* ignore */
       }
-      n += 1;
+      migrated += 1;
     } else {
       try {
         unlinkSync(path);
@@ -279,7 +289,23 @@ export function migrateAllCliSessionMarkers(
       }
     }
   }
-  return n;
+  return { migrated, remaining };
+}
+
+/**
+ * Migrate every marker for `fromPiSessionId` in `cwd` onto `toPiSessionId`.
+ * On conflict, prefer the newer lastSeenAt (keeps pre-bind first-turn session).
+ */
+export function migrateAllCliSessionMarkers(
+  cwd: string,
+  fromPiSessionId: string,
+  toPiSessionId: string,
+): number {
+  return migrateAllCliSessionMarkersDetailed(
+    cwd,
+    fromPiSessionId,
+    toPiSessionId,
+  ).migrated;
 }
 
 /**
@@ -324,7 +350,6 @@ export interface ListedCliSession {
 /** List all persisted CLI session bindings (directory). Best-effort: FS errors → []. */
 export function listCliSessions(): ListedCliSession[] {
   const dir = sessionsDir();
-  if (!existsSync(dir)) return [];
   const out: ListedCliSession[] = [];
   let names: string[];
   try {

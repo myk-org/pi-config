@@ -10,7 +10,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import * as path from "node:path";
 import * as os from "node:os";
-import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, parseComsTell, type DeferredUpstream } from "./coms-shared.js";
+import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, parseComsTell, syncComsActiveTools, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsInit from "./coms-p2p.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { setComsActive } from "../shared/coms-active.js";
@@ -38,6 +38,7 @@ export function registerComs(pi: ExtensionAPI) {
         capturedSessionShutdown: null,
         flagValues: new Map(),
         active: false,
+        deferredTools: new Set(),
         activation: null,
     };
 
@@ -66,6 +67,7 @@ export function registerComs(pi: ExtensionAPI) {
         if (evt?.reason !== "reload") {
             state.active = false;
             setComsActive(false);
+            syncComsActiveTools(pi, state, false);
             persistState(pi, PERSIST_KEY, state);
         }
         // `pi --coms …`: a headless peer boots itself, no slash command and no terminal.
@@ -131,6 +133,7 @@ export function registerComs(pi: ExtensionAPI) {
             }
             state.active = false;
             setComsActive(false);
+            syncComsActiveTools(pi, state, false);
             persistState(pi, PERSIST_KEY, state);
         }
         // A retry after a reload may carry no flags, so restored values are kept — but ONLY for the
@@ -163,6 +166,7 @@ export function registerComs(pi: ExtensionAPI) {
             }
             state.active = true;
             setComsActive(true);
+            syncComsActiveTools(pi, state, true);
             persistState(pi, PERSIST_KEY, state);
             const name = String(state.flagValues.get("cname") ?? state.flagValues.get("name") ?? "peer");
             const project = String(state.flagValues.get("project"));
@@ -249,6 +253,7 @@ export function registerComs(pi: ExtensionAPI) {
             }
             state.active = false;
             setComsActive(false);
+            syncComsActiveTools(pi, state, false);
             persistState(pi, PERSIST_KEY, state);
             try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
         } else if (subcommand === "list" || subcommand === "peers") {
@@ -374,16 +379,19 @@ export function registerComs(pi: ExtensionAPI) {
             name: "coms_stop",
             label: "coms stop",
             description: "Stop coms for THIS session: stop advertising this peer and drop the coms tools.",
+            defaultActive: false,
             parameters: Type.Object({}),
             async execute() {
                 if (!state.active) return { content: [{ type: "text" as const, text: "coms is not active." }], details: { ok: true, active: false } };
                 try { await state.capturedSessionShutdown?.(); } catch (e: any) { log.warn("coms_stop shutdown threw", e?.message ?? String(e)); }
                 state.active = false;
                 setComsActive(false);
+                syncComsActiveTools(pi, state, false);
                 persistState(pi, PERSIST_KEY, state);
                 return { content: [{ type: "text" as const, text: "coms stopped for this session." }], details: { ok: true, active: false } };
             },
         });
+        state.deferredTools?.add("coms_stop");
     } catch (e: any) {
         log.warn("registering coms_start/coms_stop failed", e?.message ?? String(e));
     }

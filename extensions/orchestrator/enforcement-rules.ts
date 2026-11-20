@@ -7,18 +7,22 @@
  */
 
 import { execSync } from "node:child_process";
+import { readdirSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import {
+  getScoresRevision,
   loadScores,
-  getActiveEntries,
   entryHash,
   isEntryActiveForSession,
   type ScoredEntry,
+  type ScoresFile,
   type EnforcementTrigger,
   type EnforcementAction,
 } from "./memory-scoring.js";
 import { createLogger } from "../shared/logger.js";
 import { readAllTopicEntries } from "./memory-tree.js";
 import { getSetting } from "./project-settings.js";
+import { getProjectMemoryDir } from "./utils.js";
 
 const log = createLogger("enforcement");
 
@@ -53,6 +57,96 @@ export interface ActionResult {
   success: boolean;
 }
 
+// ── Caching ────────────────────────────────────────────────────────────────
+
+const ENTRIES_CACHE_MAX = 32;
+const REGEX_CACHE_MAX = 64;
+
+interface CachedEntries<T> {
+  scoresRef: ScoresFile;
+  scoresRevision: number;
+  topicsStamp: string;
+  minExpiresAtMs: number;
+  result: T[];
+}
+
+const enforcedEntriesCache = new Map<string, CachedEntries<EnforcedEntry>>();
+const verifierEntriesCache = new Map<string, CachedEntries<VerifierEntry>>();
+const bashRegexCache = new Map<string, RegExp | null>();
+
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  if (map.has(key)) map.delete(key);
+  else if (map.size >= max) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
+}
+
+/** Clear cached enforced/verifier entries and compiled regexes (tests). */
+export function clearEnforcementRulesCache(): void {
+  enforcedEntriesCache.clear();
+  verifierEntriesCache.clear();
+  bashRegexCache.clear();
+}
+
+function getTopicsStamp(cwd: string): string {
+  const topicsDir = join(getProjectMemoryDir(cwd), "topics");
+  try {
+    const files = readdirSync(topicsDir).filter((f) => f.endsWith(".md")).sort();
+    const parts: string[] = [];
+    for (const file of files) {
+      try {
+        const st = statSync(join(topicsDir, file), { bigint: true });
+        parts.push(`${file}:${st.mtimeNs}:${st.ctimeNs}:${st.size}`);
+      } catch {
+        parts.push(`${file}:missing`);
+      }
+    }
+    return parts.join("|");
+  } catch {
+    return "";
+  }
+}
+
+function minExpiryFromCandidates(candidates: ReadonlyArray<{ entry: ScoredEntry }>): number {
+  let minExpiresAtMs = Infinity;
+  for (const { entry } of candidates) {
+    if (!entry.expiresAt) continue;
+    const t = Date.parse(entry.expiresAt);
+    if (!Number.isNaN(t) && t < minExpiresAtMs) minExpiresAtMs = t;
+  }
+  return minExpiresAtMs;
+}
+
+function buildHashToTextLookup(cwd: string, neededHashes: Set<string>): Map<string, string> {
+  const hashToText = new Map<string, string>();
+  if (neededHashes.size === 0) return hashToText;
+  const topicEntries = readAllTopicEntries(cwd);
+  for (const te of topicEntries) {
+    const line = `- [${te.category}] ${te.text}`;
+    const h = entryHash(line);
+    if (neededHashes.has(h)) {
+      hashToText.set(h, te.text);
+      if (hashToText.size >= neededHashes.size) break;
+    }
+  }
+  return hashToText;
+}
+
+function compileBashRegex(pattern: string): RegExp | null {
+  if (pattern.length > 200) return null;
+  if (bashRegexCache.has(pattern)) return bashRegexCache.get(pattern)!;
+  let compiled: RegExp | null = null;
+  try {
+    compiled = new RegExp(pattern);
+  } catch {
+    compiled = null;
+  }
+  setBounded(bashRegexCache, pattern, compiled, REGEX_CACHE_MAX);
+  return compiled;
+}
+
 // ── Loading ────────────────────────────────────────────────────────────────
 
 /**
@@ -67,26 +161,31 @@ export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEn
   // Load ALL entries with trigger+action, not just active/provisional.
   // Enforced rules are code-checked — lifecycle decay should not disable them.
   const scores = loadScores(cwd);
-  const all = Object.entries(scores.entries)
-    .filter(
-      ([, e]) =>
-        e.lifecycle !== "dropped" &&
-        e.userState !== "forgotten" &&
-        isEntryActiveForSession(e, sessionId),
-    )
-    .map(([hash, entry]) => ({ hash, entry }));
-  // Build hash→text lookup from topic files
-  const topicEntries = readAllTopicEntries(cwd);
-  const hashToText = new Map<string, string>();
-  for (const te of topicEntries) {
-    const line = `- [${te.category}] ${te.text}`;
-    hashToText.set(entryHash(line), te.text);
+  const scoresRevision = getScoresRevision(cwd);
+  const rawEntries = Object.entries(scores.entries);
+  if (rawEntries.length === 0) return [];
+
+  const cacheKey = `${resolve(cwd)}\0${sessionId ?? ""}`;
+  const now = Date.now();
+  const cached = enforcedEntriesCache.get(cacheKey);
+  if (
+    cached &&
+    cached.scoresRef === scores &&
+    cached.scoresRevision === scoresRevision &&
+    now < cached.minExpiresAtMs
+  ) {
+    if (cached.result.length === 0 || cached.topicsStamp === getTopicsStamp(cwd)) {
+      log.debug("enforced_entries_cache_hit", { count: cached.result.length });
+      return cached.result;
+    }
   }
 
-  const result: EnforcedEntry[] = [];
-
-  for (const { hash, entry } of all) {
+  // Filter for trigger+action FIRST before touching topic files or computing SHA-256 hashes.
+  const candidates: Array<{ hash: string; entry: ScoredEntry }> = [];
+  for (const [hash, entry] of rawEntries) {
     if (!entry.trigger || !entry.action) continue;
+    if (entry.lifecycle === "dropped" || entry.userState === "forgotten") continue;
+    if (!isEntryActiveForSession(entry, sessionId)) continue;
     // A `tool_name bash` rule fires on every command: block stops the session dead, warn
     // buries every result under a banner. Both happened with entries already in the store,
     // so the guard lives at load time as well as write time.
@@ -97,18 +196,50 @@ export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEn
       log.warn("enforcement_rule_unscoped_bash_ignored", { hash, action: entry.action });
       continue;
     }
+    candidates.push({ hash, entry });
+  }
 
+  if (candidates.length === 0) {
+    setBounded(
+      enforcedEntriesCache,
+      cacheKey,
+      { scoresRef: scores, scoresRevision, topicsStamp: "", minExpiresAtMs: Infinity, result: [] },
+      ENTRIES_CACHE_MAX,
+    );
+    log.debug("enforced_entries_loaded", { count: 0 });
+    return [];
+  }
+
+  const topicsStamp = getTopicsStamp(cwd);
+  const neededHashes = new Set(candidates.map((c) => c.hash));
+  const hashToText = buildHashToTextLookup(cwd, neededHashes);
+
+  const result: EnforcedEntry[] = [];
+  for (const { hash, entry } of candidates) {
     result.push({
       hash,
       text: hashToText.get(hash) || hash,
-      trigger: entry.trigger,
-      action: entry.action,
+      trigger: entry.trigger!,
+      action: entry.action!,
       actionCommand: entry.actionCommand,
       verifier: entry.verifier,
       entry,
     });
   }
 
+  setBounded(
+    enforcedEntriesCache,
+    cacheKey,
+    {
+      scoresRef: scores,
+      scoresRevision,
+      topicsStamp,
+      minExpiresAtMs: minExpiryFromCandidates(candidates),
+      result,
+    },
+    ENTRIES_CACHE_MAX,
+  );
+  log.debug("enforced_entries_loaded", { count: result.length });
   return result;
 }
 
@@ -121,35 +252,72 @@ export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEn
 export function loadVerifierEntries(cwd: string, sessionId?: string): VerifierEntry[] {
   // Same as loadEnforcedEntries — enforced rules bypass lifecycle decay
   const scores = loadScores(cwd);
-  const all = Object.entries(scores.entries)
-    .filter(
-      ([, e]) =>
-        e.lifecycle !== "dropped" &&
-        e.userState !== "forgotten" &&
-        isEntryActiveForSession(e, sessionId),
-    )
-    .map(([hash, entry]) => ({ hash, entry }));
-  const topicEntries = readAllTopicEntries(cwd);
-  const hashToText = new Map<string, string>();
-  for (const te of topicEntries) {
-    const line = `- [${te.category}] ${te.text}`;
-    hashToText.set(entryHash(line), te.text);
+  const scoresRevision = getScoresRevision(cwd);
+  const rawEntries = Object.entries(scores.entries);
+  if (rawEntries.length === 0) return [];
+
+  const cacheKey = `${resolve(cwd)}\0${sessionId ?? ""}`;
+  const now = Date.now();
+  const cached = verifierEntriesCache.get(cacheKey);
+  if (
+    cached &&
+    cached.scoresRef === scores &&
+    cached.scoresRevision === scoresRevision &&
+    now < cached.minExpiresAtMs
+  ) {
+    if (cached.result.length === 0 || cached.topicsStamp === getTopicsStamp(cwd)) {
+      log.debug("verifier_entries_cache_hit", { count: cached.result.length });
+      return cached.result;
+    }
   }
 
-  const result: VerifierEntry[] = [];
-
-  for (const { hash, entry } of all) {
+  const candidates: Array<{ hash: string; entry: ScoredEntry }> = [];
+  for (const [hash, entry] of rawEntries) {
     if (!entry.verifier) continue;
+    if (entry.lifecycle === "dropped" || entry.userState === "forgotten") continue;
+    if (!isEntryActiveForSession(entry, sessionId)) continue;
+    candidates.push({ hash, entry });
+  }
 
+  if (candidates.length === 0) {
+    setBounded(
+      verifierEntriesCache,
+      cacheKey,
+      { scoresRef: scores, scoresRevision, topicsStamp: "", minExpiresAtMs: Infinity, result: [] },
+      ENTRIES_CACHE_MAX,
+    );
+    log.debug("verifier_entries_loaded", { count: 0 });
+    return [];
+  }
+
+  const topicsStamp = getTopicsStamp(cwd);
+  const neededHashes = new Set(candidates.map((c) => c.hash));
+  const hashToText = buildHashToTextLookup(cwd, neededHashes);
+
+  const result: VerifierEntry[] = [];
+  for (const { hash, entry } of candidates) {
     result.push({
       hash,
       text: hashToText.get(hash) || hash,
       trigger: entry.trigger,
-      verifier: entry.verifier,
+      verifier: entry.verifier!,
       entry,
     });
   }
 
+  setBounded(
+    verifierEntriesCache,
+    cacheKey,
+    {
+      scoresRef: scores,
+      scoresRevision,
+      topicsStamp,
+      minExpiresAtMs: minExpiryFromCandidates(candidates),
+      result,
+    },
+    ENTRIES_CACHE_MAX,
+  );
+  log.debug("verifier_entries_loaded", { count: result.length });
   return result;
 }
 
@@ -168,15 +336,11 @@ function matchBashTrigger(
   }
   if (trigger.startsWith("bash_regex ")) {
     const pattern = trigger.slice("bash_regex ".length);
-    // Guard against ReDoS: limit pattern length
-    if (pattern.length > 200) return null;
-    try {
-      const re = new RegExp(pattern);
+    const re = compileBashRegex(pattern);
+    if (re) {
       // Use a bounded match — limit input to first 4000 chars
       const m = command.slice(0, 4000).match(re);
       if (m) return m[0];
-    } catch {
-      // Invalid regex — skip
     }
   }
   return null;

@@ -1293,6 +1293,96 @@ describe("reload-flag", () => {
     }
   });
 
+  test("idle turn_end tick performs at most 3 fs syscalls (1 readdirSync + 2 existsSync) (#1182)", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const readdirCalls: string[] = [];
+    const existsCalls: string[] = [];
+    const origReaddir = fs.readdirSync;
+    const origExists = fs.existsSync;
+    t.mock.method(fs, "readdirSync", (target: any, ...args: any[]) => {
+      readdirCalls.push(String(target));
+      return (origReaddir as any)(target, ...args);
+    });
+    t.mock.method(fs, "existsSync", (target: any) => {
+      existsCalls.push(String(target));
+      return origExists(target);
+    });
+    syncBuiltinESMExports();
+    try {
+      const ctx = makeCtx(cwd, { count: 0 });
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      readdirCalls.length = 0;
+      existsCalls.length = 0;
+
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(readdirCalls.length, 1, "exactly 1 readdirSync per idle tick");
+      assert.equal(readdirCalls[0], path.join(cwd, ".pi", "run"));
+      assert.equal(existsCalls.length, 2, "at most 2 existsSync checks per idle tick");
+      assert.ok(readdirCalls.length + existsCalls.length <= 3, "total <= 3 fs checks per idle tick");
+
+      // When .pi/run/reload.flag exists, legacy reload.flag check is skipped (only 1 existsSync)
+      writeFileSync(reloadFlagPath(cwd), "nonce-run-fast");
+      readdirCalls.length = 0;
+      existsCalls.length = 0;
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(readdirCalls.length, 1);
+      assert.equal(existsCalls.length, 1);
+      assert.equal(reg.sent.length, 1);
+
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("maybeTrigger rescans and preserves a foreign claim retained after EEXIST during corrupt sweep (#1182)", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    const pendingFile = reloadPendingPath(cwd);
+    const foreignValid = JSON.stringify({ nonce: "foreign-claim-nonce", owner: "1:foreign-session" });
+    try {
+      const ctx = makeCtx(cwd, { count: 0 });
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      writeFileSync(pendingFile, "");
+      writeFileSync(reloadFlagPath(cwd), "new-flag-nonce");
+
+      const rename = fs.renameSync;
+      const link = fs.linkSync;
+      let collided = false;
+      t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+        if (String(from) === pendingFile && !collided) {
+          // Concurrent valid write replaced pendingFile just before quarantine rename
+          writeFileSync(pendingFile, foreignValid);
+        }
+        return rename(from, to);
+      });
+      t.mock.method(fs, "linkSync", (existingPath: fs.PathLike, newPath: fs.PathLike) => {
+        if (String(newPath) === pendingFile && !collided) {
+          collided = true;
+          // Another writer populated pendingFile first; linkSync throws EEXIST so quarantine moves to .claim
+          writeFileSync(pendingFile, JSON.stringify({ nonce: "other-valid", owner: "1:other-foreign" }));
+        }
+        return link(existingPath, newPath);
+      });
+      syncBuiltinESMExports();
+
+      await reg.handlers.get("turn_end")!({}, ctx);
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+
+      assert.equal(collided, true);
+      assert.equal(reg.sent.length, 0, "must not dispatch over a retained foreign pending claim");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("reconcileStartupHandshake replaces pruneStaleHandshake without age-pruning branches (f2742a50)", () => {
     assert.equal(typeof reconcileStartupHandshake, "function");
     assert.equal("pruneStaleHandshake" in reloadFlagModule, false);

@@ -4,7 +4,7 @@
  */
 import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -5534,5 +5534,175 @@ describe("rtk prefix (#996)", () => {
   it("sees an identity assignment behind a wrapper option", () => {
     assert.equal(gitIdentityOverride("rtk -v GIT_AUTHOR_EMAIL=x git commit -m m"), "GIT_AUTHOR_EMAIL");
     assert.equal(gitIdentityOverride("sudo -u root GIT_AUTHOR_EMAIL=x git commit"), "GIT_AUTHOR_EMAIL");
+  });
+});
+
+describe("git protection fast-path (#1194)", () => {
+  function setupInstrumentedRepo() {
+    const dir = makeTempDir("git-prot-perf-");
+    const binDir = join(dir, "bin");
+    const repo = join(dir, "repo");
+    const logFile = join(dir, "git-calls.log");
+    const origPath = process.env.PATH ?? "";
+    const origAgent = process.env.PI_AGENT_NAME;
+
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(join(repo, ".pi"), { recursive: true });
+    const realGit = execFileSync("which", ["git"], { encoding: "utf-8" }).trim();
+    const wrapper = join(binDir, "git");
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logFile}"\nexec "${realGit}" "$@"\n`,
+    );
+    chmodSync(wrapper, 0o755);
+
+    execFileSync(realGit, ["init", "-q", "-b", "feat/test"], { cwd: repo });
+    execFileSync(realGit, ["config", "user.email", "t@example.com"], { cwd: repo });
+    execFileSync(realGit, ["config", "user.name", "T"], { cwd: repo });
+    writeFileSync(join(repo, ".gitignore"), "*.log\n");
+    writeFileSync(join(repo, "a.ts"), "export const a = 1;\n");
+    writeFileSync(join(repo, "b.ts"), "export const b = 2;\n");
+    writeFileSync(join(repo, "file with spaces.ts"), "export const s = 3;\n");
+    writeFileSync(join(repo, "ignored with spaces.log"), "secret\n");
+    execFileSync(realGit, ["add", ".gitignore"], { cwd: repo });
+    execFileSync(realGit, ["commit", "-q", "-m", "init"], { cwd: repo });
+
+    writeFileSync(
+      join(repo, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ use_worktrees: true, review_loop_enforcement: false, commit_trailer: "none", dco: false }),
+    );
+    clearSettingsCache();
+
+    const hooks = new Map<string, (...args: any[]) => any>();
+    const fakePi: any = {
+      on: (name: string, fn: any) => hooks.set(name, fn),
+      registerTool: () => {},
+      registerCommand: () => {},
+      events: { emit: () => {}, on: () => {} },
+    };
+    registerEnforcement(fakePi);
+    const toolCall = hooks.get("tool_call")!;
+    assert.ok(toolCall);
+
+    const mkCtx = () => ({ cwd: repo, hasUI: false, sessionManager: { getSessionId: () => "s1" } });
+    const readCalls = () => (existsSync(logFile) ? readFileSync(logFile, "utf-8").trim().split("\n").filter(Boolean) : []);
+    const resetLog = () => writeFileSync(logFile, "");
+
+    process.env.PATH = `${binDir}:${origPath}`;
+    delete process.env.PI_AGENT_NAME;
+
+    const cleanup = () => {
+      process.env.PATH = origPath;
+      if (origAgent === undefined) delete process.env.PI_AGENT_NAME;
+      else process.env.PI_AGENT_NAME = origAgent;
+      clearSettingsCache();
+      rmSync(dir, { recursive: true, force: true });
+    };
+
+    const warmUp = async () => {
+      await toolCall({ type: "tool_call", toolName: "bash", input: { command: "true" } }, mkCtx());
+      resetLog();
+    };
+
+    return { dir, repo, toolCall, mkCtx, readCalls, resetLog, warmUp, cleanup };
+  }
+
+  it("skips git spawns on non-git bash commands", async () => {
+    const { toolCall, mkCtx, readCalls, warmUp, cleanup } = setupInstrumentedRepo();
+    try {
+      await warmUp();
+      for (const cmd of ["ls -la", "rg pattern src/", "npm test", "uv run pytest"]) {
+        const res = await toolCall({ type: "tool_call", toolName: "bash", input: { command: cmd } }, mkCtx());
+        assert.equal(res, undefined, cmd);
+      }
+      assert.deepEqual(readCalls(), [], "non-git bash commands must spawn 0 git processes");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("defers branch lookups on non-commit non-push git commands", async () => {
+    const { toolCall, mkCtx, readCalls, warmUp, cleanup } = setupInstrumentedRepo();
+    try {
+      await warmUp();
+      assert.equal(
+        await toolCall({ type: "tool_call", toolName: "bash", input: { command: "git status --short" } }, mkCtx()),
+        undefined,
+      );
+      const calls = readCalls();
+      assert.equal(calls.length, 1, `expected 1 git spawn for git status, got: ${JSON.stringify(calls)}`);
+      assert.match(calls[0], /rev-parse --git-dir/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("batches multi-file git check-ignore into one stdin call", async () => {
+    const { toolCall, mkCtx, readCalls, warmUp, cleanup } = setupInstrumentedRepo();
+    try {
+      await warmUp();
+      assert.equal(
+        await toolCall(
+          { type: "tool_call", toolName: "bash", input: { command: 'git add a.ts b.ts "file with spaces.ts"' } },
+          mkCtx(),
+        ),
+        undefined,
+      );
+      const calls = readCalls();
+      assert.equal(calls.length, 2, `expected 2 git spawns (git-dir + 1 batched check-ignore), got: ${JSON.stringify(calls)}`);
+      assert.match(calls[1], /check-ignore --stdin -z/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("blocks gitignored files with spaces in batched git add", async () => {
+    const { toolCall, mkCtx, readCalls, warmUp, cleanup } = setupInstrumentedRepo();
+    try {
+      await warmUp();
+      const ignoredRes = await toolCall(
+        { type: "tool_call", toolName: "bash", input: { command: 'git add a.ts "ignored with spaces.log" b.ts' } },
+        mkCtx(),
+      );
+      assert.equal(ignoredRes?.block, true);
+      assert.match(ignoredRes?.reason ?? "", /ignored with spaces\.log/);
+      assert.equal(readCalls().length, 2);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("falls back to per-file git check-ignore when an outside-repo pathspec fails the batch", async () => {
+    const { toolCall, mkCtx, readCalls, warmUp, cleanup } = setupInstrumentedRepo();
+    try {
+      await warmUp();
+      const outside = join(tmpdir(), "nonexistent-outside-repo-path.txt");
+      const res = await toolCall(
+        { type: "tool_call", toolName: "bash", input: { command: `git add "${outside}" "ignored with spaces.log"` } },
+        mkCtx(),
+      );
+      assert.equal(res?.block, true);
+      assert.match(res?.reason ?? "", /ignored with spaces\.log/);
+      assert.ok(readCalls().some((line) => line.includes("check-ignore -q")));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reuses getCurrentBranch once on git-expert commits", async () => {
+    const { toolCall, mkCtx, readCalls, warmUp, cleanup } = setupInstrumentedRepo();
+    try {
+      await warmUp();
+      process.env.PI_AGENT_NAME = "git-expert";
+      const commitRes = await toolCall(
+        { type: "tool_call", toolName: "bash", input: { command: 'git commit -m "feat: ok"' } },
+        mkCtx(),
+      );
+      assert.equal(commitRes, undefined);
+      const abbrevCalls = readCalls().filter((line) => line.includes("rev-parse --abbrev-ref HEAD"));
+      assert.equal(abbrevCalls.length, 1, `expected single getCurrentBranch spawn, got: ${JSON.stringify(abbrevCalls)}`);
+    } finally {
+      cleanup();
+    }
   });
 });

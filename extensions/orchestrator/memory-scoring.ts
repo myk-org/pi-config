@@ -255,6 +255,11 @@ export function getScoresPath(cwd: string): string {
   return join(getProjectMemoryDir(cwd), SCORES_FILENAME_JSONL);
 }
 
+/** Monotonic write/reload revision for the project's scores store. */
+export function getScoresRevision(cwd: string): number {
+  return getScoresStore(cwd).getRevision();
+}
+
 /**
  * Session-aware eligibility for a scored entry (Qodo #8/#19, PR #916).
  * Session-scoped entries (including code-enforced ones — enforcement is a
