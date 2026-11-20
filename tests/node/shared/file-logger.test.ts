@@ -466,6 +466,30 @@ describe("file-logger", () => {
     assert.equal(result.status, 0, result.stderr || result.stdout);
   });
 
+  it("caches standalone settings file reads within TTL and refreshes after clearStandaloneSettingsCache (#1207)", () => {
+    const root = makeTempDir("pi-standalone-settings-cache-");
+    const home = makeTempDir("pi-standalone-settings-home-");
+    mkdirSync(join(root, ".pi"));
+    mkdirSync(join(home, ".pi"));
+    writeFileSync(join(root, ".pi", "pi-config-settings.json"), '{"log_coms":"debug"}');
+    const script = `
+      import { writeFileSync } from "node:fs";
+      import { join } from "node:path";
+      process.env.HOME = ${JSON.stringify(home)};
+      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
+      settings.setRepoRootResolverForTests(cwd => cwd);
+      if (settings.getStandaloneSetting(process.cwd(), "log_coms") !== "debug") process.exit(1);
+      writeFileSync(join(process.cwd(), ".pi", "pi-config-settings.json"), '{"log_coms":"error"}');
+      if (settings.getStandaloneSetting(process.cwd(), "log_coms") !== "debug") process.exit(2);
+      settings.clearStandaloneSettingsCache();
+      if (settings.getStandaloneSetting(process.cwd(), "log_coms") !== "error") process.exit(3);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
   it("loads project log settings from a nested directory", () => {
     const root = makeTempDir("pi-file-log-nested-");
     const nested = join(root, "a", "b");

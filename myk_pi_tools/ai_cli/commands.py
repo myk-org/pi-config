@@ -90,7 +90,7 @@ def save_config_cmd(agents: str | None, peers: str | None) -> None:
         cfg["lastPeers"] = peers
 
     config_path.write_text(json.dumps(cfg, indent=2) + "\n")
-    click.echo(json.dumps(cfg, indent=2))
+    click.echo(json.dumps(cfg, separators=(",", ":")))
 
 
 @ai_cli.command("models")

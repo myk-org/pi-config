@@ -20,9 +20,10 @@ separated by ``---`` dividers.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from bs4 import BeautifulSoup, Tag
+if TYPE_CHECKING:
+    from bs4 import BeautifulSoup, Tag
 
 # ---------------------------------------------------------------------------
 # Section keyword mapping
@@ -145,6 +146,8 @@ def _prepare_soup(body: str) -> BeautifulSoup:
     Strips markdown blockquote ``>`` prefixes, parses the HTML, and removes
     any "Prompt for AI Agents" ``<details>`` blocks.
     """
+    from bs4 import BeautifulSoup
+
     cleaned = _strip_blockquote_prefix(body)
     soup = BeautifulSoup(cleaned, "html.parser")
     _remove_ai_prompts(soup)

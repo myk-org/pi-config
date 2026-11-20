@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { OverlayScrollDetail } from "../../../extensions/orchestrator/overlay-dashboard.ts";
 import {
   enterAction,
   reconcileSelection,
@@ -7,6 +8,7 @@ import {
   type OverlayId,
   type OverlaySelection,
 } from "../../../extensions/orchestrator/overlay-dashboard-utils.ts";
+import { fakeTheme, fakeTui } from "../helpers/fake-tui.js";
 
 /**
  * openListDetailOverlay / OverlayListDashboard / OverlayScrollDetail require
@@ -132,5 +134,63 @@ describe("selectionIndexFor (#1084 finding 4): re-open on the same row", () => {
     assert.equal(selectionIndexFor(items, undefined), 0);
     assert.equal(selectionIndexFor(items, null), 0);
     assert.equal(selectionIndexFor([], "anything"), 0);
+  });
+});
+
+describe("OverlayScrollDetail incremental wrapping cache (#1209)", () => {
+  it("caches wrapped lines across invalidate ticks and wraps only newly appended lines", () => {
+    const rawLines = ["alpha", "beta", "gamma"];
+    const indexReads: number[] = [];
+    const proxyLines = new Proxy(rawLines, {
+      get(target, prop, receiver) {
+        if (typeof prop === "string" && /^\d+$/.test(prop)) {
+          indexReads.push(Number(prop));
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const tui = fakeTui();
+    const theme = fakeTheme();
+    const detail = new OverlayScrollDetail(
+      tui,
+      theme,
+      {
+        followTail: true,
+        footerHints: "Esc back",
+        tickMs: 60_000,
+        getHeader: () => "header",
+        getBodyLines: () => proxyLines,
+      },
+      () => {},
+    );
+
+    try {
+      const first = detail.render(80);
+      assert.deepEqual(indexReads, [0, 1, 2]);
+      assert.ok(first.some((l) => l.includes("alpha")));
+      assert.ok(first.some((l) => l.includes("gamma")));
+
+      // Simulated 1s ticker invalidation: header updates without re-wrapping body lines
+      indexReads.length = 0;
+      detail.invalidate();
+      detail.render(80);
+      assert.deepEqual(indexReads, []);
+
+      // Appending a line wraps ONLY index 3
+      rawLines.push("delta");
+      detail.invalidate();
+      const afterAppend = detail.render(80);
+      assert.deepEqual(indexReads, [3]);
+      assert.ok(afterAppend.some((l) => l.includes("delta")));
+
+      // Width change forces full re-wrap
+      indexReads.length = 0;
+      detail.invalidate();
+      detail.render(50);
+      assert.deepEqual(indexReads, [0, 1, 2, 3]);
+    } finally {
+      detail.dispose();
+    }
   });
 });

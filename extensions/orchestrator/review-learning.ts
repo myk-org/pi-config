@@ -56,17 +56,17 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
-import { getProjectDataDir, resolveWorktreeRoot } from "./utils.js";
+import { getProjectDataDir, getProjectMemoryDir, resolveWorktreeRoot } from "./utils.js";
 import { addMemoryEntry } from "./memory-write.js";
-import { entryHash, loadScores } from "./memory-scoring.js";
-import { readAllTopicEntries } from "./memory-tree.js";
+import { entryHash, getScoresPath, loadScores } from "./memory-scoring.js";
+import { canonicalTopicLine, readAllTopicEntries } from "./memory-tree.js";
 
 const log = createLogger("review-learning");
 
@@ -156,19 +156,62 @@ export function parseGitHubRepo(remoteUrl: string): { owner: string; repo: strin
   return { owner, repo };
 }
 
-/** Resolve owner/repo from the session cwd via `git remote get-url origin`. Fail-soft. */
+const REPO_INFO_CACHE_TTL_MS = 60_000;
+const MAX_CACHED_DBS = 8;
+const MAX_BRANCH_DIFF_CACHE = 32;
+const MAX_LESSON_CACHE = 16;
+
+interface CachedDbHandle {
+  db: DatabaseSync;
+  mtimeMs: number;
+  size: number;
+  walSig: string;
+  hasTitleColumn: boolean;
+}
+
+const repoInfoCache = new Map<string, { value: RepoInfo | null; expiresAt: number }>();
+const branchDiffCache = new Map<string, { headKey: string; paths: string[] }>();
+const reviewsDbCache = new Map<string, CachedDbHandle>();
+const lessonByCommentCache = new Map<
+  string,
+  { sig: string; byCommentId: Map<number, { text: string; order: number }> }
+>();
+
+/** Clear in-memory caches (for tests or explicit resets). */
+export function clearReviewLearningCaches(): void {
+  repoInfoCache.clear();
+  branchDiffCache.clear();
+  for (const handle of reviewsDbCache.values()) {
+    try { handle.db.close(); } catch { /* best-effort */ }
+  }
+  reviewsDbCache.clear();
+  lessonByCommentCache.clear();
+}
+
+/** Resolve owner/repo from the session cwd via `git remote get-url origin`. Fail-soft, cached 60s per worktree root. */
 export function resolveRepoInfo(cwd: string): RepoInfo | null {
+  const root = resolveWorktreeRoot(cwd);
+  const now = Date.now();
+  const cached = repoInfoCache.get(root);
+  if (cached && now < cached.expiresAt) {
+    return cached.value;
+  }
+  let repo: RepoInfo | null = null;
   try {
     const url = execFileSync("git", ["remote", "get-url", "origin"], {
       cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    const repo = parseGitHubRepo(url);
+    repo = parseGitHubRepo(url);
     if (!repo) log.debug("repo_url_unparsable", { cwd, url: url.slice(0, 120) });
-    return repo;
   } catch (error: any) {
     log.debug("repo_resolution_failed", { cwd, reason: String(error?.message ?? error).slice(0, 200) });
-    return null;
   }
+  if (repoInfoCache.size >= 64) {
+    const oldest = repoInfoCache.keys().next().value;
+    if (oldest !== undefined) repoInfoCache.delete(oldest);
+  }
+  repoInfoCache.set(root, { value: repo, expiresAt: now + REPO_INFO_CACHE_TTL_MS });
+  return repo;
 }
 
 // ── Reviews DB access ──────────────────────────────────────────────────────
@@ -191,10 +234,73 @@ export interface AddressedFinding {
   title: string | null;
 }
 
-function openReviewsDb(dbPath: string): DatabaseSync | null {
-  if (!existsSync(dbPath)) return null;
+function statSignature(path: string): string {
   try {
-    return new DatabaseSync(dbPath, { readOnly: true });
+    const st = statSync(path);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return "0:0";
+  }
+}
+
+function getCachedDbHandle(dbPath: string): CachedDbHandle | null {
+  let st: ReturnType<typeof statSync>;
+  try {
+    st = statSync(dbPath);
+  } catch {
+    const stale = reviewsDbCache.get(dbPath);
+    if (stale) {
+      reviewsDbCache.delete(dbPath);
+      try { stale.db.close(); } catch { /* ignore */ }
+    }
+    return null;
+  }
+  const walSig = statSignature(`${dbPath}-wal`);
+  const cached = reviewsDbCache.get(dbPath);
+  if (
+    cached &&
+    cached.mtimeMs === st.mtimeMs &&
+    cached.size === st.size &&
+    cached.walSig === walSig
+  ) {
+    // Refresh LRU position
+    reviewsDbCache.delete(dbPath);
+    reviewsDbCache.set(dbPath, cached);
+    return cached;
+  }
+  if (cached) {
+    reviewsDbCache.delete(dbPath);
+    try { cached.db.close(); } catch { /* ignore */ }
+  }
+  try {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    let hasTitleColumn = false;
+    try {
+      const cols = db.prepare("PRAGMA table_info(comments)").all() as Array<{ name?: string }>;
+      hasTitleColumn = cols.some((c) => c.name === "title");
+    } catch {
+      hasTitleColumn = false;
+    }
+    if (reviewsDbCache.size >= MAX_CACHED_DBS) {
+      const oldestKey = reviewsDbCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        const oldest = reviewsDbCache.get(oldestKey);
+        reviewsDbCache.delete(oldestKey);
+        if (oldest) {
+          try { oldest.db.close(); } catch { /* ignore */ }
+        }
+      }
+    }
+    const handle: CachedDbHandle = {
+      db,
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+      walSig,
+      hasTitleColumn,
+    };
+    reviewsDbCache.set(dbPath, handle);
+    log.debug("reviews_db_handle_opened", { dbPath, hasTitleColumn });
+    return handle;
   } catch (error: any) {
     log.debug("reviews_db_open_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
     return null;
@@ -206,15 +312,15 @@ function openReviewsDb(dbPath: string): DatabaseSync | null {
  * an `address` command stored (append-only store — highest id is newest).
  */
 export function getLatestReview(dbPath: string, owner: string, repo: string, prNumber?: number | null): ReviewRow | null {
-  const db = openReviewsDb(dbPath);
-  if (!db) return null;
+  const handle = getCachedDbHandle(dbPath);
+  if (!handle) return null;
   try {
     const sql = prNumber
       ? "SELECT id, pr_number, commit_sha, owner, repo FROM reviews WHERE owner=? AND repo=? AND pr_number=? ORDER BY id DESC LIMIT 1"
       : "SELECT id, pr_number, commit_sha, owner, repo FROM reviews WHERE owner=? AND repo=? ORDER BY id DESC LIMIT 1";
     const row = (prNumber
-      ? db.prepare(sql).get(owner, repo, prNumber)
-      : db.prepare(sql).get(owner, repo)) as any;
+      ? handle.db.prepare(sql).get(owner, repo, prNumber)
+      : handle.db.prepare(sql).get(owner, repo)) as any;
     if (!row) return null;
     return {
       id: Number(row.id),
@@ -226,8 +332,6 @@ export function getLatestReview(dbPath: string, owner: string, repo: string, prN
   } catch (error: any) {
     log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
     return null;
-  } finally {
-    db.close();
   }
 }
 
@@ -238,10 +342,10 @@ export function getLatestReview(dbPath: string, owner: string, repo: string, prN
  * (Qodo 16d84431).
  */
 export function getReviewsForPr(dbPath: string, owner: string, repo: string, prNumber: number): ReviewRow[] {
-  const db = openReviewsDb(dbPath);
-  if (!db) return [];
+  const handle = getCachedDbHandle(dbPath);
+  if (!handle) return [];
   try {
-    const rows = db
+    const rows = handle.db
       .prepare(
         "SELECT id, pr_number, commit_sha, owner, repo FROM reviews WHERE owner=? AND repo=? AND pr_number=? ORDER BY id ASC",
       )
@@ -256,8 +360,6 @@ export function getReviewsForPr(dbPath: string, owner: string, repo: string, prN
   } catch (error: any) {
     log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
     return [];
-  } finally {
-    db.close();
   }
 }
 
@@ -269,47 +371,27 @@ export function getReviewsForPr(dbPath: string, owner: string, repo: string, prN
  * databases, where `title` is null.
  */
 export function getAddressedComments(dbPath: string, reviewId: number): AddressedFinding[] {
-  const db = openReviewsDb(dbPath);
-  if (!db) return [];
+  const handle = getCachedDbHandle(dbPath);
+  if (!handle) return [];
   try {
-    let rows: any[];
-    try {
-      rows = db
-        .prepare(
-          "SELECT c.id, c.path, c.line, c.body, c.priority, c.title " +
-            "FROM comments c WHERE c.review_id=? AND c.status='addressed'",
-        )
-        .all(reviewId) as any[];
-    } catch {
-      // Legacy DB without the `title` column — select without it.
-      rows = db
-        .prepare(
-          "SELECT c.id, c.path, c.line, c.body, c.priority " +
-            "FROM comments c WHERE c.review_id=? AND c.status='addressed'",
-        )
-        .all(reviewId) as any[];
-      return rows.map((row) => ({
-        id: Number(row.id),
-        path: typeof row.path === "string" ? row.path : null,
-        line: row.line === null || row.line === undefined ? null : Number(row.line),
-        body: String(row.body ?? ""),
-        priority: typeof row.priority === "string" ? row.priority : null,
-        title: null,
-      }));
-    }
+    const titleCol = handle.hasTitleColumn ? ", c.title" : "";
+    const rows = handle.db
+      .prepare(
+        `SELECT c.id, c.path, c.line, c.body, c.priority${titleCol} ` +
+          "FROM comments c WHERE c.review_id=? AND c.status='addressed'",
+      )
+      .all(reviewId) as any[];
     return rows.map((row) => ({
       id: Number(row.id),
       path: typeof row.path === "string" ? row.path : null,
       line: row.line === null || row.line === undefined ? null : Number(row.line),
       body: String(row.body ?? ""),
       priority: typeof row.priority === "string" ? row.priority : null,
-      title: typeof row.title === "string" && row.title.trim() ? row.title : null,
+      title: handle.hasTitleColumn && typeof row.title === "string" && row.title.trim() ? row.title : null,
     }));
   } catch (error: any) {
     log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
     return [];
-  } finally {
-    db.close();
   }
 }
 
@@ -870,6 +952,49 @@ export function extractPathsFromText(text: string, cwd: string): string[] {
   return out;
 }
 
+function resolveGitHeadKey(worktreeRoot: string): string | null {
+  try {
+    const dotGit = join(worktreeRoot, ".git");
+    if (!existsSync(dotGit)) return null;
+    const st = statSync(dotGit);
+    let gitDir = dotGit;
+    if (st.isFile()) {
+      const line = readFileSync(dotGit, "utf-8").trim();
+      const match = /^gitdir:\s*(.+)$/.exec(line);
+      if (!match?.[1]) return null;
+      gitDir = isAbsolute(match[1]) ? match[1] : resolve(worktreeRoot, match[1]);
+    } else if (!st.isDirectory()) {
+      return null;
+    }
+
+    const headRaw = readFileSync(join(gitDir, "HEAD"), "utf-8").trim();
+    let commonDir = gitDir;
+    const commonDirFile = join(gitDir, "commondir");
+    if (existsSync(commonDirFile)) {
+      const rel = readFileSync(commonDirFile, "utf-8").trim();
+      if (rel) commonDir = isAbsolute(rel) ? rel : resolve(gitDir, rel);
+    }
+
+    let activeRef = "";
+    if (headRaw.startsWith("ref: ")) {
+      const refPath = headRaw.slice(5).trim();
+      const localRef = join(gitDir, refPath);
+      const sharedRef = join(commonDir, refPath);
+      activeRef = existsSync(localRef)
+        ? readFileSync(localRef, "utf-8").trim()
+        : existsSync(sharedRef)
+          ? readFileSync(sharedRef, "utf-8").trim()
+          : statSignature(sharedRef);
+    }
+    const mainSig = statSignature(join(commonDir, "refs", "heads", "main"));
+    const originMainSig = statSignature(join(commonDir, "refs", "remotes", "origin", "main"));
+    const packedSig = statSignature(join(commonDir, "packed-refs"));
+    return `${headRaw}|${activeRef}|${mainSig}|${originMainSig}|${packedSig}`;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Paths changed on the current branch vs main: `git diff --name-only main...HEAD`,
  * falling back to `origin/main...HEAD`. Fresh branches / missing main / no git →
@@ -877,17 +1002,34 @@ export function extractPathsFromText(text: string, cwd: string): string[] {
  * Output is repo-relative — normalize with normalizeRepoRelativeFromRoot.
  */
 export function branchDiffPaths(cwd: string): string[] {
+  const root = resolveWorktreeRoot(cwd);
+  const headKey = resolveGitHeadKey(root);
+  if (headKey !== null) {
+    const cached = branchDiffCache.get(root);
+    if (cached && cached.headKey === headKey) {
+      return cached.paths.slice();
+    }
+  }
+  let result: string[] = [];
   for (const range of ["main...HEAD", "origin/main...HEAD"]) {
     try {
       const out = execFileSync("git", ["diff", "--name-only", range], {
         cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
       });
-      return out.split("\n").map((line) => line.trim()).filter(Boolean);
+      result = out.split("\n").map((line) => line.trim()).filter(Boolean);
+      break;
     } catch {
       // try the next base ref
     }
   }
-  return [];
+  if (headKey !== null) {
+    if (branchDiffCache.size >= MAX_BRANCH_DIFF_CACHE) {
+      const oldest = branchDiffCache.keys().next().value;
+      if (oldest !== undefined) branchDiffCache.delete(oldest);
+    }
+    branchDiffCache.set(root, { headKey, paths: result });
+  }
+  return result.slice();
 }
 
 /** First sentence of a comment body, whitespace-collapsed, ≤ `max` chars. */
@@ -922,38 +1064,30 @@ interface MatchedComment {
  */
 function matchedAddressedComments(dbPath: string, owner: string, repo: string, inputs: string[]): MatchedComment[] {
   if (inputs.length === 0) return [];
-  const db = openReviewsDb(dbPath);
-  if (!db) return [];
+  const handle = getCachedDbHandle(dbPath);
+  if (!handle) return [];
   try {
     const conds = inputs.map(() => "(c.path = ? OR c.path LIKE ? ESCAPE '\\' OR ? LIKE c.path || '/%' ESCAPE '\\')").join(" OR ");
     const params: string[] = [owner, repo];
     const like = (input: string) => input.replace(/[\\%_]/g, (ch) => `\\${ch}`);
     for (const input of inputs) params.push(input, `${like(input)}/%`, input);
-    const query = (titleCol: string) =>
-      db
-        .prepare(
-          `SELECT c.id, c.path, c.body${titleCol} FROM comments c ` +
-            `JOIN reviews r ON c.review_id = r.id ` +
-            `WHERE r.owner=? AND r.repo=? AND c.status='addressed' AND c.path IS NOT NULL AND (${conds})`,
-        )
-        .all(...params) as any[];
-    let rows: any[];
-    try {
-      rows = query(", c.title");
-    } catch {
-      rows = query(""); // legacy DB without the `title` column
-    }
+    const titleCol = handle.hasTitleColumn ? ", c.title" : "";
+    const rows = handle.db
+      .prepare(
+        `SELECT c.id, c.path, c.body${titleCol} FROM comments c ` +
+          `JOIN reviews r ON c.review_id = r.id ` +
+          `WHERE r.owner=? AND r.repo=? AND c.status='addressed' AND c.path IS NOT NULL AND (${conds})`,
+      )
+      .all(...params) as any[];
     return rows.map((row) => ({
       id: Number(row.id),
       path: String(row.path),
       body: String(row.body ?? ""),
-      title: typeof row.title === "string" && row.title.trim() ? row.title : null,
+      title: handle.hasTitleColumn && typeof row.title === "string" && row.title.trim() ? row.title : null,
     }));
   } catch (error: any) {
     log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
     return [];
-  } finally {
-    db.close();
   }
 }
 
@@ -976,6 +1110,61 @@ interface IssueGroup {
   title: string | null;
   body: string;
   ids: number[];
+}
+
+function lessonLookupSignature(cwd: string): string {
+  const memDir = getProjectMemoryDir(cwd);
+  const scoresJsonlSig = statSignature(getScoresPath(cwd));
+  const scoresJsonSig = statSignature(join(memDir, "memory-scores.json"));
+  const topicsDir = join(memDir, "topics");
+  let topicsSig = "";
+  if (existsSync(topicsDir)) {
+    try {
+      topicsSig = readdirSync(topicsDir)
+        .filter((f) => f.endsWith(".md"))
+        .sort()
+        .map((f) => `${f}:${statSignature(join(topicsDir, f))}`)
+        .join("|");
+    } catch {
+      topicsSig = "";
+    }
+  }
+  return `${scoresJsonlSig}|${scoresJsonSig}|${topicsSig}`;
+}
+
+function getLessonsByCommentId(
+  cwd: string,
+  repoSlug: string,
+): Map<number, { text: string; order: number }> {
+  const cacheKey = `${getProjectMemoryDir(cwd)}\0${repoSlug}`;
+  const sig = lessonLookupSignature(cwd);
+  const cached = lessonByCommentCache.get(cacheKey);
+  if (cached && cached.sig === sig) {
+    return cached.byCommentId;
+  }
+
+  const byCommentId = new Map<number, { text: string; order: number }>();
+  const scores = loadScores(cwd);
+  const entries = readAllTopicEntries(cwd);
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    if (entry.category !== "lesson") continue;
+    const hash = entryHash(canonicalTopicLine(entry));
+    const derivedFrom = scores.entries[hash]?.derivedFrom;
+    const provenance = derivedFrom ? /^reviews\.db:(\d+);([^/\s]+\/[^\s;]+)$/.exec(derivedFrom) : null;
+    if (!provenance || provenance[2] !== repoSlug) continue;
+    const commentId = Number(provenance[1]);
+    if (!byCommentId.has(commentId)) {
+      byCommentId.set(commentId, { text: entry.text, order: i });
+    }
+  }
+
+  if (lessonByCommentCache.size >= MAX_LESSON_CACHE) {
+    const oldest = lessonByCommentCache.keys().next().value;
+    if (oldest !== undefined) lessonByCommentCache.delete(oldest);
+  }
+  lessonByCommentCache.set(cacheKey, { sig, byCommentId });
+  return byCommentId;
 }
 
 /**
@@ -1037,19 +1226,21 @@ export function collectPathFindings(
 
   // Memory lessons: only lesson entries whose reviews.db provenance resolves
   // to a matched comment of THIS repo (category + provenance + repo suffix).
+  // Memoized per (cwd, repo, scores mtime+size, topics mtime+size) to avoid
+  // re-hashing every lesson on every turn.
   const lessonTextByIssue = new Map<string, string>();
   if (rows.length > 0) {
     try {
-      const scores = loadScores(cwd);
-      for (const entry of readAllTopicEntries(cwd)) {
-        if (entry.category !== "lesson") continue;
-        const hash = entryHash(`- [${entry.category}] ${entry.text}`);
-        const derivedFrom = scores.entries[hash]?.derivedFrom;
-        const provenance = derivedFrom ? /^reviews\.db:(\d+);([^/\s]+\/[^\s;]+)$/.exec(derivedFrom) : null;
-        if (!provenance) continue;
-        if (provenance[2] !== `${repo.owner}/${repo.repo}`) continue;
-        const issue = issueByCommentId.get(Number(provenance[1]));
-        if (issue && !lessonTextByIssue.has(issue)) lessonTextByIssue.set(issue, entry.text);
+      const byCommentId = getLessonsByCommentId(cwd, `${repo.owner}/${repo.repo}`);
+      const bestOrderByIssue = new Map<string, number>();
+      for (const [commentId, issueKey] of issueByCommentId) {
+        const hit = byCommentId.get(commentId);
+        if (!hit) continue;
+        const prevOrder = bestOrderByIssue.get(issueKey);
+        if (prevOrder === undefined || hit.order < prevOrder) {
+          bestOrderByIssue.set(issueKey, hit.order);
+          lessonTextByIssue.set(issueKey, hit.text);
+        }
       }
     } catch (error: any) {
       log.debug("lesson_scan_failed", { reason: String(error?.message ?? error).slice(0, 200) });

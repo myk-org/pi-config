@@ -123,7 +123,7 @@ def pr_get_skipped(owner: str, repo: str, pr_number: int) -> None:
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
-    print(json.dumps(results, indent=2))
+    print(json.dumps(results, separators=(",", ":")))
     sys.exit(0)
 
 
@@ -210,7 +210,7 @@ def pr_get_review_history(owner: str, repo: str, pr_number: int) -> None:
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
-    print(json.dumps(results, indent=2))
+    print(json.dumps(results, separators=(",", ":")))
     sys.exit(0)
 
 

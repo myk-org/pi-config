@@ -333,18 +333,6 @@ export function loadGlobalSettings(): ProjectSettings {
   return parseSettingsFile(getGlobalSettingsPath());
 }
 
-function projectSettingsFileHasKey(cwd: string, key: string): boolean {
-  const filePath = getSettingsPath(cwd);
-  if (!existsSync(filePath)) return false;
-  try {
-    const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
-    return typeof raw === "object" && raw !== null && !Array.isArray(raw) && key in raw;
-  } catch (e: any) {
-    console.debug(`[project-settings] failed to check key in ${filePath}:`, e?.message?.slice(0, 100));
-    return false;
-  }
-}
-
 function parseDisabledEnv(name: string): boolean | undefined {
   const val = process.env[name];
   if (val === undefined || val === "") return undefined;
@@ -425,50 +413,78 @@ function parseReviewLoopMaxCyclesEnv(name: string): number | undefined {
 /** Cached settings per cwd */
 let cachedCwd = "";
 let cachedSettings: ProjectSettings = {};
+let cachedProjectSettings: ProjectSettings = {};
+let cachedGlobalSettings: ProjectSettings = {};
+let cachedProjectPath = "";
+let cachedGlobalPath = "";
 let cachedMtime = 0;
 let cachedGlobalMtime = 0;
 let lastMtimeCheck = 0;
 const MTIME_CHECK_INTERVAL_MS = 30_000; // Check file mtime at most every 30s
 
-function getSettings(cwd: string): ProjectSettings {
+function getSettingsLayers(cwd: string): {
+  settings: ProjectSettings;
+  projectSettings: ProjectSettings;
+  globalSettings: ProjectSettings;
+} {
   const now = Date.now();
   // Different cwd — always reload
   if (cwd !== cachedCwd) {
-    const projectSettings = loadProjectSettings(cwd);
-    const globalSettings = loadGlobalSettings();
+    const projectPath = getSettingsPath(cwd);
+    const globalPath = getGlobalSettingsPath();
+    const projectSettings = parseSettingsFile(projectPath);
+    const globalSettings = parseSettingsFile(globalPath);
+    cachedProjectSettings = projectSettings;
+    cachedGlobalSettings = globalSettings;
     cachedSettings = { ...globalSettings, ...projectSettings };
     cachedCwd = cwd;
-    try {
-      const settingsPath = getSettingsPath(cwd);
-      cachedMtime = existsSync(settingsPath) ? statSync(settingsPath).mtimeMs : 0;
-    } catch { cachedMtime = 0; }
-    try {
-      const globalPath = getGlobalSettingsPath();
-      cachedGlobalMtime = existsSync(globalPath) ? statSync(globalPath).mtimeMs : 0;
-    } catch { cachedGlobalMtime = 0; }
+    cachedProjectPath = projectPath;
+    cachedGlobalPath = globalPath;
+    try { cachedMtime = statSync(projectPath).mtimeMs; } catch { cachedMtime = 0; }
+    try { cachedGlobalMtime = statSync(globalPath).mtimeMs; } catch { cachedGlobalMtime = 0; }
     lastMtimeCheck = now;
-    return cachedSettings;
+    return { settings: cachedSettings, projectSettings: cachedProjectSettings, globalSettings: cachedGlobalSettings };
   }
   // Same cwd — throttle mtime checks
-  if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) return cachedSettings;
+  if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) {
+    return { settings: cachedSettings, projectSettings: cachedProjectSettings, globalSettings: cachedGlobalSettings };
+  }
   lastMtimeCheck = now;
-  const settingsPath = getSettingsPath(cwd);
+  const projectPath = getSettingsPath(cwd);
   const globalPath = getGlobalSettingsPath();
   let mtime = 0;
   let globalMtime = 0;
-  try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}
-  try { if (existsSync(globalPath)) globalMtime = statSync(globalPath).mtimeMs; } catch {}
-  if (mtime === cachedMtime && globalMtime === cachedGlobalMtime) return cachedSettings;
-  cachedSettings = { ...loadGlobalSettings(), ...loadProjectSettings(cwd) };
+  try { mtime = statSync(projectPath).mtimeMs; } catch {}
+  try { globalMtime = statSync(globalPath).mtimeMs; } catch {}
+  if (
+    projectPath === cachedProjectPath &&
+    globalPath === cachedGlobalPath &&
+    mtime === cachedMtime &&
+    globalMtime === cachedGlobalMtime
+  ) {
+    return { settings: cachedSettings, projectSettings: cachedProjectSettings, globalSettings: cachedGlobalSettings };
+  }
+  cachedProjectSettings = parseSettingsFile(projectPath);
+  cachedGlobalSettings = parseSettingsFile(globalPath);
+  cachedSettings = { ...cachedGlobalSettings, ...cachedProjectSettings };
+  cachedProjectPath = projectPath;
+  cachedGlobalPath = globalPath;
   cachedMtime = mtime;
   cachedGlobalMtime = globalMtime;
-  return cachedSettings;
+  return { settings: cachedSettings, projectSettings: cachedProjectSettings, globalSettings: cachedGlobalSettings };
 }
 
 /** Clear cache — call after migration or manual edits */
 export function clearSettingsCache(): void {
   cachedCwd = "";
   cachedSettings = {};
+  cachedProjectSettings = {};
+  cachedGlobalSettings = {};
+  cachedProjectPath = "";
+  cachedGlobalPath = "";
+  cachedMtime = 0;
+  cachedGlobalMtime = 0;
+  lastMtimeCheck = 0;
 }
 
 /**
@@ -528,7 +544,7 @@ export function getSetting(cwd: string, key: "memory_token_budget"): number;
 // key is a compile error instead of silently returning false (Qodo PR #954).
 export function getSetting(cwd: string, key: keyof typeof SETTINGS_KEYS): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }>;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
-  const settings = getSettings(cwd);
+  const { settings, projectSettings, globalSettings } = getSettingsLayers(cwd);
   const def = SETTINGS_KEYS[key as keyof typeof SETTINGS_KEYS];
   if (!def) return false;
 
@@ -547,16 +563,14 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
     case "acpx_agents":
     case "cli_agents": {
       const agentKey = key as "acpx_agents" | "cli_agents";
-      if (projectSettingsFileHasKey(cwd, agentKey)) {
-        const projectValue = loadProjectSettings(cwd)[agentKey];
-        // Only override when the raw value parsed as a valid type (string or array).
-        // Invalid types (number, object, etc.) are skipped by parseSettingsFile,
-        // leaving projectValue undefined — fall through to global/env.
-        if (projectValue !== undefined) {
-          return parseAgentNameList(projectValue);
-        }
+      const projectValue = projectSettings[agentKey];
+      // Only override when the raw value parsed as a valid type (string or array).
+      // Invalid types (number, object, etc.) are skipped by parseSettingsFile,
+      // leaving projectValue undefined — fall through to global/env.
+      if (projectValue !== undefined) {
+        return parseAgentNameList(projectValue);
       }
-      const globalAgents = loadGlobalSettings()[agentKey];
+      const globalAgents = globalSettings[agentKey];
       if (globalAgents !== undefined) {
         return parseAgentNameList(globalAgents);
       }

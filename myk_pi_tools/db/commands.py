@@ -6,8 +6,6 @@ from pathlib import Path
 
 import click
 
-from myk_pi_tools.db.query import ReviewDB, _format_table
-
 
 @click.group()
 def db() -> None:
@@ -37,6 +35,8 @@ def db_stats(by_source: bool, by_reviewer: bool, output_json: bool, db_path: str
         click.echo("Error: choose only one of --by-source or --by-reviewer", err=True)
         sys.exit(1)
 
+    from myk_pi_tools.db.query import ReviewDB, _format_table
+
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
 
     # If neither flag is set, default to by-source behavior
@@ -46,13 +46,13 @@ def db_stats(by_source: bool, by_reviewer: bool, output_json: bool, db_path: str
     if by_reviewer:
         results = db_obj.get_reviewer_stats()
         if output_json:
-            click.echo(json.dumps(results, indent=2))
+            click.echo(json.dumps(results, separators=(",", ":")))
         else:
             click.echo(_format_table(results, ["author", "total", "addressed", "not_addressed", "skipped"]))
     elif by_source:
         results = db_obj.get_stats_by_source()
         if output_json:
-            click.echo(json.dumps(results, indent=2))
+            click.echo(json.dumps(results, separators=(",", ":")))
         else:
             columns = ["source", "total", "addressed", "not_addressed", "skipped", "addressed_rate"]
             click.echo(_format_table(results, columns))
@@ -79,11 +79,13 @@ def db_patterns(min_occurrences: int, output_json: bool, db_path: str | None) ->
         # JSON output
         myk-pi-tools db patterns --json
     """
+    from myk_pi_tools.db.query import ReviewDB, _format_table
+
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
     results = db_obj.get_duplicate_patterns(min_occurrences=min_occurrences)
 
     if output_json:
-        click.echo(json.dumps(results, indent=2))
+        click.echo(json.dumps(results, separators=(",", ":")))
     else:
         click.echo(_format_table(results, ["path", "occurrences", "reason", "body_sample"]))
 
@@ -107,11 +109,13 @@ def db_dismissed(owner: str, repo: str, output_json: bool, db_path: str | None) 
         # JSON output
         myk-pi-tools db dismissed --owner myk-org --repo pi-config --json
     """
+    from myk_pi_tools.db.query import ReviewDB, _format_table
+
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
     results = db_obj.get_dismissed_comments(owner, repo)
 
     if output_json:
-        click.echo(json.dumps(results, indent=2))
+        click.echo(json.dumps(results, separators=(",", ":")))
     else:
         click.echo(_format_table(results, ["path", "line", "status", "reply", "author"]))
 
@@ -137,6 +141,8 @@ def db_query(sql: str, output_json: bool, db_path: str | None) -> None:
         # JSON output
         myk-pi-tools db query "SELECT * FROM comments LIMIT 5" --json
     """
+    from myk_pi_tools.db.query import ReviewDB, _format_table
+
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
 
     try:
@@ -146,7 +152,7 @@ def db_query(sql: str, output_json: bool, db_path: str | None) -> None:
         sys.exit(1)
 
     if output_json:
-        click.echo(json.dumps(results, indent=2))
+        click.echo(json.dumps(results, separators=(",", ":")))
     else:
         click.echo(_format_table(results))
 
@@ -190,11 +196,13 @@ def db_find_similar(owner: str, repo: str, threshold: float, output_json: bool, 
         click.echo("Error: JSON must contain 'path' and 'body' fields", err=True)
         sys.exit(1)
 
+    from myk_pi_tools.db.query import ReviewDB
+
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
     result = db_obj.find_similar_comment(owner, repo, path, body, threshold=threshold)
 
     if output_json:
-        click.echo(json.dumps(result, indent=2))
+        click.echo(json.dumps(result, separators=(",", ":")))
     else:
         if result:
             click.echo(f"Found similar comment (similarity: {result['similarity']:.2f}):")

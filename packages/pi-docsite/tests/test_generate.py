@@ -565,3 +565,21 @@ def test_main_says_nothing_when_the_repo_has_no_review_config(
     assert generate_docs.main([]) == 0
 
     assert "[ignore]" not in capsys.readouterr().out
+
+
+def test_main_computes_asset_version_once_across_multi_page_build(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha", "beta", "gamma"])
+    monkeypatch.setattr(generate_docs.Path, "home", _fake_home(tmp_path / "home"))
+    calls = 0
+
+    def fake_asset_version() -> str:
+        nonlocal calls
+        calls += 1
+        return "deadbeef00"
+
+    monkeypatch.setattr(generate_docs.renderer, "_asset_version", fake_asset_version)
+
+    assert generate_docs.main([]) == 0
+    assert calls == 1
+    assert "assets/style.css?v=deadbeef00" in (docs / "index.html").read_text(encoding="utf-8")
+    assert "assets/style.css?v=deadbeef00" in (docs / "gamma.html").read_text(encoding="utf-8")

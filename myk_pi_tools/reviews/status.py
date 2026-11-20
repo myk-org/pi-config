@@ -6,6 +6,8 @@ Duplicate entries from multiple review cycles are merged, keeping the most recen
 Output: HTML report saved to <output_dir>/review-status-<pr>.html
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -15,8 +17,6 @@ import sys
 from html import escape
 from pathlib import Path
 from urllib.parse import quote
-
-from bs4 import BeautifulSoup
 
 from myk_pi_tools.logger import create_logger
 
@@ -132,7 +132,12 @@ def extract_summary(body: str, max_len: int = 60) -> str:
     if not body:
         return ""
     # Strip ALL HTML tags from entire body first
-    cleaned_body = BeautifulSoup(body, "html.parser").get_text() if re.search(r"<[a-zA-Z/]", body) else body
+    if re.search(r"<[a-zA-Z/]", body):
+        from bs4 import BeautifulSoup
+
+        cleaned_body = BeautifulSoup(body, "html.parser").get_text()
+    else:
+        cleaned_body = body
     # Try to get the first meaningful line
     for line in cleaned_body.split("\n"):
         line = line.strip()

@@ -472,7 +472,7 @@ def run(repo: str | None = None, target: str | None = None, tag_match: str | Non
     """
     try:
         info = get_release_info(repo, target=target, tag_match=tag_match)
-        print(json.dumps(info.to_dict(), indent=2))
+        print(json.dumps(info.to_dict(), separators=(",", ":")))
     except RuntimeError as e:
-        print(json.dumps({"error": str(e)}))
+        print(json.dumps({"error": str(e)}, separators=(",", ":")))
         sys.exit(1)

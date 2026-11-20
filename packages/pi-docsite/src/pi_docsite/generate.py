@@ -612,12 +612,20 @@ def main(argv: list[str] | None = None) -> int:
     order = [page for group in navigation for page in group["pages"]]
     search_pages = {page["slug"]: _strip_frontmatter(pages[page["slug"]]) for page in order}
     search_index = renderer._build_search_index(search_pages, plan)  # noqa: SLF001
+    asset_version = renderer._asset_version()  # noqa: SLF001
     # Written once and fetched by every page rather than inlined, so pages stay
     # small and there is a single copy to cache. Serving the site over HTTP is what
     # makes that fetch work; browsers block it on file:// via CORS.
     _write(
         "index.html",
-        renderer.render_index(PROJECT_NAME, TAGLINE, navigation, repo_url=REPO_URL, badge_label=badge_label),
+        renderer.render_index(
+            PROJECT_NAME,
+            TAGLINE,
+            navigation,
+            repo_url=REPO_URL,
+            badge_label=badge_label,
+            asset_version=asset_version,
+        ),
     )
 
     for idx, page in enumerate(order):
@@ -625,7 +633,7 @@ def main(argv: list[str] | None = None) -> int:
         _write(
             f"{slug}.html",
             renderer.render_page(
-                markdown_content=_strip_frontmatter(pages[slug]),
+                markdown_content=search_pages[slug],
                 page_title=page["title"],
                 project_name=PROJECT_NAME,
                 tagline=TAGLINE,
@@ -635,6 +643,7 @@ def main(argv: list[str] | None = None) -> int:
                 next_page=order[idx + 1] if idx < len(order) - 1 else None,
                 repo_url=REPO_URL,
                 badge_label=badge_label,
+                asset_version=asset_version,
             ),
         )
     _write(
@@ -675,10 +684,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(order)} pages, {len(written)} files, {sum(s for _, s in written)} B total")
     # args.docs_dir, not DOCS_DIR: the resolved path walks out of the repo when
     # docs/ is a symlink, and the review config sits beside the symlink.
-    review_config = _find_review_config(_lexical_docs_dir(args.docs_dir, DOCS_DIR))
+    lexical_dir = _lexical_docs_dir(args.docs_dir, DOCS_DIR)
+    review_config = _find_review_config(lexical_dir)
     review_notice = (
         _review_notice(
-            _lexical_docs_dir(args.docs_dir, DOCS_DIR),
+            lexical_dir,
             [name for name, _ in written] + copied_assets,
             review_config,
             on_disk=DOCS_DIR,

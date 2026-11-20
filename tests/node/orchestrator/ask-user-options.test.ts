@@ -11,6 +11,7 @@ import {
   buildAskOptions,
   registerAskUser,
 } from "../../../extensions/orchestrator/ask-user.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 const FREE_INPUT = "__free_input__";
 
@@ -65,7 +66,10 @@ describe("ask_user result", () => {
         on: () => () => {},
       },
     };
-    registerAskUser(pi as any, () => {});
+    withSubagentChildEnv(undefined, () => {
+      registerAskUser(pi as any, () => {});
+    });
+    assert.ok(tool);
     const ctx = {
       hasUI: true,
       ui: {
@@ -96,6 +100,19 @@ describe("ask_user result", () => {
   it("still terminates on cancel", async () => {
     const { result } = await runAsk({ question: "Ship it?", options: ["Yes", "No"] }, null);
     assert.equal(result.terminate, true);
+  });
+
+  it("skips registration in PI_SUBAGENT_CHILD=1 processes (#1163)", () => {
+    let registered: any;
+    const pi = {
+      registerTool: (t: any) => {
+        registered = t;
+      },
+    };
+    withSubagentChildEnv("1", () => {
+      registerAskUser(pi as any, () => {});
+    });
+    assert.equal(registered, undefined);
   });
 
   it("emits a pidash payload without the free-input row", async () => {

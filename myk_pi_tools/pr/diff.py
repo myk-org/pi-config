@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from myk_pi_tools.pr.common import PRInfo
@@ -200,7 +201,7 @@ def run(args: list[str]) -> None:
     """
     pr_info = parse_args(args)
 
-    # Fetch PR metadata
+    # Fetch and validate PR metadata before starting diff & files workers
     metadata = fetch_pr_metadata(pr_info)
 
     head_sha = metadata.get("head", {}).get("sha")
@@ -216,9 +217,13 @@ def run(args: list[str]) -> None:
         print("Error: Failed to extract base ref from PR metadata", file=sys.stderr)
         sys.exit(1)
 
-    # Fetch diff and files
-    pr_diff = fetch_pr_diff(pr_info)
-    files = fetch_pr_files(pr_info)
+    # Fetch diff and files concurrently
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        diff_future = executor.submit(fetch_pr_diff, pr_info)
+        files_future = executor.submit(fetch_pr_files, pr_info)
+
+        pr_diff = diff_future.result()
+        files = files_future.result()
 
     # Build output JSON
     output = {
@@ -235,4 +240,4 @@ def run(args: list[str]) -> None:
         "files": files,
     }
 
-    print(json.dumps(output, indent=2))
+    print(json.dumps(output, separators=(",", ":")))

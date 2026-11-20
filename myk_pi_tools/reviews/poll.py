@@ -431,7 +431,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
     except Exception:
         Path(_tmp_path).unlink(missing_ok=True)
         raise
-    print(json.dumps(_result, indent=2))
+    print(json.dumps(_result, separators=(",", ":")))
     return 0
 
 
@@ -473,7 +473,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
                 _approval_data = fetch_run(review_url, output_dir=output_dir)
             if isinstance(_approval_data, dict):
                 _approval_data["approved"] = True
-                print(json.dumps(_approval_data, indent=2))
+                print(json.dumps(_approval_data, separators=(",", ":")))
                 return 0
             # Fetch failed — do NOT approve without data, keep polling
             print_stderr("[poll] Warning: approval detected but fetch failed — will retry next cycle")
@@ -491,7 +491,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
             if has_actionable:
                 assert isinstance(fetch_result, dict)
                 fetch_result["approved"] = False
-                print(json.dumps(fetch_result, indent=2))
+                print(json.dumps(fetch_result, separators=(",", ":")))
                 return 0
             print_stderr("[poll] All fetched comments are auto-skipped (previously addressed). No new comments.")
         else:
@@ -542,7 +542,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
                     _approval_data = fetch_run(review_url, output_dir=output_dir)
                 if isinstance(_approval_data, dict):
                     _approval_data["approved"] = True
-                    print(json.dumps(_approval_data, indent=2))
+                    print(json.dumps(_approval_data, separators=(",", ":")))
                     return 0
                 # Fetch failed — do NOT approve without data, keep polling
                 print_stderr("[poll] Warning: approval detected but fetch failed — will retry next cycle")
@@ -587,7 +587,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
                             _approval_data = fetch_run(review_url, output_dir=output_dir)
                         if isinstance(_approval_data, dict):
                             _approval_data["approved"] = True
-                            print(json.dumps(_approval_data, indent=2))
+                            print(json.dumps(_approval_data, separators=(",", ":")))
                             return 0
                         # Fetch failed — do NOT approve without data, keep polling
                         print_stderr("[poll] Warning: approval detected but fetch failed — will retry next cycle")

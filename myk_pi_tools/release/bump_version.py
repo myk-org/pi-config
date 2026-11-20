@@ -322,6 +322,6 @@ def bump_version_files(
 def run(new_version: str, files: list[str] | None = None) -> None:
     """Entry point for CLI command."""
     result = bump_version_files(new_version=new_version, files=files if files else None)
-    print(json.dumps(result.to_dict(), indent=2))
+    print(json.dumps(result.to_dict(), separators=(",", ":")))
     if result.status == "failed":
         sys.exit(1)

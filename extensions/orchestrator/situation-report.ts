@@ -15,12 +15,19 @@ import { getSetting } from "./project-settings.js";
 import { getProjectMemoryDir } from "./utils.js";
 import {
   type ScoredEntry,
+  type ScoresFile,
   type MemoryCategory,
   loadScores,
   entryHash,
   rebuild,
 } from "./memory-scoring.js";
-import { listTopics, readAllTopicEntries } from "./memory-tree.js";
+import {
+  CATEGORY_TO_TOPIC,
+  type TopicEntry,
+  canonicalTopicLine,
+  readAllTopicEntries,
+} from "./memory-tree.js";
+import { pruneEmbeddings } from "./memory-embeddings.js";
 import { formatPromotionsForReport } from "./promotion-queue.js";
 import { pruneExpiredEntries } from "./memory-write.js";
 import {
@@ -125,12 +132,21 @@ export function rebuildAndOrganize(cwd: string): void {
   const topicEntries = readAllTopicEntries(cwd);
   if (topicEntries.length > 0) {
     rebuild(cwd, topicEntries);
+    try {
+      pruneEmbeddings(cwd, topicEntries, () => readAllTopicEntries(cwd));
+    } catch {
+      // non-fatal — stale embeddings do not affect correctness
+    }
   }
 }
 
 export interface SituationReportOptions {
   /** Query class for section budget / priority bias */
   queryClass?: QueryClass;
+  /** Preloaded scores and topic entries from the caller to avoid duplicate per-turn reads */
+  preloaded?: { scores: ScoresFile; topicEntries: TopicEntry[] };
+  /** Populated with canonical `- [category] text` keys actually emitted in the report */
+  emittedKeys?: Set<string>;
 }
 
 /**
@@ -154,28 +170,24 @@ export function buildSituationReport(
   const queryClass: QueryClass = options.queryClass ?? "general";
   const bias = getQueryClassBias(queryClass);
 
-  const hasTopics = existsSync(topicsDir);
+  const hasTopics = options.preloaded ? true : existsSync(topicsDir);
 
   // Read scores (rebuilt on session start + dreaming, not every turn)
-  const scores = hasTopics ? loadScores(cwd) : { entries: {}, lastRebuild: "" };
+  const scores = options.preloaded?.scores ?? (hasTopics ? loadScores(cwd) : { entries: {}, lastRebuild: "" });
+  const topicEntries = options.preloaded?.topicEntries ?? (hasTopics ? readAllTopicEntries(cwd) : []);
 
-  // Read from topic files (source of truth) with hotness ordering
-  const topics = hasTopics ? listTopics(cwd) : [];
-  const topicEntries = hasTopics ? readAllTopicEntries(cwd) : [];
-
-  // Build topic hotness map for section ordering
+  // Build topic hotness map + eligible entries in one pass (avoids duplicate listTopics I/O + SHA-256 hashing)
   const topicHotness = new Map<string, number>();
-  for (const t of topics) {
-    topicHotness.set(t.name, t.hotness);
-  }
-
-  // Build entries from topic files (source of truth)
   const entries: MemoryEntryWithText[] = [];
   for (const te of topicEntries) {
-    const entryLine = `- [${te.category}] ${te.text}`;
+    const entryLine = canonicalTopicLine(te);
     const hash = entryHash(entryLine);
     const scored = scores.entries[hash];
     if (!scored) continue;
+    const topicName = CATEGORY_TO_TOPIC[te.category];
+    if (topicName) {
+      topicHotness.set(topicName, (topicHotness.get(topicName) ?? 0) + scored.score);
+    }
     // Only include active and provisional entries
     if (scored.lifecycle !== "active" && scored.lifecycle !== "provisional") continue;
     // Session-scoped entries are transient (issue #915) — never injected
@@ -193,26 +205,37 @@ export function buildSituationReport(
   let charBudget = Math.max(0, tokenBudget * CHARS_PER_TOKEN);
   const bodySections: string[] = [];
 
-  // Reserve budget for header + possible warning + ground truth instruction
-  const headerReserve = 330;
+  const headerTemplate = `# Project Memory [XX% — XXXX/${tokenBudget} tokens]\n`;
+  const warningText = "> ⚠️ Memory ≥80% full; remove stale entries via memory_remove before adding.\n";
+  const groundTruthLine =
+    "> **Ground Truth:** Memories here and below are authoritative; use directly without re-verifying.\n";
+
+  // Reserve budget for header + ground truth + capacity warning (when non-pinned entries can trigger it) + section join newlines
+  const hasNonPinned = entries.some((e) => !e.isPinned);
+  const headerReserve =
+    headerTemplate.length +
+    groundTruthLine.length +
+    (hasNonPinned ? warningText.length : 0) +
+    4;
   charBudget = Math.max(0, charBudget - headerReserve);
 
   // Promotion candidates (low budget) — show even when topics empty
   const promoSection = formatPromotionsForReport(cwd, 5);
   if (promoSection) {
     const promoBudget = Math.min(150 * CHARS_PER_TOKEN, charBudget);
-    const truncated =
-      promoSection.length > promoBudget
-        ? promoSection.slice(0, promoBudget) + "\n"
-        : promoSection;
-    bodySections.push(truncated);
-    charBudget -= truncated.length;
+    const truncated = truncateLinesToBudget(promoSection, promoBudget);
+    if (truncated) {
+      bodySections.push(truncated);
+      charBudget -= truncated.length + 1;
+    }
   }
 
   if (bias.hint && queryClass !== "general") {
     const hintLine = `> Query class: \`${queryClass}\` — ${bias.hint}\n`;
-    bodySections.push(hintLine);
-    charBudget -= hintLine.length;
+    if (charBudget >= hintLine.length + 1) {
+      bodySections.push(hintLine);
+      charBudget -= hintLine.length + 1;
+    }
   }
 
   if (entries.length === 0 && bodySections.length === 0) return "";
@@ -223,9 +246,9 @@ export function buildSituationReport(
   // Pinned entries always come first (no budget limit)
   const pinned = entries.filter((e) => e.isPinned);
   if (pinned.length > 0) {
-    const pinnedSection = formatSection("Pinned", pinned);
+    const pinnedSection = formatSection("Pinned", pinned, options.emittedKeys);
     bodySections.push(pinnedSection);
-    charBudget -= pinnedSection.length;
+    charBudget -= pinnedSection.length + 1;
   }
 
   // Build each scored section in priority order, boosted by topic hotness + query class
@@ -284,31 +307,22 @@ export function buildSituationReport(
       sectionDef.name,
       sectionEntries,
       sectionCharBudget,
+      options.emittedKeys,
     );
 
     if (section) {
       bodySections.push(section);
-      charBudget -= section.length;
+      charBudget -= section.length + 1;
     }
   }
 
   // Build header and optional warning, then include their sizes in the capacity calculation
   const bodyContent = bodySections.join("\n");
 
-  // Build header placeholder to measure its approximate length
-  // (actual % will be computed after including header+warning)
-  const headerTemplate = `# Project Memory [XX% — XXXX/${tokenBudget} tokens]\n`;
-  const warningText = "> ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or remove existing ones using memory_remove.\n";
-
-  // Ground Truth instruction — always included
-  const groundTruthLine =
-    "> **Ground Truth:** Memories above and contextually relevant memories injected below are authoritative. " +
-    "Use them directly — do not re-discover or re-verify information already in your context window.\n";
-
-  // Estimate: include header; include warning if body alone suggests >80%
+  // Estimate: include header; include warning only when removable (non-pinned) entries exist
   const bodyChars = bodyContent.length;
   const roughUsage = (bodyChars + headerTemplate.length + groundTruthLine.length) / CHARS_PER_TOKEN / tokenBudget;
-  const includeWarning = roughUsage >= 0.8;
+  const includeWarning = roughUsage >= 0.8 && nonPinned.length > 0;
 
   // Include header + warning + ground truth in the actual usage
   const headerChars = headerTemplate.length + groundTruthLine.length + (includeWarning ? warningText.length : 0);
@@ -321,8 +335,8 @@ export function buildSituationReport(
   const header = `# Project Memory [${usagePercent}% — ${totalTokensUsed}/${tokenBudget} tokens]\n`;
   reportSections.push(header);
 
-  // Consolidation warning when above 80%
-  if (usagePercent >= 80) {
+  // Consolidation warning when above 80% and non-pinned entries can be removed
+  if (usagePercent >= 80 && nonPinned.length > 0) {
     reportSections.push(warningText);
   }
 
@@ -366,9 +380,31 @@ export function estimateMemoryBudget(
 
 // ── Formatting ─────────────────────────────────────────────────────────────
 
-function formatSection(name: string, entries: MemoryEntryWithText[]): string {
+function truncateLinesToBudget(text: string, budget: number): string {
+  if (text.length <= budget) return text;
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    const add = line.length + 1;
+    if (used + add > budget) break;
+    kept.push(line);
+    used += add;
+  }
+  return kept.some((l) => l.startsWith("- ")) ? kept.join("\n") + "\n" : "";
+}
+
+function formatSection(
+  name: string,
+  entries: MemoryEntryWithText[],
+  emittedKeys?: Set<string>,
+): string {
   const header = `## ${name}\n`;
-  const lines = entries.map((e) => `- [${e.category}] ${e.text}`);
+  const lines = entries.map((e) => {
+    const line = canonicalTopicLine(e);
+    emittedKeys?.add(line);
+    return line;
+  });
   return header + lines.join("\n") + "\n";
 }
 
@@ -376,25 +412,45 @@ function formatSectionWithBudget(
   name: string,
   entries: MemoryEntryWithText[],
   charBudget: number,
+  emittedKeys?: Set<string>,
 ): string | null {
   const header = `## ${name}\n`;
   if (charBudget < header.length + 20) return null;
 
   let remaining = charBudget - header.length;
   const lines: string[] = [];
+  const addedKeys: string[] = [];
 
   for (const entry of entries) {
-    const line = `- [${entry.category}] ${entry.text}`;
+    const line = canonicalTopicLine(entry);
     if (remaining < line.length + 1) break; // +1 for newline
     lines.push(line);
+    addedKeys.push(line);
     remaining -= line.length + 1;
   }
 
   if (lines.length === 0) return null;
+  if (emittedKeys) {
+    for (const k of addedKeys) emittedKeys.add(k);
+  }
 
   const omitted = entries.length - lines.length;
   if (omitted > 0) {
-    lines.push(`- ... ${omitted} more (lower priority, omitted for context budget)`);
+    const omittedLine = `- ... ${omitted} more (lower priority, omitted for context budget)`;
+    if (remaining >= omittedLine.length + 1) {
+      lines.push(omittedLine);
+    } else if (lines.length > 1) {
+      const popped = lines.pop()!;
+      remaining += popped.length + 1;
+      const newOmittedLine = `- ... ${entries.length - lines.length} more (lower priority, omitted for context budget)`;
+      if (remaining >= newOmittedLine.length + 1) {
+        lines.push(newOmittedLine);
+        emittedKeys?.delete(popped);
+      } else {
+        // Restore popped line if even the adjusted summary doesn't fit
+        lines.push(popped);
+      }
+    }
   }
 
   return header + lines.join("\n") + "\n";

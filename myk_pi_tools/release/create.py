@@ -220,6 +220,6 @@ def run(
         target=target,
         title=title,
     )
-    print(json.dumps(result.to_dict(), indent=2))
+    print(json.dumps(result.to_dict(), separators=(",", ":")))
     if result.status == "failed":
         sys.exit(1)

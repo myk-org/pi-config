@@ -573,4 +573,28 @@ describe("Settings file discovery", () => {
 		clearSettingsCache();
 		assert.equal(getSetting(tmp, "enforcement_allowed_commands"), "");
 	});
+
+	it("reuses cached project/global layers for acpx_agents and cli_agents without re-reading disk (#1207)", () => {
+		const globalJson = join(globalTmp, "pi-config-settings.json");
+		setGlobalSettingsPath(globalJson);
+		writeFileSync(globalJson, JSON.stringify({ acpx_agents: "claude", cli_agents: ["gemini"] }));
+		mkdirSync(join(tmp, ".pi"), { recursive: true });
+		const projectJson = join(tmp, ".pi", "pi-config-settings.json");
+		writeFileSync(projectJson, JSON.stringify({ acpx_agents: ["cursor"] }));
+		clearSettingsCache();
+
+		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["gemini"]);
+
+		// Mutate disk inside the 30s cache window — cached layers must serve the cached values
+		writeFileSync(projectJson, JSON.stringify({ acpx_agents: ["codex"] }));
+		writeFileSync(globalJson, JSON.stringify({ cli_agents: ["claude"] }));
+		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["gemini"]);
+
+		// Explicit cache clear picks up the updated files immediately
+		clearSettingsCache();
+		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["codex"]);
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["claude"]);
+	});
 });

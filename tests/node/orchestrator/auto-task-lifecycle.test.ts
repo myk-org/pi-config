@@ -16,6 +16,7 @@ import {
   resolveTaskStorePath,
 } from "../../../extensions/orchestrator/task-lifecycle.js";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
@@ -678,9 +679,13 @@ describe("async job store recording", { concurrency: false }, () => {
         sendMessage() {},
         events: new EventEmitter(),
       };
-      const api = registerAsyncAgents(pi as any, () => {}, {
-        spawnProcess: ((command: string, _args: string[], options: any) => spawn(command, [script], options)) as any,
+      let api!: ReturnType<typeof registerAsyncAgents>;
+      withSubagentChildEnv(undefined, () => {
+        api = registerAsyncAgents(pi as any, () => {}, {
+          spawnProcess: ((command: string, _args: string[], options: any) => spawn(command, [script], options)) as any,
+        });
       });
+      assert.ok(handlers.get("session_start")?.length);
       handlers.get("session_start")![0]({}, { cwd: tmp, sessionManager: { getCwd: () => tmp, getSessionId: () => "spawn-test" } });
       const agent = { name: "worker", source: "project", systemPrompt: "" } as any;
       const job = api.spawnAsyncAgent("worker", "check", tmp, [agent], { taskId: "1" });

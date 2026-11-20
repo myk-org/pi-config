@@ -242,6 +242,177 @@ export function formatDuration(ms: number): string {
   return `${m}m${s}s`;
 }
 
+// ── Process-lifetime & TTL caches ────────────────────────────────────────
+
+let cachedJitiCliPath: string | undefined;
+
+function resolveJitiCliPath(): { path: string | undefined; probes: string[] } {
+  if (cachedJitiCliPath !== undefined) {
+    return { path: cachedJitiCliPath, probes: [] };
+  }
+
+  let jitiCliPath: string | undefined;
+  const jitiProbes: string[] = [];
+  const findJitiUnder = (label: string, startDir: string): string | undefined => {
+    let dir = startDir;
+    while (dir !== path.dirname(dir)) {
+      const candidate = path.join(dir, "node_modules/jiti/lib/jiti-cli.mjs");
+      jitiProbes.push(`${fs.existsSync(candidate) ? "HIT" : "--"} ${candidate}`);
+      if (fs.existsSync(candidate)) return candidate;
+      dir = path.dirname(dir);
+    }
+    jitiProbes.push(`(exhausted from ${label}: ${startDir})`);
+    return undefined;
+  };
+
+  // Strategy 1: resolve from pi's own install location (the running binary).
+  try {
+    if (process.argv[1]) {
+      const piRoot = path.dirname(fs.realpathSync(process.argv[1]));
+      jitiCliPath = findJitiUnder("argv-binary", piRoot);
+    }
+  } catch (e: any) {
+    log.debug(`jiti strategy 1 (running binary) failed: ${e?.message || e}`);
+  }
+
+  // Strategy 2: resolve the pi SDK package from this module's require context.
+  if (!jitiCliPath) {
+    try {
+      const req = createRequire(fileURLToPath(import.meta.url));
+      let sdkPkgJson: string | undefined;
+      try {
+        sdkPkgJson = req.resolve("@earendil-works/pi-coding-agent/package.json");
+      } catch {
+        // Newer SDK "exports" maps hide ./package.json — resolve the entry
+        // and walk up to the owning package.json instead.
+        let dir = path.dirname(req.resolve("@earendil-works/pi-coding-agent"));
+        while (dir !== path.dirname(dir)) {
+          const pj = path.join(dir, "package.json");
+          if (fs.existsSync(pj) && JSON.parse(fs.readFileSync(pj, "utf8"))?.name === "@earendil-works/pi-coding-agent") {
+            sdkPkgJson = pj;
+            break;
+          }
+          dir = path.dirname(dir);
+        }
+      }
+      if (sdkPkgJson) jitiCliPath ??= findJitiUnder("sdk-pkg", path.dirname(sdkPkgJson));
+    } catch (e: any) {
+      log.debug(`jiti strategy 2 (SDK package) failed: ${e?.message || e}`);
+    }
+  }
+
+  // Strategy 3: this package's own node_modules (git/stow clones ship jiti).
+  if (!jitiCliPath) {
+    try {
+      jitiCliPath = findJitiUnder("extension-dir", path.dirname(fileURLToPath(import.meta.url)));
+    } catch (e: any) {
+      log.debug(`jiti strategy 3 (package root) failed: ${e?.message || e}`);
+    }
+  }
+
+  if (jitiCliPath) {
+    cachedJitiCliPath = jitiCliPath;
+  }
+  return { path: jitiCliPath, probes: jitiProbes };
+}
+
+const PR_BASE_TTL_MS = 25_000;
+const PR_NO_PR_TTL_MS = 2_000;
+const PR_BASE_CACHE_MAX = 50;
+const prBaseCache = new Map<string, { at: number; ttlMs: number; baseBranch: string; hasPr: string }>();
+
+export type PrBaseRunner = (cwd: string) => { status: number | null; stdout?: string; stderr?: string };
+const defaultPrBaseRunner: PrBaseRunner = (cwd) =>
+  spawnSync("gh", ["pr", "view", "--json", "baseRefName", "--jq", ".baseRefName"], {
+    cwd,
+    timeout: 5000,
+    encoding: "utf-8",
+  });
+let prBaseRunner: PrBaseRunner = defaultPrBaseRunner;
+
+/** Override `gh pr view` base-branch lookup runner (tests). Pass null to restore default. */
+export function setPrBaseRunnerForTests(runner: PrBaseRunner | null): void {
+  prBaseRunner = runner ?? defaultPrBaseRunner;
+  prBaseCache.clear();
+}
+
+/** Clear jiti path & PR base-branch caches (tests). */
+export function clearAsyncAgentCachesForTests(): void {
+  cachedJitiCliPath = undefined;
+  prBaseCache.clear();
+}
+
+function readFastGitBranch(cwd: string): string {
+  try {
+    let dir = path.resolve(cwd);
+    while (true) {
+      const dotGit = path.join(dir, ".git");
+      if (fs.existsSync(dotGit)) {
+        const st = fs.statSync(dotGit);
+        let headPath = "";
+        if (st.isDirectory()) {
+          headPath = path.join(dotGit, "HEAD");
+        } else if (st.isFile()) {
+          const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf8"));
+          if (m) headPath = path.join(path.resolve(dir, m[1].trim()), "HEAD");
+        }
+        if (headPath && fs.existsSync(headPath)) {
+          return fs.readFileSync(headPath, "utf8").trim();
+        }
+        return "";
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) return "";
+      dir = parent;
+    }
+  } catch {
+    return "";
+  }
+}
+
+function resolvePrBaseInfo(cwd: string): { baseBranch: string; hasPr: string } {
+  const now = Date.now();
+  const branchHead = readFastGitBranch(cwd);
+  const cacheKey = `${cwd}\0${branchHead}`;
+  const cached = prBaseCache.get(cacheKey);
+  if (cached && now - cached.at < cached.ttlMs) {
+    prBaseCache.delete(cacheKey);
+    prBaseCache.set(cacheKey, cached);
+    return { baseBranch: cached.baseBranch, hasPr: cached.hasPr };
+  }
+
+  let baseBranch: string;
+  let hasPr: string;
+  let ttlMs = PR_BASE_TTL_MS;
+  try {
+    const prBase = prBaseRunner(cwd);
+    if (prBase.status === 0 && prBase.stdout?.trim()) {
+      baseBranch = prBase.stdout.trim();
+      hasPr = "true";
+    } else {
+      baseBranch = getMainBranch(cwd) || "main";
+      // Only set PI_HAS_PR=false if gh confirmed no PR exists.
+      // Other failures (timeout, auth, network) default to true to avoid skipping PR checks.
+      const noPr = prBase.stderr?.includes("no pull requests found") || false;
+      hasPr = noPr ? "false" : "true";
+      // Short batch-scoped TTL when no PR was found so a newly created PR is picked up quickly.
+      ttlMs = PR_NO_PR_TTL_MS;
+    }
+  } catch {
+    baseBranch = getMainBranch(cwd) || "main";
+    // Exception (e.g., gh not found) — default to true to avoid skipping PR checks
+    hasPr = "true";
+    ttlMs = PR_NO_PR_TTL_MS;
+  }
+
+  if (prBaseCache.size >= PR_BASE_CACHE_MAX) {
+    const oldest = prBaseCache.keys().next().value;
+    if (oldest !== undefined) prBaseCache.delete(oldest);
+  }
+  prBaseCache.set(cacheKey, { at: now, ttlMs, baseBranch, hasPr });
+  return { baseBranch, hasPr };
+}
+
 // ── Registration ─────────────────────────────────────────────────────────
 
 /** What the spawn-exit timer may do for a child that just exited.
@@ -267,6 +438,14 @@ export function registerAsyncAgents(
   /** The full job record: callers read `taskStorePath` and the delivery flags off it. */
   getAsyncJobs: () => AsyncJob[];
 } {
+  if (process.env.PI_SUBAGENT_CHILD === "1") {
+    return {
+      spawnAsyncAgent: () => ({ id: "", error: "Async subagents disabled in child process" }),
+      killAsyncAgent: () => ({ killed: [], errors: [] }),
+      getAsyncJobs: () => [],
+    };
+  }
+
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
@@ -1172,64 +1351,7 @@ export function registerAsyncAgents(
     // Find the runner script
     const runnerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "async-runner.ts");
 
-    // Find jiti for TypeScript execution — walk UP from known roots until
-    // found; never assume a fixed depth (install layouts vary: dist/,
-    // dist/bundle/, workspace hoisting, nested node_modules).
-    let jitiCliPath: string | undefined;
-    const jitiProbes: string[] = [];
-    const findJitiUnder = (label: string, startDir: string): string | undefined => {
-      let dir = startDir;
-      while (dir !== path.dirname(dir)) {
-        const candidate = path.join(dir, "node_modules/jiti/lib/jiti-cli.mjs");
-        jitiProbes.push(`${fs.existsSync(candidate) ? "HIT" : "--"} ${candidate}`);
-        if (fs.existsSync(candidate)) return candidate;
-        dir = path.dirname(dir);
-      }
-      jitiProbes.push(`(exhausted from ${label}: ${startDir})`);
-      return undefined;
-    };
-
-    // Strategy 1: resolve from pi's own install location (the running binary).
-    try {
-      if (process.argv[1]) {
-        const piRoot = path.dirname(fs.realpathSync(process.argv[1]));
-        jitiCliPath = findJitiUnder("argv-binary", piRoot);
-      }
-    } catch (e: any) {
-      log.debug(`jiti strategy 1 (running binary) failed: ${e?.message || e}`);
-    }
-
-    // Strategy 2: resolve the pi SDK package from this module's require context.
-    if (!jitiCliPath) {
-      try {
-        const req = createRequire(fileURLToPath(import.meta.url));
-        let sdkPkgJson: string | undefined;
-        try {
-          sdkPkgJson = req.resolve("@earendil-works/pi-coding-agent/package.json");
-        } catch {
-          // Newer SDK "exports" maps hide ./package.json — resolve the entry
-          // and walk up to the owning package.json instead.
-          let dir = path.dirname(req.resolve("@earendil-works/pi-coding-agent"));
-          while (dir !== path.dirname(dir)) {
-            const pj = path.join(dir, "package.json");
-            if (fs.existsSync(pj) && JSON.parse(fs.readFileSync(pj, "utf8"))?.name === "@earendil-works/pi-coding-agent") { sdkPkgJson = pj; break; }
-            dir = path.dirname(dir);
-          }
-        }
-        if (sdkPkgJson) jitiCliPath ??= findJitiUnder("sdk-pkg", path.dirname(sdkPkgJson));
-      } catch (e: any) {
-        log.debug(`jiti strategy 2 (SDK package) failed: ${e?.message || e}`);
-      }
-    }
-
-    // Strategy 3: this package's own node_modules (git/stow clones ship jiti).
-    if (!jitiCliPath) {
-      try {
-        jitiCliPath = findJitiUnder("extension-dir", path.dirname(fileURLToPath(import.meta.url)));
-      } catch (e: any) {
-        log.debug(`jiti strategy 3 (package root) failed: ${e?.message || e}`);
-      }
-    }
+    const { path: jitiCliPath, probes: jitiProbes } = resolveJitiCliPath();
 
     // Fail fast with a self-explanatory error instead of spawning a child that
     // cannot load TypeScript (bare node dies on ".js"→".ts" specifiers).
@@ -1260,25 +1382,9 @@ export function registerAsyncAgents(
       __PI_PARENT_SESSION_ID: (globalThis as any).__piConfigSessionId || "",
     };
     if (agentName.startsWith("code-reviewer-") || agentName === "test-automator" || agentName === "test-runner") {
-      try {
-        const prBase = spawnSync("gh", ["pr", "view", "--json", "baseRefName", "--jq", ".baseRefName"], {
-          cwd, timeout: 5000, encoding: "utf-8",
-        });
-        if (prBase.status === 0 && prBase.stdout?.trim()) {
-          spawnEnv.PI_REVIEW_BASE_BRANCH = prBase.stdout.trim();
-          spawnEnv.PI_HAS_PR = "true";
-        } else {
-          spawnEnv.PI_REVIEW_BASE_BRANCH = getMainBranch(cwd) || "main";
-          // Only set PI_HAS_PR=false if gh confirmed no PR exists.
-          // Other failures (timeout, auth, network) default to true to avoid skipping PR checks.
-          const noPr = prBase.stderr?.includes("no pull requests found") || false;
-          spawnEnv.PI_HAS_PR = noPr ? "false" : "true";
-        }
-      } catch {
-        spawnEnv.PI_REVIEW_BASE_BRANCH = getMainBranch(cwd) || "main";
-        // Exception (e.g., gh not found) — default to true to avoid skipping PR checks
-        spawnEnv.PI_HAS_PR = "true";
-      }
+      const { baseBranch, hasPr } = resolvePrBaseInfo(cwd);
+      spawnEnv.PI_REVIEW_BASE_BRANCH = baseBranch;
+      spawnEnv.PI_HAS_PR = hasPr;
     }
 
     // Register job BEFORE spawn — child can finish and write result file before
@@ -1415,122 +1521,89 @@ export function registerAsyncAgents(
 
     cleanupReviewerOutputArchives(path.join(PROJECT_TMP_DIR, "reviewer-results"));
 
-    // Scan worker directories for jobs with delivered=true in status.json
-    // This is more reliable than content hashing — uses job IDs directly
-    try {
-      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
-        const jobDir = path.join(PROJECT_TMP_DIR, entry);
-        try {
-          if (!fs.statSync(jobDir).isDirectory()) continue;
-          const statusPath = path.join(jobDir, "status.json");
-          if (!fs.existsSync(statusPath)) continue;
-          const status = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
-          if (status.delivered && status.runId) {
-            deliveredResultIds.add(status.runId);
-          }
-        } catch {}
-      }
-      if (deliveredResultIds.size > 0) {
-        log.info(`session_start: found ${deliveredResultIds.size} previously delivered job IDs`);
-      }
-    } catch (e: any) { log.error(`delivered job scan failed: ${e?.message}`); }
-
     // Set results dir — PID-scoped under project dir
     ASYNC_RESULTS_DIR = path.join(PROJECT_TMP_DIR, sessionResultsDirName());
-
-    // Zombie cleanup: scan project dir for dead agents
-    try {
-      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
-        const jobDir = path.join(PROJECT_TMP_DIR, entry);
-        try {
-          if (!fs.statSync(jobDir).isDirectory()) continue;
-          const markerPath = path.join(jobDir, "session.json");
-          // Only process dirs that have session.json (agent dirs)
-          if (!fs.existsSync(markerPath)) continue;
-          const marker = JSON.parse(fs.readFileSync(markerPath, "utf-8"));
-          // Skip our own session's agents
-          if (marker.resultsDir === ASYNC_RESULTS_DIR) continue;
-          const parentPid = marker.parentPid;
-          const parentStartTime = marker.parentStartTime;
-          if (!parentPid || !parentStartTime) {
-            // Missing identity — can't safely verify, skip
-            continue;
-          }
-          // Check if parent pi process is alive via /proc/PID/stat starttime
-          try {
-            const stat = fs.readFileSync(`/proc/${parentPid}/stat`, "utf-8");
-            const currentStartTime = parseProcStartTime(stat);
-            if (!currentStartTime) continue; // parse failed — can't verify, skip conservatively
-            if (currentStartTime === parentStartTime) continue; // alive, same process
-          } catch {} // /proc not found = dead
-          // Parent dead or PID reused — zombie, delete
-          try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
-        } catch {} // skip unreadable dirs
-      }
-    } catch (e: any) { log.error(`zombie cleanup failed: ${e?.message?.slice(0, 100)}`); }
-
-    // Clean up stale result directories from dead sessions
-    try {
-      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
-        if (!entry.startsWith("async-results-pid-")) continue;
-        const resultDir = path.join(PROJECT_TMP_DIR, entry);
-        if (resultDir === ASYNC_RESULTS_DIR) continue; // skip our own
-        try {
-          if (!fs.statSync(resultDir).isDirectory()) continue;
-          // Extract PID and starttime from directory name
-          // Format: async-results-pid-{pid}-{starttime} (current) or async-results-pid-{pid} (legacy)
-          const match = entry.match(/^async-results-pid-(\d+)(?:-(\d+))?$/);
-          if (!match) continue;
-          const dirPid = parseInt(match[1], 10);
-          const dirStartTime = match[2]; // undefined for legacy PID-only format
-          let parentAlive = false;
-          try {
-            const stat = fs.readFileSync(`/proc/${dirPid}/stat`, "utf-8");
-            const currentStartTime = parseProcStartTime(stat);
-            if (currentStartTime) {
-              // With starttime: must match exactly. Without: PID alive = keep (conservative)
-              parentAlive = dirStartTime ? currentStartTime === dirStartTime : true;
-            }
-          } catch {} // /proc not found = dead
-          if (!parentAlive) {
-            // Parent dead — clean up entire result directory
-            try { fs.rmSync(resultDir, { recursive: true, force: true }); } catch {}
-            log.info(`cleaned stale result dir: ${entry}`);
-          }
-        } catch {} // skip unreadable dirs
-      }
-    } catch (e: any) { log.error(`stale result dir cleanup failed: ${e?.message?.slice(0, 100)}`); }
-
     log.info(`session_start: resultsDir=${path.basename(ASYNC_RESULTS_DIR)}`);
 
-    // Restore jobs from status files in PROJECT_TMP_DIR that belong to this session
+    // Single pass over PROJECT_TMP_DIR: collect delivered job IDs, clean up dead
+    // zombies and stale result dirs, and restore live/undelivered jobs for this session.
     try {
-      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
-        if (entry.startsWith("session-") || entry.startsWith("pid-")) continue;
-        const jobDir = path.join(PROJECT_TMP_DIR, entry);
+      const tmpEntries = fs.readdirSync(PROJECT_TMP_DIR, { withFileTypes: true });
+      for (const entry of tmpEntries) {
+        const entryPath = path.join(PROJECT_TMP_DIR, entry.name);
+        let isDir = entry.isDirectory();
+        if (!isDir && entry.isSymbolicLink()) {
+          try { isDir = fs.statSync(entryPath).isDirectory(); } catch { continue; }
+        }
+        if (!isDir) continue;
+
+        if (entry.name.startsWith("async-results-pid-")) {
+          if (entryPath === ASYNC_RESULTS_DIR) continue; // skip our own
+          try {
+            // Format: async-results-pid-{pid}-{starttime} (current) or async-results-pid-{pid} (legacy)
+            const match = entry.name.match(/^async-results-pid-(\d+)(?:-(\d+))?$/);
+            if (!match) continue;
+            const dirPid = parseInt(match[1], 10);
+            const dirStartTime = match[2]; // undefined for legacy PID-only format
+            let parentAlive = false;
+            try {
+              const stat = fs.readFileSync(`/proc/${dirPid}/stat`, "utf-8");
+              const currentStartTime = parseProcStartTime(stat);
+              if (currentStartTime) {
+                parentAlive = dirStartTime ? currentStartTime === dirStartTime : true;
+              }
+            } catch {} // /proc not found = dead
+            if (!parentAlive) {
+              try { fs.rmSync(entryPath, { recursive: true, force: true }); } catch {}
+              log.info(`cleaned stale result dir: ${entry.name}`);
+            }
+          } catch {}
+          continue;
+        }
+
+        const jobDir = entryPath;
         const status = readAsyncStatus(jobDir);
-        if (!status) continue;
-        // Check if this job belongs to our session
+        if (status?.delivered && status?.runId) {
+          deliveredResultIds.add(status.runId);
+        }
+
         let marker: any;
         try {
-          marker = JSON.parse(fs.readFileSync(path.join(jobDir, "session.json"), "utf-8"));
-          if (marker.resultsDir !== ASYNC_RESULTS_DIR) continue;
+          const markerPath = path.join(jobDir, "session.json");
+          if (!fs.existsSync(markerPath)) continue;
+          marker = JSON.parse(fs.readFileSync(markerPath, "utf-8"));
         } catch {
           continue;
         }
+
+        // Different session: zombie cleanup
+        if (marker.resultsDir !== ASYNC_RESULTS_DIR) {
+          try {
+            const parentPid = marker.parentPid;
+            const parentStartTime = marker.parentStartTime;
+            if (!parentPid || !parentStartTime) continue;
+            try {
+              const stat = fs.readFileSync(`/proc/${parentPid}/stat`, "utf-8");
+              const currentStartTime = parseProcStartTime(stat);
+              if (!currentStartTime) continue;
+              if (currentStartTime === parentStartTime) continue;
+            } catch {} // /proc not found = dead
+            try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
+          } catch {}
+          continue;
+        }
+
+        // Same session: restore jobs from status files
+        if (entry.name.startsWith("session-") || entry.name.startsWith("pid-")) continue;
+        if (!status) continue;
         const id = status.runId;
         if (!id || asyncState.jobs.has(id)) continue;
         const isAlive = status.pid ? (() => { try { process.kill(status.pid, 0); return true; } catch { return false; } })() : false;
         const isComplete = status.state === "complete" || status.state === "failed";
-        // A terminal job has only done its job once the result REACHED the parent —
-        // `delivered` says that. The deferral leaves jobs terminal while their result file is
-        // still being written, and the timeout fallback delivers without findings, so a reload
-        // must reconstruct those and KEEP the worker dir: dropping it loses the job, and the
-        // poller would then unlink its result file as an orphan.
         const alreadySent = status.delivered === true || status.deliveredWithoutResult === true;
         if (isComplete && status.delivered === true) {
           try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
-          log.debug(`cleaned delivered worker dir on restore: ${entry} (state=${status.state})`);
+          log.debug(`cleaned delivered worker dir on restore: ${entry.name} (state=${status.state})`);
           continue;
         }
         // Restore running/queued jobs with alive processes, plus terminal-but-undelivered ones.
@@ -1549,7 +1622,7 @@ export function registerAsyncAgents(
             agent: status.agent || "unknown",
             task: (status.task || "").slice(0, 200),
             status: isComplete ? status.state : "running",
-            workerDir: path.join(PROJECT_TMP_DIR, entry),
+            workerDir: jobDir,
             startedAt: status.startedAt || Date.now(),
             updatedAt: status.lastUpdate || Date.now(),
             exitCode: status.exitCode,
@@ -1605,7 +1678,10 @@ export function registerAsyncAgents(
           }
         }
       }
-    } catch (e: any) { log.error(`job restore failed: ${e?.message || e}`); }
+      if (deliveredResultIds.size > 0) {
+        log.info(`session_start: found ${deliveredResultIds.size} previously delivered job IDs`);
+      }
+    } catch (e: any) { log.error(`session_start tmp scan failed: ${e?.message || e}`); }
 
     // Start poller if we have jobs or unprocessed result files
     let hasResultFiles = false;

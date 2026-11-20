@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import pi_docsite.renderer.renderer as renderer_module
 import pytest
 from pi_docsite.renderer.renderer import (
     DEFAULT_BADGE_LABEL,
@@ -531,3 +532,81 @@ def test_render_page_badge_renders_a_dashless_label_unaccented() -> None:
 def test_render_index_badge_honors_the_label_flag() -> None:
     html = render_index("p", "", [], badge_label="my-docs")
     assert '⚡ my<span class="brand-accent">-docs</span>' in html
+
+
+def test_md_to_html_resets_toc_heading_ids_across_calls() -> None:
+    md = "## Overview\n\nBody text.\n"
+    first_content, first_toc = _md_to_html(md)
+    second_content, second_toc = _md_to_html(md)
+
+    assert 'id="overview"' in first_content
+    assert 'id="overview"' in second_content
+    assert "overview_1" not in second_content
+    assert second_toc == first_toc
+
+
+def test_md_to_html_does_not_leak_previous_toc_entries() -> None:
+    _md_to_html("## First Page Heading\n")
+    _, second_toc = _md_to_html("## Second Page Heading\n")
+
+    assert "First Page Heading" not in second_toc
+    assert "Second Page Heading" in second_toc
+
+
+def test_md_to_html_concurrent_calls_isolate_per_thread_output() -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    num_threads = 6
+    barrier = threading.Barrier(num_threads, timeout=2.0)
+
+    def render_worker(idx: int) -> tuple[int, str, str]:
+        md = f"## Thread {idx} Heading Alpha\n\n### Thread {idx} Subheading Beta\n\nBody {idx}.\n"
+        barrier.wait()
+        return idx, *_md_to_html(md)
+
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        results = list(executor.map(render_worker, range(num_threads)))
+
+    for idx, content_html, toc_html in results:
+        assert f'id="thread-{idx}-heading-alpha"' in content_html
+        assert f'href="#thread-{idx}-heading-alpha"' in toc_html
+        assert f'href="#thread-{idx}-subheading-beta"' in toc_html
+        for other in range(num_threads):
+            if other != idx:
+                assert f"Thread {other}" not in content_html
+                assert f"Thread {other}" not in toc_html
+                assert f"thread-{other}-" not in toc_html
+
+
+def test_render_page_uses_passed_asset_version_without_rehashing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        renderer_module,
+        "_asset_version",
+        lambda: pytest.fail("_asset_version should not be called when asset_version is provided"),
+    )
+    html = render_page(
+        markdown_content="# Page",
+        page_title="Page",
+        project_name="proj",
+        tagline="",
+        navigation=[],
+        current_slug="page",
+        asset_version="deadbeef00",
+    )
+    assert "assets/style.css?v=deadbeef00" in html
+
+
+def test_render_index_uses_passed_asset_version_without_rehashing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        renderer_module,
+        "_asset_version",
+        lambda: pytest.fail("_asset_version should not be called when asset_version is provided"),
+    )
+    html = render_index(
+        project_name="proj",
+        tagline="",
+        navigation=[],
+        asset_version="deadbeef00",
+    )
+    assert "assets/style.css?v=deadbeef00" in html

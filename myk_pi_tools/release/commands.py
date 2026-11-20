@@ -5,14 +5,6 @@ from pathlib import Path
 
 import click
 
-from myk_pi_tools.release.bump_scoped import _parse_set_values
-from myk_pi_tools.release.bump_scoped import run as bump_scoped_run
-from myk_pi_tools.release.bump_version import run as bump_run
-from myk_pi_tools.release.create import run as create_run
-from myk_pi_tools.release.detect_versions import run as detect_run
-from myk_pi_tools.release.info import run as info_run
-from myk_pi_tools.release.plan import run as plan_run
-
 
 @click.group()
 def release() -> None:
@@ -26,6 +18,8 @@ def release() -> None:
 @click.option("--tag-match", help="Glob pattern to filter tags (e.g., 'v2.10.*')")
 def release_info(repo: str | None, target: str | None, tag_match: str | None) -> None:
     """Fetch release validation info and commits since last tag."""
+    from myk_pi_tools.release.info import run as info_run
+
     info_run(repo, target=target, tag_match=tag_match)
 
 
@@ -48,6 +42,8 @@ def release_create(
     title: str | None,
 ) -> None:
     """Create a GitHub release."""
+    from myk_pi_tools.release.create import run as create_run
+
     create_run(
         owner_repo=owner_repo,
         tag=tag,
@@ -62,6 +58,8 @@ def release_create(
 @release.command("detect-versions")
 def release_detect_versions() -> None:
     """Detect version files in the current repository."""
+    from myk_pi_tools.release.detect_versions import run as detect_run
+
     detect_run()
 
 
@@ -96,6 +94,8 @@ def release_plan(repo_root: str, force_packages: tuple[str, ...], as_json: bool)
         as_json,
     )
     try:
+        from myk_pi_tools.release.plan import run as plan_run
+
         plan_run(Path(repo_root), force_packages=force_packages, as_json=as_json)
     except SystemExit:
         raise
@@ -109,6 +109,8 @@ def release_plan(repo_root: str, force_packages: tuple[str, ...], as_json: bool)
 @click.option("--files", multiple=True, help="Specific files to update (can be repeated)")
 def release_bump_version(version: str, files: tuple[str, ...]) -> None:
     """Update version strings in detected version files."""
+    from myk_pi_tools.release.bump_version import run as bump_run
+
     bump_run(version, list(files) if files else None)
 
 
@@ -164,6 +166,9 @@ def release_bump_scoped(
         as_json,
     )
     try:
+        from myk_pi_tools.release.bump_scoped import _parse_set_values
+        from myk_pi_tools.release.bump_scoped import run as bump_scoped_run
+
         bump_scoped_run(
             Path(repo_root),
             force_packages=force_packages,
