@@ -16,8 +16,7 @@ const require = createRequire(import.meta.url);
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentDiscoveryResult } from "./agents.js";
-import { resolveAgentModelProvider } from "./resolve-agent-model.js";
-import { trailToolsArgs } from "./trail.js";
+import { buildSubagentChildSpec } from "./subagent-child-spec.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, subjectKey } from "./pi-config-review-state.js";
 import { resolveReviewSubject } from "./review-subject.js";
@@ -43,8 +42,7 @@ import {
   syncAgentRunCount,
 } from "./sync-agent-runs.js";
 import { setSlot } from "./status-bar.js";
-import { getSetting, getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
-import { resolveAgentSystemPrompt } from "./rule-placeholders.js";
+import { getSetting } from "./project-settings.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { sendSystemNote } from "../shared/system-note.js";
 
@@ -614,6 +612,19 @@ export function registerAsyncAgents(
     }
   }
 
+  /** Record a code-reviewer result safely; returns false only when recording throws. */
+  function recordReviewerResultSafe(job: AsyncJob, findings: number, logPrefix = ""): boolean {
+    if (!job.agent.startsWith("code-reviewer-")) return true;
+    try {
+      // -1 from countFindings means invalid JSON output — treat conservatively as having findings.
+      recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt });
+      return true;
+    } catch (e: any) {
+      log.error(`${logPrefix}recordReviewerResult failed for ${job.agent}: ${e?.message}`);
+      return false;
+    }
+  }
+
   const asyncState: AsyncState = {
     jobs: new Map(),
     poller: null,
@@ -755,9 +766,7 @@ export function registerAsyncAgents(
             job.updatedAt = Date.now();
             job.sideEffectsApplied = true;
             log.debug(`phantom: ${job.id} — no status file, worker dir missing`);
-            if (job.agent.startsWith("code-reviewer-")) {
-              try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
-            }
+            recordReviewerResultSafe(job, 0);
           } else {
             // Worker dir exists but no status file — check timeout
             const elapsed = Date.now() - job.startedAt;
@@ -768,9 +777,7 @@ export function registerAsyncAgents(
               job.updatedAt = Date.now();
               job.sideEffectsApplied = true;
               log.debug(`phantom-timeout: ${job.id} — no status file after ${Math.round(elapsed / 1000)}s`);
-              if (job.agent.startsWith("code-reviewer-")) {
-                try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
-              }
+              recordReviewerResultSafe(job, 0);
               updateAsyncWidget();
             }
           }
@@ -790,9 +797,7 @@ export function registerAsyncAgents(
             job.updatedAt = Date.now();
             job.sideEffectsApplied = true;
             log.debug(`phantom: ${job.id} — status file exists but no PID`);
-            if (job.agent.startsWith("code-reviewer-")) {
-              try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
-            }
+            recordReviewerResultSafe(job, 0);
           } else if (job.status === "running" && status.pid) {
             try { process.kill(status.pid, 0); } catch {
               // Process exited — check if it wrote a result file first
@@ -808,11 +813,9 @@ export function registerAsyncAgents(
                   job.durationMs = data.durationMs;
                   job.updatedAt = Date.now();
                   log.debug("poller_zombie_ingest", job.id, "status", job.status, "output_len", job.output?.length);
-                  let zombieSideEffectsOk = true;
-                  if (job.agent.startsWith("code-reviewer-")) {
-                    const findings = countFindings(typeof data.output === "string" ? data.output : "");
-                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt }); } catch (e: any) { zombieSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
-                  }
+                  const zombieSideEffectsOk = job.agent.startsWith("code-reviewer-")
+                    ? recordReviewerResultSafe(job, countFindings(typeof data.output === "string" ? data.output : ""))
+                    : true;
                   if (zombieSideEffectsOk) job.sideEffectsApplied = true;
                   try { fs.unlinkSync(resultFilePath); } catch {}
                 } catch {
@@ -820,11 +823,7 @@ export function registerAsyncAgents(
                   job.output = "Process exited before result could be read";
                   job.durationMs = Date.now() - job.startedAt;
                   job.updatedAt = Date.now();
-                  let catchSideEffectsOk = true;
-                  if (job.agent.startsWith("code-reviewer-")) {
-                    try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch (e: any) { catchSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
-                  }
-                  if (catchSideEffectsOk) job.sideEffectsApplied = true;
+                  if (recordReviewerResultSafe(job, 0)) job.sideEffectsApplied = true;
                 }
               } else {
                 job.status = "failed";
@@ -833,11 +832,7 @@ export function registerAsyncAgents(
                 job.updatedAt = Date.now();
                 log.debug("poller_zombie_no_result", job.id, "agent", job.agent, "pid", status?.pid, "elapsed_ms", Date.now() - job.startedAt);
                 // Record killed reviewer as having 0 findings — prevents permanent commit block
-                let noFileSideEffectsOk = true;
-                if (job.agent.startsWith("code-reviewer-")) {
-                  try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch (e: any) { noFileSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
-                }
-                if (noFileSideEffectsOk) job.sideEffectsApplied = true;
+                if (recordReviewerResultSafe(job, 0)) job.sideEffectsApplied = true;
               }
               // Delivery happens in the reconciliation sweep at the end of this tick.
             }
@@ -871,11 +866,9 @@ export function registerAsyncAgents(
         if ((job.status !== "complete" && job.status !== "failed") || job.delivered) continue;
         // Side-effects: ensure they fired (only mark applied when ALL succeed)
         if (!job.sideEffectsApplied) {
-          let sideEffectsOk = true;
-          if (job.agent.startsWith("code-reviewer-")) {
-            const findings = countFindings(typeof job.output === "string" ? job.output : "");
-            try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt }); } catch (e: any) { sideEffectsOk = false; log.error(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
-          }
+          const sideEffectsOk = job.agent.startsWith("code-reviewer-")
+            ? recordReviewerResultSafe(job, countFindings(typeof job.output === "string" ? job.output : ""), "reconcile: ")
+            : true;
           if (sideEffectsOk) job.sideEffectsApplied = true;
         }
         void deliverJobResult(job);
@@ -1132,12 +1125,8 @@ export function registerAsyncAgents(
       // Track reviewer completion for review loop enforcement
       let processResultSideEffectsOk = true;
       if (job.agent.startsWith("code-reviewer-")) {
-        try {
-          const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
-          const findings = countFindings(output);
-          // -1 means invalid JSON output — treat conservatively as having findings
-          recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings, { since: job.startedAt });
-        } catch (e: any) { processResultSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+        const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
+        processResultSideEffectsOk = recordReviewerResultSafe(job, countFindings(output));
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.
         // If agent uses a custom model, we pass its context window via the config.
@@ -1246,7 +1235,6 @@ export function registerAsyncAgents(
     if (!parentStartTime) {
       log.warn("async-spawn: could not read /proc/self/stat starttime after 3 attempts");
     }
-    let { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, options?.parentModelId, options?.parentProvider, cwd, options?.explicit);
     const liveCtx = getLiveAsyncCtx();
     const resolvedProjectCwd = liveCtx?.sessionManager?.getCwd?.() || liveCtx?.cwd || options?.projectCwd;
     const resolvedSessionId = liveCtx?.sessionManager?.getSessionId?.() || options?.sessionId;
@@ -1284,7 +1272,7 @@ export function registerAsyncAgents(
       try { addReviewerPending(cwd, agentName, subject); } catch { /* best-effort */ }
     }
 
-    // Build pi args
+    // Build pi args and child env via shared spec helper
     // Reviewers persist sessions during the review loop (cycle 2+) for cross-cycle context.
     // Fresh session on first cycle (needs_review/none), reuse on subsequent cycles (has_findings).
     let persistSession = options?.persistSession === true;
@@ -1292,33 +1280,34 @@ export function registerAsyncAgents(
       const reviewState = readReviewState(cwd);
       persistSession = reviewState.status === "has_findings" || reviewState.status === "in_progress";
     }
-    const piArgs: string[] = ["--mode", "json", "-p", "-nc"];
-    if (!persistSession) piArgs.push("--no-session");
-    // Deterministic session ID for provider cache affinity + optional session reuse.
-    // When persistSession is true, omits --no-session so the session persists to disk.
-    // Same agent + cwd gets the same session ID across calls.
-    const parentSessionId = getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || '';
-    const sessionIdSource = persistSession
-      ? agentName + ':' + cwd + ':' + parentSessionId
-      : agentName + ':' + task.slice(0, 100);
-    const deterministicSessionId = `async-${agentName}-${djb2Hash(sessionIdSource).toString(36)}`;
-    piArgs.push("--session-id", deterministicSessionId);
-    if (effectiveModel) piArgs.push("--model", effectiveModel);
-    if (effectiveProvider) piArgs.push("--provider", effectiveProvider);
-    piArgs.push(...trailToolsArgs(agent.tools, cwd));
+    const parentSessionId = getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || "";
+    const extraEnv: Record<string, string | undefined> = {};
+    if (agentName.startsWith("code-reviewer-") || agentName === "test-automator" || agentName === "test-runner") {
+      const { baseBranch, hasPr } = resolvePrBaseInfo(cwd);
+      extraEnv.PI_REVIEW_BASE_BRANCH = baseBranch;
+      extraEnv.PI_HAS_PR = hasPr;
+    }
+    const spec = buildSubagentChildSpec({
+      mode: "async",
+      agentName,
+      agent,
+      task,
+      cwd,
+      persistSession,
+      parentModelId: options?.parentModelId,
+      parentProvider: options?.parentProvider,
+      parentSessionId,
+      explicit: options?.explicit,
+      extraEnv,
+      onWarn: (msg) => log.warn("agent conditional evaluation:", msg),
+    });
+    const effectiveModel = spec.effectiveModel;
+    const piArgs = spec.args;
 
-    if (agent.systemPrompt?.trim()) {
-      const resolvedPrompt = resolveAgentSystemPrompt(
-        agent.systemPrompt,
-        (key) => getSettingDynamic(cwd, key),
-        Object.keys(SETTINGS_KEYS),
-        (msg) => log.warn("agent conditional evaluation:", msg),
-      );
-      if (resolvedPrompt.trim()) {
-        const promptPath = path.join(workerDir, "system-prompt.md");
-        fs.writeFileSync(promptPath, resolvedPrompt, { mode: 0o600 });
-        piArgs.push("--append-system-prompt", promptPath);
-      }
+    if (spec.resolvedPrompt) {
+      const promptPath = path.join(workerDir, "system-prompt.md");
+      fs.writeFileSync(promptPath, spec.resolvedPrompt, { mode: 0o600 });
+      piArgs.push("--append-system-prompt", promptPath);
     }
 
     piArgs.push(`Task: ${task}`);
@@ -1363,25 +1352,7 @@ export function registerAsyncAgents(
       ? [jitiCliPath, runnerPath, configPath]
       : [runnerPath, configPath];
 
-    // Resolve base branch for reviewers so they diff against the correct target
-    const spawnEnv: Record<string, string | undefined> = {
-      ...process.env,
-      PI_MODEL: effectiveModel || undefined,
-      PI_SUBAGENT_CHILD: "1",
-      PI_AGENT_NAME: agentName,
-      PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "",
-      // Isolate children from the shared jiti FS cache — other sessions running
-      // different node/jiti versions can poison it and kill children at boot.
-      JITI_CACHE: "false",
-      JITI_FS_CACHE: "false",
-      __PI_CONFIG_SESSION_ID: (globalThis as any).__piConfigSessionId || "",
-      __PI_PARENT_SESSION_ID: (globalThis as any).__piConfigSessionId || "",
-    };
-    if (agentName.startsWith("code-reviewer-") || agentName === "test-automator" || agentName === "test-runner") {
-      const { baseBranch, hasPr } = resolvePrBaseInfo(cwd);
-      spawnEnv.PI_REVIEW_BASE_BRANCH = baseBranch;
-      spawnEnv.PI_HAS_PR = hasPr;
-    }
+    const spawnEnv = spec.env;
 
     // Register job BEFORE spawn — child can finish and write result file before
     // jobs.set runs; watcher/poller would then treat it as orphan and delete it.
@@ -1428,9 +1399,7 @@ export function registerAsyncAgents(
       job.durationMs = Date.now() - job.startedAt;
       job.updatedAt = Date.now();
       job.sideEffectsApplied = true;
-      if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
-      }
+      recordReviewerResultSafe(job, 0);
       void deliverJobResult(job);
       updateAsyncWidget();
     });
@@ -1470,9 +1439,7 @@ export function registerAsyncAgents(
           job.durationMs = Date.now() - job.startedAt;
           job.updatedAt = Date.now();
           job.sideEffectsApplied = true;
-          if (job.agent.startsWith("code-reviewer-")) {
-            try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch {}
-          }
+          recordReviewerResultSafe(job, 0);
           if (!plan.deliver) {
             log.warn("spawn_exit_delivery_skipped_stale_ctx", { job: job.id, status: job.status });
             return;
@@ -1838,29 +1805,20 @@ export function registerAsyncAgents(
       job.status = "failed";
       job.updatedAt = Date.now();
       job.durationMs = Date.now() - job.startedAt;
-      // Resolve the agent's prior output BEFORE writing either destination.
+      // Resolve the agent's prior output BEFORE writing either destination, reusing the
+      // `status` snapshot already read above instead of re-reading status.json multiple times.
       // Prefer the in-memory value, then what status.json already held, then the worker's
       // output.log — a job killed mid-run has neither of the first two, because `output`
       // only lands in status.json on the completion path and job.output stays undefined
       // until then. Reading output.log is what stops the AI receiving a kill label and
       // none of the work the agent had actually done.
-      let persistedPriorOutput = "";
-      try {
-        const statusPath = path.join(job.workerDir, "status.json");
-        if (fs.existsSync(statusPath)) {
-          persistedPriorOutput = typeof JSON.parse(fs.readFileSync(statusPath, "utf-8"))?.output === "string"
-            ? JSON.parse(fs.readFileSync(statusPath, "utf-8")).output
-            : "";
-        }
-      } catch (e: any) {
-        log.debug(`kill: could not read prior output for ${job.id}: ${e?.message}`);
-      }
+      const persistedPriorOutput = typeof status?.output === "string" ? status.output : "";
       const inMemoryOutput = typeof job.output === "string" ? job.output : "";
       const partialFromLog = inMemoryOutput || persistedPriorOutput ? "" : readPartialWorkerOutput(
         job,
         // Budget the label, the newline joining them, and the truncation marker itself —
-// otherwise the composed string still overruns MAX_OUTPUT_CHARS and
-// formatAsyncResultOutput head-trims it, which drops the newest lines.
+        // otherwise the composed string still overruns MAX_OUTPUT_CHARS and
+        // formatAsyncResultOutput head-trims it, which drops the newest lines.
         Math.max(0, MAX_OUTPUT_CHARS - killLabel.length - TRUNCATION_MARKER.length - 1),
       );
       if (partialFromLog) {
@@ -1877,7 +1835,7 @@ export function registerAsyncAgents(
       // Persist killed state to disk — prevents stale re-delivery on reload
       try {
         const statusPath = path.join(job.workerDir, "status.json");
-        const existing = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf-8")) : {};
+        const existing = status && typeof status === "object" ? { ...status } : {};
         existing.state = "failed";
         existing.exitCode = -9;
         existing.endedAt = Date.now();
@@ -1890,11 +1848,7 @@ export function registerAsyncAgents(
       // Delete result file if it exists — prevent re-ingestion on reload
       try { fs.unlinkSync(path.join(ASYNC_RESULTS_DIR, `${job.id}.json`)); } catch {}
       // Record killed reviewer as having 0 findings — prevents permanent commit block
-      let killSideEffectsOk = true;
-      if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0, { since: job.startedAt }); } catch (e: any) { killSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
-      }
-      if (killSideEffectsOk) job.sideEffectsApplied = true;
+      if (recordReviewerResultSafe(job, 0)) job.sideEffectsApplied = true;
       // Deliver this job's own result — grouped or not, a finished agent never waits for
       // its siblings. No completion hook: a kill must not advance an async chain.
       void deliverJobResult(job, { fireHook: false });

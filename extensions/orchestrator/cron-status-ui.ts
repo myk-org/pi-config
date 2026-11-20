@@ -75,9 +75,6 @@ export async function openCronStatusOverlay(
   ctx: ExtensionCommandContext,
   deps: CronStatusUiDeps,
 ): Promise<void> {
-  const showSession = () =>
-    deps.listTasks().some((t) => !!t.sessionLabel);
-
   await openListDetailOverlay(ctx, {
     emptyMessage: deps.emptyMessage ?? "No scheduled tasks.",
     listSpec: {
@@ -98,7 +95,7 @@ export async function openCronStatusOverlay(
           theme.fg("dim", formatLastRunLabel(task, now)),
           theme.fg("muted", formatNextRunLabel(task, now)),
         ];
-        if (showSession() && task.sessionLabel) {
+        if (task.sessionLabel) {
           rightParts.unshift(theme.fg("dim", task.sessionLabel));
         }
         return {

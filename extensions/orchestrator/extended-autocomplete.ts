@@ -28,7 +28,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
-import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
 import { getCronRemoveAutocompleteItems } from "./cron.js";
@@ -113,6 +112,8 @@ interface AutocompleteContext {
   issueCache: Cache<AutocompleteItem[]>;
   branchCache: Cache<AutocompleteItem[]>;
   tagCache: Cache<AutocompleteItem[]>;
+  worktreeCache: Cache<AutocompleteItem[]>;
+  worktreeCwd: string;
   modelCaches: Map<string, Cache<AutocompleteItem[]>>;
   lastCwd: string;
   fetchOpenPRs(cwd: string): Promise<void>;
@@ -120,6 +121,7 @@ interface AutocompleteContext {
   fetchBranches(cwd: string): Promise<void>;
   fetchModels(provider: string, cwd: string): Promise<void>;
   fetchTags(cwd: string): Promise<void>;
+  fetchWorktrees(cwd: string): Promise<void>;
 }
 
 // ── Completions registration ────────────────────────────────────────
@@ -273,32 +275,9 @@ function registerCompletions(
     "qodo-review": qodoReviewArgumentCompletions,
 
     "review-status": (prefix: string) => {
-      // List active worktrees (excluding main repo) as completion options
-      try {
-        // Use --git-common-dir to find the shared repo root (not worktree root).
-        // This ensures we correctly identify the main repo even if ctx.lastCwd
-        // happens to be inside a worktree.
-        const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
-          cwd: ctx.lastCwd, encoding: "utf-8", timeout: 3000,
-          stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
-        const mainRoot = path.dirname(path.resolve(ctx.lastCwd, gitCommonDir));
-        const porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
-          cwd: ctx.lastCwd, encoding: "utf-8", timeout: 3000,
-          stdio: ["ignore", "pipe", "ignore"],
-        });
-        const worktrees: AutocompleteItem[] = [];
-        for (const line of porcelain.split("\n")) {
-          if (!line.startsWith("worktree ")) continue;
-          const wtPath = line.slice("worktree ".length).trim();
-          if (wtPath === mainRoot) continue; // skip main repo
-          const relative = path.relative(ctx.lastCwd, wtPath);
-          worktrees.push({ value: relative, label: relative, description: `Worktree: ${wtPath}` });
-        }
-        return filter(worktrees, prefix);
-      } catch {
-        return null;
-      }
+      void ctx.fetchWorktrees(ctx.lastCwd);
+      if (ctx.worktreeCwd !== ctx.lastCwd || !ctx.worktreeCache.data) return null;
+      return filter(ctx.worktreeCache.data, prefix);
     },
 
 
@@ -500,6 +479,8 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   ctx.issueCache = createCache<AutocompleteItem[]>();
   ctx.branchCache = createCache<AutocompleteItem[]>();
   ctx.tagCache = createCache<AutocompleteItem[]>();
+  ctx.worktreeCache = createCache<AutocompleteItem[]>();
+  ctx.worktreeCwd = "";
   ctx.modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
   ctx.lastCwd = "";
 
@@ -636,6 +617,45 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       }
     } catch (e: any) { console.debug("[autocomplete] tag fetch failed:", e?.message || e); }
     ctx.tagCache.loading = false;
+  };
+
+  ctx.fetchWorktrees = async (cwd: string) => {
+    if (!cwd) return;
+    if (ctx.worktreeCwd === cwd && isFresh(ctx.worktreeCache)) return;
+    if (ctx.worktreeCache.loading) return;
+    ctx.worktreeCache.loading = true;
+    try {
+      // Use --git-common-dir to find the shared repo root (not worktree root) so
+      // the main repo is excluded even when cwd is inside a linked worktree.
+      const commonResult = await pi.exec(
+        "git", ["rev-parse", "--git-common-dir"],
+        { cwd, timeout: 3_000 },
+      );
+      if (commonResult.code === 0) {
+        const gitCommonDir = commonResult.stdout.trim();
+        const mainRoot = path.dirname(path.resolve(cwd, gitCommonDir));
+        const listResult = await pi.exec(
+          "git", ["worktree", "list", "--porcelain"],
+          { cwd, timeout: 3_000 },
+        );
+        if (listResult.code === 0) {
+          const worktrees: AutocompleteItem[] = [];
+          for (const line of listResult.stdout.split("\n")) {
+            if (!line.startsWith("worktree ")) continue;
+            const wtPath = line.slice("worktree ".length).trim();
+            if (wtPath === mainRoot) continue;
+            const relative = path.relative(cwd, wtPath);
+            worktrees.push({ value: relative, label: relative, description: `Worktree: ${wtPath}` });
+          }
+          ctx.worktreeCache.data = worktrees;
+          ctx.worktreeCache.timestamp = Date.now();
+          ctx.worktreeCwd = cwd;
+        }
+      }
+    } catch (e: any) {
+      log.debug("worktree fetch failed", { error: e?.message || String(e) });
+    }
+    ctx.worktreeCache.loading = false;
   };
 
   const completions = registerCompletions(pi, ctx);

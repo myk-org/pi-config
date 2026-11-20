@@ -29,7 +29,7 @@ import {
   Text,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
+import { type AgentConfig, type AgentScope, discoverAgentByName, discoverAgents } from "./agents.js";
 import type { AsyncChainState } from "./async-agents.js";
 import { beginSyncAgentRun } from "./sync-agent-runs.js";
 
@@ -77,13 +77,12 @@ import {
   supportsAsyncLlm,
 } from "./async-capability.js";
 import { autoMarkInProgress, autoCompleteTask, resolveTaskStorePath, type AsyncKillOrigin } from "./async-agents.js";
-import { getSetting, getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
+import { getSetting } from "./project-settings.js";
 import { checkSyncLimit } from "./sync-limit.js";
-import { resolveAgentSystemPrompt } from "./rule-placeholders.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
-import { trailToolsArgs } from "./trail.js";
+import { buildSubagentChildSpec } from "./subagent-child-spec.js";
 import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
-import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
+import { clockHHMM, formatElapsedDuration, getPiInvocation, getProjectTmpDir } from "./utils.js";
 
 export { resolveAgentModelProvider, parseModelOverride, checkSyncLimit };
 
@@ -278,10 +277,7 @@ function formatUsageStats(
 ): string {
   const parts: string[] = [];
   if (usage.durationMs != null) {
-    const s = Math.floor(usage.durationMs / 1000);
-    if (s < 60) parts.push(`${s}s`);
-    else if (s < 3600) parts.push(`${Math.floor(s / 60)}m${s % 60}s`);
-    else parts.push(`${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`);
+    parts.push(formatElapsedDuration(usage.durationMs));
   }
   if (usage.turns)
     parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
@@ -468,17 +464,20 @@ export async function runSingleAgent(
     };
   }
 
-  const args: string[] = ["--mode", "json", "-p"];
-  if (!persistSession) {
-    args.push("--no-session");
-  } else {
-    // Deterministic session ID based on agent + cwd for session reuse
-    args.push("--session-id", `sync-${agentName}-${djb2Hash(agentName + ':' + cwd).toString(36)}`);
-  }
-  const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, parentModelId, parentProvider, cwd, explicit);
-  if (effectiveModel) args.push("--model", effectiveModel);
-  if (effectiveProvider) args.push("--provider", effectiveProvider);
-  args.push(...trailToolsArgs(agent.tools, cwd));
+  const spec = buildSubagentChildSpec({
+    mode: "sync",
+    agentName,
+    agent,
+    task,
+    cwd,
+    persistSession: persistSession === true,
+    parentModelId,
+    parentProvider,
+    explicit,
+    onWarn: (msg) => log.warn("agent conditional evaluation:", msg),
+  });
+  const args = spec.args;
+  const effectiveModel = spec.effectiveModel;
 
   let tmpDir: string | null = null;
   let tmpFile: string | null = null;
@@ -531,19 +530,11 @@ export async function runSingleAgent(
   let exitCode = 1; // stays 1 when the spawn never happens, so `end` reports failure
 
   try {
-    if (agent.systemPrompt.trim()) {
-      const resolvedPrompt = resolveAgentSystemPrompt(
-        agent.systemPrompt,
-        (key) => getSettingDynamic(cwd, key),
-        Object.keys(SETTINGS_KEYS),
-        (msg) => log.warn("agent conditional evaluation:", msg),
-      );
-      if (resolvedPrompt.trim()) {
-        const tmp = await writePromptFile(agent.name, resolvedPrompt, cwd);
-        tmpDir = tmp.dir;
-        tmpFile = tmp.filePath;
-        args.push("--append-system-prompt", tmpFile);
-      }
+    if (spec.resolvedPrompt) {
+      const tmp = await writePromptFile(agent.name, spec.resolvedPrompt, cwd);
+      tmpDir = tmp.dir;
+      tmpFile = tmp.filePath;
+      args.push("--append-system-prompt", tmpFile);
     }
     args.push(`Task: ${task}`);
 
@@ -554,7 +545,7 @@ export async function runSingleAgent(
         cwd: cwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PI_MODEL: effectiveModel || undefined, PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: agentName, PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "", __PI_CONFIG_SESSION_ID: (globalThis as any).__piConfigSessionId || "", __PI_PARENT_SESSION_ID: (globalThis as any).__piConfigSessionId || "" },
+        env: spec.env,
       });
       let buf = "";
       if (proc.pid != null) syncRun.setPid(proc.pid);
@@ -1064,6 +1055,84 @@ export function registerSubagentTool(
     };
   }
 
+  function validateSyncEstimate(
+    mode: "single" | "parallel" | "chain",
+    items: Array<{ agent: string; estimatedSeconds?: number }>,
+    cwd: string,
+    asyncOk: boolean,
+    mkd: (mode: "single" | "parallel" | "chain") => (results: SingleResult[]) => SubagentDetails,
+  ): { ok: true; limit: number } | { ok: false; response: { content: Array<{ type: "text"; text: string }>; details: SubagentDetails; isError: true } } {
+    const contextLabel = mode === "chain" ? "chain step" : mode === "parallel" ? "parallel task" : null;
+    const missing = items.find((item) => item.estimatedSeconds == null);
+    if (missing) {
+      const suffix = contextLabel ? ` (${contextLabel}, agent: ${missing.agent})` : "";
+      return {
+        ok: false,
+        response: {
+          content: [{ type: "text" as const, text: `${MISSING_ESTIMATE_ERROR}${suffix}` }],
+          details: mkd(mode)([]),
+          isError: true,
+        },
+      };
+    }
+    const invalid = items.find((item) => item.estimatedSeconds != null && item.estimatedSeconds <= 0);
+    if (invalid) {
+      const suffix = contextLabel ? ` (${contextLabel}, agent: ${invalid.agent})` : "";
+      return {
+        ok: false,
+        response: {
+          content: [{ type: "text" as const, text: `estimatedSeconds must be a positive number.${suffix}` }],
+          details: mkd(mode)([]),
+          isError: true,
+        },
+      };
+    }
+
+    const effectiveSeconds = mode === "chain"
+      ? items.reduce((sum, item) => sum + item.estimatedSeconds!, 0)
+      : mode === "parallel"
+        ? Math.max(...items.map((item) => item.estimatedSeconds!))
+        : items[0].estimatedSeconds!;
+
+    const { limit } = checkSyncLimit(0, cwd);
+    if (syncPenalty > 0) {
+      const adjusted = effectiveSeconds + syncPenalty;
+      if (adjusted >= limit) {
+        if (mode === "chain") {
+          log.info("sync_penalty_rejected_chain", "penalty", syncPenalty, "adjusted", adjusted);
+        } else if (mode === "parallel") {
+          log.info("sync_penalty_rejected_parallel", "penalty", syncPenalty, "adjusted", adjusted);
+        } else {
+          log.info("sync_penalty_rejected", items[0].agent, "estimate", effectiveSeconds, "penalty", syncPenalty, "adjusted", adjusted);
+        }
+        const estimateLabel = mode === "chain"
+          ? "Chain total"
+          : mode === "parallel"
+            ? "Max parallel estimate"
+            : "Your estimate";
+        return {
+          ok: false,
+          response: {
+            content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. ${estimateLabel} ${effectiveSeconds}s + penalty ${syncPenalty}s = ${adjusted}s — exceeds ${limit}s limit. Use async: true.` }],
+            details: mkd(mode)([]),
+            isError: true,
+          },
+        };
+      }
+    }
+    if (effectiveSeconds >= limit && asyncOk) {
+      return {
+        ok: false,
+        response: {
+          content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(effectiveSeconds, limit, cwd) }],
+          details: mkd(mode)([]),
+          isError: true,
+        },
+      };
+    }
+    return { ok: true, limit };
+  }
+
   async function executeChain(
     params: any,
     agents: AgentConfig[],
@@ -1109,48 +1178,12 @@ export function registerSubagentTool(
         });
       }
     }
-    // defensive: LLMs may omit schema-required fields
-    const missingChainEstimate = params.chain.find((s: any) => s.estimatedSeconds == null);
-    if (missingChainEstimate) {
-      return {
-        content: [{ type: "text" as const, text: `${MISSING_ESTIMATE_ERROR} (chain step, agent: ${missingChainEstimate.agent})` }],
-        details: mkd("chain")([]),
-        isError: true,
-      };
-    }
-    const invalidChainEstimate = params.chain.find((s: any) => s.estimatedSeconds != null && s.estimatedSeconds <= 0);
-    if (invalidChainEstimate) {
-      return {
-        content: [{ type: "text" as const, text: `estimatedSeconds must be a positive number. (chain step, agent: ${invalidChainEstimate.agent})` }],
-        details: mkd("chain")([]),
-        isError: true,
-      };
-    }
-    // chain runs sequentially — sum all steps
-    const totalChainSeconds = params.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0);
     if (!params.chain || params.chain.length === 0) {
       return { content: [{ type: "text" as const, text: "Error: chain array is empty — at least one step is required." }], details: undefined };
     }
-    const chainCwd = params.chain[0].cwd;
-    const { limit: chainLimit } = checkSyncLimit(0, chainCwd);
-    if (syncPenalty > 0) {
-      const adjustedTotal = totalChainSeconds + syncPenalty;
-      if (adjustedTotal >= chainLimit) {
-        log.info("sync_penalty_rejected_chain", "penalty", syncPenalty, "adjusted", adjustedTotal);
-        return {
-          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Chain total ${totalChainSeconds}s + penalty ${syncPenalty}s = ${adjustedTotal}s — exceeds ${chainLimit}s limit. Use async: true.` }],
-          details: mkd("chain")([]),
-          isError: true,
-        };
-      }
-    }
-    if (totalChainSeconds >= chainLimit && asyncOk) {
-      return {
-        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds, chainLimit, chainCwd) }],
-        details: mkd("chain")([]),
-        isError: true,
-      };
-    }
+    // defensive: LLMs may omit schema-required fields; chain runs sequentially (sum all steps)
+    const chainCheck = validateSyncEstimate("chain", params.chain, params.chain[0].cwd, asyncOk, mkd);
+    if (!chainCheck.ok) return chainCheck.response;
 
     for (let i = 0; i < params.chain.length; i++) {
       const s = params.chain[i];
@@ -1251,45 +1284,15 @@ export function registerSubagentTool(
         details: mkd("parallel")([]),
         isError: true,
       };
-    // defensive: LLMs may omit required fields
-    const missingEstimate = params.tasks.find((t: any) => t.estimatedSeconds == null);
-    if (missingEstimate) {
-      return {
-        content: [{ type: "text" as const, text: `${MISSING_ESTIMATE_ERROR} (parallel task, agent: ${missingEstimate.agent})` }],
-        details: mkd("parallel")([]),
-        isError: true,
-      };
-    }
-    const invalidEstimate = params.tasks.find((t: any) => t.estimatedSeconds != null && t.estimatedSeconds <= 0);
-    if (invalidEstimate) {
-      return {
-        content: [{ type: "text" as const, text: `estimatedSeconds must be a positive number. (parallel task, agent: ${invalidEstimate.agent})` }],
-        details: mkd("parallel")([]),
-        isError: true,
-      };
-    }
-    // parallel runs concurrently — use longest task
-    const maxParallelSeconds = Math.max(...params.tasks.map((t: any) => t.estimatedSeconds!));
-    const parallelCwd = params.tasks[0]?.cwd ?? process.cwd();
-    const { limit: parallelLimit } = checkSyncLimit(0, parallelCwd);
-    if (syncPenalty > 0) {
-      const adjustedMax = maxParallelSeconds + syncPenalty;
-      if (adjustedMax >= parallelLimit) {
-        log.info("sync_penalty_rejected_parallel", "penalty", syncPenalty, "adjusted", adjustedMax);
-        return {
-          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Max parallel estimate ${maxParallelSeconds}s + penalty ${syncPenalty}s = ${adjustedMax}s — exceeds ${parallelLimit}s limit. Use async: true.` }],
-          details: mkd("parallel")([]),
-          isError: true,
-        };
-      }
-    }
-    if (maxParallelSeconds >= parallelLimit && asyncOk) {
-      return {
-        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds, parallelLimit, parallelCwd) }],
-        details: mkd("parallel")([]),
-        isError: true,
-      };
-    }
+    // defensive: LLMs may omit required fields; parallel runs concurrently (max estimate)
+    const parallelCheck = validateSyncEstimate(
+      "parallel",
+      params.tasks,
+      params.tasks[0]?.cwd ?? process.cwd(),
+      asyncOk,
+      mkd,
+    );
+    if (!parallelCheck.ok) return parallelCheck.response;
     const all: SingleResult[] = params.tasks.map((t: any) => ({
       agent: t.agent,
       agentSource: "unknown" as const,
@@ -1445,39 +1448,15 @@ export function registerSubagentTool(
         isError: true,
       };
     }
-    if (params.estimatedSeconds == null) {
-      return {
-        content: [{ type: "text" as const, text: MISSING_ESTIMATE_ERROR }],
-        details: mkd("single")([]),
-        isError: true,
-      };
-    }
-    if (params.estimatedSeconds <= 0) {
-      return {
-        content: [{ type: "text" as const, text: "estimatedSeconds must be a positive number." }],
-        details: mkd("single")([]),
-        isError: true,
-      };
-    }
-    const { limit: singleLimit } = checkSyncLimit(0, params.cwd);
-    if (syncPenalty > 0) {
-      const adjustedEstimate = (params.estimatedSeconds ?? 0) + syncPenalty;
-      if (adjustedEstimate >= singleLimit) {
-        log.info("sync_penalty_rejected", params.agent, "estimate", params.estimatedSeconds, "penalty", syncPenalty, "adjusted", adjustedEstimate);
-        return {
-          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Your estimate ${params.estimatedSeconds}s + penalty ${syncPenalty}s = ${adjustedEstimate}s — exceeds ${singleLimit}s limit. Use async: true.` }],
-          details: mkd("single")([]),
-          isError: true,
-        };
-      }
-    }
-    if (params.estimatedSeconds >= singleLimit && asyncOk) {
-      return {
-        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds, singleLimit, params.cwd) }],
-        details: mkd("single")([]),
-        isError: true,
-      };
-    }
+    const singleCheck = validateSyncEstimate(
+      "single",
+      [{ agent: params.agent, estimatedSeconds: params.estimatedSeconds }],
+      params.cwd,
+      asyncOk,
+      mkd,
+    );
+    if (!singleCheck.ok) return singleCheck.response;
+    const singleLimit = singleCheck.limit;
     const label = params.name || params.agent;
     if (params.taskId && params.taskId !== "-1") {
       const taskErr = await validateTaskId(params.taskId, params.cwd, sessionId);
@@ -1515,7 +1494,7 @@ export function registerSubagentTool(
     const actualSeconds = Math.round((Date.now() - syncStartTime) / 1000);
     // A registry stop is the user killing a runaway child, not an overrun: penalising it would
     // reject the next sync call because of a child the user chose to stop.
-    if (!r.stoppedByRegistry && actualSeconds > checkSyncLimit(0, params.cwd).limit && actualSeconds - (params.estimatedSeconds ?? 0) > 30) {
+    if (!r.stoppedByRegistry && actualSeconds > singleLimit && actualSeconds - (params.estimatedSeconds ?? 0) > 30) {
       syncPenalty = actualSeconds - (params.estimatedSeconds ?? 0);
       lastSyncAgent = params.agent;
       lastSyncEstimate = params.estimatedSeconds ?? 0;
@@ -1627,7 +1606,7 @@ export function registerSubagentTool(
     return new Text(t, 0, 0);
   }
 
-  function renderChainResults(
+  function renderMultiAgentResults(
     details: SubagentDetails,
     expanded: boolean,
     theme: any,
@@ -1635,111 +1614,20 @@ export function registerSubagentTool(
     mdTheme: any,
     renderItems: (items: DisplayItem[], limit?: number) => string,
     aggUsage: (rs: SingleResult[]) => { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number; durationMs: number },
+    opts: {
+      label: string;
+      icon: string;
+      status: string;
+      isRunning: boolean;
+      stepPrefix: (r: SingleResult) => string;
+    },
   ) {
-    const ok = details.results.filter((r) => r.exitCode === 0).length;
-    const icon =
-      ok === details.results.length
-        ? theme.fg("success", "✓")
-        : theme.fg("error", "✗");
-    if (expanded) {
-      const c = new Container();
-      c.addChild(
-        new Text(
-          `${ts}${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`,
-          0,
-          0,
-        ),
-      );
-      for (const r of details.results) {
-        const ri =
-          r.exitCode === 0
-            ? theme.fg("success", "✓")
-            : theme.fg("error", "✗");
-        c.addChild(new Spacer(1));
-        c.addChild(
-          new Text(
-            `${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${ri}`,
-            0,
-            0,
-          ),
-        );
-        c.addChild(
-          new Text(
-            theme.fg("muted", "Task: ") + theme.fg("dim", r.task),
-            0,
-            0,
-          ),
-        );
-        for (const i of getDisplayItems(r.messages))
-          if (i.type === "toolCall")
-            c.addChild(
-              new Text(
-                theme.fg("muted", "→ ") +
-                  formatToolCall(i.name, i.args, theme.fg.bind(theme)),
-                0,
-                0,
-              ),
-            );
-        const f = getFinalOutput(r.messages);
-        if (f) {
-          c.addChild(new Spacer(1));
-          c.addChild(new Markdown(f.trim(), 0, 0, mdTheme));
-        }
-        const su = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
-        if (su) c.addChild(new Text(theme.fg("dim", su), 0, 0));
-      }
-      const tu = formatUsageStats(aggUsage(details.results));
-      if (tu) {
-        c.addChild(new Spacer(1));
-        c.addChild(new Text(theme.fg("dim", `Total: ${tu}`), 0, 0));
-      }
-      return c;
-    }
-    let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`;
-    for (const r of details.results) {
-      const ri =
-        r.exitCode === 0
-          ? theme.fg("success", "✓")
-          : theme.fg("error", "✗");
-      const di = getDisplayItems(r.messages);
-      t += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${ri}`;
-      t +=
-        di.length === 0
-          ? `\n${theme.fg("muted", "(no output)")}`
-          : `\n${renderItems(di, 5)}`;
-    }
-    const tu = formatUsageStats(aggUsage(details.results));
-    if (tu) t += `\n\n${theme.fg("dim", `Total: ${tu}`)}`;
-    t += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-    return new Text(t, 0, 0);
-  }
-
-  function renderParallelResults(
-    details: SubagentDetails,
-    expanded: boolean,
-    theme: any,
-    ts: string,
-    mdTheme: any,
-    renderItems: (items: DisplayItem[], limit?: number) => string,
-    aggUsage: (rs: SingleResult[]) => { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number; durationMs: number },
-  ) {
-    const running = details.results.filter((r) => r.exitCode === -1).length;
-    const ok = details.results.filter((r) => r.exitCode === 0).length;
-    const fail = details.results.filter((r) => r.exitCode > 0).length;
-    const isRunning = running > 0;
-    const icon = isRunning
-      ? theme.fg("warning", "⏳")
-      : fail > 0
-        ? theme.fg("warning", "◐")
-        : theme.fg("success", "✓");
-    const status = isRunning
-      ? `${ok + fail}/${details.results.length} done, ${running} running`
-      : `${ok}/${details.results.length} tasks`;
+    const { label, icon, status, isRunning, stepPrefix } = opts;
     if (expanded && !isRunning) {
       const c = new Container();
       c.addChild(
         new Text(
-          `${ts}${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`,
+          `${ts}${icon} ${theme.fg("toolTitle", theme.bold(label))}${theme.fg("accent", status)}`,
           0,
           0,
         ),
@@ -1752,7 +1640,7 @@ export function registerSubagentTool(
         c.addChild(new Spacer(1));
         c.addChild(
           new Text(
-            `${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${ri}`,
+            `${theme.fg("muted", stepPrefix(r))}${theme.fg("accent", r.agent)} ${ri}`,
             0,
             0,
           ),
@@ -1789,7 +1677,7 @@ export function registerSubagentTool(
       }
       return c;
     }
-    let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
+    let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold(label))}${theme.fg("accent", status)}`;
     for (const r of details.results) {
       const ri =
         r.exitCode === -1
@@ -1798,7 +1686,7 @@ export function registerSubagentTool(
             ? theme.fg("success", "✓")
             : theme.fg("error", "✗");
       const di = getDisplayItems(r.messages);
-      t += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${ri}`;
+      t += `\n\n${theme.fg("muted", stepPrefix(r))}${theme.fg("accent", r.agent)} ${ri}`;
       t +=
         di.length === 0
           ? `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`
@@ -1953,16 +1841,15 @@ export function registerSubagentTool(
           const seen = new Set(projAgents.map((a) => JSON.stringify([a.name, discovery.projectAgentsDir ?? ""])));
           for (const step of params.chain ?? []) {
             if (!step.cwd || step.cwd === ctx.cwd) continue;
-            const stepDiscovery = discoverAgents(step.cwd, scope);
-            const stepAgent = stepDiscovery.agents.find((a) => a.name === step.agent);
+            const { agent: stepAgent, projectAgentsDir: stepProjectAgentsDir } = discoverAgentByName(step.cwd, scope, step.agent);
             if (stepAgent?.source !== "project") continue;
             // Dedupe on name+directory: the same name in a second project dir is a
             // DIFFERENT agent and its source must appear in the prompt.
-            const key = JSON.stringify([stepAgent.name, stepDiscovery.projectAgentsDir ?? ""]);
+            const key = JSON.stringify([stepAgent.name, stepProjectAgentsDir ?? ""]);
             if (seen.has(key)) continue;
             seen.add(key);
             projAgents.push(stepAgent);
-            if (stepDiscovery.projectAgentsDir) sources.push(stepDiscovery.projectAgentsDir);
+            if (stepProjectAgentsDir) sources.push(stepProjectAgentsDir);
           }
         }
         if (projAgents.length > 0) {
@@ -2176,12 +2063,35 @@ export function registerSubagentTool(
 
       // Chain
       if (details.mode === "chain") {
-        return renderChainResults(details, expanded, theme, ts, mdTheme, renderItems, aggUsage);
+        const ok = details.results.filter((r) => r.exitCode === 0).length;
+        return renderMultiAgentResults(details, expanded, theme, ts, mdTheme, renderItems, aggUsage, {
+          label: "chain ",
+          icon: ok === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗"),
+          status: `${ok}/${details.results.length} steps`,
+          isRunning: false,
+          stepPrefix: (r) => `─── Step ${r.step}: `,
+        });
       }
 
       // Parallel
       if (details.mode === "parallel") {
-        return renderParallelResults(details, expanded, theme, ts, mdTheme, renderItems, aggUsage);
+        const running = details.results.filter((r) => r.exitCode === -1).length;
+        const ok = details.results.filter((r) => r.exitCode === 0).length;
+        const fail = details.results.filter((r) => r.exitCode > 0).length;
+        const isRunning = running > 0;
+        return renderMultiAgentResults(details, expanded, theme, ts, mdTheme, renderItems, aggUsage, {
+          label: "parallel ",
+          icon: isRunning
+            ? theme.fg("warning", "⏳")
+            : fail > 0
+              ? theme.fg("warning", "◐")
+              : theme.fg("success", "✓"),
+          status: isRunning
+            ? `${ok + fail}/${details.results.length} done, ${running} running`
+            : `${ok}/${details.results.length} tasks`,
+          isRunning,
+          stepPrefix: () => "─── ",
+        });
       }
 
       const t = result.content[0];

@@ -4,38 +4,13 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { tryGetSystemPromptOptions } from "./utils.js";
+import { formatElapsedDuration, tryGetSystemPromptOptions } from "./utils.js";
 import type { CronTask } from "./cron.js";
+import { formatCronSchedule } from "./cron-status-format.js";
 import { getCurrentBranch, runGit } from "./git-helpers.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("status");
-
-function formatDuration(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m${s % 60}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h${m % 60}m`;
-}
-
-function formatSchedule(t: CronTask): string {
-  if (t.intervalMs) {
-    const totalSec = Math.floor(t.intervalMs / 1000);
-    if (totalSec < 60) return `every ${totalSec}s`;
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    if (m < 60) return s > 0 ? `every ${m}m${s}s` : `every ${m}m`;
-    const h = Math.floor(m / 60);
-    const rm = m % 60;
-    return rm > 0 ? `every ${h}h${rm}m` : `every ${h}h`;
-  }
-  if (t.atHour != null && t.atMinute != null) {
-    return `at ${String(t.atHour).padStart(2, "0")}:${String(t.atMinute).padStart(2, "0")}`;
-  }
-  return "unknown";
-}
 
 export function registerStatus(
   pi: ExtensionAPI,
@@ -55,7 +30,7 @@ export function registerStatus(
       if (jobs.length > 0) {
         lines.push(`⏳ Async agents: ${jobs.length} running`);
         for (const j of jobs) {
-          const dur = formatDuration(Date.now() - j.startedAt);
+          const dur = formatElapsedDuration(Date.now() - j.startedAt);
           const task = j.task.length > 50 ? j.task.slice(0, 50) + "..." : j.task;
           lines.push(`   • ${j.name || j.agent} — ${dur} — ${task}`);
         }
@@ -70,7 +45,7 @@ export function registerStatus(
         for (const t of crons) {
           const last = t.lastRun ? new Date(t.lastRun).toLocaleTimeString() : "never";
           const leader = t.scope !== "session" ? `, ${t.leader === false ? "non-leader" : "leader"}` : "";
-          lines.push(`   • ${t.scope === "project" ? "persist" : "session"}:${t.id} ${formatSchedule(t)} — ${t.description} (last: ${last}${leader})`);
+          lines.push(`   • ${t.scope === "project" ? "persist" : "session"}:${t.id} ${formatCronSchedule(t)} — ${t.description} (last: ${last}${leader})`);
         }
       } else {
         lines.push("⏰ Cron tasks: none");

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { clearAgentsCache, discoverAgents } from "../../../extensions/orchestrator/agents.js";
+import { clearAgentsCache, discoverAgentByName, discoverAgents } from "../../../extensions/orchestrator/agents.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const tempDirs: string[] = [];
@@ -270,5 +270,56 @@ describe("agent {{INCLUDE:...}} resolution (#1261)", () => {
 			assert.match(agent.systemPrompt, /## Base Rules/);
 			assert.match(agent.systemPrompt, /proposed_text/);
 		}
+	});
+});
+
+describe("package cache & discoverAgentByName (#1292)", () => {
+	it("retains process-level package agents cache even after visiting >32 distinct project directories", () => {
+		clearAgentsCache();
+		const initial = discoverAgents(process.cwd(), "both");
+		const initialPkgWorker = initial.agents.find((a) => a.name === "worker" && a.source === "package");
+		assert.ok(initialPkgWorker, "expected bundled worker agent");
+
+		// Visit 35 distinct project dirs (exceeding DIR_AGENTS_CACHE_MAX=32)
+		for (let i = 0; i < 35; i++) {
+			const root = makeTempDir(`agents-lru-${i}-`);
+			tempDirs.push(root);
+			const dir = join(root, ".pi", "agents");
+			mkdirSync(dir, { recursive: true });
+			writeAgentFile(dir, "extra.md", `extra-${i}`, "Extra", "Body");
+			discoverAgents(root, "both");
+		}
+
+		const after = discoverAgents(process.cwd(), "both");
+		const afterPkgWorker = after.agents.find((a) => a.name === "worker" && a.source === "package");
+		// Exact object identity proves package agents were served from process cache without re-reading disk
+		assert.strictEqual(afterPkgWorker, initialPkgWorker);
+
+		clearAgentsCache();
+		const reloaded = discoverAgents(process.cwd(), "both");
+		const reloadedPkgWorker = reloaded.agents.find((a) => a.name === "worker" && a.source === "package");
+		assert.ok(reloadedPkgWorker);
+		assert.notStrictEqual(reloadedPkgWorker, initialPkgWorker);
+	});
+
+	it("discoverAgentByName resolves project > package precedence and handles missing names", () => {
+		const root = makeTempDir("agents-byname-");
+		tempDirs.push(root);
+		const dir = join(root, ".pi", "agents");
+		mkdirSync(dir, { recursive: true });
+		writeAgentFile(dir, "worker.md", "worker", "Project worker override", "Custom project body");
+
+		clearAgentsCache();
+		const override = discoverAgentByName(root, "both", "worker");
+		assert.equal(override.agent?.source, "project");
+		assert.equal(override.agent?.description, "Project worker override");
+		assert.equal(override.projectAgentsDir, dir);
+
+		const pkgOnly = discoverAgentByName(root, "user", "worker");
+		assert.equal(pkgOnly.agent?.source, "package");
+
+		const missing = discoverAgentByName(root, "both", "does-not-exist-xyz");
+		assert.equal(missing.agent, undefined);
+		assert.equal(missing.projectAgentsDir, dir);
 	});
 });

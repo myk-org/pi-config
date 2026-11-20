@@ -29,3 +29,24 @@ export function parseAsyncOutputLine(raw: string): string | null {
     return null;
   }
 }
+
+/**
+ * Extract readable fallback output from raw JSONL stdout tail when no `message_end`
+ * text block was captured. Falls back to raw `stdoutTail.slice(-maxChars)` only when
+ * no JSONL lines yielded readable output (e.g. non-JSON crash output).
+ */
+export function extractAsyncFallbackOutput(stdoutTail: string, maxChars = 2000): string {
+  if (!stdoutTail) return "";
+  let extracted = "";
+  for (const line of stdoutTail.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parsed = parseAsyncOutputLine(trimmed);
+    if (parsed !== null) extracted += parsed;
+  }
+  const readable = extracted.trim();
+  if (readable) {
+    return readable.length > maxChars ? readable.slice(-maxChars) : readable;
+  }
+  return stdoutTail.slice(-maxChars);
+}

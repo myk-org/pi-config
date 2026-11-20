@@ -258,4 +258,43 @@ describe("openCronStatusOverlay multi-select (#1087)", () => {
       { message: "paused 1 of 2 crons — failed: #session:1", level: "warning" },
     ]);
   });
+
+  it("renders sessionLabel without calling listTasks() per row (#1270)", async () => {
+    let listCalls = 0;
+    const tasks = Array.from({ length: 10 }, (_, idx) => ({
+      ...row({ id: String(idx + 1), description: `task ${idx + 1}` }),
+      sessionLabel: idx % 2 === 0 ? "this session" : undefined,
+    }));
+    let rendered = "";
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify: () => {},
+        custom: async (factory: any) => {
+          const fakeTui = { terminal: { rows: 24 }, requestRender: () => {} };
+          const fakeTheme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+          const comp = factory(fakeTui, fakeTheme, {}, () => {});
+          try {
+            rendered = comp.render(120).join("\n");
+          } finally {
+            comp.dispose?.();
+          }
+          return undefined;
+        },
+      },
+    } as any;
+
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => {
+        listCalls++;
+        return tasks;
+      },
+      removeTask: () => true,
+      togglePaused: () => ({ ok: true, paused: true }),
+    });
+
+    assert.match(rendered, /this session/);
+    // openListDetailOverlay calls listItems once for empty check + once for render (not +N per row).
+    assert.ok(listCalls <= 4, `expected O(1) listTasks calls per render, got ${listCalls}`);
+  });
 });

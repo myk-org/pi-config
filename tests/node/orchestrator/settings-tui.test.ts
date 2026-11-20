@@ -5,9 +5,14 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { getSettingsListState } from "../../../extensions/orchestrator/settings-tui.js";
+import {
+  buildCategoryItems,
+  buildSettingItems,
+  getSettingsListState,
+} from "../../../extensions/orchestrator/settings-tui.js";
 import {
   detectSource,
+  loadSettingsSourceSnapshot,
   formatValue,
   parseRawValue,
   readSettingsFile,
@@ -1481,5 +1486,88 @@ describe("StringListSubmenu behavior", () => {
     c.handleInput(UP); // wraps to add row
     const out = render(c);
     assert.match(out, /❯ ＋ add pattern/);
+  });
+});
+
+// ── Snapshot & lazy metadata loading (#1267) ────────────────────────
+
+describe("settings-tui snapshot & lazy metadata (#1267)", () => {
+  const stubTheme = {
+    fg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+  } as any;
+
+  let tmpDir: string;
+  let globalTmp: string;
+
+  beforeEach(() => {
+    clearSettingsCache();
+    tmpDir = makeTempDir("settings-snap-");
+    globalTmp = makeTempDir("settings-snap-global-");
+    setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
+  });
+
+  afterEach(() => {
+    setGlobalSettingsPath(null);
+    clearSettingsCache();
+    rmSync(tmpDir, { recursive: true, force: true });
+    rmSync(globalTmp, { recursive: true, force: true });
+  });
+
+  it("detectSource uses preloaded snapshot without re-reading disk", () => {
+    mkdirSync(join(tmpDir, ".pi"), { recursive: true });
+    writeFileSync(join(tmpDir, ".pi", "pi-config-settings.json"), JSON.stringify({ dco: true }), "utf-8");
+    writeFileSync(join(globalTmp, "pi-config-settings.json"), JSON.stringify({ pidash_enable: false }), "utf-8");
+
+    const snapshot = loadSettingsSourceSnapshot(tmpDir);
+    // Delete files after snapshot — detectSource with snapshot must still classify from snapshot
+    rmSync(join(tmpDir, ".pi", "pi-config-settings.json"));
+    rmSync(join(globalTmp, "pi-config-settings.json"));
+
+    assert.equal(detectSource("dco", SETTINGS_KEYS.dco, tmpDir, snapshot), "P");
+    assert.equal(detectSource("pidash_enable", SETTINGS_KEYS.pidash_enable, tmpDir, snapshot), "G");
+    assert.equal(detectSource("comment_signature", SETTINGS_KEYS.comment_signature, tmpDir, snapshot), "D");
+  });
+
+  it("buildCategoryItems lazily skips provider/agent lookups on unrelated tabs", () => {
+    const loggingIdx = CATEGORIES.findIndex((c) => !c.keys.some((k) =>
+      k === "agent_provider" || k === "internal_operations_provider" ||
+      k === "agent_model" || k === "internal_operations_model" ||
+      k === "image_model" || SETTINGS_KEYS[k]?.type === "agent_overrides"
+    ));
+    assert.ok(loggingIdx >= 0, "expected a category without provider/model/agent_overrides keys");
+
+    let pmCalls = 0;
+    let agentCalls = 0;
+    const items = buildCategoryItems(loggingIdx, tmpDir, "project", stubTheme, undefined, {
+      getProviderModelInfo: () => { pmCalls++; return { providers: [], models: [] }; },
+      getAvailableAgents: () => { agentCalls++; return []; },
+    });
+    assert.ok(items.length > 0);
+    assert.equal(pmCalls, 0, "should not compute provider/model info on unrelated tab");
+    assert.equal(agentCalls, 0, "should not discover agents on unrelated tab");
+
+    const subagentIdx = CATEGORIES.findIndex((c) => c.keys.some((k) => SETTINGS_KEYS[k]?.type === "agent_overrides"));
+    assert.ok(subagentIdx >= 0, "expected a category with agent_overrides");
+    buildCategoryItems(subagentIdx, tmpDir, "project", stubTheme, undefined, {
+      getProviderModelInfo: () => { pmCalls++; return { providers: [], models: [] }; },
+      getAvailableAgents: () => { agentCalls++; return ["worker"]; },
+    });
+    assert.equal(pmCalls, 1, "should compute provider/model info once on Subagent tab");
+    assert.equal(agentCalls, 1, "should discover agents once on Subagent tab");
+  });
+
+  it("buildSettingItems computes model registry info once across all categories", () => {
+    let getAvailableCalls = 0;
+    const fakeRegistry = {
+      getAvailable: () => {
+        getAvailableCalls++;
+        return [{ id: "gemini-2.5-pro", provider: "google" }];
+      },
+    } as any;
+
+    const items = buildSettingItems(tmpDir, "project", stubTheme, fakeRegistry);
+    assert.ok(items.length > 0);
+    assert.equal(getAvailableCalls, 1, "modelRegistry.getAvailable should be called once across all categories");
   });
 });
