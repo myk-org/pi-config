@@ -1,7 +1,9 @@
 import { logger } from "./logger.js";
+import { readBoundedResponseBytes, sanitizeUrlForLog } from "./http-helpers.js";
 
 const MAX_RESPONSE_SIZE = 1_048_576; // 1MB
 const DEFAULT_TIMEOUT_MS = 30_000;   // 30s
+const utf8Decoder = new TextDecoder();
 
 export interface HttpToolConfig {
   method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
@@ -110,57 +112,22 @@ function buildBody(bodyTemplate: Record<string, any> | string | undefined, param
 }
 
 /**
- * Redact query string from a URL for safe logging.
- * Returns origin + pathname only (no query params which may contain secrets).
- */
-function redactUrl(fullUrl: string): string {
-  try {
-    const parsed = new URL(fullUrl);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return fullUrl.split("?")[0];
-  }
-}
-
-/**
  * Read the response body with a size limit.
  * Returns the text content, truncated if it exceeds MAX_RESPONSE_SIZE.
  */
 async function readResponseBody(response: Response, logUrl: string): Promise<string> {
-  const reader = response.body?.getReader();
-  if (!reader) return "";
-
-  const chunks: Uint8Array[] = [];
-  let storedSize = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (storedSize + value.length > MAX_RESPONSE_SIZE) {
-        // Push only the bytes that fit within the limit
-        const remaining = MAX_RESPONSE_SIZE - storedSize;
-        if (remaining > 0) {
-          chunks.push(value.subarray(0, remaining));
-          storedSize += remaining;
-        }
-        reader.cancel();
-        logger.warn(`[sidecar] HTTP tool response truncated: url=${logUrl}, size>${MAX_RESPONSE_SIZE}`);
-        break;
-      }
-      chunks.push(value);
-      storedSize += value.length;
-    }
-  } catch (err: any) {
-    logger.warn(`[sidecar] HTTP tool response read error: url=${logUrl}, error=${err?.message}`);
+  const { bytes, truncated, hasBody } = await readBoundedResponseBytes(response, MAX_RESPONSE_SIZE, {
+    truncate: true,
+    allowPartialOnError: true,
+    onReadError: (err: any) => {
+      logger.warn(`[sidecar] HTTP tool response read error: url=${logUrl}, error=${err?.message}`);
+    },
+  });
+  if (!hasBody) return "";
+  if (truncated) {
+    logger.warn(`[sidecar] HTTP tool response truncated: url=${logUrl}, size>${MAX_RESPONSE_SIZE}`);
   }
-
-  const combined = new Uint8Array(storedSize);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return new TextDecoder().decode(combined);
+  return utf8Decoder.decode(bytes);
 }
 
 /**
@@ -210,7 +177,7 @@ export function createHttpToolExecutor(httpConfig: HttpToolConfig): (params: Rec
         headers["Content-Type"] = "application/json";
       }
 
-      const logUrl = redactUrl(url);
+      const logUrl = sanitizeUrlForLog(url, { includePath: true, fallback: url.split("?")[0] });
       logger.debug(`[sidecar] HTTP tool request: method=${httpConfig.method}, url=${logUrl}`);
 
       const response = await fetch(url, {

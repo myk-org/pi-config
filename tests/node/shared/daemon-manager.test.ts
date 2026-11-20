@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile, parseHealth, getGitBranch, registerDaemonCommand } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile, parseHealth, getGitBranch, registerDaemonCommand, waitForDaemon } from "../../../extensions/shared/daemon-manager.js";
 import { setupExtensionReconnect } from "../../../extensions/shared/ws-client.js";
 import { execFileSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -54,6 +54,53 @@ describe("findLiveLockfile (#1020)", () => {
       writeLockfile(runDir, await findFreePort(), null, () => {});
       assert.strictEqual(await findLiveLockfile([runDir, ""]), null);
     } finally { rmSync(runDir, { recursive: true, force: true }); }
+  });
+
+  it("skips ports in skipPorts and never probes the same dead port twice (#1269)", async () => {
+    const runDir = makeTempDir("dm-skip-run-");
+    const legacyDir = makeTempDir("dm-skip-legacy-");
+    try {
+      writeLockfile(runDir, 45001, null, () => {});
+      writeLockfile(legacyDir, 45001, null, () => {});
+      const probed: number[] = [];
+      const fakeProbe = async (port: number) => {
+        probed.push(port);
+        return false;
+      };
+      assert.strictEqual(await findLiveLockfile([runDir, legacyDir], new Set([45001]), fakeProbe), null);
+      assert.deepStrictEqual(probed, [], "preferred dead port must not be probed again");
+
+      assert.strictEqual(await findLiveLockfile([runDir, legacyDir], undefined, fakeProbe), null);
+      assert.deepStrictEqual(probed, [45001], "duplicate port across lock dirs probed only once");
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("waitForDaemon (#1269)", () => {
+  it("polls at 200ms initially for faster warm attach", async () => {
+    let checks = 0;
+    const start = Date.now();
+    const ok = await waitForDaemon(19999, 2, () => {}, async () => {
+      checks++;
+      return checks >= 2;
+    });
+    const elapsed = Date.now() - start;
+    assert.equal(ok, true);
+    assert.equal(checks, 2);
+    assert.ok(elapsed < 900, `expected fast poll <900ms, got ${elapsed}ms`);
+  });
+
+  it("returns false immediately when budget is zero", async () => {
+    let checks = 0;
+    const ok = await waitForDaemon(19999, 0, () => {}, async () => {
+      checks++;
+      return true;
+    });
+    assert.equal(ok, false);
+    assert.equal(checks, 0);
   });
 });
 

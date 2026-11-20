@@ -201,7 +201,8 @@ def _publish_trail(stage: Path, trail_prefix: Path, trail_bin: Path, lock_path: 
 # ── Install Command Builders ──────────────────────────────────────────────
 
 
-def _install_script_packages(package_dir: Path, install_root: Path) -> list[str]:
+def _install_script_packages_python(package_dir: Path, install_root: Path) -> list[str]:
+    """Fallback recursive package.json walk when install.py runs standalone without repo scripts."""
     seen: set[Path] = set()
     allowed: set[str] = set()
 
@@ -239,8 +240,31 @@ def _install_script_packages(package_dir: Path, install_root: Path) -> list[str]
             inspect(child)
 
     inspect(package_dir)
-    log.debug("trail install-script audit packages=%s", len(allowed))
+    log.debug("trail install-script audit (python fallback) packages=%s", len(allowed))
     return sorted(allowed)
+
+
+def _install_script_packages(package_dir: Path, install_root: Path) -> list[str]:
+    script_dir = Path(__file__).resolve().parent
+    auditor = script_dir / "trail-allow-scripts.mjs"
+    auditor_logger = script_dir.parent / "extensions/shared/install-logger.mjs"
+    if auditor.is_file() and auditor_logger.is_file() and shutil.which("node"):
+        result = subprocess.run(
+            ["node", str(auditor), str(package_dir), str(install_root)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout).strip()
+            if "required Trail dependency is not installed:" in err:
+                raise FileNotFoundError(err)
+            raise RuntimeError(f"Trail dependency audit failed: {err}")
+        output = result.stdout.strip()
+        allowed = [pkg for pkg in output.split(",") if pkg]
+        log.debug("trail install-script audit packages=%s", len(allowed))
+        return allowed
+    log.debug("trail auditor sibling unavailable; falling back to Python package walk")
+    return _install_script_packages_python(package_dir, install_root)
 
 
 def install_trail() -> None:

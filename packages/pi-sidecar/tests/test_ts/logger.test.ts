@@ -106,4 +106,19 @@ describe("sidecar createLogger", () => {
       stub.restore();
     }
   });
+
+  it("memoizes loggers by name and logs creation once (#1249)", () => {
+    const stub = stubLogger();
+    try {
+      const first = createLogger("unit-memo");
+      const second = createLogger("unit-memo");
+      assert.equal(first, second);
+      const createCalls = stub.calls.filter(
+        (c) => c.level === "debug" && c.args[0] === "[sidecar] createLogger name=unit-memo",
+      );
+      assert.equal(createCalls.length, 1);
+    } finally {
+      stub.restore();
+    }
+  });
 });

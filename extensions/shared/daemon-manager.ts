@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "./logger.js";
 import { findJitiPath } from "./find-jiti.js";
+import { buildUiDist } from "../../scripts/serve-ui.ts";
 
 const log = createLogger("daemon-manager");
 
@@ -63,21 +64,8 @@ export function ensureUiBuilt(callerUrl: string, uiDirName: string, log: (msg: s
     path.dirname(fileURLToPath(callerUrl)),
     uiDirName,
   );
-  const distDir = path.join(uiDir, "dist");
-  if (fs.existsSync(distDir)) return;
-  if (!fs.existsSync(path.join(uiDir, "package.json"))) return;
-
-  log(`${uiDirName} dist/ not found, building...`);
-  try {
-    execSync("npm install --production=false && npm run build", {
-      cwd: uiDir,
-      stdio: "ignore",
-      timeout: 60000,
-    });
-    log(`${uiDirName} build complete`);
-  } catch (e: any) {
-    log(`${uiDirName} build failed: ${e.message}`);
-  }
+  if (fs.existsSync(path.join(uiDir, "dist"))) return;
+  buildUiDist(uiDir, uiDirName, log);
 }
 
 export { findJitiPath, findJitiUnder } from "./find-jiti.js";
@@ -308,12 +296,20 @@ export function isLiveLegacyDaemonFile(legacyDir: string, name: string): boolean
 }
 
 /** First lockfile port (in `dirs` order) whose daemon answers /api/health, or
- *  null. Exported for testing. */
-export async function findLiveLockfile(dirs: string[]): Promise<number | null> {
+ *  null. Ports in `skipPorts` or already probed in an earlier dir are skipped
+ *  so dead ports are never probed twice. Exported for testing. */
+export async function findLiveLockfile(
+  dirs: string[],
+  skipPorts?: ReadonlySet<number>,
+  probe: (port: number) => Promise<boolean> = checkHealth,
+): Promise<number | null> {
+  const probed = new Set<number>(skipPorts);
   for (const dir of dirs) {
     if (!dir) continue;
     const lock = readLockfile(dir);
-    if (lock && await checkHealth(lock.port)) return lock.port;
+    if (!lock || probed.has(lock.port)) continue;
+    probed.add(lock.port);
+    if (await probe(lock.port)) return lock.port;
   }
   return null;
 }
@@ -333,17 +329,29 @@ export function removeLockfile(lockDir: string, log: (msg: string) => void, lega
 
 // ── Wait for daemon ─────────────────────────────────────────────────
 
+const FAST_POLL_INTERVAL_MS = 200;
+const FAST_POLL_WINDOW_MS = 2000;
+const SLOW_POLL_INTERVAL_MS = 1000;
+
 export async function waitForDaemon(
   port: number,
   maxWaitSeconds: number,
   log: (msg: string) => void,
+  probe: (port: number) => Promise<boolean> = checkHealth,
 ): Promise<boolean> {
-  for (let i = 0; i < maxWaitSeconds; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    if (await checkHealth(port)) {
-      log(`daemon ready after ${i + 1}s`);
+  const budgetMs = Math.max(0, maxWaitSeconds * 1000);
+  const start = Date.now();
+  let elapsed = 0;
+  while (elapsed < budgetMs) {
+    const interval = elapsed < FAST_POLL_WINDOW_MS ? FAST_POLL_INTERVAL_MS : SLOW_POLL_INTERVAL_MS;
+    const waitMs = Math.min(interval, budgetMs - elapsed);
+    if (waitMs <= 0) break;
+    await new Promise(r => setTimeout(r, waitMs));
+    if (await probe(port)) {
+      log(`daemon ready after ${((Date.now() - start) / 1000).toFixed(1)}s`);
       return true;
     }
+    elapsed = Date.now() - start;
   }
   log(`daemon failed to start after ${maxWaitSeconds}s`);
   return false;

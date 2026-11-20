@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage } from "node:http";
 import { parseBody } from "../../src/index.js";
+import { readBoundedResponseBytes, ResponseTooLargeError, sanitizeUrlForLog } from "../../src/http-helpers.js";
 
 /** Create a mock IncomingMessage from a PassThrough stream */
 function createMockRequest(): PassThrough {
@@ -90,6 +91,21 @@ describe("parseBody", () => {
     assert.deepEqual(result, { key: "value" });
   });
 
+  it("handles split multi-byte UTF-8 characters across TCP chunks (#1256)", async () => {
+    const stream = createMockRequest();
+    const promise = parseBody(stream as unknown as IncomingMessage);
+
+    // 4-byte UTF-8 emoji split mid-codepoint across two chunks
+    const raw = Buffer.from(JSON.stringify({ msg: "hello 🚀 world" }), "utf8");
+    const emojiStart = raw.indexOf(Buffer.from("🚀", "utf8"));
+    stream.write(raw.subarray(0, emojiStart + 2));
+    stream.write(raw.subarray(emojiStart + 2));
+    stream.end();
+
+    const result = await promise;
+    assert.deepEqual(result, { msg: "hello 🚀 world" });
+  });
+
   it("rejects on stream error", async () => {
     const stream = createMockRequest();
     const promise = parseBody(stream as unknown as IncomingMessage);
@@ -97,5 +113,34 @@ describe("parseBody", () => {
     stream.destroy(new Error("Connection reset"));
 
     await assert.rejects(promise, { message: "Connection reset" });
+  });
+});
+
+describe("http-helpers shared utilities (#1254)", () => {
+  it("sanitizeUrlForLog defaults to origin-only and supports includePath", () => {
+    const url = "https://user:pass@example.com:8443/secret/path?api_key=123#frag"; // pragma: allowlist secret — synthetic test URL
+    assert.equal(sanitizeUrlForLog(url), "https://example.com:8443");
+    assert.equal(sanitizeUrlForLog(url, { includePath: true }), "https://example.com:8443/secret/path");
+    assert.equal(sanitizeUrlForLog(undefined), "(unparseable)");
+    assert.equal(sanitizeUrlForLog("not-a-url", { fallback: "[invalid-url]" }), "[invalid-url]");
+  });
+
+  it("readBoundedResponseBytes handles exact fit, truncate mode, and throw mode", async () => {
+    const okResp = new Response("hello world");
+    const ok = await readBoundedResponseBytes(okResp, 11);
+    assert.equal(ok.hasBody, true);
+    assert.equal(ok.truncated, false);
+    assert.equal(new TextDecoder().decode(ok.bytes), "hello world");
+
+    const truncResp = new Response("0123456789");
+    const trunc = await readBoundedResponseBytes(truncResp, 4, { truncate: true });
+    assert.equal(trunc.truncated, true);
+    assert.equal(new TextDecoder().decode(trunc.bytes), "0123");
+
+    const overflowResp = new Response("0123456789");
+    await assert.rejects(
+      readBoundedResponseBytes(overflowResp, 4),
+      ResponseTooLargeError,
+    );
   });
 });

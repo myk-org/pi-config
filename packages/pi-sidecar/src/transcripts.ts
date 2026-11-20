@@ -102,9 +102,10 @@ export function redactStructured(value: unknown, redact: (value: string) => stri
   // drop a `__proto__` key (assignment mutates the prototype instead of
   // creating an own property), losing a valid JSON field from the record.
   const out = Object.create(null) as Record<string, unknown>;
+  const obj = value as Record<string, unknown>;
   try {
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      out[redact(key)] = redactStructured(item, redact, seen);
+    for (const key of Object.keys(obj)) {
+      out[redact(key)] = redactStructured(obj[key], redact, seen);
     }
   } finally {
     seen.delete(value);
@@ -358,10 +359,16 @@ export async function appendTurn(
     });
     if (line) {
       const dir = transcriptsDir();
-      // Idempotent: a turn can arrive without a preceding header write
-      // (e.g. the directory was rotated away mid-session).
-      await mkdir(dir, { recursive: true });
-      await appendLine(join(dir, `${turn.sessionId}.jsonl`), line);
+      const filePath = join(dir, `${turn.sessionId}.jsonl`);
+      try {
+        await appendLine(filePath, line);
+      } catch (err: any) {
+        if (err?.code !== "ENOENT") throw err;
+        // Idempotent: a turn can arrive without a preceding header write
+        // (e.g. the directory was rotated away mid-session).
+        await mkdir(dir, { recursive: true });
+        await appendLine(filePath, line);
+      }
       log.debug(`turn recorded: session=${turn.sessionId}, turn=${turn.turnNumber}`);
     }
   } catch (error) {
@@ -407,6 +414,7 @@ export function queueTurn(
 
 /** Retention scan throttle: at most one scan per minute from the turn path. */
 const RETENTION_INTERVAL_MS = 60_000;
+const RETENTION_CONCURRENCY = 32;
 let lastRetentionRun = 0;
 
 /**
@@ -424,33 +432,49 @@ export async function enforceRetention(activeSessions?: Set<string>): Promise<vo
     const maxSizeMb = Number(process.env.PI_SIDECAR_TRANSCRIPTS_MAX_SIZE_MB ?? "0");
     if (!maxAgeDays && !maxSizeMb) return;
     const entries = await readdir(dir).catch(() => [] as string[]);
-    const files: Array<{ name: string; stem: string; path: string; mtimeMs: number; size: number }> = [];
+    const candidates: Array<{ name: string; stem: string; path: string }> = [];
     for (const name of entries) {
       if (!name.endsWith(".jsonl")) continue;
       const stem = name.slice(0, -".jsonl".length);
       if (activeSessions?.has(stem)) continue; // never prune a live session's transcript
-      const filePath = join(dir, name);
-      try {
-        const st = await stat(filePath);
-        if (st.isFile()) files.push({ name, stem, path: filePath, mtimeMs: st.mtimeMs, size: st.size });
-      } catch {
-        // raced away — skip
+      candidates.push({ name, stem, path: join(dir, name) });
+    }
+    const files: Array<{ name: string; stem: string; path: string; mtimeMs: number; size: number }> = [];
+    for (let i = 0; i < candidates.length; i += RETENTION_CONCURRENCY) {
+      const batch = candidates.slice(i, i + RETENTION_CONCURRENCY);
+      const stats = await Promise.all(
+        batch.map(async (entry) => {
+          try {
+            const st = await stat(entry.path);
+            return st.isFile() ? { ...entry, mtimeMs: st.mtimeMs, size: st.size } : null;
+          } catch {
+            // raced away — skip
+            return null;
+          }
+        }),
+      );
+      for (const item of stats) {
+        if (item) files.push(item);
       }
     }
     files.sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
     const ageCutoff = maxAgeDays > 0 ? Date.now() - maxAgeDays * 24 * 60 * 60 * 1000 : 0;
     let totalSize = files.reduce((sum, f) => sum + f.size, 0);
     const sizeBudget = maxSizeMb > 0 ? maxSizeMb * 1024 * 1024 : Infinity;
-    let removed = 0;
+    const toRemove: typeof files = [];
     for (const file of files) {
       const tooOld = ageCutoff > 0 && file.mtimeMs < ageCutoff;
       const tooBig = totalSize > sizeBudget;
       if (!tooOld && !tooBig) break;
-      await unlink(file.path).catch(() => {});
+      toRemove.push(file);
       totalSize -= file.size;
-      removed++;
     }
-    if (removed > 0) log.info(`retention removed ${removed} transcript file(s)`);
+    for (let i = 0; i < toRemove.length; i += RETENTION_CONCURRENCY) {
+      await Promise.all(
+        toRemove.slice(i, i + RETENTION_CONCURRENCY).map((file) => unlink(file.path).catch(() => {})),
+      );
+    }
+    if (toRemove.length > 0) log.info(`retention removed ${toRemove.length} transcript file(s)`);
   } catch (error) {
     log.warn(`retention cleanup failed (swallowed): ${error instanceof Error ? error.message : String(error)}`);
   }

@@ -263,30 +263,30 @@ function sanitizeSurrogates(text: string): string {
 	return text.replace(/[\uD800-\uDFFF]/g, "\uFFFD");
 }
 
-function convertContentBlocks(
-	content: (TextContent | ImageContent)[],
-): string | Array<{ type: "text"; text: string } | { type: "image"; source: { type: "base64"; media_type: string; data: string } }> {
+function toAnthropicBlock(block: TextContent | ImageContent): ContentBlockParam {
+	if (block.type === "text") {
+		return { type: "text", text: sanitizeSurrogates(block.text) };
+	}
+	return {
+		type: "image",
+		source: {
+			type: "base64",
+			media_type: block.mimeType as Base64ImageSource["media_type"],
+			data: block.data,
+		},
+	};
+}
+
+function convertContentBlocks(content: (TextContent | ImageContent)[]): string | ContentBlockParam[] {
 	const hasImages = content.some((c) => c.type === "image");
 	if (!hasImages) {
 		return sanitizeSurrogates(content.map((c) => (c as TextContent).text).join("\n"));
 	}
 
-	const blocks = content.map((block) => {
-		if (block.type === "text") {
-			return { type: "text" as const, text: sanitizeSurrogates(block.text) };
-		}
-		return {
-			type: "image" as const,
-			source: {
-				type: "base64" as const,
-				media_type: block.mimeType,
-				data: block.data,
-			},
-		};
-	});
+	const blocks = content.map(toAnthropicBlock);
 
 	if (!blocks.some((b) => b.type === "text")) {
-		blocks.unshift({ type: "text" as const, text: "(see attached image)" });
+		blocks.unshift({ type: "text", text: "(see attached image)" });
 	}
 
 	return blocks;
@@ -304,14 +304,7 @@ export function convertMessages(messages: Message[], model: Model<Api>): any[] {
 					params.push({ role: "user", content: sanitizeSurrogates(msg.content) });
 				}
 			} else {
-				const blocks: ContentBlockParam[] = msg.content.map((item) =>
-					item.type === "text"
-						? { type: "text" as const, text: sanitizeSurrogates(item.text) }
-						: {
-								type: "image" as const,
-								source: { type: "base64" as const, media_type: item.mimeType as Base64ImageSource["media_type"], data: item.data },
-							},
-				);
+				const blocks = msg.content.map(toAnthropicBlock);
 				// Filter out images if model doesn't support them
 				let filteredBlocks = !model?.input.includes("image") ? blocks.filter((b) => b.type !== "image") : blocks;
 				filteredBlocks = filteredBlocks.filter((b) => {
@@ -398,7 +391,7 @@ export function convertMessages(messages: Message[], model: Model<Api>): any[] {
 }
 
 function convertTools(tools: Tool[]): any[] {
-	return tools.map((tool) => ({
+	const converted: any[] = tools.map((tool) => ({
 		name: tool.name,
 		description: tool.description,
 		input_schema: {
@@ -407,6 +400,10 @@ function convertTools(tools: Tool[]): any[] {
 			required: (tool.parameters as any).required || [],
 		},
 	}));
+	if (converted.length > 0) {
+		converted[converted.length - 1].cache_control = { type: "ephemeral" };
+	}
+	return converted;
 }
 
 export function mapStopReason(reason: string): StopReason {
@@ -589,6 +586,24 @@ export function createToolCallArgumentsStream(
 	};
 }
 
+function updateUsage(
+	usage: AssistantMessage["usage"],
+	eventUsage: {
+		input_tokens?: number | null;
+		output_tokens?: number | null;
+		cache_read_input_tokens?: number | null;
+		cache_creation_input_tokens?: number | null;
+	},
+	model: Model<Api>,
+): void {
+	if (eventUsage.input_tokens != null) usage.input = eventUsage.input_tokens;
+	if (eventUsage.output_tokens != null) usage.output = eventUsage.output_tokens;
+	if (eventUsage.cache_read_input_tokens != null) usage.cacheRead = eventUsage.cache_read_input_tokens;
+	if (eventUsage.cache_creation_input_tokens != null) usage.cacheWrite = eventUsage.cache_creation_input_tokens;
+	usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+	calculateCost(model, usage);
+}
+
 // =============================================================================
 // Streaming Implementation
 // =============================================================================
@@ -713,13 +728,7 @@ export function streamVertexClaude(
 
 			for await (const event of anthropicStream) {
 				if (event.type === "message_start") {
-					output.usage.input = event.message.usage.input_tokens || 0;
-					output.usage.output = event.message.usage.output_tokens || 0;
-					output.usage.cacheRead = (event.message.usage as any).cache_read_input_tokens || 0;
-					output.usage.cacheWrite = (event.message.usage as any).cache_creation_input_tokens || 0;
-					output.usage.totalTokens =
-						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-					calculateCost(model, output.usage);
+					updateUsage(output.usage, event.message.usage as any, model);
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "text") {
 						const block: TextContent = { type: "text", text: "" };
@@ -800,22 +809,7 @@ export function streamVertexClaude(
 					if ((event.delta as any).stop_reason) {
 						output.stopReason = mapStopReason((event.delta as any).stop_reason);
 					}
-					// Update usage from message_delta
-					if ((event.usage as any).input_tokens != null) {
-						output.usage.input = (event.usage as any).input_tokens;
-					}
-					if ((event.usage as any).output_tokens != null) {
-						output.usage.output = (event.usage as any).output_tokens;
-					}
-					if ((event.usage as any).cache_read_input_tokens != null) {
-						output.usage.cacheRead = (event.usage as any).cache_read_input_tokens;
-					}
-					if ((event.usage as any).cache_creation_input_tokens != null) {
-						output.usage.cacheWrite = (event.usage as any).cache_creation_input_tokens;
-					}
-					output.usage.totalTokens =
-						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-					calculateCost(model, output.usage);
+					updateUsage(output.usage, event.usage as any, model);
 				}
 			}
 
