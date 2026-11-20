@@ -31,8 +31,8 @@ export interface DaemonServerOptions {
   log: (msg: string) => void;
   /** Extra /api/* routes before fallback to serveUi */
   extraApiRoutes?: (url: URL, req: IncomingMessage, res: ServerResponse) => boolean;
-  /** Called when a pi session WebSocket sends a message */
-  onPiMessage: (ws: any, parsed: any, getPiClient: () => any, setPiClient: (c: any) => void) => void;
+  /** Called when a pi session WebSocket sends a message (5th arg is the raw decoded WS text). */
+  onPiMessage: (ws: any, parsed: any, getPiClient: () => any, setPiClient: (c: any) => void, raw?: string) => void;
   /** Called when a pi session WebSocket closes */
   onPiClose: (piClient: any, ws: any) => void;
   /** Called when a pi session WebSocket errors */
@@ -112,11 +112,13 @@ export function createDaemonServer(opts: DaemonServerOptions) {
 
     ws.on("message", (data: Buffer) => {
       try {
-        const parsed = JSON.parse(data.toString());
+        const raw = data.toString();
+        const parsed = JSON.parse(raw);
         onPiMessage(
           ws, parsed,
           () => piClient,
           (c: any) => { piClient = c; },
+          raw,
         );
       } catch (e: any) { log(`pi message error: ${e.message}`); }
     });
@@ -199,11 +201,26 @@ export function createDaemonServer(opts: DaemonServerOptions) {
   }, 30000);
   if (pingInterval.unref) pingInterval.unref();
 
-  // ── Broadcast helper ───────────────────────────────────────────
+  // ── Broadcast helpers ──────────────────────────────────────────
 
-  function broadcastToBrowsers(event: object) {
-    const data = JSON.stringify(event);
+  function broadcastToBrowsers(eventOrRaw: object | string) {
+    if (browserClients.size === 0) return;
+    const data = typeof eventOrRaw === "string" ? eventOrRaw : JSON.stringify(eventOrRaw);
     for (const browser of browserClients) {
+      try { browser.send(data); } catch { browserClients.delete(browser); }
+    }
+  }
+
+  function sendToMatchingBrowsers(
+    predicate: (browser: any, watchData: any) => boolean,
+    eventOrRaw: object | string,
+  ) {
+    let data: string | null = null;
+    for (const browser of browserClients) {
+      if (!predicate(browser, browserWatchMap.get(browser))) continue;
+      if (data === null) {
+        data = typeof eventOrRaw === "string" ? eventOrRaw : JSON.stringify(eventOrRaw);
+      }
       try { browser.send(data); } catch { browserClients.delete(browser); }
     }
   }
@@ -247,5 +264,5 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     process.on("SIGINT", () => { server.close(); process.exit(0); });
   }
 
-  return { server, piClients, browserClients, browserWatchMap, broadcastToBrowsers, piWss, browserWss, start };
+  return { server, piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, piWss, browserWss, start };
 }

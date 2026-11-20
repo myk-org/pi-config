@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
-import { disconnectPidashSession, registerPidashSession, updatePidashSession, type PiClient } from "./pidash-session-state.ts";
+import { appendEventBuffer, disconnectPidashSession, registerPidashSession, updatePidashSession, type PiClient } from "./pidash-session-state.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
 import { applyActivityEvent, initialActivityState, shouldAcceptActivityEvent } from "../extensions/pidash/activity-state.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
@@ -26,10 +26,25 @@ const DEFAULT_PORT = 19190;
 const port = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
 
 const LOG_PATH = path.join(process.env.HOME || "/tmp", ".pi", "pidash-debug.log");
+let logStream: fs.WriteStream | null = null;
+try {
+  fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+  logStream = fs.createWriteStream(LOG_PATH, { flags: "a" });
+  logStream.on("error", (error) => {
+    serverLog.warn("pidash debug log stream error", error);
+    logStream = null;
+  });
+} catch (error) {
+  serverLog.warn("could not open pidash debug log stream", error);
+}
+process.on("beforeExit", () => { logStream?.end(); });
+
 function log(msg: string) {
   const line = `${new Date().toISOString()} [srv] ${msg}\n`;
   serverLog.info(msg);
-  try { fs.appendFileSync(LOG_PATH, line); } catch (error) { serverLog.warn("could not append pidash debug log", error); }
+  if (logStream && !logStream.destroyed) {
+    try { logStream.write(line); } catch (error) { serverLog.warn("could not write pidash debug log", error); }
+  }
 }
 
 // Pluggable event hooks — Discord bot registers here to receive pi events
@@ -48,16 +63,11 @@ function getActiveSessions(): SessionInfo[] {
   return Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
 }
 
-function sendToWatchers(sessionId: string, event: object) {
-  const data = JSON.stringify(event);
-  for (const browser of browserClients) {
-    if (browserWatchMap.get(browser) === sessionId) {
-      try { browser.send(data); } catch {}
-    }
-  }
+function sendToWatchers(sessionId: string, eventOrRaw: object | string) {
+  sendToMatchingBrowsers((_browser, watchId) => watchId === sessionId, eventOrRaw);
 }
 
-function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClient: (c: any) => void): void {
+function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClient: (c: any) => void, rawMsg?: string): void {
   if (parsed.type === "register") {
     const piClient = registerPidashSession(piClients, ws, parsed, broadcastToBrowsers);
     setPiClient(piClient);
@@ -138,7 +148,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
 
   // Forward list responses directly to watchers (not buffered)
   if ((parsed.type === "sessions-list" || parsed.type === "models-list") && piClient) {
-    sendToWatchers(piClient.session.sessionId, parsed);
+    sendToWatchers(piClient.session.sessionId, rawMsg ?? parsed);
     return;
   }
 
@@ -178,20 +188,15 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     }
 
     const sid = piClient.session.sessionId;
-    const raw = JSON.stringify(parsed);
+    const raw = rawMsg ?? JSON.stringify(parsed);
 
     // Buffer the event for replay on browser connect
     // Skip extension_ui_request (one-time interactions)
     if (parsed.type !== "extension_ui_request") {
-      piClient.eventBuffer.push(raw);
-      while (piClient.eventBuffer.length > 10000) piClient.eventBuffer.shift();
+      appendEventBuffer(piClient.eventBuffer, raw);
     }
 
-    for (const browser of browserClients) {
-      if (browserWatchMap.get(browser) === sid) {
-        try { browser.send(raw); } catch {}
-      }
-    }
+    sendToWatchers(sid, raw);
 
     // Forward to event hooks (Discord bot, etc.)
     for (const hook of piEventHooks) {
@@ -207,7 +212,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
       const isError = parsed.isError === true;
       const resultText = parsed.result?.content?.[0]?.text || "";
 
-      const notifEvent = JSON.stringify({
+      broadcastToBrowsers({
         type: "session_notification",
         sessionId: sid,
         cwd: piClient.session.cwd,
@@ -217,35 +222,26 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
         agentName: parsed.args?.name || parsed.args?.agent || "",
         resultText: resultText.slice(0, 200),
       });
-      for (const browser of browserClients) {
-        try { browser.send(notifEvent); } catch {}
-      }
     }
 
     // Broadcast AI turn complete to ALL browsers (skip during replay)
     if (parsed.type === "agent_end" && !piClient.replaying) {
-      const notifEvent = JSON.stringify({
+      broadcastToBrowsers({
         type: "session_turn_complete",
         sessionId: sid,
         cwd: piClient.session.cwd,
       });
-      for (const browser of browserClients) {
-        try { browser.send(notifEvent); } catch {}
-      }
     }
 
     // Broadcast input-needed events to ALL browsers (skip during replay)
     if (!piClient.replaying && parsed.type === "extension_ui_request" && parsed.id && (parsed.method === "select" || parsed.method === "confirm" || parsed.method === "input")) {
-      const notifEvent = JSON.stringify({
+      broadcastToBrowsers({
         type: "session_input_needed",
         sessionId: sid,
         cwd: piClient.session.cwd,
         title: parsed.title || "Input needed",
         method: parsed.method,
       });
-      for (const browser of browserClients) {
-        try { browser.send(notifEvent); } catch {}
-      }
     }
   }
 }
@@ -289,7 +285,7 @@ function handleBrowserMessage(ws: any, parsed: any): void {
   }
 }
 
-const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start } = createDaemonServer({
+const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, start } = createDaemonServer({
   port,
   uiDir: resolveUiDir(process.argv[1], import.meta.url, "..", "extensions", "pidash", "pidash-ui", "dist"),
   uiName: "pidash-ui",

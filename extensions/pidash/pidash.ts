@@ -35,7 +35,7 @@ import { createLogger } from "../shared/logger.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-ops.js";
-import { modelInfoPayload, supportsImagesFor } from "../../scripts/pidash-session-state.ts";
+import { appendEventBuffer, modelInfoPayload, supportsImagesFor } from "../../scripts/pidash-session-state.ts";
 
 const log = createLogger("pidash");
 const WebSocket = createRequire(import.meta.url)("ws");
@@ -778,8 +778,7 @@ export function registerPidash(
         eventBuffer.length = 0;
         const pushBuffered = (ev: string) => {
           wsClient.send(ev);
-          eventBuffer.push(ev);
-          while (eventBuffer.length > 10000) eventBuffer.shift();
+          appendEventBuffer(eventBuffer, ev);
         };
         replaySessionHistory(wsClient, ctx, pushBuffered);
 
@@ -908,9 +907,8 @@ export function registerPidash(
 
       const msg = JSON.stringify(payload);
       if (type !== "extension_ui_request") {
-        eventBuffer.push(msg);
         // Cap incremental buffer — session file is the source of truth for full history
-        while (eventBuffer.length > 10000) eventBuffer.shift();
+        appendEventBuffer(eventBuffer, msg);
       }
       if (ws && connected) {
         try { ws.send(msg); } catch (e: any) { log.debug(`forward ${type} error: ${e.message}`); }

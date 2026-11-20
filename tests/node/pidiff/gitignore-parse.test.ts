@@ -66,4 +66,17 @@ describe("isGitIgnoredRelPath", () => {
       true,
     );
   });
+
+  it("matches exact nested directory and does not match sibling prefix names (#1273)", () => {
+    assert.equal(isGitIgnoredRelPath("extensions/pidiff/pidiff-ui/node_modules", filter), true);
+    assert.equal(isGitIgnoredRelPath("extensions/pidiff/pidiff-ui/node_modules_other/a.js", filter), false);
+    assert.equal(isGitIgnoredRelPath("", filter), false);
+    assert.equal(isGitIgnoredRelPath(".", filter), false);
+  });
+
+  it("supports manually constructed filters without pre-populated nestedSet (#1273)", () => {
+    const manual = { topLevel: new Set<string>(), nested: ["a/b/c"] };
+    assert.equal(isGitIgnoredRelPath("a/b/c/file.ts", manual), true);
+    assert.equal(isGitIgnoredRelPath("a/b/other.ts", manual), false);
+  });
 });

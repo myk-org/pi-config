@@ -21,6 +21,8 @@ PI_NPM_PKG_DIR = "$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config"
 NPM_FILES_REQUIRED = (
     "scripts/pidash-server.ts",
     "scripts/pidiff-server.ts",
+    "scripts/pidiff-git-diff.ts",
+    "scripts/pidiff-git-ignore.ts",
     "scripts/daemon-shared.ts",
     "scripts/serve-ui.ts",
     "scripts/pidash-discord.ts",
@@ -40,6 +42,8 @@ NPM_FILES_FORBIDDEN_TREES = (
 NPM_PACK_REQUIRED_PATHS = (
     "scripts/pidash-server.ts",
     "scripts/pidiff-server.ts",
+    "scripts/pidiff-git-diff.ts",
+    "scripts/pidiff-git-ignore.ts",
     "scripts/daemon-shared.ts",
     "scripts/serve-ui.ts",
     "scripts/pidash-discord.ts",

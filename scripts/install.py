@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
-import json
 import os
 import platform
 import shutil
@@ -202,45 +201,23 @@ def _publish_trail(stage: Path, trail_prefix: Path, trail_bin: Path, lock_path: 
 
 
 def _install_script_packages(package_dir: Path, install_root: Path) -> list[str]:
-    seen: set[Path] = set()
-    allowed: set[str] = set()
-
-    def inspect(path: Path) -> None:
-        real = path.resolve()
-        if real in seen:
-            return
-        seen.add(real)
-        manifest = json.loads((real / "package.json").read_text())
-        scripts = manifest.get("scripts", {})
-        lifecycle_hook = {"preinstall", "install", "postinstall"} & scripts.keys()
-        default_node_gyp_hook = "install" not in scripts and (real / "binding.gyp").is_file()
-        if lifecycle_hook or default_node_gyp_hook:
-            allowed.add(manifest["name"])
-        optional = manifest.get("optionalDependencies", {})
-        dependencies = manifest.get("dependencies", {}) | optional
-        for name in dependencies:
-            child = next(
-                (
-                    candidate
-                    for candidate in (
-                        real / "node_modules" / name,
-                        *(parent / "node_modules" / name for parent in real.parents),
-                        install_root / name,
-                    )
-                    if candidate.exists() and (candidate == install_root / name or install_root in candidate.parents)
-                ),
-                None,
-            )
-            if child is None:
-                if name in optional:
-                    log.debug("trail optional dependency omitted package=%s", name)
-                    continue
-                raise FileNotFoundError(f"required Trail dependency is not installed: {name}")
-            inspect(child)
-
-    inspect(package_dir)
+    auditor = Path(__file__).resolve().parent / "trail-allow-scripts.mjs"
+    if not auditor.is_file():
+        raise FileNotFoundError(f"Trail auditor script not found: {auditor}")
+    result = subprocess.run(
+        ["node", str(auditor), str(package_dir), str(install_root)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout).strip()
+        if "required Trail dependency is not installed:" in err:
+            raise FileNotFoundError(err)
+        raise RuntimeError(f"Trail dependency audit failed: {err}")
+    output = result.stdout.strip()
+    allowed = [pkg for pkg in output.split(",") if pkg]
     log.debug("trail install-script audit packages=%s", len(allowed))
-    return sorted(allowed)
+    return allowed
 
 
 def install_trail() -> None:
