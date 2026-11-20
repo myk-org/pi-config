@@ -296,13 +296,11 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
           gitPollInFlight = false;
           return;
         }
-        if (state.status !== "clean" && state.status !== "needs_review" && state.status !== "has_findings") {
-          lastGitSnapshot = "";
-          gitPollInFlight = false;
-          return;
-        }
-        // Revalidate cleanliness before resetting review state so an external edit
-        // that landed while the first git status was in flight is never cleared.
+        // Always revalidate cleanliness (including during in_progress/none) before clearing
+        // lastGitSnapshot or resetting review state, so an edit landing between checks is never hidden.
+        const revalidateStartedAt = Date.now();
+        const revalidateGen = editGeneration;
+        const preRevalidateEditAt = state.last_edit_at;
         gitStatusAsync(cwd, (confirm) => {
           gitPollInFlight = false;
           if (!lastCtx || lastCtx !== ctx || !isLiveExtensionCtx(lastCtx)) return;
@@ -316,7 +314,13 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
             }
             if (confirm.code !== 0) return;
             const freshState = readReviewState(cwd);
-            if (hasInterveningEdit(freshState, pollStartedAt, startGen)) return;
+            if (
+              hasInterveningEdit(freshState, pollStartedAt, startGen) ||
+              hasInterveningEdit(freshState, revalidateStartedAt, revalidateGen) ||
+              freshState.last_edit_at !== preRevalidateEditAt
+            ) {
+              return;
+            }
             lastGitSnapshot = "";
             if (freshState.status === "clean" || freshState.status === "needs_review" || freshState.status === "has_findings") {
               try { resetReviewState(cwd); } catch (e: any) { log.warn("resetReviewState failed", { error: e?.message }); }

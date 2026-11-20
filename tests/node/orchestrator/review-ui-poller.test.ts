@@ -336,6 +336,52 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
     }
   });
 
+  it("revalidates a clean poll during in_progress so an edit before confirmation sets edited_during_cycle", async () => {
+    const h = setupPollerHarness();
+    try {
+      await new Promise((r) => setTimeout(r, 35));
+      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      addReviewerPending(h.tmp, "reviewer-a", SUBJECT);
+      assert.equal(readReviewState(h.tmp).status, "in_progress");
+      assert.equal(readReviewState(h.tmp).edited_during_cycle, false);
+
+      await new Promise((r) => setTimeout(r, 40));
+      assert.ok(h.pending.length >= 1);
+      // Clean poll during in_progress must trigger revalidation rather than clearing snapshot immediately
+      h.pending.shift()!({ stdout: "", code: 0 });
+      assert.equal(h.pending.length, 1, "clean poll during in_progress must revalidate");
+
+      // Edit lands before confirmation completes
+      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      const state = readReviewState(h.tmp);
+      assert.equal(state.status, "in_progress");
+      assert.equal(state.edited_during_cycle, true);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("keeps needs_review when an edit is recorded during clean revalidation", async () => {
+    const h = setupPollerHarness();
+    try {
+      await new Promise((r) => setTimeout(r, 35));
+      h.pending.shift()!({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+
+      await new Promise((r) => setTimeout(r, 40));
+      h.pending.shift()!({ stdout: "", code: 0 });
+      assert.equal(h.pending.length, 1);
+
+      // Edit lands strictly after revalidation started, before confirmation resolves
+      await new Promise((r) => setTimeout(r, 10));
+      markNeedsReview(h.tmp);
+      h.pending.shift()!({ stdout: "", code: 0 });
+      assert.equal(readReviewState(h.tmp).status, "needs_review");
+    } finally {
+      h.cleanup();
+    }
+  });
+
   it("stops scheduling polls after session_shutdown", async () => {
     const h = setupPollerHarness();
     try {
