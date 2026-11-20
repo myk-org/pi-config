@@ -255,16 +255,21 @@ export function registerRules(
 
     // Load scores + topic entries once per turn when either situation report or
     // contextual recall needs them, avoiding duplicate disk reads and stat calls.
+    // Fail-soft: a store lock/migration error must never abort the agent turn.
     let preloaded: SituationReportOptions["preloaded"];
     if (budget > 0 || shouldSearch) {
-      const topicsDir = path.join(getProjectMemoryDir(ctx.cwd), "topics");
-      if (fs.existsSync(topicsDir)) {
-        const { readAllTopicEntries } = await import("./memory-tree.js");
-        const { loadScores } = await import("./memory-scoring.js");
-        preloaded = {
-          scores: loadScores(ctx.cwd),
-          topicEntries: readAllTopicEntries(ctx.cwd),
-        };
+      try {
+        const topicsDir = path.join(getProjectMemoryDir(ctx.cwd), "topics");
+        if (fs.existsSync(topicsDir)) {
+          const { readAllTopicEntries } = await import("./memory-tree.js");
+          const { loadScores } = await import("./memory-scoring.js");
+          preloaded = {
+            scores: loadScores(ctx.cwd),
+            topicEntries: readAllTopicEntries(ctx.cwd),
+          };
+        }
+      } catch (e: any) {
+        log.debug("memory preload failed:", e?.message?.slice(0, 100));
       }
     }
 
@@ -283,7 +288,7 @@ export function registerRules(
         const sessionId = (ctx as any).sessionManager?.getSessionId?.();
         const entries = preloaded.topicEntries.filter((te) => {
           const canon = canonicalTopicLine(te);
-          if (emittedMemoryKeys.has(canon) || memories.includes(canon)) return false;
+          if (emittedMemoryKeys.has(canon)) return false;
           return isEntryActiveForSession(preloaded.scores.entries[entryHash(canon)], sessionId);
         });
         if (entries.length > 0) {
@@ -301,8 +306,7 @@ export function registerRules(
           const injectThreshold = Number(getSetting(ctx.cwd, "memory_inject_similarity")) || 0.65;
           const relevant = results.filter((r) => {
             if (r.similarity <= injectThreshold) return false;
-            const canon = `- [${r.category}] ${r.text}`;
-            return !emittedMemoryKeys.has(canon) && !memories.includes(canon);
+            return !emittedMemoryKeys.has(`- [${r.category}] ${r.text}`);
           });
           if (relevant.length > 0) {
             log.info("context_injected", "contextual_memories");

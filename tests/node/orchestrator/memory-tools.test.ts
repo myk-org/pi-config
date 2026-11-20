@@ -29,50 +29,61 @@ test("memory_add gives portable npm guidance for an empty run_after command", as
   );
 });
 
-test("9 memory/session tools preserve names, param keys, and tightened schema size (#1198)", () => {
+const EXPECTED_MEMORY_TOOL_PARAMS: Record<string, string[]> = {
+  memory_search: ["query", "category"],
+  memory_reinforce: ["entryText", "category"],
+  memory_topics: [],
+  memory_add: [
+    "text",
+    "category",
+    "pinned",
+    "trigger",
+    "action",
+    "verifier",
+    "scope",
+    "overrideConflicts",
+    "sourceSession",
+    "derivedFrom",
+    "informs",
+  ],
+  memory_remove: ["text", "category"],
+  memory_reflect: ["query"],
+  memory_edit: [
+    "op",
+    "text",
+    "category",
+    "newText",
+    "supersededBy",
+    "sourceSession",
+    "derivedFrom",
+    "informs",
+  ],
+  memory_consolidate: [],
+  session_search: ["query", "limit"],
+};
+
+function collectRegisteredTools(): Map<string, any> {
   const tools = new Map<string, any>();
   const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), on: () => {} } as any;
   registerMemoryTools(pi);
   registerSessionSearch(pi);
+  return tools;
+}
 
-  const expectedParams: Record<string, string[]> = {
-    memory_search: ["query", "category"],
-    memory_reinforce: ["entryText", "category"],
-    memory_topics: [],
-    memory_add: [
-      "text",
-      "category",
-      "pinned",
-      "trigger",
-      "action",
-      "verifier",
-      "scope",
-      "overrideConflicts",
-      "sourceSession",
-      "derivedFrom",
-      "informs",
-    ],
-    memory_remove: ["text", "category"],
-    memory_reflect: ["query"],
-    memory_edit: [
-      "op",
-      "text",
-      "category",
-      "newText",
-      "supersededBy",
-      "sourceSession",
-      "derivedFrom",
-      "informs",
-    ],
-    memory_consolidate: [],
-    session_search: ["query", "limit"],
-  };
-
-  let totalChars = 0;
-  for (const [name, keys] of Object.entries(expectedParams)) {
+test("registers all 9 memory/session tools with expected parameter keys (#1198)", () => {
+  const tools = collectRegisteredTools();
+  for (const [name, keys] of Object.entries(EXPECTED_MEMORY_TOOL_PARAMS)) {
     const tool = tools.get(name);
     assert.ok(tool, `expected tool ${name} to be registered`);
     assert.deepEqual(Object.keys(tool.parameters.properties ?? {}), keys);
+  }
+});
+
+test("enforces tightened schema char budget across 9 memory/session tools (#1198)", () => {
+  const tools = collectRegisteredTools();
+  let totalChars = 0;
+  for (const name of Object.keys(EXPECTED_MEMORY_TOOL_PARAMS)) {
+    const tool = tools.get(name);
     totalChars += JSON.stringify({
       name: tool.name,
       description: tool.description,

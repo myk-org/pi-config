@@ -132,11 +132,11 @@ export function rebuildAndOrganize(cwd: string): void {
   const topicEntries = readAllTopicEntries(cwd);
   if (topicEntries.length > 0) {
     rebuild(cwd, topicEntries);
-  }
-  try {
-    pruneEmbeddings(cwd, topicEntries);
-  } catch {
-    // non-fatal — stale embeddings do not affect correctness
+    try {
+      pruneEmbeddings(cwd, topicEntries, () => readAllTopicEntries(cwd));
+    } catch {
+      // non-fatal — stale embeddings do not affect correctness
+    }
   }
 }
 
@@ -210,8 +210,13 @@ export function buildSituationReport(
   const groundTruthLine =
     "> **Ground Truth:** Memories here and below are authoritative; use directly without re-verifying.\n";
 
-  // Reserve budget for header + ground truth instruction
-  const headerReserve = headerTemplate.length + groundTruthLine.length;
+  // Reserve budget for header + ground truth + capacity warning (when non-pinned entries can trigger it) + section join newlines
+  const hasNonPinned = entries.some((e) => !e.isPinned);
+  const headerReserve =
+    headerTemplate.length +
+    groundTruthLine.length +
+    (hasNonPinned ? warningText.length : 0) +
+    4;
   charBudget = Math.max(0, charBudget - headerReserve);
 
   // Promotion candidates (low budget) — show even when topics empty
@@ -221,14 +226,16 @@ export function buildSituationReport(
     const truncated = truncateLinesToBudget(promoSection, promoBudget);
     if (truncated) {
       bodySections.push(truncated);
-      charBudget -= truncated.length;
+      charBudget -= truncated.length + 1;
     }
   }
 
   if (bias.hint && queryClass !== "general") {
     const hintLine = `> Query class: \`${queryClass}\` — ${bias.hint}\n`;
-    bodySections.push(hintLine);
-    charBudget -= hintLine.length;
+    if (charBudget >= hintLine.length + 1) {
+      bodySections.push(hintLine);
+      charBudget -= hintLine.length + 1;
+    }
   }
 
   if (entries.length === 0 && bodySections.length === 0) return "";
@@ -241,7 +248,7 @@ export function buildSituationReport(
   if (pinned.length > 0) {
     const pinnedSection = formatSection("Pinned", pinned, options.emittedKeys);
     bodySections.push(pinnedSection);
-    charBudget -= pinnedSection.length;
+    charBudget -= pinnedSection.length + 1;
   }
 
   // Build each scored section in priority order, boosted by topic hotness + query class
@@ -305,7 +312,7 @@ export function buildSituationReport(
 
     if (section) {
       bodySections.push(section);
-      charBudget -= section.length;
+      charBudget -= section.length + 1;
     }
   }
 
@@ -429,7 +436,21 @@ function formatSectionWithBudget(
 
   const omitted = entries.length - lines.length;
   if (omitted > 0) {
-    lines.push(`- ... ${omitted} more (lower priority, omitted for context budget)`);
+    const omittedLine = `- ... ${omitted} more (lower priority, omitted for context budget)`;
+    if (remaining >= omittedLine.length + 1) {
+      lines.push(omittedLine);
+    } else if (lines.length > 1) {
+      const popped = lines.pop()!;
+      remaining += popped.length + 1;
+      const newOmittedLine = `- ... ${entries.length - lines.length} more (lower priority, omitted for context budget)`;
+      if (remaining >= newOmittedLine.length + 1) {
+        lines.push(newOmittedLine);
+        emittedKeys?.delete(popped);
+      } else {
+        // Restore popped line if even the adjusted summary doesn't fit
+        lines.push(popped);
+      }
+    }
   }
 
   return header + lines.join("\n") + "\n";

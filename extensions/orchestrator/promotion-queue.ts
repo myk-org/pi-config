@@ -336,7 +336,7 @@ export function formatPromotionsForReport(
 
   return (
     `## Promotion Candidates\n` +
-    `\`.pi/memory/promotions.md\` (never auto-write rules/):\n` +
+    `\`.pi/memory/promotions.md\` — apply safe ones; never auto-write rules/.\n` +
     lines.join("\n") +
     "\n"
   );

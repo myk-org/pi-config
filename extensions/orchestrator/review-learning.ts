@@ -65,7 +65,7 @@ import { createLogger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectDataDir, getProjectMemoryDir, resolveWorktreeRoot } from "./utils.js";
 import { addMemoryEntry } from "./memory-write.js";
-import { entryHash, loadScores } from "./memory-scoring.js";
+import { entryHash, getScoresPath, loadScores } from "./memory-scoring.js";
 import { canonicalTopicLine, readAllTopicEntries } from "./memory-tree.js";
 
 const log = createLogger("review-learning");
@@ -1114,8 +1114,8 @@ interface IssueGroup {
 
 function lessonLookupSignature(cwd: string): string {
   const memDir = getProjectMemoryDir(cwd);
-  const scoresJsonlSig = statSignature(join(memDir, "scores.jsonl"));
-  const scoresJsonSig = statSignature(join(memDir, "scores.json"));
+  const scoresJsonlSig = statSignature(getScoresPath(cwd));
+  const scoresJsonSig = statSignature(join(memDir, "memory-scores.json"));
   const topicsDir = join(memDir, "topics");
   let topicsSig = "";
   if (existsSync(topicsDir)) {

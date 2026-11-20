@@ -189,15 +189,27 @@ export async function embedEntry(cwd: string, text: string, category?: string): 
     const vectors = await embed([text]);
     if (!vectors || vectors.length === 0) return;
 
-    store.entries[hash] = vectors[0];
-    saveStore(cwd, store);
+    const initial: EmbeddingStore = {
+      model: "Xenova/bge-small-en-v1.5",
+      dim: EMBEDDING_DIM,
+      pooling: EMBEDDING_POOLING,
+      entries: {},
+    };
+    getEmbeddingStore(cwd).mutate((latest) => {
+      if (latest.pooling !== EMBEDDING_POOLING) {
+        latest.entries = {};
+        latest.pooling = EMBEDDING_POOLING;
+        queryCache.clear();
+      }
+      latest.entries[hash] = vectors[0]!;
+    }, initial);
   } catch {
     // embedEntry failed — non-fatal
   }
 }
 
 /**
- * Remove one or more entries' embeddings from the store in a single load/save.
+ * Remove one or more entries' embeddings from the store in a single locked RMW.
  */
 export function removeEmbeddings(
   cwd: string,
@@ -205,18 +217,27 @@ export function removeEmbeddings(
 ): number {
   if (entries.length === 0) return 0;
   try {
-    const store = loadStore(cwd);
-    if (Object.keys(store.entries).length === 0) return 0;
+    const pre = loadStore(cwd);
+    if (Object.keys(pre.entries).length === 0) return 0;
+    const keysToRemove = entries.map((e) => embeddingKey(e.text, e.category));
+    if (!keysToRemove.some((k) => pre.entries[k])) return 0;
+
     let removed = 0;
-    for (const e of entries) {
-      const hash = embeddingKey(e.text, e.category);
-      if (store.entries[hash]) {
-        delete store.entries[hash];
-        removed++;
+    getEmbeddingStore(cwd).mutate((latest) => {
+      if (latest.pooling !== EMBEDDING_POOLING) {
+        latest.entries = {};
+        latest.pooling = EMBEDDING_POOLING;
+        queryCache.clear();
+        return;
       }
-    }
+      for (const hash of keysToRemove) {
+        if (latest.entries[hash]) {
+          delete latest.entries[hash];
+          removed++;
+        }
+      }
+    });
     if (removed > 0) {
-      saveStore(cwd, store);
       log.debug("embeddings_removed", { removed });
     }
     return removed;
@@ -234,28 +255,50 @@ export function removeEmbedding(cwd: string, text: string, category?: string): v
 
 /**
  * Prune orphaned embeddings whose keys no longer match any live topic entry.
- * Called during rebuildAndOrganize() to prevent unbounded embeddings.jsonl growth.
+ * Guards against empty liveEntries (never wipes embeddings on an empty/failed read)
+ * and revalidates live entries inside the store lock when `getFreshLiveEntries` is
+ * supplied so concurrent adds are never lost.
  */
 export function pruneEmbeddings(
   cwd: string,
   liveEntries: { text: string; category: string }[],
+  getFreshLiveEntries?: () => { text: string; category: string }[],
 ): number {
+  if (liveEntries.length === 0) return 0;
   try {
-    const store = loadStore(cwd);
-    const existingKeys = Object.keys(store.entries);
+    const pre = loadStore(cwd);
+    const existingKeys = Object.keys(pre.entries);
     if (existingKeys.length === 0) return 0;
 
-    const liveKeys = new Set(liveEntries.map((e) => embeddingKey(e.text, e.category)));
+    const snapshotKeys = new Set(liveEntries.map((e) => embeddingKey(e.text, e.category)));
+    if (!existingKeys.some((k) => !snapshotKeys.has(k))) return 0;
+
     let pruned = 0;
-    for (const key of existingKeys) {
-      if (!liveKeys.has(key)) {
-        delete store.entries[key];
-        pruned++;
+    let remaining = existingKeys.length;
+    getEmbeddingStore(cwd).mutate((latest) => {
+      if (latest.pooling !== EMBEDDING_POOLING) {
+        latest.entries = {};
+        latest.pooling = EMBEDDING_POOLING;
+        queryCache.clear();
+        remaining = 0;
+        return;
       }
-    }
+      const currentLive = getFreshLiveEntries ? getFreshLiveEntries() : liveEntries;
+      if (currentLive.length === 0) {
+        remaining = Object.keys(latest.entries).length;
+        return;
+      }
+      const liveKeys = new Set(currentLive.map((e) => embeddingKey(e.text, e.category)));
+      for (const key of Object.keys(latest.entries)) {
+        if (!liveKeys.has(key)) {
+          delete latest.entries[key];
+          pruned++;
+        }
+      }
+      remaining = Object.keys(latest.entries).length;
+    });
     if (pruned > 0) {
-      saveStore(cwd, store);
-      log.info("embeddings_pruned", { pruned, remaining: existingKeys.length - pruned });
+      log.info("embeddings_pruned", { pruned, remaining });
     }
     return pruned;
   } catch {

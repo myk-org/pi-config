@@ -164,6 +164,7 @@ describe("situation report truncation, emittedKeys, and warning guards (#1199, #
       // Tight budget (120 tokens = 480 chars, minus headerReserve ~145 chars = ~335 chars for promo)
       const report = buildSituationReport(cwd, 120);
       assert.match(report, /Promotion Candidates/);
+      assert.match(report, /apply safe ones/);
       const promoLines = report
         .split("\n")
         .filter((l) => l.startsWith("- [project_rule (propose only)]"));
@@ -179,7 +180,54 @@ describe("situation report truncation, emittedKeys, and warning guards (#1199, #
     }
   });
 
-  it("populates emittedKeys only for entries actually emitted and skips memory_remove warning when only pinned entries exist", () => {
+  it("populates emittedKeys only for emitted entries", () => {
+    const cwd = makeTempDir("sitrep-emitted-keys-");
+    try {
+      const topicsDir = path.join(cwd, ".pi", "memory", "topics");
+      fs.mkdirSync(topicsDir, { recursive: true });
+      const p1 = "Always preserve pinned rules across turns";
+      const omitted = "Low-priority non-pinned entry that does not fit the tight budget";
+      fs.writeFileSync(
+        path.join(topicsDir, "preferences.md"),
+        `# Preferences\n\n- [preference] ${p1} *(pinned)*\n- [preference] ${omitted}\n`,
+      );
+      const now = new Date().toISOString();
+      saveScores(cwd, {
+        entries: {
+          [entryHash(`- [preference] ${p1}`)]: {
+            class: "preference",
+            score: 100,
+            evidenceCount: 1,
+            cue: "explicit",
+            firstSeen: now,
+            lastReinforced: now,
+            userState: "pinned",
+            lifecycle: "active",
+          },
+          [entryHash(`- [preference] ${omitted}`)]: {
+            class: "preference",
+            score: 1,
+            evidenceCount: 1,
+            cue: "explicit",
+            firstSeen: now,
+            lastReinforced: now,
+            userState: "auto",
+            lifecycle: "active",
+          },
+        },
+        lastRebuild: now,
+      });
+
+      const emittedKeys = new Set<string>();
+      buildSituationReport(cwd, 75, { emittedKeys });
+      assert.equal(emittedKeys.has(`- [preference] ${p1}`), true);
+      assert.equal(emittedKeys.has(`- [preference] ${omitted}`), false);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("skips memory_remove warning when only pinned entries exist", () => {
     const cwd = makeTempDir("sitrep-pinned-warn-");
     try {
       const topicsDir = path.join(cwd, ".pi", "memory", "topics");
@@ -217,12 +265,45 @@ describe("situation report truncation, emittedKeys, and warning guards (#1199, #
         lastRebuild: now,
       });
 
-      const emittedKeys = new Set<string>();
-      // Small budget pushes pinned usage over 80%, yet only pinned entries exist
-      const report = buildSituationReport(cwd, 60, { emittedKeys });
-      assert.ok(emittedKeys.has(`- [preference] ${p1}`));
-      assert.ok(emittedKeys.has(`- [preference] ${p2}`));
+      const report = buildSituationReport(cwd, 60);
       assert.doesNotMatch(report, /memory_remove/, "pinned-only report should not emit memory_remove warning");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stays within requested tokenBudget when non-pinned entries trigger the 80% warning", () => {
+    const cwd = makeTempDir("sitrep-budget-cap-");
+    try {
+      const topicsDir = path.join(cwd, ".pi", "memory", "topics");
+      fs.mkdirSync(topicsDir, { recursive: true });
+      const now = new Date().toISOString();
+      const lines: string[] = ["# Lessons", ""];
+      const scores: Record<string, ScoredEntry> = {};
+      for (let i = 0; i < 16; i++) {
+        const text = `Always verify boundary invariant number ${i} with descriptive text`;
+        lines.push(`- [lesson] ${text}`);
+        scores[entryHash(`- [lesson] ${text}`)] = {
+          class: "lesson",
+          score: 16 - i,
+          evidenceCount: 2,
+          cue: "explicit",
+          firstSeen: now,
+          lastReinforced: now,
+          userState: "auto",
+          lifecycle: "active",
+        };
+      }
+      fs.writeFileSync(path.join(topicsDir, "lessons.md"), lines.join("\n") + "\n");
+      saveScores(cwd, { entries: scores, lastRebuild: now });
+
+      const budget = 300;
+      const report = buildSituationReport(cwd, budget);
+      assert.match(report, /memory_remove/, "80% warning triggers for non-pinned entries");
+      const match = report.match(/# Project Memory \[(\d+)% — (\d+)\/(\d+) tokens\]/);
+      assert.ok(match, "capacity header present");
+      const reportedTokens = Number(match![2]);
+      assert.ok(reportedTokens <= budget, `expected ${reportedTokens} <= ${budget}`);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

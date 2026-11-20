@@ -206,8 +206,7 @@ describe("before_agent_start section injection", () => {
       registerRules(pi);
       const h = getBeforeAgentStart(handlers);
 
-      const event = makeEvent(cwd);
-      event.prompt = "Always run tox before pushing changes to the branch";
+      const event = { ...makeEvent(cwd), messageType: "user" as const, prompt: "Always run tox before pushing changes to the branch" };
       await h.fn(event, { cwd });
 
       const sections = event.systemPromptOptions.sections;
@@ -216,6 +215,89 @@ describe("before_agent_start section injection", () => {
         sections.contextual_memories,
         undefined,
         "pinned rule already in project_memory must not be duplicated in contextual_memories",
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("retains a distinct contextual candidate whose canonical line prefixes an emitted entry (#1199)", async () => {
+    const cwd = makeTempDir("rules-prefix-");
+    try {
+      const { isVectorSearchAvailable, embedEntry } = await import(
+        "../../../extensions/orchestrator/memory-embeddings.js"
+      );
+      if (!(await isVectorSearchAvailable())) return;
+
+      const topicsDir = path.join(cwd, ".pi", "memory", "topics");
+      fs.mkdirSync(topicsDir, { recursive: true });
+      const longerEmitted = "Use tox before pushing any branch updates to origin";
+      const fillerPinned = "Always check build output logs before merging any pull request";
+      const shorterPrefix = "Use tox";
+      fs.writeFileSync(
+        path.join(topicsDir, "lessons.md"),
+        `# Lessons\n\n- [lesson] ${longerEmitted} *(pinned)*\n- [lesson] ${fillerPinned} *(pinned)*\n- [lesson] ${shorterPrefix}\n`,
+      );
+      // Tighten memory_token_budget so Pinned entries fit in project_memory while
+      // non-pinned shorterPrefix is omitted for context budget (remains eligible for contextual recall).
+      fs.writeFileSync(
+        path.join(cwd, ".pi", "pi-config-settings.json"),
+        JSON.stringify({ memory_token_budget: 75 }),
+      );
+      await embedEntry(cwd, longerEmitted, "lesson");
+      await embedEntry(cwd, fillerPinned, "lesson");
+      await embedEntry(cwd, shorterPrefix, "lesson");
+
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+
+      const event = { ...makeEvent(cwd), messageType: "user" as const, prompt: "Use tox" };
+      await h.fn(event, { cwd });
+
+      const sections = event.systemPromptOptions.sections;
+      assert.ok(sections.project_memory?.includes(longerEmitted), "pinned longer rule is in project_memory");
+      assert.ok(
+        !sections.project_memory?.includes(`\n- [lesson] ${shorterPrefix}\n`),
+        "shorter prefix entry was omitted from project_memory",
+      );
+      assert.ok(
+        sections.contextual_memories?.includes(`- [lesson] ${shorterPrefix}`),
+        "distinct prefix memory must not be dropped by substring match",
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("continues turn cleanly when memory store migration lock fails (#1199)", async () => {
+    const cwd = makeTempDir("rules-lockfail-");
+    try {
+      const memDir = path.join(cwd, ".pi", "memory");
+      fs.mkdirSync(path.join(memDir, "topics"), { recursive: true });
+      fs.writeFileSync(
+        path.join(memDir, "topics", "lessons.md"),
+        "# Lessons\n\n- [lesson] Keep running\n",
+      );
+      // Legacy scores without hashAlgo triggers locked migration inside loadScores()
+      fs.writeFileSync(
+        path.join(memDir, "memory-scores.jsonl"),
+        JSON.stringify({ entries: { deadbeef: { class: "lesson", score: 1 } }, lastRebuild: new Date().toISOString() }) + "\n",
+      );
+      // Hold the lock with live parent PID so migration fails after backoff
+      fs.writeFileSync(path.join(memDir, "memory-scores.jsonl.wlock"), String(process.ppid));
+
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+
+      const event = makeEvent(cwd);
+      await h.fn(event, { cwd });
+
+      assert.ok(
+        typeof event.systemPromptOptions.sections.orchestrator_rules === "string" &&
+          event.systemPromptOptions.sections.orchestrator_rules.length > 50,
+        "rules still inject when memory store throws",
       );
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
