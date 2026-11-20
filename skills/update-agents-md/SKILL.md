@@ -78,13 +78,24 @@ A task is complete when ALL pass:
 - Verify coverage: `<test command with coverage flag>`
 
 ## When Releasing
-- Update version in `<manifest file>`, run `<full verify>`, tag `v<version>`
+- Update version in `<manifest file>`
+- Run full suite: `<lint command> && <test command> && <type check command>`
+- Tag: `git tag -a v<version> -m "Release v<version>"`
 
 ## Boundaries <!-- 3 tiers; pair every "don't" with a "do" (15+ bare "don'ts" cause overexploration) -->
 - ✅ Always: run tests before commits, follow naming conventions
 - ⚠️ Ask first: database schema changes, adding dependencies, modifying CI
 - 🚫 Never: commit secrets, edit dependency dirs, force push to main
 ````
+
+### Section Rules
+
+- **Commands:** Exact invocations with flags plus a `Full verify` one-liner; every rule should answer "What command proves this was done?"
+- **Definition of Done:** Specific exit codes, not feelings — prevents "I think I'm done", the #1 agent failure mode.
+- **When Blocked:** Escalation rules stop destructive improvisation; pair every "never" with what to do instead.
+- **Project:** Specific versions, key deps, and 1-line structure descriptions — vague labels like "React project" are useless.
+- **When X:** Task-organized sections let agents select relevant instructions by context instead of parsing flat topic lists.
+- **Boundaries:** Three tiers (`Always` / `Ask first` / `Never`); pair every "don't" with a "do" (15+ bare "don'ts" cause overexploration).
 
 ---
 

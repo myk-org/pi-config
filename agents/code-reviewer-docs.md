@@ -38,7 +38,7 @@ Flag missing doc updates as `[CRITICAL]`.
 
 - Accuracy — do docs match actual code behavior?
 - Clarity — are instructions unambiguous and actionable?
-- Formatting — consistent markdown, proper headers, working links
+- Formatting — consistent markdown, proper headers, working links, and flagging avoided `_Avoid_` terms from `CONTEXT.md`
 - Stale content — references to removed features, old commands, dead links
 - Contradictory information within the same file
 

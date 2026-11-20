@@ -38,6 +38,8 @@ export interface AgentDiscoveryResult {
 interface DirAgentsCacheEntry {
 	dirMtimeMs: number;
 	fileMeta: Map<string, { mtimeMs: number; size: number }>;
+	includeLinks: Map<string, string>;
+	absentPaths: Set<string>;
 	agents: AgentConfig[];
 }
 
@@ -52,10 +54,47 @@ export function clearAgentsCache(): void {
 const INCLUDE_PATTERN = /\{\{INCLUDE:([^}\r\n]+)\}\}/g;
 const MAX_INCLUDE_DEPTH = 4;
 
+type ResolveIncludeResult =
+	| { status: "ok"; candidate: string; canonical: string }
+	| { status: "not_found"; candidate: string }
+	| { status: "invalid" };
+
+function resolveIncludeCandidate(rel: string, baseDir: string): ResolveIncludeResult {
+	if (!rel || path.isAbsolute(rel)) {
+		return { status: "invalid" };
+	}
+	let resolvedBase: string;
+	try {
+		resolvedBase = fs.realpathSync(baseDir);
+	} catch {
+		resolvedBase = path.resolve(baseDir);
+	}
+	const candidate = path.resolve(resolvedBase, rel);
+	if (candidate !== resolvedBase && !candidate.startsWith(resolvedBase + path.sep)) {
+		return { status: "invalid" };
+	}
+	let canonical: string;
+	try {
+		canonical = fs.realpathSync(candidate);
+	} catch (e: any) {
+		if (e?.code === "ENOENT") {
+			return { status: "not_found", candidate };
+		}
+		return { status: "invalid" };
+	}
+	if (canonical !== resolvedBase && !canonical.startsWith(resolvedBase + path.sep)) {
+		return { status: "invalid" };
+	}
+	return { status: "ok", candidate, canonical };
+}
+
 function resolveAgentIncludes(
 	body: string,
 	agentsDir: string,
+	packageAgentsDir: string,
 	fileMeta: Map<string, { mtimeMs: number; size: number }>,
+	includeLinks: Map<string, string>,
+	absentPaths: Set<string>,
 	visited: Set<string>,
 	depth = 0,
 ): { body: string; complete: boolean } {
@@ -66,40 +105,32 @@ function resolveAgentIncludes(
 		log.warn("agent include max depth exceeded", { depth });
 		return { body, complete: false };
 	}
-	let resolvedBase: string;
-	try {
-		resolvedBase = fs.realpathSync(agentsDir);
-	} catch {
-		resolvedBase = path.resolve(agentsDir);
-	}
 
 	let complete = true;
 	const resolved = body.replace(new RegExp(INCLUDE_PATTERN.source, "g"), (fullMatch, rawRel: string) => {
 		const rel = rawRel.trim();
-		if (!rel || path.isAbsolute(rel)) {
-			log.warn("agent include rejected non-relative path", { include: rel });
+		let chosenDir = agentsDir;
+		let target = resolveIncludeCandidate(rel, agentsDir);
+		if (target.status === "invalid") {
+			log.warn("agent include rejected invalid or escaping path", { include: rel });
 			complete = false;
 			return fullMatch;
 		}
-		const candidate = path.resolve(resolvedBase, rel);
-		if (candidate !== resolvedBase && !candidate.startsWith(resolvedBase + path.sep)) {
-			log.warn("agent include path escapes agents dir", { include: rel });
+		if (target.status === "not_found" && path.resolve(agentsDir) !== path.resolve(packageAgentsDir)) {
+			// Standalone user/project reviewer overrides can inherit bundled partials from package agents/.
+			const pkgTarget = resolveIncludeCandidate(rel, packageAgentsDir);
+			if (pkgTarget.status === "ok") {
+				absentPaths.add(target.candidate);
+				target = pkgTarget;
+				chosenDir = packageAgentsDir;
+			}
+		}
+		if (target.status !== "ok") {
+			log.warn("agent include not found", { include: rel });
 			complete = false;
 			return fullMatch;
 		}
-		let canonical: string;
-		try {
-			canonical = fs.realpathSync(candidate);
-		} catch (e: any) {
-			log.warn("agent include not found", { include: rel, error: e?.message });
-			complete = false;
-			return fullMatch;
-		}
-		if (canonical !== resolvedBase && !canonical.startsWith(resolvedBase + path.sep)) {
-			log.warn("agent include symlink escapes agents dir", { include: rel });
-			complete = false;
-			return fullMatch;
-		}
+		const { candidate, canonical } = target;
 		if (visited.has(canonical)) {
 			log.warn("agent include cycle detected", { include: rel });
 			complete = false;
@@ -109,9 +140,19 @@ function resolveAgentIncludes(
 			const st = fs.statSync(canonical);
 			const content = fs.readFileSync(canonical, "utf-8");
 			fileMeta.set(canonical, { mtimeMs: st.mtimeMs, size: st.size });
+			includeLinks.set(candidate, canonical);
 			const nextVisited = new Set(visited);
 			nextVisited.add(canonical);
-			const nested = resolveAgentIncludes(content.trimEnd(), agentsDir, fileMeta, nextVisited, depth + 1);
+			const nested = resolveAgentIncludes(
+				content.trimEnd(),
+				chosenDir,
+				packageAgentsDir,
+				fileMeta,
+				includeLinks,
+				absentPaths,
+				nextVisited,
+				depth + 1,
+			);
 			if (!nested.complete) complete = false;
 			return nested.body;
 		} catch (e: any) {
@@ -140,16 +181,37 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 	const cached = dirAgentsCache.get(cacheKey);
 	if (cached && cached.dirMtimeMs === dirStat.mtimeMs) {
 		let valid = true;
-		for (const [filePath, meta] of cached.fileMeta) {
+		for (const [linkPath, expectedCanonical] of cached.includeLinks) {
 			try {
-				const st = fs.statSync(filePath);
-				if (st.mtimeMs !== meta.mtimeMs || st.size !== meta.size) {
+				if (fs.realpathSync(linkPath) !== expectedCanonical) {
 					valid = false;
 					break;
 				}
 			} catch {
 				valid = false;
 				break;
+			}
+		}
+		if (valid) {
+			for (const absentPath of cached.absentPaths) {
+				if (fs.existsSync(absentPath)) {
+					valid = false;
+					break;
+				}
+			}
+		}
+		if (valid) {
+			for (const [filePath, meta] of cached.fileMeta) {
+				try {
+					const st = fs.statSync(filePath);
+					if (st.mtimeMs !== meta.mtimeMs || st.size !== meta.size) {
+						valid = false;
+						break;
+					}
+				} catch {
+					valid = false;
+					break;
+				}
 			}
 		}
 		if (valid) {
@@ -161,6 +223,9 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 
 	const agents: AgentConfig[] = [];
 	const fileMeta = new Map<string, { mtimeMs: number; size: number }>();
+	const includeLinks = new Map<string, string>();
+	const absentPaths = new Set<string>();
+	const packageDir = getPackageAgentsDir();
 	let complete = true;
 
 	let entries: fs.Dirent[];
@@ -184,6 +249,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 			canonicalPath = fs.realpathSync(filePath);
 			content = fs.readFileSync(filePath, "utf-8");
 			fileMeta.set(filePath, { mtimeMs: st.mtimeMs, size: st.size });
+			includeLinks.set(filePath, canonicalPath);
 		} catch {
 			complete = false;
 			continue;
@@ -193,7 +259,15 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 
 		if (!frontmatter.name || !frontmatter.description) continue;
 
-		const included = resolveAgentIncludes(body, dir, fileMeta, new Set([canonicalPath]));
+		const included = resolveAgentIncludes(
+			body,
+			dir,
+			packageDir,
+			fileMeta,
+			includeLinks,
+			absentPaths,
+			new Set([canonicalPath]),
+		);
 		if (!included.complete) complete = false;
 
 		const tools = frontmatter.tools
@@ -218,7 +292,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 			const oldest = dirAgentsCache.keys().next().value;
 			if (oldest !== undefined) dirAgentsCache.delete(oldest);
 		}
-		dirAgentsCache.set(cacheKey, { dirMtimeMs: dirStat.mtimeMs, fileMeta, agents });
+		dirAgentsCache.set(cacheKey, { dirMtimeMs: dirStat.mtimeMs, fileMeta, includeLinks, absentPaths, agents });
 	} else {
 		dirAgentsCache.delete(cacheKey);
 	}

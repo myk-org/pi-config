@@ -67,12 +67,15 @@ For other agents (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` instead
 
 **Resolve provider, model, and prompt (ALL modes):**
 
-Saved config: `.pi/external-ai-config.json` (`lastAgents` / `lastPeers`). Read via `cat .pi/external-ai-config.json 2>/dev/null`.
+Saved config: `.pi/external-ai-config.json` (`lastAgents` / `lastPeers`, which may include `--model <id>` per provider, e.g., `cursor --model gpt-5.4-high`).
+Read via `cat .pi/external-ai-config.json 2>/dev/null`.
 
-1. **Provider missing?** Check `lastAgents` (or `lastPeers` for `--peer`). If saved, ask: `Last used: SAVED_VALUE. Use this?` (`Yes`/`Change`/`Cancel`).
-   Otherwise ask: `Select provider:` (`cursor`, `claude`, `gemini`, `Cancel`) — or for `--peer`:
-   `Select providers:` (`cursor,claude`, `cursor,gemini`, `claude,gemini`, `cursor,claude,gemini`, `Cancel`).
-2. **Model missing?** For EACH provider without `--model`, run `uvx myk-pi-tools@latest ai-cli models PROVIDER 2>/dev/null`
+1. **Provider missing?** Check `lastAgents` (or `lastPeers` for `--peer`).
+   - If saved, ask: `Last used: SAVED_VALUE. Use this?` (`Yes`/`Change`/`Cancel`).
+     If `Yes`, parse both the provider(s) AND any saved `--model <id>` from `SAVED_VALUE` (unless overridden by CLI `--model`).
+   - If no saved config (or user picks `Change`), ask: `Select provider:` (`cursor`, `claude`, `gemini`, `Cancel`) — or for `--peer`:
+     `Select providers:` (`cursor,claude`, `cursor,gemini`, `claude,gemini`, `cursor,claude,gemini`, `Cancel`).
+2. **Model missing?** For EACH provider without a CLI `--model` or an accepted saved `--model`, run `uvx myk-pi-tools@latest ai-cli models PROVIDER 2>/dev/null`
    (outputs a JSON array; parse directly without piping through another tool), present ALL `id` values as `ask_user` options (no filtering),
    with `default (DEFAULT_MODEL)` and `Cancel` at the end.
 3. **Prompt missing?** Abort: `No prompt provided.`

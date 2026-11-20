@@ -13,7 +13,7 @@ If multiple `AGENTS.md` files exist, read and merge ALL of them. Flag violations
 
 ## Domain Vocabulary
 
-If `CONTEXT.md` exists at repo root, read it for domain terms, naming conventions, and `_Avoid_` alternatives; use these terms and flag avoided ones.
+If `CONTEXT.md` exists at repo root, read it for domain terms, naming conventions, and `_Avoid_` alternatives; use these terms in your review.
 
 ## Learned Review Preferences
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { clearAgentsCache, discoverAgents } from "../../../extensions/orchestrator/agents.js";
@@ -90,59 +90,153 @@ describe("discoverAgents cache (#1208)", () => {
 });
 
 describe("agent {{INCLUDE:...}} resolution (#1261)", () => {
-	it("resolves _partials includes, ignores _partials during discovery, and invalidates cache when partial changes", () => {
-		const root = makeTempDir("agents-include-");
+	it("expands {{INCLUDE:_partials/...}} directives in loaded agent prompts", () => {
+		const root = makeTempDir("agents-include-resolve-");
 		tempDirs.push(root);
 		const agentsDir = join(root, ".pi", "agents");
 		const partialsDir = join(agentsDir, "_partials");
 		mkdirSync(partialsDir, { recursive: true });
 		writeFileSync(join(partialsDir, "common.md"), "## Shared\n\nRule v1\n", "utf-8");
-		writeFileSync(join(agentsDir, "_ignored.md"), "---\nname: ignored\ndescription: ignored\n---\nignored\n", "utf-8");
 		writeAgentFile(agentsDir, "reviewer.md", "custom-reviewer", "Custom reviewer", "{{INCLUDE:_partials/common.md}}\n\n## Specific");
 
 		clearAgentsCache();
-		const first = discoverAgents(root, "project");
-		assert.equal(first.agents.some((a) => a.name === "ignored"), false);
-		const rev1 = first.agents.find((a) => a.name === "custom-reviewer");
-		assert.ok(rev1);
-		assert.match(rev1.systemPrompt, /Rule v1/);
-		assert.doesNotMatch(rev1.systemPrompt, /\{\{INCLUDE:/);
+		const res = discoverAgents(root, "project");
+		const rev = res.agents.find((a) => a.name === "custom-reviewer");
+		assert.ok(rev);
+		assert.match(rev.systemPrompt, /Rule v1/);
+		assert.doesNotMatch(rev.systemPrompt, /\{\{INCLUDE:/);
+	});
 
-		// Edit only the partial file (agent file & agentsDir mtimes unchanged)
+	it("excludes underscore-prefixed files during agent discovery", () => {
+		const root = makeTempDir("agents-include-exclude-");
+		tempDirs.push(root);
+		const agentsDir = join(root, ".pi", "agents");
+		mkdirSync(join(agentsDir, "_partials"), { recursive: true });
+		writeFileSync(join(agentsDir, "_partials", "common.md"), "---\nname: partial\ndescription: partial\n---\npartial\n", "utf-8");
+		writeFileSync(join(agentsDir, "_ignored.md"), "---\nname: ignored\ndescription: ignored\n---\nignored\n", "utf-8");
+		writeAgentFile(agentsDir, "real.md", "real-agent", "Real agent", "Body");
+
+		clearAgentsCache();
+		const res = discoverAgents(root, "project");
+		assert.equal(res.agents.some((a) => a.name === "ignored"), false);
+		assert.equal(res.agents.some((a) => a.name === "partial"), false);
+		assert.equal(res.agents.some((a) => a.name === "real-agent"), true);
+	});
+
+	it("invalidates cached agent prompt when an included partial file changes", () => {
+		const root = makeTempDir("agents-include-cache-");
+		tempDirs.push(root);
+		const agentsDir = join(root, ".pi", "agents");
+		const partialsDir = join(agentsDir, "_partials");
+		mkdirSync(partialsDir, { recursive: true });
 		const partialPath = join(partialsDir, "common.md");
+		writeFileSync(partialPath, "## Shared\n\nRule v1\n", "utf-8");
+		writeAgentFile(agentsDir, "reviewer.md", "custom-reviewer", "Custom reviewer", "{{INCLUDE:_partials/common.md}}");
+
+		clearAgentsCache();
+		const first = discoverAgents(root, "project");
+		assert.match(first.agents.find((a) => a.name === "custom-reviewer")?.systemPrompt ?? "", /Rule v1/);
+
 		writeFileSync(partialPath, "## Shared\n\nRule v2 updated\n", "utf-8");
 		const future = new Date(Date.now() + 5000);
 		utimesSync(partialPath, future, future);
 
 		const second = discoverAgents(root, "project");
-		const rev2 = second.agents.find((a) => a.name === "custom-reviewer");
-		assert.match(rev2?.systemPrompt ?? "", /Rule v2 updated/);
+		assert.match(second.agents.find((a) => a.name === "custom-reviewer")?.systemPrompt ?? "", /Rule v2 updated/);
 	});
 
-	it("rejects path traversal, absolute paths, and cyclic includes without throwing", () => {
-		const root = makeTempDir("agents-include-sec-");
+	it("invalidates cache when a partial symlink is retargeted to a file with identical size and mtime", () => {
+		const root = makeTempDir("agents-include-symlink-");
 		tempDirs.push(root);
 		const agentsDir = join(root, ".pi", "agents");
 		const partialsDir = join(agentsDir, "_partials");
 		mkdirSync(partialsDir, { recursive: true });
+		const targetA = join(partialsDir, "target-a.md");
+		const targetB = join(partialsDir, "target-b.md");
+		const fixedTime = new Date(Date.now() - 10_000);
+		writeFileSync(targetA, "RULE_ALPHA", "utf-8");
+		writeFileSync(targetB, "RULE_BRAVO", "utf-8");
+		utimesSync(targetA, fixedTime, fixedTime);
+		utimesSync(targetB, fixedTime, fixedTime);
+		const linkPath = join(partialsDir, "active.md");
+		symlinkSync(targetA, linkPath);
+		writeAgentFile(agentsDir, "reviewer.md", "symlink-reviewer", "Symlink reviewer", "{{INCLUDE:_partials/active.md}}");
+
+		clearAgentsCache();
+		const first = discoverAgents(root, "project");
+		assert.match(first.agents.find((a) => a.name === "symlink-reviewer")?.systemPrompt ?? "", /RULE_ALPHA/);
+
+		rmSync(linkPath);
+		symlinkSync(targetB, linkPath);
+		const second = discoverAgents(root, "project");
+		const secondPrompt = second.agents.find((a) => a.name === "symlink-reviewer")?.systemPrompt ?? "";
+		assert.match(secondPrompt, /RULE_BRAVO/);
+		assert.doesNotMatch(secondPrompt, /RULE_ALPHA/);
+	});
+
+	it("rejects path traversal in {{INCLUDE:...}} without throwing", () => {
+		const root = makeTempDir("agents-include-traversal-");
+		tempDirs.push(root);
+		const agentsDir = join(root, ".pi", "agents");
+		mkdirSync(agentsDir, { recursive: true });
 		writeFileSync(join(root, "secret.md"), "SECRET", "utf-8");
-		writeFileSync(join(partialsDir, "a.md"), "{{INCLUDE:_partials/b.md}}", "utf-8");
-		writeFileSync(join(partialsDir, "b.md"), "{{INCLUDE:_partials/a.md}}", "utf-8");
-		writeAgentFile(
-			agentsDir,
-			"bad.md",
-			"bad-includes",
-			"Bad includes",
-			"{{INCLUDE:../../secret.md}}\n{{INCLUDE:/etc/passwd}}\n{{INCLUDE:_partials/a.md}}",
-		);
+		writeAgentFile(agentsDir, "bad.md", "bad-traversal", "Bad traversal", "{{INCLUDE:../../secret.md}}");
 
 		clearAgentsCache();
 		const res = discoverAgents(root, "project");
-		const agent = res.agents.find((a) => a.name === "bad-includes");
+		const agent = res.agents.find((a) => a.name === "bad-traversal");
 		assert.ok(agent);
 		assert.doesNotMatch(agent.systemPrompt, /SECRET/);
 		assert.match(agent.systemPrompt, /\{\{INCLUDE:\.\.\/\.\.\/secret\.md\}\}/);
+	});
+
+	it("rejects absolute paths in {{INCLUDE:...}} without throwing", () => {
+		const root = makeTempDir("agents-include-abs-");
+		tempDirs.push(root);
+		const agentsDir = join(root, ".pi", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		writeAgentFile(agentsDir, "bad.md", "bad-abs", "Bad absolute path", "{{INCLUDE:/etc/passwd}}");
+
+		clearAgentsCache();
+		const res = discoverAgents(root, "project");
+		const agent = res.agents.find((a) => a.name === "bad-abs");
+		assert.ok(agent);
 		assert.match(agent.systemPrompt, /\{\{INCLUDE:\/etc\/passwd\}\}/);
+	});
+
+	it("rejects cyclic {{INCLUDE:...}} references without throwing", () => {
+		const root = makeTempDir("agents-include-cycle-");
+		tempDirs.push(root);
+		const agentsDir = join(root, ".pi", "agents");
+		const partialsDir = join(agentsDir, "_partials");
+		mkdirSync(partialsDir, { recursive: true });
+		writeFileSync(join(partialsDir, "a.md"), "A {{INCLUDE:_partials/b.md}}", "utf-8");
+		writeFileSync(join(partialsDir, "b.md"), "B {{INCLUDE:_partials/a.md}}", "utf-8");
+		writeAgentFile(agentsDir, "bad.md", "bad-cycle", "Bad cycle", "{{INCLUDE:_partials/a.md}}");
+
+		clearAgentsCache();
+		const res = discoverAgents(root, "project");
+		const agent = res.agents.find((a) => a.name === "bad-cycle");
+		assert.ok(agent);
+		assert.match(agent.systemPrompt, /\{\{INCLUDE:_partials\/a\.md\}\}/);
+	});
+
+	it("falls back to bundled package _partials when a reviewer override is copied without _partials", () => {
+		const root = makeTempDir("agents-include-override-");
+		tempDirs.push(root);
+		const agentsDir = join(root, ".pi", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		const bundled = readFileSync(join(process.cwd(), "agents", "code-reviewer-security.md"), "utf-8");
+		writeFileSync(join(agentsDir, "code-reviewer-security.md"), bundled, "utf-8");
+
+		clearAgentsCache();
+		const res = discoverAgents(root, "both");
+		const agent = res.agents.find((a) => a.name === "code-reviewer-security");
+		assert.ok(agent);
+		assert.equal(agent.source, "project");
+		assert.doesNotMatch(agent.systemPrompt, /\{\{INCLUDE:/);
+		assert.match(agent.systemPrompt, /\$PI_REVIEW_BASE_BRANCH/);
+		assert.match(agent.systemPrompt, /## Prior Review Cycle/);
 	});
 
 	it("resolves all bundled code-reviewer-* and issue-reviewer-* agents with shared partials intact", () => {

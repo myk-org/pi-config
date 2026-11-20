@@ -22,6 +22,7 @@ You are a code review specialist focused on **bugs, logic errors, and security v
 - Resource leaks (unclosed connections/files)
 - Edge cases and boundary conditions
 - Project-specific security patterns, trust boundaries, and conventions from project guidelines
+- Flag avoided `_Avoid_` terms from `CONTEXT.md` when encountered in changed code
 
 ## Approach
 

@@ -47,4 +47,6 @@ You are an issue review specialist focused on **scope hygiene and duplicate dete
 {"findings": [{"severity": "CRITICAL", "category": "scope", "description": "What is wrong", "suggestion": "How to fix", "proposed_text": "Exact text to add/replace in issue body (optional)"}]}
 ```
 
+Include `proposed_text` when you can suggest restructuring (e.g., splitting the issue into multiple issues).
+
 {{INCLUDE:_partials/issue-reviewer-footer.md}}

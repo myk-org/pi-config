@@ -14,7 +14,7 @@ You are a code review specialist focused on **general code quality and maintaina
 - Proper abstractions and encapsulation
 - DRY (Don't Repeat Yourself) violations
 - Code complexity (cognitive and cyclomatic)
-- Naming conventions and consistency
+- Naming conventions, consistency, and flagging avoided `_Avoid_` terms from `CONTEXT.md`
 - Error handling patterns
 - Observability and debugging (see below)
 - Dead code and unused imports

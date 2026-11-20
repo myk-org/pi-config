@@ -335,16 +335,13 @@ Dirs are gitignored in the container (see `add_to_gitignore` in `entrypoint.sh`)
 
 ### Native (non-container)
 
-No auto-sync. Symlink or copy package agents yourself, for example:
+No auto-sync. Run the helper script so standalone agents are symlinked and agents with
+`{{INCLUDE:...}}` partials (such as `code-reviewer-*` and `issue-reviewer-*`) are rendered
+with their shared rules and JSON output contracts expanded:
 
 ```bash
-PKG="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/agents"
-mkdir -p .cursor/agents .claude/agents .gemini/agents
-for f in "$PKG"/*.md; do
-  ln -sfn "$f" ".cursor/agents/$(basename "$f")"
-  ln -sfn "$f" ".claude/agents/$(basename "$f")"
-  ln -sfn "$f" ".gemini/agents/$(basename "$f")"
-done
+PKG="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config"
+bash "$PKG/scripts/symlink-cli-specialists.sh" "$PKG/agents" .
 ```
 
 Cursor CLI Task discovery needs **project** `.cursor/agents/` (user-global
