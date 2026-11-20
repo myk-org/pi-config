@@ -12,7 +12,7 @@ import {
   type ReviewSubject,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { normalizePorcelain } from "../../../extensions/orchestrator/review-porcelain.js";
-import { reviewStatusLine } from "../../../extensions/orchestrator/review-ui.js";
+import { registerReviewUI, reviewStatusLine, type AsyncGitStatusRunner } from "../../../extensions/orchestrator/review-ui.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 /** Every round must name what it reviews; these suites review one local commit. */
@@ -214,5 +214,79 @@ describe("reviewStatusLine", () => {
 
   it("says so when a legacy entry has no subject", () => {
     assert.match(reviewStatusLine({ ...base, subject: undefined }), /no subject/);
+  });
+});
+
+describe("gitDirtyPoller async execution & overlap guard (#1264)", () => {
+  it("transitions state asynchronously without stacking overlapping polls and stops on shutdown", async () => {
+    const tmp = makeTempDir("poller-async-");
+    const handlers = new Map<string, Array<(event: any, ctx: any) => void>>();
+    const pi = {
+      registerEntryRenderer() {},
+      on(event: string, fn: (event: any, ctx: any) => void) {
+        handlers.set(event, [...(handlers.get(event) ?? []), fn]);
+      },
+      appendEntry() {},
+    };
+    try {
+      fs.mkdirSync(path.join(tmp, ".pi", "data"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmp, ".pi", "pi-config-settings.json"),
+        JSON.stringify({ review_loop_enforcement: true, review_loop_max_cycles: 3 }),
+      );
+
+      let activeCalls = 0;
+      let maxConcurrent = 0;
+      let totalCalls = 0;
+      const pendingCallbacks: Array<(res: { stdout: string; code: number }) => void> = [];
+      const gitStatusAsync: AsyncGitStatusRunner = (_cwd, cb) => {
+        activeCalls += 1;
+        totalCalls += 1;
+        maxConcurrent = Math.max(maxConcurrent, activeCalls);
+        pendingCallbacks.push((res) => {
+          activeCalls -= 1;
+          cb(res);
+        });
+      };
+
+      registerReviewUI(pi as any, { gitStatusAsync, gitPollIntervalMs: 15 });
+
+      const ctx = {
+        cwd: tmp,
+        hasUI: false,
+        mode: "interactive",
+        ui: { theme: { fg: (_c: string, s: string) => s } },
+      };
+      for (const h of handlers.get("session_start") ?? []) h({}, ctx);
+
+      // Wait for multiple interval ticks while the first poll stays in-flight
+      await new Promise((r) => setTimeout(r, 60));
+      assert.equal(totalCalls, 1, "gitPollInFlight must prevent overlapping git status polls");
+      assert.equal(maxConcurrent, 1);
+
+      // Resolve first poll as dirty → marks needs_review
+      pendingCallbacks.shift()!({ stdout: " M foo.ts", code: 0 });
+      assert.equal(readReviewState(tmp).status, "needs_review");
+
+      // Wait for next poll tick, then resolve as clean → resets to none
+      await new Promise((r) => setTimeout(r, 40));
+      assert.ok(pendingCallbacks.length >= 1, "next poll should fire after prior completes");
+      pendingCallbacks.shift()!({ stdout: "", code: 0 });
+      assert.equal(readReviewState(tmp).status, "none");
+
+      // Shutdown clears timer and ignores any late-resolving callback
+      await new Promise((r) => setTimeout(r, 30));
+      const pendingBeforeShutdown = pendingCallbacks.splice(0);
+      for (const h of handlers.get("session_shutdown") ?? []) h({}, ctx);
+      const callsAtShutdown = totalCalls;
+      for (const cb of pendingBeforeShutdown) cb({ stdout: " M late.ts", code: 0 });
+      assert.equal(readReviewState(tmp).status, "none", "late callback after shutdown must be ignored");
+
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(totalCalls, callsAtShutdown, "no polls may run after session_shutdown");
+    } finally {
+      for (const h of handlers.get("session_shutdown") ?? []) h({}, {});
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

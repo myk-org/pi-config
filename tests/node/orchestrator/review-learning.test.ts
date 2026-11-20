@@ -34,9 +34,11 @@ import {
   emitReviewLearningLoaded,
   markReviewDistilled,
   prNumberFromCommand,
+  prTargetFromCommand,
   type AddressedFinding,
   type DistilledLesson,
 } from "../../../extensions/orchestrator/review-learning.js";
+import { parseRemoteRepo } from "../../../extensions/orchestrator/git-helpers.js";
 import { embedEntry } from "../../../extensions/orchestrator/memory-embeddings.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
@@ -1129,4 +1131,44 @@ it("markReviewDistilled is idempotent — repeated fires never duplicate ids", a
   const distilled = loadDistilledReviews(dataDir);
   assert.equal(distilled.size, 1, "no duplicate ids accumulate across fires");
   assert.ok(distilled.has(42));
+});
+
+describe("unified PR command parser & remote parser (#1282)", () => {
+  it("prTargetFromCommand extracts owner/repo/prNumber from address --json and store-session pr_url", () => {
+    const cwd = makeCwd();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "addr.json"),
+      JSON.stringify({ metadata: { owner: "up-org", repo: "up-repo", pr_number: 88 } }),
+    );
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "addr-partial.json"),
+      JSON.stringify({ metadata: { pr_number: 89 } }),
+    );
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "sess.json"),
+      JSON.stringify({ pr_url: "https://github.com/up-org/up-repo/pull/91" }),
+    );
+
+    const addrCmd = "myk-pi-tools reviews address --json .pi/tmp/addr.json --set addressed";
+    assert.deepEqual(prTargetFromCommand(addrCmd, cwd), { owner: "up-org", repo: "up-repo", prNumber: 88 });
+    assert.equal(prNumberFromCommand(addrCmd, cwd), 88);
+
+    const partialCmd = "myk-pi-tools reviews address --json .pi/tmp/addr-partial.json --set addressed";
+    assert.equal(prNumberFromCommand(partialCmd, cwd), 89);
+    assert.equal(prTargetFromCommand(partialCmd, cwd), null);
+
+    const sessCmd = "myk-pi-tools reviews store-session .pi/tmp/sess.json";
+    assert.deepEqual(prTargetFromCommand(sessCmd, cwd), { owner: "up-org", repo: "up-repo", prNumber: 91 });
+    assert.equal(prNumberFromCommand(sessCmd, cwd), 91);
+  });
+
+  it("parseRemoteRepo supports both any-host and githubOnly modes", () => {
+    assert.deepEqual(parseRemoteRepo("https://gitlab.com/my-org/my-repo.git"), { owner: "my-org", repo: "my-repo" });
+    assert.equal(parseRemoteRepo("https://gitlab.com/my-org/my-repo.git", { githubOnly: true }), null);
+    assert.deepEqual(parseRemoteRepo("git@github.com:owner/my.repo.git", { githubOnly: true }), {
+      owner: "owner",
+      repo: "my.repo",
+    });
+  });
 });

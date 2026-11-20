@@ -10,7 +10,6 @@
  * result (possibly empty) and never throw.
  */
 
-import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
@@ -48,10 +47,6 @@ function getEmbeddingStore(cwd: string): JsonlStateStore<EmbeddingStore> {
   return createCachedStore<EmbeddingStore>(
     getProjectMemoryDir(cwd), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 3 },
   );
-}
-
-function getStorePath(cwd: string): string {
-  return join(getProjectMemoryDir(cwd), STORE_FILENAME_JSONL);
 }
 
 function loadStore(cwd: string): EmbeddingStore {

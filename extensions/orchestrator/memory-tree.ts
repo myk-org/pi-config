@@ -66,13 +66,18 @@ const MAX_REMOVAL_ROWS = 5000;
 export function recordRemoval(cwd: string, canonicalLine: string): void {
   try {
     const file = join(getProjectMemoryDir(cwd), REMOVALS_FILE);
-    const row = `${JSON.stringify({ hash: entryHash(canonicalLine), at: new Date().toISOString() })}\n`;
+    const hash = entryHash(canonicalLine);
+    const row = `${JSON.stringify({ hash, at: new Date().toISOString() })}\n`;
     mkdirSync(dirname(file), { recursive: true });
     appendFileSync(file, row, "utf-8");
-    log.debug("memory_removal_recorded", { hash: entryHash(canonicalLine) });
-    const rows = readFileSync(file, "utf-8").split("\n").filter(Boolean);
-    if (rows.length > MAX_REMOVAL_ROWS) {
-      writeFileSync(file, `${rows.slice(-MAX_REMOVAL_ROWS).join("\n")}\n`, "utf-8");
+    log.debug("memory_removal_recorded", { hash });
+    // Each valid JSONL row is at least 60 bytes — skip reading the entire log
+    // until file size can plausibly exceed MAX_REMOVAL_ROWS.
+    if (statSync(file).size > MAX_REMOVAL_ROWS * 60) {
+      const rows = readFileSync(file, "utf-8").split("\n").filter(Boolean);
+      if (rows.length > MAX_REMOVAL_ROWS) {
+        writeFileSync(file, `${rows.slice(-MAX_REMOVAL_ROWS).join("\n")}\n`, "utf-8");
+      }
     }
   } catch (error) {
     log.warn("memory_removal_record_failed", { reason: String((error as Error)?.message ?? error).slice(0, 120) });

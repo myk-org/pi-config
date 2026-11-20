@@ -64,6 +64,40 @@ export function isGithubRepo(cwd?: string): boolean {
   return r.code === 0 && r.stdout.toLowerCase().includes("github.com");
 }
 
+export function getHeadSha(cwd?: string): string | null {
+  const r = runGit(["rev-parse", "HEAD"], cwd);
+  return r.code === 0 && r.stdout ? r.stdout.trim() : null;
+}
+
+export function getOriginUrl(cwd?: string): string | null {
+  const r = runGit(["remote", "get-url", "origin"], cwd);
+  return r.code === 0 && r.stdout ? r.stdout.trim() : null;
+}
+
+/** Parse `{ owner, repo }` from a git remote URL (https, ssh://, git://, or SCP-like).
+ *  When `githubOnly` is true, only `github.com` hosts match. */
+export function parseRemoteRepo(
+  remoteUrl: string | null | undefined,
+  options?: { githubOnly?: boolean },
+): { owner: string; repo: string } | null {
+  if (typeof remoteUrl !== "string") return null;
+  let url = remoteUrl.trim().replace(/\.git$/i, "").replace(/\/+$/, "");
+  if (!url) return null;
+  // SCP-like: git@github.com:owner/repo (or any user@host:path)
+  const scp = /^[^@/\s]+@([^:/\s]+):(.+)$/.exec(url);
+  if (scp) url = `https://${scp[1]}/${scp[2]}`;
+  const urlMatch = /^(?:https?|ssh|git):\/\/(?:[^@/\s]+@)?([^/\s]+)\/(.+)$/.exec(url);
+  if (!urlMatch) return null;
+  const host = urlMatch[1]!.replace(/:\d+$/, "").toLowerCase();
+  if (options?.githubOnly && host !== "github.com") return null;
+  const segments = urlMatch[2]!.split("/").filter(Boolean);
+  if (segments.length < 2) return null;
+  const repo = segments.pop()!;
+  const owner = segments.pop()!;
+  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return null;
+  return { owner, repo };
+}
+
 export function isBranchMerged(branch: string, main: string, cwd?: string): boolean {
   const u = runGit(["rev-list", "--count", `${main}..${branch}`], cwd);
   if (u.code !== 0) return false;

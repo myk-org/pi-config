@@ -16,6 +16,7 @@ import {
   type MemoryCategory,
   type ScoredEntry,
   entryHash,
+  hasEnforcementFields,
   loadScores,
   mutateScores,
 } from "./memory-scoring.js";
@@ -159,10 +160,6 @@ function looksProjectConvention(text: string): boolean {
   );
 }
 
-function hasEnforcement(entry: ScoredEntry): boolean {
-  return !!((entry.trigger && entry.action) || entry.verifier);
-}
-
 /** Mark *(enforced)* on the topic line for an entry. */
 export function markTopicEntryEnforced(
   cwd: string,
@@ -235,7 +232,7 @@ export function scanPromotionCandidates(cwd: string): PromotionCandidate[] {
     // Enforcement path
     if (
       evidence >= EVIDENCE_ENFORCEMENT &&
-      !hasEnforcement(e.scored) &&
+      !hasEnforcementFields(e.scored) &&
       (e.category === "lesson" ||
         e.category === "mistake" ||
         e.category === "preference")
@@ -302,7 +299,7 @@ export function scanPromotionCandidates(cwd: string): PromotionCandidate[] {
     if (
       evidence >= EVIDENCE_PROJECT_RULE &&
       looksProjectConvention(e.text) &&
-      !hasEnforcement(e.scored) &&
+      !hasEnforcementFields(e.scored) &&
       !inferred
     ) {
       candidates.push({
@@ -339,6 +336,7 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
   const toQueue: PromotionCandidate[] = [];
   const toApply: PromotionCandidate[] = [];
 
+  const scores = scanned.length > 0 ? loadScores(cwd) : null;
   for (const c of scanned) {
     if (c.destination !== "enforcement" || !c.trigger || !c.action) {
       toQueue.push(c);
@@ -352,8 +350,8 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
     }
 
     const hash = entryHash(`- [${c.category}] ${c.text}`);
-    const entry = loadScores(cwd).entries[hash];
-    if (!entry || hasEnforcement(entry)) {
+    const entry = scores?.entries[hash];
+    if (!entry || hasEnforcementFields(entry)) {
       toQueue.push({ ...c, status: "proposed" });
       continue;
     }
@@ -362,18 +360,20 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
   }
 
   // Single locked read-modify-write for all applied enforcement fields
-  mutateScores(cwd, (scores) => {
-    for (const c of toApply) {
-      const hash = entryHash(`- [${c.category}] ${c.text}`);
-      const entry = scores.entries[hash];
-      if (!entry || hasEnforcement(entry)) continue;
+  if (toApply.length > 0) {
+    mutateScores(cwd, (latestScores) => {
+      for (const c of toApply) {
+        const hash = entryHash(`- [${c.category}] ${c.text}`);
+        const entry = latestScores.entries[hash];
+        if (!entry || hasEnforcementFields(entry)) continue;
 
-      entry.trigger = c.trigger as EnforcementTrigger;
-      entry.action = c.action as EnforcementAction;
-      if (c.verifier) entry.verifier = c.verifier;
-      entry.lifecycle = "active";
-    }
-  });
+        entry.trigger = c.trigger as EnforcementTrigger;
+        entry.action = c.action as EnforcementAction;
+        if (c.verifier) entry.verifier = c.verifier;
+        entry.lifecycle = "active";
+      }
+    });
+  }
 
   for (const c of toApply) {
     markTopicEntryEnforced(cwd, c.category as MemoryCategory, c.text);

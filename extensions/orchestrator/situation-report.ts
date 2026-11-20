@@ -32,6 +32,7 @@ import { formatPromotionsForReport } from "./promotion-queue.js";
 import { pruneExpiredEntries } from "./memory-write.js";
 import {
   type QueryClass,
+  SECTION_CATEGORY_MAP,
   getQueryClassBias,
   sectionPriorityBoost,
 } from "./memory-query-class.js";
@@ -256,19 +257,12 @@ export function buildSituationReport(
 
   // Sort sections: use base priority but boost sections whose topic is hotter
   const sortedSections = [...SECTIONS].sort((a, b) => {
-    // Map section names to topic names
-    const topicMap: Record<string, string> = {
-      "Active Preferences": "preferences",
-      "Active Lessons": "lessons",
-      "Vetoes & Mistakes": "mistakes",
-      "Patterns": "patterns",
-      "Recent Decisions": "decisions",
-      "Recent Completions": "completions",
-    };
     const aPriority = sectionPriorityBoost(a.name, a.priority, queryClass);
     const bPriority = sectionPriorityBoost(b.name, b.priority, queryClass);
-    const aHot = topicHotness.get(topicMap[a.name] || "") || 0;
-    const bHot = topicHotness.get(topicMap[b.name] || "") || 0;
+    const aCat = SECTION_CATEGORY_MAP[a.name];
+    const bCat = SECTION_CATEGORY_MAP[b.name];
+    const aHot = (aCat ? topicHotness.get(CATEGORY_TO_TOPIC[aCat]) : undefined) || 0;
+    const bHot = (bCat ? topicHotness.get(CATEGORY_TO_TOPIC[bCat]) : undefined) || 0;
     // Primary: priority (lower = higher). Secondary: hotness (higher = first)
     if (aPriority !== bPriority) return aPriority - bPriority;
     return bHot - aHot;
@@ -284,15 +278,7 @@ export function buildSituationReport(
     if (sectionEntries.length === 0) continue;
 
     // Boost token budget for query-class-relevant sections
-    const sectionCatMap: Record<string, MemoryCategory> = {
-      "Active Preferences": "preference",
-      "Active Lessons": "lesson",
-      "Vetoes & Mistakes": "mistake",
-      Patterns: "pattern",
-      "Recent Decisions": "decision",
-      "Recent Completions": "done",
-    };
-    const sectionCat = sectionCatMap[sectionDef.name];
+    const sectionCat = SECTION_CATEGORY_MAP[sectionDef.name];
     const boosted = !!(sectionCat && bias.boostCategories.includes(sectionCat));
     const sectionTokenBudget = boosted
       ? Math.floor(sectionDef.tokenBudget * 1.25)

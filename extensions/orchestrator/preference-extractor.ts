@@ -30,9 +30,6 @@ const log = createLogger("memory");
 // Debounce: don't extract from every message, only meaningful ones
 const MIN_MESSAGE_LENGTH = 20;
 
-// Candidate queue bounds: the file stays small (dreaming consumes it each
-// cycle), but a repo where dreaming never runs must not grow it unbounded.
-const MAX_CANDIDATES = 200;
 const CANDIDATE_FILE = "preference-candidates.jsonl";
 
 export function candidateQueuePath(cwd: string): string {

@@ -84,4 +84,24 @@ describe("removal tombstones", () => {
       cleanup();
     }
   });
+
+  it("compacts the removal log when it exceeds 5000 rows (#1266)", () => {
+    const { cwd, cleanup } = project();
+    try {
+      const file = join(cwd, ".pi", "memory", "removals.jsonl");
+      const at = new Date().toISOString();
+      const seedRows = Array.from({ length: 5005 }, (_, i) =>
+        JSON.stringify({ hash: String(i).padStart(16, "0"), at }),
+      );
+      writeFileSync(file, `${seedRows.join("\n")}\n`, "utf-8");
+
+      recordRemoval(cwd, LINE);
+
+      const rows = readFileSync(file, "utf-8").split("\n").filter(Boolean);
+      assert.equal(rows.length, 5000);
+      assert.equal(JSON.parse(rows[rows.length - 1]!).hash, entryHash(LINE));
+    } finally {
+      cleanup();
+    }
+  });
 });

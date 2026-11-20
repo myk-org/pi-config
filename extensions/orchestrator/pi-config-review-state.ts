@@ -10,13 +10,13 @@
  * On first access, migrates any legacy pi-config-review-state.json automatically.
  */
 
-import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
 import { createLogger } from "../shared/logger.js";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
+import { getHeadSha } from "./git-helpers.js";
 import { resolveWorktreeRoot } from "./utils.js";
 
 const log = createLogger("pi-config-review-state");
@@ -188,17 +188,10 @@ export function readReviewState(cwd: string): ReviewState {
   }
 }
 
-function lockPath(cwd: string): string {
-  // Lock file sits next to the JSONL state file
-  return statePath(cwd) + ".lock";
-}
-
-function acquireLock(cwd: string): boolean {
-  const lock = lockPath(cwd);
+function acquireLock(lock: string): boolean {
   const maxRetries = 100;
   for (let i = 0; i < maxRetries; i++) {
     try {
-      getWorktreeDataDir(cwd);
       writeFileSync(lock, String(process.pid), { flag: "wx" });
       return true;
     } catch {
@@ -226,8 +219,8 @@ function acquireLock(cwd: string): boolean {
   return false;
 }
 
-function releaseLock(cwd: string): void {
-  try { unlinkSync(lockPath(cwd)); } catch { /* ignore */ }
+function releaseLock(lock: string): void {
+  try { unlinkSync(lock); } catch { /* ignore */ }
 }
 
 function writeState(cwd: string, state: ReviewState): void {
@@ -244,10 +237,12 @@ const lockDepth = new Map<string, number>();
 /** Execute a read-modify-write operation on the state file with a lock.
  *  Throws if lock cannot be acquired (never proceeds without mutual exclusion). */
 function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
+  // Ensure the data directory exists once before spinning on lock acquisition.
   const key = statePath(cwd);
+  const lock = `${key}.lock`;
   const depth = lockDepth.get(key) || 0;
   if (depth === 0) {
-    if (!acquireLock(cwd)) {
+    if (!acquireLock(lock)) {
       throw new Error("[pi-config-review-state] failed to acquire lock — aborting to prevent state corruption");
     }
   }
@@ -258,7 +253,7 @@ function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
     const newDepth = (lockDepth.get(key) || 1) - 1;
     if (newDepth <= 0) {
       lockDepth.delete(key);
-      releaseLock(cwd);
+      releaseLock(lock);
     } else {
       lockDepth.set(key, newDepth);
     }
@@ -387,15 +382,6 @@ export function isReviewClean(cwd: string): boolean {
   return true;
 }
 
-/** HEAD of the worktree, or null when it cannot be read (not a repo, git missing). */
-function currentHeadSha(cwd: string): string | null {
-  try {
-    return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 /** True when the stored subject is the one this worktree is reviewing now. A subject that carries a
  *  commit must match HEAD; a plan or issue is not tied to a commit and is only replaced by a caller
  *  naming a new one. Unknown HEAD answers false, so the cap never applies on a guess. */
@@ -405,7 +391,7 @@ function subjectIsCurrent(cwd: string, subject: ReviewSubject | null): boolean {
   // (including the `unresolved:` fallback written when HEAD cannot be read) never licensed a
   // commit — treating them as current let such a round's count authorize unreviewed code.
   if (subject.kind !== "pr" && subject.kind !== "local") return false;
-  const head = currentHeadSha(cwd);
+  const head = getHeadSha(cwd);
   return head !== null && subject.head_sha === head;
 }
 

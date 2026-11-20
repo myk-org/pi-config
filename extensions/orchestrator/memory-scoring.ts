@@ -13,7 +13,7 @@ import { createLogger } from "../shared/logger.js";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { createCachedStore } from "./state-jsonl.js";
+import { createCachedStore, SKIP_MUTATE } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectMemoryDir } from "./utils.js";
@@ -194,7 +194,7 @@ export function lifecycleFromScore(score: number, userState: UserState, entry?: 
   if (userState === "pinned") return "active";
   if (userState === "forgotten") return "dropped";
   // Enforced entries never decay below active — require trigger+action or verifier
-  if (entry && ((entry.trigger && entry.action) || entry.verifier)) return "active";
+  if (hasEnforcementFields(entry)) return "active";
   if (score >= PINNED_SCORE) return "active";
   if (score >= TAU_PROMOTE) return "active";
   if (score >= TAU_PROVISIONAL) return "provisional";
@@ -235,8 +235,8 @@ function isLegacyKey(key: string): boolean {
 }
 
 /** True when an entry carries enforcement (trigger+action or verifier). */
-function hasEnforcementFields(entry: ScoredEntry): boolean {
-  return !!((entry.trigger && entry.action) || entry.verifier);
+export function hasEnforcementFields(entry: ScoredEntry | undefined): boolean {
+  return !!entry && !!((entry.trigger && entry.action) || entry.verifier);
 }
 
 // ── Scores File I/O ────────────────────────────────────────────────────────
@@ -310,7 +310,7 @@ export function loadScores(cwd: string): ScoresFile {
   if (data.hashAlgo !== HASH_ALGO) {
     getScoresStore(cwd).mutate(
       (latest) => {
-        if (latest.hashAlgo === HASH_ALGO) return; // a concurrent process already migrated
+        if (latest.hashAlgo === HASH_ALGO) return SKIP_MUTATE; // a concurrent process already migrated
         migrateScoreKeysInPlace(cwd, latest);
       },
       { entries: {}, lastRebuild: new Date().toISOString(), hashAlgo: HASH_ALGO },
@@ -403,7 +403,7 @@ export function saveScores(cwd: string, scores: ScoresFile): void {
  */
 export function mutateScores(
   cwd: string,
-  fn: (scores: ScoresFile) => void,
+  fn: (scores: ScoresFile) => ScoresFile | void | typeof SKIP_MUTATE,
 ): ScoresFile | null {
   // Ensure key migration has run before mutating (idempotent, cached read)
   loadScores(cwd);
@@ -523,7 +523,7 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
     for (const hash of Object.keys(s.entries)) {
       if (!currentHashes.has(hash)) {
         const entry = s.entries[hash];
-        if (entry && ((entry.trigger && entry.action) || entry.verifier)) {
+        if (hasEnforcementFields(entry)) {
           // Enforced entry (trigger+action or verifier) — keep it
           // Mark as orphaned so budgeting excludes it
           (entry as any)._orphaned = true;
@@ -593,30 +593,34 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
 
 // ── Reinforcement ──────────────────────────────────────────────────────────
 
+/** Apply reinforcement math to an existing scored entry in place. */
+export function applyReinforceToEntry(entry: ScoredEntry, nowMs = Date.now()): void {
+  entry.evidenceCount += 1;
+  entry.lastReinforced = new Date(nowMs).toISOString();
+  entry.score = calculateStability(
+    entry.cue,
+    entry.evidenceCount,
+    nowMs,
+    nowMs,
+    entry.class,
+    entry.userState,
+  );
+  entry.lifecycle = lifecycleFromScore(entry.score, entry.userState, entry);
+}
+
 /**
  * Reinforce an existing memory entry (bump evidence count + last reinforced).
  * Locked read-modify-write — safe against concurrent sessions (issue #915).
  * Returns true if the entry was found and reinforced.
  */
 export function reinforce(cwd: string, entryLine: string): boolean {
+  const hash = entryHash(entryLine);
   let found = false;
   mutateScores(cwd, (scores) => {
-    const hash = entryHash(entryLine);
     const entry = scores.entries[hash];
-    if (!entry) return;
+    if (!entry) return SKIP_MUTATE;
     found = true;
-
-    entry.evidenceCount += 1;
-    entry.lastReinforced = new Date().toISOString();
-    entry.score = calculateStability(
-      entry.cue,
-      entry.evidenceCount,
-      Date.now(),
-      Date.now(),
-      entry.class,
-      entry.userState,
-    );
-    entry.lifecycle = lifecycleFromScore(entry.score, entry.userState, entry);
+    applyReinforceToEntry(entry);
   });
   return found;
 }

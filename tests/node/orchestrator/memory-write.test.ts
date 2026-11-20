@@ -11,9 +11,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addMemoryEntry, pruneExpiredEntries } from "../../../extensions/orchestrator/memory-write.js";
+import { addMemoryEntry, pruneExpiredEntries, removeMemoryEntry } from "../../../extensions/orchestrator/memory-write.js";
 import {
   entryHash,
+  getScoresPath,
+  hasEnforcementFields,
   loadScores,
   saveScores,
   extractPreferences,
@@ -22,7 +24,7 @@ import {
   isEntryActiveForSession,
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
-import { readAllTopicEntries, topicCharCap } from "../../../extensions/orchestrator/memory-tree.js";
+import { readAllTopicEntries, removalsSince, topicCharCap } from "../../../extensions/orchestrator/memory-tree.js";
 import { loadEnforcedEntries } from "../../../extensions/orchestrator/enforcement-rules.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -3566,6 +3568,83 @@ describe("topic size caps (issue #1010)", () => {
         category: "lesson",
       });
       assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("single-cycle dedup reinforcement & shared removal (#1262, #1277)", () => {
+  it("reinforce + scope reconcile + enforcement merge writes only one JSONL snapshot", async () => {
+    const cwd = makeCwd();
+    try {
+      const text = "Always run unit tests before opening a pull request";
+      const first = await addMemoryEntry(cwd, {
+        text,
+        category: "lesson",
+        scope: "session",
+        sourceSession: "sess-1",
+      });
+      assert.equal(first.status, "added");
+
+      const scoresPath = getScoresPath(cwd);
+      const linesBefore = fs.readFileSync(scoresPath, "utf-8").trim().split("\n").length;
+
+      // Restatement without scope + adding enforcement fields triggers all 3 updates
+      const second = await addMemoryEntry(cwd, {
+        text,
+        category: "lesson",
+        trigger: "bash_contains gh pr create",
+        action: "warn",
+      });
+      assert.equal(second.status, "reinforced");
+
+      const linesAfter = fs.readFileSync(scoresPath, "utf-8").trim().split("\n").length;
+      assert.equal(linesAfter - linesBefore, 1, "expected a single locked JSONL append, not 3");
+
+      const entry = loadScores(cwd).entries[entryHash(`- [lesson] ${text}`)];
+      assert.ok(entry);
+      assert.equal(entry.evidenceCount, 2);
+      assert.equal(entry.scope, undefined, "session scope reconciled to durable");
+      assert.equal(entry.trigger, "bash_contains gh pr create");
+      assert.equal(entry.action, "warn");
+      assert.equal(hasEnforcementFields(entry), true);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("removeMemoryEntry honors recordTombstone and handles error statuses", async () => {
+    const cwd = makeCwd();
+    try {
+      assert.equal(
+        removeMemoryEntry(cwd, "bogus", "x", { recordTombstone: true }).status,
+        "invalid_category",
+      );
+      assert.equal(
+        removeMemoryEntry(cwd, "lesson", "missing", { recordTombstone: true }).status,
+        "topic_missing",
+      );
+
+      const t1 = "First removable lesson for tombstone check";
+      const t2 = "Second removable lesson for non-tombstone invalidate";
+      await addMemoryEntry(cwd, { text: t1, category: "lesson" });
+      await addMemoryEntry(cwd, { text: t2, category: "lesson" });
+
+      assert.equal(
+        removeMemoryEntry(cwd, "lesson", "not present", { recordTombstone: true }).status,
+        "not_found",
+      );
+
+      const startedAt = Date.now() - 1000;
+      const r1 = removeMemoryEntry(cwd, "lesson", t1, { recordTombstone: true });
+      assert.equal(r1.status, "removed");
+      assert.ok(removalsSince(cwd, startedAt).has(entryHash(`- [lesson] ${t1}`)));
+
+      const r2 = removeMemoryEntry(cwd, "lesson", t2, { recordTombstone: false });
+      assert.equal(r2.status, "removed");
+      assert.ok(!removalsSince(cwd, startedAt).has(entryHash(`- [lesson] ${t2}`)));
+      assert.equal(readAllTopicEntries(cwd).length, 0);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

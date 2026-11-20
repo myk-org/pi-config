@@ -55,7 +55,6 @@
  * with it.
  */
 
-import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,6 +62,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
+import { getOriginUrl, parseRemoteRepo, runGit } from "./git-helpers.js";
 import { getProjectDataDir, getProjectMemoryDir, resolveWorktreeRoot } from "./utils.js";
 import { addMemoryEntry } from "./memory-write.js";
 import { entryHash, getScoresPath, loadScores } from "./memory-scoring.js";
@@ -140,20 +140,7 @@ export interface RepoInfo {
 
 /** Parse `owner/repo` from a git remote URL (https, ssh://, and SCP-like forms). */
 export function parseGitHubRepo(remoteUrl: string): { owner: string; repo: string } | null {
-  if (typeof remoteUrl !== "string") return null;
-  let url = remoteUrl.trim().replace(/\.git$/i, "").replace(/\/+$/, "");
-  if (!url) return null;
-  // SCP-like: git@github.com:owner/repo (or any user@host:path)
-  const scp = /^[^@/\s]+@([^:/\s]+):(.+)$/.exec(url);
-  if (scp) url = `https://${scp[1]}/${scp[2]}`;
-  const urlMatch = /^(?:https?|ssh|git):\/\/(?:[^@/\s]+@)?[^/\s]+\/(.+)$/.exec(url);
-  if (!urlMatch) return null;
-  const segments = urlMatch[1]!.split("/").filter(Boolean);
-  if (segments.length < 2) return null;
-  const repo = segments.pop()!;
-  const owner = segments.pop()!;
-  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return null;
-  return { owner, repo };
+  return parseRemoteRepo(remoteUrl);
 }
 
 const REPO_INFO_CACHE_TTL_MS = 60_000;
@@ -197,14 +184,12 @@ export function resolveRepoInfo(cwd: string): RepoInfo | null {
     return cached.value;
   }
   let repo: RepoInfo | null = null;
-  try {
-    const url = execFileSync("git", ["remote", "get-url", "origin"], {
-      cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+  const url = getOriginUrl(cwd);
+  if (url) {
     repo = parseGitHubRepo(url);
     if (!repo) log.debug("repo_url_unparsable", { cwd, url: url.slice(0, 120) });
-  } catch (error: any) {
-    log.debug("repo_resolution_failed", { cwd, reason: String(error?.message ?? error).slice(0, 200) });
+  } else {
+    log.debug("repo_resolution_failed", { cwd });
   }
   if (repoInfoCache.size >= 64) {
     const oldest = repoInfoCache.keys().next().value;
@@ -401,16 +386,38 @@ function stateFilePath(dataDir: string): string {
   return join(dataDir, STATE_FILE_NAME);
 }
 
-/** Review ids already distilled — persisted so partial address runs (no store)
- *  and re-fires never re-distill the same review. Fail-soft. */
-export function loadDistilledReviews(dataDir: string): Set<number> {
+interface ReviewLearningStateFile {
+  distilledReviews: number[];
+  reviewLessons: Map<number, Set<string>>;
+  protectedLessonTexts: string[];
+}
+
+/** Parse `.pi/data/review-learning-state.json` once into all three fields. Fail-soft. */
+function readStateFile(dataDir: string): ReviewLearningStateFile {
+  const reviewLessons = new Map<number, Set<string>>();
   try {
     const raw = JSON.parse(readFileSync(stateFilePath(dataDir), "utf-8"));
     const ids = Array.isArray(raw?.distilledReviews) ? raw.distilledReviews : [];
-    return new Set(ids.map(Number).filter((n: number) => Number.isInteger(n) && n > 0));
+    const distilledReviews = ids.map(Number).filter((n: number) => Number.isInteger(n) && n > 0);
+    const entries = raw?.reviewLessons && typeof raw.reviewLessons === "object" ? raw.reviewLessons : {};
+    for (const [id, texts] of Object.entries(entries)) {
+      if (!Array.isArray(texts)) continue;
+      reviewLessons.set(Number(id), new Set(texts.filter((t): t is string => typeof t === "string")));
+    }
+    const rawProtected = Array.isArray(raw?.protectedLessonTexts) ? raw.protectedLessonTexts : [];
+    const protectedLessonTexts = rawProtected.filter(
+      (text: unknown): text is string => typeof text === "string" && text.trim().length > 0,
+    );
+    return { distilledReviews, reviewLessons, protectedLessonTexts };
   } catch {
-    return new Set();
+    return { distilledReviews: [], reviewLessons, protectedLessonTexts: [] };
   }
+}
+
+/** Review ids already distilled — persisted so partial address runs (no store)
+ *  and re-fires never re-distill the same review. Fail-soft. */
+export function loadDistilledReviews(dataDir: string): Set<number> {
+  return new Set(readStateFile(dataDir).distilledReviews);
 }
 
 /**
@@ -420,18 +427,7 @@ export function loadDistilledReviews(dataDir: string): Set<number> {
  * evidence without a new occurrence). Fail-soft.
  */
 export function loadReviewLessons(dataDir: string): Map<number, Set<string>> {
-  const byReview = new Map<number, Set<string>>();
-  try {
-    const raw = JSON.parse(readFileSync(stateFilePath(dataDir), "utf-8"));
-    const entries = raw?.reviewLessons && typeof raw.reviewLessons === "object" ? raw.reviewLessons : {};
-    for (const [id, texts] of Object.entries(entries)) {
-      if (!Array.isArray(texts)) continue;
-      byReview.set(Number(id), new Set(texts.filter((t): t is string => typeof t === "string")));
-    }
-  } catch {
-    // fresh state
-  }
-  return byReview;
+  return readStateFile(dataDir).reviewLessons;
 }
 
 /** Every distilled review-lesson text recorded in the state file, flattened.
@@ -441,23 +437,29 @@ export function loadReviewLessons(dataDir: string): Map<number, Set<string>> {
  *  Unions the bounded per-review map with the long-lived protection list so lessons
  *  from reviews older than the tracking window stay protected. */
 export function distilledLessonTextList(dataDir: string): string[] {
+  const state = readStateFile(dataDir);
   const texts = new Set<string>();
-  for (const lessons of loadReviewLessons(dataDir).values()) {
+  for (const lessons of state.reviewLessons.values()) {
     for (const lesson of lessons) if (lesson.trim()) texts.add(lesson.trim());
   }
-  for (const lesson of loadProtectedLessonTexts(dataDir)) if (lesson.trim()) texts.add(lesson.trim());
+  for (const lesson of state.protectedLessonTexts) if (lesson.trim()) texts.add(lesson.trim());
   log.debug("distilled_lesson_texts_loaded", { count: texts.size });
   return [...texts];
 }
 
-function writeStateFile(dataDir: string, distilledReviews: number[], reviewLessons: Map<number, Set<string>>): void {
+function writeStateFile(
+  dataDir: string,
+  distilledReviews: number[],
+  reviewLessons: Map<number, Set<string>>,
+  existingProtectedTexts?: string[],
+): void {
   const lessons: Record<string, string[]> = {};
   const ids = [...reviewLessons.keys()];
   for (const id of ids.slice(-MAX_TRACKED_REVIEWS)) lessons[String(id)] = [...reviewLessons.get(id)!];
   // Protection set for older reviews: `lessons` is bounded by MAX_TRACKED_REVIEWS, so
   // without this union a lesson from review #1 stops being recognizable as reviewed
   // knowledge once 200 newer reviews land, and memory maintenance may delete it (#1010).
-  const protectedTexts = new Set(loadProtectedLessonTexts(dataDir));
+  const protectedTexts = new Set(existingProtectedTexts ?? readStateFile(dataDir).protectedLessonTexts);
   for (const set of reviewLessons.values()) for (const text of set) if (text.trim()) protectedTexts.add(text.trim());
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(
@@ -477,24 +479,19 @@ function writeStateFile(dataDir: string, distilledReviews: number[], reviewLesso
 /** Lesson texts that must stay recognizable as reviewed knowledge, independent of
  *  the bounded per-review map. Empty on a fresh or unreadable state file. */
 export function loadProtectedLessonTexts(dataDir: string): string[] {
-  try {
-    const raw = JSON.parse(readFileSync(stateFilePath(dataDir), "utf-8"));
-    const texts = Array.isArray(raw?.protectedLessonTexts) ? raw.protectedLessonTexts : [];
-    return texts.filter((text: unknown): text is string => typeof text === "string" && text.trim().length > 0);
-  } catch {
-    return [];
-  }
+  return readStateFile(dataDir).protectedLessonTexts;
 }
 
 /** Record a review id as distilled (bounded — oldest entries drop off). Fail-soft. */
 export function markReviewDistilled(dataDir: string, reviewId: number): void {
   try {
+    const state = readStateFile(dataDir);
     // Dedupe: the PR walk re-marks already-distilled reviews on every fire
     // (their completed lessons make it a no-op walk), which would append the
     // same id once per fire and grow the state file without bound.
-    const distilled = [...new Set(loadDistilledReviews(dataDir))];
+    const distilled = [...new Set(state.distilledReviews)];
     if (!distilled.includes(reviewId)) distilled.push(reviewId);
-    writeStateFile(dataDir, distilled, loadReviewLessons(dataDir));
+    writeStateFile(dataDir, distilled, state.reviewLessons, state.protectedLessonTexts);
   } catch (error: any) {
     log.debug("distilled_state_write_failed", { reason: String(error?.message ?? error).slice(0, 200) });
   }
@@ -503,11 +500,11 @@ export function markReviewDistilled(dataDir: string, reviewId: number): void {
 /** Record lesson texts completed for a review (retry bookkeeping). Fail-soft. */
 export function recordReviewLessons(dataDir: string, reviewId: number, texts: string[]): void {
   try {
-    const byReview = loadReviewLessons(dataDir);
-    const done = byReview.get(reviewId) ?? new Set<string>();
+    const state = readStateFile(dataDir);
+    const done = state.reviewLessons.get(reviewId) ?? new Set<string>();
     for (const t of texts) done.add(t);
-    byReview.set(reviewId, done);
-    writeStateFile(dataDir, [...loadDistilledReviews(dataDir)], byReview);
+    state.reviewLessons.set(reviewId, done);
+    writeStateFile(dataDir, [...new Set(state.distilledReviews)], state.reviewLessons, state.protectedLessonTexts);
   } catch (error: any) {
     log.debug("review_lessons_state_write_failed", { reason: String(error?.message ?? error).slice(0, 200) });
   }
@@ -543,30 +540,31 @@ function isRedirectionToken(token: string): boolean {
   return /^\d*>>?\S/.test(token) || token.startsWith(">") || token.includes("/dev/null");
 }
 
+interface ParsedPrCommand {
+  prNumber: number | null;
+  target: { owner: string; repo: string; prNumber: number } | null;
+}
+
 /**
- * PR number of the review an address or store-session command targeted —
- * ONLY from the command's explicit inputs (the address `--json` file or the
- * store-session session JSON's `pr_url`).
- *
- * Order and failure semantics (Qodo beb11c94/86f1855b):
- * - A readable address `--json` file wins (partial runs keep it on disk).
- * - An unreadable/invalid `--json` token (redirection capture, deleted file
- *   on the final storing run) FALLS THROUGH to the store-session path
- *   instead of failing the whole lookup — a combined poll+store command
- *   still resolves its PR from the session JSON.
- * - An unreadable store-session JSON is logged (warn) — the caller decides
- *   not to fall back to the repository's newest review, which would distill
- *   a DIFFERENT PR's findings.
- * - No explicit input at all → null — callers then select the newest review
- *   for the repo (final storing runs), never a different explicit PR.
+ * Shared parser for address `--json` and `reviews store-session <path>` command
+ * inputs — reads and parses each referenced JSON file at most once, returning
+ * both `prNumber` and (when owner/repo are available) the full `target`.
  */
-export function prNumberFromCommand(command: string | undefined, cwd: string): number | null {
+function parsePrCommand(command: string | undefined, cwd: string): ParsedPrCommand {
   const cmd = command ?? "";
   const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(cmd);
   if (m && !isRedirectionToken(m[1]!)) {
     try {
-      const pr = Number(JSON.parse(readFileSync(resolve(cwd, expandEnvVars(m[1]!)), "utf-8"))?.metadata?.pr_number);
-      if (Number.isInteger(pr) && pr > 0) return pr;
+      const meta = JSON.parse(readFileSync(resolve(cwd, expandEnvVars(m[1]!)), "utf-8"))?.metadata;
+      const pr = Number(meta?.pr_number);
+      if (Number.isInteger(pr) && pr > 0) {
+        const owner = typeof meta?.owner === "string" && meta.owner ? meta.owner : null;
+        const repo = typeof meta?.repo === "string" && meta.repo ? meta.repo : null;
+        return {
+          prNumber: pr,
+          target: owner && repo ? { owner, repo, prNumber: pr } : null,
+        };
+      }
       log.debug("pr_from_address_json_invalid", { token: m[1]!.slice(0, 120) });
     } catch (error: any) {
       // Deleted file (final storing run) or bad token — fall through to the
@@ -585,8 +583,15 @@ export function prNumberFromCommand(command: string | undefined, cwd: string): n
     try {
       const prUrl: unknown = JSON.parse(readFileSync(resolve(cwd, expandEnvVars(s[1]!)), "utf-8"))?.pr_url;
       if (typeof prUrl === "string") {
+        const parts = PR_URL_PARTS_RE.exec(prUrl.trim());
+        if (parts) {
+          const pr = Number(parts[3]);
+          if (Number.isInteger(pr) && pr > 0) {
+            return { prNumber: pr, target: { owner: parts[1]!, repo: parts[2]!, prNumber: pr } };
+          }
+        }
         const pr = Number(/\/pull\/(\d+)/.exec(prUrl)?.[1]);
-        if (Number.isInteger(pr) && pr > 0) return pr;
+        if (Number.isInteger(pr) && pr > 0) return { prNumber: pr, target: null };
         log.debug("pr_from_session_json_invalid", { prUrl: prUrl.slice(0, 120) });
       } else {
         log.debug("pr_from_session_json_no_pr_url", { path: s[1]!.slice(0, 200) });
@@ -602,50 +607,28 @@ export function prNumberFromCommand(command: string | undefined, cwd: string): n
       });
     }
   }
-  return null;
+  return { prNumber: null, target: null };
+}
+
+/**
+ * PR number of the review an address or store-session command targeted —
+ * ONLY from the command's explicit inputs (the address `--json` file or the
+ * store-session session JSON's `pr_url`).
+ */
+export function prNumberFromCommand(command: string | undefined, cwd: string): number | null {
+  return parsePrCommand(command, cwd).prNumber;
 }
 
 /**
  * The FULL review target a command names — owner/repo/prNumber from the
  * address `--json` metadata or the store-session pr_url — or null when the
- * command carries no readable target. Used by distill() to query the repo
- * the rows were actually STORED under: a fork-hosted session stores rows
- * under the pr_url's upstream repo while origin names the fork, and a
- * PR-number-only lookup against origin would find nothing (Qodo befc495a).
+ * command carries no readable target.
  */
 export function prTargetFromCommand(
   command: string | undefined,
   cwd: string,
 ): { owner: string; repo: string; prNumber: number } | null {
-  const cmd = command ?? "";
-  const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(cmd);
-  if (m && !isRedirectionToken(m[1]!)) {
-    try {
-      const meta = JSON.parse(readFileSync(resolve(cwd, expandEnvVars(m[1]!)), "utf-8"))?.metadata;
-      const owner = typeof meta?.owner === "string" ? meta.owner : null;
-      const repo = typeof meta?.repo === "string" ? meta.repo : null;
-      const pr = Number(meta?.pr_number);
-      if (owner && repo && Number.isInteger(pr) && pr > 0) return { owner, repo, prNumber: pr };
-    } catch {
-      // unreadable --json — try the store-session path
-    }
-  }
-  const s = REVIEWS_STORE_SESSION_PATH_RE.exec(cmd);
-  if (s) {
-    try {
-      const prUrl: unknown = JSON.parse(readFileSync(resolve(cwd, expandEnvVars(s[1]!)), "utf-8"))?.pr_url;
-      if (typeof prUrl === "string") {
-        const parts = PR_URL_PARTS_RE.exec(prUrl.trim());
-        if (parts) {
-          const pr = Number(parts[3]);
-          if (Number.isInteger(pr) && pr > 0) return { owner: parts[1]!, repo: parts[2]!, prNumber: pr };
-        }
-      }
-    } catch {
-      // unreadable session JSON — prNumberFromCommand already warned
-    }
-  }
-  return null;
+  return parsePrCommand(command, cwd).target;
 }
 
 // ── Distillation (script-only engine) ──────────────────────────────────────
@@ -843,15 +826,33 @@ export interface WriteLessonsResult {
  * recurrence) are reinforced by addMemoryEntry's duplicate detection.
  * Capped at MAX_MEMORY_WRITES_PER_FIRE.
  */
+/** Pre-collect all `derivedFrom` strings across current topic entries once per batch. */
+function collectExistingDerivedFrom(cwd: string): Set<string> {
+  const existing = new Set<string>();
+  try {
+    const scores = loadScores(cwd);
+    for (const te of readAllTopicEntries(cwd)) {
+      const derivedFrom = scores.entries[entryHash(canonicalTopicLine(te))]?.derivedFrom;
+      if (derivedFrom) existing.add(derivedFrom);
+    }
+  } catch (error: any) {
+    log.debug("derived_from_lookup_failed", { reason: String(error?.message ?? error).slice(0, 200) });
+  }
+  return existing;
+}
+
 export async function writeLessonsToMemory(
   cwd: string,
   lessons: DistilledLesson[],
   repo: RepoInfo,
 ): Promise<WriteLessonsResult> {
   const result: WriteLessonsResult = { added: 0, reinforced: 0, rejected: 0, skipped: 0, completed: [] };
-  for (const lesson of lessons.slice(0, MAX_MEMORY_WRITES_PER_FIRE)) {
+  const batch = lessons.slice(0, MAX_MEMORY_WRITES_PER_FIRE);
+  if (batch.length === 0) return result;
+  const existingDerivedFrom = collectExistingDerivedFrom(cwd);
+  for (const lesson of batch) {
     const derivedFrom = findingProvenance(lesson.findingIds[0]!, repo);
-    if (findMemoryLineByDerivedFrom(cwd, derivedFrom)) {
+    if (existingDerivedFrom.has(derivedFrom)) {
       result.skipped++;
       result.completed.push(lesson.text);
       log.debug("lesson_already_distilled", { derivedFrom });
@@ -877,7 +878,10 @@ export async function writeLessonsToMemory(
         reason: String((add as { message?: string }).message ?? "").slice(0, 300),
       });
     }
-    if (add.status !== "rejected") result.completed.push(lesson.text);
+    if (add.status !== "rejected") {
+      existingDerivedFrom.add(derivedFrom);
+      result.completed.push(lesson.text);
+    }
     log.debug("lesson_write", { derivedFrom, status: add.status });
   }
   return result;
@@ -895,8 +899,18 @@ const MAX_BLOCK_CHARS = 600;
 const MAX_GIST_CHARS = 120;
 
 const BLOCK_HEADER =
-  "<review-lessons>\nPast review findings for files you're about to touch (addressed N× — avoid repeating):";
+  "<review-lessons>\nAddressed findings for target files (N× — avoid repeating):";
 const BLOCK_TAIL = "</review-lessons>";
+
+/** Strip a redundant leading `<path>: ` prefix from rendered finding text
+ *  (distilled lessons already carry `<path>: `, while rendering prefixes path again). */
+function stripLeadingPathPrefix(path: string, text: string): string {
+  const prefix = `${path}: `;
+  if (text.startsWith(prefix) && text.length > prefix.length) {
+    return text.slice(prefix.length);
+  }
+  return text;
+}
 
 /**
  * Normalize a cwd-relative or absolute path (tool paths) to repo-relative
@@ -1012,14 +1026,10 @@ export function branchDiffPaths(cwd: string): string[] {
   }
   let result: string[] = [];
   for (const range of ["main...HEAD", "origin/main...HEAD"]) {
-    try {
-      const out = execFileSync("git", ["diff", "--name-only", range], {
-        cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
-      });
-      result = out.split("\n").map((line) => line.trim()).filter(Boolean);
+    const diff = runGit(["diff", "--name-only", range], cwd);
+    if (diff.code === 0) {
+      result = diff.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
       break;
-    } catch {
-      // try the next base ref
     }
   }
   if (headKey !== null) {
@@ -1264,7 +1274,8 @@ export function formatFindingsBlock(findings: PathFindings[]): string | null {
   const lines: string[] = [];
   for (const finding of findings) {
     if (lines.length >= MAX_BLOCK_LINES) break;
-    let line = `- ${finding.path} (${finding.count}×): ${finding.text}`;
+    const text = stripLeadingPathPrefix(finding.path, finding.text);
+    const line = `- ${finding.path} (${finding.count}×): ${text}`;
     const cost = (lines.length > 0 ? 1 : 0) + line.length;
     if (cost > budget) {
       if (lines.length === 0 && budget > 4) {
@@ -1385,7 +1396,7 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     const dataDir = getProjectDataDir(cwd);
     const dbPath = join(dataDir, "reviews.db");
     const distilled = loadDistilledReviews(dataDir);
-    const prNumber = prNumberFromCommand(command, cwd);
+    const { prNumber, target } = parsePrCommand(command, cwd);
     if (prNumber === null && command !== undefined && isReviewsStoreSessionCommand(command)) {
       // The session JSON is the loop's own record and is never deleted — an
       // unresolved PR means the read failed; falling back to the newest
@@ -1411,7 +1422,6 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       // the wrong repository's findings (Qodo 1c8fc091). A fork checkout
       // (origin = fork, rows under the upstream pr_url repo) still finds
       // its rows through the target.
-      const target = prTargetFromCommand(command, cwd);
       if (target) {
         rowsRepo = { owner: target.owner, repo: target.repo };
         reviews = getReviewsForPr(dbPath, target.owner, target.repo, prNumber);
@@ -1530,12 +1540,15 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     log.info("distill_start", {
       owner: repo.owner, repo: repo.repo, prNumber: review.prNumber, reviewId: review.id, findings: findings.length,
     });
-    // Per-lesson retry bookkeeping BEFORE the cap: lessons already written
-    // for this review are excluded upstream of MAX_FINDINGS_PER_FIRE, so a
-    // review with more findings than one fire's cap distills its remaining
-    // lessons on the next fire (Qodo 16d84431).
+    // Compute all distinct lessons once and derive both the pending slice
+    // and total count from it (avoids re-ranking/re-cleaning findings twice).
     const completed = loadReviewLessons(dataDir).get(review.id) ?? new Set<string>();
-    const lessons = distillLessons(findings, completed);
+    const allLessons = distillLessons(findings, new Set(), Number.MAX_SAFE_INTEGER);
+    const totalLessons = allLessons.length;
+    const lessons = (completed.size > 0
+      ? allLessons.filter((lesson) => !completed.has(lesson.text))
+      : allLessons
+    ).slice(0, MAX_FINDINGS_PER_FIRE);
     if (lessons.length === 0) {
       log.info("distill_finish", { findings: findings.length, lessons: 0, reason: "no lessons distilled" });
       markReviewDistilled(dataDir, review.id);
@@ -1565,7 +1578,6 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     // completed; a review cut short by the budget (or with rejected
     // lessons) stays unmarked — the next fire re-runs it (completed-aware)
     // and writes the remainder.
-    const totalLessons = distillLessons(findings, new Set(), Number.MAX_SAFE_INTEGER).length;
     const doneAfter = completed.size + written.completed.length;
     if (doneAfter >= totalLessons) {
       markReviewDistilled(dataDir, review.id);
@@ -1684,7 +1696,7 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         const top = findings[0]!;
         recall.injectedPaths.add(written);
         const hint = recall.fullBlockInjected
-          ? `[review-lessons] ${top.path} (${top.count}×): ${top.text}`
+          ? `[review-lessons] ${top.path} (${top.count}×): ${stripLeadingPathPrefix(top.path, top.text)}`
           : formatFindingsBlock(findings);
         if (!hint) return;
         recall.fullBlockInjected = true;

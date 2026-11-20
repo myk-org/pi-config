@@ -31,15 +31,17 @@ import {
   VALID_CATEGORIES,
   PINNED_SCORE,
   entryHash,
+  hasEnforcementFields,
   loadScores,
   mutateScores,
   newEntryId,
-  reinforce,
+  applyReinforceToEntry,
   isGrantText,
   isTaskScopedText,
   hasDurabilityMarker,
 } from "./memory-scoring.js";
 import {
+  type TopicEntry,
   CATEGORY_TO_TOPIC,
   topicCharCap,
   readAllTopicEntries,
@@ -50,7 +52,8 @@ import {
   invalidateTopicFileCache,
   recordRemoval,
 } from "./memory-tree.js";
-import { embedEntry, removeEmbedding, removeEmbeddings, vectorSearch } from "./memory-embeddings.js";
+import { embedEntry, embedMissing, removeEmbedding, removeEmbeddings, vectorSearch } from "./memory-embeddings.js";
+import { SKIP_MUTATE } from "./state-jsonl.js";
 import { getSetting } from "./project-settings.js";
 
 const log = createLogger("memory");
@@ -2028,15 +2031,139 @@ function collapsedActionSize(words: Set<string>, rawClause: string): number {
   return Math.max(1, words.size - collapse);
 }
 
-function isEnforcedEntry(entry: ScoredEntry | undefined): boolean {
-  return !!entry && (!!((entry.trigger && entry.action) || entry.verifier));
-}
-
 export interface ConflictCandidate {
   text: string;
   category: MemoryCategory;
   pinned: boolean;
   enforced: boolean;
+}
+
+interface VectorMatchItem {
+  text: string;
+  category: string;
+  pinned: boolean;
+  similarity: number;
+}
+
+/**
+ * Internal implementation returning both conflicts and the full pool's vector
+ * matches so `addMemoryEntry()` can reuse same-category similarity scores in
+ * Step 4a without running a second `vectorSearch()`.
+ */
+async function findContradictionWithVector(
+  cwd: string,
+  text: string,
+  category: string,
+  preloadedEntries?: TopicEntry[],
+): Promise<{
+  conflicts: ConflictCandidate[];
+  vectorMatches: VectorMatchItem[];
+  matchedKeys: Set<string>;
+}> {
+  const topicEntries = preloadedEntries ?? readAllTopicEntries(cwd);
+  if (topicEntries.length === 0) return { conflicts: [], vectorMatches: [], matchedKeys: new Set() };
+  const scores = loadScores(cwd);
+
+  // Protected pool: same category + pinned + enforced. These are the entries
+  // a one-off grant is most likely to contradict (issue #915 incident).
+  const pool: ConflictCandidate[] = [];
+  const seen = new Set<string>();
+  for (const te of topicEntries) {
+    const key = `${te.category}:${te.text}`;
+    if (seen.has(key)) continue;
+    const scored = scores.entries[entryHash(`- [${te.category}] ${te.text}`)];
+    const enforced = hasEnforcementFields(scored);
+    if (te.category === category || te.pinned || enforced) {
+      seen.add(key);
+      pool.push({ text: te.text, category: te.category, pinned: te.pinned, enforced });
+    }
+  }
+  if (pool.length === 0) return { conflicts: [], vectorMatches: [], matchedKeys: new Set() };
+
+  // Vector-narrowed candidates (paraphrase-tolerant). Model may be
+  // unavailable — the overlap fallback below still applies. Entries with NO
+  // embedding are never dropped by narrowing (Qodo #7, PR #916): a pinned
+  // or recently added entry that has not been embedded yet must still reach
+  // the overlap check, or it becomes invisible to the conflict gate.
+  // topK covers the WHOLE pool (Qodo round 2, PR #916): with a small topK,
+  // embedded-but-dissimilar entries are absent from the results and were
+  // indistinguishable from unembedded ones.
+  let candidates = pool;
+  let vectorMatches: VectorMatchItem[] = [];
+  let matchedKeys = new Set<string>();
+  const similarKeys = new Set<string>();
+  let similarityByText = new Map<string, number>();
+  try {
+    vectorMatches = await vectorSearch(
+      cwd,
+      text,
+      pool.map((p) => ({ text: p.text, category: p.category, pinned: p.pinned })),
+      pool.length,
+    );
+    similarityByText = new Map(
+      vectorMatches.map((vm) => [`${vm.category}:${vm.text}`, vm.similarity]),
+    );
+    matchedKeys = new Set(vectorMatches.map((vm) => `${vm.category}:${vm.text}`));
+    const conflictThreshold = getConflictSimilarityThreshold(cwd);
+    for (const vm of vectorMatches) {
+      if (vm.similarity >= conflictThreshold) {
+        similarKeys.add(`${vm.category}:${vm.text}`);
+      }
+    }
+    if (similarKeys.size > 0 || matchedKeys.size > 0) {
+      // Keep vector-similar entries AND entries the vector search never saw
+      // (no embedding) — the latter fall through to the overlap check.
+      candidates = pool.filter(
+        (p) => similarKeys.has(`${p.category}:${p.text}`) || !matchedKeys.has(`${p.category}:${p.text}`),
+      );
+    }
+  } catch (err) {
+    log.debug("memory-write: conflict vector search unavailable, using overlap fallback", err);
+  }
+
+  // Hoist per-text features outside the candidate loop.
+  const textShort = collapsedActionSize(contentWords(quotedMask(text)), text) <= 2;
+  const textHasTimeword = TIMEWORD_RE.test(text);
+  let textWords: Set<string> | null = null;
+
+  // Collect EVERY conflicting candidate, best score first — first match in
+  // file order could be a weaker conflict than the real one.
+  const conflicts: Array<{ candidate: ConflictCandidate; score: number }> = [];
+  for (const candidate of candidates) {
+    // Cheap corroboration gate FIRST (Qodo be128547): polarityClash is the
+    // expensive step (quotedMask retries, four splitClauses passes, nested
+    // clause loops) and the overlap counts are trivial — running the gate
+    // before the clash check skips it for every unrelated candidate.
+    const shared = sharedContentWords(text, candidate.text);
+    if (shared === 0) continue;
+    const vectorConfirmed = similarKeys.has(`${candidate.category}:${candidate.text}`);
+    let corroborated = shared >= 2 || vectorConfirmed;
+    if (!corroborated) {
+      // Short rules (Qodo 2c16ab75, PR #956 R2/R4), time-scoped rules (Qodo
+      // 205f7330), and action-verb synonyms (Qodo a42dc6ce) can corroborate
+      // with a single shared content word.
+      if (
+        (textShort && collapsedActionSize(contentWords(quotedMask(candidate.text)), candidate.text) <= 2) ||
+        (textHasTimeword && TIMEWORD_RE.test(candidate.text))
+      ) {
+        corroborated = true;
+      } else {
+        textWords ??= contentWords(text);
+        const candWords = contentWords(candidate.text);
+        corroborated = ACTION_VERB_SYNONYMS.some(
+          ([x, y]) =>
+            (textWords!.has(x) && candWords.has(y)) ||
+            (textWords!.has(y) && candWords.has(x)),
+        );
+      }
+    }
+    if (!corroborated) continue;
+    if (!polarityClash(text, candidate.text)) continue;
+    const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
+    conflicts.push({ candidate, score: similarity * 10 + shared });
+  }
+  conflicts.sort((a, b) => b.score - a.score);
+  return { conflicts: conflicts.map((c) => c.candidate), vectorMatches, matchedKeys };
 }
 
 /**
@@ -2057,116 +2184,68 @@ export async function findContradiction(
   text: string,
   category: string,
 ): Promise<ConflictCandidate[]> {
-  const topicEntries = readAllTopicEntries(cwd);
-  if (topicEntries.length === 0) return [];
-  const scores = loadScores(cwd);
-
-  // Protected pool: same category + pinned + enforced. These are the entries
-  // a one-off grant is most likely to contradict (issue #915 incident).
-  const pool: ConflictCandidate[] = [];
-  const seen = new Set<string>();
-  for (const te of topicEntries) {
-    const key = `${te.category}:${te.text}`;
-    if (seen.has(key)) continue;
-    const scored = scores.entries[entryHash(`- [${te.category}] ${te.text}`)];
-    const enforced = isEnforcedEntry(scored);
-    if (te.category === category || te.pinned || enforced) {
-      seen.add(key);
-      pool.push({ text: te.text, category: te.category, pinned: te.pinned, enforced });
-    }
-  }
-  if (pool.length === 0) return [];
-
-  // Vector-narrowed candidates (paraphrase-tolerant). Model may be
-  // unavailable — the overlap fallback below still applies. Entries with NO
-  // embedding are never dropped by narrowing (Qodo #7, PR #916): a pinned
-  // or recently added entry that has not been embedded yet must still reach
-  // the overlap check, or it becomes invisible to the conflict gate.
-  // topK covers the WHOLE pool (Qodo round 2, PR #916): with a small topK,
-  // embedded-but-dissimilar entries are absent from the results and were
-  // indistinguishable from unembedded ones.
-  let candidates = pool;
-  const similarKeys = new Set<string>();
-  let similarityByText = new Map<string, number>();
-  try {
-    const vectorMatches = await vectorSearch(
-      cwd,
-      text,
-      pool.map((p) => ({ text: p.text, category: p.category, pinned: p.pinned })),
-      pool.length,
-    );
-    similarityByText = new Map(
-      vectorMatches.map((vm) => [`${vm.category}:${vm.text}`, vm.similarity]),
-    );
-    const matchedKeys = new Set(vectorMatches.map((vm) => `${vm.category}:${vm.text}`));
-    for (const vm of vectorMatches) {
-      if (vm.similarity >= getConflictSimilarityThreshold(cwd)) {
-        similarKeys.add(`${vm.category}:${vm.text}`);
-      }
-    }
-    if (similarKeys.size > 0 || matchedKeys.size > 0) {
-      // Keep vector-similar entries AND entries the vector search never saw
-      // (no embedding) — the latter fall through to the overlap check.
-      candidates = pool.filter(
-        (p) => similarKeys.has(`${p.category}:${p.text}`) || !matchedKeys.has(`${p.category}:${p.text}`),
-      );
-    }
-  } catch (err) {
-    log.debug("memory-write: conflict vector search unavailable, using overlap fallback", err);
-  }
-
-  // Collect EVERY conflicting candidate, best score first — first match in
-  // file order could be a weaker conflict than the real one.
-  const conflicts: Array<{ candidate: ConflictCandidate; score: number }> = [];
-  for (const candidate of candidates) {
-    // Cheap corroboration gate FIRST (Qodo be128547): polarityClash is the
-    // expensive step (quotedMask retries, four splitClauses passes, nested
-    // clause loops) and the overlap counts are trivial — running the gate
-    // before the clash check skips it for every unrelated candidate.
-    const shared = sharedContentWords(text, candidate.text);
-    const vectorConfirmed = similarKeys.has(`${candidate.category}:${candidate.text}`);
-    // Short rules (Qodo 2c16ab75): "Never deploy" vs "Always deploy" —
-    // the single shared word IS the whole rule, so the strict ≥ 2 gate
-    // would discard the candidate before the clause gate ever sees the
-    // polarity flip. Admit one shared word when BOTH texts are that short
-    // (≤ 2 content words); the clause-level clash thresholds still apply.
-    // Collapsed sizes (Qodo PR #956 R2): "Never auto-deploy" is a two-word
-    // rule (marker + one compound action) — the shortPair admission must
-    // see the compound as one concept or the discounted shared count (1)
-    // can never corroborate an identical-compound flip. Quote-masked
-    // (Qodo PR #956 R4): quoted examples are never the action, so their
-    // words must not lengthen the rule either — "Never merge 'auto-merge'"
-    // is a two-word rule whose flip on "merge" must reach the clause gate.
-    const shortPair =
-      collapsedActionSize(contentWords(quotedMask(text)), text) <= 2 &&
-      collapsedActionSize(contentWords(quotedMask(candidate.text)), candidate.text) <= 2;
-    // Time-scoped rules (Qodo 205f7330): clock-time tokens tokenize to the
-    // stop word "am"/"pm", so a time-scoped pair can corroborate on the
-    // action alone — "Never deploy at 4am or at 2am" vs "Always deploy
-    // before 3am" shares only "deploy", yet the clause gate's inclusion
-    // logic must see it.
-    const timeScoped = TIMEWORD_RE.test(text) && TIMEWORD_RE.test(candidate.text);
-    // Action-verb synonyms corroborate too (Qodo a42dc6ce): "Never run
-    // tests" versus "Always execute tests; document results" — the exact
-    // word gate saw only "tests" and discarded the candidate before the
-    // clause gate's synonym recognition could run.
-    const textWords = contentWords(text);
-    const candWords = contentWords(candidate.text);
-    const verbSynCorroboration = ACTION_VERB_SYNONYMS.some(
-      ([x, y]) =>
-        (textWords.has(x) && candWords.has(y)) ||
-        (textWords.has(y) && candWords.has(x)),
-    );
-    if (!(shared >= 2 || (vectorConfirmed && shared >= 1) || (shortPair && shared >= 1) || (timeScoped && shared >= 1) || (verbSynCorroboration && shared >= 1))) continue;
-    if (!polarityClash(text, candidate.text)) continue;
-    const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
-    conflicts.push({ candidate, score: similarity * 10 + shared });
-  }
-  conflicts.sort((a, b) => b.score - a.score);
-  return conflicts.map((c) => c.candidate);
+  return (await findContradictionWithVector(cwd, text, category)).conflicts;
 }
 
-// ── Supersession ─────────────────────────────────────────────────────
+// ── Entry Removal & Supersession ─────────────────────────────────────
+
+export type RemoveMemoryResult =
+  | { status: "removed"; id?: string }
+  | { status: "invalid_category" }
+  | { status: "topic_missing" }
+  | { status: "not_found" };
+
+/**
+ * Shared entry-removal pipeline used by `memory_remove`, `memory_edit`
+ * (`invalidate`), and conflict supersession: removes the topic line,
+ * invalidates the topic cache, removes the embedding, cleans up the
+ * score entry (including id-bound keys), and optionally writes a removal
+ * tombstone so the dream guard does not restore it.
+ */
+export function removeMemoryEntry(
+  cwd: string,
+  category: string,
+  text: string,
+  options: { recordTombstone: boolean },
+): RemoveMemoryResult {
+  if (!VALID_CATEGORIES.includes(category as MemoryCategory)) {
+    return { status: "invalid_category" };
+  }
+  const topicName = CATEGORY_TO_TOPIC[category as MemoryCategory];
+  const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
+  if (!existsSync(topicPath)) {
+    return { status: "topic_missing" };
+  }
+  const content = readFileSync(topicPath, "utf-8");
+  const match = findTopicLine(content, category, text);
+  if (!match) {
+    return { status: "not_found" };
+  }
+
+  const lines = content.split("\n");
+  lines.splice(match.index, 1);
+  const cleaned = lines.join("\n").replace(/\n{3,}/g, "\n\n");
+  writeFileSync(topicPath, cleaned, "utf-8");
+  invalidateTopicFileCache(topicPath);
+
+  removeEmbedding(cwd, text, category);
+
+  const canonicalLine = `- [${category}] ${text}`;
+  const removedId = match.id;
+  mutateScores(cwd, (scores) => {
+    delete scores.entries[entryHash(canonicalLine)];
+    if (removedId) {
+      for (const [hash, entry] of Object.entries(scores.entries)) {
+        if (entry.id === removedId) delete scores.entries[hash];
+      }
+    }
+  });
+
+  if (options.recordTombstone) {
+    recordRemoval(cwd, canonicalLine);
+  }
+  return { status: "removed", id: removedId };
+}
 
 /**
  * Invalidate an entry that a confirmed rule change supersedes: remove the
@@ -2175,33 +2254,10 @@ export async function findContradiction(
  */
 function supersedeEntry(cwd: string, category: string, text: string): void {
   try {
-    const topicName = CATEGORY_TO_TOPIC[category as MemoryCategory];
-    if (!topicName) return;
-    const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
-    if (!existsSync(topicPath)) return;
-    const content = readFileSync(topicPath, "utf-8");
-    const match = findTopicLine(content, category, text);
-    if (!match) return;
-    const lines = content.split("\n");
-    lines.splice(match.index, 1);
-    writeFileSync(topicPath, lines.join("\n").replace(/\n{3,}/g, "\n\n"), "utf-8");
-    invalidateTopicFileCache(topicPath);
-
-    removeEmbedding(cwd, text, category);
-
-    const canonicalLine = `- [${category}] ${text}`;
-    // The old text is gone on purpose: tombstone it so the dream guard does not undo an edit.
-    recordRemoval(cwd, canonicalLine);
-    const removedId = match.id;
-    mutateScores(cwd, (scores) => {
-      delete scores.entries[entryHash(canonicalLine)];
-      if (removedId) {
-        for (const [hash, entry] of Object.entries(scores.entries)) {
-          if (entry.id === removedId) delete scores.entries[hash];
-        }
-      }
-    });
-    log.info("memory_supersede", category, text.slice(0, 60));
+    const res = removeMemoryEntry(cwd, category, text, { recordTombstone: true });
+    if (res.status === "removed") {
+      log.info("memory_supersede", category, text.slice(0, 60));
+    }
   } catch (err) {
     log.warn("memory-write: supersede failed:", err);
   }
@@ -2237,32 +2293,40 @@ function topicCapRejection(cwd: string, category: string, entryLine: string): Ad
   return null;
 }
 
-/** Scope reconciliation on dedup reinforcement (Qodo #10, PR #916): when an
- *  entry is restated WITHOUT a scope (or as project), a previous session/task
- *  scope and its TTL are cleared — the user confirmed the rule is durable.
- *  A narrower restatement never narrows an existing durable entry.
- *  Qodo round 2 (PR #916): when a session-scoped entry is restated in a
- *  DIFFERENT session, the entry rebinds to that session (sourceSession +
- *  fresh TTL) — otherwise the rule the user just restated stays inactive in
- *  the very session that asked for it. */
-function reconcileScopeOnReinforce(cwd: string, existingLine: string, input: AddMemoryInput): void {
+/**
+ * Single locked read-modify-write for dedup reinforcement: bumps evidence/score,
+ * reconciles scope (Qodo #10 / R2 / R3, PR #916), and merges any new
+ * enforcement fields in one JSONL lock/write cycle instead of three.
+ */
+function reinforceOnDedup(
+  cwd: string,
+  existingLine: string,
+  input: AddMemoryInput,
+): { found: boolean; merged: boolean } {
+  const hash = entryHash(existingLine);
+  let found = false;
+  let merged = false;
   mutateScores(cwd, (scores) => {
-    const existing = scores.entries[entryHash(existingLine)];
-    if (!existing) return;
+    const existing = scores.entries[hash];
+    if (!existing) return SKIP_MUTATE;
+    found = true;
+
+    applyReinforceToEntry(existing);
+
+    // Scope reconciliation: restatement without scope (or as project) clears
+    // prior session/task scope; session restatement in another session adds
+    // that session without stealing it from earlier ones.
     if (!input.scope || input.scope === "project") {
-      if (!existing.scope || existing.scope === "project") return;
-      delete existing.scope;
-      delete existing.expiresAt;
-      log.info("memory_scope_reconciled", existingLine.slice(0, 60));
-      return;
-    }
-    if (
+      if (existing.scope && existing.scope !== "project") {
+        delete existing.scope;
+        delete existing.expiresAt;
+        log.info("memory_scope_reconciled", existingLine.slice(0, 60));
+      }
+    } else if (
       input.scope === "session" &&
       existing.scope === "session" &&
       input.sourceSession
     ) {
-      // Rebinding ADDS the restating session — it must never steal the entry
-      // from a still-active earlier session (Qodo round 3, PR #916).
       const known = new Set(
         [existing.sourceSession, ...(existing.sourceSessions ?? [])].filter((s): s is string => !!s),
       );
@@ -2273,14 +2337,28 @@ function reconcileScopeOnReinforce(cwd: string, existingLine: string, input: Add
       existing.expiresAt = new Date(Date.now() + SESSION_SCOPE_TTL_MS).toISOString();
       log.info("memory_scope_rebound", existingLine.slice(0, 60), input.sourceSession);
     }
-  });
-}
 
-// ── Dedup + enforcement merge ──────────────────────────────────────────────
+    // Merge enforcement fields when supplied
+    if (input.trigger || input.action || input.verifier) {
+      if (input.trigger) existing.trigger = input.trigger as any;
+      if (input.action) {
+        if (input.action.startsWith("run_after ")) {
+          existing.action = "run_after";
+          existing.actionCommand = input.action.slice("run_after ".length);
+        } else if (input.action === "block" || input.action === "warn") {
+          existing.action = input.action;
+        }
+      }
+      if (input.verifier) existing.verifier = input.verifier;
+      merged = true;
+    }
+  });
+  return { found, merged };
+}
 
 /** Warn from the EFFECTIVE action on the reinforced path (Qodo 453a818e):
  *  a duplicate that adds a trigger without an action keeps the existing
- *  entry's action alive via mergeEnforcementFields — the write is not a
+ *  entry's action alive via reinforceOnDedup — the write is not a
  *  dead trigger, so the base no-action warning must be recomputed against
  *  the merged entry. */
 function reinforcedTriggerWarning(
@@ -2313,33 +2391,6 @@ function reinforcedTriggerWarning(
   } catch {
     return base;
   }
-}
-
-/** Merge enforcement fields from new input into an existing scored entry.
- *  Locked read-modify-write (issue #915). */
-function mergeEnforcementFields(
-  cwd: string,
-  existingLine: string,
-  input: AddMemoryInput,
-): boolean {
-  if (!input.trigger && !input.action && !input.verifier) return false;
-  let merged = false;
-  mutateScores(cwd, (scores) => {
-    const existing = scores.entries[entryHash(existingLine)];
-    if (!existing) return;
-    if (input.trigger) existing.trigger = input.trigger as any;
-    if (input.action) {
-      if (input.action.startsWith("run_after ")) {
-        existing.action = "run_after";
-        existing.actionCommand = input.action.slice("run_after ".length);
-      } else if (input.action === "block" || input.action === "warn") {
-        existing.action = input.action;
-      }
-    }
-    if (input.verifier) existing.verifier = input.verifier;
-    merged = true;
-  });
-  return merged;
 }
 
 // ── Main entry point ───────────────────────────────────────────────────────
@@ -2464,7 +2515,13 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   // a confirmed rule change retries with overrideConflicts, which supersedes
   // ALL the old entries. Pinned entries are never auto-superseded — they are
   // user-explicit and require the user's own memory_remove / memory_edit.
-  const conflicts = await findContradiction(cwd, text, category);
+  let topicEntries = readAllTopicEntries(cwd);
+  const {
+    conflicts,
+    vectorMatches: poolVectorMatches,
+    matchedKeys: poolMatchedKeys,
+  } = await findContradictionWithVector(cwd, text, category, topicEntries);
+  const supersededKeys = new Set<string>();
   if (conflicts.length > 0) {
     const pinned = conflicts.filter((c) => c.pinned);
     if (pinned.length > 0) {
@@ -2516,7 +2573,9 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     // Supersede every conflicting entry so no contradiction remains
     for (const c of conflicts) {
       supersedeEntry(cwd, c.category, c.text);
+      supersededKeys.add(`${c.category}:${c.text}`);
     }
+    topicEntries = readAllTopicEntries(cwd);
     if (!input.derivedFrom) {
       input.derivedFrom =
         `supersedes: [${conflict.category}] ${conflict.text}` +
@@ -2557,27 +2616,38 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   }
 
   const canonicalLine = `- [${category}] ${text}`;
-  const topicEntries = readAllTopicEntries(cwd);
 
   // 4a. Near-duplicate check via vector similarity (catches same lesson,
-  // different wording) — reinforce instead of duplicating.
+  // different wording) — reuse same-category scores from Step 3's vectorSearch,
+  // only embedding & scoring entries that had no embedding yet.
   try {
-    const seen = new Set<string>();
-    const sameCategoryEntries = topicEntries.filter((te) => {
-      if (te.category !== category || seen.has(te.text)) return false;
-      seen.add(te.text);
-      return true;
+    const nearDupThreshold = getNearDuplicateThreshold(cwd);
+    const sameCategoryMatches = poolVectorMatches.filter(
+      (vm) => vm.category === category && !supersededKeys.has(`${vm.category}:${vm.text}`),
+    );
+    const seenSameCat = new Set<string>();
+    const unembeddedSameCat = topicEntries.filter((te) => {
+      if (te.category !== category || seenSameCat.has(te.text)) return false;
+      seenSameCat.add(te.text);
+      return !poolMatchedKeys.has(`${te.category}:${te.text}`);
     });
-    await (await import("./memory-embeddings.js")).embedMissing(cwd, sameCategoryEntries);
-    // Do NOT embed the new entry before searching — if the entry already exists
-    // in sameCategoryEntries, it would match itself with similarity 1.000.
-    const vectorMatches = await vectorSearch(cwd, text, sameCategoryEntries, 20);
-    for (const vm of vectorMatches) {
-      if (vm.similarity < getNearDuplicateThreshold(cwd)) continue;
+    let mergedMatches = sameCategoryMatches;
+    if (unembeddedSameCat.length > 0) {
+      const newlyEmbedded = await embedMissing(cwd, unembeddedSameCat);
+      if (newlyEmbedded > 0) {
+        const extraMatches = await vectorSearch(cwd, text, unembeddedSameCat, 20);
+        if (extraMatches.length > 0) {
+          mergedMatches = [...sameCategoryMatches, ...extraMatches].sort(
+            (a, b) => b.similarity - a.similarity,
+          );
+        }
+      }
+    }
+    for (const vm of mergedMatches.slice(0, 20)) {
+      if (vm.similarity < nearDupThreshold) continue;
       const existingLine = `- [${vm.category}] ${vm.text}`;
-      if (reinforce(cwd, existingLine)) {
-        reconcileScopeOnReinforce(cwd, existingLine, input);
-        const merged = mergeEnforcementFields(cwd, existingLine, input);
+      const { found, merged } = reinforceOnDedup(cwd, existingLine, input);
+      if (found) {
         const enforcementNote = merged ? " (enforcement fields merged)" : "";
         const reinforcedWarning = reinforcedTriggerWarning(cwd, existingLine, input, triggerWarning);
         if (reinforcedWarning) log.warn(`memory-write: ${reinforcedWarning}`);
@@ -2588,7 +2658,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
             `[${vm.category}] ${vm.text}${enforcementNote}${reinforcedWarning ? ` — ${reinforcedWarning}` : ""}`,
         };
       }
-      // reinforce() failed (score entry missing) — try next candidate
+      // reinforceOnDedup() failed (score entry missing) — try next candidate
     }
   } catch (err) {
     log.debug("memory-write: vector dedup skipped:", err);
@@ -2597,9 +2667,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   // 4b. Exact match check (fast O(n) string comparison)
   for (const te of topicEntries) {
     if (te.text !== text || te.category !== category) continue;
-    reinforce(cwd, canonicalLine);
-    reconcileScopeOnReinforce(cwd, canonicalLine, input);
-    const merged = mergeEnforcementFields(cwd, canonicalLine, input);
+    const { merged } = reinforceOnDedup(cwd, canonicalLine, input);
     const enforcementNote = merged ? " (enforcement fields merged)" : "";
     const reinforcedWarning = reinforcedTriggerWarning(cwd, canonicalLine, input, triggerWarning);
     if (reinforcedWarning) log.warn(`memory-write: ${reinforcedWarning}`);

@@ -5,10 +5,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  SECTION_CATEGORY_MAP,
   classifyQueryClass,
   getQueryClassBias,
   sectionPriorityBoost,
 } from "../../../extensions/orchestrator/memory-query-class.js";
+import { VALID_CATEGORIES } from "../../../extensions/orchestrator/memory-scoring.js";
 
 describe("classifyQueryClass", () => {
   it("detects pr_review", () => {
@@ -50,5 +52,12 @@ describe("sectionPriorityBoost", () => {
 describe("getQueryClassBias", () => {
   it("raises vectorTopK for pr_review", () => {
     assert.ok(getQueryClassBias("pr_review").vectorTopK > getQueryClassBias("general").vectorTopK);
+  });
+});
+
+describe("SECTION_CATEGORY_MAP", () => {
+  it("maps every memory category exactly once (#1277)", () => {
+    const mapped = Object.values(SECTION_CATEGORY_MAP).sort();
+    assert.deepEqual(mapped, [...VALID_CATEGORIES].sort());
   });
 });
