@@ -89,9 +89,10 @@ function rotateIfNeeded(filePath: string): void {
 		for (let i = lines.length - 1; i >= 0; i--) {
 			const lineBytes = Buffer.byteLength(lines[i]) + 1;
 			if (keptBytes + lineBytes > HISTORY_KEEP_BYTES && kept.length > 0) break;
-			kept.unshift(lines[i]);
+			kept.push(lines[i]);
 			keptBytes += lineBytes;
 		}
+		kept.reverse();
 		writeFileSync(filePath, kept.length > 0 ? `${kept.join("\n")}\n` : "", "utf-8");
 		log.info(`history rotated: ${size} bytes → ${keptBytes} bytes, ${lines.length - kept.length} old record(s) dropped`);
 	} catch (error) {
@@ -165,7 +166,8 @@ export function appendHistoryRecord(filePath: string, record: HistoryRecord): bo
 
 /** Query the trail. Malformed lines are skipped; missing file is empty. */
 export function queryHistoryRecords(filePath: string, filter: HistoryFilter = {}): HistoryRecord[] {
-	const limit = Math.max(1, Math.min(filter.limit ?? 50, HISTORY_LIMIT_MAX));
+	const rawLimit = Number(filter.limit ?? 50);
+	const limit = Math.max(1, Math.min(Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 50, HISTORY_LIMIT_MAX));
 	let lines: string[];
 	try {
 		if (!existsSync(filePath)) return [];
@@ -174,23 +176,28 @@ export function queryHistoryRecords(filePath: string, filter: HistoryFilter = {}
 		log.warn(`history read failed (swallowed): ${error instanceof Error ? error.message : String(error)}`);
 		return [];
 	}
-	const records: HistoryRecord[] = [];
-	for (const line of lines) {
+	const statusNeedle = filter.status ? filter.status.toLowerCase() : undefined;
+	const matched: HistoryRecord[] = [];
+	for (let i = lines.length - 1; i >= 0; i--) {
+		let parsed: unknown;
 		try {
-			const parsed: unknown = JSON.parse(line);
-			if (isHistoryRecord(parsed)) records.push(parsed);
+			parsed = JSON.parse(lines[i]);
 		} catch {
 			// skip malformed line — history is best-effort
+			continue;
+		}
+		if (!isHistoryRecord(parsed)) continue;
+		if (
+			(!filter.peer || parsed.peer === filter.peer) &&
+			(!filter.direction || parsed.direction === filter.direction) &&
+			(!filter.msg_id || parsed.msg_id === filter.msg_id) &&
+			(!filter.since || parsed.ts >= filter.since) &&
+			(!statusNeedle || (parsed.status ?? "").toLowerCase().includes(statusNeedle)) &&
+			(!filter.owner || parsed.owner === filter.owner)
+		) {
+			matched.push(parsed);
+			if (matched.length >= limit) break;
 		}
 	}
-	const filtered = records.filter(
-		(r) =>
-			(!filter.peer || r.peer === filter.peer) &&
-			(!filter.direction || r.direction === filter.direction) &&
-			(!filter.msg_id || r.msg_id === filter.msg_id) &&
-			(!filter.since || r.ts >= filter.since) &&
-			(!filter.status || (r.status ?? "").toLowerCase().includes(filter.status.toLowerCase())) &&
-			(!filter.owner || r.owner === filter.owner),
-	);
-	return filtered.slice(-limit);
+	return matched.reverse();
 }

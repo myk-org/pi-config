@@ -206,7 +206,8 @@ describe("Trail retrieval, injection, and the gate", () => {
     assert.equal(result, undefined, "the system prompt is never replaced");
     assert.deepEqual(r.calls[0].args, ["ask", "where is authentication handled?", ".", "--json", "-n", "3", "--source"]);
     assert.match(event.systemPromptOptions.promptGuidelines.join("\n"), /trail_find_code/);
-    assert.match(event.systemPromptOptions.toolGuidelines.trail_find_code.join("\n"), /search concepts, not identifiers/i);
+    assert.match(event.systemPromptOptions.promptGuidelines.join("\n"), /describe the concept, not an identifier/i);
+    assert.equal(event.systemPromptOptions.toolGuidelines.trail_find_code, undefined);
     assert.match(event.systemPromptOptions.sections.trail, /authenticate: src\/auth\.ts:12/);
     assert.match(event.systemPromptOptions.sections.trail, /export function authenticate/, "source is inlined by --source");
   });
