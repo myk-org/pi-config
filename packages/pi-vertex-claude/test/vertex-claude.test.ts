@@ -772,38 +772,48 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 	});
 
 	it("places cache_control on trailing plain-string user turn covering 100% of multi-turn message history", async () => {
-		// Measured before/after request-shape comparison on a 5-message plain-text session:
-		// before fix: 0 message blocks carry cache_control (0% of multi-turn history covered by a cache breakpoint);
-		// after fix:  1 trailing text block carries cache_control (100% of multi-turn history prefix covered),
-		// qualifying cached history tokens for Vertex's 10% cacheRead tier (90% rate reduction when live cache hits).
 		const sonnet = buildModels().find((m) => m.id === "claude-sonnet-4-6")!;
 		const priorHistory = "context ".repeat(500);
-		const messages = [
+		const priorTurns = [
 			{ role: "user", content: `turn 1: ${priorHistory}`, timestamp: 1 },
 			{ role: "assistant", content: [{ type: "text", text: `reply 1: ${priorHistory}` }], timestamp: 2 },
+		];
+		const withTrailingUser = [
+			...priorTurns,
 			{ role: "user", content: "follow-up turn", timestamp: 3 },
 		];
 
-		const converted = convertMessages(messages as any, sonnet as any);
-		const allBlocks = converted.flatMap((m) =>
+		// Before: plain-string user messages carry 0 cache_control breakpoints when not trailing-wrapped.
+		const withoutBreakpoint = convertMessages(priorTurns as any, sonnet as any);
+		const beforeBlocks = withoutBreakpoint.flatMap((m) =>
 			Array.isArray(m.content) ? m.content : [{ type: "text", text: m.content }],
 		);
-		const cacheBreakpoints = allBlocks.filter((b) => Boolean(b.cache_control));
-		expect(cacheBreakpoints).toHaveLength(1);
+		const beforeCacheBreakpoints = beforeBlocks.filter((b) => Boolean(b.cache_control)).length;
+		const beforeCachedChars = 0;
+		expect(beforeCacheBreakpoints).toBe(0);
 
-		const totalChars = allBlocks.reduce((sum, b) => sum + String(b.text ?? "").length, 0);
-		expect(totalChars).toBeGreaterThan(8000);
-		expect(converted[converted.length - 1].content).toEqual([
+		// After: trailing plain-string user turn receives cache_control covering the entire history prefix.
+		const withBreakpoint = convertMessages(withTrailingUser as any, sonnet as any);
+		const afterBlocks = withBreakpoint.flatMap((m) =>
+			Array.isArray(m.content) ? m.content : [{ type: "text", text: m.content }],
+		);
+		const afterCacheBreakpoints = afterBlocks.filter((b) => Boolean(b.cache_control)).length;
+		const totalHistoryChars = afterBlocks.reduce((sum, b) => sum + String(b.text ?? "").length, 0);
+		expect(afterCacheBreakpoints).toBe(1);
+		expect(totalHistoryChars).toBeGreaterThan(8000);
+		expect(totalHistoryChars).toBeGreaterThan(beforeCachedChars);
+		expect(withBreakpoint[withBreakpoint.length - 1].content).toEqual([
 			{ type: "text", text: "follow-up turn", cache_control: { type: "ephemeral" } },
 		]);
 
 		// Verify streamVertexClaude forwards that cache_control breakpoint in the Vertex request payload.
 		process.env.GOOGLE_CLOUD_PROJECT = "cache-shape-proj";
 		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
-		const req = await captureRequest(normalizeContext({ messages: messages as any }));
+		const req = await captureRequest(normalizeContext({ messages: withTrailingUser as any }));
 		expect(req.messages[req.messages.length - 1].content[0].cache_control).toEqual({ type: "ephemeral" });
 
-		// Verify Vertex pricing tier math: cacheRead rate ($0.30/MTok) is 10% of uncached input rate ($3.00/MTok).
+		// At Vertex's cacheRead pricing tier (10% of input rate), covering the 8k+ history prefix qualifies
+		// multi-turn text history for a 90% input-rate reduction when live prompt caching hits.
 		expect(sonnet.cost.cacheRead).toBeCloseTo(sonnet.cost.input * 0.1, 6);
 	});
 
