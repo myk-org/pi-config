@@ -5,7 +5,7 @@
  * Session-scoped (default): in-memory Map — no disk I/O.
  * Shared (PI_TASK_LIST_ID set): ~/.pi/tasks/<listId>.json with file locking.
  */
-import { constants, copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeFileSync, watch, type FSWatcher } from "node:fs";
+import { constants, copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, statSync, unlinkSync, writeFileSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Task, TaskAssignee, TaskCompletedBy, TaskStatus, TaskStoreData } from "./types.js";
@@ -38,6 +38,26 @@ export interface ResolveStorePathOptions {
 	cwd?: string;
 	piTasks?: string;
 	taskScope?: "session" | "project";
+}
+
+export interface TaskStoreOptions {
+	watch?: boolean;
+}
+
+export interface TaskUpdateFields {
+	status?: TaskStatus | "deleted";
+	subject?: string;
+	description?: string;
+	activeForm?: string;
+	owner?: string;
+	assignee?: TaskAssignee;
+	completedBy?: TaskCompletedBy;
+	completionNote?: string;
+	metadata?: Record<string, any>;
+	telemetry?: Task["telemetry"];
+	blockedBy?: string[];
+	addBlocks?: string[];
+	addBlockedBy?: string[];
 }
 
 /**
@@ -76,6 +96,15 @@ export function resolveStorePath(sessionId?: string, options: ResolveStorePathOp
 	return resolved;
 }
 
+function syncSleepMs(ms: number): void {
+	try {
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+	} catch {
+		const start = Date.now();
+		while (Date.now() - start < ms) { /* spin fallback */ }
+	}
+}
+
 function acquireLock(lockPath: string): void {
 	mkdirSync(dirname(lockPath), { recursive: true });
 	for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
@@ -88,8 +117,7 @@ function acquireLock(lockPath: string): void {
 					const pid = parseInt(readFileSync(lockPath, "utf-8"), 10);
 					if (pid && !isProcessRunning(pid)) { unlinkSync(lockPath); continue; }
 				} catch { /* ignore */ }
-				const start = Date.now();
-				while (Date.now() - start < LOCK_RETRY_MS) { /* busy wait */ }
+				syncSleepMs(LOCK_RETRY_MS);
 				continue;
 			}
 			throw e;
@@ -157,17 +185,22 @@ export class TaskStore {
 	private _watcher: FSWatcher | null = null;
 	private _targetWatchers = new Map<string, FSWatcher>();
 	private _corruptOnLoad = false;
+	private _lastStat: { mtimeMs: number; size: number; ino: number } | null = null;
 	private _onChange: (() => void) | null = null;
 
-	constructor(listIdOrPath?: string) {
+	constructor(listIdOrPath?: string, opts: TaskStoreOptions = {}) {
 		if (!listIdOrPath) return;
 		const isAbsPath = isAbsolute(listIdOrPath);
 		const filePath = isAbsPath ? listIdOrPath : join(TASKS_DIR, `${listIdOrPath}.json`);
 		this.filePath = filePath;
 		this.lockPath = filePath + ".lock";
-		this.load();
-		// Watch for external file changes (e.g. remote task creation via coms)
-		this._startWatcher();
+		if (opts.watch !== false) {
+			this.load();
+			// Watch for external file changes (e.g. remote task creation via coms)
+			this._startWatcher();
+		} else {
+			log.debug("task_store_unwatched_init", { filePath });
+		}
 	}
 
 	private _startWatcher(): void {
@@ -242,6 +275,8 @@ export class TaskStore {
 				// Events are invalidations, not one-to-one write receipts, including our own writes.
 				try {
 					this._syncTargetWatchers();
+					// Invalidate stat cache on watcher events so same-ms same-size in-place writes still reload.
+					this._lastStat = null;
 					this.load();
 					this.notifyChange();
 					log.debug("task_watch_refreshed", { filePath: this.filePath, hasCallback: this._onChange !== null });
@@ -292,8 +327,25 @@ export class TaskStore {
 
 	private load(): void {
 		if (!this.filePath) return;
-		if (!existsSync(this.filePath)) {
-			this._corruptOnLoad = false;
+		let st: ReturnType<typeof statSync>;
+		try {
+			st = statSync(this.filePath);
+		} catch (error) {
+			const errorCode = (error as NodeJS.ErrnoException)?.code;
+			this._lastStat = null;
+			if (errorCode === "ENOENT") {
+				this._corruptOnLoad = false;
+				return;
+			}
+			log.error("task_store_load_failed", { filePath: this.filePath, errorType: error instanceof Error ? error.name : "unknown", errorCode });
+			return;
+		}
+		if (
+			this._lastStat &&
+			this._lastStat.mtimeMs === st.mtimeMs &&
+			this._lastStat.size === st.size &&
+			this._lastStat.ino === st.ino
+		) {
 			return;
 		}
 		try {
@@ -304,7 +356,9 @@ export class TaskStore {
 			for (const t of data.tasks) {
 				this.tasks.set(t.id, normalizeTask(t));
 			}
+			this._lastStat = { mtimeMs: st.mtimeMs, size: st.size, ino: st.ino };
 		} catch (error) {
+			this._lastStat = null;
 			this._corruptOnLoad = error instanceof SyntaxError;
 			log.error("task_store_load_failed", { filePath: this.filePath, errorType: error instanceof Error ? error.name : "unknown", errorCode: (error as NodeJS.ErrnoException)?.code });
 		}
@@ -333,6 +387,12 @@ export class TaskStore {
 		const tmpPath = this.filePath + ".tmp";
 		writeFileSync(tmpPath, JSON.stringify(data, null, 2));
 		renameSync(tmpPath, this.filePath);
+		try {
+			const st = statSync(this.filePath);
+			this._lastStat = { mtimeMs: st.mtimeMs, size: st.size, ino: st.ino };
+		} catch {
+			this._lastStat = null;
+		}
 	}
 
 	private withLock<T>(fn: () => T): T {
@@ -348,30 +408,139 @@ export class TaskStore {
 		}
 	}
 
+	private buildTask(input: {
+		subject: string;
+		description: string;
+		createdBy: Task["createdBy"];
+		activeForm?: string;
+		metadata?: Record<string, any>;
+		assignee?: TaskAssignee;
+		blockedBy?: string[];
+	}, now: number): Task {
+		return {
+			id: String(this.nextId++),
+			subject: input.subject,
+			description: input.description,
+			status: "pending",
+			assignee: input.assignee === "user" ? "user" : "llm",
+			activeForm: input.activeForm,
+			owner: undefined,
+			createdBy: input.createdBy,
+			metadata: input.metadata ?? {},
+			blocks: [],
+			blockedBy: input.blockedBy ?? [],
+			createdAt: now,
+			updatedAt: now,
+			statusHistory: {
+				pending_at: new Date(now).toISOString(),
+				in_progress_at: null,
+				completed_at: null,
+				deleted_at: null,
+			},
+		};
+	}
+
+	private pruneReferences(removedIds: Set<string>): void {
+		for (const t of this.tasks.values()) {
+			t.blocks = t.blocks.filter(bid => !removedIds.has(bid));
+			t.blockedBy = t.blockedBy.filter(bid => !removedIds.has(bid));
+		}
+	}
+
+	private applyUpdateLocked(
+		id: string,
+		fields: TaskUpdateFields,
+		collectWarnings = false,
+	): { task: Task | undefined; changedFields: string[]; warnings: string[]; found: boolean } {
+		const task = this.tasks.get(id);
+		if (!task) return { task: undefined, changedFields: [], warnings: [], found: false };
+		const changedFields: string[] = [];
+		const warnings: string[] = [];
+
+		if (fields.status === "deleted") {
+			task.statusHistory.deleted_at = new Date().toISOString();
+			this.tasks.delete(id);
+			this.pruneReferences(new Set([id]));
+			return { task: undefined, changedFields: ["deleted"], warnings: [], found: true };
+		}
+
+		if (fields.status !== undefined) {
+			if (fields.status !== "completed" || task.status !== "completed") {
+				delete task.completedBy;
+				delete task.completionNote;
+				log.debug("task_outcome_reset", { id, status: fields.status });
+			}
+			if (fields.status === "completed") task.completedBy = fields.completedBy ?? task.completedBy ?? "llm";
+			task.status = fields.status as TaskStatus;
+			changedFields.push("status");
+			const now = Date.now();
+			const isoNow = new Date(now).toISOString();
+			if (fields.status === "in_progress") {
+				task.statusHistory.in_progress_at = isoNow;
+				if (!task.telemetry || task.telemetry.endedAt !== undefined) {
+					task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
+				}
+			}
+			if (fields.status === "completed") {
+				task.statusHistory.completed_at = isoNow;
+				if (!task.telemetry) task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
+				if (!task.telemetry.endedAt) task.telemetry.endedAt = now;
+			}
+			if (fields.status === "pending") task.statusHistory.pending_at = isoNow;
+		}
+		if (fields.subject !== undefined) { task.subject = fields.subject; changedFields.push("subject"); }
+		if (fields.description !== undefined) { task.description = fields.description; changedFields.push("description"); }
+		if (fields.activeForm !== undefined) { task.activeForm = fields.activeForm; changedFields.push("activeForm"); }
+		if (fields.owner !== undefined) { task.owner = fields.owner; changedFields.push("owner"); }
+		if (fields.assignee !== undefined) { task.assignee = fields.assignee === "user" ? "user" : "llm"; changedFields.push("assignee"); }
+		if (fields.completedBy !== undefined) { task.completedBy = fields.completedBy; changedFields.push("completedBy"); }
+		if (fields.completionNote !== undefined) { task.completionNote = fields.completionNote; changedFields.push("completionNote"); }
+
+		if (fields.metadata !== undefined) {
+			for (const [key, value] of Object.entries(fields.metadata)) {
+				if (value === null) delete task.metadata[key];
+				else task.metadata[key] = value;
+			}
+			changedFields.push("metadata");
+		}
+		if (fields.telemetry !== undefined) { task.telemetry = fields.telemetry; changedFields.push("telemetry"); }
+		if (Array.isArray(fields.blockedBy)) { task.blockedBy = [...fields.blockedBy]; changedFields.push("blockedBy"); }
+
+		if (fields.addBlocks?.length) {
+			for (const targetId of fields.addBlocks) {
+				if (!task.blocks.includes(targetId)) task.blocks.push(targetId);
+				const target = this.tasks.get(targetId);
+				if (target && !target.blockedBy.includes(id)) { target.blockedBy.push(id); target.updatedAt = Date.now(); }
+				if (collectWarnings) {
+					if (targetId === id) warnings.push(`#${id} blocks itself`);
+					else if (!target) warnings.push(`#${targetId} does not exist`);
+					else if (target.blocks.includes(id)) warnings.push(`cycle: #${id} and #${targetId} block each other`);
+				}
+			}
+			changedFields.push("blocks");
+		}
+
+		if (fields.addBlockedBy?.length) {
+			for (const targetId of fields.addBlockedBy) {
+				if (!task.blockedBy.includes(targetId)) task.blockedBy.push(targetId);
+				const target = this.tasks.get(targetId);
+				if (target && !target.blocks.includes(id)) { target.blocks.push(id); target.updatedAt = Date.now(); }
+				if (collectWarnings) {
+					if (targetId === id) warnings.push(`#${id} blocks itself`);
+					else if (!target) warnings.push(`#${targetId} does not exist`);
+					else if (task.blocks.includes(targetId)) warnings.push(`cycle: #${id} and #${targetId} block each other`);
+				}
+			}
+			changedFields.push("blockedBy");
+		}
+
+		task.updatedAt = Date.now();
+		return { task, changedFields, warnings, found: true };
+	}
+
 	create(subject: string, description: string, createdBy: Task["createdBy"], activeForm?: string, metadata?: Record<string, any>, assignee: TaskAssignee = "llm"): Task {
 		const __task = this.withLock(() => {
-			const now = Date.now();
-			const task: Task = {
-				id: String(this.nextId++),
-				subject,
-				description,
-				status: "pending",
-				assignee,
-				activeForm,
-				owner: undefined,
-				createdBy,
-				metadata: metadata ?? {},
-				blocks: [],
-				blockedBy: [],
-				createdAt: now,
-				updatedAt: now,
-				statusHistory: {
-					pending_at: new Date(now).toISOString(),
-					in_progress_at: null,
-					completed_at: null,
-					deleted_at: null,
-				},
-			};
+			const task = this.buildTask({ subject, description, createdBy, activeForm, metadata, assignee }, Date.now());
 			this.tasks.set(task.id, task);
 			return task;
 		});
@@ -384,27 +553,7 @@ export class TaskStore {
 			const now = Date.now();
 			const created: Task[] = [];
 			for (const t of tasks) {
-				const task: Task = {
-					id: String(this.nextId++),
-					subject: t.subject,
-					description: t.description,
-					status: "pending",
-					assignee: t.assignee === "user" ? "user" : "llm",
-					activeForm: t.activeForm,
-					owner: undefined,
-					createdBy: t.createdBy,
-					metadata: t.metadata ?? {},
-					blocks: [],
-					blockedBy: t.blockedBy ?? [],
-					createdAt: now,
-					updatedAt: now,
-					statusHistory: {
-						pending_at: new Date(now).toISOString(),
-						in_progress_at: null,
-						completed_at: null,
-						deleted_at: null,
-					},
-				};
+				const task = this.buildTask(t, now);
 				this.tasks.set(task.id, task);
 				created.push(task);
 			}
@@ -424,105 +573,10 @@ export class TaskStore {
 		return Array.from(this.tasks.values()).sort(SORT_FNS[sortOrder]);
 	}
 
-	update(id: string, fields: {
-		status?: TaskStatus | "deleted";
-		subject?: string;
-		description?: string;
-		activeForm?: string;
-		owner?: string;
-		assignee?: TaskAssignee;
-		completedBy?: TaskCompletedBy;
-		completionNote?: string;
-		metadata?: Record<string, any>;
-		telemetry?: Task["telemetry"];
-		blockedBy?: string[];
-		addBlocks?: string[];
-		addBlockedBy?: string[];
-	}): { task: Task | undefined; changedFields: string[]; warnings: string[] } {
+	update(id: string, fields: TaskUpdateFields): { task: Task | undefined; changedFields: string[]; warnings: string[] } {
 		const __result = this.withLock(() => {
-			const task = this.tasks.get(id);
 			log.debug("task_updated", { taskId: id, status: fields.status, hasTelemetry: fields.telemetry !== undefined });
-			if (!task) return { task: undefined, changedFields: [], warnings: [] };
-			const changedFields: string[] = [];
-			const warnings: string[] = [];
-
-			if (fields.status === "deleted") {
-				task.statusHistory.deleted_at = new Date().toISOString();
-				this.tasks.delete(id);
-				for (const t of this.tasks.values()) {
-					t.blocks = t.blocks.filter(bid => bid !== id);
-					t.blockedBy = t.blockedBy.filter(bid => bid !== id);
-				}
-				return { task: undefined, changedFields: ["deleted"], warnings: [] };
-			}
-
-			if (fields.status !== undefined) {
-				if (fields.status !== "completed" || task.status !== "completed") {
-					delete task.completedBy;
-					delete task.completionNote;
-					log.debug("task_outcome_reset", { id, status: fields.status });
-				}
-				if (fields.status === "completed") task.completedBy = fields.completedBy ?? task.completedBy ?? "llm";
-				task.status = fields.status as TaskStatus;
-				changedFields.push("status");
-				const now = Date.now();
-				const isoNow = new Date(now).toISOString();
-				if (fields.status === "in_progress") {
-					task.statusHistory.in_progress_at = isoNow;
-					if (!task.telemetry || task.telemetry.endedAt !== undefined) {
-						task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
-					}
-				}
-				if (fields.status === "completed") {
-					task.statusHistory.completed_at = isoNow;
-					if (!task.telemetry) task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
-					if (!task.telemetry.endedAt) task.telemetry.endedAt = now;
-				}
-				if (fields.status === "pending") task.statusHistory.pending_at = isoNow;
-			}
-			if (fields.subject !== undefined) { task.subject = fields.subject; changedFields.push("subject"); }
-			if (fields.description !== undefined) { task.description = fields.description; changedFields.push("description"); }
-			if (fields.activeForm !== undefined) { task.activeForm = fields.activeForm; changedFields.push("activeForm"); }
-			if (fields.owner !== undefined) { task.owner = fields.owner; changedFields.push("owner"); }
-			if (fields.assignee !== undefined) { task.assignee = fields.assignee === "user" ? "user" : "llm"; changedFields.push("assignee"); }
-			if (fields.completedBy !== undefined) { task.completedBy = fields.completedBy; changedFields.push("completedBy"); }
-			if (fields.completionNote !== undefined) { task.completionNote = fields.completionNote; changedFields.push("completionNote"); }
-
-			if (fields.metadata !== undefined) {
-				for (const [key, value] of Object.entries(fields.metadata)) {
-					if (value === null) delete task.metadata[key];
-					else task.metadata[key] = value;
-				}
-				changedFields.push("metadata");
-			}
-			if (fields.telemetry !== undefined) { task.telemetry = fields.telemetry; changedFields.push("telemetry"); }
-			if (Array.isArray(fields.blockedBy)) { task.blockedBy = [...fields.blockedBy]; changedFields.push("blockedBy"); }
-
-			if (fields.addBlocks?.length) {
-				for (const targetId of fields.addBlocks) {
-					if (!task.blocks.includes(targetId)) task.blocks.push(targetId);
-					const target = this.tasks.get(targetId);
-					if (target && !target.blockedBy.includes(id)) { target.blockedBy.push(id); target.updatedAt = Date.now(); }
-					if (targetId === id) warnings.push(`#${id} blocks itself`);
-					else if (!target) warnings.push(`#${targetId} does not exist`);
-					else if (target.blocks.includes(id)) warnings.push(`cycle: #${id} and #${targetId} block each other`);
-				}
-				changedFields.push("blocks");
-			}
-
-			if (fields.addBlockedBy?.length) {
-				for (const targetId of fields.addBlockedBy) {
-					if (!task.blockedBy.includes(targetId)) task.blockedBy.push(targetId);
-					const target = this.tasks.get(targetId);
-					if (target && !target.blocks.includes(id)) { target.blocks.push(id); target.updatedAt = Date.now(); }
-					if (targetId === id) warnings.push(`#${id} blocks itself`);
-					else if (!target) warnings.push(`#${targetId} does not exist`);
-					else if (task.blocks.includes(targetId)) warnings.push(`cycle: #${id} and #${targetId} block each other`);
-				}
-				changedFields.push("blockedBy");
-			}
-
-			task.updatedAt = Date.now();
+			const { task, changedFields, warnings } = this.applyUpdateLocked(id, fields, true);
 			return { task, changedFields, warnings };
 		});
 		this.notifyChange();
@@ -532,86 +586,10 @@ export class TaskStore {
 	updateTasks(updates: Array<{ id: string; fields: Record<string, any> }>): Array<{ id: string; success: boolean; changedFields?: string[] }> {
 		const __results = this.withLock(() => {
 			log.debug("tasks_updated", { count: updates.length, statusUpdates: updates.filter(update => update.fields.status !== undefined).length });
-			const results: Array<{ id: string; success: boolean; changedFields?: string[] }> = [];
-			for (const { id, fields } of updates) {
-				const task = this.tasks.get(id);
-				if (!task) { results.push({ id, success: false }); continue; }
-				const changedFields: string[] = [];
-
-				if (fields.status === "deleted") {
-					task.statusHistory.deleted_at = new Date().toISOString();
-					this.tasks.delete(id);
-					for (const t of this.tasks.values()) {
-						t.blocks = t.blocks.filter(bid => bid !== id);
-						t.blockedBy = t.blockedBy.filter(bid => bid !== id);
-					}
-					results.push({ id, success: true, changedFields: ["deleted"] });
-					continue;
-				}
-
-				if (fields.status !== undefined) {
-					if (fields.status !== "completed" || task.status !== "completed") {
-						delete task.completedBy;
-						delete task.completionNote;
-						log.debug("task_outcome_reset", { id, status: fields.status });
-					}
-					if (fields.status === "completed") task.completedBy = fields.completedBy ?? task.completedBy ?? "llm";
-					task.status = fields.status as TaskStatus;
-					changedFields.push("status");
-					const now = Date.now();
-					const isoNow = new Date(now).toISOString();
-					if (fields.status === "in_progress") {
-						task.statusHistory.in_progress_at = isoNow;
-						if (!task.telemetry || task.telemetry.endedAt !== undefined) {
-							task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
-						}
-					}
-					if (fields.status === "completed") {
-						task.statusHistory.completed_at = isoNow;
-						if (!task.telemetry) task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
-						if (!task.telemetry.endedAt) task.telemetry.endedAt = now;
-					}
-					if (fields.status === "pending") task.statusHistory.pending_at = isoNow;
-				}
-				if (fields.subject !== undefined) { task.subject = fields.subject; changedFields.push("subject"); }
-				if (fields.description !== undefined) { task.description = fields.description; changedFields.push("description"); }
-				if (fields.activeForm !== undefined) { task.activeForm = fields.activeForm; changedFields.push("activeForm"); }
-				if (fields.owner !== undefined) { task.owner = fields.owner; changedFields.push("owner"); }
-				if (fields.assignee !== undefined) { task.assignee = fields.assignee === "user" ? "user" : "llm"; changedFields.push("assignee"); }
-				if (fields.completedBy !== undefined) { task.completedBy = fields.completedBy; changedFields.push("completedBy"); }
-				if (fields.completionNote !== undefined) { task.completionNote = fields.completionNote; changedFields.push("completionNote"); }
-
-				if (fields.metadata !== undefined) {
-					for (const [key, value] of Object.entries(fields.metadata)) {
-						if (value === null) delete task.metadata[key];
-						else task.metadata[key] = value;
-					}
-					changedFields.push("metadata");
-				}
-				if (fields.telemetry !== undefined) { task.telemetry = fields.telemetry; changedFields.push("telemetry"); }
-
-				if (fields.addBlocks?.length) {
-					for (const targetId of fields.addBlocks) {
-						if (!task.blocks.includes(targetId)) task.blocks.push(targetId);
-						const target = this.tasks.get(targetId);
-						if (target && !target.blockedBy.includes(id)) { target.blockedBy.push(id); target.updatedAt = Date.now(); }
-					}
-					changedFields.push("blocks");
-				}
-
-				if (fields.addBlockedBy?.length) {
-					for (const targetId of fields.addBlockedBy) {
-						if (!task.blockedBy.includes(targetId)) task.blockedBy.push(targetId);
-						const target = this.tasks.get(targetId);
-						if (target && !target.blocks.includes(id)) { target.blocks.push(id); target.updatedAt = Date.now(); }
-					}
-					changedFields.push("blockedBy");
-				}
-
-				task.updatedAt = Date.now();
-				results.push({ id, success: true, changedFields });
-			}
-			return results;
+			return updates.map(({ id, fields }) => {
+				const { found, changedFields } = this.applyUpdateLocked(id, fields as TaskUpdateFields);
+				return found ? { id, success: true, changedFields } : { id, success: false };
+			});
 		});
 		this.notifyChange();
 		return __results;
@@ -621,10 +599,7 @@ export class TaskStore {
 		const __deleted = this.withLock(() => {
 			if (!this.tasks.has(id)) return false;
 			this.tasks.delete(id);
-			for (const t of this.tasks.values()) {
-				t.blocks = t.blocks.filter(bid => bid !== id);
-				t.blockedBy = t.blockedBy.filter(bid => bid !== id);
-			}
+			this.pruneReferences(new Set([id]));
 			return true;
 		});
 		this.notifyChange();
@@ -633,20 +608,12 @@ export class TaskStore {
 
 	deleteTasks(ids: string[]): number {
 		const count = this.withLock(() => {
-			let deleted = 0;
+			const removed = new Set<string>();
 			for (const id of ids) {
-				if (this.tasks.has(id)) {
-					this.tasks.delete(id);
-					deleted++;
-				}
+				if (this.tasks.delete(id)) removed.add(id);
 			}
-			if (deleted > 0) {
-				for (const t of this.tasks.values()) {
-					t.blocks = t.blocks.filter(bid => !ids.includes(bid));
-					t.blockedBy = t.blockedBy.filter(bid => !ids.includes(bid));
-				}
-			}
-			return deleted;
+			if (removed.size > 0) this.pruneReferences(removed);
+			return removed.size;
 		});
 		// Broadcast the post-delete snapshot — bulk deletes must reach browser
 		// task panels like single deletes do (Qodo R1: stale entries otherwise
@@ -677,24 +644,24 @@ export class TaskStore {
 
 	deleteFileIfEmpty(): boolean {
 		if (!this.filePath || this.tasks.size > 0) return false;
-		try { unlinkSync(this.filePath); } catch { /* ignore */ }
+		try {
+			unlinkSync(this.filePath);
+			this._lastStat = null;
+		} catch { /* ignore */ }
 		return true;
 	}
 
 	clearCompleted(): number {
 		const __cleared = this.withLock(() => {
-			let count = 0;
+			const removed = new Set<string>();
 			for (const [id, task] of this.tasks) {
-				if (task.status === "completed") { this.tasks.delete(id); count++; }
-			}
-			if (count > 0) {
-				const validIds = new Set(this.tasks.keys());
-				for (const t of this.tasks.values()) {
-					t.blocks = t.blocks.filter(bid => validIds.has(bid));
-					t.blockedBy = t.blockedBy.filter(bid => validIds.has(bid));
+				if (task.status === "completed") {
+					this.tasks.delete(id);
+					removed.add(id);
 				}
 			}
-			return count;
+			if (removed.size > 0) this.pruneReferences(removed);
+			return removed.size;
 		});
 		this.notifyChange();
 		return __cleared;

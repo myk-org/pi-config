@@ -117,7 +117,7 @@ function withStoreAtPath<T>(storePath: string, fn: (store: TaskStore) => T): T {
 		log.error("store_path_invalid", { storePath, isAbsolute: Boolean(trimmed && isAbsolute(trimmed)) });
 		throw new Error(`Valid absolute task store path required (got ${JSON.stringify(storePath)})`);
 	}
-	const store = new TaskStore(trimmed);
+	const store = new TaskStore(trimmed, { watch: false });
 	try {
 		return fn(store);
 	} finally {
@@ -418,16 +418,18 @@ export default function (pi: ExtensionAPI) {
 				const threshold = minutes * 60000;
 				const now = Date.now();
 				const tasks = store.list();
-				let cleared = false;
+				const expiredIds: string[] = [];
 				for (const task of tasks) {
 					if (task.status === "completed" && task.statusHistory?.completed_at) {
 						if (now - new Date(task.statusHistory.completed_at).getTime() > threshold) {
-							store.delete(task.id);
-							cleared = true;
+							expiredIds.push(task.id);
 						}
 					}
 				}
-				if (cleared) widget.update();
+				if (expiredIds.length > 0 && store.deleteTasks(expiredIds) > 0) {
+					log.debug("task_gc_cleared", { count: expiredIds.length });
+					widget.update();
+				}
 			} catch {}
 		}, 60000);
 		if (gcTimer.unref) gcTimer.unref();

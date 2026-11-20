@@ -36,8 +36,8 @@ function glyphColor(status: string): "success" | "warning" | "muted" {
 	return "muted";
 }
 
-function detailHeader(task: Task, theme: Theme, tasks: Task[]): string {
-	const row = toTaskRowView(task, (id) => tasks.find((t) => t.id === id));
+function detailHeader(task: Task, theme: Theme, taskById: Map<string, Task>): string {
+	const row = toTaskRowView(task, (id) => taskById.get(id));
 	return (
 		`${theme.fg(glyphColor(task.status), row.glyph)} ` +
 		theme.fg("accent", theme.bold(row.label)) +
@@ -93,6 +93,7 @@ export async function openTasksOverlay(
 	// An empty board has no row to press `n` on, so the create dialog opens directly — once, so a
 	// cancelled dialog returns the terminal instead of reopening forever (issue #1089).
 	let offeredFirstTask = false;
+	let taskById = new Map<string, Task>();
 
 	for (;;) {
 		if (deps.listTasks().length === 0) {
@@ -116,9 +117,13 @@ export async function openTasksOverlay(
 						return `tasks · ${done} done / ${tasks.length}${mineOnly ? " · mine" : ""}`;
 					},
 					footerHints: TASKS_LIST_HINTS,
-					listItems: () => selectTaskRows(deps.listTasks(), { mine: mineOnly }),
+					listItems: () => {
+						const allTasks = deps.listTasks();
+						taskById = new Map(allTasks.map((t) => [t.id, t]));
+						return selectTaskRows(allTasks, { mine: mineOnly });
+					},
 					rowParts: (task, theme) => {
-						const row = toTaskRowView(task, (id) => deps.listTasks().find((t) => t.id === id));
+						const row = toTaskRowView(task, (id) => taskById.get(id));
 						return {
 							glyph: theme.fg(glyphColor(task.status), row.glyph),
 							title: row.label,
@@ -188,7 +193,10 @@ export async function openTasksOverlay(
 				},
 				createDetail: (task, tui, theme, done) => {
 					const taskId = task.id;
-					const current = () => deps.listTasks().find((t) => t.id === taskId);
+					const snapshot = () => {
+						const byId = new Map(deps.listTasks().map((t) => [t.id, t]));
+						return { live: byId.get(taskId), byId };
+					};
 					return new OverlayScrollDetail(
 						tui,
 						theme,
@@ -196,16 +204,16 @@ export async function openTasksOverlay(
 							footerHints: "↑↓/jk scroll · x delete · Esc back",
 							onX: () => deps.deleteTask(taskId),
 							getHeader: (t) => {
-								const live = current();
+								const { live, byId } = snapshot();
 								if (!live) return t.fg("error", "Task deleted.");
-								return detailHeader(live, t, deps.listTasks());
+								return detailHeader(live, t, byId);
 							},
 							getBodyLines: (t) => {
-								const live = current();
+								const { live, byId } = snapshot();
 								if (!live) {
 									return [t.fg("error", "Task deleted."), t.fg("dim", "Esc back")];
 								}
-								return taskDetailRows(live, (id) => deps.listTasks().find((item) => item.id === id)).map(
+								return taskDetailRows(live, (id) => byId.get(id)).map(
 									([label, value]) => `${t.fg("muted", label.padEnd(11))}  ${value}`,
 								);
 							},

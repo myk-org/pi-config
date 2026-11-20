@@ -27,6 +27,25 @@ describe("TaskCreate guidance", () => {
 		assert.match(agentTypeDescription, /optional descriptive metadata/i);
 		assert.match(agentTypeDescription, /does not dispatch or execute an agent/i);
 	});
+
+	it("keeps condensed tool descriptions concise while preserving behavioral rules (#1159)", () => {
+		const tools = new Map<string, any>();
+		const pi = { registerTool: (tool: any) => { tools.set(tool.name, tool); } };
+		registerTaskTools(pi as any, () => new TaskStore(), { update() {} } as any);
+
+		const totalChars = ["TaskCreate", "TaskList", "TaskGet", "TaskUpdate"]
+			.reduce((sum, name) => sum + (tools.get(name)?.description?.length ?? 0), 0);
+		assert.ok(totalChars <= 2100, `expected condensed descriptions <= 2100 chars, got ${totalChars}`);
+
+		assert.match(tools.get("TaskCreate").description, /assignee.*user/is);
+		assert.match(tools.get("TaskCreate").description, /\/tasks/);
+		assert.match(tools.get("TaskList").description, /lowest ID/i);
+		assert.match(tools.get("TaskGet").description, /completedBy.*completionNote/s);
+		assert.match(tools.get("TaskGet").description, /blockedBy/i);
+		assert.match(tools.get("TaskUpdate").description, /refuses starting or completing.*user/is);
+		assert.match(tools.get("TaskUpdate").description, /deleted/);
+		assert.match(tools.get("TaskUpdate").description, /addBlocks.*addBlockedBy/s);
+	});
 });
 
 describe("pitasks exported API pattern", () => {
@@ -139,6 +158,48 @@ describe("pitasks exported API pattern", () => {
 		const result = store.update("999", { status: "completed" });
 		assert.equal(result.task, undefined);
 		assert.equal(result.changedFields.length, 0);
+	});
+
+	it("TaskStore.updateTasks supports blockedBy replacement and deletion reference pruning (#1173)", () => {
+		const store = new TaskStore();
+		const [t1, t2, t3] = store.createTasks([
+			{ subject: "A", description: "a", createdBy: localCreatedBy },
+			{ subject: "B", description: "b", createdBy: localCreatedBy },
+			{ subject: "C", description: "c", createdBy: localCreatedBy },
+		]);
+		store.update(t3.id, { addBlockedBy: [t1.id, t2.id] });
+		assert.deepEqual(store.get(t3.id)?.blockedBy, [t1.id, t2.id]);
+		assert.deepEqual(store.get(t1.id)?.blocks, [t3.id]);
+
+		const res = store.updateTasks([
+			{ id: t3.id, fields: { blockedBy: [t2.id] } },
+			{ id: t2.id, fields: { status: "deleted" } },
+			{ id: "missing", fields: { subject: "nope" } },
+		]);
+		assert.equal(res[0].success, true);
+		assert.ok(res[0].changedFields?.includes("blockedBy"));
+		assert.deepEqual(res[1], { id: t2.id, success: true, changedFields: ["deleted"] });
+		assert.deepEqual(res[2], { id: "missing", success: false });
+		assert.deepEqual(store.get(t3.id)?.blockedBy, []);
+	});
+
+	it("TaskStore.deleteTasks and clearCompleted prune dangling references (#1173)", () => {
+		const store = new TaskStore();
+		const [t1, t2, t3, t4] = store.createTasks([
+			{ subject: "1", description: "d", createdBy: localCreatedBy },
+			{ subject: "2", description: "d", createdBy: localCreatedBy },
+			{ subject: "3", description: "d", createdBy: localCreatedBy },
+			{ subject: "4", description: "d", createdBy: localCreatedBy },
+		]);
+		store.update(t3.id, { addBlockedBy: [t1.id, t2.id] });
+		store.update(t4.id, { addBlockedBy: [t1.id, t3.id] });
+		assert.equal(store.deleteTasks([t1.id, t2.id, "missing"]), 2);
+		assert.deepEqual(store.get(t3.id)?.blockedBy, []);
+		assert.deepEqual(store.get(t4.id)?.blockedBy, [t3.id]);
+
+		store.update(t3.id, { status: "completed" });
+		assert.equal(store.clearCompleted(), 1);
+		assert.deepEqual(store.get(t4.id)?.blockedBy, []);
 	});
 });
 

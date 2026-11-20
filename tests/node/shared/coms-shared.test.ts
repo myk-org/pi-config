@@ -2,9 +2,14 @@
  * Tests for coms-shared formatting helpers (queue depth, response text).
  * Run with: npx tsx --test tests/node/shared/coms-shared.test.ts
  */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, buildInboundContent, formatQueueStr, renderQueuePart, sanitizeComsName, createDeferredProxy, type DeferredUpstream } from "../../../extensions/coms/coms-shared.js";
+import { formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, buildInboundContent, formatQueueStr, renderQueuePart, sanitizeComsName, createDeferredProxy, syncComsActiveTools, type DeferredUpstream } from "../../../extensions/coms/coms-shared.js";
+import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 describe("formatComsResponseText", () => {
 	it("formats error response without queue", () => {
@@ -407,4 +412,206 @@ describe("createDeferredProxy registerCommand", () => {
 		setComsActive(false);
 	});
 
+});
+
+describe("defaultActive gating for COMS tools (#1158)", () => {
+	function makeStatefulPi() {
+		const tools = new Map<string, any>();
+		let activeTools: string[] = ["read", "bash"];
+		const events = new Map<string, Array<(...args: any[]) => any>>();
+		const commands = new Map<string, any>();
+		const pi = {
+			tools,
+			commands,
+			events: {
+				emit: () => {},
+				on: () => () => {},
+			},
+			registerCommand: (name: string, def: any) => { commands.set(name, def); },
+			registerTool: (tool: any) => {
+				tools.set(tool.name, tool);
+				if (tool.defaultActive !== false && !activeTools.includes(tool.name)) {
+					activeTools.push(tool.name);
+				}
+			},
+			registerFlag: () => {},
+			getFlag: () => undefined,
+			getActiveTools: () => [...activeTools],
+			setActiveTools: (names: string[]) => { activeTools = [...names]; },
+			on: (event: string, handler: any) => {
+				const list = events.get(event) ?? [];
+				list.push(handler);
+				events.set(event, list);
+			},
+			appendEntry: () => {},
+		};
+		return { pi, tools, events, commands, getActive: () => [...activeTools] };
+	}
+
+	it("marks deferred tools defaultActive: false and keeps inactive execute guard", async () => {
+		const { pi, tools, getActive } = makeStatefulPi();
+		const state: DeferredUpstream = {
+			capturedSessionStart: null,
+			capturedSessionShutdown: null,
+			flagValues: new Map(),
+			active: false,
+			deferredTools: new Set(),
+		};
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
+		let executed = false;
+		proxy.registerTool({
+			name: "coms_send",
+			description: "send",
+			parameters: {},
+			execute: async () => { executed = true; return { content: [{ type: "text", text: "ok" }] }; },
+		} as any);
+
+		assert.equal(tools.get("coms_send")?.defaultActive, false);
+		assert.equal(state.deferredTools?.has("coms_send"), true);
+		assert.deepEqual(getActive(), ["read", "bash"]);
+
+		const res = await tools.get("coms_send").execute("id1", {});
+		assert.equal(executed, false);
+		assert.equal(res.content[0].text, "inactive");
+
+		syncComsActiveTools(pi as any, state, true);
+		assert.deepEqual(getActive(), ["read", "bash", "coms_send"]);
+		syncComsActiveTools(pi as any, state, false);
+		assert.deepEqual(getActive(), ["read", "bash"]);
+	});
+
+	it("toggles deferred tools on reload reactivation and failure", async () => {
+		const { setComsActive } = await import("../../../extensions/shared/coms-active.js");
+		setComsActive(false);
+		const { pi, events, getActive } = makeStatefulPi();
+		const state: DeferredUpstream = {
+			capturedSessionStart: null,
+			capturedSessionShutdown: null,
+			flagValues: new Map(),
+			active: false,
+			deferredTools: new Set(["coms_stop"]),
+		};
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
+		proxy.registerTool({ name: "coms_list", description: "list", parameters: {}, execute: async () => ({ content: [] }) } as any);
+
+		let shouldFail = false;
+		proxy.on("session_start", async () => {
+			if (shouldFail) throw new Error("boom");
+		});
+		const reloadHandlers = events.get("session_start") ?? [];
+		assert.equal(reloadHandlers.length, 1);
+
+		await reloadHandlers[0](
+			{ reason: "reload" },
+			{ sessionManager: { getEntries: () => [{ type: "custom", customType: "coms-state", data: { active: true } }] } },
+		);
+		assert.deepEqual(getActive(), ["read", "bash", "coms_stop", "coms_list"]);
+
+		shouldFail = true;
+		await reloadHandlers[0](
+			{ reason: "reload" },
+			{ sessionManager: { getEntries: () => [{ type: "custom", customType: "coms-state", data: { active: true } }] } },
+		);
+		assert.deepEqual(getActive(), ["read", "bash"]);
+		setComsActive(false);
+	});
+
+	it("registerComs gates all 15 P2P tools + coms_stop while keeping discovery/start tools active", async () => {
+		const { pi, tools, getActive } = makeStatefulPi();
+		withSubagentChildEnv(undefined, () => {
+			registerComs(pi as any);
+			return undefined;
+		});
+
+		const gatedNames = [
+			"coms_list", "coms_send", "coms_broadcast", "coms_history", "coms_get",
+			"coms_queue_inspect", "coms_queue_delete", "coms_queue_edit", "coms_queue_clear", "coms_queue_prioritize",
+			"coms_tasks_create", "coms_task_delete", "coms_task_list", "coms_task_get", "coms_task_update",
+			"coms_stop",
+		];
+		const alwaysActiveNames = ["coms_start", "coms_peers", "coms_peer_spawn", "coms_peer_kill"];
+
+		for (const name of gatedNames) {
+			assert.ok(tools.has(name), `expected ${name} to be registered`);
+			assert.equal(tools.get(name).defaultActive, false, `${name} must have defaultActive: false`);
+			assert.equal(getActive().includes(name), false, `${name} must be inactive before COMS starts`);
+		}
+		for (const name of alwaysActiveNames) {
+			assert.ok(tools.has(name), `expected ${name} to be registered`);
+			assert.notEqual(tools.get(name).defaultActive, false, `${name} must remain defaultActive`);
+			assert.equal(getActive().includes(name), true, `${name} must be active before COMS starts`);
+		}
+	});
+
+	it("toggles the 16 gated tools on coms_start / coms_stop and /coms start / stop", async () => {
+		const { setComsActive } = await import("../../../extensions/shared/coms-active.js");
+		const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coms-gate-test-"));
+		const prevComsDir = process.env.PI_COMS_DIR;
+		process.env.PI_COMS_DIR = tmpRoot;
+		const { pi, tools, commands, getActive } = makeStatefulPi();
+		withSubagentChildEnv(undefined, () => {
+			registerComs(pi as any);
+			return undefined;
+		});
+
+		const ctx = {
+			cwd: tmpRoot,
+			hasUI: false,
+			ui: { notify: () => {} },
+			sessionManager: {
+				getSessionId: () => "test-sess-gate",
+				getEntries: () => [],
+			},
+			modelRegistry: {},
+			model: undefined,
+		};
+
+		const gatedNames = [
+			"coms_list", "coms_send", "coms_broadcast", "coms_history", "coms_get",
+			"coms_queue_inspect", "coms_queue_delete", "coms_queue_edit", "coms_queue_clear", "coms_queue_prioritize",
+			"coms_tasks_create", "coms_task_delete", "coms_task_list", "coms_task_get", "coms_task_update",
+			"coms_stop",
+		];
+		const alwaysActiveNames = ["coms_start", "coms_peers", "coms_peer_spawn", "coms_peer_kill"];
+
+		try {
+			// Initially inactive
+			for (const name of gatedNames) assert.equal(getActive().includes(name), false);
+
+			// Start via coms_start tool
+			const startRes = await tools.get("coms_start").execute("id-start", { cname: "gate-peer", project: "gate-proj" }, undefined, undefined, ctx);
+			assert.equal(startRes.details.ok, true, startRes.content?.[0]?.text);
+			assert.equal(startRes.details.active, true);
+			for (const name of [...gatedNames, ...alwaysActiveNames]) {
+				assert.equal(getActive().includes(name), true, `${name} should be active after coms_start`);
+			}
+
+			// Stop via coms_stop tool
+			const stopRes = await tools.get("coms_stop").execute("id-stop", {});
+			assert.equal(stopRes.details.active, false);
+			for (const name of gatedNames) {
+				assert.equal(getActive().includes(name), false, `${name} should be inactive after coms_stop`);
+			}
+			for (const name of alwaysActiveNames) {
+				assert.equal(getActive().includes(name), true, `${name} should stay active after coms_stop`);
+			}
+
+			// Start via /coms start and stop via /coms stop
+			const comsCmd = commands.get("coms");
+			await comsCmd.handler("start --cname gate-peer2 --project gate-proj", ctx);
+			for (const name of gatedNames) {
+				assert.equal(getActive().includes(name), true, `${name} should be active after /coms start`);
+			}
+			await comsCmd.handler("stop", ctx);
+			for (const name of gatedNames) {
+				assert.equal(getActive().includes(name), false, `${name} should be inactive after /coms stop`);
+			}
+		} finally {
+			try { await tools.get("coms_stop").execute("cleanup", {}); } catch {}
+			setComsActive(false);
+			if (prevComsDir === undefined) delete process.env.PI_COMS_DIR;
+			else process.env.PI_COMS_DIR = prevComsDir;
+			fs.rmSync(tmpRoot, { recursive: true, force: true });
+		}
+	});
 });
