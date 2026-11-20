@@ -1869,9 +1869,7 @@ class TestPerfAndDedupR2:
         assert pi_sidecar_client._redact_api_key(r"err: sk-caf\u00e9-12345", unicode_key) == "err: [redacted]"
 
     @pytest.mark.asyncio
-    async def test_info_level_skips_debug_redaction_and_validates_key_once(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_info_level_skips_debug_redaction(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client = SidecarClient(base_url="http://127.0.0.1:9999")
         try:
             create_resp = _mock_response(201, {"session_id": "s-once"})
@@ -1881,14 +1879,6 @@ class TestPerfAndDedupR2:
             client._client.delete = AsyncMock(return_value=delete_resp)
             monkeypatch.setattr(pi_sidecar_client, "get_sidecar_client", lambda: client)
 
-            validate_calls = 0
-            orig_validate = pi_sidecar_client._validate_api_key
-
-            def spy_validate(api_key: str) -> str | None:
-                nonlocal validate_calls
-                validate_calls += 1
-                return orig_validate(api_key)
-
             redact_calls = 0
             orig_redact = pi_sidecar_client._redact_api_key
 
@@ -1897,7 +1887,6 @@ class TestPerfAndDedupR2:
                 redact_calls += 1
                 return orig_redact(value, api_key)
 
-            monkeypatch.setattr(pi_sidecar_client, "_validate_api_key", spy_validate)
             monkeypatch.setattr(pi_sidecar_client, "_redact_api_key", spy_redact)
             prev_level = pi_sidecar_client.logger.level
             pi_sidecar_client.logger.setLevel(logging.INFO)
@@ -1913,15 +1902,61 @@ class TestPerfAndDedupR2:
 
             assert res.success is True
             assert res.text == "ok"
-            # Validated exactly once (not 3x across call_ai_once -> call_ai -> create_session)
-            assert validate_calls == 1
             # Only the 2 INFO-level redactions in Session created (not 17 DEBUG redactions)
             assert redact_calls == 2
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
+    async def test_call_ai_once_dispatches_through_replaced_call_ai(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = SidecarClient(base_url="http://127.0.0.1:9999")
+        delete_mock = AsyncMock()
+        monkeypatch.setattr(client, "delete_session", delete_mock)
+        monkeypatch.setattr(pi_sidecar_client, "get_sidecar_client", lambda: client)
+        fake_call_ai = AsyncMock(return_value=AIResult(success=True, text="intercepted", session_id="s-hook"))
+        monkeypatch.setattr(pi_sidecar_client, "call_ai", fake_call_ai)
+        try:
+            res = await call_ai_once("hi", ai_provider="gemini", ai_model="flash")
+            assert res.success is True
+            assert res.text == "intercepted"
+            assert res.session_id is None
+            fake_call_ai.assert_awaited_once()
+            delete_mock.assert_awaited_once_with("s-hook")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_call_ai_honors_class_level_create_session_patch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = SidecarClient(base_url="http://127.0.0.1:9999")
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"text": "ok", "usage": {}}))
+        monkeypatch.setattr(pi_sidecar_client, "get_sidecar_client", lambda: client)
+        class_create = AsyncMock(return_value="s-class-patched")
+        monkeypatch.setattr(SidecarClient, "create_session", class_create)
+        try:
+            res = await call_ai(
+                "hi",
+                ai_provider="gemini",
+                ai_model="flash",
+                api_key="synthetic-test-key-value",  # pragma: allowlist secret — synthetic test fixture
+            )
+            assert res.success is True
+            assert res.session_id == "s-class-patched"
+            class_create.assert_awaited_once()
+            # Only /sessions/s-class-patched/prompt was posted, never /sessions
+            client._client.post.assert_awaited_once()
+            assert client._client.post.call_args[0][0] == "/sessions/s-class-patched/prompt"
+        finally:
+            await client.close()
+
     def test_extract_error_detail_variants(self) -> None:
         assert pi_sidecar_client._extract_error_detail(_mock_response(400, {"error": "bad"}), "fb") == "bad"
+        obj_resp = httpx.Response(400, json={"error": {"message": "x"}})
+        # Session creation keeps string-only extraction; prompt preserves original non-string payload value
+        assert pi_sidecar_client._extract_error_detail(obj_resp, "fb", require_str=True) == obj_resp.text
+        assert pi_sidecar_client._extract_error_detail(obj_resp, "fb", require_str=False) == {"message": "x"}
+        null_resp = httpx.Response(400, json={"error": None})
+        assert pi_sidecar_client._extract_error_detail(null_resp, "fb", require_str=True) == null_resp.text
+        assert pi_sidecar_client._extract_error_detail(null_resp, "fb", require_str=False) is None
         raw_resp = httpx.Response(502, text="bad gateway")
         assert pi_sidecar_client._extract_error_detail(raw_resp, "fb") == "bad gateway"
         empty_resp = httpx.Response(500, text="")

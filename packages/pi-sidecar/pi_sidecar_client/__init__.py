@@ -312,14 +312,18 @@ def _map_provider_model(provider: str, model: str, api_key: str | None = None) -
     return sidecar_provider, sidecar_model
 
 
-def _extract_error_detail(resp: httpx.Response, fallback: str) -> str:
-    """Extract an error string from a JSON response body, falling back safely."""
+def _extract_error_detail(resp: httpx.Response, fallback: str, *, require_str: bool = True) -> Any:
+    """Extract an error detail from a JSON response body, falling back safely."""
     try:
         payload = resp.json()
-        if isinstance(payload, dict) and isinstance(payload.get("error"), str):
-            return payload["error"]
     except ValueError:
-        pass
+        return resp.text or fallback
+    if isinstance(payload, dict) and "error" in payload:
+        err = payload["error"]
+        if not require_str or isinstance(err, str):
+            return err
+    if not require_str:
+        return resp.text
     return resp.text or fallback
 
 
@@ -557,32 +561,7 @@ class SidecarClient:
         The ``agent_dir`` parameter points to the global agent directory for
         user-level skills, extensions, auth, and model configs (e.g., ``~/.pi/agent/``).
         """
-        return await self._create_session(
-            provider=provider,
-            model=model,
-            system_prompt=system_prompt,
-            cwd=cwd,
-            agent_dir=agent_dir,
-            custom_tools=custom_tools,
-            tools=tools,
-            api_key=api_key,
-            validate_key=True,
-        )
-
-    async def _create_session(
-        self,
-        *,
-        provider: str,
-        model: str,
-        system_prompt: str,
-        cwd: str = DEFAULT_CWD,
-        agent_dir: str | None = None,
-        custom_tools: list | None = None,
-        tools: list[str] | None = None,
-        api_key: str | None = None,
-        validate_key: bool = True,
-    ) -> str:
-        if validate_key and api_key is not None and (error := _validate_api_key(api_key)):
+        if api_key is not None and (error := _validate_api_key(api_key)):
             raise ValueError(error)
         sidecar_provider, sidecar_model = _map_provider_model(provider, model, api_key)
         if logger.isEnabledFor(logging.DEBUG):
@@ -649,7 +628,7 @@ class SidecarClient:
             timeout=request_timeout,
         )
         if resp.status_code != 200:
-            error = _extract_error_detail(resp, f"HTTP {resp.status_code}")
+            error = _extract_error_detail(resp, f"HTTP {resp.status_code}", require_str=False)
             logger.error("Prompt failed: session=%s, status=%d", session_id, resp.status_code)
             return AIResult(success=False, text=error, error=error, status_code=resp.status_code)
 
@@ -885,7 +864,7 @@ def get_sidecar_client() -> SidecarClient:
 # --- Convenience functions for single-shot AI calls ---
 
 
-async def _call_ai_impl(
+async def call_ai(
     prompt: str,
     *,
     ai_provider: str = "",
@@ -898,9 +877,26 @@ async def _call_ai_impl(
     custom_tools: list | None = None,
     tools: list[str] | None = None,
     api_key: str | None = None,
-    validate_key: bool = True,
 ) -> AIResult:
-    if validate_key and api_key is not None and (error := _validate_api_key(api_key)):
+    """Call AI via the sidecar.
+
+    Creates a new session (or reuses *session_id*), sends the prompt,
+    and returns the result with session_id attached.
+
+    The ``cwd`` parameter also controls project-level resource loading —
+    the Pi SDK automatically discovers skills, prompts, extensions, and themes
+    from ``{cwd}/.pi/`` and loads ``AGENTS.md`` from ``{cwd}/``.
+    Nested CLI/ACPX agents use this same folder. Omitting ``cwd`` defaults to
+    the system temp directory (``DEFAULT_CWD``), not the sidecar process cwd.
+
+    Session lifecycle:
+    - Caller is responsible for deleting sessions when done.
+    - For single-shot calls, use ``call_ai_once(...)``
+      or call ``client.delete_session()`` manually after.
+    - For multi-turn (peer debate), pass ``session_id`` from the
+      previous result to continue the conversation.
+    """
+    if api_key is not None and (error := _validate_api_key(api_key)):
         return AIResult(success=False, text=error, error=error)
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
@@ -920,22 +916,16 @@ async def _call_ai_impl(
     created_session = False
     try:
         if not session_id:
-            session_kwargs: dict[str, Any] = {
-                "provider": ai_provider,
-                "model": ai_model,
-                "system_prompt": system_prompt or "You are a helpful assistant.",
-                "cwd": cwd or DEFAULT_CWD,
-                "agent_dir": agent_dir,
-                "custom_tools": custom_tools,
-                "tools": tools,
-                "api_key": api_key,
-            }
-            # Avoid redundant api_key re-validation on unpatched SidecarClient instances,
-            # while still invoking create_session() directly for mocks/subclasses.
-            if type(client) is SidecarClient and "create_session" not in client.__dict__:
-                session_id = await client._create_session(**session_kwargs, validate_key=False)
-            else:
-                session_id = await client.create_session(**session_kwargs)
+            session_id = await client.create_session(
+                provider=ai_provider,
+                model=ai_model,
+                system_prompt=system_prompt or "You are a helpful assistant.",
+                cwd=cwd or DEFAULT_CWD,
+                agent_dir=agent_dir,
+                custom_tools=custom_tools,
+                tools=tools,
+                api_key=api_key,
+            )
             created_session = True
         else:
             logger.debug("call_ai: reusing existing session=%s", session_id)
@@ -973,54 +963,6 @@ async def _call_ai_impl(
         )
 
 
-async def call_ai(
-    prompt: str,
-    *,
-    ai_provider: str = "",
-    ai_model: str = "",
-    cwd: str | None = None,
-    agent_dir: str | None = None,
-    system_prompt: str = "",
-    ai_call_timeout: int | None = None,
-    session_id: str | None = None,
-    custom_tools: list | None = None,
-    tools: list[str] | None = None,
-    api_key: str | None = None,
-) -> AIResult:
-    """Call AI via the sidecar.
-
-    Creates a new session (or reuses *session_id*), sends the prompt,
-    and returns the result with session_id attached.
-
-    The ``cwd`` parameter also controls project-level resource loading —
-    the Pi SDK automatically discovers skills, prompts, extensions, and themes
-    from ``{cwd}/.pi/`` and loads ``AGENTS.md`` from ``{cwd}/``.
-    Nested CLI/ACPX agents use this same folder. Omitting ``cwd`` defaults to
-    the system temp directory (``DEFAULT_CWD``), not the sidecar process cwd.
-
-    Session lifecycle:
-    - Caller is responsible for deleting sessions when done.
-    - For single-shot calls, use ``call_ai_once(...)``
-      or call ``client.delete_session()`` manually after.
-    - For multi-turn (peer debate), pass ``session_id`` from the
-      previous result to continue the conversation.
-    """
-    return await _call_ai_impl(
-        prompt,
-        ai_provider=ai_provider,
-        ai_model=ai_model,
-        cwd=cwd,
-        agent_dir=agent_dir,
-        system_prompt=system_prompt,
-        ai_call_timeout=ai_call_timeout,
-        session_id=session_id,
-        custom_tools=custom_tools,
-        tools=tools,
-        api_key=api_key,
-        validate_key=True,
-    )
-
-
 async def call_ai_once(
     prompt: str,
     *,
@@ -1052,7 +994,7 @@ async def call_ai_once(
             _redact_api_key(agent_dir, api_key) if agent_dir else None,
             tools if api_key is None else "[omitted for keyed session]",
         )
-    result = await _call_ai_impl(
+    result = await call_ai(
         prompt,
         ai_provider=ai_provider,
         ai_model=ai_model,
@@ -1063,7 +1005,6 @@ async def call_ai_once(
         custom_tools=custom_tools,
         tools=tools,
         api_key=api_key,
-        validate_key=False,
     )
     # Always clean up — this is a single-shot call
     if result.session_id:
