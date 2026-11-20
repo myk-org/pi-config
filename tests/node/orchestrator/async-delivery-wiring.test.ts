@@ -10,6 +10,7 @@ import { createLogger } from "../../../extensions/shared/logger.js";
 import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { fakeAgent, fakeSpawnProcess } from "../helpers/fake-async-runtime.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 
 const log = createLogger("async-delivery-wiring-test");
@@ -48,10 +49,14 @@ function harness(options: { cwd?: string } = {}) {
     sendMessage(message: any) { if (rejectedSends-- > 0) throw new Error("temporary delivery failure"); messages.push(message); },
     events,
   };
-  const api = registerAsyncAgents(pi as any, () => {}, {
-    spawnProcess: fakeSpawnProcess(),
-    discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
+  let api!: ReturnType<typeof registerAsyncAgents>;
+  withSubagentChildEnv(undefined, () => {
+    api = registerAsyncAgents(pi as any, () => {}, {
+      spawnProcess: fakeSpawnProcess(),
+      discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
+    });
   });
+  assert.ok(handlers.get("session_start")?.length);
   let overlayOpens = 0;
   const ctx = {
     cwd,

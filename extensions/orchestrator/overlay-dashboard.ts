@@ -475,6 +475,10 @@ export class OverlayScrollDetail implements Component {
   private closed = false;
   private cachedWidth: number | undefined;
   private cachedLines: string[] | undefined;
+  private wrappedWidth: number | undefined;
+  private wrappedBodyRef: string[] | undefined;
+  private wrappedBodyLen = 0;
+  private cachedWrapped: string[] = [];
   private ticker: ReturnType<typeof setInterval>;
   private poller: ReturnType<typeof setInterval> | undefined;
 
@@ -589,15 +593,28 @@ export class OverlayScrollDetail implements Component {
     const sep = theme.fg("border", "─".repeat(Math.max(1, width)));
 
     const body = this.spec.getBodyLines(theme);
-    const wrapped: string[] = [];
-    for (const line of body) {
-      for (const wl of wrapTextWithAnsi(line, Math.max(10, width - 2))) {
-        wrapped.push(truncateToWidth(wl, width));
+    const wrapWidth = Math.max(10, width - 2);
+    if (
+      this.wrappedWidth !== width ||
+      this.wrappedBodyRef !== body ||
+      body.length < this.wrappedBodyLen
+    ) {
+      this.wrappedWidth = width;
+      this.wrappedBodyRef = body;
+      this.wrappedBodyLen = 0;
+      this.cachedWrapped = [];
+    }
+    if (body.length > this.wrappedBodyLen) {
+      for (let i = this.wrappedBodyLen; i < body.length; i++) {
+        for (const wl of wrapTextWithAnsi(body[i], wrapWidth)) {
+          this.cachedWrapped.push(truncateToWidth(wl, width));
+        }
       }
+      this.wrappedBodyLen = body.length;
     }
-    if (wrapped.length === 0) {
-      wrapped.push(theme.fg("dim", this.spec.emptyBody ?? "(empty)"));
-    }
+    const wrapped = this.cachedWrapped.length > 0
+      ? this.cachedWrapped
+      : [theme.fg("dim", this.spec.emptyBody ?? "(empty)")];
 
     const rows = this.tui.terminal.rows || 30;
     const viewHeight = Math.max(6, rows - 8);

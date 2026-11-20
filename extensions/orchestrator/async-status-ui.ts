@@ -5,6 +5,7 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { parseAsyncOutputLine } from "./async-status-parse.js";
 import {
   openListDetailOverlay,
@@ -185,6 +186,72 @@ function killTargets(
 }
 
 /**
+ * Incrementally read appended JSONL lines from `logPath` using byte offsets
+ * and `StringDecoder("utf8")` so 500ms polling is O(delta_bytes) instead of O(file_size).
+ */
+export function createIncrementalLogReader(logPath: string, lines: string[]): () => boolean {
+  let bytePos = 0;
+  let textBuffer = "";
+  let decoder = new StringDecoder("utf8");
+  let lastLoggedError = "";
+
+  return (): boolean => {
+    try {
+      const size = fs.statSync(logPath).size;
+      if (size === bytePos) return false;
+      let reset = false;
+      if (size < bytePos) {
+        bytePos = 0;
+        textBuffer = "";
+        decoder = new StringDecoder("utf8");
+        if (lines.length > 0) {
+          lines.length = 0;
+          reset = true;
+        }
+      }
+      const bytesToRead = size - bytePos;
+      if (bytesToRead <= 0) return reset;
+
+      const buf = Buffer.allocUnsafe(bytesToRead);
+      const fd = fs.openSync(logPath, "r");
+      let totalRead = 0;
+      try {
+        while (totalRead < bytesToRead) {
+          const n = fs.readSync(fd, buf, totalRead, bytesToRead - totalRead, bytePos + totalRead);
+          if (n <= 0) break;
+          totalRead += n;
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+      if (totalRead === 0) return reset;
+      bytePos += totalRead;
+
+      textBuffer += decoder.write(buf.subarray(0, totalRead));
+      const parts = textBuffer.split("\n");
+      textBuffer = parts.pop() || "";
+      let changed = false;
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        const parsed = parseAsyncOutputLine(part);
+        if (parsed === null) continue;
+        for (const l of parsed.split("\n")) lines.push(l);
+        changed = true;
+      }
+      return changed || reset;
+    } catch (e: any) {
+      if (e?.code === "ENOENT") return false;
+      const msg = e?.message || String(e);
+      if (msg !== lastLoggedError) {
+        lastLoggedError = msg;
+        log.debug("live output read failed", { error: msg });
+      }
+      return false;
+    }
+  };
+}
+
+/**
  * Open fullscreen async-status picker. Loops list → detail until user closes list.
  */
 export async function openAsyncStatusOverlay(
@@ -249,44 +316,10 @@ export async function openAsyncStatusOverlay(
     },
     createDetail: (job, tui, theme, done) => {
       const lines: string[] = [];
-      let filePos = 0;
-      let textBuffer = "";
-      let lastLoggedError = "";
-
-      const readNewContent = (): boolean => {
-        // No worker dir means no output.log — path.join("", ...) would read the cwd.
-        if (!job.workerDir) return false;
-        try {
-          const content = fs.readFileSync(
-            path.join(job.workerDir, "output.log"),
-            "utf-8",
-          );
-          if (content.length <= filePos) return false;
-          const newContent = content.slice(filePos);
-          filePos = content.length;
-          textBuffer += newContent;
-
-          const parts = textBuffer.split("\n");
-          textBuffer = parts.pop() || "";
-          let changed = false;
-          for (const part of parts) {
-            if (!part.trim()) continue;
-            const parsed = parseAsyncOutputLine(part);
-            if (parsed === null) continue;
-            for (const l of parsed.split("\n")) lines.push(l);
-            changed = true;
-          }
-          return changed;
-        } catch (e: any) {
-          if (e?.code === "ENOENT") return false;
-          const msg = e?.message || String(e);
-          if (msg !== lastLoggedError) {
-            lastLoggedError = msg;
-            console.debug("[async-status-ui] live output read failed:", msg);
-          }
-          return false;
-        }
-      };
+      // No worker dir means no output.log — path.join("", ...) would read the cwd.
+      const readNewContent = job.workerDir
+        ? createIncrementalLogReader(path.join(job.workerDir, "output.log"), lines)
+        : () => false;
 
       const jobId = job.id;
       return new OverlayScrollDetail(

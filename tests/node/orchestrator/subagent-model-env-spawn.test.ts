@@ -9,6 +9,7 @@ import { runSingleAgent } from "../../../extensions/orchestrator/subagent-tool.j
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 
 // The sync path invokes process.argv[1]; the async path invokes its runner.
@@ -66,9 +67,13 @@ describe("subagent child model environment", { concurrency: false }, () => {
       global.setInterval = (() => ({ unref() {} })) as any;
       const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
       const pi = { on: (name: string, handler: any) => { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); }, registerCommand() {}, sendMessage() {}, events: new EventEmitter() };
-      const api = registerAsyncAgents(pi as any, () => {}, {
-        spawnProcess: ((command: string, _args: string[], options: any) => spawn(command, [script], options)) as any,
+      let api!: ReturnType<typeof registerAsyncAgents>;
+      withSubagentChildEnv(undefined, () => {
+        api = registerAsyncAgents(pi as any, () => {}, {
+          spawnProcess: ((command: string, _args: string[], options: any) => spawn(command, [script], options)) as any,
+        });
       });
+      assert.ok(handlers.get("session_start")?.length);
       handlers.get("session_start")![0]({}, { cwd, sessionManager: { getCwd: () => cwd, getSessionId: () => "model-test" } });
       const asyncJob = api.spawnAsyncAgent("worker", "check", cwd, [agent], { parentModelId });
       assert.equal(asyncJob.error, undefined);

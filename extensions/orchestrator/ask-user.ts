@@ -45,25 +45,25 @@ export function registerAskUser(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
 ): void {
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
   pi.registerTool({
     name: "ask_user",
     label: "Ask User",
     description:
-      "Present a question to the user with selectable options. Returns the user's choice or free-text input. Use this whenever a workflow needs user input — never ask via plain text.",
+      "Ask the user a question with selectable options or free-text input. Never ask via plain text.",
     promptSnippet: "Ask the user a question with selectable options",
     promptGuidelines: [
-      "Use ask_user when you need user input during a workflow (approvals, selections, confirmations).",
-      "Do NOT ask users questions via plain text — always use this tool for structured choices.",
-      "Provide clear, concise options. Include a 'no' or 'cancel' option when appropriate.",
+      "Use ask_user for approvals, selections, or confirmations — never ask via plain text.",
+      "Include clear options and a 'no'/'cancel' choice when appropriate.",
     ],
     parameters: Type.Object({
       question: Type.String({
-        description: "The question to display to the user",
+        description: "Question to display",
       }),
       options: Type.Optional(
         Type.Array(Type.String(), {
-          description:
-            "List of selectable options. If omitted, only free-text input is shown.",
+          description: "Selectable options (omitted = free-text input only)",
         }),
       ),
     }),

@@ -23,6 +23,7 @@ import { setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { fakeAgent, fakeSpawnProcess } from "../helpers/fake-async-runtime.js";
 import { fakeCustom } from "../helpers/fake-extension-ctx.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
 const log = createLogger("sync-agent-runs-wiring-test");
@@ -57,10 +58,13 @@ function harness() {
     sendMessage() {},
     events,
   };
-  registerAsyncAgents(pi as any, () => {}, {
-    spawnProcess: fakeSpawnProcess(),
-    discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
+  withSubagentChildEnv(undefined, () => {
+    registerAsyncAgents(pi as any, () => {}, {
+      spawnProcess: fakeSpawnProcess(),
+      discoverAgents: () => ({ agents: [fakeAgent("worker")] }),
+    });
   });
+  assert.ok(handlers.get("session_start")?.length);
   handlers.get("session_start")![0]({}, ctx);
 
   const pidash = () => {

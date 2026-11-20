@@ -35,15 +35,64 @@ export interface AgentDiscoveryResult {
 	projectAgentsDir: string | null;
 }
 
-function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"): AgentConfig[] {
-	const agents: AgentConfig[] = [];
+interface DirAgentsCacheEntry {
+	dirMtimeMs: number;
+	fileMeta: Map<string, { mtimeMs: number; size: number }>;
+	agents: AgentConfig[];
+}
 
-	if (!fs.existsSync(dir)) return agents;
+const DIR_AGENTS_CACHE_MAX = 32;
+const dirAgentsCache = new Map<string, DirAgentsCacheEntry>();
+
+/** Clear cached agent frontmatter reads (tests). */
+export function clearAgentsCache(): void {
+	dirAgentsCache.clear();
+}
+
+function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"): AgentConfig[] {
+	const cacheKey = `${source}\0${dir}`;
+	let dirStat: fs.Stats;
+	try {
+		dirStat = fs.statSync(dir);
+	} catch {
+		dirAgentsCache.delete(cacheKey);
+		return [];
+	}
+	if (!dirStat.isDirectory()) {
+		dirAgentsCache.delete(cacheKey);
+		return [];
+	}
+
+	const cached = dirAgentsCache.get(cacheKey);
+	if (cached && cached.dirMtimeMs === dirStat.mtimeMs) {
+		let valid = true;
+		for (const [filePath, meta] of cached.fileMeta) {
+			try {
+				const st = fs.statSync(filePath);
+				if (st.mtimeMs !== meta.mtimeMs || st.size !== meta.size) {
+					valid = false;
+					break;
+				}
+			} catch {
+				valid = false;
+				break;
+			}
+		}
+		if (valid) {
+			dirAgentsCache.delete(cacheKey);
+			dirAgentsCache.set(cacheKey, cached);
+			return cached.agents;
+		}
+	}
+
+	const agents: AgentConfig[] = [];
+	const fileMeta = new Map<string, { mtimeMs: number; size: number }>();
 
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
 	} catch {
+		dirAgentsCache.delete(cacheKey);
 		return agents;
 	}
 
@@ -54,6 +103,8 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 		const filePath = path.join(dir, entry.name);
 		let content: string;
 		try {
+			const st = fs.statSync(filePath);
+			fileMeta.set(filePath, { mtimeMs: st.mtimeMs, size: st.size });
 			content = fs.readFileSync(filePath, "utf-8");
 		} catch {
 			continue;
@@ -79,6 +130,12 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 			filePath,
 		});
 	}
+
+	if (dirAgentsCache.size >= DIR_AGENTS_CACHE_MAX) {
+		const oldest = dirAgentsCache.keys().next().value;
+		if (oldest !== undefined) dirAgentsCache.delete(oldest);
+	}
+	dirAgentsCache.set(cacheKey, { dirMtimeMs: dirStat.mtimeMs, fileMeta, agents });
 
 	return agents;
 }
