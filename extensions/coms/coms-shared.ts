@@ -81,10 +81,36 @@ export interface DeferredUpstream {
     flagValues: Map<string, any>;
     /** Whether the upstream extension is active */
     active: boolean;
+    /** Tool names gated behind active state (defaultActive: false until COMS starts) */
+    deferredTools?: Set<string>;
     /** In-flight activation, so two starts cannot share the process-wide origin/identity cell. */
     activation?: Promise<{ ok: boolean; message: string }> | null;
     /** Extra persisted state */
     extra?: Record<string, any>;
+}
+
+/**
+ * Sync COMS-gated tools (the 15 P2P tools + coms_stop) in the active tool set.
+ */
+export function syncComsActiveTools(pi: ExtensionAPI, state: DeferredUpstream, active: boolean): void {
+    const gated = state.deferredTools;
+    if (!gated || gated.size === 0) return;
+    if (typeof (pi as any).getActiveTools !== "function" || typeof (pi as any).setActiveTools !== "function") {
+        log.debug("coms_active_tools_sync_skipped", { reason: "api_unavailable", active });
+        return;
+    }
+    const current = pi.getActiveTools();
+    if (active) {
+        const toAdd = [...gated].filter((name) => !current.includes(name));
+        if (toAdd.length === 0) return;
+        pi.setActiveTools([...current, ...toAdd]);
+        log.debug("coms_active_tools_added", { count: toAdd.length, tools: toAdd });
+    } else {
+        const next = current.filter((name) => !gated.has(name));
+        if (next.length === current.length) return;
+        pi.setActiveTools(next);
+        log.debug("coms_active_tools_removed", { count: current.length - next.length });
+    }
 }
 
 /**
@@ -142,6 +168,11 @@ export function createDeferredProxy(
                     };
                 case 'registerTool':
                     return (tool: any) => {
+                        if (typeof tool?.name === "string" && tool.name) {
+                            if (!state.deferredTools) state.deferredTools = new Set();
+                            state.deferredTools.add(tool.name);
+                        }
+                        tool.defaultActive = false;
                         // Inject anti-loop warning into coms_send description
                         if (tool.name === "coms_send" && tool.description && !tool.description.includes("DO NOT")) {
                             tool.description +=
@@ -199,14 +230,18 @@ export function createDeferredProxy(
                                         await handler(evt, ctx);
                                         state.active = true;
                                         setComsActive(true);
+                                        syncComsActiveTools(target, state, true);
                                     } catch (err) {
                                         state.active = false;
                                         setComsActive(false);
+                                        syncComsActiveTools(target, state, false);
                                         persistState(target, persistKey, state);
                                         const msg = err instanceof Error ? err.message : String(err);
                                         const error = err instanceof Error ? err : new Error(msg);
                                         log.error("reload reactivation failed", msg, error);
                                     }
+                                } else {
+                                    syncComsActiveTools(target, state, false);
                                 }
                             });
                         }

@@ -381,3 +381,36 @@ describe("pitasks telemetry bridge", () => {
 		}
 	});
 });
+
+describe("TaskWidget single-snapshot ticks (#1162)", () => {
+	it("renders active tasks with blocker annotations across update ticks", () => {
+		const store = new TaskStore();
+		const widget = new TaskWidget(store);
+		try {
+			const t1 = store.create("Blocker", "b", createdBy);
+			const t2 = store.create("Active", "a", createdBy);
+			const t3 = store.create("Blocked", "c", createdBy);
+			store.update(t2.id, { status: "in_progress" });
+			store.update(t3.id, { addBlockedBy: [t1.id] });
+			widget.setActiveTask(t2.id);
+
+			let renderFn: (() => string[]) | undefined;
+			let rendersRequested = 0;
+			widget.setUICtx({
+				setWidget(_name: string, value: any) {
+					if (value) renderFn = value({ terminal: { columns: 120 }, requestRender() { rendersRequested++; } }, theme).render;
+				},
+			});
+			widget.update();
+			assert.ok(renderFn);
+
+			widget.update();
+			assert.equal(rendersRequested, 1);
+			const lines = renderFn();
+			assert.ok(lines.some(l => l.includes("Active")));
+			assert.ok(lines.some(l => l.includes("blocked by #1")));
+		} finally {
+			widget.dispose();
+		}
+	});
+});
