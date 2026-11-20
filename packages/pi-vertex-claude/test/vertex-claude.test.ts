@@ -821,6 +821,43 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 		]);
 	});
 
+	it("records 89.8% lower input cost in streamVertexClaude when cache_read_input_tokens hits", async () => {
+		// Measured cost impact on claude-sonnet-4-6 across a 50,000-token multi-turn history:
+		// uncached (0 breakpoints -> 50,000 input): $0.1500/turn
+		// cached   (1 breakpoint  -> 49,900 cacheRead + 100 input): $0.01527/turn (89.8% reduction).
+		process.env.GOOGLE_CLOUD_PROJECT = "cache-usage-proj";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+		const sonnet = buildModels().find((m) => m.id === "claude-sonnet-4-6")!;
+		const context = normalizeContext({ messages: [{ role: "user", content: "follow-up", timestamp: 1 }] });
+
+		vertexMock.events = [
+			{ type: "message_start", message: { usage: { input_tokens: 50000, output_tokens: 0 } } },
+			{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 100 } },
+		];
+		let uncachedDone: any;
+		for await (const ev of streamVertexClaude(sonnet as any, context)) {
+			if (ev.type === "done") uncachedDone = ev.message;
+		}
+
+		vertexMock.events = [
+			{
+				type: "message_start",
+				message: { usage: { input_tokens: 100, cache_read_input_tokens: 49900, output_tokens: 0 } },
+			},
+			{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 100 } },
+		];
+		let cachedDone: any;
+		for await (const ev of streamVertexClaude(sonnet as any, context)) {
+			if (ev.type === "done") cachedDone = ev.message;
+		}
+
+		const uncachedInputCost = uncachedDone.usage.cost.input + uncachedDone.usage.cost.cacheRead;
+		const cachedInputCost = cachedDone.usage.cost.input + cachedDone.usage.cost.cacheRead;
+		expect(uncachedInputCost).toBeCloseTo(0.15, 4);
+		expect(cachedInputCost).toBeCloseTo(0.01527, 4);
+		expect(1 - cachedInputCost / uncachedInputCost).toBeGreaterThan(0.89);
+	});
+
 	it("reports argumentsError on malformed completed tool JSON", async () => {
 		process.env.GOOGLE_CLOUD_PROJECT = "stream-test-project";
 		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
