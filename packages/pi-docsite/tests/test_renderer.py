@@ -610,3 +610,39 @@ def test_render_index_uses_passed_asset_version_without_rehashing(monkeypatch: p
         asset_version="deadbeef00",
     )
     assert "assets/style.css?v=deadbeef00" in html
+
+
+def test_iter_with_fence_state_tracks_nested_backtick_fences() -> None:
+    lines = [
+        "# Title",
+        "````markdown",
+        "```yaml",
+        "# inner",
+        "```",
+        "````",
+        "prose",
+    ]
+    states = [state for _, state, _ in renderer_module._iter_with_fence_state(lines)]
+    assert states == ["outside", "open", "inside", "inside", "inside", "close", "outside"]
+
+
+def test_iter_with_fence_state_tracks_tilde_fences() -> None:
+    lines = ["prose", "~~~sh", "```", "~~~"]
+    states = [state for _, state, _ in renderer_module._iter_with_fence_state(lines)]
+    assert states == ["outside", "open", "inside", "close"]
+
+
+def test_build_llms_full_txt_strip_trailing_matches_post_pass_normalization() -> None:
+    plan = {
+        "project_name": "Demo  ",
+        "tagline": "Line one  \nLine two\t",
+        "navigation": [{"group": "G", "pages": [{"slug": "a", "title": "A"}, {"slug": "b", "title": "B"}]}],
+    }
+    pages = {
+        "a": "# A  \n\n```yaml\n# comment  \nkey: val  \n   \n```\n\nend  \n\n",
+        "b": "~~~sh\necho hi  \n~~~\n",
+    }
+    raw = renderer_module._build_llms_full_txt(plan, pages)
+    expected = "\n".join(line.rstrip() for line in raw.split("\n")).rstrip("\n") + "\n"
+    actual = renderer_module._build_llms_full_txt(plan, pages, strip_trailing=True)
+    assert actual == expected
