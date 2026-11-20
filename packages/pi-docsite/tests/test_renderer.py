@@ -612,7 +612,7 @@ def test_render_index_uses_passed_asset_version_without_rehashing(monkeypatch: p
     assert "assets/style.css?v=deadbeef00" in html
 
 
-def test_iter_with_fence_state_tracks_backticks_tildes_and_nested_fences() -> None:
+def test_iter_with_fence_state_tracks_nested_backtick_fences() -> None:
     lines = [
         "# Title",
         "````markdown",
@@ -621,23 +621,15 @@ def test_iter_with_fence_state_tracks_backticks_tildes_and_nested_fences() -> No
         "```",
         "````",
         "prose",
-        "~~~sh",
-        "```",
-        "~~~",
     ]
     states = [state for _, state, _ in renderer_module._iter_with_fence_state(lines)]
-    assert states == [
-        "outside",
-        "open",
-        "inside",
-        "inside",
-        "inside",
-        "close",
-        "outside",
-        "open",
-        "inside",
-        "close",
-    ]
+    assert states == ["outside", "open", "inside", "inside", "inside", "close", "outside"]
+
+
+def test_iter_with_fence_state_tracks_tilde_fences() -> None:
+    lines = ["prose", "~~~sh", "```", "~~~"]
+    states = [state for _, state, _ in renderer_module._iter_with_fence_state(lines)]
+    assert states == ["outside", "open", "inside", "close"]
 
 
 def test_build_llms_full_txt_strip_trailing_matches_post_pass_normalization() -> None:

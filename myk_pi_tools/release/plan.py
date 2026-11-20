@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
+import threading
 import tomllib
 import urllib.error
 import urllib.request
@@ -201,11 +202,16 @@ def _iter_file_blobs(
     repo_root: Path,
     version_file: str,
     shas: list[str],
+    *,
+    timeout: float = GIT_TIMEOUT_SECONDS,
 ) -> Generator[tuple[str, str]]:
     """Stream ``<sha>:<version_file>`` blobs through one ``git cat-file --batch`` process.
 
     Lockstep request/response lets callers short-circuit on ``break`` without
     reading older commits, while keeping process count at O(1) per file.
+    Any startup error, timeout, broken pipe, malformed/truncated response, or
+    non-zero exit status raises ``RuntimeError`` so ``_find_anchor`` never
+    mistakenly treats a failed read as the end of history.
     """
     try:
         proc = subprocess.Popen(
@@ -224,31 +230,48 @@ def _iter_file_blobs(
         proc.wait()
         raise RuntimeError("git cat-file pipes unavailable")
 
+    timed_out = threading.Event()
+
+    def _kill_on_timeout() -> None:
+        timed_out.set()
+        with contextlib.suppress(OSError):
+            proc.kill()
+
+    timer = threading.Timer(timeout, _kill_on_timeout)
+    timer.daemon = True
+    timer.start()
+
     completed_loop = False
     try:
         for sha in shas:
             try:
                 stdin.write(f"{sha}:{version_file}\n".encode())
                 stdin.flush()
-            except BrokenPipeError:
-                break
+            except BrokenPipeError as exc:
+                if timed_out.is_set():
+                    raise RuntimeError(f"git cat-file timed out for {version_file}") from exc
+                raise RuntimeError(f"git cat-file pipe closed unexpectedly for {version_file}") from exc
             header = stdout.readline()
             if not header:
-                break
+                if timed_out.is_set():
+                    raise RuntimeError(f"git cat-file timed out for {version_file}")
+                raise RuntimeError(f"git cat-file ended unexpectedly for {version_file}")
             parts = header.rstrip(b"\r\n").decode("utf-8", errors="replace").split()
             if len(parts) >= 2 and parts[-1] == "missing":
                 continue
             if len(parts) != 3:
-                break
+                raise RuntimeError(f"git cat-file returned malformed header for {version_file}: {header!r}")
             obj_type = parts[1]
             try:
                 size = int(parts[2])
-            except ValueError:
-                break
+            except ValueError as exc:
+                raise RuntimeError(f"git cat-file returned invalid size for {version_file}: {header!r}") from exc
             raw = stdout.read(size)
-            stdout.read(1)  # trailing LF emitted by cat-file --batch
-            if len(raw) != size:
-                break
+            trailer = stdout.read(1)  # trailing LF emitted by cat-file --batch
+            if len(raw) != size or len(trailer) != 1:
+                if timed_out.is_set():
+                    raise RuntimeError(f"git cat-file timed out for {version_file}")
+                raise RuntimeError(f"git cat-file returned truncated blob for {version_file}")
             if obj_type != "blob":
                 continue
             yield sha, raw.decode("utf-8", errors="replace")
@@ -256,17 +279,18 @@ def _iter_file_blobs(
     finally:
         with contextlib.suppress(OSError):
             stdin.close()
-        timed_out = False
         try:
-            proc.wait(timeout=GIT_TIMEOUT_SECONDS)
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            timed_out = True
+            timed_out.set()
             proc.kill()
             proc.wait()
+        finally:
+            timer.cancel()
         with contextlib.suppress(OSError):
             stdout.close()
         if completed_loop:
-            if timed_out:
+            if timed_out.is_set():
                 raise RuntimeError(f"git cat-file timed out for {version_file}")
             if proc.returncode != 0:
                 raise RuntimeError(f"git cat-file failed ({version_file}): exit code {proc.returncode}")

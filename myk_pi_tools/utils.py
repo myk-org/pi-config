@@ -88,9 +88,6 @@ def find_git_root(cwd: Path | None = None) -> Path:
         raise RuntimeError(f"git command failed: {exc}") from exc
 
 
-resolve_git_root = find_git_root
-
-
 def run_gh(
     args: list[str],
     *,

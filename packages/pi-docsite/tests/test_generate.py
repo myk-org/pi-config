@@ -615,6 +615,9 @@ def test_generation_failure_stub_with_frontmatter_excluded_from_ai_indexes(
     assert (docs / "broken.html").is_file()
 
 
-def test_dead_theme_template_and_repo_root_removed() -> None:
+def test_dead_repo_root_constant_removed() -> None:
     assert not hasattr(generate_docs, "REPO_ROOT")
+
+
+def test_dead_theme_template_removed() -> None:
     assert not (generate_docs.renderer.TEMPLATES_DIR / "_theme.html").exists()
