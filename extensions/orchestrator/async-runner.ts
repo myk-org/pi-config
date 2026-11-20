@@ -219,7 +219,8 @@ async function run(config: RunConfig): Promise<void> {
   // For code reviewers: validate output is JSON, retry if not
   if (config.agent.startsWith("code-reviewer-") && exitCode === 0) {
     let validJson = false;
-    let retryOutput = finalOutput || extractAsyncFallbackOutput(stdoutTail);
+    // Extract only assistant text deltas so tool/agent annotations do not corrupt valid JSON.
+    let retryOutput = finalOutput || extractAsyncFallbackOutput(stdoutTail, 2000, { textOnly: true });
     let jsonRetryCount = 0;
     while (!validJson) {
       jsonRetryCount++;

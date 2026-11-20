@@ -1805,14 +1805,25 @@ export function registerAsyncAgents(
       job.status = "failed";
       job.updatedAt = Date.now();
       job.durationMs = Date.now() - job.startedAt;
-      // Resolve the agent's prior output BEFORE writing either destination, reusing the
-      // `status` snapshot already read above instead of re-reading status.json multiple times.
-      // Prefer the in-memory value, then what status.json already held, then the worker's
-      // output.log — a job killed mid-run has neither of the first two, because `output`
-      // only lands in status.json on the completion path and job.output stays undefined
-      // until then. Reading output.log is what stops the AI receiving a kill label and
-      // none of the work the agent had actually done.
-      const persistedPriorOutput = typeof status?.output === "string" ? status.output : "";
+      // Re-read status.json ONCE after signaling so any updates written during pstree/SIGKILL
+      // are preserved, and leave a corrupt status.json untouched instead of overwriting it.
+      const statusPath = path.join(job.workerDir, "status.json");
+      let postKillStatus: Record<string, unknown> | null = null;
+      let statusFileCorrupt = false;
+      if (fs.existsSync(statusPath)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            postKillStatus = parsed as Record<string, unknown>;
+          } else {
+            statusFileCorrupt = true;
+          }
+        } catch (e: any) {
+          statusFileCorrupt = true;
+          log.warn(`kill: corrupt status.json left untouched for ${job.id}: ${e?.message}`);
+        }
+      }
+      const persistedPriorOutput = typeof postKillStatus?.output === "string" ? postKillStatus.output : "";
       const inMemoryOutput = typeof job.output === "string" ? job.output : "";
       const partialFromLog = inMemoryOutput || persistedPriorOutput ? "" : readPartialWorkerOutput(
         job,
@@ -1832,19 +1843,20 @@ export function registerAsyncAgents(
       // delivered flag stays false after a failed send, so clear the continuation itself.
       job.onComplete = undefined;
 
-      // Persist killed state to disk — prevents stale re-delivery on reload
-      try {
-        const statusPath = path.join(job.workerDir, "status.json");
-        const existing = status && typeof status === "object" ? { ...status } : {};
-        existing.state = "failed";
-        existing.exitCode = -9;
-        existing.endedAt = Date.now();
-        existing.killOrigin = killOrigin;
-        // Same composed text as job.output, so the overlay and pidash read exactly what
-        // the AI receives instead of losing the partial output.
-        existing.output = composedOutput;
-        fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
-      } catch (e: any) { log.error(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
+      // Persist killed state to disk — prevents stale re-delivery on reload (skip if corrupt)
+      if (!statusFileCorrupt) {
+        try {
+          const existing: Record<string, unknown> = postKillStatus ? { ...postKillStatus } : {};
+          existing.state = "failed";
+          existing.exitCode = -9;
+          existing.endedAt = Date.now();
+          existing.killOrigin = killOrigin;
+          // Same composed text as job.output, so the overlay and pidash read exactly what
+          // the AI receives instead of losing the partial output.
+          existing.output = composedOutput;
+          fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
+        } catch (e: any) { log.error(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
+      }
       // Delete result file if it exists — prevent re-ingestion on reload
       try { fs.unlinkSync(path.join(ASYNC_RESULTS_DIR, `${job.id}.json`)); } catch {}
       // Record killed reviewer as having 0 findings — prevents permanent commit block

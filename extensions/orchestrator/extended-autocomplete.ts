@@ -379,6 +379,8 @@ function setupPromptTemplateInterceptor(
 
   pi.on("session_start", (_event, sessionCtx) => {
     ctx.lastCwd = sessionCtx.cwd;
+    // Warm the worktree cache in the background so the first /review-status Tab has suggestions ready.
+    void ctx.fetchWorktrees(sessionCtx.cwd);
 
     // Pre-fetch AI CLI models once on first start (not on /new)
     if (!modelsPrefetched) {

@@ -45,7 +45,7 @@ export function registerStatus(
         for (const t of crons) {
           const last = t.lastRun ? new Date(t.lastRun).toLocaleTimeString() : "never";
           const leader = t.scope !== "session" ? `, ${t.leader === false ? "non-leader" : "leader"}` : "";
-          lines.push(`   • ${t.scope === "project" ? "persist" : "session"}:${t.id} ${formatCronSchedule(t)} — ${t.description} (last: ${last}${leader})`);
+          lines.push(`   • ${t.scope === "project" ? "persist" : "session"}:${t.id} ${formatCronSchedule(t, { preciseIntervals: true, dailyPrefix: false })} — ${t.description} (last: ${last}${leader})`);
         }
       } else {
         lines.push("⏰ Cron tasks: none");

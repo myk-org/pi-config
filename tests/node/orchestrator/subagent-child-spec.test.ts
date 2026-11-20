@@ -51,7 +51,7 @@ describe("buildSubagentChildSpec & SETTINGS_KEY_NAMES (#1279)", () => {
     assert.deepEqual([...SETTINGS_KEY_NAMES], Object.keys(SETTINGS_KEYS));
   });
 
-  it("builds sync args, env, and resolved prompt without JITI cache flags", () => {
+  it("builds sync child spec without JITI cache flags", () => {
     mkdirSync(join(cwd, ".pi"), { recursive: true });
     writeFileSync(join(cwd, ".pi", "pi-config-settings.json"), JSON.stringify({ dco: true }), "utf-8");
     clearSettingsCache();
@@ -84,7 +84,7 @@ describe("buildSubagentChildSpec & SETTINGS_KEY_NAMES (#1279)", () => {
     assert.equal(spec.env.JITI_CACHE, process.env.JITI_CACHE);
   });
 
-  it("builds async args with -nc, deterministic --session-id, JITI isolation, and extraEnv", () => {
+  it("builds async child spec with -nc, session id, JITI isolation", () => {
     const spec = buildSubagentChildSpec({
       mode: "async",
       agentName: "code-reviewer-quality",
@@ -135,24 +135,35 @@ describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284
     return tool;
   }
 
-  it("validates missing, non-positive, and over-limit estimatedSeconds across single, parallel, and chain", async () => {
+  it("rejects single sync call when estimatedSeconds is missing", async () => {
     const tool = registerTool();
-    const cwd = makeTempDir("sync-val-");
+    const cwd = makeTempDir("sync-val-missing-");
     tempDirs.push(cwd);
     const ctx: any = { cwd, hasUI: false, model: { id: "claude-sonnet-4", provider: "anthropic" } };
 
-    // Single missing estimate
-    const sMissing = await tool.execute("1", { agent: "worker", task: "hi", cwd }, undefined, undefined, ctx);
-    assert.equal(sMissing.isError, true);
-    assert.match(sMissing.content[0].text, /estimatedSeconds/);
+    const res = await tool.execute("1", { agent: "worker", task: "hi", cwd }, undefined, undefined, ctx);
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /estimatedSeconds/);
+  });
 
-    // Single non-positive
-    const sZero = await tool.execute("2", { agent: "worker", task: "hi", cwd, estimatedSeconds: 0 }, undefined, undefined, ctx);
-    assert.equal(sZero.isError, true);
-    assert.match(sZero.content[0].text, /positive number/);
+  it("rejects single sync call when estimatedSeconds is non-positive", async () => {
+    const tool = registerTool();
+    const cwd = makeTempDir("sync-val-zero-");
+    tempDirs.push(cwd);
+    const ctx: any = { cwd, hasUI: false, model: { id: "claude-sonnet-4", provider: "anthropic" } };
 
-    // Parallel over limit (max >= 60)
-    const pOver = await tool.execute(
+    const res = await tool.execute("2", { agent: "worker", task: "hi", cwd, estimatedSeconds: 0 }, undefined, undefined, ctx);
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /positive number/);
+  });
+
+  it("rejects parallel sync call when max task estimatedSeconds meets sync limit", async () => {
+    const tool = registerTool();
+    const cwd = makeTempDir("sync-val-parallel-");
+    tempDirs.push(cwd);
+    const ctx: any = { cwd, hasUI: false, model: { id: "claude-sonnet-4", provider: "anthropic" } };
+
+    const res = await tool.execute(
       "3",
       {
         tasks: [
@@ -164,11 +175,17 @@ describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284
       undefined,
       ctx,
     );
-    assert.equal(pOver.isError, true);
-    assert.match(pOver.content[0].text, /sync limit/i);
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /sync limit/i);
+  });
 
-    // Chain sum over limit (35 + 30 = 65 >= 60)
-    const cOver = await tool.execute(
+  it("rejects chain sync call when summed estimatedSeconds meets sync limit", async () => {
+    const tool = registerTool();
+    const cwd = makeTempDir("sync-val-chain-");
+    tempDirs.push(cwd);
+    const ctx: any = { cwd, hasUI: false, model: { id: "claude-sonnet-4", provider: "anthropic" } };
+
+    const res = await tool.execute(
       "4",
       {
         chain: [
@@ -180,11 +197,11 @@ describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284
       undefined,
       ctx,
     );
-    assert.equal(cOver.isError, true);
-    assert.match(cOver.content[0].text, /65s/);
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /65s/);
   });
 
-  it("renders chain and parallel results identically via consolidated renderMultiAgentResults", () => {
+  it("renders collapsed chain results with step prefixes", () => {
     const tool = registerTool();
     const theme = createMockTheme();
     const makeSingle = (agent: string, exitCode: number, step?: number) => ({
@@ -192,16 +209,13 @@ describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284
       agentSource: "package" as const,
       task: `do ${agent}`,
       exitCode,
-      messages: exitCode === -1
-        ? []
-        : [{ role: "assistant", content: [{ type: "text", text: `output from ${agent}` }] }],
+      messages: [{ role: "assistant", content: [{ type: "text", text: `output from ${agent}` }] }],
       stderr: "",
       usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 150, turns: 1 },
       durationMs: 2000,
       step,
     });
 
-    // Chain collapsed
     const chainCollapsed = tool.renderResult(
       {
         content: [{ type: "text", text: "done" }],
@@ -222,8 +236,11 @@ describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284
     assert.match(chainCollapsedText, /─── Step 2: worker ✓/);
     assert.match(chainCollapsedText, /Total:/);
     assert.match(chainCollapsedText, /\(Ctrl\+O to expand\)/);
+  });
 
-    // Chain expanded (returns Container with Task + Markdown + Total)
+  it("renders expanded chain results with task details", () => {
+    const tool = registerTool();
+    const theme = createMockTheme();
     const chainExpanded = tool.renderResult(
       {
         content: [{ type: "text", text: "done" }],
@@ -231,7 +248,17 @@ describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284
           mode: "chain",
           agentScope: "both",
           projectAgentsDir: null,
-          results: [makeSingle("scout", 0, 1)],
+          results: [{
+            agent: "scout",
+            agentSource: "package" as const,
+            task: "do scout",
+            exitCode: 0,
+            messages: [{ role: "assistant", content: [{ type: "text", text: "output from scout" }] }],
+            stderr: "",
+            usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 150, turns: 1 },
+            durationMs: 2000,
+            step: 1,
+          }],
         },
       },
       { expanded: true },
@@ -243,8 +270,24 @@ describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284
     assert.match(chainExpandedText, /Task: do scout/);
     assert.match(chainExpandedText, /output from scout/);
     assert.match(chainExpandedText, /Total:/);
+  });
 
-    // Parallel running (even with expanded=true stays in running view without Total)
+  it("renders running parallel batch with pending indicator", () => {
+    const tool = registerTool();
+    const theme = createMockTheme();
+    const makeSingle = (agent: string, exitCode: number) => ({
+      agent,
+      agentSource: "package" as const,
+      task: `do ${agent}`,
+      exitCode,
+      messages: exitCode === -1
+        ? []
+        : [{ role: "assistant", content: [{ type: "text", text: `output from ${agent}` }] }],
+      stderr: "",
+      usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 150, turns: 1 },
+      durationMs: 2000,
+    });
+
     const parallelRunning = tool.renderResult(
       {
         content: [{ type: "text", text: "running" }],
@@ -265,8 +308,22 @@ describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284
     assert.match(parallelRunningText, /\(running\.\.\.\)/);
     assert.doesNotMatch(parallelRunningText, /Total:/);
     assert.match(parallelRunningText, /\(Ctrl\+O to expand\)/);
+  });
 
-    // Parallel completed with failure shows partial icon ◐
+  it("renders completed parallel batch with partial failure icon", () => {
+    const tool = registerTool();
+    const theme = createMockTheme();
+    const makeSingle = (agent: string, exitCode: number) => ({
+      agent,
+      agentSource: "package" as const,
+      task: `do ${agent}`,
+      exitCode,
+      messages: [{ role: "assistant", content: [{ type: "text", text: `output from ${agent}` }] }],
+      stderr: "",
+      usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 150, turns: 1 },
+      durationMs: 2000,
+    });
+
     const parallelMixed = tool.renderResult(
       {
         content: [{ type: "text", text: "done" }],
@@ -289,14 +346,14 @@ describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284
 });
 
 describe("formatElapsedDuration & /status formatting (#1288)", () => {
-  it("formats elapsed durations across seconds, minutes, and hours", () => {
+  it("formats elapsed durations in compact whole units", () => {
     assert.equal(formatElapsedDuration(0), "0s");
     assert.equal(formatElapsedDuration(45_000), "45s");
     assert.equal(formatElapsedDuration(192_000), "3m12s");
     assert.equal(formatElapsedDuration(3_900_000), "1h5m");
   });
 
-  it("renders /status using shared formatElapsedDuration and formatCronSchedule", async () => {
+  it("renders /status 90s cron interval as every 1m30s", async () => {
     let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
     const mockPi: any = {
       registerCommand(name: string, opts: any) {
@@ -312,7 +369,41 @@ describe("formatElapsedDuration & /status formatting (#1288)", () => {
         {
           id: "c1",
           scope: "session",
-          description: "daily check",
+          description: "ninety second check",
+          task: "check",
+          intervalMs: 90_000,
+          createdAt: now,
+        } as any,
+      ],
+    );
+    assert.ok(handler);
+    let notified = "";
+    await handler!("", {
+      hasUI: true,
+      cwd: process.cwd(),
+      ui: { notify: (msg: string) => { notified = msg; } },
+    });
+    assert.match(notified, /worker — 2m5s — do work/);
+    assert.match(notified, /session:c1 every 1m30s — ninety second check/);
+  });
+
+  it("renders /status time-of-day cron with at HH:MM label", async () => {
+    let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
+    const mockPi: any = {
+      registerCommand(name: string, opts: any) {
+        if (name === "status") handler = opts.handler;
+      },
+    };
+    const now = Date.now();
+    registerStatus(
+      mockPi,
+      false,
+      () => [],
+      () => [
+        {
+          id: "c2",
+          scope: "session",
+          description: "morning check",
           task: "check",
           atHour: 9,
           atMinute: 5,
@@ -327,7 +418,6 @@ describe("formatElapsedDuration & /status formatting (#1288)", () => {
       cwd: process.cwd(),
       ui: { notify: (msg: string) => { notified = msg; } },
     });
-    assert.match(notified, /worker — 2m5s — do work/);
-    assert.match(notified, /daily at 09:05 — daily check/);
+    assert.match(notified, /session:c2 at 09:05 — morning check/);
   });
 });

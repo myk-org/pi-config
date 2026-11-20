@@ -454,7 +454,6 @@ class SettingsOverlay implements Component {
   private notify: (msg: string, level: "info" | "error") => void;
   private settingsList!: SettingsList;
   private currentItems: SettingItem[];
-  private cachedPmInfo?: ProviderModelInfo;
   private cachedAvailableAgents?: string[];
   private cachedWidth?: number;
   private cachedLines?: string[];
@@ -481,6 +480,8 @@ class SettingsOverlay implements Component {
   }
 
   private rebuild(): void {
+    // Provider/model metadata is resolved lazily per rebuild (never pinned for the whole overlay
+    // visit) so models discovered asynchronously while the overlay is open appear on tab switch.
     this.currentItems = buildCategoryItems(
       this.categoryIndex,
       this.cwd,
@@ -488,7 +489,6 @@ class SettingsOverlay implements Component {
       this.theme,
       this.modelRegistry,
       {
-        getProviderModelInfo: () => (this.cachedPmInfo ??= getProviderModelInfo(this.modelRegistry)),
         getAvailableAgents: () => (this.cachedAvailableAgents ??= getAvailableAgentNames(this.cwd)),
       },
     );

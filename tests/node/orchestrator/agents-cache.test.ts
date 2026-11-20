@@ -302,8 +302,8 @@ describe("package cache & discoverAgentByName (#1292)", () => {
 		assert.notStrictEqual(reloadedPkgWorker, initialPkgWorker);
 	});
 
-	it("discoverAgentByName resolves project > package precedence and handles missing names", () => {
-		const root = makeTempDir("agents-byname-");
+	it("discoverAgentByName prefers project override over package agent", () => {
+		const root = makeTempDir("agents-byname-override-");
 		tempDirs.push(root);
 		const dir = join(root, ".pi", "agents");
 		mkdirSync(dir, { recursive: true });
@@ -317,7 +317,15 @@ describe("package cache & discoverAgentByName (#1292)", () => {
 
 		const pkgOnly = discoverAgentByName(root, "user", "worker");
 		assert.equal(pkgOnly.agent?.source, "package");
+	});
 
+	it("discoverAgentByName returns undefined for unknown agent names", () => {
+		const root = makeTempDir("agents-byname-missing-");
+		tempDirs.push(root);
+		const dir = join(root, ".pi", "agents");
+		mkdirSync(dir, { recursive: true });
+
+		clearAgentsCache();
 		const missing = discoverAgentByName(root, "both", "does-not-exist-xyz");
 		assert.equal(missing.agent, undefined);
 		assert.equal(missing.projectAgentsDir, dir);
