@@ -384,3 +384,33 @@ export {
   shouldSkipOneshotRegister,
   shouldSkipOneshotShutdownDream,
 } from "../shared/oneshot.js";
+
+/** Escape special regular-expression characters in a literal string. */
+export function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Sanitize a model ID for use in trailers/signatures. */
+export function sanitizeModelId(raw: unknown): string {
+  return typeof raw === "string" ? raw.replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() : "";
+}
+
+/** Resolve realpath of `target`, or of its nearest existing ancestor rejoined with the tail. */
+export function realpathNearestExisting(target: string): string | null {
+  let current = path.resolve(target);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current);
+      return tail.length > 0 ? path.join(real, ...tail.reverse()) : real;
+    } catch (err) {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        log.warn("realpath_unsupported", { target, reason: String((err as Error)?.message ?? err).slice(0, 200) });
+        return null;
+      }
+      tail.push(path.basename(current));
+      current = parent;
+    }
+  }
+}

@@ -64,7 +64,7 @@ export interface TaskRowView {
 /** The ONE assignee tag: `/tasks`, the widget, the drilldown and TaskList all read it here. */
 export function taskAssigneeTag(task: { assignee?: string }): string {
 	const tag = task.assignee === "user" ? "[you]" : "[llm]";
-	log.debug("task_assignee_tag", { tag });
+	if (log.isDebugEnabled()) log.debug("task_assignee_tag", { tag });
 	return tag;
 }
 
@@ -91,7 +91,7 @@ export function openTaskBlockers(task: TaskRowSource, get: (id: string) => TaskR
 		const blocker = get(id);
 		return blocker && blocker.status !== "completed" && blocker.status !== "deleted";
 	});
-	log.debug("task_open_blockers", { taskId: task.id, count: blockers.length });
+	if (log.isDebugEnabled()) log.debug("task_open_blockers", { taskId: task.id, count: blockers.length });
 	return blockers;
 }
 

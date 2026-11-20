@@ -27,13 +27,15 @@ export function substituteSettingsPlaceholders(
   resolve: (key: string) => unknown,
   allKeys: string[],
 ): string {
-  return text.replace(new RegExp(SETTINGS_PATTERN.source, "g"), (_match, keysGroup: string | undefined) => {
+  const allKeysSet = new Set(allKeys);
+  SETTINGS_PATTERN.lastIndex = 0;
+  return text.replace(SETTINGS_PATTERN, (_match, keysGroup: string | undefined) => {
     const keys = keysGroup !== undefined
       ? keysGroup.split(",").map((k) => k.trim()).filter((k) => k.length > 0)
       : allKeys;
     const result: Record<string, unknown> = {};
     for (const key of keys) {
-      if (!allKeys.includes(key)) {
+      if (!allKeysSet.has(key)) {
         continue;
       }
       result[key] = resolve(key);
@@ -110,7 +112,7 @@ export function parseConditionLiteral(raw: string): unknown {
 }
 
 export type ConditionalEvalOpts = {
-  knownKeys?: string[];
+  knownKeys?: readonly string[] | ReadonlySet<string>;
   /** Feature predicates consulted for truthy `{{IF:key}}` when key is not a setting. */
   featurePredicates?: Record<string, () => boolean>;
   onWarn?: (msg: string) => void;
@@ -127,25 +129,9 @@ type OpenMarker = {
 
 const MARKER_RE = /\{\{(IFNOT:([^}]+)|IF:([^}]+)|\/IFNOT|\/IF)\}\}/g;
 
-function markerRe(): RegExp {
-  return new RegExp(MARKER_RE.source, "g");
-}
-
-function findNextOpen(text: string, from: number): OpenMarker | null {
-  const re = markerRe();
-  re.lastIndex = from;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const full = m[0];
-    if (full.startsWith("{{IFNOT:")) {
-      return { kind: "ifnot", cond: m[2], index: m.index, end: m.index + full.length };
-    }
-    if (full.startsWith("{{IF:")) {
-      return { kind: "if", cond: m[3], index: m.index, end: m.index + full.length };
-    }
-    // stray close — leave for later scan
-  }
-  return null;
+function toKnownKeySet(knownKeys?: readonly string[] | ReadonlySet<string>): ReadonlySet<string> | undefined {
+  if (!knownKeys) return undefined;
+  return knownKeys instanceof Set ? knownKeys : new Set(knownKeys);
 }
 
 /**
@@ -157,10 +143,9 @@ function findMatchingClose(
   open: OpenMarker,
 ): { index: number; end: number } | null {
   const stack: OpenKind[] = [open.kind];
-  const re = markerRe();
-  re.lastIndex = open.end;
+  MARKER_RE.lastIndex = open.end;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
+  while ((m = MARKER_RE.exec(text)) !== null) {
     const full = m[0];
     if (full.startsWith("{{IF:")) {
       stack.push("if");
@@ -191,6 +176,7 @@ function conditionHolds(
   invert: boolean,
   resolve: (key: string) => unknown,
   opts?: ConditionalEvalOpts,
+  knownKeySet?: ReadonlySet<string>,
 ): boolean {
   const parsed = parseConditionExpr(condRaw);
   if (!parsed) {
@@ -213,8 +199,8 @@ function conditionHolds(
   }
 
   let value: unknown = undefined;
-  if (opts?.knownKeys && !opts.knownKeys.includes(key)) {
-    opts.onWarn?.(`unknown setting key in conditional: ${key}`);
+  if (knownKeySet && !knownKeySet.has(key)) {
+    opts?.onWarn?.(`unknown setting key in conditional: ${key}`);
     // Fail closed: unknown keys never keep the block, including {{IFNOT:typo}}.
     log.warn("conditionHolds fail-closed unknown key", { key, invert, op });
     return false;
@@ -266,7 +252,8 @@ export function evaluateConditionalBlocks(
   opts?: ConditionalEvalOpts,
 ): string {
   try {
-    const processed = processRegion(text, resolve, opts);
+    const knownKeySet = toKnownKeySet(opts?.knownKeys);
+    const processed = processRegion(text, resolve, opts, knownKeySet);
     return collapseBlankLinesBetweenTableRows(processed);
   } catch (e: any) {
     opts?.onWarn?.(`conditional evaluation failed: ${e?.message ?? String(e)}`);
@@ -278,29 +265,28 @@ function processRegion(
   region: string,
   resolve: (key: string) => unknown,
   opts?: ConditionalEvalOpts,
+  knownKeySet?: ReadonlySet<string>,
 ): string {
   let result = "";
   let i = 0;
   while (i < region.length) {
-    // Warn on stray closes before the next open
-    const peekRe = markerRe();
-    peekRe.lastIndex = i;
-    const peek = peekRe.exec(region);
-    if (peek && (peek[0] === "{{/IF}}" || peek[0] === "{{/IFNOT}}")) {
-      const open = findNextOpen(region, i);
-      if (!open || open.index > peek.index) {
-        opts?.onWarn?.(`unbalanced conditional marker: ${peek[0]}`);
-        result += region.slice(i, peek.index + peek[0].length);
-        i = peek.index + peek[0].length;
-        continue;
-      }
-    }
-
-    const open = findNextOpen(region, i);
-    if (!open) {
+    MARKER_RE.lastIndex = i;
+    const m = MARKER_RE.exec(region);
+    if (!m) {
       result += region.slice(i);
       break;
     }
+    const full = m[0];
+    if (full === "{{/IF}}" || full === "{{/IFNOT}}") {
+      opts?.onWarn?.(`unbalanced conditional marker: ${full}`);
+      result += region.slice(i, m.index + full.length);
+      i = m.index + full.length;
+      continue;
+    }
+    const open: OpenMarker = full.startsWith("{{IFNOT:")
+      ? { kind: "ifnot", cond: m[2], index: m.index, end: m.index + full.length }
+      : { kind: "if", cond: m[3], index: m.index, end: m.index + full.length };
+
     result += region.slice(i, open.index);
     const close = findMatchingClose(region, open);
     if (!close) {
@@ -310,9 +296,9 @@ function processRegion(
       break;
     }
     const body = region.slice(open.end, close.index);
-    const keep = conditionHolds(open.cond, open.kind === "ifnot", resolve, opts);
+    const keep = conditionHolds(open.cond, open.kind === "ifnot", resolve, opts, knownKeySet);
     if (keep) {
-      result += processRegion(body, resolve, opts);
+      result += processRegion(body, resolve, opts, knownKeySet);
     }
     i = close.end;
   }
@@ -344,7 +330,7 @@ export function parseRuleFrontmatter(raw: string): { attrs: Record<string, strin
 export type FrontmatterGateOpts = {
   resolveSetting: (key: string) => unknown;
   featurePredicates: Record<string, () => boolean>;
-  knownKeys?: string[];
+  knownKeys?: readonly string[] | ReadonlySet<string>;
   onWarn?: (msg: string) => void;
 };
 
@@ -360,7 +346,8 @@ export function rulePassesFrontmatterGate(
   if (!requiresSetting && !requires) return true;
 
   if (requiresSetting) {
-    if (opts.knownKeys && !opts.knownKeys.includes(requiresSetting)) {
+    const knownKeySet = toKnownKeySet(opts.knownKeys);
+    if (knownKeySet && !knownKeySet.has(requiresSetting)) {
       opts.onWarn?.(`unknown requires_setting key: ${requiresSetting}`);
       return false;
     }
@@ -390,7 +377,7 @@ export function rulePassesFrontmatterGate(
 
 export type AssembleRuleTextOpts = {
   resolve: (key: string) => unknown;
-  knownKeys: string[];
+  knownKeys: readonly string[] | ReadonlySet<string>;
   featurePredicates: Record<string, () => boolean>;
   reviewLoopMaxCycles: number;
   onWarn?: (msg: string) => void;
@@ -407,8 +394,9 @@ export type AssembleRuleTextOpts = {
  */
 export function assembleRuleText(contents: string[], opts: AssembleRuleTextOpts): string {
   const bodies: string[] = [];
+  const knownKeySet = toKnownKeySet(opts.knownKeys);
   const condOpts: ConditionalEvalOpts = {
-    knownKeys: opts.knownKeys,
+    knownKeys: knownKeySet,
     featurePredicates: opts.featurePredicates,
     onWarn: opts.onWarn,
   };
@@ -418,7 +406,7 @@ export function assembleRuleText(contents: string[], opts: AssembleRuleTextOpts)
     if (!rulePassesFrontmatterGate(attrs, {
       resolveSetting: opts.resolve,
       featurePredicates: opts.featurePredicates,
-      knownKeys: opts.knownKeys,
+      knownKeys: knownKeySet,
       onWarn: opts.onWarn,
     })) {
       opts.onSkip?.({ attrs, index });
