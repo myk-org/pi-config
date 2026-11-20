@@ -122,7 +122,7 @@ pi-config/
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model + openai-compatible-discovery)
 │   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
-│   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
+│   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
 │   ├── acpx-provider/              # ACPX provider — backward-compatible shim (re-exports for pi-sidecar)
 │   │   ├── index.ts                # Shim: re-exports discoverAcpxModels + no-op extension entry
 │   │   ├── load-runtime.ts         # Resolve acpx/runtime (global npm, then package-local)

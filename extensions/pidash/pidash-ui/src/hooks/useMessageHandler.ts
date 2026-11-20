@@ -8,6 +8,37 @@ const log = createLogger("MessageHandler");
 let counter = 0;
 export const nextId = () => `m-${++counter}`;
 
+export function patchMessageById(
+  prev: ChatMessage[],
+  id: string,
+  patch: (msg: ChatMessage) => ChatMessage,
+): ChatMessage[] {
+  for (let i = prev.length - 1; i >= 0; i--) {
+    if (prev[i].id === id) {
+      const next = prev.slice();
+      next[i] = patch(prev[i]);
+      return next;
+    }
+  }
+  return prev;
+}
+
+interface MessageSink {
+  add(role: ChatMessage["role"], text: string, className?: string, meta?: ChatMessage["meta"], explicitId?: string): string;
+  patch(id: string, fn: (msg: ChatMessage) => ChatMessage): void;
+  findLast(pred: (msg: ChatMessage) => boolean): ChatMessage | undefined;
+  dismissAsk(askId: string): void;
+  clear(): void;
+}
+
+const scheduleFrame = typeof requestAnimationFrame === "function"
+  ? requestAnimationFrame
+  : (cb: FrameRequestCallback) => setTimeout(() => cb(Date.now()), 16) as unknown as number;
+
+const cancelFrame = typeof cancelAnimationFrame === "function"
+  ? cancelAnimationFrame
+  : (id: number) => clearTimeout(id as unknown as ReturnType<typeof setTimeout>);
+
 const textFrom = (msg: any): string =>
   (msg?.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
 
@@ -38,6 +69,8 @@ export function useMessageHandler(
   const messagesRef = useRef(messages);
   const sessionRef = useRef(session);
   const notificationsRef = useRef(notifications);
+  const dirtyDeltaRef = useRef({ think: false, assist: false });
+  const deltaRafRef = useRef<number | null>(null);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { sessionRef.current = session; }, [session]);
@@ -49,28 +82,73 @@ export function useMessageHandler(
     return id;
   }, []);
 
-  const updMsg = useCallback((id: string, text: string) => {
-    setMessages((p) => p.map((m) => m.id === id ? { ...m, text } : m));
-  }, []);
-
-  const updCls = useCallback((id: string, className?: string) => {
-    setMessages((p) => p.map((m) => m.id === id ? { ...m, className } : m));
-  }, []);
-
-  const updMeta = useCallback((id: string, meta: ChatMessage["meta"]) => {
-    setMessages((p) => p.map((m) => m.id === id ? { ...m, meta: { ...m.meta, ...meta } } : m));
-  }, []);
-
   useEffect(() => {
+    const flushLiveDeltas = () => {
+      if (deltaRafRef.current !== null) {
+        cancelFrame(deltaRafRef.current);
+        deltaRafRef.current = null;
+      }
+      const { think, assist } = dirtyDeltaRef.current;
+      if (!think && !assist) return;
+      dirtyDeltaRef.current.think = false;
+      dirtyDeltaRef.current.assist = false;
+      const thinkId = think ? thinkRef.current.id : "";
+      const thinkText = think ? thinkRef.current.text : "";
+      const assistId = assist ? assistRef.current.id : "";
+      const assistText = assist ? assistRef.current.text : "";
+      if (!thinkId && !assistId) return;
+      setMessages((prev) => {
+        let next = prev;
+        if (thinkId) {
+          next = patchMessageById(next, thinkId, (m) => ({ ...m, text: thinkText }));
+        }
+        if (assistId) {
+          next = patchMessageById(next, assistId, (m) => ({ ...m, text: assistText }));
+        }
+        return next;
+      });
+    };
+
+    const scheduleDeltaFlush = () => {
+      if (deltaRafRef.current !== null) return;
+      deltaRafRef.current = scheduleFrame(() => {
+        deltaRafRef.current = null;
+        flushLiveDeltas();
+      });
+    };
+
+    const liveSink: MessageSink = {
+      add(role, text, className, meta, explicitId) {
+        const id = explicitId ?? nextId();
+        setMessages((p) => [...p, { id, role, text, className, meta, timestamp: Date.now() }]);
+        return id;
+      },
+      patch(id, fn) {
+        setMessages((p) => patchMessageById(p, id, fn));
+      },
+      findLast(pred) {
+        const current = messagesRef.current;
+        for (let i = current.length - 1; i >= 0; i--) {
+          if (pred(current[i])) return current[i];
+        }
+        return undefined;
+      },
+      dismissAsk(askId) {
+        setMessages((prev) => prev.map((m) => (
+          m.className?.startsWith(`ask|${askId}|`) ? { ...m, className: `ask-answered|${askId}` } : m
+        )));
+      },
+      clear() {
+        setMessages([]);
+      },
+    };
+
     // Replay buffering (session-switch UX): during a session replay the server
-    // sends one websocket message per historical delta — processing each as it
-    // arrives means one React render per event over a growing non-virtualized
-    // list (O(N²) work) and a slow visible crawl. Buffer everything between
-    // replay_start and replay_end, then apply the whole batch in ONE
-    // synchronous pass — React batches it into a single render.
+    // sends one websocket message per historical delta — folding them into a
+    // plain local array commits the whole transcript in a single O(N) pass.
     const replayBuffer: PiEvent[] = [];
     let replaying = false;
-    const processEvent = (ev: PiEvent) => {
+    const processEvent = (ev: PiEvent, sink: MessageSink, isReplay: boolean) => {
       if (ev.type === "session_added" || ev.type === "session_removed") return;
           if (ev.type === "session_updated" && ev.session) {
             const update = ev.session;
@@ -116,6 +194,7 @@ export function useMessageHandler(
         case "ui_prompt_end":
           break;
         case "agent_end":
+          if (!isReplay) flushLiveDeltas();
           setQueuedCount(0);
           setStreamingBehavior(null);
           thinkRef.current = { id: "", text: "", startTs: 0 };
@@ -127,11 +206,12 @@ export function useMessageHandler(
           break;
 
         case "message_start": {
+          if (!isReplay) flushLiveDeltas();
           const msg = ev.message;
           if (!msg) break;
           if (msg.role === "user") {
             const t = textFrom(msg);
-            if (t && t !== lastUserRef.current) { lastUserRef.current = t; addMsg("user", t); }
+            if (t && t !== lastUserRef.current) { lastUserRef.current = t; sink.add("user", t); }
           }
           if (msg.role === "assistant") {
             thinkRef.current = { id: "", text: "", startTs: 0 };
@@ -139,7 +219,7 @@ export function useMessageHandler(
           }
           if (msg.role === "custom" && msg.display) {
             const content = msg.content || "";
-            addMsg("system", typeof content === "string" ? content : JSON.stringify(content));
+            sink.add("system", typeof content === "string" ? content : JSON.stringify(content));
           }
           break;
         }
@@ -151,32 +231,59 @@ export function useMessageHandler(
             thinkRef.current.text += ae.delta;
             if (!thinkRef.current.id) {
               thinkRef.current.startTs = Date.now();
-              thinkRef.current.id = addMsg("thinking", thinkRef.current.text);
+              thinkRef.current.id = sink.add("thinking", thinkRef.current.text);
+            } else if (isReplay) {
+              const text = thinkRef.current.text;
+              sink.patch(thinkRef.current.id, (m) => ({ ...m, text }));
+            } else {
+              dirtyDeltaRef.current.think = true;
+              scheduleDeltaFlush();
             }
-            else updMsg(thinkRef.current.id, thinkRef.current.text);
           }
           if ((ae.type === "text_start" || ae.type === "text_delta") && thinkRef.current.id && !assistRef.current.id) {
-            updCls(thinkRef.current.id, undefined);
-            if (thinkRef.current.startTs) {
-              updMeta(thinkRef.current.id, { startTs: thinkRef.current.startTs, endTs: Date.now() });
-            }
+            if (!isReplay) flushLiveDeltas();
+            const endMeta = thinkRef.current.startTs
+              ? { startTs: thinkRef.current.startTs, endTs: Date.now() }
+              : undefined;
+            sink.patch(thinkRef.current.id, (m) => ({
+              ...m,
+              className: undefined,
+              ...(endMeta ? { meta: { ...m.meta, ...endMeta } } : {}),
+            }));
           }
           if (ae.type === "text_delta" && ae.delta) {
             assistRef.current.text += ae.delta;
-            if (!assistRef.current.id) assistRef.current.id = addMsg("assistant", assistRef.current.text, "streaming");
-            else updMsg(assistRef.current.id, assistRef.current.text);
+            if (!assistRef.current.id) {
+              assistRef.current.id = sink.add("assistant", assistRef.current.text, "streaming");
+            } else if (isReplay) {
+              const text = assistRef.current.text;
+              sink.patch(assistRef.current.id, (m) => ({ ...m, text }));
+            } else {
+              dirtyDeltaRef.current.assist = true;
+              scheduleDeltaFlush();
+            }
           }
-          if (ae.type === "text_end" && assistRef.current.id) updCls(assistRef.current.id, undefined);
+          if (ae.type === "text_end" && assistRef.current.id) {
+            if (!isReplay) flushLiveDeltas();
+            sink.patch(assistRef.current.id, (m) => ({ ...m, className: undefined }));
+          }
           // model and usage are set from message_end / turn_end events
           break;
         }
 
         case "message_end":
-          if (thinkRef.current.id) updCls(thinkRef.current.id, undefined);
-          if (thinkRef.current.id && thinkRef.current.startTs) {
-            updMeta(thinkRef.current.id, { startTs: thinkRef.current.startTs, endTs: Date.now() });
+          if (!isReplay) flushLiveDeltas();
+          if (thinkRef.current.id) {
+            const endMeta = thinkRef.current.startTs
+              ? { startTs: thinkRef.current.startTs, endTs: Date.now() }
+              : undefined;
+            sink.patch(thinkRef.current.id, (m) => ({
+              ...m,
+              className: undefined,
+              ...(endMeta ? { meta: { ...m.meta, ...endMeta } } : {}),
+            }));
           }
-          if (assistRef.current.id) updCls(assistRef.current.id, undefined);
+          if (assistRef.current.id) sink.patch(assistRef.current.id, (m) => ({ ...m, className: undefined }));
           thinkRef.current = { id: "", text: "", startTs: 0 };
           assistRef.current = { id: "", text: "" };
           if (ev.message?.model) setModel(ev.message.model);
@@ -189,6 +296,7 @@ export function useMessageHandler(
           break;
 
         case "tool_execution_start": {
+          if (!isReplay) flushLiveDeltas();
           let name = ev.toolName || "tool";
           let detail = ev.args?.command ? ev.args.command : "";
           // Show agent name for subagent tool calls
@@ -201,15 +309,15 @@ export function useMessageHandler(
             else if (ev.args.chain) detail = `${ev.args.chain.length} chain steps`;
           }
           const cid = ev.toolCallId || nextId();
-          const id = nextId();
-          setMessages((p) => [...p, { id, role: name as any, text: detail, className: "tool-call", meta: { callId: cid }, timestamp: Date.now() }]);
+          const id = sink.add(name as any, detail, "tool-call", { callId: cid });
           toolRef.current = { id, name, startTs: ev.timestamp || Date.now(), callId: cid };
           break;
         }
 
         case "tool_execution_update":
           if (toolRef.current.id && ev.partialResult?.content?.[0]?.text) {
-            updMsg(toolRef.current.id, `${toolRef.current.name}: ${ev.partialResult.content[0].text}`);
+            const text = `${toolRef.current.name}: ${ev.partialResult.content[0].text}`;
+            sink.patch(toolRef.current.id, (m) => ({ ...m, text }));
           }
           break;
 
@@ -246,8 +354,7 @@ export function useMessageHandler(
                 model: results[0]?.model,
               };
             }
-            const id = nextId();
-            setMessages((p) => [...p, { id, role: toolName as any, text: `${ev.isError ? "✗ " : "✓ "}${t}`, className: "tool-result", meta, timestamp: Date.now() }]);
+            sink.add(toolName as any, `${ev.isError ? "✗ " : "✓ "}${t}`, "tool-result", meta);
           }
           break;
         }
@@ -309,19 +416,13 @@ export function useMessageHandler(
           // Only show async agents from the watched session
           if ((ev as any).sessionId && (ev as any).sessionId !== sessionRef.current?.sessionId) break;
           // Find the subagent tool-result message that spawned this async agent
-          let targetMsgId = "";
-          const currentMsgs = messagesRef.current;
-          for (let i = currentMsgs.length - 1; i >= 0; i--) {
-            if (currentMsgs[i].className === "tool-result" && currentMsgs[i].text.includes(asyncId)) {
-              targetMsgId = currentMsgs[i].id;
-              break;
-            }
-          }
+          const match = sink.findLast((m) => m.className === "tool-result" && m.text.includes(asyncId));
+          let targetMsgId = match?.id ?? "";
           if (!targetMsgId) {
             // Fallback: create inline message
             const agent = (ev as any).agent || "agent";
             const repo = ((ev as any).cwd || "").split("/").pop() || "";
-            targetMsgId = addMsg("system" as any, `⏳ ${agent} — ${repo}`, "async-agent-running");
+            targetMsgId = sink.add("system" as any, `⏳ ${agent} — ${repo}`, "async-agent-running");
           }
           asyncMsgRef.current.set(asyncId, { msgId: targetMsgId, text: "" });
           break;
@@ -359,11 +460,11 @@ export function useMessageHandler(
           }
 
           if (changed) {
-            setMessages(prev => prev.map(m => {
-              if (m.id !== tracked.msgId) return m;
+            const body = tracked.text.trim();
+            sink.patch(tracked.msgId, (m) => {
               const header = m.text.split("\n")[0];
-              return { ...m, text: header + "\n" + tracked.text.trim() };
-            }));
+              return { ...m, text: header + "\n" + body };
+            });
           }
           break;
         }
@@ -374,18 +475,19 @@ export function useMessageHandler(
           if ((ev as any).sessionId && (ev as any).sessionId !== sessionRef.current?.sessionId) break;
           const tracked = asyncMsgRef.current.get(asyncId);
           if (!tracked) break;
-          setMessages(prev => prev.map(m => {
-            if (m.id !== tracked.msgId) return m;
+          const body = tracked.text.trim();
+          const success = (ev as any).success;
+          sink.patch(tracked.msgId, (m) => {
             if (m.className === "async-agent-running") {
               // Fallback system message — update icon
-              const header = m.text.split("\n")[0].replace("⏳", (ev as any).success === false ? "❌" : "✅");
-              return { ...m, text: header + "\n" + tracked.text.trim(), className: "async-agent-done" };
+              const header = m.text.split("\n")[0].replace("⏳", success === false ? "❌" : "✅");
+              return { ...m, text: header + "\n" + body, className: "async-agent-done" };
             }
             // Tool-result message — just mark as complete by appending status
-            const status = (ev as any).success === false ? "\n❌ Agent failed" : "\n✅ Agent complete";
+            const status = success === false ? "\n❌ Agent failed" : "\n✅ Agent complete";
             const header = m.text.split("\n")[0];
-            return { ...m, text: header + "\n" + tracked.text.trim() + status };
-          }));
+            return { ...m, text: header + "\n" + body + status };
+          });
           asyncMsgRef.current.delete(asyncId);
           break;
         }
@@ -398,7 +500,7 @@ export function useMessageHandler(
             const askId = ev.id;
             const title = ev.title || "Input needed";
             const opts = ev.method === "confirm" ? ["Yes", "No"] : ev.options || [];
-            addMsg("ask_user" as any, `${title}${ev.message ? "\n" + ev.message : ""}`, `ask|${askId}|${ev.method}|${opts.join("|||")}`)
+            sink.add("ask_user" as any, `${title}${ev.message ? "\n" + ev.message : ""}`, `ask|${askId}|${ev.method}|${opts.join("|||")}`);
           }
           break;
 
@@ -410,18 +512,18 @@ export function useMessageHandler(
 
         case "coms_peer_event": {
           const content = (ev as any).content || "";
-          addMsg("system", typeof content === "string" ? content : JSON.stringify(content));
+          sink.add("system", typeof content === "string" ? content : JSON.stringify(content));
           break;
         }
 
         case "replay_start":
-          setMessages([]);
+          sink.clear();
           break;
         case "replay_end":
           break;
 
         case "notification":
-          addMsg("system", `⚠️ ${(ev as any).message || "notification"}`);
+          sink.add("system", `⚠️ ${(ev as any).message || "notification"}`);
           break;
 
         case "commands-list":
@@ -430,15 +532,48 @@ export function useMessageHandler(
 
         case "ui-dismiss":
           // Mark the inline ask message as answered
-          setMessages((prev) => prev.map((m) => {
-            if (m.className?.startsWith(`ask|${ev.id}|`)) {
-              return { ...m, className: `ask-answered|${ev.id}` };
-            }
-            return m;
-          }));
+          sink.dismissAsk(ev.id as string);
           break;
       }
     };
+
+    const foldReplay = (buffered: PiEvent[]) => {
+      const draft: ChatMessage[] = [];
+      const indexById = new Map<string, number>();
+      const draftSink: MessageSink = {
+        add(role, text, className, meta, explicitId) {
+          const id = explicitId ?? nextId();
+          indexById.set(id, draft.length);
+          draft.push({ id, role, text, className, meta, timestamp: Date.now() });
+          return id;
+        },
+        patch(id, fn) {
+          const idx = indexById.get(id);
+          if (idx !== undefined) draft[idx] = fn(draft[idx]);
+        },
+        findLast(pred) {
+          for (let i = draft.length - 1; i >= 0; i--) {
+            if (pred(draft[i])) return draft[i];
+          }
+          return undefined;
+        },
+        dismissAsk(askId) {
+          const prefix = `ask|${askId}|`;
+          for (let i = 0; i < draft.length; i++) {
+            if (draft[i].className?.startsWith(prefix)) {
+              draft[i].className = `ask-answered|${askId}`;
+            }
+          }
+        },
+        clear() {
+          draft.length = 0;
+          indexById.clear();
+        },
+      };
+      for (const buffered_ev of buffered) processEvent(buffered_ev, draftSink, true);
+      setMessages(draft);
+    };
+
     // Coalesce the events of one task into a single processing pass. A history
     // replay arrives as thousands of individual frames; handling each one in
     // its own task gave one React render per event over a growing, unvirtualized
@@ -453,10 +588,11 @@ export function useMessageHandler(
     };
     const handleEvent = (ev: PiEvent) => {
       if (ev.type === "replay_start") {
+        flushLiveDeltas();
         replaying = true;
         replayBuffer.length = 0;
         log.debug("replay buffering started");
-        processEvent(ev); // clears the message list
+        processEvent(ev, liveSink, false); // clears the message list
         return;
       }
       if (ev.type === "replay_end") {
@@ -464,18 +600,18 @@ export function useMessageHandler(
           replaying = false;
           const buffered = replayBuffer.splice(0);
           log.debug("replay buffering applied", { events: buffered.length });
-          for (const buffered_ev of buffered) processEvent(buffered_ev);
+          foldReplay(buffered);
         }
-        processEvent(ev);
+        processEvent(ev, liveSink, false);
         return;
       }
       if (replaying) {
         replayBuffer.push(ev);
         return;
       }
-      processEvent(ev);
+      processEvent(ev, liveSink, false);
     };
-    return onMessage((ev: PiEvent) => {
+    const unsubscribe = onMessage((ev: PiEvent) => {
       pending.push(ev);
       if (flushScheduled) return;
       flushScheduled = true;
@@ -483,9 +619,22 @@ export function useMessageHandler(
       // applied together without adding latency to the live stream.
       queueMicrotask(flush);
     });
-  }, [onMessage, addMsg, updMsg, updCls, updMeta]);
+    return () => {
+      unsubscribe();
+      if (deltaRafRef.current !== null) {
+        cancelFrame(deltaRafRef.current);
+        deltaRafRef.current = null;
+      }
+      dirtyDeltaRef.current = { think: false, assist: false };
+    };
+  }, [onMessage, setSession]);
 
   const resetHandlerState = useCallback(() => {
+    if (deltaRafRef.current !== null) {
+      cancelFrame(deltaRafRef.current);
+      deltaRafRef.current = null;
+    }
+    dirtyDeltaRef.current = { think: false, assist: false };
     thinkRef.current = { id: "", text: "", startTs: 0 };
     assistRef.current = { id: "", text: "" };
     lastUserRef.current = "";

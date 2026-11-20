@@ -3,6 +3,9 @@
  * infrastructure used by both pidash and pidiff extensions.
  */
 
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isLiveExtensionCtx } from "./live-ctx.js";
+
 export interface WsHeartbeatOptions {
   /** The WebSocket client instance */
   ws: any;
@@ -71,4 +74,43 @@ export function setupReconnectPoller(opts: ReconnectPollerOptions): () => void {
   }, intervalMs);
   if (poller.unref) poller.unref();
   return () => clearInterval(poller);
+}
+
+export interface ExtensionReconnectOptions {
+  pi: ExtensionAPI;
+  isConnected: () => boolean;
+  isConnecting: () => boolean;
+  isShuttingDown: () => boolean;
+  getLastCtx: () => any;
+  clearLastCtx: () => void;
+  connect: (ctx: any) => void;
+  log: (msg: string) => void;
+  intervalMs?: number;
+}
+
+/** Wire both the `tool_result` reconnect fallback (/reload) and periodic reconnect poller. */
+export function setupExtensionReconnect(opts: ExtensionReconnectOptions): () => void {
+  const { pi, isConnected, isConnecting, isShuttingDown, getLastCtx, clearLastCtx, connect, log, intervalMs } = opts;
+  pi.on("tool_result", (_event, ctx) => {
+    if (!isConnected() && !isShuttingDown() && isLiveExtensionCtx(ctx) && ctx.mode === "tui") {
+      connect(ctx);
+    }
+  });
+  return setupReconnectPoller({
+    isConnected,
+    isConnecting,
+    isShuttingDown,
+    intervalMs,
+    connect: () => {
+      const ctx = getLastCtx();
+      if (!isLiveExtensionCtx(ctx)) {
+        if (ctx) {
+          log("reconnect poller skipped — stale ctx");
+          clearLastCtx();
+        }
+        return;
+      }
+      if (ctx.mode === "tui") connect(ctx);
+    },
+  });
 }

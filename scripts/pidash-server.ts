@@ -72,11 +72,11 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     return;
   }
 
-  // Forward session name changes to all watching browsers
+  // Forward session name changes to all browsers so sidebar stays current
   if (parsed.type === "session_info_changed" && piClient) {
     if (parsed.name !== undefined) piClient.session.name = parsed.name;
     piClient.session.lastActivity = Date.now();
-    sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
+    broadcastToBrowsers({ type: "session_updated", session: piClient.session });
     return;
   }
 
@@ -94,7 +94,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     if (parsed.comsPurpose !== undefined) piClient.session.comsPurpose = parsed.comsPurpose;
     if (parsed.comsProject !== undefined) piClient.session.comsProject = parsed.comsProject;
     updatePidashSession(piClient.session, parsed);
-    sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
+    broadcastToBrowsers({ type: "session_updated", session: piClient.session });
     return;
   }
 
@@ -113,7 +113,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     piClient.session.streaming = false;
     piClient.session.working = false;
     piClient.eventBuffer.length = 0; // Clear buffer to prevent cross-session replay
-    sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
+    broadcastToBrowsers({ type: "session_updated", session: piClient.session });
     log(`session switched: ${piClient.session.sessionId}, cwd: ${parsed.cwd}`);
     return;
   }
@@ -303,14 +303,14 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
   onPiClose: (piClient, ws) => {
     disconnectPidashSession(piClient, ws, "close", event => {
       log(`session disconnected: ${piClient.session.sessionId} (kept as inactive)`);
-      sendToWatchers(piClient.session.sessionId, event);
+      broadcastToBrowsers(event);
     });
   },
 
   onPiError: (piClient, ws) => {
     disconnectPidashSession(piClient, ws, "error", event => {
       log(`session errored: ${piClient.session.sessionId} (kept as inactive)`);
-      sendToWatchers(piClient.session.sessionId, event);
+      broadcastToBrowsers(event);
     });
   },
 

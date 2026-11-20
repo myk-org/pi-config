@@ -15,6 +15,7 @@ import { KeybindingSettings } from "@/components/KeybindingSettings";
 import { SidePanel, type PanelTab } from "@/components/SidePanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { createLogger } from "@/lib/create-logger";
+import { groupAndSortSessions } from "@/lib/group-sessions";
 import type { SessionInfo } from "@/types";
 
 const log = createLogger("App");
@@ -198,27 +199,22 @@ export function App() {
     setActivePanel((prev) => (prev === tab ? null : tab));
   }, []);
 
+  const rolesRef = useRef<string[]>([]);
+  const availableRoles = useMemo(() => {
+    const next = [...new Set(messages.map((m) => m.role))].sort();
+    const prev = rolesRef.current;
+    if (prev.length === next.length && prev.every((r, i) => r === next[i])) {
+      return prev;
+    }
+    rolesRef.current = next;
+    return next;
+  }, [messages]);
+
   // Flatten sessions matching sidebar order: active groups first, then alphabetical, active sessions first within groups
-  const flatSessions = useMemo(() => {
-    const groups = new Map<string, SessionInfo[]>();
-    for (const s of sessions) {
-      const name = (s.cwd || "").split("/").pop() || s.cwd;
-      if (!groups.has(name)) groups.set(name, []);
-      groups.get(name)!.push(s);
-    }
-    // Sort within groups: active first
-    for (const g of groups.values()) {
-      g.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
-    }
-    // Sort groups: active groups first, then alphabetical
-    const sorted = [...groups.entries()].sort((a, b) => {
-      const aActive = a[1].some(s => s.active);
-      const bActive = b[1].some(s => s.active);
-      if (aActive !== bActive) return bActive ? 1 : -1;
-      return a[0].localeCompare(b[0]);
-    });
-    return sorted.flatMap(([, sessions]) => sessions);
-  }, [sessions]);
+  const flatSessions = useMemo(
+    () => groupAndSortSessions(sessions).flatMap((g) => g.sessions),
+    [sessions],
+  );
 
   useKeyboardNavigation({
     streaming, session, flatSessions, handleAbort, watchSession,
@@ -297,7 +293,7 @@ export function App() {
                 onChange={(e) => setSearchType(e.target.value)}
               >
                 <option value="all">All</option>
-                {[...new Set(messages.map(m => m.role))].sort().map(role => (
+                {availableRoles.map(role => (
                   <option key={role} value={role}>{role}</option>
                 ))}
               </select>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { MultiFileDiff, WorkerPoolContextProvider } from "@pierre/diffs/react";
 import type { FileContents, WorkerPoolOptions, WorkerInitializationRenderOptions } from "@pierre/diffs/react";
 import { useFileTree, FileTree, useFileTreeSelection } from "@pierre/trees/react";
@@ -58,6 +58,79 @@ const TREE_THEME = themeToTreeStyles({
   },
 });
 
+export interface PreparedDiffFile {
+  key: string;
+  path: string;
+  area?: "staged" | "unstaged";
+  oldFile: FileContents;
+  newFile: FileContents;
+}
+
+export interface IndexedFileComment {
+  comment: ReviewComment;
+  globalIndex: number;
+}
+
+export interface OpenCommentForm {
+  file: string;
+  side: "deletions" | "additions";
+  lineNumber: number;
+}
+
+const EMPTY_FILE_COMMENTS: readonly IndexedFileComment[] = [];
+const EMPTY_FILE_FORMS: readonly OpenCommentForm[] = [];
+
+export function prepareDiffFiles(files: readonly FileDiffData[]): PreparedDiffFile[] {
+  const sorted = [...files].sort((a, b) => {
+    const aParts = a.name.split("/");
+    const bParts = b.name.split("/");
+    const len = Math.min(aParts.length, bParts.length);
+    for (let i = 0; i < len; i++) {
+      const aIsDir = i < aParts.length - 1;
+      const bIsDir = i < bParts.length - 1;
+      if (aIsDir && !bIsDir) return -1;
+      if (!aIsDir && bIsDir) return 1;
+      const cmp = aParts[i].localeCompare(bParts[i]);
+      if (cmp !== 0) return cmp;
+    }
+    return aParts.length - bParts.length;
+  });
+
+  return sorted.map((file) => {
+    const oldContents = file.oldContents || "";
+    const newContents = file.newContents || "";
+    return {
+      key: `${file.area}-${file.name}`,
+      path: file.name,
+      area: file.area !== "committed" ? file.area : undefined,
+      oldFile: { name: file.name, contents: oldContents, cacheKey: pierreFileCacheKey(file.name, oldContents) },
+      newFile: { name: file.name, contents: newContents, cacheKey: pierreFileCacheKey(file.name, newContents) },
+    };
+  });
+}
+
+export function groupCommentsByFile(comments: readonly ReviewComment[]): Map<string, IndexedFileComment[]> {
+  const byFile = new Map<string, IndexedFileComment[]>();
+  for (let i = 0; i < comments.length; i++) {
+    const c = comments[i];
+    if (c.resolved) continue;
+    let list = byFile.get(c.file);
+    if (!list) { list = []; byFile.set(c.file, list); }
+    list.push({ comment: c, globalIndex: i });
+  }
+  return byFile;
+}
+
+export function groupOpenFormsByFile(openForms: readonly OpenCommentForm[]): Map<string, OpenCommentForm[]> {
+  const byFile = new Map<string, OpenCommentForm[]>();
+  for (const form of openForms) {
+    let list = byFile.get(form.file);
+    if (!list) { list = []; byFile.set(form.file, list); }
+    list.push(form);
+  }
+  return byFile;
+}
+
 // ── App ─────────────────────────────────────────────────────────────
 
 export function App() {
@@ -103,8 +176,12 @@ export function App() {
   const [comments, setComments] = useState<ReviewComment[]>(() => {
     try { const s = localStorage.getItem("pidiff-comments"); return s ? JSON.parse(s) : []; } catch { return []; }
   });
-  const [openForms, setOpenForms] = useState<Array<{ file: string; side: "deletions" | "additions"; lineNumber: number }>>([]);
+  const [openForms, setOpenForms] = useState<OpenCommentForm[]>([]);
   const hasOpenForm = openForms.length > 0;
+  const commentsRef = useRef(comments);
+  commentsRef.current = comments;
+  const diffBranchRef = useRef(diffData.branch);
+  diffBranchRef.current = diffData.branch;
 
   useEffect(() => {
     try { localStorage.setItem("pidiff-comments", JSON.stringify(comments)); } catch {}
@@ -388,7 +465,7 @@ export function App() {
   }, []);
 
   const editComment = useCallback((index: number) => {
-    const c = comments[index];
+    const c = commentsRef.current[index];
     if (c) {
       // Delete the old comment, then open a form at the same location pre-filled
       // For now, delete and re-open a form so the user can re-type
@@ -399,7 +476,7 @@ export function App() {
         return [...prev, { file: c.file, side, lineNumber: c.line }];
       });
     }
-  }, [comments]);
+  }, []);
 
   const addCommentForm = useCallback((file: string, side: "deletions" | "additions", lineNumber: number) => {
     setOpenForms(prev => {
@@ -410,11 +487,12 @@ export function App() {
 
   const submitComment = useCallback((file: string, side: "deletions" | "additions", lineNumber: number, body: string) => {
     if (!body.trim()) return;
-    const branch = activeWorktree?.branch || diffData.branch;
-    const worktreePath = activeWorktree?.path;
+    const wt = activeWorktreeRef.current;
+    const branch = wt?.branch || diffBranchRef.current;
+    const worktreePath = wt?.path;
     setComments(prev => [...prev, { file, line: lineNumber, side: side === "deletions" ? "old" : "new", body: body.trim(), branch, worktreePath }]);
     setOpenForms(prev => prev.filter(f => !(f.file === file && f.side === side && f.lineNumber === lineNumber)));
-  }, [activeWorktree, diffData.branch]);
+  }, []);
 
   const cancelCommentForm = useCallback((file: string, side: "deletions" | "additions", lineNumber: number) => {
     setOpenForms(prev => prev.filter(f => !(f.file === file && f.side === side && f.lineNumber === lineNumber)));
@@ -431,6 +509,10 @@ export function App() {
       return { ...c, replies };
     }));
   }, []);
+
+  const preparedFiles = useMemo(() => prepareDiffFiles(diffData.files), [diffData.files]);
+  const commentsByFile = useMemo(() => groupCommentsByFile(comments), [comments]);
+  const openFormsByFile = useMemo(() => groupOpenFormsByFile(openForms), [openForms]);
 
   const publish = useCallback(() => {
     if (!comments.length) return;
@@ -726,49 +808,28 @@ export function App() {
           {/* ── Diff panes ─────────────────────────────────────── */}
           <main ref={scrollRef} className="flex-1 overflow-y-auto">
             <div className="p-4 space-y-4">
-              {(() => {
-                const sorted = [...diffData.files].sort((a, b) => {
-                  const aParts = a.name.split("/");
-                  const bParts = b.name.split("/");
-                  const len = Math.min(aParts.length, bParts.length);
-                  for (let i = 0; i < len; i++) {
-                    const aIsDir = i < aParts.length - 1;
-                    const bIsDir = i < bParts.length - 1;
-                    if (aIsDir && !bIsDir) return -1;
-                    if (!aIsDir && bIsDir) return 1;
-                    const cmp = aParts[i].localeCompare(bParts[i]);
-                    if (cmp !== 0) return cmp;
-                  }
-                  return aParts.length - bParts.length;
-                });
-
-                return sorted.map(file => {
-                  const oldContents = file.oldContents || "";
-                  const newContents = file.newContents || "";
-                  const oldKey = pierreFileCacheKey(file.name, oldContents);
-                  const newKey = pierreFileCacheKey(file.name, newContents);
-                  return (
-                    <FileBlock key={`${file.area}-${file.name}`}
-                      oldFile={{ name: file.name, contents: oldContents, cacheKey: oldKey }}
-                      newFile={{ name: file.name, contents: newContents, cacheKey: newKey }}
-                      path={file.name}
-                      diffStyle={diffStyle}
-                      diffIndicators={diffIndicators}
-                      lineDiffType={lineDiffType}
-                      disableBackground={disableBackground}
-                      overflow={overflow}
-                      disableLineNumbers={disableLineNumbers}
-                      hunkSeparators={hunkSeparators}
-                      fontSize={fontSize}
-                      theme={theme}
-                      area={file.area !== "committed" ? file.area : undefined}
-                      comments={comments} openForms={openForms} hasOpenForm={hasOpenForm}
-                      onAddCommentForm={addCommentForm} onSubmitComment={submitComment} onCancelCommentForm={cancelCommentForm}
-                      onEditComment={editComment} onDeleteComment={deleteComment}
-                      onResolveComment={resolveComment} onReplyComment={replyToComment} />
-                  );
-                });
-              })()}
+              {preparedFiles.map(file => (
+                <FileBlock key={file.key}
+                  oldFile={file.oldFile}
+                  newFile={file.newFile}
+                  path={file.path}
+                  diffStyle={diffStyle}
+                  diffIndicators={diffIndicators}
+                  lineDiffType={lineDiffType}
+                  disableBackground={disableBackground}
+                  overflow={overflow}
+                  disableLineNumbers={disableLineNumbers}
+                  hunkSeparators={hunkSeparators}
+                  fontSize={fontSize}
+                  theme={theme}
+                  area={file.area}
+                  comments={commentsByFile.get(file.path) ?? EMPTY_FILE_COMMENTS}
+                  openForms={openFormsByFile.get(file.path) ?? EMPTY_FILE_FORMS}
+                  hasOpenForm={hasOpenForm}
+                  onAddCommentForm={addCommentForm} onSubmitComment={submitComment} onCancelCommentForm={cancelCommentForm}
+                  onEditComment={editComment} onDeleteComment={deleteComment}
+                  onResolveComment={resolveComment} onReplyComment={replyToComment} />
+              ))}
             </div>
           </main>
         </div>
@@ -841,7 +902,7 @@ function useExplorerWidth(initial: number, min: number, max: number) {
 
 // ── FileBlock ───────────────────────────────────────────────────────
 
-function FileBlock({ oldFile, newFile, path, diffStyle, diffIndicators, lineDiffType, disableBackground, overflow, disableLineNumbers, hunkSeparators, fontSize, theme, area, comments, openForms, hasOpenForm, onAddCommentForm, onSubmitComment, onCancelCommentForm, onEditComment, onDeleteComment, onResolveComment, onReplyComment }: {
+export const FileBlock = memo(function FileBlock({ oldFile, newFile, path, diffStyle, diffIndicators, lineDiffType, disableBackground, overflow, disableLineNumbers, hunkSeparators, fontSize, theme, area, comments, openForms, hasOpenForm, onAddCommentForm, onSubmitComment, onCancelCommentForm, onEditComment, onDeleteComment, onResolveComment, onReplyComment }: {
   oldFile: FileContents;
   newFile: FileContents;
   path: string;
@@ -855,8 +916,8 @@ function FileBlock({ oldFile, newFile, path, diffStyle, diffIndicators, lineDiff
   fontSize: number;
   theme: string;
   area?: "staged" | "unstaged";
-  comments: ReviewComment[];
-  openForms: Array<{ file: string; side: "deletions" | "additions"; lineNumber: number }>;
+  comments: readonly IndexedFileComment[];
+  openForms: readonly OpenCommentForm[];
   hasOpenForm: boolean;
   onAddCommentForm: (file: string, side: "deletions" | "additions", lineNumber: number) => void;
   onSubmitComment: (file: string, side: "deletions" | "additions", lineNumber: number, body: string) => void;
@@ -875,25 +936,23 @@ function FileBlock({ oldFile, newFile, path, diffStyle, diffIndicators, lineDiff
 
     // Open comment forms for this file
     for (const form of openForms) {
-      if (form.file === path) {
-        annotations.push({
-          side: form.side,
-          lineNumber: form.lineNumber,
-          metadata: { type: "form" as const, file: path, side: form.side, lineNumber: form.lineNumber },
-        });
-      }
+      annotations.push({
+        side: form.side,
+        lineNumber: form.lineNumber,
+        metadata: { type: "form" as const, file: path, side: form.side, lineNumber: form.lineNumber },
+      });
     }
 
     // Submitted comments for this file
-    comments.forEach((c, i) => {
-      if (c.file === path && !c.resolved) {
+    for (const { comment, globalIndex } of comments) {
+      if (!comment.resolved) {
         annotations.push({
           side: "additions" as const,
-          lineNumber: c.line,
-          metadata: { type: "thread" as const, comment: c, globalIndex: i },
+          lineNumber: comment.line,
+          metadata: { type: "thread" as const, comment, globalIndex },
         });
       }
-    });
+    }
 
     return annotations;
   }, [openForms, comments, path]);
@@ -924,52 +983,59 @@ function FileBlock({ oldFile, newFile, path, diffStyle, diffIndicators, lineDiff
     onGutterUtilityClick: handleLineSelectionEnd,
   }), [diffStyle, diffIndicators, lineDiffType, disableBackground, overflow, disableLineNumbers, hunkSeparators, collapsed, theme, hasOpenForm, handleLineSelectionEnd]);
 
+  const style = useMemo(() => ({ fontSize }), [fontSize]);
+  const toggleCollapsed = useCallback(() => setCollapsed(c => !c), []);
+
+  const renderHeaderMetadata = useCallback(() => (
+    <div className="ml-auto flex items-center gap-2 pr-2">
+      {area && (
+        <span className={cn(
+          "rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider",
+          area === "staged" ? "bg-green-500/15 text-green-400" : "bg-yellow-500/15 text-yellow-400",
+        )}>
+          {area}
+        </span>
+      )}
+      <button onClick={toggleCollapsed}
+        className="cursor-pointer px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground">
+        {collapsed ? "Expand" : "Collapse"}
+      </button>
+    </div>
+  ), [area, collapsed, toggleCollapsed]);
+
+  const renderAnnotation = useCallback((annotation: any) => {
+    const meta = annotation?.metadata;
+    if (!meta) return null;
+
+    if (meta.type === "form") {
+      return <InlineCommentForm
+        file={meta.file} side={meta.side} lineNumber={meta.lineNumber}
+        onSubmit={onSubmitComment} onCancel={onCancelCommentForm} />;
+    }
+
+    if (meta.type === "thread") {
+      return <InlineComment comment={meta.comment} globalIndex={meta.globalIndex}
+        onEdit={onEditComment} onDelete={onDeleteComment} onResolve={onResolveComment} onReply={onReplyComment} />;
+    }
+
+    return null;
+  }, [onSubmitComment, onCancelCommentForm, onEditComment, onDeleteComment, onResolveComment, onReplyComment]);
+
   return (
     <div data-diff-file={path} className="overflow-hidden rounded-lg border border-neutral-800">
       <MultiFileDiff
         oldFile={oldFile}
         newFile={newFile}
         options={options}
-        style={{ fontSize }}
+        style={style}
         selectedLines={selectedRange}
         lineAnnotations={lineAnnotations}
-        renderHeaderMetadata={() => (
-          <div className="ml-auto flex items-center gap-2 pr-2">
-            {area && (
-              <span className={cn(
-                "rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider",
-                area === "staged" ? "bg-green-500/15 text-green-400" : "bg-yellow-500/15 text-yellow-400",
-              )}>
-                {area}
-              </span>
-            )}
-            <button onClick={() => setCollapsed(c => !c)}
-              className="cursor-pointer px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground">
-              {collapsed ? "Expand" : "Collapse"}
-            </button>
-          </div>
-        )}
-        renderAnnotation={(annotation) => {
-          const meta = (annotation as any).metadata;
-          if (!meta) return null;
-
-          if (meta.type === "form") {
-            return <InlineCommentForm
-              file={meta.file} side={meta.side} lineNumber={meta.lineNumber}
-              onSubmit={onSubmitComment} onCancel={onCancelCommentForm} />;
-          }
-
-          if (meta.type === "thread") {
-            return <InlineComment comment={meta.comment} globalIndex={meta.globalIndex}
-              onEdit={onEditComment} onDelete={onDeleteComment} onResolve={onResolveComment} onReply={onReplyComment} />;
-          }
-
-          return null;
-        }}
+        renderHeaderMetadata={renderHeaderMetadata}
+        renderAnnotation={renderAnnotation}
       />
     </div>
   );
-}
+});
 
 // Annotation components following @pierre/diffs Annotations example pattern.
 // Outer wrapper uses inline styles (required by @pierre/diffs annotation slot),

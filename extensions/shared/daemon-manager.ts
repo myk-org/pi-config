@@ -9,8 +9,9 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as net from "node:net";
 import * as path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "./logger.js";
 import { findJitiPath } from "./find-jiti.js";
 
@@ -346,4 +347,48 @@ export async function waitForDaemon(
   }
   log(`daemon failed to start after ${maxWaitSeconds}s`);
   return false;
+}
+
+// ── Extension lifecycle helpers ─────────────────────────────────────
+
+/** Return the current checked-out git branch for cwd, or "" on error / detached HEAD. */
+export function getGitBranch(cwd: string): string {
+  try {
+    return execFileSync("git", ["branch", "--show-current"], {
+      cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch { return ""; }
+}
+
+/** Register `/<name> start|stop|restart|status` for a daemon extension (enabled or disabled). */
+export function registerDaemonCommand(
+  pi: ExtensionAPI,
+  name: string,
+  enabled: boolean,
+  settingKey: string,
+  handler?: (args: string, ctx: any) => Promise<void> | void,
+): void {
+  const envKey = `PI_${settingKey.toUpperCase()}`;
+  pi.registerCommand(name, {
+    description: `Manage ${name} server — /${name} start|stop|restart|status`,
+    getArgumentCompletions: (prefix: string) => {
+      const items = [
+        { value: "start", label: "start", description: `Start ${name} server` },
+        { value: "stop", label: "stop", description: `Stop ${name} server` },
+        { value: "restart", label: "restart", description: `Restart ${name} server` },
+        { value: "status", label: "status", description: `Show ${name} status` },
+      ];
+      return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
+    },
+    handler: enabled && handler
+      ? async (args, ctx) => { await handler(args, ctx); }
+      : async (_args, ctx) => {
+          if (ctx.hasUI) {
+            ctx.ui.notify(
+              `${name} is disabled (${settingKey}=false in pi-config-settings.json or ${envKey}=false).`,
+              "info",
+            );
+          }
+        },
+  });
 }
