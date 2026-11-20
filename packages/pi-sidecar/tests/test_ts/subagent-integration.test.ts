@@ -59,7 +59,37 @@ describe("subagent extension integration", () => {
     assert.equal(result, "", "nonexistent package should return empty string");
   });
 
-  it("omits Vertex/Subagent extensions for default sessions and caches Subagent resolution when requested (#1195)", async () => {
+  it("omits Vertex/Subagent extensions for default sessions (#1195)", async () => {
+    const cwd = makeTempDir("sidecar-ext-default-");
+    const faux = fauxProvider({ provider: "test-ext-default", models: [{ id: "local" }] });
+    const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+    runtime.registerNativeProvider(faux.provider);
+    const store = new SessionStore();
+    Object.assign(store, {
+      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
+      modelRuntime: runtime,
+      modelRegistry: new ModelRegistry(runtime),
+      _ready: true,
+    });
+    try {
+      const defaultId = await store.create({
+        provider: "test-ext-default",
+        model: "local",
+        systemPrompt: "hi",
+        cwd,
+        agentDir: cwd,
+      });
+      const defaultSession = (store as any).sessions.get(defaultId).session;
+      const defaultExts = defaultSession.resourceLoader.getExtensions().extensions;
+      assert.equal(defaultExts.length, 0, "default session must not load Vertex or Subagent extensions");
+      assert.ok(!defaultSession.getActiveToolNames().includes("subagent"));
+    } finally {
+      await store.disposeAll();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("caches Subagent resolution while omitting Vertex when subagent tool is requested (#1195)", async () => {
     const cwd = makeTempDir("sidecar-ext-cache-");
     const faux = fauxProvider({ provider: "test-ext-cache", models: [{ id: "local" }] });
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
@@ -72,20 +102,6 @@ describe("subagent extension integration", () => {
       _ready: true,
     });
     try {
-      // 1. Default tools (no "subagent"): loads 0 per-session extensions (neither Vertex nor Subagent).
-      const defaultId = await store.create({
-        provider: "test-ext-cache",
-        model: "local",
-        systemPrompt: "hi",
-        cwd,
-        agentDir: cwd,
-      });
-      const defaultSession = (store as any).sessions.get(defaultId).session;
-      const defaultExts = defaultSession.resourceLoader.getExtensions().extensions;
-      assert.equal(defaultExts.length, 0, "default session must not load Vertex or Subagent extensions");
-      assert.ok(!defaultSession.getActiveToolNames().includes("subagent"));
-
-      // 2. Requesting "subagent" loads only Subagent (still omits Vertex) and caches resolution across creates.
       const logMessages: string[] = [];
       const origLog = logger.log;
       logger.log = (...args: unknown[]) => {

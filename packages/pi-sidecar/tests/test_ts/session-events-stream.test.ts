@@ -1155,4 +1155,61 @@ describe("session event stream: non-streaming redaction bypass & late subscriber
     // Only the pre-detach delta(s) + 1 final responseText redaction should run, not 21+ delta calls.
     assert.ok(redactCalls <= 3, `expected <= 3 redact calls after mid-turn detach, got ${redactCalls}`);
   });
+
+  it("redacts a key split across a late subscriber attach boundary without leaking key tail or pre-attach text", async () => {
+    const secret = "sk-split-across-attach-1161"; // pragma: allowlist secret — synthetic test sentinel
+    const store = new SessionStore();
+    const sink = new FakeSink();
+    store.putSessionFixture(
+      "s",
+      fixtureSession((emit) => {
+        emit(delta("pre-attach text "));
+        emit(delta(secret.slice(0, 10)));
+        store.openStream("s", sink);
+        emit(delta(secret.slice(10, 18)));
+        emit(delta(secret.slice(18)));
+        emit(delta(" post-attach"));
+        emit(agentEnd(`pre-attach text ${secret} post-attach`));
+      }),
+      "/tmp",
+    );
+    (store as any).sessions.get("s").redact = createApiKeyRedactor(secret);
+
+    const result = await store.prompt("s", "hi");
+
+    assert.equal(result.text, "pre-attach text [REDACTED] post-attach");
+    const streamedDeltas = events(sink).filter((event) => event.type === "text_delta").map((event) => event.delta).join("");
+    assert.ok(!streamedDeltas.includes(secret.slice(10)), `key suffix leaked across attach boundary: ${streamedDeltas}`);
+    assert.ok(!streamedDeltas.includes("pre-attach"), `pre-attach text leaked to late subscriber: ${streamedDeltas}`);
+    assert.equal(streamedDeltas, "[REDACTED] post-attach");
+    assert.ok(!sink.raw.includes(secret));
+  });
+
+  it("drops stale holdback before a new subscriber attaches during a quiet gap", async () => {
+    const secret = "sk-reattach-gap-1161"; // pragma: allowlist secret — synthetic test sentinel
+    const store = new SessionStore();
+    const firstSink = new FakeSink();
+    const secondSink = new FakeSink();
+    let detachFirst: (() => void) | undefined;
+
+    store.putSessionFixture(
+      "s",
+      fixtureSession((emit) => {
+        emit(delta("first-sub-only"));
+        detachFirst?.();
+        store.openStream("s", secondSink);
+        emit(delta(" second-sub-only"));
+        emit(agentEnd("first-sub-only second-sub-only"));
+      }),
+      "/tmp",
+    );
+    (store as any).sessions.get("s").redact = createApiKeyRedactor(secret);
+    detachFirst = store.openStream("s", firstSink);
+
+    await store.prompt("s", "hi");
+
+    const secondDeltas = events(secondSink).filter((event) => event.type === "text_delta").map((event) => event.delta).join("");
+    assert.ok(!secondDeltas.includes("first-sub-only"), `stale holdback leaked to re-attached subscriber: ${secondDeltas}`);
+    assert.equal(secondDeltas, " second-sub-only");
+  });
 });

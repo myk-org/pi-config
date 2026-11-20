@@ -479,18 +479,14 @@ function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
       logger.warn(`[sidecar] EXTENSION_RESOLVE_EMPTY: label=${label}`);
       continue;
     }
-    const cached = extensionPathExistsCache.get(path);
-    if (cached !== undefined) {
-      if (cached) {
-        paths.push(path);
-        if (isSubagent) subagentPathFound = true;
-      }
+    if (extensionPathExistsCache.get(path)) {
+      paths.push(path);
+      if (isSubagent) subagentPathFound = true;
       continue;
     }
     try {
       const stat = statSync(path);
       if (!stat.isFile()) {
-        extensionPathExistsCache.set(path, false);
         logger.warn(`[sidecar] EXTENSION_NOT_FILE: label=${label}, path=${path}`);
         continue;
       }
@@ -499,7 +495,6 @@ function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
       logger.log(`[sidecar] EXTENSION_FOUND: label=${label}, path=${path}`);
       if (isSubagent) subagentPathFound = true;
     } catch (err) {
-      extensionPathExistsCache.set(path, false);
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.warn(`[sidecar] EXTENSION_NOT_FOUND: label=${label}, path=${path}, error=${errMsg}`);
     }
@@ -508,12 +503,15 @@ function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
 }
 
 function resolveSubagentExtensionOnce(): ResolvedExtensions {
-  if (!cachedSubagentExtensions) {
-    cachedSubagentExtensions = resolveExtensionPaths([
-      { path: SUBAGENT_EXTENSION, label: "Subagent", isSubagent: true },
-    ]);
+  if (cachedSubagentExtensions) return cachedSubagentExtensions;
+  const resolved = resolveExtensionPaths([
+    { path: SUBAGENT_EXTENSION, label: "Subagent", isSubagent: true },
+  ]);
+  // Cache only positive resolutions so a transient stat failure can recover.
+  if (resolved.subagentPathFound) {
+    cachedSubagentExtensions = resolved;
   }
-  return cachedSubagentExtensions;
+  return resolved;
 }
 
 /**
@@ -1044,9 +1042,15 @@ function sseFrame(event: SessionStreamEvent): string {
 class SessionEventStreams {
   private subscribers = new Set<StreamSubscriber>();
   private turnSeq = 0;
+  private _attachGeneration = 0;
 
   get size(): number {
     return this.subscribers.size;
+  }
+
+  /** Incremented whenever subscribers transitions 0 -> 1 so active turns detect attach/re-attach. */
+  get attachGeneration(): number {
+    return this._attachGeneration;
   }
 
   /** Monotonic per-session turn id. */
@@ -1067,6 +1071,7 @@ class SessionEventStreams {
     sub.idle = setTimeout(() => this.drop(sub, "idle_timeout"), STREAM_IDLE_MS);
     sub.keepalive.unref?.();
     sub.idle.unref?.();
+    if (this.subscribers.size === 0) this._attachGeneration++;
     this.subscribers.add(sub);
     if (greeting) this.write(sub, sseFrame(greeting));
     return () => this.drop(sub, "detached");
@@ -2441,16 +2446,52 @@ export class SessionStore {
     const hold = redactorHoldback(entry.redact);
     const literalHold = redactorLiteralHoldback(entry.redact);
     let heldText = "";
+    // Redacted pre-attach context prefix kept only so a secret split across a
+    // late attach boundary still matches as a whole without emitting pre-attach text.
+    let preAttachSafePrefix = "";
+    let seenAttachGen = entry.streams.attachGeneration;
     const emitHeldText = (flush: boolean) => {
-      if (heldText === "" || entry.streams.size === 0) {
+      if (entry.streams.size === 0) {
         heldText = "";
+        preAttachSafePrefix = "";
         return;
       }
+      if (entry.streams.attachGeneration !== seenAttachGen) {
+        // Subscriber attached (or re-attached after detach) during a quiet gap:
+        // discard any stale holdback left over from an earlier subscriber.
+        seenAttachGen = entry.streams.attachGeneration;
+        heldText = "";
+        preAttachSafePrefix = "";
+        return;
+      }
+      if (heldText === "") return;
       const safe = entry.redact(heldText);
+      if (preAttachSafePrefix && !safe.startsWith(preAttachSafePrefix)) {
+        // Post-attach text completed a key that started inside the pre-attach tail:
+        // keep only the common prefix before the new [REDACTED] token as pre-attach skip.
+        let lcp = 0;
+        const minLen = Math.min(preAttachSafePrefix.length, safe.length);
+        while (lcp < minLen && preAttachSafePrefix.charCodeAt(lcp) === safe.charCodeAt(lcp)) lcp++;
+        const markerStart = Math.max(0, lcp - "[REDACTED]".length + 1);
+        for (let k = markerStart; k <= lcp; k++) {
+          if (safe.startsWith("[REDACTED]", k) && !preAttachSafePrefix.startsWith("[REDACTED]", k)) {
+            lcp = k;
+            break;
+          }
+        }
+        preAttachSafePrefix = preAttachSafePrefix.slice(0, lcp);
+      }
       const window = hold > literalHold && /[%\\]/.test(safe.slice(-hold)) ? hold : literalHold;
       const cut = flush ? safe.length : Math.max(0, safe.length - window);
+      if (cut <= preAttachSafePrefix.length) {
+        preAttachSafePrefix = preAttachSafePrefix.slice(cut);
+        heldText = safe.slice(cut);
+        return;
+      }
+      const deltaOut = safe.slice(preAttachSafePrefix.length, cut);
+      preAttachSafePrefix = "";
       heldText = safe.slice(cut);
-      if (cut > 0) entry.streams.emit({ type: "text_delta", turnId, delta: safe.slice(0, cut) });
+      if (deltaOut.length > 0) entry.streams.emit({ type: "text_delta", turnId, delta: deltaOut });
     };
     const emitTurnEnd = (aborted: boolean) => {
       if (turnEnded) return;
@@ -2518,18 +2559,34 @@ export class SessionStore {
         }
       }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+        const prevLen = responseText.length;
         responseText += event.assistantMessageEvent.delta;
         textDeltaCount++;
         // #1019: redact per delta — this is the only redaction point in the
         // prompt path (:2360) and a raw delta can echo a request api_key.
         // Through the holdback, so a key split across deltas is redacted whole.
         // #1161: skip holdback buffering & per-delta redaction when no SSE
-        // subscribers are attached (non-streaming prompt path).
+        // subscribers are attached (non-streaming prompt path); on mid-turn
+        // attach/re-attach, seed from the pre-attach tail so a key spanning
+        // the attach boundary is redacted without emitting pre-attach text.
         if (entry.streams.size > 0) {
-          heldText += event.assistantMessageEvent.delta;
+          if (entry.streams.attachGeneration !== seenAttachGen) {
+            seenAttachGen = entry.streams.attachGeneration;
+            if (prevLen > 0 && hold > 0) {
+              const preTail = responseText.slice(Math.max(0, prevLen - hold), prevLen);
+              preAttachSafePrefix = entry.redact(preTail);
+              heldText = preAttachSafePrefix + event.assistantMessageEvent.delta;
+            } else {
+              preAttachSafePrefix = "";
+              heldText = event.assistantMessageEvent.delta;
+            }
+          } else {
+            heldText += event.assistantMessageEvent.delta;
+          }
           emitHeldText(false);
-        } else if (heldText !== "") {
+        } else if (heldText !== "" || preAttachSafePrefix !== "") {
           heldText = "";
+          preAttachSafePrefix = "";
         }
       }
       if (event.type === "agent_end" && event.messages) {
