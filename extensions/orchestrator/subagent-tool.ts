@@ -195,7 +195,7 @@ const SubagentParams = Type.Object({
   ),
   // Optional at schema level because async mode doesn't need it; runtime enforces for sync
   estimatedSeconds: Type.Optional(
-    Type.Number({ description: "Estimated seconds (required for sync; use async if >= sync limit)" }),
+    Type.Number({ description: "Estimated seconds (required for sync; use async if >= 30s)" }),
   ),
   async: Type.Optional(
     Type.Boolean({ description: "Run in background; results auto-deliver (default: false)", default: false }),
@@ -213,7 +213,7 @@ const SubagentParams = Type.Object({
     Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'" }),
   ),
   persistSession: Type.Optional(
-    Type.Boolean({ description: "Reuse agent session across calls in this project (default: false)", default: false }),
+    Type.Boolean({ description: "Reuse agent session across calls in this project (default: false)" }),
   ),
   model: Type.Optional(
     Type.String({ description: "Override model ('provider/model-id' or 'model-id')" }),
@@ -1825,7 +1825,7 @@ export function registerSubagentTool(
     promptGuidelines: [
       "Delegate specialist work by intent (python → python-expert, git → git-expert, PR → github-expert, etc.).",
       "Use tasks[] for independent parallel work; chain[] with {previous} for sequential steps.",
-      "Use async: true unless the next step needs the output immediately; end your turn after spawning async agents (results auto-deliver).",
+      "Use async: true if estimated >= 30s or the next step doesn't need the output immediately; end your turn after spawning async agents (no bash/sleep/poll loops — results auto-deliver).",
       "Always pass cwd and (for sync) estimatedSeconds.",
     ],
     parameters: SubagentParams,

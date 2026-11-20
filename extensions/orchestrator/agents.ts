@@ -87,6 +87,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 
 	const agents: AgentConfig[] = [];
 	const fileMeta = new Map<string, { mtimeMs: number; size: number }>();
+	let complete = true;
 
 	let entries: fs.Dirent[];
 	try {
@@ -104,9 +105,10 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 		let content: string;
 		try {
 			const st = fs.statSync(filePath);
-			fileMeta.set(filePath, { mtimeMs: st.mtimeMs, size: st.size });
 			content = fs.readFileSync(filePath, "utf-8");
+			fileMeta.set(filePath, { mtimeMs: st.mtimeMs, size: st.size });
 		} catch {
+			complete = false;
 			continue;
 		}
 
@@ -131,11 +133,15 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 		});
 	}
 
-	if (dirAgentsCache.size >= DIR_AGENTS_CACHE_MAX) {
-		const oldest = dirAgentsCache.keys().next().value;
-		if (oldest !== undefined) dirAgentsCache.delete(oldest);
+	if (complete) {
+		if (dirAgentsCache.size >= DIR_AGENTS_CACHE_MAX) {
+			const oldest = dirAgentsCache.keys().next().value;
+			if (oldest !== undefined) dirAgentsCache.delete(oldest);
+		}
+		dirAgentsCache.set(cacheKey, { dirMtimeMs: dirStat.mtimeMs, fileMeta, agents });
+	} else {
+		dirAgentsCache.delete(cacheKey);
 	}
-	dirAgentsCache.set(cacheKey, { dirMtimeMs: dirStat.mtimeMs, fileMeta, agents });
 
 	return agents;
 }

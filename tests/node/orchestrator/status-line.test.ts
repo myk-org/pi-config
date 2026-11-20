@@ -3,11 +3,12 @@ import { describe, it } from "node:test";
 import { registerStatusLine } from "../../../extensions/orchestrator/status-line.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
-function makeHarness(opts: { debounceMs?: number } = {}) {
+function makeHarness(opts: { debounceMs?: number; githubRepoCacheTtlMs?: number; remoteFailFirst?: boolean } = {}) {
 	const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
 	const gitCalls: Array<{ args: string[]; cwd?: string }> = [];
 	const statuses: Array<{ key: string; text: string | undefined }> = [];
 	let notifyCalls = 0;
+	let remoteCalls = 0;
 
 	const pi = {
 		on(event: string, handler: (event: unknown, ctx: any) => void) {
@@ -21,7 +22,11 @@ function makeHarness(opts: { debounceMs?: number } = {}) {
 		gitCalls.push({ args, cwd });
 		if (args[0] === "rev-parse") return { stdout: "feat/test", code: 0 };
 		if (args[0] === "status") return { stdout: " M a.ts\n?? b.ts\n", code: 0 };
-		if (args[0] === "remote") return { stdout: "https://example.com/org/repo.git", code: 0 };
+		if (args[0] === "remote") {
+			remoteCalls++;
+			if (opts.remoteFailFirst && remoteCalls === 1) return { stdout: "", code: 128 };
+			return { stdout: "https://github.com/myk-org/pi-config.git", code: 0 };
+		}
 		return { stdout: "", code: 0 };
 	};
 
@@ -32,7 +37,11 @@ function makeHarness(opts: { debounceMs?: number } = {}) {
 			() => {
 				notifyCalls++;
 			},
-			{ runGitAsync, debounceMs: opts.debounceMs ?? 20 },
+			{
+				runGitAsync,
+				debounceMs: opts.debounceMs ?? 20,
+				githubRepoCacheTtlMs: opts.githubRepoCacheTtlMs,
+			},
 		);
 	});
 
@@ -120,6 +129,35 @@ describe("status-line (#1203)", () => {
 			await new Promise((r) => setTimeout(r, 50));
 			assert.equal(h.gitCalls.length, 7);
 			assert.equal(h.gitCalls.filter((c) => c.args[0] === "remote").length, 1);
+		} finally {
+			h.emit("session_shutdown", {});
+		}
+	});
+
+	it("does not cache failed remote lookups and refreshes cached classification after TTL", async () => {
+		const h = makeHarness({ debounceMs: 10, githubRepoCacheTtlMs: 250, remoteFailFirst: true });
+		try {
+			const ctx = h.makeCtx(true, "/repo-retry");
+			// First call fails remote check (code 128) — must NOT be cached
+			h.emit("session_start", ctx);
+			await new Promise((r) => setTimeout(r, 20));
+			assert.equal(h.gitCalls.filter((c) => c.args[0] === "remote").length, 1);
+
+			// Second call immediately retries remote and caches the success
+			h.emit("agent_end", ctx);
+			await new Promise((r) => setTimeout(r, 20));
+			assert.equal(h.gitCalls.filter((c) => c.args[0] === "remote").length, 2);
+
+			// Within TTL, cached success is reused
+			h.emit("agent_end", ctx);
+			await new Promise((r) => setTimeout(r, 20));
+			assert.equal(h.gitCalls.filter((c) => c.args[0] === "remote").length, 2);
+
+			// After TTL expires, remote is re-checked
+			await new Promise((r) => setTimeout(r, 280));
+			h.emit("agent_end", ctx);
+			await new Promise((r) => setTimeout(r, 20));
+			assert.equal(h.gitCalls.filter((c) => c.args[0] === "remote").length, 3);
 		} finally {
 			h.emit("session_shutdown", {});
 		}

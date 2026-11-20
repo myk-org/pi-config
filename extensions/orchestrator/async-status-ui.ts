@@ -189,13 +189,17 @@ function killTargets(
  * Incrementally read appended JSONL lines from `logPath` using byte offsets
  * and `StringDecoder("utf8")` so 500ms polling is O(delta_bytes) instead of O(file_size).
  */
-export function createIncrementalLogReader(logPath: string, lines: string[]): () => boolean {
+export function createIncrementalLogReader(logPath: string): {
+  readNewContent: () => boolean;
+  getLines: () => string[];
+} {
+  let lines: string[] = [];
   let bytePos = 0;
   let textBuffer = "";
   let decoder = new StringDecoder("utf8");
   let lastLoggedError = "";
 
-  return (): boolean => {
+  const readNewContent = (): boolean => {
     try {
       const size = fs.statSync(logPath).size;
       if (size === bytePos) return false;
@@ -205,7 +209,8 @@ export function createIncrementalLogReader(logPath: string, lines: string[]): ()
         textBuffer = "";
         decoder = new StringDecoder("utf8");
         if (lines.length > 0) {
-          lines.length = 0;
+          // Swap in a fresh array reference so OverlayScrollDetail drops its wrap cache.
+          lines = [];
           reset = true;
         }
       }
@@ -249,6 +254,8 @@ export function createIncrementalLogReader(logPath: string, lines: string[]): ()
       return false;
     }
   };
+
+  return { readNewContent, getLines: () => lines };
 }
 
 /**
@@ -315,11 +322,10 @@ export async function openAsyncStatusOverlay(
       },
     },
     createDetail: (job, tui, theme, done) => {
-      const lines: string[] = [];
       // No worker dir means no output.log — path.join("", ...) would read the cwd.
-      const readNewContent = job.workerDir
-        ? createIncrementalLogReader(path.join(job.workerDir, "output.log"), lines)
-        : () => false;
+      const reader = job.workerDir
+        ? createIncrementalLogReader(path.join(job.workerDir, "output.log"))
+        : { readNewContent: () => false, getLines: () => [] as string[] };
 
       const jobId = job.id;
       return new OverlayScrollDetail(
@@ -331,7 +337,7 @@ export async function openAsyncStatusOverlay(
           footerHints:
             "↑↓/jk scroll · PgUp/PgDn · Home/End · x kill · Esc back",
           pollMs: 500,
-          onPoll: readNewContent,
+          onPoll: reader.readNewContent,
           onX: () => {
             const current = deps.listJobs().find((j) => j.id === jobId);
             if (current && isActive(current.status)) {
@@ -358,7 +364,7 @@ export async function openAsyncStatusOverlay(
               t.fg("dim", ` · ${current.task.slice(0, 40)}`)
             );
           },
-          getBodyLines: () => lines,
+          getBodyLines: () => reader.getLines(),
         },
         done,
       );

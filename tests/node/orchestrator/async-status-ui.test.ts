@@ -45,16 +45,15 @@ describe("parseAsyncOutputLine", () => {
 });
 
 describe("createIncrementalLogReader (#1209)", () => {
-  it("reads only newly appended bytes across polls and handles partial lines + split UTF-8", () => {
+  it("reads only newly appended bytes across polls and swaps array reference on truncation/rewrite", () => {
     const dir = makeTempDir("inc-log-");
     tempDirs.push(dir);
     const logPath = join(dir, "output.log");
-    const lines: string[] = [];
-    const readNew = createIncrementalLogReader(logPath, lines);
+    const reader = createIncrementalLogReader(logPath);
 
     // Missing file returns false without throwing
-    assert.equal(readNew(), false);
-    assert.deepEqual(lines, []);
+    assert.equal(reader.readNewContent(), false);
+    assert.deepEqual(reader.getLines(), []);
 
     // First write: complete line + partial UTF-8 sequence split mid-character
     const fullWithEmoji = `${textDeltaLine("hi 🚀")}\n`;
@@ -63,20 +62,23 @@ describe("createIncrementalLogReader (#1209)", () => {
     writeFileSync(logPath, `${textDeltaLine("first")}\n`);
     appendFileSync(logPath, emojiBuf.subarray(0, splitPoint));
 
-    assert.equal(readNew(), true);
-    assert.deepEqual(lines, ["first"]);
+    assert.equal(reader.readNewContent(), true);
+    const beforeResetRef = reader.getLines();
+    assert.deepEqual(beforeResetRef, ["first"]);
 
     // Unchanged size returns false
-    assert.equal(readNew(), false);
+    assert.equal(reader.readNewContent(), false);
 
     // Append remaining UTF-8 bytes
     appendFileSync(logPath, emojiBuf.subarray(splitPoint));
-    assert.equal(readNew(), true);
-    assert.deepEqual(lines, ["first", "hi 🚀"]);
+    assert.equal(reader.readNewContent(), true);
+    assert.deepEqual(reader.getLines(), ["first", "hi 🚀"]);
+    assert.equal(reader.getLines(), beforeResetRef);
 
-    // Truncation/replacement resets byte offset cleanly
-    writeFileSync(logPath, `${textDeltaLine("reset")}\n`);
-    assert.equal(readNew(), true);
-    assert.deepEqual(lines, ["reset"]);
+    // Truncation/rewrite with >= as many lines swaps in a new array reference
+    writeFileSync(logPath, `${textDeltaLine("a")}\n${textDeltaLine("b")}\n`);
+    assert.equal(reader.readNewContent(), true);
+    assert.deepEqual(reader.getLines(), ["a", "b"]);
+    assert.notEqual(reader.getLines(), beforeResetRef);
   });
 });

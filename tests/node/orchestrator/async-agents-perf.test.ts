@@ -142,6 +142,17 @@ describe("async-agents optimizations (#1206)", () => {
 			h.api.spawnAsyncAgent("test-runner", "test", otherDir, [fakeAgent("test-runner")]);
 			assert.equal(ghCalls, 2);
 			assert.equal(h.spawnCalls.at(-1)?.env.PI_REVIEW_BASE_BRANCH, "develop");
+
+			// Branch change in .git/HEAD invalidates cached base branch immediately
+			const gitRepo = makeTempDir("async-perf-branch-");
+			tempDirs.push(gitRepo);
+			mkdirSync(join(gitRepo, ".git"), { recursive: true });
+			writeFileSync(join(gitRepo, ".git", "HEAD"), "ref: refs/heads/feat-a\n");
+			h.api.spawnAsyncAgent("code-reviewer-quality", "r1", gitRepo, agents);
+			assert.equal(ghCalls, 3);
+			writeFileSync(join(gitRepo, ".git", "HEAD"), "ref: refs/heads/feat-b\n");
+			h.api.spawnAsyncAgent("code-reviewer-quality", "r2", gitRepo, agents);
+			assert.equal(ghCalls, 4);
 		} finally {
 			h.shutdown();
 		}

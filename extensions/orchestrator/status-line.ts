@@ -19,6 +19,7 @@ const log = createLogger("status-line");
 export interface StatusLineDeps {
   runGitAsync?: (args: string[], cwd?: string) => Promise<{ stdout: string; code: number }>;
   debounceMs?: number;
+  githubRepoCacheTtlMs?: number;
 }
 
 export function registerStatusLine(
@@ -30,6 +31,7 @@ export function registerStatusLine(
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
   const debounceMs = deps?.debounceMs ?? 350;
+  const githubRepoCacheTtlMs = deps?.githubRepoCacheTtlMs ?? 60_000;
   const execGitAsync = deps?.runGitAsync ?? ((args: string[], cwd?: string) =>
     new Promise<{ stdout: string; code: number }>((resolve) => {
       execFile(
@@ -58,7 +60,7 @@ export function registerStatusLine(
       );
     }));
 
-  const githubRepoCache = new Map<string, boolean>();
+  const githubRepoCache = new Map<string, { at: number; isGh: boolean }>();
   const getBranchAsync = async (cwd?: string): Promise<string | null> => {
     const r = await execGitAsync(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
     if (r.code === 0 && r.stdout && r.stdout !== "HEAD") return r.stdout;
@@ -69,11 +71,16 @@ export function registerStatusLine(
   };
   const isGithubRepoAsync = async (cwd?: string): Promise<boolean> => {
     const key = cwd || "";
+    const now = Date.now();
     const cached = githubRepoCache.get(key);
-    if (cached !== undefined) return cached;
+    if (cached && now - cached.at < githubRepoCacheTtlMs) return cached.isGh;
     const r = await execGitAsync(["remote", "get-url", "origin"], cwd);
-    const result = r.code === 0 && r.stdout.toLowerCase().includes("github.com");
-    githubRepoCache.set(key, result);
+    if (r.code !== 0) {
+      githubRepoCache.delete(key);
+      return false;
+    }
+    const result = r.stdout.toLowerCase().includes("github.com");
+    githubRepoCache.set(key, { at: now, isGh: result });
     return result;
   };
   // ── Combined status line builder ───────────────────────────────────────

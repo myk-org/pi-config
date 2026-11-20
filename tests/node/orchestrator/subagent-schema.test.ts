@@ -51,7 +51,7 @@ describe("subagent & ask_user tool schemas (#1160)", () => {
 		assert.equal(subProps.confirmProjectAgents.default, true);
 		assert.equal(subProps.async.default, false);
 		assert.equal(subProps.fireAndForget.default, false);
-		assert.equal(subProps.persistSession.default, false);
+		assert.equal(subProps.persistSession.default, undefined);
 		assert.deepEqual(
 			Object.keys(subProps.tasks.items.properties).sort(),
 			["agent", "cwd", "estimatedSeconds", "model", "name", "task", "taskId"],
@@ -61,14 +61,15 @@ describe("subagent & ask_user tool schemas (#1160)", () => {
 			["agent", "cwd", "estimatedSeconds", "task", "taskId"],
 		);
 
-		// Verify trimmed prose stays compact without hardcoded "30s" limit
+		// Verify trimmed prose stays compact while preserving essential 30s and no-polling rules
 		const subagentText = [
 			subagentTool.description,
 			...(subagentTool.promptGuidelines ?? []),
 			...Object.values(subProps).map((p: any) => String(p.description ?? "")),
 		].join("\n");
 		assert.ok(subagentText.length < 1500, `Expected compact subagent schema text, got ${subagentText.length} chars`);
-		assert.doesNotMatch(subagentText, /30 seconds|30s/);
+		assert.match(subagentText, /30s/);
+		assert.match(subagentText, /sleep\/poll|poll/i);
 
 		// ask_user keys and compact prose
 		assert.deepEqual(Object.keys(askUserTool.parameters.properties), ["question", "options"]);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { clearAgentsCache, discoverAgents } from "../../../extensions/orchestrator/agents.js";
@@ -63,5 +63,28 @@ describe("discoverAgents cache (#1208)", () => {
 		utimesSync(agentsDir, dirFuture2, dirFuture2);
 		const fifth = discoverAgents(root, "project");
 		assert.equal(fifth.agents.some((a) => a.name === "second-agent"), false);
+	});
+
+	it("does not cache an incomplete directory when an agent file is unreadable and recovers after chmod", () => {
+		if (process.getuid?.() === 0) return;
+		const root = makeTempDir("agents-cache-perm-");
+		tempDirs.push(root);
+		const agentsDir = join(root, ".pi", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		const hiddenFile = join(agentsDir, "locked.md");
+		writeAgentFile(agentsDir, "locked.md", "locked-agent", "Locked agent", "Locked prompt");
+		chmodSync(hiddenFile, 0o000);
+
+		try {
+			clearAgentsCache();
+			const first = discoverAgents(root, "project");
+			assert.equal(first.agents.some((a) => a.name === "locked-agent"), false);
+
+			chmodSync(hiddenFile, 0o644);
+			const second = discoverAgents(root, "project");
+			assert.equal(second.agents.some((a) => a.name === "locked-agent"), true);
+		} finally {
+			try { chmodSync(hiddenFile, 0o644); } catch {}
+		}
 	});
 });

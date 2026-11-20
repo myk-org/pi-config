@@ -317,8 +317,9 @@ function resolveJitiCliPath(): { path: string | undefined; probes: string[] } {
 }
 
 const PR_BASE_TTL_MS = 25_000;
+const PR_NO_PR_TTL_MS = 2_000;
 const PR_BASE_CACHE_MAX = 50;
-const prBaseCache = new Map<string, { at: number; baseBranch: string; hasPr: string }>();
+const prBaseCache = new Map<string, { at: number; ttlMs: number; baseBranch: string; hasPr: string }>();
 
 export type PrBaseRunner = (cwd: string) => { status: number | null; stdout?: string; stderr?: string };
 const defaultPrBaseRunner: PrBaseRunner = (cwd) =>
@@ -341,17 +342,48 @@ export function clearAsyncAgentCachesForTests(): void {
   prBaseCache.clear();
 }
 
+function readFastGitBranch(cwd: string): string {
+  try {
+    let dir = path.resolve(cwd);
+    while (true) {
+      const dotGit = path.join(dir, ".git");
+      if (fs.existsSync(dotGit)) {
+        const st = fs.statSync(dotGit);
+        let headPath = "";
+        if (st.isDirectory()) {
+          headPath = path.join(dotGit, "HEAD");
+        } else if (st.isFile()) {
+          const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf8"));
+          if (m) headPath = path.join(path.resolve(dir, m[1].trim()), "HEAD");
+        }
+        if (headPath && fs.existsSync(headPath)) {
+          return fs.readFileSync(headPath, "utf8").trim();
+        }
+        return "";
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) return "";
+      dir = parent;
+    }
+  } catch {
+    return "";
+  }
+}
+
 function resolvePrBaseInfo(cwd: string): { baseBranch: string; hasPr: string } {
   const now = Date.now();
-  const cached = prBaseCache.get(cwd);
-  if (cached && now - cached.at < PR_BASE_TTL_MS) {
-    prBaseCache.delete(cwd);
-    prBaseCache.set(cwd, cached);
+  const branchHead = readFastGitBranch(cwd);
+  const cacheKey = `${cwd}\0${branchHead}`;
+  const cached = prBaseCache.get(cacheKey);
+  if (cached && now - cached.at < cached.ttlMs) {
+    prBaseCache.delete(cacheKey);
+    prBaseCache.set(cacheKey, cached);
     return { baseBranch: cached.baseBranch, hasPr: cached.hasPr };
   }
 
   let baseBranch: string;
   let hasPr: string;
+  let ttlMs = PR_BASE_TTL_MS;
   try {
     const prBase = prBaseRunner(cwd);
     if (prBase.status === 0 && prBase.stdout?.trim()) {
@@ -363,18 +395,21 @@ function resolvePrBaseInfo(cwd: string): { baseBranch: string; hasPr: string } {
       // Other failures (timeout, auth, network) default to true to avoid skipping PR checks.
       const noPr = prBase.stderr?.includes("no pull requests found") || false;
       hasPr = noPr ? "false" : "true";
+      // Short batch-scoped TTL when no PR was found so a newly created PR is picked up quickly.
+      ttlMs = PR_NO_PR_TTL_MS;
     }
   } catch {
     baseBranch = getMainBranch(cwd) || "main";
     // Exception (e.g., gh not found) — default to true to avoid skipping PR checks
     hasPr = "true";
+    ttlMs = PR_NO_PR_TTL_MS;
   }
 
   if (prBaseCache.size >= PR_BASE_CACHE_MAX) {
     const oldest = prBaseCache.keys().next().value;
     if (oldest !== undefined) prBaseCache.delete(oldest);
   }
-  prBaseCache.set(cwd, { at: now, baseBranch, hasPr });
+  prBaseCache.set(cacheKey, { at: now, ttlMs, baseBranch, hasPr });
   return { baseBranch, hasPr };
 }
 
