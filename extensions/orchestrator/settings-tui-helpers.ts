@@ -73,24 +73,41 @@ export const CATEGORIES: CategoryDef[] = (() => {
 
 export type SettingSource = "P" | "G" | "E" | "D";
 
-export function detectSource(key: string, def: SettingsKeyDef, cwd: string): SettingSource {
+export interface SettingsSourceSnapshot {
+  project: Record<string, unknown> | null;
+  global: Record<string, unknown> | null;
+}
+
+function readRawSettingsObject(filePath: string): Record<string, unknown> | null {
+  if (!existsSync(filePath)) return null;
+  try {
+    const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) return raw;
+  } catch (e: any) { logWarn(`parse error in ${filePath}: ${e?.message?.slice(0, 100)}`); }
+  return null;
+}
+
+/** Read project and global settings objects once so per-key source detection avoids N×2 file reads. */
+export function loadSettingsSourceSnapshot(cwd: string): SettingsSourceSnapshot {
+  return {
+    project: readRawSettingsObject(getSettingsPath(cwd)),
+    global: readRawSettingsObject(getGlobalSettingsPath()),
+  };
+}
+
+export function detectSource(
+  key: string,
+  def: SettingsKeyDef,
+  cwd: string,
+  snapshot?: SettingsSourceSnapshot,
+): SettingSource {
   // Check project settings file
-  const projectPath = getSettingsPath(cwd);
-  if (existsSync(projectPath)) {
-    try {
-      const raw = JSON.parse(stripJsonComments(readFileSync(projectPath, "utf-8")));
-      if (typeof raw === "object" && raw !== null && key in raw) return "P";
-    } catch (e: any) { logWarn(`parse error in ${projectPath}: ${e?.message?.slice(0, 100)}`); }
-  }
+  const projectRaw = snapshot ? snapshot.project : readRawSettingsObject(getSettingsPath(cwd));
+  if (projectRaw && key in projectRaw) return "P";
 
   // Check global settings file (honors setGlobalSettingsPath for tests)
-  const globalPath = getGlobalSettingsPath();
-  if (existsSync(globalPath)) {
-    try {
-      const raw = JSON.parse(stripJsonComments(readFileSync(globalPath, "utf-8")));
-      if (typeof raw === "object" && raw !== null && key in raw) return "G";
-    } catch (e: any) { logWarn(`parse error in ${globalPath}: ${e?.message?.slice(0, 100)}`); }
-  }
+  const globalRaw = snapshot ? snapshot.global : readRawSettingsObject(getGlobalSettingsPath());
+  if (globalRaw && key in globalRaw) return "G";
 
   // Check env var
   if (def.env && process.env[def.env] !== undefined && process.env[def.env] !== "") return "E";
@@ -315,6 +332,9 @@ function visitSnapshotPath(filePath: string): string {
   return `${filePath}.bak.visit-${process.pid}`;
 }
 
+/** Reusable 4-byte buffer for synchronous lock backoff (avoids per-spin SharedArrayBuffer allocation). */
+const sleepBuf = new Int32Array(new SharedArrayBuffer(4));
+
 /** Serialize chain mutations across processes: rotating or promoting shifts `.bak.N` files, and a
  *  concurrent writer interleaving between the shift and the rename would lose a restore point. */
 function withChainLock<T>(filePath: string, fn: () => T): T {
@@ -360,7 +380,7 @@ function withChainLock<T>(filePath: string, fn: () => T): T {
             /* another writer claimed it — retry the acquisition */
           }
         }
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        Atomics.wait(sleepBuf, 0, 0, 20);
       }
     }
     if (!locked) {
@@ -389,18 +409,23 @@ function promoteSnapshot(snapshotPath: string): void {
   withChainLock(filePath, () => promoteSnapshotLocked(snapshotPath, filePath));
 }
 
-function promoteSnapshotLocked(snapshotPath: string, filePath: string): void {
-  const count = backupCountFor(filePath);
-  if (count <= 0) {
-    unlinkSync(snapshotPath);
-    return;
-  }
+/** Drop `.bak.<count>` and shift `.bak.(count-1)..1` up by one slot to make room at `.bak.1`. */
+function shiftBackupSlots(filePath: string, count: number): void {
   const oldest = settingsBackupPath(filePath, count);
   if (existsSync(oldest)) unlinkSync(oldest);
   for (let slot = count - 1; slot >= 1; slot--) {
     const from = settingsBackupPath(filePath, slot);
     if (existsSync(from)) renameSync(from, settingsBackupPath(filePath, slot + 1));
   }
+}
+
+function promoteSnapshotLocked(snapshotPath: string, filePath: string): void {
+  const count = backupCountFor(filePath);
+  if (count <= 0) {
+    unlinkSync(snapshotPath);
+    return;
+  }
+  shiftBackupSlots(filePath, count);
   renameSync(snapshotPath, settingsBackupPath(filePath, 1));
 }
 
@@ -490,12 +515,7 @@ function rotateSettingsBackups(filePath: string, count: number): void {
 
 function rotateSettingsBackupsLocked(filePath: string, count: number): void {
   try {
-    const oldest = settingsBackupPath(filePath, count);
-    if (existsSync(oldest)) unlinkSync(oldest);
-    for (let slot = count - 1; slot >= 1; slot--) {
-      const from = settingsBackupPath(filePath, slot);
-      if (existsSync(from)) renameSync(from, settingsBackupPath(filePath, slot + 1));
-    }
+    shiftBackupSlots(filePath, count);
     copyFileSync(filePath, settingsBackupPath(filePath, 1));
   } catch (e: any) {
     // A write without its backup breaks the one guarantee this function exists for: if the
@@ -599,9 +619,11 @@ export function resolveSecretPrefill(
   key: string,
   editScope: "project" | "global",
   cwd: string,
+  preloadedScopeData?: Record<string, unknown> | null,
 ): { scopeValue: string | null; prefill: string; hint: string } {
-  const scopeFile = getFilePathForScope(editScope, cwd);
-  const scopeData = readSettingsFile(scopeFile);
+  const scopeData = preloadedScopeData !== undefined
+    ? preloadedScopeData
+    : readSettingsFile(getFilePathForScope(editScope, cwd));
   const scopeValue = scopeData && typeof scopeData[key] === "string" ? scopeData[key] as string : null;
   // Never prefill with the raw secret — always start empty to avoid exposing it on screen.
   // The user must type a new value; empty submit is handled by isSecretNoChange.

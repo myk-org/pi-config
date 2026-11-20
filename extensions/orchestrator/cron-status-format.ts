@@ -28,12 +28,27 @@ export interface CronStatusTaskView {
   cronFile?: string;
 }
 
-export function formatCronSchedule(task: {
-  intervalMs?: number;
-  atHour?: number;
-  atMinute?: number;
-}): string {
+export function formatCronSchedule(
+  task: {
+    intervalMs?: number;
+    atHour?: number;
+    atMinute?: number;
+  },
+  opts?: { preciseIntervals?: boolean; dailyPrefix?: boolean },
+): string {
+  const precise = opts?.preciseIntervals === true;
+  const dailyPrefix = opts?.dailyPrefix !== false;
   if (task.intervalMs) {
+    if (precise) {
+      const totalSec = Math.floor(task.intervalMs / 1000);
+      if (totalSec < 60) return `every ${totalSec}s`;
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      if (m < 60) return s > 0 ? `every ${m}m${s}s` : `every ${m}m`;
+      const h = Math.floor(m / 60);
+      const rm = m % 60;
+      return rm > 0 ? `every ${h}h${rm}m` : `every ${h}h`;
+    }
     if (task.intervalMs < 60000) return `every ${Math.round(task.intervalMs / 1000)}s`;
     if (task.intervalMs < 3600000) {
       return `every ${Math.round(task.intervalMs / 60000)}m`;
@@ -43,7 +58,8 @@ export function formatCronSchedule(task: {
     return m > 0 ? `every ${h}h${m}m` : `every ${h}h`;
   }
   if (task.atHour !== undefined && task.atMinute !== undefined) {
-    return `daily at ${String(task.atHour).padStart(2, "0")}:${String(task.atMinute).padStart(2, "0")}`;
+    const time = `${String(task.atHour).padStart(2, "0")}:${String(task.atMinute).padStart(2, "0")}`;
+    return dailyPrefix ? `daily at ${time}` : `at ${time}`;
   }
   return "unknown";
 }

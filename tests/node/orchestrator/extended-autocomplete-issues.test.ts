@@ -4,6 +4,8 @@
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { registerExtendedAutocomplete } from "../../../extensions/orchestrator/extended-autocomplete.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 // Since fetchOpenIssues is internal to registerExtendedAutocomplete,
 // we test the same logic pattern standalone.
@@ -144,5 +146,162 @@ describe("fetchOpenIssues", () => {
     assert.deepEqual(capturedArgs, ["issue", "list", "--state", "open", "--limit", "50", "--json", "number,title"]);
     assert.equal(capturedOpts.cwd, "/my/project");
     assert.equal(capturedOpts.timeout, 10_000);
+  });
+});
+
+describe("/review-status async worktree autocomplete (#1270)", () => {
+  function setupWorktreeAutocomplete(opts?: {
+    execOverride?: (cmd: string, args: string[], execOpts: any) => Promise<{ code: number; stdout: string }>;
+  }) {
+    const commands = new Map<string, any>();
+    let sessionStartHandler: ((ev: any, ctx: any) => void) | undefined;
+    const gitCalls: Array<{ args: string[]; cwd: string }> = [];
+    const defaultPorcelain = [
+      "worktree /repo",
+      "HEAD abc",
+      "",
+      "worktree /repo/.worktrees/feat-a",
+      "HEAD def",
+      "",
+      "worktree /repo/.worktrees/fix-b",
+      "HEAD ghi",
+      "",
+    ].join("\n");
+
+    const mockPi: any = {
+      registerCommand(name: string, cmdOpts: any) {
+        commands.set(name, cmdOpts);
+      },
+      on(event: string, handler: any) {
+        if (event === "session_start") sessionStartHandler = handler;
+      },
+      async exec(cmd: string, args: string[], execOpts: any) {
+        if (cmd === "git") gitCalls.push({ args, cwd: execOpts?.cwd });
+        if (opts?.execOverride) return opts.execOverride(cmd, args, execOpts);
+        if (args.includes("--git-common-dir")) {
+          return { code: 0, stdout: "/repo/.git\n" };
+        }
+        if (args.includes("worktree")) {
+          return { code: 0, stdout: defaultPorcelain };
+        }
+        return { code: 1, stdout: "" };
+      },
+    };
+
+    withSubagentChildEnv(undefined, () => {
+      registerExtendedAutocomplete(mockPi);
+      mockPi.registerCommand("review-status", { description: "status", handler: async () => {} });
+      return undefined;
+    });
+
+    const cmd = commands.get("review-status");
+    assert.ok(cmd?.getArgumentCompletions, "review-status should receive getArgumentCompletions");
+    assert.ok(sessionStartHandler, "session_start handler should be registered");
+    return {
+      complete: (prefix: string) => cmd.getArgumentCompletions(prefix),
+      startSession: (cwd = "/repo", mode: "tui" | "print" = "tui") =>
+        sessionStartHandler!({}, {
+          cwd,
+          mode,
+          ui: { addAutocompleteProvider: () => {} },
+        }),
+      gitCalls,
+    };
+  }
+
+  it("prefetches worktrees on TUI session_start so the first /review-status completion returns results", async () => {
+    const h = setupWorktreeAutocomplete();
+    h.startSession("/repo", "tui");
+    await new Promise((r) => setTimeout(r, 15));
+
+    const first = h.complete("");
+    assert.ok(first, "first completion after TUI session_start should already have prefetched worktrees");
+    assert.equal(first.length, 2);
+  });
+
+  it("skips worktree prefetch on noninteractive session_start", async () => {
+    const h = setupWorktreeAutocomplete();
+    h.startSession("/repo", "print");
+    await new Promise((r) => setTimeout(r, 15));
+
+    assert.equal(h.gitCalls.length, 0);
+  });
+
+  it("populates new session worktrees even when a prior directory fetch is still in flight", async () => {
+    let releaseRepoA!: () => void;
+    const repoABlocked = new Promise<void>((resolve) => { releaseRepoA = resolve; });
+
+    const h = setupWorktreeAutocomplete({
+      execOverride: async (cmd, args, execOpts) => {
+        if (cmd !== "git") return { code: 1, stdout: "" };
+        if (execOpts?.cwd === "/repo-a") {
+          await repoABlocked;
+          if (args.includes("--git-common-dir")) return { code: 0, stdout: "/repo-a/.git\n" };
+          return { code: 0, stdout: "worktree /repo-a\n\nworktree /repo-a/.worktrees/wt-a\n" };
+        }
+        if (args.includes("--git-common-dir")) return { code: 0, stdout: "/repo-b/.git\n" };
+        return { code: 0, stdout: "worktree /repo-b\n\nworktree /repo-b/.worktrees/wt-b\n" };
+      },
+    });
+
+    h.startSession("/repo-a", "tui");
+    // Switch to /repo-b while /repo-a's git call is still pending
+    h.startSession("/repo-b", "tui");
+    await new Promise((r) => setTimeout(r, 15));
+
+    const itemsB = h.complete("");
+    assert.deepEqual(itemsB?.map((i: any) => i.value), [".worktrees/wt-b"]);
+
+    releaseRepoA();
+    await new Promise((r) => setTimeout(r, 15));
+  });
+
+  it("excludes the main repository root from /review-status worktree suggestions", async () => {
+    const h = setupWorktreeAutocomplete();
+    h.startSession("/repo", "tui");
+    await new Promise((r) => setTimeout(r, 15));
+
+    const items = h.complete("");
+    assert.deepEqual(
+      items?.map((i: any) => i.value),
+      [".worktrees/feat-a", ".worktrees/fix-b"],
+    );
+  });
+
+  it("filters cached worktree suggestions by prefix", async () => {
+    const h = setupWorktreeAutocomplete();
+    h.startSession("/repo", "tui");
+    await new Promise((r) => setTimeout(r, 15));
+
+    const filtered = h.complete("fix");
+    assert.deepEqual(filtered?.map((i: any) => i.value), [".worktrees/fix-b"]);
+  });
+
+  it("reuses the worktree cache across repeated completions without re-running git", async () => {
+    const h = setupWorktreeAutocomplete();
+    h.startSession("/repo", "tui");
+    await new Promise((r) => setTimeout(r, 15));
+    const afterPrefetch = h.gitCalls.length;
+
+    h.complete("");
+    h.complete("feat");
+    h.complete("fix");
+    await new Promise((r) => setTimeout(r, 15));
+
+    assert.equal(h.gitCalls.length, afterPrefetch);
+  });
+
+  it("skips registration when PI_SUBAGENT_CHILD=1", () => {
+    let wrapped = false;
+    const mockPi: any = {
+      registerCommand() {},
+      on() { wrapped = true; },
+      exec: async () => ({ code: 0, stdout: "" }),
+    };
+    withSubagentChildEnv("1", () => {
+      registerExtendedAutocomplete(mockPi);
+      return undefined;
+    });
+    assert.equal(wrapped, false);
   });
 });

@@ -37,8 +37,6 @@ const startTokenDeps: StartTokenDeps = { readFileSync: fs.readFileSync, execFile
 const log = createLogger("cron_store");
 const STALE_LOCK_MS = 30_000;
 const leaderOwners = new Map<string, CronLockOwner>();
-const sleepCell = new Int32Array(new SharedArrayBuffer(4));
-function sleep(ms: number) { Atomics.wait(sleepCell, 0, 0, ms); }
 
 /** Return an OS-issued token which changes when a PID is reused, or null when unavailable. */
 export function resolveProcessStartToken(pid: number, deps: StartTokenDeps = startTokenDeps): string | null {

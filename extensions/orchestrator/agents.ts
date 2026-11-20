@@ -16,6 +16,7 @@ import { createLogger } from "../shared/logger.js";
 const log = createLogger("agents");
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PACKAGE_AGENTS_DIR = path.resolve(MODULE_DIR, "..", "..", "agents");
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -45,10 +46,12 @@ interface DirAgentsCacheEntry {
 
 const DIR_AGENTS_CACHE_MAX = 32;
 const dirAgentsCache = new Map<string, DirAgentsCacheEntry>();
+let packageAgentsCache: AgentConfig[] | null = null;
 
 /** Clear cached agent frontmatter reads (tests). */
 export function clearAgentsCache(): void {
 	dirAgentsCache.clear();
+	packageAgentsCache = null;
 }
 
 const INCLUDE_PATTERN = /\{\{INCLUDE:([^}\r\n]+)\}\}/g;
@@ -165,6 +168,11 @@ function resolveAgentIncludes(
 }
 
 function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"): AgentConfig[] {
+	// Bundled package agents are static for the lifetime of the process — avoid 60+ per-call
+	// statSync/realpathSync syscalls on repeated discoverAgents() invocations (cleared via clearAgentsCache).
+	if (source === "package" && packageAgentsCache !== null) {
+		return packageAgentsCache;
+	}
 	const cacheKey = `${source}\0${dir}`;
 	let dirStat: fs.Stats;
 	try {
@@ -288,13 +296,21 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 	}
 
 	if (complete) {
-		if (dirAgentsCache.size >= DIR_AGENTS_CACHE_MAX) {
-			const oldest = dirAgentsCache.keys().next().value;
-			if (oldest !== undefined) dirAgentsCache.delete(oldest);
+		if (source === "package") {
+			packageAgentsCache = agents;
+		} else {
+			if (dirAgentsCache.size >= DIR_AGENTS_CACHE_MAX) {
+				const oldest = dirAgentsCache.keys().next().value;
+				if (oldest !== undefined) dirAgentsCache.delete(oldest);
+			}
+			dirAgentsCache.set(cacheKey, { dirMtimeMs: dirStat.mtimeMs, fileMeta, includeLinks, absentPaths, agents });
 		}
-		dirAgentsCache.set(cacheKey, { dirMtimeMs: dirStat.mtimeMs, fileMeta, includeLinks, absentPaths, agents });
 	} else {
-		dirAgentsCache.delete(cacheKey);
+		if (source === "package") {
+			packageAgentsCache = null;
+		} else {
+			dirAgentsCache.delete(cacheKey);
+		}
 	}
 
 	return agents;
@@ -326,9 +342,7 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
  * and the agents are in ../../agents/ relative to this file.
  */
 function getPackageAgentsDir(): string {
-	const resolvedPath = path.resolve(MODULE_DIR, "..", "..", "agents");
-	log.debug("resolved package agents directory", { path: resolvedPath });
-	return resolvedPath;
+	return PACKAGE_AGENTS_DIR;
 }
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
@@ -356,4 +370,27 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	}
 
 	return { agents: Array.from(agentMap.values()), projectAgentsDir };
+}
+
+/**
+ * Look up a single agent by name while preserving full discovery override precedence
+ * (project > user > package) and mtime/process caching.
+ */
+export function discoverAgentByName(
+	cwd: string,
+	scope: AgentScope,
+	name: string,
+): { agent: AgentConfig | undefined; projectAgentsDir: string | null } {
+	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
+	if (scope !== "user" && projectAgentsDir) {
+		const match = loadAgentsFromDir(projectAgentsDir, "project").find((a) => a.name === name);
+		if (match) return { agent: match, projectAgentsDir };
+	}
+	if (scope !== "project") {
+		const userDir = path.join(getAgentDir(), "agents");
+		const match = loadAgentsFromDir(userDir, "user").find((a) => a.name === name);
+		if (match) return { agent: match, projectAgentsDir };
+	}
+	const pkgMatch = loadAgentsFromDir(getPackageAgentsDir(), "package").find((a) => a.name === name);
+	return { agent: pkgMatch, projectAgentsDir };
 }

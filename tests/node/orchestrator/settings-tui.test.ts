@@ -1,13 +1,18 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
-import { StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
+import { InputSubmenu, PickerSubmenu, StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
 import { SettingsList } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { getSettingsListState } from "../../../extensions/orchestrator/settings-tui.js";
+import {
+  buildCategoryItems,
+  buildSettingItems,
+  getSettingsListState,
+} from "../../../extensions/orchestrator/settings-tui.js";
 import {
   detectSource,
+  loadSettingsSourceSnapshot,
   formatValue,
   parseRawValue,
   readSettingsFile,
@@ -1481,5 +1486,113 @@ describe("StringListSubmenu behavior", () => {
     c.handleInput(UP); // wraps to add row
     const out = render(c);
     assert.match(out, /❯ ＋ add pattern/);
+  });
+});
+
+// ── Snapshot & lazy metadata loading (#1267) ────────────────────────
+
+describe("settings-tui snapshot & lazy metadata (#1267)", () => {
+  const stubTheme = {
+    fg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+  } as any;
+
+  let tmpDir: string;
+  let globalTmp: string;
+
+  beforeEach(() => {
+    clearSettingsCache();
+    tmpDir = makeTempDir("settings-snap-");
+    globalTmp = makeTempDir("settings-snap-global-");
+    setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
+  });
+
+  afterEach(() => {
+    setGlobalSettingsPath(null);
+    clearSettingsCache();
+    rmSync(tmpDir, { recursive: true, force: true });
+    rmSync(globalTmp, { recursive: true, force: true });
+  });
+
+  it("detectSource classifies keys from a preloaded snapshot without re-reading disk", () => {
+    mkdirSync(join(tmpDir, ".pi"), { recursive: true });
+    writeFileSync(join(tmpDir, ".pi", "pi-config-settings.json"), JSON.stringify({ dco: true }), "utf-8");
+    writeFileSync(join(globalTmp, "pi-config-settings.json"), JSON.stringify({ pidash_enable: false }), "utf-8");
+
+    const snapshot = loadSettingsSourceSnapshot(tmpDir);
+    rmSync(join(tmpDir, ".pi", "pi-config-settings.json"));
+    rmSync(join(globalTmp, "pi-config-settings.json"));
+
+    assert.equal(detectSource("dco", SETTINGS_KEYS.dco, tmpDir, snapshot), "P");
+    assert.equal(detectSource("pidash_enable", SETTINGS_KEYS.pidash_enable, tmpDir, snapshot), "G");
+    assert.equal(detectSource("comment_signature", SETTINGS_KEYS.comment_signature, tmpDir, snapshot), "D");
+  });
+
+  it("buildCategoryItems skips provider/agent metadata callbacks on unrelated tabs", () => {
+    const unrelatedIdx = CATEGORIES.findIndex((c) => !c.keys.some((k) =>
+      k === "agent_provider" || k === "internal_operations_provider" ||
+      k === "agent_model" || k === "internal_operations_model" ||
+      k === "image_model" || SETTINGS_KEYS[k]?.type === "agent_overrides"
+    ));
+    assert.ok(unrelatedIdx >= 0, "expected a category without provider/model/agent_overrides keys");
+
+    let metadataInvoked = false;
+    const items = buildCategoryItems(unrelatedIdx, tmpDir, "project", stubTheme, undefined, {
+      getProviderModelInfo: () => { metadataInvoked = true; return { providers: [], models: [] }; },
+      getAvailableAgents: () => { metadataInvoked = true; return []; },
+    });
+    assert.ok(items.length > 0);
+    assert.equal(metadataInvoked, false);
+  });
+
+  it("buildCategoryItems populates agent_overrides submenu from lazy agent callback on the Subagent tab", () => {
+    const subagentIdx = CATEGORIES.findIndex((c) => c.keys.some((k) => SETTINGS_KEYS[k]?.type === "agent_overrides"));
+    assert.ok(subagentIdx >= 0, "expected a category with agent_overrides");
+
+    const items = buildCategoryItems(subagentIdx, tmpDir, "project", stubTheme, undefined, {
+      getProviderModelInfo: () => ({
+        providers: [{ value: "google", label: "google" }],
+        models: [{ value: "gemini-2.5-pro", label: "gemini-2.5-pro", description: "google" }],
+      }),
+      getAvailableAgents: () => ["custom-lazy-agent"],
+    });
+    const overridesItem = items.find((i) => i.id === "agent_overrides");
+    assert.ok(overridesItem?.submenu, "agent_overrides should attach a submenu");
+    const submenu = overridesItem.submenu!("", () => {});
+    assert.match(submenu.render(100).join("\n"), /custom-lazy-agent/);
+  });
+
+  it("buildCategoryItems reflects newly added registry models on subsequent rebuilds", () => {
+    const subagentIdx = CATEGORIES.findIndex((c) => c.keys.includes("agent_provider"));
+    assert.ok(subagentIdx >= 0);
+
+    let models: Array<{ id: string; provider: string }> = [];
+    const dynamicRegistry = { getAvailable: () => models } as any;
+
+    const first = buildCategoryItems(subagentIdx, tmpDir, "project", stubTheme, dynamicRegistry);
+    const firstProviderItem = first.find((i) => i.id === "agent_provider");
+    assert.ok(firstProviderItem?.submenu);
+    const firstSub = firstProviderItem.submenu!("", () => {});
+    assert.ok(firstSub instanceof InputSubmenu, "empty registry should fall back to free-text InputSubmenu");
+
+    models = [{ id: "gemini-2.5-pro", provider: "google" }];
+    const second = buildCategoryItems(subagentIdx, tmpDir, "project", stubTheme, dynamicRegistry);
+    const secondProviderItem = second.find((i) => i.id === "agent_provider");
+    assert.ok(secondProviderItem?.submenu);
+    const secondSub = secondProviderItem.submenu!("", () => {});
+    assert.ok(secondSub instanceof PickerSubmenu, "populated registry should attach PickerSubmenu on rebuild");
+  });
+
+  it("buildSettingItems queries modelRegistry.getAvailable once across all categories", () => {
+    let getAvailableCalls = 0;
+    const fakeRegistry = {
+      getAvailable: () => {
+        getAvailableCalls++;
+        return [{ id: "gemini-2.5-pro", provider: "google" }];
+      },
+    } as any;
+
+    buildSettingItems(tmpDir, "project", stubTheme, fakeRegistry);
+    assert.equal(getAvailableCalls, 1);
   });
 });

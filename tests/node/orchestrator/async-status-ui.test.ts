@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { parseAsyncOutputLine } from "../../../extensions/orchestrator/async-status-parse.ts";
+import { extractAsyncFallbackOutput, parseAsyncOutputLine } from "../../../extensions/orchestrator/async-status-parse.ts";
 import { createIncrementalLogReader } from "../../../extensions/orchestrator/async-status-ui.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -41,6 +41,74 @@ describe("parseAsyncOutputLine", () => {
 
   it("returns null for junk", () => {
     assert.equal(parseAsyncOutputLine("not-json"), null);
+  });
+});
+
+describe("extractAsyncFallbackOutput (#1274)", () => {
+  it("extracts readable text from JSONL tail without raw JSON envelopes", () => {
+    const tail = [
+      '{"truncated_leading_line":',
+      JSON.stringify({ type: "turn_start" }),
+      textDeltaLine("Partial "),
+      textDeltaLine("answer"),
+      JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "git status" } }),
+      JSON.stringify({ type: "tool_execution_end", isError: false, result: { content: [{ text: "clean" }] } }),
+    ].join("\n");
+
+    const out = extractAsyncFallbackOutput(tail);
+    assert.equal(out, "Partial answer\n→ bash git status\n✓ clean");
+    assert.doesNotMatch(out, /assistantMessageEvent/);
+  });
+
+  it("returns empty string without leaking raw envelopes when JSONL has only non-display events", () => {
+    const tail = [
+      JSON.stringify({ type: "turn_start" }),
+      JSON.stringify({ type: "message_start" }),
+      JSON.stringify({ type: "turn_end" }),
+    ].join("\n");
+
+    const out = extractAsyncFallbackOutput(tail);
+    assert.equal(out, "");
+  });
+
+  it("preserves plain-text crash lines mixed with parsed JSONL events", () => {
+    const tail = [
+      JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "pytest" } }),
+      "FatalError: heap out of memory",
+      "    at allocate (runner.js:42)",
+    ].join("\n");
+
+    const out = extractAsyncFallbackOutput(tail);
+    assert.match(out, /→ bash pytest/);
+    assert.match(out, /FatalError: heap out of memory/);
+    assert.match(out, /at allocate \(runner\.js:42\)/);
+  });
+
+  it("extracts pure assistant text deltas with textOnly option ignoring tool annotations", () => {
+    const tail = [
+      JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "git diff" } }),
+      JSON.stringify({ type: "tool_execution_end", isError: false, result: { content: [{ text: "ok" }] } }),
+      textDeltaLine('{"findings":'),
+      textDeltaLine('[]}'),
+      JSON.stringify({ type: "agent_end" }),
+    ].join("\n");
+
+    const out = extractAsyncFallbackOutput(tail, 2000, { textOnly: true });
+    assert.equal(out, '{"findings":[]}');
+    assert.deepEqual(JSON.parse(out), { findings: [] });
+  });
+
+  it("falls back to raw stdoutTail slice for non-JSON crash output", () => {
+    const crash = "Fatal: out of memory\nstack line 1\nstack line 2";
+    assert.equal(extractAsyncFallbackOutput(crash), crash);
+    assert.equal(extractAsyncFallbackOutput(crash, 12), crash.slice(-12));
+  });
+
+  it("truncates long extracted output to maxChars keeping the newest tail", () => {
+    const tail = [textDeltaLine("A".repeat(80)), textDeltaLine("B".repeat(40))].join("\n");
+    const out = extractAsyncFallbackOutput(tail, 50);
+    assert.equal(out.length, 50);
+    assert.equal(out, "A".repeat(10) + "B".repeat(40));
   });
 });
 
