@@ -6,7 +6,6 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createRequire } from "node:module";
 
@@ -78,20 +77,13 @@ import {
   supportsAsyncLlm,
 } from "./async-capability.js";
 import { autoMarkInProgress, autoCompleteTask, resolveTaskStorePath, type AsyncKillOrigin } from "./async-agents.js";
-import { getSetting } from "./project-settings.js";
+import { getSetting, getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
 import { checkSyncLimit } from "./sync-limit.js";
-import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
+import { resolveAgentSystemPrompt } from "./rule-placeholders.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { trailToolsArgs } from "./trail.js";
 import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
-
-const SETTINGS_KEYS_FOR_SUBAGENT = JSON.parse(
-  fs.readFileSync(
-    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"),
-    "utf-8",
-  ),
-);
 
 export { resolveAgentModelProvider, parseModelOverride, checkSyncLimit };
 
@@ -540,15 +532,18 @@ export async function runSingleAgent(
 
   try {
     if (agent.systemPrompt.trim()) {
-      const resolvedPrompt = substituteSettingsPlaceholders(
+      const resolvedPrompt = resolveAgentSystemPrompt(
         agent.systemPrompt,
-        (key) => getSetting(cwd, key as any),
-        Object.keys(SETTINGS_KEYS_FOR_SUBAGENT),
+        (key) => getSettingDynamic(cwd, key),
+        Object.keys(SETTINGS_KEYS),
+        (msg) => log.warn("agent conditional evaluation:", msg),
       );
-      const tmp = await writePromptFile(agent.name, resolvedPrompt, cwd);
-      tmpDir = tmp.dir;
-      tmpFile = tmp.filePath;
-      args.push("--append-system-prompt", tmpFile);
+      if (resolvedPrompt.trim()) {
+        const tmp = await writePromptFile(agent.name, resolvedPrompt, cwd);
+        tmpDir = tmp.dir;
+        tmpFile = tmp.filePath;
+        args.push("--append-system-prompt", tmpFile);
+      }
     }
     args.push(`Task: ${task}`);
 

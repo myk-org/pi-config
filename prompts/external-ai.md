@@ -33,31 +33,22 @@ For other providers (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` inst
 ## Usage
 
 - `/external-ai cursor fix the tests`
-- `/external-ai claude review this code`
-- `/external-ai gemini explain this function`
-- `/external-ai cursor --model gpt-5.4-high review the architecture`
-- `/external-ai cursor --model claude-4.6-opus-max-thinking --fix fix the code`
-- `/external-ai cursor --fix fix the code quality issues`
-- `/external-ai cursor --peer review this code`
-- `/external-ai cursor --model gpt-5.4-xhigh --peer review the architecture`
-- `/external-ai cursor,claude review this code`
+- `/external-ai cursor --model claude-4.6-opus-max-thinking --fix fix the code quality issues`
+- `/external-ai cursor,claude --peer review the architecture`
 - `/external-ai cursor --resume explain the last change`
-- `/external-ai cursor --model gpt-5.4-high --resume continue reviewing`
-- `/external-ai claude --resume what about the edge cases?`
 - `/external-ai review this code` — uses last saved agent from `.pi/external-ai-config.json`
-- `/external-ai --peer review this` — uses last saved peers from `.pi/external-ai-config.json`
 
 ## Workflow
 
 ### Step 1: Parse Arguments
 
-Read the **Raw Arguments** section above. Tokenize by whitespace and parse as follows:
+Read the **Raw Arguments** section above, tokenize by whitespace, and parse in order:
 
-1. **Consume flags** — strip `--fix`, `--peer`, `--resume`, and `--model <value>` from the token stream.
-   `--model` consumes the NEXT token as the model value.
-2. **Detect agent spec** — the next non-flag token is an agent spec if it matches a known provider name
-   or is a comma-separated list of provider names.
-3. **Remainder is the prompt** — everything after the agent spec (or after flags if no agent)
+1. **Consume flags** — strip `--fix`, `--peer`, `--resume`, and `--model <value>` (`--model` consumes the next token as the model value).
+2. **Detect agent spec** — if the next non-flag token matches a known provider (`cursor`, `claude`, `gemini`) or a comma-separated list of known providers,
+   use it as the agent spec. If it looks like an agent spec containing unknown provider names, abort with the unknown provider message below.
+   If not a recognized provider, fall through to saved config.
+3. **Remainder is the prompt** — everything after the agent spec (or after flags if no agent).
 
 **Known providers:** `cursor`, `claude`, `gemini`
 
@@ -67,68 +58,32 @@ For other agents (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` instead
 
 **Flag validation:**
 
-- `--model` takes the next token as its value. If `--model` appears without a value,
-  abort with: "`--model` requires a model name (e.g., `--model gpt-5.4-high`)."
-- `--model` can be combined with any other flag (`--fix`, `--peer`, `--resume`).
-- `--resume` can be combined with `--fix` but NOT with `--peer` (peer mode manages sessions automatically).
-  If `--resume` and `--peer` are both passed, abort with: "`--resume` and `--peer` cannot be used together — peer mode manages sessions automatically."
-- `--fix` and `--peer` are **mutually exclusive**. If both are passed,
-  abort with: "`--fix` and `--peer` cannot be used together."
-- Multiple agents and `--fix` are **mutually exclusive**. If more than one
-  agent is specified with `--fix`, abort with:
-  "`--fix` can only be used with a single agent."
-- If `--fix` appears more than once, abort with: "Duplicate --fix flag."
-- If `--peer` appears more than once, abort with: "Duplicate --peer flag."
-- If `--resume` appears more than once, abort with: "Duplicate --resume flag."
+- `--model` takes the next token as its value; if missing, abort with: "`--model` requires a model name (e.g., `--model gpt-5.4-high`)."
+- `--model` combines with any other flag (`--fix`, `--peer`, `--resume`).
+- `--resume` combines with `--fix` but NOT `--peer` (abort: "`--resume` and `--peer` cannot be used together — peer mode manages sessions automatically.").
+- `--fix` and `--peer` are mutually exclusive (abort: "`--fix` and `--peer` cannot be used together.").
+- Multiple agents and `--fix` are mutually exclusive (abort: "`--fix` can only be used with a single agent.").
+- Duplicate `--fix`, `--peer`, or `--resume` flags → abort with: "Duplicate `<flag>` flag."
 
-**Parsing order:**
+**Resolve provider, model, and prompt (ALL modes):**
 
-1. **Consume leading flags first** — strip any `--fix` or `--peer` from the token stream
-2. **Check if the next token is an agent spec** — a token is an agent spec if:
-   - It matches a known provider name exactly (e.g., `cursor`, `claude`)
-   - OR it's a comma-separated list where ALL parts match known provider names
-3. **If the first non-flag token looks like an agent but contains unknown names**, abort with
-   the unknown provider message above
-4. **If no agent spec found** (first non-flag token is not a recognized provider), fall through
-   to saved config below
+Saved config: `.pi/external-ai-config.json` (`lastAgents` / `lastPeers`). Read via `cat .pi/external-ai-config.json 2>/dev/null`.
 
-**Resolve provider and model (global rule — ALL modes):**
-
-Saved config: `.pi/external-ai-config.json` with `lastAgents` and `lastPeers` fields.
-Read it: `cat .pi/external-ai-config.json 2>/dev/null`.
-
-For any missing piece (provider or model), fill from saved config and confirm:
-
-1. **Provider missing?** Check saved config (`lastAgents` or `lastPeers` depending on mode).
-   If saved config exists, ask: `Last used: SAVED_VALUE. Use this?` (Yes/Change/Cancel).
-   If no saved config, ask: `Select provider:` with options `cursor`, `claude`, `gemini`, `Cancel`.
-   For `--peer` without providers: `Select providers:` with `cursor,claude`, `cursor,gemini`,
-   `claude,gemini`, `cursor,claude,gemini`, `Cancel`.
-2. **Model missing?** For EACH provider without a `--model`, ask:
-   `Select model for PROVIDER:` — run:
-   `uvx myk-pi-tools@latest ai-cli models PROVIDER 2>/dev/null`
-   The command outputs a JSON array to stdout. Parse it directly — do NOT
-   pipe through python or any other tool. Present ALL model IDs from the
-   `id` field as ask_user options. Do NOT filter, subset, or cherry-pick.
-   Add `default (DEFAULT_MODEL)` and `Cancel` at the end.
+1. **Provider missing?** Check `lastAgents` (or `lastPeers` for `--peer`). If saved, ask: `Last used: SAVED_VALUE. Use this?` (`Yes`/`Change`/`Cancel`).
+   Otherwise ask: `Select provider:` (`cursor`, `claude`, `gemini`, `Cancel`) — or for `--peer`:
+   `Select providers:` (`cursor,claude`, `cursor,gemini`, `claude,gemini`, `cursor,claude,gemini`, `Cancel`).
+2. **Model missing?** For EACH provider without `--model`, run `uvx myk-pi-tools@latest ai-cli models PROVIDER 2>/dev/null`
+   (outputs a JSON array; parse directly without piping through another tool), present ALL `id` values as `ask_user` options (no filtering),
+   with `default (DEFAULT_MODEL)` and `Cancel` at the end.
 3. **Prompt missing?** Abort: `No prompt provided.`
 
-The user must always know exactly which provider+model will be used before execution.
-
-**Default model handling:** If no `--model` was specified for a provider,
-you must still pass a model to `ai-cli-runner`. Use these defaults:
+Always pass `--model` to `ai-cli run`: use the `--model` value if specified, otherwise the provider's default:
 
 | Provider | Default model |
 |----------|---------------|
 | `cursor` | `composer-2-fast` |
 | `claude` | `claude-sonnet-4-6` |
 | `gemini` | `gemini-2.5-flash` |
-
-These match each CLI's default behavior. When generating the Python script (Step 4),
-use the default model if none was specified by the user.
-
-When `--model` is specified, use that model.
-When not specified, use the default from the table above.
 
 ### Step 1b: Display Execution Summary
 

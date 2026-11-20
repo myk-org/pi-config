@@ -34,78 +34,41 @@ Sources: GitHub (2,500-repo analysis), Augment Code (measured eval), Blake Crosl
 
 ---
 
-## Required Sections (in this order)
+## Template & Required Sections (in order)
 
-Order matters — front-load highest-ROI content. Commands FIRST.
+Order matters — front-load highest-ROI content (`Commands` FIRST). Use this annotated skeleton:
 
-### 1. Build & Test Commands (HIGHEST ROI)
+````markdown
+# Project Name
 
-```markdown
-## Commands
+Brief one-line description.
+
+## Commands <!-- exact invocations with flags + full-verify one-liner -->
 - Build: `<build command>`
 - Test: `<test command with flags>`
 - Lint: `<lint command with flags>`
 - Type check: `<type check command>`
 - Full verify: `<lint command> && <test command> && <type check command>`
-```
 
-Rules:
-
-- Exact invocations with flags — not just tool names
-- Include the "full verify" one-liner the agent runs before committing
-- Every instruction in the file should answer: "What command proves this was done?"
-
-### 2. Definition of Done
-
-```markdown
-## Definition of Done
+## Definition of Done <!-- specific exit codes, not feelings -->
 A task is complete when ALL pass:
 1. `<lint command>` exits 0
 2. `<test command>` exits 0 with no failures
 3. `<type check command>` exits 0
-4. Changed files staged and committed
-5. Commit message: `type(scope): description`
-```
+4. Changed files staged and committed as `type(scope): description`
 
-Rules:
-
-- Specific exit codes, not feelings
-- Without this, "done" means "I think I'm done" — the #1 agent failure mode
-
-### 3. Escalation Rules
-
-```markdown
-## When Blocked
+## When Blocked <!-- escalation rules; pair every "never" with what to do instead -->
 - Tests fail after 3 attempts → stop, report failing test with full output
-- Missing dependency → check requirements first, then ask
+- Missing dependency → check manifest/requirements first, then ask
 - Merge conflicts → stop, show conflicting files
 - NEVER: delete files to resolve errors, force push, skip tests
-```
 
-Rules:
+## Project <!-- specific versions, key deps, and 1-line structure descriptions -->
+- Stack: <tech with version>, <tech with version>, <build tool>
+- Structure: `src/` (app code), `tests/` (tests), `docs/` (docs)
+- Key deps: <dep> for <purpose>, <dep> for <purpose>
 
-- Without escalation rules, agents improvise destructively when blocked
-- Pair every "never" with what to do instead
-
-### 4. Project Context
-
-```markdown
-## Project
-- Stack: <technology with version>, <technology with version>, <build tool>
-- Structure: `src/` (app code), `tests/` (tests), `docs/` (documentation)
-- Key deps: <dependency> for <purpose>, <dependency> for <purpose>
-```
-
-Rules:
-
-- Specific versions and key dependencies
-- Vague descriptions ("React project") are useless — include versions and key deps
-- File structure with one-line descriptions
-
-### 5. Task-Organized Sections
-
-```markdown
-## When Writing Code
+## When Writing Code <!-- task-organized "When X" sections > flat topic lists -->
 - Run `<lint command>` after every file change
 - Add type hints to all new functions
 - Test: `<test command for specific module>`
@@ -115,31 +78,13 @@ Rules:
 - Verify coverage: `<test command with coverage flag>`
 
 ## When Releasing
-- Update version in `<manifest file>`
-- Run full suite: `<test command> && <lint command> && <type check command>`
-- Tag: `git tag -a v<version> -m "Release v<version>"`
-```
+- Update version in `<manifest file>`, run `<full verify>`, tag `v<version>`
 
-Rules:
-
-- "When X" sections let agents select relevant instructions by task context
-- Flat topic lists force parsing everything regardless of current task
-- Task-organized > topic-organized
-
-### 6. Boundaries
-
-```markdown
-## Boundaries
+## Boundaries <!-- 3 tiers; pair every "don't" with a "do" (15+ bare "don'ts" cause overexploration) -->
 - ✅ Always: run tests before commits, follow naming conventions
 - ⚠️ Ask first: database schema changes, adding dependencies, modifying CI
 - 🚫 Never: commit secrets, edit dependency dirs, force push to main
-```
-
-Rules:
-
-- Three tiers: always do, ask first, never do
-- Pair every "don't" with a "do" — warning-only docs consistently underperform
-- 15+ sequential "don'ts" without "dos" cause agent overexploration
+````
 
 ---
 
@@ -215,52 +160,6 @@ When the agent needs to choose what patterns to include:
 | Windsurf | `.windsurfrules` | Yes (native) |
 
 **Strategy:** Write AGENTS.md as canonical source. Claude Code reads both AGENTS.md and CLAUDE.md natively — use CLAUDE.md for Claude-specific overrides only.
-
----
-
-## Template
-
-````markdown
-# Project Name
-
-Brief one-line description of the project.
-
-## Commands
-- Build: `<build command>`
-- Test: `<test command with flags>`
-- Lint: `<lint command>`
-- Full verify: `<all-in-one verification command>`
-
-## Definition of Done
-A task is complete when ALL pass:
-1. `<lint>` exits 0
-2. `<test>` exits 0
-3. `<type check>` exits 0
-4. Files committed with message: `type(scope): description`
-
-## When Blocked
-- Tests fail after 3 attempts → stop, report with full output
-- Missing dependency → check manifest first, then ask
-- NEVER: delete files to fix errors, force push, skip tests
-
-## Project
-- Stack: <technologies with versions>
-- Structure: `src/` (code), `tests/` (tests), `docs/` (docs)
-
-## When Writing Code
-- <key convention 1>
-- <key convention 2>
-- Test: `<how to run relevant tests>`
-
-## When Reviewing Code
-- <review checklist item 1>
-- <review checklist item 2>
-
-## Boundaries
-- ✅ Always: <what to always do>
-- ⚠️ Ask first: <what needs approval>
-- 🚫 Never: <what to never do>
-````
 
 ---
 

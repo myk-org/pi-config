@@ -49,6 +49,80 @@ export function clearAgentsCache(): void {
 	dirAgentsCache.clear();
 }
 
+const INCLUDE_PATTERN = /\{\{INCLUDE:([^}\r\n]+)\}\}/g;
+const MAX_INCLUDE_DEPTH = 4;
+
+function resolveAgentIncludes(
+	body: string,
+	agentsDir: string,
+	fileMeta: Map<string, { mtimeMs: number; size: number }>,
+	visited: Set<string>,
+	depth = 0,
+): { body: string; complete: boolean } {
+	if (!body.includes("{{INCLUDE:")) {
+		return { body, complete: true };
+	}
+	if (depth >= MAX_INCLUDE_DEPTH) {
+		log.warn("agent include max depth exceeded", { depth });
+		return { body, complete: false };
+	}
+	let resolvedBase: string;
+	try {
+		resolvedBase = fs.realpathSync(agentsDir);
+	} catch {
+		resolvedBase = path.resolve(agentsDir);
+	}
+
+	let complete = true;
+	const resolved = body.replace(new RegExp(INCLUDE_PATTERN.source, "g"), (fullMatch, rawRel: string) => {
+		const rel = rawRel.trim();
+		if (!rel || path.isAbsolute(rel)) {
+			log.warn("agent include rejected non-relative path", { include: rel });
+			complete = false;
+			return fullMatch;
+		}
+		const candidate = path.resolve(resolvedBase, rel);
+		if (candidate !== resolvedBase && !candidate.startsWith(resolvedBase + path.sep)) {
+			log.warn("agent include path escapes agents dir", { include: rel });
+			complete = false;
+			return fullMatch;
+		}
+		let canonical: string;
+		try {
+			canonical = fs.realpathSync(candidate);
+		} catch (e: any) {
+			log.warn("agent include not found", { include: rel, error: e?.message });
+			complete = false;
+			return fullMatch;
+		}
+		if (canonical !== resolvedBase && !canonical.startsWith(resolvedBase + path.sep)) {
+			log.warn("agent include symlink escapes agents dir", { include: rel });
+			complete = false;
+			return fullMatch;
+		}
+		if (visited.has(canonical)) {
+			log.warn("agent include cycle detected", { include: rel });
+			complete = false;
+			return fullMatch;
+		}
+		try {
+			const st = fs.statSync(canonical);
+			const content = fs.readFileSync(canonical, "utf-8");
+			fileMeta.set(canonical, { mtimeMs: st.mtimeMs, size: st.size });
+			const nextVisited = new Set(visited);
+			nextVisited.add(canonical);
+			const nested = resolveAgentIncludes(content.trimEnd(), agentsDir, fileMeta, nextVisited, depth + 1);
+			if (!nested.complete) complete = false;
+			return nested.body;
+		} catch (e: any) {
+			log.warn("agent include read failed", { include: rel, error: e?.message });
+			complete = false;
+			return fullMatch;
+		}
+	});
+	return { body: resolved, complete };
+}
+
 function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"): AgentConfig[] {
 	const cacheKey = `${source}\0${dir}`;
 	let dirStat: fs.Stats;
@@ -98,13 +172,16 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 	}
 
 	for (const entry of entries) {
+		if (entry.name.startsWith("_")) continue;
 		if (!entry.name.endsWith(".md")) continue;
 		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
 
 		const filePath = path.join(dir, entry.name);
 		let content: string;
+		let canonicalPath: string;
 		try {
 			const st = fs.statSync(filePath);
+			canonicalPath = fs.realpathSync(filePath);
 			content = fs.readFileSync(filePath, "utf-8");
 			fileMeta.set(filePath, { mtimeMs: st.mtimeMs, size: st.size });
 		} catch {
@@ -115,6 +192,9 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 		const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
 
 		if (!frontmatter.name || !frontmatter.description) continue;
+
+		const included = resolveAgentIncludes(body, dir, fileMeta, new Set([canonicalPath]));
+		if (!included.complete) complete = false;
 
 		const tools = frontmatter.tools
 			?.split(",")
@@ -127,7 +207,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 			tools: tools && tools.length > 0 ? tools : undefined,
 			model: typeof frontmatter.model === "string" ? frontmatter.model.trim() || undefined : undefined,
 			provider: typeof frontmatter.provider === "string" ? frontmatter.provider.trim() || undefined : undefined,
-			systemPrompt: body,
+			systemPrompt: included.body,
 			source,
 			filePath,
 		});

@@ -53,19 +53,12 @@ fails. Use `coms_list` for connected peers.
 
 | Action | Tool |
 |--------|------|
-| List peers | `coms_list` |
-| Send message | `coms_send` |
+| List connected peers | `coms_list` |
+| Send message / structured tasks | `coms_send` |
 | Poll for response | `coms_get` |
-| Clear your queued msgs | `coms_queue_clear` |
-| Delete queued msg | `coms_queue_delete` |
-| Edit queued msg | `coms_queue_edit` |
-| Prioritize queued msg | `coms_queue_prioritize` |
+| Clear / delete / edit / prioritize your queued msgs | `coms_queue_clear` / `coms_queue_delete` / `coms_queue_edit` / `coms_queue_prioritize` |
 | View local queue | `/coms-queue` |
-| Create task on peer | `coms_tasks_create` |
-| Delete task on peer | `coms_task_delete` |
-| List peer's tasks | `coms_task_list` |
-| Get peer's task | `coms_task_get` |
-| Update task on peer | `coms_task_update` |
+| Create / update / delete / list / get peer tasks | `coms_tasks_create` / `coms_task_update` / `coms_task_delete` / `coms_task_list` / `coms_task_get` |
 
 ## Inbound Messages — How to Reply
 
@@ -95,28 +88,13 @@ coms_send(target="peer", prompt="Updated instructions", clearPrevious=true)
 
 This clears all YOUR pending (unprocessed) messages from the peer's queue before delivering the new one. Use when previous messages are outdated.
 
-### Manual queue operations
+**Queue Rules:**
 
-| Action | Tool |
-|--------|------|
-| Clear all your pending | `coms_queue_clear(target)` |
-| Delete specific message | `coms_queue_delete(target, msg_id)` |
-| Edit queued message | `coms_queue_edit(target, msg_id, new_content)` |
-| Move to front | `coms_queue_prioritize(target, msg_id)` |
-
-**Rules:**
-
-- You can only manage YOUR OWN messages in a peer's queue
-- Cannot touch messages from other senders
-- Cannot touch the message currently being processed
+- You can only manage YOUR OWN pending messages (never other senders' or the currently processing message)
 - `msg_id` is returned by `coms_send` — track it to manage later
 - Use `clearPrevious` when sending corrections — it's the most common pattern
-
-**Note:** Queue management operations (`coms_queue_edit`, `coms_queue_delete`,
-`coms_queue_prioritize`) are fire-and-forget — they receive transport-level
-acknowledgement but do not confirm whether the target actually applied the change.
-A dequeue race, not-found `msg_id`, or ownership mismatch can cause silent no-ops.
-Callers should not assume success without verifying via subsequent responses.
+- `coms_queue_edit`, `coms_queue_delete`, and `coms_queue_prioritize` are fire-and-forget (transport ack only;
+  dequeue races, missing `msg_id`, or ownership mismatches can silently no-op — verify via subsequent responses)
 
 ## Structured Task Delegation
 
@@ -139,24 +117,5 @@ coms_send(target="coder", prompt="Implement these features", tasks=[
 
 ## Remote Task Management
 
-Manage tasks on peer sessions directly — no message sent, no peer notification:
-
-| Tool | Description |
-|------|-------------|
-| `coms_tasks_create` | Create a task on peer's session (with coms_origin tracking) |
-| `coms_task_update` | Update a task YOU created on peer's session |
-| `coms_task_delete` | Delete a task YOU created on peer's session |
-| `coms_task_list` | List all tasks on peer's session |
-| `coms_task_get` | Get a specific task from peer's session |
-
-Ownership: update/delete only work on tasks with matching `coms_origin` — you can only modify tasks you created.
-
-Tasks are written directly to the peer's task store file. The peer's fs.watch detects the change and updates their task widget instantly.
-
-## Key Rules
-
-1. **Responses auto-deliver** — after send, end your turn; the reply arrives as a followUp
-2. **Never call send tools to reply** to inbound messages — your assistant text is the reply
-3. **Always check peers first** — use list tools before sending
-4. **Messages are never lost** — busy peers queue messages in FIFO order
-5. **Use tasks for structured work** — use `tasks` parameter instead of prose lists
+`coms_task_update` and `coms_task_delete` only work on tasks with matching `coms_origin` — you can only modify tasks you created.
+Tasks write directly to the peer's task store file, and the peer's `fs.watch` updates their task widget instantly (no message sent, no notification).

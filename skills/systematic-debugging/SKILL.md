@@ -288,22 +288,11 @@ If you catch yourself thinking:
 - **"One more fix attempt" (when already tried 2+)**
 - **Each fix reveals a new problem in a different place**
 
-**ALL of these mean: STOP. Return to Phase 1.**
+**ALL of these mean: STOP. Return to Phase 1.** (If 3+ fixes failed: question the architecture per Phase 4 step 5.)
 
-**If 3+ fixes failed:** Question the architecture (Phase 4 step 5).
-
-## Common Rationalizations
-
-| Excuse | Reality |
-| ------ | ------- |
-| "Issue is simple, don't need process" | Simple issues have root causes too. Process is fast for simple bugs. |
-| "Emergency, no time for process" | Systematic debugging is FASTER than guess-and-check thrashing. |
-| "Just try this first, then investigate" | First fix sets the pattern. Do it right from the start. |
-| "I'll write test after confirming fix works" | Untested fixes don't stick. Test first proves it. |
-| "Multiple fixes at once saves time" | Can't isolate what worked. Causes new bugs. |
-| "Reference too long, I'll adapt the pattern" | Partial understanding guarantees bugs. Read it completely. |
-| "I see the problem, let me fix it" | Seeing symptoms ≠ understanding root cause. |
-| "One more fix attempt" (after 2+ failures) | 3+ failures = architectural problem. Question the pattern, don't fix again. |
+Reject rationalizations: simple bugs still have root causes; systematic investigation is faster than guess-and-check thrashing;
+read reference implementations completely; change one variable at a time; write the test first so fixes stick;
+after 2+ failures, question the architecture rather than trying one more fix.
 
 ## Quick Reference
 
@@ -334,20 +323,6 @@ The orchestrator delegates the actual fix to the appropriate language specialist
 
 ### With test-driven-development
 
-When fixing bugs:
+When fixing bugs: write a failing test reproducing the bug (RED), debug systematically to find the root cause, and fix the root cause (GREEN).
 
-1. Write a test that reproduces the bug (RED)
-2. Debug systematically to find root cause
-3. Fix the root cause (GREEN)
-4. The test proves the fix and prevents regression
-
-## Real-World Impact
-
-From debugging sessions:
-
-- Systematic approach: 15-30 minutes to fix
-- Random fixes approach: 2-3 hours of thrashing
-- First-time fix rate: 95% vs 40%
-- New bugs introduced: Near zero vs common
-
-**No shortcuts. No guessing. Systematic always wins.**
+**No shortcuts. No guessing. Systematic debugging avoids multi-hour thrashing and prevents regressions.**

@@ -242,6 +242,20 @@ export function collapseBlankLinesBetweenTableRows(text: string): string {
 }
 
 /**
+ * Evaluate conditional blocks (`{{IF:...}}` / `{{IFNOT:...}}`) before
+ * substituting `{{SETTINGS:...}}` placeholders in an agent system prompt.
+ */
+export function resolveAgentSystemPrompt(
+  text: string,
+  resolve: (key: string) => unknown,
+  knownKeys: string[],
+  onWarn?: (msg: string) => void,
+): string {
+  const evaluated = evaluateConditionalBlocks(text, resolve, { knownKeys, onWarn });
+  return substituteSettingsPlaceholders(evaluated, resolve, knownKeys);
+}
+
+/**
  * Evaluate `{{IF:key}}...{{/IF}}` / `{{IFNOT:key}}...{{/IFNOT}}` blocks
  * (including `key==value` / `key!=value`). Nesting supported.
  * Malformed/unbalanced markers: leave text as-is and warn — never throw.
