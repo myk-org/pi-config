@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
+
+from myk_pi_tools.logger import create_logger
+from myk_pi_tools.release._common import check_dependencies, run_subprocess
+
+log = create_logger(__name__)
+_VALID_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 
 @dataclass
@@ -117,29 +121,16 @@ class ReleaseInfo:
 
 def _run_command(cmd: list[str], capture_stderr: bool = False, timeout: int = 60) -> tuple[int, str]:
     """Run a command and return exit code and output."""
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-        output = result.stdout.strip()
-        if capture_stderr and result.returncode != 0:
-            output = result.stderr.strip()
-        return result.returncode, output
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    code, stdout, stderr, err_kind = run_subprocess(cmd, timeout=timeout)
+    if err_kind is not None:
         return 1, ""
+    output = stderr if (capture_stderr and code != 0) else stdout
+    return code, output
 
 
 def _check_dependencies() -> list[str]:
     """Check for required dependencies."""
-    missing = []
-    for cmd in ["gh", "git"]:
-        if shutil.which(cmd) is None:
-            missing.append(cmd)
-    return missing
+    return check_dependencies(("gh", "git"))
 
 
 def _detect_repo(repo: str | None) -> str | None:
@@ -159,10 +150,40 @@ def _get_current_branch() -> str:
     return output if code == 0 else ""
 
 
-def _get_default_branch() -> str:
+def _get_default_branch(repo: str | None = None) -> str:
     """Get the default branch from GitHub."""
-    code, output = _run_command(["gh", "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])
+    cmd = ["gh", "repo", "view"]
+    if repo and _VALID_REPO_RE.match(repo):
+        cmd.append(repo)
+    cmd.extend(["--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])
+    code, output = _run_command(cmd)
     return output if code == 0 and output else "main"
+
+
+def _get_repo_and_default_branch(repo: str | None) -> tuple[str | None, str]:
+    """Fetch ``(owner/repo, default_branch)`` in one ``gh repo view`` call when ``repo`` is omitted."""
+    if repo:
+        return repo, _get_default_branch(repo)
+
+    code, output = _run_command(["gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef"])
+    if code != 0 or not output:
+        log.debug("gh repo view failed (code=%d) while detecting repo and default branch", code)
+        return None, "main"
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError as exc:
+        log.warning("Invalid JSON from gh repo view: %s", exc)
+        return None, "main"
+    if not isinstance(data, dict):
+        log.warning("Unexpected payload type from gh repo view: %s", type(data).__name__)
+        return None, "main"
+    name_with_owner = data.get("nameWithOwner")
+    detected_repo = name_with_owner if isinstance(name_with_owner, str) and name_with_owner else None
+    default_ref = data.get("defaultBranchRef")
+    branch = default_ref.get("name") if isinstance(default_ref, dict) else None
+    default_branch = branch if isinstance(branch, str) and branch else "main"
+    log.debug("Detected repo=%s default_branch=%s", detected_repo, default_branch)
+    return detected_repo, default_branch
 
 
 def _get_last_tag(tag_match: str | None = None) -> str | None:
@@ -262,23 +283,21 @@ def _perform_validations(default_branch: str, current_branch: str, target_branch
         unpushed_commits = 0
         behind_remote = 0
     else:
-        # Check for unpushed commits
-        _, unpushed_output = _run_command([
+        # Compute behind (left) and unpushed (right) counts in a single walk
+        rev_code, counts_output = _run_command([
             "git",
             "rev-list",
-            f"origin/{effective_target}..{effective_target}",
+            "--left-right",
             "--count",
+            f"origin/{effective_target}...{effective_target}",
         ])
-        unpushed_commits = int(unpushed_output) if unpushed_output.isdigit() else 0
-
-        # Check if behind remote
-        _, behind_output = _run_command([
-            "git",
-            "rev-list",
-            f"{effective_target}..origin/{effective_target}",
-            "--count",
-        ])
-        behind_remote = int(behind_output) if behind_output.isdigit() else 0
+        behind_remote = 0
+        unpushed_commits = 0
+        if rev_code == 0 and counts_output:
+            count_parts = counts_output.split()
+            if len(count_parts) == 2 and count_parts[0].isdigit() and count_parts[1].isdigit():
+                behind_remote = int(count_parts[0])
+                unpushed_commits = int(count_parts[1])
 
         synced_with_remote = unpushed_commits == 0 and behind_remote == 0
 
@@ -380,8 +399,8 @@ def get_release_info(repo: str | None = None, target: str | None = None, tag_mat
 
     print("Detecting repository...", file=sys.stderr)
 
-    # Detect repository
-    full_repo = _detect_repo(repo)
+    # Detect repository and default branch in one gh call when --repo is omitted
+    full_repo, default_branch = _get_repo_and_default_branch(repo)
     if not full_repo:
         raise RuntimeError("Could not determine repository. Use --repo owner/repo or run from a git repository.")
 
@@ -394,7 +413,6 @@ def get_release_info(repo: str | None = None, target: str | None = None, tag_mat
 
     # Get branch info
     current_branch = _get_current_branch()
-    default_branch = _get_default_branch()
 
     # Auto-detect version branch if no explicit target
     effective_target = target

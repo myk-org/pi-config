@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from myk_pi_tools.logger import create_logger
+from myk_pi_tools.release._common import RELEASE_TAG_RE, check_dependencies, run_command
+
+log = create_logger(__name__)
 
 
 @dataclass
@@ -43,28 +46,12 @@ class ReleaseResult:
 
 def _run_command(cmd: list[str], timeout: int = 60) -> tuple[int, str, str]:
     """Run a command and return exit code, stdout, and stderr."""
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
-    except FileNotFoundError:
-        return 1, "", f"Command not found: {cmd[0]}"
-    except subprocess.TimeoutExpired:
-        return 1, "", f"Command timed out after {timeout} seconds"
+    return run_command(cmd, timeout=timeout)
 
 
 def _check_dependencies() -> list[str]:
     """Check for required dependencies."""
-    missing = []
-    for cmd in ["gh"]:
-        if shutil.which(cmd) is None:
-            missing.append(cmd)
-    return missing
+    return check_dependencies(("gh",))
 
 
 def _validate_repo_format(repo: str) -> bool:
@@ -75,8 +62,7 @@ def _validate_repo_format(repo: str) -> bool:
 
 def _is_semver_tag(tag: str) -> bool:
     """Check vX.Y.Z tags and per-package ``name@X.Y.Z`` tags (issue #965)."""
-    pattern = r"^(v[0-9]+\.[0-9]+\.[0-9]+|[A-Za-z0-9._-]+@[0-9]+\.[0-9]+\.[0-9]+)(-[a-zA-Z0-9.]+)?$"
-    return bool(re.match(pattern, tag))
+    return bool(RELEASE_TAG_RE.match(tag))
 
 
 def _extract_release_url(gh_output: str, repo: str, tag: str) -> str:
@@ -172,6 +158,7 @@ def create_release(
 
     if exit_code != 0:
         error_msg = stderr if stderr else stdout
+        log.error("gh release create failed for %s (%s): %s", owner_repo, tag, error_msg)
         return ReleaseResult(
             status="failed",
             error=f"gh release create failed: {error_msg}",
@@ -180,6 +167,7 @@ def create_release(
     # Extract URL from output
     combined_output = f"{stdout}\n{stderr}"
     release_url = _extract_release_url(combined_output, owner_repo, tag)
+    log.info("Created release %s for %s: %s", tag, owner_repo, release_url)
     print(f"Release created: {release_url}", file=sys.stderr)
 
     return ReleaseResult(

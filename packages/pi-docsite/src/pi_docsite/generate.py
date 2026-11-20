@@ -27,10 +27,6 @@ from typing import Any
 
 from pi_docsite import renderer
 
-# Package-relative. Deliberately NOT used as the default docs location: in a
-# checkout this is src/, and when installed it is site-packages/, so a
-# package-relative default would write the site into the package itself.
-REPO_ROOT = Path(__file__).resolve().parent.parent
 # The default follows the caller's working directory -- the invoking project's
 # docs/ -- not the installed package location.
 DOCS_DIR = Path.cwd() / "docs"
@@ -351,7 +347,6 @@ def _project_name_from_url(url: str, docs_dir: Path) -> str:
 
 
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
-_FENCE_RE = re.compile(r"^(`{3,}|~{3,})(.*)$")
 
 
 def _h1(markdown_text: str, slug: str) -> str:
@@ -361,18 +356,8 @@ def _h1(markdown_text: str, slug: str) -> str:
     search finds several hits; only headings outside fences are real.
     """
     titles: list[str] = []
-    fence: str | None = None
-    for line in markdown_text.splitlines():
-        stripped = line.lstrip()
-        fence_match = _FENCE_RE.match(stripped)
-        if fence_match:
-            marker = fence_match.group(1)
-            if fence is None:
-                fence = marker
-            elif marker[0] == fence[0] and len(marker) >= len(fence) and not fence_match.group(2).strip():
-                fence = None
-            continue
-        if fence is None:
+    for line, state, _marker in renderer._iter_with_fence_state(markdown_text.splitlines()):  # noqa: SLF001
+        if state == "outside":
             match = _H1_RE.match(line)
             if match:
                 titles.append(match.group(1))
@@ -599,11 +584,12 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             return False
 
-    def _write(name: str, text: str) -> None:
+    def _write(name: str, text: str, *, normalized: bool = False) -> None:
         # The committed site is hook-clean (no trailing whitespace, exactly one
         # final newline), so normalise here instead of letting the pre-commit
         # fixers rewrite generated files on every run.
-        text = "\n".join(line.rstrip() for line in text.split("\n")).rstrip("\n") + "\n"
+        if not normalized:
+            text = "\n".join(line.rstrip() for line in text.split("\n")).rstrip("\n") + "\n"
         if name.endswith(".html") and GENERATED_MARKER not in text:
             text = text.replace("</body>", f"<!-- {GENERATED_MARKER} -->\n</body>", 1)
         (DOCS_DIR / name).write_text(text, encoding="utf-8")
@@ -653,11 +639,15 @@ def main(argv: list[str] | None = None) -> int:
     # Both AI-readable indexes drop generation-failure stubs. The rendered HTML
     # and search-index.json keep every page: a stub still has a link to follow.
     ai_navigation = [
-        {**group, "pages": [p for p in group["pages"] if not _is_generation_failure_stub(pages[p["slug"]])]}
+        {**group, "pages": [p for p in group["pages"] if not _is_generation_failure_stub(search_pages[p["slug"]])]}
         for group in navigation
     ]
     _write("llms.txt", renderer._build_llms_txt(plan, ai_navigation))  # noqa: SLF001
-    _write("llms-full.txt", renderer._build_llms_full_txt(plan, pages, ai_navigation))  # noqa: SLF001
+    _write(
+        "llms-full.txt",
+        renderer._build_llms_full_txt(plan, search_pages, ai_navigation, strip_trailing=True),  # noqa: SLF001
+        normalized=True,
+    )
 
     # Drop HTML for pages that are no longer in the navigation (renamed or
     # removed markdown). glob() is non-recursive, so docs/assets/ is untouched,

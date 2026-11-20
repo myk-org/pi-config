@@ -12,6 +12,7 @@ from pi_docsite.renderer.renderer import (
     _build_llms_full_txt,
     _build_llms_txt,
     _build_search_index,
+    _iter_with_fence_state,
     render_index,
     render_page,
 )
@@ -26,4 +27,5 @@ __all__ = [
     "_build_llms_full_txt",
     "_build_search_index",
     "_FAILURE_STUB_RE",
+    "_iter_with_fence_state",
 ]
