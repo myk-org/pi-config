@@ -150,7 +150,9 @@ describe("fetchOpenIssues", () => {
 });
 
 describe("/review-status async worktree autocomplete (#1270)", () => {
-  function setupWorktreeAutocomplete(porcelain?: string) {
+  function setupWorktreeAutocomplete(opts?: {
+    execOverride?: (cmd: string, args: string[], execOpts: any) => Promise<{ code: number; stdout: string }>;
+  }) {
     const commands = new Map<string, any>();
     let sessionStartHandler: ((ev: any, ctx: any) => void) | undefined;
     const gitCalls: Array<{ args: string[]; cwd: string }> = [];
@@ -167,19 +169,20 @@ describe("/review-status async worktree autocomplete (#1270)", () => {
     ].join("\n");
 
     const mockPi: any = {
-      registerCommand(name: string, opts: any) {
-        commands.set(name, opts);
+      registerCommand(name: string, cmdOpts: any) {
+        commands.set(name, cmdOpts);
       },
       on(event: string, handler: any) {
         if (event === "session_start") sessionStartHandler = handler;
       },
-      async exec(cmd: string, args: string[], opts: any) {
-        if (cmd === "git") gitCalls.push({ args, cwd: opts?.cwd });
+      async exec(cmd: string, args: string[], execOpts: any) {
+        if (cmd === "git") gitCalls.push({ args, cwd: execOpts?.cwd });
+        if (opts?.execOverride) return opts.execOverride(cmd, args, execOpts);
         if (args.includes("--git-common-dir")) {
           return { code: 0, stdout: "/repo/.git\n" };
         }
         if (args.includes("worktree")) {
-          return { code: 0, stdout: porcelain ?? defaultPorcelain };
+          return { code: 0, stdout: defaultPorcelain };
         }
         return { code: 1, stdout: "" };
       },
@@ -196,24 +199,66 @@ describe("/review-status async worktree autocomplete (#1270)", () => {
     assert.ok(sessionStartHandler, "session_start handler should be registered");
     return {
       complete: (prefix: string) => cmd.getArgumentCompletions(prefix),
-      startSession: (cwd = "/repo") => sessionStartHandler!({}, { cwd, mode: "print" }),
+      startSession: (cwd = "/repo", mode: "tui" | "print" = "tui") =>
+        sessionStartHandler!({}, {
+          cwd,
+          mode,
+          ui: { addAutocompleteProvider: () => {} },
+        }),
       gitCalls,
     };
   }
 
-  it("prefetches worktrees on session_start so the first /review-status completion returns results", async () => {
+  it("prefetches worktrees on TUI session_start so the first /review-status completion returns results", async () => {
     const h = setupWorktreeAutocomplete();
-    h.startSession("/repo");
+    h.startSession("/repo", "tui");
     await new Promise((r) => setTimeout(r, 15));
 
     const first = h.complete("");
-    assert.ok(first, "first completion after session_start should already have prefetched worktrees");
+    assert.ok(first, "first completion after TUI session_start should already have prefetched worktrees");
     assert.equal(first.length, 2);
+  });
+
+  it("skips worktree prefetch on noninteractive session_start", async () => {
+    const h = setupWorktreeAutocomplete();
+    h.startSession("/repo", "print");
+    await new Promise((r) => setTimeout(r, 15));
+
+    assert.equal(h.gitCalls.length, 0);
+  });
+
+  it("populates new session worktrees even when a prior directory fetch is still in flight", async () => {
+    let releaseRepoA!: () => void;
+    const repoABlocked = new Promise<void>((resolve) => { releaseRepoA = resolve; });
+
+    const h = setupWorktreeAutocomplete({
+      execOverride: async (cmd, args, execOpts) => {
+        if (cmd !== "git") return { code: 1, stdout: "" };
+        if (execOpts?.cwd === "/repo-a") {
+          await repoABlocked;
+          if (args.includes("--git-common-dir")) return { code: 0, stdout: "/repo-a/.git\n" };
+          return { code: 0, stdout: "worktree /repo-a\n\nworktree /repo-a/.worktrees/wt-a\n" };
+        }
+        if (args.includes("--git-common-dir")) return { code: 0, stdout: "/repo-b/.git\n" };
+        return { code: 0, stdout: "worktree /repo-b\n\nworktree /repo-b/.worktrees/wt-b\n" };
+      },
+    });
+
+    h.startSession("/repo-a", "tui");
+    // Switch to /repo-b while /repo-a's git call is still pending
+    h.startSession("/repo-b", "tui");
+    await new Promise((r) => setTimeout(r, 15));
+
+    const itemsB = h.complete("");
+    assert.deepEqual(itemsB?.map((i: any) => i.value), [".worktrees/wt-b"]);
+
+    releaseRepoA();
+    await new Promise((r) => setTimeout(r, 15));
   });
 
   it("excludes the main repository root from /review-status worktree suggestions", async () => {
     const h = setupWorktreeAutocomplete();
-    h.startSession("/repo");
+    h.startSession("/repo", "tui");
     await new Promise((r) => setTimeout(r, 15));
 
     const items = h.complete("");
@@ -225,7 +270,7 @@ describe("/review-status async worktree autocomplete (#1270)", () => {
 
   it("filters cached worktree suggestions by prefix", async () => {
     const h = setupWorktreeAutocomplete();
-    h.startSession("/repo");
+    h.startSession("/repo", "tui");
     await new Promise((r) => setTimeout(r, 15));
 
     const filtered = h.complete("fix");
@@ -234,7 +279,7 @@ describe("/review-status async worktree autocomplete (#1270)", () => {
 
   it("reuses the worktree cache across repeated completions without re-running git", async () => {
     const h = setupWorktreeAutocomplete();
-    h.startSession("/repo");
+    h.startSession("/repo", "tui");
     await new Promise((r) => setTimeout(r, 15));
     const afterPrefetch = h.gitCalls.length;
 

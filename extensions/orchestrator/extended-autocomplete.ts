@@ -112,8 +112,7 @@ interface AutocompleteContext {
   issueCache: Cache<AutocompleteItem[]>;
   branchCache: Cache<AutocompleteItem[]>;
   tagCache: Cache<AutocompleteItem[]>;
-  worktreeCache: Cache<AutocompleteItem[]>;
-  worktreeCwd: string;
+  worktreeCaches: Map<string, Cache<AutocompleteItem[]>>;
   modelCaches: Map<string, Cache<AutocompleteItem[]>>;
   lastCwd: string;
   fetchOpenPRs(cwd: string): Promise<void>;
@@ -276,8 +275,9 @@ function registerCompletions(
 
     "review-status": (prefix: string) => {
       void ctx.fetchWorktrees(ctx.lastCwd);
-      if (ctx.worktreeCwd !== ctx.lastCwd || !ctx.worktreeCache.data) return null;
-      return filter(ctx.worktreeCache.data, prefix);
+      const cache = ctx.worktreeCaches.get(ctx.lastCwd);
+      if (!cache?.data) return null;
+      return filter(cache.data, prefix);
     },
 
 
@@ -379,8 +379,6 @@ function setupPromptTemplateInterceptor(
 
   pi.on("session_start", (_event, sessionCtx) => {
     ctx.lastCwd = sessionCtx.cwd;
-    // Warm the worktree cache in the background so the first /review-status Tab has suggestions ready.
-    void ctx.fetchWorktrees(sessionCtx.cwd);
 
     // Pre-fetch AI CLI models once on first start (not on /new)
     if (!modelsPrefetched) {
@@ -391,6 +389,9 @@ function setupPromptTemplateInterceptor(
     }
 
     if (sessionCtx.mode !== "tui") return;
+
+    // Warm the worktree cache in interactive TUI sessions so the first /review-status Tab has suggestions ready.
+    void ctx.fetchWorktrees(sessionCtx.cwd);
 
     sessionCtx.ui.addAutocompleteProvider((current: AutocompleteProvider) => ({
       async getSuggestions(
@@ -481,8 +482,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   ctx.issueCache = createCache<AutocompleteItem[]>();
   ctx.branchCache = createCache<AutocompleteItem[]>();
   ctx.tagCache = createCache<AutocompleteItem[]>();
-  ctx.worktreeCache = createCache<AutocompleteItem[]>();
-  ctx.worktreeCwd = "";
+  ctx.worktreeCaches = new Map<string, Cache<AutocompleteItem[]>>();
   ctx.modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
   ctx.lastCwd = "";
 
@@ -623,9 +623,13 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
   ctx.fetchWorktrees = async (cwd: string) => {
     if (!cwd) return;
-    if (ctx.worktreeCwd === cwd && isFresh(ctx.worktreeCache)) return;
-    if (ctx.worktreeCache.loading) return;
-    ctx.worktreeCache.loading = true;
+    let cache = ctx.worktreeCaches.get(cwd);
+    if (!cache) {
+      cache = createCache<AutocompleteItem[]>();
+      ctx.worktreeCaches.set(cwd, cache);
+    }
+    if (isFresh(cache) || cache.loading) return;
+    cache.loading = true;
     try {
       // Use --git-common-dir to find the shared repo root (not worktree root) so
       // the main repo is excluded even when cwd is inside a linked worktree.
@@ -649,15 +653,14 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
             const relative = path.relative(cwd, wtPath);
             worktrees.push({ value: relative, label: relative, description: `Worktree: ${wtPath}` });
           }
-          ctx.worktreeCache.data = worktrees;
-          ctx.worktreeCache.timestamp = Date.now();
-          ctx.worktreeCwd = cwd;
+          cache.data = worktrees;
+          cache.timestamp = Date.now();
         }
       }
     } catch (e: any) {
       log.debug("worktree fetch failed", { error: e?.message || String(e) });
     }
-    ctx.worktreeCache.loading = false;
+    cache.loading = false;
   };
 
   const completions = registerCompletions(pi, ctx);

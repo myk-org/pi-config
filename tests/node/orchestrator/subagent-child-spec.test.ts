@@ -16,6 +16,7 @@ import {
 } from "../../../extensions/orchestrator/project-settings.js";
 import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
 import { registerStatus } from "../../../extensions/orchestrator/status.js";
+import { formatCronSchedule } from "../../../extensions/orchestrator/cron-status-format.js";
 import { formatElapsedDuration } from "../../../extensions/orchestrator/utils.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
@@ -351,6 +352,22 @@ describe("formatElapsedDuration & /status formatting (#1288)", () => {
     assert.equal(formatElapsedDuration(45_000), "45s");
     assert.equal(formatElapsedDuration(192_000), "3m12s");
     assert.equal(formatElapsedDuration(3_900_000), "1h5m");
+  });
+
+  it("formats precise sub-minute interval as seconds", () => {
+    assert.equal(formatCronSchedule({ intervalMs: 45_000 }, { preciseIntervals: true }), "every 45s");
+  });
+
+  it("formats precise whole-minute interval without trailing seconds", () => {
+    assert.equal(formatCronSchedule({ intervalMs: 120_000 }, { preciseIntervals: true }), "every 2m");
+  });
+
+  it("formats precise exact-hour interval without trailing minutes", () => {
+    assert.equal(formatCronSchedule({ intervalMs: 3_600_000 }, { preciseIntervals: true }), "every 1h");
+  });
+
+  it("formats precise hour-plus-minutes interval", () => {
+    assert.equal(formatCronSchedule({ intervalMs: 3_900_000 }, { preciseIntervals: true }), "every 1h5m");
   });
 
   it("renders /status 90s cron interval as every 1m30s", async () => {
