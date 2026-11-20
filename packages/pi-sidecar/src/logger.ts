@@ -28,14 +28,21 @@ export const logger = {
   error: (...args: any[]) => { if (shouldLog("error")) console.error(...args); },
 };
 
+type NamedLogger = Pick<typeof logger, "debug" | "info" | "warn" | "error">;
+const loggerCache = new Map<string, NamedLogger>();
+
 /** Named logger for new sidecar methods (PR compliance: createLogger, not bare console). */
-export function createLogger(name: string): Pick<typeof logger, "debug" | "info" | "warn" | "error"> {
+export function createLogger(name: string): NamedLogger {
+  const cached = loggerCache.get(name);
+  if (cached) return cached;
   logger.debug(`[sidecar] createLogger name=${name}`);
   const prefix = `[${name}]`;
-  return {
+  const named: NamedLogger = {
     debug: (...args: any[]) => logger.debug(prefix, ...args),
     info: (...args: any[]) => logger.info(prefix, ...args),
     warn: (...args: any[]) => logger.warn(prefix, ...args),
     error: (...args: any[]) => logger.error(prefix, ...args),
   };
+  loggerCache.set(name, named);
+  return named;
 }

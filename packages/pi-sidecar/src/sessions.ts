@@ -25,17 +25,44 @@ import { createJiti } from "jiti";
 import stripJsonComments from "strip-json-comments";
 
 import { createLogger, logger } from "./logger.js";
+import { readBoundedResponseBytes, sanitizeUrlForLog } from "./http-helpers.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 import { runWithSessionCwd } from "./session-cwd.js";
 import { drainTranscriptWrites, maybeEnforceRetention, queueLazySessionHeader, queueTurn, transcriptUsage, transcriptsEnabled, writeSessionHeader, type TurnHeaderGuard } from "./transcripts.js";
 
-const fixtureLog = createLogger("session-store");
-const pricingLog = createLogger("session-store");
-const recordingLog = createLogger("session-store");
+const sessionStoreLog = createLogger("session-store");
 const redactorLog = createLogger("api-key-redactor");
 const redactApiKeyLog = createLogger("redact-api-key");
+const httpErrorLog = createLogger("http-error");
+const keyModelDiscoveryLog = createLogger("key-model-discovery");
+const authErrorFramesLog = createLogger("auth-error-frames");
+const apiKeyValidationLog = createLogger("api-key-validation");
+const sessionSettingsLog = createLogger("session-settings");
+const agentDirLog = createLogger("agent-dir");
+const legacyAmbientProvidersLog = createLogger("legacy-ambient-providers");
+const internalRuntimeFactoryLog = createLogger("internal-runtime-factory");
+const internalRuntimeExtensionsLog = createLogger("internal-runtime-extensions");
+const sessionStoreInitLog = createLogger("session-store-init");
+const providerDiscoveryLog = createLogger("provider-discovery");
+const sessionKeyCapabilityLog = createLogger("session-key-capability");
+const providerStatusLog = createLogger("provider-status");
+const sessionCreateLog = createLogger("session-create");
 const isRedactorDebug = process.env.PI_SIDECAR_LOG_LEVEL?.toLowerCase().trim() === "debug";
+const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
+const SESSION_API_KEY_RUNTIME_METHODS = new Set<PropertyKey>([
+  "stream",
+  "streamSimple",
+  "complete",
+  "completeSimple",
+  "streamDeferred",
+  "fetchDeferred",
+  "cancelDeferred",
+]);
+
+function isPositiveSafeInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -49,8 +76,7 @@ function baseModelId(id: string): string {
 type HttpError = Error & { statusCode: number };
 
 function httpError(message: string, statusCode: number, cause?: unknown): HttpError {
-  const log = createLogger("http-error");
-  log.debug(`Creating HTTP error: status=${statusCode}, hasCause=${cause !== undefined}`);
+  httpErrorLog.debug(`Creating HTTP error: status=${statusCode}, hasCause=${cause !== undefined}`);
   const err = new Error(message, { cause }) as HttpError;
   err.statusCode = statusCode;
   return err;
@@ -62,21 +88,20 @@ const MAX_KEY_DECODE_DEPTH = 32;
 
 /** Reject credentials at any encoding depth, including the last permitted decode. */
 function isKeyFree(value: string, redact: (value: string) => string): boolean {
-  const log = createLogger("key-model-discovery");
   for (let depth = 0; depth <= MAX_KEY_DECODE_DEPTH; depth++) {
     if (redact(value) !== value) {
-      log.debug("Discovery value contains credential", { depth });
+      keyModelDiscoveryLog.debug("Discovery value contains credential", { depth });
       return false;
     }
     let decoded: string;
     try { decoded = decodeURIComponent(value); } catch {
-      log.debug("Discovery value cannot be decoded safely", { depth });
+      keyModelDiscoveryLog.debug("Discovery value cannot be decoded safely", { depth });
       return !value.includes("%");
     }
     if (decoded === value) return true;
     value = decoded;
   }
-  log.debug("Discovery value exceeds decode bound", { depth: MAX_KEY_DECODE_DEPTH });
+  keyModelDiscoveryLog.debug("Discovery value exceeds decode bound", { depth: MAX_KEY_DECODE_DEPTH });
   return false;
 }
 
@@ -86,27 +111,25 @@ export function redactDiagnostic(value: string, redact: (value: string) => strin
 }
 
 function safeErrorFrames(err: unknown): string[] | undefined {
-  const log = createLogger("auth-error-frames");
   try {
     const stack = err instanceof Error ? err.stack : undefined;
     if (typeof stack !== "string") {
-      log.debug("Auth error has no readable stack");
+      authErrorFramesLog.debug("Auth error has no readable stack");
       return undefined;
     }
     const frames = stack.split("\n").slice(1, 9).map((line) => /^\s*at ([\w.$<>]+)\s*\(/.exec(line)?.[1] ?? "[anonymous]");
-    log.debug("Sanitized auth error frames", { frameCount: frames.length });
+    authErrorFramesLog.debug("Sanitized auth error frames", { frameCount: frames.length });
     return frames;
   } catch {
-    log.debug("Auth error stack getter failed");
+    authErrorFramesLog.debug("Auth error stack getter failed");
     return undefined;
   }
 }
 
 export function isValidApiKey(value: unknown): value is string {
-  const log = createLogger("api-key-validation");
   const valid = typeof value === "string" && value.length <= MAX_API_KEY_LENGTH && value.trim().length > 0
     && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
-  log.debug(`API key validation: valid=${valid}, lengthWithinLimit=${typeof value === "string" && value.length <= MAX_API_KEY_LENGTH}`);
+  apiKeyValidationLog.debug(`API key validation: valid=${valid}, lengthWithinLimit=${typeof value === "string" && value.length <= MAX_API_KEY_LENGTH}`);
   return valid;
 }
 
@@ -535,10 +558,9 @@ function resolveSubagentExtensionOnce(): ResolvedExtensions {
  * Exported for tests.
  */
 export function createSessionSettingsManager(seed: Record<string, unknown> = {}): SettingsManager {
-  const log = createLogger("session-settings");
   // Key count only — never settings values, which may carry configuration the
   // deployment considers sensitive.
-  log.debug("Building in-memory session settings from startup snapshot", { seedKeys: Object.keys(seed).length });
+  sessionSettingsLog.debug("Building in-memory session settings from startup snapshot", { seedKeys: Object.keys(seed).length });
   return SettingsManager.inMemory({ ...seed, compaction: { enabled: false } });
 }
 
@@ -546,26 +568,25 @@ export function createSessionSettingsManager(seed: Record<string, unknown> = {})
  * Called once per process (SessionStore constructor) — the result is the
  * startup snapshot handed to createSessionSettingsManager. Exported for tests. */
 export function readSettingsSeed(agentDir?: string): Record<string, unknown> {
-  const log = createLogger("session-settings");
   if (!agentDir) {
-    log.debug("No agent dir for settings seeding; using empty settings");
+    sessionSettingsLog.debug("No agent dir for settings seeding; using empty settings");
     return {};
   }
   const settingsPath = join(agentDir, "settings.json");
   try {
     if (!existsSync(settingsPath)) {
-      log.debug(`No settings.json in agent dir; using empty settings: path=${settingsPath}`);
+      sessionSettingsLog.debug(`No settings.json in agent dir; using empty settings: path=${settingsPath}`);
       return {};
     }
     const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf-8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      log.warn(`settings.json in agent dir is not a JSON object; ignoring: path=${settingsPath}`);
+      sessionSettingsLog.warn(`settings.json in agent dir is not a JSON object; ignoring: path=${settingsPath}`);
       return {};
     }
-    log.info(`Seeded in-memory settings from agent dir: path=${settingsPath}`);
+    sessionSettingsLog.info(`Seeded in-memory settings from agent dir: path=${settingsPath}`);
     return parsed as Record<string, unknown>;
   } catch (err) {
-    log.warn(
+    sessionSettingsLog.warn(
       `Failed to read/parse settings.json in agent dir; using empty settings: path=${settingsPath}, ` +
       `error=${err instanceof Error ? err.message : String(err)}`,
     );
@@ -599,23 +620,22 @@ export interface TrustedProviderSnapshot {
  * silently drop the provider's whole flag — with a warn per skipped entry
  * (provider id + reason, never a raw entry dump). */
 function readManifestModels(config: Record<string, unknown>, providerId: string): ManifestModelSnapshot[] {
-  const log = createLogger("agent-dir");
   const raw = config.models;
   if (!Array.isArray(raw)) return [];
   const models: ManifestModelSnapshot[] = [];
   for (const entry of raw) {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      log.warn("Skipping malformed manifest model entry: not an object", { providerId });
+      agentDirLog.warn("Skipping malformed manifest model entry: not an object", { providerId });
       continue;
     }
     const { id, name, contextWindow, maxTokens } = entry as Record<string, unknown>;
     if (typeof id !== "string" || !id.trim() || typeof name !== "string") {
-      log.warn("Skipping manifest model entry with invalid id or name", { providerId, modelId: typeof id === "string" ? id : undefined });
+      agentDirLog.warn("Skipping manifest model entry with invalid id or name", { providerId, modelId: typeof id === "string" ? id : undefined });
       continue;
     }
     const snapshot: ManifestModelSnapshot = { id, name };
-    if (typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow > 0) snapshot.contextWindow = contextWindow;
-    if (typeof maxTokens === "number" && Number.isSafeInteger(maxTokens) && maxTokens > 0) snapshot.maxTokens = maxTokens;
+    if (isPositiveSafeInt(contextWindow)) snapshot.contextWindow = contextWindow;
+    if (isPositiveSafeInt(maxTokens)) snapshot.maxTokens = maxTokens;
     models.push(snapshot);
   }
   return models;
@@ -629,16 +649,15 @@ function readManifestModels(config: Record<string, unknown>, providerId: string)
  * key-scoped listing trust gate accepts; request- or session-level input never
  * contributes. Exported for tests. */
 export function readTrustedKeyScopedProviders(agentDir?: string): Map<string, TrustedProviderSnapshot> {
-  const log = createLogger("agent-dir");
   const trusted = new Map<string, TrustedProviderSnapshot>();
   if (!agentDir) {
-    log.debug("No agent dir for trustKeyScopedListing flags; none loaded");
+    agentDirLog.debug("No agent dir for trustKeyScopedListing flags; none loaded");
     return trusted;
   }
   const modelsPath = join(agentDir, "models.json");
   try {
     if (!existsSync(modelsPath)) {
-      log.debug(`No models.json in agent dir; no trustKeyScopedListing flags: path=${modelsPath}`);
+      agentDirLog.debug(`No models.json in agent dir; no trustKeyScopedListing flags: path=${modelsPath}`);
       return trusted;
     }
     // Parse exactly like pi's ModelConfig.load (issue 1133): models.json is JSONC —
@@ -648,12 +667,12 @@ export function readTrustedKeyScopedProviders(agentDir?: string): Map<string, Tr
     const content = readFileSync(modelsPath, "utf-8").replace(/^\uFEFF/, "");
     const parsed: unknown = JSON.parse(stripJsonComments(content, { trailingCommas: true }));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      log.warn(`models.json in agent dir is not a JSON object; no trustKeyScopedListing flags: path=${modelsPath}`);
+      agentDirLog.warn(`models.json in agent dir is not a JSON object; no trustKeyScopedListing flags: path=${modelsPath}`);
       return trusted;
     }
     const providers = (parsed as { providers?: unknown }).providers;
     if (typeof providers !== "object" || providers === null || Array.isArray(providers)) {
-      log.warn(`models.json in agent dir has no providers object; no trustKeyScopedListing flags: path=${modelsPath}`);
+      agentDirLog.warn(`models.json in agent dir has no providers object; no trustKeyScopedListing flags: path=${modelsPath}`);
       return trusted;
     }
     for (const [id, config] of Object.entries(providers)) {
@@ -665,41 +684,22 @@ export function readTrustedKeyScopedProviders(agentDir?: string): Map<string, Tr
           try {
             baseUrl = new URL(record.baseUrl).href;
           } catch {
-            log.warn(`Flagged provider has an unparseable baseUrl; its flag can never grant listing trust: providerId=${id}`);
+            agentDirLog.warn(`Flagged provider has an unparseable baseUrl; its flag can never grant listing trust: providerId=${id}`);
           }
         } else {
-          log.warn(`Flagged provider has no baseUrl; its flag can never grant listing trust: providerId=${id}`);
+          agentDirLog.warn(`Flagged provider has no baseUrl; its flag can never grant listing trust: providerId=${id}`);
         }
         trusted.set(id, { baseUrl, models: readManifestModels(record, id) });
       }
     }
-    log.info(`Loaded trustKeyScopedListing flags from agent dir models.json: path=${modelsPath}, flaggedProviders=${trusted.size}, manifestModels=${trusted.size ? [...trusted.values()].reduce((sum, entry) => sum + entry.models.length, 0) : 0}`);
+    agentDirLog.info(`Loaded trustKeyScopedListing flags from agent dir models.json: path=${modelsPath}, flaggedProviders=${trusted.size}, manifestModels=${trusted.size ? [...trusted.values()].reduce((sum, entry) => sum + entry.models.length, 0) : 0}`);
   } catch (err) {
-    log.warn(
+    agentDirLog.warn(
       `Failed to read/parse models.json in agent dir; no trustKeyScopedListing flags honored: path=${modelsPath}, ` +
       `error=${err instanceof Error ? err.message : String(err)}`,
     );
   }
   return trusted;
-}
-
-/** Log-safe form of a URL: origin only (no pathname — path segments can
- * carry credentials). Never log userinfo, query, hash, or path.
- * Unparseable/absent → "(unparseable)". */
-function sanitizeUrlForLog(raw: string | undefined): string {
-  const log = createLogger("agent-dir");
-  if (!raw) {
-    log.debug("URL log sanitization: no URL provided");
-    return "(unparseable)";
-  }
-  try {
-    const url = new URL(raw);
-    log.debug("URL log sanitization: origin-only extraction", { origin: url.origin });
-    return url.origin;
-  } catch {
-    log.warn("URL log sanitization: unparseable URL withheld");
-    return "(unparseable)";
-  }
 }
 
 /** Union a flagged provider's manifest-configured models into a successful live
@@ -722,7 +722,6 @@ function mergeManifestModels(
   providerId: string,
   safeProviderId: string,
 ): void {
-  const log = createLogger("agent-dir");
   if (!manifest || manifest.length === 0) return;
   const liveCount = models.length;
   // Snapshot the gateway-listed ids BEFORE merging — indexById below also
@@ -751,7 +750,7 @@ function mergeManifestModels(
       replaced++;
     }
   }
-  log.debug("Merged manifest models into key-scoped listing", { providerId: safeProviderId, liveCount, manifestCount: manifest.length, appended: models.length - liveCount, deduped: replaced });
+  agentDirLog.debug("Merged manifest models into key-scoped listing", { providerId: safeProviderId, liveCount, manifestCount: manifest.length, appended: models.length - liveCount, deduped: replaced });
 }
 
 /** Internal registrar session never receives prompts — system prompt is a placeholder for clarity in logs/dumps. */
@@ -773,11 +772,10 @@ export const INTERNAL_AGENT_DIR = "/tmp/pi-sidecar-agent";
  * Exported for tests.
  */
 export function resolveInternalAgentDir(explicit?: string): string {
-  const log = createLogger("agent-dir");
   const fromEnv = process.env.PI_SIDECAR_AGENT_DIR?.trim();
   const resolved = explicit !== undefined ? explicit : (fromEnv || INTERNAL_AGENT_DIR);
   const source = explicit !== undefined ? "option" : fromEnv ? "env" : "default";
-  log.debug(`AGENT_DIR_RESOLVED: dir=${resolved}, source=${source}`);
+  agentDirLog.debug(`AGENT_DIR_RESOLVED: dir=${resolved}, source=${source}`);
   return resolved;
 }
 
@@ -812,7 +810,6 @@ export function snapshotLegacyAmbientProviders(
   registrations: LoadExtensionsResult["runtime"]["pendingNativeProviderRegistrations"],
   legacyAmbientProviders: WeakSet<Provider>,
 ): void {
-  const log = createLogger("legacy-ambient-providers");
   let legacyCount = 0;
   for (const { provider, extensionPath } of registrations) {
     if ([PROVIDER_EXTENSION, CLI_PROVIDER_EXTENSION, ACPX_EXTENSION, VERTEX_EXTENSION].includes(extensionPath) &&
@@ -821,7 +818,7 @@ export function snapshotLegacyAmbientProviders(
       legacyCount++;
     }
   }
-  log.debug("Legacy ambient registrations classified", { registrationCount: registrations.length, legacyCount });
+  legacyAmbientProvidersLog.debug("Legacy ambient registrations classified", { registrationCount: registrations.length, legacyCount });
 }
 
 /**
@@ -834,8 +831,7 @@ export function snapshotLegacyAmbientProviders(
  * createAgentSessionServices for models.json/auth.json/ResourceLoader loading.
  */
 function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientProviders: WeakSet<Provider>, settingsSeed: Record<string, unknown>): CreateAgentSessionRuntimeFactory {
-  const log = createLogger("internal-runtime-factory");
-  log.debug("Internal runtime factory configured", { extensionCount: extensionPaths.length, settingsSeedKeys: Object.keys(settingsSeed).length });
+  internalRuntimeFactoryLog.debug("Internal runtime factory configured", { extensionCount: extensionPaths.length, settingsSeedKeys: Object.keys(settingsSeed).length });
   return async ({ cwd, agentDir, sessionManager: runtimeSessionManager, sessionStartEvent }) => {
     const settingsManager = createSessionSettingsManager(settingsSeed);
     const services = await createAgentSessionServices({
@@ -847,8 +843,7 @@ function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientPro
         // Called after extension load but before queued native providers are registered.
         // The queue records the actual registering extension, unlike names or env vars.
         extensionsOverride: (result: LoadExtensionsResult) => {
-          const overrideLog = createLogger("internal-runtime-extensions");
-          overrideLog.debug("Classifying pending native providers", { registrationCount: result.runtime.pendingNativeProviderRegistrations.length });
+          internalRuntimeExtensionsLog.debug("Classifying pending native providers", { registrationCount: result.runtime.pendingNativeProviderRegistrations.length });
           snapshotLegacyAmbientProviders(result.runtime.pendingNativeProviderRegistrations, legacyAmbientProviders);
           return result;
         },
@@ -917,30 +912,30 @@ const PRICING_KNOWN = Symbol.for("pi-config.pricingKnown");
 export function hasKnownPricing(model: { id?: string; provider?: string; api?: string; baseUrl?: string; cost?: Record<string, number | undefined> } | undefined): boolean {
   const cost = model?.cost;
   if (!cost) {
-    pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=absent, provenance=none");
+    sessionStoreLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=absent, provenance=none");
     return false;
   }
   if (Reflect.get(model, PRICING_UNKNOWN) === true) {
-    pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=present, provenance=fabricated");
+    sessionStoreLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=present, provenance=fabricated");
     return false;
   }
   const prices = Object.values(cost).filter((value): value is number => typeof value === "number");
   if (prices.length === 0) {
-    pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=empty, provenance=none");
+    sessionStoreLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=empty, provenance=none");
     return false;
   }
   if (prices.some((value) => value > 0)) {
-    pricingLog.debug("[sidecar] PRICING_KNOWN: known=true, priceMetadata=present, provenance=priced");
+    sessionStoreLog.debug("[sidecar] PRICING_KNOWN: known=true, priceMetadata=present, provenance=priced");
     return true;
   }
   // All zero: either a source published it, or it is the catalog's own entry.
   if (Reflect.get(model, PRICING_KNOWN) === true) {
-    pricingLog.debug("[sidecar] PRICING_KNOWN: known=true, priceMetadata=present, provenance=source-published-free");
+    sessionStoreLog.debug("[sidecar] PRICING_KNOWN: known=true, priceMetadata=present, provenance=source-published-free");
     return true;
   }
   const catalogFree = isCatalogFreeModel(model);
   // Never log the model or its prices — only the resulting decision.
-  pricingLog.debug(
+  sessionStoreLog.debug(
     `[sidecar] PRICING_KNOWN: known=${catalogFree}, priceMetadata=present, provenance=${catalogFree ? "catalog-free" : "unattributed-zero"}`,
   );
   return catalogFree;
@@ -963,7 +958,7 @@ export function hasKnownPricing(model: { id?: string; provider?: string; api?: s
  */
 function isCatalogFreeModel(model: { id?: string; provider?: string; api?: string; baseUrl?: string; cost?: Record<string, number | undefined> }): boolean {
   if (!model?.id || !model.provider) {
-    pricingLog.debug("[sidecar] CATALOG_FREE: free=false, reason=unidentified");
+    sessionStoreLog.debug("[sidecar] CATALOG_FREE: free=false, reason=unidentified");
     return false;
   }
   try {
@@ -971,17 +966,17 @@ function isCatalogFreeModel(model: { id?: string; provider?: string; api?: strin
     if (!catalog) {
       // Provider and model id are non-sensitive identifiers and the only way to trace
       // which zero-priced model fell back to unknown spend.
-      pricingLog.debug("[sidecar] CATALOG_FREE: free=false, reason=absent-from-catalog", { provider: model.provider, model: model.id });
+      sessionStoreLog.debug("[sidecar] CATALOG_FREE: free=false, reason=absent-from-catalog", { provider: model.provider, model: model.id });
       return false;
     }
     const prices = Object.values(catalog.cost ?? {});
     const free = prices.length > 0 && prices.every((value) => value === 0);
     const sameEndpoint = catalog.api === model.api && catalog.baseUrl === model.baseUrl;
     const verdict = free && sameEndpoint;
-    pricingLog.debug("[sidecar] CATALOG_FREE: ", { free: verdict, catalogFree: free, sameEndpoint, provider: model.provider, model: model.id });
+    sessionStoreLog.debug("[sidecar] CATALOG_FREE: ", { free: verdict, catalogFree: free, sameEndpoint, provider: model.provider, model: model.id });
     return verdict;
   } catch (err) {
-    pricingLog.warn("[sidecar] CATALOG_LOOKUP_FAILED: reason=lookup_error", { error: err instanceof Error ? err.message : String(err) });
+    sessionStoreLog.warn("[sidecar] CATALOG_LOOKUP_FAILED: reason=lookup_error", { error: err instanceof Error ? err.message : String(err) });
     return false;
   }
 }
@@ -1235,17 +1230,17 @@ export class SessionStore {
   /** Set the runtime override; takes effect for subsequent turns. */
   setRecordingOverride(enabled: boolean): void {
     this.recordingOverride = enabled;
-    recordingLog.info(`transcript recording override set: enabled=${enabled}`);
+    sessionStoreLog.info(`transcript recording override set: enabled=${enabled}`);
   }
 
   /** Drop the runtime override; the env default governs again. */
   clearRecordingOverride(): void {
     if (this.recordingOverride === undefined) {
-      recordingLog.debug("transcript recording override cleared: no override was set");
+      sessionStoreLog.debug("transcript recording override cleared: no override was set");
       return;
     }
     this.recordingOverride = undefined;
-    recordingLog.info("transcript recording override cleared; env default restored");
+    sessionStoreLog.info("transcript recording override cleared; env default restored");
   }
 
   /** Effective recording state, with whether it comes from env or override. */
@@ -1259,7 +1254,7 @@ export class SessionStore {
   /** Env default OR this store's runtime override. */
   isRecordingEnabled(): boolean {
     const enabled = this.recordingOverride ?? transcriptsEnabled();
-    recordingLog.debug(`recording decision: enabled=${enabled}, source=${this.recordingOverride === undefined ? "env" : "override"}`);
+    sessionStoreLog.debug(`recording decision: enabled=${enabled}, source=${this.recordingOverride === undefined ? "env" : "override"}`);
     return enabled;
   }
 
@@ -1351,9 +1346,8 @@ export class SessionStore {
     this.agentDir = resolveInternalAgentDir(options?.agentDir);
     this.settingsSeed = readSettingsSeed(this.agentDir);
     this.trustedKeyScopedProviders = readTrustedKeyScopedProviders(this.agentDir);
-    const log = createLogger("session-store-init");
     // Path and counts only — no settings contents, no credentials.
-    log.debug("SessionStore constructed", { agentDir: this.agentDir, settingsSeedKeys: Object.keys(this.settingsSeed).length, trustedKeyScopedProviders: this.trustedKeyScopedProviders.size });
+    sessionStoreInitLog.debug("SessionStore constructed", { agentDir: this.agentDir, settingsSeedKeys: Object.keys(this.settingsSeed).length, trustedKeyScopedProviders: this.trustedKeyScopedProviders.size });
   }
 
   get disposed(): boolean {
@@ -1466,7 +1460,7 @@ export class SessionStore {
     cwd: string,
     pricingKnown = true,
   ): void {
-    fixtureLog.debug(`putSessionFixture id=${id} cwdBound=${Boolean(cwd)}`);
+    sessionStoreLog.debug(`putSessionFixture id=${id} cwdBound=${Boolean(cwd)}`);
     this.sessions.set(id, {
       session,
       lastActivity: Date.now(),
@@ -1562,8 +1556,7 @@ export class SessionStore {
       provider: id,
       supportsSessionApiKey: this.supportsSessionApiKey(id),
     }));
-    const log = createLogger("provider-discovery");
-    log.debug("Runtime providers listed", { count: providers.length });
+    providerDiscoveryLog.debug("Runtime providers listed", { count: providers.length });
     return providers;
   }
 
@@ -1672,8 +1665,12 @@ export class SessionStore {
   }
 
   private async snapshotExtensionModels(): Promise<void> {
-    this.acpxModels = await this.snapshotAgentSource(parseAgentList(process.env.ACPX_AGENTS), "acpx", discoverAcpxModelsFallback);
-    this.cliModels = await this.snapshotAgentSource(parseAgentList(process.env.CLI_AGENTS), "cli", discoverCliModelsFallback);
+    const [acpxModels, cliModels] = await Promise.all([
+      this.snapshotAgentSource(parseAgentList(process.env.ACPX_AGENTS), "acpx", discoverAcpxModelsFallback),
+      this.snapshotAgentSource(parseAgentList(process.env.CLI_AGENTS), "cli", discoverCliModelsFallback),
+    ]);
+    this.acpxModels = acpxModels;
+    this.cliModels = cliModels;
   }
 
   /**
@@ -1740,8 +1737,7 @@ export class SessionStore {
       ambientMarkerValue(auth) !== true &&
       !(nativeApiKey && ambientMarkerValue(nativeApiKey) === true) &&
       !(native && this.legacyAmbientProviders.has(native));
-    const log = createLogger("session-key-capability");
-    log.debug("Session key capability decided", {
+    sessionKeyCapabilityLog.debug("Session key capability decided", {
       supported, hasAuth: !!auth, legacyAmbient: !!(native && this.legacyAmbientProviders.has(native)),
       headlessExcluded: HEADLESS_EXCLUDED_PROVIDERS.has(provider),
     });
@@ -1755,7 +1751,6 @@ export class SessionStore {
    * validates against — rather than the provider's live (auth-gated) catalog.
    */
   async getProviderStatus(provider: string): Promise<ProviderStatus> {
-    const log = createLogger("provider-status");
     this.assertNotDisposed("getProviderStatus");
     await this.ensureDiscoveryComplete();
 
@@ -1778,14 +1773,14 @@ export class SessionStore {
     }
 
     if (!registered) {
-      log.debug("Provider status resolved", { provider, registered: false, modelCount, supportsSessionApiKey });
+      providerStatusLog.debug("Provider status resolved", { provider, registered: false, modelCount, supportsSessionApiKey });
       return { provider, registered: false, modelCount, supportsSessionApiKey, authStatus: null, authCheck: null };
     }
 
     // Excluded providers are unusable headlessly (create() rejects them). Skip
     // checkAuth/getProviderAuthStatus to avoid OAuth side effects and noise.
     if (HEADLESS_EXCLUDED_PROVIDERS.has(provider)) {
-      log.debug("Provider status skipped headless auth", { provider, registered: true, modelCount: 0, supportsSessionApiKey });
+      providerStatusLog.debug("Provider status skipped headless auth", { provider, registered: true, modelCount: 0, supportsSessionApiKey });
       return { provider, registered: true, modelCount: 0, supportsSessionApiKey, authStatus: null, authCheck: null };
     }
 
@@ -1794,7 +1789,7 @@ export class SessionStore {
       authCheck = (await this.modelRuntime!.checkAuth(provider)) ?? null;
     } catch (err) {
       // Auth exceptions may contain credentials: retain the traceback frames, not the message.
-      log.warn("Provider auth check failed", { provider, errorType: err instanceof Error ? "Error" : typeof err,
+      providerStatusLog.warn("Provider auth check failed", { provider, errorType: err instanceof Error ? "Error" : typeof err,
         stackFrames: safeErrorFrames(err) });
     }
 
@@ -1802,18 +1797,17 @@ export class SessionStore {
     try {
       authStatus = this.modelRuntime!.getProviderAuthStatus(provider);
     } catch (err) {
-      log.warn("Provider auth status failed", { provider, errorType: err instanceof Error ? "Error" : typeof err,
+      providerStatusLog.warn("Provider auth status failed", { provider, errorType: err instanceof Error ? "Error" : typeof err,
         stackFrames: safeErrorFrames(err) });
     }
 
-    log.debug("Provider status resolved", { provider, registered, modelCount, supportsSessionApiKey, hasAuthCheck: !!authCheck, hasAuthStatus: !!authStatus });
+    providerStatusLog.debug("Provider status resolved", { provider, registered, modelCount, supportsSessionApiKey, hasAuthCheck: !!authCheck, hasAuthStatus: !!authStatus });
 
     return { provider, registered, modelCount, supportsSessionApiKey, authStatus, authCheck };
   }
 
   /** Query the provider with this request's key, never the shared model registry. */
   async getModelsForApiKey(providerId: string, apiKey: string): Promise<{ models: Array<{ provider: string; id: string; name: string; source: "listing" | "manifest"; capabilities?: Record<string, unknown> }>; modelListingSupported: boolean }> {
-    const log = createLogger("key-model-discovery");
     if (!isValidApiKey(apiKey) || typeof providerId !== "string" || !providerId.trim()) {
       throw httpError("Invalid provider or api_key", 400);
     }
@@ -1823,7 +1817,7 @@ export class SessionStore {
     if (!isKeyFree(providerId, redact)) throw httpError("Invalid provider or api_key", 400);
     const safeProviderId = redactDiagnostic(providerId, redact);
     if (!this.supportsSessionApiKey(providerId)) {
-      log.debug("Provider has no session API key capability", { providerId: safeProviderId, supported: false });
+      keyModelDiscoveryLog.debug("Provider has no session API key capability", { providerId: safeProviderId, supported: false });
       throw httpError("Provider does not support session API keys", 400);
     }
     const provider = this.modelRuntime!.getProvider(providerId)!;
@@ -1848,10 +1842,10 @@ export class SessionStore {
         : openAiCompatible && catalog.every((model) => model.baseUrl === provider.baseUrl)
           ? provider.baseUrl : undefined;
     if (typeof base !== "string" || !base) {
-      log.debug("Provider has no native model listing", { providerId: safeProviderId, modelListingSupported: false });
+      keyModelDiscoveryLog.debug("Provider has no native model listing", { providerId: safeProviderId, modelListingSupported: false });
       return { models: [], modelListingSupported: false };
     }
-    log.debug("Resolved key-scoped listing base", { providerId: safeProviderId, canonicalBuiltin, manifestTrusted: this.trustedKeyScopedProviders.has(providerId), modelCount: catalog.length });
+    keyModelDiscoveryLog.debug("Resolved key-scoped listing base", { providerId: safeProviderId, canonicalBuiltin, manifestTrusted: this.trustedKeyScopedProviders.has(providerId), modelCount: catalog.length });
     let manifestTrusted = false;
     let url: URL;
     try {
@@ -1874,21 +1868,21 @@ export class SessionStore {
       manifestTrusted = snapshot !== undefined && canonical === undefined && snapshot.baseUrl !== undefined &&
         url.href === snapshot.baseUrl && ["http:", "https:"].includes(url.protocol);
       if (manifestTrusted) {
-        log.debug("Key-scoped listing trust granted via pinned manifest baseUrl snapshot", { providerId: safeProviderId });
+        keyModelDiscoveryLog.debug("Key-scoped listing trust granted via pinned manifest baseUrl snapshot", { providerId: safeProviderId });
       } else if (snapshot !== undefined && canonical === undefined) {
-        // Log only origin + pathname: the pinned URL can carry userinfo/query/hash.
-        log.warn("Flagged provider no longer matches its startup trust snapshot; key-scoped listing refused", { providerId: safeProviderId, pinnedBaseUrl: sanitizeUrlForLog(snapshot.baseUrl) });
+        // Log only origin: the pinned URL can carry userinfo/query/hash/path tokens.
+        keyModelDiscoveryLog.warn("Flagged provider no longer matches its startup trust snapshot; key-scoped listing refused", { providerId: safeProviderId, pinnedBaseUrl: sanitizeUrlForLog(snapshot.baseUrl) });
       }
       const trusted = canonicalTrusted || manifestTrusted;
       if ((!loopback && !trusted) || (canonical !== undefined && !trusted) || (loopback && kind !== "openai") ||
           (loopback && !["http:", "https:"].includes(url.protocol)) ||
           url.username || url.password || url.search || url.hash ||
           redact(url.href) !== url.href) {
-        log.debug("Provider listing endpoint not trusted", { providerId: safeProviderId, modelListingSupported: false });
+        keyModelDiscoveryLog.debug("Provider listing endpoint not trusted", { providerId: safeProviderId, modelListingSupported: false });
         return { models: [], modelListingSupported: false };
       }
     } catch {
-      log.debug("Provider listing endpoint invalid", { providerId: safeProviderId, modelListingSupported: false });
+      keyModelDiscoveryLog.debug("Provider listing endpoint invalid", { providerId: safeProviderId, modelListingSupported: false });
       return { models: [], modelListingSupported: false };
     }
     url.pathname = `${url.pathname.replace(/\/+$/, "")}${kind === "anthropic" ? "/v1/models" : "/models"}`;
@@ -1905,6 +1899,7 @@ export class SessionStore {
     const timer = setTimeout(() => controller.abort(), 10_000);
     const models: Array<{ provider: string; id: string; name: string; source: "listing" | "manifest"; capabilities?: Record<string, unknown> }> = [];
     const seenTokens = new Set<string>();
+    const uniformCatalog = catalog.length > 0 && catalog.every((entry) => entry.api === catalog[0].api && entry.baseUrl === catalog[0].baseUrl);
     try {
       for (let page = 0; page < 10; page++) {
       const response = await fetch(url, {
@@ -1912,26 +1907,15 @@ export class SessionStore {
         redirect: "manual", signal: controller.signal,
       });
       if (response.status === 401 || response.status === 403) {
-        log.error("Upstream rejected discovery credential", { status: response.status });
+        keyModelDiscoveryLog.error("Upstream rejected discovery credential", { status: response.status });
         throw httpError("API key rejected by provider", 401);
       }
       if (!response.ok || response.redirected || (response.status >= 300 && response.status < 400)) throw httpError("Model discovery upstream failed", 502);
-      const reader = response.body?.getReader();
-      if (!reader) throw httpError("Model discovery upstream failed", 502);
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          size += value.byteLength;
-          if (size > 1_048_576) throw httpError("Model discovery upstream failed", 502);
-          chunks.push(value);
-        }
-      } finally {
-        void reader.cancel().catch(() => {});
-      }
-      const payload: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+      const { bytes, hasBody } = await readBoundedResponseBytes(response, 1_048_576).catch(() => {
+        throw httpError("Model discovery upstream failed", 502);
+      });
+      if (!hasBody) throw httpError("Model discovery upstream failed", 502);
+      const payload: unknown = JSON.parse(utf8FatalDecoder.decode(bytes));
       const records = payload && typeof payload === "object"
         ? kind === "google" ? (payload as { models?: unknown }).models : (payload as { data?: unknown }).data
         : undefined;
@@ -1954,13 +1938,13 @@ export class SessionStore {
         if (kind === "google") {
           const capabilities: Record<string, unknown> = {};
           if (Array.isArray(item.supportedGenerationMethods) && item.supportedGenerationMethods.every((v) => typeof v === "string")) capabilities.supportedGenerationMethods = item.supportedGenerationMethods;
-          if (typeof item.inputTokenLimit === "number" && Number.isSafeInteger(item.inputTokenLimit) && item.inputTokenLimit > 0) capabilities.inputTokenLimit = item.inputTokenLimit;
-          if (typeof item.outputTokenLimit === "number" && Number.isSafeInteger(item.outputTokenLimit) && item.outputTokenLimit > 0) capabilities.outputTokenLimit = item.outputTokenLimit;
+          if (isPositiveSafeInt(item.inputTokenLimit)) capabilities.inputTokenLimit = item.inputTokenLimit;
+          if (isPositiveSafeInt(item.outputTokenLimit)) capabilities.outputTokenLimit = item.outputTokenLimit;
           if (Object.keys(capabilities).length) model.capabilities = capabilities;
         }
         // Drop records that echo the key, including nested percent/JSON-escaped forms.
         // An unknown ID requires an unambiguous same-provider runtime template at create time.
-        if (isKeyFree(JSON.stringify(model), redact) && (this.modelRuntime!.getModel(providerId, id) || catalog.length > 0 && catalog.every((entry) => entry.api === catalog[0].api && entry.baseUrl === catalog[0].baseUrl))) models.push(model);
+        if ((uniformCatalog || this.modelRuntime!.getModel(providerId, id)) && isKeyFree(JSON.stringify(model), redact)) models.push(model);
       }
       const body = payload as { has_more?: unknown; last_id?: unknown; nextPageToken?: unknown };
       const token = kind === "anthropic" && body.has_more === true ? body.last_id
@@ -1973,7 +1957,7 @@ export class SessionStore {
       if (page === 9) throw httpError("Model discovery page limit exceeded", 502);
       url.searchParams.set(kind === "anthropic" ? "after_id" : "pageToken", token);
       }
-      log.debug("Key-scoped model discovery completed", { count: models.length, modelListingSupported: true });
+      keyModelDiscoveryLog.debug("Key-scoped model discovery completed", { count: models.length, modelListingSupported: true });
       // Issue 912 extension: a flagged custom provider's response is the union of
       // the live listing and its manifest-configured models, so manually
       // configured models a gateway does not list still reach key-scoped callers.
@@ -1981,11 +1965,11 @@ export class SessionStore {
       return { models, modelListingSupported: true };
     } catch (err) {
       if (err && typeof err === "object" && "statusCode" in err) {
-        log.error("Key-scoped model discovery failed", { failure: "upstream", status: (err as HttpError).statusCode });
+        keyModelDiscoveryLog.error("Key-scoped model discovery failed", { failure: "upstream", status: (err as HttpError).statusCode });
         throw err;
       }
       // Never log or return upstream exception text, which can include headers or URLs.
-      log.error("Key-scoped model discovery failed", { failure: "upstream" });
+      keyModelDiscoveryLog.error("Key-scoped model discovery failed", { failure: "upstream" });
       throw httpError("Model discovery upstream failed", 502);
     } finally {
       clearTimeout(timer);
@@ -1998,7 +1982,6 @@ export class SessionStore {
       throw httpError("api_key must be a non-empty string with well-formed Unicode and at most 1024 characters", 400);
     }
     const redact = createApiKeyRedactor(apiKey);
-    const log = createLogger("session-create");
     const id = randomUUID();
     try {
     this.assertNotDisposed("create");
@@ -2066,8 +2049,8 @@ export class SessionStore {
           // Private to this session; never publish a key-scoped model to the shared runtime.
           const capabilities = discovered.capabilities;
           const positiveLimit = (value: unknown): number | undefined => {
-            const valid = typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-            log.debug("Validating key-discovered model token limit", { session: id, valid });
+            const valid = isPositiveSafeInt(value);
+            sessionCreateLog.debug("Validating key-discovered model token limit", { session: id, valid });
             return valid ? value : undefined;
           };
           // Issue 913: gateway listings (e.g. Acme) often omit token-limit
@@ -2082,11 +2065,11 @@ export class SessionStore {
           const contextWindow = liveContextWindow ?? manifestEntry?.contextWindow;
           const maxTokens = liveMaxTokens ?? manifestEntry?.maxTokens;
           if (manifestEntry && (!liveContextWindow || !liveMaxTokens) && contextWindow && maxTokens) {
-            log.debug("Key-discovered model limits sourced from the manifest snapshot", { session: id, providerId: options.provider });
+            sessionCreateLog.debug("Key-discovered model limits sourced from the manifest snapshot", { session: id, providerId: options.provider });
           }
           if (!contextWindow || !maxTokens) {
             // Unknown limits are a hard failure by design — never fabricate defaults.
-            log.error("Key-discovered model has no reliable token limits anywhere; refusing session creation", { session: id, providerId: options.provider });
+            sessionCreateLog.error("Key-discovered model has no reliable token limits anywhere; refusing session creation", { session: id, providerId: options.provider });
             throw httpError(
               "Model metadata missing reliable input/output token limits for unknown model. " +
               "Declare the model in the agent-dir models.json with contextWindow and maxTokens " +
@@ -2104,7 +2087,7 @@ export class SessionStore {
           // Provenance, not the value: these zeros are fabricated, so a driver
           // reporting $0 must not be recorded as a genuinely free call.
           (model as Record<symbol, unknown>)[PRICING_UNKNOWN] = true;
-          log.debug("Session model resolved from key-scoped listing", { session: id });
+          sessionCreateLog.debug("Session model resolved from key-scoped listing", { session: id });
         }
       }
       if (!model) {
@@ -2118,7 +2101,7 @@ export class SessionStore {
       throw httpError("Selected provider does not support session API key authentication", 400);
     }
     // The original key is retained only by this session's runtime facade and redactor.
-    log.debug(`[sidecar] Model resolved: session=${id}, acpxSource=${isAcpxProvider}, cliSource=${isCliProvider}`);
+    sessionCreateLog.debug(`[sidecar] Model resolved: session=${id}, acpxSource=${isAcpxProvider}, cliSource=${isCliProvider}`);
 
     // Keep request credentials on this session's facade, not the shared registrar.
     // ModelRuntime's complete* methods call stream* on `this`, so intercept all
@@ -2163,7 +2146,7 @@ export class SessionStore {
             return (target.getAuth as any)(selected, provider === options.provider ? { ...overrides, apiKey } : overrides);
           };
         }
-        if (["stream", "streamSimple", "complete", "completeSimple", "streamDeferred", "fetchDeferred", "cancelDeferred"].includes(String(property))) {
+        if (SESSION_API_KEY_RUNTIME_METHODS.has(property)) {
           return (selected: { provider: string }, ...args: any[]) => {
             if (selected.provider === options.provider) {
               args[1] = { ...args[1], apiKey };
@@ -2195,18 +2178,18 @@ export class SessionStore {
       }
       extensionPaths = paths;
     }
-    log.debug(`[sidecar] EXTENSIONS_LOADING: count=${extensionPaths.length}`);
+    sessionCreateLog.debug(`[sidecar] EXTENSIONS_LOADING: count=${extensionPaths.length}`);
 
     // Build custom tools from config — result is cast to any[] for Pi SDK ToolDefinition compatibility
     const customTools: any[] = (options.customTools || []).map((tool) => {
       if (!tool.name || typeof tool.name !== "string") {
-        log.warn(`[sidecar] Custom tool missing required 'name' field, skipping`);
+        sessionCreateLog.warn(`[sidecar] Custom tool missing required 'name' field, skipping`);
         return null;
       }
       if (tool.http) {
         const httpConfig = normalizeHttpToolConfig(tool.http);
         const httpExecutor = createHttpToolExecutor(httpConfig);
-        log.debug(`[sidecar] Creating HTTP executor for custom tool: name=${redactDiagnostic(tool.name, redact)}, method=${httpConfig.method}`);
+        sessionCreateLog.debug(`[sidecar] Creating HTTP executor for custom tool: name=${redactDiagnostic(tool.name, redact)}, method=${httpConfig.method}`);
         const { http: _http, execute: _exec, ...rest } = tool;
         return {
           ...rest,
@@ -2233,7 +2216,7 @@ export class SessionStore {
     // doesn't filter them out via allowedToolNames.
     const customToolNames = customTools.map((t: any) => t.name as string);
     const allToolNames = [...tools, ...customToolNames];
-    log.debug(`[sidecar] Tools configured: builtin=${tools.length}, custom=${customTools.length}`);
+    sessionCreateLog.debug(`[sidecar] Tools configured: builtin=${tools.length}, custom=${customTools.length}`);
 
     // The Pi SDK's DefaultResourceLoader automatically discovers project-level resources
     // from {cwd}/.pi/ — including skills, prompts, extensions, and themes.
@@ -2246,7 +2229,7 @@ export class SessionStore {
     // deployment agent dir (this.settingsSeed; see AGENTS.md §6).
     const agentDir = options.agentDir ?? this.agentDir;
     if (options.agentDir !== undefined) {
-      log.debug(`[sidecar] SESSION_AGENT_DIR: session=${id}, custom=true, dir=${agentDir}`);
+      sessionCreateLog.debug(`[sidecar] SESSION_AGENT_DIR: session=${id}, custom=true, dir=${agentDir}`);
     }
     const settingsManager = createSessionSettingsManager(this.settingsSeed);
     const loader = new DefaultResourceLoader({
@@ -2273,7 +2256,7 @@ export class SessionStore {
             e.path.includes("subagent") ||
             (SUBAGENT_EXTENSION !== "" && e.path.endsWith("examples/extensions/subagent/index.ts")),
         );
-        log.error(`[sidecar] SUBAGENT_LOAD_FAILED: session=${id}, error=${redactDiagnostic(loadError?.error ?? "extension_not_in_loader_result", redact)}`);
+        sessionCreateLog.error(`[sidecar] SUBAGENT_LOAD_FAILED: session=${id}, error=${redactDiagnostic(loadError?.error ?? "extension_not_in_loader_result", redact)}`);
         throw httpError(
           "Tool 'subagent' was requested but the subagent extension could not be loaded. Check logs for details.",
           400,
@@ -2281,7 +2264,7 @@ export class SessionStore {
       }
     }
 
-    log.debug(`[sidecar] Session setup: id=${id}, extensions=${extensionPaths.length}, tools=${customTools.length} custom`);
+    sessionCreateLog.debug(`[sidecar] Session setup: id=${id}, extensions=${extensionPaths.length}, tools=${customTools.length} custom`);
 
     const { session } = await createAgentSession({
       cwd: options.cwd,
@@ -2301,7 +2284,7 @@ export class SessionStore {
       try {
         session.dispose();
       } catch (err) {
-        log.warn(`[sidecar] SESSION_ORPHAN_DISPOSE_FAILED: session=${id}, error=${redactDiagnostic(err instanceof Error ? err.message : String(err), redact)}`);
+        sessionCreateLog.warn(`[sidecar] SESSION_ORPHAN_DISPOSE_FAILED: session=${id}, error=${redactDiagnostic(err instanceof Error ? err.message : String(err), redact)}`);
       }
       throw httpError("Sidecar is shutting down", 503);
     }
@@ -2318,7 +2301,7 @@ export class SessionStore {
     };
     const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false, headerPending: false, streams: new SessionEventStreams(), abortState: { requested: false, pending: 0, succeeded: false } };
     this.sessions.set(id, newEntry);
-    log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
+    sessionCreateLog.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     // Transcript recording (issue #922) — OFF unless RECORD_TRANSCRIPTS is
     // truthy (or the #935 runtime override is set); the header write is
     // fail-soft and awaited so it precedes any turn record for this session.
@@ -2339,7 +2322,7 @@ export class SessionStore {
     return id;
     } catch (err) {
       const message = redactDiagnostic(err instanceof Error ? err.message : String(err), redact);
-      log.error(`[sidecar] Session creation rejected: session=${id}, error=${message}, stack=${redactDiagnostic(err instanceof Error ? err.stack ?? err.message : String(err), redact)}`);
+      sessionCreateLog.error(`[sidecar] Session creation rejected: session=${id}, error=${message}, stack=${redactDiagnostic(err instanceof Error ? err.stack ?? err.message : String(err), redact)}`);
       throw httpError(message, (err as HttpError)?.statusCode ?? 500, err);
     }
   }
@@ -2413,8 +2396,19 @@ export class SessionStore {
 
     logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}, cwd=${redactDiagnostic(entry.cwd, entry.redact)}`);
 
+    const MAX_CAPTURED_ERRORS = 10;
     const errors: string[] = [];
     let errorsDropped = 0;
+    const pushError = (rawMessage: string): string => {
+      const redacted = redactDiagnostic(rawMessage, entry.redact);
+      if (errors.length < MAX_CAPTURED_ERRORS) {
+        errors.push(redacted);
+      } else {
+        errorsDropped++;
+      }
+      return redacted;
+    };
+    const formatErrors = (): string => errors.join("; ") + (errorsDropped > 0 ? ` [+${errorsDropped} more]` : "");
     let responseText = "";
     let textDeltaCount = 0;
     let assistantMessageCount = 0;
@@ -2510,7 +2504,7 @@ export class SessionStore {
         terminal = {
           type: "error",
           turnId,
-          message: promptRejected ?? errors.join("; ") + (errorsDropped > 0 ? ` [+${errorsDropped} more]` : ""),
+          message: promptRejected ?? formatErrors(),
         };
       } else {
         terminal = { type: "turn_end", turnId, text: responseText, aborted: false };
@@ -2537,12 +2531,8 @@ export class SessionStore {
             errorMsg = "[unstringifiable error]";
           }
         }
-        if (errors.length < 10) {
-          errors.push(redactDiagnostic(errorMsg, entry.redact));
-        } else {
-          errorsDropped++;
-        }
-        logger.error(`[sidecar] Prompt error event: session=${id}, error=${redactDiagnostic(errorMsg, entry.redact)}`);
+        const redactedError = pushError(errorMsg);
+        logger.error(`[sidecar] Prompt error event: session=${id}, error=${redactedError}`);
       }
       // Track assistant message boundaries via message_start events.
       // Using message_start instead of object reference comparison because some
@@ -2623,13 +2613,16 @@ export class SessionStore {
           }
         }
 
-        const finalAssistant = [...event.messages].reverse().find((msg) => msg.role === "assistant");
-        if (finalAssistant?.stopReason === "error" && finalAssistant.errorMessage) {
-          if (errors.length < 10) {
-            errors.push(redactDiagnostic(finalAssistant.errorMessage, entry.redact));
-          } else {
-            errorsDropped++;
+        let finalAssistant: Extract<(typeof event.messages)[number], { role: "assistant" }> | undefined;
+        for (let i = event.messages.length - 1; i >= 0; i--) {
+          const msg = event.messages[i];
+          if (msg.role === "assistant") {
+            finalAssistant = msg;
+            break;
           }
+        }
+        if (finalAssistant?.stopReason === "error" && finalAssistant.errorMessage) {
+          pushError(finalAssistant.errorMessage);
         }
 
         // Fallback: if no text_delta was captured, extract from final assistant message
@@ -2641,7 +2634,8 @@ export class SessionStore {
             return `${m.role}(${contentTypes})`;
           }).join(" → ");
           logger.warn(`[sidecar] No text_delta events captured (${textDeltaCount} deltas). Messages: ${msgSummary}. Extracting from agent_end messages`);
-          for (const msg of [...event.messages].reverse()) {
+          for (let i = event.messages.length - 1; i >= 0; i--) {
+            const msg = event.messages[i];
             if (msg.role === "assistant" && msg.content) {
               const textContent = Array.isArray(msg.content)
                 ? msg.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("")
@@ -2694,12 +2688,7 @@ export class SessionStore {
       // If we captured partial text or error events before the rejection,
       // return structured data instead of throwing — preserves partial state for callers
       if (responseText || errors.length > 0) {
-        const rejectionError = err?.message || "Prompt rejected";
-        if (errors.length < 10) {
-          errors.push(redactDiagnostic(rejectionError, entry.redact));
-        } else {
-          errorsDropped++;
-        }
+        pushError(err?.message || "Prompt rejected");
         turnRejected = true;
         // fall through to structured return below
       } else {
@@ -2736,46 +2725,55 @@ export class SessionStore {
         }
       }
       if (!isJson) {
-        // Find JSON regions by scanning forward once. Only check openers at top level
-        // (not inside strings) and validate balanced regions with JSON.parse.
-        const jsonRegions: Array<[number, number]> = [];
+        // Find balanced `{...}` / `[...]` spans in a single O(N) pass, stopping once
+        // past the last boundary with no open spans left to close.
+        const lastBoundary = messageBoundaries[messageBoundaries.length - 1];
+        const openers: number[] = [];
+        const matchEnd = new Map<number, number>();
+        const curlyStack: number[] = [];
+        const bracketStack: number[] = [];
         let inStr = false;
         let esc = false;
-        for (let si = 0; si < responseText.length; si++) {
-          const c = responseText.charCodeAt(si);
+        for (let i = 0; i < responseText.length; i++) {
+          if (i >= lastBoundary && curlyStack.length === 0 && bracketStack.length === 0) break;
+          const ch = responseText.charCodeAt(i);
           if (esc) { esc = false; continue; }
-          if (c === 92 /* \\ */) { esc = true; continue; }
-          if (c === 34 /* \" */) { inStr = !inStr; continue; }
+          if (ch === 92 /* \ */) { esc = true; continue; }
+          if (ch === 34 /* " */) { inStr = !inStr; continue; }
           if (inStr) continue;
-          if (c === 123 /* { */ || c === 91 /* [ */) {
-            const close = c === 123 ? 125 : 93;
-            let depth = 1;
-            let s2 = false, e2 = false;
-            let ei = si + 1;
-            for (; ei < responseText.length && depth > 0; ei++) {
-              const ch = responseText.charCodeAt(ei);
-              if (e2) { e2 = false; continue; }
-              if (ch === 92) { e2 = true; continue; }
-              if (ch === 34) { s2 = !s2; continue; }
-              if (s2) continue;
-              if (ch === c) depth++;
-              else if (ch === close) depth--;
+          if (ch === 123 /* { */) {
+            if (i < lastBoundary) openers.push(i);
+            curlyStack.push(i);
+          } else if (ch === 125 /* } */) {
+            const open = curlyStack.pop();
+            if (open !== undefined && open < lastBoundary) matchEnd.set(open, i + 1);
+          } else if (ch === 91 /* [ */) {
+            if (i < lastBoundary) openers.push(i);
+            bracketStack.push(i);
+          } else if (ch === 93 /* ] */) {
+            const open = bracketStack.pop();
+            if (open !== undefined && open < lastBoundary) matchEnd.set(open, i + 1);
+          }
+        }
+
+        const jsonRegions: Array<[number, number]> = [];
+        let skipUntil = 0;
+        for (const si of openers) {
+          if (si < skipUntil) continue;
+          const ei = matchEnd.get(si);
+          if (ei === undefined) continue;
+          // Only protect if a boundary actually falls inside this region
+          const hasRelevantBoundary = messageBoundaries.some(b => b > si && b < ei);
+          if (hasRelevantBoundary) {
+            try {
+              JSON.parse(responseText.slice(si, ei));
+              jsonRegions.push([si, ei]);
+              skipUntil = ei; // skip past valid JSON region only
+            } catch {
+              // Balanced but not valid JSON — don't skip, inner regions may be valid
             }
-            if (depth === 0) {
-              // Only protect if a boundary actually falls inside this region
-              const hasRelevantBoundary = messageBoundaries.some(b => b > si && b < ei);
-              if (hasRelevantBoundary) {
-                try {
-                  JSON.parse(responseText.slice(si, ei));
-                  jsonRegions.push([si, ei]);
-                  si = ei - 1; // skip past valid JSON region only
-                } catch {
-                  // Balanced but not valid JSON — don't skip, inner regions may be valid
-                }
-              } else {
-                si = ei - 1; // no boundaries inside, safe to skip
-              }
-            }
+          } else {
+            skipUntil = ei; // no boundaries inside, safe to skip
           }
         }
 
@@ -2833,7 +2831,7 @@ export class SessionStore {
 
     // If we got errors from the AI, surface them
     if (errors.length > 0) {
-      const errorText = errors.join("; ") + (errorsDropped > 0 ? ` [+${errorsDropped} more]` : "");
+      const errorText = formatErrors();
       logger.error(`[sidecar] Prompt completed with errors: session=${id}, errors=${errorText}`);
       return { text: responseText, usage, error: errorText, stop_reason: stopReason };
     }

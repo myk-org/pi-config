@@ -795,6 +795,73 @@ describe("runtime recording override (#935)", () => {
     assert.equal(linesFinal[2].turn_number, 2);
     await store.disposeAll();
   });
+
+  it("appendTurn recovers via ENOENT when directory is rotated away mid-session (#1247)", async () => {
+    const testDir = join(dir, "rotated-mid-session");
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = testDir;
+    // Steady-state write after first creation, then remove dir and write again.
+    await appendTurn({
+      sessionId: "rot-1",
+      turnNumber: 1,
+      messages: [{ role: "user", content: "one" }],
+      usage: {},
+      redact: (v) => v,
+    });
+    assert.equal(existsSync(join(testDir, "rot-1.jsonl")), true);
+    rmSync(testDir, { recursive: true, force: true });
+    assert.equal(existsSync(testDir), false);
+
+    await appendTurn({
+      sessionId: "rot-1",
+      turnNumber: 2,
+      messages: [{ role: "user", content: "two" }],
+      usage: {},
+      redact: (v) => v,
+    });
+    const lines = readFileSync(join(testDir, "rot-1.jsonl"), "utf-8").trim().split("\n");
+    assert.equal(lines.length, 1);
+    assert.equal(JSON.parse(lines[0]!).turn_number, 2);
+  });
+
+  it("enforceRetention prunes oldest files across concurrency batches (>32 files) while sparing active sessions (#1247)", async () => {
+    const testDir = tempTranscriptsDir();
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = testDir;
+    // Create 45 files (> RETENTION_CONCURRENCY=32): 40 old, 5 recent, plus 1 old active session.
+    const oldTime = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const freshTime = new Date();
+    for (let i = 0; i < 40; i++) {
+      const f = join(testDir, `old-${i}.jsonl`);
+      writeFileSync(f, '{"type":"turn"}\n');
+      utimesSync(f, oldTime, oldTime);
+    }
+    const activeOld = join(testDir, "active-old.jsonl");
+    writeFileSync(activeOld, '{"type":"turn"}\n');
+    utimesSync(activeOld, oldTime, oldTime);
+    for (let i = 0; i < 5; i++) {
+      const f = join(testDir, `fresh-${i}.jsonl`);
+      writeFileSync(f, '{"type":"turn"}\n');
+      utimesSync(f, freshTime, freshTime);
+    }
+
+    const savedMaxAge = process.env.PI_SIDECAR_TRANSCRIPTS_MAX_AGE_DAYS;
+    const savedMaxSize = process.env.PI_SIDECAR_TRANSCRIPTS_MAX_SIZE_MB;
+    process.env.PI_SIDECAR_TRANSCRIPTS_MAX_AGE_DAYS = "2";
+    delete process.env.PI_SIDECAR_TRANSCRIPTS_MAX_SIZE_MB;
+    try {
+      await enforceRetention(new Set(["active-old"]));
+      const remaining = readdirSync(testDir).sort();
+      assert.equal(remaining.length, 6);
+      assert.ok(remaining.includes("active-old.jsonl"), "active session must be spared");
+      for (let i = 0; i < 5; i++) {
+        assert.ok(remaining.includes(`fresh-${i}.jsonl`));
+      }
+    } finally {
+      if (savedMaxAge === undefined) delete process.env.PI_SIDECAR_TRANSCRIPTS_MAX_AGE_DAYS;
+      else process.env.PI_SIDECAR_TRANSCRIPTS_MAX_AGE_DAYS = savedMaxAge;
+      if (savedMaxSize === undefined) delete process.env.PI_SIDECAR_TRANSCRIPTS_MAX_SIZE_MB;
+      else process.env.PI_SIDECAR_TRANSCRIPTS_MAX_SIZE_MB = savedMaxSize;
+    }
+  });
 });
 
 async function waitForFileLazy(path: string, timeoutMs = 2000): Promise<boolean> {

@@ -110,4 +110,43 @@ describe("SessionStore.snapshotAgentSource", () => {
     const result = await store.snapshotAgentSource(["broken", "cursor"], "acpx", fallback);
     assert.deepEqual(result, goodModels);
   });
+
+  it("snapshots acpx and cli sources concurrently in snapshotExtensionModels (#1253)", async () => {
+    const store = new SessionStore() as any;
+    const savedAcpx = process.env.ACPX_AGENTS;
+    const savedCli = process.env.CLI_AGENTS;
+    process.env.ACPX_AGENTS = "cursor";
+    process.env.CLI_AGENTS = "cursor";
+
+    let started = 0;
+    let bothStartedResolve!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      bothStartedResolve = resolve;
+    });
+
+    store.snapshotAgentSource = async (_agents: string[], kind: "acpx" | "cli") => {
+      started++;
+      if (started === 2) bothStartedResolve();
+      // If calls were sequential, the first call would hang forever waiting for the second to start.
+      await Promise.race([
+        bothStarted,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("snapshotExtensionModels did not run concurrently")), 1000),
+        ),
+      ]);
+      return [{ id: `${kind}-m1`, name: `${kind} model`, provider: `${kind}-cursor` }];
+    };
+
+    try {
+      await store.snapshotExtensionModels();
+      assert.equal(started, 2);
+      assert.equal(store.acpxModels[0].id, "acpx-m1");
+      assert.equal(store.cliModels[0].id, "cli-m1");
+    } finally {
+      if (savedAcpx === undefined) delete process.env.ACPX_AGENTS;
+      else process.env.ACPX_AGENTS = savedAcpx;
+      if (savedCli === undefined) delete process.env.CLI_AGENTS;
+      else process.env.CLI_AGENTS = savedCli;
+    }
+  });
 });

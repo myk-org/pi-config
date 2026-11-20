@@ -54,32 +54,44 @@ function sessionId(): string {
 	);
 }
 
-function envVarKey(name: string): string {
-	return `PI_LOG_${sanitizeLogSegment(name).replace(/[-.]/g, "_").toUpperCase()}`;
-}
-
-function envLogLevel(name: string): string {
-	const envName = envVarKey(name);
-	const hyphenated = `PI_LOG_${sanitizeLogSegment(name).toUpperCase()}`;
-	return (process.env[envName] || process.env[hyphenated] || process.env.PI_LOG || "info").trim().toLowerCase();
-}
-
-export function isDebugEnabled(name: string): boolean {
-	const min = envLogLevel(name);
+function isDebugEnabledForKeys(envName: string, hyphenated: string): boolean {
+	const min = (process.env[envName] || process.env[hyphenated] || process.env.PI_LOG || "info").trim().toLowerCase();
 	if (min === "off") return false;
 	return (LEVEL_ORDER[min] ?? LEVEL_ORDER.info) <= LEVEL_ORDER.debug;
 }
 
+export function isDebugEnabled(name: string): boolean {
+	const safeName = sanitizeLogSegment(name);
+	return isDebugEnabledForKeys(
+		`PI_LOG_${safeName.replace(/[-.]/g, "_").toUpperCase()}`,
+		`PI_LOG_${safeName.toUpperCase()}`,
+	);
+}
+
 export function createLogger(name: string): Logger {
 	const safeName = sanitizeLogSegment(name);
+	const envName = `PI_LOG_${safeName.replace(/[-.]/g, "_").toUpperCase()}`;
+	const hyphenated = `PI_LOG_${safeName.toUpperCase()}`;
+	const dir = join(homedir(), ".pi", "logs", safeName);
+	let dirReady = false;
 	let failed = false;
 	const emit = (level: string, args: unknown[]) => {
 		if (failed) return;
 		try {
-			const dir = join(homedir(), ".pi", "logs", safeName);
-			mkdirSync(dir, { recursive: true });
+			if (!dirReady) {
+				mkdirSync(dir, { recursive: true });
+				dirReady = true;
+			}
 			const safeSid = sanitizeLogSegment(sessionId());
-			appendFileSync(join(dir, `${safeSid}.log`), `${new Date().toISOString()} ${level} ${fmt(args)}\n`);
+			const filePath = join(dir, `${safeSid}.log`);
+			const line = `${new Date().toISOString()} ${level} ${fmt(args)}\n`;
+			try {
+				appendFileSync(filePath, line);
+			} catch (err: any) {
+				if (err?.code !== "ENOENT") throw err;
+				mkdirSync(dir, { recursive: true });
+				appendFileSync(filePath, line);
+			}
 		} catch (err) {
 			failed = true;
 			try {
@@ -91,7 +103,7 @@ export function createLogger(name: string): Logger {
 	};
 	return {
 		debug(...args: unknown[]) {
-			if (!isDebugEnabled(name)) return;
+			if (!isDebugEnabledForKeys(envName, hyphenated)) return;
 			emit("debug", args);
 		},
 		info(...args: unknown[]) {
@@ -104,7 +116,7 @@ export function createLogger(name: string): Logger {
 			emit("error", args);
 		},
 		isDebugEnabled() {
-			return isDebugEnabled(name);
+			return isDebugEnabledForKeys(envName, hyphenated);
 		},
 	};
 }

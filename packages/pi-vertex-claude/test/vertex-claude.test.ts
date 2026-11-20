@@ -126,8 +126,38 @@ describe("Vertex transcript request state", () => {
 					properties: { value: { type: "string" } },
 					required: ["value"],
 				},
+				cache_control: { type: "ephemeral" },
 			},
 		]);
+	});
+
+	it("attaches cache_control only to the last tool definition and stays within 4 breakpoints (#1251)", async () => {
+		const context = normalizeContext({
+			systemPrompt: "Initial instructions",
+			messages: [{ role: "user", content: "hello", timestamp: 1 }],
+			tools: [oldTool, currentTool],
+		});
+		context.messages.push({ role: "system", content: "Updated instructions", timestamp: 2 });
+
+		const request = await captureRequest(context);
+
+		expect(request.tools).toHaveLength(2);
+		expect(request.tools[0]).not.toHaveProperty("cache_control");
+		expect(request.tools[1].cache_control).toEqual({ type: "ephemeral" });
+
+		// Verify total breakpoints across tools + system + messages <= 4 (exactly 3)
+		const toolBreakpoints = request.tools.filter((t: any) => t.cache_control).length;
+		const systemBreakpoints = (request.system ?? []).filter((b: any) => b.cache_control).length;
+		const msgBreakpoints = request.messages
+			.flatMap((m: any) => (Array.isArray(m.content) ? m.content : []))
+			.filter((b: any) => b.cache_control).length;
+		expect(toolBreakpoints + systemBreakpoints + msgBreakpoints).toBe(3);
+	});
+
+	it("omits tools from request when no tools are defined (#1251)", async () => {
+		const context = normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] });
+		const request = await captureRequest(context);
+		expect(request.tools).toBeUndefined();
 	});
 });
 
@@ -542,6 +572,17 @@ describe("package-local logger", () => {
 	it("collapses CR LF into a single physical log line", () => {
 		expect(oneLine("a\nb\r\nc")).toBe("a\\nb\\nc");
 	});
+
+	it("reflects dynamic PI_LOG changes on precomputed logger instances (#1249)", () => {
+		delete process.env.PI_LOG;
+		delete process.env.PI_LOG_PI_VERTEX_CLAUDE;
+		const localLog = createLogger("pi-vertex-claude");
+		expect(localLog.isDebugEnabled()).toBe(false);
+		process.env.PI_LOG_PI_VERTEX_CLAUDE = "debug";
+		expect(localLog.isDebugEnabled()).toBe(true);
+		process.env.PI_LOG_PI_VERTEX_CLAUDE = "off";
+		expect(localLog.isDebugEnabled()).toBe(false);
+	});
 });
 
 describe("Vertex client caching with per-request headers (#1181)", () => {
@@ -948,5 +989,44 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 			name: "ping",
 			arguments: {},
 		});
+	});
+
+	it("preserves message_start usage fields across message_delta updates (#1257)", async () => {
+		process.env.GOOGLE_CLOUD_PROJECT = "stream-test-project";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+		const pricedModel = { ...model, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } };
+
+		vertexMock.events = [
+			{
+				type: "message_start",
+				message: {
+					usage: {
+						input_tokens: 100,
+						output_tokens: 1,
+						cache_read_input_tokens: 500,
+						cache_creation_input_tokens: 50,
+					},
+				},
+			},
+			{
+				type: "message_delta",
+				delta: { stop_reason: "end_turn" },
+				usage: { output_tokens: 40 },
+			},
+		];
+
+		const context = normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 1 }] });
+		let doneEvent: any;
+		for await (const ev of streamVertexClaude(pricedModel as any, context)) {
+			if (ev.type === "done") doneEvent = ev;
+		}
+		expect(doneEvent?.message.usage).toMatchObject({
+			input: 100,
+			output: 40,
+			cacheRead: 500,
+			cacheWrite: 50,
+			totalTokens: 690,
+		});
+		expect(doneEvent?.message.usage.cost.total).toBeGreaterThan(0);
 	});
 });

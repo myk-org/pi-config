@@ -157,4 +157,29 @@ describe("startWatchdog", () => {
     await tick(); // failure #2 → onDead (maxFailures: 2)
     assert.equal(onDead.mock.callCount(), 1);
   });
+
+  it("cancels fetch response body to release keep-alive sockets (#1256)", async () => {
+    const cancelOk = mock.fn(async () => {});
+    const cancelErr = mock.fn(async () => {
+      throw new Error("already closed");
+    });
+    let call = 0;
+    globalThis.fetch = mock.fn(async () => {
+      call++;
+      if (call === 1) return { ok: true, body: { cancel: cancelOk } } as unknown as Response;
+      return { ok: false, status: 503, body: { cancel: cancelErr } } as unknown as Response;
+    }) as any;
+
+    const onDead = mock.fn();
+    const startWatchdog = await loadWatchdog();
+    startWatchdog("http://localhost:8000/health", onDead, TEST_OPTIONS);
+
+    const tick = intervalCallbacks[0];
+    await tick();
+    await tick();
+
+    assert.equal(cancelOk.mock.callCount(), 1);
+    assert.equal(cancelErr.mock.callCount(), 1);
+    assert.equal(onDead.mock.callCount(), 0);
+  });
 });
