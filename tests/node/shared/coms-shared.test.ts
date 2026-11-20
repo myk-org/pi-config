@@ -448,8 +448,30 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		return { pi, tools, events, commands, getActive: () => [...activeTools] };
 	}
 
-	it("marks deferred tools defaultActive: false and keeps inactive execute guard", async () => {
+	it("marks deferred tools defaultActive false", () => {
 		const { pi, tools, getActive } = makeStatefulPi();
+		const state: DeferredUpstream = {
+			capturedSessionStart: null,
+			capturedSessionShutdown: null,
+			flagValues: new Map(),
+			active: false,
+			deferredTools: new Set(),
+		};
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
+		proxy.registerTool({
+			name: "coms_send",
+			description: "send",
+			parameters: {},
+			execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+		} as any);
+
+		assert.equal(tools.get("coms_send")?.defaultActive, false);
+		assert.equal(state.deferredTools?.has("coms_send"), true);
+		assert.deepEqual(getActive(), ["read", "bash"]);
+	});
+
+	it("blocks execution of inactive deferred tools", async () => {
+		const { pi, tools } = makeStatefulPi();
 		const state: DeferredUpstream = {
 			capturedSessionStart: null,
 			capturedSessionShutdown: null,
@@ -466,21 +488,45 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 			execute: async () => { executed = true; return { content: [{ type: "text", text: "ok" }] }; },
 		} as any);
 
-		assert.equal(tools.get("coms_send")?.defaultActive, false);
-		assert.equal(state.deferredTools?.has("coms_send"), true);
-		assert.deepEqual(getActive(), ["read", "bash"]);
-
 		const res = await tools.get("coms_send").execute("id1", {});
 		assert.equal(executed, false);
 		assert.equal(res.content[0].text, "inactive");
+	});
+
+	it("adds deferred tools via syncComsActiveTools when activated", () => {
+		const { pi, getActive } = makeStatefulPi();
+		const state: DeferredUpstream = {
+			capturedSessionStart: null,
+			capturedSessionShutdown: null,
+			flagValues: new Map(),
+			active: false,
+			deferredTools: new Set(),
+		};
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
+		proxy.registerTool({ name: "coms_send", description: "send", parameters: {}, execute: async () => ({ content: [] }) } as any);
 
 		syncComsActiveTools(pi as any, state, true);
 		assert.deepEqual(getActive(), ["read", "bash", "coms_send"]);
+	});
+
+	it("removes deferred tools via syncComsActiveTools when deactivated", () => {
+		const { pi, getActive } = makeStatefulPi();
+		const state: DeferredUpstream = {
+			capturedSessionStart: null,
+			capturedSessionShutdown: null,
+			flagValues: new Map(),
+			active: true,
+			deferredTools: new Set(),
+		};
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
+		proxy.registerTool({ name: "coms_send", description: "send", parameters: {}, execute: async () => ({ content: [] }) } as any);
+
+		syncComsActiveTools(pi as any, state, true);
 		syncComsActiveTools(pi as any, state, false);
 		assert.deepEqual(getActive(), ["read", "bash"]);
 	});
 
-	it("toggles deferred tools on reload reactivation and failure", async () => {
+	it("activates deferred tools on reload when previously active", async () => {
 		const { setComsActive } = await import("../../../extensions/shared/coms-active.js");
 		setComsActive(false);
 		const { pi, events, getActive } = makeStatefulPi();
@@ -493,11 +539,8 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		};
 		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
 		proxy.registerTool({ name: "coms_list", description: "list", parameters: {}, execute: async () => ({ content: [] }) } as any);
+		proxy.on("session_start", async () => {});
 
-		let shouldFail = false;
-		proxy.on("session_start", async () => {
-			if (shouldFail) throw new Error("boom");
-		});
 		const reloadHandlers = events.get("session_start") ?? [];
 		assert.equal(reloadHandlers.length, 1);
 
@@ -506,8 +549,28 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 			{ sessionManager: { getEntries: () => [{ type: "custom", customType: "coms-state", data: { active: true } }] } },
 		);
 		assert.deepEqual(getActive(), ["read", "bash", "coms_stop", "coms_list"]);
+		setComsActive(false);
+	});
 
-		shouldFail = true;
+	it("deactivates deferred tools when reload reactivation fails", async () => {
+		const { setComsActive } = await import("../../../extensions/shared/coms-active.js");
+		setComsActive(false);
+		const { pi, events, getActive } = makeStatefulPi();
+		const state: DeferredUpstream = {
+			capturedSessionStart: null,
+			capturedSessionShutdown: null,
+			flagValues: new Map(),
+			active: false,
+			deferredTools: new Set(["coms_stop"]),
+		};
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
+		proxy.registerTool({ name: "coms_list", description: "list", parameters: {}, execute: async () => ({ content: [] }) } as any);
+		syncComsActiveTools(pi as any, state, true);
+		proxy.on("session_start", async () => {
+			throw new Error("boom");
+		});
+
+		const reloadHandlers = events.get("session_start") ?? [];
 		await reloadHandlers[0](
 			{ reason: "reload" },
 			{ sessionManager: { getEntries: () => [{ type: "custom", customType: "coms-state", data: { active: true } }] } },
@@ -516,7 +579,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		setComsActive(false);
 	});
 
-	it("registerComs gates all 15 P2P tools + coms_stop while keeping discovery/start tools active", async () => {
+	it("registerComs gates 16 tools while keeping discovery tools active", async () => {
 		const { pi, tools, getActive } = makeStatefulPi();
 		withSubagentChildEnv(undefined, () => {
 			registerComs(pi as any);
@@ -543,7 +606,13 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		}
 	});
 
-	it("toggles the 16 gated tools on coms_start / coms_stop and /coms start / stop", async () => {
+	async function withComsTempSession(fn: (ctx: {
+		pi: ReturnType<typeof makeStatefulPi>["pi"];
+		tools: ReturnType<typeof makeStatefulPi>["tools"];
+		commands: ReturnType<typeof makeStatefulPi>["commands"];
+		getActive: ReturnType<typeof makeStatefulPi>["getActive"];
+		sessionCtx: any;
+	}) => Promise<void>): Promise<void> {
 		const { setComsActive } = await import("../../../extensions/shared/coms-active.js");
 		const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coms-gate-test-"));
 		const prevComsDir = process.env.PI_COMS_DIR;
@@ -553,8 +622,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 			registerComs(pi as any);
 			return undefined;
 		});
-
-		const ctx = {
+		const sessionCtx = {
 			cwd: tmpRoot,
 			hasUI: false,
 			ui: { notify: () => {} },
@@ -565,28 +633,36 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 			modelRegistry: {},
 			model: undefined,
 		};
-
-		const gatedNames = [
-			"coms_list", "coms_send", "coms_broadcast", "coms_history", "coms_get",
-			"coms_queue_inspect", "coms_queue_delete", "coms_queue_edit", "coms_queue_clear", "coms_queue_prioritize",
-			"coms_tasks_create", "coms_task_delete", "coms_task_list", "coms_task_get", "coms_task_update",
-			"coms_stop",
-		];
-		const alwaysActiveNames = ["coms_start", "coms_peers", "coms_peer_spawn", "coms_peer_kill"];
-
 		try {
-			// Initially inactive
+			await fn({ pi, tools, commands, getActive, sessionCtx });
+		} finally {
+			try { await tools.get("coms_stop").execute("cleanup", {}); } catch {}
+			setComsActive(false);
+			if (prevComsDir === undefined) delete process.env.PI_COMS_DIR;
+			else process.env.PI_COMS_DIR = prevComsDir;
+			fs.rmSync(tmpRoot, { recursive: true, force: true });
+		}
+	}
+
+	const gatedNames = [
+		"coms_list", "coms_send", "coms_broadcast", "coms_history", "coms_get",
+		"coms_queue_inspect", "coms_queue_delete", "coms_queue_edit", "coms_queue_clear", "coms_queue_prioritize",
+		"coms_tasks_create", "coms_task_delete", "coms_task_list", "coms_task_get", "coms_task_update",
+		"coms_stop",
+	];
+	const alwaysActiveNames = ["coms_start", "coms_peers", "coms_peer_spawn", "coms_peer_kill"];
+
+	it("toggles gated tools via coms_start then coms_stop", async () => {
+		await withComsTempSession(async ({ tools, getActive, sessionCtx }) => {
 			for (const name of gatedNames) assert.equal(getActive().includes(name), false);
 
-			// Start via coms_start tool
-			const startRes = await tools.get("coms_start").execute("id-start", { cname: "gate-peer", project: "gate-proj" }, undefined, undefined, ctx);
+			const startRes = await tools.get("coms_start").execute("id-start", { cname: "gate-peer", project: "gate-proj" }, undefined, undefined, sessionCtx);
 			assert.equal(startRes.details.ok, true, startRes.content?.[0]?.text);
 			assert.equal(startRes.details.active, true);
 			for (const name of [...gatedNames, ...alwaysActiveNames]) {
 				assert.equal(getActive().includes(name), true, `${name} should be active after coms_start`);
 			}
 
-			// Stop via coms_stop tool
 			const stopRes = await tools.get("coms_stop").execute("id-stop", {});
 			assert.equal(stopRes.details.active, false);
 			for (const name of gatedNames) {
@@ -595,23 +671,20 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 			for (const name of alwaysActiveNames) {
 				assert.equal(getActive().includes(name), true, `${name} should stay active after coms_stop`);
 			}
+		});
+	});
 
-			// Start via /coms start and stop via /coms stop
+	it("toggles gated tools via /coms slash lifecycle", async () => {
+		await withComsTempSession(async ({ commands, getActive, sessionCtx }) => {
 			const comsCmd = commands.get("coms");
-			await comsCmd.handler("start --cname gate-peer2 --project gate-proj", ctx);
+			await comsCmd.handler("start --cname gate-peer2 --project gate-proj", sessionCtx);
 			for (const name of gatedNames) {
 				assert.equal(getActive().includes(name), true, `${name} should be active after /coms start`);
 			}
-			await comsCmd.handler("stop", ctx);
+			await comsCmd.handler("stop", sessionCtx);
 			for (const name of gatedNames) {
 				assert.equal(getActive().includes(name), false, `${name} should be inactive after /coms stop`);
 			}
-		} finally {
-			try { await tools.get("coms_stop").execute("cleanup", {}); } catch {}
-			setComsActive(false);
-			if (prevComsDir === undefined) delete process.env.PI_COMS_DIR;
-			else process.env.PI_COMS_DIR = prevComsDir;
-			fs.rmSync(tmpRoot, { recursive: true, force: true });
-		}
+		});
 	});
 });

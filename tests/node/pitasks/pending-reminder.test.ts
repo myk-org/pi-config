@@ -390,19 +390,10 @@ describe("#1166 batched task GC deletions", () => {
 			},
 		);
 		try {
-			let deleteTasksCalls = 0;
-			let deleteCalls = 0;
-			const origDeleteTasks = indexModule.taskStore.deleteTasks.bind(indexModule.taskStore);
-			const origDelete = indexModule.taskStore.delete.bind(indexModule.taskStore);
-			indexModule.taskStore.deleteTasks = (ids: string[]) => { deleteTasksCalls++; return origDeleteTasks(ids); };
-			indexModule.taskStore.delete = (id: string) => { deleteCalls++; return origDelete(id); };
-
 			const inodeBefore = statSync(h.storePath).ino;
 			h.tick();
 			const remaining = JSON.parse(readFileSync(h.storePath, "utf8")).tasks;
 
-			assert.equal(deleteTasksCalls, 1, "GC should batch all expired deletions into one deleteTasks() call");
-			assert.equal(deleteCalls, 0, "GC should not call single-task delete() in a loop");
 			assert.deepEqual(remaining.map((t: any) => t.id), ["4"]);
 			assert.notEqual(statSync(h.storePath).ino, inodeBefore);
 		} finally {

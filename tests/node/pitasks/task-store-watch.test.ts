@@ -334,7 +334,7 @@ it("child stores skip watching across reopen without preventing process exit", (
 	assert.equal(JSON.parse(readFileSync(file, "utf8")).tasks[0].subject, "child");
 });
 
-it("stat-caches TaskStore.load() across unchanged reads and reloads on external replacement (#1162)", () => {
+it("stat-caches TaskStore.load() across unchanged reads (#1162)", () => {
 	const dir = makeTempDir("task-store-stat-cache-");
 	const file = join(dir, "tasks.json");
 	const store = new TaskStore(file);
@@ -343,10 +343,22 @@ it("stat-caches TaskStore.load() across unchanged reads and reloads on external 
 		const firstList = store.list();
 		const secondList = store.list();
 		const fetched = store.get(created.id);
-		assert.strictEqual(firstList[0], secondList[0], "unchanged file should skip re-parsing and reuse task objects");
+		assert.strictEqual(firstList[0], secondList[0], "unchanged file should skip re-parsing");
 		assert.strictEqual(fetched, firstList[0]);
+	} finally {
+		store.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
-		// External atomic replacement updates inode/mtime/size and invalidates the stat cache even without watcher event
+it("reloads TaskStore after external atomic replacement (#1162)", () => {
+	const dir = makeTempDir("task-store-stat-reload-");
+	const file = join(dir, "tasks.json");
+	const store = new TaskStore(file);
+	try {
+		store.create("Initial", "body", createdBy);
+		const firstList = store.list();
+
 		const raw = JSON.parse(readFileSync(file, "utf8"));
 		raw.tasks[0].subject = "External update";
 		writeFileSync(file + ".ext", JSON.stringify(raw));
@@ -361,21 +373,30 @@ it("stat-caches TaskStore.load() across unchanged reads and reloads on external 
 	}
 });
 
-it("acquireLock recovers stale dead-PID locks immediately and waits without CPU spin on live locks (#1166)", async () => {
-	const dir = makeTempDir("task-store-lock-sleep-");
+it("steals stale dead-PID locks immediately (#1166)", () => {
+	const dir = makeTempDir("task-store-lock-stale-");
 	const file = join(dir, "tasks.json");
 	const lockFile = `${file}.lock`;
 	const store = new TaskStore(file);
 	try {
-		// Dead PID lock is stolen immediately without waiting
 		const deadChild = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
 		assert.ok(deadChild.pid);
 		writeFileSync(lockFile, String(deadChild.pid));
 		const t0 = performance.now();
 		store.create("After stale lock", "body", createdBy);
 		assert.ok(performance.now() - t0 < 500, "stale lock should be stolen immediately");
+	} finally {
+		store.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
-		// Live child holds lock for ~200ms then releases it
+it("waits on live locks without CPU spin (#1166)", async () => {
+	const dir = makeTempDir("task-store-lock-sleep-");
+	const file = join(dir, "tasks.json");
+	const lockFile = `${file}.lock`;
+	const store = new TaskStore(file);
+	try {
 		const holder = spawn(process.execPath, [
 			"-e",
 			`const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(lockFile)}, String(process.pid), { flag: 'wx' }); setTimeout(() => { try { fs.unlinkSync(${JSON.stringify(lockFile)}); } catch {} }, 200);`,
@@ -390,7 +411,7 @@ it("acquireLock recovers stale dead-PID locks immediately and waits without CPU 
 		const wallBefore = performance.now();
 		const created = store.create("After live lock", "body", createdBy);
 		const wallElapsed = performance.now() - wallBefore;
-		const cpuDeltaMs = (cpuBefore ? process.cpuUsage(cpuBefore) : { user: 0, system: 0 });
+		const cpuDeltaMs = process.cpuUsage(cpuBefore);
 		const totalCpuMs = (cpuDeltaMs.user + cpuDeltaMs.system) / 1000;
 
 		await new Promise<void>(resolve => holder.on("exit", () => resolve()));
@@ -403,33 +424,39 @@ it("acquireLock recovers stale dead-PID locks immediately and waits without CPU 
 	}
 });
 
-it("unwatched TaskStore({ watch: false }) defers load and allocates zero fs.watch watchers (#1170)", () => {
-	const dir = makeTempDir("task-store-no-watch-");
+it("defers parent directory creation for missing watch:false store (#1170)", () => {
+	const dir = makeTempDir("task-store-no-watch-dir-");
 	const missingParent = join(dir, "never-created", "tasks.json");
 	const unwatchedMissing = new TaskStore(missingParent, { watch: false });
 	try {
 		assert.equal(existsSync(dirname(missingParent)), false, "watch:false must not mkdirSync parent dir on init");
-		assert.equal((unwatchedMissing as any)._watcher, null);
-		assert.equal((unwatchedMissing as any)._targetWatchers.size, 0);
 	} finally {
 		unwatchedMissing.close();
+		rmSync(dir, { recursive: true, force: true });
 	}
+});
 
+it("reads existing tasks lazily on watch:false store without holding process exit (#1170)", () => {
+	const dir = makeTempDir("task-store-no-watch-read-");
 	const existing = join(dir, "existing.json");
 	writeFileSync(existing, JSON.stringify({
 		nextId: 2,
 		tasks: [{ id: "1", subject: "Existing", description: "d", status: "pending", assignee: "llm", blocks: [], blockedBy: [], metadata: {} }],
 	}));
-	const unwatched = new TaskStore(existing, { watch: false });
 	try {
-		assert.equal((unwatched as any)._watcher, null, "watch:false must skip fs.watch");
-		assert.equal((unwatched as any)._lastStat, null, "watch:false must defer initial load until first query");
-		const tasks = unwatched.list();
-		assert.equal(tasks.length, 1);
-		assert.equal(tasks[0].subject, "Existing");
-		assert.ok((unwatched as any)._lastStat, "first query populates stat cache");
+		// Run without calling close() — a leaked fs.watch would prevent Node from exiting.
+		const script = `import { TaskStore } from './extensions/pitasks/task-store.ts'; import { writeFileSync } from 'node:fs'; const s = new TaskStore(process.argv[1], { watch: false }); const first = s.list().map(t => t.subject); writeFileSync(process.argv[1], JSON.stringify({ nextId: 2, tasks: [{ id: '1', subject: 'Updated', description: 'd', status: 'pending', assignee: 'llm', blocks: [], blockedBy: [], metadata: {} }] })); console.log(JSON.stringify({ first, second: s.list().map(t => t.subject) }));`;
+		const result = spawnSync(process.execPath, ["--import", "tsx", "-e", script, existing], {
+			cwd: process.cwd(),
+			timeout: 20_000,
+		});
+		assert.equal(result.signal, null, result.stderr.toString());
+		assert.equal(result.status, 0, result.stderr.toString());
+		assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {
+			first: ["Existing"],
+			second: ["Updated"],
+		});
 	} finally {
-		unwatched.close();
 		rmSync(dir, { recursive: true, force: true });
 	}
 });

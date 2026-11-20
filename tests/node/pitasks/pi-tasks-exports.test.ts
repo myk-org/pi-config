@@ -4,6 +4,8 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import type { Task } from "../../../extensions/pitasks/types.js";
 import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
@@ -12,6 +14,7 @@ import {
 	staleReminderContent,
 	shouldFireReminder,
 } from "../../../extensions/pitasks/reminders.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const localCreatedBy: Task["createdBy"] = { type: "local", origin: "system", session: "", project: "" };
 
@@ -38,6 +41,7 @@ describe("TaskCreate guidance", () => {
 		assert.ok(totalChars <= 2100, `expected condensed descriptions <= 2100 chars, got ${totalChars}`);
 
 		assert.match(tools.get("TaskCreate").description, /assignee.*user/is);
+		assert.match(tools.get("TaskCreate").description, /never assign `user` to work an agent could do itself/i);
 		assert.match(tools.get("TaskCreate").description, /\/tasks/);
 		assert.match(tools.get("TaskList").description, /lowest ID/i);
 		assert.match(tools.get("TaskGet").description, /completedBy.*completionNote/s);
@@ -160,30 +164,42 @@ describe("pitasks exported API pattern", () => {
 		assert.equal(result.changedFields.length, 0);
 	});
 
-	it("TaskStore.updateTasks supports blockedBy replacement and deletion reference pruning (#1173)", () => {
+	it("TaskStore.updateTasks updates blockedBy with bidirectional blocks links (#1173)", () => {
 		const store = new TaskStore();
 		const [t1, t2, t3] = store.createTasks([
 			{ subject: "A", description: "a", createdBy: localCreatedBy },
 			{ subject: "B", description: "b", createdBy: localCreatedBy },
 			{ subject: "C", description: "c", createdBy: localCreatedBy },
 		]);
-		store.update(t3.id, { addBlockedBy: [t1.id, t2.id] });
-		assert.deepEqual(store.get(t3.id)?.blockedBy, [t1.id, t2.id]);
+		store.update(t3.id, { addBlockedBy: [t1.id] });
 		assert.deepEqual(store.get(t1.id)?.blocks, [t3.id]);
 
-		const res = store.updateTasks([
-			{ id: t3.id, fields: { blockedBy: [t2.id] } },
-			{ id: t2.id, fields: { status: "deleted" } },
-			{ id: "missing", fields: { subject: "nope" } },
-		]);
+		const res = store.updateTasks([{ id: t3.id, fields: { blockedBy: [t2.id] } }]);
 		assert.equal(res[0].success, true);
 		assert.ok(res[0].changedFields?.includes("blockedBy"));
-		assert.deepEqual(res[1], { id: t2.id, success: true, changedFields: ["deleted"] });
-		assert.deepEqual(res[2], { id: "missing", success: false });
-		assert.deepEqual(store.get(t3.id)?.blockedBy, []);
+		assert.deepEqual(store.get(t3.id)?.blockedBy, [t2.id]);
+		assert.deepEqual(store.get(t1.id)?.blocks, []);
+		assert.deepEqual(store.get(t2.id)?.blocks, [t3.id]);
 	});
 
-	it("TaskStore.deleteTasks and clearCompleted prune dangling references (#1173)", () => {
+	it("TaskStore.updateTasks prunes references when deleting a task (#1173)", () => {
+		const store = new TaskStore();
+		const [t1, t2] = store.createTasks([
+			{ subject: "A", description: "a", createdBy: localCreatedBy },
+			{ subject: "B", description: "b", createdBy: localCreatedBy },
+		]);
+		store.update(t2.id, { addBlockedBy: [t1.id] });
+
+		const res = store.updateTasks([
+			{ id: t1.id, fields: { status: "deleted" } },
+			{ id: "missing", fields: { subject: "nope" } },
+		]);
+		assert.deepEqual(res[0], { id: t1.id, success: true, changedFields: ["deleted"] });
+		assert.deepEqual(res[1], { id: "missing", success: false });
+		assert.deepEqual(store.get(t2.id)?.blockedBy, []);
+	});
+
+	it("TaskStore.deleteTasks prunes dangling references (#1173)", () => {
 		const store = new TaskStore();
 		const [t1, t2, t3, t4] = store.createTasks([
 			{ subject: "1", description: "d", createdBy: localCreatedBy },
@@ -196,10 +212,38 @@ describe("pitasks exported API pattern", () => {
 		assert.equal(store.deleteTasks([t1.id, t2.id, "missing"]), 2);
 		assert.deepEqual(store.get(t3.id)?.blockedBy, []);
 		assert.deepEqual(store.get(t4.id)?.blockedBy, [t3.id]);
+	});
 
-		store.update(t3.id, { status: "completed" });
+	it("TaskStore.clearCompleted prunes pre-existing missing links (#1173)", () => {
+		const store = new TaskStore();
+		const [t1, t2] = store.createTasks([
+			{ subject: "Done", description: "d", createdBy: localCreatedBy },
+			{ subject: "Keep", description: "d", createdBy: localCreatedBy },
+		]);
+		store.update(t2.id, { blockedBy: [t1.id, "missing-id"] });
+		store.update(t1.id, { status: "completed" });
 		assert.equal(store.clearCompleted(), 1);
-		assert.deepEqual(store.get(t4.id)?.blockedBy, []);
+		assert.deepEqual(store.get(t2.id)?.blockedBy, []);
+	});
+
+	it("TaskStore.withLock rolls back in-memory state when an update throws (#1162)", () => {
+		const dir = makeTempDir("task-store-rollback-");
+		const file = join(dir, "tasks.json");
+		const store = new TaskStore(file, { watch: false });
+		try {
+			const created = store.create("Persisted", "body", localCreatedBy);
+			assert.throws(() => {
+				store.update(created.id, { status: "in_progress", metadata: null as any });
+			}, TypeError);
+
+			assert.equal(store.get(created.id)?.status, "pending");
+			const afterFollowUpWrite = store.create("Second", "body", localCreatedBy);
+			assert.equal(afterFollowUpWrite.id, "2");
+			assert.equal(store.get(created.id)?.status, "pending");
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

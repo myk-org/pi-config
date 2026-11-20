@@ -403,6 +403,17 @@ export class TaskStore {
 			const result = fn();
 			this.save();
 			return result;
+		} catch (error) {
+			// Roll back failed/partial in-memory mutations so cached stat cannot hide them or persist them later.
+			this._lastStat = null;
+			if (this.filePath && !existsSync(this.filePath)) {
+				this.tasks.clear();
+				this.nextId = 1;
+				this._corruptOnLoad = false;
+			} else {
+				this.load();
+			}
+			throw error;
 		} finally {
 			releaseLock(this.lockPath);
 		}
@@ -440,10 +451,10 @@ export class TaskStore {
 		};
 	}
 
-	private pruneReferences(removedIds: Set<string>): void {
+	private pruneReferences(ids: Set<string>, keepOnly = false): void {
 		for (const t of this.tasks.values()) {
-			t.blocks = t.blocks.filter(bid => !removedIds.has(bid));
-			t.blockedBy = t.blockedBy.filter(bid => !removedIds.has(bid));
+			t.blocks = t.blocks.filter(bid => (keepOnly ? ids.has(bid) : !ids.has(bid)));
+			t.blockedBy = t.blockedBy.filter(bid => (keepOnly ? ids.has(bid) : !ids.has(bid)));
 		}
 	}
 
@@ -504,7 +515,30 @@ export class TaskStore {
 			changedFields.push("metadata");
 		}
 		if (fields.telemetry !== undefined) { task.telemetry = fields.telemetry; changedFields.push("telemetry"); }
-		if (Array.isArray(fields.blockedBy)) { task.blockedBy = [...fields.blockedBy]; changedFields.push("blockedBy"); }
+		if (Array.isArray(fields.blockedBy)) {
+			const prevSet = new Set(task.blockedBy);
+			const nextList = Array.from(new Set(fields.blockedBy));
+			const nextSet = new Set(nextList);
+			const now = Date.now();
+			for (const oldId of prevSet) {
+				if (!nextSet.has(oldId)) {
+					const oldTarget = this.tasks.get(oldId);
+					if (oldTarget) {
+						oldTarget.blocks = oldTarget.blocks.filter(bid => bid !== id);
+						oldTarget.updatedAt = now;
+					}
+				}
+			}
+			for (const newId of nextList) {
+				const newTarget = this.tasks.get(newId);
+				if (newTarget && !newTarget.blocks.includes(id)) {
+					newTarget.blocks.push(id);
+					newTarget.updatedAt = now;
+				}
+			}
+			task.blockedBy = nextList;
+			changedFields.push("blockedBy");
+		}
 
 		if (fields.addBlocks?.length) {
 			for (const targetId of fields.addBlocks) {
@@ -653,15 +687,15 @@ export class TaskStore {
 
 	clearCompleted(): number {
 		const __cleared = this.withLock(() => {
-			const removed = new Set<string>();
+			let count = 0;
 			for (const [id, task] of this.tasks) {
 				if (task.status === "completed") {
 					this.tasks.delete(id);
-					removed.add(id);
+					count++;
 				}
 			}
-			if (removed.size > 0) this.pruneReferences(removed);
-			return removed.size;
+			if (count > 0) this.pruneReferences(new Set(this.tasks.keys()), true);
+			return count;
 		});
 		this.notifyChange();
 		return __cleared;

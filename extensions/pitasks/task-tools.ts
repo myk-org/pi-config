@@ -29,7 +29,7 @@ export function registerTaskTools(
 
 - **subject** / **description**: imperative outcome title + context/acceptance criteria.
 - **activeForm**: present-continuous spinner text while \`in_progress\` (defaults to \`subject\`).
-- **assignee**: \`llm\` (default) or \`user\` (owner-only actions: merge, live UI check, approval — one task per action, never start/edit/complete it; owners close it in \`/tasks\`).
+- **assignee**: \`llm\` (default) or \`user\` (owner-only actions: merge, live UI check, approval — one task per action; never assign \`user\` to work an agent could do itself, and never start/edit/complete a \`user\` task — owners close it in \`/tasks\`).
 - **agentType**: optional descriptive metadata only; does not dispatch or execute an agent.`,
 		promptGuidelines: [
 			"When working on complex multi-step tasks, use TaskCreate to track progress and TaskUpdate to update status.",
