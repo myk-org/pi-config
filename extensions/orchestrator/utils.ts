@@ -7,6 +7,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
 
+const log = createLogger("utils");
+
 /** Whether notify-send is available (false = ENOENT, never retry) */
 let notifyAvailable: boolean | undefined;
 
@@ -49,10 +51,11 @@ export function isRunningInContainer(): boolean {
     // Check for /.dockerenv (Docker) or /run/.containerenv (Podman)
     if (fs.existsSync("/.dockerenv") || fs.existsSync("/run/.containerenv"))
       return true;
-    // Check cgroup for container runtimes
+    // Check cgroup for container runtimes (skip read on hosts without /proc, e.g. macOS)
+    if (!fs.existsSync("/proc/1/cgroup")) return false;
     const cgroup = fs.readFileSync("/proc/1/cgroup", "utf-8");
     if (/docker|containerd|kubepods|libpod/.test(cgroup)) return true;
-  } catch (e: any) { console.debug("[utils] container detection failed:", e?.message || e); }
+  } catch (e: any) { log.debug("container detection failed", { error: e?.message || String(e) }); }
   return false;
 }
 
@@ -173,8 +176,6 @@ export function mainCheckoutRoot(root: string): string | null {
  *  @param cwd — Directory to resolve from (any path inside the worktree)
  *  @returns The worktree's top-level directory, or `cwd` as fallback */
 const worktreeRootCache = new Map<string, string>();
-
-const log = createLogger("utils");
 
 /**
  * Resolve the worktree root, or null when `cwd` is not inside a git worktree.

@@ -9,6 +9,7 @@ import { GeminiDriver } from "../../../extensions/providers/gemini-driver.js";
 import { CursorCliDriver } from "../../../extensions/providers/cursor-cli-driver.js";
 import { AcpxDriver } from "../../../extensions/providers/acpx-driver.js";
 import { createCliStreamEventForwarder } from "../../../extensions/providers/cli-driver-shared.js";
+import { discoverAcpxModelIds, discoverAcpxModels } from "../../../extensions/acpx-provider/index.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -201,5 +202,38 @@ describe("driver create lifecycle", () => {
     assert.strictEqual(forwarded[1], thinkEv);
     assert.strictEqual(forwarded[2], sessEv);
     assert.deepEqual(saved, ["ext-1"]);
+  });
+
+  it("discoverAcpxModelIds returns model IDs, closes handle, and returns [] on error (#1232)", async () => {
+    const closed: unknown[] = [];
+    const handle = { id: "h-1" };
+    const fakeLoad = async () => ({
+      createAcpRuntime: () => ({
+        ensureSession: async () => handle,
+        getStatus: async () => ({ models: { availableModelIds: ["gpt-5", "sonnet-4.5"] } }),
+        close: async (opts: { handle: unknown }) => { closed.push(opts.handle); },
+      }),
+      createFileSessionStore: () => ({}),
+      createAgentRegistry: () => ({}),
+    }) as any;
+
+    const ids = await discoverAcpxModelIds("cursor", "/tmp", fakeLoad);
+    assert.deepEqual(ids, ["gpt-5", "sonnet-4.5"]);
+    assert.deepEqual(closed, [handle]);
+
+    const failingLoad = async () => ({
+      createAcpRuntime: () => ({
+        ensureSession: async () => { throw new Error("boom"); },
+        getStatus: async () => ({}),
+        close: async () => {},
+      }),
+      createFileSessionStore: () => ({}),
+      createAgentRegistry: () => ({}),
+    }) as any;
+
+    const empty = await discoverAcpxModelIds("cursor", "/tmp", failingLoad);
+    assert.deepEqual(empty, []);
+
+    await assert.rejects(() => discoverAcpxModels("bad/agent"), /Invalid agent name/);
   });
 });

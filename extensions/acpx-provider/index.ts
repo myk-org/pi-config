@@ -36,12 +36,13 @@ export {
 export async function discoverAcpxModelIds(
   agent: string,
   cwd?: string,
+  loadRuntime: typeof loadAcpxRuntime = loadAcpxRuntime,
 ): Promise<string[]> {
   const {
     createAcpRuntime,
     createFileSessionStore,
     createAgentRegistry,
-  } = await loadAcpxRuntime();
+  } = await loadRuntime();
 
   const effectiveCwd = cwd || process.cwd();
   const uid = randomUUID().slice(0, 8);
@@ -65,7 +66,7 @@ export async function discoverAcpxModelIds(
     const status = await runtime.getStatus({ handle });
     return status.models?.availableModelIds || [];
   } catch (err) {
-    log.debug(`model discovery failed for ${agent}:`, err);
+    log.warn(`model discovery failed for ${agent}: ${err instanceof Error ? err.message : String(err)}`, err);
     return [];
   } finally {
     if (handle) {

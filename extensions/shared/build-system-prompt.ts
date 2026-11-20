@@ -55,21 +55,24 @@ export function buildExternalSystemPrompt(context: TranscriptContext, cwd?: stri
       if (entries.length > 0) {
         const rules: string[] = [];
         for (const e of entries) {
-          if (e.text && systemPrompt.includes(e.text)) continue;
           const trigger = e.trigger
             .replace(/^bash_contains\s+/, "")
             .replace(/^bash_regex\s+/, "")
             .replace(/^tool_name\s+/, "")
             .replace(/^file_modified\s+/, "");
+          let ruleLine: string | undefined;
           if (e.action === "block") {
-            rules.push(`- NEVER: ${trigger} — ${e.text}`);
+            ruleLine = `- NEVER: ${trigger} — ${e.text}`;
           } else if (e.action === "warn") {
-            rules.push(`- WARN \`${trigger}\`: ${e.text}`);
+            ruleLine = `- WARN \`${trigger}\`: ${e.text}`;
           } else if (e.action.startsWith("run_after")) {
             const cmd = e.actionCommand || e.action.slice("run_after ".length);
             if (cmd) {
-              rules.push(`- AFTER \`${trigger}\`, run: \`${cmd}\``);
+              ruleLine = `- AFTER \`${trigger}\`, run: \`${cmd}\``;
             }
+          }
+          if (ruleLine && !systemPrompt.includes(ruleLine)) {
+            rules.push(ruleLine);
           }
         }
         if (rules.length > 0) {
