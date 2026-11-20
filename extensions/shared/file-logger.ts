@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getStandaloneSetting } from "../orchestrator/settings-source.js";
+import { formatErr, oneLine } from "./logger-core.mjs";
 
 var logLevelDecision: (message: string, context: object) => void;
 logLevelDecision = () => {};
@@ -109,16 +110,6 @@ export function setLogFilePrefix(name: string, prefix: string): void {
     } catch {}
   }
   logFilePrefixes.set(name, prefix);
-}
-
-/** Collapse CR/LF so one fileLog call = one physical log line. */
-function oneLine(text: string): string {
-  return text.replace(/\r\n|\r|\n/g, "\\n");
-}
-
-function formatErr(err: unknown): string {
-  if (err instanceof Error) return oneLine(err.stack || err.message);
-  return oneLine(String(err));
 }
 
 function recordWriteError(err: unknown): void {

@@ -176,7 +176,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", restoreSources);
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     restoreSources();
     lifecycleController = new AbortController();
     const generation = lifecycleGeneration;
@@ -197,7 +197,11 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    let startupRefresh = ctx?.mode === "tui" && ctx?.hasUI === true;
+    const reason = typeof (event as { reason?: unknown })?.reason === "string"
+      ? (event as { reason: string }).reason
+      : "";
+    let startupRefresh = ctx?.mode === "tui" && ctx?.hasUI === true
+      && (reason === "startup" || reason === "new");
     const registrationRefreshes: Promise<void>[] = [];
     const activeProviders: string[] = [];
     for (const { id, headers, discoverModelCapabilities } of configResult.providers) {

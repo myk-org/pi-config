@@ -16,21 +16,13 @@
  */
 
 import type {
-  ConfigSchema,
-  DiscoveredModel,
   ProviderAdapterShape,
   ProviderDriver,
-  ProviderDriverCreateInput,
-  ProviderInstance,
-  ProviderProbeResult,
   SessionHandle,
   SessionStartOptions,
   TurnOptions,
   TurnResult,
 } from "../shared/provider-driver.js";
-import { makeManagedSnapshot, buildInitialSnapshot } from "../shared/managed-refresh.js";
-import { resolveBinary } from "../shared/resolve-binary.js";
-import { discoverCliModelsDetailed } from "../cli-provider/discover.js";
 import { runCliAgent } from "../cli-provider/runner.js";
 import {
   loadCliSessionId,
@@ -46,19 +38,19 @@ import {
   resolveCliHistorySeed,
   touchCliSession,
   clearCliSessionsForPiSession,
-  readPiSessionIdFromManager,
-  resolveActivePiSessionIdOnSessionStart,
   decideCliSessionStartReseed,
   type CliSessionKey,
 } from "../cli-provider/sessions.js";
-import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../shared/build-system-prompt.js";
-import { fileLog } from "../shared/file-logger.js";
+import { messageText } from "../shared/build-system-prompt.js";
 import { createLogger } from "../shared/logger.js";
 import { resolveAdapterCwd, adapterMemoryKey, deleteKeysForCwd } from "../shared/session-cwd.js";
+import {
+  createCliDriver,
+  createCliStreamEventForwarder,
+  type CliDriverConfig,
+} from "./cli-driver-shared.js";
 
-const LOG_DOMAIN = "cursor-cli-driver";
-const log = createLogger(LOG_DOMAIN);
-const DRIVER_KIND = "cursor-cli";
+const log = createLogger("cursor-cli-driver");
 
 /**
  * Per-turn history reseed. Cwd-scoped `session_start` must not force a fresh
@@ -72,53 +64,11 @@ export function cursorTurnNeedsHistorySeed(
 ): boolean {
   const cwdListed = forceHistorySeedCwds.has(turnCwd);
   const needed = forceHistorySeedGlobal || cwdListed;
-  fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-    `cursorTurnNeedsHistorySeed cwd=${turnCwd} global=${forceHistorySeedGlobal} cwdListed=${cwdListed} needed=${needed}`);
+  log.debug(`cursorTurnNeedsHistorySeed cwd=${turnCwd} global=${forceHistorySeedGlobal} cwdListed=${cwdListed} needed=${needed}`);
   return needed;
 }
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-export interface CursorCliConfig {
-  readonly binary: string;
-  readonly enabled: boolean;
-}
-
-const cursorCliConfigSchema: ConfigSchema<CursorCliConfig> = {
-  parse: (raw: unknown): CursorCliConfig => {
-    if (!raw || typeof raw !== "object") {
-      return { binary: "agent", enabled: true };
-    }
-    const obj = raw as Record<string, unknown>;
-    return {
-      binary: typeof obj.binary === "string" ? obj.binary : "agent",
-      enabled: typeof obj.enabled === "boolean" ? obj.enabled : true,
-    };
-  },
-};
-
-// ---------------------------------------------------------------------------
-// History seeding (from original cli-provider)
-// ---------------------------------------------------------------------------
-
-function messageText(msg: { role: string; content: unknown }): string {
-  if (typeof msg.content === "string") return msg.content;
-  if (!Array.isArray(msg.content)) return "";
-  const textParts: string[] = [];
-  for (const block of msg.content) {
-    if (
-      block &&
-      typeof block === "object" &&
-      "text" in block &&
-      typeof (block as { text: unknown }).text === "string"
-    ) {
-      textParts.push((block as { text: string }).text);
-    }
-  }
-  return textParts.join("\n");
-}
+export type CursorCliConfig = CliDriverConfig;
 
 /**
  * When starting a NEW CLI session (no --resume), inject prior pi turns so
@@ -179,8 +129,7 @@ export function createCursorCliAdapter(
   /** Force history re-seed on next turn. */
   setForceHistorySeed: (force: boolean) => void;
 } {
-  fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-    `createCursorCliAdapter bootCwdBound=${Boolean(cwd)} instance=${instanceId}`);
+  log.debug(`createCursorCliAdapter bootCwdBound=${Boolean(cwd)} instance=${instanceId}`);
   let activePiSessionId: string | null = null;
   const provisionalPiSessionId = createProvisionalPiSessionId();
   let provisionalMarkerWritten = false;
@@ -245,8 +194,7 @@ export function createCursorCliAdapter(
       if (prevKey.piSessionId !== provisionalPiSessionId || hadProvisionalMarker) {
         const migrated = migrateCliSessionMarker(nextKey, prevKey.piSessionId);
         if (!migrated && loadCliSessionId(prevKey)) {
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `CLI marker migration failed; keeping source under ${prevKey.piSessionId}`);
+          log.warn(`CLI marker migration failed; keeping source under ${prevKey.piSessionId}`);
           if (prevKey.piSessionId === provisionalPiSessionId) {
             remainingProvisional += 1;
           }
@@ -285,8 +233,7 @@ export function createCursorCliAdapter(
       });
       if (decision.forceHistorySeed) {
         forceHistorySeedCwds.add(turnCwd);
-        fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-          `handleSessionStart reseed cwd=${turnCwd} (not adapter-global)`);
+        log.debug(`handleSessionStart reseed cwd=${turnCwd} (not adapter-global)`);
       }
 
       if (decision.action === "keep") {
@@ -298,8 +245,7 @@ export function createCursorCliAdapter(
             includeLegacyDefault: prevSid == null || prevSid === "" || prevSid === "default",
           });
         } catch (err) {
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `session_start marker cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+          log.warn(`session_start marker cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
         }
         deleteKeysForCwd(appliedSystemPrompts, turnCwd);
         deleteKeysForCwd(storedSystemPrompts, turnCwd);
@@ -328,8 +274,7 @@ export function createCursorCliAdapter(
       }
       sessionKeys.set(memKey, key);
       const existingId = loadCliSessionId(key);
-      fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-        `startSession model=${model} cwd=${turnCwd} boot=${cwd}`);
+      log.debug(`startSession model=${model} cwd=${turnCwd} boot=${cwd}`);
       return {
         sessionId: existingId || `cursor-${instanceId}-${model}`,
         model,
@@ -361,10 +306,9 @@ export function createCursorCliAdapter(
         forceHistorySeedCwds,
         forceHistorySeed,
       );
-      const systemPrompt = storedSystemPrompts.get(handleKey) ?? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
+      const systemPrompt = storedSystemPrompts.get(handleKey);
       const needsSystemPrompt = reseedThisCwd || !appliedSystemPrompts.has(handleKey) || appliedSystemPrompts.get(handleKey) !== systemPrompt;
-      fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-        `sendTurn model=${handle.model} cwd=${turnCwd} boot=${cwd} reseed=${reseedThisCwd}`);
+      log.debug(`sendTurn model=${handle.model} cwd=${turnCwd} boot=${cwd} reseed=${reseedThisCwd}`);
       log.debug("building turn system prompt", { model: handle.model, turnCwd, reseed: reseedThisCwd, changed: needsSystemPrompt });
 
       // Resolve history seed plan
@@ -387,18 +331,7 @@ export function createCursorCliAdapter(
       }
 
       // Build event handler
-      const onEvent = opts?.onEvent
-        ? (ev: { kind: string; text?: string; sessionId?: string }) => {
-            if (ev.kind === "session" && ev.sessionId) {
-              saveCliMarker(key, ev.sessionId);
-              opts.onEvent!({ kind: "session", sessionId: ev.sessionId });
-            } else if (ev.kind === "thinking_delta" && ev.text) {
-              opts.onEvent!({ kind: "thinking_delta", text: ev.text });
-            } else if (ev.kind === "text_delta" && ev.text) {
-              opts.onEvent!({ kind: "text_delta", text: ev.text });
-            }
-          }
-        : undefined;
+      const onEvent = createCliStreamEventForwarder(key, saveCliMarker, opts?.onEvent);
 
       const runOnce = (sid: string | null, p: string) =>
         runCliAgent({
@@ -439,8 +372,7 @@ export function createCursorCliAdapter(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (effectiveSessionId && shouldRetryWithoutResume(message)) {
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `resume failed, clearing session and retrying: ${message.slice(0, 200)}`);
+          log.warn(`resume failed, clearing session and retrying: ${message.slice(0, 200)}`);
           clearCliSessionId(key);
           // Fresh CLI session after failed --resume — re-seed history
           let retryPrompt = opts?.context?.messages
@@ -499,79 +431,11 @@ export function createCursorCliAdapter(
 // Driver
 // ---------------------------------------------------------------------------
 
-export const CursorCliDriver: ProviderDriver<CursorCliConfig> = {
-  driverKind: DRIVER_KIND,
-  metadata: {
-    displayName: "Cursor CLI",
-    supportsMultipleInstances: false,
-  },
-  configSchema: cursorCliConfigSchema,
-  defaultConfig: () => ({ binary: "agent", enabled: true }),
-
-  probe: async (config: CursorCliConfig): Promise<ProviderProbeResult> => {
-    const binary = resolveBinary(config.binary);
-    if (!binary) {
-      return {
-        available: false,
-        reason: `Binary '${config.binary}' not found on PATH`,
-      };
-    }
-    return { available: true };
-  },
-
-  create: async (
-    input: ProviderDriverCreateInput<CursorCliConfig>,
-  ): Promise<ProviderInstance> => {
-    const { instanceId, config, cwd } = input;
-
-    let discoveredModels: DiscoveredModel[] = [];
-    try {
-      const detailed = await discoverCliModelsDetailed("cursor");
-      discoveredModels = detailed.map((m) => ({ id: m.id, name: m.name }));
-    } catch (err) {
-      fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-        `model discovery failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    const managed = makeManagedSnapshot({
-      skipInitialRefresh: true,
-      initialSnapshot: () =>
-        buildInitialSnapshot(true, discoveredModels),
-      checkProvider: async () => {
-        const binary = resolveBinary(config.binary);
-        if (!binary) {
-          return buildInitialSnapshot(false, [], undefined, `Binary '${config.binary}' not found`);
-        }
-        try {
-          const next = await discoverCliModelsDetailed("cursor");
-          const models = next.map((m) => ({ id: m.id, name: m.name }));
-          return buildInitialSnapshot(true, models);
-        } catch {
-          return buildInitialSnapshot(true, discoveredModels);
-        }
-      },
-      getSettings: () => config,
-      haveSettingsChanged: (prev, next) =>
-        prev.binary !== next.binary || prev.enabled !== next.enabled,
-    });
-
-    const adapter = createCursorCliAdapter(config, cwd, instanceId);
-
-    return {
-      instanceId,
-      driverKind: DRIVER_KIND,
-      displayName: input.displayName || "Cursor CLI",
-      enabled: input.enabled,
-      snapshot: {
-        getSnapshot: managed.getSnapshot,
-        refresh: managed.refresh,
-        dispose: managed.dispose,
-      },
-      adapter,
-      dispose: async () => {
-        managed.dispose();
-        await adapter.stopAll();
-      },
-    };
-  },
-};
+export const CursorCliDriver: ProviderDriver<CursorCliConfig> = createCliDriver({
+  agent: "cursor",
+  driverKind: "cursor-cli",
+  defaultBinary: "agent",
+  defaultDisplayName: "Cursor CLI",
+  log,
+  createAdapter: createCursorCliAdapter,
+});

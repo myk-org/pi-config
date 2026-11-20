@@ -345,6 +345,32 @@ describe("cli-provider parsers", () => {
     assert.equal(deltas.join(""), "LIVE_OK_1");
   });
 
+  it("feedChunk handles partial lines, CRLF, non-json lines, and cumulative snapshots (#1237)", () => {
+    const acc = new StreamJsonAccumulator();
+    const buf = { value: "" };
+    const deltas: string[] = [];
+
+    const chunk1 = '{"type":"content_block_delta","delta":{"text":"Hel"}}\r\n{"type":"cont';
+    for (const ev of acc.feedChunk(chunk1, buf)) {
+      if (ev.kind === "text_delta") deltas.push(ev.text);
+    }
+    assert.equal(acc.text, "Hel");
+    assert.equal(buf.value, '{"type":"cont');
+
+    const chunk2 = 'ent_block_delta","delta":{"text":"lo"}}\nnot-json-line\n{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}\n';
+    for (const ev of acc.feedChunk(chunk2, buf)) {
+      if (ev.kind === "text_delta") deltas.push(ev.text);
+    }
+    assert.equal(buf.value, "");
+    assert.equal(acc.text, "Hello world");
+    assert.deepEqual(deltas, ["Hel", "lo", " world"]);
+
+    const flushed = acc.flush({ value: '{"type":"result","result":"Hello world!","session_id":"s-end"}' });
+    assert.equal(acc.text, "Hello world!");
+    assert.equal(acc.sessionId, "s-end");
+    assert.equal(flushed.some((ev) => ev.kind === "done"), true);
+  });
+
   it("extractCliUsage parses Cursor format", () => {
     assert.deepEqual(
       extractCliUsage({

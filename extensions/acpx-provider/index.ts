@@ -18,8 +18,10 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { rm } from "node:fs/promises";
-import { fileLog } from "../shared/file-logger.js";
+import { createLogger } from "../shared/logger.js";
 import { loadAcpxRuntime } from "./load-runtime.js";
+
+const log = createLogger("acpx-provider");
 
 // Re-export model mapping (consumed by tests and unified extension)
 export {
@@ -28,29 +30,19 @@ export {
 } from "./runtime-models.js";
 
 /**
- * Discover available models for an acpx agent.
- *
- * Uses the acpx/runtime library API: creates a temporary session, queries
- * getStatus().models.availableModelIds, then closes the session.
- *
- * This function is kept here (not moved to a sub-module) because pi-sidecar
- * imports it from this exact path via jiti.
+ * Shared oneshot ACPX model-ID discovery used by both the pi-sidecar entry
+ * (`discoverAcpxModels`) and `AcpxDriver`'s periodic snapshot refresh.
  */
-export async function discoverAcpxModels(
+export async function discoverAcpxModelIds(
   agent: string,
   cwd?: string,
-): Promise<Array<{ id: string; name: string; provider: string }>> {
-  if (!/^[a-z0-9_-]+$/i.test(agent)) {
-    throw new Error(`Invalid agent name: ${agent}`);
-  }
-
+  loadRuntime: typeof loadAcpxRuntime = loadAcpxRuntime,
+): Promise<string[]> {
   const {
     createAcpRuntime,
     createFileSessionStore,
     createAgentRegistry,
-  } = await loadAcpxRuntime();
-
-  const { modelIdToDisplayName: displayName } = await import("./runtime-models.js");
+  } = await loadRuntime();
 
   const effectiveCwd = cwd || process.cwd();
   const uid = randomUUID().slice(0, 8);
@@ -72,24 +64,45 @@ export async function discoverAcpxModels(
     });
 
     const status = await runtime.getStatus({ handle });
-    const modelIds: string[] = status.models?.availableModelIds || [];
-
-    return modelIds.map((modelId: string) => ({
-      id: `${agent}:${modelId}`,
-      name: `${displayName(modelId)} (${agent})`,
-      provider: `acpx-${agent}`,
-    }));
+    return status.models?.availableModelIds || [];
   } catch (err) {
-    fileLog("acpx-provider", "debug", "acpx-provider", `model discovery failed for ${agent}:`, err);
+    log.warn(`model discovery failed for ${agent}: ${err instanceof Error ? err.message : String(err)}`, err);
     return [];
   } finally {
     if (handle) {
       await runtime.close({ handle, reason: "discovery complete" }).catch((err: any) => {
-        fileLog("acpx-provider", "debug", "acpx-provider", "failed to close discovery session:", err);
+        log.debug("failed to close discovery session:", err);
       });
     }
     await rm(stateDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/**
+ * Discover available models for an acpx agent.
+ *
+ * Uses the acpx/runtime library API: creates a temporary session, queries
+ * getStatus().models.availableModelIds, then closes the session.
+ *
+ * This function is kept here (not moved to a sub-module) because pi-sidecar
+ * imports it from this exact path via jiti.
+ */
+export async function discoverAcpxModels(
+  agent: string,
+  cwd?: string,
+): Promise<Array<{ id: string; name: string; provider: string }>> {
+  if (!/^[a-z0-9_-]+$/i.test(agent)) {
+    throw new Error(`Invalid agent name: ${agent}`);
+  }
+
+  const { modelIdToDisplayName: displayName } = await import("./runtime-models.js");
+  const modelIds = await discoverAcpxModelIds(agent, cwd);
+
+  return modelIds.map((modelId: string) => ({
+    id: `${agent}:${modelId}`,
+    name: `${displayName(modelId)} (${agent})`,
+    provider: `acpx-${agent}`,
+  }));
 }
 
 /**

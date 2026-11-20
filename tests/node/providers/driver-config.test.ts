@@ -8,6 +8,8 @@ import { ClaudeDriver } from "../../../extensions/providers/claude-driver.js";
 import { GeminiDriver } from "../../../extensions/providers/gemini-driver.js";
 import { CursorCliDriver } from "../../../extensions/providers/cursor-cli-driver.js";
 import { AcpxDriver } from "../../../extensions/providers/acpx-driver.js";
+import { createCliStreamEventForwarder } from "../../../extensions/providers/cli-driver-shared.js";
+import { discoverAcpxModelIds, discoverAcpxModels } from "../../../extensions/acpx-provider/index.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -179,5 +181,59 @@ describe("driver create lifecycle", () => {
     assert.equal(instance.instanceId, "test-cursor");
     assert.equal(typeof instance.dispose, "function");
     await instance.dispose();
+  });
+
+  it("createCliStreamEventForwarder forwards delta events directly without reallocation (#1237)", () => {
+    const saved: string[] = [];
+    const forwarded: any[] = [];
+    const key = { cwd: "/tmp", agent: "claude" as const, model: "default", piSessionId: "pi-1" };
+    const forward = createCliStreamEventForwarder(
+      key,
+      (_k, sid) => { saved.push(sid); },
+      (ev) => { forwarded.push(ev); },
+    )!;
+    const textEv = { kind: "text_delta" as const, text: "hi" };
+    const thinkEv = { kind: "thinking_delta" as const, text: "hmm" };
+    const sessEv = { kind: "session" as const, sessionId: "ext-1" };
+    forward(textEv);
+    forward(thinkEv);
+    forward(sessEv);
+    assert.strictEqual(forwarded[0], textEv);
+    assert.strictEqual(forwarded[1], thinkEv);
+    assert.strictEqual(forwarded[2], sessEv);
+    assert.deepEqual(saved, ["ext-1"]);
+  });
+
+  it("discoverAcpxModelIds returns model IDs, closes handle, and returns [] on error (#1232)", async () => {
+    const closed: unknown[] = [];
+    const handle = { id: "h-1" };
+    const fakeLoad = async () => ({
+      createAcpRuntime: () => ({
+        ensureSession: async () => handle,
+        getStatus: async () => ({ models: { availableModelIds: ["gpt-5", "sonnet-4.5"] } }),
+        close: async (opts: { handle: unknown }) => { closed.push(opts.handle); },
+      }),
+      createFileSessionStore: () => ({}),
+      createAgentRegistry: () => ({}),
+    }) as any;
+
+    const ids = await discoverAcpxModelIds("cursor", "/tmp", fakeLoad);
+    assert.deepEqual(ids, ["gpt-5", "sonnet-4.5"]);
+    assert.deepEqual(closed, [handle]);
+
+    const failingLoad = async () => ({
+      createAcpRuntime: () => ({
+        ensureSession: async () => { throw new Error("boom"); },
+        getStatus: async () => ({}),
+        close: async () => {},
+      }),
+      createFileSessionStore: () => ({}),
+      createAgentRegistry: () => ({}),
+    }) as any;
+
+    const empty = await discoverAcpxModelIds("cursor", "/tmp", failingLoad);
+    assert.deepEqual(empty, []);
+
+    await assert.rejects(() => discoverAcpxModels("bad/agent"), /Invalid agent name/);
   });
 });

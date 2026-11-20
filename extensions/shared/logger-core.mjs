@@ -1,7 +1,12 @@
 const LEVELS = ["debug", "info", "warn", "error"];
 
-function oneLine(value) {
+export function oneLine(value) {
   return value.replace(/\r\n|\r|\n/g, "\\n");
+}
+
+export function formatErr(err) {
+  if (err instanceof Error) return oneLine(err.stack || err.message);
+  return oneLine(String(err));
 }
 
 function format(args) {

@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import type { DiscoveredCliModel } from "../types.js";
 
-// Re-export binary resolution from shared location
+// Re-export shared helpers for backward compatibility with existing cli-provider consumers
 export {
   resolveBinary,
   resolveBinaryForPlatform,
@@ -29,14 +29,7 @@ export {
   isExecutableForPlatform,
   type ResolveBinaryEnv,
 } from "../../shared/resolve-binary.js";
-
-export function modelIdToDisplayName(modelId: string): string {
-  const bracketIdx = modelId.indexOf("[");
-  const baseName = bracketIdx >= 0 ? modelId.substring(0, bracketIdx) : modelId;
-  return baseName
-    .replace(/-/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
+export { modelIdToDisplayName } from "../../shared/create-runtime-provider.js";
 
 function cacheDir(): string {
   return join(homedir(), ".pi", "cli-model-cache");

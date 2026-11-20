@@ -30,7 +30,7 @@ import { createLogger } from "../shared/logger.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
-import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
+import { buildExternalSystemPrompt, messageText } from "../shared/build-system-prompt.js";
 import {
   checkMinPiVersion,
   isPiMetaInvocation,
@@ -47,7 +47,7 @@ import {
 } from "../shared/models-dev.js";
 import { StreamAssembler, createAssistantMessageOutput } from "../shared/stream-builder.js";
 import { ProviderDriverRegistry } from "../shared/provider-registry.js";
-import type { ProviderInstance, DiscoveredModel } from "../shared/provider-driver.js";
+import type { DiscoveredModel, ProviderInstance } from "../shared/provider-driver.js";
 import { BUILT_IN_DRIVERS, CLI_AGENT_TO_DRIVER, ACPX_AGENT_TO_DRIVER } from "./built-in-drivers.js";
 import { mapCliDiscoveredModels } from "../cli-provider/runtime-models.js";
 import { mapAcpxDiscoveredModels } from "../acpx-provider/runtime-models.js";
@@ -57,7 +57,6 @@ import {
 import {
   readPiSessionIdFromManager,
 } from "../cli-provider/sessions.js";
-import { fileLog } from "../shared/file-logger.js";
 import {
   enterSessionCwd,
   resolveProviderStreamCwd,
@@ -72,6 +71,8 @@ import { registerLastThinkingLevel } from "./last-thinking-level.js";
 import { teardownProvidersOnSessionShutdown } from "./session-shutdown.js";
 
 const LOG_DOMAIN = "providers";
+const log = createLogger(LOG_DOMAIN);
+log.debug("providers module loaded");
 const DISCOVERY_TIMEOUT_MS = 30_000;
 
 // ---------------------------------------------------------------------------
@@ -110,32 +111,8 @@ function providerDiscoverySummaryComponent(
 }
 
 // ---------------------------------------------------------------------------
-// Configured Gates
-// ---------------------------------------------------------------------------
-
-function isCliInstanceConfigured(agent: string): boolean {
-  return cliInstances.has(agent);
-}
-
-function isAcpxInstanceConfigured(agent: string): boolean {
-  return acpxInstances.has(agent);
-}
-
-// ---------------------------------------------------------------------------
 // Context Helpers
 // ---------------------------------------------------------------------------
-
-function messageText(msg: { role: string; content: unknown }): string {
-  if (typeof msg.content === "string") return msg.content;
-  if (!Array.isArray(msg.content)) return "";
-  const textParts: string[] = [];
-  for (const block of msg.content) {
-    if ("text" in block && typeof block.text === "string") {
-      textParts.push(block.text);
-    }
-  }
-  return textParts.join("\n");
-}
 
 function extractLatestUserMessage(context: TranscriptContext): string {
   log.debug("extracting latest user message", { messageCount: context.messages.length });
@@ -226,97 +203,54 @@ function makeStreamFunction(
 // Registration Helpers
 // ---------------------------------------------------------------------------
 
-async function registerCliAgent(
-  pi: ExtensionAPI,
-  agent: string,
-  instance: ProviderInstance,
-  catalog: ModelsDevCatalog | null,
-): Promise<void> {
-  const providerId = `cli-${agent}`;
+async function registerDriverAgent(opts: {
+  pi: ExtensionAPI;
+  kind: "cli" | "acpx";
+  agent: string;
+  instance: ProviderInstance;
+  instances: Map<string, ProviderInstance>;
+  catalog: ModelsDevCatalog | null;
+  mapModels: (agent: string, discovered: readonly DiscoveredModel[], catalog: ModelsDevCatalog | null) => ReturnType<typeof mapCliDiscoveredModels>;
+}): Promise<void> {
+  const { pi, kind, agent, instance, instances, catalog, mapModels } = opts;
+  const providerId = `${kind}-${agent}`;
+  const displayName = `${kind === "cli" ? "CLI" : "ACPX"} ${agent}`;
+  const sourceLabel = kind === "cli" ? `${agent} CLI on PATH` : `${agent} acpx runtime`;
   const snapshot = instance.snapshot.getSnapshot();
-  const discovered = snapshot.models;
-
-  const models = mapCliDiscoveredModels(agent, discovered, catalog);
-  const streamFn = makeStreamFunction("cli", agent, () => cliInstances.get(agent));
+  const models = mapModels(agent, snapshot.models, catalog);
+  const streamFn = makeStreamFunction(kind, agent, () => instances.get(agent));
+  const isConfigured = () => instances.has(agent);
 
   const provider = await createRuntimeProvider({
     id: providerId,
-    name: `CLI ${agent}`,
+    name: displayName,
     auth: {
       apiKey: buildAmbientLoginAuth({
-        displayName: `CLI ${agent}`,
-        isConfigured: () => isCliInstanceConfigured(agent),
-        sourceLabel: `${agent} CLI on PATH`,
+        displayName,
+        isConfigured,
+        sourceLabel,
       }),
     },
     models,
     fetchModels: async () => {
-      if (!isCliInstanceConfigured(agent)) return [];
-      const inst = cliInstances.get(agent);
+      if (!isConfigured()) return [];
+      const inst = instances.get(agent);
       if (!inst) return [];
       const snap = await inst.snapshot.refresh();
       const fresh = await loadModelsDevCatalog();
-      return mapCliDiscoveredModels(agent, snap.models, fresh);
+      return mapModels(agent, snap.models, fresh);
     },
-    filterModels: (catalog, credential) =>
-      filterModelsWhenConfigured(catalog, credential, () =>
-        isCliInstanceConfigured(agent),
-      ),
+    filterModels: (cat, credential) =>
+      filterModelsWhenConfigured(cat, credential, isConfigured),
     api: { stream: streamFn, streamSimple: streamFn },
   });
   pi.registerProvider(provider);
-  fileLog(LOG_DOMAIN, "info", LOG_DOMAIN,
-    `cli-${agent}: ${models.length} model(s) registered`);
-}
-
-async function registerAcpxAgent(
-  pi: ExtensionAPI,
-  agent: string,
-  instance: ProviderInstance,
-  catalog: ModelsDevCatalog | null,
-): Promise<void> {
-  const providerId = `acpx-${agent}`;
-  const snapshot = instance.snapshot.getSnapshot();
-  const modelIds = snapshot.models.map((m) => m.id);
-
-  const models = mapAcpxDiscoveredModels(agent, modelIds, catalog);
-  const streamFn = makeStreamFunction("acpx", agent, () => acpxInstances.get(agent));
-
-  const provider = await createRuntimeProvider({
-    id: providerId,
-    name: `ACPX ${agent}`,
-    auth: {
-      apiKey: buildAmbientLoginAuth({
-        displayName: `ACPX ${agent}`,
-        isConfigured: () => isAcpxInstanceConfigured(agent),
-        sourceLabel: `${agent} acpx runtime`,
-      }),
-    },
-    models,
-    fetchModels: async () => {
-      const inst = acpxInstances.get(agent);
-      if (!inst) return [];
-      const snap = await inst.snapshot.refresh();
-      const fresh = await loadModelsDevCatalog();
-      return mapAcpxDiscoveredModels(agent, snap.models.map((m) => m.id), fresh);
-    },
-    filterModels: (catalog, credential) =>
-      filterModelsWhenConfigured(catalog, credential, () =>
-        isAcpxInstanceConfigured(agent),
-      ),
-    api: { stream: streamFn, streamSimple: streamFn },
-  });
-  pi.registerProvider(provider);
-  fileLog(LOG_DOMAIN, "info", LOG_DOMAIN,
-    `acpx-${agent}: ${models.length} model(s) registered`);
+  log.info(`${providerId}: ${models.length} model(s) registered`);
 }
 
 // ---------------------------------------------------------------------------
 // Extension Entry Point
 // ---------------------------------------------------------------------------
-
-const log = createLogger("providers");
-log.debug("providers module loaded");
 
 const cwdHookBound = new WeakSet<object>();
 
@@ -368,8 +302,7 @@ export default async function (
 
   const versionCheck = checkMinPiVersion();
   if (!versionCheck.ok && versionCheck.installed !== null) {
-    fileLog(LOG_DOMAIN, "error", LOG_DOMAIN,
-      `pi ${versionCheck.installed} below minimum ${versionCheck.required}; skipping`);
+    log.error(`pi ${versionCheck.installed} below minimum ${versionCheck.required}; skipping`);
     return;
   }
 
@@ -434,95 +367,27 @@ export default async function (
   // Discovery — CLI and ACPX in parallel (on main these were separate
   // extensions loaded concurrently by pi; keep the same parallelism)
   // ---------------------------------------------------------------------------
-  async function discoverAndRegisterCli(): Promise<void> {
-    if (cliAgentList.length === 0) return;
+  async function discoverAndRegisterAgents(opts: {
+    kind: "cli" | "acpx";
+    agentList: string[];
+    agentToDriver: Record<string, string>;
+    instances: Map<string, ProviderInstance>;
+    includeConfig?: boolean;
+    mapModels: (agent: string, discovered: readonly DiscoveredModel[], catalog: ModelsDevCatalog | null) => ReturnType<typeof mapCliDiscoveredModels>;
+  }): Promise<void> {
+    const { kind, agentList, agentToDriver, instances, includeConfig, mapModels } = opts;
+    if (agentList.length === 0) return;
 
-    const cliResults = await Promise.allSettled(
-      cliAgentList.map(async (agent) => {
-        const driverKind = Object.hasOwn(CLI_AGENT_TO_DRIVER, agent) ? CLI_AGENT_TO_DRIVER[agent] : undefined;
+    const results = await Promise.allSettled(
+      agentList.map(async (agent) => {
+        const providerId = `${kind}-${agent}`;
+        const driverKind = Object.hasOwn(agentToDriver, agent) ? agentToDriver[agent] : undefined;
         if (typeof driverKind !== "string" || driverKind.length === 0) {
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `cli-${agent}: no driver registered`);
+          log.warn(`${providerId}: no driver registered`);
           return null;
         }
-
-        let timer: ReturnType<typeof setTimeout>;
-        let timedOut = false;
-        const timeout = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            timedOut = true;
-            reject(new Error(`timed out after ${DISCOVERY_TIMEOUT_MS / 1000}s`));
-          }, DISCOVERY_TIMEOUT_MS);
-          if (timer.unref) timer.unref();
-        });
-
-        const discovery = (async () => {
-          try {
-            const instance = await registry.createInstance(
-              `cli-${agent}`,
-              { driver: driverKind, enabled: true },
-              projectCwd,
-            );
-            if (timedOut) return { agent, instance };
-            cliInstances.set(agent, instance);
-            return { agent, instance };
-          } catch (err) {
-            fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-              `cli-${agent}: driver create failed: ${err instanceof Error ? err.message : String(err)}`);
-            return null;
-          }
-        })();
-
-        // Clean up leaked instance if discovery completed after timeout
-        discovery.then((result) => {
-          if (timedOut && result) {
-            registry.teardownInstance(`cli-${agent}`).catch(() => {});
-          }
-        }).catch(() => {});
-
-        try {
-          const result = await Promise.race([discovery, timeout]);
-          clearTimeout(timer!);
-          return result;
-        } catch (err) {
-          clearTimeout(timer!);
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `cli-${agent}: ${err instanceof Error ? err.message : String(err)}`);
-          return null;
-        }
-      }),
-    );
-
-    const modelsDevCatalog = await modelsDevCatalogPromise;
-    for (const result of cliResults) {
-      if (result.status !== "fulfilled" || !result.value) continue;
-      const { agent, instance } = result.value;
-      try {
-        await registerCliAgent(pi, agent, instance, modelsDevCatalog);
-      } catch (err) {
-        fileLog(LOG_DOMAIN, "error", LOG_DOMAIN,
-          `cli-${agent}: registration failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  }
-
-  async function discoverAndRegisterAcpx(): Promise<void> {
-    if (isSubagent) return;
-    const acpxAgentList = asStringArray(getSetting(projectCwd, "acpx_agents"));
-    if (acpxAgentList.length === 0) return;
-
-    const acpxResults = await Promise.allSettled(
-      acpxAgentList.map(async (agent) => {
-        const driverKind = Object.hasOwn(ACPX_AGENT_TO_DRIVER, agent) ? ACPX_AGENT_TO_DRIVER[agent] : undefined;
-        if (typeof driverKind !== "string" || driverKind.length === 0) {
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `acpx-${agent}: no driver mapping in ACPX_AGENT_TO_DRIVER`);
-          return null;
-        }
-        // Only proceed if the driver is registered
         if (!registry.getDriver(driverKind)) {
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `acpx-${agent}: no driver '${driverKind}' registered`);
+          log.warn(`${providerId}: no driver '${driverKind}' registered`);
           return null;
         }
 
@@ -539,20 +404,20 @@ export default async function (
         const discovery = (async () => {
           try {
             const instance = await registry.createInstance(
-              `acpx-${agent}`,
-              { driver: driverKind, config: { agent }, enabled: true },
+              providerId,
+              includeConfig
+                ? { driver: driverKind, config: { agent }, enabled: true }
+                : { driver: driverKind, enabled: true },
               projectCwd,
             );
             if (timedOut) {
-              fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-                `acpx-${agent}: completed after timeout — cleaning up`);
+              log.warn(`${providerId}: completed after timeout — cleaning up`);
               return { agent, instance };
             }
-            acpxInstances.set(agent, instance);
+            instances.set(agent, instance);
             return { agent, instance };
           } catch (err) {
-            fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-              `acpx-${agent}: driver create failed: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(`${providerId}: driver create failed: ${err instanceof Error ? err.message : String(err)}`);
             return null;
           }
         })();
@@ -560,7 +425,7 @@ export default async function (
         // Clean up leaked instance if discovery completed after timeout
         discovery.then((result) => {
           if (timedOut && result) {
-            registry.teardownInstance(`acpx-${agent}`).catch(() => {});
+            registry.teardownInstance(providerId).catch(() => {});
           }
         }).catch(() => {});
 
@@ -570,28 +435,53 @@ export default async function (
           return result;
         } catch (err) {
           clearTimeout(timer!);
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `acpx-${agent}: ${err instanceof Error ? err.message : String(err)}`);
+          log.warn(`${providerId}: ${err instanceof Error ? err.message : String(err)}`);
           return null;
         }
       }),
     );
 
     const modelsDevCatalog = await modelsDevCatalogPromise;
-    for (const result of acpxResults) {
+    for (const result of results) {
       if (result.status !== "fulfilled" || !result.value) continue;
       const { agent, instance } = result.value;
       try {
-        await registerAcpxAgent(pi, agent, instance, modelsDevCatalog);
+        await registerDriverAgent({
+          pi,
+          kind,
+          agent,
+          instance,
+          instances,
+          catalog: modelsDevCatalog,
+          mapModels,
+        });
       } catch (err) {
-        fileLog(LOG_DOMAIN, "error", LOG_DOMAIN,
-          `acpx-${agent}: registration failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.error(`${kind}-${agent}: registration failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
 
   // Run CLI and ACPX discovery concurrently
-  await Promise.all([discoverAndRegisterCli(), discoverAndRegisterAcpx()]);
+  await Promise.all([
+    discoverAndRegisterAgents({
+      kind: "cli",
+      agentList: cliAgentList,
+      agentToDriver: CLI_AGENT_TO_DRIVER,
+      instances: cliInstances,
+      mapModels: (agent, discovered, catalog) => mapCliDiscoveredModels(agent, discovered, catalog),
+    }),
+    isSubagent
+      ? Promise.resolve()
+      : discoverAndRegisterAgents({
+          kind: "acpx",
+          agentList: acpxAgentList,
+          agentToDriver: ACPX_AGENT_TO_DRIVER,
+          instances: acpxInstances,
+          includeConfig: true,
+          mapModels: (agent, discovered, catalog) =>
+            mapAcpxDiscoveredModels(agent, discovered.map((m) => m.id), catalog),
+        }),
+  ]);
 
   // Show discovery summary on session start; restore saved default model when
   // findInitialModel raced hasConfiguredAuth false → wrong initial model (#753).

@@ -870,9 +870,7 @@ export default function (pi: ExtensionAPI) {
               pi.sendMessage(
                 {
                   customType: "reload-flag-done",
-                  content:
-                    `Extension runtime reloaded (deploy nonce ${nonce}). The deploy that requested this reload is complete — ` +
-                    `continue your pending work with the new code. (Verify via .pi/run/reload.done if needed.)`,
+                  content: `Runtime reloaded (nonce ${nonce}). Deploy complete — continue pending work on the new code.`,
                   display: true,
                   details: { nonce },
                 },

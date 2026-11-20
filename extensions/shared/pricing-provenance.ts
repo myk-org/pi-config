@@ -39,14 +39,14 @@ export const PRICING_KNOWN = Symbol.for("pi-config.pricingKnown");
 export function markPricingUnknown<T extends object>(model: T): T {
   (model as Record<symbol, unknown>)[PRICING_UNKNOWN] = true;
   // Never log the model or its prices — only the decision.
-  log.debug("Marked model pricing as unknown", { marked: true });
+  if (log.isDebugEnabled()) log.debug("Marked model pricing as unknown", { marked: true });
   return model;
 }
 
 /** Whether a model was marked as having unknown (not zero) prices. */
 export function isPricingUnknown(model: unknown): boolean {
   const unknown = !!model && typeof model === "object" && Reflect.get(model, PRICING_UNKNOWN) === true;
-  log.debug("Read model pricing provenance", { unknown });
+  if (log.isDebugEnabled()) log.debug("Read model pricing provenance", { unknown });
   return unknown;
 }
 
@@ -56,14 +56,14 @@ export function isPricingUnknown(model: unknown): boolean {
  */
 export function markPricingKnown<T extends object>(model: T): T {
   (model as Record<symbol, unknown>)[PRICING_KNOWN] = true;
-  log.debug("Marked model pricing as source-published", { marked: true });
+  if (log.isDebugEnabled()) log.debug("Marked model pricing as source-published", { marked: true });
   return model;
 }
 
 /** Whether a source published this model's prices (zeros included). */
 export function isPricingKnown(model: unknown): boolean {
   const known = !!model && typeof model === "object" && Reflect.get(model, PRICING_KNOWN) === true;
-  log.debug("Read source-published pricing provenance", { known });
+  if (log.isDebugEnabled()) log.debug("Read source-published pricing provenance", { known });
   return known;
 }
 
@@ -74,14 +74,14 @@ export function isPricingKnown(model: unknown): boolean {
  */
 export function isValidPrice(value: unknown): value is number {
   const valid = typeof value === "number" && Number.isFinite(value) && value >= 0;
-  if (!valid) log.debug("Rejected price component as invalid", { type: typeof value });
+  if (!valid && log.isDebugEnabled()) log.debug("Rejected price component as invalid", { type: typeof value });
   return valid;
 }
 
 /** Normalize one price component, falling back when the source value is invalid. */
 export function priceOrFallback(value: unknown, fallback: number): number {
   const price = isValidPrice(value) ? value : fallback;
-  log.debug("Normalized price component", { valid: price === value });
+  if (log.isDebugEnabled()) log.debug("Normalized price component", { valid: price === value });
   return price;
 }
 
@@ -96,9 +96,11 @@ export function priceOrFallback(value: unknown, fallback: number): number {
 export function safeModelRef(id: unknown): string {
   const text = typeof id === "string" ? id : String(id ?? "");
   const ref = `model#${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
-  log.debug("Derived model reference for logging", { ref });
+  if (log.isDebugEnabled()) log.debug("Derived model reference for logging", { ref });
   return ref;
 }
+
+export type CostRecordLogContext = Record<string, unknown> | (() => Record<string, unknown>);
 
 /**
  * Whether a value is a usable cost record.
@@ -113,7 +115,7 @@ function asRecord(value: unknown, operation: string, context?: Record<string, un
   const record = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
-  log.debug("Checked cost record shape", { operation, usable: !!record, ...context });
+  if (log.isDebugEnabled()) log.debug("Checked cost record shape", { operation, usable: !!record, ...context });
   return record;
 }
 
@@ -132,14 +134,20 @@ function asRecord(value: unknown, operation: string, context?: Record<string, un
  * `context` carries non-sensitive identifiers (pricing source, provider, model)
  * so the decision can be traced from the log.
  */
-export function classifyCostRecord(cost: unknown, keys: readonly string[], context?: Record<string, unknown>): "known" | "unknown" {
-  const entry = asRecord(cost, "classify-cost-record", context);
+export function classifyCostRecord(cost: unknown, keys: readonly string[], context?: CostRecordLogContext): "known" | "unknown" {
+  const debugEnabled = log.isDebugEnabled();
+  const resolvedContext = debugEnabled
+    ? (typeof context === "function" ? context() : context)
+    : undefined;
+  const entry = asRecord(cost, "classify-cost-record", resolvedContext);
   // Only absent (undefined) keys are skipped; an explicit null is a supplied
   // component that failed validation.
   const supplied = entry ? keys.filter((key) => entry[key] !== undefined) : [];
-  const priced = supplied.some((key) => isValidPrice(entry![key]));
   const allValid = supplied.length > 0 && supplied.every((key) => isValidPrice(entry![key]));
-  const verdict = priced && allValid ? "known" : "unknown";
-  log.debug("Classified cost record provenance", { verdict, supplied: supplied.length, priced, allValid, fields: keys.length, ...context });
+  const verdict = allValid ? "known" : "unknown";
+  if (debugEnabled) {
+    const priced = allValid || supplied.some((key) => isValidPrice(entry![key]));
+    log.debug("Classified cost record provenance", { verdict, supplied: supplied.length, priced, allValid, fields: keys.length, ...resolvedContext });
+  }
   return verdict;
 }

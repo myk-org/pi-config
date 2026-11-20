@@ -15,6 +15,23 @@ export function createEmptyTranscriptContext(): TranscriptContext {
   return normalizeContext({ messages: [] });
 }
 
+export function messageText(msg: { role: string; content: unknown }): string {
+  if (typeof msg.content === "string") return msg.content;
+  if (!Array.isArray(msg.content)) return "";
+  const textParts: string[] = [];
+  for (const block of msg.content) {
+    if (
+      block &&
+      typeof block === "object" &&
+      "text" in block &&
+      typeof (block as { text: unknown }).text === "string"
+    ) {
+      textParts.push((block as { text: string }).text);
+    }
+  }
+  return textParts.join("\n");
+}
+
 /**
  * Build the system prompt for external LLM providers (CLI/ACPX).
  * Appends enforced memory rules so external agents follow project enforcement.
@@ -43,15 +60,19 @@ export function buildExternalSystemPrompt(context: TranscriptContext, cwd?: stri
             .replace(/^bash_regex\s+/, "")
             .replace(/^tool_name\s+/, "")
             .replace(/^file_modified\s+/, "");
+          let ruleLine: string | undefined;
           if (e.action === "block") {
-            rules.push(`- NEVER: ${trigger} — ${e.text}`);
+            ruleLine = `- NEVER: ${trigger} — ${e.text}`;
           } else if (e.action === "warn") {
-            rules.push(`- WARNING when running \`${trigger}\`: ${e.text}`);
+            ruleLine = `- WARN \`${trigger}\`: ${e.text}`;
           } else if (e.action.startsWith("run_after")) {
             const cmd = e.actionCommand || e.action.slice("run_after ".length);
             if (cmd) {
-              rules.push(`- After running \`${trigger}\`, ALWAYS run: \`${cmd}\``);
+              ruleLine = `- AFTER \`${trigger}\`, run: \`${cmd}\``;
             }
+          }
+          if (ruleLine && !systemPrompt.includes(ruleLine)) {
+            rules.push(ruleLine);
           }
         }
         if (rules.length > 0) {

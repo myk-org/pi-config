@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { describe, it, afterEach } from "node:test";
 import { createAcpxAdapter } from "../../../extensions/providers/acpx-driver.js";
 import { createClaudeAdapter } from "../../../extensions/providers/claude-driver.js";
-import { createCursorAcpxAdapter } from "../../../extensions/providers/cursor-acpx-driver.js";
 import { createCursorCliAdapter } from "../../../extensions/providers/cursor-cli-driver.js";
 import { createGeminiAdapter } from "../../../extensions/providers/gemini-driver.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
@@ -115,7 +114,6 @@ describe("persistent provider system prompts", () => {
 
   for (const [name, create] of [
     ["generic ACPX", createAcpxAdapter],
-    ["Cursor ACPX", createCursorAcpxAdapter],
   ] as const) {
     it(`${name} recreates a session for a prompt change`, async () => {
       const ensured: any[] = [];
@@ -185,7 +183,6 @@ describe("persistent provider system prompts", () => {
 
   for (const [name, create] of [
     ["generic ACPX", createAcpxAdapter],
-    ["Cursor ACPX", createCursorAcpxAdapter],
   ] as const) {
     it(`${name} uses the latest prompt when starts overlap`, async () => {
       const ensured: any[] = [];
@@ -220,7 +217,6 @@ describe("persistent provider system prompts", () => {
 
   for (const [name, create] of [
     ["generic ACPX", createAcpxAdapter],
-    ["Cursor ACPX", createCursorAcpxAdapter],
   ] as const) {
     it(`${name} serializes overlapping replacements behind a live handle`, async () => {
       const ensured: any[] = [];
@@ -308,7 +304,6 @@ describe("persistent provider system prompts", () => {
 
   for (const [name, domain, create] of [
     ["generic ACPX", "acpx-driver", createAcpxAdapter],
-    ["Cursor ACPX", "cursor-acpx-driver", createCursorAcpxAdapter],
   ] as const) {
     it(`${name} waits for an active turn before replacing its prompt`, async () => {
       let releaseResult!: () => void;
@@ -458,7 +453,6 @@ describe("persistent provider system prompts", () => {
 
   for (const [name, domain, create] of [
     ["generic ACPX", "acpx-driver", createAcpxAdapter],
-    ["Cursor ACPX", "cursor-acpx-driver", createCursorAcpxAdapter],
   ] as const) {
     for (const shutdown of ["stopSession", "stopAll"] as const) {
       it(`${name} ${shutdown} aborts a stuck turn before closing`, async () => {
@@ -654,7 +648,7 @@ describe("persistent provider system prompts", () => {
     }
   }
 
-  it("Cursor ACPX retries a failed prompt application", async () => {
+  it("generic ACPX retries a failed prompt application", async () => {
     const ensured: any[] = [];
     let turns = 0;
     const runtime = {
@@ -666,7 +660,7 @@ describe("persistent provider system prompts", () => {
       }),
       getStatus: async () => ({}),
     } as any;
-    const adapter = createCursorAcpxAdapter({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+    const adapter = createAcpxAdapter({ agent: "cursor", enabled: true }, process.cwd(), runtime);
     const handle = await adapter.startSession({ model: "default", systemPrompt: "retry-system", cwd: process.cwd() });
     await assert.rejects(adapter.sendTurn(handle, "one"));
     await adapter.sendTurn(handle, "two");

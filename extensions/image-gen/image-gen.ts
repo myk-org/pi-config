@@ -10,6 +10,7 @@ import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { isImageGenModelId } from "../orchestrator/settings-tui-helpers.js";
+import { getProjectTmpDir, isRunningInContainer } from "../orchestrator/utils.js";
 import { createLogger } from "../shared/logger.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -102,13 +103,6 @@ function getExtensionForMime(mimeType: string): string {
     return map[mimeType] ?? "png";
 }
 
-// Same logic as getProjectTmpDir in extensions/orchestrator/utils.ts
-function getTempDir(cwd: string): string {
-    const dir = path.join(cwd, ".pi", "tmp");
-    fs.mkdirSync(dir, { recursive: true });
-    return dir;
-}
-
 function getHttpdPath(): string {
     // Resolve relative to this extension's location → ../../scripts/httpd.py
     const thisDir = path.dirname(fileURLToPath(import.meta.url));
@@ -117,11 +111,7 @@ function getHttpdPath(): string {
 
 function serveImage(imagePath: string): { url: string; port: string; dir: string } | null {
     // Only serve via HTTP in containers (where user can't access local files)
-    // Use filesystem checks matching orchestrator's isRunningInContainer()
-    const inContainer = fs.existsSync("/.dockerenv") ||
-        fs.existsSync("/run/.containerenv") ||
-        (() => { try { return fs.readFileSync("/proc/1/cgroup", "utf-8").includes("docker") || fs.readFileSync("/proc/1/cgroup", "utf-8").includes("containerd"); } catch { return false; } })();
-    if (!inContainer) return null;
+    if (!isRunningInContainer()) return null;
 
     const httpd = getHttpdPath();
     if (!fs.existsSync(httpd)) return null;
@@ -305,7 +295,7 @@ export function createImageGenTool(): ToolDefinition<typeof imageGenSchema> {
             }
 
             const cwd = ctx?.cwd ?? process.cwd();
-            const tempDir = getTempDir(cwd);
+            const tempDir = getProjectTmpDir(cwd);
             const savedPaths: string[] = [];
 
             for (const image of images) {

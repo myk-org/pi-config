@@ -31,7 +31,7 @@ import {
   buildUnavailableSnapshot,
   type UnavailableProviderSnapshot,
 } from "./provider-errors.js";
-import { fileLog } from "./file-logger.js";
+import { createLogger } from "./logger.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,7 +61,7 @@ export type RegistryChangeListener = () => void;
 // Registry
 // ---------------------------------------------------------------------------
 
-const LOG_DOMAIN = "provider-registry";
+const log = createLogger("provider-registry");
 
 /**
  * ProviderDriverRegistry — owns the lifecycle of all provider instances.
@@ -255,7 +255,7 @@ export class ProviderDriverRegistry {
     try {
       await entry.instance.dispose();
     } catch (err) {
-      fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN, `dispose failed for ${id}:`, err);
+      log.warn(`dispose failed for ${id}:`, err);
     }
   }
 
@@ -296,8 +296,7 @@ export class ProviderDriverRegistry {
 
     // Unknown driver → unavailable
     if (!driver) {
-      fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-        `${instanceId}: driver '${config.driver}' not registered`);
+      log.warn(`${instanceId}: driver '${config.driver}' not registered`);
       return {
         kind: "unavailable",
         snapshot: buildUnavailableSnapshot({
@@ -316,8 +315,7 @@ export class ProviderDriverRegistry {
       typedConfig = driver.configSchema.parse(rawConfig);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-        `${instanceId}: config validation failed: ${detail}`);
+      log.warn(`${instanceId}: config validation failed: ${detail}`);
       return {
         kind: "unavailable",
         snapshot: buildUnavailableSnapshot({
@@ -333,8 +331,7 @@ export class ProviderDriverRegistry {
     try {
       const probeResult = await driver.probe(typedConfig);
       if (!probeResult.available) {
-        fileLog(LOG_DOMAIN, "info", LOG_DOMAIN,
-          `${instanceId}: probe unavailable — ${probeResult.reason || "unknown reason"}`);
+        log.info(`${instanceId}: probe unavailable — ${probeResult.reason || "unknown reason"}`);
         return {
           kind: "unavailable",
           snapshot: buildUnavailableSnapshot({
@@ -347,8 +344,7 @@ export class ProviderDriverRegistry {
       }
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-        `${instanceId}: probe threw: ${detail}`);
+      log.warn(`${instanceId}: probe threw: ${detail}`);
       return {
         kind: "unavailable",
         snapshot: buildUnavailableSnapshot({
@@ -372,8 +368,7 @@ export class ProviderDriverRegistry {
       return { kind: "live", live: { instance, rawConfig: config } };
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-        `${instanceId}: create failed: ${detail}`);
+      log.warn(`${instanceId}: create failed: ${detail}`);
       return {
         kind: "unavailable",
         snapshot: buildUnavailableSnapshot({

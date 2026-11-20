@@ -24,6 +24,9 @@ export interface LoggerCore {
   isDebugEnabled(): boolean;
 }
 
+export declare function oneLine(value: string): string;
+export declare function formatErr(err: unknown): string;
+
 /**
  * Canonical logger behavior; adapters only select/filter and persist lines.
  * Never throws — logging must not affect the caller.

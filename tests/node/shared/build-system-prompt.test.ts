@@ -5,10 +5,12 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../../../extensions/shared/build-system-prompt.js";
+import { entryHash } from "../../../extensions/orchestrator/memory-scoring.js";
+import { clearEnforcementRulesCache } from "../../../extensions/orchestrator/enforcement-rules.js";
+import { buildExternalSystemPrompt, createEmptyTranscriptContext, messageText } from "../../../extensions/shared/build-system-prompt.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -83,5 +85,99 @@ describe("buildExternalSystemPrompt", () => {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("preserves enforced triggers/commands when only entry text is in project_memory and skips exact duplicates (#1242)", () => {
+    const tmpDir = makeTempDir("build-prompt-dedup-");
+    const now = new Date().toISOString();
+    const ruleAlreadyInMemoryText = "never use git add dot";
+    const runAfterText = "run typecheck after ts edit";
+    const lineA = `- [lesson] ${ruleAlreadyInMemoryText}`;
+    const lineB = `- [lesson] ${runAfterText}`;
+    try {
+      mkdirSync(join(tmpDir, ".pi", "memory", "topics"), { recursive: true });
+      writeFileSync(
+        join(tmpDir, ".pi", "memory", "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [entryHash(lineA)]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+              trigger: "bash_contains git add .",
+              action: "block",
+            },
+            [entryHash(lineB)]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+              trigger: "file_modified *.ts",
+              action: "run_after npm run typecheck",
+            },
+          },
+          lastRebuild: now,
+        }) + "\n",
+      );
+      writeFileSync(
+        join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
+        `# Lessons\n${lineA}\n${lineB}\n`,
+      );
+      clearEnforcementRulesCache();
+
+      // Entry text in <project_memory> lacks trigger/action/command — both rules MUST remain injected
+      const withMemoryTextOnly = buildExternalSystemPrompt({
+        messages: [{
+          role: "system",
+          content: `<project_memory>\n- [lesson] ${ruleAlreadyInMemoryText}\n- [lesson] ${runAfterText}\n</project_memory>`,
+          timestamp: 1,
+        }],
+      } as TranscriptContext, tmpDir)!;
+      assert.ok(withMemoryTextOnly.includes("## Enforced Rules (MANDATORY)"));
+      assert.ok(withMemoryTextOnly.includes(`- NEVER: git add . — ${ruleAlreadyInMemoryText}`));
+      assert.ok(withMemoryTextOnly.includes("- AFTER `*.ts`, run: `npm run typecheck`"));
+
+      // Exact rendered rule lines already in systemPrompt are skipped; when all match, section is omitted
+      const exactBlockLine = `- NEVER: git add . — ${ruleAlreadyInMemoryText}`;
+      const exactAfterLine = "- AFTER `*.ts`, run: `npm run typecheck`";
+      const partialDedup = buildExternalSystemPrompt({
+        messages: [{ role: "system", content: exactBlockLine, timestamp: 1 }],
+      } as TranscriptContext, tmpDir)!;
+      assert.ok(partialDedup.includes("## Enforced Rules (MANDATORY)"));
+      assert.ok(!partialDedup.includes(`\n${exactBlockLine}`, partialDedup.indexOf("## Enforced Rules (MANDATORY)")));
+      assert.ok(partialDedup.includes(exactAfterLine));
+
+      const fullDedup = buildExternalSystemPrompt({
+        messages: [{ role: "system", content: `${exactBlockLine}\n${exactAfterLine}`, timestamp: 1 }],
+      } as TranscriptContext, tmpDir)!;
+      assert.ok(!fullDedup.includes("## Enforced Rules (MANDATORY)"));
+    } finally {
+      clearEnforcementRulesCache();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("messageText", () => {
+  it("extracts string, array text blocks (ignoring null/non-text), and returns empty string for non-array", () => {
+    assert.equal(messageText({ role: "user", content: "plain string" }), "plain string");
+    assert.equal(
+      messageText({
+        role: "assistant",
+        content: [null, { type: "thinking", thinking: "ignored" }, { type: "text", text: "first" }, { type: "text", text: "second" }],
+      }),
+      "first\nsecond",
+    );
+    assert.equal(messageText({ role: "user", content: null }), "");
+    assert.equal(messageText({ role: "user", content: 42 }), "");
   });
 });

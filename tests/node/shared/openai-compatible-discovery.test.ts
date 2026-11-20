@@ -41,6 +41,7 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     provider?: string;
     name?: string;
     mode?: "tui" | "json" | "print";
+    reason?: string;
     headers?: Record<string, string>;
     discoverModelCapabilities?: boolean;
     staticModels?: Array<Record<string, unknown>>;
@@ -88,7 +89,7 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
       registerShortcut: (shortcut: string) => shortcuts.push(shortcut),
     };
     installOpenAiCompatibleDiscovery(pi as any);
-    await handlers.get("session_start")?.({}, {
+    await handlers.get("session_start")?.({ reason: options.reason ?? "startup" }, {
       mode: options.mode ?? "tui",
       hasUI: (options.mode ?? "tui") === "tui",
       modelRegistry: registry,
@@ -534,7 +535,7 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
       registry = current;
     } });
     await started;
-    await restart({}, { mode: "tui", hasUI: true, modelRegistry: registry });
+    await restart({ reason: "startup" }, { mode: "tui", hasUI: true, modelRegistry: registry });
     assert.equal(oldSignal.aborted, true);
     release(new Response(JSON.stringify({ data: [{ id: "late" }] })));
     const { appended } = await starting;
@@ -547,6 +548,15 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     const { handlers, registry } = await setup();
     handlers.get("session_shutdown")?.();
     assert.deepEqual(modelIds(registry), ["static"]);
+  });
+
+  it("skips duplicate discovery summary entries on reload and resume (#1242)", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "discovered" }] }));
+    for (const reason of ["reload", "resume", "fork"]) {
+      const { appended, registry } = await setup({ reason });
+      assert.deepEqual(modelIds(registry), ["static", "discovered"]);
+      assert.deepEqual(appended, [], `reason=${reason} should still refresh models without duplicating summary`);
+    }
   });
 });
 
