@@ -12,6 +12,7 @@ import {
   matchBashCommand,
   matchToolCall,
   executeAction,
+  loadEligibleScoreEntries,
   loadEnforcedEntries,
   loadVerifierEntries,
   checkVerifiers,
@@ -1145,6 +1146,52 @@ describe("loadEnforcedEntries / loadVerifierEntries caching (#1196)", () => {
       assert.equal(updated.length, 1);
       assert.equal(updated[0].text, verText);
       assert.equal(updated[0].verifier, "tool_called ask_user before gh pr merge");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loadEligibleScoreEntries maps matching active entries into cache", () => {
+    const tmpDir = makeTempDir("enf-eligible-");
+    try {
+      const memoryDir = path.join(tmpDir, ".pi", "memory");
+      fs.mkdirSync(path.join(memoryDir, "topics"), { recursive: true });
+      const text = "Always validate before push";
+      const line = `- [lesson] ${text}`;
+      const hash = entryHash(line);
+      fs.writeFileSync(path.join(memoryDir, "topics", "lessons.md"), `# Lessons\n\n${line}\n`);
+      const now = new Date().toISOString();
+      fs.writeFileSync(
+        path.join(memoryDir, "memory-scores.jsonl"),
+        JSON.stringify({
+          entries: {
+            [hash]: {
+              class: "lesson",
+              score: 1.0,
+              evidenceCount: 1,
+              cue: "explicit",
+              firstSeen: now,
+              lastReinforced: now,
+              userState: "auto",
+              lifecycle: "active",
+            },
+          },
+          lastRebuild: now,
+          hashAlgo: "sha256-16",
+        }) + "\n",
+      );
+
+      const cache = new Map();
+      const loaded = loadEligibleScoreEntries(
+        tmpDir,
+        "s1",
+        cache,
+        "test_eligible",
+        (h) => h === hash,
+        (h, t) => ({ h, t }),
+      );
+      assert.deepEqual(loaded, [{ h: hash, t: text }]);
+      assert.equal(cache.size, 1);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

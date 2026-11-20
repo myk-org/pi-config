@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
 import type { TaskStore } from "./task-store.js";
 import type { TaskWidget } from "./task-widget.js";
-import { selectTaskRows, taskAssigneeTag } from "./tasks-view.js";
+import { openTaskBlockers, selectTaskRows, taskAssigneeTag } from "./tasks-view.js";
 
 const log = createLogger("pitasks");
 
@@ -66,21 +66,13 @@ export function registerTaskTools(
 			const tasks = store.list();
 			if (tasks.length === 0) return Promise.resolve(textResult("No tasks found"));
 			const taskById = new Map(tasks.map(t => [t.id, t]));
-			const statusOrder: Record<string, number> = { pending: 0, in_progress: 1, completed: 2 };
-			const sorted = [...tasks].sort((a, b) => {
-				const so = (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
-				if (so !== 0) return so;
-				return Number(a.id) - Number(b.id);
-			});
-			const lines = selectTaskRows(sorted).map(task => {
+			const getTask = (id: string) => taskById.get(id);
+			const lines = selectTaskRows(tasks).map(task => {
 				let line = `#${task.id} [${task.status}] ${taskAssigneeTag(task)} ${task.subject}`;
 				if (task.owner) line += ` (${task.owner})`;
 				if (task.blockedBy.length > 0) {
-					const openBlockers = task.blockedBy.filter(bid => {
-						const blocker = taskById.get(bid);
-						return blocker && blocker.status !== "completed";
-					});
-					if (openBlockers.length > 0) line += ` [blocked by ${openBlockers.map(id => "#" + id).join(", ")}]`;
+					const blockers = openTaskBlockers(task, getTask);
+					if (blockers.length > 0) line += ` [blocked by ${blockers.map(id => "#" + id).join(", ")}]`;
 				}
 				return line;
 			});

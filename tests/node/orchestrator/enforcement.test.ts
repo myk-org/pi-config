@@ -13,7 +13,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { DANGEROUS, DANGEROUS_EXPLANATIONS, DANGEROUS_LABELS, dangerousPatternExplanation, dangerousPatternExplanations, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
 import { getPiLogPath, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
-import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
+import { commitTrailerModelId, formatReviewStateSummary, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { clearSettingsCache, getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
   READ_ONLY_COMMANDS,
@@ -5704,5 +5704,56 @@ describe("git protection fast-path (#1194)", () => {
     } finally {
       cleanup();
     }
+  });
+
+  it("blocks nested-shell quote-glued git identity config writes", async () => {
+    const { toolCall, mkCtx, cleanup } = setupInstrumentedRepo();
+    try {
+      const res = await toolCall(
+        { type: "tool_call", toolName: "bash", input: { command: `bash -c "echo '[user]' >> .git/con''fig"` } },
+        mkCtx(),
+      );
+      assert.equal(res?.block, true);
+      assert.match(res?.reason ?? "", /git identity config/i);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("formatReviewStateSummary formats ui mode with worktree", () => {
+    const sampleState: any = {
+      status: "needs_review",
+      subject: "src/a.ts",
+      cycle: 2,
+      findings_count: 1,
+      reviewers_pending: ["code-reviewer-quality"],
+      reviewers_total: 5,
+      edited_during_cycle: true,
+      tests_passed: false,
+      last_edit_at: "2026-11-20T00:00:00Z",
+      last_clean_at: null,
+    };
+    const uiOut = formatReviewStateSummary(sampleState, true, { mode: "ui", worktreePath: ".worktrees/wt1" });
+    assert.match(uiOut, /Review Loop Enforcement: enabled \(worktree: \.worktrees\/wt1\)/);
+    assert.match(uiOut, /Reviewers pending: 1\/5 \(code-reviewer-quality\)/);
+    assert.match(uiOut, /Last clean: none/);
+  });
+
+  it("formatReviewStateSummary formats tool mode", () => {
+    const sampleState: any = {
+      status: "needs_review",
+      subject: "src/a.ts",
+      cycle: 2,
+      findings_count: 1,
+      reviewers_pending: ["code-reviewer-quality"],
+      reviewers_total: 5,
+      edited_during_cycle: true,
+      tests_passed: false,
+      last_edit_at: "2026-11-20T00:00:00Z",
+      last_clean_at: null,
+    };
+    const toolOut = formatReviewStateSummary(sampleState, false, { mode: "tool" });
+    assert.match(toolOut, /^enforcement: disabled\n/);
+    assert.match(toolOut, /pending: 1\/5 \(code-reviewer-quality\)/);
   });
 });

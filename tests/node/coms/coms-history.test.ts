@@ -138,6 +138,29 @@ describe("queryHistoryRecords", () => {
 		appendFileSync(file, "null\n123\n\"str\"\n[]\n{}\n", "utf-8");
 		assert.deepEqual(queryHistoryRecords(file).map((r) => r.msg_id), ["m1", "m2"]);
 	});
+
+	it("backwards-iteration edge case: limit + case-insensitive status + malformed lines returns exact newest-last slice", () => {
+		appendHistoryRecord(file, rec({ msg_id: "m1", status: "QUEUED (PRIORITY)" }));
+		appendFileSync(file, "{broken json line\n", "utf-8");
+		appendHistoryRecord(file, rec({ msg_id: "m2", status: "replied" }));
+		appendHistoryRecord(file, rec({ msg_id: "m3", status: "Queued" }));
+		appendFileSync(file, "null\n[]\n42\n", "utf-8");
+		appendHistoryRecord(file, rec({ msg_id: "m4", status: "queued (urgent)" }));
+		appendFileSync(file, "not-json-at-all\n", "utf-8");
+		appendHistoryRecord(file, rec({ msg_id: "m5", status: "Priority QUEUED" }));
+		appendHistoryRecord(file, rec({ msg_id: "m6", status: "sent" }));
+
+		const out = queryHistoryRecords(file, { status: "QuEuEd", limit: 2 });
+		assert.deepEqual(out.map((r) => r.msg_id), ["m4", "m5"]);
+	});
+
+	it("floors fractional limits so the bound still applies", () => {
+		for (let i = 1; i <= 5; i++) {
+			appendHistoryRecord(file, rec({ msg_id: `frac-${i}` }));
+		}
+		const out = queryHistoryRecords(file, { limit: 2.7 });
+		assert.deepEqual(out.map((r) => r.msg_id), ["frac-4", "frac-5"]);
+	});
 });
 
 describe("history rotation", () => {

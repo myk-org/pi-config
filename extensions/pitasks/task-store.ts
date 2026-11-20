@@ -136,7 +136,7 @@ function isProcessRunning(pid: number): boolean {
 
 function normalizeTask(t: any): Task {
 	const now = Date.now();
-	log.debug("task_normalized", { taskId: t.id, hasTelemetry: !!t.telemetry });
+	if (log.isDebugEnabled()) log.debug("task_normalized", { taskId: t.id, hasTelemetry: !!t.telemetry });
 	const { completionNote, completedBy, ...rest } = t ?? {};
 	return {
 		...rest,

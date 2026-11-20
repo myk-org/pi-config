@@ -160,4 +160,20 @@ describe("tool-arg-guard hardening", () => {
     assert.equal(isArgumentRejection(true, "some log\nValidation failed for tool \"x\":"), false);
     assert.equal(isArgumentRejection(true, 'Validation failed for tool "x":\n  - a: missing'), true);
   });
+
+  it("does not inspect result payload when isError is false (#1227)", async () => {
+    const h = fakePi();
+    registerToolArgGuard(h.pi);
+    let readResult = false;
+    const event: any = { toolName: "read", isError: false };
+    Object.defineProperty(event, "result", {
+      get() {
+        readResult = true;
+        return "large payload";
+      },
+    });
+    await h.fire("tool_execution_end", event);
+    assert.equal(readResult, false);
+    assert.equal(h.notes.length, 0);
+  });
 });
