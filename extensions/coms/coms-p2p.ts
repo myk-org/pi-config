@@ -256,6 +256,10 @@ interface InboundContext {
 	mixedTurnRetries?: number;
 	/** How many times this inbound was re-injected after an abort/error before delivery (#1226) */
 	undeliveredRetries?: number;
+	/** #1226: true while Pi holds an undelivered followUp copy of this inbound in its queue. */
+	followUpQueued?: boolean;
+	/** #1226: steers injected as followUp for this inbound that have not yet emitted message_start. */
+	pendingSteers?: number;
 	/** #924 §4: this inbound was sent with priority (jumps the queue). */
 	priority?: boolean;
 	/** #924 §1: steers accepted into this inbound's turn so far (cap guard). */
@@ -747,6 +751,12 @@ export default function (pi: ExtensionAPI) {
 	let inboundDelivered = false;
 	/** Re-entrancy guard while finalizeCurrentInbound is awaiting I/O (#1226). */
 	let finalizingInbound = false;
+	/** Monotonic generation incremented on session_start and cleanShutdown (#1226). */
+	let sessionGeneration = 0;
+	/** msg_ids whose response send is already owned by an in-flight finalizer (#1226). */
+	const finalizingMsgIds = new Set<string>();
+	/** True while an agent run is active (agent_start -> agent_end) (#1226). */
+	let agentRunning = false;
 	let bundledInbounds: InboundContext[] = [];
 	let processingInbound = false;
 
@@ -912,15 +922,50 @@ export default function (pi: ExtensionAPI) {
 		return true;
 	}
 
+	function isPiStreaming(ctx?: ExtensionContext | null): boolean {
+		const activeCtx = ctx ?? currentCtx;
+		if (typeof activeCtx?.isIdle === "function") {
+			return !activeCtx.isIdle();
+		}
+		return agentRunning;
+	}
+
+	function fulfillBundledInbounds(items: InboundContext[], ident: typeof identity): void {
+		for (const bi of items) {
+			// Fire-and-forget — don't await, don't block finalization
+			if (ident) {
+				sendEnvelope(bi.sender_endpoint, {
+					type: "response",
+					msg_id: bi.msg_id,
+					sender_session: ident.coms_session_id,
+					sender_endpoint: ident.endpoint,
+					hops: 0,
+					timestamp: nowIso(),
+					response: null,
+					error: "bundled",
+					queued_msg_ids: [],
+				}).catch(() => { /* best-effort */ });
+			}
+			bi.fulfilled = true;
+			inboundQueue.delete(bi.msg_id);
+		}
+	}
+
 	function injectInbound(
 		ib: InboundContext,
-		opts: { header?: string; bundled?: { header: string; content: string; origin?: PromptOrigin; ids: string[] } } = {},
+		opts: {
+			header?: string;
+			bundled?: { header: string; content: string; origin?: PromptOrigin; ids: string[] };
+			streaming?: boolean;
+			ctx?: ExtensionContext | null;
+		} = {},
 	): void {
 		const origin = opts.bundled ? opts.bundled.origin : ib.origin;
 		const customType = formatComsInboundType(ib.sender_name, sanitizeComsName(identity?.name ?? "?"), ib.sender_cwd, origin);
 		const content = opts.bundled
 			? buildInboundContent(opts.bundled.header, opts.bundled.content, null, ib.sender_name, ib.sender_cwd, opts.bundled.origin, ib.sender_session, true)
 			: buildInboundContent(opts.header ?? "", ib.prompt, ib.tasks ?? null, ib.sender_name, ib.sender_cwd, ib.origin, ib.sender_session);
+		const queuedAsFollowUp = opts.streaming === true || isPiStreaming(opts.ctx);
 		pi.sendMessage(
 			{
 				customType,
@@ -935,9 +980,15 @@ export default function (pi: ExtensionAPI) {
 			},
 			{ deliverAs: "followUp", triggerTurn: true },
 		);
+		ib.followUpQueued = queuedAsFollowUp;
 	}
 
-	async function drainNextInbound(opts: { bundle: boolean; onFail: "reset" | "drop" | "fail_orphans" }): Promise<void> {
+	async function drainNextInbound(
+		opts: { bundle: boolean; onFail: "reset" | "drop" | "fail_orphans"; streaming?: boolean; ctx?: ExtensionContext | null },
+		expectedGen?: number,
+	): Promise<void> {
+		const isStale = () => shuttingDown || !identity || (expectedGen !== undefined && sessionGeneration !== expectedGen);
+		if (isStale()) return;
 		const allPending = [...inboundQueue.values()].filter((i) => !i.fulfilled);
 		if (allPending.length === 0) {
 			if (opts.bundle) bundledInbounds = [];
@@ -951,28 +1002,34 @@ export default function (pi: ExtensionAPI) {
 			currentInbound = next;
 			inboundDelivered = false;
 			try {
-				injectInbound(next);
+				injectInbound(next, { streaming: opts.streaming, ctx: opts.ctx });
 				writeLiveRegistry();
 				maybeRefreshWidget();
 			} catch (drainErr: any) {
 				if (opts.onFail === "fail_orphans") {
 					log.error("fifo_drain_failed", next.msg_id, drainErr?.message);
+					const ident = identity!;
 					for (let idx = 0; idx < allPending.length; idx++) {
+						if (isStale()) return;
 						const orphan = allPending[idx];
+						orphan.fulfilled = true;
+						inboundQueue.delete(orphan.msg_id);
+						finalizingMsgIds.add(orphan.msg_id);
 						try {
 							await sendEnvelope(orphan.sender_endpoint, {
 								type: "response", msg_id: orphan.msg_id,
-								sender_session: identity!.coms_session_id, sender_endpoint: identity!.endpoint,
+								sender_session: ident.coms_session_id, sender_endpoint: ident.endpoint,
 								hops: 0, timestamp: nowIso(),
 								response: null, error: "injection_failed",
 								queued_msg_ids: allPending.slice(idx + 1).map(r => r.msg_id),
 							});
 						} catch (e: any) {
 							log.error("orphan_cleanup_failed", orphan.msg_id, e?.message);
+						} finally {
+							finalizingMsgIds.delete(orphan.msg_id);
 						}
-						orphan.fulfilled = true;
-						inboundQueue.delete(orphan.msg_id);
 					}
+					if (isStale()) return;
 				}
 				currentInbound = null;
 				inboundDelivered = false;
@@ -989,7 +1046,7 @@ export default function (pi: ExtensionAPI) {
 			bundledInbounds = [];
 			log.debug("agent_end_fifo_next", next.msg_id, "from", next.sender_name);
 			try {
-				injectInbound(next);
+				injectInbound(next, { streaming: opts.streaming, ctx: opts.ctx });
 				writeLiveRegistry();
 				maybeRefreshWidget();
 			} catch (err: any) {
@@ -1013,7 +1070,7 @@ export default function (pi: ExtensionAPI) {
 		const bundle = buildBundledContent(primary.sender_name, senderPending);
 		log.debug("fifo_bundle", senderPending.length, "from", primary.sender_name, "origins", senderPending.map((ib) => ib.origin ?? "peer").join(","));
 		try {
-			injectInbound(primary, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id) } });
+			injectInbound(primary, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id) }, streaming: opts.streaming, ctx: opts.ctx });
 			writeLiveRegistry();
 			maybeRefreshWidget();
 		} catch (err: any) {
@@ -1164,6 +1221,7 @@ export default function (pi: ExtensionAPI) {
 					log.warn("steer_inject_failed", env.msg_id, err instanceof Error ? err.message : String(err));
 				}
 				if (injected) {
+					currentInbound.pendingSteers = (currentInbound.pendingSteers ?? 0) + 1;
 					ackOk(socket, env.msg_id);
 					log.info("steer_injected", env.msg_id, "into", currentInbound.msg_id, "from", env.sender_name, "count", currentInbound.steerCount);
 					appendComsHistory({
@@ -1801,7 +1859,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		applyExtensionDefaults(import.meta.url, ctx);
 		currentCtx = ctx;
+		sessionGeneration++;
 		shuttingDown = false;
+		finalizingInbound = false;
+		agentRunning = false;
 		peerCards.clear();
 		welcomeShown = false;
 		knownPeerSessions.clear();
@@ -3692,6 +3753,7 @@ Do not respond to this message.`;
 			currentCtx = ctx;
 			if (identity && resolveOwnPiSessionId(ctx) !== identity.pi_session_id) writeLiveRegistry();
 		}
+		agentRunning = true;
 		agentRunningUserTurn = !processingInbound;
 		comsSendCalledThisTurn.clear();
 		userMessageDuringInbound = false;
@@ -3707,11 +3769,22 @@ Do not respond to this message.`;
 		const msg = event?.message;
 		if (currentInbound && msg?.role === "custom" && msg?.details?.msg_id === currentInbound.msg_id) {
 			inboundDelivered = true;
+			currentInbound.followUpQueued = false;
 			inboundSetDuringUserTurn = false;
 			userMessageDuringInbound = false;
 			agentRunningUserTurn = false;
 			comsSendCalledThisTurn.clear();
 			log.debug("inbound_delivered", currentInbound.msg_id, "from", currentInbound.sender_name);
+			return;
+		}
+		if (
+			currentInbound
+			&& msg?.role === "custom"
+			&& msg?.details?.steer === true
+			&& msg?.details?.target_msg_id === currentInbound.msg_id
+		) {
+			currentInbound.pendingSteers = Math.max(0, (currentInbound.pendingSteers ?? 0) - 1);
+			log.debug("steer_delivered", msg.details.msg_id, "into", currentInbound.msg_id, "remaining", currentInbound.pendingSteers);
 			return;
 		}
 		if (isUserMessageDuringInbound(processingInbound && inboundDelivered, msg?.role)) {
@@ -3721,8 +3794,16 @@ Do not respond to this message.`;
 	});
 
 	// ━━ Inbound finalization: capture reply, dispatch response, drain FIFO (#1226) ━━
-	async function finalizeCurrentInbound(ctx: ExtensionContext, assistantMessage?: any): Promise<void> {
-		if (!currentInbound || !identity || finalizingInbound) return;
+	async function finalizeCurrentInbound(
+		ctx: ExtensionContext,
+		assistantMessage?: any,
+		opts: { streaming?: boolean } = {},
+	): Promise<void> {
+		if (shuttingDown || !currentInbound || !identity || finalizingInbound) return;
+		const gen = sessionGeneration;
+		const ident = identity;
+		const isStale = () => shuttingDown || sessionGeneration !== gen;
+		const ownedMsgIds: string[] = [];
 		finalizingInbound = true;
 		try {
 			const inbound = currentInbound;
@@ -3752,12 +3833,16 @@ Do not respond to this message.`;
 						injectInbound(inbound, {
 							header: `[NOTE: your previous reply was not captured because a user message arrived in the same turn. ` +
 								`This is a re-injection — please reply to this peer message now.]`,
+							streaming: opts.streaming,
+							ctx,
 						});
 					} catch (err: any) {
 						// Re-injection failed — send error response to peer, then FIFO drain remaining
 						log.error("mixed_turn_reinject_failed", inbound.msg_id, err?.message);
 						inbound.fulfilled = true;
 						inboundQueue.delete(inbound.msg_id);
+						finalizingMsgIds.add(inbound.msg_id);
+						ownedMsgIds.push(inbound.msg_id);
 						bundledInbounds = [];
 						maybeRefreshWidget();
 						currentInbound = null;
@@ -3767,13 +3852,14 @@ Do not respond to this message.`;
 						try {
 							await sendEnvelope(inbound.sender_endpoint, {
 								type: "response", msg_id: inbound.msg_id,
-								sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+								sender_session: ident.coms_session_id, sender_endpoint: ident.endpoint,
 								hops: 0, timestamp: nowIso(),
 								response: null, error: "mixed_turn_conflict",
 								queued_msg_ids: queuedIds,
 							});
 						} catch { /* best-effort */ }
-						await drainNextInbound({ bundle: false, onFail: "fail_orphans" });
+						if (isStale()) return;
+						await drainNextInbound({ bundle: false, onFail: "fail_orphans", streaming: opts.streaming, ctx }, gen);
 						return;
 					}
 					// Re-injection succeeded — restore currentInbound (undelivered until message_start)
@@ -3786,23 +3872,26 @@ Do not respond to this message.`;
 				log.warn("mixed_turn_exhausted", inbound.msg_id, "from", inbound.sender_name, "retries", retries);
 				const queuedIds: string[] = [];
 				for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
+				inbound.fulfilled = true;
+				inboundQueue.delete(inbound.msg_id);
+				finalizingMsgIds.add(inbound.msg_id);
+				ownedMsgIds.push(inbound.msg_id);
+				bundledInbounds = [];
+				maybeRefreshWidget();
+				currentInbound = null;
+				inboundDelivered = false;
 				try {
 					await sendEnvelope(inbound.sender_endpoint, {
 						type: "response", msg_id: inbound.msg_id,
-						sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+						sender_session: ident.coms_session_id, sender_endpoint: ident.endpoint,
 						hops: 0, timestamp: nowIso(),
 						response: null, error: "mixed_turn_conflict",
 						queued_msg_ids: queuedIds,
 					});
 				} catch { /* best-effort */ }
-				inbound.fulfilled = true;
-				inboundQueue.delete(inbound.msg_id);
-				bundledInbounds = [];
-				maybeRefreshWidget();
-				currentInbound = null;
-				inboundDelivered = false;
+				if (isStale()) return;
 
-				await drainNextInbound({ bundle: false, onFail: "fail_orphans" });
+				await drainNextInbound({ bundle: false, onFail: "fail_orphans", streaming: opts.streaming, ctx }, gen);
 				return;
 			}
 			// ── End mixed-turn detection ─────────────────────────────────────
@@ -3814,13 +3903,11 @@ Do not respond to this message.`;
 				log.info("agent_end_skip_autocapture", inbound.msg_id, "coms_send called this turn", "sender", inbound.sender_name);
 				inbound.fulfilled = true;
 				inboundQueue.delete(inbound.msg_id);
-				for (const bi of bundledInbounds) {
-					bi.fulfilled = true;
-					inboundQueue.delete(bi.msg_id);
-				}
+				const bundled = bundledInbounds;
 				bundledInbounds = [];
+				fulfillBundledInbounds(bundled, ident);
 				maybeRefreshWidget();
-				await drainNextInbound({ bundle: false, onFail: "reset" });
+				await drainNextInbound({ bundle: false, onFail: "reset", streaming: opts.streaming, ctx }, gen);
 				return;
 			}
 
@@ -3863,7 +3950,7 @@ Do not respond to this message.`;
 
 				maybeRefreshWidget();
 
-				await drainNextInbound({ bundle: true, onFail: "reset" });
+				await drainNextInbound({ bundle: true, onFail: "reset", streaming: opts.streaming, ctx }, gen);
 				return;
 			}
 
@@ -3892,8 +3979,8 @@ Do not respond to this message.`;
 			const respEnv: ResponseEnvelope = {
 				type: "response",
 				msg_id: inbound.msg_id,
-				sender_session: identity.coms_session_id,
-				sender_endpoint: identity.endpoint,
+				sender_session: ident.coms_session_id,
+				sender_endpoint: ident.endpoint,
 				hops: 0,
 				timestamp: nowIso(),
 				response: payload,
@@ -3902,6 +3989,13 @@ Do not respond to this message.`;
 			};
 			// Compute your_pending at the last moment before send
 			respEnv.your_pending = getSenderPending(inbound.sender_session, inbound.msg_id).filter(p => !bundledIds.has(p.msg_id));
+
+			// Claim ownership before awaiting I/O so cleanShutdown cannot emit a conflicting
+			// session_closed envelope for this msg_id while its normal reply is in flight (#1226).
+			inbound.fulfilled = true;
+			inboundQueue.delete(inbound.msg_id);
+			finalizingMsgIds.add(inbound.msg_id);
+			ownedMsgIds.push(inbound.msg_id);
 
 			try {
 				await sendEnvelope(inbound.sender_endpoint, respEnv);
@@ -3918,37 +4012,21 @@ Do not respond to this message.`;
 				log.error("outbound_response_failed", inbound.msg_id, e?.message);
 			}
 
-			inbound.fulfilled = true;
-			inboundQueue.delete(inbound.msg_id);
+			// Abort continuation if shutdown or session restart happened while awaiting I/O.
+			if (isStale()) return;
 
-			// Fulfill bundled inbounds — fire-and-forget responses, don't block finalization
-			for (const bi of bundledInbounds) {
-				const biMsgId = bi.msg_id;
-				const biEndpoint = bi.sender_endpoint;
-				// Fire-and-forget — don't await, don't block
-				if (identity) {
-					sendEnvelope(biEndpoint, {
-						type: "response",
-						msg_id: biMsgId,
-						sender_session: identity.coms_session_id,
-						sender_endpoint: identity.endpoint,
-						hops: 0,
-						timestamp: nowIso(),
-						response: null,
-						error: "bundled",
-						queued_msg_ids: [],
-					}).catch(() => { /* best-effort */ });
-				}
-				bi.fulfilled = true;
-				inboundQueue.delete(bi.msg_id);
-			}
+			const bundled = bundledInbounds;
 			bundledInbounds = [];
+			fulfillBundledInbounds(bundled, ident);
 
 			maybeRefreshWidget();
 
-			await drainNextInbound({ bundle: true, onFail: "drop" });
+			await drainNextInbound({ bundle: true, onFail: "drop", streaming: opts.streaming, ctx }, gen);
 		} finally {
-			finalizingInbound = false;
+			for (const id of ownedMsgIds) finalizingMsgIds.delete(id);
+			if (sessionGeneration === gen) {
+				finalizingInbound = false;
+			}
 		}
 	}
 
@@ -3964,12 +4042,19 @@ Do not respond to this message.`;
 		const toolResults = Array.isArray(event?.toolResults) ? event.toolResults : [];
 		const hasToolCalls = Array.isArray(msg?.content) && msg.content.some((b: any) => b && b.type === "toolCall");
 		if (toolResults.length > 0 || hasToolCalls) return;
+		// Defer while mid-turn followUp steers targeting this inbound have not yet been delivered;
+		// Pi delivers follow-ups right after a zero-tool-call turn_end.
+		if ((currentInbound.pendingSteers ?? 0) > 0) {
+			log.debug("turn_end_defer_pending_steer", currentInbound.msg_id, "pendingSteers", currentInbound.pendingSteers);
+			return;
+		}
 		log.info("turn_end_finalize", currentInbound.msg_id, "stopReason", msg?.stopReason ?? "unknown");
-		await finalizeCurrentInbound(ctx, msg);
+		await finalizeCurrentInbound(ctx, msg, { streaming: true });
 	});
 
 	// ━━ agent_end: safety net for delivered & aborted-before-delivery inbounds ━━
 	pi.on("agent_end", async (_event, ctx) => {
+		agentRunning = false;
 		log.info("agent_end_enter", "currentInbound", currentInbound?.msg_id ?? "null", "delivered", inboundDelivered, "identity", !!identity, "processingInbound", processingInbound);
 		if (finalizingInbound) {
 			log.debug("agent_end_skip_finalizing");
@@ -4001,9 +4086,23 @@ Do not respond to this message.`;
 			return;
 		}
 
-		// Run ended (aborted/errored) before Pi ever delivered currentInbound via message_start.
-		// Re-inject once (bounded) so the peer prompt is not lost, or fail with "aborted" and drain FIFO
-		// so processingInbound cannot stay stranded true at idle (#1226).
+		// Pi retains already-queued followUp messages across aborts. While Pi still holds
+		// this inbound in its followUp queue, do not enqueue a duplicate copy or send
+		// "aborted" (which would leave the queued copy deliverable on the next run).
+		if (currentInbound.followUpQueued) {
+			agentRunningUserTurn = false;
+			inboundSetDuringUserTurn = false;
+			userMessageDuringInbound = false;
+			comsSendCalledThisTurn.clear();
+			log.info("agent_end_followup_retained", currentInbound.msg_id, "from", currentInbound.sender_name);
+			return;
+		}
+
+		// Direct-run inbound (not queued as followUp) ended before Pi emitted message_start.
+		// Re-inject once (bounded) so a genuinely lost prompt is recovered, or fail with
+		// "aborted" and drain FIFO so processingInbound cannot stay stranded true at idle (#1226).
+		const gen = sessionGeneration;
+		const ident = identity;
 		const inbound = currentInbound;
 		currentInbound = null;
 		inboundDelivered = false;
@@ -4021,9 +4120,9 @@ Do not respond to this message.`;
 				if (bundledInbounds.length > 0) {
 					const senderPending = [inbound, ...bundledInbounds];
 					const bundle = buildBundledContent(inbound.sender_name, senderPending);
-					injectInbound(inbound, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id) } });
+					injectInbound(inbound, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id) }, ctx });
 				} else {
-					injectInbound(inbound);
+					injectInbound(inbound, { ctx });
 				}
 				currentInbound = inbound;
 				inboundDelivered = false;
@@ -4036,6 +4135,7 @@ Do not respond to this message.`;
 		log.warn("agent_end_undelivered_aborted", inbound.msg_id, "from", inbound.sender_name, "retries", retries);
 		inbound.fulfilled = true;
 		inboundQueue.delete(inbound.msg_id);
+		finalizingMsgIds.add(inbound.msg_id);
 		bundledInbounds = [];
 		maybeRefreshWidget();
 		const queuedIds: string[] = [];
@@ -4044,16 +4144,19 @@ Do not respond to this message.`;
 			await sendEnvelope(inbound.sender_endpoint, {
 				type: "response",
 				msg_id: inbound.msg_id,
-				sender_session: identity.coms_session_id,
-				sender_endpoint: identity.endpoint,
+				sender_session: ident.coms_session_id,
+				sender_endpoint: ident.endpoint,
 				hops: 0,
 				timestamp: nowIso(),
 				response: null,
 				error: "aborted",
 				queued_msg_ids: queuedIds,
 			});
-		} catch { /* best-effort */ }
-		await drainNextInbound({ bundle: true, onFail: "fail_orphans" });
+		} catch { /* best-effort */ } finally {
+			finalizingMsgIds.delete(inbound.msg_id);
+		}
+		if (shuttingDown || sessionGeneration !== gen) return;
+		await drainNextInbound({ bundle: true, onFail: "fail_orphans", ctx }, gen);
 	});
 
 	// ━━ /coms slash command ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4261,6 +4364,7 @@ Do not respond to this message.`;
 	async function cleanShutdown(): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		sessionGeneration++;
 		try { pi.events.emit("pidash:coms-identity", { name: null, purpose: null }); } catch {}
 		const ident = identity; // snapshot before nulling
 		const shutdownCtx = currentCtx;
@@ -4339,13 +4443,13 @@ Do not respond to this message.`;
 		const waitingInbounds: InboundContext[] = [];
 		const seenInboundIds = new Set<string>();
 		for (const ib of inboundQueue.values()) {
-			if (!ib.fulfilled) {
+			if (!ib.fulfilled && !finalizingMsgIds.has(ib.msg_id)) {
 				ib.fulfilled = true;
 				waitingInbounds.push(ib);
 				seenInboundIds.add(ib.msg_id);
 			}
 		}
-		if (currentInbound && !currentInbound.fulfilled && !seenInboundIds.has(currentInbound.msg_id)) {
+		if (currentInbound && !currentInbound.fulfilled && !finalizingMsgIds.has(currentInbound.msg_id) && !seenInboundIds.has(currentInbound.msg_id)) {
 			currentInbound.fulfilled = true;
 			waitingInbounds.push(currentInbound);
 		}
@@ -4357,6 +4461,7 @@ Do not respond to this message.`;
 		inboundDelivered = false;
 		finalizingInbound = false;
 		processingInbound = false;
+		agentRunning = false;
 		agentRunningUserTurn = false;
 		inboundSetDuringUserTurn = false;
 		userMessageDuringInbound = false;

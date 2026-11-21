@@ -1,20 +1,25 @@
 /**
- * Regression tests for COMS inbound FIFO queue followUp starvation (#1226).
+ * Regression tests for COMS inbound FIFO queue drain & followUp starvation (#1226).
  *
  * Covers:
- *   1. turn_end finalization & FIFO drain under active followUp load (agent_end starved)
- *   2. Multi-tool-call inbound turns capture only the final zero-tool-call reply
- *   3. User-interrupted turns unblock coms_send and evaluate hasMixedTurn before comsSendCalledThisTurn
- *   4. Mid-user-turn inbound arrival does not block coms_send, flag userMessageDuringInbound, or force mixed_turn_reinject
- *   5. Abort before delivery re-injects once (bounded), then fails with "aborted" and drains FIFO
- *   6. Abort after delivery defers from turn_end to agent_end safety net
- *   7. cleanShutdown() notifies waiting senders ("session_closed") and resets all inbound state across restart
+ *   - turn_end finalization & FIFO drain under active followUp load (agent_end starved)
+ *   - Multi-tool-call inbound turns capture only the final zero-tool-call reply
+ *   - User-interrupted turns: coms_send unblock + hasMixedTurn precedence over comsSendCalledThisTurn
+ *   - Mid-user-turn inbound arrival: no premature block, spurious interrupt, or mixed_turn_reinject
+ *   - Abort before delivery: Pi-queued followUp retained (no double-inject / premature aborted);
+ *     genuinely lost direct-run retries once, then replies aborted and drains FIFO
+ *   - Abort after delivery defers from turn_end to agent_end safety net
+ *   - Mid-turn followUp steer defers turn_end finalization until post-steer reply
+ *   - Bundled senders receive "bundled" response envelopes in sentDirectlyToSender path
+ *   - cleanShutdown(): session_closed notifications, restart state reset, in-flight finalizer ownership,
+ *     and generation guard preventing stale pre-shutdown continuations from mutating a restarted session
  *
  * Run with: npx tsx --test tests/node/coms/coms-queue-drain.test.ts
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { join } from "node:path";
 
 import comsP2p from "../../../extensions/coms/coms-p2p.js";
@@ -30,12 +35,28 @@ interface FakePi {
 	ctx: any;
 	registryFile: string;
 	sessionId: string;
+	onSendMessage?: (msg: any, opts?: any) => void;
+}
+
+interface HoldableSender {
+	endpoint: string;
+	received: any[];
+	sendPrompt: (receiverEndpoint: string, msgId: string, prompt: string) => Promise<any>;
+	releaseAll: () => void;
 }
 
 const cleanupDirs: string[] = [];
 const startedPeers: FakePi[] = [];
+const activeServers: net.Server[] = [];
+const activeSockets: net.Socket[] = [];
 
 afterEach(async () => {
+	for (const sock of activeSockets.splice(0)) {
+		try { sock.destroy(); } catch { /* ignore */ }
+	}
+	for (const srv of activeServers.splice(0)) {
+		try { srv.close(); } catch { /* ignore */ }
+	}
 	for (const peer of startedPeers.splice(0)) {
 		try { await peer.shutdown(); } catch { /* ignore */ }
 	}
@@ -64,12 +85,13 @@ function makeWorkspace() {
 	return { workspace, comsDir };
 }
 
-function makeCtx(cwd: string, sessionId: string, branchReply = "") {
+function makeCtx(cwd: string, sessionId: string, branchReply = "", extra: { isIdle?: () => boolean } = {}) {
 	return {
 		cwd,
 		model: { id: "test-model" },
 		hasUI: false,
 		ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {} },
+		...(extra.isIdle ? { isIdle: extra.isIdle } : {}),
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getBranch: () => branchReply
@@ -79,7 +101,14 @@ function makeCtx(cwd: string, sessionId: string, branchReply = "") {
 	};
 }
 
-async function startPeer(opts: { name: string; sessionId: string; project: string; cwd: string; comsDir: string }): Promise<FakePi> {
+async function startPeer(opts: {
+	name: string;
+	sessionId: string;
+	project: string;
+	cwd: string;
+	comsDir: string;
+	isIdle?: () => boolean;
+}): Promise<FakePi> {
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, Function>();
 	const messages: any[] = [];
@@ -87,6 +116,16 @@ async function startPeer(opts: { name: string; sessionId: string; project: strin
 		["cname", opts.name],
 		["project", opts.project],
 	]);
+	const peer: FakePi = {
+		tools,
+		handlers,
+		messages,
+		start: async () => {},
+		shutdown: async () => {},
+		ctx: null,
+		registryFile: "",
+		sessionId: opts.sessionId,
+	};
 	const fakePi: any = {
 		tools,
 		handlers,
@@ -96,7 +135,10 @@ async function startPeer(opts: { name: string; sessionId: string; project: strin
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: () => {},
 		on: (event: string, handler: Function) => handlers.set(event, handler),
-		sendMessage: (msg: any) => messages.push(msg),
+		sendMessage: (msg: any, sendOpts?: any) => {
+			messages.push(msg);
+			peer.onSendMessage?.(msg, sendOpts);
+		},
 		events: { on: () => () => {}, emit: () => {} },
 	};
 
@@ -109,32 +151,22 @@ async function startPeer(opts: { name: string; sessionId: string; project: strin
 	});
 
 	(globalThis as any).__piConfigSessionId = opts.sessionId;
-	const ctx = makeCtx(opts.cwd, opts.sessionId);
-	const start = async (event: any, startCtx: any) => {
+	peer.ctx = makeCtx(opts.cwd, opts.sessionId, "", { isIdle: opts.isIdle });
+	peer.start = async (event: any, startCtx: any) => {
 		await handlers.get("session_start")!(event, startCtx);
 	};
-	const shutdown = async () => {
+	peer.shutdown = async () => {
 		await handlers.get("session_shutdown")?.();
 	};
-	const peer: FakePi = {
-		tools,
-		handlers,
-		messages,
-		start,
-		shutdown,
-		ctx,
-		registryFile: "",
-		sessionId: opts.sessionId,
-	};
 	startedPeers.push(peer);
-	await start({}, ctx);
+	await peer.start({}, peer.ctx);
 	const self = (globalThis as any).__comsSelf;
 	assert.ok(self?.sessionId, "peer published coms identity");
 	peer.registryFile = join(opts.comsDir, "projects", opts.project, "agents", `${self.sessionId}.json`);
 	return peer;
 }
 
-function readRegistry(peer: FakePi): { busy?: boolean; queue_depth?: number } {
+function readRegistry(peer: FakePi): { busy?: boolean; queue_depth?: number; endpoint?: string } {
 	return JSON.parse(readFileSync(peer.registryFile, "utf-8"));
 }
 
@@ -159,6 +191,104 @@ async function emitTurnEnd(peer: FakePi, opts: {
 		{ type: "turn_end", turnIndex: 0, message, toolResults: opts.toolResults ?? [] },
 		makeCtx(peer.ctx.cwd, peer.sessionId, opts.branchReply ?? ""),
 	);
+}
+
+async function createHoldableSenderServer(endpoint: string, opts: { holdMsgId?: string; senderSession: string; senderName: string; cwd: string }): Promise<HoldableSender> {
+	const received: any[] = [];
+	const heldAcks: Array<() => void> = [];
+	const srv = net.createServer((sock) => {
+		activeSockets.push(sock);
+		let buf = "";
+		sock.on("data", (chunk) => {
+			buf += chunk.toString("utf-8");
+			const nl = buf.indexOf("\n");
+			if (nl === -1) return;
+			const line = buf.slice(0, nl);
+			buf = buf.slice(nl + 1);
+			const env = JSON.parse(line);
+			received.push(env);
+			const ack = () => {
+				try {
+					sock.write(JSON.stringify({ type: "ack", msg_id: env.msg_id ?? "" }) + "\n");
+				} catch { /* ignore */ }
+			};
+			if (opts.holdMsgId && env.type === "response" && env.msg_id === opts.holdMsgId && env.error !== "session_closed") {
+				heldAcks.push(ack);
+			} else {
+				ack();
+			}
+		});
+	});
+	activeServers.push(srv);
+	await new Promise<void>((resolve, reject) => {
+		srv.once("error", reject);
+		srv.listen(endpoint, () => resolve());
+	});
+
+	const sendPrompt = (receiverEndpoint: string, msgId: string, prompt: string) =>
+		new Promise<any>((resolve, reject) => {
+			const sock = net.createConnection({ path: receiverEndpoint });
+			activeSockets.push(sock);
+			let buf = "";
+			sock.once("error", reject);
+			sock.once("connect", () => {
+				sock.write(JSON.stringify({
+					type: "prompt",
+					msg_id: msgId,
+					sender_session: opts.senderSession,
+					sender_endpoint: endpoint,
+					sender_name: opts.senderName,
+					sender_cwd: opts.cwd,
+					hops: 0,
+					timestamp: new Date().toISOString(),
+					prompt,
+				}) + "\n");
+			});
+			sock.on("data", (chunk) => {
+				buf += chunk.toString("utf-8");
+				const nl = buf.indexOf("\n");
+				if (nl === -1) return;
+				const parsed = JSON.parse(buf.slice(0, nl));
+				try { sock.destroy(); } catch { /* ignore */ }
+				resolve(parsed);
+			});
+		});
+
+	return {
+		endpoint,
+		received,
+		sendPrompt,
+		releaseAll: () => {
+			for (const ack of heldAcks.splice(0)) ack();
+		},
+	};
+}
+
+async function setupInterruptedTurn(project: string) {
+	const { workspace, comsDir } = makeWorkspace();
+	const sender = await startPeer({ name: "sender", sessionId: `su-${project}`, project, cwd: workspace, comsDir });
+	const receiver = await startPeer({ name: "receiver", sessionId: `ru-${project}`, project, cwd: workspace, comsDir });
+	const sent = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "peer question" });
+	const msgId = sent.details.msg_id as string;
+	await deliverInbound(receiver, msgId);
+	return { sender, receiver, msgId };
+}
+
+async function setupShutdownWork(project: string) {
+	const { workspace, comsDir } = makeWorkspace();
+	const peerA = await startPeer({ name: "peer-a", sessionId: `sha-${project}`, project, cwd: workspace, comsDir });
+	const peerB = await startPeer({ name: "peer-b", sessionId: `shb-${project}`, project, cwd: workspace, comsDir });
+	const receiver = await startPeer({ name: "receiver", sessionId: `shr-${project}`, project, cwd: workspace, comsDir });
+
+	const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "active before stop" });
+	const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "queued before stop" });
+	const m1 = r1.details.msg_id as string;
+	const m2 = r2.details.msg_id as string;
+	await deliverInbound(receiver, m1);
+	await receiver.handlers.get("message_start")!({ message: { role: "user", content: "interrupt" } });
+	assert.equal(readRegistry(receiver).busy, true);
+	assert.equal(readRegistry(receiver).queue_depth, 1);
+	return { comsDir, peerA, peerB, receiver, m1, m2 };
 }
 
 describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concurrency: false }, () => {
@@ -261,32 +391,30 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		assert.equal((await sender.tools.get("coms_get").execute("g-done", { msg_id: msgId })).details.response, "final verified answer");
 	});
 
-	it("unblocks coms_send after userMessageDuringInbound and evaluates hasMixedTurn before comsSendCalledThisTurn", async () => {
-		const { workspace, comsDir } = makeWorkspace();
-		const sender = await startPeer({ name: "sender", sessionId: "su-1226", project: "pu-1226", cwd: workspace, comsDir });
-		const receiver = await startPeer({ name: "receiver", sessionId: "ru-1226", project: "pu-1226", cwd: workspace, comsDir });
+	it("unblocks coms_send after a user message interrupts a delivered inbound turn", async () => {
+		const { receiver } = await setupInterruptedTurn("pu-unblock");
 
-		const sent = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "peer question" });
-		const msgId = sent.details.msg_id as string;
-		await deliverInbound(receiver, msgId);
-
-		// Before user interruption, both coms_send and coms_broadcast back to sender are blocked by auto-capture guard.
 		const blocked = await receiver.tools.get("coms_send").execute("blocked-reply", { target: "sender", prompt: "manual" });
 		assert.equal(blocked.details.blocked, true);
 		const blockedBroadcast = await receiver.tools.get("coms_broadcast").execute("blocked-bcast", { targets: ["sender"], prompt: "manual" });
 		assert.equal(blockedBroadcast.details.failed, 1);
 		assert.match(String(blockedBroadcast.details.results[0]?.error ?? ""), /blocked: auto-capture/);
 
-		// Real user message interrupts the delivered inbound turn.
 		await receiver.handlers.get("message_start")!({ message: { role: "user", content: "hey, ping sender about X" } });
 
-		// Now coms_send to sender MUST be allowed (auto-capture will discard this interrupted turn).
 		const allowed = await receiver.tools.get("coms_send").execute("allowed-send", { target: "sender", prompt: "about X" });
 		assert.equal(Boolean(allowed.details.blocked), false, "coms_send must unblock once userMessageDuringInbound is true");
 		assert.ok(allowed.details.msg_id, "coms_send delivered normally");
+	});
 
-		// turn_end fires: even though comsSendCalledThisTurn now contains sender,
-		// hasMixedTurn MUST run first and re-inject msgId instead of silently dropping it.
+	it("evaluates hasMixedTurn before comsSendCalledThisTurn on an interrupted turn", async () => {
+		const { sender, receiver, msgId } = await setupInterruptedTurn("pu-precedence");
+
+		await receiver.handlers.get("message_start")!({ message: { role: "user", content: "hey, ping sender about X" } });
+		const allowed = await receiver.tools.get("coms_send").execute("allowed-send", { target: "sender", prompt: "about X" });
+		assert.ok(allowed.details.msg_id);
+
+		// Even though comsSendCalledThisTurn now contains sender, hasMixedTurn runs first and re-injects msgId.
 		await emitTurnEnd(receiver, { text: "sure, I messaged sender about X", stopReason: "stop", toolResults: [] });
 		const mid = await sender.tools.get("coms_get").execute("g-mid", { msg_id: msgId });
 		assert.equal(mid.details.status, "pending", "interrupted turn must not silently drop or leak reply");
@@ -295,7 +423,6 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 			"receiver re-injected inbound after mixed turn despite coms_send during interrupted turn",
 		);
 
-		// Clean dedicated retry turn completes normally.
 		await deliverInbound(receiver, msgId);
 		await emitTurnEnd(receiver, { text: "dedicated reply to peer question", stopReason: "stop", toolResults: [] });
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g-wait", { msg_id: msgId })).details.status === "complete");
@@ -346,13 +473,13 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		);
 	});
 
-	it("re-injects once on abort before delivery, then fails with aborted and drains FIFO at agent_end", async () => {
+	it("retains Pi-queued followUp on abort before delivery without duplicate injection or premature aborted reply", async () => {
 		const { workspace, comsDir } = makeWorkspace();
-		const peerA = await startPeer({ name: "peer-a", sessionId: "sab-a", project: "pab-1226", cwd: workspace, comsDir });
-		const peerB = await startPeer({ name: "peer-b", sessionId: "sab-b", project: "pab-1226", cwd: workspace, comsDir });
-		const receiver = await startPeer({ name: "receiver", sessionId: "rab-1226", project: "pab-1226", cwd: workspace, comsDir });
+		const peerA = await startPeer({ name: "peer-a", sessionId: "sfq-a", project: "pfq-1226", cwd: workspace, comsDir });
+		const peerB = await startPeer({ name: "peer-b", sessionId: "sfq-b", project: "pfq-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "rfq-1226", project: "pfq-1226", cwd: workspace, comsDir });
 
-		// User turn active when m1 arrives; m2 queues behind m1.
+		// Active user turn means Pi queues m1 in its followUp queue (retained across aborts).
 		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
 		const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "prompt A" });
 		const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "prompt B" });
@@ -360,22 +487,78 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		const m2 = r2.details.msg_id as string;
 		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
 
-		// Run aborts BEFORE m1 is ever delivered via message_start.
+		// User turn aborts twice before Pi delivers the queued follow-up m1.
 		await emitTurnEnd(receiver, { text: "partial user text", stopReason: "aborted", toolResults: [] });
-		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "rab-1226", "partial user text"));
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "rfq-1226", "partial user text"));
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "rfq-1226", "second abort"));
 
-		// First undelivered abort -> re-injects m1 once (does NOT leak "partial user text").
+		assert.equal(
+			receiver.messages.filter((m) => m?.details?.msg_id === m1).length,
+			1,
+			"must not enqueue a duplicate follow-up copy while Pi still holds m1",
+		);
+		assert.equal(
+			(await peerA.tools.get("coms_get").execute("g1-still-pending", { msg_id: m1 })).details.status,
+			"pending",
+			"must not reply aborted while Pi still holds a deliverable follow-up copy of m1",
+		);
+
+		// Next run delivers the single retained copy of m1, completes cleanly, and drains m2.
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		await deliverInbound(receiver, m1);
+		await emitTurnEnd(receiver, { text: "single reply A", stopReason: "stop", toolResults: [] });
+		await waitUntil(async () => (await peerA.tools.get("coms_get").execute("g1-wait", { msg_id: m1 })).details.status === "complete");
+		assert.equal((await peerA.tools.get("coms_get").execute("g1-done", { msg_id: m1 })).details.response, "single reply A");
+
+		await deliverInbound(receiver, m2);
+		await emitTurnEnd(receiver, { text: "reply B", stopReason: "stop", toolResults: [] });
+		await waitUntil(async () => (await peerB.tools.get("coms_get").execute("g2-wait", { msg_id: m2 })).details.status === "complete");
+		assert.equal((await peerB.tools.get("coms_get").execute("g2-done", { msg_id: m2 })).details.response, "reply B");
+		assert.equal(readRegistry(receiver).busy, false);
+	});
+
+	it("re-injects once when an idle direct-run inbound aborts before delivery", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const peerA = await startPeer({ name: "peer-a", sessionId: "sdr-a", project: "pdr-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "rdr-1226", project: "pdr-1226", cwd: workspace, comsDir });
+
+		// Receiver is idle when m1 arrives -> direct run (not queued as followUp).
+		const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "prompt A" });
+		const m1 = r1.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
+
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		await emitTurnEnd(receiver, { text: "partial text", stopReason: "aborted", toolResults: [] });
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "rdr-1226", "partial text"));
+
 		assert.equal((await peerA.tools.get("coms_get").execute("g1-retry", { msg_id: m1 })).details.status, "pending");
-		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 2, "m1 re-injected once after abort before delivery");
+		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 2, "genuinely lost direct-run inbound re-injected once");
+	});
 
-		// Second abort before delivery -> exhausts bound, sends error: "aborted" to peer-a, drains m2!
-		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "rab-1226", "still aborted"));
+	it("replies aborted on direct-run retry exhaustion to drain the remaining FIFO queue", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const peerA = await startPeer({ name: "peer-a", sessionId: "sde-a", project: "pde-1226", cwd: workspace, comsDir });
+		const peerB = await startPeer({ name: "peer-b", sessionId: "sde-b", project: "pde-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "rde-1226", project: "pde-1226", cwd: workspace, comsDir });
+
+		// Receiver is idle -> m1 starts as a direct run; m2 queues behind m1.
+		const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "prompt A" });
+		const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "prompt B" });
+		const m1 = r1.details.msg_id as string;
+		const m2 = r2.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
+
+		// First direct-run abort retries once; second direct-run abort exhausts retry bound.
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "rde-1226", "aborted 1"));
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "rde-1226", "aborted 2"));
+
 		await waitUntil(async () => (await peerA.tools.get("coms_get").execute("g1-wait", { msg_id: m1 })).details.status === "complete");
 		const g1 = await peerA.tools.get("coms_get").execute("g1-done", { msg_id: m1 });
 		assert.equal(g1.details.error, "aborted");
 		assert.equal(g1.details.response, null);
 
-		// m2 drained cleanly and completes.
 		await deliverInbound(receiver, m2);
 		await emitTurnEnd(receiver, { text: "reply B after A aborted", stopReason: "stop", toolResults: [] });
 		await waitUntil(async () => (await peerB.tools.get("coms_get").execute("g2-wait", { msg_id: m2 })).details.status === "complete");
@@ -402,23 +585,91 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		assert.equal(readRegistry(receiver).busy, false);
 	});
 
-	it("resets all in-memory inbound queue state and notifies waiting senders (session_closed) in cleanShutdown()", async () => {
+	it("defers turn_end finalization while a mid-turn followUp steer is pending so post-steer text reaches the reply", async () => {
 		const { workspace, comsDir } = makeWorkspace();
-		const peerA = await startPeer({ name: "peer-a", sessionId: "ssh-a", project: "psh-1226", cwd: workspace, comsDir });
-		const peerB = await startPeer({ name: "peer-b", sessionId: "ssh-b", project: "psh-1226", cwd: workspace, comsDir });
-		const receiver = await startPeer({ name: "receiver", sessionId: "ssh-r", project: "psh-1226", cwd: workspace, comsDir });
+		const sender = await startPeer({ name: "sender", sessionId: "sst-s", project: "pst-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "sst-r", project: "pst-1226", cwd: workspace, comsDir });
 
-		// Populate active + queued inbound state and dirty turn flags.
-		const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "active before stop" });
-		const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "queued before stop" });
-		const m1 = r1.details.msg_id as string;
-		const m2 = r2.details.msg_id as string;
-		await deliverInbound(receiver, m1);
-		await receiver.handlers.get("message_start")!({ message: { role: "user", content: "interrupt" } });
-		assert.equal(readRegistry(receiver).busy, true);
-		assert.equal(readRegistry(receiver).queue_depth, 1);
+		const sent = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "compute value" });
+		const msgId = sent.details.msg_id as string;
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		await deliverInbound(receiver, msgId);
 
-		// Shut down receiver (simulating /coms stop): both waiting senders get error: "session_closed".
+		// Mid-turn steer arrives as followUp targeting msgId.
+		const steerRes = await sender.tools.get("coms_send").execute("st1", {
+			target: "receiver",
+			prompt: "use 42 instead",
+			steer: true,
+		});
+		const steerId = steerRes.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.steer === true && m?.details?.msg_id === steerId));
+		const steerMsg = receiver.messages.find((m) => m?.details?.steer === true && m?.details?.msg_id === steerId);
+		assert.equal(steerMsg.details.target_msg_id, msgId);
+
+		// Pre-steer zero-tool-call turn_end must NOT finalize m1 before the steer is delivered.
+		await emitTurnEnd(receiver, { text: "pre-steer draft: 7", stopReason: "stop", toolResults: [] });
+		assert.equal(
+			(await sender.tools.get("coms_get").execute("g-pre-steer", { msg_id: msgId })).details.status,
+			"pending",
+			"turn_end must wait for pending followUp steer delivery",
+		);
+
+		// Pi delivers the steer via message_start, then the model produces the post-steer reply.
+		await receiver.handlers.get("message_start")!({ message: { role: "custom", ...steerMsg } });
+		await emitTurnEnd(receiver, { text: "post-steer answer: 42", stopReason: "stop", toolResults: [] });
+
+		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g-wait", { msg_id: msgId })).details.status === "complete");
+		assert.equal((await sender.tools.get("coms_get").execute("g-done", { msg_id: msgId })).details.response, "post-steer answer: 42");
+		assert.equal(readRegistry(receiver).busy, false);
+	});
+
+	it("sends bundled response envelopes to secondary inbounds when coms_send skips auto-capture", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const peerA = await startPeer({ name: "peer-a", sessionId: "sbn-a", project: "pbn-1226", cwd: workspace, comsDir });
+		const peerB = await startPeer({ name: "peer-b", sessionId: "sbn-b", project: "pbn-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "rbn-1226", project: "pbn-1226", cwd: workspace, comsDir });
+
+		// Occupy receiver with m0 so peer-b's two messages queue up and bundle on drain.
+		const r0 = await peerA.tools.get("coms_send").execute("s0", { target: "receiver", prompt: "blocking work" });
+		const m0 = r0.details.msg_id as string;
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		await deliverInbound(receiver, m0);
+
+		const rb1 = await peerB.tools.get("coms_send").execute("sb1", { target: "receiver", prompt: "part 1" });
+		const rb2 = await peerB.tools.get("coms_send").execute("sb2", { target: "receiver", prompt: "part 2" });
+		const b1 = rb1.details.msg_id as string;
+		const b2 = rb2.details.msg_id as string;
+
+		// Finishing m0 drains [b1, b2] as a bundle (b1 primary, b2 in bundledInbounds).
+		await emitTurnEnd(receiver, { text: "done m0", stopReason: "stop", toolResults: [] });
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === b1));
+		const b1Msg = [...receiver.messages].reverse().find((m) => m?.details?.msg_id === b1);
+		assert.deepEqual(b1Msg.details.bundled_msg_ids, [b1, b2]);
+
+		// Simulate a coms_send to peer-b that passed isAutoCaptureReplyBlocked before delivery,
+		// then settled right after b1 emitted message_start so comsSendCalledThisTurn contains peer-b.
+		let deliveredDuringSend = false;
+		peerB.onSendMessage = () => {
+			if (deliveredDuringSend) return;
+			deliveredDuringSend = true;
+			receiver.handlers.get("message_start")!({ message: { role: "custom", ...b1Msg } });
+		};
+		const directRes = await receiver.tools.get("coms_send").execute("direct-b", { target: "peer-b", prompt: "direct reply" });
+		assert.ok(directRes.details.msg_id, "direct coms_send succeeded");
+		assert.equal(deliveredDuringSend, true);
+
+		// Finalizing b1 enters the sentDirectlyToSender branch; b2 must receive error: "bundled".
+		await emitTurnEnd(receiver, { text: "sent directly", stopReason: "stop", toolResults: [] });
+		await waitUntil(async () => (await peerB.tools.get("coms_get").execute("gb2-wait", { msg_id: b2 })).details.status === "complete");
+		const gb2 = await peerB.tools.get("coms_get").execute("gb2-done", { msg_id: b2 });
+		assert.equal(gb2.details.error, "bundled");
+		assert.equal(gb2.details.response, null);
+		assert.equal(readRegistry(receiver).busy, false);
+	});
+
+	it("notifies waiting senders with session_closed during cleanShutdown()", async () => {
+		const { peerA, peerB, receiver, m1, m2 } = await setupShutdownWork("psh-notify");
+
 		await receiver.shutdown();
 		await waitUntil(async () => {
 			const g1 = await peerA.tools.get("coms_get").execute("g1", { msg_id: m1 });
@@ -427,12 +678,18 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		});
 		assert.equal((await peerA.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.error, "session_closed");
 		assert.equal((await peerB.tools.get("coms_get").execute("g2-check", { msg_id: m2 })).details.error, "session_closed");
+	});
+
+	it("resets in-memory inbound queue state across cleanShutdown() restart", async () => {
+		const { comsDir, peerA, receiver } = await setupShutdownWork("psh-reset");
+
+		await receiver.shutdown();
 
 		// Restart the SAME closure (simulating /coms stop -> /coms start): state must be clean.
 		await receiver.start({}, receiver.ctx);
 		const restartedSelf = (globalThis as any).__comsSelf;
 		assert.ok(restartedSelf?.sessionId, "restarted peer published coms identity");
-		receiver.registryFile = join(comsDir, "projects", "psh-1226", "agents", `${restartedSelf.sessionId}.json`);
+		receiver.registryFile = join(comsDir, "projects", "psh-reset", "agents", `${restartedSelf.sessionId}.json`);
 		assert.equal(Boolean(readRegistry(receiver).busy), false, "busy must be false after restart");
 		assert.equal(readRegistry(receiver).queue_depth ?? 0, 0, "queue_depth must be 0 after restart");
 
@@ -445,6 +702,100 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		await emitTurnEnd(receiver, { text: "fresh after restart", stopReason: "stop", toolResults: [] });
 		await waitUntil(async () => (await peerA.tools.get("coms_get").execute("g3-wait", { msg_id: m3 })).details.status === "complete");
 		assert.equal((await peerA.tools.get("coms_get").execute("g3-done", { msg_id: m3 })).details.response, "fresh after restart");
+		assert.equal(readRegistry(receiver).busy, false);
+		assert.equal(readRegistry(receiver).queue_depth, 0);
+	});
+
+	it("omits conflicting session_closed for an inbound whose response send is already in flight during cleanShutdown()", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const peerB = await startPeer({ name: "peer-b", sessionId: "sif-b", project: "pif-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "rif-1226", project: "pif-1226", cwd: workspace, comsDir });
+		const receiverEndpoint = readRegistry(receiver).endpoint!;
+
+		const senderSock = join(workspace, "hold-sender-a.sock");
+		const senderA = await createHoldableSenderServer(senderSock, {
+			holdMsgId: "msg-inflight-1",
+			senderSession: "fake-sender-a",
+			senderName: "fake-a",
+			cwd: workspace,
+		});
+
+		await senderA.sendPrompt(receiverEndpoint, "msg-inflight-1", "first work");
+		const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "queued behind" });
+		const m2 = r2.details.msg_id as string;
+		await deliverInbound(receiver, "msg-inflight-1");
+
+		// Start finalizing msg-inflight-1; senderA holds the ACK so finalizeCurrentInbound suspends in sendEnvelope.
+		const finalizePromise = emitTurnEnd(receiver, { text: "normal reply", stopReason: "stop", toolResults: [] });
+		await waitUntil(() => senderA.received.some((e) => e.type === "response" && e.msg_id === "msg-inflight-1"));
+
+		// Shut down while normal response is in flight: m2 gets session_closed, msg-inflight-1 does NOT.
+		await receiver.shutdown();
+		await waitUntil(async () => (await peerB.tools.get("coms_get").execute("g2-wait", { msg_id: m2 })).details.status === "complete");
+		assert.equal((await peerB.tools.get("coms_get").execute("g2-done", { msg_id: m2 })).details.error, "session_closed");
+
+		senderA.releaseAll();
+		await finalizePromise;
+
+		const repliesForM1 = senderA.received.filter((e) => e.type === "response" && e.msg_id === "msg-inflight-1");
+		assert.equal(repliesForM1.length, 1, "must not send a conflicting session_closed envelope for an in-flight finalization");
+		assert.equal(repliesForM1[0].response, "normal reply");
+		assert.equal(repliesForM1[0].error, null);
+	});
+
+	it("ignores stale pre-shutdown finalization completions after restart so new session state stays untouched", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const peerB = await startPeer({ name: "peer-b", sessionId: "sgen-b", project: "pgen-1226", cwd: workspace, comsDir });
+		const peerC = await startPeer({ name: "peer-c", sessionId: "sgen-c", project: "pgen-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "rgen-1226", project: "pgen-1226", cwd: workspace, comsDir });
+		const receiverEndpoint = readRegistry(receiver).endpoint!;
+
+		const senderSock = join(workspace, "hold-sender-gen.sock");
+		const senderA = await createHoldableSenderServer(senderSock, {
+			holdMsgId: "msg-old-1",
+			senderSession: "fake-sender-gen",
+			senderName: "fake-gen",
+			cwd: workspace,
+		});
+
+		await senderA.sendPrompt(receiverEndpoint, "msg-old-1", "old session work");
+		await deliverInbound(receiver, "msg-old-1");
+
+		// Suspend old session's finalizeCurrentInbound inside sendEnvelope.
+		const oldFinalizePromise = emitTurnEnd(receiver, { text: "old reply", stopReason: "stop", toolResults: [] });
+		await waitUntil(() => senderA.received.some((e) => e.type === "response" && e.msg_id === "msg-old-1"));
+
+		// Shut down AND restart receiver BEFORE old sendEnvelope resolves.
+		await receiver.shutdown();
+		await receiver.start({}, receiver.ctx);
+		const restartedSelf = (globalThis as any).__comsSelf;
+		receiver.registryFile = join(comsDir, "projects", "pgen-1226", "agents", `${restartedSelf.sessionId}.json`);
+
+		// Queue fresh work in the restarted session: n1 active (undelivered), n2 queued behind it.
+		const rn1 = await peerB.tools.get("coms_send").execute("sn1", { target: "receiver", prompt: "new work 1" });
+		const rn2 = await peerC.tools.get("coms_send").execute("sn2", { target: "receiver", prompt: "new work 2" });
+		const n1 = rn1.details.msg_id as string;
+		const n2 = rn2.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === n1));
+
+		// Release the old session's sendEnvelope now; its stale continuation MUST exit without draining n2 or altering state.
+		senderA.releaseAll();
+		await oldFinalizePromise;
+
+		assert.equal(receiver.messages.some((m) => m?.details?.msg_id === n2), false, "stale finalizer must not drain n2 in restarted session");
+		assert.equal(readRegistry(receiver).busy, true);
+		assert.equal(readRegistry(receiver).queue_depth, 1);
+
+		// Restarted session processes n1 then n2 cleanly.
+		await deliverInbound(receiver, n1);
+		await emitTurnEnd(receiver, { text: "new reply 1", stopReason: "stop", toolResults: [] });
+		await waitUntil(async () => (await peerB.tools.get("coms_get").execute("gn1-wait", { msg_id: n1 })).details.status === "complete");
+		assert.equal((await peerB.tools.get("coms_get").execute("gn1-done", { msg_id: n1 })).details.response, "new reply 1");
+
+		await deliverInbound(receiver, n2);
+		await emitTurnEnd(receiver, { text: "new reply 2", stopReason: "stop", toolResults: [] });
+		await waitUntil(async () => (await peerC.tools.get("coms_get").execute("gn2-wait", { msg_id: n2 })).details.status === "complete");
+		assert.equal((await peerC.tools.get("coms_get").execute("gn2-done", { msg_id: n2 })).details.response, "new reply 2");
 		assert.equal(readRegistry(receiver).busy, false);
 		assert.equal(readRegistry(receiver).queue_depth, 0);
 	});
