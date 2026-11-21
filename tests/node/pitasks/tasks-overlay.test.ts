@@ -495,7 +495,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 function makeTasksCtx(opens: string[][]) {
 	const notifications: Array<{ message: string; level: string | undefined }> = [];
 	/** Rendered frame of every list that opened — the footer is asserted through what is drawn. */
-	const frames: string[][] = [];
+	const frames: Array<readonly string[]> = [];
 	/** How many keys each open had received when it closed — tells a key that closed the list
 	 *  in place from one that only redrew it. */
 	const closeAfterKeys: number[] = [];
