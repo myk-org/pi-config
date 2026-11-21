@@ -21,7 +21,6 @@ from myk_pi_tools.settings.commands import (
     _parse_review_loop_max_cycles,
     get_setting,
     get_settings,
-    parse_agent_name_list,
 )
 
 _KEYS_FILE = Path(__file__).resolve().parent.parent.parent / "settings-keys.json"
@@ -92,36 +91,6 @@ def test_parse_review_loop_max_cycles_rejects(raw: str) -> None:
 )
 def test_parse_review_loop_max_cycles_accepts(raw: int | str, expected: int) -> None:
     assert _parse_review_loop_max_cycles(raw) == expected
-
-
-def test_parse_agent_name_list_comma_separated() -> None:
-    assert parse_agent_name_list("Git-Expert, Scout, ts-expert") == [
-        "git-expert",
-        "scout",
-        "ts-expert",
-    ]
-
-
-def test_parse_agent_name_list_deduplicates() -> None:
-    assert parse_agent_name_list("scout, Scout, scout") == ["scout"]
-
-
-def test_parse_agent_name_list_filters_invalid() -> None:
-    assert parse_agent_name_list("scout, Bad Name!, ok_agent, @bad") == [
-        "scout",
-        "ok_agent",
-    ]
-
-
-def test_parse_agent_name_list_from_list() -> None:
-    assert parse_agent_name_list(["Scout", "git-expert", "Scout"]) == [
-        "scout",
-        "git-expert",
-    ]
-
-
-def test_parse_agent_name_list_none() -> None:
-    assert parse_agent_name_list(None) == []
 
 
 def test_settings_file_with_comments_still_parses(_isolated_settings: Path) -> None:
@@ -525,7 +494,7 @@ def test_get_settings_resolves_repo_root_once(
 
     result = get_settings((), cwd=_isolated_settings)
 
-    assert len(result) == len(SETTINGS_KEYS) == 71
+    assert len(result) == len(SETTINGS_KEYS) == 67
     assert counts["root_calls"] == 1
 
 
@@ -579,61 +548,3 @@ def test_commented_json_settings_fall_back_to_commentjson(
 
     assert get_setting("coms_max_hops", cwd=_isolated_settings) == 8
     assert "commentjson" in sys.modules
-
-
-def _write_pi_settings(base_dir: Path, payload: dict[str, object]) -> None:
-    pi_dir = base_dir / ".pi"
-    pi_dir.mkdir(exist_ok=True)
-    (pi_dir / "pi-config-settings.json").write_text(json.dumps(payload), encoding="utf-8")
-
-
-@pytest.mark.parametrize("key", ["acpx_agents", "cli_agents"])
-def test_project_empty_agent_list_overrides_global(
-    _isolated_settings: Path,
-    key: str,
-) -> None:
-    _write_pi_settings(Path.home(), {key: ["cursor", "claude"]})
-    _write_pi_settings(_isolated_settings, {key: []})
-
-    assert get_setting(key, cwd=_isolated_settings) == []
-
-
-@pytest.mark.parametrize(
-    ("key", "env_name"),
-    [
-        ("acpx_agents", "PI_ACPX_AGENTS"),
-        ("cli_agents", "PI_CLI_AGENTS"),
-    ],
-)
-def test_project_empty_agent_list_overrides_env(
-    _isolated_settings: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    key: str,
-    env_name: str,
-) -> None:
-    monkeypatch.setenv(env_name, "gemini")
-    _write_pi_settings(_isolated_settings, {key: []})
-
-    assert get_setting(key, cwd=_isolated_settings) == []
-
-
-def test_project_empty_acpx_agents_leaves_cli_agents_from_global(
-    _isolated_settings: Path,
-) -> None:
-    global_pi = Path.home() / ".pi"
-    global_pi.mkdir()
-    (global_pi / "pi-config-settings.json").write_text(
-        json.dumps({"acpx_agents": ["cursor"], "cli_agents": ["claude"]}),
-        encoding="utf-8",
-    )
-    project_pi = _isolated_settings / ".pi"
-    project_pi.mkdir()
-    (project_pi / "pi-config-settings.json").write_text(
-        json.dumps({"acpx_agents": []}),
-        encoding="utf-8",
-    )
-
-    assert get_settings(("acpx_agents", "cli_agents"), cwd=_isolated_settings) == {
-        "acpx_agents": [],
-        "cli_agents": ["claude"],
-    }

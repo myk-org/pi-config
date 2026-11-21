@@ -44,7 +44,6 @@
     {
       "name": "Providers",
       "pages": [
-        "acpx-provider",
         "vertex-claude-provider"
       ]
     },
@@ -62,8 +61,7 @@
     {
       "name": "Architecture",
       "pages": [
-        "async-internals",
-        "cli-provider"
+        "async-internals"
       ]
     },
     {

@@ -10,7 +10,7 @@
  * the owning extension's registration path — never from module-load code — so
  * readers always reach the live owner across module instances.
  *
- * Same pattern as the pricing-provenance and session-cwd markers.
+ * Same pattern as the pricing-provenance marker.
  */
 import { createLogger } from "./logger.js";
 

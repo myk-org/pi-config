@@ -460,13 +460,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         "Node.js tools for agent capabilities",
         [
             Tool(
-                "acpx",
-                "Headless CLI client for Agent Client Protocol (ACP)",
-                installed=bool(shutil.which("acpx")),
-                disabled=nd,
-                install_cmd="npm install -g acpx",
-            ),
-            Tool(
                 "agent-browser",
                 "Browser automation for web testing",
                 installed=bool(shutil.which("agent-browser")),

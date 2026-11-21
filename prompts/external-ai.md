@@ -28,8 +28,6 @@ AI CLI tools directly via subprocess — giving full model access including all 
 | `claude` | `claude` | `-p` for non-interactive print mode |
 | `gemini` | `gemini` | Stdin prompt |
 
-For other providers (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` instead.
-
 ## Usage
 
 - `/external-ai cursor fix the tests`
@@ -53,8 +51,7 @@ Read the **Raw Arguments** section above, tokenize by whitespace, and parse in o
 **Known providers:** `cursor`, `claude`, `gemini`
 
 **Unknown provider handling:** If any agent name is not one of the 3 known providers,
-abort with: "Unknown provider: `<name>`. Supported: cursor, claude, gemini.
-For other agents (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` instead."
+abort with: "Unknown provider: `<name>`. Supported: cursor, claude, gemini."
 
 **Flag validation:**
 

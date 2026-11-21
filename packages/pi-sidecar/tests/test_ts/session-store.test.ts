@@ -1,24 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { SessionStore, hasKnownPricing } from "../../src/sessions.js";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import {
-  getSessionCwd,
-  resolveProviderStreamCwd,
-} from "../../../../extensions/shared/session-cwd.js";
-import { createCursorCliAdapter } from "../../../../extensions/providers/cursor-cli-driver.js";
-import { createAcpxAdapter } from "../../../../extensions/providers/acpx-driver.js";
-import { makeTempDir } from "./helpers/temp-dirs.js";
 
 /**
  * Unit tests for SessionStore lifecycle (refresh / catalog / status / concurrency).
  *
- * Fully mocked runtime for catalog/lifecycle tests. The #768 prompt() spawn
- * tests exercise Cursor CLI / ACPX adapters with a fake `agent` binary and a
- * mock ACPX runtime — they still never create a real AgentSessionRuntime.
+ * Fully mocked runtime for catalog/lifecycle tests — never creates a real
+ * AgentSessionRuntime.
  */
 
 type DiscoveredModel = { id: string; name: string; provider: string };
@@ -103,16 +93,12 @@ describe("SessionStore (mocked runtime)", () => {
   it("refreshModels() marks ready and returns the mocked available catalog", async () => {
     const store = new SessionStore() as any;
     const state = installMockRuntime(store);
-    delete process.env.ACPX_AGENTS;
-    delete process.env.CLI_AGENTS;
 
     const models = await store.refreshModels();
     assert.equal(store.ready, true);
     assert.equal(store.discoveryError, null);
     assert.equal(models.length, state.available.length);
     assert.ok(models.every((m: DiscoveredModel) => m.provider === "google"));
-    assert.ok(!models.some((m: DiscoveredModel) => m.provider.startsWith("acpx-")));
-    assert.ok(!models.some((m: DiscoveredModel) => m.provider.startsWith("cli-")));
     // Pre-installed internalRuntime → refresh path (not first-discovery create).
     assert.equal(state.refreshCalls, 1);
   });
@@ -120,8 +106,6 @@ describe("SessionStore (mocked runtime)", () => {
   it("refreshModels() returns an empty available catalog without treating it as failure", async () => {
     const store = new SessionStore() as any;
     installMockRuntime(store, { available: [], providerModels: { google: [{ id: "gemini-2.5-flash", name: "Flash", provider: "google" }] } });
-    delete process.env.ACPX_AGENTS;
-    delete process.env.CLI_AGENTS;
 
     const models = await store.refreshModels();
     assert.equal(models.length, 0);
@@ -136,8 +120,6 @@ describe("SessionStore (mocked runtime)", () => {
   it("refreshModels() can be called again and hits ModelRuntime.refresh each time after init", async () => {
     const store = new SessionStore() as any;
     const state = installMockRuntime(store);
-    delete process.env.ACPX_AGENTS;
-    delete process.env.CLI_AGENTS;
 
     const first = await store.refreshModels();
     const second = await store.refreshModels();
@@ -149,8 +131,6 @@ describe("SessionStore (mocked runtime)", () => {
   it("getModels() matches the most recent refreshModels() snapshot", async () => {
     const store = new SessionStore() as any;
     installMockRuntime(store);
-    delete process.env.ACPX_AGENTS;
-    delete process.env.CLI_AGENTS;
 
     const refreshed = await store.refreshModels();
     const listed = await store.getModels();
@@ -163,8 +143,6 @@ describe("SessionStore (mocked runtime)", () => {
   it("getModels() triggers discovery when store is not yet ready", async () => {
     const store = new SessionStore() as any;
     installMockRuntime(store);
-    delete process.env.ACPX_AGENTS;
-    delete process.env.CLI_AGENTS;
 
     assert.equal(store.ready, false);
     const listed = await store.getModels();
@@ -175,8 +153,6 @@ describe("SessionStore (mocked runtime)", () => {
   it("concurrent getModels() before ready share one refreshModels pass", async () => {
     const store = new SessionStore() as any;
     const state = installMockRuntime(store);
-    delete process.env.ACPX_AGENTS;
-    delete process.env.CLI_AGENTS;
 
     const [a, b] = await Promise.all([store.getModels(), store.getModels()]);
     assert.deepEqual(
@@ -208,32 +184,6 @@ describe("SessionStore (mocked runtime)", () => {
     assert.equal(status.supportsSessionApiKey, false);
   });
 
-  it("getProviderStatus() reports zero models for acpx-*/cli-* providers when no agents are configured", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store);
-    delete process.env.ACPX_AGENTS;
-    delete process.env.CLI_AGENTS;
-    await store.refreshModels();
-    const acpxStatus = await store.getProviderStatus("acpx-cursor");
-    const cliStatus = await store.getProviderStatus("cli-cursor");
-    assert.equal(acpxStatus.modelCount, 0);
-    assert.equal(cliStatus.modelCount, 0);
-    assert.equal(acpxStatus.supportsSessionApiKey, false);
-    assert.equal(cliStatus.supportsSessionApiKey, false);
-  });
-
-  it("create() rejects an acpx-* model when ACPX_AGENTS is not configured", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store);
-    delete process.env.ACPX_AGENTS;
-    delete process.env.CLI_AGENTS;
-    await store.refreshModels();
-    await assert.rejects(
-      () => store.create({ provider: "acpx-cursor", model: "cursor:default[]", systemPrompt: "test", cwd: "/tmp" }),
-      /not found for provider 'acpx-cursor'/,
-    );
-  });
-
   it("create() rejects an unknown builtin model", async () => {
     const store = new SessionStore() as any;
     installMockRuntime(store);
@@ -248,8 +198,6 @@ describe("SessionStore (mocked runtime)", () => {
     it("keeps the model catalog stable while mocked sessions are created/deleted concurrently with refreshModels()", async () => {
       const store = new SessionStore() as any;
       const state = installMockRuntime(store);
-      delete process.env.ACPX_AGENTS;
-      delete process.env.CLI_AGENTS;
 
       const baseline = await store.refreshModels();
       const baselineIds = baseline.map((m: DiscoveredModel) => `${m.provider}/${m.id}`).sort();
@@ -357,23 +305,6 @@ describe("SessionStore (mocked runtime)", () => {
     assert.equal(store.runtimeInit, undefined);
   });
 
-  it("prompt() binds session cwd on ALS for the turn (#768)", async () => {
-    const store = new SessionStore();
-    let seen: string | undefined;
-    store.putSessionFixture(
-      "s-cwd",
-      fixtureSession({
-        prompt: async () => {
-          seen = getSessionCwd();
-        },
-      }),
-      "/tmp/job-sidecar-768",
-    );
-    await store.prompt("s-cwd", "hi");
-    assert.equal(seen, "/tmp/job-sidecar-768");
-    assert.equal(getSessionCwd(), undefined);
-  });
-
   it("abort() reaches the SDK only while a turn is in flight (#1019)", async () => {
     const store = new SessionStore();
     let aborted = false;
@@ -403,94 +334,6 @@ describe("SessionStore (mocked runtime)", () => {
     assert.equal(aborted, true);
   });
 
-  it("prompt() passes session cwd to Cursor CLI spawn, not boot cwd (#768)", async () => {
-    const bootCwd = makeTempDir("pi-boot-768-");
-    const sessionCwd = makeTempDir("pi-job-768-");
-    const binDir = makeTempDir("pi-agent-bin-768-");
-    const seenFile = join(binDir, "seen-cwd");
-    const prevPath = process.env.PATH;
-    writeFileSync(
-      join(binDir, "agent"),
-      `#!/bin/sh
-printf '%s' "$(pwd)" > "$CLI_SPAWN_CWD_FILE"
-printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}'
-printf '%s\\n' '{"type":"result","result":"ok"}'
-exit 0
-`,
-      { mode: 0o755 },
-    );
-    chmodSync(join(binDir, "agent"), 0o755);
-    process.env.PATH = `${binDir}:${prevPath || ""}`;
-    process.env.CLI_SPAWN_CWD_FILE = seenFile;
-    try {
-      const store = new SessionStore();
-      const adapter = createCursorCliAdapter(
-        { binary: "agent", enabled: true },
-        bootCwd,
-        "test-768",
-      );
-      store.putSessionFixture(
-        "s-cli",
-        fixtureSession({
-          prompt: async () => {
-            const turnCwd = resolveProviderStreamCwd(bootCwd);
-            const handle = await adapter.startSession({
-              model: "default",
-              cwd: turnCwd,
-            });
-            await adapter.sendTurn(handle, "hi");
-          },
-        }),
-        sessionCwd,
-      );
-      await store.prompt("s-cli", "hi");
-      assert.equal(readFileSync(seenFile, "utf8"), sessionCwd);
-      assert.notEqual(sessionCwd, bootCwd);
-    } finally {
-      if (prevPath === undefined) delete process.env.PATH;
-      else process.env.PATH = prevPath;
-      delete process.env.CLI_SPAWN_CWD_FILE;
-      rmSync(bootCwd, { recursive: true, force: true });
-      rmSync(sessionCwd, { recursive: true, force: true });
-      rmSync(binDir, { recursive: true, force: true });
-    }
-  });
-
-  it("prompt() passes session cwd to ACPX ensureSession, not boot cwd (#768)", async () => {
-    const bootCwd = makeTempDir("pi-boot-acpx-768-");
-    const sessionCwd = makeTempDir("pi-job-acpx-768-");
-    let ensureCwd: string | undefined;
-    const mockRuntime = {
-      ensureSession: async (opts: { cwd?: string }) => {
-        ensureCwd = opts.cwd;
-        return { id: "acpx-h1" };
-      },
-    };
-    try {
-      const store = new SessionStore();
-      const adapter = createAcpxAdapter(
-        { agent: "cursor", enabled: true },
-        bootCwd,
-        mockRuntime as never,
-      );
-      store.putSessionFixture(
-        "s-acpx",
-        fixtureSession({
-          prompt: async () => {
-            const turnCwd = resolveProviderStreamCwd(bootCwd);
-            await adapter.startSession({ model: "default", cwd: turnCwd });
-          },
-        }),
-        sessionCwd,
-      );
-      await store.prompt("s-acpx", "hi");
-      assert.equal(ensureCwd, sessionCwd);
-      assert.notEqual(ensureCwd, bootCwd);
-    } finally {
-      rmSync(bootCwd, { recursive: true, force: true });
-      rmSync(sessionCwd, { recursive: true, force: true });
-    }
-  });
   /**
    * Drives prompt() over a fixture session that reports `reportedTotal` as the
    * turn cost, so cost and token assertions can live in separate tests.
@@ -534,8 +377,8 @@ exit 0
    * unknown spend look free to consumers (rootcoz), so usage.cost_usd must stay
    * null instead of accumulating a numeric zero.
    *
-   * A driver can still report a real turn cost for such a model (ACPX models
-   * without catalog prices do), so a *positive* total must always be kept.
+   * A provider can still report a real turn cost for such a model, so a
+   * *positive* total must always be kept.
    */
   it("prompt() distinguishes unknown pricing from a reported zero", async () => {
     const priced = await promptWithReportedCost(true, 0.42);

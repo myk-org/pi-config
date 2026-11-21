@@ -6,7 +6,6 @@ import { getProjectTmpDir } from "./utils.js";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
-import { decideAsyncLlmDispatch } from "./async-capability.js";
 import { formatCronSchedule, cronStateLabel, toCronStatusTaskView, type CronPauseResult } from "./cron-status-format.js";
 import { parseModelOverride } from "./parse-model-override.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
@@ -163,9 +162,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
         pi.sendUserMessage(cmd, { deliverAs: "followUp" }); return;
       }
       const explicit = parseModelOverride(task.model);
-      const dispatch = decideAsyncLlmDispatch({ parentProvider: explicit?.provider ?? ctx?.model?.provider, cwd: task.cwd, mustAsync: true });
-      log.debug("cron_dispatch", { id: qualifyCronId(task), model: task.model || "inherit", action: dispatch.action });
-      if (dispatch.action === "skip") { log.error("cron_error", qualifyCronId(task), dispatch.note); return; }
+      log.debug("cron_dispatch", { id: qualifyCronId(task), model: task.model || "inherit" });
       const { discoverAgents } = await import("./agents.js");
       if (!isCurrent()) { log.debug("cron_execution_fenced", { id: qualifyCronId(task), reason: "stale_timer" }); return; }
       const stateAfterDiscovery = storedTaskState(task);
@@ -179,11 +176,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
         log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
         election(); return;
       }
-      // The sidecar must be authoritative: passed as parent fields it could lose to worker
-      // overrides/frontmatter, which async children cannot always register. An unusable
-      // acpx-* override is discarded rather than passed at all.
-      const override = dispatch.action === "sidecar-async" ? dispatch.sidecar : explicit;
-      spawnAsyncAgent("worker", cmd, task.cwd, agents, { name: `Cron: ${task.description.slice(0, 40)}`, ...(override ? { explicit: override } : {}) });
+      spawnAsyncAgent("worker", cmd, task.cwd, agents, { name: `Cron: ${task.description.slice(0, 40)}`, ...(explicit ? { explicit } : {}) });
     } catch (error: any) { log.error("cron_execute_failed", qualifyCronId(task), error?.message || error); }
   }
   function stop(id: string) { const timer = timers.get(id); if (timer) { clearTimeout(timer as any); clearInterval(timer as any); timers.delete(id); } }

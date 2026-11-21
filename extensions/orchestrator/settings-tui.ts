@@ -55,7 +55,6 @@ import {
   InputSubmenu,
   NumberInputSubmenu,
   PickerSubmenu,
-  MultiSelectSubmenu,
   AgentOverridesSubmenu,
   StringListSubmenu,
   SelectSubmenu,
@@ -100,7 +99,7 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
 
   const providerSet = new Set<string>();
   for (const m of models) {
-    if (!(m.provider || "").startsWith("acpx-")) {
+    if (m.provider) {
       providerSet.add(m.provider);
     }
   }
@@ -110,18 +109,16 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
     label: p,
   }));
 
-  const modelItems: ModelSelectItem[] = models
-    .filter((m) => !(m.provider || "").startsWith("acpx-"))
-    .map((m) => {
-      const extra = m as { input?: string[]; output?: string[] };
-      return {
-        value: m.id,
-        label: m.id,
-        description: m.provider,
-        input: Array.isArray(extra.input) ? extra.input : undefined,
-        output: Array.isArray(extra.output) ? extra.output : undefined,
-      };
-    });
+  const modelItems: ModelSelectItem[] = models.map((m) => {
+    const extra = m as { input?: string[]; output?: string[] };
+    return {
+      value: m.id,
+      label: m.id,
+      description: m.provider,
+      input: Array.isArray(extra.input) ? extra.input : undefined,
+      output: Array.isArray(extra.output) ? extra.output : undefined,
+    };
+  });
 
   return { providers, models: modelItems };
 }
@@ -132,10 +129,6 @@ function getAvailableAgentNames(cwd: string): string[] {
   const { agents } = discoverAgents(cwd, "both");
   return agents.map((a) => a.name).sort();
 }
-
-// ── Known CLI/ACPX provider names (for acpx_agents / cli_agents) ──
-
-const KNOWN_CLI_PROVIDERS = ["cursor", "claude", "gemini"];
 
 // ── Refresh a single item's label + value in-place ──────────────────
 
@@ -291,19 +284,6 @@ export function buildCategoryItems(
         case "number":
           item.submenu = (current: string, done: (val?: string) => void): Component => {
             return new NumberInputSubmenu(key, current, def, theme, done);
-          };
-          break;
-
-        case "agent_list":
-          item.submenu = (_current: string, done: (val?: string) => void): Component => {
-            const currentAgents = Array.isArray(effectiveValue) ? effectiveValue as string[] : [];
-            return new MultiSelectSubmenu(
-              `${key} — select providers`,
-              KNOWN_CLI_PROVIDERS,
-              currentAgents,
-              theme,
-              done,
-            );
           };
           break;
 

@@ -22,10 +22,8 @@ Default `E2E_TEST_CWD=/tmp/e2e-pi-sidecar-tests` (base path). Under `-n auto`, e
 worker’s effective cwd/settings root is `{E2E_TEST_CWD}/{PYTEST_XDIST_WORKER}`
 (e.g. `gw0`); serial runs use the base path as-is.
 
-1. `installed_agents` — PATH only (`claude` / `gemini` / `agent|cursor`); ignores env
-2. `agent_env` — sets **both** `CLI_AGENTS` and `ACPX_AGENTS`, plants settings under `{cwd}/.pi/pi-config-settings.json` (never `~/.pi` or the repo `.pi`)
-3. `sidecar_url` — start/stop sidecar with **cwd=`{cwd}`** so ACPX project settings win
-4. `working_models` — `dict[provider → model]` for `google` + each `cli-*` / `acpx-*`.
+1. `sidecar_url` — start/stop sidecar with `cwd={cwd}`
+2. `working_models` — `dict[provider → model]` for native `google`.
    Broken/missing providers are omitted (warned); **only that provider’s param cases fail**.
 
 **Test params:** LLM/prompt cases take `provider` + `model` (from `working_models`); provider-status cases take `provider` only. Validation/smoke cases skip the probe.

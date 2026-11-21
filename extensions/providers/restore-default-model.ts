@@ -324,7 +324,7 @@ export function resolveDefaultModel(
  * that does not include the default provider (including empty array).
  *
  * Optional / tests only. Production omits registeredProviders and relies on
- * find + setModel retries (warn on exhaust). Never pass a cli/acpx-only list.
+ * find + setModel retries (warn on exhaust). Never pass a partial provider list.
  *
  * NEVER treat getAvailable missing the target as hopeless: getAvailable only
  * returns auth-ready providers. During the #753 race a provider may be
@@ -402,7 +402,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
   reason?: string;
   /**
    * Optional provider ids for fail-fast (tests). Production should omit —
-   * do not pass a cli/acpx-only list (breaks native default restore).
+   * do not pass a partial provider list (breaks native default restore).
    */
   registeredProviders?: string[];
   /** Total attempts (default 5). Injectable for tests. */

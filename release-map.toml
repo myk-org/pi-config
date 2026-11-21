@@ -67,9 +67,6 @@ npm-name = "@myk-org/pi-sidecar"
 pypi-name = "pi-sidecar-client"
 version-files = ["packages/pi-sidecar/package.json", "packages/pi-sidecar/pyproject.toml"]
 paths = ["packages/pi-sidecar/"]
-# The dual-copy session-cwd.ts under packages/pi-sidecar/src/ is kept in
-# sync manually with extensions/shared/session-cwd.ts; the sidecar copy is
-# inside this package's paths, so a sync edit triggers this package.
 
 [[package]]
 name = "pi-vertex-claude"

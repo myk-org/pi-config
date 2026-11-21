@@ -215,7 +215,7 @@ key overrides stored/environment credentials only for that session's selected
 provider; omit it to use server credentials. Check `GET /models/:provider/status` for `supportsSessionApiKey` before
 sending a key. This boolean is independent of server credentials and remains
 visible on non-loopback binds and unknown-provider 404 responses (false).
-Headless-excluded and ambient CLI/ACPX providers report false. Unsupported API-key auth returns
+Headless-excluded and ambient-auth providers report false. Unsupported API-key auth returns
 400. Keys live in memory until session deletion/expiry, not session files or
 API responses, and are not inherited by nested agents. Keep sidecar access
 restricted to trusted callers, particularly when binding beyond loopback.
@@ -269,11 +269,9 @@ npx pi-sidecar-start --help
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SIDECAR_PORT` | `9100` | Listen port (`9201` for start script). `startSidecar()` stamps this env while running (default, `options.port`, or `0` for ephemeral) so nested Cursor CLI can detect sidecar and pass `--approve-mcps`. `close()` restores the inherited value. |
+| `SIDECAR_PORT` | `9100` | Listen port (`9201` for start script). `startSidecar()` stamps this env while running (default, `options.port`, or `0` for ephemeral) and `close()` restores the inherited value. |
 | `SIDECAR_HOST` | `127.0.0.1` | Bind address |
 | `SIDECAR_URL` | `http://127.0.0.1:9100` | Python client base URL |
-| `CLI_AGENTS` | (none) | Comma-separated CLI agents: `cursor,claude,gemini` |
-| `ACPX_AGENTS` | (none) | Comma-separated ACPX agents: `cursor,claude,gemini` |
 | `GEMINI_API_KEY` | (none) | Google AI API key (native provider) |
 | `GOOGLE_API_KEY` | (none) | Alternative Google API key |
 | `GOOGLE_CLOUD_PROJECT` | (none) | GCP project for Vertex AI Claude |
@@ -291,8 +289,6 @@ set -euo pipefail
 # Start sidecar in background
 cd /app/sidecar-helper
 SIDECAR_PORT="${SIDECAR_PORT:-9100}" \
-CLI_AGENTS="${CLI_AGENTS:-}" \
-ACPX_AGENTS="${ACPX_AGENTS:-}" \
   nohup node node_modules/@myk-org/pi-sidecar/dist/server.js \
   > /tmp/sidecar.log 2>&1 &
 
@@ -343,23 +339,6 @@ COPY --from=sidecar-builder /sidecar/package.json /app/sidecar-helper/package.js
 The runtime stage needs Node.js, `curl` (health checks), `bash`, and `uv` (if using Python).
 See [`Dockerfile.example`](Dockerfile.example) for the complete setup including system packages, non-root user, and PATH configuration.
 
-### CLI agents
-
-Install CLI agents for CLI/ACPX providers. See [`Dockerfile.example`](Dockerfile.example) for the complete pattern with correct `HOME` and npm prefix setup.
-
-Required CLIs:
-
-| CLI | Install method | Binary location |
-|-----|---------------|-----------------|
-| Claude Code | `curl -fsSL https://claude.ai/install.sh` piped to `bash` | `~/.local/bin/claude` |
-| Cursor Agent | `curl -fsSL https://cursor.com/install` piped to `bash` | `~/.local/bin/agent` |
-| Gemini | `npm install -g @google/gemini-cli` | npm global bin |
-| ACPX | `npm install -g acpx` | npm global bin |
-
-**Note:** Gemini requires npm prefix setup (`npm config set prefix`) for non-root users.
-The Cursor CLI binary is named `agent`, but the sidecar agent name is `cursor`.
-Claude and Cursor use official vendor install scripts — verify URLs before use in production.
-
 ### Entrypoint pattern
 
 > See [`entrypoint.example.sh`](entrypoint.example.sh) for the full working example.
@@ -388,7 +367,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 - **Don't exec** the main app if sidecar is running — use plain invocation so the EXIT trap fires
 - **Monitor the sidecar** — if it dies, kill the container (avoid silent AI failures)
 - **Set `SIDECAR_PORT`** explicitly — default is 9100
-- **Set `CLI_AGENTS`/`ACPX_AGENTS`** env vars if CLI agents are installed
 
 ## API Quick Reference
 
@@ -419,8 +397,7 @@ curl -s -X POST http://127.0.0.1:9100/sessions \
 ```
 
 `cwd` is the session working directory. Pi tools (`read` / `ls` / `grep` /
-`bash`) use it, and nested CLI/ACPX agents (`cli-cursor` `--workspace`, spawn
-cwd, ACPX `ensureSession`) inherit that same folder. Omit `cwd` and the sidecar
+`bash`) use it. Omit `cwd` and the sidecar
 still defaults to its process working directory (`process.cwd()`). Pass an
 explicit project path when you want job isolation.
 
@@ -460,11 +437,10 @@ is `false` when every reported turn cost was usable.
 
 The complication is Pi pricing metadata. Pi requires numeric prices, so a model
 whose source published none — one resolved from a **key-scoped listing**
-(`POST /models/for-api-key`, or a model id absent from the catalog), a CLI/ACPX
-discovery with no catalog price, or an OpenAI-compatible `/v1/models` record with
-no priced component — is registered with zero prices. Those zeros mean *unknown
-pricing*, not *free*, so the sidecar cannot derive a cost for those turns — but a
-driver may still report one (ACPX models without catalog prices do).
+(`POST /models/for-api-key`, or a model id absent from the catalog) or an
+OpenAI-compatible `/v1/models` record with no priced component — is registered
+with zero prices. Those zeros mean *unknown pricing*, not *free*, so the sidecar
+cannot derive a cost for those turns — unless the provider reports a billed total.
 
 A catalog all-zero cost means the opposite: the price is known to be zero (an
 OpenRouter `:free` variant, for example), so such a model is free and reports a
@@ -621,13 +597,9 @@ still compresses or buffers the response, deltas arrive as one burst at the end
 | Provider | Source | Models | Cost reported |
 |----------|--------|--------|--------------|
 | `google` | Native (API key) | Gemini models in the catalog | ✅ Yes |
-| `google` | Key-scoped listing | Model ids **not** in the catalog | ⚠️ `null` unless the driver reports a real cost |
+| `google` | Key-scoped listing | Model ids **not** in the catalog | ⚠️ `null` unless the provider reports a real cost |
 | `google-vertex` | Native (ADC) | Gemini via Vertex | ✅ Yes |
 | `google-vertex-claude` | Vertex Claude extension | Claude via Vertex | ✅ Yes |
-| `cli-cursor` | Cursor CLI (`agent`) | Cursor models | ❌ No |
-| `cli-claude` | Claude CLI | Claude models | ❌ No |
-| `cli-gemini` | Gemini CLI | Gemini models | ❌ No |
-| `acpx-cursor` | ACPX + Cursor | Cursor models | ❌ No |
 
 ## Versioning
 

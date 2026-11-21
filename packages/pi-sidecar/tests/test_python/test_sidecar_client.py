@@ -82,7 +82,7 @@ def provider_server() -> Iterator[tuple[str, list[str]]]:
             body = json.dumps({
                 "providers": [
                     {"provider": "google", "supportsSessionApiKey": True},
-                    {"provider": "acpx-cursor", "supportsSessionApiKey": False},
+                    {"provider": "google-vertex-claude", "supportsSessionApiKey": False},
                 ]
             }).encode()
             self.send_response(200)
@@ -186,16 +186,6 @@ def key_models_server(
 
 
 class TestProviderMapping:
-    def test_map_provider_model_cursor(self) -> None:
-        provider, model = _map_provider_model("cursor", "gpt-4o")
-        assert provider == "acpx-cursor"
-        assert model == "cursor:gpt-4o"
-
-    def test_map_provider_model_cursor_already_prefixed(self) -> None:
-        provider, model = _map_provider_model("cursor", "cursor:gpt-4o")
-        assert provider == "acpx-cursor"
-        assert model == "cursor:gpt-4o"
-
     def test_map_provider_model_claude(self) -> None:
         provider, model = _map_provider_model("claude", "claude-sonnet-4-20250514")
         assert provider == "google-vertex-claude"
@@ -283,7 +273,7 @@ class TestSidecarClient:
 
     # -- get_models --
     async def test_client_get_models(self, client: SidecarClient) -> None:
-        models = [{"id": "m1", "provider": "google"}, {"id": "m2", "provider": "acpx-cursor"}]
+        models = [{"id": "m1", "provider": "google"}, {"id": "m2", "provider": "google-vertex-claude"}]
         mock_resp = _mock_response(200, {"models": models})
         client._client.get = AsyncMock(return_value=mock_resp)
 
@@ -396,7 +386,7 @@ class TestSidecarClient:
             async with SidecarClient(base_url=url) as client:
                 assert await client.get_providers() == [
                     {"provider": "google", "supportsSessionApiKey": True},
-                    {"provider": "acpx-cursor", "supportsSessionApiKey": False},
+                    {"provider": "google-vertex-claude", "supportsSessionApiKey": False},
                 ]
 
     def test_client_get_providers_public_return_type_schema(self) -> None:
@@ -476,7 +466,7 @@ class TestSidecarClient:
     # -- get_model_provider_status URL-encodes the provider id --
     async def test_client_get_model_provider_status_url_encodes_provider(self, client: SidecarClient) -> None:
         status = {
-            "provider": "acpx-cursor",
+            "provider": "google-vertex-claude",
             "registered": True,
             "modelCount": 3,
             "authStatus": {"configured": True},
@@ -485,9 +475,9 @@ class TestSidecarClient:
         mock_resp = _mock_response(200, status)
         client._client.get = AsyncMock(return_value=mock_resp)
 
-        result = await client.get_model_provider_status("acpx-cursor")
+        result = await client.get_model_provider_status("google-vertex-claude")
         assert result == status
-        client._client.get.assert_awaited_once_with("/models/acpx-cursor/status")
+        client._client.get.assert_awaited_once_with("/models/google-vertex-claude/status")
 
     async def test_client_get_model_provider_status_encodes_special_characters(self, client: SidecarClient) -> None:
         """Provider ids with reserved URL characters must not alter the request path."""
@@ -527,8 +517,8 @@ class TestSidecarClient:
         client._client.post = AsyncMock(return_value=mock_resp)
 
         sid = await client.create_session(
-            provider="cursor",
-            model="gpt-4o",
+            provider="claude",
+            model="claude-sonnet-4-20250514",
             system_prompt="Be helpful",
             cwd=str(tmp_path),
         )
@@ -537,8 +527,8 @@ class TestSidecarClient:
         # Verify provider mapping was applied in the request body
         call_kwargs = client._client.post.call_args
         body = call_kwargs.kwargs["json"]
-        assert body["provider"] == "acpx-cursor"
-        assert body["model"] == "cursor:gpt-4o"
+        assert body["provider"] == "google-vertex-claude"
+        assert body["model"] == "claude-sonnet-4-20250514"
 
     @pytest.mark.parametrize("api_key", [None, "synthetic-session-key"])
     async def test_create_session_serializes_optional_api_key(self, api_key: str | None) -> None:
@@ -1242,7 +1232,7 @@ class TestConvenienceFunctions:
     async def test_list_models_no_filter(self, mock_client: AsyncMock) -> None:
         models = [
             {"id": "m1", "provider": "google"},
-            {"id": "m2", "provider": "acpx-cursor"},
+            {"id": "m2", "provider": "google-vertex-claude"},
         ]
         mock_client.get_models.return_value = models
 
@@ -1253,7 +1243,7 @@ class TestConvenienceFunctions:
     async def test_list_models_with_filter(self, mock_client: AsyncMock) -> None:
         models = [
             {"id": "m1", "provider": "google"},
-            {"id": "m2", "provider": "acpx-cursor"},
+            {"id": "m2", "provider": "google-vertex-claude"},
             {"id": "m3", "provider": "google"},
         ]
         mock_client.get_models.return_value = models
@@ -1263,10 +1253,10 @@ class TestConvenienceFunctions:
         assert len(result) == 2
         assert all(m["provider"] == "google" for m in result)
 
-        # "cursor" maps to "acpx-cursor"
-        result = await list_models(provider="cursor")
+        # "claude" maps to "google-vertex-claude"
+        result = await list_models(provider="claude")
         assert len(result) == 1
-        assert result[0]["provider"] == "acpx-cursor"
+        assert result[0]["provider"] == "google-vertex-claude"
 
 
 # ---------------------------------------------------------------------------

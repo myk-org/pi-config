@@ -3,10 +3,9 @@
 # HOME is set to /home/$PI_HOST_USER if configured, otherwise /home/node.
 set -e
 
-# Always install/update pi and acpx on every container start.
+# Always install/update pi on every container start.
 # PI_HOST_USER can reverse-symlink the host ~/.npm-global over the image copy.
 npm install -g @earendil-works/pi-coding-agent
-npm install -g acpx
 
 # Register pi packages if not already present — single mechanism for all of
 # them. `legacy_marker` catches a stale pre-npm source (e.g. vertex's old
@@ -70,28 +69,5 @@ add_to_gitignore() {
 }
 add_to_gitignore '.pi/'
 add_to_gitignore '.worktrees/'
-# CLI specialist agents materialised under the mounted project (see symlink-cli-specialists.sh)
-add_to_gitignore '.cursor/agents/'
-add_to_gitignore '.claude/agents/'
-add_to_gitignore '.gemini/agents/'
-
-# Symlink package agents into PWD for Cursor/Claude/Gemini discovery (container only).
-# Source is the npm unpack of pi-orchestrator-config — never a git clone.
-# Native users place these manually — see README / cli-provider.md.
-# Failures are warn-only: container start must not abort if linking fails.
-PI_NPM_PKG="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config"
-AGENTS_SRC="$PI_NPM_PKG/agents"
-SYMLINK_SCRIPT="$PI_NPM_PKG/scripts/symlink-cli-specialists.sh"
-if [ -d "$AGENTS_SRC" ] && [ -x "$SYMLINK_SCRIPT" ]; then
-  if ! "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD"; then
-    echo "WARN: failed to symlink CLI specialists from $AGENTS_SRC" >&2
-  fi
-elif [ -d "$AGENTS_SRC" ] && [ -f "$SYMLINK_SCRIPT" ]; then
-  if ! bash "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD"; then
-    echo "WARN: failed to symlink CLI specialists from $AGENTS_SRC" >&2
-  fi
-else
-  echo "WARN: pi-orchestrator-config npm tree missing at $PI_NPM_PKG — skip CLI specialist symlinks" >&2
-fi
 
 exec pi "$@"

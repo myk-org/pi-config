@@ -27,7 +27,6 @@ NPM_FILES_REQUIRED = (
     "scripts/serve-ui.ts",
     "scripts/pidash-discord.ts",
     "scripts/httpd.py",
-    "scripts/symlink-cli-specialists.sh",
     "extensions/pidash/pidash-ui/src/",
     "extensions/pidiff/pidiff-ui/src/",
     "extensions/pidash/pidash-ui/dist/",
@@ -48,7 +47,6 @@ NPM_PACK_REQUIRED_PATHS = (
     "scripts/serve-ui.ts",
     "scripts/pidash-discord.ts",
     "scripts/httpd.py",
-    "scripts/symlink-cli-specialists.sh",
     "extensions/pidash/pidash.ts",
     "extensions/pidiff/pidiff.ts",
     "extensions/pidash/pidash-ui/package.json",
@@ -201,12 +199,10 @@ def entrypoint_has_no_pi_config_git_clone(entrypoint_text: str) -> bool:
     """Users must not need a github.com/myk-org/pi-config git clone at runtime."""
     clones_repo = "github.com/myk-org/pi-config.git" in entrypoint_text
     home_src = "pi-config-src" in entrypoint_text
-    uses_npm_tree = "node_modules/pi-orchestrator-config" in entrypoint_text
-    ok = uses_npm_tree and not clones_repo and not home_src
+    ok = not clones_repo and not home_src
     log.debug(
-        "entrypoint no-git-clone ok=%s npm_tree=%s clones=%s home_src=%s",
+        "entrypoint no-git-clone ok=%s clones=%s home_src=%s",
         ok,
-        uses_npm_tree,
         clones_repo,
         home_src,
     )

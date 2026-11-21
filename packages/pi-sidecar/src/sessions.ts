@@ -21,14 +21,12 @@ import {
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { Model, Provider } from "@earendil-works/pi-ai";
-import { createJiti } from "jiti";
 import stripJsonComments from "strip-json-comments";
 
 import { createLogger, logger } from "./logger.js";
 import { readBoundedResponseBytes, sanitizeUrlForLog } from "./http-helpers.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
-import { runWithSessionCwd } from "./session-cwd.js";
 import { drainTranscriptWrites, maybeEnforceRetention, queueLazySessionHeader, queueTurn, transcriptUsage, transcriptsEnabled, writeSessionHeader, type TurnHeaderGuard } from "./transcripts.js";
 
 const sessionStoreLog = createLogger("session-store");
@@ -65,12 +63,6 @@ function isPositiveSafeInt(value: unknown): value is number {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-/** Strip bracket suffixes from model IDs for display or comparison (e.g. "cursor:default[]" → "cursor:default"). */
-function baseModelId(id: string): string {
-  const idx = id.indexOf("[");
-  return idx >= 0 ? id.substring(0, idx) : id;
-}
 
 /** Error with HTTP status for the sidecar request handler. */
 type HttpError = Error & { statusCode: number };
@@ -300,7 +292,6 @@ export function redactApiKey(value: string, apiKey?: string): string {
   return createApiKeyRedactor(apiKey)(value);
 }
 
-const DISCOVERY_TIMEOUT_MS = 30_000;
 // Only SDK-owned literal endpoints are trusted for key-scoped model listing.
 const builtinBaseUrls = new Map(builtinProviders().filter((provider) => provider.baseUrl).map((provider) => [provider.id, provider.baseUrl!]));
 
@@ -320,16 +311,6 @@ function resolveAndLog(envVar: string, packageName: string, entryFile: string): 
   return result.path;
 }
 
-type DiscoveredModel = { id: string; name: string; provider: string };
-
-type CliDiscoverModule = {
-  discoverCliModels: (agent: string) => Promise<DiscoveredModel[]>;
-};
-
-type AcpxDiscoverModule = {
-  discoverAcpxModels: (agent: string, cwd?: string) => Promise<DiscoveredModel[]>;
-};
-
 /** Resolve extension: env override → npm package → monorepo relative path. */
 export function resolveExt(envVar: string, packageName: string, entryFile: string, monorepoRelative: string): string {
   const envPath = process.env[envVar];
@@ -339,140 +320,8 @@ export function resolveExt(envVar: string, packageName: string, entryFile: strin
   return join(__dirname, "..", "..", "..", monorepoRelative);
 }
 
-const ACPX_EXTENSION = resolveExt("SIDECAR_ACPX_EXTENSION_PATH", "pi-orchestrator-config", "extensions/acpx-provider/index.ts", "extensions/acpx-provider/index.ts");
-const CLI_PROVIDER_EXTENSION = resolveExt("SIDECAR_CLI_PROVIDER_EXTENSION_PATH", "pi-orchestrator-config", "extensions/cli-provider/index.ts", "extensions/cli-provider/index.ts");
-const PROVIDER_EXTENSION = resolveExt("SIDECAR_PROVIDER_EXTENSION_PATH", "pi-orchestrator-config", "extensions/providers/index.ts", "extensions/providers/index.ts");
-/**
- * Load fallback discovery via jiti from each extension's public entry
- * (`index.ts`), which re-exports discoverCliModels / discoverAcpxModels —
- * never from a private sibling like discover.ts.
- */
-const CLI_DISCOVER_MODULE = CLI_PROVIDER_EXTENSION;
-const ACPX_DISCOVER_MODULE = ACPX_EXTENSION;
 const VERTEX_EXTENSION = resolveExt("SIDECAR_VERTEX_EXTENSION_PATH", "@myk-org/pi-vertex-claude", "index.ts", "packages/pi-vertex-claude/index.ts");
 const SUBAGENT_EXTENSION = resolveAndLog("SIDECAR_SUBAGENT_EXTENSION_PATH", "@earendil-works/pi-coding-agent", "examples/extensions/subagent/index.ts");
-
-/** Cache of jiti-loaded fallback discovery modules, keyed by resolved path. */
-const jitiModuleCache = new Map<string, unknown>();
-
-/**
- * Load a TypeScript module at runtime via jiti and return the export named
- * `exportName` (handling both named and default-wrapped exports). Results
- * are cached per path since jiti transpilation is not free and these modules
- * are pure functions with no meaningful per-call state.
- */
-function loadJitiExport<T extends Record<string, unknown>>(path: string, exportName: keyof T & string): T {
-  const cached = jitiModuleCache.get(path);
-  if (cached) return cached as T;
-  const jiti = createJiti(import.meta.url);
-  const mod = jiti(path) as Record<string, unknown> & { default?: T };
-  const resolved = (exportName in mod && typeof mod[exportName] === "function" ? mod : mod.default) as T | undefined;
-  if (!resolved || typeof resolved[exportName] !== "function") {
-    throw new Error(`Module missing ${exportName} at ${path}`);
-  }
-  jitiModuleCache.set(path, resolved);
-  return resolved;
-}
-
-/** In-flight fallback discoveries keyed by `kind:agent` — joiners reuse the same Promise. */
-const inFlightDiscovery = new Map<string, Promise<DiscoveredModel[]>>();
-
-/**
- * Race a discovery call against DISCOVERY_TIMEOUT_MS; never throws — returns [] on failure.
- * On timeout the underlying Promise may keep running (no AbortSignal in discover APIs), but
- * the inFlightDiscovery entry is evicted so later refreshes start a new discovery instead of
- * joining a permanently hung promise. Late failures are still logged.
- */
-async function raceDiscovery(agent: string, kind: string, run: () => Promise<DiscoveredModel[]>): Promise<DiscoveredModel[]> {
-  const key = `${kind}:${agent}`;
-  let discovery = inFlightDiscovery.get(key);
-  if (!discovery) {
-    discovery = run().finally(() => {
-      if (inFlightDiscovery.get(key) === discovery) {
-        inFlightDiscovery.delete(key);
-      }
-    });
-    inFlightDiscovery.set(key, discovery);
-  } else {
-    logger.debug(`[sidecar] ${kind.toUpperCase()}_DISCOVERY_REUSE: agent=${agent}`);
-  }
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        reject(new Error(`${kind} fallback discovery for ${agent} timed out after ${DISCOVERY_TIMEOUT_MS / 1000}s`));
-      }, DISCOVERY_TIMEOUT_MS);
-    });
-    return await Promise.race([discovery, timeout]);
-  } catch (err) {
-    const timedOut = err instanceof Error && /timed out/i.test(err.message);
-    if (timedOut) {
-      // Evict the hung entry so a later refresh starts a new discovery instead of
-      // forever joining a promise that may never settle.
-      if (inFlightDiscovery.get(key) === discovery) {
-        inFlightDiscovery.delete(key);
-        logger.warn(
-          `[sidecar] ${kind.toUpperCase()}_DISCOVERY_EVICTED: agent=${agent}, reason=timeout, timeout_ms=${DISCOVERY_TIMEOUT_MS}`,
-        );
-      }
-      // Abandoned promise may still reject later — log that instead of swallowing silently.
-      discovery.catch((lateErr) => {
-        logger.warn(`[sidecar] ${kind.toUpperCase()}_DISCOVERY_LATE_FAILED: agent=${agent}`, lateErr);
-      });
-    }
-    logger.warn(`[sidecar] ${kind.toUpperCase()}_DISCOVERY_FALLBACK_FAILED: agent=${agent}`, err);
-    return [];
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-const AGENT_NAME_PATTERN = /^[a-z0-9_-]+$/i;
-
-/**
- * Builds a fallback model-discovery function for one extension kind (acpx or
- * cli). Invoked by snapshotAgentSource() only when the shared ModelRuntime has
- * a registered `<kind>-<agent>` provider whose catalog is empty (e.g. refresh
- * race / late agent). Unregistered providers skip this path entirely
- * (FALLBACK_DROPPED) — create() cannot resolve models without a registered
- * provider. Loads the extension's own exported discovery function via jiti
- * rather than duplicating its discovery logic here.
- */
-function makeDiscoverFallback<T extends Record<string, unknown>>(
-  kind: "acpx" | "cli",
-  modulePath: string,
-  exportName: keyof T & string,
-): (agent: string) => Promise<DiscoveredModel[]> {
-  const label = kind.toUpperCase();
-  return async (agent: string): Promise<DiscoveredModel[]> => {
-    logger.debug(`[sidecar] ${label}_DISCOVERY_FALLBACK_START: agent=${agent}`);
-    if (!AGENT_NAME_PATTERN.test(agent)) {
-      throw new Error(`Invalid agent name: ${agent}`);
-    }
-    if (!modulePath) {
-      logger.warn(`[sidecar] ${label}_DISCOVERY_FALLBACK_SKIPPED: agent=${agent}, reason=module_path_unresolved`);
-      return [];
-    }
-    return raceDiscovery(agent, kind, () => {
-      const discover = loadJitiExport<T>(modulePath, exportName)[exportName] as (agent: string) => Promise<DiscoveredModel[]>;
-      return discover(agent);
-    });
-  };
-}
-
-/** Model ids are acpx bracket ids (e.g. cursor:default[]). */
-const discoverAcpxModelsFallback = makeDiscoverFallback<AcpxDiscoverModule>("acpx", ACPX_DISCOVER_MODULE, "discoverAcpxModels");
-/** Model ids are CLI `--model` values (e.g. cursor:composer-2.5), not acpx bracket ids. */
-const discoverCliModelsFallback = makeDiscoverFallback<CliDiscoverModule>("cli", CLI_DISCOVER_MODULE, "discoverCliModels");
-
-/** Parse comma-separated agent env vars (ACPX_AGENTS / CLI_AGENTS). */
-function parseAgentList(envValue: string | undefined): string[] {
-  return (envValue || "")
-    .split(",")
-    .map((a) => a.trim())
-    .filter((a) => a.length > 0);
-}
 
 interface ExtensionEntry {
   path: string;
@@ -782,15 +631,15 @@ export function resolveInternalAgentDir(explicit?: string): string {
 /**
  * Ambient-marker value on `apiKey`; string apiKeys cannot carry it (undefined).
  *
- * Marker mechanism (issue #919): an ambient-auth provider (ADC, CLI login,
- * ACPX) opts out of per-session API keys by registering object-form auth whose
- * apiKey carries `Symbol.for("pi-config.ambientLoginAuth") = true` — only
- * possible via pi-ai `createProvider` (native registration). Legacy
- * `registerProvider(name, bag)` registrations use string apiKeys (env-var
- * refs) that cannot carry the marker; those are classified by extension path
- * in `snapshotLegacyAmbientProviders` below. A NEW ambient-auth extension must
- * either register via createProvider with the marker, or load through one of
- * the path-classified extension entries (add its path there).
+ * Marker mechanism (issue #919): an ambient-auth provider (e.g. ADC) opts out
+ * of per-session API keys by registering object-form auth whose apiKey carries
+ * `Symbol.for("pi-config.ambientLoginAuth") = true` — only possible via pi-ai
+ * `createProvider` (native registration). Legacy `registerProvider(name, bag)`
+ * registrations use string apiKeys (env-var refs) that cannot carry the marker;
+ * those are classified by extension path in `snapshotLegacyAmbientProviders`
+ * below. A NEW ambient-auth extension must either register via createProvider
+ * with the marker, or load through one of the path-classified extension entries
+ * (add its path there).
  */
 function ambientMarkerValue(apiKey: unknown): unknown { // pragma: allowlist secret — parameter name, not a credential
   return typeof apiKey === "object" && apiKey !== null // pragma: allowlist secret — parameter name, not a credential
@@ -812,7 +661,7 @@ export function snapshotLegacyAmbientProviders(
 ): void {
   let legacyCount = 0;
   for (const { provider, extensionPath } of registrations) {
-    if ([PROVIDER_EXTENSION, CLI_PROVIDER_EXTENSION, ACPX_EXTENSION, VERTEX_EXTENSION].includes(extensionPath) &&
+    if (extensionPath === VERTEX_EXTENSION &&
         provider.auth.apiKey && ambientMarkerValue(provider.auth.apiKey) === undefined) {
       legacyAmbientProviders.add(provider);
       legacyCount++;
@@ -892,8 +741,8 @@ const PRICING_KNOWN = Symbol.for("pi-config.pricingKnown");
  * registered with zeros — and those zeros mean "unknown pricing", not "free".
  * Three sources supply such zeros, and all three must be withheld:
  *
- * - Models we fabricate (key-scoped listings, CLI/ACPX discovery without a
- *   catalog price, openai-compatible /v1/models records), marked PRICING_UNKNOWN.
+ * - Models we fabricate (key-scoped listings, openai-compatible /v1/models
+ *   records), marked PRICING_UNKNOWN.
  * - models.json definitions that omit `cost`: Pi's provider composer fills them
  *   with zeros (see pi's provider-composer `cost: definition.cost ?? {0,0,0,0}`)
  *   and hands us a model with no marker.
@@ -1154,7 +1003,7 @@ interface SessionEntry {
   headerPending: boolean;
   /**
    * Whether the session's model carries real prices. Pi requires numeric prices,
-   * so a model whose source published none (key-scoped listing, CLI/ACPX
+   * so a model whose source published none (key-scoped listing, openai-compatible
    * discovery without a catalog price) uses zeros for "unknown pricing", not
    * "free"; those models carry the PRICING_UNKNOWN marker. Reporting that as $0
    * makes unknown spend look free to consumers (e.g. rootcoz), so usage cost
@@ -1270,40 +1119,17 @@ export class SessionStore {
   private legacyAmbientProviders = new WeakSet<Provider>();
   /**
    * Internal AgentSessionRuntime that owns the shared ModelRuntime and keeps
-   * unified Providers (ACPX + CLI), Vertex, and Subagent extensions loaded for the sidecar process's
-   * lifetime. Created once, lazily, and disposed only in disposeAll().
+   * Vertex and Subagent extensions loaded for the sidecar process's lifetime.
+   * Created once, lazily, and disposed only in disposeAll().
    *
-   * Why this exists: the unified Providers extension (ACPX + CLI) keeps
-   * module-level state (acpx runtime sessions, CLI --resume markers) that is
-   * only correct if exactly one instance of that extension is ever loaded.
-   * `AgentSessionRuntime.dispose()` emits a `session_shutdown` event, which
-   * those providers use as their own teardown signal — they clear that
-   * module-level state and their `filterModels()` (driven by `isConfigured()`)
-   * starts returning an empty list for every acpx-* / cli-* model. So this
-   * runtime must never be disposed except at process shutdown, and it must
-   * never be recreated to "refresh" discovery (see refreshModels()).
-   *
-   * User sessions created via create() never load the unified Providers
-   * extension or Vertex (already registered on the shared modelRuntime), and
-   * only load Subagent when "subagent" is in the session's tools. They
-   * resolve acpx-* / cli-* models directly via `modelRuntime.getModel()`. This
-   * intentionally bypasses `ModelRuntime.getAvailable()`/`ModelRegistry.getAvailable()`,
-   * whose `filterModels()` call would read `isConfigured()` from the *internal*
-   * runtime's extension module instance — something a user session has no
-   * reason to depend on and would only add a footgun if it silently changed.
+   * User sessions created via create() never load Vertex (already registered
+   * on the shared modelRuntime), and only load Subagent when "subagent" is in
+   * the session's tools.
    */
   private internalRuntime: AgentSessionRuntime | undefined;
   private runtimeInit: Promise<void> | undefined;
   private _ready = false;
   private _discoveryError: string | null = null;
-  /**
-   * Cached acpx-* / cli-* model snapshots, refreshed by snapshotExtensionModels().
-   * This is the source of truth for create()'s acpx/cli validation — not a
-   * live provider lookup — so a session request always sees a consistent
-   * list matching the most recent GET /models response.
-   */
-  private acpxModels: DiscoveredModel[] = [];
-  private cliModels: DiscoveredModel[] = [];
   /**
    * Set at the very start of disposeAll(), before any session or the internal
    * runtime is torn down. Once true, ensureInternalRuntime()/create()/getModels()/
@@ -1376,8 +1202,7 @@ export class SessionStore {
 
   /**
    * Ensure the first discovery pass has finished (or failed with _ready set).
-   * Startup kicks refreshModels() async after listen; GET /models and create()
-   * must not serve empty acpx/cli caches during that window.
+   * Startup kicks refreshModels() async after listen.
    *
    * If init failed before modelRuntime was assigned, throws a controlled 503
    * instead of letting callers crash on `this.modelRuntime!`.
@@ -1496,18 +1321,7 @@ export class SessionStore {
     if (this.internalRuntime) return;
     if (!this.runtimeInit) {
       this.runtimeInit = (async () => {
-        // Prefer the unified providers extension (extensions/providers/index.ts)
-        // when available (pi-orchestrator-config >= 4.0.0). Fall back to loading
-        // ACPX + CLI individually on older versions where the file doesn't exist.
-        const providerEntries: ExtensionEntry[] =
-          PROVIDER_EXTENSION && existsSync(PROVIDER_EXTENSION)
-            ? [{ path: PROVIDER_EXTENSION, label: "Providers" }]
-            : [
-                { path: ACPX_EXTENSION, label: "ACPX" },
-                { path: CLI_PROVIDER_EXTENSION, label: "CLI" },
-              ];
         const { paths: extensionPaths } = resolveExtensionPaths([
-          ...providerEntries,
           { path: VERTEX_EXTENSION, label: "Vertex" },
           { path: SUBAGENT_EXTENSION, label: "Subagent", isSubagent: true },
         ]);
@@ -1522,8 +1336,7 @@ export class SessionStore {
           sessionManager,
         });
         // disposeAll() may have run while we were creating — never leave an
-        // orphaned registrar runtime alive past shutdown (its dispose() is the
-        // only path that emits session_shutdown for the Providers extension).
+        // orphaned registrar runtime alive past shutdown.
         if (this._disposed) {
           try {
             await runtime.dispose();
@@ -1561,116 +1374,23 @@ export class SessionStore {
   }
 
   /**
-   * List models from all sources. Ensures the internal runtime is initialized
-   * so builtins are never silently empty during startup races.
-   * ACPX models take precedence over builtin placeholders with the same base ID;
-   * cli-* stays a separate source (no acpx↔cli merge).
+   * List models from all configured providers. Ensures the internal runtime is
+   * initialized so builtins are never silently empty during startup races.
    */
   async getModels(): Promise<Array<{ id: string; name: string; provider: string }>> {
     this.assertNotDisposed("getModels");
     await this.ensureDiscoveryComplete();
 
-    // acpx-* / cli-* providers are registered directly on the shared ModelRuntime
-    // by the internal runtime's extensions (see ensureInternalRuntime). Strip
-    // them from the builtins list here — callers get those only via the
-    // explicit acpxModels/cliModels caches populated by snapshotExtensionModels(),
-    // which read the provider's raw catalog rather than the auth-filtered one
-    // (see the internalRuntime field docstring for why).
-    const isExtensionProvider = (provider: string): boolean =>
-      provider.startsWith("acpx-") || provider.startsWith("cli-");
-
-    const builtinModels = this.modelRegistry!.getAvailable()
-      .filter((m) => !HEADLESS_EXCLUDED_PROVIDERS.has(m.provider) && !isExtensionProvider(m.provider))
+    const models = this.modelRegistry!.getAvailable()
+      .filter((m) => !HEADLESS_EXCLUDED_PROVIDERS.has(m.provider))
       .map((m) => ({
         id: m.id,
         name: m.name,
         provider: m.provider,
       }));
 
-    // Deduplicate: acpx models take priority over builtin placeholders.
-    // Compare by stripping bracket suffixes (e.g. "cursor:default[]" base is "cursor:default").
-    const acpxBaseIds = new Set(this.acpxModels.map((m) => baseModelId(m.id)));
-    const dedupedBuiltins = builtinModels.filter((m) => !acpxBaseIds.has(baseModelId(m.id)));
-    const dedupedCount = builtinModels.length - dedupedBuiltins.length;
-    if (dedupedCount > 0) {
-      logger.debug(
-        `[sidecar] MODELS_DEDUPED: builtin=${builtinModels.length}, acpx=${this.acpxModels.length}, removed=${dedupedCount}, total=${dedupedBuiltins.length + this.acpxModels.length + this.cliModels.length}`,
-      );
-    } else {
-      logger.debug(
-        `[sidecar] MODELS_LISTED: builtin=${dedupedBuiltins.length}, acpx=${this.acpxModels.length}, cli=${this.cliModels.length}`,
-      );
-    }
-
-    // Caller selects source via provider: google/… vs acpx-<agent> vs cli-<agent>
-    return [...dedupedBuiltins, ...this.acpxModels, ...this.cliModels];
-  }
-
-  /**
-   * Snapshot one extension model source (acpx or cli) for each configured agent.
-   * Prefers the shared ModelRuntime's provider catalog (already populated by
-   * the internal runtime's extension load / refresh()); falls back to a
-   * jiti-loaded discovery call only when that provider is registered but empty.
-   */
-  private async snapshotAgentSource(
-    agents: string[],
-    kind: "acpx" | "cli",
-    fallback: (agent: string) => Promise<DiscoveredModel[]>,
-  ): Promise<DiscoveredModel[]> {
-    if (agents.length === 0) return [];
-    const label = kind.toUpperCase();
-    logger.info(`[sidecar] ${label}_SNAPSHOT_START: agents=${agents.join(",")}`);
-
-    const results = await Promise.allSettled(
-      agents.map(async (agent) => {
-        const providerId = `${kind}-${agent}`;
-        const provider = this.modelRuntime?.getProvider(providerId);
-        const fromRuntime = provider?.getModels().map((m) => ({ id: m.id, name: m.name, provider: providerId })) ?? [];
-        if (fromRuntime.length > 0) {
-          return { models: fromRuntime, source: "modelRuntime" as const };
-        }
-        // Unregistered providers cannot resolve models in create() — skip the
-        // expensive jiti fallback (up to DISCOVERY_TIMEOUT_MS) entirely.
-        if (!provider) {
-          logger.warn(
-            `[sidecar] ${label}_FALLBACK_DROPPED: agent=${agent}, provider=${providerId}, reason=provider_not_registered, discovered=0`,
-          );
-          return { models: [], source: "fallback" as const };
-        }
-        // Only advertise fallback discoveries that ModelRuntime can actually
-        // resolve — create() later calls getModel() and would 500 otherwise.
-        const fromFallback = await fallback(agent);
-        const resolvable = fromFallback.filter((m) => Boolean(this.modelRuntime?.getModel(providerId, m.id)));
-        if (resolvable.length < fromFallback.length) {
-          logger.warn(
-            `[sidecar] ${label}_FALLBACK_FILTERED: agent=${agent}, provider=${providerId}, discovered=${fromFallback.length}, resolvable=${resolvable.length}`,
-          );
-        }
-        return { models: resolvable, source: "fallback" as const };
-      }),
-    );
-
-    const models: DiscoveredModel[] = [];
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      const agent = agents[i];
-      if (result.status === "fulfilled") {
-        models.push(...result.value.models);
-        logger.info(`[sidecar] ${label}_SNAPSHOT_OK: agent=${agent}, count=${result.value.models.length}, source=${result.value.source}`);
-      } else {
-        logger.error(`[sidecar] ${label}_SNAPSHOT_FAILED: agent=${agent}`, result.reason);
-      }
-    }
+    logger.debug(`[sidecar] MODELS_LISTED: count=${models.length}`);
     return models;
-  }
-
-  private async snapshotExtensionModels(): Promise<void> {
-    const [acpxModels, cliModels] = await Promise.all([
-      this.snapshotAgentSource(parseAgentList(process.env.ACPX_AGENTS), "acpx", discoverAcpxModelsFallback),
-      this.snapshotAgentSource(parseAgentList(process.env.CLI_AGENTS), "cli", discoverCliModelsFallback),
-    ]);
-    this.acpxModels = acpxModels;
-    this.cliModels = cliModels;
   }
 
   /**
@@ -1691,29 +1411,16 @@ export class SessionStore {
     logger.debug(`[sidecar] MODEL_DISCOVERY_START:`);
     try {
       const isFirstDiscovery = !this.internalRuntime;
-      // First call: creates the internal runtime, which loads the unified
-      // Providers (ACPX + CLI), Vertex, and Subagent extensions and triggers
-      // their synchronous discovery once.
+      // First call: creates the internal runtime, which loads Vertex and
+      // Subagent extensions once.
       await this.ensureInternalRuntime();
 
       if (!isFirstDiscovery) {
-        // Extensions are already loaded and their providers already registered
-        // on the shared ModelRuntime — reloading the unified Providers extension
-        // would give it a second module instance with its own empty agents Map
-        // (see the internalRuntime field docstring). Instead, ask the runtime to
-        // re-fetch each provider's catalog: Provider.refreshModels(), which
-        // createRuntimeProvider() wires to the extension's fetchModels callback.
-        // allowNetwork: false — ACPX/CLI providers resolve their catalogs from
-        // the local acpx runtime / CLI binaries, not the network; ModelRuntime
-        // defaults allowNetwork to true (for builtin providers' remote catalog
-        // fetches), which we don't want triggered from this localhost refresh path.
         const result = await this.modelRuntime!.refresh({ force: true, allowNetwork: false });
         for (const [providerId, err] of result.errors) {
           logger.warn(`[sidecar] MODEL_REFRESH_PROVIDER_FAILED: provider=${providerId}, error=${err.message}`);
         }
       }
-
-      await this.snapshotExtensionModels();
 
       this._ready = true;
       this._discoveryError = null;
@@ -1746,9 +1453,7 @@ export class SessionStore {
 
   /**
    * Auth/registration/model-count snapshot for one provider, for diagnostics
-   * (GET /models/:provider/status). Model counts for acpx-* / cli-* come from
-   * the cache populated by snapshotExtensionModels() — the same source create()
-   * validates against — rather than the provider's live (auth-gated) catalog.
+   * (GET /models/:provider/status).
    */
   async getProviderStatus(provider: string): Promise<ProviderStatus> {
     this.assertNotDisposed("getProviderStatus");
@@ -1764,10 +1469,6 @@ export class SessionStore {
       // are excluded from the catalog this process can ever actually serve, so
       // report 0 here too rather than the SDK's raw (unusable) model count.
       modelCount = 0;
-    } else if (provider.startsWith("acpx-")) {
-      modelCount = this.acpxModels.filter((m) => m.provider === provider).length;
-    } else if (provider.startsWith("cli-")) {
-      modelCount = this.cliModels.filter((m) => m.provider === provider).length;
     } else {
       modelCount = registeredProvider?.getModels().length ?? 0;
     }
@@ -2003,105 +1704,74 @@ export class SessionStore {
 
     await this.ensureInternalRuntime();
 
-    const isAcpxProvider = options.provider.startsWith("acpx-");
-    const isCliProvider = options.provider.startsWith("cli-");
-
-    // Extension sources are selected explicitly via provider prefix and
-    // validated against the acpx/cli cache (kept in sync by refreshModels()).
-    let model: any;
-    if (isAcpxProvider || isCliProvider) {
-      const cache = isAcpxProvider ? this.acpxModels : this.cliModels;
-      const envVar = isAcpxProvider ? "ACPX_AGENTS" : "CLI_AGENTS";
-      const sourceLabel = isAcpxProvider ? "acpx-*" : "cli-*";
-      const match = cache.some((m) => m.id === options.model && m.provider === options.provider);
-      if (!match) {
-        throw httpError(
-          `Model '${options.model}' not found for provider '${options.provider}'. ` +
-            `Set ${envVar} and use GET /models to list ${sourceLabel} models.`, 400,
-        );
-      }
-      // Resolve directly against the shared ModelRuntime — this bypasses
-      // getAvailable()/filterModels(), which would read the extension's
-      // isConfigured() state from the internal runtime's own module instance.
-      // See the internalRuntime field docstring for why user sessions must not
-      // depend on that state.
-      model = this.modelRuntime!.getModel(options.provider, options.model);
-      if (!model) {
-        throw new Error(
-          `Model '${options.model}' was found in the ${isAcpxProvider ? "acpx" : "cli"} model cache but is no ` +
-            `longer registered on the shared ModelRuntime for provider '${options.provider}'. Try POST /models/refresh.`,
-        );
-      }
-    } else {
-      model = this.modelRegistry!.find(options.provider, options.model)
-        || this.modelRuntime!.getModel(options.provider, options.model)
-        || getModel(options.provider as any, options.model)
-        || undefined;
-      if (!model && apiKey !== undefined && !isKeyFree(options.model, redact)) {
-        throw httpError("Invalid model for session API key: [REDACTED]", 400);
-      }
-      if (!model && apiKey !== undefined && this.supportsSessionApiKey(options.provider)) {
-        const listed = await this.getModelsForApiKey(options.provider, apiKey);
-        const discovered = listed.models.find((candidate) => candidate.id === options.model);
-        const templates = this.modelRuntime!.getProvider(options.provider)?.getModels() ?? [];
-        const template = templates[0];
-        if (discovered && template && templates.every((entry) => entry.api === template.api && entry.baseUrl === template.baseUrl)) {
-          // Private to this session; never publish a key-scoped model to the shared runtime.
-          const capabilities = discovered.capabilities;
-          const positiveLimit = (value: unknown): number | undefined => {
-            const valid = isPositiveSafeInt(value);
-            sessionCreateLog.debug("Validating key-discovered model token limit", { session: id, valid });
-            return valid ? value : undefined;
-          };
-          // Issue 913: gateway listings (e.g. Acme) often omit token-limit
-          // capabilities. Manifest-declared limits reach this path already
-          // merged into the discovered entry's capabilities under the SAME
-          // inputTokenLimit/outputTokenLimit keys (see mergeManifestModels),
-          // so they are read directly from the entry; the snapshot lookup
-          // below stays only as a fallback for entries that somehow lack limits.
-          const manifestEntry = this.trustedKeyScopedProviders.get(options.provider)?.models.find((entry) => entry.id === discovered.id);
-          const liveContextWindow = positiveLimit(capabilities?.inputTokenLimit);
-          const liveMaxTokens = positiveLimit(capabilities?.outputTokenLimit);
-          const contextWindow = liveContextWindow ?? manifestEntry?.contextWindow;
-          const maxTokens = liveMaxTokens ?? manifestEntry?.maxTokens;
-          if (manifestEntry && (!liveContextWindow || !liveMaxTokens) && contextWindow && maxTokens) {
-            sessionCreateLog.debug("Key-discovered model limits sourced from the manifest snapshot", { session: id, providerId: options.provider });
-          }
-          if (!contextWindow || !maxTokens) {
-            // Unknown limits are a hard failure by design — never fabricate defaults.
-            sessionCreateLog.error("Key-discovered model has no reliable token limits anywhere; refusing session creation", { session: id, providerId: options.provider });
-            throw httpError(
-              "Model metadata missing reliable input/output token limits for unknown model. " +
-              "Declare the model in the agent-dir models.json with contextWindow and maxTokens " +
-              "to use it with a session API key.", 400);
-          }
-          model = {
-            id: discovered.id, name: discovered.name, provider: options.provider,
-            api: template.api, baseUrl: template.baseUrl,
-            reasoning: false, input: ["text"],
-            // Pi requires numeric prices and limits; zero means unknown pricing here, not free.
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow,
-            maxTokens,
-          } satisfies Model<typeof template.api>;
-          // Provenance, not the value: these zeros are fabricated, so a driver
-          // reporting $0 must not be recorded as a genuinely free call.
-          (model as Record<symbol, unknown>)[PRICING_UNKNOWN] = true;
-          sessionCreateLog.debug("Session model resolved from key-scoped listing", { session: id });
+    let model: any = this.modelRegistry!.find(options.provider, options.model)
+      || this.modelRuntime!.getModel(options.provider, options.model)
+      || getModel(options.provider as any, options.model)
+      || undefined;
+    if (!model && apiKey !== undefined && !isKeyFree(options.model, redact)) {
+      throw httpError("Invalid model for session API key: [REDACTED]", 400);
+    }
+    if (!model && apiKey !== undefined && this.supportsSessionApiKey(options.provider)) {
+      const listed = await this.getModelsForApiKey(options.provider, apiKey);
+      const discovered = listed.models.find((candidate) => candidate.id === options.model);
+      const templates = this.modelRuntime!.getProvider(options.provider)?.getModels() ?? [];
+      const template = templates[0];
+      if (discovered && template && templates.every((entry) => entry.api === template.api && entry.baseUrl === template.baseUrl)) {
+        // Private to this session; never publish a key-scoped model to the shared runtime.
+        const capabilities = discovered.capabilities;
+        const positiveLimit = (value: unknown): number | undefined => {
+          const valid = isPositiveSafeInt(value);
+          sessionCreateLog.debug("Validating key-discovered model token limit", { session: id, valid });
+          return valid ? value : undefined;
+        };
+        // Issue 913: gateway listings (e.g. Acme) often omit token-limit
+        // capabilities. Manifest-declared limits reach this path already
+        // merged into the discovered entry's capabilities under the SAME
+        // inputTokenLimit/outputTokenLimit keys (see mergeManifestModels),
+        // so they are read directly from the entry; the snapshot lookup
+        // below stays only as a fallback for entries that somehow lack limits.
+        const manifestEntry = this.trustedKeyScopedProviders.get(options.provider)?.models.find((entry) => entry.id === discovered.id);
+        const liveContextWindow = positiveLimit(capabilities?.inputTokenLimit);
+        const liveMaxTokens = positiveLimit(capabilities?.outputTokenLimit);
+        const contextWindow = liveContextWindow ?? manifestEntry?.contextWindow;
+        const maxTokens = liveMaxTokens ?? manifestEntry?.maxTokens;
+        if (manifestEntry && (!liveContextWindow || !liveMaxTokens) && contextWindow && maxTokens) {
+          sessionCreateLog.debug("Key-discovered model limits sourced from the manifest snapshot", { session: id, providerId: options.provider });
         }
+        if (!contextWindow || !maxTokens) {
+          // Unknown limits are a hard failure by design — never fabricate defaults.
+          sessionCreateLog.error("Key-discovered model has no reliable token limits anywhere; refusing session creation", { session: id, providerId: options.provider });
+          throw httpError(
+            "Model metadata missing reliable input/output token limits for unknown model. " +
+            "Declare the model in the agent-dir models.json with contextWindow and maxTokens " +
+            "to use it with a session API key.", 400);
+        }
+        model = {
+          id: discovered.id, name: discovered.name, provider: options.provider,
+          api: template.api, baseUrl: template.baseUrl,
+          reasoning: false, input: ["text"],
+          // Pi requires numeric prices and limits; zero means unknown pricing here, not free.
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow,
+          maxTokens,
+        } satisfies Model<typeof template.api>;
+        // Provenance, not the value: these zeros are fabricated, so a driver
+        // reporting $0 must not be recorded as a genuinely free call.
+        (model as Record<symbol, unknown>)[PRICING_UNKNOWN] = true;
+        sessionCreateLog.debug("Session model resolved from key-scoped listing", { session: id });
       }
-      if (!model) {
-        throw httpError(
-          `Model '${options.model}' not found for provider '${options.provider}'. Use GET /models to list available models.`, 400,
-        );
-      }
+    }
+    if (!model) {
+      throw httpError(
+        `Model '${options.model}' not found for provider '${options.provider}'. Use GET /models to list available models.`, 400,
+      );
     }
 
     if (apiKey !== undefined && !this.supportsSessionApiKey(options.provider)) {
       throw httpError("Selected provider does not support session API key authentication", 400);
     }
     // The original key is retained only by this session's runtime facade and redactor.
-    sessionCreateLog.debug(`[sidecar] Model resolved: session=${id}, acpxSource=${isAcpxProvider}, cliSource=${isCliProvider}`);
+    sessionCreateLog.debug(`[sidecar] Model resolved: session=${id}`);
 
     // Keep request credentials on this session's facade, not the shared registrar.
     // ModelRuntime's complete* methods call stream* on `this`, so intercept all
@@ -2161,8 +1831,7 @@ export class SessionStore {
 
     const tools = options.tools ?? [...DEFAULT_TOOLS];
     const needsSubagent = tools.includes("subagent");
-    // User sessions deliberately never load the unified Providers extension
-    // (it owns module-level acpx/CLI state) or Vertex (google-vertex-claude is
+    // User sessions deliberately never load Vertex (google-vertex-claude is
     // already registered on the shared this.modelRuntime). Subagent only
     // registers the `subagent` tool, so omit it unless requested in `tools`.
     let extensionPaths: string[] = [];
@@ -2591,8 +2260,8 @@ export class SessionStore {
             // charged, so even a billed zero is authoritative and an unknown
             // catalog price cannot turn it into unknown spend.
             const billed = msg.usage.cost?.totalFromProvider === true;
-            // A model with unknown pricing reports zeros, but a driver can still
-            // know the real turn cost (ACPX models without catalog prices do).
+            // A model with unknown pricing reports zeros, but a provider can still
+            // know the real turn cost.
             // Only discard a reported *zero*; never discard a positive total.
             if (reported != null && (billed || entry.pricingKnown || reported > 0)) {
               usage.cost_usd = (usage.cost_usd ?? 0) + reported;
@@ -2662,7 +2331,7 @@ export class SessionStore {
     });
 
     try {
-      await runWithSessionCwd(entry.cwd, () => entry.session.prompt(message));
+      await entry.session.prompt(message);
     } catch (err: any) {
       logger.error(`[sidecar] Prompt failed: session=${id}, error=${redactDiagnostic(err?.message || String(err), entry.redact)}, stack=${redactDiagnostic(err instanceof Error ? err.stack ?? err.message : String(err), entry.redact)}`);
       // Transcript fallback (#923 review): a prompt that rejects without an

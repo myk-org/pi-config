@@ -9,7 +9,7 @@ Get pi-config installed, configure your project, start the local daemons, and ru
 - `pi` >= 1.5.0 (install with `npm install -g @earendil-works/pi-coding-agent`)
 - `uv` (Python package manager)
 
-> **Note:** pi-config requires pi **1.5.0 or newer**, because the orchestrator and sidecar call APIs added in that release. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.
+> **Note:** pi-config requires pi **1.5.0 or newer**, because the orchestrator and sidecar call APIs added in that release. On an older version, pi warns on session start.
 
 ## Quick Example
 
@@ -34,7 +34,7 @@ pi install npm:pi-orchestrator-config
 uv tool install myk-pi-tools
 ```
 
-To get everything at once — the pi package, `myk-pi-tools`, `prek`, `acpx`, `agent-browser`, `trail` (`@trailhq/trail-code`), Playwright, and the git-excludes setup — run the interactive installer instead:
+To get everything at once — the pi package, `myk-pi-tools`, `prek`, `agent-browser`, `trail` (`@trailhq/trail-code`), Playwright, and the git-excludes setup — run the interactive installer instead:
 
 ```bash
 uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
@@ -64,8 +64,7 @@ Create `.pi/pi-config-settings.json` in your repository root — it is the only 
   "dco": true,
   "dream_interval_hours": 3,
   "pidash_enable": true,
-  "pidiff_enable": true,
-  "cli_agents": ["claude", "cursor"]
+  "pidiff_enable": true
 }
 ```
 
@@ -124,7 +123,7 @@ Skip the settings file when you prefer env vars. Resolution order:
 
 1. `.pi/pi-config-settings.json` (project)
 2. `~/.pi/pi-config-settings.json` (global)
-3. Environment variables (for example `PI_DREAM_INTERVAL_HOURS=3`, `CLI_AGENTS=claude,cursor`)
+3. Environment variables (for example `PI_DREAM_INTERVAL_HOURS=3`, `PI_PIDASH_PORT=19190`)
 4. Built-in defaults
 
 See [Configuration & Settings](configuration.html) for keys and env var names. For CLI utilities used by review and memory workflows, see [myk_pi_tools CLI Reference](cli-reference.html).

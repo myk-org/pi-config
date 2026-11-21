@@ -204,18 +204,13 @@ User-visible effect:
 | `/dream-auto off` | Disables the automatic timer for the current project. |
 | `dream_interval_hours` | Adjusts the automatic interval in project or global settings. `number`, default `3`. |
 | `PI_DREAM_INTERVAL_HOURS` | Environment-variable override for the interval. |
-| `internal_operations_provider` | Sidecar provider used when the parent session is ACPX-backed. `string`, default `""`. |
-| `internal_operations_model` | Sidecar model used when the parent session is ACPX-backed. `string`, default `""`. |
+| `internal_operations_provider` | Optional provider override for background internal operations like dreaming. `string`, default `""`. |
+| `internal_operations_model` | Optional model override for background internal operations like dreaming. `string`, default `""`. |
 | `agent_model` | Default model for the `worker` agent. `string`, default `""` (inherit parent). |
 
-### When Dreaming Skips Work
+### Model Selection for Dreaming
 
-Dreaming depends on an async-capable LLM path. A parent session on a native or `cli-*` provider supports it directly, and the `worker` agent resolves its model through the normal subagent chain (`agent_model` → parent model). When the parent is ACPX-backed, child Pi processes skip ACPX provider registration, so dreaming instead needs both of these set:
-
-- `internal_operations_provider`
-- `internal_operations_model`
-
-Both must be non-empty and the provider must not be an `acpx-*` id. If that path is unavailable, Pi skips the run and notifies you with "Dream skipped: set internal_operations_provider and internal_operations_model for acpx sessions".
+Dreaming spawns the `worker` agent asynchronously. When both `internal_operations_provider` and `internal_operations_model` are set, dreaming uses that pair; otherwise the `worker` agent resolves its model through the normal subagent chain (`agent_model` → parent model).
 
 User-visible effect:
 

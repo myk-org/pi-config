@@ -1,7 +1,6 @@
 """Full live e2e via pi_sidecar_client — pytest + fixtures.
 
-Client API is provider + model. Live tests are parametrized over every provider
-from installed CLIs (cli-* + acpx-*) plus native google.
+Client API is provider + model. Live tests run against native providers.
 """
 
 from __future__ import annotations
@@ -289,47 +288,19 @@ async def test_subagent_invoke(
     project_math_agent: Path,
 ) -> None:
     assert project_math_agent.is_file()
-    assert (test_cwd / ".claude" / "agents" / "e2e-math.md").is_file()
-    assert (test_cwd / ".gemini" / "agents" / "e2e-math.md").is_file()
 
-    # Native Pi uses the subagent extension; Claude/Gemini CLIs use their own agent tools.
-    if "claude" in provider:
-        tools = ["read", "ls"]
-        system_prompt = (
-            "You MUST call the Agent tool exactly once. "
-            'Required args: description="math", subagent_type="e2e-math", '
-            'prompt="What is 2+2? Reply with only the number.". '
-            "After the tool returns, reply with only the subagent's numeric answer."
-        )
-        user_prompt = (
-            'Call Agent with subagent_type="e2e-math", description="math", '
-            'prompt="What is 2+2? Reply with only the number.". '
-            "Then reply with only the number from the tool result."
-        )
-    elif "gemini" in provider and provider != "google":
-        # cli-gemini / acpx-gemini — Gemini CLI subagents from .gemini/agents/
-        tools = ["read", "ls"]
-        system_prompt = (
-            "You MUST delegate to the e2e-math subagent exactly once "
-            "(via @e2e-math or the subagent tool). "
-            "Task: What is 2+2? After it returns, reply with only the numeric answer."
-        )
-        user_prompt = (
-            "Delegate to @e2e-math: What is 2+2? Reply with only the number. Then reply with only that number."
-        )
-    else:
-        tools = ["subagent"]
-        system_prompt = (
-            "You MUST call the subagent tool exactly once. "
-            'Required args: agent="e2e-math", agentScope="both", '
-            "confirmProjectAgents=false. Do not invent other agent names. "
-            "After the tool returns, reply with only the subagent's numeric answer."
-        )
-        user_prompt = (
-            'Call subagent with agent="e2e-math", agentScope="both", '
-            'confirmProjectAgents=false, task="What is 2+2?". '
-            "Then reply with only the number from the tool result."
-        )
+    tools = ["subagent"]
+    system_prompt = (
+        "You MUST call the subagent tool exactly once. "
+        'Required args: agent="e2e-math", agentScope="both", '
+        "confirmProjectAgents=false. Do not invent other agent names. "
+        "After the tool returns, reply with only the subagent's numeric answer."
+    )
+    user_prompt = (
+        'Call subagent with agent="e2e-math", agentScope="both", '
+        'confirmProjectAgents=false, task="What is 2+2?". '
+        "Then reply with only the number from the tool result."
+    )
 
     sid = await client.create_session(
         provider=provider,

@@ -16,8 +16,6 @@
   ],
   "files": [
     "CHANGELOG.md",
-    "extensions/acpx-provider/",
-    "extensions/cli-provider/",
     "extensions/providers/",
     "extensions/openai-compatible-discovery/",
     "extensions/shared/",
@@ -52,7 +50,6 @@
     "scripts/serve-ui.ts",
     "scripts/pidash-discord.ts",
     "scripts/httpd.py",
-    "scripts/symlink-cli-specialists.sh",
     "scripts/build-extension-uis.sh",
     "scripts/trail-allow-scripts.mjs",
     "agents/",
@@ -72,7 +69,6 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "acpx": ">=0.12.0 <1",
     "chokidar": "^5.0.0",
     "discord.js": "^14.0.0",
     "strip-json-comments": "^5.0.3",

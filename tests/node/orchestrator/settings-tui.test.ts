@@ -164,11 +164,13 @@ describe("formatValue", () => {
   });
 
   it("formats agent_list with entries", () => {
-    assert.equal(formatValue("acpx_agents", ["claude", "gemini"], SETTINGS_KEYS.acpx_agents), "claude, gemini");
+    const def = { description: "test", type: "agent_list", default: [], group: "Provider" } as any;
+    assert.equal(formatValue("test_agents", ["claude", "gemini"], def), "claude, gemini");
   });
 
   it("formats empty agent_list", () => {
-    assert.equal(formatValue("acpx_agents", [], SETTINGS_KEYS.acpx_agents), EMPTY_VALUE_SENTINEL);
+    const def = { description: "test", type: "agent_list", default: [], group: "Provider" } as any;
+    assert.equal(formatValue("test_agents", [], def), EMPTY_VALUE_SENTINEL);
   });
 
   it("formats agent_overrides with entries", () => {
@@ -311,12 +313,14 @@ describe("parseRawValue", () => {
   });
 
   it("parses agent_list comma-separated", () => {
-    assert.deepEqual(parseRawValue("acpx_agents", "claude, gemini", SETTINGS_KEYS.acpx_agents), ["claude", "gemini"]);
+    const def = { description: "test", type: "agent_list", default: [], group: "Provider" } as any;
+    assert.deepEqual(parseRawValue("test_agents", "claude, gemini", def), ["claude", "gemini"]);
   });
 
   it("parses empty agent_list", () => {
-    assert.deepEqual(parseRawValue("acpx_agents", "", SETTINGS_KEYS.acpx_agents), []);
-    assert.deepEqual(parseRawValue("acpx_agents", EMPTY_VALUE_SENTINEL, SETTINGS_KEYS.acpx_agents), []);
+    const def = { description: "test", type: "agent_list", default: [], group: "Provider" } as any;
+    assert.deepEqual(parseRawValue("test_agents", "", def), []);
+    assert.deepEqual(parseRawValue("test_agents", EMPTY_VALUE_SENTINEL, def), []);
   });
 
   it("round-trips bool values", () => {
@@ -807,7 +811,7 @@ describe("readSettingsFile / writeSettingsFile", () => {
       dco: true,
       commit_trailer: "my-trailer",
       pidash_port: 9999,
-      acpx_agents: ["claude", "gemini"],
+      dangerous_command_allowlist: ["git status"],
       dream_interval_hours: 4.5,
     };
     writeSettingsFile(filePath, data);
@@ -1177,8 +1181,8 @@ describe("resolveModelPickerProvider", () => {
 
   it("uses agent_provider for agent_model", () => {
     assert.equal(
-      resolveModelPickerProvider("agent_model", { agent_provider: "cli-cursor" }),
-      "cli-cursor",
+      resolveModelPickerProvider("agent_model", { agent_provider: "anthropic" }),
+      "anthropic",
     );
   });
 

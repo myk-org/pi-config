@@ -232,7 +232,6 @@ def test_entrypoint_has_no_pi_config_git_clone() -> None:
     assert entrypoint_has_no_pi_config_git_clone(text) is True
     assert "github.com/myk-org/pi-config.git" not in text
     assert "pi-config-src" not in text
-    assert "node_modules/pi-orchestrator-config" in text
     assert r'"\"${legacy_marker}\""' in text
 
 
@@ -1052,7 +1051,7 @@ def test_entrypoint_does_not_install_mcpc() -> None:
 
 
 def test_entrypoint_installs_required_npm_packages() -> None:
-    """pi and acpx stay required; a failure aborts container start (pre-existing)."""
+    """pi stays required; a failure aborts container start."""
     text = (REPO / "entrypoint.sh").read_text()
     assert "npm install -g @earendil-works/pi-coding-agent" in text
-    assert "npm install -g acpx" in text
+    assert "npm install -g acpx" not in text

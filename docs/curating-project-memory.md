@@ -182,7 +182,7 @@ See [Implementing Command Guards](safety-enforcements.html) for details.
 ## Troubleshooting
 
 - **A saved rule does not seem to affect later sessions:** Run `myk-pi-tools memory show` and confirm the entry is present. If it is critical, save it again as a pinned memory with a shorter, clearer summary.
-- **Automatic background consolidation does not run:** If you are on an ACPX-backed provider, set both `internal_operations_provider` and `internal_operations_model` — dreaming is skipped outright otherwise. See [Configuration & Settings](configuration.html).
+- **Automatic background consolidation does not run:** Confirm `/dream-auto` is enabled and check `dream_interval_hours` (and optional `internal_operations_provider` / `internal_operations_model`) in [Configuration & Settings](configuration.html).
 - **Memory feels too noisy or repetitive:** Check `myk-pi-tools memory status`, keep entries one-line and specific, then run `/dream` to consolidate the store.
 - **You need deeper scoring and lifecycle details:** See [Memory Architecture](memory-architecture.html) for details.
 

@@ -47,7 +47,7 @@ pi-config/
 │   │   ├── settings-tui.ts          # /pi-config-settings TUI overlay (uses overlay-dashboard)
 │   │   ├── settings-tui-helpers.ts  # Pure settings helpers (categories, source detection, formatting, file I/O, model-picker resolution: image_model google+image-capable filter + paired agent/internal_operations providers)
 │   │   ├── settings-tui-submenus.ts # Submenu components (input, number, picker, multi-select, overrides)
-│   │   ├── async-capability.ts      # supportsAsyncLlm / acpx coerce + internal ops provider settings
+│   │   ├── async-capability.ts      # supportsAsyncLlm + internal ops provider settings
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files
 │   │   ├── cron.ts                   # /cron scheduled tasks and session/project scope handling
@@ -108,15 +108,7 @@ pi-config/
 │   ├── shared/                      # Shared extension utilities
 │   │   ├── oneshot.ts               # Argv oneshot helpers (`pi -p` / `--mode json` skip register)
 │   │   ├── provider-stream-log.ts   # Shared provider_stream_event hook (#848; gated on log_providers=debug)
-│   │   ├── resolve-binary.ts        # In-process PATH binary resolution (used by CLI + ACPX drivers)
-│   │   ├── create-runtime-provider.ts # createProvider helpers for cli/acpx (auth/fetch/filter)
-│   │   ├── models-dev.ts            # models.dev api.json cache (~/.pi/pi-config) + CLI/ACPX metadata fill
-│   │   ├── provider-driver.ts       # ProviderDriver SPI interfaces (t3code-inspired driver architecture)
-│   │   ├── provider-errors.ts       # Tagged error hierarchy for provider system
-│   │   ├── provider-registry.ts     # ProviderDriverRegistry — lifecycle management for driver instances
-│   │   ├── stream-builder.ts        # StreamAssembler — unified thinking/text event→pi stream mapping
-│   │   ├── session-cwd.ts           # Per-turn CLI/ACPX spawn cwd ALS (#768; same Symbol.for as sidecar copy)
-│   │   ├── managed-refresh.ts       # Managed snapshot refresh with periodic re-probe (t3code pattern)
+│   │   ├── resolve-binary.ts        # In-process PATH binary resolution
 │   │   ├── openai-compatible-discovery.ts # Discovery config, requests, header resolution, cache, diagnostics
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
@@ -126,28 +118,11 @@ pi-config/
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model + openai-compatible-discovery)
 │   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
-│   ├── acpx-provider/              # ACPX provider — backward-compatible shim (re-exports for pi-sidecar)
-│   │   ├── index.ts                # Shim: re-exports discoverAcpxModels + no-op extension entry
-│   │   ├── load-runtime.ts         # Resolve acpx/runtime (global npm, then package-local)
-│   │   └── runtime-models.ts       # mapAcpxDiscoveredModels → createProvider Model[]
-│   ├── cli-provider/               # CLI provider — backward-compatible shim (re-exports for pi-sidecar)
-│   │   ├── agents/                 # Per-CLI drivers (cursor/claude/gemini) — add new CLI here
-│   │   ├── shared/                 # Shared discovery cache helpers
-│   │   ├── sessions.ts             # Resume directory (lastSeen/status)
-│   │   ├── session-reaper.ts       # Idle session marker cleanup
-│   │   ├── runtime-models.ts       # mapCliDiscoveredModels → createProvider Model[]
-│   │   └── index.ts                # Shim: re-exports discoverCliModels + no-op extension entry
-│   ├── providers/                  # Unified provider extension (t3code-inspired driver architecture)
-│   │   ├── index.ts                # Extension entry — registers all providers via ProviderDriverRegistry
-│   │   ├── initialized-guard.ts    # Session-scoped init flag; reset on session_shutdown for /new|/resume|/fork
-│   │   ├── session-shutdown.ts     # Teardown: stop reaper, clear maps, reset initialized (#752)
+│   ├── providers/                  # Default model restore & thinking-level persistence extension
+│   │   ├── index.ts                # Extension entry — wires model restore & thinking-level persistence
 │   │   ├── restore-default-model.ts # Cold-start restore of saved default (provider-agnostic) after auth-race fallback (#753)
-│   │   ├── built-in-drivers.ts     # Static driver list + agent→driver mappings
-│   │   ├── cli-driver-shared.ts    # Shared CLI driver/adapter factory + event forwarder (Claude, Gemini, Cursor CLI)
-│   │   ├── claude-driver.ts        # ClaudeDriver — ProviderDriver<ClaudeCliConfig> (CLI)
-│   │   ├── gemini-driver.ts        # GeminiDriver — ProviderDriver<GeminiCliConfig> (CLI)
-│   │   ├── cursor-cli-driver.ts    # CursorCliDriver — ProviderDriver<CursorCliConfig> (CLI)
-│   │   └── acpx-driver.ts          # AcpxDriver — ProviderDriver<AcpxConfig> (ACPX)
+│   │   ├── model-restore-wiring.ts # session_start wiring for cold-start default model restore
+│   │   └── last-thinking-level.ts  # Per-model thinking-level persistence across sessions
 │   └── image-gen/                   # Image generation extension (standalone)
 │       ├── index.ts                # Entry point — registers generate_image tool
 │       └── image-gen.ts            # Gemini API image generation (settings: image_model; env: GEMINI_API_KEY)
@@ -203,7 +178,6 @@ pi-config/
 │   ├── pidiff-git-diff.ts           # Batched git cat-file blob reader, diff status parser, and worktree list parser
 │   ├── pidiff-git-ignore.ts         # Chokidar gitignore filter (top-level dirs vs nested prefixes)
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
-│   ├── symlink-cli-specialists.sh   # Symlink package agents into .cursor/.claude/.gemini/agents (container entrypoint)
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
 ├── packages/                        # Workspace packages
 │   ├── pi-sidecar/                  # HTTP sidecar wrapping Pi SDK (@myk-org/pi-sidecar)
@@ -211,7 +185,6 @@ pi-config/
 │       │   ├── index.ts             # Public API + startSidecar()
 │       │   ├── server.ts            # CLI entry point
 │       │   ├── sessions.ts          # SessionStore — session lifecycle + model discovery
-│       │   ├── session-cwd.ts       # Sidecar ALS wrap for prompt(); same Symbol.for as extensions/shared/session-cwd.ts (#768)
 │       │   ├── http-tool-executor.ts # HTTP-backed custom tool execution
 │       │   ├── watchdog.ts          # Health-check poller for companion backend
 │       │   ├── resolve-extension-path.ts # Extension path resolution (env override + require.resolve)
@@ -241,18 +214,16 @@ pi-config/
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition
 ├── init-entrypoint.sh               # Container init (UID remap, HOME map, docker.sock, then entrypoint.sh)
-├── entrypoint.sh                    # Container entrypoint (gitignore + CLI agent symlinks, then pi)
+├── entrypoint.sh                    # Container entrypoint (pi/package updates + gitignore, then pi)
 ├── README.md                        # Project README
 ├── AGENTS.md                        # Contributor rules (this repo)
 ├── pi-config-settings.example.json  # Example project settings file (plain JSON)
 ├── tests/                           # Test suite
 │   ├── node/                        # Node.js tests (tsx + node:test)
-│   │   ├── acpx-provider/           # ACPX createProvider / runtime-model tests
-│   │   ├── cli-provider/            # CLI createProvider / runtime-model tests
-│   │   ├── providers/               # Driver schema, restore-default-model, initialized-reset tests
+│   │   ├── providers/               # restore-default-model, model-restore-wiring, last-thinking-level tests
 │   │   ├── orchestrator/            # Orchestrator extension tests
 │   │   ├── pidiff/                  # Pidiff extension tests
-│   │   └── shared/                  # Shared tests (oneshot, coms, daemon, runtime provider, models.dev, OpenAI-compatible discovery)
+│   │   └── shared/                  # Shared tests (oneshot, coms, daemon, pricing-provenance, provider-stream-log, OpenAI-compatible discovery)
 │   └── python/                      # Python tests (pytest)
 ├── package.json                     # Node.js dependencies (extensions)
 ├── tox.toml                         # Test runner config (Python + Node environments)

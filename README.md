@@ -29,8 +29,8 @@ Single extension that provides:
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Subagent tool**             | Delegate tasks to specialist agents (single, parallel, chain, async, and async-chain modes); optional `model` param for model override. Chains also run async: every step needs its own `taskId` and `cwd`, each step receives the previous step's output as `{previous}`, and a failed step stops the chain                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **`list_models`**             | List available models and providers for subagent model override                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| **Async background agents**   | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`: `x` kills, `Space` multi-selects, `a` kills all). Async applies to chains too: step 1 spawns immediately and each step starts when the previous one ends. On **acpx** parents, optional async is coerced to sync; dream/cron need `internal_operations_provider` + `internal_operations_model`. `cli-*` providers support async natively (see `docs/cli-provider.md`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **CLI / ACPX providers**      | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.84): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable. Missing context window / maxTokens / cost filled from models.dev (`~/.pi/pi-config/models.dev.json`, 1-day refresh). Cold-start default restore (#753): gates `startup`\|`resume` (`new` only when no model is selected), empty `enabledModels`, trusted project merge — see `docs/cli-provider.md`. Headless Cursor `--approve-mcps` when `CLI_APPROVE_MCPS` is set (`false` opts out) or the process is a sidecar (`SIDECAR_PORT`; `startSidecar()` stamps it while running and restores it on `close()`). Executable sidecar consumers should call `bindSidecarListenExit()` so bind/`stopped` fatals exit 1. Headless Gemini defaults `GEMINI_CLI_TRUST_WORKSPACE=true` and preserves an explicit parent value (including `false`). |
+| **Async background agents**   | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`: `x` kills, `Space` multi-selects, `a` kills all). Async applies to chains too: step 1 spawns immediately and each step starts when the previous one ends. |
+| **Default model & thinking restore** | Cold-start default model restore (`extensions/providers/restore-default-model.ts`): gates `startup`\|`resume` (`new` only when no model is selected), empty `enabledModels`, and trusted project merge. Per-model thinking-level persistence (`last-thinking-level.ts`). |
 | **`/async-status` command**   | Show status of background agents — select one for live output streaming, multi-select and kill (`x`), or kill everything (`a`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **`ask_user` tool**           | Structured user input with options and free-text — used by workflows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Python/pip enforcement**    | Auto-fixes `python`/`python3` → `uv run python`; blocks `pip`/`pip3` — requires `uv`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -97,7 +97,7 @@ for `git-expert` to commit.
 | `/dream`                                                                                        | Run memory consolidation — extract, deduplicate, maintain topic-based memory                                                                                                                                                                                                                                                                                                                                                                               |
 | `/remember <what>`                                                                              | Save a memory for future sessions                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `/dream-auto`                                                                                   | Toggle automatic memory dreaming (every 3h + session end)                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `/cron add\|list\|list-all\|remove [--persist]`                                                         | Schedule recurring tasks. A scheduling message is required: bare `/cron`, `--persist` alone, and `add` without a request are rejected locally without calling the LLM or changing schedules. Session jobs end with the session; `--persist` keeps a job across Pi sessions in this project. Add/remove mutations still work when leader election fails closed on an unsupported platform. For example: `/cron add every 2h check for new issues --persist` or `/cron remove persist:<uuid>`. Pin one job's model by naming it in the request: `/cron add every 2h check for new issues using openrouter/anthropic/claude-opus-5`. A bare `model-id` (e.g. `claude-opus-5`) keeps the normal provider resolution. An unpinned job uses the worker's normal resolution chain (`agent_overrides[worker]`, worker frontmatter, then `agent_provider`/`agent_model`) — cron does not pass the session model down, so a worker-level setting wins over the session model. An `acpx-*` provider cannot be pinned here: async children cannot register those providers, so the job runs on `internal_operations_provider`/`internal_operations_model` when both are set to a non-`acpx-*` pair, and is skipped with a logged error when they are not. `/cron list` opens an overlay for the selected jobs (or both when omitted). Persistent delivery is local at-least-once: a crash or leader recovery can repeat a run. Project cron writes use a stable OS `flock` (included in Docker via `util-linux`) across the entire transaction; native installations need `flock` and a shared filesystem that supports advisory locks. A busy or unavailable lock fails closed after two seconds. **Upgrade gate (enforced):** stop and drain every old Pi process writing crons on the shared mount before starting a version with this kernel lock; old directory-lock writers do not honor `flock` and must not resume. If a legacy `crons.json.mutation.lock` directory exists, new writes fail closed even if its PID is invisible or its heartbeat expired. Only after verifying every old writer cannot resume may an operator remove that stale directory (not `crons.json` or cron tasks). Never remove it merely because a write timed out. |
+| `/cron add\|list\|list-all\|remove [--persist]`                                                         | Schedule recurring tasks. A scheduling message is required: bare `/cron`, `--persist` alone, and `add` without a request are rejected locally without calling the LLM or changing schedules. Session jobs end with the session; `--persist` keeps a job across Pi sessions in this project. Add/remove mutations still work when leader election fails closed on an unsupported platform. For example: `/cron add every 2h check for new issues --persist` or `/cron remove persist:<uuid>`. Pin one job's model by naming it in the request: `/cron add every 2h check for new issues using openrouter/anthropic/claude-opus-5`. A bare `model-id` (e.g. `claude-opus-5`) keeps the normal provider resolution. An unpinned job uses the worker's normal resolution chain (`agent_overrides[worker]`, worker frontmatter, then `agent_provider`/`agent_model`) — cron does not pass the session model down, so a worker-level setting wins over the session model. `/cron list` opens an overlay for the selected jobs (or both when omitted). Persistent delivery is local at-least-once: a crash or leader recovery can repeat a run. Project cron writes use a stable OS `flock` (included in Docker via `util-linux`) across the entire transaction; native installations need `flock` and a shared filesystem that supports advisory locks. A busy or unavailable lock fails closed after two seconds. **Upgrade gate (enforced):** stop and drain every old Pi process writing crons on the shared mount before starting a version with this kernel lock; old directory-lock writers do not honor `flock` and must not resume. If a legacy `crons.json.mutation.lock` directory exists, new writes fail closed even if its PID is invisible or its heartbeat expired. Only after verifying every old writer cannot resume may an operator remove that stale directory (not `crons.json` or cron tasks). Never remove it merely because a write timed out. |
 | `/async-status`                                                                            | Async agent dashboard — live output, multi-select + `x` kill, `X` kill all                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `/pi-config-settings [project\|global]`                                                         | Interactive TUI settings editor — browse all pi-config settings with scope indicators, smart pickers for providers/models, and immediate save                                                                                                                                                                                                                                                                                                              |
 | `/status`                                                                                       | Unified session snapshot — async agents, cron tasks, git branch, context usage                                                                                                                                                                                                                                                                                                                                                                             |
@@ -218,7 +218,7 @@ The installer covers:
 
 - **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, myk-pi-tools, bun
 - **Python Tools** — prek
-- **npm Packages** — acpx, agent-browser, trail-code (`@trailhq/trail-code`)
+- **npm Packages** — agent-browser, trail-code (`@trailhq/trail-code`)
 - **Browser Automation** — playwright + chromium
 - **Environment Setup** — gitignore configuration
 
@@ -246,8 +246,6 @@ uv tool upgrade myk-pi-tools      # CLI tool
 ```
 
 After updating, run `/reload` in pi or restart pi to pick up changes.
-Refresh the global agent package after acpx-provider / cli-provider / settings
-changes so `~/.pi` is not a mixed checkout (see issue #651).
 
 ### Custom update command
 
@@ -577,34 +575,7 @@ drain every legacy cron writer. An existing legacy mutation-lock directory block
 new writes until an operator verifies old writers cannot resume and removes only
 that directory. Do not stop running containers merely to test this PR.
 
-**CLI provider binaries (optional `cli_agents`):** The image installs the CLIs used by
-`cli-*` providers — `claude` (Claude Code), `gemini` (`@google/gemini-cli`), and
-`agent` (Cursor Agent CLI). Enable with `cli_agents` in settings (e.g.
-`["claude","cursor","gemini"]`). Binary missing at load → `cli-*` not registered.
-After register, `filterModels` hides models when unavailable: PATH cleared while
-agent state remains, restore PATH; after `session_shutdown` (AgentState cleared
-and `initialized` reset) the next factory re-registers on `/new`|`/resume`|`/fork`
-(PATH alone is not enough). See `docs/cli-provider.md`.
-
-**ACPX provider agents (optional `acpx_agents`):** ACPX wraps CLI agents via the
-ACP runtime. Supported agents: `cursor`, `claude`, `gemini`. Enable with
-`acpx_agents` in settings (e.g. `["cursor","claude","gemini"]`). Each ACPX agent
-requires the underlying CLI binary on PATH (`agent` for cursor, `claude` for claude,
-`gemini` for gemini) — missing binary → `acpx-*` not registered.
-
-**CLI specialist agents (Cursor / Claude / Gemini):** On container start, `entrypoint.sh`
-symlinks package `agents/*.md` into the mounted project:
-
-- `.cursor/agents/`
-- `.claude/agents/`
-- `.gemini/agents/`
-
-Uses `ln -sfn` (safe if multiple `pi-docker` sessions share the same folder). Those three
-directories are added to the container global gitignore. **Native** installs do not auto-
-sync — copy or symlink yourself (see `docs/cli-provider.md`).
-
-**Extension ops logs:** `cli-provider` and dreaming write to `~/.pi/logs/` (not the chat
-UI). Fallback: `$TMPDIR/pi-logs/`. Details in `docs/cli-provider.md` (Logging).
+**Extension ops logs:** Extensions and dreaming write structured logs to `~/.pi/logs/` (not the chat UI). Fallback: `.pi/tmp/pi-logs/` or `~/.pi/tmp/pi-logs/`.
 
 ### Pre-built image
 
@@ -643,7 +614,7 @@ docker run --rm -it \
 ### Environment file
 
 Create a `.env` file with external service credentials and container-specific
-variables. Pi-config settings (image_model, acpx_agents, vertex_claude_1m, etc.)
+variables. Pi-config settings (`image_model`, `vertex_claude_1m`, etc.)
 go in `.pi/pi-config-settings.json` — not here:
 
 ```env
@@ -710,15 +681,10 @@ The `.pi/memory/` directory is auto-added to the global gitignore in the contain
 `.gemini/agents/`). This repo's `.gitignore` also ignores those three `*/agents/`
 dirs so `uv build` does not pack local specialist symlinks.
 
-For **native** (non-container) usage, add memory (and optionally CLI agent dirs) to your
-global gitignore:
+For **native** (non-container) usage, add memory to your global gitignore:
 
 ```bash
 echo '.pi/memory/' >> ~/.gitignore-global
-# If you symlink pi agents for cli-cursor / cli-claude / cli-gemini:
-echo '.cursor/agents/' >> ~/.gitignore-global
-echo '.claude/agents/' >> ~/.gitignore-global
-echo '.gemini/agents/' >> ~/.gitignore-global
 git config --global core.excludesFile ~/.gitignore-global
 ```
 
@@ -787,8 +753,7 @@ PI_PIDASH_ENABLE=false pi
 ```
 
 Oneshot (`pi -p` / `--print` / `--mode json`) skips register of pidash, pidiff,
-pitasks, and coms so those daemons/watchers do not start. CLI and ACPX providers
-still load. `--mode rpc` is long-lived and is not skipped.
+pitasks, and coms so those daemons/watchers do not start. `--mode rpc` is long-lived and is not skipped.
 
 **Management:**
 
@@ -857,8 +822,8 @@ PI_PIDIFF_ENABLE=false pi
 | ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | `-v "$HOME/.agents":"$HOME/.agents":rw`                                                                                         | User-level skills (install/uninstall from container)  |
 | `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC (for Claude via Vertex AI)           |
-| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro`                                                       | Cursor CLI auth (for acpx-cursor / cli-cursor models) |
-| `-v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro`                                                       | Claude CLI auth (for acpx-claude / cli-claude models) |
+| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro`                                                       | Cursor CLI auth (for `/external-ai`)                  |
+| `-v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro`                                                       | Claude CLI auth (for `/external-ai`)                  |
 | `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro`                                                                       | GitLab CLI config (auth tokens, host settings)        |
 | `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw`                                                                                 | CodeRabbit CLI auth and review data                   |
 | `-v "$HOME/.qodo":"$HOME/.qodo":rw`                                                                                             | Qodo CLI auth directory (mount at the container user's `$HOME/.qodo`; with `PI_HOST_USER`, that is `/home/$PI_HOST_USER/.qodo`). Create it on the host first with `mkdir -p "$HOME/.qodo"`; inside the container run `qodo read whoami` and, if signed out, `qodo login`. Host OS-keychain credentials may not work inside the container. |
@@ -880,7 +845,6 @@ PI_PIDIFF_ENABLE=false pi
 | `libxml2-dev`       | libxml2 headers — needed for building Python C extensions (e.g. ovirt-engine-sdk-python)                                                                                                                                                                                                                                       |
 | `myk-pi-tools`      | PR review, release, and other CLI utilities                                                                                                                                                                                                                                                                                    |
 | `prek`              | Pre-commit hook runner                                                                                                                                                                                                                                                                                                         |
-| `acpx`              | Agent proxy for remote models                                                                                                                                                                                                                                                                                                  |
 | `kubectl` / `oc`    | Kubernetes and OpenShift CLI                                                                                                                                                                                                                                                                                                   |
 | `agent-browser`     | Browser automation CLI (navigate, click, screenshot, forms)                                                                                                                                                                                                                                                                    |
 | `trail`             | Local code map for `trail_enable` (on by default); the regenerable cache lives in the mounted project's `./graft/` or `.trail/cache/` directory |
