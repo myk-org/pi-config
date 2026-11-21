@@ -654,6 +654,9 @@ describe("coms peer task lifecycle regression (#1080)", { concurrency: false }, 
 		});
 
 		// Finish the first inbound turn so the queued second prompt delivers with its reminder footer.
+		const firstInbound = peer.messages.find((m) => m?.details?.msg_id);
+		assert.ok(firstInbound, "peer received the initial delegated inbound");
+		await peer.handlers.get("message_start")({ message: { role: "custom", ...firstInbound } });
 		await peer.handlers.get("agent_end")(
 			{ messages: [] },
 			{
