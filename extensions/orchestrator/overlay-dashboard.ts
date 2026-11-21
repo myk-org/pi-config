@@ -124,6 +124,9 @@ export interface OverlayDetailSpec {
   emptyBody?: string;
   /** Return true to close after action. */
   onX?: () => boolean | void;
+  /** Optional single-key actions in detail view (e.g. c/d/p/r).
+   *  "close" closes the detail pane, "redraw" invalidates and re-renders, false/void ignores. */
+  onKey?: (key: string) => "close" | "redraw" | false | void;
   tickMs?: number;
   pollMs?: number;
   /** Return true when content changed (triggers re-render). */
@@ -581,6 +584,16 @@ export class OverlayScrollDetail implements Component {
       this.following = true;
       this.invalidate();
       this.tui.requestRender();
+      return;
+    }
+    if (this.spec.onKey) {
+      const res = this.spec.onKey(data);
+      if (res === "close") {
+        this.close();
+      } else if (res === "redraw") {
+        this.invalidate();
+        this.tui.requestRender();
+      }
     }
   }
 

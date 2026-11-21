@@ -7,7 +7,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatElapsedDuration, tryGetSystemPromptOptions } from "./utils.js";
 import type { CronTask } from "./cron.js";
 import { formatCronSchedule } from "./cron-status-format.js";
-import { getCurrentBranch, runGit } from "./git-helpers.js";
+import { getCurrentBranch, listWorktreesAsync, runGit } from "./git-helpers.js";
+import { formatWorktreeStatusSummary } from "./worktree-helpers.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("status");
@@ -62,6 +63,10 @@ export function registerStatus(
           const stateIcon = dirtyCount > 0 ? "●" : "✓";
           const stateText = dirtyCount > 0 ? `${dirtyCount} changed file${dirtyCount > 1 ? "s" : ""}` : "clean";
           lines.push(`🔀 Git: ${branch} ${stateIcon} ${stateText} (${repoName})`);
+
+          const worktrees = await listWorktreesAsync(ctx.cwd);
+          const wtSummary = formatWorktreeStatusSummary(worktrees);
+          if (wtSummary) lines.push(wtSummary);
         }
       } catch (e: any) { log.debug("status_git_failed", { code: e?.code }); }
 

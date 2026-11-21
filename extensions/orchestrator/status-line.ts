@@ -2,24 +2,31 @@
  * Git status line, container indicator, desktop notifications, git poller.
  */
 
-import { execFile } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
 import {
+  countLinkedWorktrees,
   getOpenPr,
+  isInLinkedWorktree,
+  listWorktreesAsync,
+  parseGitStatusPorcelain,
+  runGitAsync,
   scheduleOpenPrStatusRefresh,
+  type GitAsyncRunner,
 } from "./git-helpers.js";
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
-import { setSlot } from "./status-bar.js";
+import { clearSlot, setSlot } from "./status-bar.js";
 import { clockHHMM } from "./utils.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("status-line");
 
 export interface StatusLineDeps {
-  runGitAsync?: (args: string[], cwd?: string) => Promise<{ stdout: string; code: number }>;
+  runGitAsync?: GitAsyncRunner;
   debounceMs?: number;
   githubRepoCacheTtlMs?: number;
+  worktreeCacheTtlMs?: number;
 }
 
 export function registerStatusLine(
@@ -32,33 +39,8 @@ export function registerStatusLine(
 
   const debounceMs = deps?.debounceMs ?? 350;
   const githubRepoCacheTtlMs = deps?.githubRepoCacheTtlMs ?? 60_000;
-  const execGitAsync = deps?.runGitAsync ?? ((args: string[], cwd?: string) =>
-    new Promise<{ stdout: string; code: number }>((resolve) => {
-      execFile(
-        "git",
-        ["--no-optional-locks", ...args],
-        {
-          cwd,
-          timeout: 5000,
-          encoding: "utf-8",
-          maxBuffer: 1024 * 1024,
-          env: {
-            ...process.env,
-            GIT_TERMINAL_PROMPT: "0",
-            GCM_INTERACTIVE: "Never",
-          },
-        },
-        (err, stdout) => {
-          const out = (typeof stdout === "string" ? stdout : "").trimEnd();
-          if (err) {
-            const exitCode = typeof (err as any).code === "number" ? (err as any).code : 1;
-            resolve({ stdout: out, code: exitCode });
-          } else {
-            resolve({ stdout: out, code: 0 });
-          }
-        },
-      );
-    }));
+  const worktreeCacheTtlMs = deps?.worktreeCacheTtlMs ?? 5_000;
+  const execGitAsync: GitAsyncRunner = deps?.runGitAsync ?? runGitAsync;
 
   const githubRepoCache = new Map<string, { at: number; isGh: boolean }>();
   const getBranchAsync = async (cwd?: string): Promise<string | null> => {
@@ -86,7 +68,9 @@ export function registerStatusLine(
   // ── Combined status line builder ───────────────────────────────────────
 
   let lastStatusText = "";
+  let lastWorktreesText: string | undefined = undefined;
   const buildStatus = (ctx: any, gitPart: string) => {
+    if (!isLiveExtensionCtx(ctx)) return;
     const parts: string[] = [];
 
     if (IN_CONTAINER) parts.push(ICON_CONTAINER);
@@ -99,6 +83,19 @@ export function registerStatusLine(
     // Clear legacy status keys to avoid duplicates
     ctx.ui.setStatus("container", undefined);
     ctx.ui.setStatus("git", undefined);
+  };
+
+  const updateWorktreesSlot = (ctx: any, linkedCount: number) => {
+    if (!isLiveExtensionCtx(ctx)) return;
+    if (linkedCount > 0) {
+      const badge = ctx.ui.theme.fg("muted", `⊞ ${linkedCount} wt`);
+      if (badge === lastWorktreesText) return;
+      lastWorktreesText = badge;
+      setSlot("worktrees", badge, ctx);
+    } else if (lastWorktreesText !== undefined) {
+      lastWorktreesText = undefined;
+      clearSlot("worktrees", ctx);
+    }
   };
 
   // ── Git branch status line ─────────────────────────────────────────────
@@ -116,8 +113,8 @@ export function registerStatusLine(
     }
   };
 
-  const updateBranch = async (_event: any, ctx: any): Promise<void> => {
-    if (shutDown || !ctx?.hasUI) return;
+  const updateBranch = async (_event: any, ctx: any, forceWorktreeRefresh = false): Promise<void> => {
+    if (shutDown || !ctx?.hasUI || !isLiveExtensionCtx(ctx)) return;
     lastCtx = ctx;
     const seq = ++branchUpdateSeq;
     try {
@@ -126,28 +123,25 @@ export function registerStatusLine(
         execGitAsync(["status", "--porcelain"], ctx.cwd),
         isGithubRepoAsync(ctx.cwd),
       ]);
-      if (shutDown || seq !== branchUpdateSeq) return;
+      if (shutDown || seq !== branchUpdateSeq || !isLiveExtensionCtx(ctx)) return;
       if (!b) {
         lastBranch = null;
+        updateWorktreesSlot(ctx, 0);
         return;
       }
       lastBranch = b;
 
-      let modified = 0,
-        added = 0,
-        deleted = 0,
-        untracked = 0;
-      if (status.code === 0 && status.stdout) {
-        for (const line of status.stdout.split("\n")) {
-          if (!line.trim()) continue;
-          const xy = line.slice(0, 2);
-          if (xy.includes("?")) untracked++;
-          else if (xy.includes("D")) deleted++;
-          else if (xy.includes("A")) added++;
-          else if (xy.includes("M") || xy.includes("R") || xy.includes("C"))
-            modified++;
-        }
-      }
+      const worktrees = await listWorktreesAsync(ctx.cwd, {
+        runGitAsync: execGitAsync,
+        ttlMs: worktreeCacheTtlMs,
+        forceRefresh: forceWorktreeRefresh,
+      });
+      if (shutDown || seq !== branchUpdateSeq || !isLiveExtensionCtx(ctx)) return;
+
+      const { modified, added, deleted, untracked } =
+        status.code === 0 && status.stdout
+          ? parseGitStatusPorcelain(status.stdout)
+          : { modified: 0, added: 0, deleted: 0, untracked: 0 };
 
       const changes: string[] = [];
       if (modified > 0)
@@ -172,7 +166,12 @@ export function registerStatusLine(
         gitPart = `${gitPart} ${prLabel}`;
       }
 
+      if (isInLinkedWorktree(worktrees)) {
+        gitPart = `${gitPart} ${ctx.ui.theme.fg("accent", "[wt]")}`;
+      }
+
       buildStatus(ctx, gitPart);
+      updateWorktreesSlot(ctx, countLinkedWorktrees(worktrees));
 
       // Per-key coalesce lives in refreshOpenPr — no global pending gate.
       if (isGh) {
@@ -209,9 +208,15 @@ export function registerStatusLine(
     if (debounceTimer.unref) debounceTimer.unref();
   });
 
+  // Immediate refresh when /worktree removes or prunes worktrees
+  pi.events?.on?.("orchestrator:worktrees-changed", () => {
+    if (shutDown || !lastCtx || !isLiveExtensionCtx(lastCtx)) return;
+    void updateBranch(null, lastCtx, true);
+  });
+
   // Poll git status every 5s for updates during long-running operations
   const gitPoller = setInterval(() => {
-    if (!lastCtx) return;
+    if (!lastCtx || !isLiveExtensionCtx(lastCtx)) return;
     try {
       lastCtx.ui.theme; // probe for stale ctx
       void updateBranch(null, lastCtx);

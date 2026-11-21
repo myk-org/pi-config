@@ -3,7 +3,8 @@
  */
 
 import { execFile, execFileSync, execSync } from "node:child_process";
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { createLogger } from "../shared/logger.js";
 
 const gitLog = createLogger("git-helpers");
@@ -35,6 +36,336 @@ export function runGit(
         : "";
     return { stdout: rawOut.trimEnd(), code: e?.status || 1 };
   }
+}
+
+export type GitAsyncResult = { stdout: string; stderr?: string; code: number };
+export type GitAsyncRunner = (args: string[], cwd?: string) => Promise<GitAsyncResult>;
+
+/** Async `git --no-optional-locks` runner (non-interactive, 5s timeout). */
+export function runGitAsync(args: string[], cwd?: string): Promise<GitAsyncResult> {
+  return new Promise((resolvePromise) => {
+    execFile(
+      "git",
+      ["--no-optional-locks", ...args],
+      {
+        cwd,
+        timeout: 5000,
+        encoding: "utf-8",
+        maxBuffer: 1024 * 1024,
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: "0",
+          GCM_INTERACTIVE: "Never",
+        },
+      },
+      (err, stdout, stderr) => {
+        const out = (typeof stdout === "string" ? stdout : "").trimEnd();
+        const errOut = (typeof stderr === "string" ? stderr : "").trimEnd();
+        if (err) {
+          const exitCode = typeof (err as any).code === "number" ? (err as any).code : 1;
+          resolvePromise({ stdout: out, stderr: errOut, code: exitCode });
+        } else {
+          resolvePromise({ stdout: out, stderr: errOut, code: 0 });
+        }
+      },
+    );
+  });
+}
+
+// ── Worktree helpers ────────────────────────────────────────────────────────
+
+export interface WorktreeDirtySummary {
+  modified: number;
+  added: number;
+  deleted: number;
+  untracked: number;
+  total: number;
+}
+
+export interface WorktreeEntry {
+  path: string;
+  head: string;
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+  isMain: boolean;
+  isCurrent: boolean;
+  locked: boolean;
+  lockedReason?: string;
+  prunable: boolean;
+  prunableReason?: string;
+  dirty?: WorktreeDirtySummary;
+}
+
+export interface ListWorktreesOptions {
+  /** Include dirty file counts per non-bare, non-prunable worktree (default false). */
+  includeDirty?: boolean;
+  /** Bypass TTL cache and run `git worktree list --porcelain` immediately. */
+  forceRefresh?: boolean;
+  /** Cache TTL in milliseconds (default 5000). */
+  ttlMs?: number;
+  /** Override async git runner (used by status-line and unit tests). */
+  runGitAsync?: GitAsyncRunner;
+}
+
+/** Normalize a filesystem path for prefix comparisons, resolving symlinks when present. */
+export function normalizePathForMatch(p: string): string {
+  const abs = resolve(p);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+
+/** Match `targetPath` to the most specific (longest-prefix) worktree containing it. */
+export function matchPathToWorktrees<T extends { path: string }>(
+  targetPath: string | null | undefined,
+  worktrees: readonly T[],
+): T | null {
+  if (!targetPath || worktrees.length === 0) return null;
+  const normTarget = normalizePathForMatch(targetPath);
+  let best: T | null = null;
+  let bestLen = -1;
+  for (const wt of worktrees) {
+    const normWt = normalizePathForMatch(wt.path);
+    const prefix = normWt.endsWith(sep) ? normWt : `${normWt}${sep}`;
+    if (normTarget === normWt || normTarget.startsWith(prefix)) {
+      if (normWt.length > bestLen) {
+        best = wt;
+        bestLen = normWt.length;
+      }
+    }
+  }
+  return best;
+}
+
+/** Parse `git status --porcelain` output into dirty counters. */
+export function parseGitStatusPorcelain(stdout: string): WorktreeDirtySummary {
+  let modified = 0;
+  let added = 0;
+  let deleted = 0;
+  let untracked = 0;
+  let total = 0;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    total++;
+    const xy = line.slice(0, 2);
+    if (xy.includes("?")) untracked++;
+    else if (xy.includes("D")) deleted++;
+    else if (xy.includes("A")) added++;
+    else if (xy.includes("M") || xy.includes("R") || xy.includes("C")) modified++;
+    else modified++;
+  }
+  return { modified, added, deleted, untracked, total };
+}
+
+/** Parse `git worktree list --porcelain` stdout into structured entries. */
+export function parseWorktreePorcelain(raw: string, cwd?: string): WorktreeEntry[] {
+  const entries: WorktreeEntry[] = [];
+  let current: Partial<WorktreeEntry> | null = null;
+
+  const flush = () => {
+    if (!current?.path) return;
+    entries.push({
+      path: current.path,
+      head: current.head ?? "",
+      branch: current.branch ?? null,
+      detached: current.detached ?? false,
+      bare: current.bare ?? false,
+      isMain: entries.length === 0,
+      isCurrent: false,
+      locked: current.locked ?? false,
+      ...(current.lockedReason ? { lockedReason: current.lockedReason } : {}),
+      prunable: current.prunable ?? false,
+      ...(current.prunableReason ? { prunableReason: current.prunableReason } : {}),
+    });
+    current = null;
+  };
+
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (!line) {
+      flush();
+      continue;
+    }
+    if (line.startsWith("worktree ")) {
+      flush();
+      current = { path: line.slice("worktree ".length).trim() };
+    } else if (!current) {
+      continue;
+    } else if (line.startsWith("HEAD ")) {
+      current.head = line.slice("HEAD ".length).trim();
+    } else if (line.startsWith("branch ")) {
+      const ref = line.slice("branch ".length).trim();
+      current.branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+    } else if (line === "detached") {
+      current.detached = true;
+      current.branch = null;
+    } else if (line === "bare") {
+      current.bare = true;
+      current.branch = null;
+    } else if (line === "locked" || line.startsWith("locked ")) {
+      current.locked = true;
+      const reason = line.slice("locked".length).trim();
+      if (reason) current.lockedReason = reason;
+    } else if (line === "prunable" || line.startsWith("prunable ")) {
+      current.prunable = true;
+      const reason = line.slice("prunable".length).trim();
+      if (reason) current.prunableReason = reason;
+    }
+  }
+  flush();
+
+  if (cwd && entries.length > 0) {
+    const matched = matchPathToWorktrees(cwd, entries);
+    if (matched) matched.isCurrent = true;
+  }
+
+  return entries;
+}
+
+const WORKTREE_TTL_MS = 5_000;
+const WORKTREE_CACHE_MAX = 50;
+
+type WorktreeCacheEntry = { at: number; entries: WorktreeEntry[] };
+const worktreeCache = new Map<string, WorktreeCacheEntry>();
+const worktreeInFlight = new Map<string, Promise<WorktreeEntry[]>>();
+const runnerWorktreeCaches = new WeakMap<GitAsyncRunner, Map<string, WorktreeCacheEntry>>();
+const runnerWorktreeInFlight = new WeakMap<GitAsyncRunner, Map<string, Promise<WorktreeEntry[]>>>();
+
+function getWorktreeCacheStore(runner?: GitAsyncRunner): {
+  cache: Map<string, WorktreeCacheEntry>;
+  inFlight: Map<string, Promise<WorktreeEntry[]>>;
+} {
+  if (!runner || runner === runGitAsync) {
+    return { cache: worktreeCache, inFlight: worktreeInFlight };
+  }
+  let cache = runnerWorktreeCaches.get(runner);
+  if (!cache) {
+    cache = new Map();
+    runnerWorktreeCaches.set(runner, cache);
+  }
+  let inFlight = runnerWorktreeInFlight.get(runner);
+  if (!inFlight) {
+    inFlight = new Map();
+    runnerWorktreeInFlight.set(runner, inFlight);
+  }
+  return { cache, inFlight };
+}
+
+function worktreeCacheKey(cwd?: string): string {
+  return resolve(cwd || process.cwd());
+}
+
+/** Invalidate cached worktree listings for `cwd` (or all cached repos when omitted). */
+export function invalidateWorktreeCache(cwd?: string): void {
+  if (!cwd) {
+    worktreeCache.clear();
+    worktreeInFlight.clear();
+    return;
+  }
+  const key = worktreeCacheKey(cwd);
+  worktreeCache.delete(key);
+  worktreeInFlight.delete(key);
+  // Also invalidate any sibling worktree keys that belong to the same repo
+  const norm = normalizePathForMatch(cwd);
+  for (const [cachedKey, entry] of worktreeCache) {
+    if (entry.entries.some((wt) => normalizePathForMatch(wt.path) === norm)) {
+      worktreeCache.delete(cachedKey);
+      worktreeInFlight.delete(cachedKey);
+    }
+  }
+}
+
+/** True when `cwd` resolved to a linked (non-main) worktree. */
+export function isInLinkedWorktree(worktrees: readonly WorktreeEntry[]): boolean {
+  return worktrees.some((wt) => wt.isCurrent && !wt.isMain);
+}
+
+/** Number of linked (non-main) worktrees in a listing. */
+export function countLinkedWorktrees(worktrees: readonly WorktreeEntry[]): number {
+  let count = 0;
+  for (const wt of worktrees) {
+    if (!wt.isMain) count++;
+  }
+  return count;
+}
+
+/**
+ * List git worktrees via `git worktree list --porcelain` with a short TTL cache.
+ * Shared by status-line, `/worktree`, `/status`, and `/review-status` autocomplete.
+ */
+export async function listWorktreesAsync(
+  cwd?: string,
+  opts: ListWorktreesOptions = {},
+): Promise<WorktreeEntry[]> {
+  const runner = opts.runGitAsync ?? runGitAsync;
+  const ttlMs = opts.ttlMs ?? WORKTREE_TTL_MS;
+  const effectiveCwd = cwd || process.cwd();
+  const key = worktreeCacheKey(effectiveCwd);
+  const { cache, inFlight } = getWorktreeCacheStore(runner);
+
+  const loadBase = async (): Promise<WorktreeEntry[]> => {
+    const now = Date.now();
+    if (!opts.forceRefresh) {
+      const cached = cache.get(key);
+      if (cached && now - cached.at < ttlMs) {
+        return cached.entries.map((e) => ({ ...e }));
+      }
+      const pending = inFlight.get(key);
+      if (pending) {
+        const res = await pending;
+        return res.map((e) => ({ ...e }));
+      }
+    }
+
+    const promise = (async (): Promise<WorktreeEntry[]> => {
+      try {
+        const r = await runner(["worktree", "list", "--porcelain"], effectiveCwd);
+        if (r.code !== 0) return [];
+        const parsed = r.stdout ? parseWorktreePorcelain(r.stdout, effectiveCwd) : [];
+        cache.delete(key);
+        cache.set(key, { at: Date.now(), entries: parsed });
+        while (cache.size > WORKTREE_CACHE_MAX) {
+          const oldest = cache.keys().next().value;
+          if (oldest === undefined) break;
+          cache.delete(oldest);
+        }
+        return parsed;
+      } catch (e: any) {
+        gitLog.debug("worktree_list_failed", { cwd: effectiveCwd, error: e?.message || String(e) });
+        return [];
+      }
+    })().finally(() => {
+      inFlight.delete(key);
+    });
+
+    inFlight.set(key, promise);
+    const entries = await promise;
+    return entries.map((e) => ({ ...e }));
+  };
+
+  const entries = await loadBase();
+  if (!opts.includeDirty || entries.length === 0) {
+    return entries;
+  }
+
+  await Promise.all(
+    entries.map(async (wt) => {
+      if (wt.bare || wt.prunable) return;
+      try {
+        const st = await runner(["status", "--porcelain"], wt.path);
+        if (st.code === 0) {
+          wt.dirty = parseGitStatusPorcelain(st.stdout);
+        }
+      } catch (e: any) {
+        gitLog.debug("worktree_dirty_check_failed", { path: wt.path, error: e?.message || String(e) });
+      }
+    }),
+  );
+
+  return entries;
 }
 
 export function getCurrentBranch(cwd?: string): string | null {
