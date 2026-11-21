@@ -69,7 +69,7 @@ export function createMinimizedBar(theme: PromptTheme, label: string): Component
       const contentWidth = Math.max(1, width - pad * 2);
       const text =
         theme.fg("accent", `◷ ${label} paused`) +
-        theme.fg("dim", " — press Tab (or Alt+P) to resume answering · Esc cancel");
+        theme.fg("dim", " — press tab or alt+p to resume · esc cancel");
       return [" ".repeat(pad) + truncateToWidth(text, contentWidth, "…")];
     },
     invalidate() {},
@@ -78,7 +78,6 @@ export function createMinimizedBar(theme: PromptTheme, label: string): Component
 
 export class QuestionViewport implements Component {
   private scrollOffset = 0;
-  private expanded = false;
   private lastWidth = 0;
   private cachedWrapWidth = -1;
   private cachedWrapped: string[] = [];
@@ -110,10 +109,6 @@ export class QuestionViewport implements Component {
     return this.lastWidth > 0 ? this.lastWidth : 80;
   }
 
-  isExpanded(): boolean {
-    return this.expanded;
-  }
-
   isOverflowed(width?: number): boolean {
     const w = width ?? this.getEffectiveWidth();
     const { wrapped } = this.getWrapped(w);
@@ -121,7 +116,6 @@ export class QuestionViewport implements Component {
   }
 
   scrollBy(delta: number): boolean {
-    if (this.expanded) return false;
     const { wrapped } = this.getWrapped(this.getEffectiveWidth());
     const cap = computeQuestionViewportCap(this.getTermRows());
     if (wrapped.length <= cap) return false;
@@ -138,13 +132,6 @@ export class QuestionViewport implements Component {
     return this.scrollBy(direction * Math.max(1, cap - 1));
   }
 
-  toggleExpanded(): boolean {
-    if (!this.expanded && !this.isOverflowed()) return false;
-    this.expanded = !this.expanded;
-    this.invalidate();
-    return true;
-  }
-
   invalidate(): void {
     this.cachedRenderKey = "";
     this.cachedLines = undefined;
@@ -154,7 +141,7 @@ export class QuestionViewport implements Component {
     this.lastWidth = width;
     const termRows = this.getTermRows();
     const selectMode = this.isSelectMode();
-    const key = `${width}:${termRows}:${this.scrollOffset}:${this.expanded ? 1 : 0}:${selectMode ? 1 : 0}`;
+    const key = `${width}:${termRows}:${this.scrollOffset}:${selectMode ? 1 : 0}`;
     if (this.cachedLines && this.cachedRenderKey === key) {
       return this.cachedLines;
     }
@@ -172,7 +159,7 @@ export class QuestionViewport implements Component {
     let visible: string[];
     let start = 0;
 
-    if (!overflowed || this.expanded) {
+    if (!overflowed) {
       visible = wrapped;
     } else {
       const maxOffset = total - cap;
@@ -185,19 +172,15 @@ export class QuestionViewport implements Component {
     const lines: string[] = visible.map((line) => leftPad + this.theme.fg(this.textColor, line));
 
     if (overflowed) {
-      const indicator = this.expanded
-        ? selectMode
-          ? `lines 1–${total} of ${total} (expanded) • ctrl+e collapse`
-          : `lines 1–${total} of ${total} (expanded)`
-        : selectMode
-          ? `lines ${start + 1}–${start + visible.length} of ${total} • shift+↑↓/pgup/pgdn scroll • ctrl+e expand`
-          : `lines ${start + 1}–${start + visible.length} of ${total} • shift+↑↓ scroll`;
+      const indicator = selectMode
+        ? `lines ${start + 1}–${start + visible.length} of ${total} · shift+↑↓/pgup/pgdn scroll`
+        : `lines ${start + 1}–${start + visible.length} of ${total} · shift+↑↓ scroll`;
       lines.push(leftPad + this.theme.fg("dim", truncateToWidth(indicator, contentWidth, "…")));
     }
 
     lines.push("");
 
-    this.cachedRenderKey = `${width}:${termRows}:${this.scrollOffset}:${this.expanded ? 1 : 0}:${selectMode ? 1 : 0}`;
+    this.cachedRenderKey = `${width}:${termRows}:${this.scrollOffset}:${selectMode ? 1 : 0}`;
     this.cachedLines = lines;
     return lines;
   }
@@ -401,14 +384,14 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
                 return;
               }
               if (matchesKey(data, Key.shift("up"))) {
-                if (questionViewport.isOverflowed() && !questionViewport.isExpanded()) {
+                if (questionViewport.isOverflowed()) {
                   if (questionViewport.scrollBy(-1)) container.invalidate();
                   tui.requestRender();
                   return;
                 }
               }
               if (matchesKey(data, Key.shift("down"))) {
-                if (questionViewport.isOverflowed() && !questionViewport.isExpanded()) {
+                if (questionViewport.isOverflowed()) {
                   if (questionViewport.scrollBy(1)) container.invalidate();
                   tui.requestRender();
                   return;
@@ -445,8 +428,8 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
             theme.fg(
               "dim",
               filterVisible
-                ? `tab peek chat · type to filter · ↑↓ · enter · esc ${alwaysShowFilter ? "cancel" : "close"}`
-                : "tab peek chat · / filter · ↑↓ navigate · enter select · esc cancel",
+                ? `tab/alt+p peek chat · type to filter · ↑↓ · enter · esc ${alwaysShowFilter ? "cancel" : "close"}`
+                : "tab/alt+p peek chat · / filter · ↑↓ navigate · enter select · esc cancel",
             ),
           );
         };
@@ -542,38 +525,25 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
               return;
             }
             if (matchesKey(data, Key.shift("up"))) {
-              if (questionViewport.isOverflowed() && !questionViewport.isExpanded()) {
+              if (questionViewport.isOverflowed()) {
                 if (questionViewport.scrollBy(-1)) container.invalidate();
                 tui.requestRender();
               }
               return;
             }
             if (matchesKey(data, Key.shift("down"))) {
-              if (questionViewport.isOverflowed() && !questionViewport.isExpanded()) {
+              if (questionViewport.isOverflowed()) {
                 if (questionViewport.scrollBy(1)) container.invalidate();
                 tui.requestRender();
               }
               return;
             }
-            if (matchesKey(data, Key.ctrl("e")) && questionViewport.toggleExpanded()) {
-              container.invalidate();
-              tui.requestRender();
-              return;
-            }
-            if (
-              matchesKey(data, Key.pageUp) &&
-              questionViewport.isOverflowed() &&
-              !questionViewport.isExpanded()
-            ) {
+            if (matchesKey(data, Key.pageUp) && questionViewport.isOverflowed()) {
               if (questionViewport.scrollPage(-1)) container.invalidate();
               tui.requestRender();
               return;
             }
-            if (
-              matchesKey(data, Key.pageDown) &&
-              questionViewport.isOverflowed() &&
-              !questionViewport.isExpanded()
-            ) {
+            if (matchesKey(data, Key.pageDown) && questionViewport.isOverflowed()) {
               if (questionViewport.scrollPage(1)) container.invalidate();
               tui.requestRender();
               return;

@@ -374,6 +374,38 @@ describe("ui-bridge bounded viewport, on-demand filter, peek, and Esc cancel (#1
     assert.equal(await p, undefined);
   });
 
+  it("shows tab/alt+p peek chat in the select help footer", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Allow?", ["run once", "no"]);
+    const comp = ctx.calls[0].component;
+
+    assert.match(comp.render(80).join("\n"), /tab\/alt\+p peek chat/);
+
+    comp.handleInput("\x1b");
+    assert.equal(await p, undefined);
+  });
+
+  it("omits ctrl+e expand from the overflow hint in select mode", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(35);
+    const bridged = createBridgedUi(pi as any);
+    const longTitle = Array.from({ length: 12 }, (_, i) => `Detail ${i + 1}`).join("\n");
+    const p = bridged.select(ctx as any, longTitle, ["run once", "no"]);
+    const comp = ctx.calls[0].component;
+
+    const frame = comp.render(80).join("\n");
+    assert.match(frame, /lines 1–4 of 12 · shift\+↑↓\/pgup\/pgdn scroll/);
+    assert.doesNotMatch(frame, /ctrl\+e/i);
+
+    comp.handleInput("\x05");
+    assert.doesNotMatch(comp.render(80).join("\n"), /Detail 12/);
+
+    comp.handleInput("\x1b");
+    assert.equal(await p, undefined);
+  });
+
   it("collapses select mode to a 1-line paused bar on Tab", async () => {
     const pi = fakePi();
     const ctx = fakeCtxWithRows(24);
@@ -384,7 +416,7 @@ describe("ui-bridge bounded viewport, on-demand filter, peek, and Esc cancel (#1
     comp.handleInput("\t");
     const lines = comp.render(80);
     assert.equal(lines.length, 1);
-    assert.match(lines[0], /◷ prompt paused — press Tab \(or Alt\+P\) to resume answering · Esc cancel/);
+    assert.match(lines[0], /◷ prompt paused — press tab or alt\+p to resume · esc cancel/);
 
     comp.handleInput("\x1b");
     assert.equal(await p, undefined);

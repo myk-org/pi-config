@@ -2,7 +2,7 @@
  * #1317 + #1313 — ask_user TUI UX & Container caching tests.
  *
  * Covers:
- * - Bounded scrollable wrapped question viewport + Shift+Up/Down, PgUp/PgDn, Ctrl+E expand/collapse
+ * - Bounded scrollable wrapped question viewport + Shift+Up/Down, PgUp/PgDn
  * - On-demand `/` filter for < 6 options vs always-shown filter for >= 6 options
  * - Dynamic SelectList max visible rows sized to terminal height
  * - Wrapped preview footer for truncated highlighted option labels
@@ -174,7 +174,7 @@ describe("ask_user tool registration & sizing helpers", () => {
   });
 });
 
-describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () => {
+describe("ask_user question viewport and scrolling (#1317)", () => {
   it("renders short questions inside the box without overflow indicator", async () => {
     const h = mountAskUser({ question: "Deploy to staging?", options: ["Yes", "No"] }, { rows: 24 });
     const lines = h.component.render(60);
@@ -255,25 +255,19 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
     await h.resultPromise;
   });
 
-  it("toggles full question expansion with Ctrl+E in select mode", async () => {
+  it("keeps the question viewport bounded on Ctrl+E without showing a ctrl+e hint", async () => {
     const h = mountAskUser(
       { question: makeLongQuestion(), options: ["Approve", "Reject"] },
       { rows: 35 },
     );
-    h.component.render(60);
+    const initial = h.component.render(60).join("\n");
+    assert.match(initial, /lines 1–4 of 16 · shift\+↑↓\/pgup\/pgdn scroll/);
+    assert.doesNotMatch(initial, /ctrl\+e/i);
 
-    // Ctrl+E expands to show all 16 lines
     h.component.handleInput("\x05");
-    const expanded = h.component.render(60).join("\n");
-    assert.match(expanded, /Line 1: detail/);
-    assert.match(expanded, /Line 16: detail/);
-    assert.match(expanded, /lines 1–16 of 16 \(expanded\)/);
-
-    // Ctrl+E again collapses back to bounded viewport
-    h.component.handleInput("\x05");
-    const collapsed = h.component.render(60).join("\n");
-    assert.doesNotMatch(collapsed, /Line 16: detail/);
-    assert.match(collapsed, /lines 1–4 of 16/);
+    const afterCtrlE = h.component.render(60).join("\n");
+    assert.doesNotMatch(afterCtrlE, /Line 16: detail/);
+    assert.match(afterCtrlE, /lines 1–4 of 16/);
 
     h.component.handleInput("\x1b");
     await h.resultPromise;
@@ -365,20 +359,20 @@ describe("ask_user filter visibility and dynamic list height (#1317)", () => {
     const h = mountAskUser({ question: "Many choices", options }, { rows: 35 });
 
     // 35 rows -> boxBudget = 14, reservedRows = 6 (2 borders + 2 question + 1 filter + 1 help) -> maxVisible = 8
-    const lines = h.component.render(60);
+    const lines = h.component.render(70);
     const optionLines = lines.filter((line: string) => /Option \d+/.test(line));
     assert.equal(optionLines.length, 8);
     assert.match(lines.join("\n"), /\(1\/19\)/);
 
     // Resize terminal to 20 rows -> boxBudget = 10, reservedRows = 6 -> maxVisible = 4
     h.setTermRows(20);
-    const mediumLines = h.component.render(60);
+    const mediumLines = h.component.render(70);
     const mediumOptionLines = mediumLines.filter((line: string) => /Option \d+/.test(line));
     assert.equal(mediumOptionLines.length, 4);
 
     // Resize terminal to 12 rows -> byRatio = 3 -> maxVisible = 3
     h.setTermRows(12);
-    const smallLines = h.component.render(60);
+    const smallLines = h.component.render(70);
     const smallOptionLines = smallLines.filter((line: string) => /Option \d+/.test(line));
     assert.equal(smallOptionLines.length, 3);
 
@@ -437,7 +431,7 @@ describe("ask_user truncated option preview (#1317)", () => {
     const lines = h.component.render(50);
     const previewStart = lines.findIndex((line: string) => line.includes("↳ "));
     assert.ok(previewStart >= 0, "preview line must render");
-    const helpIdx = lines.findIndex((line: string) => line.includes("tab peek chat"));
+    const helpIdx = lines.findIndex((line: string) => line.includes("tab/alt+p peek chat"));
     const previewCount = helpIdx - previewStart;
     assert.equal(previewCount, computeOptionPreviewCap(24));
     assert.match(lines[helpIdx - 1], /…$/);
@@ -607,7 +601,7 @@ describe("ask_user chat-peek minimize toggle (#1317)", () => {
   it("shows the peek shortcut in the select help footer", async () => {
     const h = mountAskUser({ question: "Deploy?", options: ["Yes", "No"] }, { rows: 24 });
     const frame = h.component.render(80).join("\n");
-    assert.match(frame, /tab peek chat/);
+    assert.match(frame, /tab\/alt\+p peek chat/);
     h.component.handleInput("\x1b");
     await h.resultPromise;
   });
@@ -629,7 +623,7 @@ describe("ask_user chat-peek minimize toggle (#1317)", () => {
     assert.equal(minimizedLines.length, 1);
     assert.match(
       minimizedLines[0],
-      /◷ ask_user paused — press Tab \(or Alt\+P\) to resume answering · Esc cancel/,
+      /◷ ask_user paused — press tab or alt\+p to resume · esc cancel/,
     );
 
     // Narrow width still truncates to a single line

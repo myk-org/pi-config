@@ -325,8 +325,8 @@ export function registerAskUser(
               theme.fg(
                 "dim",
                 filterVisible
-                  ? `tab peek chat · type to filter · ↑↓ · enter · esc ${alwaysShowFilter ? "cancel" : "close"}`
-                  : "tab peek chat · / filter · ↑↓ navigate · enter select · esc cancel",
+                  ? `tab/alt+p peek chat · type to filter · ↑↓ · enter · esc ${alwaysShowFilter ? "cancel" : "close"}`
+                  : "tab/alt+p peek chat · / filter · ↑↓ navigate · enter select · esc cancel",
               ),
             );
           };
@@ -501,9 +501,9 @@ export function registerAskUser(
                 return;
               }
 
-              // Question viewport scroll (Shift+↑/↓ in all modes; Ctrl+E & PgUp/PgDn in select mode so Editor keeps them in input mode)
+              // Question viewport scroll (Shift+↑/↓ in all modes; PgUp/PgDn in select mode so Editor keeps them in input mode)
               if (matchesKey(data, Key.shift("up"))) {
-                if (questionViewport.isOverflowed() && !questionViewport.isExpanded()) {
+                if (questionViewport.isOverflowed()) {
                   if (questionViewport.scrollBy(-1)) container.invalidate();
                   tui.requestRender();
                   return;
@@ -511,7 +511,7 @@ export function registerAskUser(
                 if (mode === "select") return;
               }
               if (matchesKey(data, Key.shift("down"))) {
-                if (questionViewport.isOverflowed() && !questionViewport.isExpanded()) {
+                if (questionViewport.isOverflowed()) {
                   if (questionViewport.scrollBy(1)) container.invalidate();
                   tui.requestRender();
                   return;
@@ -519,25 +519,12 @@ export function registerAskUser(
                 if (mode === "select") return;
               }
               if (mode === "select") {
-                if (matchesKey(data, Key.ctrl("e")) && questionViewport.toggleExpanded()) {
-                  container.invalidate();
-                  tui.requestRender();
-                  return;
-                }
-                if (
-                  matchesKey(data, Key.pageUp) &&
-                  questionViewport.isOverflowed() &&
-                  !questionViewport.isExpanded()
-                ) {
+                if (matchesKey(data, Key.pageUp) && questionViewport.isOverflowed()) {
                   if (questionViewport.scrollPage(-1)) container.invalidate();
                   tui.requestRender();
                   return;
                 }
-                if (
-                  matchesKey(data, Key.pageDown) &&
-                  questionViewport.isOverflowed() &&
-                  !questionViewport.isExpanded()
-                ) {
+                if (matchesKey(data, Key.pageDown) && questionViewport.isOverflowed()) {
                   if (questionViewport.scrollPage(1)) container.invalidate();
                   tui.requestRender();
                   return;
