@@ -85,13 +85,14 @@ function makeWorkspace() {
 	return { workspace, comsDir };
 }
 
-function makeCtx(cwd: string, sessionId: string, branchReply = "", extra: { isIdle?: () => boolean } = {}) {
+function makeCtx(cwd: string, sessionId: string, branchReply = "", extra: { isIdle?: () => boolean; abort?: () => void } = {}) {
 	return {
 		cwd,
 		model: { id: "test-model" },
 		hasUI: false,
 		ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {} },
 		...(extra.isIdle ? { isIdle: extra.isIdle } : {}),
+		...(extra.abort ? { abort: extra.abort } : {}),
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getBranch: () => branchReply
@@ -108,6 +109,7 @@ async function startPeer(opts: {
 	cwd: string;
 	comsDir: string;
 	isIdle?: () => boolean;
+	abort?: () => void;
 }): Promise<FakePi> {
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, Function>();
@@ -147,11 +149,12 @@ async function startPeer(opts: {
 		assert.ok(tools.get("coms_send"), "coms_send tool must register");
 		assert.ok(handlers.get("turn_end"), "turn_end handler must register");
 		assert.ok(handlers.get("message_start"), "message_start handler must register");
+		assert.ok(handlers.get("context"), "context handler must register");
 		assert.ok(handlers.get("agent_end"), "agent_end handler must register");
 	});
 
 	(globalThis as any).__piConfigSessionId = opts.sessionId;
-	peer.ctx = makeCtx(opts.cwd, opts.sessionId, "", { isIdle: opts.isIdle });
+	peer.ctx = makeCtx(opts.cwd, opts.sessionId, "", { isIdle: opts.isIdle, abort: opts.abort });
 	peer.start = async (event: any, startCtx: any) => {
 		await handlers.get("session_start")!(event, startCtx);
 	};
@@ -798,5 +801,92 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		assert.equal((await peerC.tools.get("coms_get").execute("gn2-done", { msg_id: n2 })).details.response, "new reply 2");
 		assert.equal(readRegistry(receiver).busy, false);
 		assert.equal(readRegistry(receiver).queue_depth, 0);
+	});
+
+	it("suppresses a closed queued follow-up after cleanShutdown() so the model never runs it", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		let abortCalls = 0;
+		const peerA = await startPeer({ name: "peer-a", sessionId: "scl-a", project: "pcl-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({
+			name: "receiver",
+			sessionId: "rcl-1226",
+			project: "pcl-1226",
+			cwd: workspace,
+			comsDir,
+			abort: () => { abortCalls++; },
+		});
+
+		// Active user turn means Pi queues m1 in its followUp queue (undelivered).
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "do not run after stop" });
+		const m1 = r1.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
+		const staleMsg = { role: "custom", ...receiver.messages.find((m) => m?.details?.msg_id === m1) };
+
+		// Stop COMS while m1 is still sitting in Pi's follow-up queue.
+		await receiver.shutdown();
+		await waitUntil(async () => (await peerA.tools.get("coms_get").execute("g1-wait", { msg_id: m1 })).details.status === "complete");
+		assert.equal((await peerA.tools.get("coms_get").execute("g1-done", { msg_id: m1 })).details.error, "session_closed");
+
+		// Agent resumes and Pi drains the stale queued follow-up: message_start suppresses it
+		// and context strips it + aborts the turn before any LLM call can execute it.
+		const priorUser = { role: "user", content: "earlier question" };
+		const priorAssistant = { role: "assistant", content: [{ type: "text", text: "earlier answer" }] };
+		await receiver.handlers.get("message_start")!({ message: staleMsg });
+		const ctxResult = receiver.handlers.get("context")!(
+			{ type: "context", messages: [priorUser, priorAssistant, staleMsg] },
+			receiver.ctx,
+		);
+		assert.deepEqual(ctxResult?.messages, [priorUser, priorAssistant], "closed follow-up must be stripped from LLM context");
+		assert.equal(abortCalls, 1, "standalone closed follow-up turn must abort before reaching the model");
+	});
+
+	it("filters a closed pre-shutdown follow-up after same-closure restart while allowing fresh work", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		let abortCalls = 0;
+		const peerA = await startPeer({ name: "peer-a", sessionId: "scr-a", project: "pcr-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({
+			name: "receiver",
+			sessionId: "rcr-1226",
+			project: "pcr-1226",
+			cwd: workspace,
+			comsDir,
+			abort: () => { abortCalls++; },
+		});
+
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "stale before restart" });
+		const m1 = r1.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
+		const staleMsg = { role: "custom", ...receiver.messages.find((m) => m?.details?.msg_id === m1) };
+
+		await receiver.shutdown();
+		await waitUntil(async () => (await peerA.tools.get("coms_get").execute("g1-wait", { msg_id: m1 })).details.status === "complete");
+		assert.equal((await peerA.tools.get("coms_get").execute("g1-done", { msg_id: m1 })).details.error, "session_closed");
+
+		// Restart the same closure and receive a fresh prompt m2.
+		await receiver.start({}, receiver.ctx);
+		const restartedSelf = (globalThis as any).__comsSelf;
+		receiver.registryFile = join(comsDir, "projects", "pcr-1226", "agents", `${restartedSelf.sessionId}.json`);
+		const r2 = await peerA.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "fresh after restart" });
+		const m2 = r2.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m2));
+		const freshMsg = { role: "custom", ...receiver.messages.find((m) => m?.details?.msg_id === m2) };
+
+		// Pi delivers stale m1 alongside fresh m2: m1 is stripped, m2 runs normally without abort.
+		const priorAssistant = { role: "assistant", content: [{ type: "text", text: "earlier answer" }] };
+		await receiver.handlers.get("message_start")!({ message: staleMsg });
+		await receiver.handlers.get("message_start")!({ message: freshMsg });
+		const ctxResult = receiver.handlers.get("context")!(
+			{ type: "context", messages: [priorAssistant, staleMsg, freshMsg] },
+			receiver.ctx,
+		);
+		assert.deepEqual(ctxResult?.messages, [priorAssistant, freshMsg], "stale pre-shutdown prompt must be stripped while fresh prompt remains");
+		assert.equal(abortCalls, 0, "turn carrying a live prompt must not be aborted");
+
+		await emitTurnEnd(receiver, { text: "reply to fresh work", stopReason: "stop", toolResults: [] });
+		await waitUntil(async () => (await peerA.tools.get("coms_get").execute("g2-wait", { msg_id: m2 })).details.status === "complete");
+		assert.equal((await peerA.tools.get("coms_get").execute("g2-done", { msg_id: m2 })).details.response, "reply to fresh work");
+		assert.equal(readRegistry(receiver).busy, false);
 	});
 });

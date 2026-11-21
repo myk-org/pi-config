@@ -755,10 +755,44 @@ export default function (pi: ExtensionAPI) {
 	let sessionGeneration = 0;
 	/** msg_ids whose response send is already owned by an in-flight finalizer (#1226). */
 	const finalizingMsgIds = new Set<string>();
+	/** Undelivered inbound msg_ids closed by cleanShutdown() whose followUp copy may still sit in Pi's queue (#1226). */
+	const closedInboundMsgIds = new Set<string>();
+	/** Delivered inbound msg_ids that had pending followUp steers when cleanShutdown() ran (#1226). */
+	const closedSteerTargetIds = new Set<string>();
+	const MAX_CLOSED_INBOUND_IDS = 500;
 	/** True while an agent run is active (agent_start -> agent_end) (#1226). */
 	let agentRunning = false;
 	let bundledInbounds: InboundContext[] = [];
 	let processingInbound = false;
+
+	function rememberClosedId(target: Set<string>, msgId: string): void {
+		if (!msgId || target.has(msgId)) return;
+		if (target.size >= MAX_CLOSED_INBOUND_IDS) {
+			const oldest = target.values().next().value;
+			if (oldest !== undefined) target.delete(oldest);
+		}
+		target.add(msgId);
+	}
+
+	function isClosedComsMessage(msg: any): boolean {
+		if (msg?.role !== "custom" || !msg?.details || typeof msg.details !== "object") return false;
+		const d = msg.details;
+		if (typeof d.msg_id === "string" && closedInboundMsgIds.has(d.msg_id)) return true;
+		if (
+			d.steer === true
+			&& typeof d.target_msg_id === "string"
+			&& (closedInboundMsgIds.has(d.target_msg_id) || closedSteerTargetIds.has(d.target_msg_id))
+		) {
+			return true;
+		}
+		if (
+			Array.isArray(d.bundled_msg_ids)
+			&& d.bundled_msg_ids.some((id: unknown) => typeof id === "string" && closedInboundMsgIds.has(id))
+		) {
+			return true;
+		}
+		return false;
+	}
 
 	function extractAssistantText(message: any): string {
 		if (!message || message.role !== "assistant") return "";
@@ -3765,8 +3799,12 @@ Do not respond to this message.`;
 	// flip inboundDelivered = true and reset per-inbound turn flags. Only flag a user message
 	// as interrupting the inbound once that inbound has actually been delivered.
 	pi.on("message_start" as any, (event: any) => {
-		if (shuttingDown || !identity) return;
 		const msg = event?.message;
+		if (isClosedComsMessage(msg)) {
+			log.info("closed_inbound_suppressed", msg?.details?.msg_id ?? msg?.details?.target_msg_id ?? "unknown");
+			return;
+		}
+		if (shuttingDown || !identity) return;
 		if (currentInbound && msg?.role === "custom" && msg?.details?.msg_id === currentInbound.msg_id) {
 			inboundDelivered = true;
 			currentInbound.followUpQueued = false;
@@ -3791,6 +3829,25 @@ Do not respond to this message.`;
 			userMessageDuringInbound = true;
 			log.info("user_message_during_inbound", currentInbound?.msg_id ?? "null");
 		}
+	});
+
+	// ━━ context: strip closed COMS follow-ups before any LLM call (#1226) ━━
+	// Pi retains queued followUp messages across cleanShutdown() (including same-closure
+	// restarts). Strip prompts/steers whose senders already received session_closed, and
+	// abort the turn when no live user/peer prompt remains to drive the model.
+	pi.on("context" as any, (event: any, ctx?: ExtensionContext) => {
+		if (closedInboundMsgIds.size === 0 && closedSteerTargetIds.size === 0) return;
+		const msgs = Array.isArray(event?.messages) ? event.messages : null;
+		if (!msgs || msgs.length === 0) return;
+		const filtered = msgs.filter((m: any) => !isClosedComsMessage(m));
+		if (filtered.length === msgs.length) return;
+		const lastBefore = msgs[msgs.length - 1];
+		const lastAfter = filtered[filtered.length - 1];
+		if (isClosedComsMessage(lastBefore) && (!lastAfter || lastAfter.role === "assistant")) {
+			log.info("closed_inbound_abort_turn", { removed: msgs.length - filtered.length });
+			try { ctx?.abort?.(); } catch { /* best-effort */ }
+		}
+		return { messages: filtered };
 	});
 
 	// ━━ Inbound finalization: capture reply, dispatch response, drain FIFO (#1226) ━━
@@ -4440,6 +4497,7 @@ Do not respond to this message.`;
 		queueRecoveryPreviews.clear();
 		// Snapshot waiting inbound senders and reset all in-memory inbound queue state so
 		// /coms stop -> /coms start (which reuses this closure) starts completely clean (#1226).
+		const wasCurrentDelivered = inboundDelivered;
 		const waitingInbounds: InboundContext[] = [];
 		const seenInboundIds = new Set<string>();
 		for (const ib of inboundQueue.values()) {
@@ -4452,6 +4510,17 @@ Do not respond to this message.`;
 		if (currentInbound && !currentInbound.fulfilled && !finalizingMsgIds.has(currentInbound.msg_id) && !seenInboundIds.has(currentInbound.msg_id)) {
 			currentInbound.fulfilled = true;
 			waitingInbounds.push(currentInbound);
+		}
+		// Record closed undelivered inbounds (and pending steers on delivered inbounds) BEFORE
+		// sending session_closed so Pi cannot execute any retained followUp copy after stop/restart.
+		for (const ib of waitingInbounds) {
+			if (ib === currentInbound && wasCurrentDelivered) {
+				if ((ib.pendingSteers ?? 0) > 0) {
+					rememberClosedId(closedSteerTargetIds, ib.msg_id);
+				}
+			} else {
+				rememberClosedId(closedInboundMsgIds, ib.msg_id);
+			}
 		}
 		inboundQueue.clear();
 		accumulatedResponses.clear();
