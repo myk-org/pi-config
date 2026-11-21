@@ -26,6 +26,26 @@ _DISMISSED_ADDRESSED_TYPES = tuple(sorted(BODY_EMBEDDED_COMMENT_TYPES - {"qodo_r
 _DISMISSED_ADDRESSED_PLACEHOLDERS = ", ".join("?" for _ in _DISMISSED_ADDRESSED_TYPES)
 
 
+def _non_resolution_skipped_sql(prefix: str = "") -> str:
+    """SQL predicate excluding reasonless or GitHub-resolution-derived skipped rows.
+
+    GitHub thread resolution is PR-specific, not a reusable repo-wide dismissal.
+    Excludes both newly stored reasonless resolution skips and rows already persisted
+    with ``Resolved on GitHub`` / ``Resolved on GitHub by <login>``.
+    """
+    p = f"{prefix}." if prefix else ""
+    return (
+        f"NOT ({p}status = 'skipped' AND ("
+        f"(({p}skip_reason IS NULL OR TRIM({p}skip_reason) = '') "
+        f"AND ({p}reply IS NULL OR TRIM({p}reply) = '')) "
+        f"OR TRIM(COALESCE({p}skip_reason, '')) = 'Resolved on GitHub' "
+        f"OR TRIM(COALESCE({p}skip_reason, '')) LIKE 'Resolved on GitHub by %' "
+        f"OR TRIM(COALESCE({p}reply, '')) = 'Resolved on GitHub' "
+        f"OR TRIM(COALESCE({p}reply, '')) LIKE 'Resolved on GitHub by %'"
+        "))"
+    )
+
+
 def log(message: str) -> None:
     """Print message to stderr."""
     print(message, file=sys.stderr)
@@ -253,6 +273,7 @@ class ReviewDB:
                       OR (c.status = 'addressed'
                           AND c.type IN ({_DISMISSED_ADDRESSED_PLACEHOLDERS}))
                   )
+                  AND {_non_resolution_skipped_sql("c")}
                 ORDER BY c.path, c.line
                 """,  # noqa: S608
                 (owner, repo, *_DISMISSED_ADDRESSED_TYPES),
@@ -377,7 +398,7 @@ class ReviewDB:
             cursor = conn.cursor()
             # Get all dismissed comments for this path in the repo
             cursor.execute(
-                """
+                f"""
                 SELECT c.path, c.line, c.body, c.status, c.reply, c.skip_reason, c.author
                 FROM comments c
                 JOIN reviews r ON c.review_id = r.id
@@ -385,7 +406,8 @@ class ReviewDB:
                   AND c.path = ?
                   AND c.status IN ('not_addressed', 'skipped')
                   AND c.body IS NOT NULL
-                """,
+                  AND {_non_resolution_skipped_sql("c")}
+                """,  # noqa: S608
                 (owner, repo, path),
             )
 
@@ -510,14 +532,15 @@ class ReviewDB:
 
             # Get all dismissed comments
             cursor.execute(
-                """
+                f"""
                 SELECT path, body, reply, skip_reason
                 FROM comments
                 WHERE status IN ('not_addressed', 'skipped')
                   AND body IS NOT NULL
                   AND path IS NOT NULL
+                  AND {_non_resolution_skipped_sql()}
                 ORDER BY path
-                """
+                """  # noqa: S608
             )
 
             # Group by path and find similar bodies
