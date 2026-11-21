@@ -253,6 +253,7 @@ describe("ui-bridge Container & header caching (#1313)", () => {
       assert.match(initialFrame, /alpha/);
       assert.match(initialFrame, /gamma/);
 
+      comp.handleInput("/");
       comp.handleInput("g");
       const filteredFrame = comp.render(60).join("\n");
       assert.match(filteredFrame, /Pick target/);
@@ -265,5 +266,205 @@ describe("ui-bridge Container & header caching (#1313)", () => {
 
     comp.handleInput("\r");
     assert.equal(await p, "gamma");
+  });
+});
+
+describe("ui-bridge bounded viewport, on-demand filter, peek, and Esc cancel (#1317, #1313)", () => {
+  function fakeCtxWithRows(rows: number) {
+    const calls: CustomCall[] = [];
+    return {
+      hasUI: true,
+      ui: {
+        custom: (render: any) =>
+          new Promise((resolve) => {
+            const call: CustomCall = { render, done: resolve, component: null } as any;
+            calls.push(call);
+            call.component = render(
+              { requestRender: () => {}, terminal: { rows, columns: 80 } },
+              { fg: (_c: string, s: string) => s },
+              {},
+              (v: any) => resolve(v),
+            );
+          }),
+      },
+      calls,
+    };
+  }
+
+  it("bounds a 25-line title in select mode so all options stay visible", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(35);
+    const bridged = createBridgedUi(pi as any);
+    const longTitle = Array.from({ length: 25 }, (_, i) => `Line ${i + 1}: rm -rf details`).join("\n");
+    const options = ["run once", "this session", "this project", "everywhere", "no"];
+    const p = bridged.select(ctx as any, longTitle, options);
+    const comp = ctx.calls[0].component;
+
+    const lines = comp.render(80);
+    const joined = lines.join("\n");
+    assert.match(joined, /lines 1–4 of 25/);
+    for (const opt of options) {
+      assert.match(joined, new RegExp(opt));
+    }
+    assert.ok(lines.length <= 16, `expected compact height <= 16 lines, got ${lines.length}`);
+
+    comp.handleInput("\x1b");
+    assert.equal(await p, undefined);
+  });
+
+  it("updates the highlighted selection in rendered output on arrow down", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Pick target", ["alpha", "beta", "gamma"]);
+    const comp = ctx.calls[0].component;
+
+    const before = comp.render(60).join("\n");
+    assert.match(before, /→ alpha/);
+    assert.doesNotMatch(before, /→ beta/);
+
+    comp.handleInput("\x1b[B");
+    const after = comp.render(60).join("\n");
+    assert.match(after, /→ beta/);
+    assert.doesNotMatch(after, /→ alpha/);
+
+    comp.handleInput("\r");
+    assert.equal(await p, "beta");
+  });
+
+  it("hides filter input for fewer than 6 options until slash is pressed", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Allow?", ["run once", "no"]);
+    const comp = ctx.calls[0].component;
+
+    const initial = comp.render(80).join("\n");
+    assert.match(initial, /\/ filter/);
+    assert.doesNotMatch(initial, /type to filter/);
+
+    // Printable keys are ignored while filter is hidden
+    comp.handleInput("n");
+    const unchanged = comp.render(80).join("\n");
+    assert.match(unchanged, /run once/);
+    assert.match(unchanged, /no/);
+
+    comp.handleInput("/");
+    assert.match(comp.render(80).join("\n"), /type to filter/);
+
+    comp.handleInput("\x1b"); // close filter
+    comp.handleInput("\x1b"); // cancel prompt
+    assert.equal(await p, undefined);
+  });
+
+  it("shows filter input immediately for 6 or more options", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Pick", ["one", "two", "three", "four", "five", "six"]);
+    const comp = ctx.calls[0].component;
+
+    assert.match(comp.render(80).join("\n"), /type to filter/);
+
+    comp.handleInput("\x1b");
+    assert.equal(await p, undefined);
+  });
+
+  it("collapses select mode to a 1-line paused bar on Tab", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Allow?", ["run once", "no"]);
+    const comp = ctx.calls[0].component;
+
+    comp.handleInput("\t");
+    const lines = comp.render(80);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /◷ prompt paused — press Tab \(or Alt\+P\) to resume answering · Esc cancel/);
+
+    comp.handleInput("\x1b");
+    assert.equal(await p, undefined);
+  });
+
+  it("restores select mode from minimized state preserving highlighted selection", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Allow?", ["run once", "this session", "no"]);
+    const comp = ctx.calls[0].component;
+
+    comp.handleInput("\x1b[B"); // highlight "this session"
+    comp.handleInput("\t"); // minimize
+    assert.equal(comp.render(80).length, 1);
+
+    comp.handleInput("\x1bp"); // restore with Alt+P
+    comp.handleInput("\r");
+    assert.equal(await p, "this session");
+  });
+
+  it("cancels select mode with undefined on legacy Esc", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Allow?", ["run once", "no"]);
+    const comp = ctx.calls[0].component;
+
+    comp.handleInput("\x1b");
+    assert.equal(await p, undefined);
+  });
+
+  it("cancels select mode with undefined on Kitty Esc", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Allow?", ["run once", "no"]);
+    const comp = ctx.calls[0].component;
+
+    comp.handleInput("\x1b[27u");
+    assert.equal(await p, undefined);
+  });
+
+  it("cancels select mode with undefined on Kitty Esc when filter is always shown", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Pick", ["one", "two", "three", "four", "five", "six"]);
+    const comp = ctx.calls[0].component;
+
+    comp.handleInput("\x1b[27u");
+    assert.equal(await p, undefined);
+  });
+
+  it("cancels confirm mode with false on Kitty Esc", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.confirm(ctx as any, "Proceed?");
+    const comp = ctx.calls[0].component;
+
+    comp.handleInput("\x1b[27u");
+    assert.equal(await p, false);
+  });
+
+  it("cancels input mode with undefined on Kitty Esc", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.input(ctx as any, "Enter value");
+    const comp = ctx.calls[0].component;
+
+    comp.handleInput("\x1b[27u");
+    assert.equal(await p, undefined);
+  });
+
+  it("cancels select mode with undefined on Ctrl+C", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(24);
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Allow?", ["run once", "no"]);
+    const comp = ctx.calls[0].component;
+
+    comp.handleInput("\x03");
+    assert.equal(await p, undefined);
   });
 });

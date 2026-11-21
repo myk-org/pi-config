@@ -16,152 +16,29 @@ import {
   Text,
   fuzzyFilter,
   matchesKey,
-  truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
+import {
+  FILTER_AUTO_SHOW_THRESHOLD,
+  QuestionViewport,
+  computeBoxHeightBudget,
+  computeQuestionViewportCap,
+  computeSelectMaxVisible,
+  createMinimizedBar,
+} from "../shared/ui-bridge.js";
+
+export {
+  computeBoxHeightBudget,
+  computeQuestionViewportCap,
+  computeSelectMaxVisible,
+};
 
 const log = createLogger("ask-user");
 
 const FREE_INPUT_VALUE = "__free_input__";
-const FILTER_AUTO_SHOW_THRESHOLD = 6;
-
-export function computeQuestionViewportCap(termRows: number): number {
-  return Math.max(4, Math.min(8, Math.floor(termRows * 0.3)));
-}
-
-export function computeSelectMaxVisible(itemCount: number, termRows: number): number {
-  if (itemCount <= 0) return 0;
-  return Math.min(itemCount, Math.max(4, Math.floor(termRows * 0.35)));
-}
-
-class QuestionViewport implements Component {
-  private scrollOffset = 0;
-  private expanded = false;
-  private lastWidth = 0;
-  private cachedWrapWidth = -1;
-  private cachedWrapped: string[] = [];
-  private cachedRenderKey = "";
-  private cachedLines: string[] | undefined;
-
-  constructor(
-    private readonly question: string,
-    private readonly getTermRows: () => number,
-    private readonly theme: Theme,
-    private readonly isSelectMode: () => boolean,
-  ) {}
-
-  private getWrapped(width: number): { wrapped: string[]; pad: number; contentWidth: number } {
-    const pad = Math.min(1, Math.max(0, Math.floor((width - 1) / 2)));
-    const contentWidth = Math.max(1, width - pad * 2);
-    if (this.cachedWrapWidth !== contentWidth) {
-      this.cachedWrapWidth = contentWidth;
-      this.cachedWrapped =
-        this.question.trim() === ""
-          ? []
-          : wrapTextWithAnsi(this.question.replace(/\t/g, "   "), contentWidth);
-    }
-    return { wrapped: this.cachedWrapped, pad, contentWidth };
-  }
-
-  private getEffectiveWidth(): number {
-    return this.lastWidth > 0 ? this.lastWidth : 80;
-  }
-
-  isExpanded(): boolean {
-    return this.expanded;
-  }
-
-  isOverflowed(width?: number): boolean {
-    const w = width ?? this.getEffectiveWidth();
-    const { wrapped } = this.getWrapped(w);
-    return wrapped.length > computeQuestionViewportCap(this.getTermRows());
-  }
-
-  scrollBy(delta: number): boolean {
-    if (this.expanded) return false;
-    const { wrapped } = this.getWrapped(this.getEffectiveWidth());
-    const cap = computeQuestionViewportCap(this.getTermRows());
-    if (wrapped.length <= cap) return false;
-    const maxOffset = wrapped.length - cap;
-    const next = Math.max(0, Math.min(maxOffset, this.scrollOffset + delta));
-    if (next === this.scrollOffset) return false;
-    this.scrollOffset = next;
-    this.invalidate();
-    return true;
-  }
-
-  scrollPage(direction: -1 | 1): boolean {
-    const cap = computeQuestionViewportCap(this.getTermRows());
-    return this.scrollBy(direction * Math.max(1, cap - 1));
-  }
-
-  toggleExpanded(): boolean {
-    if (!this.expanded && !this.isOverflowed()) return false;
-    this.expanded = !this.expanded;
-    this.invalidate();
-    return true;
-  }
-
-  invalidate(): void {
-    this.cachedRenderKey = "";
-    this.cachedLines = undefined;
-  }
-
-  render(width: number): string[] {
-    this.lastWidth = width;
-    const termRows = this.getTermRows();
-    const selectMode = this.isSelectMode();
-    const key = `${width}:${termRows}:${this.scrollOffset}:${this.expanded ? 1 : 0}:${selectMode ? 1 : 0}`;
-    if (this.cachedLines && this.cachedRenderKey === key) {
-      return this.cachedLines;
-    }
-
-    const { wrapped, pad, contentWidth } = this.getWrapped(width);
-    if (wrapped.length === 0) {
-      this.cachedRenderKey = key;
-      this.cachedLines = [];
-      return this.cachedLines;
-    }
-
-    const cap = computeQuestionViewportCap(termRows);
-    const total = wrapped.length;
-    const overflowed = total > cap;
-    let visible: string[];
-    let start = 0;
-
-    if (!overflowed || this.expanded) {
-      visible = wrapped;
-    } else {
-      const maxOffset = total - cap;
-      this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxOffset));
-      start = this.scrollOffset;
-      visible = wrapped.slice(start, start + cap);
-    }
-
-    const leftPad = " ".repeat(pad);
-    const lines: string[] = visible.map((line) => leftPad + this.theme.fg("text", line));
-
-    if (overflowed) {
-      const indicator = this.expanded
-        ? selectMode
-          ? `lines 1–${total} of ${total} (expanded) • ctrl+e collapse`
-          : `lines 1–${total} of ${total} (expanded)`
-        : selectMode
-          ? `lines ${start + 1}–${start + visible.length} of ${total} • shift+↑↓/pgup/pgdn scroll • ctrl+e expand`
-          : `lines ${start + 1}–${start + visible.length} of ${total} • shift+↑↓ scroll`;
-      lines.push(leftPad + this.theme.fg("dim", truncateToWidth(indicator, contentWidth, "…")));
-    }
-
-    lines.push("");
-
-    this.cachedRenderKey = `${width}:${termRows}:${this.scrollOffset}:${this.expanded ? 1 : 0}:${selectMode ? 1 : 0}`;
-    this.cachedLines = lines;
-    return lines;
-  }
-}
 
 class OptionPreview implements Component {
   private selectedItem: SelectItem | null = null;
@@ -348,6 +225,8 @@ export function registerAskUser(
           externalDone = done;
 
           let mode: "select" | "input" = assembled.length ? "select" : "input";
+          let minimized = false;
+          let lastRenderWidth = 0;
           let resolved = false;
 
           const resolve = (value: string | null) => {
@@ -401,12 +280,14 @@ export function registerAskUser(
             theme.fg(
               "dim",
               assembled.length > 0
-                ? "Type your response • enter submit • shift+enter newline • esc back"
-                : "Type your response • enter submit • shift+enter newline • esc cancel",
+                ? "Type your response · alt+p peek chat · enter submit · shift+enter newline · esc back"
+                : "Type your response · alt+p peek chat · enter submit · shift+enter newline · esc cancel",
             ),
             1,
             0,
           );
+
+          const minimizedBar = createMinimizedBar(theme, "ask_user");
 
           // SelectList (only if options provided)
           let selectList: SelectList | null = null;
@@ -423,8 +304,8 @@ export function registerAskUser(
               theme.fg(
                 "dim",
                 filterVisible
-                  ? `type to filter • ↑↓ navigate • enter select • esc ${alwaysShowFilter ? "cancel" : "close filter"}`
-                  : "/ filter • ↑↓ navigate • enter select • esc cancel",
+                  ? `tab peek chat · type to filter · ↑↓ · enter · esc ${alwaysShowFilter ? "cancel" : "close"}`
+                  : "tab peek chat · / filter · ↑↓ navigate · enter select · esc cancel",
               ),
             );
           };
@@ -441,12 +322,17 @@ export function registerAskUser(
           let _focused = false;
 
           const syncFocus = () => {
-            editor.focused = _focused && mode === "input";
-            searchInput.focused = _focused && mode === "select" && filterVisible;
+            editor.focused = _focused && !minimized && mode === "input";
+            searchInput.focused = _focused && !minimized && mode === "select" && filterVisible;
           };
 
           const syncContainer = () => {
             container.clear();
+            if (minimized) {
+              container.addChild(minimizedBar);
+              container.invalidate();
+              return;
+            }
             container.addChild(topBorder);
             container.addChild(questionViewport);
             if (mode === "select" && selectList) {
@@ -462,13 +348,30 @@ export function registerAskUser(
             container.invalidate();
           };
 
+          const toggleMinimized = () => {
+            minimized = !minimized;
+            log.debug("ask_user_minimized_toggled", { askId, minimized, mode });
+            syncFocus();
+            syncContainer();
+            tui.requestRender();
+          };
+
+          const getSelectMaxVisible = (itemCount: number, width = lastRenderWidth): number => {
+            const termRows = getTermRows();
+            if (width <= 0) return computeSelectMaxVisible(itemCount, termRows);
+            const questionLines = questionViewport.render(width).length;
+            const helpLines = selectHelp.render(width).length;
+            const reservedRows = 2 + questionLines + (filterVisible ? 1 : 0) + helpLines;
+            return computeSelectMaxVisible(itemCount, termRows, reservedRows);
+          };
+
           const enterInputMode = () => {
             mode = "input";
             searchInput.setValue("");
             if (lastQuery) {
               lastQuery = "";
               currentItems = allItems;
-              selectList = makeSelectList(currentItems, computeSelectMaxVisible(currentItems.length, getTermRows()));
+              selectList = makeSelectList(currentItems, getSelectMaxVisible(currentItems.length));
               optionPreview.setSelectedItem(selectList.getSelectedItem());
             }
             if (!alwaysShowFilter && filterVisible) {
@@ -530,8 +433,9 @@ export function registerAskUser(
             },
 
             render: (w: number) => {
-              if (mode === "select" && selectList) {
-                const nextMaxVisible = computeSelectMaxVisible(currentItems.length, getTermRows());
+              lastRenderWidth = w;
+              if (!minimized && mode === "select" && selectList) {
+                const nextMaxVisible = getSelectMaxVisible(currentItems.length, w);
                 if (nextMaxVisible !== currentSelectMaxVisible) {
                   const prevSelected = selectList.getSelectedItem();
                   selectList = makeSelectList(currentItems, nextMaxVisible);
@@ -548,6 +452,27 @@ export function registerAskUser(
             invalidate: () => container.invalidate(),
             handleInput: (data: string) => {
               if (resolved) return;
+
+              // Ctrl+C always cancels immediately regardless of mode or minimized state.
+              if (matchesKey(data, Key.ctrl("c"))) {
+                resolve(null);
+                return;
+              }
+
+              // Peek / minimize toggle: Tab in select mode or while minimized; Alt+P in all modes.
+              const isPeekToggle =
+                matchesKey(data, Key.alt("p")) ||
+                ((minimized || mode === "select") && matchesKey(data, Key.tab));
+              if (isPeekToggle) {
+                toggleMinimized();
+                return;
+              }
+              if (minimized) {
+                if (matchesKey(data, Key.escape)) {
+                  resolve(null);
+                }
+                return;
+              }
 
               // Question viewport scroll (Shift+↑/↓ in all modes; Ctrl+E & PgUp/PgDn in select mode so Editor keeps them in input mode)
               if (matchesKey(data, Key.shift("up"))) {
@@ -593,6 +518,39 @@ export function registerAskUser(
               }
 
               if (mode === "select" && selectList) {
+                // Direct Esc handling (covers both legacy "\x1b" and Kitty "\x1b[27u") — never rely on SelectList.onCancel
+                if (matchesKey(data, Key.escape)) {
+                  if (filterVisible && !alwaysShowFilter) {
+                    filterVisible = false;
+                    const hadQuery = searchInput.getValue().length > 0;
+                    searchInput.setValue("");
+                    lastQuery = "";
+                    if (hadQuery) {
+                      currentItems = allItems;
+                      selectList = makeSelectList(
+                        currentItems,
+                        getSelectMaxVisible(currentItems.length),
+                      );
+                      optionPreview.setSelectedItem(selectList.getSelectedItem());
+                    }
+                    updateSelectHelp();
+                    syncFocus();
+                    syncContainer();
+                    tui.requestRender();
+                    return;
+                  }
+                  resolve(null);
+                  return;
+                }
+
+                const isNavKey =
+                  matchesKey(data, Key.up) ||
+                  matchesKey(data, Key.down) ||
+                  matchesKey(data, Key.enter) ||
+                  matchesKey(data, Key.return) ||
+                  matchesKey(data, Key.pageUp) ||
+                  matchesKey(data, Key.pageDown);
+
                 if (!filterVisible) {
                   if (matchesKey(data, Key.slash)) {
                     filterVisible = true;
@@ -602,54 +560,18 @@ export function registerAskUser(
                     tui.requestRender();
                     return;
                   }
-                  const isNavKey =
-                    matchesKey(data, Key.up) ||
-                    matchesKey(data, Key.down) ||
-                    matchesKey(data, Key.enter) ||
-                    matchesKey(data, Key.return) ||
-                    matchesKey(data, Key.escape) ||
-                    matchesKey(data, Key.ctrl("c")) ||
-                    matchesKey(data, Key.pageUp) ||
-                    matchesKey(data, Key.pageDown);
                   if (isNavKey) {
                     selectList.handleInput(data);
+                    container.invalidate();
                     tui.requestRender();
                   }
                   return;
                 }
 
                 // Filter is visible
-                if (matchesKey(data, Key.escape) && !alwaysShowFilter) {
-                  filterVisible = false;
-                  const hadQuery = searchInput.getValue().length > 0;
-                  searchInput.setValue("");
-                  lastQuery = "";
-                  if (hadQuery) {
-                    currentItems = allItems;
-                    selectList = makeSelectList(
-                      currentItems,
-                      computeSelectMaxVisible(currentItems.length, getTermRows()),
-                    );
-                    optionPreview.setSelectedItem(selectList.getSelectedItem());
-                  }
-                  updateSelectHelp();
-                  syncFocus();
-                  syncContainer();
-                  tui.requestRender();
-                  return;
-                }
-
-                const isNavKey =
-                  matchesKey(data, Key.up) ||
-                  matchesKey(data, Key.down) ||
-                  matchesKey(data, Key.enter) ||
-                  matchesKey(data, Key.return) ||
-                  matchesKey(data, Key.escape) ||
-                  matchesKey(data, Key.ctrl("c")) ||
-                  matchesKey(data, Key.pageUp) ||
-                  matchesKey(data, Key.pageDown);
                 if (isNavKey) {
                   selectList.handleInput(data);
+                  container.invalidate();
                 } else {
                   searchInput.handleInput(data);
                   const query = searchInput.getValue();
@@ -670,10 +592,12 @@ export function registerAskUser(
                     }
                     selectList = makeSelectList(
                       currentItems,
-                      computeSelectMaxVisible(currentItems.length, getTermRows()),
+                      getSelectMaxVisible(currentItems.length),
                     );
                     optionPreview.setSelectedItem(selectList.getSelectedItem());
                     syncContainer();
+                  } else {
+                    container.invalidate();
                   }
                 }
               } else {
@@ -690,11 +614,8 @@ export function registerAskUser(
                   }
                   return;
                 }
-                if (matchesKey(data, Key.ctrl("c"))) {
-                  resolve(null);
-                  return;
-                }
                 editor.handleInput(data);
+                container.invalidate();
               }
               tui.requestRender();
             },
@@ -706,7 +627,19 @@ export function registerAskUser(
       unsubscribe();
 
       if (result === null) {
-        return { content: [{ type: "text", text: "User cancelled" }], details: undefined, terminate: true };
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "User cancelled (Esc pressed) — STOP immediately and wait for the user's next message. " +
+                "Do NOT assume any option was selected.",
+            },
+          ],
+          details: undefined,
+          isError: true,
+          terminate: true,
+        };
       }
       return { content: [{ type: "text", text: result }], details: undefined };
     },
@@ -725,7 +658,7 @@ export function registerAskUser(
       const text = result.content[0];
       const value = text?.type === "text" ? text.text : "(no response)";
       const icon =
-        value === "User cancelled"
+        value.startsWith("User cancelled")
           ? theme.fg("warning", "✗")
           : theme.fg("success", "✓");
       return new Text(`${icon} ${theme.fg("toolOutput", value)}`, 0, 0);

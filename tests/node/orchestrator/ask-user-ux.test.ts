@@ -15,6 +15,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Container } from "@earendil-works/pi-tui";
 import {
+  computeBoxHeightBudget,
   computeQuestionViewportCap,
   computeSelectMaxVisible,
   registerAskUser,
@@ -114,21 +115,38 @@ describe("ask_user tool registration & sizing helpers", () => {
     assert.equal(tool.executionMode, "sequential");
   });
 
-  it("caps question viewport to ~30% of terminal height clamped to 4..8", () => {
-    assert.equal(computeQuestionViewportCap(10), 4);
-    assert.equal(computeQuestionViewportCap(20), 6);
-    assert.equal(computeQuestionViewportCap(24), 7);
-    assert.equal(computeQuestionViewportCap(30), 8);
-    assert.equal(computeQuestionViewportCap(60), 8);
+  it("caps question viewport to ~14% of terminal height clamped to 3..5", () => {
+    assert.equal(computeQuestionViewportCap(10), 3);
+    assert.equal(computeQuestionViewportCap(20), 3);
+    assert.equal(computeQuestionViewportCap(24), 3);
+    assert.equal(computeQuestionViewportCap(30), 4);
+    assert.equal(computeQuestionViewportCap(35), 4);
+    assert.equal(computeQuestionViewportCap(40), 5);
+    assert.equal(computeQuestionViewportCap(60), 5);
+  });
+
+  it("caps total box height budget to ~40% of terminal height with a 10-row floor", () => {
+    assert.equal(computeBoxHeightBudget(10), 10);
+    assert.equal(computeBoxHeightBudget(20), 10);
+    assert.equal(computeBoxHeightBudget(35), 14);
+    assert.equal(computeBoxHeightBudget(50), 20);
   });
 
   it("sizes SelectList maxVisible dynamically to terminal height", () => {
     assert.equal(computeSelectMaxVisible(0, 24), 0);
-    assert.equal(computeSelectMaxVisible(3, 24), 3);
-    assert.equal(computeSelectMaxVisible(20, 10), 4);
-    assert.equal(computeSelectMaxVisible(20, 20), 7);
-    assert.equal(computeSelectMaxVisible(20, 24), 8);
-    assert.equal(computeSelectMaxVisible(20, 40), 14);
+    assert.equal(computeSelectMaxVisible(2, 24), 2);
+    assert.equal(computeSelectMaxVisible(20, 10), 3);
+    assert.equal(computeSelectMaxVisible(20, 20), 5);
+    assert.equal(computeSelectMaxVisible(20, 24), 6);
+    assert.equal(computeSelectMaxVisible(20, 35), 8);
+    assert.equal(computeSelectMaxVisible(20, 40), 10);
+  });
+
+  it("shrinks SelectList maxVisible to fit remaining box height budget when reserved rows are given", () => {
+    // On 35 rows, boxBudget = 14, byRatio = 8; with 10 reserved rows, remaining = 4
+    assert.equal(computeSelectMaxVisible(20, 35, 10), 4);
+    // Floor stays at 3 even when reserved rows fill the budget
+    assert.equal(computeSelectMaxVisible(20, 35, 14), 3);
   });
 
   it("preserves headless COMS fallback when ctx.hasUI is false", async () => {
@@ -173,18 +191,18 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
   const makeLongQuestion = () =>
     Array.from({ length: 16 }, (_, i) => `Line ${i + 1}: detail about change`).join("\n");
 
-  it("bounds overflowing questions to the viewport cap with an overflow indicator", async () => {
+  it("bounds overflowing questions to the 4-line viewport cap on a 35-row terminal", async () => {
     const h = mountAskUser(
       { question: makeLongQuestion(), options: ["Approve", "Reject"] },
-      { rows: 20 },
+      { rows: 35 },
     );
 
-    // On 20-row terminal, cap = 6 lines
+    // On 35-row terminal, cap = 4 lines
     const initial = h.component.render(60).join("\n");
     assert.match(initial, /Line 1: detail/);
-    assert.match(initial, /Line 6: detail/);
-    assert.doesNotMatch(initial, /Line 7: detail/);
-    assert.match(initial, /lines 1–6 of 16/);
+    assert.match(initial, /Line 4: detail/);
+    assert.doesNotMatch(initial, /Line 5: detail/);
+    assert.match(initial, /lines 1–4 of 16/);
 
     h.component.handleInput("\x1b");
     const res = await h.resultPromise;
@@ -194,7 +212,7 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
   it("scrolls an overflowing question line by line with Shift+Down / Shift+Up", async () => {
     const h = mountAskUser(
       { question: makeLongQuestion(), options: ["Approve", "Reject"] },
-      { rows: 20 },
+      { rows: 35 },
     );
     h.component.render(60);
 
@@ -203,13 +221,13 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
     const afterShiftDown = h.component.render(60).join("\n");
     assert.doesNotMatch(afterShiftDown, /Line 1: detail/);
     assert.match(afterShiftDown, /Line 2: detail/);
-    assert.match(afterShiftDown, /Line 7: detail/);
-    assert.match(afterShiftDown, /lines 2–7 of 16/);
+    assert.match(afterShiftDown, /Line 5: detail/);
+    assert.match(afterShiftDown, /lines 2–5 of 16/);
 
     // Shift+Up scrolls back up by 1 line
     h.component.handleInput("\x1b[1;2A");
     const afterShiftUp = h.component.render(60).join("\n");
-    assert.match(afterShiftUp, /lines 1–6 of 16/);
+    assert.match(afterShiftUp, /lines 1–4 of 16/);
 
     h.component.handleInput("\x1b");
     await h.resultPromise;
@@ -218,19 +236,19 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
   it("pages an overflowing question with PgDn / PgUp in select mode", async () => {
     const h = mountAskUser(
       { question: makeLongQuestion(), options: ["Approve", "Reject"] },
-      { rows: 20 },
+      { rows: 35 },
     );
     h.component.render(60);
 
-    // PgDn scrolls by a page (cap - 1 = 5 lines -> lines 6-11)
+    // PgDn scrolls by a page (cap - 1 = 3 lines -> lines 4-7)
     h.component.handleInput("\x1b[6~");
     const afterPgDn = h.component.render(60).join("\n");
-    assert.match(afterPgDn, /lines 6–11 of 16/);
+    assert.match(afterPgDn, /lines 4–7 of 16/);
 
-    // PgUp scrolls back to lines 1-6
+    // PgUp scrolls back to lines 1-4
     h.component.handleInput("\x1b[5~");
     const afterPgUp = h.component.render(60).join("\n");
-    assert.match(afterPgUp, /lines 1–6 of 16/);
+    assert.match(afterPgUp, /lines 1–4 of 16/);
 
     h.component.handleInput("\x1b");
     await h.resultPromise;
@@ -239,7 +257,7 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
   it("toggles full question expansion with Ctrl+E in select mode", async () => {
     const h = mountAskUser(
       { question: makeLongQuestion(), options: ["Approve", "Reject"] },
-      { rows: 20 },
+      { rows: 35 },
     );
     h.component.render(60);
 
@@ -254,7 +272,7 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
     h.component.handleInput("\x05");
     const collapsed = h.component.render(60).join("\n");
     assert.doesNotMatch(collapsed, /Line 16: detail/);
-    assert.match(collapsed, /lines 1–6 of 16/);
+    assert.match(collapsed, /lines 1–4 of 16/);
 
     h.component.handleInput("\x1b");
     await h.resultPromise;
@@ -341,21 +359,40 @@ describe("ask_user filter visibility and dynamic list height (#1317)", () => {
     assert.equal(res.content[0].text, "Six");
   });
 
-  it("sizes SelectList rows dynamically to terminal height instead of hardcoded 15", async () => {
+  it("sizes SelectList rows dynamically as terminal height changes", async () => {
     const options = Array.from({ length: 18 }, (_, i) => `Option ${i + 1}`);
-    const h = mountAskUser({ question: "Many choices", options }, { rows: 20 });
+    const h = mountAskUser({ question: "Many choices", options }, { rows: 35 });
 
-    // 20 rows -> maxVisible = Math.max(4, Math.floor(20 * 0.35)) = 7
+    // 35 rows -> boxBudget = 14, reservedRows = 6 (2 borders + 2 question + 1 filter + 1 help) -> maxVisible = 8
     const lines = h.component.render(60);
     const optionLines = lines.filter((line: string) => /Option \d+/.test(line));
-    assert.equal(optionLines.length, 7);
+    assert.equal(optionLines.length, 8);
     assert.match(lines.join("\n"), /\(1\/19\)/);
 
-    // Resize terminal to 10 rows -> maxVisible = 4
-    h.setTermRows(10);
-    const resizedLines = h.component.render(60);
-    const resizedOptionLines = resizedLines.filter((line: string) => /Option \d+/.test(line));
-    assert.equal(resizedOptionLines.length, 4);
+    // Resize terminal to 20 rows -> boxBudget = 10, reservedRows = 6 -> maxVisible = 4
+    h.setTermRows(20);
+    const mediumLines = h.component.render(60);
+    const mediumOptionLines = mediumLines.filter((line: string) => /Option \d+/.test(line));
+    assert.equal(mediumOptionLines.length, 4);
+
+    // Resize terminal to 12 rows -> byRatio = 3 -> maxVisible = 3
+    h.setTermRows(12);
+    const smallLines = h.component.render(60);
+    const smallOptionLines = smallLines.filter((line: string) => /Option \d+/.test(line));
+    assert.equal(smallOptionLines.length, 3);
+
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("keeps total rendered height compact on a 35-row terminal with a long question", async () => {
+    const longQuestion = Array.from({ length: 10 }, (_, i) => `Detail line ${i + 1}`).join("\n");
+    const options = Array.from({ length: 12 }, (_, i) => `Choice ${i + 1}`);
+    const h = mountAskUser({ question: longQuestion, options }, { rows: 35 });
+
+    const lines = h.component.render(70);
+    // 4 question + 1 indicator + 1 blank + 1 filter + 4 list + 1 scroll info + 1 help + 2 borders = 15 lines
+    assert.ok(lines.length <= 15, `expected <= 15 lines on 35-row terminal, got ${lines.length}`);
 
     h.component.handleInput("\x1b");
     await h.resultPromise;
@@ -447,7 +484,7 @@ describe("ask_user multi-line Editor free-text mode (#1317)", () => {
 
   it("routes Ctrl+E to Editor line-end cursor movement when the question overflows", async () => {
     const longQuestion = Array.from({ length: 16 }, (_, i) => `Prompt line ${i + 1}`).join("\n");
-    const h = mountAskUser({ question: longQuestion }, { rows: 20 });
+    const h = mountAskUser({ question: longQuestion }, { rows: 35 });
     h.component.render(60);
 
     for (const ch of "hello world") h.component.handleInput(ch);
@@ -456,7 +493,7 @@ describe("ask_user multi-line Editor free-text mode (#1317)", () => {
     h.component.handleInput("!");
 
     const frame = h.component.render(60).join("\n");
-    assert.match(frame, /lines 1–6 of 16/);
+    assert.match(frame, /lines 1–4 of 16/);
     assert.doesNotMatch(frame, /\(expanded\)/);
 
     h.component.handleInput("\r");
@@ -478,17 +515,210 @@ describe("ask_user multi-line Editor free-text mode (#1317)", () => {
     h.component.handleInput("\x1b[5~");
     h.component.handleInput("*");
     const afterPgUp = h.component.render(60).join("\n");
-    assert.match(afterPgUp, /lines 1–6 of 16/);
+    assert.match(afterPgUp, /lines 1–3 of 16/);
 
     // PageDown moves cursor back down 6 lines to L8 (index 7) without scrolling the question
     h.component.handleInput("\x1b[6~");
     h.component.handleInput("#");
     const afterPgDn = h.component.render(60).join("\n");
-    assert.match(afterPgDn, /lines 1–6 of 16/);
+    assert.match(afterPgDn, /lines 1–3 of 16/);
 
     h.component.handleInput("\r");
     const res = await h.resultPromise;
     assert.equal(res.content[0].text, "L1\nL2*\nL3\nL4\nL5\nL6\nL7\nL8#");
+  });
+});
+
+describe("ask_user chat-peek minimize toggle (#1317)", () => {
+  it("shows the peek shortcut in the select help footer", async () => {
+    const h = mountAskUser({ question: "Deploy?", options: ["Yes", "No"] }, { rows: 24 });
+    const frame = h.component.render(80).join("\n");
+    assert.match(frame, /tab peek chat/);
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("shows the peek shortcut in the free-text input footer", async () => {
+    const h = mountAskUser({ question: "Notes?" }, { rows: 24 });
+    const frame = h.component.render(80).join("\n");
+    assert.match(frame, /alt\+p peek chat/);
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("collapses select mode to a 1-line paused bar on Tab", async () => {
+    const h = mountAskUser({ question: "Deploy?", options: ["Yes", "No"] }, { rows: 24 });
+    assert.ok(h.component.render(80).length > 1);
+
+    h.component.handleInput("\t");
+    const minimizedLines = h.component.render(80);
+    assert.equal(minimizedLines.length, 1);
+    assert.match(
+      minimizedLines[0],
+      /◷ ask_user paused — press Tab \(or Alt\+P\) to resume answering · Esc cancel/,
+    );
+
+    // Narrow width still truncates to a single line
+    assert.equal(h.component.render(32).length, 1);
+
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("restores select mode from minimized state while preserving highlighted selection", async () => {
+    const h = mountAskUser(
+      { question: "Pick env", options: ["Alpha", "Beta", "Gamma"] },
+      { rows: 24 },
+    );
+
+    h.component.handleInput("\x1b[B"); // highlight Beta
+    h.component.handleInput("\t"); // minimize
+    assert.equal(h.component.render(80).length, 1);
+
+    // Keys other than toggle/cancel are ignored while minimized
+    h.component.handleInput("\x1b[B");
+    h.component.handleInput("\r");
+    assert.equal(h.component.render(80).length, 1);
+
+    h.component.handleInput("\t"); // restore
+    h.component.handleInput("\r"); // submit preserved selection
+    const res = await h.resultPromise;
+    assert.equal(res.content[0].text, "Beta");
+  });
+
+  it("restores select mode from minimized state while preserving active filter query", async () => {
+    const h = mountAskUser(
+      { question: "Pick env", options: ["Alpha", "Beta", "Gamma"] },
+      { rows: 24 },
+    );
+
+    h.component.handleInput("/");
+    h.component.handleInput("G");
+    h.component.handleInput("a");
+    h.component.handleInput("m");
+
+    h.component.handleInput("\t"); // minimize
+    assert.equal(h.component.render(80).length, 1);
+
+    h.component.handleInput("\x1bp"); // Alt+P restores
+    const restored = h.component.render(80).join("\n");
+    assert.match(restored, /type to filter/);
+    assert.match(restored, /Gamma/);
+    assert.doesNotMatch(restored, /Alpha/);
+
+    h.component.handleInput("\r");
+    const res = await h.resultPromise;
+    assert.equal(res.content[0].text, "Gamma");
+  });
+
+  it("keeps Tab free for editing in free-text input mode", async () => {
+    const h = mountAskUser({ question: "Explain?" }, { rows: 24 });
+    for (const ch of "draft") h.component.handleInput(ch);
+
+    h.component.handleInput("\t");
+    assert.ok(h.component.render(80).length > 1);
+
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("collapses input mode on Alt+P to a 1-line paused bar", async () => {
+    const h = mountAskUser({ question: "Explain?" }, { rows: 24 });
+    for (const ch of "draft answer") h.component.handleInput(ch);
+
+    h.component.handleInput("\x1bp");
+    const minimizedLines = h.component.render(80);
+    assert.equal(minimizedLines.length, 1);
+    assert.match(minimizedLines[0], /◷ ask_user paused/);
+
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("restores input mode from minimized state with draft text intact", async () => {
+    const h = mountAskUser({ question: "Explain?" }, { rows: 24 });
+    for (const ch of "draft answer") h.component.handleInput(ch);
+
+    h.component.handleInput("\x1bp");
+    assert.equal(h.component.render(80).length, 1);
+
+    h.component.handleInput("\t");
+    for (const ch of "!") h.component.handleInput(ch);
+    h.component.handleInput("\r");
+    const res = await h.resultPromise;
+    assert.equal(res.content[0].text, "draft answer!");
+  });
+
+  it("cancels the prompt on Esc while minimized", async () => {
+    const h = mountAskUser({ question: "Deploy?", options: ["Yes", "No"] }, { rows: 24 });
+    h.component.handleInput("\t");
+    assert.equal(h.component.render(80).length, 1);
+
+    h.component.handleInput("\x1b");
+    const res = await h.resultPromise;
+    assert.equal(res.isError, true);
+    assert.equal(res.terminate, true);
+    assert.match(res.content[0].text, /User cancelled/);
+  });
+
+  it("cancels select mode with isError on Kitty Esc", async () => {
+    const h = mountAskUser({ question: "Deploy?", options: ["Yes", "No"] }, { rows: 24 });
+    h.component.handleInput("\x1b[27u");
+    const res = await h.resultPromise;
+    assert.equal(res.isError, true);
+    assert.equal(res.terminate, true);
+    assert.match(res.content[0].text, /User cancelled/);
+    assert.doesNotMatch(res.content[0].text, /^Yes$/);
+  });
+
+  it("cancels select mode with isError on Kitty Esc when filter is always shown", async () => {
+    const options = ["One", "Two", "Three", "Four", "Five", "Six"];
+    const h = mountAskUser({ question: "Pick?", options }, { rows: 24 });
+    h.component.handleInput("\x1b[27u");
+    const res = await h.resultPromise;
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /User cancelled/);
+  });
+
+  it("cancels free-text-only mode with isError on Kitty Esc", async () => {
+    const h = mountAskUser({ question: "Notes?" }, { rows: 24 });
+    h.component.handleInput("\x1b[27u");
+    const res = await h.resultPromise;
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /User cancelled/);
+  });
+
+  it("cancels minimized prompt with isError on Kitty Esc", async () => {
+    const h = mountAskUser({ question: "Deploy?", options: ["Yes", "No"] }, { rows: 24 });
+    h.component.handleInput("\t");
+    h.component.handleInput("\x1b[27u");
+    const res = await h.resultPromise;
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /User cancelled/);
+  });
+
+  it("cancels prompt with isError on Ctrl+C", async () => {
+    const h = mountAskUser({ question: "Deploy?", options: ["Yes", "No"] }, { rows: 24 });
+    h.component.handleInput("\x03");
+    const res = await h.resultPromise;
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /User cancelled/);
+  });
+
+  it("updates the highlighted option in rendered output on arrow down", async () => {
+    const h = mountAskUser({ question: "Pick env", options: ["Alpha", "Beta", "Gamma"] }, { rows: 24 });
+    const before = h.component.render(60).join("\n");
+    assert.match(before, /→ Alpha/);
+    assert.doesNotMatch(before, /→ Beta/);
+
+    h.component.handleInput("\x1b[B");
+    const after = h.component.render(60).join("\n");
+    assert.match(after, /→ Beta/);
+    assert.doesNotMatch(after, /→ Alpha/);
+
+    h.component.handleInput("\r");
+    const res = await h.resultPromise;
+    assert.equal(res.content[0].text, "Beta");
   });
 });
 
