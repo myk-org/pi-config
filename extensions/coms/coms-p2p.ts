@@ -710,7 +710,6 @@ export default function (pi: ExtensionAPI) {
 	const peerCards: Map<string, AgentCard & { staleCount: number }> = new Map();
 	let welcomeShown = false;
 	const knownPeerSessions: Map<string, string> = new Map(); // session_id → name
-	const accumulatedResponses: Map<string, string[]> = new Map();
 	const pendingReplies: Map<string, PendingReply> = new Map();
 	/** Track pending (unresponded) outbound msg_ids per target name. */
 	const pendingOutbound: Map<string, Set<string>> = new Map();
@@ -1900,7 +1899,6 @@ export default function (pi: ExtensionAPI) {
 		peerCards.clear();
 		welcomeShown = false;
 		knownPeerSessions.clear();
-		accumulatedResponses.clear();
 
 		// 1. Resolve identity from CLI flags > frontmatter > defaults.
 		const flags = readCliFlags(pi);
@@ -3958,7 +3956,6 @@ Do not respond to this message.`;
 			comsSendCalledThisTurn.clear();
 			if (sentDirectlyToSender) {
 				log.info("agent_end_skip_autocapture", inbound.msg_id, "coms_send called this turn", "sender", inbound.sender_name);
-				accumulatedResponses.delete(inbound.sender_session);
 				inbound.fulfilled = true;
 				inboundQueue.delete(inbound.msg_id);
 				const bundled = bundledInbounds;
@@ -3981,40 +3978,9 @@ Do not respond to this message.`;
 				}
 			}
 
-			// Check if sender has more pending messages — accumulate response if so
 			const bundledIds = new Set(bundledInbounds.map(bi => bi.msg_id));
-			const morePending = [...inboundQueue.values()].some(i =>
-				!i.fulfilled && i.sender_session === inbound.sender_session && i.msg_id !== inbound.msg_id
-				&& !bundledIds.has(i.msg_id)
-			);
 
-			if (morePending) {
-				// Accumulate response, send "bundled" envelopes so callers never hang pending,
-				// and let FIFO drain continue with the next message(s) from the same sender (#1226).
-				if (!accumulatedResponses.has(inbound.sender_session)) {
-					accumulatedResponses.set(inbound.sender_session, []);
-				}
-				accumulatedResponses.get(inbound.sender_session)!.push(lastAssistantText);
-				log.debug("agent_end_accumulate", inbound.msg_id, "from", inbound.sender_name, "accumulated", accumulatedResponses.get(inbound.sender_session)!.length);
-
-				const bundled = bundledInbounds;
-				bundledInbounds = [];
-				fulfillBundledInbounds([inbound, ...bundled], ident);
-
-				maybeRefreshWidget();
-
-				await drainNextInbound({ bundle: true, onFail: "reset", streaming: opts.streaming, ctx }, gen);
-				return;
-			}
-
-			// No more pending from this sender — build combined response
-			const accumulated = accumulatedResponses.get(inbound.sender_session) ?? [];
-			accumulated.push(lastAssistantText);
-			accumulatedResponses.delete(inbound.sender_session);
-			const combinedPayload = accumulated.length > 1 ? accumulated.join("\n\n---\n\n") : accumulated[0] || lastAssistantText;
-			log.debug("agent_end_combined_response", inbound.msg_id, "parts", accumulated.length);
-
-			let payload: any = combinedPayload;
+			let payload: any = lastAssistantText;
 			let error: string | null = null;
 			if (inbound.response_schema && typeof inbound.response_schema === "object") {
 				try {
@@ -4519,7 +4485,6 @@ Do not respond to this message.`;
 			}
 		}
 		inboundQueue.clear();
-		accumulatedResponses.clear();
 		comsSendCalledThisTurn.clear();
 		bundledInbounds = [];
 		currentInbound = null;

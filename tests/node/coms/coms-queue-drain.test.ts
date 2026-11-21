@@ -890,7 +890,7 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		assert.equal(readRegistry(receiver).busy, false);
 	});
 
-	it("resolves accumulated same-sender inbounds with bundled envelopes during multi-message FIFO drain", async () => {
+	it("delivers each same-sender inbound response directly during multi-message FIFO drain", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const sender = await startPeer({ name: "sender", sessionId: "sac-s", project: "pac-1226", cwd: workspace, comsDir });
 		const receiver = await startPeer({ name: "receiver", sessionId: "sac-r", project: "pac-1226", cwd: workspace, comsDir });
@@ -921,19 +921,19 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		await emitTurnEnd(receiver, { text: "P1-BASE draft", stopReason: "stop", toolResults: [] });
 		assert.equal((await sender.tools.get("coms_get").execute("g1-pre", { msg_id: m1 })).details.status, "pending");
 
-		// Deliver steer, then finalize m1: morePending accumulates m1's reply, resolves m1 as "bundled",
-		// and drains [m2, m3] together as a bundle.
+		// Deliver steer, then finalize m1: m1 receives its own response immediately while [m2, m3] drain bundled.
 		await receiver.handlers.get("message_start")!({ message: { role: "custom", ...steerMsg } });
 		await emitTurnEnd(receiver, { text: "P1-BASE STEER-OK", stopReason: "stop", toolResults: [] });
 
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-wait", { msg_id: m1 })).details.status === "complete");
 		const g1 = await sender.tools.get("coms_get").execute("g1-done", { msg_id: m1 });
-		assert.equal(g1.details.error, "bundled", "accumulated primary inbound m1 must resolve with error:'bundled' instead of hanging pending");
+		assert.equal(g1.details.error, null);
+		assert.equal(g1.details.response, "P1-BASE STEER-OK");
 
 		const bundledMsg = await deliverInbound(receiver, m2);
 		assert.deepEqual(bundledMsg.details.bundled_msg_ids, [m2, m3]);
 
-		// Finalize [m2, m3]: m2 gets the combined reply, m3 gets "bundled", queue drains to 0.
+		// Finalize [m2, m3]: m2 gets its own reply, m3 gets "bundled", queue drains to 0.
 		await emitTurnEnd(receiver, { text: "OVERRIDE-P3-OK", stopReason: "stop", toolResults: [] });
 		await waitUntil(async () => {
 			const g2 = await sender.tools.get("coms_get").execute("g2-wait", { msg_id: m2 });
@@ -944,13 +944,13 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		const g2 = await sender.tools.get("coms_get").execute("g2-done", { msg_id: m2 });
 		const g3 = await sender.tools.get("coms_get").execute("g3-done", { msg_id: m3 });
 		assert.equal(g2.details.error, null);
-		assert.equal(g2.details.response, "P1-BASE STEER-OK\n\n---\n\nOVERRIDE-P3-OK");
+		assert.equal(g2.details.response, "OVERRIDE-P3-OK");
 		assert.equal(g3.details.error, "bundled");
 		assert.equal(readRegistry(receiver).busy, false);
 		assert.equal(readRegistry(receiver).queue_depth, 0);
 	});
 
-	it("clears accumulated responses when a follow-up turn replies directly via coms_send", async () => {
+	it("preserves earlier same-sender reply when a follow-up turn replies directly via coms_send", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const sender = await startPeer({ name: "sender", sessionId: "sad-s2", project: "pad-1226b", cwd: workspace, comsDir });
 		const receiver = await startPeer({ name: "receiver", sessionId: "sad-r2", project: "pad-1226b", cwd: workspace, comsDir });
@@ -963,10 +963,12 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		const r2 = await sender.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "second" });
 		const m2 = r2.details.msg_id as string;
 
-		// Finalize m1 -> accumulates "reply-1", resolves m1 as "bundled", drains m2.
+		// Finalize m1 -> sender receives m1's reply directly (never lost if m2 sends directly), then drains m2.
 		await emitTurnEnd(receiver, { text: "reply-1", stopReason: "stop", toolResults: [] });
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-wait", { msg_id: m1 })).details.status === "complete");
-		assert.equal((await sender.tools.get("coms_get").execute("g1-done", { msg_id: m1 })).details.error, "bundled");
+		const g1 = await sender.tools.get("coms_get").execute("g1-done", { msg_id: m1 });
+		assert.equal(g1.details.error, null);
+		assert.equal(g1.details.response, "reply-1");
 
 		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m2));
 		const m2Msg = [...receiver.messages].reverse().find((m) => m?.details?.msg_id === m2);
@@ -985,7 +987,7 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		await emitTurnEnd(receiver, { text: "direct-turn-text", stopReason: "stop", toolResults: [] });
 		assert.equal(readRegistry(receiver).busy, false);
 
-		// A fresh unrelated m3 must receive only its own reply without stale "reply-1" prepended.
+		// A fresh unrelated m3 receives only its own reply without stale earlier text.
 		const r3 = await sender.tools.get("coms_send").execute("s3", { target: "receiver", prompt: "third" });
 		const m3 = r3.details.msg_id as string;
 		await deliverInbound(receiver, m3);
