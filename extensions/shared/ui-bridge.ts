@@ -185,39 +185,40 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
           noMatch: (t: string) => theme.fg("warning", t),
         };
         const searchInput = new Input();
-        let selectList = new SelectList(allItems, Math.min(allItems.length + 1, 15), selectTheme);
         const makeSelectList = (items: SelectItem[]) => {
           const sl = new SelectList(items, Math.min(items.length + 1, 15), selectTheme);
           sl.onSelect = (item: SelectItem) => { if (item.value !== "__no_match__") resolve(item.value); };
           sl.onCancel = () => resolve(undefined);
           return sl;
         };
-        selectList = makeSelectList(allItems);
+        let selectList = makeSelectList(allItems);
+        let lastQuery = "";
         searchInput.onSubmit = () => {
           const selected = selectList.getSelectedItem();
           if (selected && selected.value !== "__no_match__") resolve(selected.value);
         };
         searchInput.onEscape = () => resolve(undefined);
+        const header = new Text(theme.fg("accent", title) + (message ? theme.fg("muted", `\n${message}`) : ""), 1, 0);
         const help = new Text(theme.fg("dim", "type to filter • ↑↓ navigate • enter select • esc cancel"), 1, 0);
         const topBorder = new DynamicBorder((s: string) => theme.fg("accent", s));
         const bottomBorder = new DynamicBorder((s: string) => theme.fg("accent", s));
-        // Rebuilt on every render — selectList is replaced when filtering (ask_user pattern)
-        const buildContainer = () => {
-          const c = new Container();
-          c.addChild(topBorder);
-          c.addChild(new Text(theme.fg("accent", title) + (message ? theme.fg("muted", `\n${message}`) : ""), 1, 0));
-          c.addChild(searchInput);
-          c.addChild(selectList);
-          c.addChild(help);
-          c.addChild(bottomBorder);
-          return c;
+        const container = new Container();
+        const syncContainer = () => {
+          container.clear();
+          container.addChild(topBorder);
+          container.addChild(header);
+          container.addChild(searchInput);
+          container.addChild(selectList);
+          container.addChild(help);
+          container.addChild(bottomBorder);
+          container.invalidate();
         };
-        let container = buildContainer();
+        syncContainer();
         let focused = false;
         return {
           set focused(value: boolean) { focused = value; searchInput.focused = value; },
           get focused(): boolean { return focused; },
-          render: (w: number) => { container = buildContainer(); return container.render(w); },
+          render: (w: number) => container.render(w),
           invalidate: () => container.invalidate(),
           handleInput: (data: string) => {
             if (resolved) return;
@@ -228,11 +229,15 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
             } else {
               searchInput.handleInput(data);
               const query = searchInput.getValue();
-              if (query) {
-                const filtered = fuzzyFilter(allItems, query, (item) => item.label);
-                selectList = makeSelectList(filtered.length > 0 ? filtered : [{ value: "__no_match__", label: "No matches", description: "clear search to see all" }]);
-              } else {
-                selectList = makeSelectList(allItems);
+              if (query !== lastQuery) {
+                lastQuery = query;
+                if (query) {
+                  const filtered = fuzzyFilter(allItems, query, (item) => item.label);
+                  selectList = makeSelectList(filtered.length > 0 ? filtered : [{ value: "__no_match__", label: "No matches", description: "clear search to see all" }]);
+                } else {
+                  selectList = makeSelectList(allItems);
+                }
+                syncContainer();
               }
             }
             tui.requestRender();
