@@ -147,14 +147,17 @@ describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
 		const sender = await startPeer("sender", "fast-sender");
 		const receiver = await startPeer("receiver", "fast-receiver");
-		(receiver as any).sendMessage = () => {
-			queueMicrotask(() => receiver.handlers.get("agent_end")(
-				{ messages: [{ role: "assistant", content: [{ type: "text", text: "fast" }] }] },
-				{
-					cwd: workspace, hasUI: false, ui: { notify: () => {} },
-					sessionManager: { getBranch: () => [{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "fast" }] } }] },
-				},
-			));
+		(receiver as any).sendMessage = (message: any) => {
+			queueMicrotask(async () => {
+				await receiver.handlers.get("message_start")?.({ message: { role: "custom", ...message } });
+				await receiver.handlers.get("agent_end")(
+					{ messages: [{ role: "assistant", content: [{ type: "text", text: "fast" }] }] },
+					{
+						cwd: workspace, hasUI: false, ui: { notify: () => {} },
+						sessionManager: { getBranch: () => [{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "fast" }] } }] },
+					},
+				);
+			});
 		};
 		const result = await sender.tools.get("coms_send").execute("fast-send", {
 			target: "receiver", prompt: "reply now", tasks: [{ subject: "task", description: "task" }],

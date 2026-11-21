@@ -254,6 +254,8 @@ interface InboundContext {
 	fulfilled: boolean;
 	/** How many times this inbound was re-injected due to mixed-turn conflict */
 	mixedTurnRetries?: number;
+	/** How many times this inbound was re-injected after an abort/error before delivery (#1226) */
+	undeliveredRetries?: number;
 	/** #924 §4: this inbound was sent with priority (jumps the queue). */
 	priority?: boolean;
 	/** #924 §1: steers accepted into this inbound's turn so far (cap guard). */
@@ -741,8 +743,35 @@ export default function (pi: ExtensionAPI) {
 	let displayProject: string | null = null;
 	let currentCtx: ExtensionContext | null = null;
 	let currentInbound: InboundContext | null = null;
+	/** True once Pi emits message_start for currentInbound (#1226). */
+	let inboundDelivered = false;
+	/** Re-entrancy guard while finalizeCurrentInbound is awaiting I/O (#1226). */
+	let finalizingInbound = false;
 	let bundledInbounds: InboundContext[] = [];
 	let processingInbound = false;
+
+	function extractAssistantText(message: any): string {
+		if (!message || message.role !== "assistant") return "";
+		if (typeof message.content === "string") return message.content;
+		if (Array.isArray(message.content)) {
+			return message.content
+				.filter((b: any) => b && b.type === "text" && typeof b.text === "string")
+				.map((b: any) => b.text)
+				.join("\n");
+		}
+		return "";
+	}
+
+	function isAutoCaptureReplyBlocked(targetSession: string): boolean {
+		return (
+			processingInbound
+			&& inboundDelivered
+			&& !userMessageDuringInbound
+			&& currentInbound !== null
+			&& !currentInbound.fulfilled
+			&& targetSession === currentInbound.sender_session
+		);
+	}
 
 	/** Busy state is peer-visible (#924 §3): rewrite the registry entry the
 	 *  moment processingInbound flips so peers' ⚙busy indicators track the
@@ -912,14 +941,19 @@ export default function (pi: ExtensionAPI) {
 		const allPending = [...inboundQueue.values()].filter((i) => !i.fulfilled);
 		if (allPending.length === 0) {
 			if (opts.bundle) bundledInbounds = [];
+			currentInbound = null;
+			inboundDelivered = false;
 			setProcessingInbound(false);
 			return;
 		}
 		if (!opts.bundle) {
 			const next = allPending[0];
 			currentInbound = next;
+			inboundDelivered = false;
 			try {
 				injectInbound(next);
+				writeLiveRegistry();
+				maybeRefreshWidget();
 			} catch (drainErr: any) {
 				if (opts.onFail === "fail_orphans") {
 					log.error("fifo_drain_failed", next.msg_id, drainErr?.message);
@@ -941,6 +975,7 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 				currentInbound = null;
+				inboundDelivered = false;
 				setProcessingInbound(false);
 			}
 			return;
@@ -950,10 +985,13 @@ export default function (pi: ExtensionAPI) {
 		if (senderPending.length === 1) {
 			const next = senderPending[0];
 			currentInbound = next;
+			inboundDelivered = false;
 			bundledInbounds = [];
 			log.debug("agent_end_fifo_next", next.msg_id, "from", next.sender_name);
 			try {
 				injectInbound(next);
+				writeLiveRegistry();
+				maybeRefreshWidget();
 			} catch (err: any) {
 				if (opts.onFail === "drop") {
 					log.error("fifo_drain_failed", next.msg_id, err?.message);
@@ -961,6 +999,7 @@ export default function (pi: ExtensionAPI) {
 					inboundQueue.delete(next.msg_id);
 				}
 				currentInbound = null;
+				inboundDelivered = false;
 				bundledInbounds = [];
 				setProcessingInbound(false);
 			}
@@ -969,11 +1008,14 @@ export default function (pi: ExtensionAPI) {
 
 		const primary = senderPending[0];
 		currentInbound = primary;
+		inboundDelivered = false;
 		bundledInbounds = senderPending.slice(1);
 		const bundle = buildBundledContent(primary.sender_name, senderPending);
 		log.debug("fifo_bundle", senderPending.length, "from", primary.sender_name, "origins", senderPending.map((ib) => ib.origin ?? "peer").join(","));
 		try {
 			injectInbound(primary, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id) } });
+			writeLiveRegistry();
+			maybeRefreshWidget();
 		} catch (err: any) {
 			if (opts.onFail === "drop") {
 				log.error("fifo_bundle_failed", primary.msg_id, err?.message);
@@ -983,6 +1025,7 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 			currentInbound = null;
+			inboundDelivered = false;
 			bundledInbounds = [];
 			setProcessingInbound(false);
 		}
@@ -1202,8 +1245,9 @@ export default function (pi: ExtensionAPI) {
 		log.debug("recovery_inbound_enqueued", { msgId: env.msg_id, sender: env.sender_name, state: "queued" });
 		maybeRefreshWidget();
 
-		// 3. If already processing another inbound, just queue — agent_end will drain FIFO.
+		// 3. If already processing another inbound, just queue — turn_end/agent_end will drain FIFO.
 		if (processingInbound) {
+			writeLiveRegistry();
 			ackOk(socket, env.msg_id);
 
 			log.debug("inbound_queued", env.msg_id, "from", env.sender_name, "depth", getPendingInboundCount());
@@ -1212,9 +1256,10 @@ export default function (pi: ExtensionAPI) {
 
 		// 4. Not busy — inject immediately.
 		// If the agent is already running (user turn), this inbound arrives
-		// mid-turn via followUp — mark as mixed turn for agent_end (#731).
+		// mid-turn via followUp — mark as mixed turn until message_start delivers it (#731, #1226).
 		inboundSetDuringUserTurn = agentRunningUserTurn;
 		currentInbound = inbound;
+		inboundDelivered = false;
 		setProcessingInbound(true);
 		try {
 			injectInbound(inbound);
@@ -1224,6 +1269,7 @@ export default function (pi: ExtensionAPI) {
 			inboundQueue.delete(env.msg_id);
 			maybeRefreshWidget();
 			currentInbound = null;
+			inboundDelivered = false;
 			setProcessingInbound(false);
 			nack(socket, env.msg_id, "internal error");
 			return;
@@ -2855,8 +2901,8 @@ Do not respond to this message.`;
 				throw new Error("coms not initialised");
 			}
 			const target = await resolveLiveTarget(params.target);
-			// Block coms_send to the sender when processing their inbound — auto-capture handles the reply
-			if (processingInbound && currentInbound && !currentInbound.fulfilled && target.coms_session_id === currentInbound.sender_session) {
+			// Block coms_send to the sender when processing their delivered, non-interrupted inbound — auto-capture handles the reply (#1226)
+			if (isAutoCaptureReplyBlocked(target.coms_session_id)) {
 				log.info("coms_send_blocked", "to", target.name, "auto-capture will reply");
 				return {
 					content: [{ type: "text" as const, text: `coms_send blocked: you are responding to ${target.name}'s inbound message. Your assistant text will be auto-captured and sent back. Do NOT use coms_send to reply.` }],
@@ -2972,7 +3018,7 @@ Do not respond to this message.`;
 			}
 			// Same-sender inbound block applies per target: auto-capture replies.
 			await Promise.allSettled([...resolved.values()].map(async (target) => {
-				if (processingInbound && currentInbound && !currentInbound.fulfilled && target.coms_session_id === currentInbound.sender_session) {
+				if (isAutoCaptureReplyBlocked(target.coms_session_id)) {
 					sendResults.push({ target: target.name, status: "error", error: "blocked: auto-capture will reply to this peer" });
 					return;
 				}
@@ -3652,22 +3698,283 @@ Do not respond to this message.`;
 		log.debug("agent_start", "userTurn", agentRunningUserTurn, "processingInbound", processingInbound, "currentInbound", currentInbound?.msg_id ?? "null");
 	});
 
-	// ━━ message_start: detect a real user message interrupting an inbound turn (#741) ━━
-	// A message_start with role "user" while processingInbound means a genuine user
-	// message landed during a coms inbound turn — auto-capturing that assistant text
-	// would leak user-directed content to the peer. Flag it for mixed-turn handling.
+	// ━━ message_start: track inbound delivery boundary & detect user interrupts (#741, #1226) ━━
+	// When Pi actually pulls currentInbound into context (role "custom" with matching msg_id),
+	// flip inboundDelivered = true and reset per-inbound turn flags. Only flag a user message
+	// as interrupting the inbound once that inbound has actually been delivered.
 	pi.on("message_start" as any, (event: any) => {
 		if (shuttingDown || !identity) return;
-		if (isUserMessageDuringInbound(processingInbound, event?.message?.role)) {
+		const msg = event?.message;
+		if (currentInbound && msg?.role === "custom" && msg?.details?.msg_id === currentInbound.msg_id) {
+			inboundDelivered = true;
+			inboundSetDuringUserTurn = false;
+			userMessageDuringInbound = false;
+			agentRunningUserTurn = false;
+			comsSendCalledThisTurn.clear();
+			log.debug("inbound_delivered", currentInbound.msg_id, "from", currentInbound.sender_name);
+			return;
+		}
+		if (isUserMessageDuringInbound(processingInbound && inboundDelivered, msg?.role)) {
 			userMessageDuringInbound = true;
 			log.info("user_message_during_inbound", currentInbound?.msg_id ?? "null");
 		}
 	});
 
-	// ━━ agent_end: capture turn output and dispatch response back ━━━━━━━━
+	// ━━ Inbound finalization: capture reply, dispatch response, drain FIFO (#1226) ━━
+	async function finalizeCurrentInbound(ctx: ExtensionContext, assistantMessage?: any): Promise<void> {
+		if (!currentInbound || !identity || finalizingInbound) return;
+		finalizingInbound = true;
+		try {
+			const inbound = currentInbound;
+			currentInbound = null;
+			inboundDelivered = false;
+			agentRunningUserTurn = false;
 
+			// ── Mixed-turn detection (#731, #741, #1226) ─────────────────────
+			// Evaluated BEFORE comsSendCalledThisTurn so a coms_send during a
+			// user-interrupted turn cannot silently drop the peer's response envelope.
+			const hasMixedTurn = computeMixedTurn(inboundSetDuringUserTurn, userMessageDuringInbound);
+			if (userMessageDuringInbound && !inboundSetDuringUserTurn) {
+				log.info("mixed_turn_user_interrupt", inbound.msg_id);
+			}
+			inboundSetDuringUserTurn = false;
+			userMessageDuringInbound = false;
+
+			const MAX_MIXED_RETRIES = 2;
+			if (hasMixedTurn) {
+				comsSendCalledThisTurn.clear();
+				const retries = inbound.mixedTurnRetries ?? 0;
+				if (retries < MAX_MIXED_RETRIES) {
+					// Re-inject the inbound for a clean dedicated turn.
+					inbound.mixedTurnRetries = retries + 1;
+					log.info("mixed_turn_reinject", inbound.msg_id, "retry", inbound.mixedTurnRetries, "from", inbound.sender_name);
+					try {
+						injectInbound(inbound, {
+							header: `[NOTE: your previous reply was not captured because a user message arrived in the same turn. ` +
+								`This is a re-injection — please reply to this peer message now.]`,
+						});
+					} catch (err: any) {
+						// Re-injection failed — send error response to peer, then FIFO drain remaining
+						log.error("mixed_turn_reinject_failed", inbound.msg_id, err?.message);
+						inbound.fulfilled = true;
+						inboundQueue.delete(inbound.msg_id);
+						bundledInbounds = [];
+						maybeRefreshWidget();
+						currentInbound = null;
+						inboundDelivered = false;
+						const queuedIds: string[] = [];
+						for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
+						try {
+							await sendEnvelope(inbound.sender_endpoint, {
+								type: "response", msg_id: inbound.msg_id,
+								sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+								hops: 0, timestamp: nowIso(),
+								response: null, error: "mixed_turn_conflict",
+								queued_msg_ids: queuedIds,
+							});
+						} catch { /* best-effort */ }
+						await drainNextInbound({ bundle: false, onFail: "fail_orphans" });
+						return;
+					}
+					// Re-injection succeeded — restore currentInbound (undelivered until message_start)
+					currentInbound = inbound;
+					inboundDelivered = false;
+					return;
+				}
+
+				// Max retries exhausted — send error response to peer.
+				log.warn("mixed_turn_exhausted", inbound.msg_id, "from", inbound.sender_name, "retries", retries);
+				const queuedIds: string[] = [];
+				for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
+				try {
+					await sendEnvelope(inbound.sender_endpoint, {
+						type: "response", msg_id: inbound.msg_id,
+						sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+						hops: 0, timestamp: nowIso(),
+						response: null, error: "mixed_turn_conflict",
+						queued_msg_ids: queuedIds,
+					});
+				} catch { /* best-effort */ }
+				inbound.fulfilled = true;
+				inboundQueue.delete(inbound.msg_id);
+				bundledInbounds = [];
+				maybeRefreshWidget();
+				currentInbound = null;
+				inboundDelivered = false;
+
+				await drainNextInbound({ bundle: false, onFail: "fail_orphans" });
+				return;
+			}
+			// ── End mixed-turn detection ─────────────────────────────────────
+
+			// Skip auto-capture if LLM already replied via coms_send to the same peer
+			const sentDirectlyToSender = comsSendCalledThisTurn.has(inbound.sender_session);
+			comsSendCalledThisTurn.clear();
+			if (sentDirectlyToSender) {
+				log.info("agent_end_skip_autocapture", inbound.msg_id, "coms_send called this turn", "sender", inbound.sender_name);
+				inbound.fulfilled = true;
+				inboundQueue.delete(inbound.msg_id);
+				for (const bi of bundledInbounds) {
+					bi.fulfilled = true;
+					inboundQueue.delete(bi.msg_id);
+				}
+				bundledInbounds = [];
+				maybeRefreshWidget();
+				await drainNextInbound({ bundle: false, onFail: "reset" });
+				return;
+			}
+
+			// Extract assistant text from turn_end's message, falling back to session branch walk for agent_end.
+			let lastAssistantText = "";
+			if (assistantMessage && assistantMessage.role === "assistant") {
+				lastAssistantText = extractAssistantText(assistantMessage);
+			} else {
+				for (const entry of ctx?.sessionManager?.getBranch?.() ?? []) {
+					if (entry.type === "message" && entry.message.role === "assistant") {
+						lastAssistantText = extractAssistantText(entry.message);
+					}
+				}
+			}
+
+			// Check if sender has more pending messages — accumulate response if so
+			const bundledIds = new Set(bundledInbounds.map(bi => bi.msg_id));
+			const morePending = [...inboundQueue.values()].some(i =>
+				!i.fulfilled && i.sender_session === inbound.sender_session && i.msg_id !== inbound.msg_id
+				&& !bundledIds.has(i.msg_id)
+			);
+
+			if (morePending) {
+				// Accumulate response, fulfill silently, let FIFO drain continue with next from same sender
+				if (!accumulatedResponses.has(inbound.sender_session)) {
+					accumulatedResponses.set(inbound.sender_session, []);
+				}
+				accumulatedResponses.get(inbound.sender_session)!.push(lastAssistantText);
+				log.debug("agent_end_accumulate", inbound.msg_id, "from", inbound.sender_name, "accumulated", accumulatedResponses.get(inbound.sender_session)!.length);
+
+				inbound.fulfilled = true;
+				inboundQueue.delete(inbound.msg_id);
+
+				// Also fulfill bundled inbounds silently
+				for (const bi of bundledInbounds) {
+					bi.fulfilled = true;
+					inboundQueue.delete(bi.msg_id);
+				}
+				bundledInbounds = [];
+
+				maybeRefreshWidget();
+
+				await drainNextInbound({ bundle: true, onFail: "reset" });
+				return;
+			}
+
+			// No more pending from this sender — build combined response
+			const accumulated = accumulatedResponses.get(inbound.sender_session) ?? [];
+			accumulated.push(lastAssistantText);
+			accumulatedResponses.delete(inbound.sender_session);
+			const combinedPayload = accumulated.length > 1 ? accumulated.join("\n\n---\n\n") : accumulated[0] || lastAssistantText;
+			log.debug("agent_end_combined_response", inbound.msg_id, "parts", accumulated.length);
+
+			let payload: any = combinedPayload;
+			let error: string | null = null;
+			if (inbound.response_schema && typeof inbound.response_schema === "object") {
+				try {
+					payload = JSON.parse(lastAssistantText);
+				} catch {
+					error = "response not valid JSON";
+					payload = null;
+				}
+			}
+
+			// Use inline count instead of getPendingInboundCount() — `inbound` (local param)
+			// differs from `currentInbound` (module-scoped, already null at this point).
+			const queuedIds: string[] = [];
+			for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound && !bundledIds.has(i.msg_id)) queuedIds.push(i.msg_id);
+			const respEnv: ResponseEnvelope = {
+				type: "response",
+				msg_id: inbound.msg_id,
+				sender_session: identity.coms_session_id,
+				sender_endpoint: identity.endpoint,
+				hops: 0,
+				timestamp: nowIso(),
+				response: payload,
+				error,
+				queued_msg_ids: queuedIds,
+			};
+			// Compute your_pending at the last moment before send
+			respEnv.your_pending = getSenderPending(inbound.sender_session, inbound.msg_id).filter(p => !bundledIds.has(p.msg_id));
+
+			try {
+				await sendEnvelope(inbound.sender_endpoint, respEnv);
+				log.debug("outbound_response", inbound.msg_id, "error", error);
+				appendComsHistory({
+					direction: "response_out",
+					msg_id: inbound.msg_id,
+					peer: inbound.sender_name,
+					preview: truncatePreview(typeof payload === "string" ? payload : JSON.stringify(payload ?? "")),
+					status: error ? `error: ${error}` : "replied",
+					error: error,
+				});
+			} catch (e: any) {
+				log.error("outbound_response_failed", inbound.msg_id, e?.message);
+			}
+
+			inbound.fulfilled = true;
+			inboundQueue.delete(inbound.msg_id);
+
+			// Fulfill bundled inbounds — fire-and-forget responses, don't block finalization
+			for (const bi of bundledInbounds) {
+				const biMsgId = bi.msg_id;
+				const biEndpoint = bi.sender_endpoint;
+				// Fire-and-forget — don't await, don't block
+				if (identity) {
+					sendEnvelope(biEndpoint, {
+						type: "response",
+						msg_id: biMsgId,
+						sender_session: identity.coms_session_id,
+						sender_endpoint: identity.endpoint,
+						hops: 0,
+						timestamp: nowIso(),
+						response: null,
+						error: "bundled",
+						queued_msg_ids: [],
+					}).catch(() => { /* best-effort */ });
+				}
+				bi.fulfilled = true;
+				inboundQueue.delete(bi.msg_id);
+			}
+			bundledInbounds = [];
+
+			maybeRefreshWidget();
+
+			await drainNextInbound({ bundle: true, onFail: "drop" });
+		} finally {
+			finalizingInbound = false;
+		}
+	}
+
+	// ━━ turn_end: finalize delivered inbound on zero-tool-call completion (#1226) ━━
+	// Prevents queued followUp messages (async-agent results, coms responses) from
+	// starving agent_end and wedging the inbound FIFO queue indefinitely.
+	pi.on("turn_end" as any, async (event: any, ctx: ExtensionContext) => {
+		if (shuttingDown || !identity || !currentInbound || !inboundDelivered || finalizingInbound) return;
+		const msg = event?.message;
+		if (msg && msg.role !== "assistant") return;
+		// Let agent_end handle aborted/errored turns (runLoop exits immediately after turn_end).
+		if (msg?.stopReason === "error" || msg?.stopReason === "aborted") return;
+		const toolResults = Array.isArray(event?.toolResults) ? event.toolResults : [];
+		const hasToolCalls = Array.isArray(msg?.content) && msg.content.some((b: any) => b && b.type === "toolCall");
+		if (toolResults.length > 0 || hasToolCalls) return;
+		log.info("turn_end_finalize", currentInbound.msg_id, "stopReason", msg?.stopReason ?? "unknown");
+		await finalizeCurrentInbound(ctx, msg);
+	});
+
+	// ━━ agent_end: safety net for delivered & aborted-before-delivery inbounds ━━
 	pi.on("agent_end", async (_event, ctx) => {
-		log.info("agent_end_enter", "currentInbound", currentInbound?.msg_id ?? "null", "identity", !!identity, "processingInbound", processingInbound);
+		log.info("agent_end_enter", "currentInbound", currentInbound?.msg_id ?? "null", "delivered", inboundDelivered, "identity", !!identity, "processingInbound", processingInbound);
+		if (finalizingInbound) {
+			log.debug("agent_end_skip_finalizing");
+			return;
+		}
 		if (!currentInbound || !identity) {
 			// Drain any orphaned inbounds — can't send responses without identity,
 			// but must clear the queue to prevent permanent buildup
@@ -3677,227 +3984,76 @@ Do not respond to this message.`;
 					inboundQueue.delete(id);
 				}
 				currentInbound = null;
+				bundledInbounds = [];
 			}
+			inboundDelivered = false;
 			agentRunningUserTurn = false;
 			inboundSetDuringUserTurn = false;
 			userMessageDuringInbound = false;
+			comsSendCalledThisTurn.clear();
 			setProcessingInbound(false);
 			log.debug("agent_end_early", "currentInbound", currentInbound?.msg_id ?? "null", "processingInbound", processingInbound);
 			return;
 		}
+
+		if (inboundDelivered) {
+			await finalizeCurrentInbound(ctx);
+			return;
+		}
+
+		// Run ended (aborted/errored) before Pi ever delivered currentInbound via message_start.
+		// Re-inject once (bounded) so the peer prompt is not lost, or fail with "aborted" and drain FIFO
+		// so processingInbound cannot stay stranded true at idle (#1226).
 		const inbound = currentInbound;
 		currentInbound = null;
+		inboundDelivered = false;
 		agentRunningUserTurn = false;
-
-		// Skip auto-capture if LLM already replied via coms_send to the same peer
-		if (comsSendCalledThisTurn.has(inbound.sender_session)) {
-			log.info("agent_end_skip_autocapture", inbound.msg_id, "coms_send called this turn", "sender", inbound.sender_name);
-			inbound.fulfilled = true;
-			inboundQueue.delete(inbound.msg_id);
-			maybeRefreshWidget();
-			await drainNextInbound({ bundle: false, onFail: "reset" });
-			return;
-		}
-
-		// ── Mixed-turn detection (#731) ──────────────────────────────────────
-		// If the inbound was set while the agent was running a user turn
-		// (not a coms followUp), the assistant's response is for the user.
-		// Re-inject the inbound for a dedicated turn.
-		const hasMixedTurn = computeMixedTurn(inboundSetDuringUserTurn, userMessageDuringInbound);
-		if (userMessageDuringInbound && !inboundSetDuringUserTurn) {
-			log.info("mixed_turn_user_interrupt", inbound.msg_id);
-		}
 		inboundSetDuringUserTurn = false;
 		userMessageDuringInbound = false;
+		comsSendCalledThisTurn.clear();
 
-		const MAX_MIXED_RETRIES = 2;
-		if (hasMixedTurn) {
-			const retries = inbound.mixedTurnRetries ?? 0;
-			if (retries < MAX_MIXED_RETRIES) {
-				// Re-inject the inbound for a clean dedicated turn.
-				inbound.mixedTurnRetries = retries + 1;
-				log.info("mixed_turn_reinject", inbound.msg_id, "retry", inbound.mixedTurnRetries, "from", inbound.sender_name);
-				try {
-					injectInbound(inbound, {
-						header: `[NOTE: your previous reply was not captured because a user message arrived in the same turn. ` +
-							`This is a re-injection — please reply to this peer message now.]`,
-					});
-				} catch (err: any) {
-					// Re-injection failed — send error response to peer, then FIFO drain remaining
-					log.error("mixed_turn_reinject_failed", inbound.msg_id, err?.message);
-					inbound.fulfilled = true;
-					inboundQueue.delete(inbound.msg_id);
-					maybeRefreshWidget();
-					currentInbound = null;
-					const queuedIds: string[] = [];
-					for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
-					try {
-						await sendEnvelope(inbound.sender_endpoint, {
-							type: "response", msg_id: inbound.msg_id,
-							sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
-							hops: 0, timestamp: nowIso(),
-							response: null, error: "mixed_turn_conflict",
-							queued_msg_ids: queuedIds,
-						});
-					} catch { /* best-effort */ }
-					await drainNextInbound({ bundle: false, onFail: "fail_orphans" });
-					return;
+		const MAX_UNDELIVERED_RETRIES = 1;
+		const retries = inbound.undeliveredRetries ?? 0;
+		if (retries < MAX_UNDELIVERED_RETRIES) {
+			inbound.undeliveredRetries = retries + 1;
+			log.warn("agent_end_undelivered_reinject", inbound.msg_id, "retry", inbound.undeliveredRetries, "from", inbound.sender_name);
+			try {
+				if (bundledInbounds.length > 0) {
+					const senderPending = [inbound, ...bundledInbounds];
+					const bundle = buildBundledContent(inbound.sender_name, senderPending);
+					injectInbound(inbound, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id) } });
+				} else {
+					injectInbound(inbound);
 				}
-				// Re-injection succeeded — restore currentInbound for next agent_end
 				currentInbound = inbound;
+				inboundDelivered = false;
 				return;
-			}
-
-			// Max retries exhausted — send error response to peer.
-			log.warn("mixed_turn_exhausted", inbound.msg_id, "from", inbound.sender_name, "retries", retries);
-			const queuedIds: string[] = [];
-			for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
-			try {
-				await sendEnvelope(inbound.sender_endpoint, {
-					type: "response", msg_id: inbound.msg_id,
-					sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
-					hops: 0, timestamp: nowIso(),
-					response: null, error: "mixed_turn_conflict",
-					queued_msg_ids: queuedIds,
-				});
-			} catch { /* best-effort */ }
-			inbound.fulfilled = true;
-			inboundQueue.delete(inbound.msg_id);
-			maybeRefreshWidget();
-			currentInbound = null;
-
-			await drainNextInbound({ bundle: false, onFail: "fail_orphans" });
-			return;
-		}
-		// ── End mixed-turn detection ─────────────────────────────────────────
-
-		// Walk the session branch for the most recent assistant message text.
-		let lastAssistantText = "";
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type === "message" && entry.message.role === "assistant") {
-				const m = entry.message as any;
-				if (typeof m.content === "string") {
-					lastAssistantText = m.content;
-				} else if (Array.isArray(m.content)) {
-					lastAssistantText = m.content
-						.filter((b: any) => b && b.type === "text")
-						.map((b: any) => b.text)
-						.join("\n");
-				}
+			} catch (err: any) {
+				log.error("agent_end_undelivered_reinject_failed", inbound.msg_id, err?.message);
 			}
 		}
 
-		// Check if sender has more pending messages — accumulate response if so
-		const bundledIds = new Set(bundledInbounds.map(bi => bi.msg_id));
-		const morePending = [...inboundQueue.values()].some(i =>
-			!i.fulfilled && i.sender_session === inbound.sender_session && i.msg_id !== inbound.msg_id
-			&& !bundledIds.has(i.msg_id)
-		);
-
-		if (morePending) {
-			// Accumulate response, fulfill silently, let FIFO drain continue with next from same sender
-			if (!accumulatedResponses.has(inbound.sender_session)) {
-				accumulatedResponses.set(inbound.sender_session, []);
-			}
-			accumulatedResponses.get(inbound.sender_session)!.push(lastAssistantText);
-			log.debug("agent_end_accumulate", inbound.msg_id, "from", inbound.sender_name, "accumulated", accumulatedResponses.get(inbound.sender_session)!.length);
-
-			inbound.fulfilled = true;
-			inboundQueue.delete(inbound.msg_id);
-
-			// Also fulfill bundled inbounds silently
-			for (const bi of bundledInbounds) {
-				bi.fulfilled = true;
-				inboundQueue.delete(bi.msg_id);
-			}
-			bundledInbounds = [];
-
-			maybeRefreshWidget();
-
-			await drainNextInbound({ bundle: true, onFail: "reset" });
-			return;
-		}
-
-		// No more pending from this sender — build combined response
-		const accumulated = accumulatedResponses.get(inbound.sender_session) ?? [];
-		accumulated.push(lastAssistantText);
-		accumulatedResponses.delete(inbound.sender_session);
-		const combinedPayload = accumulated.length > 1 ? accumulated.join("\n\n---\n\n") : accumulated[0] || lastAssistantText;
-		log.debug("agent_end_combined_response", inbound.msg_id, "parts", accumulated.length);
-
-		let payload: any = combinedPayload;
-		let error: string | null = null;
-		if (inbound.response_schema && typeof inbound.response_schema === "object") {
-			try {
-				payload = JSON.parse(lastAssistantText);
-			} catch {
-				error = "response not valid JSON";
-				payload = null;
-			}
-		}
-
-		// Use inline count instead of getPendingInboundCount() — `inbound` (local param)
-		// differs from `currentInbound` (module-scoped, already null at this point).
-		const queuedIds: string[] = [];
-		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound && !bundledIds.has(i.msg_id)) queuedIds.push(i.msg_id);
-		const respEnv: ResponseEnvelope = {
-			type: "response",
-			msg_id: inbound.msg_id,
-			sender_session: identity.coms_session_id,
-			sender_endpoint: identity.endpoint,
-			hops: 0,
-			timestamp: nowIso(),
-			response: payload,
-			error,
-			queued_msg_ids: queuedIds,
-		};
-		// Compute your_pending at the last moment before send
-		respEnv.your_pending = getSenderPending(inbound.sender_session, inbound.msg_id).filter(p => !bundledIds.has(p.msg_id));
-
-		try {
-			await sendEnvelope(inbound.sender_endpoint, respEnv);
-			log.debug("outbound_response", inbound.msg_id, "error", error);
-			appendComsHistory({
-				direction: "response_out",
-				msg_id: inbound.msg_id,
-				peer: inbound.sender_name,
-				preview: truncatePreview(typeof payload === "string" ? payload : JSON.stringify(payload ?? "")),
-				status: error ? `error: ${error}` : "replied",
-				error: error,
-			});
-		} catch (e: any) {
-			log.error("outbound_response_failed", inbound.msg_id, e?.message);
-		}
-
+		log.warn("agent_end_undelivered_aborted", inbound.msg_id, "from", inbound.sender_name, "retries", retries);
 		inbound.fulfilled = true;
 		inboundQueue.delete(inbound.msg_id);
-
-		// Fulfill bundled inbounds — fire-and-forget responses, don't block agent_end
-		for (const bi of bundledInbounds) {
-			const biMsgId = bi.msg_id;
-			const biEndpoint = bi.sender_endpoint;
-			// Fire-and-forget — don't await, don't block
-			if (identity) {
-				sendEnvelope(biEndpoint, {
-					type: "response",
-					msg_id: biMsgId,
-					sender_session: identity.coms_session_id,
-					sender_endpoint: identity.endpoint,
-					hops: 0,
-					timestamp: nowIso(),
-					response: null,
-					error: "bundled",
-					queued_msg_ids: [],
-				}).catch(() => { /* best-effort */ });
-			}
-			bi.fulfilled = true;
-			inboundQueue.delete(bi.msg_id);
-		}
 		bundledInbounds = [];
-
 		maybeRefreshWidget();
-
-		await drainNextInbound({ bundle: true, onFail: "drop" });
+		const queuedIds: string[] = [];
+		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
+		try {
+			await sendEnvelope(inbound.sender_endpoint, {
+				type: "response",
+				msg_id: inbound.msg_id,
+				sender_session: identity.coms_session_id,
+				sender_endpoint: identity.endpoint,
+				hops: 0,
+				timestamp: nowIso(),
+				response: null,
+				error: "aborted",
+				queued_msg_ids: queuedIds,
+			});
+		} catch { /* best-effort */ }
+		await drainNextInbound({ bundle: true, onFail: "fail_orphans" });
 	});
 
 	// ━━ /coms slash command ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4005,6 +4161,7 @@ Do not respond to this message.`;
 				inboundQueue.delete(msgId);
 				if (currentInbound?.msg_id === msgId) {
 					currentInbound = null;
+					inboundDelivered = false;
 				}
 				maybeRefreshWidget();
 				// Send error response to sender
@@ -4177,6 +4334,58 @@ Do not respond to this message.`;
 		pendingReplies.clear();
 		pendingOutbound.clear();
 		queueRecoveryPreviews.clear();
+		// Snapshot waiting inbound senders and reset all in-memory inbound queue state so
+		// /coms stop -> /coms start (which reuses this closure) starts completely clean (#1226).
+		const waitingInbounds: InboundContext[] = [];
+		const seenInboundIds = new Set<string>();
+		for (const ib of inboundQueue.values()) {
+			if (!ib.fulfilled) {
+				ib.fulfilled = true;
+				waitingInbounds.push(ib);
+				seenInboundIds.add(ib.msg_id);
+			}
+		}
+		if (currentInbound && !currentInbound.fulfilled && !seenInboundIds.has(currentInbound.msg_id)) {
+			currentInbound.fulfilled = true;
+			waitingInbounds.push(currentInbound);
+		}
+		inboundQueue.clear();
+		accumulatedResponses.clear();
+		comsSendCalledThisTurn.clear();
+		bundledInbounds = [];
+		currentInbound = null;
+		inboundDelivered = false;
+		finalizingInbound = false;
+		processingInbound = false;
+		agentRunningUserTurn = false;
+		inboundSetDuringUserTurn = false;
+		userMessageDuringInbound = false;
+		if (ident && waitingInbounds.length > 0) {
+			log.info("shutdown_notify_waiting_inbounds", { count: waitingInbounds.length });
+			let notifyTimeout: NodeJS.Timeout | undefined;
+			await Promise.race([
+				Promise.allSettled(waitingInbounds.map((ib) =>
+					sendEnvelope(ib.sender_endpoint, {
+						type: "response",
+						msg_id: ib.msg_id,
+						sender_session: ident.coms_session_id,
+						sender_endpoint: ident.endpoint,
+						hops: 0,
+						timestamp: nowIso(),
+						response: null,
+						error: "session_closed",
+						queued_msg_ids: [],
+					}).catch((err) => {
+						log.debug("shutdown_notify_inbound_failed", ib.msg_id, err instanceof Error ? err.message : String(err));
+					}),
+				)),
+				new Promise<void>((resolve) => {
+					notifyTimeout = setTimeout(resolve, 500);
+					notifyTimeout.unref?.();
+				}),
+			]);
+			if (notifyTimeout) clearTimeout(notifyTimeout);
+		}
 		process.off("SIGINT", handleSigint);
 		process.off("SIGTERM", handleSigterm);
 		log.debug("recovery_previews_cleared", { reason: "shutdown" });
