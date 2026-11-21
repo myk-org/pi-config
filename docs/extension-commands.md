@@ -23,10 +23,10 @@ the internals that are not visible from usage alone.
 | `/cron` | `cron.ts` + `cron-store.ts` + `cron-status-ui.ts` | Schedule session tasks, or persistent tasks with `--persist` |
 | `/pi-config-settings [project\|global]` | `settings-tui.ts` + `settings-tui-helpers.ts` | Interactive settings editor overlay |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
-| `/coms` | `coms/coms-wrapper.ts` | P2P agent communication (start/stop/status) |
+| `/coms` | `coms/coms-wrapper.ts` | P2P agent communication (`start`/`stop`/`status`/`tell`/`list`/`kill`/`widget [expand\|collapse\|toggle]`) |
 | `/coms-queue` | `coms/coms-p2p.ts` | View and kill queued peer messages |
 | `/repair` | `session-validation.ts` | Repair session — fix orphaned tool calls that break API requests |
-| `/tasks` | `pitasks/index.ts` + `tasks-ui.ts` | Task list overlay (like `/cron list`), plus `create`, `start`/`done <id>`, and `clear completed\|all` |
+| `/tasks` | `pitasks/index.ts` + `tasks-ui.ts` | Task list overlay (like `/cron list`), plus `create`, `start`/`done <id>`, `clear completed\|all`, and `widget [expand\|collapse\|toggle]` |
 | `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
 
 ## Cron Delivery Internals
@@ -43,6 +43,19 @@ guarantees underneath:
 - Add/remove mutations use a bounded transaction lock, so they remain safe without process identity.
 - Invalid stored task records are logged and skipped before timers are created.
 - `/cron list-all` labels each task plus persistent leader/follower state; it does not inspect another Pi process's private session-cron file.
+
+## Widget Collapse/Expand & Shortcuts
+
+The `tasks` (`aboveEditor`) and `coms-pool` (`belowEditor`) widgets support two display modes — `expanded` (full view with `[<key> collapse]` in the header) and `collapsed` (1-line header with live counts and `[<key> expand]`, pausing the 150ms task spinner timer so collapsed mode causes zero idle redraws). The 1-line header always remains visible whenever tasks exist or COMS is active, and active modes persist on `globalThis` across `/reload`:
+
+- **Slash commands:** `/tasks widget [expand|collapse|toggle]` and `/coms widget [expand|collapse|toggle]` (both support tab autocomplete and accept `show`/`hide`/`compact` aliases).
+- **Configurable keyboard shortcuts** (registered via `pi.registerShortcut()`, empty string disables):
+  - `widget_tasks_shortcut` (default `alt+t`): collapse/expand the tasks widget.
+  - `widget_coms_shortcut` (default `alt+c`): collapse/expand the coms widget.
+  - `widget_all_shortcut` (default `alt+w`): collapse/expand both widgets via `pi.events` `"ui:toggle-all-widgets"` (collapses both if either is expanded; second press restores prior modes).
+- **Default mode:** `widgets_default_mode` (`"expanded" | "collapsed"`, default `"expanded"`).
+
+Shared state and shortcut helpers live in `extensions/shared/widget-visibility.ts`.
 
 ## Adding an Extension Command
 
