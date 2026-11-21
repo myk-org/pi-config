@@ -6,15 +6,16 @@
  */
 import type { Task, TaskCompletedBy, TaskStatus } from "./types.js";
 import { createLogger } from "../shared/logger.js";
+import { parseWidgetCommandAction, type WidgetCommandAction } from "../shared/widget-visibility.js";
 
 const log = createLogger("pitasks");
 
 export const TASKS_USAGE =
-	"Usage: /tasks [mine | create | start <id> | done <id> | clear completed | clear all]";
+	"Usage: /tasks [mine | create | start <id> | done <id> | clear completed | clear all | widget [expand|collapse|toggle]]";
 export const TASKS_EMPTY_MESSAGE = "No tasks.";
 /** Text output (headless or browser) carries the actions the overlay cannot offer there. */
 export const TASKS_HINT =
-	"Subcommands: /tasks mine · create · start <id> · done <id> · clear completed · clear all";
+	"Subcommands: /tasks mine · create · start <id> · done <id> · clear completed · clear all · widget [expand|collapse|toggle]";
 
 export type TasksCommand =
 	| { kind: "list"; mine?: boolean }
@@ -23,6 +24,7 @@ export type TasksCommand =
 	| { kind: "done"; id: string }
 	| { kind: "clear-completed" }
 	| { kind: "clear-all" }
+	| { kind: "widget"; action: WidgetCommandAction }
 	| { kind: "usage" };
 
 /** `/tasks <args>` — the command never opens a nested menu. */
@@ -46,6 +48,12 @@ export function parseTasksCommand(args: string | undefined): TasksCommand {
 	if (sub === "clear" && parts.length === 2) {
 		if (target === "completed") return { kind: "clear-completed" };
 		if (target === "all") return { kind: "clear-all" };
+	}
+	if (sub === "widget") {
+		if (parts.length > 2) return { kind: "usage" };
+		const action = parseWidgetCommandAction(target);
+		if (!action) return { kind: "usage" };
+		return { kind: "widget", action };
 	}
 	log.debug("tasks_command_unrecognised", { args: (args ?? "").slice(0, 80) });
 	return { kind: "usage" };

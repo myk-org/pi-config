@@ -5,11 +5,22 @@
  * Added: store export for coms direct access.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { isAbsolute } from "node:path";
 import { TaskStore, resolveStorePath, type ResolveStorePathOptions } from "./task-store.js";
 import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import {
+	TOGGLE_ALL_WIDGETS_EVENT,
+	applyWidgetAction,
+	cycleWidgetMode,
+	getRegisteredWidgetShortcut,
+	getWidgetMode,
+	registerWidgetShortcut,
+	type ToggleAllWidgetsEvent,
+} from "../shared/widget-visibility.js";
 import {
 	publishTaskStore,
 	publishTaskTelemetryActive,
@@ -289,6 +300,48 @@ export default function (pi: ExtensionAPI) {
 	taskStore = store;
 	currentStore = store;
 	const widget = new TaskWidget(store);
+	widget.setMode(getWidgetMode("tasks", process.cwd()));
+	let currentCtx: any = null;
+	const tasksShortcut = registerWidgetShortcut(
+		pi,
+		"widget_tasks_shortcut",
+		process.cwd(),
+		"Collapse/expand tasks widget",
+		(ctx) => {
+			if (shuttingDown || !isLiveExtensionCtx(ctx)) return;
+			currentCtx = ctx;
+			currentUiCtx = ctx.ui;
+			widget.setUICtx(ctx.ui);
+			const next = cycleWidgetMode("tasks", ctx.cwd || process.cwd());
+			widget.setMode(next);
+			log.info("tasks_widget_shortcut_cycled", { mode: next });
+		},
+	);
+	widget.setShortcutHint(tasksShortcut);
+	let unsubToggleAll: (() => void) | undefined;
+	function subscribeToggleAll(): void {
+		try { unsubToggleAll?.(); } catch {}
+		try { (globalThis as any).__pitasks_toggle_all_unsubscribe?.(); } catch {}
+		unsubToggleAll = undefined;
+		try {
+			unsubToggleAll = pi.events.on(TOGGLE_ALL_WIDGETS_EVENT, (data: unknown) => {
+				if (shuttingDown) return;
+				const payload = data as Partial<ToggleAllWidgetsEvent> | undefined;
+				const cwd = payload?.cwd || (currentCtx && isLiveExtensionCtx(currentCtx) ? currentCtx.cwd : undefined) || process.cwd();
+				const next = payload?.modes?.tasks ?? getWidgetMode("tasks", cwd);
+				if (currentCtx && isLiveExtensionCtx(currentCtx)) {
+					currentUiCtx = currentCtx.ui;
+					widget.setUICtx(currentCtx.ui);
+				}
+				widget.setMode(next);
+				log.debug("tasks_widget_toggle_all_applied", { mode: next });
+			});
+			(globalThis as any).__pitasks_toggle_all_unsubscribe = unsubToggleAll;
+		} catch (e: any) {
+			log.warn("tasks_widget_toggle_all_subscribe_failed", { error: e?.message });
+		}
+	}
+	subscribeToggleAll();
 	store.setOnChange(() => { widget.update(); broadcastTasks(); });
 	for (const taskId of resumedActiveTaskIds) widget.setActiveTask(taskId);
 	currentWidget = widget;
@@ -515,6 +568,9 @@ export default function (pi: ExtensionAPI) {
 		turnTaskRefs.clear();
 		if (gcTimer) { clearInterval(gcTimer); gcTimer = null; }
 		if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
+		try { unsubToggleAll?.(); } catch {}
+		unsubToggleAll = undefined;
+		currentCtx = null;
 		widget.deactivate();
 		store.setOnChange(() => {});
 		store.close();
@@ -529,6 +585,7 @@ export default function (pi: ExtensionAPI) {
 		turnTaskRefs.clear();
 		agentBusy = true;
 		log.debug("agentBusy", "turn_start");
+		currentCtx = ctx;
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
@@ -564,6 +621,7 @@ export default function (pi: ExtensionAPI) {
 		turnTaskRefs.clear();
 		agentBusy = false;
 		log.debug("agentBusy", "session_start reset");
+		currentCtx = ctx;
 		widget.reactivate(ctx.ui);
 		store.reopen();
 		store.setOnChange(() => { widget.update(); broadcastTasks(); });
@@ -586,6 +644,12 @@ export default function (pi: ExtensionAPI) {
 		}
 		upgradeStoreIfNeeded(ctx);
 		if (forkSeed?.tasks.length) store.seed(forkSeed);
+		const sessionCwd = ctx?.cwd || process.cwd();
+		// Re-subscribe after session_shutdown so /new, /resume, and /fork still receive toggle-all.
+		subscribeToggleAll();
+		// Always advertise the shortcut binding accepted at registration (never an unbound edit).
+		widget.setShortcutHint(getRegisteredWidgetShortcut("widget_tasks_shortcut"));
+		widget.setMode(getWidgetMode("tasks", sessionCwd));
 		widget.beginTurn();
 		showPersistedTasks(reason === "reload" || reason === "resume" || reason === "fork");
 	});
@@ -595,6 +659,7 @@ export default function (pi: ExtensionAPI) {
 		turnTaskRefs.clear();
 		agentBusy = true;
 		log.debug("agentBusy", "before_agent_start");
+		currentCtx = ctx;
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
@@ -611,6 +676,7 @@ export default function (pi: ExtensionAPI) {
 		} else if (event?.args?.taskId !== undefined || event?.args?.task_id !== undefined) {
 			log.debug("task_telemetry_ref_ignored", { toolName: event?.toolName, taskId: event?.args?.taskId ?? event?.args?.task_id });
 		}
+		currentCtx = ctx;
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
@@ -619,14 +685,65 @@ export default function (pi: ExtensionAPI) {
 
 	// /tasks command — extracted so it can be re-registered on reload
 	let tasksCmdHandler: any;
+	function completeTasksArgs(prefix: string): AutocompleteItem[] | null {
+		const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+		const atNextToken = prefix.endsWith(" ") || tokens.length === 0;
+		const lastPart = atNextToken ? "" : tokens[tokens.length - 1];
+		const completed = atNextToken ? tokens : tokens.slice(0, -1);
+		const base = atNextToken ? prefix : prefix.slice(0, prefix.length - lastPart.length);
+		const mk = (items: { v: string; l: string; d: string }[]): AutocompleteItem[] | null => {
+			const mapped: AutocompleteItem[] = items.map((i) => ({ value: base + i.v, label: i.l, description: i.d }));
+			if (!lastPart.trim()) return mapped.length > 0 ? mapped : null;
+			const filtered = fuzzyFilter(mapped, lastPart, (i) => `${i.label} ${i.description || ""}`);
+			return filtered.length > 0 ? filtered : null;
+		};
+		if (completed.length === 0) {
+			return mk([
+				{ v: "mine", l: "mine", d: "Show only tasks assigned to you" },
+				{ v: "create", l: "create", d: "Create a new task" },
+				{ v: "start ", l: "start", d: "Mark a task in progress: start <id>" },
+				{ v: "done ", l: "done", d: "Mark a task completed: done <id>" },
+				{ v: "clear ", l: "clear", d: "Clear completed or all tasks" },
+				{ v: "widget ", l: "widget", d: "Collapse or expand tasks widget: expand | collapse | toggle" },
+			]);
+		}
+		if (completed[0] === "clear" && completed.length === 1) {
+			return mk([
+				{ v: "completed", l: "completed", d: "Remove completed tasks" },
+				{ v: "all", l: "all", d: "Remove all tasks" },
+			]);
+		}
+		if (completed[0] === "widget" && completed.length === 1) {
+			return mk([
+				{ v: "expand", l: "expand", d: "Show full task list widget" },
+				{ v: "collapse", l: "collapse", d: "Collapse to 1-line header (pauses spinner)" },
+				{ v: "toggle", l: "toggle", d: "Toggle between expanded and collapsed" },
+			]);
+		}
+		return null;
+	}
 	function registerTasksCommand(): void {
 		log.debug("registerTasksCommand called");
 		pi.registerCommand("tasks", {
-			description: "Tasks: list overlay, create, clear completed|all",
+			description: "Tasks: list overlay, create, start, done, clear completed|all, widget [expand|collapse|toggle]",
+			getArgumentCompletions: completeTasksArgs,
 			handler: tasksCmdHandler = async (args: string, ctx: any) => {
 				const cmd = parseTasksCommand(args);
 				log.debug("/tasks handler called", cmd.kind);
 				if (cmd.kind === "usage") { ctx.ui?.notify(TASKS_USAGE, "warning"); return; }
+				if (cmd.kind === "widget") {
+					const cwd = ctx?.cwd || process.cwd();
+					const next = applyWidgetAction("tasks", cmd.action, cwd);
+					if (ctx?.ui) {
+						currentCtx = ctx;
+						currentUiCtx = ctx.ui;
+						currentWidget?.setUICtx(ctx.ui);
+					}
+					currentWidget?.setMode(next);
+					log.info("tasks_widget_mode_updated", { mode: next, action: cmd.action });
+					ctx.ui?.notify(`Tasks widget: ${next}`, "info");
+					return;
+				}
 				if (cmd.kind === "clear-completed" || cmd.kind === "clear-all") {
 					const cleared = cmd.kind === "clear-completed" ? taskStore.clearCompleted() : taskStore.clearAll();
 					if (taskScope === "session") taskStore.deleteFileIfEmpty();

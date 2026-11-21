@@ -31,6 +31,7 @@ import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { registerCron } from "./cron.js";
 import { publishWorkloadSources, clearWorkloadSources } from "../shared/workload-bridge.js";
 import { registerStatus } from "./status.js";
+import { registerWorktree } from "./worktree.js";
 import { registerNvim } from "./nvim.js";
 import { registerPreferenceExtractor } from "./preference-extractor.js";
 import { registerSkillMaintenance } from "./skill-maintenance.js";
@@ -45,6 +46,12 @@ import { registerTrail } from "./trail.js";
 import { registerReviewLearning } from "./review-learning.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
+import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
+import {
+  TOGGLE_ALL_WIDGETS_EVENT,
+  registerWidgetShortcut,
+  toggleAllWidgets,
+} from "../shared/widget-visibility.js";
 import { registerProviderStreamLog } from "../shared/provider-stream-log.js";
 import { migrateMcpConfig } from "../shared/mcp-config-migration.js";
 import { setGlobalSessionId } from "../shared/file-logger.js";
@@ -163,6 +170,7 @@ export default function (pi: ExtensionAPI) {
   registerSessionValidation(pi);
   registerGithubAutocomplete(pi);
   registerStatus(pi, IN_CONTAINER, getAsyncJobs, getCronTasks);
+  registerWorktree(pi);
   registerNvim(pi);
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
@@ -171,6 +179,21 @@ export default function (pi: ExtensionAPI) {
   registerSessionSearch(pi);
   registerSettingsTui(pi);
   registerMarkdownTransformer(pi);
+  if (process.env.PI_SUBAGENT_CHILD !== "1") {
+    registerWidgetShortcut(
+      pi,
+      "widget_all_shortcut",
+      process.cwd(),
+      "Collapse/expand both tasks and coms widgets",
+      (ctx) => {
+        if (!isLiveExtensionCtx(ctx)) return;
+        const cwd = ctx?.cwd || process.cwd();
+        const modes = toggleAllWidgets(cwd);
+        emitIfLive(pi, TOGGLE_ALL_WIDGETS_EVENT, { modes, cwd });
+        log.info("widget_all_shortcut_toggled", { modes });
+      },
+    );
+  }
   // Raw provider stream logging — gated on `log_providers=debug` (#848).
   registerProviderStreamLog(pi);
   // Copy a pre-#848 `~/.pi/pi-config/mcp.json` to where builtin:mcp reads it (#848).

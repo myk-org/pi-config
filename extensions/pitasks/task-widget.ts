@@ -4,6 +4,7 @@
  */
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
+import { formatWidgetShortcutHint, type WidgetMode } from "../shared/widget-visibility.js";
 import type { TaskStore } from "./task-store.js";
 import { taskAssigneeRank, toTaskRowView } from "./tasks-view.js";
 
@@ -42,6 +43,8 @@ export class TaskWidget {
 	private tui: any;
 	private widgetRegistered = false;
 	private disposed = false;
+	private mode: WidgetMode = "expanded";
+	private shortcutHint: string | null = null;
 
 	constructor(private store: TaskStore, private config: Record<string, any> = {}) {
 		if (log.isDebugEnabled()) log.debug("widget_created", { taskCount: store.list().length });
@@ -56,6 +59,25 @@ export class TaskWidget {
 	}
 	setUICtx(ctx: any): void { this.uiCtx = ctx; }
 	getActiveTaskIds(): string[] { return [...this.activeTaskIds]; }
+	getMode(): WidgetMode { return this.mode; }
+	hasActiveTimer(): boolean { return this.widgetInterval !== undefined; }
+
+	setShortcutHint(hint: string | null): void {
+		this.shortcutHint = hint;
+		if (this.tui && this.widgetRegistered) {
+			this.tui.requestRender();
+		}
+	}
+
+	setMode(mode: WidgetMode): void {
+		this.mode = mode;
+		log.debug("task_widget_mode_changed", { mode });
+		if (mode === "collapsed" && this.widgetInterval) {
+			clearInterval(this.widgetInterval);
+			this.widgetInterval = undefined;
+		}
+		this.update();
+	}
 
 	private getInProgressActiveIds(): string[] {
 		return [...this.activeTaskIds].filter(
@@ -172,6 +194,8 @@ export class TaskWidget {
 	}
 
 	private ensureTimer(): void {
+		// Pause spinner animation while collapsed so header-only mode causes zero idle redraws.
+		if (this.mode === "collapsed") return;
 		if (!this.widgetInterval) {
 			this.widgetInterval = setInterval(() => this.update(), 150);
 		}
@@ -211,7 +235,11 @@ export class TaskWidget {
 		const yoursText = yours > 0 ? `${parts.length > 0 ? " · " : ""}${yours} yours` : "";
 		const statusText = `${tasks.length} tasks (${parts.join(", ")}${yoursText})`;
 		const spinnerChar = SPINNER[this.widgetFrame % SPINNER.length];
-		const lines: string[] = [truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText))];
+		const hintBadge = formatWidgetShortcutHint(this.shortcutHint, this.mode);
+		const hintSuffix = hintBadge ? " " + theme.fg("dim", hintBadge) : "";
+		const headerLine = truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText) + hintSuffix);
+		if (this.mode === "collapsed") return [headerLine];
+		const lines: string[] = [headerLine];
 
 		const showAll = this.config.showAll ?? false;
 		const limit = this.config.maxVisible ?? DEFAULT_MAX_VISIBLE_TASKS;
@@ -269,21 +297,21 @@ export class TaskWidget {
 			return;
 		}
 		const tasks = this.store.list();
-		if (log.isDebugEnabled()) log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx, taskCount: tasks.length });
-		if (tasks.length === 0) {
-			if (this.widgetRegistered) { this.uiCtx.setWidget("tasks", undefined); this.widgetRegistered = false; }
-			if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
-			return;
-		}
+		if (log.isDebugEnabled()) log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx, taskCount: tasks.length, mode: this.mode });
 		const taskById = new Map(tasks.map((t) => [t.id, t]));
 		for (const id of this.activeTaskIds) {
 			const t = taskById.get(id);
 			if (!t || t.status !== "in_progress") { this.activeTaskIds.delete(id); this.metrics.delete(id); }
 		}
-		const hasActiveSpinner = tasks.some(t => t.status === "in_progress");
+		if (tasks.length === 0) {
+			if (this.widgetRegistered) { this.uiCtx.setWidget("tasks", undefined); this.widgetRegistered = false; this.tui = undefined; }
+			if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
+			return;
+		}
+		const hasActiveSpinner = this.mode === "expanded" && tasks.some(t => t.status === "in_progress");
 		if (hasActiveSpinner) this.ensureTimer();
 		else if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
-		this.widgetFrame++;
+		if (this.mode === "expanded") this.widgetFrame++;
 		if (!this.widgetRegistered) {
 			this.uiCtx.setWidget("tasks", (tui: any, theme: any) => {
 				this.tui = tui;

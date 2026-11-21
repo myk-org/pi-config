@@ -43,6 +43,16 @@ import { collectWorkload, openBlockers, renderWorkloadPart, toDescribeDetail, ty
 import { publishedWorkloadSources } from "../shared/workload-bridge.js";
 import { publishedTaskStore } from "../shared/task-store-bridge.js";
 import { sanitizePeerText } from "./peer-text.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import {
+	TOGGLE_ALL_WIDGETS_EVENT,
+	WIDGET_MODE_CHANGED_EVENT,
+	formatComsCollapsedHeader,
+	formatComsTopBorder,
+	getRegisteredWidgetShortcut,
+	getWidgetMode,
+	type WidgetModeChangedEvent,
+} from "../shared/widget-visibility.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1921,6 +1931,7 @@ export default function (pi: ExtensionAPI) {
 		log.info("boot", name, project);
 
 		// 6. Surface presence in the UI + install the live pool widget.
+		registerPoolVisibilityListeners();
 		try {
 			ctx.ui.setStatus("coms", `📡 ${name}@${project}`);
 			installPoolWidget(ctx);
@@ -2268,41 +2279,42 @@ Do not respond to this message.`;
 			});
 		}
 
+		const widgetCwd = identity?.cwd || currentCtx?.cwd || process.cwd();
+		const widgetMode = getWidgetMode("coms", widgetCwd);
+		// Advertise only the binding accepted at registration (never an unbound settings edit).
+		const shortcutHint = getRegisteredWidgetShortcut("widget_coms_shortcut");
+		if (widgetMode === "collapsed") {
+			const busyCount = rows.filter((r) => !r.stale && r.busy).length;
+			return [
+				formatComsCollapsedHeader({
+					width: Math.max(0, width),
+					identity,
+					pendingCount: getPendingInboundCount(),
+					shortcutHint,
+					peerCount: rows.length,
+					busyCount,
+					theme,
+					colorizeName: hexFg,
+				}),
+			];
+		}
+
 		// Border helpers — sandwich the body with single-line box-drawing rules
 		// so the widget reads as its own block above the minimal footer. The
 		// top border carries a branded ` coms ` tag so the widget reads as its
 		// own block; bottom border stays a plain rule for minimalism.
 		const safeWidth = Math.max(0, width);
-		let topBorder: string;
-		let bottomBorder: string;
-		if (safeWidth < 12) {
-			topBorder = theme.fg("dim", "━".repeat(safeWidth));
-			bottomBorder = theme.fg("dim", "━".repeat(safeWidth));
-		} else {
-			const left = theme.fg("dim", "┏━") + theme.fg("border", " coms ");
-			const leftFill = theme.fg("dim", "━");
-			const pendingCount = getPendingInboundCount();
-			const pendingSuffix = ` (${pendingCount} pending)`;
-			const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
-			const rightTagVisLen = identity ? nameLen + 3 : 0;
-			const remaining = safeWidth - 9 /* "┏━ coms ━" */ - rightTagVisLen - 1 /* "┓" */;
-			if (identity && remaining >= 1) {
-				const pendingPart = pendingCount > 0 ? theme.fg("warning", pendingSuffix) : theme.fg("dim", pendingSuffix);
-				const rightTag =
-					theme.fg("dim", " ") +
-					hexFg(identity.color, identity.name) +
-					pendingPart +
-					theme.fg("dim", " ━");
-				const middle = theme.fg("dim", "━".repeat(remaining));
-				const right = theme.fg("dim", "┓");
-				topBorder = left + leftFill + middle + rightTag + right;
-			} else {
-				const fallbackRemaining = Math.max(0, safeWidth - 2 /* "┏━" */ - 6 /* " coms " */ - 1 /* "┓" */);
-				const right = theme.fg("dim", "━".repeat(fallbackRemaining) + "┓");
-				topBorder = left + right;
-			}
-			bottomBorder = theme.fg("dim", "┗" + "━".repeat(safeWidth - 2) + "┛");
-		}
+		const topBorder = formatComsTopBorder({
+			width: safeWidth,
+			identity,
+			pendingCount: getPendingInboundCount(),
+			shortcutHint,
+			theme,
+			colorizeName: hexFg,
+		});
+		const bottomBorder = safeWidth < 12
+			? theme.fg("dim", "━".repeat(safeWidth))
+			: theme.fg("dim", "┗" + "━".repeat(safeWidth - 2) + "┛");
 
 		if (rows.length === 0) {
 			const emptyMsg = theme.fg("muted", "no peers connected");
@@ -2356,8 +2368,36 @@ Do not respond to this message.`;
 		return out;
 	}
 
+	let unsubPoolVisibility: Array<() => void> = [];
+
+	function clearPoolVisibilityListeners(): void {
+		for (const unsub of unsubPoolVisibility) {
+			try { unsub(); } catch { /* ignore */ }
+		}
+		unsubPoolVisibility = [];
+	}
+
+	function registerPoolVisibilityListeners(): void {
+		clearPoolVisibilityListeners();
+		const refresh = (): void => {
+			if (!currentCtx || !isLiveExtensionCtx(currentCtx)) return;
+			lastPoolSnapshot = "";
+			installPoolWidget(currentCtx);
+		};
+		try {
+			unsubPoolVisibility.push(pi.events.on(TOGGLE_ALL_WIDGETS_EVENT, () => refresh()));
+			unsubPoolVisibility.push(pi.events.on(WIDGET_MODE_CHANGED_EVENT, (data: unknown) => {
+				const evt = data as Partial<WidgetModeChangedEvent> | undefined;
+				if (evt?.widget && evt.widget !== "coms") return;
+				refresh();
+			}));
+		} catch (e: any) {
+			log.warn("coms_pool_visibility_subscribe_failed", { error: e?.message });
+		}
+	}
+
 	function installPoolWidget(ctx: ExtensionContext): void {
-		if (!ctx.hasUI) return;
+		if (!ctx.hasUI || !isLiveExtensionCtx(ctx)) return;
 		try {
 			ctx.ui.setWidget("coms-pool", (_tui, theme) => ({
 				invalidate() {},
@@ -4180,6 +4220,7 @@ Do not respond to this message.`;
 		process.off("SIGINT", handleSigint);
 		process.off("SIGTERM", handleSigterm);
 		log.debug("recovery_previews_cleared", { reason: "shutdown" });
+		clearPoolVisibilityListeners();
 		if (shutdownCtx?.hasUI) {
 			try { shutdownCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
 			try { shutdownCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }

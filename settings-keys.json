@@ -654,5 +654,37 @@
     "min": 0,
     "max": 20,
     "group": "Settings"
+  },
+  "widget_tasks_shortcut": {
+    "description": "Keyboard shortcut to collapse/expand the tasks widget (empty string disables)",
+    "type": "string",
+    "env": "PI_WIDGET_TASKS_SHORTCUT",
+    "default": "alt+t",
+    "group": "UI"
+  },
+  "widget_coms_shortcut": {
+    "description": "Keyboard shortcut to collapse/expand the coms widget (empty string disables)",
+    "type": "string",
+    "env": "PI_WIDGET_COMS_SHORTCUT",
+    "default": "alt+c",
+    "group": "UI"
+  },
+  "widget_all_shortcut": {
+    "description": "Keyboard shortcut to collapse/expand both tasks and coms widgets together (empty string disables)",
+    "type": "string",
+    "env": "PI_WIDGET_ALL_SHORTCUT",
+    "default": "alt+w",
+    "group": "UI"
+  },
+  "widgets_default_mode": {
+    "description": "Default display mode for tasks and coms widgets on session start",
+    "type": "string",
+    "env": "PI_WIDGETS_DEFAULT_MODE",
+    "default": "expanded",
+    "enum": [
+      "expanded",
+      "collapsed"
+    ],
+    "group": "UI"
   }
 }

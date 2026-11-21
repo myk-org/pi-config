@@ -72,8 +72,11 @@ pi-config/
 │   │   ├── state-jsonl.ts               # JSONL state persistence (JsonlStateStore + JsonlAppendLog)
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
-│   │   ├── status.ts                # /status command — unified session status snapshot
-│   │   ├── status-line.ts           # Git status, notifications, container indicator, last-activity timestamp
+│   │   ├── status.ts                # /status command — unified session status snapshot (incl. worktree summary)
+│   │   ├── status-bar.ts            # Ordered status bar slot registry (time, async, crons, dream, git, worktrees, trail, review)
+│   │   ├── status-line.ts           # Git status ([wt] tag, 4a-worktrees badge), notifications, container indicator, last-activity timestamp
+│   │   ├── worktree.ts              # /worktree command — interactive overlay + list/prune subcommands
+│   │   ├── worktree-helpers.ts      # Pure worktree helpers (COMS peer matching, remove guards, table/status/prune formatting, clipboard)
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
 │   │   ├── memory-tools.ts              # AI-accessible memory tools (search, reinforce, add, remove)
 │   │   ├── memory-embeddings.ts         # Vector embedding support for semantic memory search (fastembed)
@@ -125,6 +128,7 @@ pi-config/
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model + openai-compatible-discovery)
 │   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
+│   │   ├── widget-visibility.ts     # Shared collapse/expand widget state (expanded/collapsed, header-always-visible), globalThis reload persistence, shortcut validation/registration, and ui:toggle-all-widgets bridge
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
 │   ├── acpx-provider/              # ACPX provider — backward-compatible shim (re-exports for pi-sidecar)
 │   │   ├── index.ts                # Shim: re-exports discoverAcpxModels + no-op extension entry
