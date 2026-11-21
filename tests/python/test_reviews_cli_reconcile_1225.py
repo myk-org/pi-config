@@ -18,8 +18,10 @@ from unittest.mock import patch
 
 import pytest
 
+from myk_pi_tools.db.query import ReviewDB
 from myk_pi_tools.reviews import fetch as fetch_mod
 from myk_pi_tools.reviews import store as store_mod
+from myk_pi_tools.reviews.address import _is_addressable
 from myk_pi_tools.reviews.fetch import _reconcile_cli_threads_with_github
 
 PR_URL = "https://github.com/org/repo/pull/42"
@@ -200,11 +202,12 @@ def test_reconcile_open_cli_finding_resolved_on_github_with_human_reply() -> Non
     assert t["replies"][0] is not reply  # shallow-copied, no aliasing
     assert t["status"] == "skipped"
     assert t["is_auto_skipped"] is True
-    assert t["skip_reason"] == "Resolved on GitHub by myakove"
+    assert t.get("skip_reason") is None
+    assert _is_addressable(t) is False
 
 
 def test_reconcile_open_cli_finding_resolved_without_resolved_by_login() -> None:
-    """Resolved GitHub thread without `resolved_by` falls back to generic skip reason."""
+    """Resolved GitHub thread without `resolved_by` stays skipped without a dismissal skip_reason."""
     cli = [_cli_finding(thread_id="PRRT_kwDO1")]
     twin = _gh_qodo_twin(thread_id="PRRT_kwDO1", is_resolved=True, resolved_by=None, replies=[])
 
@@ -216,7 +219,8 @@ def test_reconcile_open_cli_finding_resolved_without_resolved_by_login() -> None
     assert t["replies"] == []
     assert t["status"] == "skipped"
     assert t["is_auto_skipped"] is True
-    assert t["skip_reason"] == "Resolved on GitHub"
+    assert t.get("skip_reason") is None
+    assert _is_addressable(t) is False
 
 
 def test_reconcile_open_cli_finding_unresolved_with_human_reply_stays_pending() -> None:
@@ -306,7 +310,8 @@ def test_reconcile_null_thread_id_matches_by_title_and_inherits_all_fields() -> 
     assert t["resolved_by"] == "myakove"
     assert t["status"] == "skipped"
     assert t["is_auto_skipped"] is True
-    assert t["skip_reason"] == "Resolved on GitHub by myakove"
+    assert t.get("skip_reason") is None
+    assert _is_addressable(t) is False
 
 
 def test_reconcile_null_thread_id_matches_short_title_and_html_entities() -> None:
@@ -357,7 +362,7 @@ def test_reconcile_null_thread_id_disambiguates_by_path_and_line() -> None:
     assert cli_path[0]["resolved_by"] == "bob"
 
     cli_line = [
-        _cli_finding(thread_id=None, path="src/a.py", line=99, title="Missing null check"),
+        _cli_finding(thread_id=None, path="src/a.py", line=99, end_line=99, title="Missing null check"),
     ]
     twins_line = [
         _gh_qodo_twin(thread_id="PRRT_l10", path="src/a.py", line=10, is_resolved=False),
@@ -366,6 +371,79 @@ def test_reconcile_null_thread_id_disambiguates_by_path_and_line() -> None:
     _reconcile_cli_threads_with_github(cli_line, twins_line)
     assert cli_line[0]["thread_id"] == "PRRT_l99"
     assert cli_line[0]["resolved_by"] == "carol"
+
+
+def test_reconcile_null_thread_id_rejects_sole_candidate_with_conflicting_line() -> None:
+    """A sole same-title, same-path GitHub thread at a different line must not be inherited."""
+    reply = {"author": "myakove", "body": "Approved at line 10", "created_at": "2026-11-20T12:00:00Z"}
+    cli = [
+        _cli_finding(
+            thread_id=None,
+            node_id=None,
+            comment_id=None,
+            path="src/a.py",
+            line=99,
+            end_line=101,
+            title="Missing null check",
+        )
+    ]
+    twin = _gh_qodo_twin(
+        thread_id="PRRT_line10",
+        node_id="PRRC_line10",
+        comment_id=1010,
+        path="src/a.py",
+        line=10,
+        is_resolved=True,
+        resolved_by="myakove",
+        replies=[reply],
+    )
+
+    _reconcile_cli_threads_with_github(cli, [twin])
+
+    t = cli[0]
+    assert t["thread_id"] is None
+    assert t["node_id"] is None
+    assert t["comment_id"] is None
+    assert "replies" not in t
+    assert t["is_resolved"] is None
+    assert "resolved_by" not in t
+    assert t["status"] == "pending"
+    assert not t.get("is_auto_skipped")
+
+
+def test_reconcile_null_thread_id_matches_multiline_span_and_outdated_null_line() -> None:
+    """Multi-line CLI span matches GitHub's end-line, and outdated null-line twin matches when sole."""
+    cli_span = [
+        _cli_finding(thread_id=None, path="src/a.py", line=42, end_line=44, title="Missing null check"),
+    ]
+    twin_end = _gh_qodo_twin(thread_id="PRRT_end44", path="src/a.py", line=44, is_resolved=True, resolved_by="dana")
+    _reconcile_cli_threads_with_github(cli_span, [twin_end])
+    assert cli_span[0]["thread_id"] == "PRRT_end44"
+    assert cli_span[0]["is_resolved"] is True
+
+    cli_outdated = [
+        _cli_finding(thread_id=None, path="src/a.py", line=42, end_line=44, title="Missing null check"),
+    ]
+    twin_outdated = _gh_qodo_twin(
+        thread_id="PRRT_outdated", path="src/a.py", line=None, is_resolved=True, resolved_by="erin"
+    )
+    _reconcile_cli_threads_with_github(cli_outdated, [twin_outdated])
+    assert cli_outdated[0]["thread_id"] == "PRRT_outdated"
+    assert cli_outdated[0]["is_resolved"] is True
+
+    # When both an outdated (line=None) and an exact-line twin exist, prefer the exact line.
+    cli_pref = [
+        _cli_finding(thread_id=None, path="src/a.py", line=42, end_line=44, title="Missing null check"),
+    ]
+    _reconcile_cli_threads_with_github(
+        cli_pref,
+        [
+            _gh_qodo_twin(thread_id="PRRT_outdated", path="src/a.py", line=None, is_resolved=False),
+            _gh_qodo_twin(thread_id="PRRT_exact", path="src/a.py", line=42, is_resolved=True, resolved_by="frank"),
+        ],
+    )
+    assert cli_pref[0]["thread_id"] == "PRRT_exact"
+    assert cli_pref[0]["resolved_by"] == "frank"
 
 
 def test_reconcile_null_thread_id_skips_ambiguous_twins() -> None:
@@ -627,7 +705,7 @@ def test_fetch_run_reconciles_resolved_and_replied_qodo_threads_when_include_res
     assert resolved_qodo["resolved_by"] == "myakove"
     assert resolved_qodo["status"] == "skipped"
     assert resolved_qodo["is_auto_skipped"] is True
-    assert resolved_qodo["skip_reason"] == "Resolved on GitHub by myakove"
+    assert resolved_qodo.get("skip_reason") is None
     assert resolved_qodo["replies"] == [
         {"author": "myakove", "body": "Its ok, I approve it", "created_at": "2026-11-20T10:30:00Z"}
     ]
@@ -662,7 +740,7 @@ def test_fetch_run_reconciles_resolved_and_replied_qodo_threads_when_include_res
         "qodo",
         "PRRT_resolved_qodo",
         "skipped",
-        "Resolved on GitHub by myakove",
+        None,
         "Missing null check",
     )
     assert qodo_rows["PRRT_open_replied"] == (
@@ -672,6 +750,167 @@ def test_fetch_run_reconciles_resolved_and_replied_qodo_threads_when_include_res
         None,
         "Handle empty list",
     )
+
+    # A similar comment on a later PR must NOT be auto-skipped by the GitHub-resolved row.
+    db = ReviewDB(db_path=db_path)
+    assert db.get_dismissed_comments("org", "repo") == []
+    monkeypatch.setattr(fetch_mod, "ReviewDB", lambda db_path=None: db)  # noqa: ARG005
+    later_pr_threads = [
+        {
+            "thread_id": "PRRT_later_human",
+            "node_id": "PRRC_lh_1",
+            "comment_id": 9001,
+            "author": "reviewer",
+            "path": "src/app.py",
+            "line": 42,
+            "body": "**Missing null check**\n\nCan raise on None.",
+            "created_at": "2026-11-22T10:00:00Z",
+            "replies": [],
+            "is_resolved": False,
+        },
+        {
+            "thread_id": "PRRT_later_cr",
+            "node_id": "PRRC_lcr_1",
+            "comment_id": 9002,
+            "author": "coderabbitai[bot]",
+            "path": "src/app.py",
+            "line": 42,
+            "body": "**Missing null check**\n\nCan raise on None.",
+            "created_at": "2026-11-22T10:00:00Z",
+            "replies": [],
+            "is_resolved": False,
+        },
+    ]
+    categorized = fetch_mod.process_and_categorize(later_pr_threads, "org", "repo", pr_number=99)
+    assert categorized["human"][0]["status"] == "pending"
+    assert not categorized["human"][0].get("is_auto_skipped")
+    assert categorized["coderabbit"][0]["status"] == "pending"
+    assert not categorized["coderabbit"][0].get("is_auto_skipped")
+
+
+def test_dismissed_queries_exclude_legacy_github_resolved_rows_on_later_pr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Already-persisted 'Resolved on GitHub...' rows must not suppress comments on later PRs."""
+    db_path = tmp_path / ".pi" / "data" / "reviews.db"
+    store_mod.ensure_database_directory(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        store_mod.create_tables(conn)
+        review_id = store_mod.insert_review(conn, "org", "repo", 42, HEAD_SHA)
+        # Legacy persisted rows from GitHub resolution (with and without login, and via reply)
+        store_mod.insert_comment(
+            conn,
+            review_id,
+            "qodo",
+            {
+                "thread_id": "PRRT_legacy_by",
+                "author": "qodo-code-review",
+                "path": "src/app.py",
+                "line": 10,
+                "body": "**Missing null check**\n\nCan raise on None.",
+                "status": "skipped",
+                "skip_reason": "Resolved on GitHub by myakove",
+                "reply": None,
+                "type": "qodo_bug",
+            },
+        )
+        store_mod.insert_comment(
+            conn,
+            review_id,
+            "qodo",
+            {
+                "thread_id": "PRRT_legacy_generic",
+                "author": "qodo-code-review",
+                "path": "src/app.py",
+                "line": 11,
+                "body": "**Missing null check**\n\nCan raise on None.",
+                "status": "skipped",
+                "skip_reason": "Resolved on GitHub",
+                "reply": "Resolved on GitHub",
+                "type": "qodo_bug",
+            },
+        )
+        store_mod.insert_comment(
+            conn,
+            review_id,
+            "qodo",
+            {
+                "thread_id": "PRRT_legacy_reply_only",
+                "author": "qodo-code-review",
+                "path": "src/app.py",
+                "line": 12,
+                "body": "**Missing null check**\n\nCan raise on None.",
+                "status": "skipped",
+                "skip_reason": None,
+                "reply": "Resolved on GitHub by alice",
+                "type": "qodo_bug",
+            },
+        )
+        # Real reusable dismissal on another file — must remain visible
+        store_mod.insert_comment(
+            conn,
+            review_id,
+            "human",
+            {
+                "thread_id": "PRRT_real_dismiss",
+                "author": "reviewer",
+                "path": "src/keep.py",
+                "line": 5,
+                "body": "Use dataclass here instead of dict",
+                "status": "skipped",
+                "skip_reason": "Intentional dict for JSON wire shape",
+                "reply": "Intentional dict for JSON wire shape",
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = ReviewDB(db_path=db_path)
+    dismissed = db.get_dismissed_comments("org", "repo")
+    assert [d["path"] for d in dismissed] == ["src/keep.py"]
+    assert dismissed[0]["skip_reason"] == "Intentional dict for JSON wire shape"
+    assert db.find_similar_comment("org", "repo", "src/app.py", "**Missing null check**\n\nCan raise on None.") is None
+    assert db.get_duplicate_patterns(min_occurrences=2) == []
+
+    monkeypatch.setattr(fetch_mod, "ReviewDB", lambda db_path=None: db)  # noqa: ARG005
+    later = fetch_mod.process_and_categorize(
+        [
+            {
+                "thread_id": "PRRT_later_pr",
+                "node_id": "PRRC_later_pr",
+                "comment_id": 9100,
+                "author": "reviewer",
+                "path": "src/app.py",
+                "line": 20,
+                "body": "**Missing null check**\n\nCan raise on None.",
+                "created_at": "2026-11-23T10:00:00Z",
+                "replies": [],
+                "is_resolved": False,
+            },
+            {
+                "thread_id": "PRRT_later_keep",
+                "node_id": "PRRC_later_keep",
+                "comment_id": 9101,
+                "author": "reviewer",
+                "path": "src/keep.py",
+                "line": 5,
+                "body": "Use dataclass here instead of dict",
+                "created_at": "2026-11-23T10:00:00Z",
+                "replies": [],
+                "is_resolved": False,
+            },
+        ],
+        "org",
+        "repo",
+        pr_number=100,
+    )
+    assert later["human"][0]["status"] == "pending"
+    assert not later["human"][0].get("is_auto_skipped")
+    assert later["human"][1]["status"] == "skipped"
+    assert later["human"][1]["is_auto_skipped"] is True
+    assert later["human"][1]["skip_reason"] == "Intentional dict for JSON wire shape"
 
 
 def test_fetch_run_include_resolved_true_dedups_fallback_matched_qodo_twin(

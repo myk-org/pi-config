@@ -1242,6 +1242,18 @@ def _github_twin_match_titles(twin: dict[str, Any]) -> set[str]:
     return titles
 
 
+def _twin_line_matches_cli(twin: dict[str, Any], cli_line: int, cli_end_line: int | None) -> bool:
+    """Return True when a GitHub twin's line matches a populated CLI line or span."""
+    twin_line = twin.get("line")
+    if not isinstance(twin_line, int) or isinstance(twin_line, bool):
+        return False
+    if twin_line == cli_line:
+        return True
+    if isinstance(cli_end_line, int) and not isinstance(cli_end_line, bool) and cli_end_line >= cli_line:
+        return cli_line <= twin_line <= cli_end_line
+    return False
+
+
 def _reconcile_cli_threads_with_github(
     cli_threads: list[dict[str, Any]], all_threads: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -1302,8 +1314,15 @@ def _reconcile_cli_threads_with_github(
             if cli_path:
                 candidates = [t for t in candidates if (t.get("path") or "").strip() == cli_path]
             cli_line = thread.get("line")
-            if len(candidates) > 1 and cli_line is not None:
-                candidates = [t for t in candidates if t.get("line") == cli_line]
+            if isinstance(cli_line, int) and not isinstance(cli_line, bool):
+                cli_end_line = thread.get("end_line")
+                candidates = [
+                    t for t in candidates if t.get("line") is None or _twin_line_matches_cli(t, cli_line, cli_end_line)
+                ]
+                if len(candidates) > 1:
+                    exact_line = [t for t in candidates if _twin_line_matches_cli(t, cli_line, cli_end_line)]
+                    if exact_line:
+                        candidates = exact_line
 
             if len(candidates) == 1:
                 twin = candidates[0]
@@ -1346,11 +1365,11 @@ def _reconcile_cli_threads_with_github(
                 thread["status"] = "pending"
             reopened += 1
         elif is_resolved:
+            # Mark skipped for addressing without setting skip_reason — GitHub thread
+            # resolution is PR-specific, not a reusable repo-wide dismissal reason.
             thread["is_auto_skipped"] = True
             if thread.get("status") == "pending":
                 thread["status"] = "skipped"
-            if not thread.get("skip_reason"):
-                thread["skip_reason"] = f"Resolved on GitHub by {resolved_by}" if resolved_by else "Resolved on GitHub"
             resolved_count += 1
 
     if inherited or reopened or resolved_count or fallback_matched or replies_preserved:
