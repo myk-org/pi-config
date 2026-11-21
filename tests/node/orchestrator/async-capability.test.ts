@@ -1,5 +1,5 @@
 /**
- * Tests for async LLM capability and internal ops provider resolution.
+ * Tests for internal ops provider resolution.
  * Run with: npx tsx --test tests/node/orchestrator/async-capability.test.ts
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -7,11 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-import {
-  decideAsyncLlmDispatch,
-  getInternalOpsProvider,
-  supportsAsyncLlm,
-} from "../../../extensions/orchestrator/async-capability.js";
+import { getInternalOpsProvider } from "../../../extensions/orchestrator/async-capability.js";
 import {
   clearSettingsCache,
   setGlobalSettingsPath,
@@ -19,7 +15,7 @@ import {
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
-describe("async capability / internal ops provider", () => {
+describe("internal ops provider", () => {
   let tmp: string;
   let globalTmp: string;
   const prev = {
@@ -53,13 +49,7 @@ describe("async capability / internal ops provider", () => {
     clearSettingsCache();
   }
 
-  it("supportsAsyncLlm returns true for all providers", () => {
-    assert.equal(supportsAsyncLlm("anthropic", tmp), true);
-    assert.equal(supportsAsyncLlm("google", tmp), true);
-    assert.equal(supportsAsyncLlm(null, tmp), true);
-  });
-
-  it("returns null sidecar when unset", () => {
+  it("returns null when unset", () => {
     assert.equal(getInternalOpsProvider(tmp), null);
   });
 
@@ -77,53 +67,6 @@ describe("async capability / internal ops provider", () => {
   it("requires both provider and model", () => {
     writeSettings({ internal_operations_provider: "anthropic" });
     assert.equal(getInternalOpsProvider(tmp), null);
-  });
-
-  it("native parent keeps async", () => {
-    const d = decideAsyncLlmDispatch({
-      parentProvider: "anthropic",
-      cwd: tmp,
-      mustAsync: false,
-    });
-    assert.equal(d.action, "keep-async");
-  });
-
-  it("parentSupportsAsyncLlm false coerces optional async to sync", () => {
-    const d = decideAsyncLlmDispatch({
-      parentProvider: "anthropic",
-      cwd: tmp,
-      mustAsync: false,
-      parentSupportsAsyncLlm: false,
-    });
-    assert.equal(d.action, "coerce-sync");
-  });
-
-  it("parentSupportsAsyncLlm false must-async skips without internal ops provider", () => {
-    const d = decideAsyncLlmDispatch({
-      parentProvider: "anthropic",
-      cwd: tmp,
-      mustAsync: true,
-      parentSupportsAsyncLlm: false,
-    });
-    assert.equal(d.action, "skip");
-  });
-
-  it("parentSupportsAsyncLlm false must-async uses internal ops provider when set", () => {
-    writeSettings({
-      internal_operations_provider: "openai",
-      internal_operations_model: "gpt-5.4",
-    });
-    const d = decideAsyncLlmDispatch({
-      parentProvider: "anthropic",
-      cwd: tmp,
-      mustAsync: true,
-      parentSupportsAsyncLlm: false,
-    });
-    assert.equal(d.action, "sidecar-async");
-    if (d.action === "sidecar-async") {
-      assert.equal(d.sidecar.provider, "openai");
-      assert.equal(d.sidecar.model, "gpt-5.4");
-    }
   });
 
   it("reads internal ops provider from env when file unset", () => {

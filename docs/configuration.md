@@ -442,7 +442,7 @@ See [Memory Architecture](memory-architecture.html) for what each gate does.
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `internal_operations_provider` | string | `""` | `PI_INTERNAL_OPERATIONS_PROVIDER` | Provider pi-config uses for its own detached LLM work when the session provider cannot do it. | Combined with `internal_operations_model` to define the sidecar provider. Used by dreaming, cron, and fire-and-forget async agents. |
+| `internal_operations_provider` | string | `""` | `PI_INTERNAL_OPERATIONS_PROVIDER` | Optional provider override for background internal operations (dreaming). | When set together with `internal_operations_model`, overrides the session model used by dreaming. |
 
 ```json
 {
@@ -458,7 +458,7 @@ export PI_INTERNAL_OPERATIONS_PROVIDER=openai
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `internal_operations_model` | string | `""` | `PI_INTERNAL_OPERATIONS_MODEL` | Model ID paired with `internal_operations_provider`. | Combined with `internal_operations_provider` to define the sidecar model. |
+| `internal_operations_model` | string | `""` | `PI_INTERNAL_OPERATIONS_MODEL` | Model ID paired with `internal_operations_provider`. | When set together with `internal_operations_provider`, overrides the session model used by dreaming. |
 
 ```json
 {
@@ -470,9 +470,9 @@ export PI_INTERNAL_OPERATIONS_PROVIDER=openai
 export PI_INTERNAL_OPERATIONS_MODEL=gpt-5.4
 ```
 
-> **Note:** Both `internal_operations_provider` and `internal_operations_model` must be set together to override the session model for internal operations like dreaming.
+> **Note:** Both `internal_operations_provider` and `internal_operations_model` must be set together to override the session model for background dreaming. Cron jobs use the worker's normal model resolution chain (`agent_overrides`, frontmatter, `agent_provider`/`agent_model`) unless pinned via `/cron`.
 
-See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
+See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for details.
 
 ### `sync_agent_max_seconds`
 

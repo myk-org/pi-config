@@ -163,16 +163,6 @@ describe("formatValue", () => {
     assert.equal(formatValue("image_model", "gemini-2.0-flash", SETTINGS_KEYS.image_model), "gemini-2.0-flash");
   });
 
-  it("formats agent_list with entries", () => {
-    const def = { description: "test", type: "agent_list", default: [], group: "Provider" } as any;
-    assert.equal(formatValue("test_agents", ["claude", "gemini"], def), "claude, gemini");
-  });
-
-  it("formats empty agent_list", () => {
-    const def = { description: "test", type: "agent_list", default: [], group: "Provider" } as any;
-    assert.equal(formatValue("test_agents", [], def), EMPTY_VALUE_SENTINEL);
-  });
-
   it("formats agent_overrides with entries", () => {
     const overrides = { worker: { provider: "litellm" } };
     assert.equal(formatValue("agent_overrides", overrides, SETTINGS_KEYS.agent_overrides), "1 override(s)");
@@ -310,17 +300,6 @@ describe("parseRawValue", () => {
 
   it("parses empty string to empty", () => {
     assert.equal(parseRawValue("image_model", EMPTY_VALUE_SENTINEL, SETTINGS_KEYS.image_model), "");
-  });
-
-  it("parses agent_list comma-separated", () => {
-    const def = { description: "test", type: "agent_list", default: [], group: "Provider" } as any;
-    assert.deepEqual(parseRawValue("test_agents", "claude, gemini", def), ["claude", "gemini"]);
-  });
-
-  it("parses empty agent_list", () => {
-    const def = { description: "test", type: "agent_list", default: [], group: "Provider" } as any;
-    assert.deepEqual(parseRawValue("test_agents", "", def), []);
-    assert.deepEqual(parseRawValue("test_agents", EMPTY_VALUE_SENTINEL, def), []);
   });
 
   it("round-trips bool values", () => {
@@ -884,7 +863,7 @@ describe("getFilePathForScope", () => {
 
 describe("buildSettingItems integration", () => {
   it("every CATEGORIES key has a matching SETTINGS_KEYS entry with valid type", () => {
-    const validTypes = new Set(["bool", "bool_enable", "bool_or_string", "string", "int", "port", "number", "agent_list", "agent_overrides", "string_list"]);
+    const validTypes = new Set(["bool", "bool_enable", "bool_or_string", "string", "int", "port", "number", "agent_overrides", "string_list"]);
     for (const category of CATEGORIES) {
       for (const key of category.keys) {
         const def = SETTINGS_KEYS[key];
@@ -928,7 +907,6 @@ describe("buildSettingItems integration", () => {
       int: 5,
       port: 8080,
       number: 3.5,
-      agent_list: ["claude", "gemini"],
       agent_overrides: { worker: { provider: "litellm" } },
     };
 
@@ -944,11 +922,7 @@ describe("buildSettingItems integration", () => {
         const formatted = formatValue(key, testVal, def);
         const parsed = parseRawValue(key, formatted, def);
 
-        if (def.type === "agent_list") {
-          assert.deepEqual(parsed, testVal, `round-trip failed for ${key} (${def.type})`);
-        } else {
-          assert.equal(parsed, testVal, `round-trip failed for ${key} (${def.type})`);
-        }
+        assert.equal(parsed, testVal, `round-trip failed for ${key} (${def.type})`);
       }
     }
   });
