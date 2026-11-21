@@ -105,6 +105,14 @@ interface ProjectSettings {
   pidiff_daemon_startup_timeout_s?: number;
   /** Distill addressed review findings into memory lessons after `reviews address`. Default: true. */
   review_learning?: boolean;
+  /** Keyboard shortcut to collapse/expand the tasks widget (empty string disables). */
+  widget_tasks_shortcut?: string;
+  /** Keyboard shortcut to collapse/expand the coms widget (empty string disables). */
+  widget_coms_shortcut?: string;
+  /** Keyboard shortcut to collapse/expand both tasks and coms widgets (empty string disables). */
+  widget_all_shortcut?: string;
+  /** Default display mode for tasks and coms widgets ("expanded" | "collapsed"). */
+  widgets_default_mode?: string;
 }
 
 /** Settings metadata is loaded from settings-keys.json by the cycle-free settings source. */
@@ -156,6 +164,10 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "pidiff_stale_lock_timeout_ms",
   "pidiff_daemon_startup_timeout_s",
   "review_learning",
+  "widget_tasks_shortcut",
+  "widget_coms_shortcut",
+  "widget_all_shortcut",
+  "widgets_default_mode",
 ];
 for (const key of PROJECT_SETTINGS_KEYS) {
   if (!(key in SETTINGS_KEYS)) {
@@ -540,6 +552,10 @@ export function getSetting(cwd: string, key: "memory_near_duplicate_threshold"):
 export function getSetting(cwd: string, key: "memory_conflict_similarity"): number;
 export function getSetting(cwd: string, key: "memory_inject_similarity"): number;
 export function getSetting(cwd: string, key: "memory_token_budget"): number;
+export function getSetting(cwd: string, key: "widget_tasks_shortcut"): string;
+export function getSetting(cwd: string, key: "widget_coms_shortcut"): string;
+export function getSetting(cwd: string, key: "widget_all_shortcut"): string;
+export function getSetting(cwd: string, key: "widgets_default_mode"): string;
 // Fallback overload: any known settings key (SETTINGS_KEYS union) — a mistyped
 // key is a compile error instead of silently returning false (Qodo PR #954).
 export function getSetting(cwd: string, key: keyof typeof SETTINGS_KEYS): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }>;
