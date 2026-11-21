@@ -91,7 +91,6 @@ Friendly Python provider aliases map to sidecar ids:
 | Client alias | Sidecar provider |
 | :--- | :--- |
 | `gemini` | `google` |
-| `cursor` | `acpx-cursor` (model prefixed with `cursor:` if needed) |
 | `claude` | `google-vertex-claude` |
 
 Refresh after changing agents or auth:
@@ -209,16 +208,6 @@ result = await call_ai_once(
 | `timeout_ms` / `timeoutMs` | number | `30000` | Request timeout |
 
 Restrict the built-in tool allowlist with `tools=["read", "grep"]` (or `[]` for none).
-
-### ACPX and CLI model sources
-
-```bash
-export ACPX_AGENTS=cursor
-export CLI_AGENTS=claude,gemini
-npx pi-sidecar
-```
-
-Then use providers such as `acpx-cursor` / `cli-claude` (or Python aliases `cursor` / mapped names). Refresh with `POST /models/refresh` after changing env. See [Configuration & Settings](configuration.html) for project-level agent lists used by interactive Pi.
 
 ### Custom providers and settings (agent dir)
 
@@ -377,7 +366,7 @@ Start the sidecar, wait for `/health`, then start your app and trap cleanup — 
 | Goal | What you do |
 | :--- | :--- |
 | **Use** | Run `pi-sidecar`, call `call_ai_once` / `SidecarClient`, pass `custom_tools` / `tools` |
-| **Extend** | Call `startSidecar({ port, host, watchdogUrl, watchdogOptions })` from Node, or override extension paths with `SIDECAR_ACPX_EXTENSION_PATH`, `SIDECAR_CLI_PROVIDER_EXTENSION_PATH`, `SIDECAR_PROVIDER_EXTENSION_PATH`, `SIDECAR_VERTEX_EXTENSION_PATH`, `SIDECAR_SUBAGENT_EXTENSION_PATH` |
+| **Extend** | Call `startSidecar({ port, host, watchdogUrl, watchdogOptions })` from Node, or override extension paths with `SIDECAR_VERTEX_EXTENSION_PATH` and `SIDECAR_SUBAGENT_EXTENSION_PATH` |
 
 Startup lifecycle:
 
@@ -404,7 +393,7 @@ results = await run_parallel_with_limit(tasks, max_concurrency=5)
 | :--- | :--- |
 | Client connection errors | Align `SIDECAR_URL` with the server port (`9100` vs `9201`). |
 | `/health` stuck on `starting` / 503 | Wait for discovery; check logs (`PI_SIDECAR_LOG_LEVEL=debug`). |
-| Empty model list | Auth providers; set `ACPX_AGENTS` / `CLI_AGENTS`; `POST /models/refresh`; check `GET /models/:provider/status`. |
+| Empty model list | Auth providers; `POST /models/refresh`; check `GET /models/:provider/status`. |
 | Session create rejects model | Use an id from `GET /models`; interactive OAuth-only providers are blocked in this headless service. |
 | `409` / session busy | Wait for the current prompt or `POST .../abort`. |
 | `agent_dir` rejected | Bind on loopback, or use `DEV_MODE=true` (value discarded). |
@@ -415,7 +404,6 @@ results = await run_parallel_with_limit(tasks, max_concurrency=5)
 ## Related Pages
 
 - [Google Vertex Claude Provider](vertex-claude-provider.html)
-- [ACPX Provider Integration](acpx-provider.html)
 - [External AI Agents & CLI](external-ai-agents.html)
 - [Configuration & Settings](configuration.html)
 - [Daemon & Websocket Networking](daemon-and-websockets.html)

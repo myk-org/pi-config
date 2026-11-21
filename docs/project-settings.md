@@ -44,7 +44,7 @@ uv run myk-pi-tools settings get dco use_worktrees # specific keys
 
 Use `{{SETTINGS:key1,key2}}` in agent `.md` files to inject resolved values at prompt assembly time. The
 placeholder is replaced by `substituteSettingsPlaceholders` in `rule-placeholders.ts` before the system prompt
-reaches any model (native or CLI/ACPX), as a JSON object of the resolved values.
+reaches the model, as a JSON object of the resolved values.
 
 This is **not** the same pipeline as orchestrator rules. Agents only get `{{SETTINGS:…}}` JSON injection; rules
 use conditional assembly — `{{IF:}}` / `{{IFNOT:}}` blocks, comparison literals, and whole-file
@@ -63,7 +63,6 @@ For what it looks like from the user side, see [Configuration & Settings](config
 - **Smart pickers:** Provider and model fields use fuzzy-searchable `SelectList` from `ctx.modelRegistry`.
   `image_model` is hard-filtered to provider `google` **and** image-capable models; if that filtered list is
   empty, the TUI falls back to free-text `InputSubmenu`.
-- **Agent lists:** `acpx_agents` and `cli_agents` use multi-select with ☑/☐ toggles.
 - **Agent overrides:** Nested per-agent provider/model editor.
 - **Secret masking:** Keys matching `token|secret|password|auth` are masked in the list and never prefilled in the editor.
 - **Write format:** The TUI writes plain JSON (atomic write-then-rename) to the scope's settings file.
@@ -82,4 +81,4 @@ Files: `extensions/orchestrator/settings-tui.ts`, `settings-tui-helpers.ts`, `se
 
 - [Configuration & Settings](configuration.html) — the full settings key reference and resolution order.
 - [Rules and Layers](rules-and-layers.html) — how rules consume settings through conditionals and frontmatter gates.
-- [CLI Provider Internals](cli-provider.html) and [Async & Runtime Internals](async-internals.html) — extensions driven by these settings.
+- [Async & Runtime Internals](async-internals.html) — extensions driven by these settings.

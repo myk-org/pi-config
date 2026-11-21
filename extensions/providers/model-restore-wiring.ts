@@ -84,7 +84,7 @@ export function registerModelRestoreOnSessionStart(
       projectTrusted = false;
     }
     // Fire-and-forget restore so session_start is not blocked by retries (#753).
-    // Omit registeredProviders: cli/acpx-only lists falsely fail-fast native defaults.
+    // Omit registeredProviders so native defaults are never falsely fail-fasted.
     const modelRestore = restoreDefaultModelOnSessionStart({
       ctx: {
         model: ctx.model

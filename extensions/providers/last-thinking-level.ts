@@ -15,11 +15,6 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createLogger } from "../shared/logger.js";
-import {
-  discoveredIdFromRuntimeModelId,
-  isCliOrAcpxProvider,
-  thinkingLevelFromDiscoveredId,
-} from "../shared/models-dev.js";
 import { resolvePiAgentDir } from "./restore-default-model.js";
 
 const log = createLogger("providers");
@@ -214,17 +209,6 @@ function hasExplicitThinkingArg(argv: string[]): boolean {
   return explicit;
 }
 
-function hasEncodedThinking(model: RuntimeModel | undefined): boolean {
-  const encoded = !!model?.id
-    && isCliOrAcpxProvider(String(model.provider))
-    && thinkingLevelFromDiscoveredId(discoveredIdFromRuntimeModelId(model.id)) !== undefined;
-  log.debug("thinking preference encoded model checked", {
-    model: modelThinkingKey(model),
-    encoded,
-  });
-  return encoded;
-}
-
 function hasSessionThinkingState(ctx: ThinkingRestoreContext): boolean {
   const statefulEntryTypes = new Set([
     "message", "custom_message", "compaction", "branch_summary",
@@ -243,8 +227,7 @@ export function shouldRestoreLastThinkingLevel(opts: {
     || (opts.reason === "startup" && !hasSessionThinkingState(opts.ctx));
   const restore = fresh
     && opts.ctx.model?.reasoning === true
-    && !hasExplicitThinkingArg(opts.argv ?? process.argv)
-    && !hasEncodedThinking(opts.ctx.model);
+    && !hasExplicitThinkingArg(opts.argv ?? process.argv);
   log.debug("thinking preference lifecycle restore checked", {
     reason: opts.reason,
     model: modelThinkingKey(opts.ctx.model),
@@ -313,7 +296,7 @@ export function registerLastThinkingLevel(
 
   const applyPreference = (model: RuntimeModel | undefined, reason: string): boolean => {
     const key = modelThinkingKey(model);
-    if (!model || model.reasoning !== true || !key || hasEncodedThinking(model)) {
+    if (!model || model.reasoning !== true || !key) {
       log.debug("thinking preference model restore skipped", { model: key, reason, reasoning: model?.reasoning === true });
       return false;
     }
@@ -396,7 +379,7 @@ export function registerLastThinkingLevel(
     generation += 1;
     modelEventGeneration = generation;
     lastModelEvent = { key: selectedKey, source: event.source, fromDefaultRestore: event.source === "set" && selectedKey === defaultRestoreKey };
-    if (event.source === "restore" || selectedKey === defaultRestoreKey || preserveCliLevel || hasEncodedThinking(event.model as RuntimeModel)) {
+    if (event.source === "restore" || selectedKey === defaultRestoreKey || preserveCliLevel) {
       log.debug("thinking preference model event preserved session level", {
         model: selectedKey,
         source: event.source,

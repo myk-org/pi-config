@@ -12,9 +12,7 @@ import { join } from "node:path";
 import {
 	clearSettingsCache,
 	getSetting,
-	parseAcpxAgentList,
 	parseReviewLoopMaxCycles,
-	asStringArray,
 	setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -84,34 +82,6 @@ describe("parseReviewLoopMaxCycles", () => {
 	});
 });
 
-describe("parseAcpxAgentList", () => {
-	it("parses comma-separated string", () => {
-		assert.deepEqual(parseAcpxAgentList("cursor, claude"), ["cursor", "claude"]);
-	});
-
-	it("parses array", () => {
-		assert.deepEqual(parseAcpxAgentList(["cursor", "gemini"]), ["cursor", "gemini"]);
-	});
-
-	it("filters invalid agent names", () => {
-		assert.deepEqual(parseAcpxAgentList("cursor, bad name!, claude"), ["cursor", "claude"]);
-	});
-});
-
-describe("asStringArray", () => {
-	it("returns empty for non-arrays", () => {
-		assert.deepEqual(asStringArray(false), []);
-		assert.deepEqual(asStringArray(undefined), []);
-		assert.deepEqual(asStringArray(null), []);
-		assert.deepEqual(asStringArray("cursor"), []);
-		assert.deepEqual(asStringArray(1), []);
-	});
-
-	it("keeps only string entries", () => {
-		assert.deepEqual(asStringArray(["cursor", 1, "claude", null]), ["cursor", "claude"]);
-	});
-});
-
 describe("extension settings", () => {
 	let tmp: string;
 	let globalTmp: string;
@@ -122,8 +92,6 @@ describe("extension settings", () => {
 		PI_IMAGE_MODEL: process.env.PI_IMAGE_MODEL,
 		PI_INTERNAL_OPERATIONS_PROVIDER: process.env.PI_INTERNAL_OPERATIONS_PROVIDER,
 		PI_INTERNAL_OPERATIONS_MODEL: process.env.PI_INTERNAL_OPERATIONS_MODEL,
-		ACPX_AGENTS: process.env.ACPX_AGENTS,
-		CLI_AGENTS: process.env.CLI_AGENTS,
 		PI_REVIEW_LOOP_MAX_CYCLES: process.env.PI_REVIEW_LOOP_MAX_CYCLES,
 	};
 
@@ -139,8 +107,6 @@ describe("extension settings", () => {
 		delete process.env.PI_IMAGE_MODEL;
 		delete process.env.PI_INTERNAL_OPERATIONS_PROVIDER;
 		delete process.env.PI_INTERNAL_OPERATIONS_MODEL;
-		delete process.env.ACPX_AGENTS;
-		delete process.env.CLI_AGENTS;
 		delete process.env.PI_REVIEW_LOOP_MAX_CYCLES;
 	});
 
@@ -241,52 +207,6 @@ describe("extension settings", () => {
 		assert.equal(getSetting(tmp, "image_model"), "from-env");
 	});
 
-	it("explicit empty project acpx_agents disables agents", () => {
-		writeSettings({ acpx_agents: [] });
-		process.env.ACPX_AGENTS = "cursor";
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), []);
-	});
-
-	it("reads acpx_agents string from project settings", () => {
-		writeSettings({ acpx_agents: "cursor,claude" });
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor", "claude"]);
-	});
-
-	it("reads acpx_agents array from project settings", () => {
-		writeSettings({ acpx_agents: ["cursor", "gemini"] });
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor", "gemini"]);
-	});
-
-	it("falls back to ACPX_AGENTS env when project omits it", () => {
-		process.env.ACPX_AGENTS = "cursor,copilot";
-		clearSettingsCache();
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor", "copilot"]);
-	});
-
-	it("acpx_agents global wins over env", () => {
-		writeGlobalSettings({ acpx_agents: ["gemini"] });
-		process.env.ACPX_AGENTS = "cursor";
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["gemini"]);
-	});
-
-	it("malformed project acpx_agents falls through to env", () => {
-		writeSettings({ acpx_agents: 123 });
-		process.env.ACPX_AGENTS = "cursor";
-		clearSettingsCache();
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
-	});
-
-	it("trims whitespace in acpx_agents array entries", () => {
-		writeSettings({ acpx_agents: [" cursor ", " claude"] });
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor", "claude"]);
-	});
-
-	it("project acpx_agents win over env", () => {
-		process.env.ACPX_AGENTS = "claude";
-		writeSettings({ acpx_agents: "cursor" });
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
-	});
-
 	it("project settings win over global settings", () => {
 		writeGlobalSettings({ pidash_port: 7777, image_model: "global-model" });
 		writeSettings({ pidash_port: 5555 });
@@ -314,39 +234,6 @@ describe("extension settings", () => {
 		clearSettingsCache();
 		assert.equal(getSetting(tmp, "internal_operations_provider"), "openai");
 		assert.equal(getSetting(tmp, "internal_operations_model"), "gpt-5.4");
-	});
-
-	it("cli_agents defaults empty", () => {
-		assert.deepEqual(getSetting(tmp, "cli_agents"), []);
-	});
-
-	it("cli_agents from settings", () => {
-		writeSettings({ cli_agents: ["claude", "cursor"] });
-		assert.deepEqual(getSetting(tmp, "cli_agents"), ["claude", "cursor"]);
-	});
-
-	it("cli_agents from env when project omits it", () => {
-		writeSettings({});
-		process.env.CLI_AGENTS = "gemini";
-		clearSettingsCache();
-		assert.deepEqual(getSetting(tmp, "cli_agents"), ["gemini"]);
-	});
-
-	it("cli_agents normalizes mixed case", () => {
-		process.env.CLI_AGENTS = "Cursor,Gemini";
-		clearSettingsCache();
-		assert.deepEqual(getSetting(tmp, "cli_agents"), ["cursor", "gemini"]);
-	});
-
-	it("ACPX_AGENTS normalizes mixed case", () => {
-		process.env.ACPX_AGENTS = "Cursor";
-		clearSettingsCache();
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
-	});
-
-	it("parseAgentNameList dedupes after lowercase", () => {
-		writeSettings({ cli_agents: ["Cursor", "cursor", "CURSOR"] });
-		assert.deepEqual(getSetting(tmp, "cli_agents"), ["cursor"]);
 	});
 
 	it("review_loop_max_cycles defaults to 3", () => {
@@ -423,23 +310,23 @@ describe("extension settings", () => {
 	describe("agent model settings", () => {
 		it("agent_provider and agent_model parse from settings JSON", () => {
 			writeSettings({
-				agent_provider: "cli-cursor",
-				agent_model: "cursor:cursor-grok-4.5-high-fast",
+				agent_provider: "google",
+				agent_model: "gemini-2.5-pro",
 			});
-			assert.equal(getSetting(tmp, "agent_provider"), "cli-cursor");
-			assert.equal(getSetting(tmp, "agent_model"), "cursor:cursor-grok-4.5-high-fast");
+			assert.equal(getSetting(tmp, "agent_provider"), "google");
+			assert.equal(getSetting(tmp, "agent_model"), "gemini-2.5-pro");
 		});
 
 		it("agent_overrides parses with null values preserved", () => {
 			writeSettings({
 				agent_overrides: {
 					debugger: { provider: null, model: null },
-					reviewer: { provider: "cli-claude", model: "claude-sonnet" },
+					reviewer: { provider: "anthropic", model: "claude-sonnet" },
 				},
 			});
 			assert.deepEqual(getSetting(tmp, "agent_overrides"), {
 				debugger: { provider: null, model: null },
-				reviewer: { provider: "cli-claude", model: "claude-sonnet" },
+				reviewer: { provider: "anthropic", model: "claude-sonnet" },
 			});
 		});
 
@@ -458,7 +345,7 @@ describe("extension settings", () => {
 		it("invalid agent_overrides shapes are skipped", () => {
 			writeSettings({
 				agent_overrides: {
-					ok: { provider: "cli-cursor", model: "m1" },
+					ok: { provider: "google", model: "m1" },
 					badArray: ["not", "an", "object"],
 					badNull: null,
 					badString: "nope",
@@ -466,7 +353,7 @@ describe("extension settings", () => {
 				},
 			});
 			assert.deepEqual(getSetting(tmp, "agent_overrides"), {
-				ok: { provider: "cli-cursor", model: "m1" },
+				ok: { provider: "google", model: "m1" },
 			});
 		});
 
@@ -574,27 +461,27 @@ describe("Settings file discovery", () => {
 		assert.equal(getSetting(tmp, "enforcement_allowed_commands"), "");
 	});
 
-	it("reuses cached project/global layers for acpx_agents and cli_agents without re-reading disk (#1207)", () => {
+	it("reuses cached project/global layers without re-reading disk (#1207)", () => {
 		const globalJson = join(globalTmp, "pi-config-settings.json");
 		setGlobalSettingsPath(globalJson);
-		writeFileSync(globalJson, JSON.stringify({ acpx_agents: "claude", cli_agents: ["gemini"] }));
+		writeFileSync(globalJson, JSON.stringify({ pidash_port: 7777, image_model: "global-img" }));
 		mkdirSync(join(tmp, ".pi"), { recursive: true });
 		const projectJson = join(tmp, ".pi", "pi-config-settings.json");
-		writeFileSync(projectJson, JSON.stringify({ acpx_agents: ["cursor"] }));
+		writeFileSync(projectJson, JSON.stringify({ pidash_port: 8888 }));
 		clearSettingsCache();
 
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
-		assert.deepEqual(getSetting(tmp, "cli_agents"), ["gemini"]);
+		assert.equal(getSetting(tmp, "pidash_port"), 8888);
+		assert.equal(getSetting(tmp, "image_model"), "global-img");
 
 		// Mutate disk inside the 30s cache window — cached layers must serve the cached values
-		writeFileSync(projectJson, JSON.stringify({ acpx_agents: ["codex"] }));
-		writeFileSync(globalJson, JSON.stringify({ cli_agents: ["claude"] }));
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
-		assert.deepEqual(getSetting(tmp, "cli_agents"), ["gemini"]);
+		writeFileSync(projectJson, JSON.stringify({ pidash_port: 9999 }));
+		writeFileSync(globalJson, JSON.stringify({ image_model: "updated-img" }));
+		assert.equal(getSetting(tmp, "pidash_port"), 8888);
+		assert.equal(getSetting(tmp, "image_model"), "global-img");
 
 		// Explicit cache clear picks up the updated files immediately
 		clearSettingsCache();
-		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["codex"]);
-		assert.deepEqual(getSetting(tmp, "cli_agents"), ["claude"]);
+		assert.equal(getSetting(tmp, "pidash_port"), 9999);
+		assert.equal(getSetting(tmp, "image_model"), "updated-img");
 	});
 });

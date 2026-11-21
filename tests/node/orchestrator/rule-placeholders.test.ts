@@ -629,12 +629,10 @@ describe("assembleRuleText", () => {
 		const routing = readFileSync(join(root, "rules/10-agent-routing.md"), "utf-8");
 
 		const featureOn = {
-			coms_active: () => false,
-			external_ai_agents: () => true,
+			coms_active: () => true,
 		};
 		const featureOff = {
 			coms_active: () => false,
-			external_ai_agents: () => false,
 		};
 
 		const on = assembleRuleText([reviewLoop], baseOpts({
@@ -653,21 +651,14 @@ describe("assembleRuleText", () => {
 		assert.doesNotMatch(on, /\{\{\/IF/);
 		assert.doesNotMatch(off, /\{\{\/IF/);
 
-		const routingOn = assembleRuleText([routing], baseOpts({
-			resolve: () => false,
-			featurePredicates: featureOn,
-		}));
-		const routingOff = assembleRuleText([routing], baseOpts({
+		const routingOut = assembleRuleText([routing], baseOpts({
 			resolve: () => false,
 			featurePredicates: featureOff,
 		}));
-		assert.doesNotMatch(routingOn, /\{\{IF/);
-		assert.doesNotMatch(routingOff, /\{\{IF/);
-		assert.match(routingOn, /External AI agents/);
-		assert.doesNotMatch(routingOff, /External AI agents/);
+		assert.doesNotMatch(routingOut, /\{\{IF/);
+		assert.doesNotMatch(routingOut, /External AI agents/);
 		// No blank line between consecutive table rows
-		assert.doesNotMatch(routingOn, /\|\n\n\|/);
-		assert.doesNotMatch(routingOff, /\|\n\n\|/);
+		assert.doesNotMatch(routingOut, /\|\n\n\|/);
 	});
 });
 

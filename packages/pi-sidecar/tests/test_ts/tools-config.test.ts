@@ -412,21 +412,7 @@ describe("resolveExtensionPath", () => {
     }
   });
 
-  it("resolves acpx-provider extension from monorepo root", () => {
-    const result = join(MONOREPO_ROOT, "extensions/acpx-provider/index.ts");
-    assert.ok(result.length > 0, "should resolve to a non-empty path");
-    assert.ok(result.replaceAll("\\", "/").endsWith("extensions/acpx-provider/index.ts"), `path should end with entry file, got: ${result}`);
-    assert.doesNotThrow(() => accessSync(result), `extension file should exist at: ${result}`);
-  });
-
-  it("resolves cli-provider extension from monorepo root", () => {
-    const result = join(MONOREPO_ROOT, "extensions/cli-provider/index.ts");
-    assert.ok(result.length > 0, "should resolve to a non-empty path");
-    assert.ok(result.replaceAll("\\", "/").endsWith("extensions/cli-provider/index.ts"), `path should end with entry file, got: ${result}`);
-    assert.doesNotThrow(() => accessSync(result), `extension file should exist at: ${result}`);
-  });
-
-  it("resolves the unified providers extension from monorepo root", () => {
+  it("resolves the providers extension from monorepo root", () => {
     const result = join(MONOREPO_ROOT, "extensions/providers/index.ts");
     assert.ok(result.replaceAll("\\", "/").endsWith("extensions/providers/index.ts"), `path should end with entry file, got: ${result}`);
     assert.doesNotThrow(() => accessSync(result), `extension file should exist at: ${result}`);

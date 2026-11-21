@@ -8,7 +8,7 @@
  * extension instance still sees the live bindings. Tasks are read through
  * `publishedTaskStore()` (`task-store-bridge.ts`), the same pattern.
  *
- * Same marker pattern as the pricing-provenance, session-cwd and task-store bridges.
+ * Same marker pattern as the pricing-provenance and task-store bridges.
  */
 import { createLogger } from "./logger.js";
 

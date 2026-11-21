@@ -14,7 +14,6 @@ import { Type } from "typebox";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import path, { join, resolve, dirname } from "node:path";
-import { supportsAsyncLlm } from "./async-capability.js";
 import { getGlobalSettingsPath, getSetting, getSettingsPath } from "./project-settings.js";
 import { LEGACY_SETTINGS_FILENAME, SETTINGS_FILENAMES } from "./settings-source.js";
 import { escapeRegExp, getProjectTmpDir, realpathNearestExisting, resolveWorktreeRoot, sanitizeModelId } from "./utils.js";
@@ -973,12 +972,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     // Block repeated identical commands (polling-by-spam) — orchestrator only.
-    // Skip on acpx: async LLM agents are unavailable; foreground polls are expected.
-    const parentSupportsAsyncLlm = supportsAsyncLlm(
-      (ctx as any).model?.provider,
-      ctx.cwd,
-    );
-    if (parentSupportsAsyncLlm && process.env.PI_SUBAGENT_CHILD !== "1") {
+    if (process.env.PI_SUBAGENT_CHILD !== "1") {
       ensureRepeatFile(ctx.cwd);
       const normalized = normalizeForRepeatCheck(command);
       const rs = readRepeatState();
@@ -1029,13 +1023,12 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       };
     }
 
-    // Block sleep inside loops / long sleeps — force async on native providers only.
-    // On acpx, do not push async (unsupported); foreground waits are allowed.
+    // Block sleep inside loops / long sleeps — force async in the orchestrator.
     const hasLoop = /\b(while|for|until)\b/.test(command);
     const sleepMatch = command.match(/\bsleep\s+(\d+)/);
     // A subagent CHILD cannot spawn async agents, so blocking its sleep would recommend a route
     // that does not exist there — the advice ("use async: true") is only true in the parent.
-    const asyncRouteAvailable = parentSupportsAsyncLlm && process.env.PI_SUBAGENT_CHILD !== "1";
+    const asyncRouteAvailable = process.env.PI_SUBAGENT_CHILD !== "1";
     if (asyncRouteAvailable && hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > getSetting(ctx.cwd, "enforcement_loop_sleep_threshold_s")) {
       return {
         block: true,

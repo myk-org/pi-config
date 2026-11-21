@@ -10,7 +10,7 @@
  *
  * Shared with packages/pi-sidecar through the global symbol registry: the sidecar
  * cannot import extensions/shared (separate tsconfig rootDir). Same pattern as
- * Symbol.for("pi-config.ambientLoginAuth") and the session-cwd ALS.
+ * Symbol.for("pi-config.ambientLoginAuth").
  */
 import { createHash } from "node:crypto";
 import { createLogger } from "./logger.js";

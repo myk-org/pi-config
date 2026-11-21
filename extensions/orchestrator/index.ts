@@ -205,7 +205,7 @@ export default function (pi: ExtensionAPI) {
     label: "List Models",
     description: "List available models and providers. Use when the user asks to run an agent with a specific model, or when you need to discover available models for the subagent model parameter. Returns provider/model pairs that can be passed to subagent(model=\"provider/model-id\").",
     parameters: Type.Object({
-      provider: Type.Optional(Type.String({ description: "Filter by provider name (e.g., 'litellm', 'cli-cursor', 'google')" })),
+      provider: Type.Optional(Type.String({ description: "Filter by provider name (e.g., 'litellm', 'google', 'anthropic')" })),
     }),
     async execute(_callId, params, _signal, _onUpdate, ctx) {
       let models: any[];
@@ -224,12 +224,9 @@ export default function (pi: ExtensionAPI) {
           details: undefined,
         };
       }
-      // Filter out acpx-* providers — they cannot work in subagent children
-      // (PI_SUBAGENT_CHILD=1 skips acpx registration)
-      const filtered = (params.provider
+      const filtered = params.provider
         ? models.filter((m: any) => m.provider === params.provider)
-        : models
-      ).filter((m: any) => !(m.provider || "").startsWith("acpx-"));
+        : models;
       if (filtered.length === 0) {
         return {
           content: [{ type: "text" as const, text: params.provider ? `No models found for provider "${params.provider}".` : "No models available." }],

@@ -162,12 +162,12 @@ If one specialist works better on a specific backend, set defaults in project se
 
 ```json
 {
-  "agent_provider": "cli-cursor",
-  "agent_model": "cursor:cursor-grok-4.5-high-fast",
+  "agent_provider": "google",
+  "agent_model": "gemini-2.5-pro",
   "agent_overrides": {
     "test-runner": {
-      "provider": "cli-claude",
-      "model": "claude-3-5-sonnet"
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5"
     }
   }
 }

@@ -143,16 +143,14 @@ myk-pi-tools ai-cli run "Review auth" --provider cursor --cli-flags=--trust
 
 `--cli-flags` is repeatable. Pi adds `--force` automatically for `cursor` so non-interactive `--print` runs skip the workspace trust prompt. `ai-cli run` also accepts `--cwd <dir>` to run the agent somewhere other than the current directory.
 
-### Other providers
+### Customization
 
-For agents outside `cursor` / `claude` / `gemini` (for example Codex or Copilot), use ACPX instead of `/external-ai`. See [ACPX Provider Integration](acpx-provider.html).
-
-For registering `cli-*` providers inside Pi sessions, see [Configuration & Settings](configuration.html). To customize slash-command behavior, see [Creating Slash Commands](custom-slash-commands.html).
+To customize slash-command behavior, see [Creating Slash Commands](custom-slash-commands.html).
 
 ## Troubleshooting
 
 - **Permission / unexpected file changes:** You ran without `--fix`, or the agent ignored read-only instructions. Retry with `--fix` after a clean or checkpointed tree.
-- **Unknown provider:** Use only `cursor`, `claude`, or `gemini` with `/external-ai`. Other agents need [ACPX Provider Integration](acpx-provider.html).
+- **Unknown provider:** Use only `cursor`, `claude`, or `gemini` with `/external-ai`.
 - **`agent` / `claude` / `gemini` not found:** Install and authenticate that provider’s CLI separately, then confirm it is on your `PATH`.
 - **Long-running or “stuck” agents:** Multi-step tool use can take several minutes. Do not cancel early — execution commands intentionally run without strict timeouts.
 - **`--resume` and `--peer` together:** Not allowed; drop one of the flags.
@@ -160,7 +158,6 @@ For registering `cli-*` providers inside Pi sessions, see [Configuration & Setti
 
 ## Related Pages
 
-- [ACPX Provider Integration](acpx-provider.html)
 - [Google Vertex Claude Provider](vertex-claude-provider.html)
 - [Pi Sidecar HTTP API](pi-sidecar.html)
 - [Configuration & Settings](configuration.html)

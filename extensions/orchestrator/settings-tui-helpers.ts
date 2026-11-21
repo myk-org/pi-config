@@ -140,9 +140,6 @@ export function formatValue(key: string, value: unknown, def: SettingsKeyDef): s
       return String(value);
     case "string":
       return value === "" ? EMPTY_VALUE_SENTINEL : String(value);
-    case "agent_list":
-      if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : EMPTY_VALUE_SENTINEL;
-      return String(value);
     case "string_list":
       if (Array.isArray(value)) return value.length > 0 ? `${value.length} pattern(s)` : EMPTY_VALUE_SENTINEL;
       return String(value);
@@ -185,10 +182,6 @@ export function parseRawValue(key: string, rawValue: string, def: SettingsKeyDef
 
     case "string":
       return rawValue === EMPTY_VALUE_SENTINEL ? "" : rawValue;
-
-    case "agent_list":
-      if (!rawValue || rawValue === EMPTY_VALUE_SENTINEL) return [];
-      return rawValue.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 
     case "string_list": {
       // StringListSubmenu commits JSON; accept a hand-typed single pattern too

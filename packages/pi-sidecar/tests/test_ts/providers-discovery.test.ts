@@ -8,8 +8,14 @@ import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { startSidecar } from "../../src/index.js";
 import { SessionStore } from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
-import { buildAmbientLoginAuth } from "../../../../extensions/shared/create-runtime-provider.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
+
+function makeAmbientLoginAuth(displayName: string) {
+  return Object.assign(
+    { name: displayName, resolve: async () => undefined },
+    { [Symbol.for("pi-config.ambientLoginAuth")]: true },
+  ) as never;
+}
 
 describe("GET /providers", () => {
   let port: number;
@@ -99,8 +105,8 @@ describe("SessionStore provider discovery", () => {
     // An empty object is still "no usable auth" — the assertion below is unchanged.
     (authless.provider as { auth?: unknown }).auth = {};
     runtime.registerNativeProvider(authless.provider);
-    const ambient = fauxProvider({ provider: "cli-ambient", models: [] });
-    ambient.provider.auth = { apiKey: buildAmbientLoginAuth({ displayName: "Local login", isConfigured: () => false, sourceLabel: "local" }) };
+    const ambient = fauxProvider({ provider: "ambient-local", models: [] });
+    ambient.provider.auth = { apiKey: makeAmbientLoginAuth("Local login") };
     runtime.registerNativeProvider(ambient.provider);
     store = new SessionStore();
     Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime });
@@ -118,8 +124,8 @@ describe("SessionStore provider discovery", () => {
       { provider: "extension-authless", supportsSessionApiKey: false });
   });
   it("marks ambient login providers unsupported", async () => {
-    assert.deepEqual((await store.getProviders()).find((p) => p.provider === "cli-ambient"),
-      { provider: "cli-ambient", supportsSessionApiKey: false });
+    assert.deepEqual((await store.getProviders()).find((p) => p.provider === "ambient-local"),
+      { provider: "ambient-local", supportsSessionApiKey: false });
   });
   it("includes excluded providers but marks session keys unsupported", async () => {
     assert.deepEqual((await store.getProviders()).find((p) => p.provider === "github-copilot"),

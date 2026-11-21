@@ -2,10 +2,7 @@
  * Shared binary resolution helpers.
  *
  * In-process PATH scan for resolving CLI binaries. Avoids spawnSync("which")
- * on auth/filter hot paths. Used by both CLI and ACPX provider drivers.
- *
- * Moved from cli-provider/shared/discover-cache.ts so both provider families
- * can import without cross-provider dependencies.
+ * on hot paths.
  *
  * @module shared/resolve-binary
  */

@@ -16,7 +16,7 @@ const log = createLogger("dreaming");
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { decideAsyncLlmDispatch } from "./async-capability.js";
+import { getInternalOpsProvider } from "./async-capability.js";
 import { getSetting } from "./project-settings.js";
 import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
@@ -263,28 +263,9 @@ export function registerDreaming(
   function runDreamAsync(cwd: string, lastSessionFile?: string) {
     if (dreamInFlight) return; // Prevent concurrent dreams
 
-    const parentProvider = lastCtx?.model?.provider as string | undefined;
-    let dreamModelId: string | undefined;
-    let dreamProvider: string | undefined;
-    const dreamDispatch = decideAsyncLlmDispatch({
-      parentProvider,
-      cwd,
-      mustAsync: true,
-    });
-    if (dreamDispatch.action === "skip") {
-      fileLog("dreaming", "warn", "dreaming", dreamDispatch.note || "dream skipped (no async LLM path)");
-      try {
-        lastCtx?.ui?.notify?.(
-          "Dream skipped: set internal_operations_provider and internal_operations_model for acpx sessions",
-          "warning",
-        );
-      } catch { /* stale UI */ }
-      return;
-    }
-    if (dreamDispatch.action === "sidecar-async") {
-      dreamProvider = dreamDispatch.sidecar.provider;
-      dreamModelId = dreamDispatch.sidecar.model;
-    }
+    const internalOps = getInternalOpsProvider(cwd);
+    const dreamProvider = internalOps?.provider;
+    const dreamModelId = internalOps?.model;
 
     dreamInFlight = true;
     log.info("dream start", cwd);

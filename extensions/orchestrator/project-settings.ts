@@ -6,11 +6,11 @@
  *    .jsonc is migrated away once, see migrateLegacySettingsFile)
  * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
  * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
- *    ACPX_AGENTS, CLI_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
+ *    PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
  *    PI_INTERNAL_OPERATIONS_PROVIDER, PI_INTERNAL_OPERATIONS_MODEL, PI_REVIEW_LOOP_MAX_CYCLES,
  *    PI_ENFORCEMENT_ALLOWED_COMMANDS, VERTEX_CLAUDE_1M, PI_SIDECAR_LOG_LEVEL,
  *    PI_COMS_MAX_HOPS, PI_COMS_TIMEOUT_MS, PI_COMS_DIR)
- * 4. Default (dream_interval_hours defaults to 3; acpx_agents/cli_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190;
+ * 4. Default (dream_interval_hours defaults to 3; pidash_enable/pidiff_enable to true; pidash_port to 19190;
  *    review_loop_max_cycles to 3)
  *
  * review_loop_max_cycles accepts JSON integers 1-10, or digit strings "1"-"10" only (after trim).
@@ -42,9 +42,6 @@ interface ProjectSettings {
   review_loop_enforcement?: boolean;
   /** Block orchestrator from using edit and write tools directly (must delegate to subagents). Default: false. */
   orchestrator_edit_write_block?: boolean;
-  acpx_agents?: string | string[];
-  /** CLI-backed providers to register as cli-${agent} (claude, gemini, cursor). */
-  cli_agents?: string | string[];
   pidash_enable?: boolean;
   pidiff_enable?: boolean;
   /** Enable local Trail code map integration. Default: true. */
@@ -57,9 +54,9 @@ interface ProjectSettings {
   task_stale_in_progress_enabled?: boolean;
   task_stale_in_progress_minutes?: number;
   image_model?: string;
-  /** Provider for detached LLM async children when parent is acpx (must-async / dream). */
+  /** Provider for internal operations (e.g. dreaming). Empty = use session model. */
   internal_operations_provider?: string;
-  /** Model id for detached LLM async children when parent is acpx. */
+  /** Model id for internal operations (e.g. dreaming). Empty = use session model. */
   internal_operations_model?: string;
   /** Max review-loop cycles injected into the rules prompt. Integer 1-10 only. */
   review_loop_max_cycles?: number;
@@ -128,8 +125,6 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "comment_signature",
   "review_loop_enforcement",
   "orchestrator_edit_write_block",
-  "acpx_agents",
-  "cli_agents",
   "pidash_enable",
   "pidiff_enable",
   "trail_enable",
@@ -215,16 +210,6 @@ export function parseSettingsFile(filePath: string): ProjectSettings {
     if (parsedMaxCycles !== undefined) {
       result.review_loop_max_cycles = parsedMaxCycles;
     }
-    if (typeof raw.acpx_agents === "string") {
-      result.acpx_agents = raw.acpx_agents;
-    } else if (Array.isArray(raw.acpx_agents)) {
-      result.acpx_agents = raw.acpx_agents;
-    }
-    if (typeof raw.cli_agents === "string") {
-      result.cli_agents = raw.cli_agents;
-    } else if (Array.isArray(raw.cli_agents)) {
-      result.cli_agents = raw.cli_agents;
-    }
     if (typeof raw.agent_provider === "string") {
       result.agent_provider = raw.agent_provider.trim();
     }
@@ -253,7 +238,7 @@ export function parseSettingsFile(filePath: string): ProjectSettings {
       "dream_interval_hours", "dco", "comment_signature", "review_loop_enforcement",
       "orchestrator_edit_write_block", "pidash_enable", "pidiff_enable", "trail_enable", "pidash_port",
       "image_model", "internal_operations_provider", "internal_operations_model",
-      "review_loop_max_cycles", "acpx_agents", "cli_agents", "agent_provider",
+      "review_loop_max_cycles", "agent_provider",
       "agent_model", "agent_overrides",
     ]);
     for (const [k, def] of Object.entries(SETTINGS_KEYS)) {
@@ -362,31 +347,6 @@ function parsePortEnv(name: string): number | undefined {
   if (val === undefined || val === "") return undefined;
   const port = parseInt(val, 10);
   return Number.isFinite(port) && port > 0 && port <= 65535 ? port : undefined;
-}
-
-/** Parse agent name lists (acpx_agents / cli_agents) — comma-separated string or JSON array. */
-export function parseAgentNameList(value: string | string[] | undefined): string[] {
-  if (value === undefined) return [];
-  const parts = Array.isArray(value)
-    ? value.map((a) => (typeof a === "string" ? a.trim().toLowerCase() : ""))
-    : value.split(",").map((a) => a.trim().toLowerCase());
-  const filtered = parts.filter((a) => /^[a-z0-9_-]+$/.test(a));
-  return [...new Set(filtered)];
-}
-
-/**
- * Coerce a getSetting result to string[].
- * Mixed/stale ~/.pi installs may pair a new provider with an older project-settings
- * that returns `false` for unknown keys — never assume .filter/.map is safe.
- */
-export function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((x): x is string => typeof x === "string");
-}
-
-/** @deprecated Use parseAgentNameList — kept for existing imports. */
-export function parseAcpxAgentList(value: string | string[] | undefined): string[] {
-  return parseAgentNameList(value);
 }
 
 function parseNumEnv(name: string): number | undefined {
@@ -510,8 +470,6 @@ export function getSetting(cwd: string, key: "dco"): boolean;
 export function getSetting(cwd: string, key: "comment_signature"): boolean;
 export function getSetting(cwd: string, key: "review_loop_enforcement"): boolean;
 export function getSetting(cwd: string, key: "orchestrator_edit_write_block"): boolean;
-export function getSetting(cwd: string, key: "acpx_agents"): string[];
-export function getSetting(cwd: string, key: "cli_agents"): string[];
 export function getSetting(cwd: string, key: "pidash_enable"): boolean;
 export function getSetting(cwd: string, key: "pidiff_enable"): boolean;
 export function getSetting(cwd: string, key: "trail_enable"): boolean;
@@ -560,7 +518,7 @@ export function getSetting(cwd: string, key: "widgets_default_mode"): string;
 // key is a compile error instead of silently returning false (Qodo PR #954).
 export function getSetting(cwd: string, key: keyof typeof SETTINGS_KEYS): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }>;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
-  const { settings, projectSettings, globalSettings } = getSettingsLayers(cwd);
+  const { settings } = getSettingsLayers(cwd);
   const def = SETTINGS_KEYS[key as keyof typeof SETTINGS_KEYS];
   if (!def) return false;
 
@@ -575,28 +533,6 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
         return envStr; // treat as custom trailer string
       }
       return def.default as boolean;
-    }
-    case "acpx_agents":
-    case "cli_agents": {
-      const agentKey = key as "acpx_agents" | "cli_agents";
-      const projectValue = projectSettings[agentKey];
-      // Only override when the raw value parsed as a valid type (string or array).
-      // Invalid types (number, object, etc.) are skipped by parseSettingsFile,
-      // leaving projectValue undefined — fall through to global/env.
-      if (projectValue !== undefined) {
-        return parseAgentNameList(projectValue);
-      }
-      const globalAgents = globalSettings[agentKey];
-      if (globalAgents !== undefined) {
-        return parseAgentNameList(globalAgents);
-      }
-      if (def.env) {
-        const env = process.env[def.env];
-        if (env !== undefined && env !== "") {
-          return parseAgentNameList(env);
-        }
-      }
-      return parseAgentNameList(def.default as string | string[] | undefined);
     }
     case "pidash_enable":
     case "pidiff_enable": {
@@ -723,14 +659,6 @@ export function registerProjectSettings(pi: ExtensionAPI): void {
     const sidecarLogLevel = getSetting(cwd, "sidecar_log_level");
     if (sidecarLogLevel) process.env.PI_SIDECAR_LOG_LEVEL = sidecarLogLevel;
     else delete process.env.PI_SIDECAR_LOG_LEVEL;
-
-    const acpxAgents = getSetting(cwd, "acpx_agents");
-    if (acpxAgents.length > 0) process.env.ACPX_AGENTS = acpxAgents.join(",");
-    else delete process.env.ACPX_AGENTS;
-
-    const cliAgents = getSetting(cwd, "cli_agents");
-    if (cliAgents.length > 0) process.env.CLI_AGENTS = cliAgents.join(",");
-    else delete process.env.CLI_AGENTS;
 
     const imageModel = getSetting(cwd, "image_model");
     if (imageModel) process.env.PI_IMAGE_MODEL = imageModel;

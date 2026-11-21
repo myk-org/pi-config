@@ -288,7 +288,6 @@ class AIResult:
 
 # Provider mapping: friendly provider names → sidecar provider names
 _PROVIDER_MAP = {
-    "cursor": "acpx-cursor",
     "claude": "google-vertex-claude",
     "gemini": "google",
 }
@@ -298,9 +297,6 @@ def _map_provider_model(provider: str, model: str, api_key: str | None = None) -
     """Map friendly provider/model names to sidecar provider/model."""
     sidecar_provider = _PROVIDER_MAP.get(provider, provider)
     sidecar_model = model
-    # Cursor models need the cursor: prefix
-    if sidecar_provider == "acpx-cursor" and not model.startswith("cursor:"):
-        sidecar_model = f"cursor:{model}"
     if (sidecar_provider != provider or sidecar_model != model) and logger.isEnabledFor(logging.DEBUG):
         logger.debug(
             "Provider mapped: %s/%s → %s/%s",
@@ -493,8 +489,8 @@ class SidecarClient:
         """Get registration, model count, and auth status for a single provider.
 
         Args:
-            provider: Sidecar provider id, e.g. ``"google"``, ``"acpx-cursor"``,
-                or ``"cli-cursor"``. URL-encoded before being placed in the path
+            provider: Sidecar provider id, e.g. ``"google"`` or
+                ``"google-vertex-claude"``. URL-encoded before being placed in the path
                 so ids containing reserved characters (e.g. ``/``) can't alter
                 the request path.
 
@@ -505,12 +501,10 @@ class SidecarClient:
             - ``provider`` (str): the provider id that was queried.
             - ``registered`` (bool): whether the provider is currently
               registered on the shared ``ModelRuntime``.
-            - ``modelCount`` (int): number of models known for this provider
-              (from the acpx/cli snapshot cache for ``acpx-*``/``cli-*``
-              providers, or the live catalog for builtins).
+            - ``modelCount`` (int): number of models known for this provider.
             - ``supportsSessionApiKey`` (bool): whether this provider accepts
               ``api_key`` on ``POST /sessions``. Independent of server auth;
-              false for unknown, headless-excluded, and ambient CLI/ACPX providers.
+              false for unknown, headless-excluded, and ambient-auth providers.
               Included even on non-loopback binds and in 404 response bodies.
             - ``authStatus`` (dict | None): result of
               ``ModelRuntime.getProviderAuthStatus()``, or ``None`` if that
@@ -554,8 +548,7 @@ class SidecarClient:
         The ``cwd`` parameter also controls project-level resource loading —
         the Pi SDK automatically discovers skills, prompts, extensions, and themes
         from ``{cwd}/.pi/`` and loads ``AGENTS.md`` from ``{cwd}/``.
-        Nested CLI/ACPX agents (``cli-cursor`` ``--workspace``, spawn cwd, ACPX sessions)
-        use this same folder. Omitting ``cwd`` defaults to ``tempfile.gettempdir()``,
+        Omitting ``cwd`` defaults to ``tempfile.gettempdir()``,
         not the sidecar process working directory.
 
         The ``agent_dir`` parameter points to the global agent directory for
@@ -886,7 +879,7 @@ async def call_ai(
     The ``cwd`` parameter also controls project-level resource loading —
     the Pi SDK automatically discovers skills, prompts, extensions, and themes
     from ``{cwd}/.pi/`` and loads ``AGENTS.md`` from ``{cwd}/``.
-    Nested CLI/ACPX agents use this same folder. Omitting ``cwd`` defaults to
+    Omitting ``cwd`` defaults to
     the system temp directory (``DEFAULT_CWD``), not the sidecar process cwd.
 
     Session lifecycle:

@@ -14,10 +14,10 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
 
 ## pi-sidecar (Monorepo Workspace)
 
-`packages/pi-sidecar/` is an npm workspace and the ONLY external consumer of pi-config extensions (`acpx-provider`, `cli-provider`, `providers`).
+`packages/pi-sidecar/` is an npm workspace for the standalone HTTP sidecar and `pi_sidecar_client`.
 `extensions/pidiff/pidiff-ui` is also a workspace (provides React for Node pidiff-ui tests).
 
-- **Required checks:** changes to `extensions/{acpx-provider,cli-provider,providers,shared}/` must pass `npx tsx --test packages/pi-sidecar/tests/test_ts/*.test.ts`;
+- **Required checks:** changes to `extensions/{providers,shared}/` must pass `npx tsx --test packages/pi-sidecar/tests/test_ts/*.test.ts`;
   shared types/re-exports must preserve `packages/pi-sidecar/src/sessions.ts`; run `.pi/skills/sidecar-test/` before release.
 - **CLI & config:** `npx pi-sidecar` / `npx pi-sidecar-start`. Agent dir (`startSidecar` `agentDir` / `PI_SIDECAR_AGENT_DIR`, default `/tmp/pi-sidecar-agent`) is read
   once at startup.
@@ -28,12 +28,12 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
     inferred; `Usage.cost.totalFromProvider: true` is authoritative (incl. `0`), while catalog estimates on unknown-pricing models yield `null` / `cost_partial: true`.
     Never coalesce `null` to `0`.
   - `GET /providers` returns all registered provider IDs (`{ provider, supportsSessionApiKey }`, no credentials); `GET /models/:provider/status` always returns public
-    `supportsSessionApiKey` (even on non-loopback/404; CLI/ACPX/headless-excluded report `false`).
+    `supportsSessionApiKey` (even on non-loopback/404; ambient-auth and headless-excluded providers report `false`).
   - `POST /models/for-api-key` & `SidecarClient.get_models_for_api_key` return request-local `{ models, modelListingSupported }` (never cached/shared);
     `trustKeyScopedListing` in agent-dir `models.json` unions live `baseUrl`-pinned results with manifest `models[]` (manifest wins on id collision; `source: "listing" |
     "manifest"`).
   - `POST /sessions` & `pi_sidecar_client` optional `api_key` (≤1,024 UTF-16 units) overrides credentials for key-capable providers only; reject unsupported/ambient
-    CLI/ACPX; delete/expiry clears it; never log, return, persist, or forward to nested agents.
+    providers; delete/expiry clears it; never log, return, persist, or forward to nested agents.
 
 ## Tests
 
@@ -70,15 +70,13 @@ All new/modified runtime code (extensions, sidecar, CLI, scripts) MUST log via `
 - **Stack & structure:** TypeScript (extensions), Python (`myk_pi_tools`), Markdown (agents, rules, prompts); structure in `contributing/repo-structure.md`. Container:
   `ghcr.io/myk-org/pi-config:latest` (`Dockerfile`).
 - **Additional suites:** `packages/pi-sidecar/tests/`, `packages/pi-vertex-claude/test/` (vitest), `packages/pi-docsite/tests/`.
-- **User install/runtime is npm + PyPI only** (`npm:pi-orchestrator-config`, `npm:@myk-org/pi-vertex-claude`, `npm:pi-web-access`, PyPI `myk-pi-tools`; container
-  specialists/`httpd.py` read from `~/.pi/agent/npm/node_modules/pi-orchestrator-config`). NEVER add `pi install git:github.com/myk-org/pi-config` or `git+https`
+- **User install/runtime is npm + PyPI only** (`npm:pi-orchestrator-config`, `npm:@myk-org/pi-vertex-claude`, `npm:pi-web-access`, PyPI `myk-pi-tools`;
+  `httpd.py` reads from `~/.pi/agent/npm/node_modules/pi-orchestrator-config`). NEVER add `pi install git:github.com/myk-org/pi-config` or `git+https`
   `myk-pi-tools` (tested in `tests/python/test_install.py`).
 - **Docs (`docs/*.md`):** hand-written source; `.github/workflows/docs.yml` builds the site on `main` and `docs-guard.yml` rejects generated output in PRs. **NEVER run
   `pi-docsite` in a PR or commit generated `.html`, `llms*.txt`, `search-index.json`, or `assets/`.** Inter-page links use `.html`; one H1 per page; output is
   deterministic. Local preview (discard output): `uv run --package pi-docsite pi-docsite --docs-dir docs --tagline "Agent orchestration for pi: routing, subagents,
   background work, memory, providers, and sidecar."` (`--tagline` required; see `.pi/skills/pi-docsite/` or `~/.pi/agent/skills/pi-docsite/`).
-- **CLI specialists (container):** `entrypoint.sh` runs `scripts/symlink-cli-specialists.sh` from npm unpack into `.cursor/agents/`, `.claude/agents/`, `.gemini/agents/`
-  (gitignored); native installs do not auto-sync (see `docs/cli-provider.md`).
 
 ## Agents, Rules, Prompts & Docker
 
@@ -111,11 +109,9 @@ All new/modified runtime code (extensions, sidecar, CLI, scripts) MUST log via `
   `/coms tell` and `m` composer set `origin: "user"` via `globalThis.__comsUserSend` (`resolvePromptOrigin` accepts literal `true` only; display-only, unauthenticated).
   Queue recovery: `coms_queue_inspect` → 5m owner-bound `preview_id` → `coms_queue_clear`/`delete` (never `clearPrevious`; RPC providers keep ≤20 previews and atomic
   `clearQueueIfSnapshot`).
-- **Async & CLI/ACPX providers (`docs/async-internals.md`, `docs/cli-provider.md`):** native `cli-*`/`acpx-*` providers MUST use
-  `extensions/shared/create-runtime-provider.ts` (`createProvider` + `/login` + fetch/filter) — **never legacy `registerProvider(name, bag)`**; `models.dev` cached at
-  `~/.pi/pi-config/models.dev.json` (1d TTL; thinking from id); cold-start restore on `startup`/`resume` (skips non-empty `enabledModels`); spawn cwd uses session cwd
-  (`Symbol.for("pi-config.sessionCwdAls")` synced between `extensions/shared/session-cwd.ts` and `packages/pi-sidecar/src/session-cwd.ts`); Cursor `--approve-mcps`
-  (`CLI_APPROVE_MCPS` > `SIDECAR_PORT`; `bindSidecarListenExit()` exits 1 on fatal errors); Gemini defaults `GEMINI_CLI_TRUST_WORKSPACE=true`; ops logs in `~/.pi/logs/`.
+- **Providers & async (`docs/async-internals.md`):** `extensions/providers/` handles cold-start saved default-model restore on `startup`/`resume` (skips non-empty
+  `enabledModels`, merges trusted project settings) and per-model thinking-level persistence (`last-thinking-level.ts`); `bindSidecarListenExit()` exits 1 on fatal
+  sidecar errors; ops logs live in `~/.pi/logs/`.
 - **Self-reload handshake (`docs/configuration.md#reload-handshake`):** deploy writes nonce to `.pi/run/reload.flag` via same-dir atomic rename; `extensions/reload-flag/`
   awaits `ctx.waitForIdle()`, calls `ctx.reload()`, and writes `.pi/run/reload.done` (+ `.pi/tmp/reload.done` mirror). Confirm reload by comparing `.pi/run/reload.done`
   to flag nonce. Live foreign `reload.pending` survives (OS `startToken` catches PID reuse); oneshot/headless never touches handshake; worktrees do NOT auto-reload.

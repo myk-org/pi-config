@@ -82,7 +82,7 @@ describe("file-logger", () => {
     previousCwd = undefined;
   });
 
-  it("writes cli-provider info lines to ~/.pi/logs", async () => {
+  it("writes providers info lines to ~/.pi/logs", async () => {
     tmpHome = makeTempDir("pi-file-log-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
@@ -92,9 +92,9 @@ describe("file-logger", () => {
     );
     setGlobalSessionId("test-session");
 
-    assert.equal(fileLog("cli-provider", "info", "cli-provider", "reaped session cursor/test"), true);
-    const body = readFileSync(getPiLogPath("cli-provider"), "utf-8");
-    assert.match(body, /\[info\] \[cli-provider\] reaped session cursor\/test/);
+    assert.equal(fileLog("providers", "info", "providers", "restored model google/gemini-2.5-pro"), true);
+    const body = readFileSync(getPiLogPath("providers"), "utf-8");
+    assert.match(body, /\[info\] \[providers\] restored model google\/gemini-2\.5-pro/);
   });
   it("writes dreaming info lines to ~/.pi/logs", async () => {
     tmpHome = makeTempDir("pi-file-log-dream-");
@@ -120,8 +120,8 @@ describe("file-logger", () => {
     );
     setGlobalSessionId("test-session");
 
-    fileLog("cli-provider", "warn", "cli-provider", "a\nb\rc", new Error("x\ny"));
-    const lines = readFileSync(getPiLogPath("cli-provider"), "utf-8")
+    fileLog("providers", "warn", "providers", "a\nb\rc", new Error("x\ny"));
+    const lines = readFileSync(getPiLogPath("providers"), "utf-8")
       .trimEnd()
       .split("\n");
     assert.equal(lines.length, 1);
@@ -142,11 +142,11 @@ describe("file-logger", () => {
     delete process.env.__PI_CONFIG_SESSION_ID;
     delete process.env.__PI_PARENT_SESSION_ID;
     delete (globalThis as any).__piConfigSessionId;
-    assert.equal(getPiLogPath("cli-provider"), null);
+    assert.equal(getPiLogPath("providers"), null);
 
     // With globalThis session ID: per-session directory with main.log (no mkdir)
     (globalThis as any).__piConfigSessionId = "test-abc-123";
-    assert.equal(getPiLogPath("cli-provider"), join(getPiLogsDir(), "cli-provider", "test-abc-123", "main.log"));
+    assert.equal(getPiLogPath("providers"), join(getPiLogsDir(), "providers", "test-abc-123", "main.log"));
     delete (globalThis as any).__piConfigSessionId;
 
     // getPiLogPath returns correct path strings without side effects
@@ -170,15 +170,15 @@ describe("file-logger", () => {
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 4}`
     );
     mod.setGlobalSessionId("test-session");
-    assert.equal(mod.fileLog("cli-provider", "error", "cli-provider", "fallback"), true);
+    assert.equal(mod.fileLog("providers", "error", "providers", "fallback"), true);
     assert.ok(mod.getFileLogErrorCount() >= 1);
     assert.ok(mod.getLastFileLogError());
 
     // Never the OS temp dir, and the project comes first: its tmp sweep owns the file, so a
     // fallback log cannot outlive the checkout. Home is only the second chance.
-    const fallback = join(projectDir, ".pi", "tmp", "pi-logs", "cli-provider.log");
+    const fallback = join(projectDir, ".pi", "tmp", "pi-logs", "providers.log");
     assert.match(readFileSync(fallback, "utf-8"), /fallback/);
-    assert.equal(existsSync(join(tmpHome, ".pi", "tmp", "pi-logs", "cli-provider.log")), false,
+    assert.equal(existsSync(join(tmpHome, ".pi", "tmp", "pi-logs", "providers.log")), false,
       "home fallback must not be used while the project one works");
   });
 
@@ -201,9 +201,9 @@ describe("file-logger", () => {
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 6}`
     );
     mod.setGlobalSessionId("test-session");
-    assert.equal(mod.fileLog("cli-provider", "error", "cli-provider", "home-fallback"), true);
+    assert.equal(mod.fileLog("providers", "error", "providers", "home-fallback"), true);
     assert.match(
-      readFileSync(join(tmpHome, ".pi", "tmp", "pi-logs", "cli-provider.log"), "utf-8"),
+      readFileSync(join(tmpHome, ".pi", "tmp", "pi-logs", "providers.log"), "utf-8"),
       /home-fallback/,
     );
   });
@@ -218,10 +218,10 @@ describe("file-logger", () => {
     );
     setGlobalSessionId("test-session");
 
-    assert.equal(fileLog("cli-provider", "info", "cli-provider", "first"), true);
-    const logPath = getPiLogPath("cli-provider");
+    assert.equal(fileLog("providers", "info", "providers", "first"), true);
+    const logPath = getPiLogPath("providers");
     rmSync(join(tmpHome, ".pi", "logs"), { recursive: true, force: true });
-    assert.equal(fileLog("cli-provider", "info", "cli-provider", "second"), true);
+    assert.equal(fileLog("providers", "info", "providers", "second"), true);
     const body = readFileSync(logPath, "utf-8");
     assert.match(body, /second/);
   });
@@ -247,10 +247,10 @@ describe("file-logger", () => {
     syncBuiltinESMExports();
     try {
       for (let i = 0; i < 5; i++) {
-        assert.equal(fileLog("cli-provider", "info", "cli-provider", `line-${i}`), true);
+        assert.equal(fileLog("providers", "info", "providers", `line-${i}`), true);
       }
       assert.equal(mkdirCalls, 1, "mkdirSync only called on initial ENOENT");
-      const body = readFileSync(getPiLogPath("cli-provider")!, "utf-8");
+      const body = readFileSync(getPiLogPath("providers")!, "utf-8");
       assert.match(body, /line-0/);
       assert.match(body, /line-4/);
     } finally {
@@ -259,15 +259,10 @@ describe("file-logger", () => {
     }
   });
 
-  it("dreaming and cli-provider sources have no executable console.* ops calls", () => {
+  it("dreaming and providers sources have no executable console.* ops calls", () => {
     const files = [
       join(REPO, "extensions/orchestrator/dreaming.ts"),
-      join(REPO, "extensions/cli-provider/session-reaper.ts"),
-      join(REPO, "extensions/cli-provider/discover.ts"),
-      join(REPO, "extensions/cli-provider/index.ts"),
-      join(REPO, "extensions/cli-provider/agents/cursor.ts"),
-      join(REPO, "extensions/cli-provider/agents/claude.ts"),
-      join(REPO, "extensions/cli-provider/agents/gemini.ts"),
+      join(REPO, "extensions/providers/index.ts"),
     ];
     const consoleRe = /\bconsole\.(debug|log|info|warn|error)\s*\(/;
     for (const file of files) {
@@ -371,15 +366,15 @@ describe("file-logger", () => {
     assert.match(body, /\\n\s+at /);  // Stack frames collapsed by fileLog's oneLine()
   });
 
-  it("ACPX shim import enables debug from project settings without project-settings import", () => {
+  it("providers import enables debug from project settings without project-settings import", () => {
     const project = makeTempDir("pi-file-log-setting-");
     mkdirSync(join(project, ".pi"));
-    writeFileSync(join(project, ".pi", "pi-config-settings.json"), '{"log_acpx_provider":"debug"}');
+    writeFileSync(join(project, ".pi", "pi-config-settings.json"), '{"log_providers":"debug"}');
 
     const script = `
-      await import(${JSON.stringify(join(REPO, "extensions/acpx-provider/index.ts"))});
+      await import(${JSON.stringify(join(REPO, "extensions/providers/index.ts"))});
       const { isLevelEnabled } = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
-      if (!isLevelEnabled("acpx-provider", "debug")) process.exit(1);
+      if (!isLevelEnabled("providers", "debug")) process.exit(1);
     `;
     const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], {
       cwd: project,
@@ -443,7 +438,7 @@ describe("file-logger", () => {
       let resolutions = 0;
       settings.setRepoRootResolverForTests(cwd => { resolutions++; return cwd; });
       settings.getStandaloneSetting(process.cwd(), "log_coms");
-      settings.getStandaloneSetting(process.cwd() + "/.", "log_acpx_provider");
+      settings.getStandaloneSetting(process.cwd() + "/.", "log_providers");
       if (resolutions !== 1) process.exit(1);
     `;
     const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
@@ -458,7 +453,7 @@ describe("file-logger", () => {
       let resolutions = 0;
       settings.setRepoRootResolverForTests(cwd => { resolutions++; return cwd; });
       settings.getStandaloneSetting(process.cwd(), "log_coms");
-      settings.getStandaloneSetting(process.cwd(), "log_acpx_provider");
+      settings.getStandaloneSetting(process.cwd(), "log_providers");
       if (resolutions !== 1) process.exit(1);
     `;
     const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });

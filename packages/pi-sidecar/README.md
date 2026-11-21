@@ -10,7 +10,7 @@ simple JSON API. Ships with a Python client for easy integration.
 ## Features
 
 - **Session management** — create, prompt, abort, and delete AI sessions over REST; optionally supply a provider-agnostic, session-scoped API key
-- **Model discovery** — discover models from ACPX, CLI, and built-in providers.
+- **Model discovery** — discover models from built-in, Vertex AI, and custom providers.
   See [key-scoped model discovery](#key-scoped-model-discovery) for user keys.
 - **Provider discovery** — `GET /providers` lists every provider registered in
   the initialized runtime, including built-ins and extensions, even without
@@ -26,8 +26,8 @@ simple JSON API. Ships with a Python client for easy integration.
 - **Provider diagnostics** — `GET /models/:provider/status` reports registration,
   model count, auth status, and `supportsSessionApiKey` (a boolean indicating
   whether `POST /sessions` accepts `api_key` for that provider, regardless of
-  server credentials; false for unknown, headless-excluded, and ambient
-  CLI/ACPX providers). Python: `SidecarClient.get_model_provider_status()`.
+  server credentials; false for unknown, headless-excluded, and ambient-auth
+  providers). Python: `SidecarClient.get_model_provider_status()`.
   Full auth detail on
   loopback; on non-loopback binds (`SIDECAR_HOST` / `DEV_MODE`)
   `authStatus`/`authCheck` are redacted to `{ configured }` / `{ type }`;

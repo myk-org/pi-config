@@ -64,8 +64,7 @@ export function startSidecar(options?: {
 }): StartedSidecarHandle {
   const log = createLogger("startSidecar");
   // Fail fast on a stale SDK install rather than surfacing confusing runtime
-  // errors later (e.g. createProvider()-based ACPX/CLI providers silently
-  // failing to register on a pre-0.81 SDK).
+  // errors later.
   assertPiVersionFloor();
 
   // --- Subagent subprocess compatibility ---

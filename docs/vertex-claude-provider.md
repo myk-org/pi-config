@@ -172,7 +172,7 @@ Lifecycle when you start `pi`:
 3. Both present → `google-vertex-claude` registers with the current model catalog (including `-1m` if enabled).
 4. Each turn re-checks project, region, and ADC, then streams from Vertex.
 
-For ACPX/CLI backends (separate from Vertex), see [ACPX Provider Integration](acpx-provider.html) and [External AI Agents & CLI](external-ai-agents.html).
+For invoking external AI CLIs as slash-command helpers, see [External AI Agents & CLI](external-ai-agents.html).
 
 ## Troubleshooting
 
@@ -192,4 +192,3 @@ For ACPX/CLI backends (separate from Vertex), see [ACPX Provider Integration](ac
 - [Pi Sidecar HTTP API](pi-sidecar.html)
 - [Configuration & Settings](configuration.html)
 - [Installation & Quickstart](quickstart.html)
-- [ACPX Provider Integration](acpx-provider.html)

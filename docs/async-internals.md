@@ -1,48 +1,19 @@
 # Async & Runtime Internals
 
-## Async LLM capability (`supportsAsyncLlm`)
+## Async LLM capability & Runtime Invocations
 
-Detached LLM async agents spawn a child `pi` with `PI_SUBAGENT_CHILD=1`. The acpx
-provider **does not load** in those children (nested `cursor-agent` hangs), so an
-**acpx parent cannot host async LLM children on the parent model**.
-
-The user-facing behavior matrix — what happens to optional async, must-async
-(dream/cron/fireAndForget), and `cli-*` parents — is documented in
-[Running Background Agents and Scheduled Tasks](async-agents-and-cron.html). This page covers the mechanism behind it:
-
-- Registration list: `acpx_agents` → `getRegisteredAcpxProviders` / `isAcpxProvider` (which agents we register)
-- Capability gate: **any** provider id starting with `acpx-` → `supportsAsyncLlm` false (`isAcpxProviderId`), even if not in settings — children never load acpx
-- `cli-${agent}` from `cli_agents` loads in subagent children, so `supportsAsyncLlm` is `true` for `cli-*`
-
-Settings: `acpx_agents`, `cli_agents`, `internal_operations_provider` + `internal_operations_model` — see [Project Settings Internals](project-settings.html) and [CLI Provider Internals](cli-provider.html).
-
-**acpx runtime resolution:** `extensions/acpx-provider/load-runtime.ts` prefers a
-global `npm install -g acpx`, then falls back to the package-local `acpx`
-dependency (required so plain `pi` / `~/.pi` installs can `import("acpx/runtime")`).
-Package dep range is `">=0.12.0 <1"` (latest within acpx 0.x; see issue #651).
-Not `^0.8.0` (that stays on 0.8.x under 0.x caret rules).
-
-**Native createProvider (pi ≥ 0.84.0):** `acpx-*` registers via
-`extensions/shared/create-runtime-provider.ts` (same helper as `cli-*`):
-ambient `resolve`/`check` succeed when `isAcpxAgentConfigured` (`agents.has`);
-`/login acpx-<agent>` stores an optional `configured` marker (not required for ambient
-auth); `fetchModels` rediscovers via `discoverModelsInternal` (returns `[]` if no
-state; empty discovery with state → `${agent}:default`);
-`filterModels` also gates on `agents.has` — **not** a live health probe;
-`session_shutdown` clears AgentState / maps and resets providers `initialized`
-so the next factory re-registers (required for `/new`|`/resume`|`/fork` to keep
-saved `cli-*` / `acpx-*` defaults — same lifecycle as native `createProvider`
-in `extensions/providers/`);
-streams use `{ stream, streamSimple }` → `streamAcpx`.
-No legacy `registerProvider(name, { streamSimple })` bag.
+Detached LLM async agents spawn a child `pi` with `PI_SUBAGENT_CHILD=1`. All
+registered providers support async LLM children. Optional
+`internal_operations_provider` + `internal_operations_model` can override the
+model used by background dreaming (see [Project Settings Internals](project-settings.html)).
 
 **Meta invocations:** `isPiMetaInvocation()` (`extensions/orchestrator/utils.ts`)
-skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
+skips provider session wiring on `pi --help` / `--version` (`-h` / `-v`).
 
 **Oneshot invocations:** `isPiOneshotInvocation()` / `shouldSkipOneshotRegister()`
 (`extensions/shared/oneshot.ts`, re-exported from `extensions/orchestrator/utils.ts`)
 skip pitasks, pidash, pidiff, and coms on `-p` / `--print` / `--mode json` so the
-process can exit after the reply. CLI/ACPX providers still load. Last valid
+process can exit after the reply. Last valid
 `--mode <text|json|rpc>` wins (matching pi `parseArgs`); rpc is never oneshot
 even with `-p`. `--mode=json` / `--mode=rpc` are unknown flags in pi, not mode.
 The scanner consumes the next token after value flags so `--mode -p` is not
@@ -53,27 +24,19 @@ exists only after session_start.
 `shouldSkipOneshotShutdownDream(mode)` skips when argv is oneshot **or**
 `mode` is `print`/`json`.
 
-**Code-enforced (not prompt-only):**
-
-- `subagent-tool.ts` — coerce / sidecar / skip via `decideAsyncLlmDispatch`
-- `enforcement.ts` — does not push “use async” sleep/repeat blocks when capability is false
-- `dreaming.ts` / `cron.ts` — sidecar or skip on acpx
-
 ## Async-Only Agents
 
 Some agents are enforced to only run with `async: true` — sync calls are automatically
 promoted to async by `subagent-tool.ts`. This prevents the LLM from blocking the session
 waiting for long-running agents.
 
-**Currently enforced (native / `supportsAsyncLlm` only):**
+**Currently enforced:**
 
 - `code-reviewer-quality`
 - `code-reviewer-guidelines`
 - `code-reviewer-security`
 - `code-reviewer-docs`
 - `code-reviewer-spec`
-
-On acpx parents these agents run **sync** (coerced) instead of being forced async.
 
 **To add/remove agents from the async-only list:**
 
@@ -197,5 +160,4 @@ runtime value falls back to `user`. The async-status detail header appends
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — the user-facing async and cron workflows this page implements.
 - [Background Memory Consolidation (Dreaming)](background-dreaming.html) — the dream passes that rely on async LLM capability.
 - [Inter-Agent Communication](inter-agent-communication.html) — peer-to-peer messaging between async agents.
-- [CLI Provider Internals](cli-provider.html) — the `cli-*` providers that load in subagent children.
 - [Configuration & Settings](configuration.html) — the async-related settings keys.

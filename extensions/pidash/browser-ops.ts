@@ -141,11 +141,6 @@ export function validateSettingValue(key: string, value: unknown): string | null
         return `${key} must be an array of strings`;
       }
       return null;
-    case "agent_list":
-      if (typeof value === "string" || (Array.isArray(value) && value.every((v: unknown) => typeof v === "string"))) {
-        return null;
-      }
-      return `${key} must be a string or array of strings`;
     case "agent_overrides":
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
         return `${key} must be an object mapping agent name to {provider?, model?}`;

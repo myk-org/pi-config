@@ -364,15 +364,15 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
     if (!versionCheck.ok) {
       if (versionCheck.installed === null) {
         ctx.ui.notify(
-          `⚠️ pi version could not be determined; CLI/ACPX providers require >= ${versionCheck.required} ` +
-            `and will still be attempted. Some features (--session-id for async agents, session_info_changed events) ` +
-            `may not work. Update pi if registration fails: npm install -g @earendil-works/pi-coding-agent`,
+          `⚠️ pi version could not be determined; pi-config requires >= ${versionCheck.required}. ` +
+            `Some features (--session-id for async agents, session_info_changed events) ` +
+            `may not work. Update pi: npm install -g @earendil-works/pi-coding-agent`,
           "warning",
         );
       } else {
         ctx.ui.notify(
           `⚠️ pi ${versionCheck.installed} is below minimum required version ${versionCheck.required}. ` +
-            `CLI/ACPX providers (createProvider) are disabled, and some features (--session-id for async agents, session_info_changed events) will not work. ` +
+            `Some features (--session-id for async agents, session_info_changed events) will not work. ` +
             `Update pi: npm install -g @earendil-works/pi-coding-agent`,
           "warning",
         );

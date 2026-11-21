@@ -89,8 +89,7 @@ function getPathPiVersion(): string | null {
  * Enforces the minimum installed @earendil-works/pi-coding-agent version.
  * Throws (does not just log) when the resolved SDK version is below MIN_PI_VERSION
  * or cannot be resolved at all — callers should call this early during startup
- * so a stale SDK install fails fast instead of surfacing confusing runtime errors
- * (e.g. createProvider()-based ACPX/CLI providers silently failing to register).
+ * so a stale SDK install fails fast instead of surfacing confusing runtime errors.
  */
 export function assertPiVersionFloor(): void {
   const installed = getInstalledPiVersion();

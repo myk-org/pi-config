@@ -18,7 +18,7 @@ import { formatDuration } from "./async-agents.js";
 import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize, type SituationReportOptions } from "./situation-report.js";
 import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
 import { getSetting, getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
-import { assembleRuleText, isSettingTruthy } from "./rule-placeholders.js";
+import { assembleRuleText } from "./rule-placeholders.js";
 import { isComsActive } from "../shared/coms-active.js";
 import { JsonlAppendLog } from "./state-jsonl.js";
 import { getProjectDataDir, getProjectMemoryDir } from "./utils.js";
@@ -38,7 +38,6 @@ interface CachedRawRuleFile {
 interface AssembledRulesCacheEntry {
   accessedSettings: Array<[string, unknown]>;
   comsActive: boolean;
-  externalAiAgents: boolean;
   reviewLoopMaxCycles: number;
   joined: string;
   fileCount: number;
@@ -154,16 +153,12 @@ function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR): 
   }
 
   const comsActive = isComsActive();
-  const externalAiAgents =
-    isSettingTruthy(getSetting(cwd, "acpx_agents")) ||
-    isSettingTruthy(getSetting(cwd, "cli_agents"));
   const reviewLoopMaxCycles = Number(getSetting(cwd, "review_loop_max_cycles"));
   const cacheKey = `${path.resolve(cwd)}\0${sigParts.join("|")}`;
   const cached = assembledRulesCache.get(cacheKey);
   if (
     cached &&
     cached.comsActive === comsActive &&
-    cached.externalAiAgents === externalAiAgents &&
     cached.reviewLoopMaxCycles === reviewLoopMaxCycles &&
     cached.accessedSettings.every(([k, v]) => sameSettingValue(getSettingDynamic(cwd, k), v))
   ) {
@@ -194,7 +189,6 @@ function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR): 
     knownKeys: KNOWN_SETTING_KEYS,
     featurePredicates: {
       coms_active: () => comsActive,
-      external_ai_agents: () => externalAiAgents,
     },
     reviewLoopMaxCycles,
     onWarn: (msg) => log.warn("rule assembly:", msg),
@@ -213,7 +207,6 @@ function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR): 
     {
       accessedSettings: [...accessed.entries()],
       comsActive,
-      externalAiAgents,
       reviewLoopMaxCycles,
       joined,
       fileCount: ruleContents.length,
