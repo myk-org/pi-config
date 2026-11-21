@@ -23,7 +23,7 @@ from pi_sidecar_client import get_sidecar_client
 async def main() -> None:
     client = get_sidecar_client()
 
-    for provider in ("google", "acpx-cursor", "cli-cursor"):
+    for provider in ("google", "google-vertex-claude", "anthropic"):
         try:
             status = await client.get_model_provider_status(provider)
             print(f"{provider}:")

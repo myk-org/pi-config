@@ -23,8 +23,6 @@
   "sync_agent_max_seconds": 60,
   "async_poll_interval_ms": 3000,
   "async_phantom_timeout_ms": 30000,
-  "acpx_agents": [],
-  "cli_agents": [],
   "vertex_claude_1m": false,
   "sidecar_log_level": "info",
   "enforcement_allowed_commands": "",

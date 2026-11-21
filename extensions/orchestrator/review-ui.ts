@@ -229,7 +229,7 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
   }, 5000);
   if (reviewPoller.unref) reviewPoller.unref();
 
-  // Poll git status asynchronously to detect file changes from CLI/ACPX agents without blocking TUI.
+  // Poll git status asynchronously to detect file changes from external tools/processes without blocking TUI.
   // Track the persisted monotonic `edit_seq` revision across both async git status checks so an
   // intervening edit (in-process or cross-process, even in the same millisecond) is never cleared.
   let gitPollInFlight = false;

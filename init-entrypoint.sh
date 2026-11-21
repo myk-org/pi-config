@@ -31,7 +31,7 @@ if [ -n "$PI_HOST_USER" ] && [ "$PI_HOST_USER" != "node" ] && [ -d "/home/$PI_HO
 
     # Symlink container-internal tool dirs/files into the new HOME
     for item in .npm-global .npm .npmrc .cache .local .claude .claude.json \
-                .cursor .acpx .agent-browser .bashrc .bash_logout .profile; do
+                .cursor .agent-browser .bashrc .bash_logout .profile; do
         if [ -e "/home/node/$item" ] && [ ! -e "$NEW_HOME/$item" ]; then
             ln -sf "/home/node/$item" "$NEW_HOME/$item"
         fi

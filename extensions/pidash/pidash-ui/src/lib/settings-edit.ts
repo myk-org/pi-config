@@ -54,11 +54,6 @@ export function parseTypedSetting(raw: string, def: SettingsKey): { value: unkno
       return { value: null, error: "invalid JSON object" };
     }
   }
-  if (t === "agent_list") {
-    // Stored as string or array of strings — send an array.
-    const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
-    return { value: list };
-  }
   if (def.enum?.length && !def.enum.includes(raw)) return { value: null, error: `must be one of: ${def.enum.join(", ")}` };
   return { value: raw };
 }

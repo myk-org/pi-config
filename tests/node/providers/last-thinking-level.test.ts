@@ -170,14 +170,6 @@ describe("last-used thinking level", () => {
       ctx: reasoningCtx(),
       argv: ["pi", "--thinking", "high"],
     }), false);
-    assert.equal(shouldRestoreLastThinkingLevel({
-      reason: "new",
-      ctx: {
-        model: { id: "codex:gpt-5-high", provider: "cli-codex", reasoning: true },
-        sessionManager: { getEntries: () => [] },
-      },
-      argv: [],
-    }), false);
   });
 
   it("persists explicit thinking selections from Pi events", () => {

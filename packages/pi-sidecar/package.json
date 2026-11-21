@@ -42,7 +42,6 @@
     "@earendil-works/pi-ai": ">=1.6.0",
     "@earendil-works/pi-coding-agent": ">=1.6.0",
     "@myk-org/pi-vertex-claude": ">=4.3.4 <5",
-    "acpx": "^0.8.0",
     "jiti": "^2.7.0",
     "pi-orchestrator-config": ">=4.3.4 <5",
     "protobufjs": "7.6.5",

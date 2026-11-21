@@ -56,7 +56,7 @@ const PI_MODES = new Set(["text", "json", "rpc"]);
  * Debug log uses isDebugEnabled() (same log_oneshot / PI_LOG_ONESHOT sources
  * as fileLog). Level is cached 30s so register/argv scan does not re-stat.
  *
- * CLI/ACPX providers still load. Non-TTY stdin or stdout print (`echo | pi`,
+ * Non-TTY stdin or stdout print (`echo | pi`,
  * `pi | cat`) without those flags is not detected here — argv has no flags;
  * use `ctx.mode` after session_start.
  */

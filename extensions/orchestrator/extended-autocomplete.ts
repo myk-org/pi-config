@@ -359,7 +359,7 @@ function setupPromptTemplateInterceptor(
   completions: Record<string, CompletionFn>,
 ): void {
   log.debug("Setting up prompt template autocomplete interceptor");
-  // Prompt templates (acpx-prompt, review-local, etc.) are registered by
+  // Prompt templates (external-ai, review-local, etc.) are registered by
   // pi itself — not through our registerCommand wrapper. We intercept
   // them in the autocomplete provider, which runs before the built-in.
 

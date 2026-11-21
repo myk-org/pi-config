@@ -136,7 +136,7 @@ describe("provider-stream-log", () => {
 
     pi.handlers.get("provider_stream_event")![0]!({
       type: "provider_stream_event",
-      provider: "acpx-provider",
+      provider: "anthropic",
       api: "anthropic-messages",
       model: "test-model",
       data: {
@@ -147,7 +147,7 @@ describe("provider-stream-log", () => {
     });
 
     const body = readFileSync(logFile(home), "utf-8");
-    assert.match(body, /acpx-provider\/anthropic-messages\/test-model/);
+    assert.match(body, /anthropic\/anthropic-messages\/test-model/);
     assert.match(body, /authorization:…redacted/);
     assert.match(body, /api_key:…redacted/);
     assert.doesNotMatch(body, /placeholder-value|fixture-key-value/);

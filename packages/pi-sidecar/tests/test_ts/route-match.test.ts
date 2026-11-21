@@ -63,16 +63,10 @@ describe("routeMatch", () => {
     assert.equal(result.provider, "google");
   });
 
-  it("matches /models/:provider/status with a hyphenated acpx-* provider id", () => {
-    const result = routeMatch("/models/acpx-cursor/status", "/models/:provider/status");
+  it("matches /models/:provider/status with a hyphenated provider id", () => {
+    const result = routeMatch("/models/google-vertex-claude/status", "/models/:provider/status");
     assert.ok(result);
-    assert.equal(result.provider, "acpx-cursor");
-  });
-
-  it("matches /models/:provider/status with a hyphenated cli-* provider id", () => {
-    const result = routeMatch("/models/cli-cursor/status", "/models/:provider/status");
-    assert.ok(result);
-    assert.equal(result.provider, "cli-cursor");
+    assert.equal(result.provider, "google-vertex-claude");
   });
 
   it("does not match /models/:provider/status against the plain /models route", () => {

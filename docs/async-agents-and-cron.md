@@ -7,7 +7,6 @@ Run long tasks without blocking your main session, and schedule recurring work s
 - A running Pi session in your project repository
 - A TUI session if you want to use the fullscreen status overlays
 - `git` available if your background task depends on repository state
-- If you use ACPX-backed models for detached work, `internal_operations_provider` and `internal_operations_model` may be required. See [Configuration & Settings](configuration.html) for details.
 
 ## Quick Example
 
@@ -130,10 +129,7 @@ To pin one schedule without moving the whole session, name the model in the requ
 `cron_manage` stores that on the task and passes it as the subagent `explicit` override for
 that run only. A bare `model-id` keeps the normal provider resolution chain. An unpinned cron
 uses the worker's own chain (`agent_overrides[worker]` → worker frontmatter →
-`agent_provider`/`agent_model`) and does not inherit the session model. Pinning an `acpx-*`
-provider does not work — child processes cannot register those providers, so the cron runs on
-`internal_operations_provider`/`internal_operations_model` when both are set, and is skipped
-with a logged error when they are not (see ACPX Compatibility below).
+`agent_provider`/`agent_model`) and does not inherit the session model.
 
 ### Keep Background Context Between Runs
 
@@ -166,24 +162,9 @@ Session-scoped tasks survive `/reload` inside the running process but are delete
 
 > **Tip:** `/cron` with free text does not schedule anything by itself. It re-enters the conversation with a request to call the `cron_manage` tool, and `persist` is set to `true` only when you passed `--persist`. Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour`. `model` accepts `provider/model-id` or a bare `model-id`; leaving it out uses the worker's normal model resolution.
 
-### ACPX Compatibility
-
-Detached LLM work is more restricted when your parent session is using an `acpx-*` provider. Child Pi processes launched as async agents skip ACPX provider registration, so Pi decides between three outcomes:
-
-| Case | Behavior |
-|---|---|
-| Parent is native or `cli-*` | Async work runs detached as normal. |
-| Parent is `acpx-*`, work is not must-async | The request is coerced to run synchronously instead. |
-| Parent is `acpx-*`, work is must-async (dreaming, `fireAndForget`) | Runs detached on `internal_operations_provider`/`internal_operations_model`; if those are unset, the work is skipped with a warning. |
-
-Set `internal_operations_provider` and `internal_operations_model` to cover that last case. Both are `string` settings, default `""`, and the provider must not itself be an `acpx-*` id.
-
-See [ACPX Provider Integration](acpx-provider.html) and [Configuration & Settings](configuration.html) for the exact setup.
-
 ## Troubleshooting
 
-- **Async job does not start:** Confirm you asked for it in the background (`async: true`) and that you ended your turn — Pi delivers results automatically and does not expect a polling loop. Agents declared async-only force `async: true` on a native provider and refuse chain mode.
-- **Job starts but immediately skips:** If your session is using an ACPX-backed provider, configure `internal_operations_provider` and `internal_operations_model` before retrying.
+- **Async job does not start:** Confirm you asked for it in the background (`async: true`) and that you ended your turn — Pi delivers results automatically and does not expect a polling loop. Agents declared async-only force `async: true` and refuse sync chain mode.
 - **You want the result to update a task automatically:** Pass a numeric `taskId` from the task tools. It is optional; when set, the finished job marks that task `completed` for you.
 - **You want live output but nothing appears:** Use `/async-status` from a TUI session. The fullscreen overlay is the supported live-view interface. A sync row has no output pane — everything it printed is already in your transcript.
 - **The footer counts an agent you cannot find in `/async-status`:** A sync agent registers for exactly as long as its child process lives. A count that does not fall back to `0` means a child is still alive — open `/async-status`, find the `sync` row and press `x` to abort it.

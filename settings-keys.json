@@ -174,22 +174,6 @@
     "default": "",
     "group": "Provider"
   },
-  "acpx_agents": {
-    "description": "ACPX agent configurations for external AI agents",
-    "type": "agent_list",
-    "env": "ACPX_AGENTS",
-    "default": [],
-    "per_key_resolution": true,
-    "group": "Provider"
-  },
-  "cli_agents": {
-    "description": "CLI agent configurations for native AI agents",
-    "type": "agent_list",
-    "env": "CLI_AGENTS",
-    "default": [],
-    "per_key_resolution": true,
-    "group": "Provider"
-  },
   "agent_provider": {
     "description": "Default provider for subagents (empty = inherit from parent)",
     "type": "string",
@@ -380,20 +364,6 @@
     ],
     "group": "Logging"
   },
-  "log_cli_provider": {
-    "description": "Log level for cli-provider module",
-    "type": "string",
-    "env": "PI_LOG_CLI_PROVIDER",
-    "default": "info",
-    "enum": [
-      "off",
-      "debug",
-      "info",
-      "warn",
-      "error"
-    ],
-    "group": "Logging"
-  },
   "log_providers": {
     "description": "Log level for providers module",
     "type": "string",
@@ -412,20 +382,6 @@
     "description": "Log level for dreaming module",
     "type": "string",
     "env": "PI_LOG_DREAMING",
-    "default": "info",
-    "enum": [
-      "off",
-      "debug",
-      "info",
-      "warn",
-      "error"
-    ],
-    "group": "Logging"
-  },
-  "log_acpx_provider": {
-    "description": "Log level for acpx-provider module",
-    "type": "string",
-    "env": "PI_LOG_ACPX_PROVIDER",
     "default": "info",
     "enum": [
       "off",

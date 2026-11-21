@@ -1,16 +1,11 @@
 """Live e2e fixtures — pytest owns the full sidecar lifecycle.
 
 Flow (session):
-  installed_agents  → PATH only (ignore CLI_AGENTS / ACPX_AGENTS env)
-  agent_env         → set both env vars + e2e-only project settings under test_cwd
   sidecar_url       → start sidecar with cwd=test_cwd; always stop
-  working_models    → dict[provider → model] for google + cli-* + acpx-*
+  working_models    → dict[provider → model] for native google
                       (omit broken providers; those param cases fail via ``model``)
 
 Never reads or writes ~/.pi or the repo's .pi/pi-config-settings.json.
-ACPX getSetting is project → global → env; global ~/.pi often pins acpx_agents=["cursor"].
-We plant settings only under {E2E_TEST_CWD}/.pi/ and start the sidecar with that cwd
-so process.cwd() picks the e2e project settings (never the user's home or repo .pi).
 
 ``pi_sidecar_client.SIDECAR_URL`` is env-backed; assignment or ``os.environ["SIDECAR_URL"]``
 sets the URL that ``SidecarClient()`` reads at construction.
@@ -19,7 +14,6 @@ sets the URL that ``SidecarClient()`` reads at construction.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import shutil
@@ -51,29 +45,11 @@ NATIVE_PROVIDER = "google"
 logger = logging.getLogger("e2e")
 
 
-def _detect_installed_agents() -> list[str]:
-    """PATH only — never reads CLI_AGENTS / ACPX_AGENTS."""
-    found: list[str] = []
-    if shutil.which("claude"):
-        found.append("claude")
-    if shutil.which("gemini"):
-        found.append("gemini")
-    if shutil.which("agent") or shutil.which("cursor"):
-        found.append("cursor")
-    return found
-
-
-def _providers_for_agents(agents: list[str]) -> list[str]:
-    """Native google + all cli-* + all acpx-* for installed agents."""
-    return [NATIVE_PROVIDER] + [f"cli-{a}" for a in agents] + [f"acpx-{a}" for a in agents]
-
-
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    """Parametrize every test that asks for ``provider`` from installed CLIs + google."""
+    """Parametrize every test that asks for ``provider`` with native google."""
     if "provider" not in metafunc.fixturenames:
         return
-    agents = _detect_installed_agents()
-    providers = _providers_for_agents(agents)
+    providers = [NATIVE_PROVIDER]
     metafunc.parametrize("provider", providers, ids=providers)
 
 
@@ -228,12 +204,7 @@ def _ensure_dist_built() -> None:
 
 
 def _model_ids(models: list[dict], provider: str) -> list[str]:
-    ids = [m["id"] for m in models if m.get("provider") == provider]
-    # Skip pinned junk / flaky ids on cli-* and acpx-*.
-    if provider.startswith(("cli-", "acpx-")):
-        skip = {"cursor:auto", "cursor:default[]"}
-        ids = [mid for mid in ids if mid not in skip and "claude-3-5-haiku" not in mid.lower()]
-    return ids
+    return [m["id"] for m in models if m.get("provider") == provider]
 
 
 async def _probe_first_working(
@@ -325,55 +296,13 @@ def test_cwd() -> Path:
 
 
 @pytest.fixture(scope="session")
-def installed_agents() -> list[str]:
-    """PATH detection only — ignores any pre-set CLI_AGENTS / ACPX_AGENTS."""
-    detected = _detect_installed_agents()
-    if not detected:
-        pytest.fail("no CLI agents on PATH (need claude, gemini, and/or agent|cursor)")
-    logger.info("installed_agents=%s", detected)
-    return detected
-
-
-@pytest.fixture(scope="session")
-def agent_env(installed_agents: list[str], test_cwd: Path) -> Iterator[list[str]]:
-    """Set CLI_AGENTS + ACPX_AGENTS and plant e2e-only project settings under test_cwd.
-
-    Does not touch ~/.pi or the repo .pi. Sidecar must start with cwd=test_cwd so
-    acpx-provider's getSetting(process.cwd()) reads this file instead of global ~/.pi.
-    """
-    value = ",".join(installed_agents)
-    os.environ["CLI_AGENTS"] = value
-    os.environ["ACPX_AGENTS"] = value
-
-    settings_path = test_cwd / ".pi" / "pi-config-settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "acpx_agents": list(installed_agents),
-        "cli_agents": list(installed_agents),
-    }
-    settings_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    logger.info(
-        "agent_env CLI_AGENTS=%s ACPX_AGENTS=%s e2e_settings=%s",
-        value,
-        value,
-        settings_path,
-    )
-
-    try:
-        yield installed_agents
-    finally:
-        settings_path.unlink(missing_ok=True)
-
-
-@pytest.fixture(scope="session")
-def sidecar_url(agent_env: list[str], test_cwd: Path) -> Iterator[str]:
+def sidecar_url(test_cwd: Path) -> Iterator[str]:
     host = os.environ.get("SIDECAR_HOST", "127.0.0.1")
     if os.environ.get("PYTEST_XDIST_WORKER"):
         port = _pick_free_port()
     else:
         port = int(os.environ["SIDECAR_PORT"]) if os.environ.get("SIDECAR_PORT") else _pick_free_port()
     url = f"http://{host}:{port}"
-    agents_csv = ",".join(agent_env)
 
     _ensure_dist_built()
 
@@ -381,8 +310,6 @@ def sidecar_url(agent_env: list[str], test_cwd: Path) -> Iterator[str]:
         "SIDECAR_HOST": host,
         "SIDECAR_PORT": str(port),
         "SIDECAR_URL": url,
-        "CLI_AGENTS": agents_csv,
-        "ACPX_AGENTS": agents_csv,
     }
     env = {
         **os.environ,
@@ -394,14 +321,7 @@ def sidecar_url(agent_env: list[str], test_cwd: Path) -> Iterator[str]:
     if _health_ok(url):
         _stop_sidecar(port, url)
 
-    # cwd=test_cwd so acpx-provider getSetting reads e2e project settings, not ~/.pi.
-    logger.info(
-        "sidecar start url=%s cwd=%s CLI_AGENTS=%s ACPX_AGENTS=%s",
-        url,
-        test_cwd,
-        agents_csv,
-        agents_csv,
-    )
+    logger.info("sidecar start url=%s cwd=%s", url, test_cwd)
     subprocess.run([str(START_SCRIPT)], cwd=str(test_cwd), env=env, check=True)
 
     deadline = time.time() + 60
@@ -427,14 +347,13 @@ def sidecar_url(agent_env: list[str], test_cwd: Path) -> Iterator[str]:
 @pytest.fixture(scope="session")
 def working_models(
     sidecar_url: str,
-    agent_env: list[str],
     test_cwd: Path,
 ) -> dict[str, str]:
     """provider → first model that completes a tiny prompt.
 
     Missing/broken providers are omitted (logged). Per-provider tests fail via ``model``.
     """
-    providers = _providers_for_agents(agent_env)
+    providers = [NATIVE_PROVIDER]
 
     async def _discover() -> dict[str, str]:
         pi_sidecar_client._client = None
@@ -516,12 +435,7 @@ async def models(client: SidecarClient) -> list[dict]:
 
 @pytest.fixture
 def project_math_agent(test_cwd: Path) -> Path:
-    """Plant e2e-math where each harness looks for agents (never home dirs).
-
-    - Pi native ``subagent``: ``{cwd}/.pi/agents/``
-    - Claude Code (cli-/acpx-claude): ``{cwd}/.claude/agents/``
-    - Gemini CLI (cli-/acpx-gemini): ``{cwd}/.gemini/agents/``
-    """
+    """Plant e2e-math for Pi native ``subagent`` under ``{cwd}/.pi/agents/``."""
     body = """---
 name: e2e-math
 description: Tiny math helper for e2e tests. Answers arithmetic with a single number. Use for 2+2 style questions.
@@ -529,12 +443,7 @@ description: Tiny math helper for e2e tests. Answers arithmetic with a single nu
 
 You are a math helper. Reply with ONLY the numeric answer. No words, no tools.
 """
-    paths = [
-        test_cwd / ".pi" / "agents" / "e2e-math.md",
-        test_cwd / ".claude" / "agents" / "e2e-math.md",
-        test_cwd / ".gemini" / "agents" / "e2e-math.md",
-    ]
-    for path in paths:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
-    return paths[0]
+    path = test_cwd / ".pi" / "agents" / "e2e-math.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return path

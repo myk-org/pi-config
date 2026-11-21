@@ -101,7 +101,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     exit 1; \
   fi
 
-# Install acpx, agent-browser, pi-web-access, gemini-cli, and Trail-code (pi itself is installed at runtime in entrypoint.sh)
+# Install agent-browser, pi-web-access, gemini-cli, and Trail-code (pi itself is installed at runtime in entrypoint.sh)
 # Trail-code installs in two isolated passes: an --ignore-scripts audit whose tree is deleted after the
 # allowlist is derived, then a strict --allow-scripts install that is verified before it is published
 # atomically, so no unapproved dependency lifecycle script ever runs in the final image.
@@ -109,7 +109,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 COPY scripts/trail-allow-scripts.mjs /usr/local/lib/scripts/trail-allow-scripts.mjs
 COPY extensions/shared/logger-core.mjs extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
+  npm install -g agent-browser pi-web-access @google/gemini-cli && \
   TRAIL_AUDIT="$(mktemp -d)" && \
   TRAIL_STAGE="" && \
   TRAIL_LINK="" && \

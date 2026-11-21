@@ -15,8 +15,7 @@ Both settings files use the same name, `pi-config-settings.json` — plain JSON.
 ```json
 {
   "pidash_enable": true,
-  "pidash_port": 19190,
-  "cli_agents": ["claude", "cursor"]
+  "pidash_port": 19190
 }
 ```
 
@@ -193,55 +192,6 @@ See [Automating Code Reviews](automating-code-reviews.html) for details.
 
 ## Provider Registration & Model Routing
 
-### `cli_agents`
-
-| Parameter | Type | Default | Environment variable | Description | Effect |
-|---|---|---|---|---|---|
-| `cli_agents` | string or string[] | `[]` | `CLI_AGENTS` | List of CLI-backed agent names. | Registers `cli-<agent>` providers in the unified provider extension. |
-
-| Supported built-in value | Registered provider ID |
-|---|---|
-| `claude` | `cli-claude` |
-| `gemini` | `cli-gemini` |
-| `cursor` | `cli-cursor` |
-
-> **Note:** Values are lowercased, deduplicated, and invalid names are filtered out.
-
-
-> **Tip:** Set an explicit empty array (`[]`) in the project file to override inherited global or environment values.
-
-```json
-{
-  "cli_agents": ["claude", "cursor"]
-}
-```
-
-```bash
-export CLI_AGENTS="Cursor,Gemini"
-```
-
-See [External AI Agents & CLI](external-ai-agents.html) for details.
-
-### `acpx_agents`
-
-| Parameter | Type | Default | Environment variable | Description | Effect |
-|---|---|---|---|---|---|
-| `acpx_agents` | string or string[] | `[]` | `ACPX_AGENTS` | List of ACPX agent names to register. | Registers `acpx-<agent>` providers in the unified provider extension. |
-
-> **Note:** Values are lowercased, deduplicated, and any name that is not `[a-z0-9_-]+` is dropped. Unlike `cli_agents`, the name is not checked against a built-in list — it must match an agent the `acpx` binary can launch.
-
-```json
-{
-  "acpx_agents": ["cursor"]
-}
-```
-
-```bash
-export ACPX_AGENTS="cursor,claude"
-```
-
-See [ACPX Provider Integration](acpx-provider.html) for details.
-
 ### `agent_provider`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
@@ -250,7 +200,7 @@ See [ACPX Provider Integration](acpx-provider.html) for details.
 
 ```json
 {
-  "agent_provider": "cli-cursor"
+  "agent_provider": "google"
 }
 ```
 
@@ -283,15 +233,15 @@ See [ACPX Provider Integration](acpx-provider.html) for details.
 
 ```json
 {
-  "agent_provider": "cli-cursor",
-  "agent_model": "cursor:cursor-grok-4.5-high-fast",
+  "agent_provider": "google",
+  "agent_model": "gemini-2.5-pro",
   "agent_overrides": {
     "debugger": {
       "provider": null,
       "model": null
     },
     "reviewer": {
-      "provider": "cli-claude",
+      "provider": "anthropic",
       "model": "claude-sonnet"
     }
   }
@@ -492,7 +442,7 @@ See [Memory Architecture](memory-architecture.html) for what each gate does.
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `internal_operations_provider` | string | `""` | `PI_INTERNAL_OPERATIONS_PROVIDER` | Provider pi-config uses for its own detached LLM work when the session provider cannot do it. | Combined with `internal_operations_model` to define the sidecar provider. Used by dreaming, cron, and fire-and-forget async agents. |
+| `internal_operations_provider` | string | `""` | `PI_INTERNAL_OPERATIONS_PROVIDER` | Optional provider override for background internal operations (dreaming). | When set together with `internal_operations_model`, overrides the session model used by dreaming. |
 
 ```json
 {
@@ -508,7 +458,7 @@ export PI_INTERNAL_OPERATIONS_PROVIDER=openai
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `internal_operations_model` | string | `""` | `PI_INTERNAL_OPERATIONS_MODEL` | Model ID paired with `internal_operations_provider`. | Combined with `internal_operations_provider` to define the sidecar model. |
+| `internal_operations_model` | string | `""` | `PI_INTERNAL_OPERATIONS_MODEL` | Model ID paired with `internal_operations_provider`. | When set together with `internal_operations_provider`, overrides the session model used by dreaming. |
 
 ```json
 {
@@ -520,11 +470,9 @@ export PI_INTERNAL_OPERATIONS_PROVIDER=openai
 export PI_INTERNAL_OPERATIONS_MODEL=gpt-5.4
 ```
 
-> **Warning:** Both `internal_operations_provider` and `internal_operations_model` must be set together. If either is missing, must-async work is skipped.
+> **Note:** Both `internal_operations_provider` and `internal_operations_model` must be set together to override the session model for background dreaming. Cron jobs use the worker's normal model resolution chain (`agent_overrides`, frontmatter, `agent_provider`/`agent_model`) unless pinned via `/cron`.
 
-> **Warning:** `internal_operations_provider` cannot be an `acpx-*` provider ID. Non-must-async work is coerced to sync instead of using the sidecar.
-
-See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
+See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for details.
 
 ### `sync_agent_max_seconds`
 
@@ -781,8 +729,6 @@ A module resolves its level in this order: the `log_<module>` setting → the `P
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
 | `log_pitasks` | string | `info` | `PI_LOG_PITASKS` | Log level for the pitasks module. | Controls the verbosity of `~/.pi/logs/pitasks/<session-id>/main.log` — task list operations and reminder fires. |
-| `log_cli_provider` | string | `info` | `PI_LOG_CLI_PROVIDER` | Log level for the cli-provider module. | Controls the verbosity of `~/.pi/logs/cli_provider/<session-id>/main.log` — CLI agent spawn, discovery, and handshake events. |
-| `log_acpx_provider` | string | `info` | `PI_LOG_ACPX_PROVIDER` | Log level for the acpx-provider module. | Controls the verbosity of `~/.pi/logs/acpx-provider/<session-id>/main.log` — ACPX session lifecycle, model discovery, and shutdown. |
 | `log_orchestrator` | string | `info` | `PI_LOG_ORCHESTRATOR` | Log level for the orchestrator module. | Controls the verbosity of `~/.pi/logs/orchestrator/<session-id>/main.log` — delegation, settings resolution, and enforcement decisions. |
 | `log_async_agents` | string | `info` | `PI_LOG_ASYNC_AGENTS` | Log level for the async-agents module. | Controls the verbosity of `~/.pi/logs/async_agents/<parent-session-id>/<job-id>.log` — spawn, poll, and delivery events for background agents. |
 | `log_rules` | string | `info` | `PI_LOG_RULES` | Log level for the rules module. | Controls the verbosity of `~/.pi/logs/rules/<session-id>/main.log` — rule loading, placeholder substitution, and rule-matched events. |
@@ -1021,4 +967,3 @@ See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) 
 - [Daemon & Websocket Networking](daemon-and-websockets.html)
 - [Curating Project Memory](curating-project-memory.html)
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-- [ACPX Provider Integration](acpx-provider.html)

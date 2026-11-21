@@ -293,7 +293,6 @@ BOOL_TRUE = frozenset({"true", "1", "yes", "on"})
 BOOL_FALSE = frozenset({"false", "0", "no", "off"})
 
 REVIEW_LOOP_MAX_CYCLES_RE = re.compile(r"^(?:[1-9]|10)$")
-AGENT_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
 
 def _resolve_repo_root(cwd: Path | None = None) -> Path:
@@ -387,8 +386,6 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
         if isinstance(value, str):
             return value.strip()
         return None
-    if typ == "agent_list":
-        return value if isinstance(value, (str, list)) else None
     if typ == "agent_overrides":
         return _parse_agent_overrides(value)
     if typ == "string_list":
@@ -510,47 +507,6 @@ def _parse_review_loop_max_cycles_env(name: str) -> int | None:
     return _parse_review_loop_max_cycles(val)
 
 
-def parse_agent_name_list(value: str | list[Any] | None) -> list[str]:
-    """Parse agent name lists — comma-separated string or JSON array (matches TS)."""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        parts = [a.strip().lower() if isinstance(a, str) else "" for a in value]
-    else:
-        parts = [a.strip().lower() for a in value.split(",")]
-    filtered = [a for a in parts if AGENT_NAME_RE.match(a)]
-    # Deduplicate preserving order
-    seen: set[str] = set()
-    result: list[str] = []
-    for name in filtered:
-        if name not in seen:
-            seen.add(name)
-            result.append(name)
-    return result
-
-
-def _resolve_agent_list(
-    key: str,
-    *,
-    project_raw_keys: frozenset[str] | set[str],
-    project: dict[str, Any],
-    global_settings: dict[str, Any],
-    env_name: str,
-) -> list[str]:
-    """Resolve acpx_agents / cli_agents with per-key project presence check."""
-    if key in project_raw_keys:
-        project_value = project.get(key)
-        if project_value is not None:
-            return parse_agent_name_list(project_value)
-    global_value = global_settings.get(key)
-    if global_value is not None:
-        return parse_agent_name_list(global_value)
-    env = os.environ.get(env_name)
-    if env is not None and env != "":
-        return parse_agent_name_list(env)
-    return []
-
-
 def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
     """Resolve env → default for one key using JSON type metadata."""
     typ = meta["type"]
@@ -629,7 +585,6 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
 class _SettingsContext:
     root: Path
     project_path: Path
-    project_raw_keys: frozenset[str]
     project: dict[str, Any]
     global_settings: dict[str, Any]
     merged: dict[str, Any]
@@ -641,7 +596,6 @@ def _load_settings_context(cwd: Path | None = None) -> _SettingsContext:
     pi_dir = root / ".pi"
     project_path = _find_settings_file(pi_dir) or (pi_dir / SETTINGS_FILENAMES[0])
     project_raw = _read_settings_raw(project_path)
-    project_raw_keys = frozenset(project_raw.keys()) if project_raw is not None else frozenset()
     project = _coerce_settings_dict(project_raw) if project_raw is not None else {}
 
     global_path = _find_settings_file(Path.home() / ".pi", scope="global") or (
@@ -651,7 +605,6 @@ def _load_settings_context(cwd: Path | None = None) -> _SettingsContext:
     return _SettingsContext(
         root=root,
         project_path=project_path,
-        project_raw_keys=project_raw_keys,
         project=project,
         global_settings=global_settings,
         merged={**global_settings, **project},
@@ -662,17 +615,6 @@ def _resolve_key(key: str, ctx: _SettingsContext) -> SettingValue:
     """Resolve one setting from a pre-loaded settings context."""
     meta = SETTINGS_KEYS[key]
     typ = meta["type"]
-
-    # Special-case: agent lists use per-key project presence (not simple merge)
-    if typ == "agent_list" and meta.get("per_key_resolution"):
-        env_name = meta.get("env", "")
-        return _resolve_agent_list(
-            key,
-            project_raw_keys=ctx.project_raw_keys,
-            project=ctx.project,
-            global_settings=ctx.global_settings,
-            env_name=env_name,
-        )
 
     if key in ctx.merged:
         value = ctx.merged[key]
@@ -731,7 +673,7 @@ def settings_get(keys: tuple[str, ...]) -> None:
 
         myk-pi-tools settings get dco commit_trailer use_worktrees
 
-        myk-pi-tools settings get acpx_agents cli_agents pidash_port
+        myk-pi-tools settings get pidash_port trail_enable
     """
     try:
         result = get_settings(keys)
