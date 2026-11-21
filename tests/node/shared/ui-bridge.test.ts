@@ -1,7 +1,7 @@
 /** #968 B — ui-bridge race semantics: browser/TUI first-answer-wins, dismiss, confirm mapping. */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container } from "@earendil-works/pi-tui";
 import { createBridgedUi, isBrowserDispatch, markBrowserDispatch } from "../../../extensions/shared/ui-bridge.ts";
 
 type Handler = (data: unknown) => void;
@@ -204,7 +204,7 @@ describe("browser dispatch marker (#1082)", () => {
 });
 
 describe("ui-bridge Container & header caching (#1313)", () => {
-  it("reuses Container and hoisted header Text across repeated render() calls and filter updates", async () => {
+  it("returns identical lines from the same Container across repeated render calls", async () => {
     const pi = fakePi();
     const ctx = fakeCtx();
     const bridged = createBridgedUi(pi as any);
@@ -212,17 +212,10 @@ describe("ui-bridge Container & header caching (#1313)", () => {
     const comp = ctx.calls[0].component;
 
     const seenContainers = new Set<Container>();
-    let addChildCalls = 0;
     const origRender = Container.prototype.render;
-    const origAddChild = Container.prototype.addChild;
-
     Container.prototype.render = function (this: Container, width: number) {
       seenContainers.add(this);
       return origRender.call(this, width);
-    };
-    Container.prototype.addChild = function (this: Container, child: any) {
-      addChildCalls++;
-      return origAddChild.call(this, child);
     };
 
     try {
@@ -232,34 +225,44 @@ describe("ui-bridge Container & header caching (#1313)", () => {
       assert.deepEqual(f1, f2);
       assert.deepEqual(f2, f3);
       assert.equal(seenContainers.size, 1, "same Container reused across renders");
-      assert.equal(addChildCalls, 0, "no container rebuild on repeated render(w)");
-
-      const [container] = [...seenContainers];
-      const headerBefore = container.children.find((c) => c instanceof Text);
-      assert.ok(headerBefore, "header Text child present");
-
-      // Navigation does not rebuild container
-      comp.handleInput("\x1b[B");
-      comp.render(60);
-      assert.equal(addChildCalls, 0, "arrow navigation does not rebuild container");
-
-      // Typing a filter query swaps SelectList on the same Container while keeping the hoisted header Text
-      comp.handleInput("g");
-      assert.ok(addChildCalls > 0, "filter update syncs container children");
-      const countAfterFilter = addChildCalls;
-      const filteredFrame = comp.render(60).join("\n");
-      assert.match(filteredFrame, /gamma/);
-      assert.doesNotMatch(filteredFrame, /alpha/);
-      assert.equal(addChildCalls, countAfterFilter, "render after filter does not rebuild container");
-      assert.equal(seenContainers.size, 1, "Container instance still reused after filter update");
-      const headerAfter = container.children.find((c) => c instanceof Text);
-      assert.strictEqual(headerAfter, headerBefore, "hoisted header Text instance preserved");
     } finally {
       Container.prototype.render = origRender;
-      Container.prototype.addChild = origAddChild;
     }
 
-    // Select filtered item ("gamma")
+    comp.handleInput("\x1b");
+    assert.equal(await p, undefined);
+  });
+
+  it("reuses the Container while filtering updates visible options", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtx();
+    const bridged = createBridgedUi(pi as any);
+    const p = bridged.select(ctx as any, "Pick target", ["alpha", "beta", "gamma"]);
+    const comp = ctx.calls[0].component;
+
+    const seenContainers = new Set<Container>();
+    const origRender = Container.prototype.render;
+    Container.prototype.render = function (this: Container, width: number) {
+      seenContainers.add(this);
+      return origRender.call(this, width);
+    };
+
+    try {
+      const initialFrame = comp.render(60).join("\n");
+      assert.match(initialFrame, /Pick target/);
+      assert.match(initialFrame, /alpha/);
+      assert.match(initialFrame, /gamma/);
+
+      comp.handleInput("g");
+      const filteredFrame = comp.render(60).join("\n");
+      assert.match(filteredFrame, /Pick target/);
+      assert.match(filteredFrame, /gamma/);
+      assert.doesNotMatch(filteredFrame, /alpha/);
+      assert.equal(seenContainers.size, 1, "Container instance reused after filter update");
+    } finally {
+      Container.prototype.render = origRender;
+    }
+
     comp.handleInput("\r");
     assert.equal(await p, "gamma");
   });

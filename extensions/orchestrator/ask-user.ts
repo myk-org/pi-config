@@ -50,6 +50,7 @@ class QuestionViewport implements Component {
     private readonly question: string,
     private readonly getTermRows: () => number,
     private readonly theme: Theme,
+    private readonly isSelectMode: () => boolean,
   ) {}
 
   private getWrapped(width: number): { wrapped: string[]; pad: number; contentWidth: number } {
@@ -112,7 +113,8 @@ class QuestionViewport implements Component {
   render(width: number): string[] {
     this.lastWidth = width;
     const termRows = this.getTermRows();
-    const key = `${width}:${termRows}:${this.scrollOffset}:${this.expanded ? 1 : 0}`;
+    const selectMode = this.isSelectMode();
+    const key = `${width}:${termRows}:${this.scrollOffset}:${this.expanded ? 1 : 0}:${selectMode ? 1 : 0}`;
     if (this.cachedLines && this.cachedRenderKey === key) {
       return this.cachedLines;
     }
@@ -144,14 +146,18 @@ class QuestionViewport implements Component {
 
     if (overflowed) {
       const indicator = this.expanded
-        ? `lines 1–${total} of ${total} (expanded) • ctrl+e collapse`
-        : `lines ${start + 1}–${start + visible.length} of ${total} • shift+↑↓/pgup/pgdn scroll • ctrl+e expand`;
+        ? selectMode
+          ? `lines 1–${total} of ${total} (expanded) • ctrl+e collapse`
+          : `lines 1–${total} of ${total} (expanded)`
+        : selectMode
+          ? `lines ${start + 1}–${start + visible.length} of ${total} • shift+↑↓/pgup/pgdn scroll • ctrl+e expand`
+          : `lines ${start + 1}–${start + visible.length} of ${total} • shift+↑↓ scroll`;
       lines.push(leftPad + this.theme.fg("dim", truncateToWidth(indicator, contentWidth, "…")));
     }
 
     lines.push("");
 
-    this.cachedRenderKey = `${width}:${termRows}:${this.scrollOffset}:${this.expanded ? 1 : 0}`;
+    this.cachedRenderKey = `${width}:${termRows}:${this.scrollOffset}:${this.expanded ? 1 : 0}:${selectMode ? 1 : 0}`;
     this.cachedLines = lines;
     return lines;
   }
@@ -383,7 +389,12 @@ export function registerAskUser(
             if (text) resolve(text);
           };
 
-          const questionViewport = new QuestionViewport(params.question, getTermRows, theme);
+          const questionViewport = new QuestionViewport(
+            params.question,
+            getTermRows,
+            theme,
+            () => mode === "select",
+          );
           const optionPreview = new OptionPreview(theme);
 
           const inputLabel = new Text(
@@ -538,12 +549,7 @@ export function registerAskUser(
             handleInput: (data: string) => {
               if (resolved) return;
 
-              // Question viewport expand/collapse (Ctrl+E) & scroll (Shift+↑/↓, PgUp/PgDn)
-              if (matchesKey(data, Key.ctrl("e")) && questionViewport.toggleExpanded()) {
-                container.invalidate();
-                tui.requestRender();
-                return;
-              }
+              // Question viewport scroll (Shift+↑/↓ in all modes; Ctrl+E & PgUp/PgDn in select mode so Editor keeps them in input mode)
               if (matchesKey(data, Key.shift("up"))) {
                 if (questionViewport.isOverflowed() && !questionViewport.isExpanded()) {
                   if (questionViewport.scrollBy(-1)) container.invalidate();
@@ -560,23 +566,30 @@ export function registerAskUser(
                 }
                 if (mode === "select") return;
               }
-              if (
-                matchesKey(data, Key.pageUp) &&
-                questionViewport.isOverflowed() &&
-                !questionViewport.isExpanded()
-              ) {
-                if (questionViewport.scrollPage(-1)) container.invalidate();
-                tui.requestRender();
-                return;
-              }
-              if (
-                matchesKey(data, Key.pageDown) &&
-                questionViewport.isOverflowed() &&
-                !questionViewport.isExpanded()
-              ) {
-                if (questionViewport.scrollPage(1)) container.invalidate();
-                tui.requestRender();
-                return;
+              if (mode === "select") {
+                if (matchesKey(data, Key.ctrl("e")) && questionViewport.toggleExpanded()) {
+                  container.invalidate();
+                  tui.requestRender();
+                  return;
+                }
+                if (
+                  matchesKey(data, Key.pageUp) &&
+                  questionViewport.isOverflowed() &&
+                  !questionViewport.isExpanded()
+                ) {
+                  if (questionViewport.scrollPage(-1)) container.invalidate();
+                  tui.requestRender();
+                  return;
+                }
+                if (
+                  matchesKey(data, Key.pageDown) &&
+                  questionViewport.isOverflowed() &&
+                  !questionViewport.isExpanded()
+                ) {
+                  if (questionViewport.scrollPage(1)) container.invalidate();
+                  tui.requestRender();
+                  return;
+                }
               }
 
               if (mode === "select" && selectList) {

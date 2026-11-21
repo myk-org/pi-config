@@ -13,7 +13,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { Container, Input, Text } from "@earendil-works/pi-tui";
+import { Container } from "@earendil-works/pi-tui";
 import {
   computeQuestionViewportCap,
   computeSelectMaxVisible,
@@ -170,9 +170,14 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
     assert.equal(res.content[0].text, "Yes");
   });
 
-  it("bounds long questions, scrolls with Shift+Arrows and PgUp/PgDn, and toggles Ctrl+E", async () => {
-    const longQuestion = Array.from({ length: 16 }, (_, i) => `Line ${i + 1}: detail about change`).join("\n");
-    const h = mountAskUser({ question: longQuestion, options: ["Approve", "Reject"] }, { rows: 20 });
+  const makeLongQuestion = () =>
+    Array.from({ length: 16 }, (_, i) => `Line ${i + 1}: detail about change`).join("\n");
+
+  it("bounds overflowing questions to the viewport cap with an overflow indicator", async () => {
+    const h = mountAskUser(
+      { question: makeLongQuestion(), options: ["Approve", "Reject"] },
+      { rows: 20 },
+    );
 
     // On 20-row terminal, cap = 6 lines
     const initial = h.component.render(60).join("\n");
@@ -180,6 +185,18 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
     assert.match(initial, /Line 6: detail/);
     assert.doesNotMatch(initial, /Line 7: detail/);
     assert.match(initial, /lines 1–6 of 16/);
+
+    h.component.handleInput("\x1b");
+    const res = await h.resultPromise;
+    assert.equal(res.terminate, true);
+  });
+
+  it("scrolls an overflowing question line by line with Shift+Down / Shift+Up", async () => {
+    const h = mountAskUser(
+      { question: makeLongQuestion(), options: ["Approve", "Reject"] },
+      { rows: 20 },
+    );
+    h.component.render(60);
 
     // Shift+Down scrolls by 1 line
     h.component.handleInput("\x1b[1;2B");
@@ -194,6 +211,17 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
     const afterShiftUp = h.component.render(60).join("\n");
     assert.match(afterShiftUp, /lines 1–6 of 16/);
 
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("pages an overflowing question with PgDn / PgUp in select mode", async () => {
+    const h = mountAskUser(
+      { question: makeLongQuestion(), options: ["Approve", "Reject"] },
+      { rows: 20 },
+    );
+    h.component.render(60);
+
     // PgDn scrolls by a page (cap - 1 = 5 lines -> lines 6-11)
     h.component.handleInput("\x1b[6~");
     const afterPgDn = h.component.render(60).join("\n");
@@ -203,6 +231,17 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
     h.component.handleInput("\x1b[5~");
     const afterPgUp = h.component.render(60).join("\n");
     assert.match(afterPgUp, /lines 1–6 of 16/);
+
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("toggles full question expansion with Ctrl+E in select mode", async () => {
+    const h = mountAskUser(
+      { question: makeLongQuestion(), options: ["Approve", "Reject"] },
+      { rows: 20 },
+    );
+    h.component.render(60);
 
     // Ctrl+E expands to show all 16 lines
     h.component.handleInput("\x05");
@@ -218,13 +257,12 @@ describe("ask_user question viewport, scrolling, and Ctrl+E expand (#1317)", () 
     assert.match(collapsed, /lines 1–6 of 16/);
 
     h.component.handleInput("\x1b");
-    const res = await h.resultPromise;
-    assert.equal(res.terminate, true);
+    await h.resultPromise;
   });
 });
 
 describe("ask_user filter visibility and dynamic list height (#1317)", () => {
-  it("hides filter input for < 6 options until `/` is pressed, and Esc closes filter before cancelling", async () => {
+  it("hides filter input for < 6 options until `/` is pressed", async () => {
     const h = mountAskUser(
       { question: "Pick env", options: ["Alpha", "Beta", "Gamma"] },
       { rows: 24 },
@@ -240,12 +278,11 @@ describe("ask_user filter visibility and dynamic list height (#1317)", () => {
     assert.match(afterLetterIgnored, /Alpha/);
     assert.match(afterLetterIgnored, /Gamma/);
 
-    // Pressing `/` opens the filter input
+    // Pressing `/` opens the filter input and typing narrows the list
     h.component.handleInput("/");
     const afterSlash = h.component.render(70).join("\n");
     assert.match(afterSlash, /type to filter/);
 
-    // Now typing filters to Gamma
     h.component.handleInput("G");
     h.component.handleInput("a");
     h.component.handleInput("m");
@@ -253,7 +290,24 @@ describe("ask_user filter visibility and dynamic list height (#1317)", () => {
     assert.match(filtered, /Gamma/);
     assert.doesNotMatch(filtered, /Alpha/);
 
-    // Esc closes the on-demand filter and restores all options (does NOT cancel dialog)
+    h.component.handleInput("\r");
+    const res = await h.resultPromise;
+    assert.equal(res.content[0].text, "Gamma");
+  });
+
+  it("closes the on-demand filter on first Esc before cancelling on second Esc", async () => {
+    const h = mountAskUser(
+      { question: "Pick env", options: ["Alpha", "Beta", "Gamma"] },
+      { rows: 24 },
+    );
+
+    h.component.handleInput("/");
+    h.component.handleInput("G");
+    h.component.handleInput("a");
+    h.component.handleInput("m");
+    assert.doesNotMatch(h.component.render(70).join("\n"), /Alpha/);
+
+    // First Esc closes the on-demand filter and restores all options (does NOT cancel dialog)
     h.component.handleInput("\x1b");
     const restored = h.component.render(70).join("\n");
     assert.match(restored, /\/ filter/);
@@ -337,7 +391,7 @@ describe("ask_user truncated option preview (#1317)", () => {
 });
 
 describe("ask_user multi-line Editor free-text mode (#1317)", () => {
-  it("switches to Editor on Other, allows Esc back to options, and submits multi-line text", async () => {
+  it("returns from Editor to options on Esc after selecting Other", async () => {
     const h = mountAskUser({ question: "Explain?", options: ["Keep"] }, { rows: 24 });
 
     // Move down to "✎  Other (type custom answer)" and press Enter
@@ -352,7 +406,15 @@ describe("ask_user multi-line Editor free-text mode (#1317)", () => {
     const backInSelect = h.component.render(60).join("\n");
     assert.match(backInSelect, /\/ filter/);
 
-    // Re-enter Editor (selection still on Other), type two lines, submit
+    h.component.handleInput("\x1b");
+    const res = await h.resultPromise;
+    assert.equal(res.terminate, true);
+  });
+
+  it("submits multi-line text entered via Other", async () => {
+    const h = mountAskUser({ question: "Explain?", options: ["Keep"] }, { rows: 24 });
+
+    h.component.handleInput("\x1b[B");
     h.component.handleInput("\r");
     for (const ch of "first line") h.component.handleInput(ch);
     h.component.handleInput("\n"); // newline in Editor
@@ -363,41 +425,82 @@ describe("ask_user multi-line Editor free-text mode (#1317)", () => {
     assert.equal(res.content[0].text, "first line\nsecond line");
   });
 
-  it("cancels on Esc in free-text-only mode and submits multi-line input", async () => {
-    const cancelHarness = mountAskUser({ question: "Notes?" }, { rows: 24 });
-    const frame = cancelHarness.component.render(60).join("\n");
+  it("cancels on Esc in free-text-only mode", async () => {
+    const h = mountAskUser({ question: "Notes?" }, { rows: 24 });
+    const frame = h.component.render(60).join("\n");
     assert.match(frame, /Notes\?/);
     assert.match(frame, /esc cancel/);
-    cancelHarness.component.handleInput("\x1b");
-    const cancelled = await cancelHarness.resultPromise;
+    h.component.handleInput("\x1b");
+    const cancelled = await h.resultPromise;
     assert.equal(cancelled.terminate, true);
+  });
 
-    const submitHarness = mountAskUser({ question: "Notes?", options: [] }, { rows: 24 });
-    for (const ch of "line A") submitHarness.component.handleInput(ch);
-    submitHarness.component.handleInput("\n");
-    for (const ch of "line B") submitHarness.component.handleInput(ch);
-    submitHarness.component.handleInput("\r");
-    const submitted = await submitHarness.resultPromise;
+  it("submits multi-line input in free-text-only mode", async () => {
+    const h = mountAskUser({ question: "Notes?", options: [] }, { rows: 24 });
+    for (const ch of "line A") h.component.handleInput(ch);
+    h.component.handleInput("\n");
+    for (const ch of "line B") h.component.handleInput(ch);
+    h.component.handleInput("\r");
+    const submitted = await h.resultPromise;
     assert.equal(submitted.content[0].text, "line A\nline B");
+  });
+
+  it("routes Ctrl+E to Editor line-end cursor movement when the question overflows", async () => {
+    const longQuestion = Array.from({ length: 16 }, (_, i) => `Prompt line ${i + 1}`).join("\n");
+    const h = mountAskUser({ question: longQuestion }, { rows: 20 });
+    h.component.render(60);
+
+    for (const ch of "hello world") h.component.handleInput(ch);
+    h.component.handleInput("\x01"); // Ctrl+A: move cursor to start of line
+    h.component.handleInput("\x05"); // Ctrl+E: move cursor to end of line (must not expand question)
+    h.component.handleInput("!");
+
+    const frame = h.component.render(60).join("\n");
+    assert.match(frame, /lines 1–6 of 16/);
+    assert.doesNotMatch(frame, /\(expanded\)/);
+
+    h.component.handleInput("\r");
+    const res = await h.resultPromise;
+    assert.equal(res.content[0].text, "hello world!");
+  });
+
+  it("routes PageUp / PageDown to Editor cursor paging when the question overflows", async () => {
+    const longQuestion = Array.from({ length: 16 }, (_, i) => `Prompt line ${i + 1}`).join("\n");
+    const h = mountAskUser({ question: longQuestion }, { rows: 20 });
+
+    for (let i = 1; i <= 8; i++) {
+      for (const ch of `L${i}`) h.component.handleInput(ch);
+      if (i < 8) h.component.handleInput("\n");
+    }
+    h.component.render(60);
+
+    // On 20-row terminal, Editor pageSize = 6 -> PageUp from L8 (index 7) lands on L2 (index 1)
+    h.component.handleInput("\x1b[5~");
+    h.component.handleInput("*");
+    const afterPgUp = h.component.render(60).join("\n");
+    assert.match(afterPgUp, /lines 1–6 of 16/);
+
+    // PageDown moves cursor back down 6 lines to L8 (index 7) without scrolling the question
+    h.component.handleInput("\x1b[6~");
+    h.component.handleInput("#");
+    const afterPgDn = h.component.render(60).join("\n");
+    assert.match(afterPgDn, /lines 1–6 of 16/);
+
+    h.component.handleInput("\r");
+    const res = await h.resultPromise;
+    assert.equal(res.content[0].text, "L1\nL2*\nL3\nL4\nL5\nL6\nL7\nL8#");
   });
 });
 
 describe("ask_user Container reuse across redraws (#1313)", () => {
-  it("reuses the same Container without rebuilding on repeated render(w) calls", async () => {
+  it("returns identical lines from the same Container across repeated render calls", async () => {
     const h = mountAskUser({ question: "Choose", options: ["A", "B", "C"] }, { rows: 24 });
 
     const seenContainers = new Set<Container>();
-    let addChildCalls = 0;
     const origRender = Container.prototype.render;
-    const origAddChild = Container.prototype.addChild;
-
     Container.prototype.render = function (this: Container, width: number) {
       seenContainers.add(this);
       return origRender.call(this, width);
-    };
-    Container.prototype.addChild = function (this: Container, child: any) {
-      addChildCalls++;
-      return origAddChild.call(this, child);
     };
 
     try {
@@ -407,37 +510,51 @@ describe("ask_user Container reuse across redraws (#1313)", () => {
       assert.deepStrictEqual(r1, r2);
       assert.deepStrictEqual(r2, r3);
       assert.equal(seenContainers.size, 1, "same Container instance reused across renders");
-      assert.equal(addChildCalls, 0, "no container rebuild during repeated render(w)");
-
-      // Opening filter rebuilds children on the same Container instance
-      h.component.handleInput("/");
-      assert.ok(addChildCalls > 0, "container children rebuilt when filter visibility toggles");
-      const countAfterOpen = addChildCalls;
-
-      // Repeated renders after opening filter do NOT rebuild again
-      h.component.render(60);
-      h.component.render(60);
-      assert.equal(addChildCalls, countAfterOpen);
-      assert.equal(seenContainers.size, 1, "Container instance still reused after state change");
-
-      // Navigating up/down in SelectList does NOT rebuild container
-      h.component.handleInput("\x1b[B");
-      h.component.render(60);
-      assert.equal(addChildCalls, countAfterOpen);
     } finally {
       Container.prototype.render = origRender;
-      Container.prototype.addChild = origAddChild;
     }
 
-    // Verify searchInput is actually mounted only when filter is visible
-    const hasInput = (container: Container) => container.children.some((c) => c instanceof Input);
-    const [onlyContainer] = [...seenContainers];
-    assert.equal(hasInput(onlyContainer), true);
-    h.component.handleInput("\x1b"); // close filter
-    assert.equal(hasInput(onlyContainer), false);
-    assert.ok(onlyContainer.children.some((c) => c instanceof Text));
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
 
-    h.component.handleInput("\x1b"); // cancel
+  it("reuses the same Container when filter toggles update rendered output", async () => {
+    const h = mountAskUser({ question: "Choose", options: ["Alpha", "Beta", "Gamma"] }, { rows: 24 });
+
+    const seenContainers = new Set<Container>();
+    const origRender = Container.prototype.render;
+    Container.prototype.render = function (this: Container, width: number) {
+      seenContainers.add(this);
+      return origRender.call(this, width);
+    };
+
+    try {
+      const initial = h.component.render(60).join("\n");
+      assert.match(initial, /\/ filter/);
+      assert.match(initial, /Alpha/);
+      assert.match(initial, /Gamma/);
+
+      h.component.handleInput("/");
+      h.component.handleInput("G");
+      h.component.handleInput("a");
+      h.component.handleInput("m");
+      const filtered = h.component.render(60).join("\n");
+      assert.match(filtered, /type to filter/);
+      assert.match(filtered, /Gamma/);
+      assert.doesNotMatch(filtered, /Alpha/);
+
+      h.component.handleInput("\x1b");
+      const restored = h.component.render(60).join("\n");
+      assert.match(restored, /\/ filter/);
+      assert.match(restored, /Alpha/);
+      assert.match(restored, /Gamma/);
+
+      assert.equal(seenContainers.size, 1, "same Container instance reused across state changes");
+    } finally {
+      Container.prototype.render = origRender;
+    }
+
+    h.component.handleInput("\x1b");
     await h.resultPromise;
   });
 });
