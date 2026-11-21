@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { createComsInboundTasks, resolvePeerTaskStorePath } from "../../../extensions/coms/coms-shared.js";
+import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import pitasks, {
 	createTasksAtStorePath,
@@ -96,6 +97,7 @@ async function startComsPeer(opts: {
 			...(opts.probeTimeoutMs !== undefined ? { coms_probe_timeout_ms: opts.probeTimeoutMs } : {}),
 		}),
 	);
+	clearSettingsCache();
 
 	const fakePi = createFakePi(opts.name);
 	const tag = `${opts.name}-${++seq}`;

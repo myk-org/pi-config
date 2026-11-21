@@ -15,6 +15,14 @@ import upstreamComsInit from "./coms-p2p.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
+import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
+import {
+    WIDGET_MODE_CHANGED_EVENT,
+    applyWidgetAction,
+    cycleWidgetMode,
+    parseWidgetCommandAction,
+    registerWidgetShortcut,
+} from "../shared/widget-visibility.js";
 import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -49,6 +57,20 @@ export function registerComs(pi: ExtensionAPI) {
     );
 
     upstreamComsInit(proxyPi as any);
+
+    registerWidgetShortcut(
+        pi,
+        "widget_coms_shortcut",
+        process.cwd(),
+        "Collapse/expand coms widget",
+        (ctx) => {
+            if (!isLiveExtensionCtx(ctx)) return;
+            const cwd = ctx?.cwd || process.cwd();
+            const next = cycleWidgetMode("coms", cwd);
+            emitIfLive(pi, WIDGET_MODE_CHANGED_EVENT, { widget: "coms", mode: next, cwd });
+            log.info("coms_widget_shortcut_cycled", { mode: next });
+        },
+    );
 
     // Prune stale registry entries on session start (cleans up after crashes)
     // Also reset coms state on fresh starts (non-reload) to clear phantom peers
@@ -295,16 +317,31 @@ export function registerComs(pi: ExtensionAPI) {
             }
             const result = killPeers(scope);
             try { ctx.ui.notify(result.text, result.killed > 0 ? "info" : "warning"); } catch {}
+        } else if (subcommand === "widget") {
+            if (parts.length > 2) {
+                try { ctx.ui.notify("Usage: /coms widget [expand|collapse|toggle]", "warning"); } catch {}
+                return;
+            }
+            const action = parseWidgetCommandAction(parts[1]);
+            if (!action) {
+                try { ctx.ui.notify("Usage: /coms widget [expand|collapse|toggle]", "warning"); } catch {}
+                return;
+            }
+            const cwd = ctx?.cwd || process.cwd();
+            const next = applyWidgetAction("coms", action, cwd);
+            emitIfLive(pi, WIDGET_MODE_CHANGED_EVENT, { widget: "coms", mode: next, cwd });
+            log.info("coms_widget_mode_updated", { mode: next, action });
+            try { ctx.ui.notify(`📡 coms widget: ${next}`, "info"); } catch {}
         } else if (subcommand === "status") {
             try {
                 ctx.ui.notify(state.active ? "📡 coms: active (P2P)" : "📡 coms: inactive — run /coms start", "info");
             } catch {}
         } else {
-            try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status | tell | list | kill`, "warning"); } catch {}
+            try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status | tell | list | kill | widget`, "warning"); } catch {}
         }
     };
     pi.registerCommand("coms", {
-        description: "P2P agent communication: /coms start | stop | status | tell <peer> <message> | list [--all] | kill <name|all>",
+        description: "P2P agent communication: /coms start | stop | status | tell <peer> <message> | list [--all] | kill <name|all> | widget [expand|collapse|toggle]",
         getArgumentCompletions: (prefix: string) => {
             // Parse: split on whitespace, trailing space means "next token position"
             const tokens = prefix.trim().split(/\s+/).filter(Boolean);
@@ -323,6 +360,14 @@ export function registerComs(pi: ExtensionAPI) {
                     { v: "tell ", l: "tell", d: "Send a peer a message from YOU (the peer sees it is from the user)" },
                     { v: "list", l: "list", d: "List spawned peers (name, pids, state)" },
                     { v: "kill ", l: "kill", d: "Stop a peer: kill <name> | kill all" },
+                    { v: "widget ", l: "widget", d: "Collapse or expand coms widget: expand | collapse | toggle" },
+                ]);
+            }
+            if (completed[0] === "widget" && completed.length === 1) {
+                return mk([
+                    { v: "expand", l: "expand", d: "Show full peer pool widget" },
+                    { v: "collapse", l: "collapse", d: "Collapse to 1-line header with peer counts" },
+                    { v: "toggle", l: "toggle", d: "Toggle between expanded and collapsed" },
                 ]);
             }
             if (completed[0] === "kill") {
