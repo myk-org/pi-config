@@ -3958,6 +3958,7 @@ Do not respond to this message.`;
 			comsSendCalledThisTurn.clear();
 			if (sentDirectlyToSender) {
 				log.info("agent_end_skip_autocapture", inbound.msg_id, "coms_send called this turn", "sender", inbound.sender_name);
+				accumulatedResponses.delete(inbound.sender_session);
 				inbound.fulfilled = true;
 				inboundQueue.delete(inbound.msg_id);
 				const bundled = bundledInbounds;
@@ -3988,22 +3989,17 @@ Do not respond to this message.`;
 			);
 
 			if (morePending) {
-				// Accumulate response, fulfill silently, let FIFO drain continue with next from same sender
+				// Accumulate response, send "bundled" envelopes so callers never hang pending,
+				// and let FIFO drain continue with the next message(s) from the same sender (#1226).
 				if (!accumulatedResponses.has(inbound.sender_session)) {
 					accumulatedResponses.set(inbound.sender_session, []);
 				}
 				accumulatedResponses.get(inbound.sender_session)!.push(lastAssistantText);
 				log.debug("agent_end_accumulate", inbound.msg_id, "from", inbound.sender_name, "accumulated", accumulatedResponses.get(inbound.sender_session)!.length);
 
-				inbound.fulfilled = true;
-				inboundQueue.delete(inbound.msg_id);
-
-				// Also fulfill bundled inbounds silently
-				for (const bi of bundledInbounds) {
-					bi.fulfilled = true;
-					inboundQueue.delete(bi.msg_id);
-				}
+				const bundled = bundledInbounds;
 				bundledInbounds = [];
+				fulfillBundledInbounds([inbound, ...bundled], ident);
 
 				maybeRefreshWidget();
 

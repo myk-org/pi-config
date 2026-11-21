@@ -889,4 +889,108 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		assert.equal((await peerA.tools.get("coms_get").execute("g2-done", { msg_id: m2 })).details.response, "reply to fresh work");
 		assert.equal(readRegistry(receiver).busy, false);
 	});
+
+	it("resolves accumulated same-sender inbounds with bundled envelopes during multi-message FIFO drain", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const sender = await startPeer({ name: "sender", sessionId: "sac-s", project: "pac-1226", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "sac-r", project: "pac-1226", cwd: workspace, comsDir });
+
+		// Prompt 1 starts running.
+		const r1 = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "P1-BASE" });
+		const m1 = r1.details.msg_id as string;
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		await deliverInbound(receiver, m1);
+
+		// While m1 is busy, the same sender sends a mid-turn steer plus two queued prompts (m2, m3).
+		const steerRes = await sender.tools.get("coms_send").execute("st1", {
+			target: "receiver",
+			prompt: "STEER-OK",
+			steer: true,
+		});
+		const steerId = steerRes.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.steer === true && m?.details?.msg_id === steerId));
+		const steerMsg = receiver.messages.find((m) => m?.details?.steer === true && m?.details?.msg_id === steerId);
+
+		const r2 = await sender.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "P2-OLD" });
+		const r3 = await sender.tools.get("coms_send").execute("s3", { target: "receiver", prompt: "OVERRIDE-P3-OK" });
+		const m2 = r2.details.msg_id as string;
+		const m3 = r3.details.msg_id as string;
+		assert.equal(readRegistry(receiver).queue_depth, 2);
+
+		// Pre-steer turn_end defers until steer delivery.
+		await emitTurnEnd(receiver, { text: "P1-BASE draft", stopReason: "stop", toolResults: [] });
+		assert.equal((await sender.tools.get("coms_get").execute("g1-pre", { msg_id: m1 })).details.status, "pending");
+
+		// Deliver steer, then finalize m1: morePending accumulates m1's reply, resolves m1 as "bundled",
+		// and drains [m2, m3] together as a bundle.
+		await receiver.handlers.get("message_start")!({ message: { role: "custom", ...steerMsg } });
+		await emitTurnEnd(receiver, { text: "P1-BASE STEER-OK", stopReason: "stop", toolResults: [] });
+
+		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-wait", { msg_id: m1 })).details.status === "complete");
+		const g1 = await sender.tools.get("coms_get").execute("g1-done", { msg_id: m1 });
+		assert.equal(g1.details.error, "bundled", "accumulated primary inbound m1 must resolve with error:'bundled' instead of hanging pending");
+
+		const bundledMsg = await deliverInbound(receiver, m2);
+		assert.deepEqual(bundledMsg.details.bundled_msg_ids, [m2, m3]);
+
+		// Finalize [m2, m3]: m2 gets the combined reply, m3 gets "bundled", queue drains to 0.
+		await emitTurnEnd(receiver, { text: "OVERRIDE-P3-OK", stopReason: "stop", toolResults: [] });
+		await waitUntil(async () => {
+			const g2 = await sender.tools.get("coms_get").execute("g2-wait", { msg_id: m2 });
+			const g3 = await sender.tools.get("coms_get").execute("g3-wait", { msg_id: m3 });
+			return g2.details.status === "complete" && g3.details.status === "complete";
+		});
+
+		const g2 = await sender.tools.get("coms_get").execute("g2-done", { msg_id: m2 });
+		const g3 = await sender.tools.get("coms_get").execute("g3-done", { msg_id: m3 });
+		assert.equal(g2.details.error, null);
+		assert.equal(g2.details.response, "P1-BASE STEER-OK\n\n---\n\nOVERRIDE-P3-OK");
+		assert.equal(g3.details.error, "bundled");
+		assert.equal(readRegistry(receiver).busy, false);
+		assert.equal(readRegistry(receiver).queue_depth, 0);
+	});
+
+	it("clears accumulated responses when a follow-up turn replies directly via coms_send", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const sender = await startPeer({ name: "sender", sessionId: "sad-s2", project: "pad-1226b", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "sad-r2", project: "pad-1226b", cwd: workspace, comsDir });
+
+		const r1 = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "first" });
+		const m1 = r1.details.msg_id as string;
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		await deliverInbound(receiver, m1);
+
+		const r2 = await sender.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "second" });
+		const m2 = r2.details.msg_id as string;
+
+		// Finalize m1 -> accumulates "reply-1", resolves m1 as "bundled", drains m2.
+		await emitTurnEnd(receiver, { text: "reply-1", stopReason: "stop", toolResults: [] });
+		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-wait", { msg_id: m1 })).details.status === "complete");
+		assert.equal((await sender.tools.get("coms_get").execute("g1-done", { msg_id: m1 })).details.error, "bundled");
+
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m2));
+		const m2Msg = [...receiver.messages].reverse().find((m) => m?.details?.msg_id === m2);
+
+		// Enter sentDirectlyToSender on m2 by delivering m2 right as a direct coms_send settles.
+		let deliveredDuringSend = false;
+		sender.onSendMessage = () => {
+			if (deliveredDuringSend) return;
+			deliveredDuringSend = true;
+			receiver.handlers.get("message_start")!({ message: { role: "custom", ...m2Msg } });
+		};
+		const directRes = await receiver.tools.get("coms_send").execute("direct-s", { target: "sender", prompt: "direct reply for m2" });
+		assert.ok(directRes.details.msg_id, "direct coms_send succeeded");
+		assert.equal(deliveredDuringSend, true);
+
+		await emitTurnEnd(receiver, { text: "direct-turn-text", stopReason: "stop", toolResults: [] });
+		assert.equal(readRegistry(receiver).busy, false);
+
+		// A fresh unrelated m3 must receive only its own reply without stale "reply-1" prepended.
+		const r3 = await sender.tools.get("coms_send").execute("s3", { target: "receiver", prompt: "third" });
+		const m3 = r3.details.msg_id as string;
+		await deliverInbound(receiver, m3);
+		await emitTurnEnd(receiver, { text: "reply-3", stopReason: "stop", toolResults: [] });
+		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g3-wait", { msg_id: m3 })).details.status === "complete");
+		assert.equal((await sender.tools.get("coms_get").execute("g3-done", { msg_id: m3 })).details.response, "reply-3");
+	});
 });
