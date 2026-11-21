@@ -76,9 +76,14 @@ describe("compareSemver", () => {
     assert.equal(compareSemver("2.0.0", "10.0.0"), -1);
   });
 
-  it("strips prerelease metadata before comparing", () => {
-    assert.equal(compareSemver("0.80.4-beta.1", "0.80.4"), 0);
-    assert.equal(compareSemver("1.2.3-rc.1+build.7", "1.2.3"), 0);
+  it("orders prereleases strictly below matching stable releases and ignores build metadata", () => {
+    assert.equal(compareSemver("1.6.0-beta.1", "1.6.0"), -1);
+    assert.equal(compareSemver("1.6.0", "1.6.0-beta.1"), 1);
+    assert.equal(compareSemver("1.2.3-rc.1+build.7", "1.2.3"), -1);
+    assert.equal(compareSemver("1.2.3+build.7", "1.2.3"), 0);
+    assert.equal(compareSemver("1.6.1-alpha.1", "1.6.0"), 1);
+    assert.equal(compareSemver("1.6.0-alpha.2", "1.6.0-alpha.10"), -1);
+    assert.equal(compareSemver("1.6.0-alpha", "1.6.0-alpha.1"), -1);
   });
 
   it("pads missing components as zeros", () => {
@@ -110,6 +115,20 @@ describe("checkMinPiVersion", () => {
     const r = checkMinPiVersion();
     assert.equal(r.installed, "99.0.0");
     assert.equal(r.ok, true);
+  });
+
+  it("rejects prerelease versions of the floor while accepting exact and higher stable versions", () => {
+    useFakePi("1.6.0-beta.1");
+    const pre = checkMinPiVersion();
+    assert.equal(pre.installed, "1.6.0-beta.1");
+    assert.equal(pre.required, "1.6.0");
+    assert.equal(pre.ok, false);
+
+    useFakePi("1.6.0");
+    assert.equal(checkMinPiVersion().ok, true);
+
+    useFakePi("1.6.1");
+    assert.equal(checkMinPiVersion().ok, true);
   });
 
   it("marks installs below a custom floor as not ok", () => {

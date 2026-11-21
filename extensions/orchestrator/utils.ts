@@ -323,18 +323,41 @@ export function getPiVersion(): string | null {
   return null;
 }
 
-/** Compare two semver strings. Returns -1 if a < b, 0 if equal, 1 if a > b. */
+function parseSemver(v: string): { core: number[]; pre: string[] } {
+  const noBuild = v.split("+")[0];
+  const dashIdx = noBuild.indexOf("-");
+  const coreStr = dashIdx >= 0 ? noBuild.slice(0, dashIdx) : noBuild;
+  const preStr = dashIdx >= 0 ? noBuild.slice(dashIdx + 1) : "";
+  return {
+    core: coreStr.split(".").map(Number),
+    pre: preStr ? preStr.split(".") : [],
+  };
+}
+
+/** Compare two semver strings per SemVer 2.0.0 precedence. Returns -1 if a < b, 0 if equal, 1 if a > b. */
 export function compareSemver(a: string, b: string): number {
-  // Strip prerelease/build metadata (e.g., '0.80.4-beta.1' → '0.80.4')
-  const pa = a.split("-")[0].split(".").map(Number);
-  const pb = b.split("-")[0].split(".").map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] || 0;
-    const nb = pb[i] || 0;
-    if (na < nb) return -1;
-    if (na > nb) return 1;
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  for (let i = 0; i < Math.max(pa.core.length, pb.core.length); i++) {
+    const na = pa.core[i] || 0;
+    const nb = pb.core[i] || 0;
+    if (na !== nb) return na < nb ? -1 : 1;
   }
-  return 0;
+  if (pa.pre.length === 0 && pb.pre.length === 0) return 0;
+  if (pa.pre.length === 0) return 1;
+  if (pb.pre.length === 0) return -1;
+  for (let i = 0; i < Math.min(pa.pre.length, pb.pre.length); i++) {
+    const ia = pa.pre[i];
+    const ib = pb.pre[i];
+    if (ia === ib) continue;
+    const aNum = /^\d+$/.test(ia);
+    const bNum = /^\d+$/.test(ib);
+    if (aNum && bNum) return Number(ia) < Number(ib) ? -1 : 1;
+    if (aNum !== bNum) return aNum ? -1 : 1;
+    return ia < ib ? -1 : 1;
+  }
+  if (pa.pre.length === pb.pre.length) return 0;
+  return pa.pre.length < pb.pre.length ? -1 : 1;
 }
 
 /** Check if installed pi version meets minimum requirement. */
