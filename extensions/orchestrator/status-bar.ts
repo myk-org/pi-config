@@ -21,13 +21,14 @@ const log = createLogger("status-bar");
 
 /** Slot sort-keys — alphabetical order determines left-to-right position in the bar. */
 const SLOTS = {
-  time:   "1-time",
-  async:  "2-async",
-  crons:  "3-crons",
-  dream:  "3b-dream",
-  git:    "4-git",
-  trail:  "4b-trail",
-  review: "5-review",
+  time:      "1-time",
+  async:     "2-async",
+  crons:     "3-crons",
+  dream:     "3b-dream",
+  git:       "4-git",
+  worktrees: "4a-worktrees",
+  trail:     "4b-trail",
+  review:    "5-review",
 } as const;
 
 export type StatusBarSlot = keyof typeof SLOTS;

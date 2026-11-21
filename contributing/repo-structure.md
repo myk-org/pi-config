@@ -72,8 +72,11 @@ pi-config/
 │   │   ├── state-jsonl.ts               # JSONL state persistence (JsonlStateStore + JsonlAppendLog)
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
-│   │   ├── status.ts                # /status command — unified session status snapshot
-│   │   ├── status-line.ts           # Git status, notifications, container indicator, last-activity timestamp
+│   │   ├── status.ts                # /status command — unified session status snapshot (incl. worktree summary)
+│   │   ├── status-bar.ts            # Ordered status bar slot registry (time, async, crons, dream, git, worktrees, trail, review)
+│   │   ├── status-line.ts           # Git status ([wt] tag, 4a-worktrees badge), notifications, container indicator, last-activity timestamp
+│   │   ├── worktree.ts              # /worktree command — interactive overlay + list/prune subcommands
+│   │   ├── worktree-helpers.ts      # Pure worktree helpers (COMS peer matching, remove guards, table/status/prune formatting, clipboard)
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
 │   │   ├── memory-tools.ts              # AI-accessible memory tools (search, reinforce, add, remove)
 │   │   ├── memory-embeddings.ts         # Vector embedding support for semantic memory search (fastembed)

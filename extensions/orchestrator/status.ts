@@ -7,7 +7,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatElapsedDuration, tryGetSystemPromptOptions } from "./utils.js";
 import type { CronTask } from "./cron.js";
 import { formatCronSchedule } from "./cron-status-format.js";
-import { getCurrentBranch, runGit } from "./git-helpers.js";
+import { listWorktreesAsync, runGit } from "./git-helpers.js";
+import { formatWorktreeStatusSummary } from "./worktree-helpers.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("status");
@@ -53,15 +54,38 @@ export function registerStatus(
 
       // ── Git ────────────────────────────────────────────────────────
       try {
-        const branch = getCurrentBranch(ctx.cwd);
-        if (branch) {
+        const headRef = runGit(["rev-parse", "--abbrev-ref", "HEAD"], ctx.cwd);
+        let branch: string | null = null;
+        let inRepo = false;
+        if (headRef.code === 0) {
+          inRepo = true;
+          if (headRef.stdout && headRef.stdout !== "HEAD") {
+            branch = headRef.stdout;
+          }
+        } else {
+          const sym = runGit(["symbolic-ref", "HEAD"], ctx.cwd);
+          if (sym.code === 0 && sym.stdout.startsWith("refs/heads/")) {
+            inRepo = true;
+            branch = sym.stdout.slice("refs/heads/".length);
+          }
+        }
+        if (inRepo) {
           const status = runGit(["status", "--porcelain"], ctx.cwd);
           const dirtyLines = status.code === 0 ? status.stdout?.trim() : "";
           const dirtyCount = dirtyLines ? dirtyLines.split("\n").length : 0;
           const repoName = ctx.cwd.split("/").pop() || ctx.cwd;
           const stateIcon = dirtyCount > 0 ? "●" : "✓";
           const stateText = dirtyCount > 0 ? `${dirtyCount} changed file${dirtyCount > 1 ? "s" : ""}` : "clean";
-          lines.push(`🔀 Git: ${branch} ${stateIcon} ${stateText} (${repoName})`);
+          let branchLabel = branch;
+          if (!branchLabel) {
+            const head = runGit(["rev-parse", "--short", "HEAD"], ctx.cwd);
+            branchLabel = head.code === 0 && head.stdout ? `(detached ${head.stdout.trim()})` : "(detached)";
+          }
+          lines.push(`🔀 Git: ${branchLabel} ${stateIcon} ${stateText} (${repoName})`);
+
+          const worktrees = await listWorktreesAsync(ctx.cwd);
+          const wtSummary = formatWorktreeStatusSummary(worktrees);
+          if (wtSummary) lines.push(wtSummary);
         }
       } catch (e: any) { log.debug("status_git_failed", { code: e?.code }); }
 
