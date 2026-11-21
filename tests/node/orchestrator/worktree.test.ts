@@ -3,17 +3,22 @@
  * /worktree overlay + subcommands, /status summary, and autocomplete (#1316).
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, beforeEach, afterEach } from "node:test";
+import { hyperlink } from "@earendil-works/pi-tui";
 import {
   countLinkedWorktrees,
+  detectWorktreePresence,
   invalidateWorktreeCache,
   isInLinkedWorktree,
   listWorktreesAsync,
   parseGitStatusPorcelain,
   parseWorktreePorcelain,
+  runGitAsync,
   type GitAsyncRunner,
+  type OpenPr,
 } from "../../../extensions/orchestrator/git-helpers.js";
 import { registerExtendedAutocomplete } from "../../../extensions/orchestrator/extended-autocomplete.js";
 import { registerStatus } from "../../../extensions/orchestrator/status.js";
@@ -21,16 +26,23 @@ import {
   buildWorktreeDetailLines,
   buildWorktreeRowParts,
   executeGuardedWorktreeRemove,
+  loadWorktreeDetail,
   openWorktreeOverlay,
   registerWorktree,
 } from "../../../extensions/orchestrator/worktree.js";
 import {
   attachPeersToWorktrees,
   canRemoveWorktree,
+  copyTextToClipboard,
+  defaultIsPidAlive,
+  fetchOpenPrsByBranchAsync,
   formatPruneResult,
   formatWorktreeStatusSummary,
   formatWorktreeTable,
+  inspectLiveComsPeers,
   readLiveComsPeers,
+  runClipboardCommand,
+  type GhPrListRunner,
   type WorktreePeerInfo,
   type WorktreeView,
 } from "../../../extensions/orchestrator/worktree-helpers.js";
@@ -107,45 +119,98 @@ describe("parseWorktreePorcelain & listWorktreesAsync (#1316)", () => {
     assert.deepEqual(parseGitStatusPorcelain(""), { modified: 0, added: 0, deleted: 0, untracked: 0, total: 0 });
   });
 
-  it("caches worktree listing per runner+cwd within TTL and refreshes on forceRefresh", async () => {
-    let calls = 0;
+  it("caches worktree listing within TTL until forceRefresh", async () => {
+    let updated = false;
     const runner: GitAsyncRunner = async (args) => {
-      calls++;
-      if (args[0] === "worktree") return { stdout: SAMPLE_PORCELAIN, code: 0 };
+      if (args[0] === "worktree") {
+        return {
+          stdout: updated
+            ? SAMPLE_PORCELAIN.replace("refs/heads/feat/a", "refs/heads/feat/updated")
+            : SAMPLE_PORCELAIN,
+          code: 0,
+        };
+      }
       if (args[0] === "status") return { stdout: " M index.ts\n", code: 0 };
       return { stdout: "", code: 0 };
     };
 
     const first = await listWorktreesAsync("/repo/.worktrees/feat-a", { runGitAsync: runner, ttlMs: 5_000 });
-    assert.equal(first.length, 4);
-    assert.equal(calls, 1);
+    assert.equal(first[1].branch, "feat/a");
 
-    const second = await listWorktreesAsync("/repo/.worktrees/feat-a", { runGitAsync: runner, ttlMs: 5_000 });
-    assert.equal(second.length, 4);
-    assert.equal(calls, 1, "should reuse cached base listing within TTL");
+    updated = true;
+    const cached = await listWorktreesAsync("/repo/.worktrees/feat-a", { runGitAsync: runner, ttlMs: 5_000 });
+    assert.equal(cached[1].branch, "feat/a", "should reuse cached listing within TTL");
 
-    const withDirty = await listWorktreesAsync("/repo/.worktrees/feat-a", {
+    const refreshed = await listWorktreesAsync("/repo/.worktrees/feat-a", {
       runGitAsync: runner,
       includeDirty: true,
       forceRefresh: true,
     });
-    assert.equal(withDirty[0].dirty?.total, 1);
-    assert.equal(withDirty[3].dirty, undefined, "prunable worktree skips git status");
-    assert.equal(calls, 1 + 1 + 3, "forceRefresh + 3 non-prunable status calls");
+    assert.equal(refreshed[1].branch, "feat/updated", "forceRefresh should bypass cache");
+    assert.equal(refreshed[0].dirty?.total, 1);
+    assert.equal(refreshed[3].dirty, undefined, "prunable worktree skips git status");
+  });
+
+  it("prevents older worktree listing from overwriting newer forced refresh", async () => {
+    let resolveSlow!: (v: { stdout: string; code: number }) => void;
+    const slowPromise = new Promise<{ stdout: string; code: number }>((r) => { resolveSlow = r; });
+    let started = 0;
+
+    const runner: GitAsyncRunner = async () => {
+      started++;
+      if (started === 1) return slowPromise;
+      return { stdout: "worktree /repo\nHEAD bbb\nbranch refs/heads/main\n", code: 0 };
+    };
+
+    const olderLoad = listWorktreesAsync("/repo", { runGitAsync: runner, ttlMs: 5_000 });
+    const newerLoad = await listWorktreesAsync("/repo", {
+      runGitAsync: runner,
+      ttlMs: 5_000,
+      forceRefresh: true,
+    });
+    assert.equal(newerLoad.length, 1);
+
+    resolveSlow({ stdout: SAMPLE_PORCELAIN, code: 0 });
+    await olderLoad;
+
+    const cachedAfter = await listWorktreesAsync("/repo", { runGitAsync: runner, ttlMs: 5_000 });
+    assert.equal(cachedAfter.length, 1, "stale older refresh must not overwrite newer cached listing");
   });
 
   it("does not cache non-zero exit failures", async () => {
-    let attempt = 0;
+    let failedOnce = false;
     const runner: GitAsyncRunner = async () => {
-      attempt++;
-      if (attempt === 1) return { stdout: "", code: 128 };
+      if (!failedOnce) {
+        failedOnce = true;
+        return { stdout: "", code: 128 };
+      }
       return { stdout: "worktree /repo\nHEAD aaa\nbranch refs/heads/main\n", code: 0 };
     };
     const r1 = await listWorktreesAsync("/repo", { runGitAsync: runner });
     assert.deepEqual(r1, []);
     const r2 = await listWorktreesAsync("/repo", { runGitAsync: runner });
     assert.equal(r2.length, 1);
-    assert.equal(attempt, 2);
+  });
+
+  it("runs real runGitAsync against a temporary git repository", async () => {
+    const tmpRepo = makeTempDir("wt-real-git-");
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: tmpRepo });
+      const res = await runGitAsync(["worktree", "list", "--porcelain"], tmpRepo);
+      assert.equal(res.code, 0);
+      assert.match(res.stdout, /worktree /);
+      assert.equal(detectWorktreePresence(tmpRepo), false);
+
+      const nonRepo = makeTempDir("wt-non-git-");
+      try {
+        const failRes = await runGitAsync(["rev-parse", "--git-dir"], nonRepo);
+        assert.notEqual(failRes.code, 0);
+      } finally {
+        rmSync(nonRepo, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(tmpRepo, { recursive: true, force: true });
+    }
   });
 });
 
@@ -216,8 +281,82 @@ describe("COMS peer matching & cleanup guards (#1316)", () => {
     assert.equal(views[1].peers[0].name, "peer-live");
   });
 
-  it("enforces fail-closed remove guards for main, current, peer, locked, dirty, and unknown state", () => {
-    const base: WorktreeView = {
+  it("treats EPERM as alive in defaultIsPidAlive", () => {
+    const alive = defaultIsPidAlive(4242, () => {
+      const err: NodeJS.ErrnoException = new Error("operation not permitted");
+      err.code = "EPERM";
+      throw err;
+    });
+    assert.equal(alive, true);
+  });
+
+  it("treats ESRCH as dead in defaultIsPidAlive", () => {
+    const alive = defaultIsPidAlive(4242, () => {
+      const err: NodeJS.ErrnoException = new Error("no such process");
+      err.code = "ESRCH";
+      throw err;
+    });
+    assert.equal(alive, false);
+  });
+
+  it("marks absent COMS registry as verified", () => {
+    const res = inspectLiveComsPeers("/repo", {
+      comsDir: join(tmpDir, "does-not-exist"),
+      strict: true,
+    });
+    assert.equal(res.verified, true);
+    assert.deepEqual(res.peers, []);
+  });
+
+  it("marks malformed COMS peer entries as unverified", () => {
+    const agentsDir = join(tmpDir, "projects", "proj-a", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(agentsDir, "corrupt.json"), "{not-valid-json");
+
+    const res = inspectLiveComsPeers("/repo", { comsDir: tmpDir, strict: true });
+    assert.equal(res.verified, false);
+    assert.match(res.error ?? "", /corrupt\.json/);
+  });
+
+  it("keeps stale-heartbeat peers with live PID and socket in strict mode", () => {
+    const agentsDir = join(tmpDir, "projects", "proj-a", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    const now = Date.now();
+    const staleIso = new Date(now - 600_000).toISOString();
+
+    writeFileSync(
+      join(agentsDir, "peer-stale-live.json"),
+      JSON.stringify({
+        name: "peer-stale-live",
+        pid: 7777,
+        cwd: "/repo/.worktrees/feat-a",
+        endpoint: "/tmp/still-there.sock",
+        heartbeat_at: staleIso,
+      }),
+    );
+
+    const display = readLiveComsPeers("/repo", {
+      comsDir: tmpDir,
+      now,
+      isPidAlive: (pid) => pid === 7777,
+      endpointExists: (ep) => ep === "/tmp/still-there.sock",
+    });
+    assert.equal(display.length, 0, "best-effort display skips stale heartbeats");
+
+    const strict = inspectLiveComsPeers("/repo", {
+      comsDir: tmpDir,
+      now,
+      strict: true,
+      isPidAlive: (pid) => pid === 7777,
+      endpointExists: (ep) => ep === "/tmp/still-there.sock",
+    });
+    assert.equal(strict.verified, true);
+    assert.equal(strict.peers.length, 1);
+    assert.equal(strict.peers[0].name, "peer-stale-live");
+  });
+
+  describe("canRemoveWorktree guards", () => {
+    const baseView = (): WorktreeView => ({
       id: "/repo/.worktrees/clean",
       path: "/repo/.worktrees/clean",
       head: "aaaaaaa1111111",
@@ -230,37 +369,73 @@ describe("COMS peer matching & cleanup guards (#1316)", () => {
       prunable: false,
       dirty: { modified: 0, added: 0, deleted: 0, untracked: 0, total: 0 },
       peers: [],
+    });
+
+    it("allows removing a clean linked worktree", () => {
+      assert.deepEqual(canRemoveWorktree(baseView()), { allowed: true });
+    });
+
+    it("refuses removing the main worktree", () => {
+      assert.equal(canRemoveWorktree({ ...baseView(), isMain: true }).allowed, false);
+    });
+
+    it("refuses removing the current session worktree", () => {
+      assert.equal(canRemoveWorktree({ ...baseView(), isCurrent: true }).allowed, false);
+    });
+
+    it("refuses removing a worktree with an active COMS peer", () => {
+      const peer: WorktreePeerInfo = { name: "peer-x", project: "p", cwd: "/repo/.worktrees/clean", busy: false, pid: 1, purpose: "" };
+      const res = canRemoveWorktree({ ...baseView(), peers: [peer] });
+      assert.equal(res.allowed, false);
+      if (!res.allowed) assert.match(res.reason, /peer-x/);
+    });
+
+    it("refuses removing a worktree when COMS peer state is unverified", () => {
+      const res = canRemoveWorktree({ ...baseView(), peersUnverifiedReason: "unreadable COMS registry" });
+      assert.equal(res.allowed, false);
+      if (!res.allowed) assert.match(res.reason, /unreadable COMS registry/);
+    });
+
+    it("refuses removing a locked worktree", () => {
+      const res = canRemoveWorktree({ ...baseView(), locked: true, lockedReason: "CI" });
+      assert.equal(res.allowed, false);
+      if (!res.allowed) assert.match(res.reason, /locked.*CI/i);
+    });
+
+    it("refuses removing a dirty worktree", () => {
+      const res = canRemoveWorktree({
+        ...baseView(),
+        dirty: { modified: 2, added: 0, deleted: 0, untracked: 1, total: 3 },
+      });
+      assert.equal(res.allowed, false);
+      if (!res.allowed) assert.match(res.reason, /3 uncommitted changes/);
+    });
+
+    it("refuses removing a worktree with unknown dirty state", () => {
+      assert.equal(canRemoveWorktree({ ...baseView(), dirty: undefined }).allowed, false);
+    });
+
+    it("allows removing a prunable worktree without dirty status", () => {
+      assert.equal(canRemoveWorktree({ ...baseView(), prunable: true, dirty: undefined }).allowed, true);
+    });
+  });
+
+  it("refuses executeGuardedWorktreeRemove when COMS peer state cannot be verified", async () => {
+    const calls: string[][] = [];
+    const runner: GitAsyncRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "worktree" && args[1] === "list") return { stdout: SAMPLE_PORCELAIN, code: 0 };
+      if (args[0] === "status") return { stdout: "", code: 0 };
+      return { stdout: "", code: 0 };
     };
 
-    assert.deepEqual(canRemoveWorktree(base), { allowed: true });
-
-    const rMain = canRemoveWorktree({ ...base, isMain: true });
-    assert.equal(rMain.allowed, false);
-
-    const rCurrent = canRemoveWorktree({ ...base, isCurrent: true });
-    assert.equal(rCurrent.allowed, false);
-
-    const peer: WorktreePeerInfo = { name: "peer-x", project: "p", cwd: base.path, busy: false, pid: 1, purpose: "" };
-    const rPeer = canRemoveWorktree({ ...base, peers: [peer] });
-    assert.equal(rPeer.allowed, false);
-    if (!rPeer.allowed) assert.match(rPeer.reason, /peer-x/);
-
-    const rLocked = canRemoveWorktree({ ...base, locked: true, lockedReason: "CI" });
-    assert.equal(rLocked.allowed, false);
-    if (!rLocked.allowed) assert.match(rLocked.reason, /locked.*CI/i);
-
-    const rDirty = canRemoveWorktree({
-      ...base,
-      dirty: { modified: 2, added: 0, deleted: 0, untracked: 1, total: 3 },
+    const res = await executeGuardedWorktreeRemove("/repo", "/repo/.worktrees/feat-a", {
+      runGitAsync: runner,
+      inspectLivePeers: () => ({ peers: [], verified: false, error: "EACCES reading registry" }),
     });
-    assert.equal(rDirty.allowed, false);
-    if (!rDirty.allowed) assert.match(rDirty.reason, /3 uncommitted changes/);
-
-    const rUnknown = canRemoveWorktree({ ...base, dirty: undefined });
-    assert.equal(rUnknown.allowed, false);
-
-    const rPrunable = canRemoveWorktree({ ...base, prunable: true, dirty: undefined });
-    assert.equal(rPrunable.allowed, true);
+    assert.equal(res.ok, false);
+    assert.match(res.message, /EACCES reading registry/);
+    assert.equal(calls.some((a) => a[0] === "worktree" && a[1] === "remove"), false);
   });
 
   it("re-verifies live state inside executeGuardedWorktreeRemove before calling git remove", async () => {
@@ -334,19 +509,27 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
     assert.match(errPrune.message, /fatal: not a git repository/);
   });
 
-  it("renders overlay row parts and detail lines with HEAD, status, COMS peer, and guard status", () => {
+  it("renders overlay row parts and detail lines with HEAD, status, COMS peer, PR link, and guard status", () => {
     const entries = parseWorktreePorcelain(SAMPLE_PORCELAIN, "/repo/.worktrees/feat-a");
     entries[1].dirty = { modified: 1, added: 0, deleted: 0, untracked: 1, total: 2 };
-    const views = attachPeersToWorktrees(entries, [
-      { name: "peer-worktree-ux", project: "p", cwd: "/repo/.worktrees/feat-a", busy: true, pid: 77, purpose: "#1316" },
-    ]);
+    const prUrl = "https://github.com/myk-org/pi-config/pull/1323";
+    const prs = new Map<string, OpenPr>([["feat/a", { number: 1323, url: prUrl }]]);
+    const views = attachPeersToWorktrees(
+      entries,
+      [{ name: "peer-worktree-ux", project: "p", cwd: "/repo/.worktrees/feat-a", busy: true, pid: 77, purpose: "#1316" }],
+      prs,
+    );
 
     const theme = fakeTheme();
     const parts = buildWorktreeRowParts(views[1], "/repo", theme as any);
     assert.equal(parts.title, "feat/a");
     assert.match(parts.idLabel, /\[current\]/);
+    assert.ok(parts.rightParts.some((p) => p.includes(hyperlink("#1323", prUrl))));
     assert.ok(parts.rightParts.some((p) => p.includes("~1 ?1")));
     assert.ok(parts.rightParts.some((p) => p.includes("peer-worktree-ux")));
+
+    const mainParts = buildWorktreeRowParts(views[0], "/repo", theme as any);
+    assert.equal(mainParts.rightParts.some((p) => p.includes("#1323")), false);
 
     const detailLines = buildWorktreeDetailLines(
       views[1],
@@ -355,10 +538,114 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
     );
     const joined = detailLines.join("\n");
     assert.match(joined, /\/repo\/.worktrees\/feat-a/);
+    assert.ok(joined.includes(hyperlink("#1323", prUrl)));
+    assert.ok(joined.includes(hyperlink(prUrl, prUrl)));
     assert.match(joined, /feat: initial worktree ux/);
     assert.match(joined, /peer-worktree-ux \(busy, pid:77\) — #1316/);
     assert.match(joined, /M a\.ts/);
     assert.match(joined, /Cannot remove the current session/);
+
+    const mainDetail = buildWorktreeDetailLines(views[0], { headSubject: "main", statusLines: [] }, theme as any).join("\n");
+    assert.doesNotMatch(mainDetail, /^PR\s+/m);
+  });
+
+  it("marks failed detail git status as unavailable instead of clean", async () => {
+    const entries = parseWorktreePorcelain(SAMPLE_PORCELAIN, "/repo");
+    const views = attachPeersToWorktrees(entries, []);
+    const detail = await loadWorktreeDetail(views[1], async (args) => {
+      if (args[0] === "log") return { stdout: "feat: wip", code: 0 };
+      return { stdout: "", stderr: "fatal: unable to read index", code: 128 };
+    });
+    assert.equal(detail.statusOk, false);
+    assert.match(detail.statusError ?? "", /unable to read index/);
+
+    const lines = buildWorktreeDetailLines(views[1], detail, fakeTheme() as any).join("\n");
+    assert.match(lines, /Working tree status unavailable/);
+    assert.doesNotMatch(lines, /Working tree clean/);
+  });
+
+  it("ignores unsafe PR URLs and non-positive PR numbers when fetching open PRs", async () => {
+    const prUrl = "https://github.com/myk-org/pi-config/pull/1323";
+    const runner: GhPrListRunner = async () =>
+      JSON.stringify([
+        { number: 1323, url: prUrl, headRefName: "feat/a" },
+        { number: 99, url: "javascript:alert(1)", headRefName: "feat/bad-url" },
+        { number: 0, url: "https://github.com/myk-org/pi-config/pull/0", headRefName: "feat/zero" },
+      ]);
+
+    const res = await fetchOpenPrsByBranchAsync("/repo", { runner, ttlMs: 15_000 });
+    assert.deepEqual(res.get("feat/a"), { number: 1323, url: prUrl });
+    assert.equal(res.has("feat/bad-url"), false, "unsafe URL must be ignored");
+    assert.equal(res.has("feat/zero"), false, "non-positive PR number must be ignored");
+  });
+
+  it("serves cached open PRs within TTL until forceRefresh", async () => {
+    const prUrl1 = "https://github.com/myk-org/pi-config/pull/1323";
+    const prUrl2 = "https://github.com/myk-org/pi-config/pull/1400";
+    let updated = false;
+    const runner: GhPrListRunner = async () =>
+      JSON.stringify(
+        updated
+          ? [{ number: 1400, url: prUrl2, headRefName: "feat/a" }]
+          : [{ number: 1323, url: prUrl1, headRefName: "feat/a" }],
+      );
+
+    const first = await fetchOpenPrsByBranchAsync("/repo-pr-cache", { runner, ttlMs: 15_000 });
+    assert.equal(first.get("feat/a")?.number, 1323);
+
+    updated = true;
+    const cached = await fetchOpenPrsByBranchAsync("/repo-pr-cache", { runner, ttlMs: 15_000 });
+    assert.equal(cached.get("feat/a")?.number, 1323, "should serve cached PR map within TTL");
+
+    const refreshed = await fetchOpenPrsByBranchAsync("/repo-pr-cache", {
+      runner,
+      ttlMs: 15_000,
+      forceRefresh: true,
+    });
+    assert.equal(refreshed.get("feat/a")?.number, 1400, "forceRefresh should bypass PR cache");
+  });
+
+  it("fails open on gh PR errors without caching failures", async () => {
+    let step = 0;
+    const flakyRunner: GhPrListRunner = async () => {
+      step++;
+      if (step === 1) throw new Error("gh not found");
+      if (step === 2) return "not json{";
+      return JSON.stringify([{ number: 42, url: "https://github.com/myk-org/pi-config/pull/42", headRefName: "feat/ok" }]);
+    };
+    const errRes = await fetchOpenPrsByBranchAsync("/repo-flaky", { runner: flakyRunner });
+    assert.equal(errRes.size, 0);
+    const badJsonRes = await fetchOpenPrsByBranchAsync("/repo-flaky", { runner: flakyRunner });
+    assert.equal(badJsonRes.size, 0);
+    const recovered = await fetchOpenPrsByBranchAsync("/repo-flaky", { runner: flakyRunner });
+    assert.deepEqual(recovered.get("feat/ok"), { number: 42, url: "https://github.com/myk-org/pi-config/pull/42" });
+  });
+
+  it("formats PR column with OSC 8 hyperlinks for TUI and markdown links for headless, showing '-' when unmatched", () => {
+    const entries = parseWorktreePorcelain(SAMPLE_PORCELAIN, "/repo/.worktrees/feat-a");
+    entries[0].dirty = { modified: 0, added: 0, deleted: 0, untracked: 0, total: 0 };
+    entries[1].dirty = { modified: 0, added: 0, deleted: 0, untracked: 0, total: 0 };
+    const prUrl = "https://github.com/myk-org/pi-config/pull/1323";
+    const views = attachPeersToWorktrees(
+      entries,
+      [],
+      new Map<string, OpenPr>([["feat/a", { number: 1323, url: prUrl }]]),
+    );
+
+    const tuiTable = formatWorktreeTable(views, "/repo", { hyperlinks: true });
+    assert.ok(tuiTable.includes(hyperlink("#1323", prUrl)));
+    const tuiLines = tuiTable.split("\n");
+    const mainLine = tuiLines.find((l) => l.includes("main"));
+    assert.ok(mainLine && /\s-\s+clean/.test(mainLine), `expected '-' for worktree without PR: ${mainLine}`);
+
+    const mdTable = formatWorktreeTable(views, "/repo", { hyperlinks: false });
+    assert.ok(mdTable.includes(`[#1323](${prUrl})`));
+
+    // When no worktrees have PRs, omit PR column entirely
+    const noPrViews = attachPeersToWorktrees(entries, []);
+    const plainTable = formatWorktreeTable(noPrViews, "/repo", { hyperlinks: true });
+    assert.equal(plainTable.includes("\x1b]8;;"), false);
+    assert.doesNotMatch(plainTable, /\s-\s+clean/);
   });
 
   it("drives openWorktreeOverlay detail actions: c copy, d blocked on current, d confirmed remove, p prune", async () => {
@@ -436,6 +723,7 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
     await openWorktreeOverlay(ctx, {
       runGitAsync: runner,
       readLivePeers: () => [],
+      fetchOpenPrs: async () => new Map(),
       copyToClipboard: async (text) => {
         copied.push(text);
         return { ok: true, method: "test" };
@@ -498,6 +786,7 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
     await openWorktreeOverlay(ctx, {
       runGitAsync: runner,
       readLivePeers: () => [],
+      fetchOpenPrs: async () => new Map(),
       openOverlay: fakeOpenOverlay,
     });
 
@@ -505,58 +794,304 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
     assert.ok(notifications.some((n) => n.level === "warning" && n.msg.includes("current session")));
   });
 
-  it("registers /worktree (skips PI_SUBAGENT_CHILD=1) and handles list, prune, headless, and unknown subcommands", async () => {
-    const childRegistered: string[] = [];
-    withSubagentChildEnv("1", () => {
-      registerWorktree({ registerCommand: (n: string) => childRegistered.push(n) } as any);
-    });
-    assert.deepEqual(childRegistered, []);
-
-    let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
-    const sentMessages: string[] = [];
-    const emittedEvents: string[] = [];
-    const mockPi: any = {
-      registerCommand(name: string, opts: any) {
-        if (name === "worktree") handler = opts.handler;
-      },
-      sendMessage(msg: any) {
-        sentMessages.push(msg.content);
-      },
-      events: {
-        emit(ch: string) {
-          emittedEvents.push(ch);
-        },
-      },
-    };
-
+  it("uses best-effort OSC 52 wording when clipboard falls back to terminal sequence", async () => {
+    const notifications: Array<{ msg: string; level: string }> = [];
     const runner: GitAsyncRunner = async (args) => {
       if (args[0] === "worktree" && args[1] === "list") return { stdout: SAMPLE_PORCELAIN, code: 0 };
-      if (args[0] === "worktree" && args[1] === "prune") return { stdout: "", stderr: "", code: 0 };
+      if (args[0] === "log") return { stdout: "init", code: 0 };
       if (args[0] === "status") return { stdout: "", code: 0 };
       return { stdout: "", code: 0 };
     };
-
-    withSubagentChildEnv(undefined, () => {
-      registerWorktree(mockPi, { runGitAsync: runner, readLivePeers: () => [] });
+    let listOpens = 0;
+    const fakeOpenOverlay: any = async (_ctx: any, opts: any) => {
+      listOpens++;
+      if (listOpens === 1) opts.listSpec.onSelect(opts.listSpec.listItems()[1]);
+    };
+    const detailKeys = ["c", "\x1b"];
+    const theme = fakeTheme();
+    const tui = fakeTui();
+    const ctx: any = {
+      hasUI: true,
+      cwd: "/repo",
+      ui: {
+        theme,
+        notify: (msg: string, level: string) => notifications.push({ msg, level }),
+        custom: async (factory: any) => {
+          let resolveDone!: () => void;
+          const p = new Promise<void>((r) => { resolveDone = r; });
+          const comp = factory(tui, theme, {}, () => resolveDone());
+          comp.handleInput(detailKeys.shift() ?? "\x1b");
+          comp.dispose?.();
+          await p;
+          return null;
+        },
+      },
+    };
+    await openWorktreeOverlay(ctx, {
+      runGitAsync: runner,
+      readLivePeers: () => [],
+      fetchOpenPrs: async () => new Map(),
+      copyToClipboard: async () => ({ ok: true, method: "osc52" }),
+      openOverlay: fakeOpenOverlay,
     });
-    assert.ok(handler);
+    assert.ok(
+      notifications.some((n) => n.msg.includes("OSC 52") && n.msg.includes("/repo/.worktrees/feat-a")),
+      `expected OSC 52 wording with path, got: ${JSON.stringify(notifications)}`,
+    );
+  });
 
-    const notified: string[] = [];
-    const uiCtx: any = { hasUI: true, cwd: "/repo", ui: { notify: (m: string) => notified.push(m) } };
-    await handler!("list", uiCtx);
-    assert.match(notified[0], /Worktrees \(4 total, 3 linked\)/);
+  it("exits overlay remove branch cleanly when ctx.ui.confirm throws on stale context", async () => {
+    let confirmAttempted = false;
+    const runner: GitAsyncRunner = async (args) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return {
+          stdout: "worktree /repo\nHEAD aaa\nbranch refs/heads/main\n\nworktree /repo/.worktrees/clean-wt\nHEAD bbb\nbranch refs/heads/feat/clean\n",
+          code: 0,
+        };
+      }
+      if (args[0] === "log") return { stdout: "clean", code: 0 };
+      if (args[0] === "status") return { stdout: "", code: 0 };
+      return { stdout: "", code: 0 };
+    };
+    let listOpens = 0;
+    const fakeOpenOverlay: any = async (_ctx: any, opts: any) => {
+      listOpens++;
+      if (listOpens === 1) opts.listSpec.onSelect(opts.listSpec.listItems()[1]);
+    };
+    const theme = fakeTheme();
+    const tui = fakeTui();
+    const ctx: any = {
+      hasUI: true,
+      cwd: "/repo",
+      ui: {
+        theme,
+        notify: () => {},
+        confirm: async () => {
+          confirmAttempted = true;
+          throw new Error("stale extension context");
+        },
+        custom: async (factory: any) => {
+          let resolveDone!: () => void;
+          const p = new Promise<void>((r) => { resolveDone = r; });
+          const comp = factory(tui, theme, {}, () => resolveDone());
+          comp.handleInput("d");
+          comp.dispose?.();
+          await p;
+          return null;
+        },
+      },
+    };
+    await openWorktreeOverlay(ctx, {
+      runGitAsync: runner,
+      readLivePeers: () => [],
+      fetchOpenPrs: async () => new Map(),
+      openOverlay: fakeOpenOverlay,
+    });
+    assert.equal(confirmAttempted, true);
+  });
 
-    await handler!("prune", uiCtx);
-    assert.match(notified[1], /No stale worktrees to prune/);
-    assert.ok(emittedEvents.includes("orchestrator:worktrees-changed"));
+  describe("copyTextToClipboard & runClipboardCommand", () => {
+    it("dispatches pbcopy on darwin", async () => {
+      const tried: string[] = [];
+      const res = await copyTextToClipboard("/tmp/wt", {
+        platform: "darwin",
+        isTTY: false,
+        runCommand: async (cmd) => {
+          tried.push(cmd);
+          return cmd === "pbcopy";
+        },
+      });
+      assert.deepEqual(tried, ["pbcopy"]);
+      assert.deepEqual(res, { ok: true, method: "pbcopy" });
+    });
 
-    await handler!("bogus", uiCtx);
-    assert.match(notified[2], /Unknown subcommand/);
+    it("dispatches clip on win32", async () => {
+      const tried: string[] = [];
+      const res = await copyTextToClipboard("/tmp/wt", {
+        platform: "win32",
+        isTTY: false,
+        runCommand: async (cmd) => {
+          tried.push(cmd);
+          return cmd === "clip";
+        },
+      });
+      assert.deepEqual(tried, ["clip"]);
+      assert.deepEqual(res, { ok: true, method: "clip" });
+    });
 
-    // Headless /worktree (no args, hasUI: false) falls back to plain-text table via sendMessage
-    await handler!("", { hasUI: false, cwd: "/repo" });
-    assert.equal(sentMessages.length, 1);
-    assert.match(sentMessages[0], /Worktrees \(4 total, 3 linked\)/);
+    it("prefers wl-copy on Wayland Linux before falling back to xclip and xsel", async () => {
+      const tried: string[] = [];
+      const res = await copyTextToClipboard("/tmp/wt", {
+        platform: "linux",
+        waylandDisplay: "wayland-0",
+        isTTY: false,
+        runCommand: async (cmd) => {
+          tried.push(cmd);
+          return cmd === "xsel";
+        },
+      });
+      assert.deepEqual(tried, ["wl-copy", "xclip", "xsel"]);
+      assert.deepEqual(res, { ok: true, method: "xsel" });
+    });
+
+    it("falls back to OSC 52 on a TTY when clipboard utilities fail", async () => {
+      const written: string[] = [];
+      const res = await copyTextToClipboard("/repo/wt", {
+        platform: "linux",
+        waylandDisplay: "",
+        isTTY: true,
+        runCommand: async () => false,
+        writeStdout: (data) => written.push(data),
+      });
+      assert.deepEqual(res, { ok: true, method: "osc52" });
+      const b64 = Buffer.from("/repo/wt", "utf-8").toString("base64");
+      assert.equal(written[0], `\x1b]52;c;${b64}\x07`);
+    });
+
+    it("returns an error outside a TTY when no clipboard utility succeeds", async () => {
+      const res = await copyTextToClipboard("/repo/wt", {
+        platform: "linux",
+        waylandDisplay: "",
+        isTTY: false,
+        runCommand: async () => false,
+      });
+      assert.equal(res.ok, false);
+      assert.match(res.error ?? "", /No clipboard utility/);
+    });
+
+    it("returns true when runClipboardCommand exits with code 0", async () => {
+      const ok = await runClipboardCommand(process.execPath, ["-e", "process.stdin.resume()"], "hello", 2000);
+      assert.equal(ok, true);
+    });
+
+    it("returns false when runClipboardCommand exits with non-zero code", async () => {
+      const ok = await runClipboardCommand(process.execPath, ["-e", "process.exit(1)"], "hello", 2000);
+      assert.equal(ok, false);
+    });
+
+    it("kills hung clipboard process when runClipboardCommand exceeds timeout", async () => {
+      const ok = await runClipboardCommand(
+        process.execPath,
+        ["-e", "setTimeout(() => {}, 10000)"],
+        "hello",
+        60,
+      );
+      assert.equal(ok, false);
+    });
+  });
+
+  describe("/worktree command subcommands", () => {
+    const prUrl = "https://github.com/myk-org/pi-config/pull/1323";
+
+    const setupWorktreeCommand = () => {
+      let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const sentMessages: string[] = [];
+      const emittedEvents: string[] = [];
+      const mockPi: any = {
+        registerCommand(name: string, opts: any) {
+          if (name === "worktree") handler = opts.handler;
+        },
+        sendMessage(msg: any) {
+          sentMessages.push(msg.content);
+        },
+        events: {
+          emit(ch: string) {
+            emittedEvents.push(ch);
+          },
+        },
+      };
+      const runner: GitAsyncRunner = async (args) => {
+        if (args[0] === "worktree" && args[1] === "list") return { stdout: SAMPLE_PORCELAIN, code: 0 };
+        if (args[0] === "worktree" && args[1] === "prune") return { stdout: "", stderr: "", code: 0 };
+        if (args[0] === "status") return { stdout: "", code: 0 };
+        return { stdout: "", code: 0 };
+      };
+      withSubagentChildEnv(undefined, () => {
+        registerWorktree(mockPi, {
+          runGitAsync: runner,
+          readLivePeers: () => [],
+          fetchOpenPrs: async () => new Map<string, OpenPr>([["feat/a", { number: 1323, url: prUrl }]]),
+        });
+      });
+      assert.ok(handler);
+      return { handler: handler!, sentMessages, emittedEvents };
+    };
+
+    it("skips /worktree registration when PI_SUBAGENT_CHILD=1", () => {
+      const childRegistered: string[] = [];
+      withSubagentChildEnv("1", () => {
+        registerWorktree({ registerCommand: (n: string) => childRegistered.push(n) } as any);
+      });
+      assert.deepEqual(childRegistered, []);
+    });
+
+    it("emits clickable OSC 8 PR links on /worktree list in TUI", async () => {
+      const { handler } = setupWorktreeCommand();
+      const notified: string[] = [];
+      await handler("list", { hasUI: true, cwd: "/repo", ui: { notify: (m: string) => notified.push(m) } });
+      assert.match(notified[0], /Worktrees \(4 total, 3 linked\)/);
+      assert.ok(notified[0].includes(hyperlink("#1323", prUrl)));
+    });
+
+    it("runs /worktree prune with worktrees-changed notification", async () => {
+      const { handler, emittedEvents } = setupWorktreeCommand();
+      const notified: string[] = [];
+      await handler("prune", { hasUI: true, cwd: "/repo", ui: { notify: (m: string) => notified.push(m) } });
+      assert.match(notified[0], /No stale worktrees to prune/);
+      assert.ok(emittedEvents.includes("orchestrator:worktrees-changed"));
+    });
+
+    it("warns on unknown /worktree subcommand", async () => {
+      const { handler } = setupWorktreeCommand();
+      const notified: string[] = [];
+      await handler("bogus", { hasUI: true, cwd: "/repo", ui: { notify: (m: string) => notified.push(m) } });
+      assert.match(notified[0], /Unknown subcommand/);
+    });
+
+    it("falls back to markdown table via sendMessage when headless", async () => {
+      const { handler, sentMessages } = setupWorktreeCommand();
+      await handler("", { hasUI: false, cwd: "/repo" });
+      assert.equal(sentMessages.length, 1);
+      assert.match(sentMessages[0], /Worktrees \(4 total, 3 linked\)/);
+      assert.ok(sentMessages[0].includes(`[#1323](${prUrl})`));
+    });
+  });
+
+  it("includes 1-line Worktrees summary in /status for detached HEAD linked worktrees", async () => {
+    const tmpBase = makeTempDir("wt-status-detached-");
+    const mainDir = join(tmpBase, "main");
+    const wtDir = join(tmpBase, "detached-wt");
+    try {
+      mkdirSync(mainDir, { recursive: true });
+      execFileSync("git", ["init", "-q"], { cwd: mainDir });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: mainDir });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: mainDir });
+      writeFileSync(join(mainDir, "a.txt"), "hello\n");
+      execFileSync("git", ["add", "a.txt"], { cwd: mainDir });
+      execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: mainDir });
+      execFileSync("git", ["worktree", "add", "-q", "--detach", wtDir, "HEAD"], { cwd: mainDir });
+
+      let statusHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const mockPi: any = {
+        registerCommand(name: string, opts: any) {
+          if (name === "status") statusHandler = opts.handler;
+        },
+      };
+      registerStatus(mockPi, false, () => [], () => []);
+      assert.ok(statusHandler);
+
+      let notified = "";
+      await statusHandler!("", {
+        hasUI: true,
+        cwd: wtDir,
+        ui: { notify: (msg: string) => { notified = msg; } },
+      });
+      assert.match(notified, /Git: \(detached /);
+      assert.match(notified, /⊞ Worktrees: 1 linked \(current: \(detached /);
+    } finally {
+      invalidateWorktreeCache();
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
   });
 
   it("completes /worktree subcommands (list, prune) via extended-autocomplete", () => {

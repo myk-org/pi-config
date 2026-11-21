@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
 import {
   countLinkedWorktrees,
+  detectWorktreePresence,
   getOpenPr,
   isInLinkedWorktree,
   listWorktreesAsync,
@@ -13,6 +14,7 @@ import {
   runGitAsync,
   scheduleOpenPrStatusRefresh,
   type GitAsyncRunner,
+  type WorktreeEntry,
 } from "./git-helpers.js";
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
 import { clearSlot, setSlot } from "./status-bar.js";
@@ -27,6 +29,7 @@ export interface StatusLineDeps {
   debounceMs?: number;
   githubRepoCacheTtlMs?: number;
   worktreeCacheTtlMs?: number;
+  hasLinkedWorktreesHint?: (cwd: string) => boolean | null;
 }
 
 export function registerStatusLine(
@@ -41,6 +44,8 @@ export function registerStatusLine(
   const githubRepoCacheTtlMs = deps?.githubRepoCacheTtlMs ?? 60_000;
   const worktreeCacheTtlMs = deps?.worktreeCacheTtlMs ?? 5_000;
   const execGitAsync: GitAsyncRunner = deps?.runGitAsync ?? runGitAsync;
+  const checkWorktreePresence = deps?.hasLinkedWorktreesHint ?? detectWorktreePresence;
+  const singleCheckoutCwds = new Set<string>();
 
   const githubRepoCache = new Map<string, { at: number; isGh: boolean }>();
   const getBranchAsync = async (cwd?: string): Promise<string | null> => {
@@ -68,7 +73,9 @@ export function registerStatusLine(
   // ── Combined status line builder ───────────────────────────────────────
 
   let lastStatusText = "";
+  let lastStatusCtx: any = null;
   let lastWorktreesText: string | undefined = undefined;
+  let lastWorktreesCtx: any = null;
   const buildStatus = (ctx: any, gitPart: string) => {
     if (!isLiveExtensionCtx(ctx)) return;
     const parts: string[] = [];
@@ -77,8 +84,9 @@ export function registerStatusLine(
     parts.push(gitPart);
 
     const text = parts.join(ctx.ui.theme.fg("dim", ICON_SEP));
-    if (text === lastStatusText) return; // Skip redundant re-renders
+    if (text === lastStatusText && ctx === lastStatusCtx) return; // Skip redundant re-renders
     lastStatusText = text;
+    lastStatusCtx = ctx;
     setSlot("git", text, ctx);
     // Clear legacy status keys to avoid duplicates
     ctx.ui.setStatus("container", undefined);
@@ -89,11 +97,13 @@ export function registerStatusLine(
     if (!isLiveExtensionCtx(ctx)) return;
     if (linkedCount > 0) {
       const badge = ctx.ui.theme.fg("muted", `⊞ ${linkedCount} wt`);
-      if (badge === lastWorktreesText) return;
+      if (badge === lastWorktreesText && ctx === lastWorktreesCtx) return;
       lastWorktreesText = badge;
+      lastWorktreesCtx = ctx;
       setSlot("worktrees", badge, ctx);
-    } else if (lastWorktreesText !== undefined) {
+    } else if (lastWorktreesText !== undefined || (lastWorktreesCtx !== null && lastWorktreesCtx !== ctx)) {
       lastWorktreesText = undefined;
+      lastWorktreesCtx = ctx;
       clearSlot("worktrees", ctx);
     }
   };
@@ -124,19 +134,32 @@ export function registerStatusLine(
         isGithubRepoAsync(ctx.cwd),
       ]);
       if (shutDown || seq !== branchUpdateSeq || !isLiveExtensionCtx(ctx)) return;
-      if (!b) {
+      const isRepo = b !== null || status.code === 0;
+      if (!isRepo) {
         lastBranch = null;
         updateWorktreesSlot(ctx, 0);
         return;
       }
       lastBranch = b;
 
-      const worktrees = await listWorktreesAsync(ctx.cwd, {
-        runGitAsync: execGitAsync,
-        ttlMs: worktreeCacheTtlMs,
-        forceRefresh: forceWorktreeRefresh,
-      });
-      if (shutDown || seq !== branchUpdateSeq || !isLiveExtensionCtx(ctx)) return;
+      const cwdKey = ctx.cwd || "";
+      const presence = checkWorktreePresence(cwdKey);
+      let worktrees: WorktreeEntry[] = [];
+      if (presence === false) {
+        singleCheckoutCwds.add(cwdKey);
+      } else if (presence === true || forceWorktreeRefresh || !singleCheckoutCwds.has(cwdKey)) {
+        worktrees = await listWorktreesAsync(ctx.cwd, {
+          runGitAsync: execGitAsync,
+          ttlMs: worktreeCacheTtlMs,
+          forceRefresh: forceWorktreeRefresh,
+        });
+        if (shutDown || seq !== branchUpdateSeq || !isLiveExtensionCtx(ctx)) return;
+        if (countLinkedWorktrees(worktrees) === 0 && !isInLinkedWorktree(worktrees)) {
+          singleCheckoutCwds.add(cwdKey);
+        } else {
+          singleCheckoutCwds.delete(cwdKey);
+        }
+      }
 
       const { modified, added, deleted, untracked } =
         status.code === 0 && status.stdout
@@ -157,7 +180,7 @@ export function registerStatusLine(
         changes.length > 0 ? `${icon} ${changes.join(" ")}` : icon;
 
       // Sync cache only — never block the status path on `gh`.
-      const pr = isGh ? getOpenPr(ctx.cwd, b, { assumeGithub: true }) : null;
+      const pr = isGh && b ? getOpenPr(ctx.cwd, b, { assumeGithub: true }) : null;
       if (pr) {
         const prLabel = ctx.ui.theme.fg(
           "accent",
@@ -174,7 +197,7 @@ export function registerStatusLine(
       updateWorktreesSlot(ctx, countLinkedWorktrees(worktrees));
 
       // Per-key coalesce lives in refreshOpenPr — no global pending gate.
-      if (isGh) {
+      if (isGh && b) {
         scheduleOpenPrStatusRefresh({
           cwd: ctx.cwd,
           branch: b,
@@ -210,6 +233,7 @@ export function registerStatusLine(
 
   // Immediate refresh when /worktree removes or prunes worktrees
   pi.events?.on?.("orchestrator:worktrees-changed", () => {
+    singleCheckoutCwds.clear();
     if (shutDown || !lastCtx || !isLiveExtensionCtx(lastCtx)) return;
     void updateBranch(null, lastCtx, true);
   });

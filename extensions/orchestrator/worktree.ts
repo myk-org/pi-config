@@ -4,6 +4,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { hyperlink } from "@earendil-works/pi-tui";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
 import {
@@ -12,6 +13,7 @@ import {
   listWorktreesAsync,
   runGitAsync,
   type GitAsyncRunner,
+  type OpenPr,
 } from "./git-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -24,12 +26,14 @@ import {
   canRemoveWorktree,
   copyTextToClipboard,
   displayWorktreePath,
+  fetchOpenPrsByBranchAsync,
   formatDirtyText,
   formatPruneResult,
   formatWorktreeLabel,
   formatWorktreeTable,
   formatWorktreeTags,
-  readLiveComsPeers,
+  inspectLiveComsPeers,
+  type PeerInspectionResult,
   type WorktreePeerInfo,
   type WorktreeView,
 } from "./worktree-helpers.js";
@@ -41,6 +45,8 @@ const MAX_STATUS_LINES = 60;
 export interface WorktreeDeps {
   runGitAsync?: GitAsyncRunner;
   readLivePeers?: (cwd: string) => WorktreePeerInfo[];
+  inspectLivePeers?: (cwd: string, opts?: { strict?: boolean }) => PeerInspectionResult;
+  fetchOpenPrs?: (cwd: string, opts?: { forceRefresh?: boolean }) => Promise<Map<string, OpenPr>>;
   copyToClipboard?: (text: string) => Promise<{ ok: boolean; method?: string; error?: string }>;
   openOverlay?: typeof openListDetailOverlay;
   onWorktreesChanged?: () => void;
@@ -76,39 +82,71 @@ function emitOutput(
   }
 }
 
-/** Load worktrees with dirty counts + matched live COMS peers. */
+/** Load worktrees with dirty counts, matched live COMS peers, and open GitHub PRs. */
 export async function loadWorktreeViews(
   cwd: string,
-  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers"> = {},
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "fetchOpenPrs"> = {},
   forceRefresh = true,
+  opts: { includePrs?: boolean; forceRefreshPrs?: boolean; strictPeers?: boolean } = {},
 ): Promise<WorktreeView[]> {
-  const entries = await listWorktreesAsync(cwd, {
-    includeDirty: true,
-    forceRefresh,
-    runGitAsync: deps.runGitAsync,
-  });
-  const peers = (deps.readLivePeers ?? readLiveComsPeers)(cwd);
-  return attachPeersToWorktrees(entries, peers);
+  const includePrs = opts.includePrs ?? true;
+  const prFetcher =
+    deps.fetchOpenPrs ??
+    ((dir, o) => fetchOpenPrsByBranchAsync(dir, { forceRefresh: o?.forceRefresh }));
+
+  const [entries, prsByBranch] = await Promise.all([
+    listWorktreesAsync(cwd, {
+      includeDirty: true,
+      forceRefresh,
+      runGitAsync: deps.runGitAsync,
+    }),
+    includePrs
+      ? prFetcher(cwd, { forceRefresh: opts.forceRefreshPrs }).catch((e: any) => {
+          log.debug("open_prs_load_failed", { cwd, error: e?.message || String(e) });
+          return new Map<string, OpenPr>();
+        })
+      : Promise.resolve(new Map<string, OpenPr>()),
+  ]);
+  const peerInspection: PeerInspectionResult = deps.inspectLivePeers
+    ? deps.inspectLivePeers(cwd, { strict: opts.strictPeers })
+    : deps.readLivePeers
+      ? { peers: deps.readLivePeers(cwd), verified: true }
+      : inspectLiveComsPeers(cwd, { strict: opts.strictPeers });
+  const unverifiedReason = peerInspection.verified
+    ? undefined
+    : (peerInspection.error || "COMS registry unreadable");
+  return attachPeersToWorktrees(entries, peerInspection.peers, prsByBranch, unverifiedReason);
+}
+
+export interface WorktreeDetailInfo {
+  headSubject: string;
+  statusLines: string[];
+  statusOk?: boolean;
+  statusError?: string;
 }
 
 /** Load HEAD commit subject and `git status --short` lines for the detail view. */
 export async function loadWorktreeDetail(
   wt: WorktreeView,
   runner: GitAsyncRunner = runGitAsync,
-): Promise<{ headSubject: string; statusLines: string[] }> {
+): Promise<WorktreeDetailInfo> {
   if (wt.prunable || wt.bare) {
-    return { headSubject: "", statusLines: [] };
+    return { headSubject: "", statusLines: [], statusOk: true };
   }
   const [logRes, statusRes] = await Promise.all([
     runner(["log", "-1", "--format=%s"], wt.path),
     runner(["status", "--short"], wt.path),
   ]);
   const headSubject = logRes.code === 0 ? logRes.stdout.trim() : "";
-  const statusLines =
-    statusRes.code === 0 && statusRes.stdout
-      ? statusRes.stdout.split(/\r?\n/).filter((l) => l.trim().length > 0)
-      : [];
-  return { headSubject, statusLines };
+  if (statusRes.code !== 0) {
+    const statusError = (statusRes.stderr || statusRes.stdout || "git status failed").trim();
+    log.debug("worktree_detail_status_failed", { path: wt.path, code: statusRes.code, error: statusError });
+    return { headSubject, statusLines: [], statusOk: false, statusError };
+  }
+  const statusLines = statusRes.stdout
+    ? statusRes.stdout.split(/\r?\n/).filter((l) => l.trim().length > 0)
+    : [];
+  return { headSubject, statusLines, statusOk: true };
 }
 
 /** Build themed row parts for `openListDetailOverlay`. */
@@ -145,7 +183,11 @@ export function buildWorktreeRowParts(
           ? theme.fg("dim", dirtyText)
           : theme.fg("warning", dirtyText);
 
-  const rightParts: string[] = [dirtyPart];
+  const rightParts: string[] = [];
+  if (wt.pr) {
+    rightParts.push(theme.fg("accent", hyperlink(`#${wt.pr.number}`, wt.pr.url)));
+  }
+  rightParts.push(dirtyPart);
   if (wt.peers.length > 0) {
     const peerLabel =
       wt.peers.length === 1
@@ -161,7 +203,7 @@ export function buildWorktreeRowParts(
 /** Build detail body lines for a single worktree. */
 export function buildWorktreeDetailLines(
   wt: WorktreeView,
-  detail: { headSubject: string; statusLines: string[] },
+  detail: WorktreeDetailInfo,
   theme: Theme,
 ): string[] {
   const lines: string[] = [];
@@ -170,6 +212,11 @@ export function buildWorktreeDetailLines(
 
   lines.push(kv("Path", wt.path));
   lines.push(kv("Branch", formatWorktreeLabel(wt)));
+  if (wt.pr) {
+    const prNum = theme.fg("accent", hyperlink(`#${wt.pr.number}`, wt.pr.url));
+    const prUrl = theme.fg("dim", hyperlink(wt.pr.url, wt.pr.url));
+    lines.push(kv("PR", `${prNum} — ${prUrl}`));
+  }
   const shortSha = wt.head ? wt.head.slice(0, 10) : "(none)";
   const headText = detail.headSubject ? `${shortSha} — ${detail.headSubject}` : shortSha;
   lines.push(kv("HEAD", headText));
@@ -209,6 +256,9 @@ export function buildWorktreeDetailLines(
     lines.push(theme.fg("error", "Worktree directory is missing/prunable — press p to prune."));
   } else if (wt.bare) {
     lines.push(theme.fg("dim", "Bare repository worktree."));
+  } else if (detail.statusOk === false) {
+    const errSuffix = detail.statusError ? ` (${detail.statusError})` : "";
+    lines.push(theme.fg("warning", `Working tree status unavailable${errSuffix}.`));
   } else if (detail.statusLines.length === 0) {
     lines.push(theme.fg("success", "Working tree clean."));
   } else {
@@ -246,10 +296,10 @@ export async function runWorktreePrune(
 export async function executeGuardedWorktreeRemove(
   cwd: string,
   targetPath: string,
-  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "onWorktreesChanged"> = {},
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "onWorktreesChanged"> = {},
 ): Promise<{ ok: boolean; message: string }> {
   const runner = deps.runGitAsync ?? runGitAsync;
-  const freshViews = await loadWorktreeViews(cwd, deps, true);
+  const freshViews = await loadWorktreeViews(cwd, deps, true, { includePrs: false, strictPeers: true });
   const fresh = freshViews.find((w) => w.path === targetPath);
   if (!fresh) {
     invalidateWorktreeCache(cwd);
@@ -258,7 +308,7 @@ export async function executeGuardedWorktreeRemove(
   }
   const guard = canRemoveWorktree(fresh);
   if (!guard.allowed) {
-    log.warn("worktree_remove_blocked", { path: targetPath, reason: guard.reason });
+    log.info("worktree_remove_blocked", { path: targetPath, reason: guard.reason });
     return { ok: false, message: guard.reason };
   }
   const res = await runner(["worktree", "remove", targetPath], cwd);
@@ -283,6 +333,7 @@ export async function openWorktreeOverlay(
   const copyFn = deps.copyToClipboard ?? copyTextToClipboard;
 
   let views = await loadWorktreeViews(ctx.cwd, deps, true);
+  if (!isLiveExtensionCtx(ctx)) return;
   if (views.length === 0) {
     safeNotify(ctx, "Not in a git repository (no worktrees found).", "info");
     return;
@@ -296,6 +347,7 @@ export async function openWorktreeOverlay(
     | { kind: "prune" };
 
   for (;;) {
+    if (!isLiveExtensionCtx(ctx)) return;
     const listQueue: ListAction[] = [];
 
     await openOverlay<string, WorktreeView>(ctx, {
@@ -335,11 +387,11 @@ export async function openWorktreeOverlay(
     });
 
     const action = listQueue.pop();
-    if (!action) return;
+    if (!action || !isLiveExtensionCtx(ctx)) return;
 
     if (action.kind === "refresh") {
-      views = await loadWorktreeViews(ctx.cwd, deps, true);
-      if (views.length === 0) return;
+      views = await loadWorktreeViews(ctx.cwd, deps, true, { forceRefreshPrs: true });
+      if (!isLiveExtensionCtx(ctx) || views.length === 0) return;
       continue;
     }
 
@@ -347,7 +399,7 @@ export async function openWorktreeOverlay(
       const pruned = await runWorktreePrune(ctx.cwd, deps);
       safeNotify(ctx, pruned.message, pruned.ok ? "info" : "warning");
       views = await loadWorktreeViews(ctx.cwd, deps, true);
-      if (views.length === 0) return;
+      if (!isLiveExtensionCtx(ctx) || views.length === 0) return;
       continue;
     }
 
@@ -410,8 +462,13 @@ export async function openWorktreeOverlay(
 
       if (detailAction === "copy") {
         const res = await copyFn(wt.path);
+        if (!isLiveExtensionCtx(ctx)) return;
         if (res.ok) {
-          safeNotify(ctx, `Copied worktree path: ${wt.path}`, "info");
+          const msg =
+            res.method === "osc52"
+              ? `Sent worktree path to terminal clipboard (OSC 52): ${wt.path}`
+              : `Copied worktree path: ${wt.path}`;
+          safeNotify(ctx, msg, "info");
         } else {
           safeNotify(ctx, `Copy unavailable (${res.error}) — path: ${wt.path}`, "warning");
         }
@@ -419,7 +476,8 @@ export async function openWorktreeOverlay(
       }
 
       if (detailAction === "refresh") {
-        views = await loadWorktreeViews(ctx.cwd, deps, true);
+        views = await loadWorktreeViews(ctx.cwd, deps, true, { forceRefreshPrs: true });
+        if (!isLiveExtensionCtx(ctx)) return;
         currentWt = views.find((w) => w.path === targetPath);
         continue;
       }
@@ -428,17 +486,26 @@ export async function openWorktreeOverlay(
         const pruned = await runWorktreePrune(ctx.cwd, deps);
         safeNotify(ctx, pruned.message, pruned.ok ? "info" : "warning");
         views = await loadWorktreeViews(ctx.cwd, deps, true);
+        if (!isLiveExtensionCtx(ctx)) return;
         currentWt = views.find((w) => w.path === targetPath);
         continue;
       }
 
       if (detailAction === "remove") {
+        if (!isLiveExtensionCtx(ctx)) return;
         const label = formatWorktreeLabel(wt);
         const rel = displayWorktreePath(wt.path, ctx.cwd);
-        const confirmed = await ctx.ui.confirm(
-          "Remove worktree?",
-          `Remove worktree "${rel}" (${label})?\nPath: ${wt.path}`,
-        );
+        let confirmed = false;
+        try {
+          confirmed = await ctx.ui.confirm(
+            "Remove worktree?",
+            `Remove worktree "${rel}" (${label})?\nPath: ${wt.path}`,
+          );
+        } catch (e: any) {
+          log.debug("worktree_confirm_failed", { path: wt.path, error: e?.message || String(e) });
+          return;
+        }
+        if (!isLiveExtensionCtx(ctx)) return;
         if (!confirmed) {
           log.debug("worktree_remove_cancelled", { path: wt.path });
           continue;
@@ -446,6 +513,7 @@ export async function openWorktreeOverlay(
         const removed = await executeGuardedWorktreeRemove(ctx.cwd, wt.path, deps);
         safeNotify(ctx, removed.message, removed.ok ? "info" : "warning");
         views = await loadWorktreeViews(ctx.cwd, deps, true);
+        if (!isLiveExtensionCtx(ctx)) return;
         if (removed.ok) {
           reselectId = views.find((w) => w.isCurrent)?.id ?? views[0]?.id;
           break;
@@ -475,7 +543,7 @@ export function registerWorktree(pi: ExtensionAPI, deps: WorktreeDeps = {}): voi
 
       if (sub === "list") {
         const views = await loadWorktreeViews(ctx.cwd, effectiveDeps, true);
-        emitOutput(pi, ctx, formatWorktreeTable(views, ctx.cwd), "info");
+        emitOutput(pi, ctx, formatWorktreeTable(views, ctx.cwd, { hyperlinks: !!ctx?.hasUI }), "info");
         return;
       }
 
@@ -488,7 +556,7 @@ export function registerWorktree(pi: ExtensionAPI, deps: WorktreeDeps = {}): voi
       if (sub === "") {
         if (!ctx?.hasUI) {
           const views = await loadWorktreeViews(ctx.cwd, effectiveDeps, true);
-          emitOutput(pi, ctx, formatWorktreeTable(views, ctx.cwd), "info");
+          emitOutput(pi, ctx, formatWorktreeTable(views, ctx.cwd, { hyperlinks: false }), "info");
           return;
         }
         await openWorktreeOverlay(ctx, effectiveDeps);

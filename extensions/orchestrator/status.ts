@@ -55,14 +55,19 @@ export function registerStatus(
       // ── Git ────────────────────────────────────────────────────────
       try {
         const branch = getCurrentBranch(ctx.cwd);
-        if (branch) {
-          const status = runGit(["status", "--porcelain"], ctx.cwd);
+        const status = runGit(["status", "--porcelain"], ctx.cwd);
+        if (branch || status.code === 0) {
           const dirtyLines = status.code === 0 ? status.stdout?.trim() : "";
           const dirtyCount = dirtyLines ? dirtyLines.split("\n").length : 0;
           const repoName = ctx.cwd.split("/").pop() || ctx.cwd;
           const stateIcon = dirtyCount > 0 ? "●" : "✓";
           const stateText = dirtyCount > 0 ? `${dirtyCount} changed file${dirtyCount > 1 ? "s" : ""}` : "clean";
-          lines.push(`🔀 Git: ${branch} ${stateIcon} ${stateText} (${repoName})`);
+          let branchLabel = branch;
+          if (!branchLabel) {
+            const head = runGit(["rev-parse", "--short", "HEAD"], ctx.cwd);
+            branchLabel = head.code === 0 && head.stdout ? `(detached ${head.stdout.trim()})` : "(detached)";
+          }
+          lines.push(`🔀 Git: ${branchLabel} ${stateIcon} ${stateText} (${repoName})`);
 
           const worktrees = await listWorktreesAsync(ctx.cwd);
           const wtSummary = formatWorktreeStatusSummary(worktrees);

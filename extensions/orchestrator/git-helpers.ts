@@ -3,8 +3,8 @@
  */
 
 import { execFile, execFileSync, execSync } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import { createLogger } from "../shared/logger.js";
 
 const gitLog = createLogger("git-helpers");
@@ -231,15 +231,18 @@ const WORKTREE_CACHE_MAX = 50;
 type WorktreeCacheEntry = { at: number; entries: WorktreeEntry[] };
 const worktreeCache = new Map<string, WorktreeCacheEntry>();
 const worktreeInFlight = new Map<string, Promise<WorktreeEntry[]>>();
+const worktreeGen = new Map<string, number>();
 const runnerWorktreeCaches = new WeakMap<GitAsyncRunner, Map<string, WorktreeCacheEntry>>();
 const runnerWorktreeInFlight = new WeakMap<GitAsyncRunner, Map<string, Promise<WorktreeEntry[]>>>();
+const runnerWorktreeGen = new WeakMap<GitAsyncRunner, Map<string, number>>();
 
 function getWorktreeCacheStore(runner?: GitAsyncRunner): {
   cache: Map<string, WorktreeCacheEntry>;
   inFlight: Map<string, Promise<WorktreeEntry[]>>;
+  gen: Map<string, number>;
 } {
   if (!runner || runner === runGitAsync) {
-    return { cache: worktreeCache, inFlight: worktreeInFlight };
+    return { cache: worktreeCache, inFlight: worktreeInFlight, gen: worktreeGen };
   }
   let cache = runnerWorktreeCaches.get(runner);
   if (!cache) {
@@ -251,27 +254,71 @@ function getWorktreeCacheStore(runner?: GitAsyncRunner): {
     inFlight = new Map();
     runnerWorktreeInFlight.set(runner, inFlight);
   }
-  return { cache, inFlight };
+  let gen = runnerWorktreeGen.get(runner);
+  if (!gen) {
+    gen = new Map();
+    runnerWorktreeGen.set(runner, gen);
+  }
+  return { cache, inFlight, gen };
 }
 
 function worktreeCacheKey(cwd?: string): string {
   return resolve(cwd || process.cwd());
 }
 
+/**
+ * Fast filesystem check for linked worktrees without spawning git.
+ * Returns `true` when `.git` is a file (linked worktree) or `.git/worktrees` is non-empty,
+ * `false` when `.git` is a directory with no/empty `worktrees/` (single checkout),
+ * or `null` when indeterminate (e.g. `GIT_DIR` override, path not on disk, or I/O error).
+ */
+export function detectWorktreePresence(cwd: string): boolean | null {
+  if (!cwd || process.env.GIT_DIR || process.env.GIT_WORK_TREE) return null;
+  let dir = resolve(cwd);
+  for (;;) {
+    const dotGit = join(dir, ".git");
+    try {
+      const st = lstatSync(dotGit);
+      if (st.isFile()) return true;
+      if (st.isDirectory()) {
+        try {
+          return readdirSync(join(dotGit, "worktrees")).length > 0;
+        } catch (e: any) {
+          if (e?.code === "ENOENT") return false;
+          return null;
+        }
+      }
+      return null;
+    } catch (e: any) {
+      if (e?.code !== "ENOENT" && e?.code !== "ENOTDIR") return null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 /** Invalidate cached worktree listings for `cwd` (or all cached repos when omitted). */
 export function invalidateWorktreeCache(cwd?: string): void {
+  const bumpGen = (k: string) => {
+    worktreeGen.set(k, (worktreeGen.get(k) ?? 0) + 1);
+  };
   if (!cwd) {
+    for (const k of worktreeCache.keys()) bumpGen(k);
+    for (const k of worktreeInFlight.keys()) bumpGen(k);
     worktreeCache.clear();
     worktreeInFlight.clear();
     return;
   }
   const key = worktreeCacheKey(cwd);
+  bumpGen(key);
   worktreeCache.delete(key);
   worktreeInFlight.delete(key);
   // Also invalidate any sibling worktree keys that belong to the same repo
   const norm = normalizePathForMatch(cwd);
   for (const [cachedKey, entry] of worktreeCache) {
     if (entry.entries.some((wt) => normalizePathForMatch(wt.path) === norm)) {
+      bumpGen(cachedKey);
       worktreeCache.delete(cachedKey);
       worktreeInFlight.delete(cachedKey);
     }
@@ -304,7 +351,7 @@ export async function listWorktreesAsync(
   const ttlMs = opts.ttlMs ?? WORKTREE_TTL_MS;
   const effectiveCwd = cwd || process.cwd();
   const key = worktreeCacheKey(effectiveCwd);
-  const { cache, inFlight } = getWorktreeCacheStore(runner);
+  const { cache, inFlight, gen } = getWorktreeCacheStore(runner);
 
   const loadBase = async (): Promise<WorktreeEntry[]> => {
     const now = Date.now();
@@ -320,17 +367,23 @@ export async function listWorktreesAsync(
       }
     }
 
-    const promise = (async (): Promise<WorktreeEntry[]> => {
+    const myGen = (gen.get(key) ?? 0) + 1;
+    gen.set(key, myGen);
+
+    let promise!: Promise<WorktreeEntry[]>;
+    promise = (async (): Promise<WorktreeEntry[]> => {
       try {
         const r = await runner(["worktree", "list", "--porcelain"], effectiveCwd);
         if (r.code !== 0) return [];
         const parsed = r.stdout ? parseWorktreePorcelain(r.stdout, effectiveCwd) : [];
-        cache.delete(key);
-        cache.set(key, { at: Date.now(), entries: parsed });
-        while (cache.size > WORKTREE_CACHE_MAX) {
-          const oldest = cache.keys().next().value;
-          if (oldest === undefined) break;
-          cache.delete(oldest);
+        if (gen.get(key) === myGen) {
+          cache.delete(key);
+          cache.set(key, { at: Date.now(), entries: parsed });
+          while (cache.size > WORKTREE_CACHE_MAX) {
+            const oldest = cache.keys().next().value;
+            if (oldest === undefined) break;
+            cache.delete(oldest);
+          }
         }
         return parsed;
       } catch (e: any) {
@@ -338,7 +391,9 @@ export async function listWorktreesAsync(
         return [];
       }
     })().finally(() => {
-      inFlight.delete(key);
+      if (inFlight.get(key) === promise) {
+        inFlight.delete(key);
+      }
     });
 
     inFlight.set(key, promise);
