@@ -49,7 +49,7 @@ import {
 	WIDGET_MODE_CHANGED_EVENT,
 	formatComsCollapsedHeader,
 	formatComsTopBorder,
-	getConfiguredShortcut,
+	getRegisteredWidgetShortcut,
 	getWidgetMode,
 	type WidgetModeChangedEvent,
 } from "../shared/widget-visibility.js";
@@ -2281,7 +2281,8 @@ Do not respond to this message.`;
 
 		const widgetCwd = identity?.cwd || currentCtx?.cwd || process.cwd();
 		const widgetMode = getWidgetMode("coms", widgetCwd);
-		const shortcutHint = getConfiguredShortcut(widgetCwd, "widget_coms_shortcut");
+		// Advertise only the binding accepted at registration (never an unbound settings edit).
+		const shortcutHint = getRegisteredWidgetShortcut("widget_coms_shortcut");
 		if (widgetMode === "collapsed") {
 			const busyCount = rows.filter((r) => !r.stale && r.busy).length;
 			return [

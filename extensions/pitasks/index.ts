@@ -16,7 +16,7 @@ import {
 	TOGGLE_ALL_WIDGETS_EVENT,
 	applyWidgetAction,
 	cycleWidgetMode,
-	getConfiguredShortcut,
+	getRegisteredWidgetShortcut,
 	getWidgetMode,
 	registerWidgetShortcut,
 	type ToggleAllWidgetsEvent,
@@ -319,24 +319,29 @@ export default function (pi: ExtensionAPI) {
 	);
 	widget.setShortcutHint(tasksShortcut);
 	let unsubToggleAll: (() => void) | undefined;
-	try {
+	function subscribeToggleAll(): void {
+		try { unsubToggleAll?.(); } catch {}
 		try { (globalThis as any).__pitasks_toggle_all_unsubscribe?.(); } catch {}
-		unsubToggleAll = pi.events.on(TOGGLE_ALL_WIDGETS_EVENT, (data: unknown) => {
-			if (shuttingDown) return;
-			const payload = data as Partial<ToggleAllWidgetsEvent> | undefined;
-			const cwd = (currentCtx && isLiveExtensionCtx(currentCtx) ? currentCtx.cwd : undefined) || process.cwd();
-			const next = payload?.modes?.tasks ?? getWidgetMode("tasks", cwd);
-			if (currentCtx && isLiveExtensionCtx(currentCtx)) {
-				currentUiCtx = currentCtx.ui;
-				widget.setUICtx(currentCtx.ui);
-			}
-			widget.setMode(next);
-			log.debug("tasks_widget_toggle_all_applied", { mode: next });
-		});
-		(globalThis as any).__pitasks_toggle_all_unsubscribe = unsubToggleAll;
-	} catch (e: any) {
-		log.warn("tasks_widget_toggle_all_subscribe_failed", { error: e?.message });
+		unsubToggleAll = undefined;
+		try {
+			unsubToggleAll = pi.events.on(TOGGLE_ALL_WIDGETS_EVENT, (data: unknown) => {
+				if (shuttingDown) return;
+				const payload = data as Partial<ToggleAllWidgetsEvent> | undefined;
+				const cwd = payload?.cwd || (currentCtx && isLiveExtensionCtx(currentCtx) ? currentCtx.cwd : undefined) || process.cwd();
+				const next = payload?.modes?.tasks ?? getWidgetMode("tasks", cwd);
+				if (currentCtx && isLiveExtensionCtx(currentCtx)) {
+					currentUiCtx = currentCtx.ui;
+					widget.setUICtx(currentCtx.ui);
+				}
+				widget.setMode(next);
+				log.debug("tasks_widget_toggle_all_applied", { mode: next });
+			});
+			(globalThis as any).__pitasks_toggle_all_unsubscribe = unsubToggleAll;
+		} catch (e: any) {
+			log.warn("tasks_widget_toggle_all_subscribe_failed", { error: e?.message });
+		}
 	}
+	subscribeToggleAll();
 	store.setOnChange(() => { widget.update(); broadcastTasks(); });
 	for (const taskId of resumedActiveTaskIds) widget.setActiveTask(taskId);
 	currentWidget = widget;
@@ -640,7 +645,10 @@ export default function (pi: ExtensionAPI) {
 		upgradeStoreIfNeeded(ctx);
 		if (forkSeed?.tasks.length) store.seed(forkSeed);
 		const sessionCwd = ctx?.cwd || process.cwd();
-		widget.setShortcutHint(getConfiguredShortcut(sessionCwd, "widget_tasks_shortcut"));
+		// Re-subscribe after session_shutdown so /new, /resume, and /fork still receive toggle-all.
+		subscribeToggleAll();
+		// Always advertise the shortcut binding accepted at registration (never an unbound edit).
+		widget.setShortcutHint(getRegisteredWidgetShortcut("widget_tasks_shortcut"));
 		widget.setMode(getWidgetMode("tasks", sessionCwd));
 		widget.beginTurn();
 		showPersistedTasks(reason === "reload" || reason === "resume" || reason === "fork");

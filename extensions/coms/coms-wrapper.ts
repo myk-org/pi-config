@@ -65,8 +65,9 @@ export function registerComs(pi: ExtensionAPI) {
         "Collapse/expand coms widget",
         (ctx) => {
             if (!isLiveExtensionCtx(ctx)) return;
-            const next = cycleWidgetMode("coms", ctx?.cwd || process.cwd());
-            emitIfLive(pi, WIDGET_MODE_CHANGED_EVENT, { widget: "coms", mode: next });
+            const cwd = ctx?.cwd || process.cwd();
+            const next = cycleWidgetMode("coms", cwd);
+            emitIfLive(pi, WIDGET_MODE_CHANGED_EVENT, { widget: "coms", mode: next, cwd });
             log.info("coms_widget_shortcut_cycled", { mode: next });
         },
     );
@@ -326,8 +327,9 @@ export function registerComs(pi: ExtensionAPI) {
                 try { ctx.ui.notify("Usage: /coms widget [expand|collapse|toggle]", "warning"); } catch {}
                 return;
             }
-            const next = applyWidgetAction("coms", action, ctx?.cwd || process.cwd());
-            emitIfLive(pi, WIDGET_MODE_CHANGED_EVENT, { widget: "coms", mode: next });
+            const cwd = ctx?.cwd || process.cwd();
+            const next = applyWidgetAction("coms", action, cwd);
+            emitIfLive(pi, WIDGET_MODE_CHANGED_EVENT, { widget: "coms", mode: next, cwd });
             log.info("coms_widget_mode_updated", { mode: next, action });
             try { ctx.ui.notify(`📡 coms widget: ${next}`, "info"); } catch {}
         } else if (subcommand === "status") {

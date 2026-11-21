@@ -1,17 +1,19 @@
 /**
  * Shared widget collapse/expand state, shortcut validation/registration, and toggle-all bridge.
  *
- * State lives on `globalThis[WIDGET_VISIBILITY_SYMBOL]` so active display modes survive
- * `/reload` and stay consistent across separately loaded extension bundles (`pitasks`,
- * `coms`, `orchestrator`).
+ * State lives on `globalThis[WIDGET_VISIBILITY_SYMBOL]` keyed by resolved project root so active
+ * display modes survive `/reload` within a project without leaking across projects, and stay
+ * consistent across separately loaded extension bundles (`pitasks`, `coms`, `orchestrator`).
  *
  * Widgets always keep their 1-line header visible (never hidden to 0 lines) so users always
  * see the widget exists along with its `[<key> collapse]` / `[<key> expand]` hint.
  */
 
+import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type KeyId } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, type KeyId } from "@earendil-works/pi-tui";
 import { getSetting } from "../orchestrator/project-settings.js";
+import { resolveRepoRoot } from "../orchestrator/utils.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("widget-visibility");
@@ -31,26 +33,70 @@ export const WIDGET_VISIBILITY_SYMBOL = Symbol.for("pi-config.widgetVisibility")
 
 export interface ToggleAllWidgetsEvent {
   modes: Record<WidgetId, WidgetMode>;
+  cwd?: string;
 }
 
 export interface WidgetModeChangedEvent {
   widget: WidgetId;
   mode: WidgetMode;
+  cwd?: string;
+}
+
+interface ProjectWidgetBucket {
+  modes: Partial<Record<WidgetId, WidgetMode>>;
+  toggleAllSnapshot: Record<WidgetId, WidgetMode> | null;
 }
 
 interface WidgetVisibilityStore {
-  modes: Partial<Record<WidgetId, WidgetMode>>;
-  toggleAllSnapshot: Record<WidgetId, WidgetMode> | null;
+  projects: Record<string, ProjectWidgetBucket>;
+  /** Accepted shortcut bindings returned by `registerWidgetShortcut` (never unaccepted keys). */
+  registeredShortcuts: Partial<Record<WidgetShortcutSettingKey, KeyId | null>>;
+  /** Deduplication keys for invalid-setting warnings so repaints never flood logs. */
+  warnedKeys: Set<string>;
 }
 
 function getStore(): WidgetVisibilityStore {
   const g = globalThis as Record<symbol, unknown>;
   let store = g[WIDGET_VISIBILITY_SYMBOL] as WidgetVisibilityStore | undefined;
-  if (!store || typeof store !== "object" || !store.modes) {
-    store = { modes: {}, toggleAllSnapshot: null };
+  if (!store || typeof store !== "object" || !store.projects) {
+    store = {
+      projects: {},
+      registeredShortcuts: {},
+      warnedKeys: new Set<string>(),
+    };
     g[WIDGET_VISIBILITY_SYMBOL] = store;
+  } else {
+    if (!store.registeredShortcuts) store.registeredShortcuts = {};
+    if (!(store.warnedKeys instanceof Set)) store.warnedKeys = new Set<string>();
   }
   return store;
+}
+
+function warnOnce(dedupeKey: string, event: string, data: Record<string, unknown>): void {
+  const store = getStore();
+  if (store.warnedKeys.has(dedupeKey)) return;
+  store.warnedKeys.add(dedupeKey);
+  log.warn(event, data);
+}
+
+function resolveProjectKey(cwd?: string): string {
+  const effective = cwd || process.cwd();
+  try {
+    return resolve(resolveRepoRoot(effective));
+  } catch {
+    return resolve(effective);
+  }
+}
+
+function getProjectBucket(cwd?: string): ProjectWidgetBucket {
+  const store = getStore();
+  const key = resolveProjectKey(cwd);
+  let bucket = store.projects[key];
+  if (!bucket) {
+    bucket = { modes: {}, toggleAllSnapshot: null };
+    store.projects[key] = bucket;
+  }
+  return bucket;
 }
 
 /** Reset persisted widget visibility state (for tests). */
@@ -76,7 +122,8 @@ export function normalizeWidgetMode(raw: unknown, fallback: WidgetMode = "expand
     }
   }
   if (raw !== undefined && raw !== null && raw !== "") {
-    log.warn("invalid_widget_mode", { value: String(raw), fallback });
+    const value = String(raw);
+    warnOnce(`invalid_widget_mode:${value}`, "invalid_widget_mode", { value, fallback });
   }
   return fallback;
 }
@@ -104,21 +151,22 @@ export function getDefaultWidgetMode(cwd?: string): WidgetMode {
     const raw = getSetting(cwd || process.cwd(), "widgets_default_mode");
     return normalizeWidgetMode(raw, "expanded");
   } catch (err: unknown) {
-    log.warn("widget_default_mode_read_failed", { error: err instanceof Error ? err.message : String(err) });
+    const msg = err instanceof Error ? err.message : String(err);
+    warnOnce(`widget_default_mode_read_failed:${msg}`, "widget_default_mode_read_failed", { error: msg });
     return "expanded";
   }
 }
 
 export function getWidgetMode(id: WidgetId, cwd?: string): WidgetMode {
-  const store = getStore();
-  return store.modes[id] ?? getDefaultWidgetMode(cwd);
+  const bucket = getProjectBucket(cwd);
+  return bucket.modes[id] ?? getDefaultWidgetMode(cwd);
 }
 
-export function setWidgetMode(id: WidgetId, mode: WidgetMode): WidgetMode {
-  const store = getStore();
-  store.modes[id] = mode;
-  // Manual change invalidates any pending toggle-all restore snapshot.
-  store.toggleAllSnapshot = null;
+export function setWidgetMode(id: WidgetId, mode: WidgetMode, cwd?: string): WidgetMode {
+  const bucket = getProjectBucket(cwd);
+  bucket.modes[id] = mode;
+  // Manual change invalidates any pending toggle-all restore snapshot for this project.
+  bucket.toggleAllSnapshot = null;
   log.debug("widget_mode_set", { id, mode });
   return mode;
 }
@@ -126,46 +174,46 @@ export function setWidgetMode(id: WidgetId, mode: WidgetMode): WidgetMode {
 export function cycleWidgetMode(id: WidgetId, cwd?: string): WidgetMode {
   const current = getWidgetMode(id, cwd);
   const next = nextWidgetMode(current);
-  return setWidgetMode(id, next);
+  return setWidgetMode(id, next, cwd);
 }
 
 export function applyWidgetAction(id: WidgetId, action: WidgetCommandAction, cwd?: string): WidgetMode {
-  return action === "toggle" ? cycleWidgetMode(id, cwd) : setWidgetMode(id, action);
+  return action === "toggle" ? cycleWidgetMode(id, cwd) : setWidgetMode(id, action, cwd);
 }
 
 /**
- * Toggle both widgets together (`widget_all_shortcut`):
+ * Toggle both widgets together (`widget_all_shortcut`) for the given project:
  * - If either widget is `expanded`, save their modes and collapse both.
  * - On second press (both collapsed with saved snapshot), restore the previous modes.
  * - If both are already collapsed with no saved snapshot, expand both.
  */
 export function toggleAllWidgets(cwd?: string): Record<WidgetId, WidgetMode> {
-  const store = getStore();
+  const bucket = getProjectBucket(cwd);
   const tasks = getWidgetMode("tasks", cwd);
   const coms = getWidgetMode("coms", cwd);
 
   if (tasks === "expanded" || coms === "expanded") {
-    store.toggleAllSnapshot = { tasks, coms };
-    store.modes.tasks = "collapsed";
-    store.modes.coms = "collapsed";
-    log.debug("widget_toggle_all_collapsed", { previous: store.toggleAllSnapshot });
+    bucket.toggleAllSnapshot = { tasks, coms };
+    bucket.modes.tasks = "collapsed";
+    bucket.modes.coms = "collapsed";
+    log.debug("widget_toggle_all_collapsed", { previous: bucket.toggleAllSnapshot });
     return { tasks: "collapsed", coms: "collapsed" };
   }
 
-  if (store.toggleAllSnapshot) {
+  if (bucket.toggleAllSnapshot) {
     const restored: Record<WidgetId, WidgetMode> = {
-      tasks: store.toggleAllSnapshot.tasks,
-      coms: store.toggleAllSnapshot.coms,
+      tasks: bucket.toggleAllSnapshot.tasks,
+      coms: bucket.toggleAllSnapshot.coms,
     };
-    store.modes.tasks = restored.tasks;
-    store.modes.coms = restored.coms;
-    store.toggleAllSnapshot = null;
+    bucket.modes.tasks = restored.tasks;
+    bucket.modes.coms = restored.coms;
+    bucket.toggleAllSnapshot = null;
     log.debug("widget_toggle_all_restored", { restored });
     return restored;
   }
 
-  store.modes.tasks = "expanded";
-  store.modes.coms = "expanded";
+  bucket.modes.tasks = "expanded";
+  bucket.modes.coms = "expanded";
   log.debug("widget_toggle_all_expanded", {});
   return { tasks: "expanded", coms: "expanded" };
 }
@@ -256,9 +304,10 @@ export function getConfiguredShortcut(cwd: string, settingKey: WidgetShortcutSet
   try {
     raw = getSetting(cwd || process.cwd(), settingKey);
   } catch (err: unknown) {
-    log.warn("widget_shortcut_setting_read_failed", {
+    const msg = err instanceof Error ? err.message : String(err);
+    warnOnce(`widget_shortcut_read_failed:${settingKey}:${msg}`, "widget_shortcut_setting_read_failed", {
       settingKey,
-      error: err instanceof Error ? err.message : String(err),
+      error: msg,
     });
     return null;
   }
@@ -266,15 +315,25 @@ export function getConfiguredShortcut(cwd: string, settingKey: WidgetShortcutSet
   if (!trimmed) return null;
   const normalized = normalizeShortcut(trimmed);
   if (!normalized) {
-    log.warn("invalid_widget_shortcut", { settingKey, value: trimmed });
+    warnOnce(`invalid_widget_shortcut:${settingKey}:${trimmed}`, "invalid_widget_shortcut", {
+      settingKey,
+      value: trimmed,
+    });
     return null;
   }
   return normalized;
 }
 
+/** Return the shortcut key actually bound by `registerWidgetShortcut` (never an unbound setting). */
+export function getRegisteredWidgetShortcut(settingKey: WidgetShortcutSettingKey): KeyId | null {
+  const store = getStore();
+  return store.registeredShortcuts[settingKey] ?? null;
+}
+
 /**
  * Register a configurable widget shortcut on `pi` if configured and valid.
- * Returns the normalized `KeyId` when registered, or `null` when disabled/invalid.
+ * Records the accepted binding (or `null` if disabled/invalid/rejected) in the shared store
+ * so widget headers only ever advertise a key that is actually bound.
  */
 export function registerWidgetShortcut(
   pi: ExtensionAPI,
@@ -283,20 +342,25 @@ export function registerWidgetShortcut(
   description: string,
   handler: (ctx: ExtensionContext) => Promise<void> | void,
 ): KeyId | null {
+  const store = getStore();
   const key = getConfiguredShortcut(cwd, settingKey);
   if (!key) {
+    store.registeredShortcuts[settingKey] = null;
     log.debug("widget_shortcut_disabled", { settingKey });
     return null;
   }
   if (typeof (pi as { registerShortcut?: unknown }).registerShortcut !== "function") {
+    store.registeredShortcuts[settingKey] = null;
     log.debug("widget_shortcut_api_unavailable", { settingKey, key });
-    return key;
+    return null;
   }
   try {
     pi.registerShortcut(key, { description, handler });
+    store.registeredShortcuts[settingKey] = key;
     log.debug("widget_shortcut_registered", { settingKey, key });
     return key;
   } catch (err: unknown) {
+    store.registeredShortcuts[settingKey] = null;
     log.warn("widget_shortcut_register_failed", {
       settingKey,
       key,
@@ -332,17 +396,17 @@ function renderComsHeaderLine(
   const left = theme.fg("dim", "┏━") + theme.fg("border", " coms ");
   const leftFill = theme.fg("dim", "━");
   const pendingSuffix = ` (${pendingCount} pending)`;
-  const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
-  const rightTagVisLen = identity ? nameLen + 3 : 0;
+  const nameVisLen = identity ? visibleWidth(identity.name) + visibleWidth(pendingSuffix) : 0;
+  const rightTagVisLen = identity ? nameVisLen + 3 : 0;
 
   const hintLabel = formatWidgetShortcutHint(shortcutHint, mode);
-  const hintVisLen = hintLabel ? hintLabel.length + 1 : 0;
+  const hintVisLen = hintLabel ? visibleWidth(hintLabel) + 1 : 0;
 
   const hasCounts = peerCount !== undefined && busyCount !== undefined;
   const peerPlain = hasCounts ? `${peerCount} ${peerCount === 1 ? "peer" : "peers"}` : "";
   const busyPlain = hasCounts ? `(${busyCount} busy)` : "";
   const countsPlain = hasCounts ? `· ${peerPlain} ${busyPlain} ` : "";
-  const countsVisLen = countsPlain.length;
+  const countsVisLen = visibleWidth(countsPlain);
   const countsStyled = hasCounts
     ? theme.fg("dim", "· ") +
       theme.fg("accent", peerPlain) +
@@ -358,7 +422,7 @@ function renderComsHeaderLine(
     return theme.fg("dim", " ") + styledName + pendingPart + theme.fg("dim", " ━");
   };
 
-  // Try progressively narrower combinations while keeping exact safeWidth alignment:
+  // Try progressively narrower combinations while keeping exact safeWidth column alignment:
   // 1) hint + counts + identity, 2) counts + identity, 3) hint + identity, 4) identity only.
   if (identity) {
     const candidates: Array<{ showHint: boolean; showCounts: boolean }> = [
@@ -374,7 +438,10 @@ function renderComsHeaderLine(
         const hintPart = c.showHint ? theme.fg("dim", `${hintLabel} `) : "";
         const countsPart = c.showCounts ? countsStyled : "";
         const middle = theme.fg("dim", "━".repeat(remaining));
-        return left + hintPart + countsPart + leftFill + middle + buildRightTag() + theme.fg("dim", "┓");
+        return truncateToWidth(
+          left + hintPart + countsPart + leftFill + middle + buildRightTag() + theme.fg("dim", "┓"),
+          safeWidth,
+        );
       }
     }
   }

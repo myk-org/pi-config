@@ -185,8 +185,9 @@ export default function (pi: ExtensionAPI) {
       "Collapse/expand both tasks and coms widgets",
       (ctx) => {
         if (!isLiveExtensionCtx(ctx)) return;
-        const modes = toggleAllWidgets(ctx?.cwd || process.cwd());
-        emitIfLive(pi, TOGGLE_ALL_WIDGETS_EVENT, { modes });
+        const cwd = ctx?.cwd || process.cwd();
+        const modes = toggleAllWidgets(cwd);
+        emitIfLive(pi, TOGGLE_ALL_WIDGETS_EVENT, { modes, cwd });
         log.info("widget_all_shortcut_toggled", { modes });
       },
     );
