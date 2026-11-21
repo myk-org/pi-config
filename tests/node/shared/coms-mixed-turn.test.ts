@@ -361,4 +361,10 @@ describe("userMessageDuringInbound flag (#741)", () => {
 	it("treats a clean turn as non-mixed (auto-capture)", () => {
 		assert.equal(computeMixedTurn(false, false), false);
 	});
+
+	it("does not flag a user message while inbound is queued but not yet delivered (#1226)", () => {
+		const processingInbound = true;
+		const inboundDelivered = false;
+		assert.equal(isUserMessageDuringInbound(processingInbound && inboundDelivered, "user"), false);
+	});
 });

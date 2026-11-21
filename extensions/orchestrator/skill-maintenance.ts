@@ -891,6 +891,8 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
     }
 
     if ((event as any)?.isError !== true) return;
+    // User cancellations / headless stops from ask_user are not skill execution failures.
+    if (String((event as any)?.toolName ?? "") === "ask_user") return;
     for (const skill of usedSkills) {
       if (nudgedSkills.has(skill)) continue;
       nudgedSkills.add(skill);

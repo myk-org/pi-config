@@ -381,6 +381,7 @@ describe("envelope origin end to end (#1077)", { concurrency: false }, () => {
 		while (Date.now() < deadline && inboundMessages(sender).length === 0) {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
+		await sender.handlers.get("message_start")({ message: { role: "custom", ...inboundMessages(sender)[0] } });
 
 		const send = (globalThis as any).__comsUserSend as (p: { target: string; prompt: string }) => Promise<{ ok: boolean; message: string }>;
 		assert.equal((await send({ target: "receiver", prompt: "carry on" })).ok, true);

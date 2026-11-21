@@ -254,6 +254,8 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 
 		// Finish beta's first inbound turn before sending the second so each arrives as its own message.
 		await waitUntil(() => beta.messages.some((m) => typeof m.content === "string" && m.content.includes("ping-by-id")));
+		const firstInbound = beta.messages.find((m) => typeof m.content === "string" && m.content.includes("ping-by-id"));
+		await beta.handlers.get("message_start")!({ message: { role: "custom", ...firstInbound } });
 		await beta.handlers.get("agent_end")!({}, makeCtx(workspace, "sess-beta-other", () => "ack-id"));
 
 		const byName = await alpha.tools.get("coms_send").execute("send-by-name", {
@@ -541,6 +543,11 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		const receiver = await startP2pPeer({ name: "receiver", sessionId: "r-1252", project: "p-1252", cwd: workspace });
 
 		// Step A: Multi-message FIFO bundling
+		const deliverLatestInbound = async (peer: FakePi, msgId?: string) => {
+			const msg = [...peer.messages].reverse().find((m) => m.details?.msg_id && (!msgId || m.details.msg_id === msgId));
+			assert.ok(msg, `expected injected inbound${msgId ? ` ${msgId}` : ""}`);
+			await peer.handlers.get("message_start")!({ message: { role: "custom", ...msg } });
+		};
 		await blocker.tools.get("coms_send").execute("b0", { target: "receiver", prompt: "initial busy" });
 		const r1 = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "bundle one" });
 		const r2 = await sender.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "bundle two" });
@@ -548,6 +555,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		const m2 = r2.details.msg_id as string;
 
 		// Complete blocker's turn -> drains sender's 2 queued messages as one bundle.
+		await deliverLatestInbound(receiver);
 		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "r-1252", () => "reply-blocker"));
 		const bundledMsg = receiver.messages.find((m) => Array.isArray(m.details?.bundled_msg_ids));
 		assert.ok(bundledMsg, "receiver injects a bundled followUp");
@@ -555,6 +563,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		assert.match(bundledMsg.content, /BUNDLED: 2 messages/);
 
 		// Complete bundled turn -> primary gets reply, secondary gets "bundled".
+		await deliverLatestInbound(receiver, m1);
 		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "r-1252", () => "reply-bundle"));
 		await waitUntil(async () => {
 			const g1 = await sender.tools.get("coms_get").execute("g1", { msg_id: m1 });
@@ -573,6 +582,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		const m4 = r4.details.msg_id as string;
 
 		await receiver.handlers.get("agent_start")!({}, makeCtx(workspace, "r-1252"));
+		await deliverLatestInbound(receiver, m3);
 		let sendDone = false;
 		const offSendResult = receiver.events.on("pidash:coms-send-result", () => { sendDone = true; });
 		receiver.events.emit("pidash:coms-send", { target: "sender", prompt: "direct reply via deliverPrompt" });
@@ -585,6 +595,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		await waitUntil(() => receiver.messages.some((m) => m.details?.msg_id === m4));
 
 		// Step C: Mixed-turn reinjection
+		await deliverLatestInbound(receiver, m4);
 		await receiver.handlers.get("message_start")!({ message: { role: "user" } });
 		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "r-1252", () => "user-directed answer"));
 
@@ -595,6 +606,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 			"receiver re-injects m4 for a dedicated turn",
 		);
 
+		await deliverLatestInbound(receiver, m4);
 		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "r-1252", () => "dedicated peer reply"));
 		await waitUntil(async () => (await other.tools.get("coms_get").execute("g4-wait", { msg_id: m4 })).details.status === "complete");
 		const g4Done = await other.tools.get("coms_get").execute("g4-done", { msg_id: m4 });
