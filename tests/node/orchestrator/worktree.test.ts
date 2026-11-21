@@ -1133,4 +1133,29 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
     // This test runs inside a repo — if linked worktrees exist, verify Worktrees line; always check Git line
     assert.match(notified, /Git:/);
   });
+
+  it("omits Git and Worktrees lines in /status for non-git directories", async () => {
+    const plainDir = makeTempDir("wt-status-nongit-");
+    try {
+      let statusHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+      const mockPi: any = {
+        registerCommand(name: string, opts: any) {
+          if (name === "status") statusHandler = opts.handler;
+        },
+      };
+      registerStatus(mockPi, false, () => [], () => []);
+      assert.ok(statusHandler);
+
+      let notified = "";
+      await statusHandler!("", {
+        hasUI: true,
+        cwd: plainDir,
+        ui: { notify: (msg: string) => { notified = msg; } },
+      });
+      assert.doesNotMatch(notified, /🔀 Git:/);
+      assert.doesNotMatch(notified, /⊞ Worktrees:/);
+    } finally {
+      rmSync(plainDir, { recursive: true, force: true });
+    }
+  });
 });

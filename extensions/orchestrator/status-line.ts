@@ -45,7 +45,6 @@ export function registerStatusLine(
   const worktreeCacheTtlMs = deps?.worktreeCacheTtlMs ?? 5_000;
   const execGitAsync: GitAsyncRunner = deps?.runGitAsync ?? runGitAsync;
   const checkWorktreePresence = deps?.hasLinkedWorktreesHint ?? detectWorktreePresence;
-  const singleCheckoutCwds = new Set<string>();
 
   const githubRepoCache = new Map<string, { at: number; isGh: boolean }>();
   const getBranchAsync = async (cwd?: string): Promise<string | null> => {
@@ -142,23 +141,15 @@ export function registerStatusLine(
       }
       lastBranch = b;
 
-      const cwdKey = ctx.cwd || "";
-      const presence = checkWorktreePresence(cwdKey);
+      const presence = checkWorktreePresence(ctx.cwd || "");
       let worktrees: WorktreeEntry[] = [];
-      if (presence === false) {
-        singleCheckoutCwds.add(cwdKey);
-      } else if (presence === true || forceWorktreeRefresh || !singleCheckoutCwds.has(cwdKey)) {
+      if (presence !== false) {
         worktrees = await listWorktreesAsync(ctx.cwd, {
           runGitAsync: execGitAsync,
           ttlMs: worktreeCacheTtlMs,
           forceRefresh: forceWorktreeRefresh,
         });
         if (shutDown || seq !== branchUpdateSeq || !isLiveExtensionCtx(ctx)) return;
-        if (countLinkedWorktrees(worktrees) === 0 && !isInLinkedWorktree(worktrees)) {
-          singleCheckoutCwds.add(cwdKey);
-        } else {
-          singleCheckoutCwds.delete(cwdKey);
-        }
       }
 
       const { modified, added, deleted, untracked } =
@@ -233,7 +224,6 @@ export function registerStatusLine(
 
   // Immediate refresh when /worktree removes or prunes worktrees
   pi.events?.on?.("orchestrator:worktrees-changed", () => {
-    singleCheckoutCwds.clear();
     if (shutDown || !lastCtx || !isLiveExtensionCtx(lastCtx)) return;
     void updateBranch(null, lastCtx, true);
   });

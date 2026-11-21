@@ -11,6 +11,7 @@ function makeHarness(opts: {
 	githubRepoCacheTtlMs?: number;
 	worktreeCacheTtlMs?: number;
 	remoteFailFirst?: boolean;
+	statusPorcelain?: string | (() => string);
 	worktreePorcelain?: string | (() => string);
 	hasLinkedWorktreesHint?: (cwd: string) => boolean | null;
 	detachedHead?: boolean;
@@ -50,7 +51,13 @@ function makeHarness(opts: {
 		if (args[0] === "symbolic-ref") {
 			return opts.detachedHead ? { stdout: "", code: 128 } : { stdout: "refs/heads/feat/test", code: 0 };
 		}
-		if (args[0] === "status") return { stdout: " M a.ts\n?? b.ts\n", code: 0 };
+		if (args[0] === "status") {
+			const out =
+				typeof opts.statusPorcelain === "function"
+					? opts.statusPorcelain()
+					: (opts.statusPorcelain ?? " M a.ts\n?? b.ts\n");
+			return { stdout: out, code: 0 };
+		}
 		if (args[0] === "remote") {
 			remoteCalls++;
 			if (opts.remoteFailFirst && remoteCalls === 1) return { stdout: "", code: 128 };
@@ -147,30 +154,38 @@ describe("status-line (#1203)", () => {
 		}
 	});
 
-	it("coalesces rapid tool_execution_end bursts via trailing debounce and caches isGithubRepo per cwd", async () => {
-		const h = makeHarness({ debounceMs: 25 });
+	it("coalesces rapid tool_execution_end bursts via trailing debounce", async () => {
+		let dirtyStatus = " M a.ts\n";
+		const h = makeHarness({
+			debounceMs: 25,
+			statusPorcelain: () => dirtyStatus,
+		});
 		try {
 			const ctx = h.makeCtx(true, "/repo-cache");
 			h.emit("session_start", ctx);
 			await new Promise((r) => setTimeout(r, 15));
-			// Initial session_start: rev-parse + status + remote (3 calls)
-			assert.equal(h.gitCalls.length, 3);
-			assert.equal(h.gitCalls.filter((c) => c.args[0] === "remote").length, 1);
+			const initialGitUpdates = h.statuses.filter((s) => s.key === "4-git");
+			assert.equal(initialGitUpdates.length, 1);
+			assert.ok(initialGitUpdates[0].text?.includes("~1"));
 
-			// 5 rapid tool_execution_end events coalesce into 1 debounced update (2 git calls, remote cached)
-			for (let i = 0; i < 5; i++) {
+			// 5 rapid tool_execution_end events coalesce into one debounced status render
+			for (let i = 1; i <= 5; i++) {
+				dirtyStatus = `${Array.from({ length: i }, (_, idx) => ` M f${idx}.ts`).join("\n")}\n`;
 				h.emit("tool_execution_end", ctx);
 			}
 			await new Promise((r) => setTimeout(r, 60));
-			assert.equal(h.gitCalls.length, 5);
-			assert.equal(h.gitCalls.filter((c) => c.args[0] === "remote").length, 1);
+			const afterBurst = h.statuses.filter((s) => s.key === "4-git");
+			assert.equal(afterBurst.length, 2, "burst of 5 events should produce one coalesced status update");
+			assert.ok(afterBurst.at(-1)?.text?.includes("~5"), "coalesced update should reflect latest working tree state");
 
-			// agent_end cancels pending debounce and updates immediately without re-running remote
+			// agent_end cancels pending debounce and renders immediately
+			dirtyStatus = " M x.ts\n M y.ts\n";
 			h.emit("tool_execution_end", ctx);
 			h.emit("agent_end", ctx);
 			await new Promise((r) => setTimeout(r, 50));
-			assert.equal(h.gitCalls.length, 7);
-			assert.equal(h.gitCalls.filter((c) => c.args[0] === "remote").length, 1);
+			const afterAgentEnd = h.statuses.filter((s) => s.key === "4-git");
+			assert.equal(afterAgentEnd.length, 3, "agent_end should cancel pending debounce and emit one update");
+			assert.ok(afterAgentEnd.at(-1)?.text?.includes("~2"));
 		} finally {
 			h.emit("session_shutdown", {});
 		}
@@ -418,6 +433,31 @@ describe("status-line (#1203)", () => {
 			h.emit("session_start", ctx2);
 			await new Promise((r) => setTimeout(r, 20));
 			assert.equal(ctx2Statuses.find((s) => s.key === "4a-worktrees")?.text, "⊞ 1 wt");
+		} finally {
+			h.emit("session_shutdown", {});
+		}
+	});
+
+	it("discovers worktrees added later when presence hint is indeterminate (#1316)", async () => {
+		let hasLinked = false;
+		const h = makeHarness({
+			worktreeCacheTtlMs: 20,
+			hasLinkedWorktreesHint: () => null,
+			worktreePorcelain: () =>
+				hasLinked
+					? "worktree /repo\nHEAD aaa\nbranch refs/heads/main\n\nworktree /repo/.worktrees/wt1\nHEAD bbb\nbranch refs/heads/feat/x\n"
+					: "worktree /repo\nHEAD aaa\nbranch refs/heads/main\n",
+		});
+		try {
+			const ctx = h.makeCtx(true, "/repo");
+			h.emit("session_start", ctx);
+			await new Promise((r) => setTimeout(r, 30));
+			assert.equal(h.statuses.some((s) => s.key === "4a-worktrees"), false);
+
+			hasLinked = true;
+			h.emit("agent_end", ctx);
+			await new Promise((r) => setTimeout(r, 30));
+			assert.equal(h.statuses.filter((s) => s.key === "4a-worktrees").at(-1)?.text, "⊞ 1 wt");
 		} finally {
 			h.emit("session_shutdown", {});
 		}

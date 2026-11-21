@@ -7,7 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatElapsedDuration, tryGetSystemPromptOptions } from "./utils.js";
 import type { CronTask } from "./cron.js";
 import { formatCronSchedule } from "./cron-status-format.js";
-import { getCurrentBranch, listWorktreesAsync, runGit } from "./git-helpers.js";
+import { listWorktreesAsync, runGit } from "./git-helpers.js";
 import { formatWorktreeStatusSummary } from "./worktree-helpers.js";
 import { createLogger } from "../shared/logger.js";
 
@@ -54,9 +54,23 @@ export function registerStatus(
 
       // ── Git ────────────────────────────────────────────────────────
       try {
-        const branch = getCurrentBranch(ctx.cwd);
-        const status = runGit(["status", "--porcelain"], ctx.cwd);
-        if (branch || status.code === 0) {
+        const headRef = runGit(["rev-parse", "--abbrev-ref", "HEAD"], ctx.cwd);
+        let branch: string | null = null;
+        let inRepo = false;
+        if (headRef.code === 0) {
+          inRepo = true;
+          if (headRef.stdout && headRef.stdout !== "HEAD") {
+            branch = headRef.stdout;
+          }
+        } else {
+          const sym = runGit(["symbolic-ref", "HEAD"], ctx.cwd);
+          if (sym.code === 0 && sym.stdout.startsWith("refs/heads/")) {
+            inRepo = true;
+            branch = sym.stdout.slice("refs/heads/".length);
+          }
+        }
+        if (inRepo) {
+          const status = runGit(["status", "--porcelain"], ctx.cwd);
           const dirtyLines = status.code === 0 ? status.stdout?.trim() : "";
           const dirtyCount = dirtyLines ? dirtyLines.split("\n").length : 0;
           const repoName = ctx.cwd.split("/").pop() || ctx.cwd;
