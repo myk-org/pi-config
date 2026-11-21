@@ -674,6 +674,26 @@ describe("registerSkillMaintenance", () => {
     emit("turn_end", {}, ctx);
   });
 
+  it("does not nudge on errored ask_user tool results after using an adopted skill", () => {
+    const { cwd, root } = project();
+    const projAdopted = writeSkill(root, "proj-adopted", MARKED);
+    const skills = [makeSkillInfo("proj-adopted", projAdopted, "project")];
+
+    const { pi, messages, emit } = createMockPi(() => toCommands(skills));
+    registerSkillMaintenance(pi);
+    const ctx = makeCtx(cwd);
+
+    emit("input", { text: "Run /skill:proj-adopted" }, ctx);
+    emit("turn_start", { turnIndex: 1 }, ctx);
+    emit(
+      "tool_result",
+      { toolCallId: "ask-1", toolName: "ask_user", input: { question: "Proceed?" }, isError: true },
+      ctx,
+    );
+    assert.equal(messages.filter((m) => m.msg.customType === "skill-maintenance-nudge").length, 0);
+    emit("turn_end", {}, ctx);
+  });
+
   it("records provenance and emits turn-end and turn-start notices across project, global, and symlinked scopes", () => {
     const { cwd, root } = project();
     const globalDir = tempDir("prov-global-");

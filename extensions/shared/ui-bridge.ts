@@ -347,6 +347,7 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
           );
           const container = new Container();
           let focused = false;
+          let lastRenderTermRows = -1;
           const syncFocus = () => {
             input.focused = focused && !minimized;
           };
@@ -368,7 +369,14 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
           return {
             set focused(value: boolean) { focused = value; syncFocus(); },
             get focused(): boolean { return focused; },
-            render: (w: number) => container.render(w),
+            render: (w: number) => {
+              const termRows = getTermRows();
+              if (termRows !== lastRenderTermRows) {
+                lastRenderTermRows = termRows;
+                container.invalidate();
+              }
+              return container.render(w);
+            },
             invalidate: () => container.invalidate(),
             handleInput: (data: string) => {
               if (resolved) return;
@@ -470,6 +478,7 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
 
         const container = new Container();
         let focused = false;
+        let lastRenderTermRows = -1;
         const syncFocus = () => {
           searchInput.focused = focused && !minimized && filterVisible;
         };
@@ -494,6 +503,11 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
           get focused(): boolean { return focused; },
           render: (w: number) => {
             lastRenderWidth = w;
+            const termRows = getTermRows();
+            if (termRows !== lastRenderTermRows) {
+              lastRenderTermRows = termRows;
+              container.invalidate();
+            }
             if (!minimized) {
               const nextMaxVisible = getSelectMaxVisible(currentItems.length, w);
               if (nextMaxVisible !== currentSelectMaxVisible) {

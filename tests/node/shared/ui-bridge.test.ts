@@ -272,6 +272,7 @@ describe("ui-bridge Container & header caching (#1313)", () => {
 describe("ui-bridge bounded viewport, on-demand filter, peek, and Esc cancel (#1317, #1313)", () => {
   function fakeCtxWithRows(rows: number) {
     const calls: CustomCall[] = [];
+    let termRows = rows;
     return {
       hasUI: true,
       ui: {
@@ -279,8 +280,10 @@ describe("ui-bridge bounded viewport, on-demand filter, peek, and Esc cancel (#1
           new Promise((resolve) => {
             const call: CustomCall = { render, done: resolve, component: null } as any;
             calls.push(call);
+            const terminal = { columns: 80 };
+            Object.defineProperty(terminal, "rows", { get: () => termRows, configurable: true });
             call.component = render(
-              { requestRender: () => {}, terminal: { rows, columns: 80 } },
+              { requestRender: () => {}, terminal },
               { fg: (_c: string, s: string) => s },
               {},
               (v: any) => resolve(v),
@@ -288,6 +291,7 @@ describe("ui-bridge bounded viewport, on-demand filter, peek, and Esc cancel (#1
           }),
       },
       calls,
+      setRows: (next: number) => { termRows = next; },
     };
   }
 
@@ -465,6 +469,40 @@ describe("ui-bridge bounded viewport, on-demand filter, peek, and Esc cancel (#1
     const comp = ctx.calls[0].component;
 
     comp.handleInput("\x03");
+    assert.equal(await p, undefined);
+  });
+
+  it("refreshes input mode viewport when terminal height changes at the same width", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(35);
+    const bridged = createBridgedUi(pi as any);
+    const longTitle = Array.from({ length: 12 }, (_, i) => `Prompt line ${i + 1}`).join("\n");
+    const p = bridged.input(ctx as any, longTitle);
+    const comp = ctx.calls[0].component;
+
+    assert.match(comp.render(60).join("\n"), /lines 1–4 of 12/);
+
+    ctx.setRows(20);
+    assert.match(comp.render(60).join("\n"), /lines 1–3 of 12/);
+
+    comp.handleInput("\x1b");
+    assert.equal(await p, undefined);
+  });
+
+  it("refreshes select mode viewport when terminal height changes at the same width without changing list rows", async () => {
+    const pi = fakePi();
+    const ctx = fakeCtxWithRows(35);
+    const bridged = createBridgedUi(pi as any);
+    const longTitle = Array.from({ length: 12 }, (_, i) => `Prompt line ${i + 1}`).join("\n");
+    const p = bridged.select(ctx as any, longTitle, ["Yes", "No"]);
+    const comp = ctx.calls[0].component;
+
+    assert.match(comp.render(60).join("\n"), /lines 1–4 of 12/);
+
+    ctx.setRows(20);
+    assert.match(comp.render(60).join("\n"), /lines 1–3 of 12/);
+
+    comp.handleInput("\x1b");
     assert.equal(await p, undefined);
   });
 });

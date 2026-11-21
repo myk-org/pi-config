@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import { Container } from "@earendil-works/pi-tui";
 import {
   computeBoxHeightBudget,
+  computeOptionPreviewCap,
   computeQuestionViewportCap,
   computeSelectMaxVisible,
   registerAskUser,
@@ -424,6 +425,79 @@ describe("ask_user truncated option preview (#1317)", () => {
     h.component.handleInput("\r");
     const res = await h.resultPromise;
     assert.equal(res.content[0].text, "Cancel");
+  });
+
+  it("bounds an arbitrarily long option preview to the preview line cap with an ellipsis", async () => {
+    const hugeOpt = Array.from({ length: 30 }, (_, i) => `segment-${i + 1}-extra-words`).join(" ");
+    const h = mountAskUser(
+      { question: "Pick?", options: [hugeOpt, "Short"] },
+      { rows: 24 },
+    );
+
+    const lines = h.component.render(50);
+    const previewStart = lines.findIndex((line: string) => line.includes("↳ "));
+    assert.ok(previewStart >= 0, "preview line must render");
+    const helpIdx = lines.findIndex((line: string) => line.includes("tab peek chat"));
+    const previewCount = helpIdx - previewStart;
+    assert.equal(previewCount, computeOptionPreviewCap(24));
+    assert.match(lines[helpIdx - 1], /…$/);
+
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("reserves OptionPreview height when allocating SelectList rows for a long highlighted option", async () => {
+    const longOpt = Array.from({ length: 12 }, (_, i) => `detail-word-${i + 1}`).join(" ");
+    const shortOpts = Array.from({ length: 10 }, (_, i) => `Opt ${i + 1}`);
+    const h = mountAskUser(
+      { question: "Choose", options: [longOpt, ...shortOpts] },
+      { rows: 35 },
+    );
+
+    // Highlighted longOpt wraps into 4 preview lines on 35-row terminal -> SelectList shrinks to stay within budget
+    const withPreview = h.component.render(50);
+    const listRowsWithPreview = withPreview.filter((l: string) => /^\s*(→ )?(detail-word-|Opt |✎)/.test(l)).length;
+    assert.ok(withPreview.length <= 16, `expected compact height <= 16 with preview, got ${withPreview.length}`);
+
+    // Move to a short option -> preview disappears and SelectList grows to use reclaimed rows
+    h.component.handleInput("\x1b[B");
+    const withoutPreview = h.component.render(50);
+    const listRowsWithoutPreview = withoutPreview.filter((l: string) => /^\s*(→ )?(detail-word-|Opt |✎)/.test(l)).length;
+    assert.ok(
+      listRowsWithoutPreview > listRowsWithPreview,
+      `expected more visible list rows without preview (${listRowsWithoutPreview}) than with preview (${listRowsWithPreview})`,
+    );
+
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("refreshes input mode viewport when terminal height changes at the same width", async () => {
+    const longQuestion = Array.from({ length: 12 }, (_, i) => `Q line ${i + 1}`).join("\n");
+    const h = mountAskUser({ question: longQuestion }, { rows: 35 });
+
+    assert.match(h.component.render(60).join("\n"), /lines 1–4 of 12/);
+
+    // Height-only resize at identical width 60: cap drops from 4 to 3
+    h.setTermRows(20);
+    assert.match(h.component.render(60).join("\n"), /lines 1–3 of 12/);
+
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
+  });
+
+  it("refreshes select mode viewport when terminal height changes at the same width without changing list rows", async () => {
+    const longQuestion = Array.from({ length: 12 }, (_, i) => `Q line ${i + 1}`).join("\n");
+    // Only 2 options (+ Other = 3 items), so SelectList maxVisible stays 3 across both heights
+    const h = mountAskUser({ question: longQuestion, options: ["Yes", "No"] }, { rows: 35 });
+
+    assert.match(h.component.render(60).join("\n"), /lines 1–4 of 12/);
+
+    h.setTermRows(20);
+    assert.match(h.component.render(60).join("\n"), /lines 1–3 of 12/);
+
+    h.component.handleInput("\x1b");
+    await h.resultPromise;
   });
 });
 

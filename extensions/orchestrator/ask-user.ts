@@ -16,6 +16,7 @@ import {
   Text,
   fuzzyFilter,
   matchesKey,
+  truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
@@ -40,13 +41,21 @@ const log = createLogger("ask-user");
 
 const FREE_INPUT_VALUE = "__free_input__";
 
+export function computeOptionPreviewCap(termRows: number): number {
+  return Math.max(2, Math.min(4, Math.floor(termRows * 0.14)));
+}
+
 class OptionPreview implements Component {
   private selectedItem: SelectItem | null = null;
   private cachedWidth = -1;
+  private cachedTermRows = -1;
   private cachedLabel: string | undefined;
   private cachedLines: string[] | undefined;
 
-  constructor(private readonly theme: Theme) {}
+  constructor(
+    private readonly theme: Theme,
+    private readonly getTermRows: () => number,
+  ) {}
 
   setSelectedItem(item: SelectItem | null): void {
     if (
@@ -61,6 +70,7 @@ class OptionPreview implements Component {
 
   invalidate(): void {
     this.cachedWidth = -1;
+    this.cachedTermRows = -1;
     this.cachedLabel = undefined;
     this.cachedLines = undefined;
   }
@@ -68,9 +78,11 @@ class OptionPreview implements Component {
   render(width: number): string[] {
     const item = this.selectedItem;
     const label = item?.label;
+    const termRows = this.getTermRows();
     if (
       this.cachedLines !== undefined &&
       this.cachedWidth === width &&
+      this.cachedTermRows === termRows &&
       this.cachedLabel === label
     ) {
       return this.cachedLines;
@@ -82,6 +94,7 @@ class OptionPreview implements Component {
       item.value === FREE_INPUT_VALUE
     ) {
       this.cachedWidth = width;
+      this.cachedTermRows = termRows;
       this.cachedLabel = label;
       this.cachedLines = [];
       return this.cachedLines;
@@ -92,6 +105,7 @@ class OptionPreview implements Component {
     const overflows = /[\r\n]/.test(item.label) || visibleWidth(item.label) > availableSingleLine;
     if (!overflows) {
       this.cachedWidth = width;
+      this.cachedTermRows = termRows;
       this.cachedLabel = label;
       this.cachedLines = [];
       return this.cachedLines;
@@ -103,15 +117,21 @@ class OptionPreview implements Component {
     const prefixWidth = visibleWidth(prefix);
     const wrapWidth = Math.max(1, contentWidth - prefixWidth);
     const wrapped = wrapTextWithAnsi(item.label.replace(/\t/g, "   "), wrapWidth);
+    const maxLines = computeOptionPreviewCap(termRows);
+    const visible = wrapped.length > maxLines ? wrapped.slice(0, maxLines) : wrapped;
+    if (wrapped.length > maxLines) {
+      visible[maxLines - 1] = truncateToWidth(`${visible[maxLines - 1].trimEnd()}…`, wrapWidth, "…");
+    }
     const leftPad = " ".repeat(pad);
     const contPad = " ".repeat(pad + prefixWidth);
-    const lines = wrapped.map((line, i) =>
+    const lines = visible.map((line, i) =>
       i === 0
         ? leftPad + this.theme.fg("accent", prefix) + this.theme.fg("muted", line)
         : contPad + this.theme.fg("muted", line),
     );
 
     this.cachedWidth = width;
+    this.cachedTermRows = termRows;
     this.cachedLabel = label;
     this.cachedLines = lines;
     return lines;
@@ -227,6 +247,7 @@ export function registerAskUser(
           let mode: "select" | "input" = assembled.length ? "select" : "input";
           let minimized = false;
           let lastRenderWidth = 0;
+          let lastRenderTermRows = -1;
           let resolved = false;
 
           const resolve = (value: string | null) => {
@@ -274,7 +295,7 @@ export function registerAskUser(
             theme,
             () => mode === "select",
           );
-          const optionPreview = new OptionPreview(theme);
+          const optionPreview = new OptionPreview(theme, getTermRows);
 
           const inputLabel = new Text(
             theme.fg(
@@ -360,8 +381,9 @@ export function registerAskUser(
             const termRows = getTermRows();
             if (width <= 0) return computeSelectMaxVisible(itemCount, termRows);
             const questionLines = questionViewport.render(width).length;
+            const previewLines = optionPreview.render(width).length;
             const helpLines = selectHelp.render(width).length;
-            const reservedRows = 2 + questionLines + (filterVisible ? 1 : 0) + helpLines;
+            const reservedRows = 2 + questionLines + (filterVisible ? 1 : 0) + previewLines + helpLines;
             return computeSelectMaxVisible(itemCount, termRows, reservedRows);
           };
 
@@ -434,6 +456,11 @@ export function registerAskUser(
 
             render: (w: number) => {
               lastRenderWidth = w;
+              const termRows = getTermRows();
+              if (termRows !== lastRenderTermRows) {
+                lastRenderTermRows = termRows;
+                container.invalidate();
+              }
               if (!minimized && mode === "select" && selectList) {
                 const nextMaxVisible = getSelectMaxVisible(currentItems.length, w);
                 if (nextMaxVisible !== currentSelectMaxVisible) {
