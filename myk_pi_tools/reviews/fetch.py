@@ -32,6 +32,11 @@ from myk_pi_tools.reviews.constants import (
 from myk_pi_tools.reviews.constants import QODO_TYPE_MAP as _QODO_TYPE_MAP
 from myk_pi_tools.reviews.qodo_cli import fetch_qodo_cli_threads
 from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
+from myk_pi_tools.reviews.title_extraction import (
+    MAX_FINDING_BODY_CHARS,
+    MAX_TITLE_CHARS,
+    extract_finding_title,
+)
 from myk_pi_tools.utils import atomic_write_json, merge_paginated_json, parse_pr_url
 
 # Priority classification keywords
@@ -333,6 +338,7 @@ def fetch_review_threads(
                         nodes {
                             id
                             isResolved
+                            resolvedBy { login }
                             comments(first: 100) {
                                 nodes {
                                     id
@@ -363,6 +369,7 @@ def fetch_review_threads(
                         nodes {
                             id
                             isResolved
+                            resolvedBy { login }
                             comments(first: 100) {
                                 nodes {
                                     id
@@ -455,7 +462,10 @@ def fetch_review_threads(
         }
         # Issue #1033: is_resolved is always present — include_resolved controls
         # filtering, never whether consumers can count open threads.
+        resolved_by_obj = thread.get("resolvedBy")
+        resolved_by = resolved_by_obj.get("login") if isinstance(resolved_by_obj, dict) else None
         thread_data["is_resolved"] = is_resolved
+        thread_data["resolved_by"] = resolved_by
         # Filter by user if specified
         if user and (thread_data.get("author") or "").lower() != user.lower():
             continue
@@ -1156,45 +1166,203 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
 
 CLI_LOCATOR_FIELDS = ("path", "line", "end_line", "node_id", "comment_id", "thread_id")
 
+# Title normalization regexes mirroring title_extraction.py for CLI↔GitHub fallback matching.
+_TITLE_BADGE_LINE_RE = re.compile(r"^(?:<img\b|!\[[^\]]*\]\([^)]*\)|https?://\S+$)", re.IGNORECASE)
+_TITLE_CODE_TAG_RE = re.compile(r"<code\b[^>]*>[\s\S]*?</code>", re.IGNORECASE)
+_TITLE_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_TITLE_LIST_NUMBER_RE = re.compile(r"^\d+\\?\.\s*")
+_TITLE_MARKDOWN_CHARS_RE = re.compile(r"[*`#>|]")
+_TITLE_ALNUM_RE = re.compile(r"[a-zA-Z0-9]")
+
+
+def _normalize_title_text(raw: str) -> str:
+    """Normalize a title string for case- and markup-insensitive matching."""
+    if not isinstance(raw, str):
+        return ""
+    text = html.unescape(raw)
+    text = _TITLE_MARKDOWN_CHARS_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip().lower()[:MAX_TITLE_CHARS]
+
+
+def _first_body_title_line(body: str) -> str:
+    """Return the first cleaned alphanumeric title line from a comment body."""
+    if not isinstance(body, str) or not body.strip():
+        return ""
+    for raw_line in body[:MAX_FINDING_BODY_CHARS].splitlines():
+        line = raw_line.strip()
+        if not line or _TITLE_BADGE_LINE_RE.match(line):
+            continue
+        line = _TITLE_CODE_TAG_RE.sub(" ", line)
+        line = _TITLE_HTML_TAG_RE.sub(" ", line)
+        line = html.unescape(line).strip()
+        line = _TITLE_LIST_NUMBER_RE.sub("", line)
+        line = _TITLE_MARKDOWN_CHARS_RE.sub(" ", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if _TITLE_ALNUM_RE.search(line):
+            return line.lower()[:MAX_TITLE_CHARS]
+    return ""
+
+
+def _cli_match_title(thread: dict[str, Any]) -> str:
+    """Extract a normalized match title from a Qodo CLI finding."""
+    raw_title = thread.get("title")
+    if isinstance(raw_title, str):
+        normalized = _normalize_title_text(raw_title)
+        if normalized:
+            return normalized
+    body = thread.get("body")
+    if isinstance(body, str) and body:
+        first_line = _first_body_title_line(body)
+        if first_line:
+            return first_line
+        extracted = extract_finding_title(body)
+        if extracted:
+            return _normalize_title_text(extracted)
+    return ""
+
+
+def _github_twin_match_titles(twin: dict[str, Any]) -> set[str]:
+    """Collect candidate normalized titles for a GitHub Qodo review thread."""
+    titles: set[str] = set()
+    raw_title = twin.get("title")
+    if isinstance(raw_title, str):
+        normalized = _normalize_title_text(raw_title)
+        if normalized:
+            titles.add(normalized)
+    body = twin.get("body")
+    if isinstance(body, str) and body:
+        extracted = extract_finding_title(body)
+        if extracted:
+            normalized_extracted = _normalize_title_text(extracted)
+            if normalized_extracted:
+                titles.add(normalized_extracted)
+        first_line = _first_body_title_line(body)
+        if first_line:
+            titles.add(first_line)
+    return titles
+
 
 def _reconcile_cli_threads_with_github(
     cli_threads: list[dict[str, Any]], all_threads: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Give CLI threads their GitHub twin's locators and real resolution state (issue #1033).
+    """Give CLI threads their GitHub twin's locators, replies, and real resolution state (issues #1033, #1225).
 
     Qodo's ``pr-review-session`` payload omits ``file_path``/``start_line`` for findings it
-    closed, and the dedup below then drops the GitHub thread that still carries them — so
-    the only record left has no span, and ``reviews address`` cannot match a ``path:line``
-    rule against it.
+    closed, omits GitHub inline replies and resolution state, and may omit ``thread_id``.
+    The dedup below then drops the GitHub thread that still carries them.
 
-    Copy the locators while the twin is still available, then take the twin's state:
-    closure in Qodo is NOT resolution on GitHub, and ``already_replied`` must reflect an
-    actual reply rather than a closed finding. A finding Qodo closed while the thread is
-    still open stays answerable.
+    Match CLI findings to their GitHub Qodo twins in two passes (exact ``thread_id`` first,
+    then ``comment_id`` or normalized title/path/line fallback when ``thread_id`` is absent),
+    copy missing locators and full ``replies``, and apply GitHub's real resolution state:
+    closure in Qodo is NOT resolution on GitHub, while resolution on GitHub skips even an
+    open CLI finding.
     """
-    twins = {t.get("thread_id"): t for t in all_threads if t.get("thread_id") and t.get("author") in QODO_USERS}
+    qodo_twins = [t for t in all_threads if t.get("author") in QODO_USERS]
+    twins_by_id = {t["thread_id"]: t for t in qodo_twins if t.get("thread_id")}
+    claimed: set[int] = set()
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    fallback_matched = 0
+
+    # Pass 1: exact thread_id matches claim their twins first.
+    unmatched_without_id: list[dict[str, Any]] = []
+    for thread in cli_threads:
+        tid = thread.get("thread_id")
+        if tid:
+            twin = twins_by_id.get(tid)
+            if twin is not None:
+                pairs.append((thread, twin))
+                claimed.add(id(twin))
+        else:
+            unmatched_without_id.append(thread)
+
+    # Pass 2: fallback matching only for CLI threads that have no thread_id.
+    if unmatched_without_id and qodo_twins:
+        twin_titles_by_obj_id = {id(t): _github_twin_match_titles(t) for t in qodo_twins}
+        for thread in unmatched_without_id:
+            unclaimed = [t for t in qodo_twins if id(t) not in claimed]
+            if not unclaimed:
+                break
+
+            cli_comment_id = thread.get("comment_id")
+            if cli_comment_id is not None:
+                comment_matches = [t for t in unclaimed if t.get("comment_id") == cli_comment_id]
+                if len(comment_matches) == 1:
+                    twin = comment_matches[0]
+                    pairs.append((thread, twin))
+                    claimed.add(id(twin))
+                    fallback_matched += 1
+                    continue
+
+            cli_title = _cli_match_title(thread)
+            if not cli_title:
+                continue
+
+            candidates = [t for t in unclaimed if cli_title in twin_titles_by_obj_id[id(t)]]
+            cli_path = (thread.get("path") or "").strip()
+            if cli_path:
+                candidates = [t for t in candidates if (t.get("path") or "").strip() == cli_path]
+            cli_line = thread.get("line")
+            if len(candidates) > 1 and cli_line is not None:
+                candidates = [t for t in candidates if t.get("line") == cli_line]
+
+            if len(candidates) == 1:
+                twin = candidates[0]
+                pairs.append((thread, twin))
+                claimed.add(id(twin))
+                fallback_matched += 1
+            elif len(candidates) > 1:
+                log.debug(
+                    "ambiguous GitHub twin fallback match for CLI finding",
+                    extra={"title": cli_title, "path": cli_path, "line": cli_line, "candidates": len(candidates)},
+                )
+
     inherited = 0
     reopened = 0
-    for thread in cli_threads:
-        twin = twins.get(thread.get("thread_id"))
-        if twin is None:
-            continue
+    resolved_count = 0
+    replies_preserved = 0
+    for thread, twin in pairs:
         for field in CLI_LOCATOR_FIELDS:
             if not thread.get(field) and twin.get(field) not in (None, ""):
                 thread[field] = twin[field]
                 inherited += 1
-        thread["is_resolved"] = bool(twin.get("is_resolved", False))
-        if thread.get("is_auto_skipped") and not thread["is_resolved"]:
+
+        twin_replies = twin.get("replies")
+        replies = (
+            [dict(r) if isinstance(r, dict) else r for r in twin_replies] if isinstance(twin_replies, list) else []
+        )
+        thread["replies"] = replies
+        replies_preserved += len(replies)
+
+        is_resolved = bool(twin.get("is_resolved", False))
+        resolved_by = twin.get("resolved_by")
+        thread["is_resolved"] = is_resolved
+        thread["resolved_by"] = resolved_by
+
+        if thread.get("is_auto_skipped") and not is_resolved:
             # Closed in Qodo, still open on GitHub: a reply is still owed.
             thread["is_auto_skipped"] = False
-            thread["already_replied"] = bool(twin.get("replies"))
+            thread["already_replied"] = bool(replies)
             if thread.get("status") == "skipped":
                 thread["status"] = "pending"
             reopened += 1
-    if inherited or reopened:
+        elif is_resolved:
+            thread["is_auto_skipped"] = True
+            if thread.get("status") == "pending":
+                thread["status"] = "skipped"
+            if not thread.get("skip_reason"):
+                thread["skip_reason"] = f"Resolved on GitHub by {resolved_by}" if resolved_by else "Resolved on GitHub"
+            resolved_count += 1
+
+    if inherited or reopened or resolved_count or fallback_matched or replies_preserved:
         log.info(
             "reconciled CLI threads with their GitHub twins",
-            extra={"locator_fields": inherited, "reopened": reopened},
+            extra={
+                "locator_fields": inherited,
+                "reopened": reopened,
+                "resolved": resolved_count,
+                "fallback_matched": fallback_matched,
+                "replies_preserved": replies_preserved,
+            },
         )
     return cli_threads
 
@@ -1406,10 +1574,11 @@ def run(
     label = "review" if include_resolved else "unresolved review"
     pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
 
+    fetch_include_resolved = True if not user else include_resolved
     with ThreadPoolExecutor(max_workers=4) as executor:
         author_future = executor.submit(run_gh_api, f"/repos/{owner}/{repo}/pulls/{pr_number}")
         threads_future = executor.submit(
-            fetch_review_threads, owner, repo, pr_number, include_resolved=include_resolved, user=user
+            fetch_review_threads, owner, repo, pr_number, include_resolved=fetch_include_resolved, user=user
         )
         body_comments_future = (
             executor.submit(fetch_coderabbit_body_comments, owner, repo, pr_number) if not user else None
@@ -1436,7 +1605,12 @@ def run(
 
         # Collect all unresolved threads in deterministic order
         print_stderr(f"Fetching {label} threads...")
-        all_threads = threads_future.result()
+        raw_github_threads = threads_future.result()
+        all_threads = (
+            list(raw_github_threads)
+            if include_resolved
+            else [t for t in raw_github_threads if not t.get("is_resolved")]
+        )
         print_stderr(f"Found {len(all_threads)} {label} thread(s)")
 
         body_comment_threads: list[dict[str, Any]] = []
@@ -1476,11 +1650,13 @@ def run(
             # Drop the GitHub twins so each finding appears exactly once;
             # threads NOT covered by a CLI finding (human authors, or a
             # truncated CLI read) are kept untouched.
+            if cli_threads:
+                # Issues #1033, #1225: take the twins' spans, replies, and real GitHub
+                # resolution state BEFORE dropping them (including resolved GitHub
+                # threads and CLI findings that arrive without a thread_id).
+                cli_threads = _reconcile_cli_threads_with_github(cli_threads, raw_github_threads)
             cli_thread_ids = {t.get("thread_id") for t in cli_threads if t.get("thread_id")}
             if cli_thread_ids:
-                # Issue #1033: take the twins' spans and state BEFORE dropping them,
-                # otherwise a CLI finding Qodo closed is left spanless and unaddressable.
-                cli_threads = _reconcile_cli_threads_with_github(cli_threads, all_threads)
                 before = len(all_threads)
                 all_threads = [
                     t
