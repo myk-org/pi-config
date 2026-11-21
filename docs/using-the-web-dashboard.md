@@ -61,6 +61,54 @@ To check the health and port of your active diff server at any time, run:
 
 > **Tip:** If you need to forcefully reset the project diff viewer, run `/pidiff restart`. This kills the local server and allocates a new random port.
 
+### Optional: Automated Visual Smoke Triage with models.classify()
+
+This workflow is **opt-in** and **fails open**: no classifier model or local `llama.cpp` server is required to use `/pidash` or `/pidiff`.
+
+On Pi `>= 1.6.0` with `codemode` enabled, automated screenshot checks (for example, `agent-browser` captures of `/pidash` or `/pidiff`) can pre-triage coarse states (`rendered`, `blank`, `error`, `loading`) inside a `codemode` script using an image-capable classifier. Passing screenshots never enter main-model context; if no classifier is available, `stopReason !== "stop"`, or confidence is low, fall back to standard `read` or DOM inspection.
+
+Key Pi `1.6.0` details:
+
+- **Discover dynamically:** Query `models.getAvailableOfType("classifier")` and filter by `input.includes("image")`. Calling `models.classify()` with an unconfigured model ID throws, and text-only classifiers (such as `github-copilot/microsoft-decision-1`) or standard `llama.cpp` chat models return `stopReason: "error"` on image input.
+- **Local and cloud support:** Local `llama.cpp >= 0.6.0` multimodal decision models (such as Clef with `mmproj`) work automatically through `/v1/systemone` alongside authenticated cloud classifiers.
+
+Fail-open `codemode` smoke-triage example:
+
+```js
+const path = ".pi/tmp/pidash-smoke.png";
+const classifiers = await models.getAvailableOfType("classifier");
+const model = classifiers.find((m) => m.input?.includes("image"));
+if (!model) return { fallback: true, reason: "no image-capable classifier available" };
+
+const shot = await tools.read({ path }).catch(() => null);
+if (!shot || shot.type !== "image") return { fallback: true, reason: "screenshot not readable as image" };
+
+const result = await models.classify(model, {
+  state: { ui: "pidash", check: "smoke" },
+  images: [shot],
+  questions: {
+    status: {
+      type: "choice",
+      instructions: "Classify the overall render state of this web UI screenshot.",
+      criteria: {
+        rendered: "Main UI chrome and content are visible with no error banner",
+        blank: "Empty, white, or unrendered viewport",
+        error: "Error screen, crash stack, or disconnect banner",
+        loading: "Spinner or skeleton placeholder still active",
+      },
+    },
+  },
+});
+
+const answer = result.answers?.status;
+if (result.stopReason !== "stop" || answer?.type !== "choice" || answer.confidence < 0.85) {
+  return { fallback: true, reason: result.errorMessage ?? "low confidence", stopReason: result.stopReason, answer };
+}
+return { fallback: false, model: `${model.provider}/${model.id}`, status: answer.choice, confidence: answer.confidence };
+```
+
+When the script returns `fallback: true`, inspect the screenshot with `read` or DOM checks. Classifier triage only covers coarse render states; subtle layout, focus, or text checks still require standard `read` or manual inspection.
+
 ### Running in Containers
 
 The pidash extension detects whether a session is running inside a container (it checks for `/.dockerenv` and `/run/.containerenv`) and shows a 📦 marker on that session in the dashboard. Ensure you expose the necessary ports when launching your container so your host machine's browser can connect:

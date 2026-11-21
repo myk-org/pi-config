@@ -31,6 +31,7 @@ import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { registerCron } from "./cron.js";
 import { publishWorkloadSources, clearWorkloadSources } from "../shared/workload-bridge.js";
 import { registerStatus } from "./status.js";
+import { registerWorktree } from "./worktree.js";
 import { registerNvim } from "./nvim.js";
 import { registerPreferenceExtractor } from "./preference-extractor.js";
 import { registerSkillMaintenance } from "./skill-maintenance.js";
@@ -163,6 +164,7 @@ export default function (pi: ExtensionAPI) {
   registerSessionValidation(pi);
   registerGithubAutocomplete(pi);
   registerStatus(pi, IN_CONTAINER, getAsyncJobs, getCronTasks);
+  registerWorktree(pi);
   registerNvim(pi);
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);

@@ -39,8 +39,8 @@
     "postinstall": "node scripts/enforce-protobufjs-floor.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": ">=1.5.0",
-    "@earendil-works/pi-coding-agent": ">=1.5.0",
+    "@earendil-works/pi-ai": ">=1.6.0",
+    "@earendil-works/pi-coding-agent": ">=1.6.0",
     "@myk-org/pi-vertex-claude": ">=4.3.4 <5",
     "jiti": "^2.7.0",
     "pi-orchestrator-config": ">=4.3.4 <5",
@@ -48,8 +48,8 @@
     "strip-json-comments": "^5.0.3"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=1.5.0",
-    "@earendil-works/pi-coding-agent": ">=1.5.0"
+    "@earendil-works/pi-ai": ">=1.6.0",
+    "@earendil-works/pi-coding-agent": ">=1.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -57,7 +57,7 @@
     "typescript": "^5.7.0"
   },
   "overrides": {
-    "undici": ">=6.27.0",
+    "undici": ">=8.12.4",
     "uuid": ">=11.1.1",
     "google-auth-library": ">=10.0.0",
     "brace-expansion": ">=5.0.7 <6",

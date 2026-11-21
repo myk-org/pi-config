@@ -13,7 +13,8 @@ the internals that are not visible from usage alone.
 | --- | --- | --- |
 | `/pidash` | `pidash/pidash.ts` | Manage pidash daemon (start/stop/restart/status) |
 | `/pidiff` | `pidiff/pidiff.ts` | Manage pidiff per-project server (start/stop/restart/status) |
-| `/status` | `status.ts` | Unified session status snapshot |
+| `/status` | `status.ts` | Unified session status snapshot (includes 1-line `Worktrees:` summary when linked worktrees exist) |
+| `/worktree [list\|prune]` | `worktree.ts` + `worktree-helpers.ts` | Fullscreen list→detail overlay for git worktrees (branch/detached, dirty counts, locked/prunable flags, active COMS peer, `c` copy path, guarded `d` remove, `p` prune, `r` refresh); `list` prints a plain-text table; `prune` runs `git worktree prune -v` |
 | `/review-status [worktree-path]` | `enforcement.ts` | Show review loop state, optionally for a specific worktree |
 | `/async-status` | `async-agents.ts` + `async-status-ui.ts` | Fullscreen overlay: list async agents → live output; `x` kills the focused job (or the whole `Space` multi-selection), `X` kills all running/queued immediately (no confirmation) |
 | `/dream` | `dreaming.ts` | Memory consolidation |

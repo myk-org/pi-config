@@ -1389,7 +1389,7 @@ describe("StringListSubmenu behavior", () => {
   // Identity theme — the component only styles text through it
   const theme: any = { fg: (_c: string, s: string) => s, bold: (s: string) => s, dim: (s: string) => s };
 
-  const render = (c: { render(w: number): string[] }): string => c.render(80).join("\n");
+  const render = (c: { render(w: number): readonly string[] }): string => c.render(80).join("\n");
 
   it("renders entries, the add row, and navigation help", () => {
     const c = new StringListSubmenu("test — patterns", ["sudo zsh", "nohup *"], theme, () => {});

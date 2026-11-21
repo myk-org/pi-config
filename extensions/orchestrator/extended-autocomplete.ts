@@ -16,6 +16,7 @@
  *   /review-handler <Tab>        → --autorabbit, --autoqodo
  *   /qodo-review <Tab>           → --autofix, --fast, --deep, --ticket
  *   /review-status <Tab>         → active worktree paths
+ *   /worktree <Tab>              → list, prune
  *   /create-skill <Tab>          → (free-text name)
  *   /cron <Tab>                  → add, list, remove
  *   /dream-auto <Tab>            → on, off
@@ -31,6 +32,7 @@ import { fuzzyFilter } from "@earendil-works/pi-tui";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
 import { getCronRemoveAutocompleteItems } from "./cron.js";
+import { listWorktreesAsync, type GitAsyncRunner } from "./git-helpers.js";
 
 const log = createLogger("autocomplete");
 
@@ -280,6 +282,15 @@ function registerCompletions(
       return filter(cache.data, prefix);
     },
 
+    "worktree": (prefix: string) => {
+      const parts = prefix.trimStart().split(/\s+/);
+      if (parts.length > 1) return null;
+      return filter([
+        { value: "list", label: "list", description: "Show compact plain-text table of worktrees" },
+        { value: "prune", label: "prune", description: "Prune stale git worktree administrative files" },
+      ], parts[0] || "");
+    },
+
 
     "dream-auto": (prefix: string) => {
       return filter([
@@ -486,6 +497,11 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   ctx.modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
   ctx.lastCwd = "";
 
+  const piGitRunner: GitAsyncRunner = async (args, dir) => {
+    const r = await pi.exec("git", args, { cwd: dir, timeout: 3_000 });
+    return { stdout: r.stdout, code: r.code };
+  };
+
   // ── Fetchers (close over pi and ctx) ────────────────────────────
 
   ctx.fetchOpenPRs = async (cwd: string) => {
@@ -631,32 +647,15 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     if (isFresh(cache) || cache.loading) return;
     cache.loading = true;
     try {
-      // Use --git-common-dir to find the shared repo root (not worktree root) so
-      // the main repo is excluded even when cwd is inside a linked worktree.
-      const commonResult = await pi.exec(
-        "git", ["rev-parse", "--git-common-dir"],
-        { cwd, timeout: 3_000 },
-      );
-      if (commonResult.code === 0) {
-        const gitCommonDir = commonResult.stdout.trim();
-        const mainRoot = path.dirname(path.resolve(cwd, gitCommonDir));
-        const listResult = await pi.exec(
-          "git", ["worktree", "list", "--porcelain"],
-          { cwd, timeout: 3_000 },
-        );
-        if (listResult.code === 0) {
-          const worktrees: AutocompleteItem[] = [];
-          for (const line of listResult.stdout.split("\n")) {
-            if (!line.startsWith("worktree ")) continue;
-            const wtPath = line.slice("worktree ".length).trim();
-            if (wtPath === mainRoot) continue;
-            const relative = path.relative(cwd, wtPath);
-            worktrees.push({ value: relative, label: relative, description: `Worktree: ${wtPath}` });
-          }
-          cache.data = worktrees;
-          cache.timestamp = Date.now();
-        }
-      }
+      const entries = await listWorktreesAsync(cwd, { runGitAsync: piGitRunner });
+      const worktrees: AutocompleteItem[] = entries
+        .filter((wt) => !wt.isMain)
+        .map((wt) => {
+          const relative = path.relative(cwd, wt.path) || ".";
+          return { value: relative, label: relative, description: `Worktree: ${wt.path}` };
+        });
+      cache.data = worktrees;
+      cache.timestamp = Date.now();
     } catch (e: any) {
       log.debug("worktree fetch failed", { error: e?.message || String(e) });
     }

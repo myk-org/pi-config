@@ -41,6 +41,7 @@ const agentDirLog = createLogger("agent-dir");
 const legacyAmbientProvidersLog = createLogger("legacy-ambient-providers");
 const internalRuntimeFactoryLog = createLogger("internal-runtime-factory");
 const internalRuntimeExtensionsLog = createLogger("internal-runtime-extensions");
+const internalRuntimeDiagnosticsLog = createLogger("internal-runtime-diagnostics");
 const sessionStoreInitLog = createLogger("session-store-init");
 const providerDiscoveryLog = createLogger("provider-discovery");
 const sessionKeyCapabilityLog = createLogger("session-key-capability");
@@ -713,6 +714,24 @@ function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientPro
   };
 }
 
+/**
+ * Drain unreported diagnostics from an AgentSessionRuntime and log each once.
+ * Uses takeUnreportedDiagnostics() so repeat drains never duplicate prior entries.
+ */
+export function logUnreportedRuntimeDiagnostics(
+  runtime: Pick<AgentSessionRuntime, "takeUnreportedDiagnostics">,
+  redact: (value: string) => string = (value) => value,
+): number {
+  const diagnostics = runtime.takeUnreportedDiagnostics();
+  internalRuntimeDiagnosticsLog.debug("Drained internal runtime diagnostics", { count: diagnostics.length });
+  for (const diagnostic of diagnostics) {
+    const log = diagnostic.type === "error" ? logger.error : diagnostic.type === "warning" ? logger.warn : logger.debug;
+    const message = redactDiagnostic(diagnostic.message, redact);
+    log(`[sidecar] INTERNAL_RUNTIME_DIAGNOSTIC: type=${diagnostic.type}, message=${message}`);
+  }
+  return diagnostics.length;
+}
+
 export const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 
 /** Methods SessionStore calls on a stored session (create() or test fixture). */
@@ -1349,10 +1368,7 @@ export class SessionStore {
         this.internalRuntime = runtime;
         this.modelRuntime = this.internalRuntime.services.modelRuntime;
         this.modelRegistry = new ModelRegistry(this.modelRuntime);
-        for (const diagnostic of this.internalRuntime.diagnostics) {
-          const log = diagnostic.type === "error" ? logger.error : diagnostic.type === "warning" ? logger.warn : logger.debug;
-          log(`[sidecar] INTERNAL_RUNTIME_DIAGNOSTIC: type=${diagnostic.type}, message=${diagnostic.message}`);
-        }
+        logUnreportedRuntimeDiagnostics(this.internalRuntime);
         logger.info(`[sidecar] INTERNAL_RUNTIME_CREATED: extensions=${extensionPaths.length}, agentDir=${this.agentDir}`);
       })();
     }
