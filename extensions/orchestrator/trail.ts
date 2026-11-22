@@ -213,7 +213,7 @@ export function trailNodes(root: string, logger: Logger = log): number {
 }
 
 /** Trail's statusline shape, adapted to Pi's theme API. */
-export function formatTrailFooter({ state, nodeCount, tokenSavings, trailReads = 0, sourceReads = 0 }: { state: TrailState; nodeCount: number; tokenSavings: number; trailReads?: number; sourceReads?: number }, theme?: StatusTheme): string {
+export function formatTrailFooter({ state, nodeCount, tokenSavings }: { state: TrailState; nodeCount: number; tokenSavings: number; trailReads?: number; sourceReads?: number }, theme?: StatusTheme): string {
   const fg = (color: string, value: string) => theme?.fg(color, value) ?? value;
   // "absent" is deliberately dim, not error-red: the cwd is not a git worktree,
   // so no graph is possible. Reporting that as "failed" made an ordinary
@@ -221,8 +221,6 @@ export function formatTrailFooter({ state, nodeCount, tokenSavings, trailReads =
   const freshness = state === "syncing" ? fg("warning", "syncing…") : state === "stale" ? fg("warning", "⚠ stale") : state === "failed" ? fg("error", "failed") : state === "absent" ? fg("dim", "n/a") : fg("success", "✓ synced");
   if (state === "absent") return fg("dim", "◤ trail · n/a");
   const parts = [fg("dim", "◤ ") + fg("accent", "trail"), fg("dim", `${nodeCount} nodes`), freshness];
-  const reads = trailReads + sourceReads;
-  if (reads > 0) parts.push(fg("dim", `${trailReads}/${reads} reads`));
   if (tokenSavings > 0) parts.push(fg("success", `~${formatCompactTotal(tokenSavings)} tok saved`));
   return parts.join(fg("dim", " · "));
 }
@@ -822,7 +820,7 @@ export function createTrailIntegration(options: Options) {
     if (isLiveExtensionCtx(state.ctx)) {
       try { theme = state.ctx.ui.theme; } catch { theme = undefined; }
     }
-    setSlot("trail", formatTrailFooter({ state: value, nodeCount: state.nodeCount, tokenSavings: state.tokenSavings, trailReads: state.trailReads, sourceReads: state.sourceReads }, theme), state.ctx);
+    setSlot("trail", formatTrailFooter({ state: value, nodeCount: state.nodeCount, tokenSavings: state.tokenSavings }, theme), state.ctx);
     publishSavings();
   };
   const loadMap = (root: string) => {
