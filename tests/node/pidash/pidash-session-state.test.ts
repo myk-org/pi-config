@@ -5,8 +5,11 @@ import {
   clearPendingUiRequests,
   createPidashSessionState,
   dismissPendingUiRequest,
+  forwardBrowserUiResponse,
   isInteractiveUiRequest,
+  processPiPendingUiEvent,
   recordPendingUiRequest,
+  replayClientToWatcher,
   snapshotPendingUiRequests,
   updatePidashSession,
 } from "../../../scripts/pidash-session-state.ts";
@@ -255,5 +258,159 @@ describe("pending UI requests (#1331)", () => {
     recordPendingUiRequest(client, r3.parsed, r3.raw, 2);
 
     assert.deepEqual(snapshotPendingUiRequests(client), [r2.raw, r3.raw]);
+  });
+});
+
+describe("pidash server pending UI wiring (#1331)", () => {
+  function liveClient(sessionId = "42:/project") {
+    const state = createPidashSessionState(() => {});
+    const sentToPi: string[] = [];
+    const socket = { send: (msg: string) => sentToPi.push(msg) };
+    const client = state.register(socket, registration({ sessionId }));
+    client.replaying = false;
+    return { client, sentToPi };
+  }
+
+  function uiRequest(id: string, method = "select", title = "Pick one") {
+    const parsed = { type: "extension_ui_request", id, method, title, options: ["A", "B"] };
+    return { parsed, raw: JSON.stringify(parsed) };
+  }
+
+  it("sends pending UI requests after replay_end when replaying to a watcher", () => {
+    const { client } = liveClient();
+    const buffered = JSON.stringify({ type: "message_start", message: { role: "user", content: "hi" } });
+    const req = uiRequest("ask-replay", "select");
+    appendEventBuffer(client.eventBuffer, buffered);
+    recordPendingUiRequest(client, req.parsed, req.raw);
+
+    const frames: string[] = [];
+    const result = replayClientToWatcher({ send: (msg) => frames.push(msg) }, client);
+
+    assert.deepEqual(result, { bufferedCount: 1, pendingCount: 1 });
+    assert.deepEqual(frames, [
+      JSON.stringify({ type: "replay_start" }),
+      buffered,
+      JSON.stringify({ type: "replay_end" }),
+      req.raw,
+    ]);
+  });
+
+  it("reports zero pending requests when replaying a client with no open prompts", () => {
+    const { client } = liveClient();
+    const frames: string[] = [];
+    const result = replayClientToWatcher({ send: (msg) => frames.push(msg) }, client);
+
+    assert.deepEqual(result, { bufferedCount: 0, pendingCount: 0 });
+    assert.deepEqual(frames, [
+      JSON.stringify({ type: "replay_start" }),
+      JSON.stringify({ type: "replay_end" }),
+    ]);
+  });
+
+  it("records a live interactive extension_ui_request without buffering it", () => {
+    const { client } = liveClient();
+    const req = uiRequest("ask-live", "confirm");
+
+    const action = processPiPendingUiEvent(client, req.parsed, req.raw, () => {});
+
+    assert.equal(action, "recorded");
+    assert.deepEqual(snapshotPendingUiRequests(client), [req.raw]);
+    assert.deepEqual(client.eventBuffer, []);
+  });
+
+  it("fans out a live extension_ui_request to session watchers", () => {
+    const { client } = liveClient("s-fanout");
+    const req = uiRequest("ask-fanout", "input");
+    const watched: Array<[string, object | string]> = [];
+
+    processPiPendingUiEvent(client, req.parsed, req.raw, (sid, ev) => watched.push([sid, ev]));
+
+    assert.deepEqual(watched, [["s-fanout", req.raw]]);
+  });
+
+  it("dismisses a recorded prompt when ui-dismiss arrives from pi", () => {
+    const { client } = liveClient();
+    const req = uiRequest("ask-dismiss", "select");
+    processPiPendingUiEvent(client, req.parsed, req.raw, () => {});
+
+    const dismiss = { type: "ui-dismiss", id: "ask-dismiss" };
+    const dismissRaw = JSON.stringify(dismiss);
+    const action = processPiPendingUiEvent(client, dismiss, dismissRaw, () => {});
+
+    assert.equal(action, "dismissed");
+    assert.deepEqual(snapshotPendingUiRequests(client), []);
+  });
+
+  it("buffers ui-dismiss events for future watchers", () => {
+    const { client } = liveClient("s-buf");
+    const dismiss = { type: "ui-dismiss", id: "ask-buf" };
+    const dismissRaw = JSON.stringify(dismiss);
+    const watched: Array<[string, object | string]> = [];
+
+    processPiPendingUiEvent(client, dismiss, dismissRaw, (sid, ev) => watched.push([sid, ev]));
+
+    assert.deepEqual(client.eventBuffer, [dismissRaw]);
+    assert.deepEqual(watched, [["s-buf", dismissRaw]]);
+  });
+
+  it("ignores interactive prompts received while client is replaying", () => {
+    const { client } = liveClient();
+    client.replaying = true;
+    const req = uiRequest("ask-during-replay", "select");
+
+    const action = processPiPendingUiEvent(client, req.parsed, req.raw, () => {});
+
+    assert.equal(action, null);
+    assert.deepEqual(snapshotPendingUiRequests(client), []);
+    assert.deepEqual(client.eventBuffer, []);
+  });
+
+  it("forwards extension_ui_response to the pi socket", () => {
+    const { client, sentToPi } = liveClient();
+    const response = forwardBrowserUiResponse(client, {
+      type: "extension_ui_response",
+      sessionId: client.session.sessionId,
+      id: "ask-resp",
+      value: "Option A",
+    });
+
+    assert.deepEqual(response, { type: "extension_ui_response", id: "ask-resp", value: "Option A" });
+    assert.deepEqual(sentToPi, [JSON.stringify(response)]);
+  });
+
+  it("preserves pending prompts after forwarding extension_ui_response until ui-dismiss arrives", () => {
+    const { client, sentToPi } = liveClient();
+    const req = uiRequest("ask-reject", "select");
+    processPiPendingUiEvent(client, req.parsed, req.raw, () => {});
+
+    // Simulate a browser response that Pi rejects or has not yet accepted
+    forwardBrowserUiResponse(client, {
+      type: "extension_ui_response",
+      sessionId: client.session.sessionId,
+      id: "ask-reject",
+      value: "Invalid",
+    });
+
+    assert.equal(sentToPi.length, 1);
+    assert.deepEqual(snapshotPendingUiRequests(client), [req.raw]);
+
+    // Only Pi's authoritative ui-dismiss clears the pending prompt
+    const dismiss = { type: "ui-dismiss", id: "ask-reject" };
+    processPiPendingUiEvent(client, dismiss, JSON.stringify(dismiss), () => {});
+    assert.deepEqual(snapshotPendingUiRequests(client), []);
+  });
+
+  it("skips forwarding extension_ui_response when pi socket is missing", () => {
+    const { client } = liveClient();
+    client.ws = null;
+
+    const response = forwardBrowserUiResponse(client, {
+      type: "extension_ui_response",
+      sessionId: client.session.sessionId,
+      id: "ask-offline",
+      confirmed: true,
+    });
+
+    assert.equal(response, null);
   });
 });

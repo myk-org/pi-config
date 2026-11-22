@@ -24,11 +24,15 @@ export function appendEventBuffer(
   }
 }
 
-export interface PiClient {
+export interface PendingUiRequestStore {
+  pendingUiRequests: Map<string, string>;
+  replaying?: boolean;
+}
+
+export interface PiClient extends PendingUiRequestStore {
   ws: any;
   session: SessionInfo;
   eventBuffer: string[];
-  pendingUiRequests: Map<string, string>;
   replaying: boolean;
   connectionGeneration: number;
 }
@@ -43,36 +47,88 @@ export function isInteractiveUiRequest(parsed: any): boolean {
 }
 
 export function recordPendingUiRequest(
-  client: PiClient,
+  store: PendingUiRequestStore,
   parsed: any,
   raw: string,
   max = PENDING_UI_REQUESTS_MAX,
 ): boolean {
-  if (client.replaying || !isInteractiveUiRequest(parsed)) return false;
+  if (store.replaying || !isInteractiveUiRequest(parsed)) return false;
   const id = parsed.id as string;
-  if (client.pendingUiRequests.has(id)) {
-    client.pendingUiRequests.delete(id);
-  } else if (client.pendingUiRequests.size >= max) {
-    const oldest = client.pendingUiRequests.keys().next().value;
-    if (oldest !== undefined) client.pendingUiRequests.delete(oldest);
+  if (store.pendingUiRequests.has(id)) {
+    store.pendingUiRequests.delete(id);
+  } else if (store.pendingUiRequests.size >= max) {
+    const oldest = store.pendingUiRequests.keys().next().value;
+    if (oldest !== undefined) store.pendingUiRequests.delete(oldest);
   }
-  client.pendingUiRequests.set(id, raw);
+  store.pendingUiRequests.set(id, raw);
   return true;
 }
 
-export function dismissPendingUiRequest(client: PiClient, id: unknown): boolean {
+export function dismissPendingUiRequest(store: PendingUiRequestStore, id: unknown): boolean {
   if (typeof id !== "string" || id.length === 0) return false;
-  return client.pendingUiRequests.delete(id);
+  return store.pendingUiRequests.delete(id);
 }
 
-export function clearPendingUiRequests(client: PiClient): number {
-  const count = client.pendingUiRequests.size;
-  client.pendingUiRequests.clear();
+export function clearPendingUiRequests(store: PendingUiRequestStore): number {
+  const count = store.pendingUiRequests.size;
+  store.pendingUiRequests.clear();
   return count;
 }
 
-export function snapshotPendingUiRequests(client: PiClient): string[] {
-  return Array.from(client.pendingUiRequests.values());
+export function snapshotPendingUiRequests(store: PendingUiRequestStore): string[] {
+  return Array.from(store.pendingUiRequests.values());
+}
+
+export function processPiPendingUiEvent(
+  client: PiClient,
+  parsed: any,
+  raw: string,
+  sendToWatchers: (sessionId: string, eventOrRaw: object | string) => void,
+): "recorded" | "dismissed" | null {
+  let action: "recorded" | "dismissed" | null = null;
+  if (recordPendingUiRequest(client, parsed, raw)) {
+    action = "recorded";
+  } else if (parsed?.type === "ui-dismiss" && dismissPendingUiRequest(client, parsed.id)) {
+    action = "dismissed";
+  }
+
+  // Buffer the event for replay on browser connect
+  // Skip extension_ui_request (one-time interactions)
+  if (parsed?.type !== "extension_ui_request") {
+    appendEventBuffer(client.eventBuffer, raw);
+  }
+
+  sendToWatchers(client.session.sessionId, raw);
+  return action;
+}
+
+export function forwardBrowserUiResponse(
+  client: PiClient,
+  parsed: any,
+): Record<string, unknown> | null {
+  if (parsed?.type !== "extension_ui_response" || !parsed.id || !client.ws) return null;
+  const response: Record<string, unknown> = { type: "extension_ui_response", id: parsed.id };
+  if (parsed.value !== undefined) response.value = parsed.value;
+  if (parsed.confirmed !== undefined) response.confirmed = parsed.confirmed;
+  if (parsed.cancelled) response.cancelled = true;
+  client.ws.send(JSON.stringify(response));
+  return response;
+}
+
+export function replayClientToWatcher(
+  ws: { send: (data: string) => void },
+  client: PiClient,
+): { bufferedCount: number; pendingCount: number } {
+  try { ws.send(JSON.stringify({ type: "replay_start" })); } catch {}
+  for (const event of client.eventBuffer) {
+    try { ws.send(event); } catch {}
+  }
+  try { ws.send(JSON.stringify({ type: "replay_end" })); } catch {}
+  const pendingUi = snapshotPendingUiRequests(client);
+  for (const pendingEvent of pendingUi) {
+    try { ws.send(pendingEvent); } catch {}
+  }
+  return { bufferedCount: client.eventBuffer.length, pendingCount: pendingUi.length };
 }
 
 function registeredSession(parsed: any): SessionInfo {

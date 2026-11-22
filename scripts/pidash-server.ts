@@ -14,14 +14,13 @@ import { createRequire } from "node:module";
 import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import {
-  appendEventBuffer,
   clearPendingUiRequests,
   disconnectPidashSession,
-  dismissPendingUiRequest,
+  forwardBrowserUiResponse,
   isInteractiveUiRequest,
-  recordPendingUiRequest,
+  processPiPendingUiEvent,
   registerPidashSession,
-  snapshotPendingUiRequests,
+  replayClientToWatcher,
   updatePidashSession,
   type PiClient,
 } from "./pidash-session-state.ts";
@@ -192,19 +191,12 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     const sid = piClient.session.sessionId;
     const raw = rawMsg ?? JSON.stringify(parsed);
 
-    if (recordPendingUiRequest(piClient, parsed, raw)) {
+    const pendingAction = processPiPendingUiEvent(piClient, parsed, raw, sendToWatchers);
+    if (pendingAction === "recorded") {
       log(`pending UI request recorded: ${sid} id=${parsed.id} method=${parsed.method}`);
-    } else if (parsed.type === "ui-dismiss" && dismissPendingUiRequest(piClient, parsed.id)) {
+    } else if (pendingAction === "dismissed") {
       log(`pending UI request dismissed: ${sid} id=${parsed.id}`);
     }
-
-    // Buffer the event for replay on browser connect
-    // Skip extension_ui_request (one-time interactions)
-    if (parsed.type !== "extension_ui_request") {
-      appendEventBuffer(piClient.eventBuffer, raw);
-    }
-
-    sendToWatchers(sid, raw);
 
     // Forward to event hooks (Discord bot, etc.)
     for (const hook of piEventHooks) {
@@ -270,14 +262,8 @@ function handleBrowserMessage(ws: any, parsed: any): void {
   if (parsed.type === "extension_ui_response" && parsed.id) {
     if (!parsed.sessionId) return;
     const piClient = piClients.get(parsed.sessionId);
-    if (piClient && piClient.ws) {
-      const response: any = { type: "extension_ui_response", id: parsed.id };
-      if (parsed.value !== undefined) response.value = parsed.value;
-      if (parsed.confirmed !== undefined) response.confirmed = parsed.confirmed;
-      if (parsed.cancelled) response.cancelled = true;
-      piClient.ws.send(JSON.stringify(response));
-      dismissPendingUiRequest(piClient, parsed.id);
-      sendToWatchers(parsed.sessionId, { type: "ui-dismiss", id: parsed.id });
+    const response = piClient ? forwardBrowserUiResponse(piClient, parsed) : null;
+    if (response) {
       log(`UI response forwarded to ${parsed.sessionId}: ${JSON.stringify(response).slice(0, 100)}`);
     }
     return;
@@ -323,19 +309,11 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
   onBrowserWatch: (ws, watchId, client) => {
     // Replay buffered events
     if (client) {
-      try { ws.send(JSON.stringify({ type: "replay_start" })); } catch {}
-      for (const event of client.eventBuffer) {
-        try { ws.send(event); } catch {}
-      }
-      try { ws.send(JSON.stringify({ type: "replay_end" })); } catch {}
-      const pendingUi = snapshotPendingUiRequests(client);
-      for (const pendingEvent of pendingUi) {
-        try { ws.send(pendingEvent); } catch {}
-      }
-      if (pendingUi.length > 0) {
-        log(`replayed ${client.eventBuffer.length} events + ${pendingUi.length} pending UI request(s) for ${watchId}`);
+      const { bufferedCount, pendingCount } = replayClientToWatcher(ws, client);
+      if (pendingCount > 0) {
+        log(`replayed ${bufferedCount} events + ${pendingCount} pending UI request(s) for ${watchId}`);
       } else {
-        log(`replayed ${client.eventBuffer.length} events for ${watchId}`);
+        log(`replayed ${bufferedCount} events for ${watchId}`);
       }
     }
     return watchId;  // pidash stores just the sessionId string

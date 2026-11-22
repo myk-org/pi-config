@@ -35,7 +35,15 @@ import { createLogger } from "../shared/logger.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-ops.js";
-import { appendEventBuffer, modelInfoPayload, supportsImagesFor } from "../../scripts/pidash-session-state.ts";
+import {
+  appendEventBuffer,
+  clearPendingUiRequests,
+  dismissPendingUiRequest,
+  modelInfoPayload,
+  recordPendingUiRequest,
+  snapshotPendingUiRequests,
+  supportsImagesFor,
+} from "../../scripts/pidash-session-state.ts";
 
 const log = createLogger("pidash");
 const WebSocket = createRequire(import.meta.url)("ws");
@@ -174,6 +182,7 @@ export function registerPidash(
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const sessionId = `${process.pid}:${process.cwd()}`;
   const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
+  const pendingUiStore = { pendingUiRequests: new Map<string, string>() };
   let activitySequence = 0;
   let activity: "working" | "waiting_for_input" | "idle" = "idle";
   let activityBeforePrompt: "working" | "waiting_for_input" | "idle" | null = null;
@@ -782,6 +791,16 @@ export function registerPidash(
         };
         replaySessionHistory(wsClient, ctx, pushBuffered);
 
+        // Re-send still-open interactive prompts after replay_complete so the daemon
+        // records them as live (not replaying) and restores active browser dialogs.
+        const pendingUi = snapshotPendingUiRequests(pendingUiStore);
+        if (pendingUi.length > 0) {
+          log.debug("resending pending UI requests after replay_complete", { count: pendingUi.length });
+          for (const rawReq of pendingUi) {
+            try { wsClient.send(rawReq); } catch {}
+          }
+        }
+
         } catch (err) {
           // ctx may be stale if session was replaced during WebSocket connect
           log.debug(`open handler error (likely stale ctx): ${err}`);
@@ -973,19 +992,30 @@ export function registerPidash(
   function setupPidashEventListeners(): void {
     // Forward ask_user requests to the daemon for browser display
     pi.events.on("pidash:ui-request", (data: unknown) => {
+      if (shuttingDown) return;
+      const req = data as { id?: string; method?: string } | null;
+      let serialized: string | undefined;
+      try { serialized = JSON.stringify(data); } catch {}
+      if (typeof serialized !== "string") return;
+      const recorded = recordPendingUiRequest(pendingUiStore, data, serialized);
       if (ws && connected) {
-        const req = data as { id?: string; method?: string } | null;
-        log.debug("forwarding pidash:ui-request", { id: req?.id, method: req?.method });
-        try { ws.send(JSON.stringify(data)); } catch {}
+        log.debug("forwarding pidash:ui-request", { id: req?.id, method: req?.method, recorded });
+        try { ws.send(serialized); } catch {}
+      } else if (recorded) {
+        log.debug("recorded pending pidash:ui-request while disconnected", { id: req?.id, method: req?.method });
       }
     });
 
     // Forward dialog dismissals to the browser
     pi.events.on("pidash:ui-dismiss", (data: unknown) => {
+      if (shuttingDown) return;
+      const req = data as { id?: string } | null;
+      const dismissed = dismissPendingUiRequest(pendingUiStore, req?.id);
       if (ws && connected) {
-        const req = data as { id?: string } | null;
-        log.debug("forwarding pidash:ui-dismiss", { id: req?.id });
+        log.debug("forwarding pidash:ui-dismiss", { id: req?.id, dismissed });
         try { ws.send(JSON.stringify(data)); } catch {}
+      } else if (dismissed) {
+        log.debug("dismissed pending pidash:ui-dismiss while disconnected", { id: req?.id });
       }
     });
 
@@ -1089,6 +1119,10 @@ export function registerPidash(
     sessionNamed = false;
     log.debug("session_start", (event as any)?.reason);
     if (["new", "fork"].includes(event?.reason)) trailTokenSavings = 0;
+    if (["new", "resume", "fork"].includes(event?.reason)) {
+      const cleared = clearPendingUiRequests(pendingUiStore);
+      if (cleared > 0) log.debug("cleared pending UI requests on session_start", { reason: event?.reason, count: cleared });
+    }
 
     const resolved = resolveSessionStartCtx(lastCtx, ctx);
     lastCtx = resolved.lastCtx;
@@ -1115,6 +1149,8 @@ export function registerPidash(
       // Already connected — session switched (e.g., /resume, /new)
       sessionEpoch++;
       eventBuffer.length = 0; // Clear stale events to prevent cross-session replay on reconnect
+      const cleared = clearPendingUiRequests(pendingUiStore);
+      if (cleared > 0) log.debug("cleared pending UI requests on session_switch", { count: cleared });
       activitySequence = 0;
       activity = "idle";
       activityBeforePrompt = null;
@@ -1237,6 +1273,8 @@ export function registerPidash(
   });
 
   pi.on("session_shutdown", (event) => {
+    const cleared = clearPendingUiRequests(pendingUiStore);
+    if (cleared > 0) log.debug("cleared pending UI requests on session_shutdown", { count: cleared });
     // Forward shutdown reason to pidash dashboard
     if (ws && connected) {
       try {
