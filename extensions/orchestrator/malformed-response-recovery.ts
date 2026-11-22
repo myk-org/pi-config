@@ -12,9 +12,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
+  DEFAULT_SESSION_KEY,
   markRecoveryPending,
   notifyMalformedRecoveryAborted,
   registerRecoveryCoordinator,
+  resolveRecoverySessionKey,
 } from "../shared/malformed-recovery-bridge.js";
 import { sendSystemNote } from "../shared/system-note.js";
 
@@ -63,6 +65,7 @@ export function registerMalformedResponseRecovery(
   opts?: { maxRetries?: number },
 ): void {
   const maxRetries = opts?.maxRetries ?? MAX_CONSECUTIVE_MALFORMED_RETRIES;
+  let currentSessionKey = DEFAULT_SESSION_KEY;
   let consecutiveRetries = 0;
   let budgetGeneration = 0;
   let shuttingDown = false;
@@ -82,30 +85,57 @@ export function registerMalformedResponseRecovery(
 
   const ensureCoordinatorRegistered = (): void => {
     if (!unregisterCoordinator) {
-      unregisterCoordinator = registerRecoveryCoordinator(willRecover);
+      unregisterCoordinator = registerRecoveryCoordinator(willRecover, currentSessionKey);
+    }
+  };
+
+  const switchSessionKey = (nextSessionKey: string, preservePending: boolean): void => {
+    if (currentSessionKey === nextSessionKey) return;
+    const hadPending = pendingMessage !== null;
+    if (hadPending) {
+      markRecoveryPending(false, currentSessionKey);
+    }
+    unregisterCoordinator?.();
+    unregisterCoordinator = null;
+    currentSessionKey = nextSessionKey;
+    ensureCoordinatorRegistered();
+    if (preservePending && hadPending) {
+      markRecoveryPending(true, currentSessionKey);
     }
   };
 
   ensureCoordinatorRegistered();
 
-  pi.on("session_start", () => {
+  pi.on("session_start", (_event, ctx) => {
+    const prevSessionKey = currentSessionKey;
+    const nextSessionKey = resolveRecoverySessionKey(ctx);
+    const hadPending = pendingMessage !== null;
     consecutiveRetries = 0;
     budgetGeneration += 1;
     shuttingDown = false;
     pendingMessage = null;
-    markRecoveryPending(false);
+    if (hadPending) {
+      markRecoveryPending(false, prevSessionKey);
+    }
+    if (prevSessionKey !== nextSessionKey) {
+      unregisterCoordinator?.();
+      unregisterCoordinator = null;
+      currentSessionKey = nextSessionKey;
+    }
+    markRecoveryPending(false, currentSessionKey);
     ensureCoordinatorRegistered();
   });
 
   pi.on("session_shutdown", () => {
     const wasPending = pendingMessage !== null;
+    const sessionKey = currentSessionKey;
     shuttingDown = true;
     pendingMessage = null;
-    markRecoveryPending(false);
+    markRecoveryPending(false, sessionKey);
     unregisterCoordinator?.();
     unregisterCoordinator = null;
     if (wasPending) {
-      notifyMalformedRecoveryAborted();
+      notifyMalformedRecoveryAborted(sessionKey);
     }
   });
 
@@ -119,6 +149,14 @@ export function registerMalformedResponseRecovery(
   pi.on("agent_end", async (event, ctx) => {
     if (shuttingDown) return;
 
+    if (currentSessionKey === DEFAULT_SESSION_KEY) {
+      const resolvedKey = resolveRecoverySessionKey(ctx);
+      if (resolvedKey !== DEFAULT_SESSION_KEY) {
+        switchSessionKey(resolvedKey, true);
+      }
+    }
+    const sessionKey = currentSessionKey;
+
     const messages = (event as any)?.messages;
     const lastAssistant = findLastTurnAssistantMessage(messages);
     if (lastAssistant && handledMessages.has(lastAssistant)) return;
@@ -128,7 +166,7 @@ export function registerMalformedResponseRecovery(
       consecutiveRetries = 0;
       budgetGeneration += 1;
       pendingMessage = null;
-      markRecoveryPending(false);
+      markRecoveryPending(false, sessionKey);
       return;
     }
 
@@ -136,7 +174,7 @@ export function registerMalformedResponseRecovery(
 
     if (consecutiveRetries >= maxRetries) {
       pendingMessage = null;
-      markRecoveryPending(false);
+      markRecoveryPending(false, sessionKey);
       log.warn("malformed_response_retry_exhausted", {
         reason,
         attempts: consecutiveRetries,
@@ -157,7 +195,7 @@ export function registerMalformedResponseRecovery(
     consecutiveRetries += 1;
     const attempt = consecutiveRetries;
     pendingMessage = lastAssistant;
-    markRecoveryPending(true);
+    markRecoveryPending(true, sessionKey);
     log.warn("malformed_response_auto_retry", {
       reason,
       attempt,
@@ -195,8 +233,8 @@ export function registerMalformedResponseRecovery(
       });
       if (pendingMessage === lastAssistant) {
         pendingMessage = null;
-        markRecoveryPending(false);
-        notifyMalformedRecoveryAborted();
+        markRecoveryPending(false, sessionKey);
+        notifyMalformedRecoveryAborted(sessionKey);
       }
     }
   });

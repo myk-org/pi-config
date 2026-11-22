@@ -326,4 +326,55 @@ describe("COMS malformed-response recovery coordination (#1333)", { concurrency:
       "must not send a recovery note once retries are exhausted",
     );
   });
+
+  it("isolates COMS malformed recovery deferral across concurrent peer sessions", async () => {
+    const { workspace } = makeWorkspace();
+    const sender = await startPeer({ name: "sender", sessionId: "s-conc", project: "p-1333-5", cwd: workspace });
+    const receiverA = await startPeer({
+      name: "receiver-a",
+      sessionId: "r-conc-a",
+      project: "p-1333-5",
+      cwd: workspace,
+      registerRecoveryOrder: "coms-first",
+      maxRetries: 1,
+    });
+    const receiverB = await startPeer({
+      name: "receiver-b",
+      sessionId: "r-conc-b",
+      project: "p-1333-5",
+      cwd: workspace,
+      registerRecoveryOrder: "coms-first",
+      maxRetries: 1,
+    });
+
+    const sentB = await sender.tools.get("coms_send").execute("sb", { target: "receiver-b", prompt: "status b?" });
+    const msgIdB = sentB.details.msg_id as string;
+
+    await receiverB.emit("agent_start", {});
+    await deliverInbound(receiverB, msgIdB);
+
+    // Receiver A shuts down while Receiver B hits a malformed response.
+    await receiverA.shutdown();
+
+    const errMsgB = malformedAssistant("MALFORMED_RESPONSE");
+    await receiverB.emit("turn_end", { type: "turn_end", turnIndex: 0, message: errMsgB, toolResults: [] });
+    await receiverB.emit("agent_end", { messages: [errMsgB] });
+
+    const midStatusB = await sender.tools.get("coms_get").execute("gb-mid", { msg_id: msgIdB });
+    assert.equal(midStatusB.details.status, "pending", "Receiver B must remain deferred after Receiver A shuts down");
+
+    const okMsgB = {
+      role: "assistant",
+      stopReason: "stop",
+      content: [{ type: "text", text: "recovered answer b" }],
+    };
+    await receiverB.emit("agent_start", {});
+    await receiverB.emit("turn_end", { type: "turn_end", turnIndex: 0, message: okMsgB, toolResults: [] });
+    await receiverB.emit("agent_end", { messages: [okMsgB] });
+
+    await waitUntil(async () => (await sender.tools.get("coms_get").execute("gb-wait", { msg_id: msgIdB })).details.status === "complete");
+    const doneB = await sender.tools.get("coms_get").execute("gb-done", { msg_id: msgIdB });
+    assert.equal(doneB.details.response, "recovered answer b");
+    assert.equal(doneB.details.error, null);
+  });
 });

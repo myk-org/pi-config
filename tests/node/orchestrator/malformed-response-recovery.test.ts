@@ -9,6 +9,7 @@ import {
   registerMalformedResponseRecovery,
 } from "../../../extensions/orchestrator/malformed-response-recovery.js";
 import {
+  MALFORMED_RECOVERY_BRIDGE_SYMBOL,
   onMalformedRecoveryAborted,
   resetMalformedRecoveryBridgeForTests,
   shouldDeferForMalformedRecovery,
@@ -60,11 +61,18 @@ function createHarness(opts?: {
   return { emit, sentMessages };
 }
 
-function makeLiveCtx(hasUI = true) {
+function makeLiveCtx(hasUI = true, sessionId?: string) {
   const notifications: Array<{ text: string; level: string }> = [];
   const ctx = {
     mode: "interactive",
     hasUI,
+    ...(sessionId !== undefined
+      ? {
+          sessionManager: {
+            getSessionId: () => sessionId,
+          },
+        }
+      : {}),
     ui: {
       notify(text: string, level: string) {
         notifications.push({ text, level });
@@ -455,5 +463,88 @@ describe("registerMalformedResponseRecovery", () => {
     } finally {
       unsub();
     }
+  });
+
+  it("tracks retry deferral independently across concurrent sessions", async () => {
+    const sessionA = createHarness({ maxRetries: 1 });
+    const sessionB = createHarness({ maxRetries: 1 });
+    const { ctx: ctxA } = makeLiveCtx(false, "sess-a");
+    const { ctx: ctxB } = makeLiveCtx(false, "sess-b");
+
+    await sessionA.emit("session_start", { reason: "new" }, ctxA);
+    await sessionB.emit("session_start", { reason: "new" }, ctxB);
+
+    await sessionA.emit("agent_end", { messages: [malformedAssistant()] }, ctxA);
+
+    assert.equal(shouldDeferForMalformedRecovery([malformedAssistant()], "sess-a"), false);
+    assert.equal(shouldDeferForMalformedRecovery([malformedAssistant()], "sess-b"), true);
+  });
+
+  it("preserves concurrent session recovery state after another session shuts down", async () => {
+    const sessionA = createHarness({ maxRetries: 1 });
+    const sessionB = createHarness({ maxRetries: 1 });
+    const { ctx: ctxA } = makeLiveCtx(false, "sess-a");
+    const { ctx: ctxB } = makeLiveCtx(false, "sess-b");
+    const pendingB = malformedAssistant();
+
+    await sessionA.emit("session_start", { reason: "new" }, ctxA);
+    await sessionB.emit("session_start", { reason: "new" }, ctxB);
+    await sessionB.emit("agent_end", { messages: [pendingB] }, ctxB);
+
+    await sessionA.emit("session_shutdown", {}, ctxA);
+
+    assert.equal(shouldDeferForMalformedRecovery([pendingB], "sess-b"), true);
+    assert.equal(shouldDeferForMalformedRecovery(undefined, "sess-b"), true);
+    assert.equal(shouldDeferForMalformedRecovery([malformedAssistant()], "sess-a"), false);
+  });
+
+  it("scopes abort notifications to the aborted session", async () => {
+    const sessionA = createHarness({ maxRetries: 1 });
+    const sessionB = createHarness({ maxRetries: 1 });
+    const { ctx: ctxA } = makeLiveCtx(false, "sess-a");
+    const { ctx: ctxB } = makeLiveCtx(false, "sess-b");
+
+    await sessionA.emit("session_start", { reason: "new" }, ctxA);
+    await sessionB.emit("session_start", { reason: "new" }, ctxB);
+
+    let abortedA = 0;
+    let abortedB = 0;
+    const unsubA = onMalformedRecoveryAborted(() => {
+      abortedA += 1;
+    }, "sess-a");
+    const unsubB = onMalformedRecoveryAborted(() => {
+      abortedB += 1;
+    }, "sess-b");
+
+    try {
+      await sessionA.emit("agent_end", { messages: [malformedAssistant()] }, ctxA);
+      await sessionB.emit("agent_end", { messages: [malformedAssistant()] }, ctxB);
+
+      await sessionA.emit("session_shutdown", {}, ctxA);
+
+      assert.equal(abortedA, 1);
+      assert.equal(abortedB, 0);
+    } finally {
+      unsubA();
+      unsubB();
+    }
+  });
+
+  it("prunes empty session slots from the bridge after cleanup", async () => {
+    const sessionA = createHarness({ maxRetries: 1 });
+    const { ctx: ctxA } = makeLiveCtx(false, "sess-prune");
+    const unsub = onMalformedRecoveryAborted(() => {}, "sess-prune");
+
+    await sessionA.emit("session_start", { reason: "new" }, ctxA);
+    const bridgeMap = (globalThis as Record<symbol, unknown>)[MALFORMED_RECOVERY_BRIDGE_SYMBOL] as
+      | Map<string, unknown>
+      | undefined;
+    assert.equal(bridgeMap?.has("sess-prune"), true);
+
+    await sessionA.emit("session_shutdown", {}, ctxA);
+    assert.equal(bridgeMap?.has("sess-prune"), true);
+
+    unsub();
+    assert.equal(bridgeMap?.has("sess-prune"), false);
   });
 });
