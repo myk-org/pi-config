@@ -1,5 +1,31 @@
 # Changelog
 
+## [5.0.0] - 2026-11-22
+
+- **BREAKING CHANGE:** Removed `acpx-provider` and `cli-provider` extensions, shared runtime provider
+  driver infrastructure, CLI specialist symlinking, settings keys, and related dead async dispatch code
+  (#1328).
+- Added bounded `MALFORMED_RESPONSE` auto-recovery (`MAX_CONSECUTIVE_MALFORMED_RETRIES = 2`) with
+  per-session COMS deferral coordination and retry-budget restoration (#1334).
+- Added amber `⏸` paused and mixed cron status indicators across the TUI status bar, `/status`, and
+  PiDash `InfoBar`, and removed `N/M reads` clutter from the Trail footer (#1330).
+- Preserved active `ask_user` / `extension_ui_request` prompts in PiDash across session switches,
+  browser reloads, and Pi-to-daemon reconnects, with authoritative `ui-dismiss` state sync (#1332).
+- Added cached worktree visibility to the status bar (`[wt]` / `4a-worktrees`), `/status`, and
+  `/worktree` interactive overlay + `list`/`prune` subcommands with clickable PR links (#1323).
+- Added collapse/expand widget toggles (`Alt+T`, `Alt+C`, `Alt+W`) with persistent headers and
+  configurable shortcuts across `tasks` and `coms` widgets (#1327).
+- Improved `ask_user` and `ui-bridge` TUI UX with a shared bounded question viewport, `tab`/`alt+p`
+  chat peek toggle, on-demand option filter, multi-line `Editor`, strict `Esc` cancel, and Pi `1.6.0`
+  `Container` caching (#1320).
+- Fixed COMS inbound FIFO drain under `followUp` starvation by delivering each inbound response
+  directly at `turn_end` (#1322).
+- Raised minimum Pi version floor to `1.6.0`, bumped `undici` to `>=8.12.4`, and aligned
+  `readonly string[]` render types (#1321).
+- Applied codebase-wide performance optimizations across orchestrator, memory, review-learning,
+  subagents, COMS, pitasks, providers, pidash/pidiff, and shared hot paths (#1216, #1217, #1220,
+  #1222, #1223, #1302, #1303, #1305, #1306, #1309, #1310, #1311).
+
 ## [4.34.3] - 2026-11-19
 
 - Simplified skill adoption and maintenance to use Pi's built-in `pi.getCommands()` registry
