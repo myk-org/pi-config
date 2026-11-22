@@ -42,6 +42,10 @@ import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueR
 import { collectWorkload, openBlockers, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
 import { publishedWorkloadSources } from "../shared/workload-bridge.js";
 import { publishedTaskStore } from "../shared/task-store-bridge.js";
+import {
+	onMalformedRecoveryAborted,
+	shouldDeferForMalformedRecovery,
+} from "../shared/malformed-recovery-bridge.js";
 import { sanitizePeerText } from "./peer-text.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
@@ -756,6 +760,10 @@ export default function (pi: ExtensionAPI) {
 	let displayProject: string | null = null;
 	let currentCtx: ExtensionContext | null = null;
 	let currentInbound: InboundContext | null = null;
+	/** Inbound msg_id deferred on agent_end while malformed-response recovery runs (#1333). */
+	let deferredRecoveryInboundId: string | null = null;
+	let deferredRecoveryCtx: ExtensionContext | null = null;
+	let unsubMalformedRecoveryAborted: (() => void) | null = null;
 	/** True once Pi emits message_start for currentInbound (#1226). */
 	let inboundDelivered = false;
 	/** Re-entrancy guard while finalizeCurrentInbound is awaiting I/O (#1226). */
@@ -2071,6 +2079,19 @@ export default function (pi: ExtensionAPI) {
 
 		// 6. Surface presence in the UI + install the live pool widget.
 		registerPoolVisibilityListeners();
+		unsubMalformedRecoveryAborted?.();
+		deferredRecoveryInboundId = null;
+		deferredRecoveryCtx = null;
+		unsubMalformedRecoveryAborted = onMalformedRecoveryAborted(() => {
+			if (shuttingDown || !identity || !currentInbound || !inboundDelivered || finalizingInbound) return;
+			if (deferredRecoveryInboundId !== currentInbound.msg_id) return;
+			const ctx = deferredRecoveryCtx ?? currentCtx;
+			deferredRecoveryInboundId = null;
+			deferredRecoveryCtx = null;
+			if (!ctx) return;
+			log.warn("malformed_recovery_aborted_finalize", currentInbound.msg_id);
+			void finalizeCurrentInbound(ctx);
+		});
 		try {
 			ctx.ui.setStatus("coms", `📡 ${name}@${project}`);
 			installPoolWidget(ctx);
@@ -3903,6 +3924,8 @@ Do not respond to this message.`;
 		try {
 			const inbound = currentInbound;
 			currentInbound = null;
+			deferredRecoveryInboundId = null;
+			deferredRecoveryCtx = null;
 			inboundDelivered = false;
 			agentRunningUserTurn = false;
 
@@ -4112,7 +4135,7 @@ Do not respond to this message.`;
 	});
 
 	// ━━ agent_end: safety net for delivered & aborted-before-delivery inbounds ━━
-	pi.on("agent_end", async (_event, ctx) => {
+	pi.on("agent_end", async (event, ctx) => {
 		agentRunning = false;
 		log.info("agent_end_enter", "currentInbound", currentInbound?.msg_id ?? "null", "delivered", inboundDelivered, "identity", !!identity, "processingInbound", processingInbound);
 		if (finalizingInbound) {
@@ -4141,6 +4164,12 @@ Do not respond to this message.`;
 		}
 
 		if (inboundDelivered) {
+			if (shouldDeferForMalformedRecovery((event as any)?.messages)) {
+				deferredRecoveryInboundId = currentInbound.msg_id;
+				deferredRecoveryCtx = ctx;
+				log.info("agent_end_deferred_for_malformed_recovery", currentInbound.msg_id);
+				return;
+			}
 			await finalizeCurrentInbound(ctx);
 			return;
 		}
@@ -4565,6 +4594,10 @@ Do not respond to this message.`;
 		process.off("SIGTERM", handleSigterm);
 		log.debug("recovery_previews_cleared", { reason: "shutdown" });
 		clearPoolVisibilityListeners();
+		unsubMalformedRecoveryAborted?.();
+		unsubMalformedRecoveryAborted = null;
+		deferredRecoveryInboundId = null;
+		deferredRecoveryCtx = null;
 		if (shutdownCtx?.hasUI) {
 			try { shutdownCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
 			try { shutdownCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }

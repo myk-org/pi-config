@@ -11,6 +11,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import {
+  markRecoveryPending,
+  notifyMalformedRecoveryAborted,
+  registerRecoveryCoordinator,
+} from "../shared/malformed-recovery-bridge.js";
 import { sendSystemNote } from "../shared/system-note.js";
 
 const log = createLogger("malformed-response-recovery");
@@ -59,21 +64,55 @@ export function registerMalformedResponseRecovery(
 ): void {
   const maxRetries = opts?.maxRetries ?? MAX_CONSECUTIVE_MALFORMED_RETRIES;
   let consecutiveRetries = 0;
+  let budgetGeneration = 0;
   let shuttingDown = false;
+  let pendingMessage: object | null = null;
   const handledMessages = new WeakSet<object>();
+  let unregisterCoordinator: (() => void) | null = null;
+
+  const willRecover = (messages: readonly any[] | undefined): boolean => {
+    if (shuttingDown) return false;
+    const lastAssistant = findLastTurnAssistantMessage(messages);
+    if (!lastAssistant) return false;
+    if (pendingMessage === lastAssistant) return true;
+    if (handledMessages.has(lastAssistant)) return false;
+    if (consecutiveRetries >= maxRetries) return false;
+    return detectMalformedStopReason(messages) !== null;
+  };
+
+  const ensureCoordinatorRegistered = (): void => {
+    if (!unregisterCoordinator) {
+      unregisterCoordinator = registerRecoveryCoordinator(willRecover);
+    }
+  };
+
+  ensureCoordinatorRegistered();
 
   pi.on("session_start", () => {
     consecutiveRetries = 0;
+    budgetGeneration += 1;
     shuttingDown = false;
+    pendingMessage = null;
+    markRecoveryPending(false);
+    ensureCoordinatorRegistered();
   });
 
   pi.on("session_shutdown", () => {
+    const wasPending = pendingMessage !== null;
     shuttingDown = true;
+    pendingMessage = null;
+    markRecoveryPending(false);
+    unregisterCoordinator?.();
+    unregisterCoordinator = null;
+    if (wasPending) {
+      notifyMalformedRecoveryAborted();
+    }
   });
 
   pi.on("input", (event) => {
     if ((event as any)?.source !== "extension") {
       consecutiveRetries = 0;
+      budgetGeneration += 1;
     }
   });
 
@@ -87,12 +126,17 @@ export function registerMalformedResponseRecovery(
     const reason = detectMalformedStopReason(messages);
     if (!reason) {
       consecutiveRetries = 0;
+      budgetGeneration += 1;
+      pendingMessage = null;
+      markRecoveryPending(false);
       return;
     }
 
     handledMessages.add(lastAssistant);
 
     if (consecutiveRetries >= maxRetries) {
+      pendingMessage = null;
+      markRecoveryPending(false);
       log.warn("malformed_response_retry_exhausted", {
         reason,
         attempts: consecutiveRetries,
@@ -109,17 +153,21 @@ export function registerMalformedResponseRecovery(
       return;
     }
 
+    const attemptGen = budgetGeneration;
     consecutiveRetries += 1;
+    const attempt = consecutiveRetries;
+    pendingMessage = lastAssistant;
+    markRecoveryPending(true);
     log.warn("malformed_response_auto_retry", {
       reason,
-      attempt: consecutiveRetries,
+      attempt,
       maxRetries,
     });
 
     if (isLiveExtensionCtx(ctx) && ctx?.hasUI) {
       try {
         ctx.ui.notify(
-          `Provider returned ${reason} — auto-continuing (${consecutiveRetries}/${maxRetries})…`,
+          `Provider returned ${reason} — auto-continuing (${attempt}/${maxRetries})…`,
           "warning",
         );
       } catch {}
@@ -137,11 +185,19 @@ export function registerMalformedResponseRecovery(
         },
       );
     } catch (err) {
+      if (budgetGeneration === attemptGen && consecutiveRetries > 0) {
+        consecutiveRetries -= 1;
+      }
       log.error("malformed_response_retry_send_failed", {
         reason,
-        attempt: consecutiveRetries,
+        attempt,
         error: String(err),
       });
+      if (pendingMessage === lastAssistant) {
+        pendingMessage = null;
+        markRecoveryPending(false);
+        notifyMalformedRecoveryAborted();
+      }
     }
   });
 }

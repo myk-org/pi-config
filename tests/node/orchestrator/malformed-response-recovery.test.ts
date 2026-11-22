@@ -1,15 +1,24 @@
 /**
  * Bounded auto-recovery for malformed provider stop reasons (issue #1333).
  */
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
   detectMalformedStopReason,
   registerMalformedResponseRecovery,
 } from "../../../extensions/orchestrator/malformed-response-recovery.js";
+import {
+  onMalformedRecoveryAborted,
+  resetMalformedRecoveryBridgeForTests,
+  shouldDeferForMalformedRecovery,
+} from "../../../extensions/shared/malformed-recovery-bridge.js";
 import { SYSTEM_NOTE_MARKER } from "../../../extensions/shared/system-note.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+
+afterEach(() => {
+  resetMalformedRecoveryBridgeForTests();
+});
 
 type Handler = (...args: any[]) => any;
 
@@ -349,5 +358,102 @@ describe("registerMalformedResponseRecovery", () => {
 
     assert.equal(sentMessages.length, 1);
     assert.equal(sentMessages[0].message.customType, "malformed-response-recovery");
+  });
+
+  it("restores retry budget when sendSystemNote rejects", async () => {
+    let attempts = 0;
+    let succeeded = 0;
+    const { emit } = createHarness({
+      maxRetries: 2,
+      sendMessageImpl: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("transient transport failure");
+        succeeded += 1;
+      },
+    });
+    const { ctx } = makeLiveCtx(false);
+
+    const failedMsg = malformedAssistant();
+    await emit("agent_end", { messages: [failedMsg] }, ctx);
+    // Duplicate delivery of the same failed message object must still be ignored.
+    await emit("agent_end", { messages: [failedMsg] }, ctx);
+    // Subsequent malformed turns still receive the full maxRetries=2 successful sends.
+    await emit("agent_end", { messages: [malformedAssistant()] }, ctx);
+    await emit("agent_end", { messages: [malformedAssistant()] }, ctx);
+    // A 3rd subsequent malformed turn is blocked because 2 retries succeeded.
+    await emit("agent_end", { messages: [malformedAssistant()] }, ctx);
+
+    assert.equal(attempts, 3);
+    assert.equal(succeeded, 2);
+  });
+
+  it("ignores late sendSystemNote rejection after an intervening retry reset", async () => {
+    let rejectFirst!: (err: Error) => void;
+    let callCount = 0;
+    const { emit, sentMessages } = createHarness({
+      maxRetries: 1,
+      sendMessageImpl: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          await new Promise<void>((_resolve, reject) => {
+            rejectFirst = reject;
+          });
+        }
+      },
+    });
+    const { ctx } = makeLiveCtx(false);
+
+    const firstEmit = emit("agent_end", { messages: [malformedAssistant()] }, ctx);
+    await emit("input", { source: "interactive", text: "reset budget" }, ctx);
+    rejectFirst(new Error("late failure"));
+    await firstEmit;
+
+    await emit("agent_end", { messages: [malformedAssistant()] }, ctx);
+    await emit("agent_end", { messages: [malformedAssistant()] }, ctx);
+
+    // 1st failed call + 1 allowed call after reset; 3rd call must be blocked (budget did not go below 0).
+    assert.equal(sentMessages.length, 2);
+  });
+
+  it("defers via shouldDeferForMalformedRecovery before orchestrator handles agent_end", () => {
+    createHarness({ maxRetries: 1 });
+
+    assert.equal(shouldDeferForMalformedRecovery([malformedAssistant()]), true);
+    assert.equal(
+      shouldDeferForMalformedRecovery([{ role: "assistant", stopReason: "stop" }]),
+      false,
+    );
+  });
+
+  it("defers via shouldDeferForMalformedRecovery after orchestrator handles agent_end", async () => {
+    const { emit } = createHarness({ maxRetries: 1 });
+    const { ctx } = makeLiveCtx(false);
+    const msg = malformedAssistant();
+
+    await emit("agent_end", { messages: [msg] }, ctx);
+
+    assert.equal(shouldDeferForMalformedRecovery([msg]), true);
+    assert.equal(shouldDeferForMalformedRecovery([malformedAssistant()]), false);
+  });
+
+  it("clears recovery deferral after session_shutdown", async () => {
+    const { emit } = createHarness({ maxRetries: 1 });
+    const { ctx } = makeLiveCtx(false);
+    const msg = malformedAssistant();
+    let abortedCount = 0;
+    const unsub = onMalformedRecoveryAborted(() => {
+      abortedCount += 1;
+    });
+
+    try {
+      await emit("agent_end", { messages: [msg] }, ctx);
+      assert.equal(shouldDeferForMalformedRecovery([msg]), true);
+
+      await emit("session_shutdown", {}, ctx);
+      assert.equal(shouldDeferForMalformedRecovery([msg]), false);
+      assert.equal(abortedCount, 1);
+    } finally {
+      unsub();
+    }
   });
 });

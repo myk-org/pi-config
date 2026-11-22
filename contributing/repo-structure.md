@@ -117,6 +117,7 @@ pi-config/
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
+│   │   ├── malformed-recovery-bridge.ts # Cross-extension malformed-response recovery coordination with COMS (#1333)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model + openai-compatible-discovery)
