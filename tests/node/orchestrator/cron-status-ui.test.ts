@@ -110,19 +110,28 @@ describe("cronStateLabel", () => {
 describe("formatCronStatusSlot", () => {
   const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
 
-  it("formats empty, active, paused, and mixed states with theme", () => {
+  it("formats zero crons with muted styling", () => {
     assert.equal(formatCronStatusSlot([], theme), "<muted>⏰ 0 crons</muted>");
+  });
+
+  it("formats active crons with muted styling", () => {
     assert.equal(formatCronStatusSlot([{}], theme), "<muted>⏰ 1 cron</muted>");
     assert.equal(formatCronStatusSlot([{}, { paused: false }], theme), "<muted>⏰ 2 crons</muted>");
+  });
+
+  it("formats paused crons with warning styling", () => {
     assert.equal(formatCronStatusSlot([{ paused: true }], theme), "<warning>⏸ 1 cron</warning>");
     assert.equal(formatCronStatusSlot([{ paused: true }, { paused: true }], theme), "<warning>⏸ 2 crons</warning>");
+  });
+
+  it("formats mixed crons with warning styling on the paused count", () => {
     assert.equal(
       formatCronStatusSlot([{}, { paused: true }, { paused: true }], theme),
       "<muted>⏰ 1 · </muted><warning>⏸ 2</warning>",
     );
   });
 
-  it("returns plain strings when theme is omitted", () => {
+  it("returns plain uncolored text when theme is omitted", () => {
     assert.equal(formatCronStatusSlot([]), "⏰ 0 crons");
     assert.equal(formatCronStatusSlot([{}]), "⏰ 1 cron");
     assert.equal(formatCronStatusSlot([{}, {}]), "⏰ 2 crons");

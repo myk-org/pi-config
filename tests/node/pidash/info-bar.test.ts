@@ -261,7 +261,10 @@ describe("InfoBar thinking selector", () => {
     assert.equal(unmounts, 1);
   });
 
-  it("renders cron status trigger for empty, active, paused, and mixed states", async () => {
+});
+
+describe("InfoBar cron status trigger", () => {
+  async function renderCronBar() {
     let emit: (ev: any) => void = () => {};
     const { container } = installReactDomShim();
     const root = createRoot(container);
@@ -271,14 +274,18 @@ describe("InfoBar thinking selector", () => {
       session: value, model: value.model, tokens: null, send: () => {},
       onMessage: (handler: any) => { emit = handler; return () => {}; },
     })));
-
     const cronTrigger = () => elements(container, "button").find((item) => /cron|⏸/.test(item.textContent || ""));
+    return { emit, cronTrigger };
+  }
 
-    // 0 crons -> muted
+  it("renders muted cron trigger when no crons exist", async () => {
+    const { cronTrigger } = await renderCronBar();
     assert.equal(cronTrigger()!.textContent.trim(), "⏰ 0 crons");
     assert.match(String(cronTrigger()!.getAttribute("class") || ""), /text-muted-foreground\/50/);
+  });
 
-    // All active -> blue
+  it("renders blue cron trigger when all crons are active", async () => {
+    const { emit, cronTrigger } = await renderCronBar();
     await act(async () => emit({
       type: "cron-status",
       count: 2,
@@ -289,8 +296,10 @@ describe("InfoBar thinking selector", () => {
     }));
     assert.equal(cronTrigger()!.textContent.trim(), "⏰ 2 crons");
     assert.match(String(cronTrigger()!.getAttribute("class") || ""), /text-blue-400/);
+  });
 
-    // All paused -> amber
+  it("renders amber paused trigger when all crons are paused", async () => {
+    const { emit, cronTrigger } = await renderCronBar();
     await act(async () => emit({
       type: "cron-status",
       count: 1,
@@ -298,8 +307,10 @@ describe("InfoBar thinking selector", () => {
     }));
     assert.equal(cronTrigger()!.textContent.trim(), "⏸ 1 cron");
     assert.match(String(cronTrigger()!.getAttribute("class") || ""), /text-amber-400/);
+  });
 
-    // Mixed -> blue active + muted dot + amber paused
+  it("renders active count beside amber paused count for mixed crons", async () => {
+    const { emit, cronTrigger } = await renderCronBar();
     await act(async () => emit({
       type: "cron-status",
       count: 3,

@@ -335,20 +335,33 @@ describe("/status cron paused summary", () => {
     assert.doesNotMatch(out, /⏸ paused/);
   });
 
-  it("shows paused count and row marker when all are paused", async () => {
+  it("shows paused count in the /status header when all crons are paused", async () => {
     const out = await runStatus([
       { id: "p1", scope: "session", cwd: process.cwd(), description: "paused job", task: "x", intervalMs: 60_000, createdAt: 1, paused: true },
     ]);
     assert.match(out, /⏰ Cron tasks: 1 paused/);
+  });
+
+  it("marks paused cron rows with a paused badge in /status", async () => {
+    const out = await runStatus([
+      { id: "p1", scope: "session", cwd: process.cwd(), description: "paused job", task: "x", intervalMs: 60_000, createdAt: 1, paused: true },
+    ]);
     assert.match(out, /session:p1 .* — paused job \(last: never, ⏸ paused\)/);
   });
 
-  it("splits active and paused counts when mixed", async () => {
+  it("reports mixed cron counts in the /status header", async () => {
     const out = await runStatus([
       { id: "a", scope: "session", cwd: process.cwd(), description: "active job", task: "x", intervalMs: 60_000, createdAt: 1 },
       { id: "p", scope: "project", cwd: process.cwd(), description: "paused job", task: "x", intervalMs: 60_000, createdAt: 1, leader: true, paused: true },
     ]);
     assert.match(out, /⏰ Cron tasks: 1 active, 1 paused/);
+  });
+
+  it("marks only paused rows in a mixed /status listing", async () => {
+    const out = await runStatus([
+      { id: "a", scope: "session", cwd: process.cwd(), description: "active job", task: "x", intervalMs: 60_000, createdAt: 1 },
+      { id: "p", scope: "project", cwd: process.cwd(), description: "paused job", task: "x", intervalMs: 60_000, createdAt: 1, leader: true, paused: true },
+    ]);
     assert.match(out, /session:a .* — active job \(last: never\)/);
     assert.match(out, /persist:p .* — paused job \(last: never, leader, ⏸ paused\)/);
   });
