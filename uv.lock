@@ -208,7 +208,7 @@ wheels = [
 
 [[package]]
 name = "myk-pi-tools"
-version = "4.23.1"
+version = "5.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "ai-cli-runner" },
