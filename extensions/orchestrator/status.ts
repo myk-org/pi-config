@@ -42,11 +42,20 @@ export function registerStatus(
       // ── Cron tasks ─────────────────────────────────────────────────
       const crons = getCronTasks();
       if (crons.length > 0) {
-        lines.push(`⏰ Cron tasks: ${crons.length} active`);
+        const pausedCount = crons.filter((t) => t.paused === true).length;
+        const activeCount = crons.length - pausedCount;
+        const summary =
+          pausedCount === 0
+            ? `${activeCount} active`
+            : activeCount === 0
+              ? `${pausedCount} paused`
+              : `${activeCount} active, ${pausedCount} paused`;
+        lines.push(`⏰ Cron tasks: ${summary}`);
         for (const t of crons) {
           const last = t.lastRun ? new Date(t.lastRun).toLocaleTimeString() : "never";
           const leader = t.scope !== "session" ? `, ${t.leader === false ? "non-leader" : "leader"}` : "";
-          lines.push(`   • ${t.scope === "project" ? "persist" : "session"}:${t.id} ${formatCronSchedule(t, { preciseIntervals: true, dailyPrefix: false })} — ${t.description} (last: ${last}${leader})`);
+          const paused = t.paused === true ? ", ⏸ paused" : "";
+          lines.push(`   • ${t.scope === "project" ? "persist" : "session"}:${t.id} ${formatCronSchedule(t, { preciseIntervals: true, dailyPrefix: false })} — ${t.description} (last: ${last}${leader}${paused})`);
         }
       } else {
         lines.push("⏰ Cron tasks: none");

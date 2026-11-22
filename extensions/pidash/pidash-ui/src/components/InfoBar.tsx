@@ -170,6 +170,9 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
     if (name === "sessions") send({ type: "pidash-command", command: "list-sessions", sessionId: session.sessionId });
   }, [openMenu, send, session.sessionId]);
 
+  const pausedCronCount = cronTasks.tasks.filter((t) => t.paused).length;
+  const activeCronCount = Math.max(0, cronTasks.count - pausedCronCount);
+
   return (
     <div className={cn("flex items-center gap-3 max-md:gap-1.5 h-10 px-4 max-md:px-2 border-t border-border text-sm text-muted-foreground relative whitespace-nowrap shrink-0", inactive && "opacity-50 pointer-events-none")}>
       {/* Stats zone — shrinks with ellipsis on narrow screens. Fixed bar
@@ -387,9 +390,25 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         <Popover>
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",
-            cronTasks.count > 0 ? "text-blue-400 hover:text-blue-300" : "text-muted-foreground/50"
+            cronTasks.count === 0
+              ? "text-muted-foreground/50"
+              : pausedCronCount === 0
+                ? "text-blue-400 hover:text-blue-300"
+                : activeCronCount === 0
+                  ? "text-amber-400 hover:text-amber-300"
+                  : ""
           )}>
-            ⏰ {cronTasks.count} cron{cronTasks.count !== 1 ? "s" : ""}
+            {cronTasks.count === 0 || pausedCronCount === 0 ? (
+              <>⏰ {cronTasks.count} cron{cronTasks.count !== 1 ? "s" : ""}</>
+            ) : activeCronCount === 0 ? (
+              <>⏸ {pausedCronCount} cron{pausedCronCount !== 1 ? "s" : ""}</>
+            ) : (
+              <>
+                <span className="text-blue-400 hover:text-blue-300">⏰ {activeCronCount}</span>
+                <span className="text-muted-foreground/50"> · </span>
+                <span className="text-amber-400 hover:text-amber-300">⏸ {pausedCronCount}</span>
+              </>
+            )}
           </PopoverTrigger>
           {cronTasks.count > 0 && (
             <PopoverContent className="w-72 max-h-60 overflow-y-auto">

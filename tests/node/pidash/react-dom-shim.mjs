@@ -44,6 +44,8 @@ class FakeNode {
     return !event.defaultPrevented;
   }
   contains(node) { return node === this || this.childNodes.some((child) => child.contains?.(node)); }
+  get nodeValue() { return this.nodeType === 3 ? this.data : null; }
+  set nodeValue(value) { if (this.nodeType === 3) this.data = String(value); }
   get textContent() { return this.nodeType === 3 ? this.data : this.childNodes.map((child) => child.textContent).join(""); }
   set textContent(value) {
     if (this.nodeType === 3) { this.data = String(value); return; }

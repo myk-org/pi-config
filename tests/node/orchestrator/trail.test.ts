@@ -535,13 +535,13 @@ describe("Trail savings accounting", () => {
       assert.deepEqual(r.emitted.filter(item => item.event === "pidash:trail-savings").at(-1)?.data, { tokenSavings: 0 });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
-  it("tracks Trail and source reads in the footer", async () => {
+  it("omits Trail and source read ratio from the footer while keeping token savings", async () => {
     const r = register({ graph: async () => "fresh" }); const c = await start(r);
     r.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("[trail] tokens saved ≈ 500"), isError: false }, c);
     r.handlers.get("tool_result")![0]({ toolName: "grep", input: {}, content: [], isError: false }, c);
     r.handlers.get("tool_result")![0]({ toolName: "read", input: {}, content: [], isError: false }, c);
     assert.match(c.status.at(-1)?.text ?? "", /~500 tok saved/);
-    assert.match(c.status.at(-1)?.text ?? "", /1\/3 reads/);
+    assert.doesNotMatch(c.status.at(-1)?.text ?? "", /\d+\/\d+\s+reads|\breads\b/);
   });
 });
 
@@ -671,10 +671,11 @@ describe("Trail paths and status", () => {
     const r = register({ executable: async () => false }); const c = await start(r);
     assert.deepEqual(c.status.at(-1), { key: "4b-trail", text: "◤ trail · 0 nodes · failed" });
   });
-  it("formats nodes, freshness, reads, and compact savings", () => {
+  it("formats nodes, freshness, and compact savings without reads", () => {
     const theme = { fg: (color: string, value: string) => `<${color}>${value}</${color}>` };
     assert.equal(trail.formatTrailFooter({ state: "ready", nodeCount: 12, tokenSavings: 1_098_359 }, theme), "<dim>◤ </dim><accent>trail</accent><dim> · </dim><dim>12 nodes</dim><dim> · </dim><success>✓ synced</success><dim> · </dim><success>~1.1M tok saved</success>");
-    assert.equal(trail.formatTrailFooter({ state: "ready", nodeCount: 12, tokenSavings: 0, trailReads: 3, sourceReads: 9 }, theme), "<dim>◤ </dim><accent>trail</accent><dim> · </dim><dim>12 nodes</dim><dim> · </dim><success>✓ synced</success><dim> · </dim><dim>3/12 reads</dim>");
+    assert.equal(trail.formatTrailFooter({ state: "ready", nodeCount: 12, tokenSavings: 0, trailReads: 3, sourceReads: 9 }, theme), "<dim>◤ </dim><accent>trail</accent><dim> · </dim><dim>12 nodes</dim><dim> · </dim><success>✓ synced</success>");
+    assert.doesNotMatch(trail.formatTrailFooter({ state: "ready", nodeCount: 12, tokenSavings: 500, trailReads: 3, sourceReads: 9 }, theme), /reads/);
     assert.doesNotMatch(trail.formatTrailFooter({ state: "ready", nodeCount: 12, tokenSavings: 0 }, theme), /tok saved|reads/);
   });
 });

@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { decideCronArm, registerCron } from "../../../extensions/orchestrator/cron.ts";
 import { readDurableCronStore } from "../../../extensions/orchestrator/cron-store.ts";
+import { registerStatus } from "../../../extensions/orchestrator/status.ts";
 import { makeTempDir } from "../helpers/temp-dirs.ts";
 
 const NOW = 123_456;
@@ -266,5 +267,89 @@ describe("pause across replicas (#1089)", () => {
     const { h } = start(cwd, [{ ...projectTask(cwd), paused: true }]);
     const status = h.emitted.filter(({ event }) => event === "pidash:cron-status").at(-1)!.data;
     assert.equal(status.tasks[0].paused, true);
+  });
+
+  it("updates the TUI cron status slot live on togglePaused", () => {
+    const cwd = makeTempDir("pi-cron-pause-");
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    fs.writeFileSync(store, JSON.stringify({
+      version: 1,
+      tasks: [projectTask(cwd), { ...projectTask(cwd), id: "job-2", description: "audit 2" }],
+    }));
+    const h = makeCron();
+    harnesses.add(h);
+    h.pi.events.on = h.pi.eventHandler;
+    const slots: Array<{ key: string; text: string | undefined }> = [];
+    const cron = registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, {
+      cwd,
+      mode: "interactive",
+      hasUI: true,
+      model: {},
+      isProjectTrusted: () => true,
+      sessionManager: { getSessionId: () => "session-ui" },
+      ui: {
+        theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` },
+        setStatus: (key: string, text: string | undefined) => slots.push({ key, text }),
+        notify() {},
+      },
+    });
+    const lastSlot = () => slots.filter((s) => s.key === "3-crons").at(-1)?.text;
+    assert.equal(lastSlot(), "<muted>⏰ 2 crons</muted>");
+
+    assert.deepEqual(cron.togglePaused("persist:job"), { ok: true, paused: true });
+    assert.equal(lastSlot(), "<muted>⏰ 1 · </muted><warning>⏸ 1</warning>");
+
+    assert.deepEqual(cron.togglePaused("persist:job-2"), { ok: true, paused: true });
+    assert.equal(lastSlot(), "<warning>⏸ 2 crons</warning>");
+
+    assert.deepEqual(cron.togglePaused("persist:job"), { ok: true, paused: false });
+    assert.equal(lastSlot(), "<muted>⏰ 1 · </muted><warning>⏸ 1</warning>");
+  });
+});
+
+describe("/status cron paused summary", () => {
+  async function runStatus(tasks: any[]) {
+    let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
+    const mockPi: any = {
+      registerCommand(name: string, opts: any) {
+        if (name === "status") handler = opts.handler;
+      },
+    };
+    registerStatus(mockPi, false, () => [], () => tasks);
+    let notified = "";
+    await handler!("", {
+      hasUI: true,
+      cwd: process.cwd(),
+      ui: { notify: (msg: string) => { notified = msg; } },
+    });
+    return notified;
+  }
+
+  it("shows active count when none are paused", async () => {
+    const out = await runStatus([
+      { id: "a", scope: "session", cwd: process.cwd(), description: "active job", task: "x", intervalMs: 60_000, createdAt: 1 },
+    ]);
+    assert.match(out, /⏰ Cron tasks: 1 active/);
+    assert.doesNotMatch(out, /⏸ paused/);
+  });
+
+  it("shows paused count and row marker when all are paused", async () => {
+    const out = await runStatus([
+      { id: "p1", scope: "session", cwd: process.cwd(), description: "paused job", task: "x", intervalMs: 60_000, createdAt: 1, paused: true },
+    ]);
+    assert.match(out, /⏰ Cron tasks: 1 paused/);
+    assert.match(out, /session:p1 .* — paused job \(last: never, ⏸ paused\)/);
+  });
+
+  it("splits active and paused counts when mixed", async () => {
+    const out = await runStatus([
+      { id: "a", scope: "session", cwd: process.cwd(), description: "active job", task: "x", intervalMs: 60_000, createdAt: 1 },
+      { id: "p", scope: "project", cwd: process.cwd(), description: "paused job", task: "x", intervalMs: 60_000, createdAt: 1, leader: true, paused: true },
+    ]);
+    assert.match(out, /⏰ Cron tasks: 1 active, 1 paused/);
+    assert.match(out, /session:a .* — active job \(last: never\)/);
+    assert.match(out, /persist:p .* — paused job \(last: never, leader, ⏸ paused\)/);
   });
 });

@@ -4,6 +4,7 @@ import {
   cronDetailRows,
   cronStateLabel,
   formatCronSchedule,
+  formatCronStatusSlot,
   formatLastRunLabel,
   formatNextRunLabel,
   resolveNextRunAt,
@@ -103,6 +104,31 @@ describe("cronStateLabel", () => {
       toCronStatusTaskView({ id: 1, description: "x", task: "y", createdAt: 0, ...overrides } as any, { overlayId: "1" });
     assert.equal(view({ paused: true }).paused, true);
     assert.equal(view({}).paused, undefined);
+  });
+});
+
+describe("formatCronStatusSlot", () => {
+  const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+
+  it("formats empty, active, paused, and mixed states with theme", () => {
+    assert.equal(formatCronStatusSlot([], theme), "<muted>⏰ 0 crons</muted>");
+    assert.equal(formatCronStatusSlot([{}], theme), "<muted>⏰ 1 cron</muted>");
+    assert.equal(formatCronStatusSlot([{}, { paused: false }], theme), "<muted>⏰ 2 crons</muted>");
+    assert.equal(formatCronStatusSlot([{ paused: true }], theme), "<warning>⏸ 1 cron</warning>");
+    assert.equal(formatCronStatusSlot([{ paused: true }, { paused: true }], theme), "<warning>⏸ 2 crons</warning>");
+    assert.equal(
+      formatCronStatusSlot([{}, { paused: true }, { paused: true }], theme),
+      "<muted>⏰ 1 · </muted><warning>⏸ 2</warning>",
+    );
+  });
+
+  it("returns plain strings when theme is omitted", () => {
+    assert.equal(formatCronStatusSlot([]), "⏰ 0 crons");
+    assert.equal(formatCronStatusSlot([{}]), "⏰ 1 cron");
+    assert.equal(formatCronStatusSlot([{}, {}]), "⏰ 2 crons");
+    assert.equal(formatCronStatusSlot([{ paused: true }]), "⏸ 1 cron");
+    assert.equal(formatCronStatusSlot([{ paused: true }, { paused: true }]), "⏸ 2 crons");
+    assert.equal(formatCronStatusSlot([{}, { paused: true }]), "⏰ 1 · ⏸ 1");
   });
 });
 

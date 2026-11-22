@@ -260,4 +260,61 @@ describe("InfoBar thinking selector", () => {
     await act(async () => root.unmount()); mounted.pop();
     assert.equal(unmounts, 1);
   });
+
+  it("renders cron status trigger for empty, active, paused, and mixed states", async () => {
+    let emit: (ev: any) => void = () => {};
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+    const value = session();
+    await act(async () => root.render(createElement(InfoBar, {
+      session: value, model: value.model, tokens: null, send: () => {},
+      onMessage: (handler: any) => { emit = handler; return () => {}; },
+    })));
+
+    const cronTrigger = () => elements(container, "button").find((item) => /cron|⏸/.test(item.textContent || ""));
+
+    // 0 crons -> muted
+    assert.equal(cronTrigger()!.textContent.trim(), "⏰ 0 crons");
+    assert.match(String(cronTrigger()!.getAttribute("class") || ""), /text-muted-foreground\/50/);
+
+    // All active -> blue
+    await act(async () => emit({
+      type: "cron-status",
+      count: 2,
+      tasks: [
+        { id: "session:1", description: "a", schedule: "every 1m", paused: false },
+        { id: "session:2", description: "b", schedule: "every 5m" },
+      ],
+    }));
+    assert.equal(cronTrigger()!.textContent.trim(), "⏰ 2 crons");
+    assert.match(String(cronTrigger()!.getAttribute("class") || ""), /text-blue-400/);
+
+    // All paused -> amber
+    await act(async () => emit({
+      type: "cron-status",
+      count: 1,
+      tasks: [{ id: "session:1", description: "a", schedule: "every 1m", paused: true }],
+    }));
+    assert.equal(cronTrigger()!.textContent.trim(), "⏸ 1 cron");
+    assert.match(String(cronTrigger()!.getAttribute("class") || ""), /text-amber-400/);
+
+    // Mixed -> blue active + muted dot + amber paused
+    await act(async () => emit({
+      type: "cron-status",
+      count: 3,
+      tasks: [
+        { id: "session:1", description: "a", schedule: "every 1m", paused: false },
+        { id: "session:2", description: "b", schedule: "every 5m", paused: true },
+        { id: "session:3", description: "c", schedule: "every 10m", paused: true },
+      ],
+    }));
+    const mixed = cronTrigger()!;
+    assert.equal(mixed.textContent.trim(), "⏰ 1 · ⏸ 2");
+    const spans = elements(mixed, "span");
+    assert.equal(spans.length, 3);
+    assert.match(String(spans[0].getAttribute("class") || ""), /text-blue-400/);
+    assert.match(String(spans[1].getAttribute("class") || ""), /text-muted-foreground\/50/);
+    assert.match(String(spans[2].getAttribute("class") || ""), /text-amber-400/);
+  });
 });

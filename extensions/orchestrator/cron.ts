@@ -6,7 +6,7 @@ import { getProjectTmpDir } from "./utils.js";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
-import { formatCronSchedule, cronStateLabel, toCronStatusTaskView, type CronPauseResult } from "./cron-status-format.js";
+import { formatCronSchedule, formatCronStatusSlot, cronStateLabel, toCronStatusTaskView, type CronPauseResult } from "./cron-status-format.js";
 import { parseModelOverride } from "./parse-model-override.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
 import { setSlot } from "./status-bar.js";
@@ -105,7 +105,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
   }
   const stores = () => ctx ? [{ scope: "project" as const, file: projectStore(ctx.cwd) }] : [];
   function updateStatus() {
-    try { if (ctx?.hasUI) setSlot("crons", ctx.ui.theme.fg("muted", `⏰ ${tasks.size} cron${tasks.size === 1 ? "" : "s"}`), ctx); } catch {}
+    try { if (ctx?.hasUI) setSlot("crons", formatCronStatusSlot([...tasks.values()], ctx.ui.theme), ctx); } catch {}
     pi.events.emit("pidash:cron-status", { count: tasks.size, tasks: [...tasks.values()].map(t => ({ id: qualifyCronId(t), scope: t.scope, description: t.description, schedule: formatCronSchedule(t), lastRun: t.lastRun, nextRun: t.nextRun, leader: t.leader, paused: t.paused === true })) });
   }
   /** A full-record write keeps the STORED `paused` flag: a leader that has not synced yet would

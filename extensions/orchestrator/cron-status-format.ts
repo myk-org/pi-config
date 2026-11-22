@@ -117,6 +117,24 @@ export function cronStateLabel(task: { paused?: boolean; leader?: boolean }): st
   return task.leader === false ? "waiting for leader" : "active";
 }
 
+/** Format the TUI status bar cron slot, highlighting paused tasks in warning color. */
+export function formatCronStatusSlot(
+  tasks: ReadonlyArray<{ paused?: boolean }>,
+  theme?: { fg: (color: any, text: string) => string },
+): string {
+  const fg = (color: string, text: string) => (theme ? theme.fg(color, text) : text);
+  const total = tasks.length;
+  if (total === 0) return fg("muted", "⏰ 0 crons");
+  let pausedCount = 0;
+  for (const task of tasks) {
+    if (task.paused) pausedCount++;
+  }
+  const activeCount = total - pausedCount;
+  if (pausedCount === 0) return fg("muted", `⏰ ${total} cron${total === 1 ? "" : "s"}`);
+  if (activeCount === 0) return fg("warning", `⏸ ${pausedCount} cron${pausedCount === 1 ? "" : "s"}`);
+  return `${fg("muted", `⏰ ${activeCount} · `)}${fg("warning", `⏸ ${pausedCount}`)}`;
+}
+
 /** Whether the pause reached the store — the caller must not show a state that was never written. */
 export type CronPauseResult =
   | { ok: true; paused: boolean }
