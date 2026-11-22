@@ -120,7 +120,9 @@ export function useMessageHandler(
     const liveSink: MessageSink = {
       add(role, text, className, meta, explicitId) {
         const id = explicitId ?? nextId();
-        setMessages((p) => [...p, { id, role, text, className, meta, timestamp: Date.now() }]);
+        const msg: ChatMessage = { id, role, text, className, meta, timestamp: Date.now() };
+        messagesRef.current = [...messagesRef.current, msg];
+        setMessages((p) => [...p, msg]);
         return id;
       },
       patch(id, fn) {
@@ -134,11 +136,14 @@ export function useMessageHandler(
         return undefined;
       },
       dismissAsk(askId) {
-        setMessages((prev) => prev.map((m) => (
+        const update = (prev: ChatMessage[]) => prev.map((m) => (
           m.className?.startsWith(`ask|${askId}|`) ? { ...m, className: `ask-answered|${askId}` } : m
-        )));
+        ));
+        messagesRef.current = update(messagesRef.current);
+        setMessages(update);
       },
       clear() {
+        messagesRef.current = [];
         setMessages([]);
       },
     };
@@ -493,14 +498,16 @@ export function useMessageHandler(
         }
 
         case "extension_ui_request":
-          // Skip stale UI requests from replay (older than 10 seconds)
-          if (ev.timestamp && Date.now() - ev.timestamp > 10000) break;
+          // Only skip stale UI requests during historical replay; live/post-replay active prompts remain interactive
+          if (isReplay && ev.timestamp && Date.now() - ev.timestamp > 10000) break;
           if (ev.id && (ev.method === "select" || ev.method === "confirm" || ev.method === "input")) {
-            // Add as inline message with options
             const askId = ev.id;
+            const prefix = `ask|${askId}|`;
+            if (sink.findLast((m) => Boolean(m.className?.startsWith(prefix)))) break;
+            // Add as inline message with options
             const title = ev.title || "Input needed";
             const opts = ev.method === "confirm" ? ["Yes", "No"] : ev.options || [];
-            sink.add("ask_user" as any, `${title}${ev.message ? "\n" + ev.message : ""}`, `ask|${askId}|${ev.method}|${opts.join("|||")}`);
+            sink.add("ask_user" as any, `${title}${ev.message ? "\n" + ev.message : ""}`, `${prefix}${ev.method}|${opts.join("|||")}`);
           }
           break;
 
@@ -571,6 +578,7 @@ export function useMessageHandler(
         },
       };
       for (const buffered_ev of buffered) processEvent(buffered_ev, draftSink, true);
+      messagesRef.current = draft;
       setMessages(draft);
     };
 

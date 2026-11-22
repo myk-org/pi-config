@@ -974,6 +974,8 @@ export function registerPidash(
     // Forward ask_user requests to the daemon for browser display
     pi.events.on("pidash:ui-request", (data: unknown) => {
       if (ws && connected) {
+        const req = data as { id?: string; method?: string } | null;
+        log.debug("forwarding pidash:ui-request", { id: req?.id, method: req?.method });
         try { ws.send(JSON.stringify(data)); } catch {}
       }
     });
@@ -981,6 +983,8 @@ export function registerPidash(
     // Forward dialog dismissals to the browser
     pi.events.on("pidash:ui-dismiss", (data: unknown) => {
       if (ws && connected) {
+        const req = data as { id?: string } | null;
+        log.debug("forwarding pidash:ui-dismiss", { id: req?.id });
         try { ws.send(JSON.stringify(data)); } catch {}
       }
     });
