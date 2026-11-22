@@ -19,6 +19,7 @@ import { registerAskUser } from "./ask-user.js";
 import { registerAsyncAgents } from "./async-agents.js";
 import { registerDreaming } from "./dreaming.js";
 import { registerEnforcement } from "./enforcement.js";
+import { registerMalformedResponseRecovery } from "./malformed-response-recovery.js";
 import { registerToolArgGuard } from "./tool-arg-guard.js";
 import { registerProjectSettings } from "./project-settings.js";
 import { registerRules } from "./rules.js";
@@ -142,6 +143,8 @@ export default function (pi: ExtensionAPI) {
   registerEnforcement(pi, IN_CONTAINER);
   // A rejected-before-run tool call must force a retry, not end the turn silently.
   registerToolArgGuard(pi);
+  // Bounded auto-recovery when a provider aborts with MALFORMED_RESPONSE (#1333).
+  registerMalformedResponseRecovery(pi);
   registerReviewUI(pi);
   registerRules(pi, getAsyncJobs);
 
