@@ -6,6 +6,7 @@ const log = createLogger("pidash");
 
 export const EVENT_BUFFER_MAX = 10000;
 export const EVENT_BUFFER_TRIM_AT = 12000;
+export const PENDING_UI_REQUESTS_MAX = 50;
 
 /**
  * Append a serialized event to a bounded buffer using amortized trimming
@@ -23,12 +24,111 @@ export function appendEventBuffer(
   }
 }
 
-export interface PiClient {
+export interface PendingUiRequestStore {
+  pendingUiRequests: Map<string, string>;
+  replaying?: boolean;
+}
+
+export interface PiClient extends PendingUiRequestStore {
   ws: any;
   session: SessionInfo;
   eventBuffer: string[];
   replaying: boolean;
   connectionGeneration: number;
+}
+
+export function isInteractiveUiRequest(parsed: any): boolean {
+  return (
+    parsed?.type === "extension_ui_request" &&
+    typeof parsed.id === "string" &&
+    parsed.id.length > 0 &&
+    (parsed.method === "select" || parsed.method === "confirm" || parsed.method === "input")
+  );
+}
+
+export function recordPendingUiRequest(
+  store: PendingUiRequestStore,
+  parsed: any,
+  raw: string,
+  max = PENDING_UI_REQUESTS_MAX,
+): boolean {
+  if (store.replaying || !isInteractiveUiRequest(parsed)) return false;
+  const id = parsed.id as string;
+  if (store.pendingUiRequests.has(id)) {
+    store.pendingUiRequests.delete(id);
+  } else if (store.pendingUiRequests.size >= max) {
+    const oldest = store.pendingUiRequests.keys().next().value;
+    if (oldest !== undefined) store.pendingUiRequests.delete(oldest);
+  }
+  store.pendingUiRequests.set(id, raw);
+  return true;
+}
+
+export function dismissPendingUiRequest(store: PendingUiRequestStore, id: unknown): boolean {
+  if (typeof id !== "string" || id.length === 0) return false;
+  return store.pendingUiRequests.delete(id);
+}
+
+export function clearPendingUiRequests(store: PendingUiRequestStore): number {
+  const count = store.pendingUiRequests.size;
+  store.pendingUiRequests.clear();
+  return count;
+}
+
+export function snapshotPendingUiRequests(store: PendingUiRequestStore): string[] {
+  return Array.from(store.pendingUiRequests.values());
+}
+
+export function processPiPendingUiEvent(
+  client: PiClient,
+  parsed: any,
+  raw: string,
+  sendToWatchers: (sessionId: string, eventOrRaw: object | string) => void,
+): "recorded" | "dismissed" | null {
+  let action: "recorded" | "dismissed" | null = null;
+  if (recordPendingUiRequest(client, parsed, raw)) {
+    action = "recorded";
+  } else if (parsed?.type === "ui-dismiss" && dismissPendingUiRequest(client, parsed.id)) {
+    action = "dismissed";
+  }
+
+  // Buffer the event for replay on browser connect
+  // Skip extension_ui_request (one-time interactions)
+  if (parsed?.type !== "extension_ui_request") {
+    appendEventBuffer(client.eventBuffer, raw);
+  }
+
+  sendToWatchers(client.session.sessionId, raw);
+  return action;
+}
+
+export function forwardBrowserUiResponse(
+  client: PiClient,
+  parsed: any,
+): Record<string, unknown> | null {
+  if (parsed?.type !== "extension_ui_response" || !parsed.id || !client.ws) return null;
+  const response: Record<string, unknown> = { type: "extension_ui_response", id: parsed.id };
+  if (parsed.value !== undefined) response.value = parsed.value;
+  if (parsed.confirmed !== undefined) response.confirmed = parsed.confirmed;
+  if (parsed.cancelled) response.cancelled = true;
+  client.ws.send(JSON.stringify(response));
+  return response;
+}
+
+export function replayClientToWatcher(
+  ws: { send: (data: string) => void },
+  client: PiClient,
+): { bufferedCount: number; pendingCount: number } {
+  try { ws.send(JSON.stringify({ type: "replay_start" })); } catch {}
+  for (const event of client.eventBuffer) {
+    try { ws.send(event); } catch {}
+  }
+  try { ws.send(JSON.stringify({ type: "replay_end" })); } catch {}
+  const pendingUi = snapshotPendingUiRequests(client);
+  for (const pendingEvent of pendingUi) {
+    try { ws.send(pendingEvent); } catch {}
+  }
+  return { bufferedCount: client.eventBuffer.length, pendingCount: pendingUi.length };
 }
 
 function registeredSession(parsed: any): SessionInfo {
@@ -116,11 +216,12 @@ export function registerPidashSession(
     existing.ws = ws;
     existing.session = session;
     existing.eventBuffer = [];
+    existing.pendingUiRequests.clear();
     existing.replaying = true;
     existing.connectionGeneration++;
     client = existing;
   } else {
-    client = { ws, session, eventBuffer: [], replaying: true, connectionGeneration: 1 };
+    client = { ws, session, eventBuffer: [], pendingUiRequests: new Map(), replaying: true, connectionGeneration: 1 };
   }
   sessions.set(session.sessionId, client);
   log.info(`session registered: session=${session.sessionId} streaming=${session.streaming}`);
@@ -152,6 +253,7 @@ export function disconnectPidashSession(
   client.session.activityBeforePrompt = undefined;
   client.session.streaming = false;
   client.session.working = false;
+  clearPendingUiRequests(client);
   client.ws = null;
   log.info(`session disconnected: session=${client.session.sessionId} source=${source}`);
   broadcast({ type: "session_updated", session: client.session });

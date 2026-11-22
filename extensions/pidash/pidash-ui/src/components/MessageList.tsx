@@ -237,7 +237,7 @@ function CopyBtn({ text }: { text: string }) {
 
 // Memoized: during streaming every text delta updates ONE message — without
 // memo the whole (potentially 1000+ item) list re-rendered per delta.
-const MessageItem = memo(function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; searchQuery?: string; onAskResponse?: (id: string, value: string) => void }) {
+export const MessageItem = memo(function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; searchQuery?: string; onAskResponse?: (id: string, value: string) => void }) {
   // Inline ask_user with clickable options
   if (msg.className?.startsWith("ask|") || msg.className?.startsWith("ask-answered|")) {
     const isAnswered = msg.className?.startsWith("ask-answered|");
@@ -247,6 +247,7 @@ const MessageItem = memo(function MessageItem({ msg, searchQuery, onAskResponse 
     const options = isAnswered ? [] : parts.slice(3).join("|").split("|||").filter(Boolean);
     const [answered, setAnswered] = useState(isAnswered || false);
     const [selectedOpt, setSelectedOpt] = useState("");
+    const isDone = answered || isAnswered;
 
     return (
       <div>
@@ -256,7 +257,7 @@ const MessageItem = memo(function MessageItem({ msg, searchQuery, onAskResponse 
         </div>
         <div className="rounded-md bg-card p-3 text-[13px] whitespace-pre-wrap break-words border-l-2 border-cyan-400">
           <div className="mb-2">{msg.text}</div>
-          {answered ? (
+          {isDone ? (
             <div className="text-xs text-muted-foreground">✓ Answered: {selectedOpt || "dismissed"}</div>
           ) : method === "input" ? (
             <form className="flex gap-2 mt-2" onSubmit={(e) => {
