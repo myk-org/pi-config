@@ -30,13 +30,12 @@ import { projectProblem, userTargetProblem } from "./coms-peers.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 import * as crypto from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { createLogger } from "../shared/logger.js";
 import { setLogFilePrefix } from "../shared/file-logger.js";
-import { probeStaleSocket } from "./probe-socket.js";
+import { ComsRegistry, probeAlive, probeStaleSocket, resolveComsDir, type RegistryEntry } from "./coms-registry.js";
 import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
 import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueRecoveryPreview } from "./queue-recovery.js";
 import { collectWorkload, openBlockers, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
@@ -69,12 +68,79 @@ const log = createLogger("coms");
 const tellLog = createLogger("coms-tell");
 const RECOVERY_PREVIEW_TTL_MS = 5 * 60 * 1000;
 const MAX_RECOVERY_PREVIEWS_PER_SESSION = 20;
-let COMS_DIR = path.join(os.homedir(), ".pi", "coms");
-let MAX_HOPS = 5;
-
-let TIMEOUT_MS = 1_800_000;
 const KEEPALIVE_INTERVAL_MS = 30_000;
 const LINE_CAP_BYTES = 64 * 1024;
+
+
+// ━━ Public Runtime Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export type ComsActivationOrigin = "tool" | "slash" | "cli";
+
+export interface ComsPeerFlagOverrides {
+	cname?: string;
+	purpose?: string;
+	project?: string;
+	color?: string;
+	explicit?: boolean;
+}
+
+export interface ComsPeerStartOptions {
+	flags?: ComsPeerFlagOverrides;
+	origin?: ComsActivationOrigin;
+	sessionId?: string;
+}
+
+export interface ComsUserSendParams {
+	target: string;
+	prompt: string;
+	project?: string;
+	expectedEndpoint?: string;
+}
+
+export interface ComsUserSendResult {
+	ok: boolean;
+	message: string;
+}
+
+export interface ComsPeerSelf {
+	sessionId: string;
+	name: string;
+	project: string;
+	endpoint: string;
+	origin: ComsActivationOrigin;
+	registryFile: string;
+}
+
+export interface ComsPeerRuntimeOptions {
+	/**
+	 * When true, P2P tools register with `defaultActive: false` and reject calls while inactive,
+	 * and `session_start`/`session_shutdown` are driven explicitly by the caller (e.g. `coms-wrapper.ts`).
+	 * Defaults to false (auto-starts on `session_start`, stops on `session_shutdown`).
+	 */
+	deferred?: boolean;
+	/** Message returned when a gated tool executes while inactive. */
+	inactiveMessage?: string;
+	/** Optional flag lookup override (checked before `pi.getFlag`). */
+	getFlag?: (name: string) => unknown;
+	/** Override COMS registry root directory (otherwise resolved via `getSetting(cwd, "coms_dir")`). */
+	comsDir?: string;
+	/** Override session id (otherwise resolved via `globalThis.__piConfigSessionId` or ULID). */
+	sessionId?: string;
+	/** Allow registration even when `PI_SUBAGENT_CHILD=1` (default: false). */
+	allowSubagentChild?: boolean;
+	/** Register SIGINT/SIGTERM process handlers while active (default: true). */
+	registerSignalHandlers?: boolean;
+}
+
+export interface ComsPeerRuntime {
+	start(ctx: ExtensionContext, options?: ComsPeerStartOptions): Promise<ComsPeerSelf | null>;
+	stop(): Promise<void>;
+	getSelf(): ComsPeerSelf | null;
+	isActive(): boolean;
+	sendAsUser(params: ComsUserSendParams): Promise<ComsUserSendResult>;
+	openQueueOverlay(args: string, ctx: any): Promise<void>;
+	readonly gatedToolNames: ReadonlySet<string>;
+}
 
 
 // ━━ Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -195,35 +261,6 @@ interface DescribeEnvelope extends Envelope {
 	type: "describe";
 }
 
-interface RegistryEntry {
-	/** Entry point that activated coms: `user` (/coms start) or `agent` (coms_start tool). */
-	origin?: string | null;
-	coms_session_id: string;
-	name: string;
-	purpose: string;
-	model: string;
-	color: string;
-	/** Informational only — not used for liveness checks (socket existence + heartbeat used instead). */
-	pid: number;
-	endpoint: string;
-	cwd: string;
-	started_at: string;
-	explicit: boolean;
-	version: number;
-	// Live status snapshot — refreshed every KEEPALIVE_INTERVAL_MS by the heartbeat.
-	// Optional so older entries (pre-heartbeat-refresh) still parse cleanly.
-	context_used_pct?: number;
-	queue_depth?: number;
-	/** #924 §3: peer is processing a peer inbound (heartbeat-refreshed). */
-	busy?: boolean;
-	heartbeat_at?: string;
-	pi_session_id?: string;
-	/** #1080: exact TaskStore file path this peer reads, or null when peer task persistence is disabled/unavailable. */
-	task_store_path?: string | null;
-	/** #1083: active-only workload counted by the peer itself; absent on older entries. */
-	workload?: PeerWorkloadCounts | null;
-}
-
 interface PendingReply {
 	resolve?: (value: any) => void;
 	reject?: (err: Error) => void;
@@ -286,13 +323,6 @@ interface InboundContext {
 	origin?: PromptOrigin;
 	/** #924 §6: last progress-signal emission for this inbound (ms epoch). */
 	lastProgressAt?: number;
-}
-
-function makeEndpoint(sessionId: string): string {
-	if (process.platform === "win32") {
-		return `\\\\.\\pipe\\pi-coms-${sessionId}`;
-	}
-	return path.join(COMS_DIR, "sockets", `${sessionId}.sock`);
 }
 
 /** Inline ping worker — responds to pings on a separate socket, immune to main-thread event-loop blocks */
@@ -366,225 +396,15 @@ interface CliFlags {
 	explicit?: boolean;
 }
 
-function readCliFlags(pi: ExtensionAPI): CliFlags {
-	// Identity flags are declared via pi.registerFlag at extension load time so
-	// pi's CLI parser accepts them; here we just read them back.
-	const name = pi.getFlag("cname") as string | undefined;
-	const purpose = pi.getFlag("purpose") as string | undefined;
-	const project = pi.getFlag("project") as string | undefined;
-	const color = pi.getFlag("color") as string | undefined;
-	const explicit = pi.getFlag("explicit") as boolean | undefined;
-	return {
-		name: name && name.length > 0 ? name : undefined,
-		purpose: purpose && purpose.length > 0 ? purpose : undefined,
-		project: project && project.length > 0 ? project : undefined,
-		color: color && color.length > 0 ? color : undefined,
-		explicit: explicit === true,
-	};
-}
-
-// ━━ Registry I/O ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-function projectAgentsDir(project: string): string {
-	return path.join(COMS_DIR, "projects", project, "agents");
-}
-
-function registryFilePath(project: string, sessionId: string): string {
-	// Guard against path traversal from malformed session_id
-	if (sessionId.includes("/") || sessionId.includes("\\") || sessionId.includes("..")) {
-		throw new Error(`Invalid session_id: ${sessionId}`);
-	}
-	return path.join(projectAgentsDir(project), `${sessionId}.json`);
-}
-
-function writeRegistryAtomic(entry: RegistryEntry, project: string): string {
-	const dir = projectAgentsDir(project);
-	fs.mkdirSync(dir, { recursive: true });
-	const final = registryFilePath(project, entry.coms_session_id);
-	const tmp = `${final}.tmp`;
-	fs.writeFileSync(tmp, JSON.stringify(entry, null, 2));
-	fs.renameSync(tmp, final);
-	return final;
-}
-
-function readAllRegistryEntries(project: string): RegistryEntry[] {
-	const dir = projectAgentsDir(project);
-	if (!fs.existsSync(dir)) return [];
-	const out: RegistryEntry[] = [];
-	let files: string[];
-	try {
-		files = fs.readdirSync(dir);
-	} catch {
-		return [];
-	}
-	for (const f of files) {
-		if (!f.endsWith(".json")) continue;
-		try {
-			const raw = fs.readFileSync(path.join(dir, f), "utf-8");
-			const parsed = JSON.parse(raw) as RegistryEntry;
-			if (parsed && typeof parsed.coms_session_id === "string") {
-				out.push(parsed);
-			}
-		} catch {
-			// skip malformed
-		}
-	}
-	return out;
-}
-
-function readAllRegistryEntriesAcrossProjects(): RegistryEntry[] {
-	const root = path.join(COMS_DIR, "projects");
-	let projects: string[];
-	try {
-		projects = fs.readdirSync(root);
-	} catch {
-		return [];
-	}
-	const out: RegistryEntry[] = [];
-	for (const p of projects) {
-		try {
-			if (!fs.statSync(path.join(root, p)).isDirectory()) continue;
-		} catch {
-			continue;
-		}
-		out.push(...readAllRegistryEntries(p));
-	}
-	return out;
-}
-
-function removeRegistryEntry(project: string, sessionId: string): void {
-	try {
-		fs.unlinkSync(registryFilePath(project, sessionId));
-	} catch {
-		// best-effort
-	}
-}
-
-async function pruneDeadEntries(project: string, cwd = process.cwd()): Promise<RegistryEntry[]> {
-	const entries = readAllRegistryEntries(project);
-
-	// Phase 1: Sync pre-filter (fast — no I/O)
-	const candidates: RegistryEntry[] = [];
-	const youngEntries: RegistryEntry[] = [];
-	for (const entry of entries) {
-		if (!entry.endpoint || typeof entry.endpoint !== "string") {
-			removeRegistryEntry(project, entry.coms_session_id);
-			continue;
-		}
-		// On Windows, endpoints are named pipes — fs.existsSync doesn't apply
-		if (process.platform !== "win32" && !fs.existsSync(entry.endpoint)) {
-			removeRegistryEntry(project, entry.coms_session_id);
-			continue;
-		}
-		// Skip entries younger than 30s — recently booted peers get grace period
-		const entryAge = Date.now() - new Date(entry.heartbeat_at ?? entry.started_at ?? "").getTime();
-		if (!isNaN(entryAge) && entryAge < getSetting(cwd, "coms_entry_grace_period_ms")) {
-			log.debug("prune_skip_grace", entry.name, "age_ms", entryAge);
-			youngEntries.push(entry);
-			continue;
-		}
-		// Check heartbeat/started_at structural validity (malformed = remove, missing = remove)
-		// Timestamp staleness is NOT checked here — stale entries go to Phase 2 for socket probing.
-		// This prevents false pruning after laptop suspend/resume when all timestamps are stale
-		// but peers are still alive.
-		const lastSeen = entry.heartbeat_at ?? entry.started_at;
-		if (lastSeen) {
-			const lastSeenMs = new Date(lastSeen).getTime();
-			if (isNaN(lastSeenMs)) {
-				removeRegistryEntry(project, entry.coms_session_id);
-				continue;
-			}
-		} else {
-			removeRegistryEntry(project, entry.coms_session_id);
-			continue;
-		}
-		candidates.push(entry);
-	}
-
-	// Phase 2: Parallel socket probes (capped at 10 concurrent to avoid EMFILE)
-	if (candidates.length === 0) {
-		log.debug("prune_complete", "checked", entries.length);
-		return youngEntries;
-	}
-	const PROBE_CONCURRENCY = 10;
-	const results: ("in_use" | "stale")[] = [];
-	for (let start = 0; start < candidates.length; start += PROBE_CONCURRENCY) {
-		const batch = candidates.slice(start, start + PROBE_CONCURRENCY);
-		const batchResults = await Promise.allSettled(batch.map(entry => probeStaleSocket(entry.endpoint, entry.name, cwd)));
-		results.push(...batchResults.map(r => r.status === "fulfilled" ? r.value : "in_use" as const));
-	}
-	const live: RegistryEntry[] = [];
-	for (let i = 0; i < candidates.length; i++) {
-		if (results[i] === "stale") {
-			const entry = candidates[i];
-			removeRegistryEntry(project, entry.coms_session_id);
-			// Do NOT delete socket files — they belong to the peer process.
-			// Only the owning peer should manage its own socket.
-			// If the peer is alive, it will self-heal its registry.
-		} else {
-			live.push(candidates[i]);
-		}
-	}
-	log.debug("prune_complete", "checked", entries.length);
-	return [...live, ...youngEntries];
-}
-
-async function pruneDeadEntriesAllProjects(): Promise<RegistryEntry[]> {
-	const root = path.join(COMS_DIR, "projects");
-	let projects: string[];
-	try {
-		projects = fs.readdirSync(root);
-	} catch {
-		return [];
-	}
-	const out: RegistryEntry[] = [];
-	for (const p of projects) {
-		try {
-			if (!fs.statSync(path.join(root, p)).isDirectory()) continue;
-		} catch {
-			continue;
-		}
-		out.push(...await pruneDeadEntries(p, process.cwd()));
-	}
-	return out;
-}
-
 // ━━ Transport ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/**
- * Strict liveness probe — only returns "alive" on actual successful TCP connect.
- * Unlike probeStaleSocket which treats transient errors as "in_use" (safe for
- * pruning decisions), this function treats ANY error as "dead" (safe for
- * duplicate-name rejection where false positives block startup).
- */
-function probeAlive(endpoint: string): Promise<boolean> {
-	return new Promise((resolve) => {
-		const sock = net.createConnection({ path: endpoint });
-		let settled = false;
-		const finish = (alive: boolean) => {
-			if (settled) return;
-			settled = true;
-			try { sock.destroy(); } catch { /* ignore */ }
-			resolve(alive);
-		};
-		const timer = setTimeout(() => finish(false), 500);
-		sock.once("connect", () => {
-			clearTimeout(timer);
-			finish(true);
-		});
-		sock.once("error", () => {
-			clearTimeout(timer);
-			finish(false);
-		});
-	});
-}
 
 async function bindEndpoint(
 	endpoint: string,
 	connHandler: (socket: net.Socket) => void,
+	cwd = process.cwd(),
 ): Promise<net.Server> {
 	if (process.platform !== "win32" && fs.existsSync(endpoint)) {
-		const verdict = await probeStaleSocket(endpoint);
+		const verdict = await probeStaleSocket(endpoint, undefined, cwd);
 		if (verdict === "in_use") {
 			throw new Error(`coms: endpoint already in use (${endpoint})`);
 		}
@@ -673,10 +493,37 @@ function sendEnvelope(endpoint: string, envelope: Envelope | Pong | { type: stri
 	});
 }
 
-// ━━ Default export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ━━ Instantiable Peer Runtime & Default Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export default function (pi: ExtensionAPI) {
-	if (process.env.PI_SUBAGENT_CHILD === "1") return;
+export function createComsPeerRuntime(
+	pi: ExtensionAPI,
+	options: ComsPeerRuntimeOptions = {},
+): ComsPeerRuntime {
+	const gatedToolNames = new Set<string>();
+	if (process.env.PI_SUBAGENT_CHILD === "1" && !options.allowSubagentChild) {
+		return {
+			start: async () => null,
+			stop: async () => {},
+			getSelf: () => null,
+			isActive: () => false,
+			sendAsUser: async () => ({ ok: false, message: "coms is disabled in subagent child sessions." }),
+			openQueueOverlay: async (_args: string, ctx: any) => {
+				try { ctx?.ui?.notify?.("📡 coms not active — no queue. Run /coms start first.", "info"); } catch { /* ignore */ }
+			},
+			gatedToolNames,
+		};
+	}
+	const deferred = options.deferred === true;
+	const inactiveMessage = options.inactiveMessage ?? "⚠️ coms not active. Run `/coms start` first.";
+	const registerSignalHandlers = options.registerSignalHandlers !== false;
+
+	// Per-instance runtime configuration & registry (zero module-level mutable globals).
+	let runtimeCwd = process.cwd();
+	let registry = new ComsRegistry(options.comsDir || resolveComsDir(runtimeCwd));
+	let maxHops = 5;
+	let timeoutMs = 1_800_000;
+	let signalsBound = false;
+
 	// ━━ Register identity CLI flags so pi's parser accepts them. ━━━━━━━━━
 	// Without these, pi 0.73+ rejects the invocation with "Unknown options:
 	// --name, --project, ..." before this extension's hooks ever fire.
@@ -706,6 +553,53 @@ export default function (pi: ExtensionAPI) {
 		type: "boolean",
 		default: false,
 	});
+
+	function readEffectiveCliFlags(startFlags?: ComsPeerFlagOverrides): CliFlags {
+		const pick = (key: keyof ComsPeerFlagOverrides): unknown => {
+			if (startFlags && startFlags[key] !== undefined) return startFlags[key];
+			if (options.getFlag) {
+				const fromOpt = options.getFlag(key);
+				if (fromOpt !== undefined) return fromOpt;
+			}
+			return pi.getFlag(key);
+		};
+		const name = pick("cname") as string | undefined;
+		const purpose = pick("purpose") as string | undefined;
+		const project = pick("project") as string | undefined;
+		const color = pick("color") as string | undefined;
+		const explicit = pick("explicit") as boolean | undefined;
+		return {
+			name: name && name.length > 0 ? name : undefined,
+			purpose: purpose && purpose.length > 0 ? purpose : undefined,
+			project: project && project.length > 0 ? project : undefined,
+			color: color && color.length > 0 ? color : undefined,
+			explicit: explicit === true,
+		};
+	}
+
+	const registerPeerTool: ExtensionAPI["registerTool"] = (tool) => {
+		if (typeof tool?.name === "string" && tool.name) {
+			gatedToolNames.add(tool.name);
+		}
+		if (!deferred) {
+			pi.registerTool(tool);
+			return;
+		}
+		const origExecute = tool.execute;
+		pi.registerTool({
+			...tool,
+			defaultActive: false,
+			execute: async (callId, params, signal, onUpdate, ctx) => {
+				if (!identity) {
+					return {
+						content: [{ type: "text" as const, text: inactiveMessage }],
+						details: {} as any,
+					};
+				}
+				return origExecute(callId, params, signal, onUpdate, ctx);
+			},
+		});
+	};
 
 	// State containers — shared across all hooks for this extension instance.
 	let identity: {
@@ -760,8 +654,6 @@ export default function (pi: ExtensionAPI) {
 	let pingWorkerReady = false;
 	let keepaliveTimer: NodeJS.Timeout | null = null;
 	let staleCheckTimer: NodeJS.Timeout | null = null;
-	let includeExplicit = false;
-	let displayProject: string | null = null;
 	let currentCtx: ExtensionContext | null = null;
 	let currentInbound: InboundContext | null = null;
 	/** Inbound msg_id deferred on agent_end while malformed-response recovery runs (#1333). */
@@ -961,7 +853,7 @@ export default function (pi: ExtensionAPI) {
 				// field at all, so a viewer shows `unknown` instead of a fabricated 0.
 				workload: workload?.counts ?? null,
 			};
-			writeRegistryAtomic(live, identity.project);
+			registry.writeEntryAtomic(live, identity.project);
 			void updatePingWorkerCard({ workloadCounts: workload?.counts ?? null, tasksSummary: workload?.tasksSummary });
 		} catch (err) {
 			log.warn("live_registry_write_failed", err instanceof Error ? err.message : String(err));
@@ -1215,7 +1107,7 @@ export default function (pi: ExtensionAPI) {
 	 *  never waits on history. Every record is stamped with this session's id
 	 *  so queries can scope to one session's traffic on the shared file. */
 	function appendComsHistory(record: Omit<HistoryRecord, "ts" | "owner"> & { ts?: string }): void {
-		appendHistoryRecord(path.join(COMS_DIR, "history.jsonl"), {
+		appendHistoryRecord(registry.historyPath(), {
 			ts: record.ts ?? nowIso(),
 			owner: identity?.coms_session_id,
 			...record,
@@ -1238,7 +1130,7 @@ export default function (pi: ExtensionAPI) {
 
 	function handlePrompt(socket: net.Socket, env: PromptEnvelope): void {
 		// 1. Hop limit check
-		if (typeof env.hops !== "number" || env.hops >= MAX_HOPS) {
+		if (typeof env.hops !== "number" || env.hops >= maxHops) {
 			nack(socket, env.msg_id, "hops exceeded");
 			return;
 		}
@@ -1936,8 +1828,22 @@ export default function (pi: ExtensionAPI) {
 		}, recoverySessionKey);
 	}
 
-	// ━━ session_start ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	pi.on("session_start", async (_event, ctx) => {
+	function getSelf(): ComsPeerSelf | null {
+		if (!identity) return null;
+		const origin: ComsActivationOrigin =
+			identity.origin === "tool" || identity.origin === "cli" ? identity.origin : "slash";
+		return {
+			sessionId: identity.coms_session_id,
+			name: identity.name,
+			project: identity.project,
+			endpoint: identity.endpoint,
+			origin,
+			registryFile: identity.registryFile,
+		};
+	}
+
+	// ━━ Peer startup ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	async function startPeer(ctx: ExtensionContext, startOptions?: ComsPeerStartOptions): Promise<ComsPeerSelf | null> {
 		applyExtensionDefaults(import.meta.url, ctx);
 		unsubMalformedRecoveryAborted?.();
 		unsubMalformedRecoveryAborted = null;
@@ -1953,12 +1859,12 @@ export default function (pi: ExtensionAPI) {
 		welcomeShown = false;
 		knownPeerSessions.clear();
 
-		// 1. Resolve identity from CLI flags > frontmatter > defaults.
-		const flags = readCliFlags(pi);
+		// 1. Resolve identity from explicit start flags > CLI flags > frontmatter > defaults.
+		const flags = readEffectiveCliFlags(startOptions?.flags);
 		const fm = readFrontmatterFromArgv(process.argv);
 		const project = flags.project || "default";
 		const explicit = flags.explicit === true;
-		const comsSessionId = (globalThis as any).__piConfigSessionId || ulid();
+		const comsSessionId = (startOptions?.sessionId ?? options.sessionId ?? (globalThis as any).__piConfigSessionId) || ulid();
 
 		const defaultName = `agent-${comsSessionId.slice(-6)}`;
 		const name = flags.name || fm.name || defaultName;
@@ -1975,30 +1881,28 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const cwd = ctx.cwd || process.cwd();
+		runtimeCwd = cwd;
 
-		// Resolve coms settings from project settings
-		COMS_DIR = getSetting(cwd, "coms_dir") || path.join(os.homedir(), ".pi", "coms");
-		MAX_HOPS = getSetting(cwd, "coms_max_hops");
-		TIMEOUT_MS = getSetting(cwd, "coms_timeout_ms");
+		// Resolve coms settings from project settings (scoped to this runtime instance).
+		const resolvedComsDir = options.comsDir || resolveComsDir(cwd);
+		registry = new ComsRegistry(resolvedComsDir);
+		maxHops = getSetting(cwd, "coms_max_hops");
+		timeoutMs = getSetting(cwd, "coms_timeout_ms");
 		const TASK_HEARTBEAT_MS: number = getSetting(cwd, "coms_task_heartbeat_ms") ?? 300_000;
 
-		const endpoint = makeEndpoint(comsSessionId);
+		const endpoint = registry.makeEndpoint(comsSessionId);
 		const model = ctx.model?.id ?? "unknown";
 
 		// 2. Ensure storage dirs exist.
 		try {
-			fs.mkdirSync(path.join(COMS_DIR, "projects", project, "agents"), { recursive: true });
-			if (process.platform !== "win32") {
-				fs.mkdirSync(path.join(COMS_DIR, "sockets"), { recursive: true });
-				try { fs.chmodSync(COMS_DIR, 0o700); } catch { /* best-effort */ }
-			}
+			registry.ensureProjectDirs(project);
 		} catch (err) {
 			ctx.ui?.notify?.(`📡 coms: failed to create dirs — ${err instanceof Error ? err.message : String(err)}`, "error");
-			return;
+			return null;
 		}
 
 		// 2b. Reject duplicate names — each peer must have a unique name in the project.
-		const existingEntries = readAllRegistryEntries(project);
+		const existingEntries = registry.readEntries(project);
 		for (const existing of existingEntries) {
 			if (existing.name === name && existing.coms_session_id !== comsSessionId) {
 				// Verify the existing peer is actually alive via .ping endpoint.
@@ -2024,26 +1928,20 @@ export default function (pi: ExtensionAPI) {
 						);
 					}
 
-					if (!hasPing && !hasMain) {
-						// No socket files at all — definitely dead
-						removeRegistryEntry(project, existing.coms_session_id);
-					} else {
-						// Probe(s) returned stale — remove registry, peer is dead
-						removeRegistryEntry(project, existing.coms_session_id);
-					}
+					registry.removeEntry(project, existing.coms_session_id);
 				} else {
 					// No valid endpoint — remove stale entry
-					removeRegistryEntry(project, existing.coms_session_id);
+					registry.removeEntry(project, existing.coms_session_id);
 				}
 			}
 		}
 
 		// 3. Bind the endpoint.
 		try {
-			server = await bindEndpoint(endpoint, connHandler);
+			server = await bindEndpoint(endpoint, connHandler, runtimeCwd);
 		} catch (err) {
 			ctx.ui?.notify?.(`📡 coms: bind failed — ${err instanceof Error ? err.message : String(err)}`, "error");
-			return;
+			return null;
 		}
 
 		// 3b. Start ping worker on separate socket for liveness checks
@@ -2054,10 +1952,8 @@ export default function (pi: ExtensionAPI) {
 		const piSessionId = resolveOwnPiSessionId(ctx);
 		const taskStorePath = resolveOwnTaskStorePath(piSessionId, cwd);
 		/** Which entry point activated coms: the `coms_start` tool, `/coms start`, or `pi --coms`. */
-		const activationOrigin = (() => {
-			const entry = (globalThis as any).__comsSelfOrigin;
-			return entry === "tool" || entry === "cli" ? entry : "slash";
-		})();
+		const activationOrigin: ComsActivationOrigin =
+			startOptions?.origin === "tool" || startOptions?.origin === "cli" ? startOptions.origin : "slash";
 		const entry: RegistryEntry = {
 			coms_session_id: comsSessionId,
 			name,
@@ -2076,11 +1972,11 @@ export default function (pi: ExtensionAPI) {
 		};
 		let registryFile: string;
 		try {
-			registryFile = writeRegistryAtomic(entry, project);
+			registryFile = registry.writeEntryAtomic(entry, project);
 		} catch (err) {
 			ctx.ui?.notify?.(`📡 coms: registry write failed — ${err instanceof Error ? err.message : String(err)}`, "error");
 			try { server?.close(); } catch { /* ignore */ }
-			return;
+			return null;
 		}
 
 		identity = {
@@ -2098,14 +1994,11 @@ export default function (pi: ExtensionAPI) {
 			task_store_path: taskStorePath,
 			origin: activationOrigin,
 		};
-		// Publish who we are so an activation path can VERIFY that a peer really exists (a socket
-		// bind can fail and be swallowed upstream, which used to look like a successful start).
-		(globalThis as any).__comsSelf = { sessionId: comsSessionId, name, project, endpoint, origin: activationOrigin };
-		// The user-send bridge is published HERE, not at extension init: it is cleared on shutdown,
-		// so a `/coms stop` + `/coms start` cycle must re-publish it or `/coms tell` breaks.
-		publishUserSendBridge();
-		includeExplicit = false;
-		displayProject = project;
+		if (registerSignalHandlers && !signalsBound) {
+			process.on("SIGINT", handleSigint);
+			process.on("SIGTERM", handleSigterm);
+			signalsBound = true;
+		}
 
 		// 5. Audit log: boot.
 		setLogFilePrefix("coms", identity.name);
@@ -2121,7 +2014,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("coms", `📡 ${name}@${project}`);
 			installPoolWidget(ctx);
 			ctx.ui.notify(
-				`📡 coms ready · ${name}@${project} · ${displayProject ?? project} pool`,
+				`📡 coms ready · ${name}@${project} · ${project} pool`,
 				"info",
 			);
 		} catch {
@@ -2132,10 +2025,10 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.mode !== "print" && ctx.mode !== "json") {
 
 		// Seed peerCards from existing registry entries
-		const existingPeers = readAllRegistryEntries(project);
+		const existingPeers = registry.readEntries(project);
 		for (const entry of existingPeers) {
 			if (entry.coms_session_id === identity.coms_session_id) continue;
-			if (entry.explicit && !includeExplicit) continue;
+			if (entry.explicit) continue;
 			peerCards.set(entry.coms_session_id, {
 				name: entry.name,
 				endpoint: entry.endpoint,
@@ -2234,7 +2127,7 @@ Do not respond to this message.`;
 		};
 
 		// Watch registry directory for peer changes (fs.watch)
-		const agentsDir = projectAgentsDir(project);
+		const agentsDir = registry.projectAgentsDir(project);
 		try {
 			fsWatcher = fs.watch(agentsDir, (eventType, filename) => {
 				log.debug("fs_watch_event", eventType, filename);
@@ -2261,7 +2154,7 @@ Do not respond to this message.`;
 							// name: two sessions may legitimately share a name, and a name-only check
 							// would let the surviving twin keep a card whose session is genuinely gone.
 							const stillRegistered = isSessionStillRegistered(
-								readAllRegistryEntries(identity.project),
+								registry.readEntries(identity.project),
 								sessionId,
 							);
 							if (stillRegistered) {
@@ -2348,7 +2241,7 @@ Do not respond to this message.`;
 					try {
 						log.warn("self_heal_socket_missing", identity.coms_session_id, identity.endpoint);
 						if (server) { try { server.close(); } catch {} server = null; }
-						server = await bindEndpoint(identity.endpoint, connHandler);
+						server = await bindEndpoint(identity.endpoint, connHandler, runtimeCwd);
 						if (pingWorker) {
 							const oldWorker = pingWorker;
 							oldWorker.removeAllListeners();
@@ -2382,7 +2275,7 @@ Do not respond to this message.`;
 			if (!identity || shuttingDown) return;
 			for (const [sid, card] of peerCards.entries()) {
 				if (sid === identity.coms_session_id) continue;
-				const regFile = registryFilePath(identity.project, sid);
+				const regFile = registry.registryFilePath(identity.project, sid);
 				try {
 					const stat = fs.statSync(regFile);
 					const age = Date.now() - stat.mtimeMs;
@@ -2394,7 +2287,7 @@ Do not respond to this message.`;
 								log.info("stale_confirmed_dead", card.name, sid);
 								peerCards.delete(sid);
 								announcePeerLeft(sid, card.name);
-								removeRegistryEntry(identity.project, sid);
+								registry.removeEntry(identity.project, sid);
 								maybeRefreshWidget();
 							} else {
 								log.debug("stale_but_alive", card.name, "resetting staleCount");
@@ -2409,7 +2302,14 @@ Do not respond to this message.`;
 		try { (staleCheckTimer as any).unref?.(); } catch {}
 
 		} // end mode guard for timers
-	});
+		return getSelf();
+	}
+
+	if (!deferred) {
+		pi.on("session_start", async (_event, ctx) => {
+			await startPeer(ctx);
+		});
+	}
 
 	// ━━ Helpers used by tools ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2595,21 +2495,10 @@ Do not respond to this message.`;
 	}
 
 	// ━━ Ping cycle ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	function listProjects(): string[] {
-		const root = path.join(COMS_DIR, "projects");
-		try {
-			return fs.readdirSync(root).filter((d) => {
-				try { return fs.statSync(path.join(root, d)).isDirectory(); } catch { return false; }
-			});
-		} catch {
-			return [];
-		}
-	}
-
 	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
 		// Prefer exact session_id match first (unambiguous).
 		if (identity) {
-			const localEntries = await pruneDeadEntries(identity.project, process.cwd());
+			const localEntries = await registry.pruneDeadEntries(identity.project, runtimeCwd);
 			// Try session_id match first (always unambiguous)
 			const bySession = localEntries.find((e) => e.coms_session_id === target);
 			if (bySession) { log.debug("resolveTarget", target, "→", bySession.name, "by_session"); return bySession; }
@@ -2631,12 +2520,12 @@ Do not respond to this message.`;
 			}
 		}
 		const otherProjects = identity
-			? listProjects().filter((p) => p !== identity!.project)
-			: listProjects();
+			? registry.listProjects().filter((p) => p !== identity!.project)
+			: registry.listProjects();
 		const cachedEntries: RegistryEntry[][] = [];
 		// Fall back to scanning other projects by session_id.
 		for (const proj of otherProjects) {
-			const entries = await pruneDeadEntries(proj, process.cwd());
+			const entries = await registry.pruneDeadEntries(proj, runtimeCwd);
 			cachedEntries.push(entries);
 			const bySession = entries.find((e) => e.coms_session_id === target);
 			if (bySession) return bySession;
@@ -2767,8 +2656,8 @@ Do not respond to this message.`;
 		// A human typing `/coms tell` starts a conversation: it does not inherit the hop depth of the
 		// peer message this session happens to be answering, so the cap cannot refuse the user.
 		const hops = params.userAuthored === true ? 0 : currentInbound ? currentInbound.hops + 1 : 0;
-		if (hops >= MAX_HOPS) {
-			throw new Error(`coms: hop limit reached (${hops} >= ${MAX_HOPS})`);
+		if (hops >= maxHops) {
+			throw new Error(`coms: hop limit reached (${hops} >= ${maxHops})`);
 		}
 		const msg_id = ulid();
 		// Append sender's active tasks for this peer to the prompt
@@ -2837,7 +2726,7 @@ Do not respond to this message.`;
 		// reply, which can legitimately take longer than any short timeout.
 		// A short steer-specific timeout would orphan those late replies. The
 		// only cost of the full timeout is a lingering entry when the receipt
-		// is lost — one small object for at most TIMEOUT_MS.
+		// is lost — one small object for at most timeoutMs.
 		entry.timer = setTimeout(() => {
 			if (entry.result) return;
 			entry.result = { error: "timeout" };
@@ -2846,7 +2735,7 @@ Do not respond to this message.`;
 			const pSet = pendingOutbound.get(target.name);
 			if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
 			setTimeout(() => { pendingReplies.delete(msg_id); maybeRefreshWidget(); }, 60_000).unref();
-		}, TIMEOUT_MS);
+		}, timeoutMs);
 		// Don't keep the event loop alive solely for this timer.
 		try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
 		pendingReplies.set(msg_id, entry);
@@ -2917,11 +2806,11 @@ Do not respond to this message.`;
 			}
 		}
 		const ident = identity;
-		const projects = project ? [project] : [ident.project, ...listProjects().filter((p) => p !== ident.project)];
+		const projects = project ? [project] : [ident.project, ...registry.listProjects().filter((p) => p !== ident.project)];
 		const matches: Array<{ project: string; entry: RegistryEntry }> = [];
 		for (const proj of projects) {
 			let entries: RegistryEntry[] = [];
-			try { entries = await pruneDeadEntries(proj, process.cwd()); } catch (err) {
+			try { entries = await registry.pruneDeadEntries(proj, runtimeCwd); } catch (err) {
 				// One unreadable project must not abort the scan, and must not vanish either.
 				log.warn("user_target_scan_failed", { project: proj, error: err instanceof Error ? err.message : String(err) });
 				continue;
@@ -2942,41 +2831,42 @@ Do not respond to this message.`;
 		return { target: found[0].entry };
 	}
 
-	/** #1077 command-layer bridge: `/coms tell` and the peers overlay composer deliver through the
-	 *  SAME path as coms_send, but they are the only callers that stamp origin "user" — the wrapper
-	 *  that owns `/coms` cannot reach this closure. Returns text and never throws, so a delivery
-	 *  failure reaches the user instead of being dropped on the floor. */
-	function publishUserSendBridge(): void {
-		(globalThis as any).__comsUserSend = async (params: { target: string; prompt: string; project?: string; expectedEndpoint?: string }): Promise<{ ok: boolean; message: string }> => {
-			const resolved = await resolveUserTarget(params.target, params.project);
-			if (!resolved.target) {
-				// The decision and its one warn live in resolveUserTarget; this is the send path's trail.
-				log.debug("user_send_target_missing", { target: params.target, project: params.project ?? null });
-				tellLog.debug("tell_target_unresolved", { reason: resolved.error ?? "no match" });
-				return { ok: false, message: resolved.error ?? `no live peer "${params.target}"` };
-			}
-			const target = resolved.target;
-			if (params.expectedEndpoint !== undefined && target.endpoint !== params.expectedEndpoint) {
-				log.warn("user_send_identity_changed", { target: params.target });
-				return { ok: false, message: "peer session changed since selection; select the peer again" };
-			}
-			const safeTarget = sanitizePeerText(target.name, 40);
-			try {
-				const { msg_id } = await deliverPrompt(target, { prompt: params.prompt, userAuthored: true });
-				log.info("user_send", msg_id, "to", target.name, "chars", params.prompt.length);
-				tellLog.debug("tell_completion", { count: 1 });
-				return { ok: true, message: `sent to ${safeTarget} (${msg_id})` };
-			} catch (error) {
-				const reason = error instanceof Error ? error.message : String(error);
-				log.error("user_send_failed", target.name, reason);
-				return { ok: false, message: `delivery to ${safeTarget} failed: ${reason}` };
-			}
-		};
+	/** #1077 command-layer send: `/coms tell` and the peers overlay composer deliver through the
+	 *  SAME path as coms_send, but they are the only callers that stamp origin "user" — exposed
+	 *  directly on `ComsPeerRuntime` instead of a global side channel. Returns structured result
+	 *  and never throws, so a delivery failure reaches the user instead of being dropped. */
+	async function sendAsUser(params: ComsUserSendParams): Promise<ComsUserSendResult> {
+		if (!identity) {
+			return { ok: false, message: "coms is not active — run /coms start first." };
+		}
+		const resolved = await resolveUserTarget(params.target, params.project);
+		if (!resolved.target) {
+			// The decision and its one warn live in resolveUserTarget; this is the send path's trail.
+			log.debug("user_send_target_missing", { target: params.target, project: params.project ?? null });
+			tellLog.debug("tell_target_unresolved", { reason: resolved.error ?? "no match" });
+			return { ok: false, message: resolved.error ?? `no live peer "${params.target}"` };
+		}
+		const target = resolved.target;
+		if (params.expectedEndpoint !== undefined && target.endpoint !== params.expectedEndpoint) {
+			log.warn("user_send_identity_changed", { target: params.target });
+			return { ok: false, message: "peer session changed since selection; select the peer again" };
+		}
+		const safeTarget = sanitizePeerText(target.name, 40);
+		try {
+			const { msg_id } = await deliverPrompt(target, { prompt: params.prompt, userAuthored: true });
+			log.info("user_send", msg_id, "to", target.name, "chars", params.prompt.length);
+			tellLog.debug("tell_completion", { count: 1 });
+			return { ok: true, message: `sent to ${safeTarget} (${msg_id})` };
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			log.error("user_send_failed", target.name, reason);
+			return { ok: false, message: `delivery to ${safeTarget} failed: ${reason}` };
+		}
 	}
 
 	// ━━ Tools ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_list",
 		label: "Coms List",
 		description:
@@ -3052,14 +2942,15 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_send",
 		label: "Coms Send",
 		description:
 			"Send a prompt to a peer; returns msg_id on ack. Reply auto-delivers as a followUp (use coms_get to poll). Throws if unreachable or rejected.\n\n" +
 			"- `tasks`: structured items added to the peer's task list.\n" +
 			"- `steer=true`: inject into peer's IN-FLIGHT turn for course correction only (acked, never separately answered; cap 5/turn, excess queues). Do not steer idle peers or multi-part briefs.\n" +
-			"- `priority=true`: jump peer's queued backlog for urgent messages.",
+			"- `priority=true`: jump peer's queued backlog for urgent messages.\n\n" +
+			"⚠️ DO NOT call this to REPLY to a `[from <peer>]` inbound — your final assistant text auto-sends as the reply.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name (this project) or session_id (global)." }),
 			prompt: Type.String({ description: "Prompt to send." }),
@@ -3145,7 +3036,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_broadcast",
 		label: "Coms Broadcast",
 		description:
@@ -3170,7 +3061,7 @@ Do not respond to this message.`;
 			// re-resolve, which would re-probe every socket N times).
 			const resolved = new Map<string, RegistryEntry>();
 			if (params.targets.includes("*")) {
-				const localEntries = await pruneDeadEntries(identity.project, process.cwd());
+				const localEntries = await registry.pruneDeadEntries(identity.project, runtimeCwd);
 				for (const e of localEntries) {
 					if (e.coms_session_id === identity.coms_session_id) continue;
 					if (e.explicit) continue;
@@ -3239,7 +3130,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_history",
 		label: "Coms History",
 		description:
@@ -3254,7 +3145,7 @@ Do not respond to this message.`;
 			limit: Type.Optional(Type.Number({ description: "Max records (default 50, max 500)." })),
 		}),
 		async execute(_callId, params) {
-			const records = queryHistoryRecords(path.join(COMS_DIR, "history.jsonl"), {
+			const records = queryHistoryRecords(registry.historyPath(), {
 				peer: params.peer,
 				direction: params.direction,
 				msg_id: params.msg_id,
@@ -3286,7 +3177,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_get",
 		label: "Coms Get",
 		description:
@@ -3369,7 +3260,7 @@ Do not respond to this message.`;
 		return { target, affected: result.affected, preview: result.preview };
 	}
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_queue_inspect",
 		label: "Coms Queue Inspect",
 		description: "Preview your queued inbound messages on a peer before any irreversible recovery. Returns IDs, sender, target, age, FIFO position, and delivery state, never full message bodies. Pass preview_id to coms_queue_clear.",
@@ -3402,7 +3293,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_queue_delete",
 		label: "Coms Queue Delete",
 		description: "Irreversibly delete one of your messages shown by coms_queue_inspect. Only the owner may delete it.",
@@ -3417,7 +3308,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_queue_edit",
 		label: "Coms Queue Edit",
 		description: "Replace the content of your queued message on a peer. Only works on your own pending messages.",
@@ -3432,7 +3323,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_queue_clear",
 		label: "Coms Queue Clear",
 		description: "Irreversibly clear only the messages shown by a preceding coms_queue_inspect preview. Ownership is enforced by the peer; untouched messages retain FIFO order.",
@@ -3447,7 +3338,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_queue_prioritize",
 		label: "Coms Queue Prioritize",
 		description: "Move your message to the front of a peer's queue. Only works on your own pending messages.",
@@ -3486,7 +3377,7 @@ Do not respond to this message.`;
 		return { task };
 	}
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_tasks_create",
 		label: "Coms Tasks Create",
 		description: "Create multiple tasks on a peer's task list. Automatically adds a 'Report completion to sender' task blocked by all created tasks, and sends a message to the peer to start working.",
@@ -3681,7 +3572,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_task_delete",
 		label: "Coms Task Delete",
 		description: "Delete a task from a peer's task list. Only works on tasks you created (createdBy match).",
@@ -3714,7 +3605,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_task_list",
 		label: "Coms Task List",
 		description: "List tasks on a peer's task list without sending a message.",
@@ -3765,7 +3656,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_task_get",
 		label: "Coms Task Get",
 		description: "Get a specific task from a peer's task list without sending a message.",
@@ -3810,7 +3701,7 @@ Do not respond to this message.`;
 		},
 	});
 
-	pi.registerTool({
+	registerPeerTool({
 		name: "coms_task_update",
 		label: "Coms Task Update",
 		description: "Update a task on a peer's task list. Only works on tasks you created (createdBy match).",
@@ -4299,25 +4190,6 @@ Do not respond to this message.`;
 		await drainNextInbound({ bundle: true, onFail: "fail_orphans", ctx }, gen);
 	});
 
-	// ━━ /coms slash command ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	const comsRefreshHandler = async (args: any, ctx: any) => {
-		const trimmed = ((args as string) ?? "").trim();
-		if (trimmed.includes("--all")) {
-			includeExplicit = !includeExplicit;
-			try { ctx.ui.notify(`coms: include_explicit = ${includeExplicit}`, "info"); } catch { /* ignore */ }
-		}
-		const projectMatch = trimmed.match(/--project\s+(\S+)/);
-		if (projectMatch) {
-			displayProject = projectMatch[1];
-			try { ctx.ui.notify(`coms: displaying project ${displayProject}`, "info"); } catch { /* ignore */ }
-		}
-		maybeRefreshWidget();
-	};
-	pi.registerCommand("coms", {
-		description: "Force-refresh the coms pool widget (or filter with --all / --project <name>)",
-		handler: comsRefreshHandler,
-	});
-
 	// ━━ #968 part C: pidash browser bridge ─━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	// Peer list + messaging from the browser, routed through the SAME
 	// resolveTarget/deliverPrompt path as coms_send — identical delivery
@@ -4356,11 +4228,12 @@ Do not respond to this message.`;
 	});
 
 	// ━━ /coms-queue command — view and kill queued messages ━━━━━━━━━━━━━━━
-	let comsQueueCmdHandler: any;
-	pi.registerCommand("coms-queue", {
-		description: "View and manage queued coms inbound messages",
-		handler: comsQueueCmdHandler = async (_args: any, ctx: any) => {
-			interface QueueItem {
+	const openQueueOverlay = async (_args: string, ctx: any): Promise<void> => {
+		if (!identity) {
+			try { ctx?.ui?.notify?.("📡 coms not active — no queue. Run /coms start first.", "info"); } catch { /* ignore */ }
+			return;
+		}
+		interface QueueItem {
 				id: string;
 				msg_id: string;
 				sender_name: string;
@@ -4470,24 +4343,11 @@ Do not respond to this message.`;
 					}, done);
 				},
 			});
-		},
+	};
+	pi.registerCommand("coms-queue", {
+		description: "View and manage queued coms inbound messages",
+		handler: openQueueOverlay,
 	});
-
-	// Expose command handlers to pidash for browser command dispatch
-	try {
-		if ((globalThis as any).__coms_p2p_pidash_listener) {
-			// #951: pi's EventBus exposes only emit/on — no removeListener. This cleanup has
-			// always thrown (swallowed by the catch), so the stale listener is never removed;
-			// latent bug left as-is, typed to match reality.
-			try { (pi.events as { removeListener?: (channel: string, handler: (data: unknown) => void) => void }).removeListener?.("pidash:request-commands", (globalThis as any).__coms_p2p_pidash_listener); } catch {}
-		}
-		const registerWithPidash = () => {
-			pi.events.emit("pidash:register-command", { name: "coms-queue", handler: comsQueueCmdHandler });
-		};
-		(globalThis as any).__coms_p2p_pidash_listener = registerWithPidash;
-		registerWithPidash();
-		pi.events.on("pidash:request-commands", registerWithPidash);
-	} catch {}
 
 	// ━━ Clean shutdown ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let shuttingDown = false;
@@ -4520,7 +4380,7 @@ Do not respond to this message.`;
 			for (const [sid, card] of peerCards) {
 				if (sid === ident.coms_session_id) continue;
 				const endpoint = card.endpoint
-					?? (fallbackEntries ??= readAllRegistryEntries(ident.project))
+					?? (fallbackEntries ??= registry.readEntries(ident.project))
 						.find(e => e.name === card.name && e.coms_session_id !== ident!.coms_session_id)?.endpoint;
 				if (endpoint) {
 					log.info("shutdown_leaving_broadcast", "to", card.name, endpoint);
@@ -4568,7 +4428,7 @@ Do not respond to this message.`;
 			if (process.platform !== "win32") {
 				try { fs.unlinkSync(ident.endpoint); } catch { /* ignore */ }
 			}
-			try { removeRegistryEntry(ident.project, ident.coms_session_id); } catch { /* ignore */ }
+			try { registry.removeEntry(ident.project, ident.coms_session_id); } catch { /* ignore */ }
 			log.info("shutdown", ident.coms_session_id);
 		}
 		for (const pending of pendingReplies.values()) {
@@ -4642,8 +4502,11 @@ Do not respond to this message.`;
 			]);
 			if (notifyTimeout) clearTimeout(notifyTimeout);
 		}
-		process.off("SIGINT", handleSigint);
-		process.off("SIGTERM", handleSigterm);
+		if (signalsBound) {
+			process.off("SIGINT", handleSigint);
+			process.off("SIGTERM", handleSigterm);
+			signalsBound = false;
+		}
 		log.debug("recovery_previews_cleared", { reason: "shutdown" });
 		clearPoolVisibilityListeners();
 		unsubMalformedRecoveryAborted?.();
@@ -4659,8 +4522,24 @@ Do not respond to this message.`;
 
 	const handleSigint = () => { log.info("signal_received", { signal: "SIGINT" }); void cleanShutdown(); };
 	const handleSigterm = () => { log.info("signal_received", { signal: "SIGTERM" }); void cleanShutdown(); };
-	pi.on("session_shutdown", async () => {
-		(globalThis as any).__comsSelf = null; (globalThis as any).__comsUserSend = null; await cleanShutdown(); });
-	process.on("SIGINT", handleSigint);
-	process.on("SIGTERM", handleSigterm);
+	if (!deferred) {
+		pi.on("session_shutdown", async () => {
+			await cleanShutdown();
+		});
+	}
+
+	return {
+		start: startPeer,
+		stop: cleanShutdown,
+		getSelf,
+		isActive: () => identity !== null,
+		sendAsUser,
+		openQueueOverlay,
+		gatedToolNames,
+	};
+}
+
+export default function (pi: ExtensionAPI): ComsPeerRuntime | undefined {
+	if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
+	return createComsPeerRuntime(pi, { deferred: false });
 }
