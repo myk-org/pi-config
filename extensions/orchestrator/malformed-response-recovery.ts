@@ -12,12 +12,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
-  DEFAULT_SESSION_KEY,
+  DEFAULT_BRIDGE_SESSION_KEY,
   markRecoveryPending,
   notifyMalformedRecoveryAborted,
   registerRecoveryCoordinator,
-  resolveRecoverySessionKey,
-} from "../shared/malformed-recovery-bridge.js";
+  resolveBridgeSessionKey,
+} from "../shared/session-bridge.js";
 import { sendSystemNote } from "../shared/system-note.js";
 
 const log = createLogger("malformed-response-recovery");
@@ -65,7 +65,7 @@ export function registerMalformedResponseRecovery(
   opts?: { maxRetries?: number },
 ): void {
   const maxRetries = opts?.maxRetries ?? MAX_CONSECUTIVE_MALFORMED_RETRIES;
-  let currentSessionKey = DEFAULT_SESSION_KEY;
+  let currentSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
   let consecutiveRetries = 0;
   let budgetGeneration = 0;
   let shuttingDown = false;
@@ -108,7 +108,7 @@ export function registerMalformedResponseRecovery(
 
   pi.on("session_start", (_event, ctx) => {
     const prevSessionKey = currentSessionKey;
-    const nextSessionKey = resolveRecoverySessionKey(ctx);
+    const nextSessionKey = resolveBridgeSessionKey(ctx);
     const hadPending = pendingMessage !== null;
     consecutiveRetries = 0;
     budgetGeneration += 1;
@@ -149,9 +149,9 @@ export function registerMalformedResponseRecovery(
   pi.on("agent_end", async (event, ctx) => {
     if (shuttingDown) return;
 
-    if (currentSessionKey === DEFAULT_SESSION_KEY) {
-      const resolvedKey = resolveRecoverySessionKey(ctx);
-      if (resolvedKey !== DEFAULT_SESSION_KEY) {
+    if (currentSessionKey === DEFAULT_BRIDGE_SESSION_KEY) {
+      const resolvedKey = resolveBridgeSessionKey(ctx);
+      if (resolvedKey !== DEFAULT_BRIDGE_SESSION_KEY) {
         switchSessionKey(resolvedKey, true);
       }
     }
