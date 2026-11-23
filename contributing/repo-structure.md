@@ -235,3 +235,5 @@ pi-config/
 ├── tox.toml                         # Test runner config (Python + Node environments)
 └── pyproject.toml                   # Python project config (myk_pi_tools)
 ```
+
+Cross-extension lifecycle hooks (`agent_end`, `turn_end`, `session_shutdown`): see [Async & Runtime Internals](../docs/async-internals.md#cross-extension-lifecycle-hooks).
