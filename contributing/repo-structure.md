@@ -67,6 +67,7 @@ pi-config/
 │   │   ├── resolve-agent-model.ts   # Resolve effective model/provider for an agent (priority chain)
 │   │   ├── review-ui.ts             # Review loop TUI — status bar indicator + transcript status cards
 │   │   ├── review-learning.ts      # Distill addressed review findings into memory lessons after `reviews address` (issue #918)
+│   │   ├── pr-retro.ts             # Opt-in post-merge PR retrospective trigger (gated on `pr_retro_on_merge`, issue #1343)
 │   │   ├── rule-placeholders.ts     # Rule assembly: frontmatter gates, {{IF}}/{{IFNOT}} conditionals, {{REVIEW_LOOP_MAX_CYCLES}}
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries
@@ -146,6 +147,7 @@ pi-config/
 │   ├── refine-review.md
 │   ├── release.md
 │   ├── remember.md
+│   ├── retro.md
 │   ├── review-handler.md
 │   ├── review-local.md
 │   └── scout-and-plan.md
@@ -184,6 +186,7 @@ pi-config/
 │   ├── pidiff-git-diff.ts           # Batched git cat-file blob reader, diff status parser, and worktree list parser
 │   ├── pidiff-git-ignore.ts         # Chokidar gitignore filter (top-level dirs vs nested prefixes)
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
+│   ├── pr-retro-collect.mjs         # Deterministic $0 PR + session + check-config telemetry collector (issue #1343)
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
 ├── packages/                        # Workspace packages
 │   ├── pi-sidecar/                  # HTTP sidecar wrapping Pi SDK (@myk-org/pi-sidecar)

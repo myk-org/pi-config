@@ -10,6 +10,7 @@
  * Completions:
  *   /external-ai <Tab>           → ai-cli provider names + --fix, --peer, --cli-flags
  *   /pr-review <Tab>             → open PR numbers
+ *   /retro <Tab>                 → open PR numbers
  *   /coderabbit-rate-limit <Tab> → open PR numbers
  *   /review-local <Tab>          → git branch names
  *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
@@ -218,6 +219,11 @@ function registerCompletions(
       return ctx.prCache.data ? filter(ctx.prCache.data, prefix.replace(/^#/, "")) : null;
     },
 
+    "retro": (prefix: string) => {
+      void ctx.fetchOpenPRs(ctx.lastCwd);
+      return ctx.prCache.data ? filter(ctx.prCache.data, prefix.replace(/^#/, "")) : null;
+    },
+
     "review-local": (prefix: string) => {
       void ctx.fetchBranches(ctx.lastCwd);
       return ctx.branchCache.data ? filter(ctx.branchCache.data, prefix) : null;
@@ -365,7 +371,7 @@ function setupPromptTemplateInterceptor(
 
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
-    "external-ai", "pr-review", "issue-review", "coderabbit-rate-limit",
+    "external-ai", "pr-review", "retro", "issue-review", "coderabbit-rate-limit",
     "review-local", "release", "review-handler", "qodo-review", "create-skill", "create-coms-feature-manager",
     "pi-config-settings",
   ]);

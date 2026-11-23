@@ -190,6 +190,22 @@ export PI_REVIEW_LOOP_MAX_CYCLES=7
 
 See [Automating Code Reviews](automating-code-reviews.html) for details.
 
+### `pr_retro_on_merge`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `pr_retro_on_merge` | boolean | `false` | `PI_PR_RETRO_ON_MERGE` | Enables opt-in post-merge PR retrospective triggers. | When `true`, injects the `{{IF:pr_retro_on_merge}}` rule block and watches successful `gh pr merge` completions (bash and `github-expert` subagent) to run the `$0` collector (`scripts/pr-retro-collect.mjs`) and dispatch a read-only background retrospective writing `.pi/data/retros/pr-<N>.md`. Zero prompt tokens and zero runtime overhead when `false`. Manual `/retro [pr-number]` works regardless of this setting. |
+
+```json
+{
+  "pr_retro_on_merge": true
+}
+```
+
+```bash
+export PI_PR_RETRO_ON_MERGE=true
+```
+
 ## Provider Registration & Model Routing
 
 ### `agent_provider`

@@ -50,6 +50,13 @@
     "strict_digits": true,
     "group": "Review"
   },
+  "pr_retro_on_merge": {
+    "description": "Run a lightweight read-only post-merge PR retrospective (writes .pi/data/retros/pr-<N>.md)",
+    "type": "bool",
+    "env": "PI_PR_RETRO_ON_MERGE",
+    "default": false,
+    "group": "Review"
+  },
   "dream_interval_hours": {
     "description": "Hours between automatic memory dreaming",
     "type": "number",
