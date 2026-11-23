@@ -519,6 +519,55 @@ describe("createDaemonClient lifecycle (#1358)", () => {
     assert.equal(h.opened[0].ctx, newCtx);
   });
 
+  it("closes superseded handshake socket to reconnect with newer live ctx arrived before open", async () => {
+    const { ctx: oldCtx } = createFakeCtx({ cwd: "/tmp/old-handshake" });
+    const { ctx: newCtx } = createFakeCtx({ cwd: "/tmp/new-handshake" });
+
+    const h = makeClient({
+      reconnectPollIntervalMs: 60_000,
+    });
+
+    await h.client.connect(oldCtx);
+    assert.equal(h.sockets.length, 1);
+    const firstSocket = h.sockets[0];
+
+    // Session switches after createWebSocket() while handshake is still in progress
+    await h.client.connect(newCtx);
+    firstSocket.open();
+
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(firstSocket.closed, true, "superseded socket must be closed instead of registering old ctx");
+    assert.equal(h.opened.length, 0, "onOpen must not fire for the superseded ctx");
+    assert.equal(h.sockets.length, 2, "newer ctx must open a replacement socket immediately");
+
+    h.sockets[1].open();
+    assert.equal(h.client.connected, true);
+    assert.equal(h.opened.length, 1);
+    assert.equal(h.opened[0].ctx, newCtx);
+  });
+
+  it("refuses to mark connected when handshake ctx goes stale before open", async () => {
+    let stale = false;
+    const ctx = {
+      get mode(): string {
+        if (stale) throw new Error("stale");
+        return "tui";
+      },
+      cwd: "/tmp/stale-handshake",
+    };
+
+    const h = makeClient();
+    await h.client.connect(ctx);
+    assert.equal(h.sockets.length, 1);
+
+    stale = true;
+    h.sockets[0].open();
+    assert.equal(h.sockets[0].closed, true);
+    assert.equal(h.client.connected, false);
+    assert.equal(h.client.connecting, false);
+    assert.equal(h.opened.length, 0);
+  });
+
   it("forwards outbound send payloads while connected", async () => {
     const h = makeClient();
     const { ctx } = createFakeCtx();

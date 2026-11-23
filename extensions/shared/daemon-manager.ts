@@ -597,6 +597,15 @@ export function createDaemonClient<TConnectData = void>(
           try { wsClient.close(); } catch {}
           return;
         }
+        const supersededByNewCtx =
+          Boolean(pendingConnectCtx && pendingConnectCtx !== ctx && isLiveExtensionCtx(pendingConnectCtx));
+        if (supersededByNewCtx || !isLiveExtensionCtx(ctx)) {
+          adapter.log.debug("WebSocket opened for superseded or stale ctx — closing and retrying");
+          activeSocket = null;
+          try { wsClient.close(); } catch {}
+          finishAbortedConnect(ctx, myGen);
+          return;
+        }
         adapter.log.debug("WebSocket connected");
         ws = wsClient;
         connected = true;
@@ -650,10 +659,10 @@ export function createDaemonClient<TConnectData = void>(
         activeSocket = null;
         ws = null;
         connected = false;
-        connecting = false;
         clearHeartbeat();
         adapter.onDisconnect?.();
-        if (!shuttingDown) {
+        const retried = finishAbortedConnect(ctx, myGen);
+        if (!retried && !shuttingDown) {
           scheduleReconnect(reconnectDelayMs);
         }
       });
