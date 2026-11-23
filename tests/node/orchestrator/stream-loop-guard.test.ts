@@ -367,6 +367,22 @@ describe("StreamLoopGuard false-positive resistance", () => {
     assert.equal(hit.kind, "repeated_line");
   });
 
+  it("rejects oversized diff hunk counts so repeated additions cannot hide loops", () => {
+    const hugeHeader = `@@ -1,1 +1,${"9".repeat(400)} @@\n`;
+    const hugeGuard = new StreamLoopGuard();
+    const hugeHit = hugeGuard.push("text", `${hugeHeader}${"+.\n".repeat(CONSECUTIVE_LINE_THRESHOLD)}`);
+    assert.ok(hugeHit);
+    assert.equal(hugeHit.kind, "repeated_line");
+
+    const cappedGuard = new StreamLoopGuard();
+    const cappedHit = cappedGuard.push(
+      "text",
+      `@@ -1,1 +1,10001 @@\n${"+.\n".repeat(CONSECUTIVE_LINE_THRESHOLD)}`,
+    );
+    assert.ok(cappedHit);
+    assert.equal(cappedHit.kind, "repeated_line");
+  });
+
   it("ignores repeated scalar entries inside a pretty-printed JSON array", () => {
     const guard = new StreamLoopGuard();
     const jsonArray = `${JSON.stringify(Array.from({ length: 15 }, () => "ok"), null, 2)}\n`;
@@ -383,6 +399,13 @@ describe("StreamLoopGuard false-positive resistance", () => {
   it("exits JSON mode on invalid lines after an unclosed opening bracket", () => {
     const guard = new StreamLoopGuard();
     const hit = guard.push("text", `[\n${".\n".repeat(CONSECUTIVE_LINE_THRESHOLD)}`);
+    assert.ok(hit);
+    assert.equal(hit.kind, "repeated_line");
+  });
+
+  it("exits JSON mode on malformed JSON property value loops", () => {
+    const guard = new StreamLoopGuard();
+    const hit = guard.push("text", `{\n${'"x": .\n'.repeat(CONSECUTIVE_LINE_THRESHOLD)}`);
     assert.ok(hit);
     assert.equal(hit.kind, "repeated_line");
   });

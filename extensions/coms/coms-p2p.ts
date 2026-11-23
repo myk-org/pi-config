@@ -989,7 +989,7 @@ export default function (pi: ExtensionAPI) {
 		return agentRunning;
 	}
 
-	function fulfillBundledInbounds(items: InboundContext[], ident: typeof identity): void {
+	function fulfillBundledInbounds(items: InboundContext[], ident: typeof identity, errorReason = "bundled"): void {
 		for (const bi of items) {
 			// Fire-and-forget — don't await, don't block finalization
 			if (ident) {
@@ -1001,7 +1001,7 @@ export default function (pi: ExtensionAPI) {
 					hops: 0,
 					timestamp: nowIso(),
 					response: null,
-					error: "bundled",
+					error: errorReason,
 					queued_msg_ids: [],
 				}).catch(() => { /* best-effort */ });
 			}
@@ -4136,7 +4136,7 @@ Do not respond to this message.`;
 
 			const bundled = bundledInbounds;
 			bundledInbounds = [];
-			fulfillBundledInbounds(bundled, ident);
+			fulfillBundledInbounds(bundled, ident, opts.abortError ?? "bundled");
 
 			maybeRefreshWidget();
 

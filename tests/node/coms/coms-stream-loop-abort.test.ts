@@ -268,4 +268,83 @@ describe("stream-loop-guard + COMS abort coordination (#1374)", { concurrency: f
     assert.equal(reply.details.error, "stream_repetition_loop_aborted");
     assert.equal(reply.details.response, null);
   });
+
+  it("reports stream_repetition_loop_aborted to bundled peers on aborted turn", async () => {
+    const { workspace } = makeWorkspace();
+    const peerA = await startPeer({
+      name: "peer-a",
+      sessionId: "sla-peer-a",
+      project: "proj-1374-c",
+      cwd: workspace,
+    });
+    const peerB = await startPeer({
+      name: "peer-b",
+      sessionId: "sla-peer-b",
+      project: "proj-1374-c",
+      cwd: workspace,
+    });
+    const receiver = await startPeer({
+      name: "receiver3",
+      sessionId: "sla-receiver-3",
+      project: "proj-1374-c",
+      cwd: workspace,
+      branchReply: "stale branch text",
+    });
+
+    // Occupy receiver with m0 so peerB's two requests queue up and bundle on drain.
+    const r0 = await peerA.tools
+      .get("coms_send")
+      .execute("s0", { target: "receiver3", prompt: "blocking work" });
+    const m0 = r0.details.msg_id as string;
+    await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m0));
+    const m0Msg = receiver.messages.find((m) => m?.details?.msg_id === m0);
+    await receiver.emit("agent_start", {});
+    await receiver.emit("message_start", { message: { role: "custom", ...m0Msg } });
+
+    const rb1 = await peerB.tools
+      .get("coms_send")
+      .execute("sb1", { target: "receiver3", prompt: "part 1" });
+    const rb2 = await peerB.tools
+      .get("coms_send")
+      .execute("sb2", { target: "receiver3", prompt: "part 2" });
+    const b1 = rb1.details.msg_id as string;
+    const b2 = rb2.details.msg_id as string;
+
+    // Finishing m0 drains [b1, b2] as a bundle (b1 primary, b2 in bundledInbounds).
+    await receiver.emit("turn_end", {
+      message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done m0" }] },
+      toolResults: [],
+    });
+    await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === b1));
+    const bundledMsg = [...receiver.messages].reverse().find((m) => m?.details?.msg_id === b1);
+    assert.deepEqual(bundledMsg.details.bundled_msg_ids, [b1, b2]);
+
+    await receiver.emit("message_start", { message: { role: "custom", ...bundledMsg } });
+    await receiver.emit("turn_start", {});
+    await receiver.emit("message_start", { message: { role: "assistant", content: [] } });
+    await receiver.emit("message_update", {
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "text_delta",
+        delta: ".\n".repeat(CONSECUTIVE_LINE_THRESHOLD),
+      },
+    });
+    await receiver.emit("turn_end", {
+      message: { role: "assistant", stopReason: "aborted", content: [{ type: "text", text: "." }] },
+      toolResults: [],
+    });
+    await receiver.emit("agent_end", { messages: [] });
+
+    await waitUntil(async () => {
+      const r1 = await peerB.tools.get("coms_get").execute("g1", { msg_id: b1 });
+      const r2 = await peerB.tools.get("coms_get").execute("g2", { msg_id: b2 });
+      return r1.details.status !== "pending" && r2.details.status !== "pending";
+    });
+    const reply1 = await peerB.tools.get("coms_get").execute("g1-final", { msg_id: b1 });
+    const reply2 = await peerB.tools.get("coms_get").execute("g2-final", { msg_id: b2 });
+    assert.equal(reply1.details.error, "stream_repetition_loop_aborted");
+    assert.equal(reply1.details.response, null);
+    assert.equal(reply2.details.error, "stream_repetition_loop_aborted");
+    assert.equal(reply2.details.response, null);
+  });
 });

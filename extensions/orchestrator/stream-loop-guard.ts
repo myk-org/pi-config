@@ -43,15 +43,13 @@ const TILDE_CLOSE_RE = /^ {0,3}(~{3,})[ \t]*$/;
 
 const GFM_TABLE_MULTI_COL_DELIM_RE = /^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/;
 const GFM_TABLE_SINGLE_COL_DELIM_RE = /^\|\s*:?-{3,}:?\s*\|$/;
-const DIFF_HUNK_HEADER_RE = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: |$)/;
+const MAX_DIFF_HUNK_LINES = 10_000;
+const DIFF_HUNK_HEADER_RE = /^@@ -\d{1,7}(?:,(\d{1,5}))? \+\d{1,7}(?:,(\d{1,5}))? @@(?: |$)/;
 const MARKDOWN_LIST_ITEM_RE = /^(?:[-*+]|\d+[.)])\s+\S/;
 const CLOSING_DELIMITER_RE = /^[}\]),;]+$/;
 
-const JSON_STRUCTURAL_RE = /^[{\[\]}]+,?$/;
-const JSON_PROPERTY_RE = /^"(?:[^"\\]|\\.)*"\s*:\s*.+$/;
-const JSON_STRING_RE = /^"(?:[^"\\]|\\.)*",?$/;
-const JSON_NUMBER_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?,?$/;
-const JSON_LITERAL_RE = /^(?:true|false|null),?$/;
+const JSON_CLOSER_RE = /^[}\]]+,?$/;
+const JSON_PROPERTY_RE = /^"(?:[^"\\]|\\.)*"\s*:\s*(.+)$/;
 
 export type StreamKind = "text" | "thinking";
 export type RepetitionKind = "repeated_line" | "repeated_block";
@@ -107,18 +105,36 @@ function parseDiffHunkHeader(line: string): DiffHunkState | null {
   if (!match) return null;
   const oldRemaining = match[1] !== undefined ? Number(match[1]) : 1;
   const newRemaining = match[2] !== undefined ? Number(match[2]) : 1;
-  if (oldRemaining === 0 && newRemaining === 0) return null;
+  if (
+    !Number.isSafeInteger(oldRemaining) ||
+    !Number.isSafeInteger(newRemaining) ||
+    oldRemaining > MAX_DIFF_HUNK_LINES ||
+    newRemaining > MAX_DIFF_HUNK_LINES ||
+    (oldRemaining === 0 && newRemaining === 0)
+  ) {
+    return null;
+  }
   return { oldRemaining, newRemaining };
 }
 
+function isValidJsonValueFragment(val: string): boolean {
+  const trimmed = val.trim();
+  if (trimmed === "{" || trimmed === "[") return true;
+  const candidate = trimmed.endsWith(",") ? trimmed.slice(0, -1).trimEnd() : trimmed;
+  if (candidate.length === 0) return false;
+  try {
+    JSON.parse(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isValidJsonLine(trimmed: string): boolean {
-  return (
-    JSON_STRUCTURAL_RE.test(trimmed) ||
-    JSON_PROPERTY_RE.test(trimmed) ||
-    JSON_STRING_RE.test(trimmed) ||
-    JSON_NUMBER_RE.test(trimmed) ||
-    JSON_LITERAL_RE.test(trimmed)
-  );
+  if (JSON_CLOSER_RE.test(trimmed)) return true;
+  const prop = JSON_PROPERTY_RE.exec(trimmed);
+  if (prop) return isValidJsonValueFragment(prop[1]);
+  return isValidJsonValueFragment(trimmed);
 }
 
 /** Net JSON container depth delta outside double-quoted strings, or null on unterminated string. */
