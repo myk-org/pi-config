@@ -15,12 +15,10 @@ import { createLogger, type Logger } from "../shared/logger.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
   DEFAULT_BRIDGE_SESSION_KEY,
-  resolveBridgeSessionKey,
-} from "../shared/session-bridge-map.js";
-import {
   clearStreamLoopAborted,
   markStreamLoopAborted,
-} from "../shared/stream-loop-abort-bridge.js";
+  resolveBridgeSessionKey,
+} from "../shared/session-bridge.js";
 
 const defaultLog = createLogger("orchestrator");
 

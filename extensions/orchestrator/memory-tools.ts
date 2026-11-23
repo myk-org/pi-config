@@ -15,31 +15,22 @@
 import { createLogger } from "../shared/logger.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { getProjectMemoryDir } from "./utils.js";
 import {
   loadScores,
   entryHash,
   isEntryActiveForSession,
   reinforce,
-  mutateScores,
   VALID_CATEGORIES,
-  type MemoryCategory,
   type ScoredEntry,
 } from "./memory-scoring.js";
 import {
   listTopics,
   readAllTopicEntries,
-  CATEGORY_TO_TOPIC,
-  topicCharCap,
-  findTopicLine,
-  invalidateTopicFileCache,
   type TopicInfo,
 } from "./memory-tree.js";
-import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
+import { vectorSearch, embedMissing } from "./memory-embeddings.js";
 import { maybePromoteAfterReinforce } from "./memory-promotion.js";
-import { addMemoryEntry, removeMemoryEntry } from "./memory-write.js";
+import { addMemoryEntry, editMemoryEntry, removeMemoryEntry } from "./memory-store.js";
 
 const CATEGORY_DESC = "preference|lesson|pattern|decision|done|mistake";
 
@@ -311,8 +302,8 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      // Unified write path (issue #915): validation, grant-phrase guardrail,
-      // contradiction gate, dedup, topic cap, scope — all in memory-write.ts.
+      // Unified write path (issue #915, #1354): validation, grant-phrase guardrail,
+      // contradiction gate, dedup, topic cap, scope — all in memory-store.ts.
       // Session-scoped writes carry the current session id when the caller
       // did not supply one, so scope eligibility can be evaluated later.
       if (params.scope === "session" && !params.sourceSession) {
@@ -466,74 +457,16 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: result }], details: undefined };
       }
 
-      const validCategories = VALID_CATEGORIES;
-      if (!validCategories.includes(category as MemoryCategory)) {
-        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }], details: undefined };
-      }
-
-      const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
-      const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
-
-      if (!existsSync(topicPath)) {
-        return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }], details: undefined };
-      }
-
-      const content = readFileSync(topicPath, "utf-8");
-
-      // Marker-agnostic match (pinned/enforced/id combinations, issue #915)
-      const match = findTopicLine(content, category, text);
-      if (!match) {
-        return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }], details: undefined };
-      }
-      const { index: matchIndex, pinned: wasPinned, enforced: wasEnforced, id: wasId } = match;
-      const lines = content.split("\n");
-
       if (op === "update") {
-        if (!newText) {
-          return { content: [{ type: "text", text: "newText is required for update operation." }], details: undefined };
-        }
-        // Enforce single-line content
-        if (newText.includes("\n")) {
-          return { content: [{ type: "text", text: "newText must be a single line (no newlines)." }], details: undefined };
-        }
-        // Check topic size cap. The rewritten line keeps its markers and id
-        // so the enforcement binding survives the text change (issue #915).
-        const markers = `${wasPinned ? " *(pinned)*" : ""}${wasEnforced ? " *(enforced)*" : ""}${wasId ? ` {#${wasId}}` : ""}`;
-        const replacement = `- [${category}] ${newText}${markers}`;
-        const newContent = content.replace(lines[matchIndex]!, replacement);
-        const cap = topicCharCap(topicName);
-        if (newContent.length > cap) {
-          log.warn("memory_edit_topic_cap_rejected", { topic: topicName, chars: newContent.length, cap });
-          return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${cap} chars).` }], details: undefined };
-        }
-        // Replace the line
-        lines[matchIndex] = replacement;
-        writeFileSync(topicPath, lines.join("\n"), "utf-8");
-        invalidateTopicFileCache(topicPath);
-
-        // Update scores: transfer old entry's score to the new key, keeping
-        // the stable id (and enforcement fields) — locked RMW (issue #915).
-        const oldHash = entryHash(`- [${category}] ${text}`);
-        const newHash = entryHash(`- [${category}] ${newText}`);
-        mutateScores(cwd, (scores) => {
-          if (scores.entries[oldHash]) {
-            scores.entries[newHash] = { ...scores.entries[oldHash]! };
-            delete scores.entries[oldHash];
-          }
-          const target = scores.entries[newHash];
-          if (target) {
-            if (!target.id && wasId) target.id = wasId;
-            if (params.sourceSession !== undefined) target.sourceSession = params.sourceSession;
-            if (params.derivedFrom !== undefined) target.derivedFrom = params.derivedFrom;
-            if (params.informs !== undefined) target.informs = params.informs;
-          }
+        const res = await editMemoryEntry(cwd, {
+          category,
+          text,
+          newText: newText ?? "",
+          sourceSession: params.sourceSession,
+          derivedFrom: params.derivedFrom,
+          informs: params.informs,
         });
-
-        // Update embeddings
-        removeEmbedding(cwd, text, category);
-        await embedEntry(cwd, newText, category);
-
-        return { content: [{ type: "text", text: `Updated: [${category}] ${text}\n     → [${category}] ${newText}` }], details: undefined };
+        return { content: [{ type: "text", text: res.message }], details: undefined };
       }
 
       return { content: [{ type: "text", text: `Unknown operation: ${op}` }], details: undefined };

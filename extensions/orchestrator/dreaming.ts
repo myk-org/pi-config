@@ -13,7 +13,6 @@
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("dreaming");
-import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getInternalOpsProvider } from "./async-capability.js";
@@ -22,134 +21,27 @@ import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
 import { setSlot } from "./status-bar.js";
 import { distilledLessonTextList } from "./review-learning.js";
-import { canonicalTopicLine, invalidateTopicFileCache, parseTopicLine, removalsSince, stripTopicMarkers, topicCharCap } from "./memory-tree.js";
+import { canonicalizeTopicLine } from "./memory-line.js";
 import { entryHash } from "./memory-scoring.js";
-
-/** Topic files memory maintenance rewrites. */
-const MEMORY_TOPIC_FILES = ["lessons", "preferences", "patterns", "decisions", "completions", "mistakes"];
-
-/** Line text without its `- [category] ` prefix, lock markers, or `{#id}` suffix. */
-function topicLineText(line: string): string {
-  const parsed = parseTopicLine(line);
-  if (parsed) return parsed.text;
-  return stripTopicMarkers(line.replace(/^- \[[a-z]+\] /, ""));
-}
-
-/**
- * Entries memory maintenance must never delete, whatever the prompt says:
- * pinned/enforced entries (user-locked, or keyed by text hash for enforcement) and
- * lessons distilled from reviews — their source is the reviews DB, but nothing
- * re-materializes the topic line once a dream removes it (issue #1010).
- */
-export function isProtectedTopicLine(line: string, reviewLessons: readonly string[]): boolean {
-  if (!line.startsWith("- [")) return false;
-  if (line.includes("*(pinned)*") || line.includes("*(enforced)*")) return true;
-  const text = topicLineText(line);
-  return reviewLessons.some((lesson) => {
-    const candidate = lesson.trim();
-    return candidate.length > 0 && text === candidate;
-  });
-}
-
-/** Snapshot every memory topic file's lines, so a dream's deletions can be audited. */
-export function snapshotTopicLines(topicsDir: string): Record<string, string[]> {
-  const before: Record<string, string[]> = {};
-  for (const name of MEMORY_TOPIC_FILES) {
-    try {
-      before[`${name}.md`] = fs.readFileSync(path.join(topicsDir, `${name}.md`), "utf-8").split("\n");
-    } catch {
-      // Topic absent — nothing to protect.
-    }
-  }
-  return before;
-}
-
-/**
- * Restore protected entries a dream removed, at their original index. Returns how
- * many lines were put back; zero means the dream stayed inside its mandate.
- * Any failure is the caller's to log — this never throws.
- */
-/** Canonical `- [category] text` form used as the memory score key. */
-export function topicLineCanonical(line: string): string {
-  const parsed = parseTopicLine(line);
-  if (parsed) return canonicalTopicLine(parsed);
-  const category = /^- \[([a-z]+)\] /.exec(line)?.[1] ?? "";
-  return `- [${category}] ${topicLineText(line)}`;
-}
-
-export type TopicRestoreReport = {
-  restored: number;
-  failed: number;
-  /** Topics still over their cap after reconcile. Never trimmed here: see below. */
-  overCapTopics: string[];
-};
-
-/**
- * Restore protected entries a dream removed, at their original index, then keep the
- * file inside its per-topic cap by dropping unprotected additions — never protected
- * ones. Recreates a topic the dream deleted outright. Returns what it did; logging is
- * the caller's, this never throws.
- */
-export function restoreProtectedTopicLines(
-  topicsDir: string,
-  before: Record<string, string[]>,
-  reviewLessons: readonly string[],
-  removedByUser: (line: string) => boolean = () => false,
-): TopicRestoreReport {
-  const report: TopicRestoreReport = { restored: 0, failed: 0, overCapTopics: [] };
-  for (const [file, beforeLines] of Object.entries(before)) {
-    const filePath = path.join(topicsDir, file);
-    let current: string[] | null = null;
-    try {
-      current = fs.readFileSync(filePath, "utf-8").split("\n");
-    } catch {
-      current = null; // Deleted outright — rebuilt below from the snapshot.
-    }
-    const base = current ?? beforeLines.filter((line) => !line.startsWith("- ["));
-    // A dream that *rewrites* a protected entry keeps it: compare canonical text, not the
-    // raw line, or the original returns beside the rewrite as a duplicate.
-    const surviving = new Set((current ?? []).map(topicLineCanonical));
-    const missing = beforeLines
-      .map((line, index) => ({ line, index }))
-      .filter(({ line }) => {
-        if (!line.startsWith("- [") || !isProtectedTopicLine(line, reviewLessons)) return false;
-        if (surviving.has(topicLineCanonical(line))) return false;
-        // Only an explicit tombstone proves a removal. Score absence does not: the
-        // scheduled rebuild prunes scores for lines a dream deleted, which would look
-        // exactly like a user removal and strand the entry (issue #1010).
-        return !removedByUser(line);
-      });
-    if (missing.length === 0 && current !== null) continue;
-
-    const merged = [...base];
-    for (const { line, index } of missing) {
-      merged.splice(Math.min(index, merged.length), 0, line);
-      report.restored += 1;
-    }
-
-    const cap = topicCharCap(file.replace(/\.md$/, ""));
-    // Never trim here. Text cannot distinguish a dream's addition from its rewrite of an
-    // existing memory, and deleting the wrong one loses knowledge that the score rebuild
-    // cannot recover. The write paths still enforce the cap for normal additions; an
-    // over-cap file is reported so the next prune can shrink it with judgment.
-    if (merged.join("\n").length > cap) report.overCapTopics.push(file);
-
-    try {
-      fs.writeFileSync(filePath, merged.join("\n"), "utf-8");
-      invalidateTopicFileCache(filePath);
-    } catch {
-      report.failed += 1;
-      report.restored -= missing.length;
-    }
-  }
-  return report;
-}
-
+import {
+  type TopicRestoreReport,
+  isProtectedTopicLine,
+  removalsSince,
+  restoreProtectedTopicLines,
+  snapshotTopicLines,
+} from "./memory-store.js";
 import { rebuildAndOrganize } from "./situation-report.js";
 import { runPromotionPass } from "./memory-promotion.js";
 import { mergeProvenancePending } from "./memory-provenance.js";
 import { getProjectMemoryDir, getProjectDataDir, shouldSkipOneshotShutdownDream } from "./utils.js";
 import { fileLog } from "../shared/file-logger.js";
+
+export {
+  type TopicRestoreReport,
+  isProtectedTopicLine,
+  restoreProtectedTopicLines,
+  snapshotTopicLines,
+};
 
 // Scoring rebuild runs every 30 minutes (cheap, no LLM — just rescores and reorganizes)
 const REBUILD_INTERVAL_MS = 30 * 60 * 1000;
@@ -296,7 +188,7 @@ export function registerDreaming(
             const reviewLessons = distilledLessonTextList(getProjectDataDir(cwd));
             const removed = removalsSince(cwd, dreamStartedAt);
             const report = restoreProtectedTopicLines(topicsDir, topicsBeforeDream, reviewLessons, (line) =>
-              removed.has(entryHash(topicLineCanonical(line))),
+              removed.has(entryHash(canonicalizeTopicLine(line))),
             );
             if (report.restored > 0) {
               log.warn("dream_restored_protected_entries", { restored: report.restored });

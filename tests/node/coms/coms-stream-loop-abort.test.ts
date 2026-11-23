@@ -14,8 +14,8 @@ import {
 import {
   consumeStreamLoopAborted,
   markStreamLoopAborted,
-  resetStreamLoopAbortBridgeForTests,
-} from "../../../extensions/shared/stream-loop-abort-bridge.js";
+  resetSessionBridge,
+} from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -42,7 +42,7 @@ afterEach(async () => {
       /* ignore */
     }
   }
-  resetStreamLoopAbortBridgeForTests();
+  resetSessionBridge({ all: true });
   (globalThis as any).__comsSelf = null;
   (globalThis as any).__comsUserSend = null;
   for (const dir of cleanupDirs.splice(0)) {

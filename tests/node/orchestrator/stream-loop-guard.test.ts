@@ -13,11 +13,11 @@ import {
 import type { Logger } from "../../../extensions/shared/logger.js";
 import {
   hasStreamLoopAborted,
-  resetStreamLoopAbortBridgeForTests,
-} from "../../../extensions/shared/stream-loop-abort-bridge.js";
+  resetSessionBridge,
+} from "../../../extensions/shared/session-bridge.js";
 
 afterEach(() => {
-  resetStreamLoopAbortBridgeForTests();
+  resetSessionBridge({ all: true });
 });
 
 type Handler = (...args: any[]) => any;
