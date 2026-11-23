@@ -535,7 +535,7 @@ class TestStoreSessionPrefetch1174:
                 stderr="",
             )
 
-        with patch.object(store_session.subprocess, "run", side_effect=fake_subprocess_run):
+        with patch("myk_pi_tools.github.subprocess.run", side_effect=fake_subprocess_run):
             store_session.store_session(json_path)
 
         assert len(calls) == 1
@@ -573,7 +573,7 @@ class TestStoreSessionPrefetch1174:
                 return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(["src/miss.py", 22]), stderr="")
             raise AssertionError(f"Unexpected command: {cmd}")
 
-        with patch.object(store_session.subprocess, "run", side_effect=fake_subprocess_run):
+        with patch("myk_pi_tools.github.subprocess.run", side_effect=fake_subprocess_run):
             store_session.store_session(json_path)
 
         assert len(calls) == 2
@@ -596,7 +596,7 @@ class TestStoreSessionPrefetch1174:
             ],
         )
 
-        with patch.object(store_session.subprocess, "run", side_effect=FileNotFoundError("gh missing")):
+        with patch("myk_pi_tools.github.subprocess.run", side_effect=FileNotFoundError("gh missing")):
             store_session.store_session(json_path)
 
         conn = sqlite3.connect(str(tmp_path / ".pi" / "data" / "reviews.db"))
