@@ -22,6 +22,7 @@ import {
   type WorktreeInfo,
 } from "./pidiff-git-diff.ts";
 import { isGitIgnoredRelPath, parseGitIgnoredWatchFilter, type GitIgnoredWatchFilter } from "./pidiff-git-ignore.ts";
+import { registerServerPidFile } from "../extensions/pidiff/lockfile.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
 
 const execFileAsync = promisify(execFile);
@@ -676,40 +677,9 @@ if (worktreeRefreshInterval.unref) worktreeRefreshInterval.unref();
 
 // ── Start ───────────────────────────────────────────────────────────
 
-// Control files live in .pi/run — .pi/tmp is throwaway and may be swept (#1020).
-const RUN_DIR = PROJECT_CWD ? path.join(PROJECT_CWD, ".pi", "run") : "";
-const LEGACY_RUN_DIR = PROJECT_CWD ? path.join(PROJECT_CWD, ".pi", "tmp") : "";
-const PID_FILE = RUN_DIR ? path.join(RUN_DIR, "pidiff.pid") : "";
-
-/** Drop the pre-#1020 PID file, but never while that daemon is still running. */
-function removeLegacyPidFile(): void {
-  if (!LEGACY_RUN_DIR) return;
-  const legacy = path.join(LEGACY_RUN_DIR, "pidiff.pid");
-  try {
-    const pid = parseInt(fs.readFileSync(legacy, "utf-8").trim(), 10);
-    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
-      try { process.kill(pid, 0); return; } catch (e: any) { if (e?.code === "EPERM") return; }
-    }
-    fs.unlinkSync(legacy);
-    log(`legacy PID file removed: ${legacy}`);
-  } catch {}
-}
-
 // Write PID file for lockfile-based management (before start so /pidiff stop works during startup)
-if (PID_FILE) {
-  try {
-    if (!fs.existsSync(RUN_DIR)) fs.mkdirSync(RUN_DIR, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(PID_FILE, String(process.pid), { mode: 0o600 });
-    log(`PID file written: ${PID_FILE} (PID ${process.pid})`);
-    removeLegacyPidFile();
-  } catch (e: any) { log(`PID file write error: ${e.message}`); }
-}
-
-// Clean PID file on exit to prevent stale PID issues
-process.on("exit", () => {
-  if (PID_FILE) {
-    try { fs.unlinkSync(PID_FILE); } catch {}
-  }
-});
+// and remove it on exit. Control files live in .pi/run; dead pre-#1020 .pi/tmp copies are cleaned (#1020).
+const cleanupPidFile = registerServerPidFile(PROJECT_CWD, (msg) => log(msg));
+process.on("exit", cleanupPidFile);
 
 start();

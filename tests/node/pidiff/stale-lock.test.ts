@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
-
+import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { describe, it, afterEach } from "node:test";
+import {
+  acquireSpawnLocks,
+  evaluateSpawnLock,
+  findFreePort,
+  findRunningPidiffPort,
+  releaseSpawnLocks,
+  writeLockfile,
+} from "../../../extensions/pidiff/lockfile.js";
+import { getProjectLegacyRunDir, getProjectRunDir } from "../../../extensions/orchestrator/utils.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
-
 
 describe("pidiff stale lock detection", () => {
   let tmpDir: string | undefined;
@@ -17,10 +24,7 @@ describe("pidiff stale lock detection", () => {
     }
   });
 
-  it("dead PID triggers recover action", async () => {
-    const { evaluateSpawnLock } = await import(
-      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now()}`
-    );
+  it("dead PID triggers recover action", () => {
     tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, "99999999");
@@ -30,10 +34,7 @@ describe("pidiff stale lock detection", () => {
     assert.match(result.reason, /dead/);
   });
 
-  it("alive PID with young lock triggers wait action", async () => {
-    const { evaluateSpawnLock } = await import(
-      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 1}`
-    );
+  it("alive PID with young lock triggers wait action", () => {
     tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, String(process.pid));
@@ -43,26 +44,19 @@ describe("pidiff stale lock detection", () => {
     assert.match(result.reason, /alive/);
   });
 
-  it("no valid PID with old lock triggers recover", async () => {
-    const { evaluateSpawnLock } = await import(
-      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 2}`
-    );
+  it("no valid PID with old lock triggers recover", () => {
     tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, "not-a-pid");
-    // Set mtime to 2s ago to exceed the 1s floor
     const twoSecsAgo = new Date(Date.now() - 2000);
     utimesSync(lockPath, twoSecsAgo, twoSecsAgo);
 
-    const result = evaluateSpawnLock(lockPath, 500); // 500ms < 1s floor → uses 1s, lock is 2s old → recover
+    const result = evaluateSpawnLock(lockPath, 500);
     assert.equal(result.action, "recover");
     assert.match(result.reason, /no valid PID/);
   });
 
-  it("missing lockfile triggers recover", async () => {
-    const { evaluateSpawnLock } = await import(
-      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 3}`
-    );
+  it("missing lockfile triggers recover", () => {
     tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning.nonexistent");
 
@@ -71,18 +65,14 @@ describe("pidiff stale lock detection", () => {
     assert.match(result.reason, /cannot read/);
   });
 
-  it("alive PID with very old lock triggers PID reuse recovery", async () => {
-    const { evaluateSpawnLock } = await import(
-      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 4}`
-    );
+  it("alive PID with very old lock triggers PID reuse recovery", () => {
     tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, String(process.pid));
-    // Set mtime to 2s ago to exceed the 1s floor
     const twoSecsAgo = new Date(Date.now() - 2000);
     utimesSync(lockPath, twoSecsAgo, twoSecsAgo);
 
-    const result = evaluateSpawnLock(lockPath, 500); // floor 1s, lock 2s old → recover_pid_reuse
+    const result = evaluateSpawnLock(lockPath, 500);
     assert.equal(result.action, "recover_pid_reuse");
     assert.match(result.reason, /alive but lock age/);
   });
@@ -103,10 +93,7 @@ describe("spawn lock across .pi/run and legacy .pi/tmp (#1020)", () => {
     return dirs;
   };
 
-  it("takes the lock in every dir", async () => {
-    const { acquireSpawnLocks, releaseSpawnLocks } = await import(
-      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 10}`
-    );
+  it("acquires the lock across every existing dir", () => {
     const [legacy, run] = mkDirs(2);
     const { held, contended } = acquireSpawnLocks([legacy, run]);
     assert.equal(contended, null);
@@ -117,23 +104,16 @@ describe("spawn lock across .pi/run and legacy .pi/tmp (#1020)", () => {
     assert.ok(!existsSync(join(run, "pidiff.spawning")), "release clears the new lock");
   });
 
-  it("reports the legacy lock as contended when a pre-#1020 session holds it", async () => {
-    const { acquireSpawnLocks } = await import(
-      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 11}`
-    );
+  it("reports the legacy lock as contended when a pre-#1020 session holds it", () => {
     const [legacy, run] = mkDirs(2);
-    writeFileSync(join(legacy, "pidiff.spawning"), String(process.pid)); // old-code session
+    writeFileSync(join(legacy, "pidiff.spawning"), String(process.pid));
     const { held, contended } = acquireSpawnLocks([legacy, run]);
     assert.equal(contended, join(legacy, "pidiff.spawning"));
     assert.deepEqual(held, []);
     assert.ok(!existsSync(join(run, "pidiff.spawning")), "no new-dir lock is taken while waiting");
   });
 
-  it("skips a legacy dir that does not exist instead of reporting contention", async () => {
-    const { acquireSpawnLocks, releaseSpawnLocks } = await import(
-      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 13}`
-    );
-    // Fresh project: `.pi/tmp` was never created (only `.pi/run` is).
+  it("skips a missing legacy dir instead of reporting contention", () => {
     const [run] = mkDirs(1);
     const legacy = join(run, "missing-legacy");
     const { held, contended } = acquireSpawnLocks([legacy, run]);
@@ -143,12 +123,9 @@ describe("spawn lock across .pi/run and legacy .pi/tmp (#1020)", () => {
     releaseSpawnLocks(held);
   });
 
-  it("releases a lock it already took when a later dir is contended", async () => {
-    const { acquireSpawnLocks } = await import(
-      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 12}`
-    );
+  it("releases an earlier lock when a later dir is contended", () => {
     const [legacy, run] = mkDirs(2);
-    writeFileSync(join(run, "pidiff.spawning"), String(process.pid)); // a concurrent new-code session
+    writeFileSync(join(run, "pidiff.spawning"), String(process.pid));
     const { held, contended } = acquireSpawnLocks([legacy, run]);
     assert.equal(contended, join(run, "pidiff.spawning"));
     assert.deepEqual(held, []);
@@ -156,9 +133,6 @@ describe("spawn lock across .pi/run and legacy .pi/tmp (#1020)", () => {
   });
 });
 
-/** `/pidiff start` and connect() share this probe: a stale `.pi/run` record must
- *  never hide the live pre-#1020 daemon in `.pi/tmp` — `start` would spawn a
- *  duplicate on top of it (#1024, Qodo). */
 describe("findRunningPidiffPort across .pi/run and legacy .pi/tmp (#1024)", () => {
   let server: Server | undefined;
   let dirs: string[] = [];
@@ -187,18 +161,12 @@ describe("findRunningPidiffPort across .pi/run and legacy .pi/tmp (#1024)", () =
     return dir;
   };
 
-  it("returns the live legacy port when the `.pi/run` record is stale", async () => {
-    const { findRunningPidiffPort } = await import(
-      `../../../extensions/pidiff/pidiff.ts?t=${Date.now() + 20}`
-    );
-    const { writeLockfile, findFreePort } = await import(
-      `../../../extensions/shared/daemon-manager.ts?t=${Date.now() + 21}`
-    );
+  it("returns the live legacy port when the .pi/run record is stale", async () => {
     const livePort = await listenHealthy();
     const runDir = mkDir("pidiff-start-run-");
     const legacyDir = mkDir("pidiff-start-legacy-");
-    writeLockfile(runDir, await findFreePort(), null, () => {}); // stale: nothing listens
-    writeLockfile(legacyDir, livePort, null, () => {}); // daemon started pre-#1020
+    writeLockfile(runDir, await findFreePort(), null, () => {});
+    writeLockfile(legacyDir, livePort, null, () => {});
 
     assert.equal(
       await findRunningPidiffPort(runDir, legacyDir),
@@ -208,12 +176,6 @@ describe("findRunningPidiffPort across .pi/run and legacy .pi/tmp (#1024)", () =
   });
 
   it("prefers the session's known port when it is healthy", async () => {
-    const { findRunningPidiffPort } = await import(
-      `../../../extensions/pidiff/pidiff.ts?t=${Date.now() + 22}`
-    );
-    const { writeLockfile, findFreePort } = await import(
-      `../../../extensions/shared/daemon-manager.ts?t=${Date.now() + 23}`
-    );
     const livePort = await listenHealthy();
     const runDir = mkDir("pidiff-start-run-");
     writeLockfile(runDir, await findFreePort(), null, () => {});
@@ -222,25 +184,13 @@ describe("findRunningPidiffPort across .pi/run and legacy .pi/tmp (#1024)", () =
   });
 
   it("returns null when no recorded port answers health", async () => {
-    const { findRunningPidiffPort } = await import(
-      `../../../extensions/pidiff/pidiff.ts?t=${Date.now() + 24}`
-    );
-    const { writeLockfile, findFreePort } = await import(
-      `../../../extensions/shared/daemon-manager.ts?t=${Date.now() + 25}`
-    );
     const runDir = mkDir("pidiff-start-run-");
     writeLockfile(runDir, await findFreePort(), null, () => {});
 
     assert.equal(await findRunningPidiffPort(runDir, "", 0), null);
   });
 
-  it("keeps pidiff control files in `.pi/run`, outside the swept `.pi/tmp` (#1020)", async () => {
-    const { writeLockfile } = await import(
-      `../../../extensions/shared/daemon-manager.ts?t=${Date.now() + 26}`
-    );
-    const { getProjectRunDir, getProjectLegacyRunDir } = await import(
-      `../../../extensions/orchestrator/utils.ts?t=${Date.now() + 27}`
-    );
+  it("keeps pidiff control files in .pi/run, outside the swept .pi/tmp (#1020)", () => {
     const cwd = mkDir("pidiff-home-");
     const runDir = getProjectRunDir(cwd);
     writeLockfile(runDir, 12345, process.pid, () => {});
