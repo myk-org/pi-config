@@ -716,6 +716,15 @@ export function createDiffSessionController(
   };
 }
 
+function getBrowserStorage(): StorageLike | undefined {
+  try {
+    return typeof localStorage !== "undefined" ? localStorage : undefined;
+  } catch (err) {
+    log.warn("browser localStorage unavailable", { error: String(err) });
+    return undefined;
+  }
+}
+
 /** React hook binding the in-process DiffSessionController to useWebSocket. */
 export function useDiffSessionController(options?: {
   testWs?: WebSocket | null;
@@ -729,7 +738,7 @@ export function useDiffSessionController(options?: {
     () =>
       createDiffSessionController({
         send: (msg) => sendRef.current(msg),
-        storage: typeof localStorage !== "undefined" ? localStorage : undefined,
+        storage: getBrowserStorage(),
         initialStale: Boolean((globalThis as { __pidiffTestStale?: boolean }).__pidiffTestStale),
       }),
     [],

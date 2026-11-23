@@ -859,4 +859,37 @@ describe("useDiffSessionController — React reconnect integration", () => {
       globalThis.localStorage = prevStorage;
     }
   });
+
+  it("renders without crashing when reading global localStorage throws SecurityError", async () => {
+    const prevStorageDesc = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get() {
+        throw new DOMException("The operation is insecure.", "SecurityError");
+      },
+    });
+
+    const container = installReactDomShim();
+    const ref: { current: DiffSessionController | null } = { current: null };
+
+    function Probe() {
+      const { controller } = useDiffSessionController({ testWs: null });
+      ref.current = controller;
+      return null;
+    }
+
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(createElement(Probe));
+      });
+      assert.ok(ref.current, "controller should initialize when localStorage getter throws");
+      assert.equal(ref.current.getState().activeSession, null);
+      assert.deepEqual(ref.current.getState().comments, []);
+    } finally {
+      await act(async () => { root.unmount(); });
+      if (prevStorageDesc) Object.defineProperty(globalThis, "localStorage", prevStorageDesc);
+      else delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
 });
