@@ -13,7 +13,7 @@ commands = [
 
 [env.node]
 skip_install = true
-allowlist_externals = ["npm", "npx", "sh"]
+allowlist_externals = ["node", "npm", "sh"]
 # Fresh CI worktrees have no node_modules (and package-lock.json is gitignored);
 # bootstrap root workspaces and the standalone pidash-ui package when absent.
 # --legacy-peer-deps avoids an npm 10 Arborist #loadPeerSet edgesOut crash on
@@ -23,10 +23,11 @@ commands_pre = [
   ["sh", "-c", "test -d extensions/pidash/pidash-ui/node_modules || npm --prefix extensions/pidash/pidash-ui install --no-audit --no-fund --legacy-peer-deps"],
 ]
 # Runs repo TypeScript typecheck plus the root Node, pi-docsite browser-asset
-# (jsdom), and pi-sidecar TypeScript test suites.
+# (jsdom), and pi-sidecar TypeScript test suites. Uses `node --import tsx` with
+# bounded concurrency to avoid tsx wrapper / container worker SIGSEGV crashes.
 commands = [
   ["npm", "run", "typecheck"],
-  ["npx", "tsx", "--test", "tests/node/**/*.test.ts"],
-  ["npx", "tsx", "--test", "packages/pi-docsite/tests/js/**/*.test.ts"],
-  ["npx", "tsx", "--test", "packages/pi-sidecar/tests/test_ts/*.test.ts"],
+  ["node", "--import", "tsx", "--test", "--test-concurrency=4", "tests/node/**/*.test.ts"],
+  ["node", "--import", "tsx", "--test", "--test-concurrency=4", "packages/pi-docsite/tests/js/**/*.test.ts"],
+  ["node", "--import", "tsx", "--test", "--test-concurrency=4", "packages/pi-sidecar/tests/test_ts/*.test.ts"],
 ]
