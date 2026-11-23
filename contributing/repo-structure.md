@@ -80,9 +80,12 @@ pi-config/
 │   │   ├── worktree.ts              # /worktree command — interactive overlay + list/prune subcommands
 │   │   ├── worktree-helpers.ts      # Pure worktree helpers (COMS peer matching, remove guards, table/status/prune formatting, clipboard)
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
-│   │   ├── memory-tools.ts              # AI-accessible memory tools (search, reinforce, add, remove)
-│   │   ├── memory-embeddings.ts         # Vector embedding support for semantic memory search (fastembed)
-│   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
+│   │   ├── memory-store.ts            # Deep memory store — owns all topic writes, cache invalidation, score/tombstone updates, and embedding upkeep/pruning
+│   │   ├── memory-contradiction.ts    # Internal NLP contradiction detection helper (clause-scoped polarity + vector narrowing)
+│   │   ├── memory-tools.ts            # AI-accessible memory tools (search, reinforce, add, remove, edit, reflect, consolidate)
+│   │   ├── memory-embeddings.ts       # Vector embedding support for semantic memory search (fastembed)
+│   │   ├── memory-tree.ts             # Read-only topic-file index and hotness scores
+│   │   ├── memory-line.ts             # Pure topic-line parser, formatter, and canonicalization helpers
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
 │   │   ├── project-settings.ts        # Deep settings store — schema-driven validation/parsing (settings-keys.json), legacy .jsonc migration, single coordinated cache, source detection, and locked atomic persistence with backups
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
