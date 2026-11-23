@@ -16,9 +16,11 @@ skip_install = true
 allowlist_externals = ["npm", "npx", "sh"]
 # Fresh CI worktrees have no node_modules (and package-lock.json is gitignored);
 # bootstrap root workspaces and the standalone pidash-ui package when absent.
+# --legacy-peer-deps avoids an npm 10 Arborist #loadPeerSet edgesOut crash on
+# workspace peer-dependency resolution.
 commands_pre = [
-  ["sh", "-c", "test -x node_modules/.bin/tsc && test -x node_modules/.bin/tsx || npm install --no-audit --no-fund"],
-  ["sh", "-c", "test -d extensions/pidash/pidash-ui/node_modules || npm --prefix extensions/pidash/pidash-ui install --no-audit --no-fund"],
+  ["sh", "-c", "test -x node_modules/.bin/tsc && test -x node_modules/.bin/tsx || npm install --no-audit --no-fund --legacy-peer-deps"],
+  ["sh", "-c", "test -d extensions/pidash/pidash-ui/node_modules || npm --prefix extensions/pidash/pidash-ui install --no-audit --no-fund --legacy-peer-deps"],
 ]
 # Runs repo TypeScript typecheck plus the root Node, pi-docsite browser-asset
 # (jsdom), and pi-sidecar TypeScript test suites.

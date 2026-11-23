@@ -4399,14 +4399,20 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
 
   let prevSessionId: string | undefined;
   let prevSessionIdEnv: string | undefined;
+  let prevParentSessionIdEnv: string | undefined;
+  let throwawaySessionId: string | undefined;
   let testLogDir: string | undefined;
 
   before(() => {
-    // Pin a throwaway session id so audit-log assertions do not depend on
-    // ambient __PI_CONFIG_SESSION_ID (stripped by tox / clean CI shells).
+    // Pin a throwaway session id (and clear any inherited parent session id)
+    // so audit-log assertions never depend on ambient __PI_CONFIG_SESSION_ID
+    // and cleanup never touches a parent agent's shared enforcement log dir.
     prevSessionId = (globalThis as any).__piConfigSessionId;
     prevSessionIdEnv = process.env.__PI_CONFIG_SESSION_ID;
-    setGlobalSessionId(`enforcement-gate-${process.pid}-${Date.now()}`);
+    prevParentSessionIdEnv = process.env.__PI_PARENT_SESSION_ID;
+    delete process.env.__PI_PARENT_SESSION_ID;
+    throwawaySessionId = `enforcement-gate-${process.pid}-${Date.now()}`;
+    setGlobalSessionId(throwawaySessionId);
     const logPath = getPiLogPath("enforcement");
     if (logPath) testLogDir = dirname(logPath);
     hooks = new Map();
@@ -4418,7 +4424,11 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   after(() => {
-    if (testLogDir) rmSync(testLogDir, { recursive: true, force: true });
+    if (testLogDir && throwawaySessionId && path.basename(testLogDir) === throwawaySessionId) {
+      rmSync(testLogDir, { recursive: true, force: true });
+    }
+    if (prevParentSessionIdEnv === undefined) delete process.env.__PI_PARENT_SESSION_ID;
+    else process.env.__PI_PARENT_SESSION_ID = prevParentSessionIdEnv;
     if (prevSessionId === undefined) delete (globalThis as any).__piConfigSessionId;
     else (globalThis as any).__piConfigSessionId = prevSessionId;
     if (prevSessionIdEnv === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
@@ -5340,7 +5350,10 @@ describe("dangerous approval scopes + explanations (#1073)", () => {
     clearAllDangerousSessionApprovals();
     const prevSid = (globalThis as any).__piConfigSessionId;
     const prevSidEnv = process.env.__PI_CONFIG_SESSION_ID;
-    setGlobalSessionId(`enforcement-evict-${process.pid}-${Date.now()}`);
+    const prevParentSidEnv = process.env.__PI_PARENT_SESSION_ID;
+    delete process.env.__PI_PARENT_SESSION_ID;
+    const throwawaySid = `enforcement-evict-${process.pid}-${Date.now()}`;
+    setGlobalSessionId(throwawaySid);
     const logPath = getPiLogPath("enforcement");
     const testLogDir = logPath ? dirname(logPath) : undefined;
     try {
@@ -5355,7 +5368,11 @@ describe("dangerous approval scopes + explanations (#1073)", () => {
       assert.doesNotMatch(written, /"s0"/, "the session id itself must not reach the log");
     } finally {
       clearAllDangerousSessionApprovals();
-      if (testLogDir) rmSync(testLogDir, { recursive: true, force: true });
+      if (testLogDir && path.basename(testLogDir) === throwawaySid) {
+        rmSync(testLogDir, { recursive: true, force: true });
+      }
+      if (prevParentSidEnv === undefined) delete process.env.__PI_PARENT_SESSION_ID;
+      else process.env.__PI_PARENT_SESSION_ID = prevParentSidEnv;
       if (prevSid === undefined) delete (globalThis as any).__piConfigSessionId;
       else (globalThis as any).__piConfigSessionId = prevSid;
       if (prevSidEnv === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
