@@ -155,6 +155,83 @@ The pidash browser UI is a human clicking, so it counts as `user`. An unrecognis
 runtime value falls back to `user`. The async-status detail header appends
 `· killed by <origin>` for failed jobs.
 
+## Cross-Extension Lifecycle Hooks
+
+Multiple extensions subscribe independently to `agent_end`, `turn_end`, and
+`session_shutdown`. Extension load order is not guaranteed (in practice alphabetical
+by directory, so `extensions/coms/` loads before `extensions/orchestrator/`); within
+`extensions/orchestrator/`, handlers run in `index.ts` registration order. Handlers
+that finalize state or queue `followUp` turns must coordinate across extensions
+instead of assuming sole ownership.
+
+| Hook | Extension / File | State Mutated / Action | Guards & Ordering Notes |
+|------|------------------|------------------------|-------------------------|
+| `agent_end` | `extensions/coms/coms-p2p.ts` | Clears `agentRunning`; safety-net finalizes delivered `currentInbound` (replies to peer and drains FIFO queue), or re-injects once / aborts undelivered non-`followUp` inbounds. | Skipped on oneshot register; loads before `orchestrator`; defers when `shouldDeferForMalformedRecovery()` is true. |
+| `agent_end` | `extensions/orchestrator/malformed-response-recovery.ts` | Detects recoverable provider stop reasons (`MALFORMED_RESPONSE`, `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`); up to 2 consecutive retries, calls `markRecoveryPending(true)` and queues hidden `followUp` (`triggerTurn: true`); resets budget on normal turns; calls `notifyMalformedRecoveryAborted()` on send failure. | Coordinates with `coms-p2p` via `extensions/shared/malformed-recovery-bridge.ts`. |
+| `agent_end` | `extensions/orchestrator/review-ui.ts` | Refreshes cached `lastCtx` for background `reviewPoller` / `gitDirtyPoller` status-bar updates. | — |
+| `agent_end` | `extensions/orchestrator/status-line.ts` (2 handlers) | Cancels debounce timer and runs immediate git branch/status refresh (`updateBranch`); updates `lastActivityTime` and status-bar timestamp (`touchActivity`). | Guarded by `shutDown` / `ctx.hasUI`. |
+| `agent_end` | `extensions/pidash/pidash.ts` (2 handlers) | `forward("agent_end")` sets `activity = "idle"`, bumps `activitySequence`, buffers/forwards over WS; second handler auto-names unnamed sessions once from first user prompt (`setSessionName`). | Guarded by `shuttingDown`. |
+| `agent_end` | `extensions/pidiff/pidiff.ts` | Updates cached `lastCtx` and refreshes pidiff status slot when connected. | — |
+| `turn_end` | `extensions/coms/coms-p2p.ts` | Early-finalizes delivered `currentInbound` on zero-tool-call, non-error/non-aborted assistant turns with `pendingSteers === 0`, draining the inbound FIFO queue so queued follow-ups/async results cannot starve `agent_end`. | Runs before `orchestrator`; skips when `toolResults.length > 0`, `hasToolCalls`, `stopReason` is `error`/`aborted`, or `pendingSteers > 0`. |
+| `turn_end` | `extensions/orchestrator/rules.ts` | Logs memory retrieval telemetry (clears `lastInjectedMemories` on `aborted`/`error`); checks semantic verifiers on `toolResults` and queues `enforcement-violation` `followUp` (`triggerTurn: true`); vector-searches memories for `edit`/`write` paths and queues `memory-reminder` `followUp` (`triggerTurn: false`). | Skipped for `PI_SUBAGENT_CHILD=1`; verifier/reminder only run when `toolResults` is non-empty (no race with `coms-p2p`'s zero-tool-call finalization). |
+| `turn_end` | `extensions/orchestrator/status-line.ts` | Updates `lastActivityTime` and status-bar timestamp (`touchActivity`). | Guarded by `shutDown` / `ctx.hasUI`. |
+| `turn_end` | `extensions/orchestrator/skill-maintenance.ts` | Reconciles project skill tree changes against turn snapshot, queues `skill-maintenance` `followUp` notice (`triggerTurn: false`) if changed, and clears per-turn tracking sets. | — |
+| `turn_end` | `extensions/pidash/pidash.ts` (2 handlers) | `forward("turn_end")` projects (`projectTurnEndEvent`) and sends over WS; second handler syncs `thinkingLevel` (`update_info`). | Guarded by `shuttingDown`. |
+| `turn_end` | `extensions/pitasks/index.ts` | Clears `agentBusy` and `turnTaskRefs`; attributes assistant turn token usage to task widget (`addTokenUsage` / `beginTurn`). | `agent_settled` also resets `agentBusy` if `turn_end` is skipped on abort/error. |
+| `turn_end` | `extensions/reload-flag/index.ts` | Fallback trigger (`maybeTrigger()`) for `.pi/run/reload.flag` if FS watcher missed it. | Guarded by `isLiveExtensionCtx` and `isHandshakeParticipant(ctx.mode)`. |
+| `session_shutdown` | `extensions/coms/coms-p2p.ts` (via `coms-shared.ts` proxy) | Clears `globalThis.__comsSelf` / `__comsUserSend`; `cleanShutdown()` stops watchers/timers, broadcasts `"leaving"` presence, closes P2P socket/server, unsubscribes malformed-recovery abort listener, removes `SIGINT`/`SIGTERM` handlers, clears UI widget/status. | Proxy captures and passes `session_shutdown` through so reload cleans up old sockets. |
+| `session_shutdown` | `extensions/openai-compatible-discovery/index.ts` | `restoreSources()` aborts in-flight discovery requests, increments `lifecycleGeneration`, unregisters augmented providers. | — |
+| `session_shutdown` | `extensions/orchestrator/index.ts` | Calls `clearWorkloadSources()` (`extensions/shared/workload-bridge.ts`) so torn-down runtimes do not serve coms drilldowns from dead getters. | — |
+| `session_shutdown` | `extensions/orchestrator/async-agents.ts` | Nulls `asyncState.lastCtx`, stops poller interval and FS watcher, unsubscribes sync-run listener, calls `abortAllSyncAgentRuns()`. | — |
+| `session_shutdown` | `extensions/orchestrator/cron.ts` | `cleanupRuntime()` clears timers/watchers and releases durable leader locks; unlinks session cron file on `reason` in `["new", "fork", "quit"]`. | Preserves session cron file on `reload`/`resume`. |
+| `session_shutdown` | `extensions/orchestrator/dreaming.ts` | Stops auto-dream timer; spawns `runDreamAsync()` on `quit` (or unset `reason`). | Skipped when `shouldSkipOneshotShutdownDream(lastCtx?.mode)`, `dreamInFlight`, or `reason !== "quit"`. |
+| `session_shutdown` | `extensions/orchestrator/enforcement.ts` | Clears session-scoped dangerous-command approvals (`Symbol.for("pi-config.dangerousSessionApprovals")`). | Preserved when `event.reason === "reload"`. |
+| `session_shutdown` | `extensions/orchestrator/malformed-response-recovery.ts` | Sets `shuttingDown = true`, clears `markRecoveryPending(false)`, unregisters bridge coordinator, calls `notifyMalformedRecoveryAborted()` if recovery was pending. | Unblocks any deferred `coms-p2p` inbound. |
+| `session_shutdown` | `extensions/orchestrator/review-ui.ts` | Nulls `lastCtx`, clears `reviewPoller` and `gitDirtyPoller` intervals. | — |
+| `session_shutdown` | `extensions/orchestrator/session-search.ts` | Harvests compaction/branch summaries from session file (fallback: joined user messages) and indexes them. | — |
+| `session_shutdown` | `extensions/orchestrator/status-line.ts` | Sets `shutDown = true`, bumps `branchUpdateSeq`, nulls `lastCtx`, clears debounce timer and `gitPoller`/`timePoller`. | — |
+| `session_shutdown` | `extensions/orchestrator/trail.ts` | Increments `state.generation` (invalidating in-flight refresh continuations) and clears `trail` status slot. | — |
+| `session_shutdown` | `extensions/pidash/pidash.ts` | Clears pending bridged UI requests, sends `session_shutdown` (`reason`, `targetSessionFile`) to daemon, sets `shuttingDown = true`, stops timers/heartbeat/reconnect, closes WS. | — |
+| `session_shutdown` | `extensions/pidiff/pidiff.ts` | Sets `shuttingDown = true`, stops reconnect/heartbeat, closes WS. | Server auto-exits when last session disconnects. |
+| `session_shutdown` | `extensions/pitasks/index.ts` | Sets `shuttingDown = true`, clears `turnTaskRefs`, GC/reminder intervals, toggle-all subscription; deactivates widget and closes store. | — |
+| `session_shutdown` | `extensions/reload-flag/index.ts` | Stops flag watcher; atomically releases owned `reload.pending` lock; cancels pending `continuationTimer`. | Preserves `reload.pending` when `event.reason === "reload"`. |
+
+### Load-Order Caveats & Bridge Coordination
+
+Because `extensions/coms/` loads before `extensions/orchestrator/`, `coms-p2p.ts`'s
+`agent_end` handler runs before `malformed-response-recovery.ts`. Without
+coordination, `coms-p2p` would finalize an active `currentInbound` and reply to the
+peer with an incomplete or failed turn before the orchestrator schedules its
+recovery `followUp`.
+
+Extensions avoid circular imports and load-order assumptions by coordinating through
+process-local `Symbol.for("pi-config.<name>")` slots in `extensions/shared/`.
+`extensions/shared/malformed-recovery-bridge.ts` is the canonical example:
+
+- `malformed-response-recovery.ts` registers a synchronous predicate with
+  `registerRecoveryCoordinator()`, marks retries in flight via
+  `markRecoveryPending()`, and emits `notifyMalformedRecoveryAborted()` if sending
+  fails or the session shuts down.
+- `coms-p2p.ts` checks `shouldDeferForMalformedRecovery()` before finalizing on
+  `agent_end` and subscribes via `onMalformedRecoveryAborted()` so deferred inbounds
+  finalize cleanly if recovery aborts.
+
+Other lifecycle-spanning bridges using the same pattern:
+`extensions/shared/workload-bridge.ts`, `extensions/shared/task-store-bridge.ts`,
+`extensions/shared/ui-bridge.ts`, and `extensions/shared/widget-visibility.ts`.
+
+Checklist when adding a new `agent_end`, `turn_end`, or `session_shutdown` subscriber:
+
+1. **`turn_end` + `followUp` (`triggerTurn: true`) on zero-tool-call assistant turns:**
+   Check whether `coms-p2p` already finalized `currentInbound` before your handler runs.
+2. **`agent_end` + `followUp` (`triggerTurn: true`):** Expose a synchronous predicate
+   and abort callback via `extensions/shared/` so earlier-loaded `coms-p2p` defers
+   finalization until the follow-up finishes or aborts.
+3. **`session_shutdown`:** Distinguish `event.reason === "reload"` from real exits
+   when clearing `globalThis` grants, session files, or lockfiles; always clear timers
+   and watchers, and guard async continuations with `isLiveExtensionCtx`
+   (`extensions/shared/live-ctx.ts`).
+
 ## Related Pages
 
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — the user-facing async and cron workflows this page implements.
