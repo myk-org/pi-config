@@ -15,12 +15,12 @@ import {
   readPiAgentDefaults,
   mergePiAgentDefaults,
   resolveDefaultModel,
-  resolvePiAgentDir,
   resolvePiAgentSettingsPath,
   resolveProjectPiSettingsPath,
   isRestoreModelHopeless,
   restoreDefaultModelOnSessionStart,
 } from "../../../extensions/providers/restore-default-model.js";
+import { resolvePiAgentDir } from "../../../extensions/shared/pi-agent-dir.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -1589,5 +1589,44 @@ describe("resolveDefaultModel + restoreDefaultModelOnSessionStart", () => {
     assert.equal(ok, false);
     assert.equal(called, false);
     assert.equal(polls, 2);
+  });
+
+  it("aborts pending retry timer immediately when signal aborts", async () => {
+    const path = join(dir, "settings.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        defaultProvider: "foo",
+        defaultModel: "foo-model",
+      }),
+    );
+    const controller = new AbortController();
+    let findCalls = 0;
+    const start = Date.now();
+    const pending = restoreDefaultModelOnSessionStart({
+      settingsPath: path,
+      reason: "startup",
+      argv: ["node", "pi"],
+      retries: 5,
+      delayMs: 10_000,
+      signal: controller.signal,
+      ctx: {
+        model: { id: "bar-model", provider: "bar" },
+        modelRegistry: {
+          find: () => {
+            findCalls += 1;
+            // Trigger abort right after the first attempt schedules the 10s timer.
+            queueMicrotask(() => controller.abort());
+            return undefined;
+          },
+        },
+      },
+      setModel: async () => true,
+    });
+    const ok = await pending;
+    const elapsedMs = Date.now() - start;
+    assert.equal(ok, false);
+    assert.equal(findCalls, 1);
+    assert.ok(elapsedMs < 1000, `expected abort to cancel 10s timer quickly, took ${elapsedMs}ms`);
   });
 });

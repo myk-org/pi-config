@@ -157,9 +157,11 @@ runtime value falls back to `user`. The async-status detail header appends
 
 ## Provider Restore & Runtime Lifecycle
 
-- **Saved default-model restore & thinking level (`extensions/providers/`):** Cold-start restore runs on `startup` and
-  `resume`, skips when `enabledModels` is non-empty, and merges trusted project settings. Per-model thinking levels are
-  persisted via `extensions/providers/last-thinking-level.ts`.
+- **Saved default-model restore & thinking level (`extensions/providers/`):** `extensions/providers/session-restore.ts`
+  owns one ordered `session_start` flow (cold-start default-model restore on `startup`/`resume` — skipping when
+  `enabledModels` is non-empty and merging trusted project settings — followed directly by per-model thinking-level
+  restore persisted via `extensions/providers/last-thinking-level.ts`) and cancels pending retry timers on
+  `session_shutdown` or superseded `session_start`.
 - **Sidecar fatal exit & ops logs:** `bindSidecarListenExit()` exits with code `1` on fatal sidecar listen errors;
   operational logs live under `~/.pi/logs/`.
 - **Timers & reload safety:** Guard timer and async callbacks with `isLiveExtensionCtx` (`extensions/shared/live-ctx.ts`)

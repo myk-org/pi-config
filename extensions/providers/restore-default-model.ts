@@ -18,8 +18,6 @@ import { join } from "node:path";
 import { createLogger } from "../shared/logger.js";
 import { resolvePiAgentDir } from "../shared/pi-agent-dir.js";
 
-export { resolvePiAgentDir };
-
 const log = createLogger("providers");
 
 /** session_start reasons where cold-start restore is allowed. */
@@ -359,8 +357,20 @@ export const RESTORE_DEFAULT_MODEL_RETRIES = 5;
 /** Delay between restore attempts (ms). */
 export const RESTORE_DEFAULT_MODEL_DELAY_MS = 100;
 
-const defaultSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> => {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+};
 
 function trimModelRef(
   model: { provider?: string | null; id?: string | null } | undefined | null,
@@ -411,6 +421,8 @@ export async function restoreDefaultModelOnSessionStart(opts: {
   delayMs?: number;
   /** Sleep implementation (default setTimeout). Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
+  /** Optional abort signal to cancel pending retries and clear timers cleanly. */
+  signal?: AbortSignal;
   /** CLI argv for --model/--provider/--models skip (default process.argv). */
   argv?: string[];
   /**
@@ -463,7 +475,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
 
   const retries = opts.retries ?? RESTORE_DEFAULT_MODEL_RETRIES;
   const delayMs = opts.delayMs ?? RESTORE_DEFAULT_MODEL_DELAY_MS;
-  const sleep = opts.sleep ?? defaultSleep;
+  const sleep = opts.sleep ?? ((ms: number) => defaultSleep(ms, opts.signal));
   const label = `${defaultProvider}/${defaultModel}`;
   let lastFailReason = "unknown";
   const snapshot = trimModelRef({
@@ -557,8 +569,17 @@ export async function restoreDefaultModelOnSessionStart(opts: {
   };
 
   for (let attempt = 1; attempt <= retries; attempt++) {
+    if (opts.signal?.aborted) {
+      log.debug("restore-default-model aborted", { label, reason: reason || "?", attempt, phase: "pre-resolve" });
+      return false;
+    }
+
     if (typeof opts.getCurrentModel === "function") {
       const live = trimModelRef(opts.getCurrentModel());
+      if (opts.signal?.aborted) {
+        log.debug("restore-default-model aborted", { label, reason: reason || "?", attempt, phase: "post-getCurrentModel" });
+        return false;
+      }
       if (shouldAbortForLiveModel(live, attempt, "pre-resolve")) {
         return false;
       }
@@ -575,13 +596,28 @@ export async function restoreDefaultModelOnSessionStart(opts: {
         "restore-default-model retry",
         `${lastFailReason} (attempt ${attempt}/${retries})`,
       );
-      if (attempt < retries) await sleep(delayMs);
+      if (attempt < retries) {
+        await sleep(delayMs);
+        if (opts.signal?.aborted) {
+          log.debug("restore-default-model aborted", { label, reason: reason || "?", attempt, phase: "post-sleep" });
+          return false;
+        }
+      }
       continue;
+    }
+
+    if (opts.signal?.aborted) {
+      log.debug("restore-default-model aborted", { label, reason: reason || "?", attempt, phase: "pre-setModel" });
+      return false;
     }
 
     // TOCTOU: re-check immediately before setModel after resolve.
     if (typeof opts.getCurrentModel === "function") {
       const liveBeforeSet = trimModelRef(opts.getCurrentModel());
+      if (opts.signal?.aborted) {
+        log.debug("restore-default-model aborted", { label, reason: reason || "?", attempt, phase: "post-getCurrentModel-pre-setModel" });
+        return false;
+      }
       if (shouldAbortForLiveModel(liveBeforeSet, attempt, "pre-setModel")) {
         return false;
       }
@@ -598,19 +634,33 @@ export async function restoreDefaultModelOnSessionStart(opts: {
         );
         return true;
       }
+      if (opts.signal?.aborted) {
+        log.debug("restore-default-model aborted", { label, reason: reason || "?", attempt, phase: "post-setModel" });
+        return false;
+      }
       lastFailReason = `setModel returned false for ${label}`;
       log.debug(
         "restore-default-model retry",
         `${lastFailReason} (attempt ${attempt}/${retries})`,
       );
     } catch (err) {
+      if (opts.signal?.aborted) {
+        log.debug("restore-default-model aborted", { label, reason: reason || "?", attempt, phase: "catch" });
+        return false;
+      }
       lastFailReason = err instanceof Error ? err.message : String(err);
       log.debug(
         "restore-default-model retry",
         `setModel threw: ${lastFailReason} (attempt ${attempt}/${retries})`,
       );
     }
-    if (attempt < retries) await sleep(delayMs);
+    if (attempt < retries) {
+      await sleep(delayMs);
+      if (opts.signal?.aborted) {
+        log.debug("restore-default-model aborted", { label, reason: reason || "?", attempt, phase: "post-sleep" });
+        return false;
+      }
+    }
   }
 
   log.warn(

@@ -7,40 +7,26 @@
  * Loaded from: extensions/providers/
  */
 
-import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { isPiMetaInvocation } from "../orchestrator/utils.js";
-import { registerModelRestoreOnSessionStart } from "./model-restore-wiring.js";
-import { registerLastThinkingLevel } from "./last-thinking-level.js";
+import { registerSessionRestore, type SessionRestoreOptions } from "./session-restore.js";
 
 const log = createLogger("providers");
 log.debug("providers module loaded");
 
 export default function (
   pi: ExtensionAPI,
-  testOptions?: {
-    thinkingStatePath?: string;
-    argv?: string[];
-  },
+  testOptions?: SessionRestoreOptions,
 ) {
   // pi --help / --version — skip session wiring
-  if (isPiMetaInvocation()) return;
+  if (isPiMetaInvocation(testOptions?.argv)) {
+    log.debug("providers skipping session wiring for meta invocation");
+    return;
+  }
 
-  const lastThinking = registerLastThinkingLevel(pi, {
-    statePath: testOptions?.thinkingStatePath,
+  registerSessionRestore(pi, {
+    thinkingStatePath: testOptions?.thinkingStatePath,
     argv: testOptions?.argv,
-  });
-
-  registerModelRestoreOnSessionStart(pi, {
-    argv: testOptions?.argv,
-    onRestoreModel: (model, setSelected) => {
-      log.debug("onRestoreModel handoff", { provider: model.provider, id: model.id });
-      return lastThinking.restoreModel(model as Model<any>, setSelected);
-    },
-    onRestoreSettled: (event, ctx, modelRestore) => {
-      log.debug("onRestoreSettled handoff", { reason: (event as { reason?: string })?.reason });
-      return void lastThinking.applyAfterModelRestore(event, ctx, modelRestore);
-    },
   });
 }
