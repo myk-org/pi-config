@@ -60,6 +60,9 @@ const MTIME_SUPERSEDE_TOLERANCE_MS = 1000;
 
 // ── Secret & Noise Sanitization ────────────────────────────────────────────
 
+const CREDENTIAL_KEY_SRC =
+  "(?:[A-Za-z0-9_-]{1,64}[_-])?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|secret[_-]?access[_-]?key|password|passwd|private[_-]?key)|[A-Za-z0-9_-]{1,64}[_-](?:token|secret)";
+
 const SECRET_PATTERNS: Array<{ re: RegExp; replacement: string }> = [
   {
     re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
@@ -98,8 +101,16 @@ const SECRET_PATTERNS: Array<{ re: RegExp; replacement: string }> = [
     replacement: "$1[REDACTED]",
   },
   {
-    re: /\b((?:[A-Za-z0-9_-]{1,64}[_-])?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|secret[_-]?access[_-]?key|password|passwd|private[_-]?key)|[A-Za-z0-9_-]{1,64}[_-](?:token|secret))(["']?\s*[:=]\s*["']?)([^\s"',;}{]{8,})(["']?)/gi,
+    re: new RegExp(`\\b(${CREDENTIAL_KEY_SRC})(["']?\\s*[:=]\\s*")((?:\\\\[^\\r\\n]|[^"\\\\\\r\\n]){8,})("|$)`, "gi"),
     replacement: "$1$2[REDACTED]$4",
+  },
+  {
+    re: new RegExp(`\\b(${CREDENTIAL_KEY_SRC})(["']?\\s*[:=]\\s*')((?:\\\\[^\\r\\n]|[^'\\\\\\r\\n]){8,})('|$)`, "gi"),
+    replacement: "$1$2[REDACTED]$4",
+  },
+  {
+    re: new RegExp(`\\b(${CREDENTIAL_KEY_SRC})(["']?\\s*[:=]\\s*)([^\\s"';}{]{8,})`, "gi"),
+    replacement: "$1$2[REDACTED]",
   },
   {
     re: /(https?:\/\/[^/\s:@]{1,128}:)([^/\s@]{1,256})(@)/gi,
@@ -279,12 +290,6 @@ interface CachedSessionScan extends ScanMutableState {
   effectiveLastActivityIso: string;
 }
 
-export interface SessionScanStats {
-  cacheHits: number;
-  fullScans: number;
-  incrementalScans: number;
-}
-
 export interface SearchSessionsOptions {
   /** Override the project sessions directory (defaults to `~/.pi/agent/sessions/<cwd-slug>`). */
   sessionsDir?: string;
@@ -293,23 +298,10 @@ export interface SearchSessionsOptions {
 }
 
 const fileScanCache = new Map<string, CachedSessionScan>();
-const scanStats: SessionScanStats = {
-  cacheHits: 0,
-  fullScans: 0,
-  incrementalScans: 0,
-};
 
-/** Clear the in-memory session JSONL scan cache and counters (for tests). */
+/** Clear the in-memory session JSONL scan cache (for tests). */
 export function clearSessionScanCache(): void {
   fileScanCache.clear();
-  scanStats.cacheHits = 0;
-  scanStats.fullScans = 0;
-  scanStats.incrementalScans = 0;
-}
-
-/** Return cumulative cache hit / scan counters for diagnostics and tests. */
-export function getSessionScanStats(): SessionScanStats {
-  return { ...scanStats };
 }
 
 /**
@@ -576,7 +568,6 @@ function scanSessionJsonlFile(filePath: string, st: Stats): CachedSessionScan | 
     cached.size === st.size &&
     cached.ino === st.ino
   ) {
-    scanStats.cacheHits++;
     setCachedScan(filePath, cached);
     return cached;
   }
@@ -595,7 +586,6 @@ function scanSessionJsonlFile(filePath: string, st: Stats): CachedSessionScan | 
       fd = openSync(filePath, "r");
       const deltaLen = st.size - cached.committedByteOffset;
       const buf = deltaLen > 0 ? readRange(fd, cached.committedByteOffset, deltaLen) : Buffer.alloc(0);
-      scanStats.incrementalScans++;
 
       const state: ScanMutableState = {
         sessionId: cached.sessionId,
@@ -651,7 +641,6 @@ function scanSessionJsonlFile(filePath: string, st: Stats): CachedSessionScan | 
       lastActivityIso: mtimeIso,
     };
 
-    scanStats.fullScans++;
     if (st.size === 0) {
       const empty = finalizeEffectiveView(state, "", st, 0);
       setCachedScan(filePath, empty);
@@ -682,10 +671,19 @@ function scanSessionJsonlFile(filePath: string, st: Stats): CachedSessionScan | 
       applyJsonlLine(state, headerLine, true);
 
       const startOffset = st.size - MAX_SCAN_BYTES;
-      const tailBuf = readRange(fd, startOffset, MAX_SCAN_BYTES);
-      const skipPartial = tailBuf.indexOf(0x0a);
-      if (skipPartial !== -1) {
-        const bodyStart = skipPartial + 1;
+      // Read 1 preceding byte so a record starting right at startOffset (after \n) is preserved
+      const probeBuf = readRange(fd, startOffset - 1, MAX_SCAN_BYTES + 1);
+      const startsAtBoundary = probeBuf.length > 0 && probeBuf[0] === 0x0a;
+      const tailBuf = probeBuf.subarray(1);
+      let bodyStart = -1;
+      if (startsAtBoundary) {
+        bodyStart = 0;
+      } else {
+        const skipPartial = tailBuf.indexOf(0x0a);
+        if (skipPartial !== -1) bodyStart = skipPartial + 1;
+      }
+
+      if (bodyStart !== -1) {
         const bodyBuf = tailBuf.subarray(bodyStart);
         const lastNl = bodyBuf.lastIndexOf(0x0a);
         if (lastNl !== -1) {
@@ -771,10 +769,11 @@ function scanRecentProjectSessions(
     }
   }
 
-  const selected = [
-    ...priorityCandidates.slice(0, MAX_RECENT_SESSION_FILES),
-    ...indexedCandidates.slice(0, MAX_RECENT_SESSION_FILES),
-  ];
+  const prioritySelected = priorityCandidates.slice(0, MAX_RECENT_SESSION_FILES);
+  const remainingSlots = MAX_RECENT_SESSION_FILES - prioritySelected.length;
+  const selected = remainingSlots > 0
+    ? [...prioritySelected, ...indexedCandidates.slice(0, remainingSlots)]
+    : prioritySelected;
 
   const scanned: CachedSessionScan[] = [];
   for (const { filePath, st } of selected) {
@@ -788,8 +787,8 @@ function scanRecentProjectSessions(
     dir,
     candidates: candidates.length,
     priority: priorityCandidates.length,
+    selected: selected.length,
     scanned: scanned.length,
-    stats: scanStats,
   });
 
   return scanned;

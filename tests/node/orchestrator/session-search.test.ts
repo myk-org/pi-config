@@ -14,7 +14,6 @@ import {
   getProjectSessionsDir,
   redactSecrets,
   clearSessionScanCache,
-  getSessionScanStats,
 } from "../../../extensions/orchestrator/session-search.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
@@ -281,32 +280,45 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
     }
   });
 
-  it("reuses the mtime cache on repeated queries of an unchanged session file", () => {
+  it("reuses cached results when a session file's mtime and size are unchanged", () => {
     const cwd = makeCwd();
     const sessionsDir = makeTempDir("sessions-cache-hit-");
     try {
       const sid = "active-cache-hit-01";
       const file = path.join(sessionsDir, `2026-11-21T10-00-00-000Z_${sid}.jsonl`);
-      fs.writeFileSync(
-        file,
-        makeSessionJsonl([
-          { type: "session", version: 3, id: sid, timestamp: "2026-11-21T10:00:00.000Z", cwd },
-          makeUserMsg("Initial discussion about sqlite WAL checkpoint tuning", "2026-11-21T10:01:00.000Z"),
-        ]),
-      );
+      const fixedTime = new Date("2026-11-21T10:01:00.000Z");
+      const baseMsg = makeUserMsg("Initial discussion about alpha-cached-topic tuning", "2026-11-21T10:01:00.000Z");
+      const initialContent = makeSessionJsonl([
+        { type: "session", version: 3, id: sid, timestamp: "2026-11-21T10:00:00.000Z", cwd },
+        baseMsg,
+      ]);
+      fs.writeFileSync(file, initialContent);
+      fs.utimesSync(file, fixedTime, fixedTime);
 
-      assert.equal(searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir }).length, 1);
-      assert.deepEqual(getSessionScanStats(), { cacheHits: 0, fullScans: 1, incrementalScans: 0 });
+      assert.equal(searchSessions(cwd, "alpha-cached-topic", 5, { sessionsDir }).length, 1);
 
-      assert.equal(searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir }).length, 1);
-      assert.deepEqual(getSessionScanStats(), { cacheHits: 1, fullScans: 1, incrementalScans: 0 });
+      // Overwrite in-place with identical byte length and identical mtime:
+      // cache hit serves previous result without re-parsing disk content.
+      const mutatedContent = initialContent.replace("alpha-cached-topic", "bravo-cached-topic");
+      assert.equal(Buffer.byteLength(mutatedContent), Buffer.byteLength(initialContent));
+      fs.writeFileSync(file, mutatedContent);
+      fs.utimesSync(file, fixedTime, fixedTime);
+
+      assert.equal(searchSessions(cwd, "alpha-cached-topic", 5, { sessionsDir }).length, 1);
+      assert.equal(searchSessions(cwd, "bravo-cached-topic", 5, { sessionsDir }).length, 0);
+
+      // Advancing mtime invalidates the cache and picks up the new content
+      const newerTime = new Date("2026-11-21T10:02:00.000Z");
+      fs.utimesSync(file, newerTime, newerTime);
+      assert.equal(searchSessions(cwd, "bravo-cached-topic", 5, { sessionsDir }).length, 1);
+      assert.equal(searchSessions(cwd, "alpha-cached-topic", 5, { sessionsDir }).length, 0);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
       fs.rmSync(sessionsDir, { recursive: true, force: true });
     }
   });
 
-  it("performs an incremental byte-offset scan when new lines are appended", () => {
+  it("picks up newly appended messages on subsequent queries of an active session", () => {
     const cwd = makeCwd();
     const sessionsDir = makeTempDir("sessions-inc-append-");
     try {
@@ -320,7 +332,7 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
         ]),
       );
 
-      searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir });
+      assert.equal(searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir }).length, 1);
       fs.appendFileSync(
         file,
         JSON.stringify(
@@ -328,17 +340,17 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
         ) + "\n",
       );
 
-      const results = searchSessions(cwd, "prometheus scrape", 5, { sessionsDir });
-      assert.equal(results.length, 1);
-      assert.equal(results[0]!.sessionId, sid);
-      assert.deepEqual(getSessionScanStats(), { cacheHits: 0, fullScans: 1, incrementalScans: 1 });
+      const appended = searchSessions(cwd, "prometheus scrape", 5, { sessionsDir });
+      assert.equal(appended.length, 1);
+      assert.equal(appended[0]!.sessionId, sid);
+      assert.equal(searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir }).length, 1);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
       fs.rmSync(sessionsDir, { recursive: true, force: true });
     }
   });
 
-  it("falls back to a full scan when a session file is truncated or rewritten shorter", () => {
+  it("replaces stale content when a session file is truncated or rewritten shorter", () => {
     const cwd = makeCwd();
     const sessionsDir = makeTempDir("sessions-rewrite-");
     try {
@@ -364,7 +376,7 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
 
       const results = searchSessions(cwd, "graphql federation", 5, { sessionsDir });
       assert.equal(results.length, 1);
-      assert.equal(getSessionScanStats().fullScans, 2);
+      assert.equal(results[0]!.sessionId, sid);
       assert.equal(searchSessions(cwd, "prometheus scrape", 5, { sessionsDir }).length, 0);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -400,9 +412,10 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
           "\n",
       );
 
-      assert.equal(searchSessions(cwd, "radix trie", 5, { sessionsDir }).length, 1);
+      const firstHits = searchSessions(cwd, "radix trie", 5, { sessionsDir });
+      assert.equal(firstHits.length, 1);
+      assert.equal(firstHits[0]!.snippet.split("radix trie").length - 1, 1);
       assert.equal(searchSessions(cwd, "bloom filter", 5, { sessionsDir }).length, 1);
-      assert.equal(getSessionScanStats().incrementalScans, 1);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
       fs.rmSync(sessionsDir, { recursive: true, force: true });
@@ -625,6 +638,89 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
     }
   });
 
+  it("preserves a message starting at the exact 4MB tail-window boundary", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-oversized-boundary-");
+    try {
+      const sid = "exact-boundary-session-92";
+      const file = path.join(sessionsDir, `2026-11-22T07-45-00-000Z_${sid}.jsonl`);
+      const maxScanBytes = 4 * 1024 * 1024;
+      const header =
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: sid,
+          timestamp: "2026-11-22T07:45:00.000Z",
+          cwd,
+        }) + "\n";
+      const boundaryLine =
+        JSON.stringify(
+          makeUserMsg("Exact boundary-record-marker message right at startOffset", "2026-11-22T07:46:00.000Z"),
+        ) + "\n";
+
+      // Construct tail so Buffer.byteLength(boundaryLine + filler) === maxScanBytes exactly,
+      // meaning startOffset = st.size - maxScanBytes lands right after header's trailing '\n'.
+      const fillerTemplatePrefix = '{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"';
+      const fillerTemplateSuffix = '"}]}}\n';
+      const remainingBytes = maxScanBytes - Buffer.byteLength(boundaryLine);
+      const padLen = remainingBytes - Buffer.byteLength(fillerTemplatePrefix) - Buffer.byteLength(fillerTemplateSuffix);
+      assert.ok(padLen > 0);
+      const fillerLine = `${fillerTemplatePrefix}${"p".repeat(padLen)}${fillerTemplateSuffix}`;
+      const fullContent = header + boundaryLine + fillerLine;
+      assert.equal(Buffer.byteLength(fullContent) - maxScanBytes, Buffer.byteLength(header));
+
+      fs.writeFileSync(file, fullContent);
+
+      const hits = searchSessions(cwd, "boundary-record-marker", 5, { sessionsDir });
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0]!.sessionId, sid);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("caps combined priority and indexed session scans to 20 files", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-combined-cap-");
+    try {
+      // Create 20 priority (unindexed) sessions so they fill all 20 scan slots
+      for (let i = 1; i <= 20; i++) {
+        const sid = `priority-unindexed-${String(i).padStart(2, "0")}`;
+        const ts = `2026-11-20T11:${String(i).padStart(2, "0")}:00.000Z`;
+        fs.writeFileSync(
+          path.join(sessionsDir, `2026-11-20T11-${String(i).padStart(2, "0")}-00-000Z_${sid}.jsonl`),
+          makeSessionJsonl([
+            { type: "session", version: 3, id: sid, timestamp: ts, cwd },
+            makeUserMsg(`Unindexed priority session ${i} working on priority-bucket-work`, ts),
+          ]),
+        );
+      }
+
+      // Create an indexed session whose on-disk branch_summary would only appear if >20 files were scanned
+      const overflowSid = "indexed-overflow-21";
+      fs.writeFileSync(
+        path.join(sessionsDir, `2026-11-20T12-00-00-000Z_${overflowSid}.jsonl`),
+        makeSessionJsonl([
+          { type: "session", version: 3, id: overflowSid, timestamp: "2026-11-20T12:00:00.000Z", cwd },
+          {
+            type: "branch_summary",
+            summary:
+              "Unindexed overflow-bucket-branch-marker summary that exceeds the 20-file combined scan budget.",
+            timestamp: "2026-11-20T12:01:00.000Z",
+          },
+        ]),
+      );
+      indexSessionSummary(cwd, overflowSid, "Indexed primary summary for overflow session.");
+
+      assert.equal(searchSessions(cwd, "priority-bucket-work", 25, { sessionsDir }).length, 20);
+      assert.equal(searchSessions(cwd, "overflow-bucket-branch-marker", 5, { sessionsDir }).length, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
   it("recovers cleanly after an oversized single-line tail slice with no newline", () => {
     const cwd = makeCwd();
     const sessionsDir = makeTempDir("sessions-oversized-nonl-");
@@ -723,6 +819,27 @@ describe("session-search sanitization and subagent filtering", () => {
     assert.ok(!redacted.includes(envVal));
     assert.ok(!redacted.includes(ghVal));
     assert.ok(!redacted.includes(jsonVal));
+  });
+
+  it("redacts full quoted credential values containing commas, semicolons, and escaped quotes", () => {
+    const doubleQuotedSuffix = "SUFFIX_" + "d".repeat(10);
+    const singleQuotedSuffix = "SUFFIX_" + "s".repeat(10);
+    const escapedSuffix = "SUFFIX_" + "e".repeat(10);
+    const truncatedSuffix = "SUFFIX_" + "t".repeat(10);
+    const sample = [
+      `${["OPENAI", "API_KEY"].join("_")}="abcdefgh,${doubleQuotedSuffix}"`,
+      `${["DB", "PASSWORD"].join("_")}='part1;${singleQuotedSuffix}'`,
+      `${["GITHUB", "TOKEN"].join("_")}="abc\\"def,${escapedSuffix}"`,
+      `${["API", "KEY"].join("_")}="abcdefgh,${truncatedSuffix}`,
+    ].join(" ");
+
+    const redacted = redactSecrets(sample);
+    assert.ok(!redacted.includes(doubleQuotedSuffix));
+    assert.ok(!redacted.includes(singleQuotedSuffix));
+    assert.ok(!redacted.includes(escapedSuffix));
+    assert.ok(!redacted.includes(truncatedSuffix));
+    assert.match(redacted, /OPENAI_API_KEY="\[REDACTED\]"/);
+    assert.match(redacted, /DB_PASSWORD='\[REDACTED\]'/);
   });
 
   it("filters slash commands and harness banners while preserving prompts after peer-joined prefixes", () => {
