@@ -16,7 +16,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { sendSystemNote } from "../shared/system-note.js";
-import { publishedTaskStore } from "../shared/task-store-bridge.js";
+import { publishedTaskStore } from "../shared/session-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import {
   getMarkdownTheme,

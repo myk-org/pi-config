@@ -22,14 +22,14 @@ import {
 	type ToggleAllWidgetsEvent,
 } from "../shared/widget-visibility.js";
 import {
-	DEFAULT_TASK_BRIDGE_SESSION_KEY,
+	DEFAULT_BRIDGE_SESSION_KEY,
 	publishTaskStore,
 	publishTaskTelemetryActive,
 	publishedTaskTelemetryActive,
-	resolveTaskBridgeSessionKey,
+	publishedWorkloadSources,
+	resolveBridgeSessionKey,
 	type TaskTelemetryActiveCallback,
-} from "../shared/task-store-bridge.js";
-import { publishedWorkloadSources } from "../shared/workload-bridge.js";
+} from "../shared/session-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import { openTasksOverlay } from "./tasks-ui.js";
 import {
@@ -357,7 +357,7 @@ export default function (pi: ExtensionAPI) {
 	currentWidget = widget;
 	// Registration and session transitions publish closure-local bindings keyed by sessionId so
 	// concurrent sessions in pi-sidecar never clobber each other's store or telemetry callback.
-	let bridgeSessionKey = DEFAULT_TASK_BRIDGE_SESSION_KEY;
+	let bridgeSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
 	let unregisterTaskStore: (() => void) | null = null;
 	let unregisterTaskTelemetry: (() => void) | null = null;
 	const getLiveStore = () => (shuttingDown ? null : store);
@@ -366,11 +366,11 @@ export default function (pi: ExtensionAPI) {
 		if (!shuttingDown) widget.setActiveTask(taskId, active);
 	};
 	const syncTaskBridge = (ctx?: any, preserveNamedOnMissingId = false): void => {
-		const resolvedKey = ctx ? resolveTaskBridgeSessionKey(ctx) : bridgeSessionKey;
+		const resolvedKey = ctx ? resolveBridgeSessionKey(ctx) : bridgeSessionKey;
 		const nextKey =
 			preserveNamedOnMissingId &&
-			resolvedKey === DEFAULT_TASK_BRIDGE_SESSION_KEY &&
-			bridgeSessionKey !== DEFAULT_TASK_BRIDGE_SESSION_KEY
+			resolvedKey === DEFAULT_BRIDGE_SESSION_KEY &&
+			bridgeSessionKey !== DEFAULT_BRIDGE_SESSION_KEY
 				? bridgeSessionKey
 				: resolvedKey;
 		if (unregisterTaskStore && unregisterTaskTelemetry && nextKey === bridgeSessionKey) return;

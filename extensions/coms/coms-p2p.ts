@@ -40,14 +40,14 @@ import { probeStaleSocket } from "./probe-socket.js";
 import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
 import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueRecoveryPreview } from "./queue-recovery.js";
 import { collectWorkload, openBlockers, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
-import { publishedWorkloadSources } from "../shared/workload-bridge.js";
-import { publishedTaskStore } from "../shared/task-store-bridge.js";
 import {
-	DEFAULT_SESSION_KEY,
+	DEFAULT_BRIDGE_SESSION_KEY,
 	onMalformedRecoveryAborted,
-	resolveRecoverySessionKey,
+	publishedTaskStore,
+	publishedWorkloadSources,
+	resolveBridgeSessionKey,
 	shouldDeferForMalformedRecovery,
-} from "../shared/malformed-recovery-bridge.js";
+} from "../shared/session-bridge.js";
 import { sanitizePeerText } from "./peer-text.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
@@ -765,7 +765,7 @@ export default function (pi: ExtensionAPI) {
 	/** Inbound msg_id deferred on agent_end while malformed-response recovery runs (#1333). */
 	let deferredRecoveryInboundId: string | null = null;
 	let deferredRecoveryCtx: ExtensionContext | null = null;
-	let recoverySessionKey: string = DEFAULT_SESSION_KEY;
+	let recoverySessionKey: string = DEFAULT_BRIDGE_SESSION_KEY;
 	let unsubMalformedRecoveryAborted: (() => void) | null = null;
 	/** True once Pi emits message_start for currentInbound (#1226). */
 	let inboundDelivered = false;
@@ -1911,11 +1911,11 @@ export default function (pi: ExtensionAPI) {
 	const PROGRESS_SIGNAL_INTERVAL_MS = 60_000;
 
 	function resolveComsRecoverySessionKey(ctx?: ExtensionContext | null, fallbackSessionId?: string): string {
-		const fromCtx = resolveRecoverySessionKey(ctx);
-		if (fromCtx !== DEFAULT_SESSION_KEY) return fromCtx;
+		const fromCtx = resolveBridgeSessionKey(ctx);
+		if (fromCtx !== DEFAULT_BRIDGE_SESSION_KEY) return fromCtx;
 		if (typeof fallbackSessionId === "string" && fallbackSessionId.trim()) return fallbackSessionId.trim();
 		if (identity?.pi_session_id?.trim()) return identity.pi_session_id.trim();
-		return DEFAULT_SESSION_KEY;
+		return DEFAULT_BRIDGE_SESSION_KEY;
 	}
 
 	function subscribeMalformedRecoveryAborted(sessionKey: string): void {
@@ -1941,7 +1941,7 @@ export default function (pi: ExtensionAPI) {
 		unsubMalformedRecoveryAborted = null;
 		deferredRecoveryInboundId = null;
 		deferredRecoveryCtx = null;
-		recoverySessionKey = DEFAULT_SESSION_KEY;
+		recoverySessionKey = DEFAULT_BRIDGE_SESSION_KEY;
 		currentCtx = ctx;
 		sessionGeneration++;
 		shuttingDown = false;
@@ -4196,7 +4196,7 @@ Do not respond to this message.`;
 		if (inboundDelivered) {
 			const activeRecoveryKey = resolveComsRecoverySessionKey(
 				ctx,
-				recoverySessionKey !== DEFAULT_SESSION_KEY ? recoverySessionKey : undefined,
+				recoverySessionKey !== DEFAULT_BRIDGE_SESSION_KEY ? recoverySessionKey : undefined,
 			);
 			if (activeRecoveryKey !== recoverySessionKey) {
 				subscribeMalformedRecoveryAborted(activeRecoveryKey);
@@ -4633,7 +4633,7 @@ Do not respond to this message.`;
 		clearPoolVisibilityListeners();
 		unsubMalformedRecoveryAborted?.();
 		unsubMalformedRecoveryAborted = null;
-		recoverySessionKey = DEFAULT_SESSION_KEY;
+		recoverySessionKey = DEFAULT_BRIDGE_SESSION_KEY;
 		deferredRecoveryInboundId = null;
 		deferredRecoveryCtx = null;
 		if (shutdownCtx?.hasUI) {

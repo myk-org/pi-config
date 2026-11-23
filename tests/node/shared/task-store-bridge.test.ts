@@ -10,21 +10,18 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  DEFAULT_TASK_BRIDGE_SESSION_KEY,
-  TASK_STORE_SYMBOL,
-  TASK_TELEMETRY_ACTIVE_SYMBOL,
-  clearTaskStore,
-  clearTaskTelemetryActive,
+  DEFAULT_BRIDGE_SESSION_KEY,
+  SESSION_BRIDGE_SYMBOL,
   publishedTaskStore,
   publishedTaskTelemetryActive,
   publishTaskStore,
   publishTaskTelemetryActive,
-  resolveTaskBridgeSessionKey,
-} from "../../../extensions/shared/task-store-bridge.ts";
+  resetSessionBridge,
+  resolveBridgeSessionKey,
+} from "../../../extensions/shared/session-bridge.ts";
 
 const clear = (): void => {
-  delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
-  delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+  resetSessionBridge({ all: true });
 };
 
 describe("task store bridge", () => {
@@ -63,8 +60,13 @@ describe("task store bridge", () => {
     assert.deepEqual(seen, [{ taskId: "42", active: false }]);
   });
 
-  it("ignores non-function values under the telemetry symbol", () => {
-    (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL] = { invalid: true };
+  it("ignores non-function values under the telemetry slot", () => {
+    (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] = { invalid: true };
+    assert.equal(publishedTaskTelemetryActive(), null);
+
+    (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] = new Map([
+      [DEFAULT_BRIDGE_SESSION_KEY, { taskStore: { telemetryActive: { invalid: true } } }],
+    ]);
     assert.equal(publishedTaskTelemetryActive(), null);
   });
 
@@ -82,7 +84,7 @@ describe("task store bridge", () => {
     publishTaskStore(() => ({ id: "default" }));
     assert.equal(publishedTaskStore("sess-explicit"), null);
 
-    clearTaskStore();
+    resetSessionBridge({ slot: "taskStore" });
     publishTaskStore(() => ({ id: "only" }), "sess-only");
     assert.equal(publishedTaskStore(), null);
     assert.equal(publishedTaskStore("sess-other"), null);
@@ -90,7 +92,7 @@ describe("task store bridge", () => {
     publishTaskTelemetryActive(() => {});
     assert.equal(publishedTaskTelemetryActive("sess-explicit"), null);
 
-    clearTaskTelemetryActive();
+    resetSessionBridge({ slot: "taskStore" });
     publishTaskTelemetryActive(() => {}, "sess-only");
     assert.equal(publishedTaskTelemetryActive(), null);
     assert.equal(publishedTaskTelemetryActive("sess-other"), null);
@@ -110,7 +112,7 @@ describe("task store bridge", () => {
     const storeB = { id: "b" };
     publishTaskStore(() => storeA, "sess-a");
     publishTaskStore(() => storeB, "sess-b");
-    clearTaskStore("sess-a");
+    resetSessionBridge({ sessionKey: "sess-a", slot: "taskStore" });
     assert.equal(publishedTaskStore("sess-a"), null);
     assert.equal(publishedTaskStore("sess-b"), storeB);
   });
@@ -125,31 +127,31 @@ describe("task store bridge", () => {
 
     unregTelA();
     assert.equal(publishedTaskTelemetryActive("sess-a"), null);
-    clearTaskTelemetryActive("sess-b");
+    resetSessionBridge({ sessionKey: "sess-b", slot: "taskStore" });
     assert.equal(publishedTaskTelemetryActive("sess-b"), null);
   });
 
-  it("resolves trimmed session IDs from ExtensionContext via resolveTaskBridgeSessionKey", () => {
+  it("resolves trimmed session IDs from ExtensionContext via resolveBridgeSessionKey", () => {
     assert.equal(
-      resolveTaskBridgeSessionKey({ sessionManager: { getSessionId: () => "  sess-99  " } }),
+      resolveBridgeSessionKey({ sessionManager: { getSessionId: () => "  sess-99  " } }),
       "sess-99",
     );
   });
 
-  it("falls back to DEFAULT_TASK_BRIDGE_SESSION_KEY when ExtensionContext lacks a usable session ID", () => {
-    assert.equal(resolveTaskBridgeSessionKey(undefined), DEFAULT_TASK_BRIDGE_SESSION_KEY);
-    assert.equal(resolveTaskBridgeSessionKey({}), DEFAULT_TASK_BRIDGE_SESSION_KEY);
-    assert.equal(resolveTaskBridgeSessionKey({ sessionManager: { getSessionId: () => "   " } }), DEFAULT_TASK_BRIDGE_SESSION_KEY);
-    assert.equal(resolveTaskBridgeSessionKey({ sessionManager: { getSessionId: () => 42 } }), DEFAULT_TASK_BRIDGE_SESSION_KEY);
+  it("falls back to DEFAULT_BRIDGE_SESSION_KEY when ExtensionContext lacks a usable session ID", () => {
+    assert.equal(resolveBridgeSessionKey(undefined), DEFAULT_BRIDGE_SESSION_KEY);
+    assert.equal(resolveBridgeSessionKey({}), DEFAULT_BRIDGE_SESSION_KEY);
+    assert.equal(resolveBridgeSessionKey({ sessionManager: { getSessionId: () => "   " } }), DEFAULT_BRIDGE_SESSION_KEY);
+    assert.equal(resolveBridgeSessionKey({ sessionManager: { getSessionId: () => 42 } }), DEFAULT_BRIDGE_SESSION_KEY);
     assert.equal(
-      resolveTaskBridgeSessionKey({
+      resolveBridgeSessionKey({
         sessionManager: {
           getSessionId: () => {
             throw new Error("boom");
           },
         },
       }),
-      DEFAULT_TASK_BRIDGE_SESSION_KEY,
+      DEFAULT_BRIDGE_SESSION_KEY,
     );
   });
 });
