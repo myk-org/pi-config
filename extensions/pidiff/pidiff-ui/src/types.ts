@@ -54,3 +54,9 @@ export interface ReviewComment {
   replies?: ReviewCommentReply[];
   resolved?: boolean;
 }
+
+export interface OpenCommentForm {
+  file: string;
+  side: "deletions" | "additions";
+  lineNumber: number;
+}

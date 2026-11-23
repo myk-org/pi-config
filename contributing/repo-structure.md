@@ -105,7 +105,7 @@ pi-config/
 │   ├── pidiff/                      # Diff viewer extension (standalone)
 │   │   ├── index.ts                 # Entry point
 │   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/run/ lockfiles)
-│   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
+│   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees; deep DiffSessionController in src/lib/diff-session-controller.ts)
 │   ├── openai-compatible-discovery/ # Config-gated /v1/models discovery on configured providers
 │   │   └── index.ts                 # Augments the source provider in Pi's ordinary model picker
 │   ├── reload-flag/                 # Agent-triggered extension reload (deploy → flag → ctx.reload → done marker)
