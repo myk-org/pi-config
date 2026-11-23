@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import pitasks from "../../../extensions/pitasks/index.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import type { Task } from "../../../extensions/pitasks/types.js";
 import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
@@ -15,6 +16,7 @@ import {
 	shouldFireReminder,
 } from "../../../extensions/pitasks/reminders.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 const localCreatedBy: Task["createdBy"] = { type: "local", origin: "system", session: "", project: "" };
 
@@ -49,6 +51,151 @@ describe("TaskCreate guidance", () => {
 		assert.match(tools.get("TaskUpdate").description, /refuses starting or completing.*user/is);
 		assert.match(tools.get("TaskUpdate").description, /deleted/);
 		assert.match(tools.get("TaskUpdate").description, /addBlocks.*addBlockedBy/s);
+		assert.match(tools.get("TaskUpdate").description, /remaining open tasks/i);
+		assert.doesNotMatch(tools.get("TaskUpdate").description, /check `TaskList` after resolving/i);
+		assert.match(tools.get("TaskBulkUpdate").description, /remaining open-task summary/i);
+		const guidelines: string[] = tools.get("TaskCreate").promptGuidelines ?? [];
+		assert.ok(guidelines.some(g => /open-task summary/i.test(g) && /only when/i.test(g)));
+		assert.ok(!guidelines.some(g => /Use TaskList to check for available work after completing a task/i.test(g)));
+	});
+});
+
+describe("TaskUpdate and TaskBulkUpdate open-task summary (#1340)", () => {
+	function makeTools(store: TaskStore) {
+		const tools = new Map<string, any>();
+		const pi = { registerTool: (tool: any) => { tools.set(tool.name, tool); } };
+		registerTaskTools(pi as any, () => store, { update() {}, setActiveTask() {} } as any);
+		return tools;
+	}
+
+	it("TaskUpdate appends a 1-line summary of remaining open tasks ordered in_progress then pending", async () => {
+		const store = new TaskStore();
+		const [t1, t2, t3, t4] = store.createTasks([
+			{ subject: "Done step", description: "d", createdBy: localCreatedBy },
+			{ subject: "Pending step", description: "d", createdBy: localCreatedBy },
+			{ subject: "Active step", description: "d", createdBy: localCreatedBy },
+			{ subject: "Owner merge", description: "d", createdBy: localCreatedBy, assignee: "user" },
+		]);
+		store.update(t3.id, { status: "in_progress" });
+		store.update(t2.id, { addBlockedBy: [t3.id] });
+		const tools = makeTools(store);
+
+		const res = await tools.get("TaskUpdate").execute("call", { taskId: t1.id, status: "completed" });
+		const lines = res.content[0].text.split("\n");
+		assert.equal(lines.length, 2);
+		assert.equal(lines[0], `Updated task #${t1.id} status`);
+		assert.equal(
+			lines[1],
+			`Open (3): #${t3.id} [in_progress] Active step; #${t2.id} [pending, blocked by #${t3.id}] Pending step; #${t4.id} [pending, you] Owner merge`,
+		);
+	});
+
+	it("TaskUpdate appends 'All tasks completed' when no open tasks remain", async () => {
+		const store = new TaskStore();
+		const t1 = store.create("Only step", "d", localCreatedBy);
+		const tools = makeTools(store);
+
+		const res = await tools.get("TaskUpdate").execute("call", { taskId: t1.id, status: "completed" });
+		assert.equal(res.content[0].text, `Updated task #${t1.id} status\nAll tasks completed`);
+	});
+
+	it("TaskUpdate appends 'No open tasks' when the last task is deleted", async () => {
+		const store = new TaskStore();
+		const t1 = store.create("Drop me", "d", localCreatedBy);
+		const tools = makeTools(store);
+
+		const res = await tools.get("TaskUpdate").execute("call", { taskId: t1.id, status: "deleted" });
+		assert.equal(res.content[0].text, `Updated task #${t1.id} deleted\nNo open tasks`);
+	});
+
+	it("TaskUpdate keeps summary single-line with truncated subject and capped item count", async () => {
+		const store = new TaskStore();
+		const created = store.createTasks(
+			Array.from({ length: 10 }, (_, idx) => ({
+				subject: idx === 0
+					? "Line one\nline two with a very long subject exceeding forty-eight characters easily"
+					: `Task ${idx + 1}`,
+				description: "d",
+				createdBy: localCreatedBy,
+			})),
+		);
+		const tools = makeTools(store);
+
+		const res = await tools.get("TaskUpdate").execute("call", { taskId: created[9].id, status: "completed" });
+		const lines = res.content[0].text.split("\n");
+		assert.equal(lines.length, 2);
+		assert.match(lines[1], /^Open \(9\): #1 \[pending\] Line one line two with a very long subject exce…; /);
+		assert.match(lines[1], /\(\+1 more\)$/);
+	});
+
+	it("TaskBulkUpdate appends open-task summary for remaining work", async () => {
+		const store = new TaskStore();
+		const [t1, t2, t3] = store.createTasks([
+			{ subject: "First", description: "d", createdBy: localCreatedBy },
+			{ subject: "Second", description: "d", createdBy: localCreatedBy },
+			{ subject: "Third", description: "d", createdBy: localCreatedBy },
+		]);
+		const tools = makeTools(store);
+
+		const partial = await tools.get("TaskBulkUpdate").execute("call", {
+			updates: [
+				{ taskId: t1.id, status: "completed" },
+				{ taskId: t2.id, status: "in_progress" },
+			],
+		});
+		const partialLines = partial.content[0].text.split("\n");
+		assert.equal(
+			partialLines[partialLines.length - 1],
+			`Open (2): #${t2.id} [in_progress] Second; #${t3.id} [pending] Third`,
+		);
+	});
+
+	it("TaskBulkUpdate appends 'All tasks completed' when batch closes all open tasks", async () => {
+		const store = new TaskStore();
+		const [t1, t2] = store.createTasks([
+			{ subject: "First", description: "d", createdBy: localCreatedBy },
+			{ subject: "Second", description: "d", createdBy: localCreatedBy },
+		]);
+		const tools = makeTools(store);
+
+		const done = await tools.get("TaskBulkUpdate").execute("call", {
+			updates: [
+				{ taskId: t1.id, status: "completed" },
+				{ taskId: t2.id, status: "completed" },
+			],
+		});
+		const doneLines = done.content[0].text.split("\n");
+		assert.equal(doneLines[doneLines.length - 1], "All tasks completed");
+	});
+
+	it("pitasks registers TaskUpdate/TaskBulkUpdate in parent sessions", () => {
+		const parentTools = new Map<string, any>();
+		withSubagentChildEnv(undefined, () => {
+			pitasks({
+				on() {},
+				registerTool(tool: any) { parentTools.set(tool.name, tool); },
+				registerCommand() {},
+				events: { on() { return () => {}; }, emit() {} },
+			} as any);
+			return undefined;
+		});
+		assert.ok(parentTools.get("TaskUpdate"));
+		assert.ok(parentTools.get("TaskBulkUpdate"));
+	});
+
+	it("pitasks skips TaskUpdate/TaskBulkUpdate registration when PI_SUBAGENT_CHILD=1", () => {
+		const childTools = new Map<string, any>();
+		withSubagentChildEnv("1", () => {
+			pitasks({
+				on() {},
+				registerTool(tool: any) { childTools.set(tool.name, tool); },
+				registerCommand() {},
+				events: { on() { return () => {}; }, emit() {} },
+			} as any);
+			return undefined;
+		});
+		assert.equal(childTools.get("TaskUpdate"), undefined);
+		assert.equal(childTools.get("TaskBulkUpdate"), undefined);
 	});
 });
 

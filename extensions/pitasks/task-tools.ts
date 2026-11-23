@@ -12,8 +12,38 @@ import { openTaskBlockers, selectTaskRows, taskAssigneeTag } from "./tasks-view.
 
 const log = createLogger("pitasks");
 
+const MAX_SUMMARY_ITEMS = 8;
+const MAX_SUMMARY_SUBJECT_LEN = 48;
+
 function textResult(msg: string) {
 	return { content: [{ type: "text" as const, text: msg }], details: undefined };
+}
+
+function formatOpenTaskSummary(store: TaskStore): string {
+	const tasks = store.list();
+	const open = tasks
+		.filter(t => t.status === "in_progress" || t.status === "pending")
+		.sort((a, b) =>
+			(a.status === "in_progress" ? 0 : 1) - (b.status === "in_progress" ? 0 : 1) ||
+			Number(a.id) - Number(b.id),
+		);
+	if (log.isDebugEnabled()) log.debug("task_open_summary", { total: tasks.length, open: open.length });
+	if (open.length === 0) return tasks.length > 0 ? "All tasks completed" : "No open tasks";
+	const taskById = new Map(tasks.map(t => [t.id, t]));
+	const getTask = (id: string) => taskById.get(id);
+	const items = open.slice(0, MAX_SUMMARY_ITEMS).map(task => {
+		const tags: string[] = [task.status];
+		if (task.assignee === "user") tags.push("you");
+		const blockers = openTaskBlockers(task, getTask);
+		if (blockers.length > 0) tags.push(`blocked by ${blockers.map(id => `#${id}`).join(", ")}`);
+		const cleanSubject = task.subject.replace(/\s+/g, " ").trim();
+		const subject = cleanSubject.length > MAX_SUMMARY_SUBJECT_LEN
+			? `${cleanSubject.slice(0, MAX_SUMMARY_SUBJECT_LEN - 1)}…`
+			: cleanSubject;
+		return subject ? `#${task.id} [${tags.join(", ")}] ${subject}` : `#${task.id} [${tags.join(", ")}]`;
+	});
+	const more = open.length > MAX_SUMMARY_ITEMS ? ` (+${open.length - MAX_SUMMARY_ITEMS} more)` : "";
+	return `Open (${open.length}): ${items.join("; ")}${more}`;
 }
 
 export function registerTaskTools(
@@ -34,7 +64,7 @@ export function registerTaskTools(
 		promptGuidelines: [
 			"When working on complex multi-step tasks, use TaskCreate to track progress and TaskUpdate to update status.",
 			"Mark tasks as in_progress before starting work and completed when done.",
-			"Use TaskList to check for available work after completing a task.",
+			"TaskUpdate and TaskBulkUpdate return a remaining open-task summary; call TaskList only when you need the full board state.",
 		],
 		parameters: Type.Object({
 			subject: Type.String({ description: "A brief title for the task" }),
@@ -126,7 +156,7 @@ export function registerTaskTools(
 		label: "TaskUpdate",
 		description: `Update a task (\`pending\` → \`in_progress\` → \`completed\`, or \`deleted\` to remove). Refuses starting or completing an existing or resulting \`user\`-assigned task (including reassignment combined with status); reassignment alone is supported.
 
-- Read latest state with \`TaskGet\` before updating; check \`TaskList\` after resolving.
+- Returns remaining open tasks (call \`TaskList\` only when full board state is unknown); use \`TaskGet\` when full details are needed.
 - Mark \`in_progress\` BEFORE starting work; mark \`completed\` ONLY when fully done with tests passing and no unresolved blockers.
 - \`metadata\` merges keys (set \`null\` to delete); \`addBlocks\`/\`addBlockedBy\` add dependencies.`,
 		parameters: Type.Object({
@@ -159,6 +189,7 @@ export function registerTaskTools(
 			widget.update();
 			let msg = `Updated task #${taskId} ${changedFields.join(", ")}`;
 			if (warnings.length > 0) msg += ` (warning: ${warnings.join("; ")})`;
+			msg += `\n${formatOpenTaskSummary(store)}`;
 			return Promise.resolve(textResult(msg));
 		},
 	});
@@ -206,7 +237,7 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskBulkUpdate",
 		label: "TaskBulkUpdate",
-		description: "Update multiple tasks at once. More efficient than calling TaskUpdate multiple times. User-assigned tasks cannot be started or completed; other updates remain supported.",
+		description: "Update multiple tasks at once and return a remaining open-task summary (call TaskList only when full board state is unknown). More efficient than calling TaskUpdate multiple times. User-assigned tasks cannot be started or completed; other updates remain supported.",
 		parameters: Type.Object({
 			updates: Type.Array(Type.Object({
 				taskId: Type.String({ description: "Task ID to update" }),
@@ -246,7 +277,8 @@ export function registerTaskTools(
 			}
 			widget.update();
 			const lines = results.map(r => r.success ? `#${r.id}: ${r.changedFields?.join(", ") || "no changes"}` : `#${r.id}: not found`);
-			return textResult(`Updated ${results.filter(r => r.success).length} task(s):\n${[...lines, ...refused].join("\n")}`);
+			const summary = formatOpenTaskSummary(store);
+			return textResult(`Updated ${results.filter(r => r.success).length} task(s):\n${[...lines, ...refused, summary].join("\n")}`);
 		},
 	});
 }
