@@ -200,10 +200,10 @@ pi-config/
 │       ├── src/                     # TypeScript source
 │       │   ├── index.ts             # Public API + startSidecar()
 │       │   ├── server.ts            # CLI entry point
-│       │   ├── sessions.ts          # SessionStore — session lifecycle + model discovery
+│       │   ├── sessions.ts          # SessionStore — active sessions, SSE streaming, redaction holdback, abort, transcripts
+│       │   ├── provider-runtime.ts  # ProviderRuntime seam + PiProviderRuntime (extension resolution, snapshots, SDK runtime, discovery, session creation)
 │       │   ├── http-tool-executor.ts # HTTP-backed custom tool execution
 │       │   ├── watchdog.ts          # Health-check poller for companion backend
-│       │   ├── resolve-extension-path.ts # Extension path resolution (env override + require.resolve)
 │       │   ├── pi-version.ts        # Pi SDK version floor assertion
 │       │   └── logger.ts            # Structured logger
 │       ├── pi_sidecar_client/       # Python client (pi-sidecar-client on PyPI)

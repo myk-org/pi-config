@@ -3,10 +3,15 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { type AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { startSidecar } from "../../src/index.js";
-import { SessionStore, readTrustedKeyScopedProviders } from "../../src/sessions.js";
+import {
+  PiProviderRuntime,
+  SessionStore,
+  readTrustedKeyScopedProviders,
+  type CreatedRuntimeSession,
+} from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
 
@@ -342,11 +347,13 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
 });
 
 describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: false }, () => {
+  const storeForRuntime = (runtime: ModelRuntime, agentDir?: string) =>
+    new SessionStore({ runtime: new PiProviderRuntime({ agentDir, modelRuntime: runtime }) });
+
   for (const [provider, base] of [["groq", "https://api.groq.com/openai/v1"], ["xai", "https://api.x.ai/v1"]]) {
     it(`lists ${provider} models only at the SDK builtin endpoint`, async () => {
       const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-      const store = new SessionStore();
-      Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+      const store = storeForRuntime(runtime);
       const originalFetch = globalThis.fetch;
       const paths: string[] = [];
       globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -367,8 +374,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       models: [{ id: "static" }],
     } } }));
     const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const store = storeForRuntime(runtime);
     const originalFetch = globalThis.fetch;
     let requests = 0;
     globalThis.fetch = (async () => { requests++; throw new Error("unexpected request"); }) as typeof fetch;
@@ -383,11 +389,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     const native = fauxProvider({ provider: "key-no-list-839", models: [{ id: "static-only" }] });
     native.provider.auth = { apiKey: { name: "Key", resolve: async () => undefined } } as never;
     runtime.registerNativeProvider(native.provider);
-    const store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
-    });
+    const store = storeForRuntime(runtime);
     try {
       assert.equal((await store.getProviderStatus("key-no-list-839")).supportsSessionApiKey, true);
       assert.ok(runtime.getModels("key-no-list-839").some((model) => model.id === "static-only"));
@@ -407,11 +409,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       models: [{ id: "static-only", name: "Static only" }],
     } } }));
     const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
-    });
+    const store = storeForRuntime(runtime);
     const originalFetch = globalThis.fetch;
     let externalRequests = 0;
     globalThis.fetch = ((...args: Parameters<typeof fetch>) => {
@@ -441,11 +439,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       models: [{ id: "static-only", name: "Static" }],
     } } }));
     const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
-    });
+    const store = storeForRuntime(runtime);
     const originalFetch = globalThis.fetch;
     let outbound = 0;
     globalThis.fetch = (async () => { outbound++; throw new Error("unexpected outbound request"); }) as typeof fetch;
@@ -467,8 +461,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     const native = fauxProvider({ provider: "key-no-list-log-839", models: [{ id: "static-only" }] });
     native.provider.auth = { apiKey: { name: "Key", resolve: async () => undefined } } as never;
     runtime.registerNativeProvider(native.provider);
-    const store = new SessionStore();
-    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const store = storeForRuntime(runtime);
     const original = logger.debug;
     const logs: string[] = [];
     logger.debug = (...args) => { logs.push(JSON.stringify(args)); };
@@ -490,11 +483,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       baseUrl: "https://redirected.example/v1",
     } } }));
     const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
-    });
+    const store = storeForRuntime(runtime);
     const originalFetch = globalThis.fetch;
     let outbound = 0;
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -521,11 +510,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       models: [{ id: "static-only", name: "Static" }],
     } } }));
     const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
-    });
+    const store = storeForRuntime(runtime);
     const originalFetch = globalThis.fetch;
     let outbound = 0;
     globalThis.fetch = (async () => { outbound++; throw new Error("unexpected outbound request"); }) as typeof fetch;
@@ -548,11 +533,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       models: [],
     } } }));
     const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
-    });
+    const store = storeForRuntime(runtime);
     const originalFetch = globalThis.fetch;
     let outbound = 0;
     globalThis.fetch = (async () => { outbound++; throw new Error("unexpected outbound request"); }) as typeof fetch;
@@ -573,8 +554,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
   for (const status of [401, 502]) {
     it(`preserves discovery status ${status} for an unknown session model`, async () => {
       const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-      const store = new SessionStore();
-      Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+      const store = storeForRuntime(runtime);
       const originalFetch = globalThis.fetch;
       globalThis.fetch = (async () => new Response("{}", { status: status === 401 ? 401 : 503 })) as typeof fetch;
       const dir = makeTempDir("sidecar-839-fail-");
@@ -587,8 +567,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
 
   it("does not include the supplied key in discovery errors", async () => {
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const store = storeForRuntime(runtime);
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: `invalid ${keyA}` }), { status: 401 })) as typeof fetch;
     const dir = makeTempDir("sidecar-839-secret-");
@@ -600,8 +579,14 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
 
   it("uses validated Google token limits for a session-only model", async () => {
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const piRuntime = new PiProviderRuntime({ modelRuntime: runtime });
+    let created: CreatedRuntimeSession | undefined;
+    const origCreate = piRuntime.createSession.bind(piRuntime);
+    piRuntime.createSession = async (input) => {
+      created = await origCreate(input);
+      return created;
+    };
+    const store = new SessionStore({ runtime: piRuntime });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ models: [{
       name: "models/gemini-new-839", supportedGenerationMethods: ["generateContent"], inputTokenLimit: 4096, outputTokenLimit: 1024,
@@ -609,7 +594,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     const dir = makeTempDir("sidecar-839-google-");
     try {
       const session = await store.create({ provider: "google", model: "gemini-new-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA });
-      const selected = (store as any).sessions.get(session).session.model;
+      const selected = (created!.session as AgentSession).model;
       assert.equal(selected?.contextWindow, 4096);
       assert.equal(selected?.maxTokens, 1024);
       store.delete(session);
@@ -618,8 +603,14 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
 
   it("marks a key-discovered model as unknown-priced on the stored session", async () => {
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const piRuntime = new PiProviderRuntime({ modelRuntime: runtime });
+    let created: CreatedRuntimeSession | undefined;
+    const origCreate = piRuntime.createSession.bind(piRuntime);
+    piRuntime.createSession = async (input) => {
+      created = await origCreate(input);
+      return created;
+    };
+    const store = new SessionStore({ runtime: piRuntime });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ models: [
       { name: "models/gemini-zeroprice-839", supportedGenerationMethods: ["generateContent"], inputTokenLimit: 4096, outputTokenLimit: 1024 },
@@ -627,16 +618,14 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     const dir = makeTempDir("sidecar-839-zeroprice-");
     try {
       const id = await store.create({ provider: "google", model: "gemini-zeroprice-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA });
-      const entry = (store as any).sessions.get(id);
-      assert.equal(entry.pricingKnown, false, "a key-discovered model has no catalog price, so pricing is unknown");
+      assert.equal(created?.pricingKnown, false, "a key-discovered model has no catalog price, so pricing is unknown");
       store.delete(id);
     } finally { globalThis.fetch = originalFetch; await store.disposeAll(); rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("rejects embedding-only Google models even with native limits", async () => {
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const store = storeForRuntime(runtime);
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ models: [{
       name: "models/embedding-private-839", supportedGenerationMethods: ["embedContent"], inputTokenLimit: 4096, outputTokenLimit: 1024,
@@ -653,8 +642,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
 
   it("rejects unknown Google models with incomplete native limits", async () => {
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const store = storeForRuntime(runtime);
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ models: [{
       name: "models/gemini-incomplete-839", supportedGenerationMethods: ["generateContent"], inputTokenLimit: 4096,
@@ -683,11 +671,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       models: [{ id: "unverified-static", name: "Unverified" }],
     } } }));
     const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
-    });
+    const store = storeForRuntime(runtime);
     try {
       const before = (await store.getModels()).filter((model) => model.provider === "gateway.839");
       const snapshot = runtime.getAvailableSnapshot().filter((model) => model.provider === "gateway.839");
@@ -738,12 +722,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
    * temp models.json, store built with that agentDir so the manifest flag is read. */
   const fixtureStore = async (dir: string) => {
     const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
-    const store = new SessionStore({ agentDir: dir });
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
-    });
-    return store;
+    return new SessionStore({ runtime: new PiProviderRuntime({ agentDir: dir, modelRuntime: runtime }) });
   };
 
   /** Issue 913 fixtures where the startup manifest snapshot (store's agentDir)
@@ -751,12 +730,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
    * the shape the snapshot-pinning and limits-fallback behaviors guard. */
   const splitFixtureStore = async (manifestDir: string, runtimeDir: string) => {
     const runtime = await ModelRuntime.create({ modelsPath: join(runtimeDir, "models.json"), authPath: join(runtimeDir, "auth.json"), refreshOnCreate: false });
-    const store = new SessionStore({ agentDir: manifestDir });
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
-    });
-    return store;
+    return new SessionStore({ runtime: new PiProviderRuntime({ agentDir: manifestDir, modelRuntime: runtime }) });
   };
 
   it("lists a manifest-flagged custom provider against its configured baseUrl", async () => {

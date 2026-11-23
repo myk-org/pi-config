@@ -22,6 +22,7 @@ import {
   transcriptsEnabled,
   writeSessionHeader,
 } from "../../src/transcripts.js";
+import { InMemoryProviderRuntime } from "./helpers/in-memory-runtime.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
 
 function tempTranscriptsDir(): string {
@@ -362,35 +363,41 @@ describe("store wiring (end-to-end through prompt())", () => {
     delete process.env.RECORD_TRANSCRIPTS;
   });
 
-  /** Fixture session whose prompt() emits a realistic agent_end with a tool loop. */
-  function emittingStore(id = "s-e2e"): { store: InstanceType<typeof SessionStore>; id: string } {
-    const store = new SessionStore();
+  /** In-memory session whose prompt() emits a realistic agent_end with a tool loop. */
+  async function emittingStore(): Promise<{ store: SessionStore; id: string }> {
     let emit: (event: unknown) => void = () => {};
-    (store as any).putSessionFixture(
-      id,
-      {
-        subscribe: (cb: (event: unknown) => void) => {
-          emit = cb;
-          return () => {};
-        },
-        prompt: async () => {
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ran it" } });
-          emit({
-            type: "agent_end",
-            messages: [
-              { role: "user", content: [{ type: "text", text: "run the tool" }] },
-              { role: "assistant", content: [{ type: "toolCall", toolCall: { toolCallId: "tc1", toolName: "bash", arguments: { command: "echo hello" } } }], usage: { input: 5, output: 2 } },
-              { role: "toolResult", toolCallId: "tc1", content: [{ type: "text", text: "hello" }] },
-              { role: "assistant", content: [{ type: "text", text: "ran it" }], usage: { input: 10, output: 4 }, stopReason: "end_turn" },
-            ],
-          });
-        },
-        dispose: () => {},
-        abort: async () => {},
-      },
-      "/tmp/job-e2e",
-      true,
-    );
+    const store = new SessionStore({
+      runtime: new InMemoryProviderRuntime({
+        ready: true,
+        allowAnyModel: true,
+        sessionFactory: () => ({
+          subscribe: (cb: (event: unknown) => void) => {
+            emit = cb;
+            return () => {};
+          },
+          prompt: async () => {
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ran it" } });
+            emit({
+              type: "agent_end",
+              messages: [
+                { role: "user", content: [{ type: "text", text: "run the tool" }] },
+                { role: "assistant", content: [{ type: "toolCall", toolCall: { toolCallId: "tc1", toolName: "bash", arguments: { command: "echo hello" } } }], usage: { input: 5, output: 2 } },
+                { role: "toolResult", toolCallId: "tc1", content: [{ type: "text", text: "hello" }] },
+                { role: "assistant", content: [{ type: "text", text: "ran it" }], usage: { input: 10, output: 4 }, stopReason: "end_turn" },
+              ],
+            });
+          },
+          dispose: () => {},
+          abort: async () => {},
+        }),
+      }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "e2e transcript test",
+      cwd: "/tmp/job-e2e",
+    });
     return { store, id };
   }
 
@@ -404,7 +411,7 @@ describe("store wiring (end-to-end through prompt())", () => {
   }
 
   it("disabled: prompt() writes zero transcript files", async () => {
-    const { store, id } = emittingStore();
+    const { store, id } = await emittingStore();
     const result = await store.prompt(id, "run the tool");
     assert.equal(result.text, "ran it");
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -413,21 +420,16 @@ describe("store wiring (end-to-end through prompt())", () => {
 
   it("enabled: prompt() appends a redacted turn record with the full tool loop", async () => {
     process.env.RECORD_TRANSCRIPTS = "1";
-    const { store, id } = emittingStore();
+    const { store, id } = await emittingStore();
     const result = await store.prompt(id, "run the tool");
     assert.equal(result.text, "ran it", "prompt response unaffected");
-    const file = join(dir, "s-e2e.jsonl");
+    const file = join(dir, `${id}.jsonl`);
     assert.ok(await waitForFile(file), "turn record written");
     await drainTranscriptWrites();
-    // Fixture sessions get a lazy header on the first recorded turn (#935) —
-    // same well-formed header-then-turn shape as real create() sessions.
     const record = lastRecord(file);
     assert.equal(record.type, "turn");
     assert.equal(record.turn_number, 1);
     assert.equal(record.messages.length, 4, "full message array persisted");
-    // Redaction itself is unit-covered above; the fixture session's redactor
-    // is identity by design — this asserts the wiring passes entry.redact
-    // through to the writer, which for real sessions is the API-key redactor.
     assert.equal(record.messages[1].content[0].toolCall.toolName, "bash");
     assert.equal(record.final_text, "ran it", "final_text carries the assembled response (#923 review)");
     assert.equal(record.stop_reason, "end_turn");
@@ -438,37 +440,42 @@ describe("store wiring (end-to-end through prompt())", () => {
     await waitForFile(file);
     await drainTranscriptWrites();
     const lines = readFileSync(file, "utf-8").trim().split("\n");
-    assert.equal(lines.length, 3, "lazy header + one line per turn");
+    assert.equal(lines.length, 3, "header + one line per turn");
     assert.equal(JSON.parse(lines[2]!).turn_number, 2);
   });
 
   it("enabled: a rejected prompt still leaves a turn record (#923 review)", async () => {
     process.env.RECORD_TRANSCRIPTS = "1";
-    const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
-    const id = "s-reject";
-    (store as any).putSessionFixture(
-      id,
-      {
-        subscribe: (cb: (event: unknown) => void) => {
-          emit = cb;
-          return () => {};
-        },
-        prompt: async () => {
-          // Partial text, then a rejection with NO agent_end event.
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "partial answer" } });
-          throw new Error("provider exploded mid-turn");
-        },
-        dispose: () => {},
-        abort: async () => {},
-      },
-      "/tmp/job-reject",
-      true,
-    );
+    const store = new SessionStore({
+      runtime: new InMemoryProviderRuntime({
+        ready: true,
+        allowAnyModel: true,
+        sessionFactory: () => ({
+          subscribe: (cb: (event: unknown) => void) => {
+            emit = cb;
+            return () => {};
+          },
+          prompt: async () => {
+            // Partial text, then a rejection with NO agent_end event.
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "partial answer" } });
+            throw new Error("provider exploded mid-turn");
+          },
+          dispose: () => {},
+          abort: async () => {},
+        }),
+      }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "reject test",
+      cwd: "/tmp/job-reject",
+    });
     const result = await store.prompt(id, "hello");
     assert.ok(result.error, "structured partial result returned");
     await drainTranscriptWrites();
-    const file = join(dir, "s-reject.jsonl");
+    const file = join(dir, `${id}.jsonl`);
     assert.ok(existsSync(file), "rejection fallback record written");
     const record = lastRecord(file);
     assert.equal(record.type, "turn");
@@ -484,69 +491,79 @@ describe("store wiring (end-to-end through prompt())", () => {
 
   it("enabled: multi-message responses get separator-matching final_text (#923 review)", async () => {
     process.env.RECORD_TRANSCRIPTS = "1";
-    const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
-    const id = "s-multi";
-    (store as any).putSessionFixture(
-      id,
-      {
-        subscribe: (cb: (event: unknown) => void) => { emit = cb; return () => {}; },
-        prompt: async () => {
-          emit({ type: "message_start", message: { role: "assistant" } });
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "part one" } });
-          emit({ type: "message_start", message: { role: "assistant" } });
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "part two" } });
-          emit({
-            type: "agent_end",
-            messages: [
-              { role: "user", content: [{ type: "text", text: "hi" }] },
-              { role: "assistant", content: [{ type: "text", text: "part one" }], usage: { input: 3, output: 2 }, stopReason: "end_turn" },
-              { role: "assistant", content: [{ type: "text", text: "part two" }], usage: { input: 3, output: 2 }, stopReason: "end_turn" },
-            ],
-          });
-        },
-        dispose: () => {},
-        abort: async () => {},
-      },
-      "/tmp/job-multi",
-      true,
-    );
+    const store = new SessionStore({
+      runtime: new InMemoryProviderRuntime({
+        ready: true,
+        allowAnyModel: true,
+        sessionFactory: () => ({
+          subscribe: (cb: (event: unknown) => void) => { emit = cb; return () => {}; },
+          prompt: async () => {
+            emit({ type: "message_start", message: { role: "assistant" } });
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "part one" } });
+            emit({ type: "message_start", message: { role: "assistant" } });
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "part two" } });
+            emit({
+              type: "agent_end",
+              messages: [
+                { role: "user", content: [{ type: "text", text: "hi" }] },
+                { role: "assistant", content: [{ type: "text", text: "part one" }], usage: { input: 3, output: 2 }, stopReason: "end_turn" },
+                { role: "assistant", content: [{ type: "text", text: "part two" }], usage: { input: 3, output: 2 }, stopReason: "end_turn" },
+              ],
+            });
+          },
+          dispose: () => {},
+          abort: async () => {},
+        }),
+      }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "multi test",
+      cwd: "/tmp/job-multi",
+    });
     const result = await store.prompt(id, "hi");
     assert.equal(result.text, "part one\n\npart two", "boundary separator applied to the response");
     await drainTranscriptWrites();
-    const record = lastRecord(join(dir, "s-multi.jsonl"));
+    const record = lastRecord(join(dir, `${id}.jsonl`));
     assert.equal(record.final_text, "part one\n\npart two", "transcript final_text matches the returned text exactly");
   });
 
   it("enabled: completed turns with error events keep the errors array (#923 review)", async () => {
     process.env.RECORD_TRANSCRIPTS = "1";
-    const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
-    const id = "s-errmsg";
-    (store as any).putSessionFixture(
-      id,
-      {
-        subscribe: (cb: (event: unknown) => void) => { emit = cb; return () => {}; },
-        prompt: async () => {
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "best effort" } });
-          emit({
-            type: "agent_end",
-            messages: [
-              { role: "user", content: [{ type: "text", text: "hi" }] },
-              { role: "assistant", content: [{ type: "text", text: "best effort" }], usage: { input: 3, output: 2 }, stopReason: "error", errorMessage: "tool timeout" },
-            ],
-          });
-        },
-        dispose: () => {},
-        abort: async () => {},
-      },
-      "/tmp/job-errmsg",
-      true,
-    );
+    const store = new SessionStore({
+      runtime: new InMemoryProviderRuntime({
+        ready: true,
+        allowAnyModel: true,
+        sessionFactory: () => ({
+          subscribe: (cb: (event: unknown) => void) => { emit = cb; return () => {}; },
+          prompt: async () => {
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "best effort" } });
+            emit({
+              type: "agent_end",
+              messages: [
+                { role: "user", content: [{ type: "text", text: "hi" }] },
+                { role: "assistant", content: [{ type: "text", text: "best effort" }], usage: { input: 3, output: 2 }, stopReason: "error", errorMessage: "tool timeout" },
+              ],
+            });
+          },
+          dispose: () => {},
+          abort: async () => {},
+        }),
+      }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "errmsg test",
+      cwd: "/tmp/job-errmsg",
+    });
     const result = await store.prompt(id, "hi");
     assert.ok(result.error, "caller sees the error");
     await drainTranscriptWrites();
-    const record = lastRecord(join(dir, "s-errmsg.jsonl"));
+    const record = lastRecord(join(dir, `${id}.jsonl`));
     assert.ok(JSON.stringify(record.errors).includes("tool timeout"), "collected SDK errors retained in the turn record");
     assert.equal(record.stop_reason, "error");
   });
@@ -599,11 +616,11 @@ describe("store wiring (end-to-end through prompt())", () => {
 
   it("enabled: disposeAll drains pending turn writes (#923 review)", async () => {
     process.env.RECORD_TRANSCRIPTS = "1";
-    const { store, id } = emittingStore("s-drain-e2e");
+    const { store, id } = await emittingStore();
     await store.prompt(id, "run the tool");
     // Do NOT wait for the file here — disposeAll must drain the write chain.
     await store.disposeAll();
-    const file = join(dir, "s-drain-e2e.jsonl");
+    const file = join(dir, `${id}.jsonl`);
     assert.ok(existsSync(file), "queued turn survived shutdown via drain");
   });
 });
@@ -670,32 +687,37 @@ describe("runtime recording override (#935)", () => {
   });
 
   it("a failed header write skips the turn — the transcript stays header-first (Qodo 7dad2203)", async () => {
-    const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
-    const id = "s-hdr-fail";
-    (store as any).putSessionFixture(
-      id,
-      {
-        subscribe: (cb: (event: unknown) => void) => {
-          emit = cb;
-          return () => {};
-        },
-        prompt: async () => {
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
-          emit({
-            type: "agent_end",
-            messages: [
-              { role: "user", content: [{ type: "text", text: "hi" }] },
-              { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 3, output: 1 }, stopReason: "end_turn" },
-            ],
-          });
-        },
-        dispose: () => {},
-        abort: async () => {},
-      },
-      "/tmp/hdr-fail",
-      true,
-    );
+    const store = new SessionStore({
+      runtime: new InMemoryProviderRuntime({
+        ready: true,
+        allowAnyModel: true,
+        sessionFactory: () => ({
+          subscribe: (cb: (event: unknown) => void) => {
+            emit = cb;
+            return () => {};
+          },
+          prompt: async () => {
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+            emit({
+              type: "agent_end",
+              messages: [
+                { role: "user", content: [{ type: "text", text: "hi" }] },
+                { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 3, output: 1 }, stopReason: "end_turn" },
+              ],
+            });
+          },
+          dispose: () => {},
+          abort: async () => {},
+        }),
+      }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "hdr fail test",
+      cwd: "/tmp/hdr-fail",
+    });
     store.setRecordingOverride(true);
     // Break the transcripts dir: its parent is a regular file, so mkdir and
     // every append fail. The lazy header fire AND the inline turn-slot retry
@@ -705,7 +727,7 @@ describe("runtime recording override (#935)", () => {
     process.env.PI_SIDECAR_TRANSCRIPTS_DIR = join(blocker, "sub");
     await store.prompt(id, "hi");
     await drainTranscriptWrites();
-    assert.ok(!existsSync(join(blocker, "sub", "s-hdr-fail.jsonl")), "no file when the header cannot be written");
+    assert.ok(!existsSync(join(blocker, "sub", `${id}.jsonl`)), "no file when the header cannot be written");
 
     // Repair the dir: the next recorded prompt retries the header inline and
     // the file comes back HEADER-FIRST — never turn → header → turn.
@@ -713,7 +735,7 @@ describe("runtime recording override (#935)", () => {
     process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
     await store.prompt(id, "again");
     await drainTranscriptWrites();
-    const file = join(dir, "s-hdr-fail.jsonl");
+    const file = join(dir, `${id}.jsonl`);
     assert.ok(existsSync(file), "file written after repair");
     const lines = readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
     assert.equal(lines[0].type, "session_header", "header is the first line after recovery");
@@ -726,32 +748,37 @@ describe("runtime recording override (#935)", () => {
     // Session prompts once with recording off (zero I/O), then recording is
     // enabled at runtime: the next prompt must produce header-then-turn, in
     // that order, with turn numbering starting at 1.
-    const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
-    const id = "s-mid-toggle";
-    (store as any).putSessionFixture(
-      id,
-      {
-        subscribe: (cb: (event: unknown) => void) => {
-          emit = cb;
-          return () => {};
-        },
-        prompt: async () => {
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
-          emit({
-            type: "agent_end",
-            messages: [
-              { role: "user", content: [{ type: "text", text: "hi" }] },
-              { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 3, output: 1 }, stopReason: "end_turn" },
-            ],
-          });
-        },
-        dispose: () => {},
-        abort: async () => {},
-      },
-      "/tmp/mid-toggle",
-      true,
-    );
+    const store = new SessionStore({
+      runtime: new InMemoryProviderRuntime({
+        ready: true,
+        allowAnyModel: true,
+        sessionFactory: () => ({
+          subscribe: (cb: (event: unknown) => void) => {
+            emit = cb;
+            return () => {};
+          },
+          prompt: async () => {
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+            emit({
+              type: "agent_end",
+              messages: [
+                { role: "user", content: [{ type: "text", text: "hi" }] },
+                { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 3, output: 1 }, stopReason: "end_turn" },
+              ],
+            });
+          },
+          dispose: () => {},
+          abort: async () => {},
+        }),
+      }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "mid toggle test",
+      cwd: "/tmp/mid-toggle",
+    });
     await store.prompt(id, "hi");
     assert.equal(readdirSyncSafe(dir).length, 0, "disabled: zero I/O");
 
@@ -762,13 +789,13 @@ describe("runtime recording override (#935)", () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     store.setRecordingOverride(true);
     await store.prompt(id, "again");
-    const file = join(dir, "s-mid-toggle.jsonl");
+    const file = join(dir, `${id}.jsonl`);
     assert.ok(await waitForFileLazy(file), "turn written after enabling");
     await drainTranscriptWrites();
     const lines = readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
     assert.equal(lines.length, 2);
     assert.equal(lines[0].type, "session_header", "lazy header precedes first recorded turn");
-    assert.equal(lines[0].session_id, "s-mid-toggle");
+    assert.equal(lines[0].session_id, id);
     assert.ok(
       Date.parse(lines[0].created_at) < Date.parse(lines[1].timestamp),
       "lazy header stamps the session's real creation time, not the first recorded turn's (Qodo 8597d8f7)",

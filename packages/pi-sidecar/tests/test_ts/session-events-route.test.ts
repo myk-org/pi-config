@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { SessionStore } from "../../src/sessions.js";
 import { isAllowedStreamRequest } from "../../src/index.js";
 import { createRequestHandler } from "../../src/request-handler.js";
+import { InMemoryProviderRuntime } from "./helpers/in-memory-runtime.js";
 import { invoke, type InvokeResult, type RequestHandler } from "./helpers/invoke-handler.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
 
@@ -61,10 +62,14 @@ describe("GET /sessions/:id/events (#1019) in-process", () => {
     transcriptsDir: process.env.PI_SIDECAR_TRANSCRIPTS_DIR,
   };
 
-  /** Fixture session, so POST /prompt and DELETE have a real store entry. */
-  function addSession(id: string): string {
-    store.putSessionFixture(id, fixtureSession(), "/tmp");
-    return id;
+  /** In-memory session via store.create(), so POST /prompt and DELETE have a real store entry. */
+  async function addSession(): Promise<string> {
+    return store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "sse route test",
+      cwd: "/tmp",
+    });
   }
 
   before(() => {
@@ -72,7 +77,13 @@ describe("GET /sessions/:id/events (#1019) in-process", () => {
     process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
     process.env.PI_OFFLINE = "1";
     delete process.env.RECORD_TRANSCRIPTS;
-    store = new SessionStore();
+    store = new SessionStore({
+      runtime: new InMemoryProviderRuntime({
+        ready: true,
+        allowAnyModel: true,
+        sessionFactory: () => fixtureSession(),
+      }),
+    });
     handler = createRequestHandler({
       store,
       isDraining: () => false,
@@ -123,7 +134,7 @@ describe("GET /sessions/:id/events (#1019) in-process", () => {
     assert.equal(loopbackOrigin.status, 404, "a same-origin request passes the guard and reaches session lookup");
 
     // /prompt keeps its old behaviour: the stream guard does not apply to it.
-    const sessionId = addSession("prompt-not-guarded");
+    const sessionId = await addSession();
     const prompt = await invoke(handler, {
       method: "POST",
       url: `/sessions/${sessionId}/prompt`,
@@ -137,7 +148,7 @@ describe("GET /sessions/:id/events (#1019) in-process", () => {
   });
 
   it("returns 429 as JSON past the per-session cap and past the global ceiling", async () => {
-    const sessions = ["cap-1", "cap-2", "cap-3", "cap-4", "cap-5"].map(addSession);
+    const sessions = await Promise.all(Array.from({ length: 5 }, () => addSession()));
     const feeds: InvokeResult[] = [];
     try {
       // 4 sessions × 8 = the global ceiling of 32.
@@ -168,7 +179,7 @@ describe("GET /sessions/:id/events (#1019) in-process", () => {
   });
 
   it("a live feed outlives the request that opened it and ends with the session", async () => {
-    const sessionId = addSession("live-feed");
+    const sessionId = await addSession();
     const feed = await invoke(handler, { method: "GET", url: `/sessions/${sessionId}/events` });
     try {
       assert.equal(feed.status, 200);
@@ -195,7 +206,7 @@ describe("GET /sessions/:id/events (#1019) in-process", () => {
     // Shutdown closes the feeds BEFORE it waits for connections to drain, so an
     // open stream cannot hold the drain to its timeout. That behaviour is
     // store-level: assert it without a socket.
-    const sessionId = addSession("shutdown-feed");
+    const sessionId = await addSession();
     const feeds = [
       await invoke(handler, { method: "GET", url: `/sessions/${sessionId}/events` }),
       await invoke(handler, { method: "GET", url: `/sessions/${sessionId}/events` }),

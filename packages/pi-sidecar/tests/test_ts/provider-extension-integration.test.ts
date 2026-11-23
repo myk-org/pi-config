@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { accessSync } from "node:fs";
 
-import { resolveExtensionPath, resolveExtensionPathDetailed } from "../../src/resolve-extension-path.js";
+import { resolveExtensionPath, resolveExtensionPathDetailed } from "../../src/provider-runtime.js";
 
 describe("unified provider extension integration", () => {
   it("resolves the providers extension path from pi-orchestrator-config (or gracefully skips when not yet available)", () => {

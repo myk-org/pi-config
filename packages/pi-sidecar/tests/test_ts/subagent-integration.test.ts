@@ -2,11 +2,15 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { accessSync, rmSync } from "node:fs";
 
-import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { type AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 
 import { logger } from "../../src/logger.js";
-import { resolveExtensionPath } from "../../src/resolve-extension-path.js";
+import {
+  PiProviderRuntime,
+  resolveExtensionPath,
+  type CreatedRuntimeSession,
+} from "../../src/provider-runtime.js";
 import { SessionStore } from "../../src/sessions.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
 
@@ -64,22 +68,23 @@ describe("subagent extension integration", () => {
     const faux = fauxProvider({ provider: "test-ext-default", models: [{ id: "local" }] });
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
     runtime.registerNativeProvider(faux.provider);
-    const store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime,
-      modelRegistry: new ModelRegistry(runtime),
-      _ready: true,
-    });
+    const piRuntime = new PiProviderRuntime({ modelRuntime: runtime });
+    let created: CreatedRuntimeSession | undefined;
+    const origCreateSession = piRuntime.createSession.bind(piRuntime);
+    piRuntime.createSession = async (input) => {
+      created = await origCreateSession(input);
+      return created;
+    };
+    const store = new SessionStore({ runtime: piRuntime });
     try {
-      const defaultId = await store.create({
+      await store.create({
         provider: "test-ext-default",
         model: "local",
         systemPrompt: "hi",
         cwd,
         agentDir: cwd,
       });
-      const defaultSession = (store as any).sessions.get(defaultId).session;
+      const defaultSession = created!.session as AgentSession;
       const defaultExts = defaultSession.resourceLoader.getExtensions().extensions;
       assert.equal(defaultExts.length, 0, "default session must not load Vertex or Subagent extensions");
       assert.ok(!defaultSession.getActiveToolNames().includes("subagent"));
@@ -94,13 +99,15 @@ describe("subagent extension integration", () => {
     const faux = fauxProvider({ provider: "test-ext-cache", models: [{ id: "local" }] });
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
     runtime.registerNativeProvider(faux.provider);
-    const store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime,
-      modelRegistry: new ModelRegistry(runtime),
-      _ready: true,
-    });
+    const piRuntime = new PiProviderRuntime({ modelRuntime: runtime });
+    const createdSessions: CreatedRuntimeSession[] = [];
+    const origCreateSession = piRuntime.createSession.bind(piRuntime);
+    piRuntime.createSession = async (input) => {
+      const result = await origCreateSession(input);
+      createdSessions.push(result);
+      return result;
+    };
+    const store = new SessionStore({ runtime: piRuntime });
     try {
       const logMessages: string[] = [];
       const origLog = logger.log;
@@ -108,7 +115,7 @@ describe("subagent extension integration", () => {
         logMessages.push(args.map(String).join(" "));
       };
       try {
-        const subId1 = await store.create({
+        await store.create({
           provider: "test-ext-cache",
           model: "local",
           systemPrompt: "hi",
@@ -116,7 +123,7 @@ describe("subagent extension integration", () => {
           agentDir: cwd,
           tools: ["read", "subagent"],
         });
-        const subId2 = await store.create({
+        await store.create({
           provider: "test-ext-cache",
           model: "local",
           systemPrompt: "hi",
@@ -124,11 +131,11 @@ describe("subagent extension integration", () => {
           agentDir: cwd,
           tools: ["subagent"],
         });
-        const subSession1 = (store as any).sessions.get(subId1).session;
+        const subSession1 = createdSessions[0].session as AgentSession;
         const subExts1 = subSession1.resourceLoader.getExtensions().extensions;
         assert.equal(subExts1.length, 1, "subagent session should load only the Subagent extension");
         assert.ok(subSession1.getActiveToolNames().includes("subagent"));
-        assert.ok(!subExts1.some((ext: any) => ext.path.includes("pi-vertex-claude")), "Vertex must not be loaded per session");
+        assert.ok(!subExts1.some((ext) => ext.path.includes("pi-vertex-claude")), "Vertex must not be loaded per session");
 
         const foundLogs = logMessages.filter((msg) => msg.includes("EXTENSION_FOUND: label=Subagent"));
         assert.ok(foundLogs.length <= 1, `expected at most 1 EXTENSION_FOUND log across repeated creates, got ${foundLogs.length}`);

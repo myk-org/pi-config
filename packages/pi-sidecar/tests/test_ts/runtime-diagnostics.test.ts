@@ -14,6 +14,7 @@ import {
 
 import { logger } from "../../src/logger.js";
 import {
+  PiProviderRuntime,
   SessionStore,
   createApiKeyRedactor,
   logUnreportedRuntimeDiagnostics,
@@ -230,7 +231,8 @@ describe("logUnreportedRuntimeDiagnostics", () => {
       'throw new Error("synthetic extension load failure 1312");\n',
     );
 
-    const store = new SessionStore({ agentDir: tempDir });
+    const runtime = new PiProviderRuntime({ agentDir: tempDir });
+    const store = new SessionStore({ runtime });
     const stub = stubLogger();
     try {
       await store.getProviders();
@@ -247,10 +249,8 @@ describe("logUnreportedRuntimeDiagnostics", () => {
       // Draining the same internalRuntime again must produce zero duplicates, proving
       // ensureInternalRuntime() consumed takeUnreportedDiagnostics() rather than reading .diagnostics.
       stub.calls.length = 0;
-      const internalRuntime = (store as unknown as { internalRuntime: AgentSessionRuntime }).internalRuntime;
-      assert.ok(internalRuntime, "internalRuntime should be initialized");
-      assert.ok(internalRuntime.diagnostics.length > 0, "runtime should retain diagnostics list");
-      assert.equal(logUnreportedRuntimeDiagnostics(internalRuntime), 0);
+      assert.ok(runtime.getInternalDiagnostics().length > 0, "runtime should retain diagnostics list");
+      assert.equal(runtime.drainUnreportedDiagnostics(), 0);
       assert.deepEqual(diagnosticCalls(stub.calls), []);
     } finally {
       stub.restore();

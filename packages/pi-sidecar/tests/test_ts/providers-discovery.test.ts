@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { startSidecar } from "../../src/index.js";
-import { SessionStore } from "../../src/sessions.js";
+import { PiProviderRuntime, SessionStore } from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
 
@@ -108,8 +108,7 @@ describe("SessionStore provider discovery", () => {
     const ambient = fauxProvider({ provider: "ambient-local", models: [] });
     ambient.provider.auth = { apiKey: makeAmbientLoginAuth("Local login") };
     runtime.registerNativeProvider(ambient.provider);
-    store = new SessionStore();
-    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime });
+    store = new SessionStore({ runtime: new PiProviderRuntime({ modelRuntime: runtime }) });
   });
   after(async () => { await store?.disposeAll(); rmSync(dir, { recursive: true, force: true }); });
 

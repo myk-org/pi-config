@@ -4,8 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { resolveExtensionPath, resolveExtensionPathDetailed } from "../../src/resolve-extension-path.js";
-import { resolveExt } from "../../src/sessions.js";
+import { resolveExtensionPath, resolveExtensionPathDetailed, resolveExt } from "../../src/provider-runtime.js";
 
 const MONOREPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
