@@ -8,8 +8,7 @@
 
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { getSetting } from "../orchestrator/project-settings.js";
-import { isImageGenModelId } from "../orchestrator/settings-tui-helpers.js";
+import { getSetting, isImageGenModelId } from "../orchestrator/project-settings.js";
 import { getProjectTmpDir, isRunningInContainer } from "../orchestrator/utils.js";
 import { createLogger } from "../shared/logger.js";
 import * as fs from "node:fs";

@@ -76,8 +76,8 @@ async function loadModule(level: string): Promise<{
   });
 
   // Project settings win over env — point resolution at a settings-free dir.
-  const settingsSource = await import("../../../extensions/orchestrator/settings-source.js");
-  settingsSource.setRepoRootResolverForTests(() => project);
+  const projectSettings = await import("../../../extensions/orchestrator/project-settings.js");
+  projectSettings.setRepoRootResolverForTests(() => project);
 
   const fileLogger = await import("../../../extensions/shared/file-logger.js");
   // file-logger.js is a single instance across these tests — drop its 30s

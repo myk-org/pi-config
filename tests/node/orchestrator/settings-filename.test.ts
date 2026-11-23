@@ -12,14 +12,15 @@ import { join } from "node:path";
 import {
 	LEGACY_SETTINGS_FILENAME,
 	SETTINGS_FILENAMES,
+	SettingsFileCorruptError,
 	findSettingsFile,
+	getSettingsPath,
 	migrateLegacySettingsFile,
 	readLegacySettings,
 	setPublishSettingsFileForTests,
-	setSettingsSourceLogger,
-} from "../../../extensions/orchestrator/settings-source.js";
-import { SettingsFileCorruptError, writeSettingsFile } from "../../../extensions/orchestrator/settings-tui-helpers.js";
-import { getSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+	setSettingsLogger,
+	writeSettingsFile,
+} from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const JSON_NAME = "pi-config-settings.json";
@@ -33,7 +34,7 @@ interface LogEntry {
 /** Every info/warning the settings source emits while `body` runs, with its level. */
 function captureLogs(body: () => void): LogEntry[] {
 	const entries: LogEntry[] = [];
-	setSettingsSourceLogger({
+	setSettingsLogger({
 		debug: () => {},
 		info: (message) => entries.push({ level: "info", message }),
 		warn: (message) => entries.push({ level: "warn", message }),
@@ -41,7 +42,7 @@ function captureLogs(body: () => void): LogEntry[] {
 	try {
 		body();
 	} finally {
-		setSettingsSourceLogger({ debug: () => {}, info: () => {}, warn: () => {} });
+		setSettingsLogger({ debug: () => {}, info: () => {}, warn: () => {} });
 	}
 	return entries;
 }

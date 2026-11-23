@@ -19,8 +19,7 @@ import { isLiveLegacyDaemonFile } from "../shared/daemon-manager.js";
 import { acquireMtimeFileLock } from "../shared/file-lock.js";
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
-import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, SETTINGS_KEYS } from "./project-settings.js";
-import { readSettingsObject } from "./settings-source.js";
+import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, readSettingsObject, SETTINGS_KEYS } from "./project-settings.js";
 import { getProjectRunDir, getProjectTmpDir } from "./utils.js";
 
 const log = createLogger("tmp_cleanup");
@@ -253,7 +252,7 @@ function acquireLock(lockPath: string): (() => void) | null {
  */
 function rawSizeSetting(cwd: string): unknown {
   for (const file of [getSettingsPath(cwd), getGlobalSettingsPath()]) {
-    const value = readSettingsObject(file, "project_tmp_max_size").project_tmp_max_size;
+    const value = readSettingsObject(file).project_tmp_max_size;
     if (value !== undefined) return value;
   }
   return undefined;

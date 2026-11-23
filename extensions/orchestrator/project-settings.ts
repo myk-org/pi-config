@@ -1,176 +1,476 @@
 /**
- * Project-level settings — loads .pi/pi-config-settings.json with env var fallback.
+ * Deep settings store — single source of truth for pi-config settings.
+ *
+ * Driven directly from `settings-keys.json` (zero parallel key tables or manual
+ * per-key overloads). Owns:
+ * - Schema validation and parsing (`validateSetting`, `parseSettingInput`, `parseSettingsFile`)
+ * - Legacy `.jsonc` one-time migration (`findSettingsFile`, `migrateLegacySettingsFile`)
+ * - Single coordinated layer cache (`layerCache`, `clearSettingsCache`, `resolveSetting`, `getSetting`)
+ * - Locked atomic persistence with backup rotation and TUI visit snapshots (`readSettingsFile`,
+ *   `writeSettingsFile`, `updateSetting`, `beginSettingsEditSession`, `endSettingsEditSession`)
+ *
+ * Cycle-free by design: imports only Node built-ins and `strip-json-comments` so
+ * `extensions/shared/file-logger.ts` can read `log_*` settings through the exact
+ * same cache and validator. `extensions/shared/logger.ts` injects a bootstrap logger
+ * via `setSettingsLogger`.
  *
  * Resolution order:
- * 1. Project .pi/pi-config-settings.json (wins if set; the only settings filename — a legacy
- *    .jsonc is migrated away once, see migrateLegacySettingsFile)
- * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
- * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
- *    PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
- *    PI_INTERNAL_OPERATIONS_PROVIDER, PI_INTERNAL_OPERATIONS_MODEL, PI_REVIEW_LOOP_MAX_CYCLES,
- *    PI_ENFORCEMENT_ALLOWED_COMMANDS, VERTEX_CLAUDE_1M, PI_SIDECAR_LOG_LEVEL,
- *    PI_COMS_MAX_HOPS, PI_COMS_TIMEOUT_MS, PI_COMS_DIR)
- * 4. Default (dream_interval_hours defaults to 3; pidash_enable/pidiff_enable to true; pidash_port to 19190;
- *    review_loop_max_cycles to 3)
- *
- * review_loop_max_cycles accepts JSON integers 1-10, or digit strings "1"-"10" only (after trim).
- * Rejects out-of-range values and non-digit forms ("01", "10.0", "1e1", "0b1010", "inf", Infinity, …) —
- * those fall through to the next resolution layer / default (3). Disable the review loop via
- * review_loop_enforcement: false — not via max_cycles.
+ * 1. Project `.pi/pi-config-settings.json`
+ * 2. Global `~/.pi/pi-config-settings.json`
+ * 3. Environment variable declared in `settings-keys.json`
+ * 4. Default value declared in `settings-keys.json`
  */
 
-import { existsSync, statSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir, tmpdir } from "node:os";
-import stripJsonComments from "strip-json-comments";
-import { resolveRepoRoot } from "./utils.js";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { execFileSync } from "node:child_process";
 import {
-  findSettingsFile,
-  SETTINGS_FILENAMES,
-  SETTINGS_KEYS,
-  type SettingsKeyDef,
-} from "./settings-source.js";
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import stripJsonComments from "strip-json-comments";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+type SettingsKeysSchema = typeof import("../../settings-keys.json");
 
-interface ProjectSettings {
-  commit_trailer?: boolean | string;
-  allow_push_to_protected_branches?: boolean;
-  use_worktrees?: boolean;
-  dream_interval_hours?: number;
-  dco?: boolean;
-  comment_signature?: boolean;
-  review_loop_enforcement?: boolean;
-  /** Run a lightweight read-only post-merge PR retrospective. Default: false. */
-  pr_retro_on_merge?: boolean;
-  /** Block orchestrator from using edit and write tools directly (must delegate to subagents). Default: false. */
-  orchestrator_edit_write_block?: boolean;
-  pidash_enable?: boolean;
-  pidiff_enable?: boolean;
-  /** Enable local Trail code map integration. Default: true. */
-  trail_enable?: boolean;
-  pidash_port?: number;
-  task_auto_clear_enabled?: boolean;
-  task_auto_clear_minutes?: number;
-  task_reminder_enabled?: boolean;
-  task_reminder_interval_minutes?: number;
-  task_stale_in_progress_enabled?: boolean;
-  task_stale_in_progress_minutes?: number;
-  image_model?: string;
-  /** Provider for internal operations (e.g. dreaming). Empty = use session model. */
-  internal_operations_provider?: string;
-  /** Model id for internal operations (e.g. dreaming). Empty = use session model. */
-  internal_operations_model?: string;
-  /** Max review-loop cycles injected into the rules prompt. Integer 1-10 only. */
-  review_loop_max_cycles?: number;
-  /** Default provider for all subagents. */
-  agent_provider?: string;
-  /** Default model for all subagents. */
-  agent_model?: string;
-  /** Per-agent provider/model overrides. null = use parent model (skip global agent_provider/agent_model). */
-  agent_overrides?: Record<string, { provider?: string | null; model?: string | null }>;
-  /** Enable 1M context window variants for Vertex Claude models. */
-  vertex_claude_1m?: boolean;
-  /** Log level for pi-sidecar (debug, info, warn, error). */
-  sidecar_log_level?: string;
-  /** Colon-separated command allowlist for enforcement. Empty = allow all. */
-  enforcement_allowed_commands?: string;
-  /** Enforcement: max sleep seconds allowed in loop context. */
-  enforcement_loop_sleep_threshold_s?: number;
-  /** Enforcement: max sleep seconds allowed standalone. */
-  enforcement_sleep_threshold_s?: number;
-  /** Subagent: max sync agent duration in seconds. */
-  sync_agent_max_seconds?: number;
-  /** Subagent: async poller interval in ms. */
-  async_poll_interval_ms?: number;
-  /** Subagent: async phantom timeout in ms. */
-  async_phantom_timeout_ms?: number;
-  /** Max hops for P2P coms message relay. */
-  coms_max_hops?: number;
-  /** P2P coms message response timeout in ms. */
-  coms_timeout_ms?: number;
-  /** P2P coms data directory. Empty = ~/.pi/coms. */
-  coms_dir?: string;
-  /** Coms task heartbeat interval in ms. */
-  coms_task_heartbeat_ms?: number;
-  /** Coms: entry grace period in ms. */
-  coms_entry_grace_period_ms?: number;
-  /** Coms: probe timeout in ms. */
-  coms_probe_timeout_ms?: number;
-  /** Pidiff: stale lock timeout in ms. */
-  pidiff_stale_lock_timeout_ms?: number;
-  /** Glob patterns of pre-approved dangerous commands (* any run, ? one char, matched against the full command text). */
-  dangerous_command_allowlist?: string[];
-  /** Pidiff: daemon startup timeout in seconds. */
-  pidiff_daemon_startup_timeout_s?: number;
-  /** Distill addressed review findings into memory lessons after `reviews address`. Default: true. */
-  review_learning?: boolean;
-  /** Keyboard shortcut to collapse/expand the tasks widget (empty string disables). */
-  widget_tasks_shortcut?: string;
-  /** Keyboard shortcut to collapse/expand the coms widget (empty string disables). */
-  widget_coms_shortcut?: string;
-  /** Keyboard shortcut to collapse/expand both tasks and coms widgets (empty string disables). */
-  widget_all_shortcut?: string;
-  /** Default display mode for tasks and coms widgets ("expanded" | "collapsed"). */
-  widgets_default_mode?: string;
+// ── Injected bootstrap logger (avoids cycle with extensions/shared/logger.ts) ──
+
+export interface SettingsLogger {
+  debug(message: string, context?: object): void;
+  info(message: string, context?: object): void;
+  warn(message: string, context?: object): void;
+  error(message: string, context?: object): void;
 }
 
-/** Settings metadata is loaded from settings-keys.json by the cycle-free settings source. */
-export { findSettingsFile, SETTINGS_KEYS, type SettingsKeyDef };
+const noop = (): void => {};
+let log: SettingsLogger = { debug: noop, info: noop, warn: noop, error: noop };
 
-/** Dev-time check: every ProjectSettings field must have a JSON definition. */
-const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
-  "commit_trailer",
-  "allow_push_to_protected_branches",
-  "use_worktrees",
-  "dream_interval_hours",
-  "dco",
-  "comment_signature",
-  "review_loop_enforcement",
-  "pr_retro_on_merge",
-  "orchestrator_edit_write_block",
-  "pidash_enable",
-  "pidiff_enable",
-  "trail_enable",
-  "pidash_port",
-  "task_auto_clear_enabled",
-  "task_auto_clear_minutes",
-  "task_reminder_enabled",
-  "task_reminder_interval_minutes",
-  "task_stale_in_progress_enabled",
-  "task_stale_in_progress_minutes",
-  "image_model",
-  "internal_operations_provider",
-  "internal_operations_model",
-  "review_loop_max_cycles",
-  "agent_provider",
-  "agent_model",
-  "agent_overrides",
-  "vertex_claude_1m",
-  "sidecar_log_level",
-  "enforcement_allowed_commands",
-  "enforcement_loop_sleep_threshold_s",
-  "enforcement_sleep_threshold_s",
-  "sync_agent_max_seconds",
-  "async_poll_interval_ms",
-  "async_phantom_timeout_ms",
-  "coms_max_hops",
-  "coms_timeout_ms",
-  "coms_dir",
-  "coms_task_heartbeat_ms",
-  "coms_entry_grace_period_ms",
-  "coms_probe_timeout_ms",
-  "pidiff_stale_lock_timeout_ms",
-  "pidiff_daemon_startup_timeout_s",
-  "review_learning",
-  "widget_tasks_shortcut",
-  "widget_coms_shortcut",
-  "widget_all_shortcut",
-  "widgets_default_mode",
-];
-for (const key of PROJECT_SETTINGS_KEYS) {
-  if (!(key in SETTINGS_KEYS)) {
-    throw new Error(`[project-settings] settings-keys.json missing key: ${key}`);
+/** Inject logger (wired at bootstrap by `extensions/shared/logger.ts` with bypassLevelResolution). */
+export function setSettingsLogger(logger: Partial<SettingsLogger>): void {
+  log = {
+    debug: logger.debug ?? noop,
+    info: logger.info ?? noop,
+    warn: logger.warn ?? noop,
+    error: logger.error ?? noop,
+  };
+}
+
+// ── Schema & derived types (directly from settings-keys.json) ───────
+
+export type SettingKey = keyof SettingsKeysSchema;
+export type AgentOverrideEntry = { provider?: string | null; model?: string | null };
+export type AgentOverrides = Record<string, AgentOverrideEntry>;
+
+type SpecialSettingValueMap = {
+  commit_trailer: boolean | string;
+  dangerous_command_allowlist: string[];
+  agent_overrides: AgentOverrides;
+};
+
+export type SettingValue<K extends SettingKey> =
+  K extends keyof SpecialSettingValueMap
+    ? SpecialSettingValueMap[K]
+    : SettingsKeysSchema[K]["default"] extends boolean
+      ? boolean
+      : SettingsKeysSchema[K]["default"] extends number
+        ? number
+        : SettingsKeysSchema[K]["default"] extends string
+          ? string
+          : unknown;
+
+export type ProjectSettings = { [K in SettingKey]?: SettingValue<K> };
+export type AnySettingValue = boolean | string | number | string[] | AgentOverrides;
+export type SettingsScope = "project" | "global";
+export type SettingSource = "P" | "G" | "E" | "D";
+
+export interface SettingsKeyDef {
+  description: string;
+  type: string;
+  env?: string;
+  default: unknown;
+  min?: number;
+  max?: number;
+  strict_digits?: boolean;
+  per_key_resolution?: boolean;
+  enum?: string[];
+  group?: string;
+}
+
+export const SETTINGS_KEYS: Record<string, SettingsKeyDef> = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"), "utf8"),
+);
+
+/** Sentinel value displayed for empty strings in the TUI. */
+export const EMPTY_VALUE_SENTINEL = "(empty)";
+
+/** The only settings filename — one name, one precedence, project and global alike. */
+export const SETTINGS_FILENAMES = ["pi-config-settings.json"];
+
+/** Legacy settings file, no longer read: migrated away once, then ignored (issue #1086). */
+export const LEGACY_SETTINGS_FILENAME = "pi-config-settings.jsonc";
+
+/** Suffix the legacy file is moved to — it can never shadow the `.json` again. */
+const LEGACY_MIGRATED_SUFFIX = ".migrated";
+
+// ── Path & sandbox helpers ──────────────────────────────────────────
+
+/** `realpath` of the nearest path that exists, so a symlinked parent cannot hide the target. */
+export function nearestRealPath(target: string): string {
+  const absolute = resolve(target);
+  const tail: string[] = [];
+  let current = absolute;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return tail.length > 0 ? join(real, ...tail.reverse()) : real;
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return absolute;
+      tail.push(basename(current));
+      current = parent;
+    }
   }
+}
+
+function isInsideTempTree(targetPath: string): boolean {
+  const base = nearestRealPath(tmpdir());
+  const target = nearestRealPath(targetPath);
+  return target === base || target.startsWith(base + sep);
+}
+
+// ── Canonical repository root resolution (cached, cycle-free) ───────
+
+const REPO_ROOT_CACHE_MAX = 512;
+/** Cached main-checkout root per resolved cwd ("" represents "not a git repo"). LRU-evicted. */
+const mainCheckoutRootCache = new Map<string, string>();
+let repoRootResolverOverride: ((cwd: string) => string) | null = null;
+const overrideRepoRootCache = new Map<string, string>();
+
+export function setRepoRootResolverForTests(resolver: ((cwd: string) => string) | null): void {
+  repoRootResolverOverride = resolver;
+  overrideRepoRootCache.clear();
+  mainCheckoutRootCache.clear();
+  clearSettingsCache();
+}
+
+function tryResolveMainCheckoutRootUncached(cwd: string): string | null {
+  const runGit = (args: string[]): string | null => {
+    try {
+      const out = execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        timeout: 3000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      return out && !out.startsWith("fatal") ? out : null;
+    } catch {
+      return null;
+    }
+  };
+  const common =
+    runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"]) ??
+    runGit(["rev-parse", "--git-common-dir"]);
+  if (common !== null) {
+    return dirname(resolve(cwd, common));
+  }
+
+  // Fallback for fake/offline repos or linked worktrees when git CLI fails
+  let current = resolve(cwd);
+  for (;;) {
+    const dotGit = join(current, ".git");
+    if (existsSync(dotGit)) {
+      try {
+        if (statSync(dotGit).isDirectory()) return current;
+        const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"));
+        if (match) {
+          const gitDir = resolve(current, match[1].trim());
+          if (!gitDir.split(sep).join("/").includes("/.git/modules/")) {
+            const commonFile = join(gitDir, "commondir");
+            if (existsSync(commonFile)) {
+              return dirname(resolve(gitDir, readFileSync(commonFile, "utf8").trim()));
+            }
+          }
+        }
+      } catch {
+        // Fall through to returning current directory
+      }
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+/**
+ * Resolve the main checkout root (the repo owning a worktree), or null when
+ * `cwd` is not inside a git repository. Single canonical implementation shared
+ * by `project-settings.ts` and `utils.ts` so settings, memory, and data dirs
+ * always resolve identically (even when git CLI fails).
+ */
+export function tryResolveMainCheckoutRoot(cwd: string): string | null {
+  const resolvedCwd = resolve(cwd);
+  const cached = mainCheckoutRootCache.get(resolvedCwd);
+  if (cached !== undefined) {
+    // Promote to MRU so hot roots like process.cwd() are never evicted by temp-dir bursts.
+    mainCheckoutRootCache.delete(resolvedCwd);
+    mainCheckoutRootCache.set(resolvedCwd, cached);
+    return cached === "" ? null : cached;
+  }
+  const root = tryResolveMainCheckoutRootUncached(resolvedCwd);
+  if (mainCheckoutRootCache.size >= REPO_ROOT_CACHE_MAX) {
+    const oldest = mainCheckoutRootCache.keys().next().value;
+    if (oldest !== undefined) mainCheckoutRootCache.delete(oldest);
+  }
+  mainCheckoutRootCache.set(resolvedCwd, root ?? "");
+  return root;
+}
+
+/** Main checkout root, or `resolve(cwd)` when not inside a git repo. */
+export function resolveMainCheckoutRoot(cwd: string): string {
+  return tryResolveMainCheckoutRoot(cwd) ?? resolve(cwd);
+}
+
+function resolveRepoRoot(cwd: string): string {
+  const resolvedCwd = resolve(cwd);
+  if (repoRootResolverOverride) {
+    const cached = overrideRepoRootCache.get(resolvedCwd);
+    if (cached !== undefined) return cached;
+    const root = repoRootResolverOverride(resolvedCwd);
+    if (overrideRepoRootCache.size >= REPO_ROOT_CACHE_MAX) {
+      const oldest = overrideRepoRootCache.keys().next().value;
+      if (oldest !== undefined) overrideRepoRootCache.delete(oldest);
+    }
+    overrideRepoRootCache.set(resolvedCwd, root);
+    return root;
+  }
+  return resolveMainCheckoutRoot(resolvedCwd);
+}
+
+// ── Legacy `.jsonc` one-time migration (issue #1086) ────────────────
+
+/** One warning per directory and reason: settings resolution runs on nearly every tool call, so a
+ *  file that stays ignored/refused/corrupt must not re-log on each read. Path only, never values. */
+const legacyWarned = new Set<string>();
+function warnLegacyOnce(reason: string, message: string, file: string): void {
+  const key = `${reason}\0${dirname(file)}`;
+  if (legacyWarned.has(key)) return;
+  legacyWarned.add(key);
+  log.warn(message, { path: file });
+}
+
+/** Test processes may only migrate inside the OS temp tree: a test that merely resolves
+ *  settings must never rewrite the user's real `~/.pi` — the same safety net `writeSettingsFile`
+ *  has. Production runs are unaffected. */
+function migrationAllowed(dir: string): boolean {
+  if (process.env.NODE_TEST_CONTEXT === undefined) return true;
+  return isInsideTempTree(dir);
+}
+
+/** Whether git tracks the legacy file, in the repo that owns it. `"unknown"` (git failed for an
+ *  unrelated reason) counts as tracked: a migration that MIGHT launder a clone's settings must not
+ *  happen. Exit 1 means "not in the index" — the normal, migratable case. */
+function legacyTracked(dir: string, legacy: string): boolean {
+  try {
+    const out = execFileSync("git", ["ls-files", "--error-unmatch", "--", legacy], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return out !== "";
+  } catch (error) {
+    const { status, stderr } = error as { status?: number; stderr?: string };
+    if (status === 1) return false;
+    if (status === 128 && /not a git repository/i.test(String(stderr ?? ""))) return false;
+    log.warn("settings_legacy_jsonc_git_check_failed", { path: legacy, fallback: "not migrated" });
+    return true;
+  }
+}
+
+/** Directories whose tracked legacy file was already refused in THIS process. */
+const legacyTrackedRefused = new Set<string>();
+function legacyTrackedRefusal(dir: string, legacy: string): boolean {
+  if (legacyTrackedRefused.has(dirname(legacy))) return true;
+  if (!legacyTracked(dir, legacy)) return false;
+  legacyTrackedRefused.add(dirname(legacy));
+  return true;
+}
+
+/** The nearest ancestor (or self) that contains `.git`, lexically — no git exec per resolution. */
+function lexicalRepoRoot(dir: string): string | null {
+  for (let current = resolve(dir); ; current = dirname(current)) {
+    if (existsSync(join(current, ".git"))) return current;
+    if (dirname(current) === current) return null;
+  }
+}
+
+/** Whether a repo could have SHIPPED the settings dir as a link: the dir itself, or a component
+ *  between it and the repo root. Symlinks above the repo root are the user's own layout and must
+ *  not block a migration. */
+function projectDirShippedAsSymlink(dir: string): boolean {
+  const leaf = resolve(dir);
+  try {
+    if (lstatSync(leaf).isSymbolicLink()) return true;
+  } catch {
+    return false;
+  }
+  const root = lexicalRepoRoot(leaf);
+  if (root === null || root === leaf) return false;
+  for (let current = dirname(leaf); current !== root; current = dirname(current)) {
+    try {
+      if (lstatSync(current).isSymbolicLink()) return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** The settings object at `file`, or `null` when it is missing or not a JSON object. */
+function readSettingsObjectOrNull(file: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(stripJsonComments(readFileSync(file, "utf8")));
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+let publishSettingsFile: (from: string, to: string) => void = renameSync;
+
+export function setPublishSettingsFileForTests(publish: ((from: string, to: string) => void) | null): void {
+  publishSettingsFile = publish ?? renameSync;
+}
+
+/** A legacy file that exists while its `.json` does not, and cannot be parsed. */
+export function legacyMigrationBlocked(dir: string): boolean {
+  const legacy = join(dir, LEGACY_SETTINGS_FILENAME);
+  if (!existsSync(legacy) || existsSync(join(dir, SETTINGS_FILENAMES[0]))) return false;
+  return readLegacySettings(legacy) === null && existsSync(legacy);
+}
+
+/** Reads and parses the legacy file; `null` means "nothing to migrate". */
+export function readLegacySettings(file: string): Record<string, unknown> | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(stripJsonComments(readFileSync(file, "utf8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    data = null;
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    warnLegacyOnce("corrupt", "settings_legacy_jsonc_corrupt", file);
+    return null;
+  }
+  return data as Record<string, unknown>;
+}
+
+export interface FindSettingsOptions {
+  /** Which settings root `dir` is. Defaults to `"project"`. */
+  scope?: SettingsScope;
+}
+
+/** ONE-TIME migration away from the legacy `.jsonc` file (issue #1086). */
+export function migrateLegacySettingsFile(dir: string, options: FindSettingsOptions = {}): void {
+  if (!migrationAllowed(dir)) return;
+  const scope = options.scope ?? "project";
+  if (scope === "project" && projectDirShippedAsSymlink(dir)) {
+    warnLegacyOnce("dir_symlink", "settings_legacy_jsonc_dir_symlink_refused", dir);
+    return;
+  }
+  const legacy = join(dir, LEGACY_SETTINGS_FILENAME);
+  let legacyStat;
+  try {
+    legacyStat = lstatSync(legacy);
+  } catch {
+    return;
+  }
+  if (legacyStat.isSymbolicLink()) {
+    warnLegacyOnce("symlink", "settings_legacy_jsonc_symlink_refused", legacy);
+    return;
+  }
+  const target = join(dir, SETTINGS_FILENAMES[0]);
+  if (existsSync(target)) {
+    warnLegacyOnce("ignored", "settings_legacy_jsonc_ignored", legacy);
+    return;
+  }
+
+  const data = readLegacySettings(legacy);
+  if (data === null) return;
+  if (scope === "project" && legacyTrackedRefusal(dir, legacy)) {
+    warnLegacyOnce("tracked", "settings_legacy_jsonc_tracked_refused", legacy);
+    return;
+  }
+
+  const tmp = `${target}.${process.pid}.${Date.now().toString(36)}`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  } catch {
+    log.warn("settings_legacy_jsonc_migrate_failed", { path: legacy });
+    return;
+  }
+  let publishError: NodeJS.ErrnoException | undefined;
+  try {
+    if (!existsSync(target)) publishSettingsFile(tmp, target);
+  } catch (error) {
+    publishError = error as NodeJS.ErrnoException;
+  } finally {
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {
+      /* temp file left behind */
+    }
+  }
+
+  if (readSettingsObjectOrNull(target) === null) {
+    log.warn("settings_legacy_jsonc_migrate_failed", {
+      path: legacy,
+      code: publishError?.code ?? (existsSync(target) ? "invalid_target" : "ENOENT"),
+    });
+    return;
+  }
+
+  try {
+    renameSync(legacy, join(dir, `${LEGACY_SETTINGS_FILENAME}${LEGACY_MIGRATED_SUFFIX}`));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn("settings_legacy_jsonc_rename_failed", { path: legacy });
+      return;
+    }
+  }
+  log.info("settings_legacy_jsonc_migrated", { path: legacy });
+}
+
+export function findSettingsFile(dir: string, options: FindSettingsOptions = {}): string | null {
+  migrateLegacySettingsFile(dir, options);
+  for (const name of SETTINGS_FILENAMES) {
+    const file = join(dir, name);
+    if (existsSync(file)) return file;
+  }
+  return null;
+}
+
+// ── File path resolution ────────────────────────────────────────────
+
+/** Override global settings path for testing. Pass null to restore default. Clears cache. */
+let globalSettingsPathOverride: string | null = null;
+
+export function setGlobalSettingsPath(path: string | null): void {
+  globalSettingsPathOverride = path;
+  clearSettingsCache();
 }
 
 export function getSettingsPath(cwd: string): string {
@@ -178,475 +478,967 @@ export function getSettingsPath(cwd: string): string {
   return findSettingsFile(piDir) ?? join(piDir, SETTINGS_FILENAMES[0]);
 }
 
-export function parseSettingsFile(filePath: string): ProjectSettings {
+/**
+ * Resolved global settings file path (honors test override).
+ *
+ * Under `node:test` (`NODE_TEST_CONTEXT`), an unset override with a real (non-temp)
+ * `HOME` redirects to a throwaway per-process temp file so a test can never read or
+ * mutate the user's real `~/.pi/pi-config-settings.json`. Tests that explicitly point
+ * `process.env.HOME` inside the OS temp tree still use `<HOME>/.pi/pi-config-settings.json`.
+ */
+export function getGlobalSettingsPath(): string {
+  if (globalSettingsPathOverride) return globalSettingsPathOverride;
+  const home = process.env.HOME || homedir();
+  if (process.env.NODE_TEST_CONTEXT !== undefined && !isInsideTempTree(home)) {
+    return join(tmpdir(), `pi-config-test-global-settings-${process.pid}.json`);
+  }
+  const piDir = join(home, ".pi");
+  return findSettingsFile(piDir, { scope: "global" }) ?? join(piDir, SETTINGS_FILENAMES[0]);
+}
+
+export function getFilePathForScope(scope: SettingsScope, cwd: string): string {
+  return scope === "project" ? getSettingsPath(cwd) : getGlobalSettingsPath();
+}
+
+// ── Unified schema validator & parser (single source of truth) ──────
+
+export type ValidationResult<T = unknown> =
+  | { ok: true; value: T }
+  | { ok: false; error: string };
+
+export interface ValidateSettingOptions {
+  /** Treat `null` as a valid "clear key" sentinel (used by browser/API edits). */
+  allowNull?: boolean;
+  /**
+   * - `"strict"` (default, writes/TUI/browser): rejects invalid entries inside arrays/objects.
+   * - `"lenient"` (file reads): drops malformed entries inside `string_list`/`agent_overrides`
+   *   so one bad entry does not discard valid siblings, while still enforcing type/enum/min/max.
+   */
+  mode?: "strict" | "lenient";
+}
+
+function validateAgentOverrides(
+  key: string,
+  value: unknown,
+  mode: "strict" | "lenient",
+): ValidationResult<AgentOverrides> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: `${key} must be an object mapping agent name to {provider?, model?}` };
+  }
+  const rawEntries = Object.entries(value as Record<string, unknown>);
+  const overrides: AgentOverrides = {};
+  for (const [name, val] of rawEntries) {
+    if (typeof val !== "object" || val === null || Array.isArray(val)) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${name} must be an object with {provider?, model?}` };
+      }
+      continue;
+    }
+    const v = val as { provider?: unknown; model?: unknown };
+    const entry: AgentOverrideEntry = {};
+    if (v.provider === null) {
+      entry.provider = null;
+    } else if (typeof v.provider === "string") {
+      entry.provider = v.provider.trim() || undefined;
+    } else if (v.provider !== undefined) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${name}.provider must be a string or null` };
+      }
+    }
+    if (v.model === null) {
+      entry.model = null;
+    } else if (typeof v.model === "string") {
+      entry.model = v.model.trim() || undefined;
+    } else if (v.model !== undefined) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${name}.model must be a string or null` };
+      }
+    }
+    if (entry.provider !== undefined || entry.model !== undefined) {
+      overrides[name] = entry;
+    } else if (mode === "strict") {
+      overrides[name] = entry;
+    }
+  }
+  if (mode === "lenient" && rawEntries.length > 0 && Object.keys(overrides).length === 0) {
+    return { ok: false, error: `${key} has no valid override entries` };
+  }
+  return { ok: true, value: overrides };
+}
+
+/**
+ * Validate and normalize a single setting value against `settings-keys.json`.
+ * Used consistently across file parsing, env resolution, TUI edits, and browser edits.
+ */
+export function validateSetting(
+  key: string,
+  value: unknown,
+  options: ValidateSettingOptions = {},
+): ValidationResult {
+  const def = SETTINGS_KEYS[key];
+  if (!def) return { ok: false, error: `unknown setting key: ${key}` };
+  if (value === null && options.allowNull) return { ok: true, value: null };
+  const mode = options.mode ?? "strict";
+
+  switch (def.type) {
+    case "bool":
+    case "bool_enable":
+      return typeof value === "boolean"
+        ? { ok: true, value }
+        : { ok: false, error: `${key} must be a boolean` };
+
+    case "bool_or_string":
+      if (typeof value === "boolean") return { ok: true, value };
+      if (typeof value === "string") return { ok: true, value: value.trim() };
+      return { ok: false, error: `${key} must be a boolean or string` };
+
+    case "int": {
+      let num: number;
+      if (typeof value === "number") {
+        if (!Number.isInteger(value)) return { ok: false, error: `${key} must be an integer` };
+        num = value;
+      } else if (typeof value === "string" && def.strict_digits) {
+        const trimmed = value.trim();
+        if (!/^(?:0|[1-9]\d*)$/.test(trimmed)) {
+          return { ok: false, error: `${key} must be an integer` };
+        }
+        num = Number(trimmed);
+        if (!Number.isSafeInteger(num)) return { ok: false, error: `${key} must be an integer` };
+      } else {
+        return { ok: false, error: `${key} must be an integer` };
+      }
+      if (def.min !== undefined && num < def.min) return { ok: false, error: `${key} must be >= ${def.min}` };
+      if (def.max !== undefined && num > def.max) return { ok: false, error: `${key} must be <= ${def.max}` };
+      return { ok: true, value: num };
+    }
+
+    case "port": {
+      const min = def.min ?? 1;
+      const max = def.max ?? 65535;
+      if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+        return { ok: false, error: `${key} must be an integer between ${min} and ${max}` };
+      }
+      return { ok: true, value };
+    }
+
+    case "number": {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return { ok: false, error: `${key} must be a finite number` };
+      }
+      if (def.min !== undefined && value < def.min) return { ok: false, error: `${key} must be >= ${def.min}` };
+      if (def.max !== undefined && value > def.max) return { ok: false, error: `${key} must be <= ${def.max}` };
+      return { ok: true, value };
+    }
+
+    case "string": {
+      if (typeof value !== "string") return { ok: false, error: `${key} must be a string` };
+      const trimmed = value.trim();
+      if (Array.isArray(def.enum) && def.enum.length > 0 && !def.enum.includes(trimmed)) {
+        return { ok: false, error: `${key} must be one of: ${def.enum.join(", ")}` };
+      }
+      return { ok: true, value: trimmed };
+    }
+
+    case "string_list": {
+      if (!Array.isArray(value)) return { ok: false, error: `${key} must be an array of strings` };
+      if (mode === "lenient") {
+        const list = value.filter((e): e is string => typeof e === "string" && e.length > 0);
+        if (value.length > 0 && list.length === 0) {
+          return { ok: false, error: `${key} has no valid string entries` };
+        }
+        return { ok: true, value: list };
+      }
+      if (!value.every((e) => typeof e === "string" && e.length > 0)) {
+        return { ok: false, error: `${key} must be an array of non-empty strings` };
+      }
+      return { ok: true, value: [...value] };
+    }
+
+    case "agent_overrides":
+      return validateAgentOverrides(key, value, mode);
+
+    default:
+      return { ok: false, error: `${key} has unsupported type ${def.type}` };
+  }
+}
+
+/**
+ * Parse and validate a string input (from TUI or CLI) against `settings-keys.json`.
+ * Empty string for numeric types returns `{ ok: true, value: undefined }` (clear/unset).
+ */
+export function parseSettingInput(key: string, rawValue: string): ValidationResult {
+  const def = SETTINGS_KEYS[key];
+  if (!def) return { ok: false, error: `unknown setting key: ${key}` };
+
+  switch (def.type) {
+    case "bool":
+    case "bool_enable":
+      if (rawValue === "true") return { ok: true, value: true };
+      if (rawValue === "false") return { ok: true, value: false };
+      return { ok: false, error: `${key} must be "true" or "false"` };
+
+    case "bool_or_string":
+      if (rawValue === "true") return { ok: true, value: true };
+      if (rawValue === "false") return { ok: true, value: false };
+      return validateSetting(key, rawValue);
+
+    case "int": {
+      const trimmed = rawValue.trim();
+      if (trimmed === "") return { ok: true, value: undefined };
+      if (def.strict_digits) return validateSetting(key, trimmed);
+      if (!/^-?\d+$/.test(trimmed)) return { ok: false, error: `${key} must be an integer` };
+      return validateSetting(key, Number(trimmed));
+    }
+
+    case "port": {
+      const trimmed = rawValue.trim();
+      if (trimmed === "") return { ok: true, value: undefined };
+      if (!/^\d+$/.test(trimmed)) {
+        const min = def.min ?? 1;
+        const max = def.max ?? 65535;
+        return { ok: false, error: `${key} must be an integer between ${min} and ${max}` };
+      }
+      return validateSetting(key, Number(trimmed));
+    }
+
+    case "number": {
+      const trimmed = rawValue.trim();
+      if (trimmed === "") return { ok: true, value: undefined };
+      return validateSetting(key, Number(trimmed));
+    }
+
+    case "string": {
+      const normalized = rawValue === EMPTY_VALUE_SENTINEL ? "" : rawValue;
+      return validateSetting(key, normalized);
+    }
+
+    case "string_list": {
+      // StringListSubmenu commits JSON; accept a hand-typed single pattern too.
+      try {
+        const parsed = JSON.parse(rawValue);
+        if (Array.isArray(parsed)) {
+          const list = parsed.filter((e): e is string => typeof e === "string" && e.length > 0);
+          return { ok: true, value: list };
+        }
+      } catch {
+        // Fall through to single-pattern parsing
+      }
+      const trimmed = rawValue.trim();
+      return { ok: true, value: trimmed !== "" ? [trimmed] : [] };
+    }
+
+    case "agent_overrides": {
+      try {
+        const parsed = JSON.parse(rawValue);
+        return validateSetting(key, parsed);
+      } catch {
+        return { ok: false, error: `${key} must be a valid JSON object` };
+      }
+    }
+
+    default:
+      return { ok: false, error: `${key} has unsupported type ${def.type}` };
+  }
+}
+
+/**
+ * Parse `review_loop_max_cycles` from a raw settings-file or env value.
+ * Delegates to the unified schema validator (`strict_digits`, `min: 1`, `max: 10`).
+ */
+export function parseReviewLoopMaxCycles(raw: unknown): number | undefined {
+  const res = validateSetting("review_loop_max_cycles", raw);
+  return res.ok ? (res.value as number) : undefined;
+}
+
+/** Parse and validate an env var for `key` using the unified schema validator. */
+function parseEnvSetting(key: string, def: SettingsKeyDef): unknown | undefined {
+  if (!def.env) return undefined;
+  const raw = process.env[def.env];
+  if (raw === undefined || raw === "") return undefined;
+
+  switch (def.type) {
+    case "bool":
+      return ["true", "1", "yes", "on"].includes(raw.trim().toLowerCase());
+    case "bool_enable":
+      return !["false", "0", "no", "off"].includes(raw.trim().toLowerCase());
+    case "bool_or_string": {
+      const lower = raw.trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(lower)) return true;
+      if (["false", "0", "no", "off"].includes(lower)) return false;
+      return raw;
+    }
+    case "int": {
+      const trimmed = raw.trim();
+      const res = def.strict_digits
+        ? validateSetting(key, trimmed)
+        : /^-?\d+$/.test(trimmed)
+          ? validateSetting(key, Number(trimmed))
+          : { ok: false as const, error: "not an integer" };
+      return res.ok ? res.value : undefined;
+    }
+    case "port": {
+      const trimmed = raw.trim();
+      if (!/^\d+$/.test(trimmed)) return undefined;
+      const res = validateSetting(key, Number(trimmed));
+      return res.ok ? res.value : undefined;
+    }
+    case "number": {
+      const trimmed = raw.trim();
+      if (trimmed === "") return undefined;
+      const res = validateSetting(key, Number(trimmed));
+      return res.ok ? res.value : undefined;
+    }
+    case "string": {
+      const res = validateSetting(key, raw);
+      return res.ok ? res.value : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** True when a model id looks like a Google/Gemini image-generation model. */
+export function isImageGenModelId(id: string): boolean {
+  const lower = id.toLowerCase();
+  return (
+    lower.includes("imagen") ||
+    lower.includes("image-generation") ||
+    /(?:^|[-_./])image(?:[-_./]|$)/.test(lower)
+  );
+}
+
+// ── File reading & schema-driven parsing ────────────────────────────
+
+/**
+ * Read raw JSON object from a settings file (preserving unknown keys).
+ * Returns `{}` if the file does not exist, or `null` if it exists but cannot be parsed
+ * as a JSON object (corrupt/array/primitive).
+ */
+export function readSettingsFile(filePath: string): Record<string, unknown> | null {
   if (!existsSync(filePath)) return {};
   try {
     const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
-    const result: ProjectSettings = {};
-    if (typeof raw.commit_trailer === "boolean" || typeof raw.commit_trailer === "string") result.commit_trailer = raw.commit_trailer;
-    if (typeof raw.allow_push_to_protected_branches === "boolean") result.allow_push_to_protected_branches = raw.allow_push_to_protected_branches;
-    if (typeof raw.use_worktrees === "boolean") result.use_worktrees = raw.use_worktrees;
-    if (typeof raw.dream_interval_hours === "number" && Number.isFinite(raw.dream_interval_hours)) {
-      result.dream_interval_hours = raw.dream_interval_hours;
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      return raw as Record<string, unknown>;
     }
-    if (typeof raw.dco === "boolean") result.dco = raw.dco;
-    if (typeof raw.comment_signature === "boolean") result.comment_signature = raw.comment_signature;
-    if (typeof raw.review_loop_enforcement === "boolean") result.review_loop_enforcement = raw.review_loop_enforcement;
-    if (typeof raw.orchestrator_edit_write_block === "boolean") result.orchestrator_edit_write_block = raw.orchestrator_edit_write_block;
-    if (typeof raw.pidash_enable === "boolean") result.pidash_enable = raw.pidash_enable;
-    if (typeof raw.pidiff_enable === "boolean") result.pidiff_enable = raw.pidiff_enable;
-    if (typeof raw.trail_enable === "boolean") result.trail_enable = raw.trail_enable;
-    if (typeof raw.pidash_port === "number" && Number.isInteger(raw.pidash_port) && raw.pidash_port > 0 && raw.pidash_port <= 65535) {
-      result.pidash_port = raw.pidash_port;
-    }
-    if (typeof raw.image_model === "string" && raw.image_model.trim()) {
-      result.image_model = raw.image_model.trim();
-    }
-    if (typeof raw.internal_operations_provider === "string" && raw.internal_operations_provider.trim()) {
-      result.internal_operations_provider = raw.internal_operations_provider.trim();
-    }
-    if (typeof raw.internal_operations_model === "string" && raw.internal_operations_model.trim()) {
-      result.internal_operations_model = raw.internal_operations_model.trim();
-    }
-    const parsedMaxCycles = parseReviewLoopMaxCycles(raw.review_loop_max_cycles);
-    if (parsedMaxCycles !== undefined) {
-      result.review_loop_max_cycles = parsedMaxCycles;
-    }
-    if (typeof raw.agent_provider === "string") {
-      result.agent_provider = raw.agent_provider.trim();
-    }
-    if (typeof raw.agent_model === "string") {
-      result.agent_model = raw.agent_model.trim();
-    }
-    if (typeof raw.agent_overrides === "object" && raw.agent_overrides !== null && !Array.isArray(raw.agent_overrides)) {
-      const overrides: Record<string, { provider?: string | null; model?: string | null }> = {};
-      for (const [name, val] of Object.entries(raw.agent_overrides)) {
-        if (typeof val === "object" && val !== null && !Array.isArray(val)) {
-          const v = val as { provider?: unknown; model?: unknown };
-          const entry: { provider?: string | null; model?: string | null } = {};
-          if (v.provider === null) entry.provider = null;
-          else if (typeof v.provider === "string") entry.provider = v.provider.trim() || undefined;
-          if (v.model === null) entry.model = null;
-          else if (typeof v.model === "string") entry.model = v.model.trim() || undefined;
-          if (entry.provider !== undefined || entry.model !== undefined) overrides[name] = entry;
-        }
-      }
-      if (Object.keys(overrides).length > 0) result.agent_overrides = overrides;
-    }
-
-    // Data-driven parsing for remaining settings — derive from settings-keys.json types
-    const SPECIAL_CASE_KEYS = new Set<string>([
-      "commit_trailer", "allow_push_to_protected_branches", "use_worktrees",
-      "dream_interval_hours", "dco", "comment_signature", "review_loop_enforcement",
-      "orchestrator_edit_write_block", "pidash_enable", "pidiff_enable", "trail_enable", "pidash_port",
-      "image_model", "internal_operations_provider", "internal_operations_model",
-      "review_loop_max_cycles", "agent_provider",
-      "agent_model", "agent_overrides",
-    ]);
-    for (const [k, def] of Object.entries(SETTINGS_KEYS)) {
-      if (SPECIAL_CASE_KEYS.has(k) || k in result) continue;
-      if (!(k in raw)) continue;
-      const val = raw[k];
-      switch (def.type) {
-        case "bool":
-          if (typeof val === "boolean") (result as any)[k] = val;
-          break;
-        case "string":
-          if (typeof val === "string") (result as any)[k] = val.trim();
-          break;
-        case "int": {
-          if (typeof val === "number" && Number.isInteger(val)) {
-            const min = def.min ?? 0;
-            const max = def.max ?? Number.MAX_SAFE_INTEGER;
-            if (val >= min && val <= max) (result as any)[k] = val;
-          }
-          break;
-        }
-        case "port": {
-          const min = def.min ?? 0;
-          if (typeof val === "number" && Number.isInteger(val) && val >= min && val <= 65535) {
-            (result as any)[k] = val;
-          }
-          break;
-        }
-        case "number":
-          if (typeof val === "number" && Number.isFinite(val)) (result as any)[k] = val;
-          break;
-        case "string_list":
-          if (Array.isArray(val)) {
-            const list = val.filter((e: unknown): e is string => typeof e === "string" && e.length > 0);
-            const rejected = val.length - list.length;
-            if (rejected > 0) console.debug(`[project-settings] ${filePath}: dropped ${rejected} invalid string_list entrie(s) for ${k}`);
-            if (list.length > 0) (result as any)[k] = list;
-          }
-          break;
-      }
-    }
-    return result;
-  } catch (e: any) {
-    console.debug(`[project-settings] failed to parse ${filePath}:`, e?.message?.slice(0, 100));
-    return {};
+    log.warn("settings file is not a JSON object", { path: filePath });
+  } catch (error) {
+    log.warn("settings read or parse failed", {
+      path: filePath,
+      error: error instanceof Error ? error.message.slice(0, 120) : String(error),
+    });
   }
+  return null;
+}
+
+/** Read the full raw settings object, returning `{}` when missing or unparseable (non-mutating callers). */
+export function readSettingsObject(file: string | null): Record<string, unknown> {
+  if (!file) return {};
+  return readSettingsFile(file) ?? {};
+}
+
+/** Parse and validate all known schema keys from a settings file. */
+export function parseSettingsFile(filePath: string): ProjectSettings {
+  if (!existsSync(filePath)) return {};
+  const raw = readSettingsFile(filePath);
+  if (raw === null) return {};
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(SETTINGS_KEYS)) {
+    if (!(key in raw)) continue;
+    const validated = validateSetting(key, raw[key], { mode: "lenient" });
+    if (validated.ok) {
+      result[key] = validated.value;
+    }
+  }
+  return result as ProjectSettings;
 }
 
 export function loadProjectSettings(cwd: string): ProjectSettings {
   return parseSettingsFile(getSettingsPath(cwd));
 }
 
-/** Override global settings path for testing. When set, loadGlobalSettings reads from this instead of ~/.pi/. */
-let globalSettingsPathOverride: string | null = null;
-
-/** Set a custom global settings path (for tests). Pass null to restore default. Clears cache immediately. */
-/**
- * Dynamic-key variant for callers that build setting keys at runtime (e.g.
- * rules.ts `{{SETTINGS:...}}` substitution). Prefer the typed `getSetting` —
- * this exists so dynamic keys do not force a `key: string` overload onto
- * every caller (Qodo PR #954: mistyped keys must stay compile errors).
- */
-export function getSettingDynamic(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
-  return getSetting(cwd, key as keyof typeof SETTINGS_KEYS);
-}
-
-export function setGlobalSettingsPath(path: string | null): void {
-  globalSettingsPathOverride = path;
-  clearSettingsCache();
-}
-
-/** Resolved global settings file path (honors test override).
- *
- * TEST-RUNNER SAFETY NET (PR #950 R8, learned the hard way): a unit test
- * that forgets `setGlobalSettingsPath` must never read — let alone WRITE —
- * the user's real machine-wide settings. Under node:test
- * (`NODE_TEST_CONTEXT` is set by the runner) an unset override resolves to
- * a throwaway per-process temp file instead of `~/.pi/...`, so a stray
- * global-scope write lands in /tmp, never in the user's allowlist. */
-export function getGlobalSettingsPath(): string {
-  if (globalSettingsPathOverride) return globalSettingsPathOverride;
-  if (process.env.NODE_TEST_CONTEXT !== undefined) {
-    return join(tmpdir(), `pi-config-test-global-settings-${process.pid}.json`);
-  }
-  return findSettingsFile(join(homedir(), ".pi"), { scope: "global" }) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
-}
-
 export function loadGlobalSettings(): ProjectSettings {
   return parseSettingsFile(getGlobalSettingsPath());
 }
 
-function parseDisabledEnv(name: string): boolean | undefined {
-  const val = process.env[name];
-  if (val === undefined || val === "") return undefined;
-  return ["false", "0", "no", "off"].includes(val.toLowerCase());
+// ── Single coordinated layer cache ──────────────────────────────────
+
+const SETTINGS_CACHE_TTL_MS = 30_000;
+const SETTINGS_CACHE_MAX = 32;
+
+interface CachedLayer {
+  checkedAt: number;
+  file: string | null;
+  mtimeMs: number;
+  parsed: ProjectSettings;
 }
 
-function parseBoolEnv(name: string): boolean | undefined {
-  const val = process.env[name];
-  if (val === undefined || val === "") return undefined;
-  return ["true", "1", "yes", "on"].includes(val.toLowerCase());
+const layerCache = new Map<string, CachedLayer>();
+
+/** Clear the unified settings cache (shared by getSetting, file-logger, TUI, and browser-ops). */
+export function clearSettingsCache(): void {
+  layerCache.clear();
 }
 
-function parsePortEnv(name: string): number | undefined {
-  const val = process.env[name];
-  if (val === undefined || val === "") return undefined;
-  const port = parseInt(val, 10);
-  return Number.isFinite(port) && port > 0 && port <= 65535 ? port : undefined;
+function readCachedLayer(scope: SettingsScope, cwd: string): CachedLayer {
+  const now = Date.now();
+  let cacheKey: string;
+  let resolveFile: () => string | null;
+
+  if (scope === "project") {
+    const dir = join(resolveRepoRoot(cwd), ".pi");
+    cacheKey = `project\0${dir}`;
+    resolveFile = () => findSettingsFile(dir);
+  } else if (globalSettingsPathOverride) {
+    const override = globalSettingsPathOverride;
+    cacheKey = `global-file\0${override}`;
+    resolveFile = () => (existsSync(override) ? override : null);
+  } else {
+    const home = process.env.HOME || homedir();
+    if (process.env.NODE_TEST_CONTEXT !== undefined && !isInsideTempTree(home)) {
+      const testGlobal = join(tmpdir(), `pi-config-test-global-settings-${process.pid}.json`);
+      cacheKey = `global-file\0${testGlobal}`;
+      resolveFile = () => (existsSync(testGlobal) ? testGlobal : null);
+    } else {
+      const dir = join(home, ".pi");
+      cacheKey = `global\0${dir}`;
+      resolveFile = () => findSettingsFile(dir, { scope: "global" });
+    }
+  }
+
+  const cached = layerCache.get(cacheKey);
+  if (cached && now - cached.checkedAt < SETTINGS_CACHE_TTL_MS) {
+    layerCache.delete(cacheKey);
+    layerCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const file = resolveFile();
+  let mtimeMs = 0;
+  if (file) {
+    try {
+      mtimeMs = statSync(file).mtimeMs;
+    } catch {
+      mtimeMs = 0;
+    }
+  }
+  if (cached && cached.file === file && cached.mtimeMs === mtimeMs) {
+    cached.checkedAt = now;
+    return cached;
+  }
+
+  const parsed = file ? parseSettingsFile(file) : {};
+  const entry: CachedLayer = { checkedAt: now, file, mtimeMs, parsed };
+  if (layerCache.size >= SETTINGS_CACHE_MAX) {
+    const oldest = layerCache.keys().next().value;
+    if (oldest !== undefined) layerCache.delete(oldest);
+  }
+  layerCache.set(cacheKey, entry);
+  return entry;
 }
 
-function parseNumEnv(name: string): number | undefined {
-  const val = process.env[name];
-  if (val === undefined || val === "") return undefined;
-  const n = parseFloat(val);
-  return Number.isFinite(n) ? n : undefined;
+// ── Unified resolution & source detection ───────────────────────────
+
+export interface ResolvedSetting<T = AnySettingValue> {
+  value: T;
+  source: SettingSource;
+  path?: string | null;
 }
 
 /**
- * Parse review_loop_max_cycles from a raw settings-file or env value.
- * Accepts an integer 1-10, or a digit string "1"-"10" only (no exponents/binary/hex/decimals).
- * Returns undefined for anything else (0, negative, >10, NaN, "inf", Infinity, "1e1", "10.0", …) —
- * callers should fall through to the next resolution layer (global settings → env var → default 3).
+ * Resolve a setting value and its winning source (`P` | `G` | `E` | `D`) through the
+ * single coordinated cache and schema validator. Returns `null` for unknown keys.
+ *
+ * Pass `{ audit: true }` only from low-frequency bootstrap callers (e.g. `file-logger.ts`,
+ * cached 30s per logger) so hot `getSetting` calls never append to the bypass logger.
  */
-export function parseReviewLoopMaxCycles(raw: unknown): number | undefined {
-  if (typeof raw === "number") {
-    return Number.isInteger(raw) && raw >= 1 && raw <= 10 ? raw : undefined;
+export function resolveSetting(
+  cwd: string,
+  key: string,
+  options?: { audit?: boolean },
+): ResolvedSetting | null {
+  const def = SETTINGS_KEYS[key];
+  if (!def) return null;
+  const audit = options?.audit === true;
+
+  const projectLayer = readCachedLayer("project", cwd);
+  const projectVal = (projectLayer.parsed as Record<string, unknown>)[key];
+  if (projectVal !== undefined) {
+    if (audit) log.debug("resolved setting", { key, source: "project", path: projectLayer.file });
+    return { value: projectVal as AnySettingValue, source: "P", path: projectLayer.file };
   }
-  if (typeof raw === "string") {
-    const trimmed = raw.trim();
-    // Strict digit strings only — reject "1e1", "0b1010", "10.0", "01", etc.
-    if (!/^(?:[1-9]|10)$/.test(trimmed)) return undefined;
-    return parseInt(trimmed, 10);
+
+  const globalLayer = readCachedLayer("global", cwd);
+  const globalVal = (globalLayer.parsed as Record<string, unknown>)[key];
+  if (globalVal !== undefined) {
+    if (audit) log.debug("resolved setting", { key, source: "global", path: globalLayer.file });
+    return { value: globalVal as AnySettingValue, source: "G", path: globalLayer.file };
   }
-  return undefined;
+
+  const envVal = parseEnvSetting(key, def);
+  if (envVal !== undefined) {
+    if (audit) log.debug("resolved setting", { key, source: "environment" });
+    return { value: envVal as AnySettingValue, source: "E" };
+  }
+
+  if (audit) log.debug("resolved setting", { key, source: "default" });
+  const defaultVal =
+    def.type === "string_list"
+      ? (Array.isArray(def.default) ? [...(def.default as string[])] : [])
+      : def.type === "agent_overrides"
+        ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as AgentOverrides) } : {})
+        : (def.default as AnySettingValue);
+  return { value: defaultVal, source: "D" };
 }
 
-/** Parse PI_REVIEW_LOOP_MAX_CYCLES env var — digit string "1"-"10" only (same rules as parseReviewLoopMaxCycles). */
-function parseReviewLoopMaxCyclesEnv(name: string): number | undefined {
-  const val = process.env[name];
-  if (val === undefined || val === "") return undefined;
-  return parseReviewLoopMaxCycles(val);
+/**
+ * Get a typed setting value for any key defined in `settings-keys.json`.
+ * Resolution: project file → global ~/.pi/pi-config-settings.json → env var → default.
+ */
+export function getSetting<K extends SettingKey>(cwd: string, key: K): SettingValue<K> {
+  const resolved = resolveSetting(cwd, key);
+  return (resolved ? resolved.value : false) as SettingValue<K>;
 }
 
-/** Cached settings per cwd */
-let cachedCwd = "";
-let cachedSettings: ProjectSettings = {};
-let cachedProjectSettings: ProjectSettings = {};
-let cachedGlobalSettings: ProjectSettings = {};
-let cachedProjectPath = "";
-let cachedGlobalPath = "";
-let cachedMtime = 0;
-let cachedGlobalMtime = 0;
-let lastMtimeCheck = 0;
-const MTIME_CHECK_INTERVAL_MS = 30_000; // Check file mtime at most every 30s
+/**
+ * Dynamic-key variant for callers that build setting keys at runtime (e.g.
+ * `rules.ts` `{{SETTINGS:...}}`, `file-logger.ts`). Prefer typed `getSetting`
+ * when the key is statically known.
+ */
+export function getSettingDynamic(cwd: string, key: string): AnySettingValue {
+  const resolved = resolveSetting(cwd, key);
+  return resolved ? resolved.value : false;
+}
 
-function getSettingsLayers(cwd: string): {
-  settings: ProjectSettings;
-  projectSettings: ProjectSettings;
-  globalSettings: ProjectSettings;
-} {
-  const now = Date.now();
-  // Different cwd — always reload
-  if (cwd !== cachedCwd) {
-    const projectPath = getSettingsPath(cwd);
-    const globalPath = getGlobalSettingsPath();
-    const projectSettings = parseSettingsFile(projectPath);
-    const globalSettings = parseSettingsFile(globalPath);
-    cachedProjectSettings = projectSettings;
-    cachedGlobalSettings = globalSettings;
-    cachedSettings = { ...globalSettings, ...projectSettings };
-    cachedCwd = cwd;
-    cachedProjectPath = projectPath;
-    cachedGlobalPath = globalPath;
-    try { cachedMtime = statSync(projectPath).mtimeMs; } catch { cachedMtime = 0; }
-    try { cachedGlobalMtime = statSync(globalPath).mtimeMs; } catch { cachedGlobalMtime = 0; }
-    lastMtimeCheck = now;
-    return { settings: cachedSettings, projectSettings: cachedProjectSettings, globalSettings: cachedGlobalSettings };
-  }
-  // Same cwd — throttle mtime checks
-  if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) {
-    return { settings: cachedSettings, projectSettings: cachedProjectSettings, globalSettings: cachedGlobalSettings };
-  }
-  lastMtimeCheck = now;
+export interface SettingsSourceSnapshot {
+  project: ProjectSettings | null;
+  global: ProjectSettings | null;
+}
+
+/** Read project and global parsed settings once so per-key source detection avoids N×2 file reads. */
+export function loadSettingsSourceSnapshot(cwd: string): SettingsSourceSnapshot {
   const projectPath = getSettingsPath(cwd);
   const globalPath = getGlobalSettingsPath();
-  let mtime = 0;
-  let globalMtime = 0;
-  try { mtime = statSync(projectPath).mtimeMs; } catch {}
-  try { globalMtime = statSync(globalPath).mtimeMs; } catch {}
-  if (
-    projectPath === cachedProjectPath &&
-    globalPath === cachedGlobalPath &&
-    mtime === cachedMtime &&
-    globalMtime === cachedGlobalMtime
-  ) {
-    return { settings: cachedSettings, projectSettings: cachedProjectSettings, globalSettings: cachedGlobalSettings };
-  }
-  cachedProjectSettings = parseSettingsFile(projectPath);
-  cachedGlobalSettings = parseSettingsFile(globalPath);
-  cachedSettings = { ...cachedGlobalSettings, ...cachedProjectSettings };
-  cachedProjectPath = projectPath;
-  cachedGlobalPath = globalPath;
-  cachedMtime = mtime;
-  cachedGlobalMtime = globalMtime;
-  return { settings: cachedSettings, projectSettings: cachedProjectSettings, globalSettings: cachedGlobalSettings };
+  return {
+    project: existsSync(projectPath) ? parseSettingsFile(projectPath) : null,
+    global: existsSync(globalPath) ? parseSettingsFile(globalPath) : null,
+  };
 }
 
-/** Clear cache — call after migration or manual edits */
-export function clearSettingsCache(): void {
-  cachedCwd = "";
-  cachedSettings = {};
-  cachedProjectSettings = {};
-  cachedGlobalSettings = {};
-  cachedProjectPath = "";
-  cachedGlobalPath = "";
-  cachedMtime = 0;
-  cachedGlobalMtime = 0;
-  lastMtimeCheck = 0;
+export function detectSource(
+  key: string,
+  def: SettingsKeyDef,
+  cwd: string,
+  snapshot?: SettingsSourceSnapshot,
+): SettingSource {
+  const project = snapshot
+    ? snapshot.project
+    : (existsSync(getSettingsPath(cwd)) ? parseSettingsFile(getSettingsPath(cwd)) : null);
+  if (project && (project as Record<string, unknown>)[key] !== undefined) return "P";
+
+  const global = snapshot
+    ? snapshot.global
+    : (existsSync(getGlobalSettingsPath()) ? parseSettingsFile(getGlobalSettingsPath()) : null);
+  if (global && (global as Record<string, unknown>)[key] !== undefined) return "G";
+
+  if (parseEnvSetting(key, def) !== undefined) return "E";
+  return "D";
+}
+
+// ── Locked atomic persistence, backups & edit sessions ──────────────
+
+/** Thrown instead of writing when the target file cannot be parsed. */
+export class SettingsFileCorruptError extends Error {
+  constructor(readonly filePath: string) {
+    super(`refusing to overwrite unparseable settings file: ${filePath}`);
+    this.name = "SettingsFileCorruptError";
+    log.error("settings_write_refused_corrupt", { filePath });
+  }
+}
+
+/** Thrown when the previous version could not be preserved, so nothing is written. */
+export class SettingsBackupError extends Error {
+  constructor(readonly filePath: string, readonly cause?: unknown) {
+    super(`refusing to write settings without a backup: ${filePath}`);
+    this.name = "SettingsBackupError";
+  }
+}
+
+/** Path of the newest previous-version copy kept next to a settings file. */
+export function settingsBackupPath(filePath: string, slot = 1): string {
+  return `${filePath}.bak.${slot}`;
+}
+
+/** The cwd whose settings govern this file: project root for a project file, null for global. */
+function settingCwdFor(filePath: string): string | null {
+  const parent = dirname(filePath);
+  if (basename(parent) === ".pi") {
+    const root = dirname(parent);
+    if (root === homedir()) return null;
+    return root;
+  }
+  try {
+    return process.cwd();
+  } catch {
+    return null;
+  }
+}
+
+/** Backup retention for this file: project setting where owned by a project, env/default for global. */
+function backupCountFor(filePath: string): number {
+  const def = SETTINGS_KEYS.settings_backup_count;
+  const fallback = Number(def?.default ?? 5);
+  const min = Number(def?.min ?? 0);
+  const max = Number(def?.max ?? 20);
+  const accept = (value: number): number | null =>
+    Number.isInteger(value) && value >= min && value <= max ? value : null;
+
+  const raw = process.env.PI_SETTINGS_BACKUP_COUNT;
+  const envCount = raw !== undefined && raw.trim() !== "" ? accept(Number(raw)) : null;
+  if (raw !== undefined && raw.trim() !== "" && envCount === null) {
+    log.warn("settings_backup_count_invalid", { raw, min, max, fallback });
+  }
+
+  const cwd = settingCwdFor(filePath);
+  if (cwd !== null) {
+    const resolved = accept(Number(getSetting(cwd, "settings_backup_count")));
+    if (resolved !== null) return resolved;
+  }
+  return envCount ?? fallback;
+}
+
+/** Drop slots beyond the configured count, so lowering retention removes old copies. */
+function pruneExtraBackups(filePath: string, count: number): void {
+  const prefix = `${basename(filePath)}.bak.`;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dirname(filePath));
+  } catch (e: unknown) {
+    log.warn("settings_backup_prune_scan_failed", { filePath, error: e instanceof Error ? e.message : String(e) });
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(prefix)) continue;
+    const slot = Number(name.slice(prefix.length));
+    if (!Number.isFinite(slot) || slot <= count) continue;
+    try {
+      unlinkSync(join(dirname(filePath), name));
+    } catch (e: unknown) {
+      log.warn("settings_backup_prune_failed", { filePath, slot: name, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+}
+
+let editSessionDepth = 0;
+const backedUpInSession = new Set<string>();
+const createdInSession = new Set<string>();
+const visitSnapshots = new Set<string>();
+
+function visitSnapshotPath(filePath: string): string {
+  return `${filePath}.bak.visit-${process.pid}`;
+}
+
+/** Reusable 4-byte buffer for synchronous lock backoff. */
+const sleepBuf = new Int32Array(new SharedArrayBuffer(4));
+
+/** Serialize chain mutations across processes with an O_EXCL pid lockfile. */
+function withChainLock<T>(filePath: string, fn: () => T): T {
+  const lockPath = `${filePath}.bak.lock`;
+  let locked = false;
+  try {
+    for (let attempt = 0; attempt < 100 && !locked; attempt++) {
+      try {
+        writeFileSync(lockPath, String(process.pid), { flag: "wx", mode: 0o600 });
+        locked = true;
+      } catch {
+        let stale = false;
+        try {
+          const ownerPid = Number(readFileSync(lockPath, "utf-8").trim());
+          if (Number.isInteger(ownerPid) && ownerPid > 0) {
+            try {
+              process.kill(ownerPid, 0);
+            } catch {
+              stale = true;
+            }
+          } else {
+            stale = Date.now() - statSync(lockPath).mtimeMs > 200;
+          }
+        } catch {
+          // Vanished between failed create and read — retry immediately
+        }
+        if (stale) {
+          const grave = `${lockPath}.stale-${process.pid}-${Date.now()}`;
+          try {
+            renameSync(lockPath, grave);
+            unlinkSync(grave);
+          } catch {
+            /* another writer claimed it */
+          }
+        }
+        Atomics.wait(sleepBuf, 0, 0, 20);
+      }
+    }
+    if (!locked) {
+      log.error("settings_backup_lock_timeout", { filePath });
+      throw new SettingsBackupError(filePath, new Error("backup lock timeout"));
+    }
+    return fn();
+  } finally {
+    if (locked) {
+      try {
+        if (readFileSync(lockPath, "utf-8").trim() === String(process.pid)) unlinkSync(lockPath);
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+}
+
+function shiftBackupSlots(filePath: string, count: number): void {
+  const oldest = settingsBackupPath(filePath, count);
+  if (existsSync(oldest)) unlinkSync(oldest);
+  for (let slot = count - 1; slot >= 1; slot--) {
+    const from = settingsBackupPath(filePath, slot);
+    if (existsSync(from)) renameSync(from, settingsBackupPath(filePath, slot + 1));
+  }
+}
+
+function promoteSnapshotLocked(snapshotPath: string, filePath: string): void {
+  const count = backupCountFor(filePath);
+  if (count <= 0) {
+    unlinkSync(snapshotPath);
+    return;
+  }
+  shiftBackupSlots(filePath, count);
+  renameSync(snapshotPath, settingsBackupPath(filePath, 1));
+}
+
+function promoteSnapshot(snapshotPath: string): void {
+  const filePath = snapshotPath.replace(/\.bak\.visit-\d+$/, "");
+  if (!existsSync(snapshotPath)) return;
+  withChainLock(filePath, () => promoteSnapshotLocked(snapshotPath, filePath));
+}
+
+function reapStaleVisitSnapshots(filePath: string): void {
+  const dir = dirname(filePath);
+  const marker = `${basename(filePath)}.bak.visit-`;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(marker)) continue;
+    const pid = Number(name.slice(marker.length));
+    if (!Number.isInteger(pid)) continue;
+    if (pid === process.pid && visitSnapshots.has(join(dir, name))) continue;
+    try {
+      process.kill(pid, 0);
+      continue;
+    } catch {
+      /* dead owner — promote snapshot */
+    }
+    try {
+      promoteSnapshot(join(dir, name));
+      log.info("settings_visit_snapshot_recovered", { filePath, pid });
+    } catch (e: unknown) {
+      log.warn("settings_visit_snapshot_recover_failed", {
+        filePath,
+        pid,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+}
+
+function promoteVisitSnapshots(): void {
+  const failed = new Set<string>();
+  for (const snapshot of [...visitSnapshots]) {
+    try {
+      promoteSnapshot(snapshot);
+    } catch (e: unknown) {
+      failed.add(snapshot);
+      log.warn("settings_visit_snapshot_promote_failed", {
+        snapshot,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  visitSnapshots.clear();
+  for (const snapshot of failed) visitSnapshots.add(snapshot);
+}
+
+export function beginSettingsEditSession(): void {
+  editSessionDepth++;
+}
+
+export function endSettingsEditSession(): void {
+  editSessionDepth = Math.max(0, editSessionDepth - 1);
+  if (editSessionDepth === 0) {
+    promoteVisitSnapshots();
+    backedUpInSession.clear();
+    createdInSession.clear();
+  }
+}
+
+function shouldBackUp(filePath: string, dedupe: boolean): boolean {
+  if (!dedupe || editSessionDepth === 0) return true;
+  if (createdInSession.has(filePath)) return false;
+  return !backedUpInSession.has(filePath);
+}
+
+function rotateSettingsBackups(filePath: string, count: number): void {
+  if (count <= 0) return;
+  withChainLock(filePath, () => {
+    try {
+      shiftBackupSlots(filePath, count);
+      copyFileSync(filePath, settingsBackupPath(filePath, 1));
+    } catch (e: unknown) {
+      log.error("settings_backup_failed", { filePath, error: e instanceof Error ? e.message : String(e) });
+      throw new SettingsBackupError(filePath, e);
+    }
+  });
 }
 
 /**
- * Get a setting value. Resolution: project file → global ~/.pi/pi-config-settings.json → env var → default.
+ * Atomically write a settings object to `filePath` with sandbox guard, corrupt-file
+ * refusal, locked backup rotation / visit snapshots, and automatic cache invalidation.
  */
-export function getSetting(cwd: string, key: "commit_trailer"): boolean | string;
-export function getSetting(cwd: string, key: "allow_push_to_protected_branches"): boolean;
-export function getSetting(cwd: string, key: "use_worktrees"): boolean;
-export function getSetting(cwd: string, key: "dream_interval_hours"): number;
-export function getSetting(cwd: string, key: "dco"): boolean;
-export function getSetting(cwd: string, key: "comment_signature"): boolean;
-export function getSetting(cwd: string, key: "review_loop_enforcement"): boolean;
-export function getSetting(cwd: string, key: "pr_retro_on_merge"): boolean;
-export function getSetting(cwd: string, key: "orchestrator_edit_write_block"): boolean;
-export function getSetting(cwd: string, key: "pidash_enable"): boolean;
-export function getSetting(cwd: string, key: "pidiff_enable"): boolean;
-export function getSetting(cwd: string, key: "trail_enable"): boolean;
-export function getSetting(cwd: string, key: "pidash_port"): number;
-export function getSetting(cwd: string, key: "task_auto_clear_enabled"): boolean;
-export function getSetting(cwd: string, key: "task_auto_clear_minutes"): number;
-export function getSetting(cwd: string, key: "task_reminder_enabled"): boolean;
-export function getSetting(cwd: string, key: "task_reminder_interval_minutes"): number;
-export function getSetting(cwd: string, key: "task_stale_in_progress_enabled"): boolean;
-export function getSetting(cwd: string, key: "task_stale_in_progress_minutes"): number;
-export function getSetting(cwd: string, key: "image_model"): string;
-export function getSetting(cwd: string, key: "internal_operations_provider"): string;
-export function getSetting(cwd: string, key: "internal_operations_model"): string;
-export function getSetting(cwd: string, key: "review_loop_max_cycles"): number;
-export function getSetting(cwd: string, key: "agent_provider"): string;
-export function getSetting(cwd: string, key: "agent_model"): string;
-export function getSetting(cwd: string, key: "agent_overrides"): Record<string, { provider?: string | null; model?: string | null }>;
-export function getSetting(cwd: string, key: "vertex_claude_1m"): boolean;
-export function getSetting(cwd: string, key: "sidecar_log_level"): string;
-export function getSetting(cwd: string, key: "enforcement_allowed_commands"): string;
-export function getSetting(cwd: string, key: "enforcement_loop_sleep_threshold_s"): number;
-export function getSetting(cwd: string, key: "enforcement_sleep_threshold_s"): number;
-export function getSetting(cwd: string, key: "sync_agent_max_seconds"): number;
-export function getSetting(cwd: string, key: "async_poll_interval_ms"): number;
-export function getSetting(cwd: string, key: "async_phantom_timeout_ms"): number;
-export function getSetting(cwd: string, key: "coms_max_hops"): number;
-export function getSetting(cwd: string, key: "coms_timeout_ms"): number;
-export function getSetting(cwd: string, key: "coms_dir"): string;
-export function getSetting(cwd: string, key: "coms_task_heartbeat_ms"): number;
-export function getSetting(cwd: string, key: "coms_entry_grace_period_ms"): number;
-export function getSetting(cwd: string, key: "coms_probe_timeout_ms"): number;
-export function getSetting(cwd: string, key: "pidiff_stale_lock_timeout_ms"): number;
-export function getSetting(cwd: string, key: "pidiff_daemon_startup_timeout_s"): number;
-export function getSetting(cwd: string, key: "dangerous_command_allowlist"): string[];
-export function getSetting(cwd: string, key: "review_learning"): boolean;
-export function getSetting(cwd: string, key: "memory_max_active_entries"): number;
-export function getSetting(cwd: string, key: "memory_near_duplicate_threshold"): number;
-export function getSetting(cwd: string, key: "memory_conflict_similarity"): number;
-export function getSetting(cwd: string, key: "memory_inject_similarity"): number;
-export function getSetting(cwd: string, key: "memory_token_budget"): number;
-export function getSetting(cwd: string, key: "widget_tasks_shortcut"): string;
-export function getSetting(cwd: string, key: "widget_coms_shortcut"): string;
-export function getSetting(cwd: string, key: "widget_all_shortcut"): string;
-export function getSetting(cwd: string, key: "widgets_default_mode"): string;
-// Fallback overload: any known settings key (SETTINGS_KEYS union) — a mistyped
-// key is a compile error instead of silently returning false (Qodo PR #954).
-export function getSetting(cwd: string, key: keyof typeof SETTINGS_KEYS): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }>;
-export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
-  const { settings } = getSettingsLayers(cwd);
-  const def = SETTINGS_KEYS[key as keyof typeof SETTINGS_KEYS];
-  if (!def) return false;
+export function writeSettingsFile(
+  filePath: string,
+  data: Record<string, unknown>,
+  options: { dedupeBackup?: boolean } = {},
+): void {
+  const dir = dirname(filePath);
 
-  // Special cases — unique parsing beyond simple settings → env → default
-  switch (key) {
-    case "commit_trailer": {
-      if (settings.commit_trailer !== undefined) return settings.commit_trailer;
-      const envStr = def.env ? process.env[def.env] : undefined;
-      if (envStr !== undefined && envStr !== "") {
-        if (["true", "1", "yes", "on"].includes(envStr.toLowerCase())) return true;
-        if (["false", "0", "no", "off"].includes(envStr.toLowerCase())) return false;
-        return envStr; // treat as custom trailer string
-      }
-      return def.default as boolean;
-    }
-    case "pidash_enable":
-    case "pidiff_enable": {
-      const enableKey = key as "pidash_enable" | "pidiff_enable";
-      if (settings[enableKey] !== undefined) return settings[enableKey]!;
-      if (def.env) {
-        const disabled = parseDisabledEnv(def.env);
-        if (disabled !== undefined) return !disabled;
-      }
-      return def.default as boolean;
-    }
-    case "pidash_port": {
-      if (settings.pidash_port !== undefined) {
-        // Defensive: validate even though parseSettingsFile already checks
-        if (Number.isInteger(settings.pidash_port) && settings.pidash_port > 0 && settings.pidash_port <= 65535) {
-          return settings.pidash_port;
+  if (process.env.NODE_TEST_CONTEXT !== undefined && !isInsideTempTree(filePath)) {
+    const real = nearestRealPath(filePath);
+    throw new Error(`test process refused to write settings outside the temp tree: ${real}`);
+  }
+
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+  if (SETTINGS_FILENAMES.includes(basename(filePath)) && legacyMigrationBlocked(dir)) {
+    throw new SettingsFileCorruptError(join(dir, LEGACY_SETTINGS_FILENAME));
+  }
+
+  const existedBefore = existsSync(filePath);
+  if (!existedBefore && options.dedupeBackup === true && editSessionDepth > 0) {
+    createdInSession.add(filePath);
+  }
+
+  if (existedBefore) {
+    if (readSettingsFile(filePath) === null) throw new SettingsFileCorruptError(filePath);
+    const count = backupCountFor(filePath);
+    pruneExtraBackups(filePath, count);
+    if (options.dedupeBackup === true && editSessionDepth > 0) {
+      if (shouldBackUp(filePath, true) && count > 0) {
+        try {
+          reapStaleVisitSnapshots(filePath);
+          copyFileSync(filePath, visitSnapshotPath(filePath));
+          backedUpInSession.add(filePath);
+          visitSnapshots.add(visitSnapshotPath(filePath));
+        } catch (e: unknown) {
+          log.error("settings_backup_failed", { filePath, error: e instanceof Error ? e.message : String(e) });
+          throw new SettingsBackupError(filePath, e);
         }
-        // Invalid value in merged settings — fall through to env/default
       }
-      if (def.env) {
-        const envPort = parsePortEnv(def.env);
-        if (envPort !== undefined) return envPort;
-      }
-      return def.default as number;
-    }
-    case "review_loop_max_cycles": {
-      if (settings.review_loop_max_cycles !== undefined) return settings.review_loop_max_cycles;
-      if (def.env) {
-        const env = parseReviewLoopMaxCyclesEnv(def.env);
-        if (env !== undefined) return env;
-      }
-      return def.default as number;
-    }
-    case "agent_overrides": {
-      return settings.agent_overrides || (def.default as Record<string, { provider?: string | null; model?: string | null }>);
+    } else {
+      rotateSettingsBackups(filePath, count);
     }
   }
 
-  // Generic handler — simple bool / number / string keys driven by settings-keys.json
-  const merged = settings[key as keyof ProjectSettings];
-  switch (def.type) {
-    case "bool": {
-      if (merged !== undefined) return merged as boolean;
-      if (def.env) {
-        const env = parseBoolEnv(def.env);
-        if (env !== undefined) return env;
-      }
-      return def.default as boolean;
+  const content = JSON.stringify(data, null, 2) + "\n";
+  const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;
+  try {
+    writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+    renameSync(tmpPath, filePath);
+  } catch (e) {
+    try {
+      if (existsSync(tmpPath)) unlinkSync(tmpPath);
+    } catch {
+      /* ignore cleanup failure */
     }
-    case "int": {
-      if (merged !== undefined) return merged as number;
-      if (def.env) {
-        const val = process.env[def.env];
-        if (val !== undefined && val !== "") {
-          const trimmed = val.trim();
-          if (/^-?\d+$/.test(trimmed)) {
-            const n = Number(trimmed);
-            const min = def.min ?? 0;
-            const max = def.max ?? Number.MAX_SAFE_INTEGER;
-            if (n >= min && n <= max) return n;
-          }
-        }
-      }
-      return def.default as number;
+    throw e;
+  }
+
+  // Always invalidate the unified cache after a successful write.
+  clearSettingsCache();
+}
+
+export type UpdateSettingResult =
+  | { ok: true; file: string }
+  | { ok: false; reason: "invalid" | "corrupt" | "write_error"; file: string; error: string; cause?: unknown };
+
+/**
+ * Validate and persist one setting in `scope`. Passing `undefined` or `null` deletes
+ * the key from that scope's file. Preserves unknown keys, rotates backups, and
+ * invalidates the unified cache.
+ */
+export function updateSetting(
+  cwd: string,
+  scope: SettingsScope,
+  key: string,
+  value: unknown,
+  options: { dedupeBackup?: boolean } = {},
+): UpdateSettingResult {
+  const filePath = getFilePathForScope(scope, cwd);
+  const clearing = value === undefined || value === null;
+
+  let validatedValue: unknown;
+  if (clearing) {
+    if (!(key in SETTINGS_KEYS)) {
+      return { ok: false, reason: "invalid", file: filePath, error: `unknown setting key: ${key}` };
     }
-    case "port": {
-      if (merged !== undefined) {
-        const n = merged as number;
-        if (Number.isInteger(n) && n >= 0 && n <= 65535) return n;
-      }
-      if (def.env) {
-        const val = process.env[def.env];
-        if (val !== undefined && val !== "") {
-          const trimmed = val.trim();
-          if (/^\d+$/.test(trimmed)) {
-            const n = Number(trimmed);
-            if (n >= 0 && n <= 65535) return n;
-          }
-        }
-      }
-      return def.default as number;
+  } else {
+    const validated = validateSetting(key, value);
+    if (!validated.ok) {
+      return { ok: false, reason: "invalid", file: filePath, error: validated.error };
     }
-    case "number": {
-      if (merged !== undefined) return merged as number;
-      if (def.env) {
-        const env = parseNumEnv(def.env);
-        if (env !== undefined) return env;
-      }
-      return def.default as number;
+    validatedValue = validated.value;
+  }
+
+  const current = readSettingsFile(filePath);
+  if (current === null) {
+    return {
+      ok: false,
+      reason: "corrupt",
+      file: filePath,
+      error: `${filePath} is malformed (invalid JSON or not an object) — fix it before saving`,
+    };
+  }
+
+  if (clearing) {
+    if (!(key in current)) return { ok: true, file: filePath };
+    delete current[key];
+    if (Object.keys(current).length === 0 && !existsSync(filePath)) return { ok: true, file: filePath };
+  } else {
+    current[key] = validatedValue;
+  }
+
+  try {
+    writeSettingsFile(filePath, current, options);
+    return { ok: true, file: filePath };
+  } catch (error) {
+    if (error instanceof SettingsFileCorruptError) {
+      return { ok: false, reason: "corrupt", file: filePath, error: error.message, cause: error };
     }
-    case "string": {
-      // Preserve empty strings — some settings use empty as meaningful ("allow all", "use default dir")
-      if (merged !== undefined) return merged as string;
-      if (def.env) {
-        const env = process.env[def.env];
-        if (env !== undefined && env !== "") return env.trim();
-      }
-      return def.default as string;
-    }
-    case "string_list": {
-      if (merged !== undefined) return merged as string[];
-      return Array.isArray(def.default) ? (def.default as string[]) : [];
-    }
-    default:
-      return false;
+    return {
+      ok: false,
+      reason: "write_error",
+      file: filePath,
+      error: error instanceof Error ? error.message : String(error),
+      cause: error,
+    };
   }
 }
 
+// ── Pi extension hook ───────────────────────────────────────────────
+
 /**
- * Register project settings — runs migration on session_start.
+ * Register project settings — clears cache and syncs env vars for standalone
+ * packages on `session_start`.
  */
 export function registerProjectSettings(pi: ExtensionAPI): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
@@ -654,7 +1446,6 @@ export function registerProjectSettings(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => {
     clearSettingsCache();
 
-    // Inject settings into process.env for standalone packages that can't call getSetting
     const cwd = ctx.cwd;
     const vertexClaude1m = getSetting(cwd, "vertex_claude_1m");
     if (vertexClaude1m) process.env.VERTEX_CLAUDE_1M = "true";

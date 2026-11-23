@@ -12,7 +12,7 @@
 
 import { isLevelEnabled, setLogLevelDiagnosticLogger, writeFileLogLine } from "./file-logger.js";
 import { createLoggerCore } from "./logger-core.mjs";
-import { setSettingsSourceLogger } from "../orchestrator/settings-source.js";
+import { setSettingsLogger } from "../orchestrator/project-settings.js";
 
 export interface Logger {
   debug(...args: any[]): void;
@@ -30,4 +30,4 @@ export function createLogger(name: string, prefix?: string, bypassLevelResolutio
 }
 
 setLogLevelDiagnosticLogger(createLogger("file-logger-bootstrap", undefined, true));
-setSettingsSourceLogger(createLogger("settings-source", undefined, true));
+setSettingsLogger(createLogger("settings-source", undefined, true));

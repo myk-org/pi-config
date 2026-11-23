@@ -15,17 +15,17 @@ import { createLogger } from "../shared/logger.js";
 import {
   SETTINGS_KEYS,
   clearSettingsCache,
-  getGlobalSettingsPath,
   getSettingsPath,
   loadGlobalSettings,
   loadProjectSettings,
-  parseSettingsFile,
+  updateSetting,
+  validateSetting,
+  type SettingsScope,
 } from "../orchestrator/project-settings.js";
-import { readSettingsFile, writeSettingsFile } from "../orchestrator/settings-tui-helpers.js";
 
 const log = createLogger("pidash-browser-ops");
 
-export type SettingsScope = "project" | "global";
+export type { SettingsScope };
 
 export interface SettingsKeyPayload {
   key: string;
@@ -60,19 +60,16 @@ export function buildSettingsPayload(cwd: string, scope: unknown): SettingsPaylo
   if (!isSettingsScope(scope)) return { scope: "project", keys: [], error: "invalid scope" };
   try {
     clearSettingsCache();
-    let stored: Record<string, unknown> = {};
-    if (scope === "project") {
-      stored = parseSettingsFile(getSettingsPath(cwd)) as unknown as Record<string, unknown>;
-    } else {
-      stored = loadGlobalSettings() as unknown as Record<string, unknown>;
-    }
+    const stored = (
+      scope === "project" ? loadProjectSettings(cwd) : loadGlobalSettings()
+    ) as Record<string, unknown>;
     const keys: SettingsKeyPayload[] = Object.entries(SETTINGS_KEYS).map(([key, def]) => ({
       key,
       description: def.description,
       type: def.type,
       env: def.env,
       default: def.default,
-      group: (def as any).group ?? "General",
+      group: def.group ?? "General",
       enum: def.enum,
       min: def.min,
       max: def.max,
@@ -90,65 +87,16 @@ export function buildSettingsPayload(cwd: string, scope: unknown): SettingsPaylo
 }
 
 /**
- * Validate a browser-supplied value against the settings-keys schema.
- * Mirrors the checks `parseSettingsFile` applies on read, so the browser can
- * never persist a value the terminal settings editor would reject or drop.
+ * Validate a browser-supplied value against the unified settings schema.
+ * Adds the browser-only security policy blocking `dangerous_command_allowlist`.
  * Returns an error string, or null when the value is valid.
  */
 export function validateSettingValue(key: string, value: unknown): string | null {
-  const def = (SETTINGS_KEYS as Record<string, any>)[key];
-  if (!def) return `unknown setting key: ${key}`;
-  // Security-sensitive: the dangerous-command allowlist has a dedicated
-  // writer with trust/escaping checks (settings-tui) — never accept it over
-  // the browser websocket.
   if (key === "dangerous_command_allowlist") {
     return "dangerous_command_allowlist is managed by the terminal settings editor only";
   }
-  if (value === null) return null; // clear — removing the key is always valid
-  const t = def.type as string;
-  const isStr = (v: unknown) => typeof v === "string" && v.trim().length > 0;
-  switch (t) {
-    case "bool":
-    case "bool_enable":
-      return typeof value === "boolean" ? null : `${key} must be a boolean`;
-    case "int":
-      if (typeof value !== "number" || !Number.isInteger(value)) return `${key} must be an integer`;
-      if (def.min !== undefined && value < def.min) return `${key} must be >= ${def.min}`;
-      if (def.max !== undefined && value > def.max) return `${key} must be <= ${def.max}`;
-      return null;
-    case "number":
-      if (typeof value !== "number" || !Number.isFinite(value)) return `${key} must be a finite number`;
-      if (def.min !== undefined && value < def.min) return `${key} must be >= ${def.min}`;
-      if (def.max !== undefined && value > def.max) return `${key} must be <= ${def.max}`;
-      return null;
-    case "port":
-      return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 65535
-        ? null
-        : `${key} must be an integer between 1 and 65535`;
-    case "string":
-    case "enum":
-    case "model":
-    case "provider":
-      if (!isStr(value)) return `${key} must be a non-empty string`;
-      if (Array.isArray(def.enum) && def.enum.length > 0 && !def.enum.includes(value)) {
-        return `${key} must be one of: ${def.enum.join(", ")}`;
-      }
-      return null;
-    case "bool_or_string":
-      return typeof value === "boolean" || isStr(value) ? null : `${key} must be a boolean or non-empty string`;
-    case "string_list":
-      if (!Array.isArray(value) || !value.every((v: unknown) => typeof v === "string")) {
-        return `${key} must be an array of strings`;
-      }
-      return null;
-    case "agent_overrides":
-      if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        return `${key} must be an object mapping agent name to {provider?, model?}`;
-      }
-      return null;
-    default:
-      return `${key} has unsupported type ${t} for browser edits`;
-  }
+  const result = validateSetting(key, value, { allowNull: true });
+  return result.ok ? null : result.error;
 }
 
 /** Apply one setting to a scope's file. value === null removes the key. */
@@ -159,35 +107,22 @@ export function applySetting(
   value: unknown,
 ): { ok: boolean; error?: string } {
   if (!isSettingsScope(scope)) return { ok: false, error: "invalid scope" };
-  if (!(key in SETTINGS_KEYS)) return { ok: false, error: `unknown setting key: ${key}` };
   const validationError = validateSettingValue(key, value);
   if (validationError) {
     log.warn("browser_setting_rejected", { scope, key, error: validationError });
     return { ok: false, error: validationError };
   }
-  try {
-    clearSettingsCache();
-    const filePath = scope === "project" ? getSettingsPath(cwd) : getGlobalSettingsPath();
-    // Read the RAW file — parseSettingsFile drops unknown keys and invalid
-    // values, so a read-modify-write through it would rewrite the file
-    // without them; and for malformed JSON it returns {} which would replace
-    // the user's file with a one-key file. readSettingsFile preserves every
-    // key and returns null for malformed files — refuse to save instead.
-    const data = readSettingsFile(filePath);
-    if (data === null) {
-      log.warn("browser_setting_save_refused_malformed_file", { scope, key, filePath });
-      return { ok: false, error: `${filePath} is malformed (invalid JSON or not an object) — fix it before saving from the browser` };
+  const result = updateSetting(cwd, scope, key, value);
+  if (!result.ok) {
+    if (result.reason === "corrupt") {
+      log.warn("browser_setting_save_refused_malformed_file", { scope, key, filePath: result.file });
+    } else {
+      log.error("browser_setting_apply_failed", { scope, key, error: result.error });
     }
-    if (value === null) delete data[key];
-    else data[key] = value;
-    writeSettingsFile(filePath, data);
-    clearSettingsCache();
-    log.info("browser_setting_applied", { scope, key, cleared: value === null });
-    return { ok: true };
-  } catch (e: any) {
-    log.error("browser_setting_apply_failed", { scope, key, error: e?.message });
-    return { ok: false, error: e?.message };
+    return { ok: false, error: result.error };
   }
+  log.info("browser_setting_applied", { scope, key, cleared: value === null });
+  return { ok: true };
 }
 
 /**

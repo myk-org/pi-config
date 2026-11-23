@@ -19,32 +19,31 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { existsSync } from "node:fs";
 import {
   SETTINGS_KEYS,
-  type SettingsKeyDef,
+  type SettingSource,
+  type SettingsSourceSnapshot,
   getSetting,
   clearSettingsCache,
+  detectSource,
+  loadSettingsSourceSnapshot,
+  getFilePathForScope,
+  readSettingsFile,
+  beginSettingsEditSession,
+  endSettingsEditSession,
+  parseSettingInput,
+  updateSetting,
 } from "./project-settings.js";
 import { discoverAgents } from "./agents.js";
 import {
   CATEGORIES,
-  detectSource,
-  loadSettingsSourceSnapshot,
   formatValue,
-  parseRawValue,
-  getFilePathForScope,
-  readSettingsFile,
-  writeSettingsFile,
-  beginSettingsEditSession,
-  endSettingsEditSession,
   registerSettingsTuiCommand,
   isSecretNoChange,
   resolveSecretPrefill,
   sourceGlyph,
   resolveModelKeySubmenu,
   type ModelSelectItem,
-  type SettingsSourceSnapshot,
 } from "./settings-tui-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -67,13 +66,8 @@ log.debug("settings-tui module loaded");
 export {
   CATEGORIES,
   type CategoryDef,
-  type SettingSource,
-  detectSource,
   formatValue,
   parseRawValue,
-  getFilePathForScope,
-  readSettingsFile,
-  writeSettingsFile,
   registerSettingsTuiCommand,
   isSecretNoChange,
   resolveSecretPrefill,
@@ -83,6 +77,7 @@ export {
   resolveModelPickerItems,
   resolveModelKeySubmenu,
 } from "./settings-tui-helpers.js";
+export type { SettingSource };
 
 // ── Provider/Model data helpers ─────────────────────────────────────
 
@@ -379,46 +374,14 @@ export function getSettingsListState(list: SettingsList): {
   return { hasActiveSearch, hasActiveSubmenu, selectedIndex, displayItems };
 }
 
-// ── Save a single change ────────────────────────────────────────
+// ── Thin save/delete adapters over the deep settings store ──────
 
-type SaveResult = { ok: true } | { ok: false; reason: "corrupt" | "write_error"; error?: unknown };
-
-function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string): SaveResult {
-  const filePath = getFilePathForScope(scope, cwd);
-  const current = readSettingsFile(filePath);
-  if (current === null) return { ok: false, reason: "corrupt" };
-  if (value === undefined) {
-    if (!(key in current)) return { ok: true };
-    delete current[key];
-  } else {
-    current[key] = value;
-  }
-  if (Object.keys(current).length === 0 && !existsSync(filePath)) return { ok: true };
-  try {
-    writeSettingsFile(filePath, current, { dedupeBackup: true });
-  } catch (e) {
-    return { ok: false, reason: "write_error", error: e };
-  }
-  clearSettingsCache();
-  return { ok: true };
+function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string) {
+  return updateSetting(cwd, scope, key, value, { dedupeBackup: true });
 }
 
-// ── Delete a key from the current scope ─────────────────────────
-
-function deleteFromScope(key: string, scope: "project" | "global", cwd: string): SaveResult {
-  return saveChange(key, undefined, scope, cwd);
-}
-
-// ── Parse value for agent_overrides ─────────────────────────────
-
-function parseOverridesValue(rawValue: string): Record<string, { provider?: string | null; model?: string | null }> {
-  try {
-    const parsed = JSON.parse(rawValue);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed;
-    }
-  } catch {}
-  return {};
+function deleteFromScope(key: string, scope: "project" | "global", cwd: string) {
+  return updateSetting(cwd, scope, key, undefined, { dedupeBackup: true });
 }
 
 // ── Settings overlay component ──────────────────────────────────
@@ -478,22 +441,20 @@ class SettingsOverlay implements Component {
       20,
       getSettingsListTheme(),
       (id: string, newValue: string) => {
-        const def = SETTINGS_KEYS[id];
-        if (!def) return;
+        if (!(id in SETTINGS_KEYS)) return;
 
-        let parsed: unknown;
-        if (def.type === "agent_overrides") {
-          parsed = parseOverridesValue(newValue);
-        } else {
-          parsed = parseRawValue(id, newValue, def);
+        const parsedResult = parseSettingInput(id, newValue);
+        if (!parsedResult.ok) {
+          this.notify(`Invalid value for ${id}: ${parsedResult.error}`, "error");
+          return;
         }
+        const parsed = parsedResult.value;
 
-        const filePath = getFilePathForScope(this.editScope, this.cwd);
         const result = saveChange(id, parsed, this.editScope, this.cwd);
         if (!result.ok) {
           const msg = result.reason === "corrupt"
-            ? `Failed to save: settings file is corrupt (${filePath})`
-            : `Failed to write settings: ${(result.error as any)?.message || "unknown error"}`;
+            ? `Failed to save: settings file is corrupt (${result.file})`
+            : `Failed to write settings: ${result.error || "unknown error"}`;
           this.notify(msg, "error");
           return;
         }
@@ -566,12 +527,11 @@ class SettingsOverlay implements Component {
       if (!state.hasActiveSubmenu && !state.hasActiveSearch) {
         const selectedItem = state.displayItems[state.selectedIndex];
         if (selectedItem) {
-          const filePath = getFilePathForScope(this.editScope, this.cwd);
           const delResult = deleteFromScope(selectedItem.id, this.editScope, this.cwd);
           if (!delResult.ok) {
             const msg = delResult.reason === "corrupt"
-              ? `Failed to delete: settings file is corrupt (${filePath})`
-              : `Failed to delete: ${(delResult.error as any)?.message || "unknown error"}`;
+              ? `Failed to delete: settings file is corrupt (${delResult.file})`
+              : `Failed to delete: ${delResult.error || "unknown error"}`;
             this.notify(msg, "error");
           } else {
             this.notify(`Deleted ${selectedItem.id} from ${this.editScope} scope`, "info");

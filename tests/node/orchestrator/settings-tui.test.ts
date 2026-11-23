@@ -11,15 +11,8 @@ import {
   getSettingsListState,
 } from "../../../extensions/orchestrator/settings-tui.js";
 import {
-  detectSource,
-  loadSettingsSourceSnapshot,
   formatValue,
   parseRawValue,
-  readSettingsFile,
-  writeSettingsFile,
-  beginSettingsEditSession,
-  endSettingsEditSession,
-  getFilePathForScope,
   CATEGORIES,
   registerSettingsTuiCommand,
   isSecretNoChange,
@@ -31,13 +24,20 @@ import {
   resolveModelKeySubmenu,
   IMAGE_MODEL_PROVIDER,
   EMPTY_VALUE_SENTINEL,
-  isImageGenModelId,
   isImageCapablePickerItem,
 } from "../../../extensions/orchestrator/settings-tui-helpers.js";
 import {
   SETTINGS_KEYS,
   setGlobalSettingsPath,
   clearSettingsCache,
+  detectSource,
+  loadSettingsSourceSnapshot,
+  readSettingsFile,
+  writeSettingsFile,
+  beginSettingsEditSession,
+  endSettingsEditSession,
+  getFilePathForScope,
+  isImageGenModelId,
 } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -915,9 +915,16 @@ describe("buildSettingItems integration", () => {
     for (const category of CATEGORIES) {
       for (const key of category.keys) {
         const def = SETTINGS_KEYS[key];
-        const testVal = testValues[def.type];
+        let testVal = testValues[def.type];
         // Secret strings are masked by formatValue — skip round-trip
         if (testVal === undefined || def.type === "agent_overrides" || SECRET_PATTERNS.test(key)) continue;
+        if (def.type === "string" && def.enum && def.enum.length > 0) {
+          testVal = def.enum[0];
+        } else if (def.type === "int") {
+          const min = def.min ?? 1;
+          const max = def.max ?? min + 10;
+          testVal = Math.min(max, Math.max(min, 5));
+        }
 
         const formatted = formatValue(key, testVal, def);
         const parsed = parseRawValue(key, formatted, def);
