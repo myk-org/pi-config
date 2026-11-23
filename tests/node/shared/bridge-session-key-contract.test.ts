@@ -14,37 +14,31 @@ import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
-  MALFORMED_RECOVERY_BRIDGE_SYMBOL,
+  SESSION_BRIDGE_SYMBOL,
+  clearSessionBridge,
+  clearTaskStore,
+  clearTaskTelemetryActive,
+  clearWorkloadSources,
+  isComsActive,
   markRecoveryPending,
   notifyMalformedRecoveryAborted,
   onMalformedRecoveryAborted,
-  registerRecoveryCoordinator,
-  resetMalformedRecoveryBridgeForTests,
-  shouldDeferForMalformedRecovery,
-} from "../../../extensions/shared/malformed-recovery-bridge.ts";
-import {
-  TASK_STORE_SYMBOL,
-  TASK_TELEMETRY_ACTIVE_SYMBOL,
-  clearTaskStore,
-  clearTaskTelemetryActive,
   publishTaskStore,
   publishTaskTelemetryActive,
+  publishWorkloadSources,
   publishedTaskStore,
   publishedTaskTelemetryActive,
-  resetTaskStoreBridgeForTests,
-} from "../../../extensions/shared/task-store-bridge.ts";
+  publishedWorkloadSources,
+  registerRecoveryCoordinator,
+  resetSessionBridgeForTests,
+  setComsActive,
+  shouldDeferForMalformedRecovery,
+} from "../../../extensions/shared/session-bridge.ts";
 import {
   createBridgedUi,
   isBrowserDispatch,
   markBrowserDispatch,
 } from "../../../extensions/shared/ui-bridge.ts";
-import {
-  WORKLOAD_SOURCES_SYMBOL,
-  clearWorkloadSources,
-  publishWorkloadSources,
-  publishedWorkloadSources,
-  resetWorkloadBridgeForTests,
-} from "../../../extensions/shared/workload-bridge.ts";
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(THIS_DIR, "../../..");
@@ -57,8 +51,8 @@ const SHARED_DIR = join(REPO_ROOT, "extensions/shared");
  */
 const PROCESS_WIDE_SINGLETON_ALLOWLIST: ReadonlyMap<string, string> = new Map();
 
-/** Shared bridge backing helpers audited alongside `*-bridge.ts`. */
-const BRIDGE_HELPER_FILES = ["session-bridge-map.ts"] as const;
+/** Expected bridge modules under `extensions/shared/`. */
+const REQUIRED_BRIDGE_FILES = ["session-bridge.ts", "ui-bridge.ts"] as const;
 
 /** Strip JS/TS comments while preserving string and template literals. */
 function stripComments(source: string): string {
@@ -199,12 +193,14 @@ function auditBridgeSource(
 describe("extensions/shared/*-bridge.ts static session-key contract (#1337)", () => {
   it("audits every *-bridge.ts module under extensions/shared/", () => {
     const sharedFiles = readdirSync(SHARED_DIR);
-    const bridgeFiles = [
-      ...sharedFiles.filter((name) => name.endsWith("-bridge.ts")),
-      ...BRIDGE_HELPER_FILES.filter((name) => sharedFiles.includes(name)),
-    ].sort();
+    const bridgeFiles = sharedFiles.filter((name) => name.endsWith("-bridge.ts")).sort();
 
-    assert.ok(bridgeFiles.length >= 5, `expected bridge modules plus shared helper, found: ${bridgeFiles.join(", ")}`);
+    for (const requiredFile of REQUIRED_BRIDGE_FILES) {
+      assert.ok(
+        bridgeFiles.includes(requiredFile),
+        `expected bridge module ${requiredFile} in extensions/shared/, found: ${bridgeFiles.join(", ")}`,
+      );
+    }
 
     // Guard against stale allowlist entries.
     for (const allowedFile of PROCESS_WIDE_SINGLETON_ALLOWLIST.keys()) {
@@ -358,14 +354,12 @@ describe("extensions/shared/*-bridge.ts static session-key contract (#1337)", ()
   });
 });
 
-describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)", () => {
+describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337, #1364)", () => {
   afterEach(() => {
-    resetWorkloadBridgeForTests();
-    resetTaskStoreBridgeForTests();
-    resetMalformedRecoveryBridgeForTests();
+    resetSessionBridgeForTests();
   });
 
-  it("workload-bridge stores per-session entries inside a Map on globalThis", () => {
+  it("isolates workload slot per session inside the single globalThis Map", () => {
     const sourcesA = {
       agents: () => [{ id: "a1", agent: "worker", task: "A", status: "running", startedAt: 1 }],
       crons: () => [],
@@ -378,7 +372,7 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     const unregA = publishWorkloadSources(sourcesA, "sess-a");
     publishWorkloadSources(sourcesB, "sess-b");
 
-    assert.ok((globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL] instanceof Map);
+    assert.ok((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] instanceof Map);
     assert.equal(publishedWorkloadSources("sess-a")?.agents()[0].id, "a1");
     assert.equal(publishedWorkloadSources("sess-b")?.agents()[0].id, "b1");
     assert.equal(publishedWorkloadSources("sess-unknown"), null);
@@ -389,10 +383,10 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     assert.equal(publishedWorkloadSources("sess-b")?.agents()[0].id, "b1");
 
     clearWorkloadSources("sess-b");
-    assert.equal((globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL], undefined);
+    assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
   });
 
-  it("task-store-bridge stores per-session stores inside Maps on globalThis", () => {
+  it("isolates taskStore slot per session inside the single globalThis Map", () => {
     const storeA = { id: "store-a" };
     const storeB = { id: "store-b" };
     const callsA: string[] = [];
@@ -403,8 +397,7 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     const unregTelA = publishTaskTelemetryActive((id) => callsA.push(id), "sess-a");
     publishTaskTelemetryActive((id) => callsB.push(id), "sess-b");
 
-    assert.ok((globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL] instanceof Map);
-    assert.ok((globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL] instanceof Map);
+    assert.ok((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] instanceof Map);
     assert.equal(publishedTaskStore("sess-a"), storeA);
     assert.equal(publishedTaskStore("sess-b"), storeB);
     assert.equal(publishedTaskStore("sess-unknown"), null);
@@ -425,11 +418,10 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
 
     clearTaskStore("sess-b");
     clearTaskTelemetryActive("sess-b");
-    assert.equal((globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL], undefined);
-    assert.equal((globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL], undefined);
+    assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
   });
 
-  it("malformed-recovery-bridge isolates recovery state across concurrent sessions", () => {
+  it("isolates malformedRecovery slot across concurrent sessions", () => {
     const abortedA: number[] = [];
     const abortedB: number[] = [];
     const unregCoordA = registerRecoveryCoordinator(() => true, "sess-a");
@@ -437,7 +429,7 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     const unregAbortA = onMalformedRecoveryAborted(() => abortedA.push(1), "sess-a");
     const unregAbortB = onMalformedRecoveryAborted(() => abortedB.push(1), "sess-b");
 
-    assert.ok((globalThis as Record<symbol, unknown>)[MALFORMED_RECOVERY_BRIDGE_SYMBOL] instanceof Map);
+    assert.ok((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] instanceof Map);
     markRecoveryPending(true, "sess-a");
 
     assert.equal(shouldDeferForMalformedRecovery([], "sess-a"), true);
@@ -454,6 +446,71 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     unregAbortA();
     unregAbortB();
     markRecoveryPending(false, "sess-a");
+    assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
+  });
+
+  it("isolates comsActive slot across concurrent sessions", () => {
+    setComsActive(true, "sess-a");
+    assert.equal(isComsActive("sess-a"), true);
+    assert.equal(isComsActive("sess-b"), false);
+    assert.equal(isComsActive(), false);
+
+    setComsActive(true, "sess-b");
+    setComsActive(false, "sess-a");
+    assert.equal(isComsActive("sess-a"), false);
+    assert.equal(isComsActive("sess-b"), true);
+
+    setComsActive(false, "sess-b");
+    assert.equal(isComsActive("sess-b"), false);
+    assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
+  });
+
+  it("preserves sibling slots on the same session when one slot clears", () => {
+    const storeA = { id: "store-a" };
+    publishTaskStore(() => storeA, "sess-a");
+    setComsActive(true, "sess-a");
+    const unregCoord = registerRecoveryCoordinator(() => true, "sess-a");
+
+    clearTaskStore("sess-a");
+    assert.equal(publishedTaskStore("sess-a"), null);
+    assert.equal(isComsActive("sess-a"), true);
+    assert.equal(shouldDeferForMalformedRecovery([], "sess-a"), true);
+
+    setComsActive(false, "sess-a");
+    unregCoord();
+    assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
+  });
+
+  it("clears all four slots for one session via clearSessionBridge without affecting siblings", () => {
+    publishTaskStore(() => ({ id: "a" }), "sess-a");
+    publishWorkloadSources({ agents: () => [], crons: () => [] }, "sess-a");
+    markRecoveryPending(true, "sess-a");
+    setComsActive(true, "sess-a");
+    setComsActive(true, "sess-b");
+
+    clearSessionBridge("sess-a");
+    assert.equal(publishedTaskStore("sess-a"), null);
+    assert.equal(publishedWorkloadSources("sess-a"), null);
+    assert.equal(shouldDeferForMalformedRecovery(undefined, "sess-a"), false);
+    assert.equal(isComsActive("sess-a"), false);
+    assert.equal(isComsActive("sess-b"), true);
+
+    clearSessionBridge("sess-b");
+    assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
+  });
+
+  it("resets all sessions in one call via resetSessionBridgeForTests", () => {
+    publishTaskStore(() => ({ id: "a" }), "sess-a");
+    publishWorkloadSources({ agents: () => [], crons: () => [] }, "sess-b");
+    markRecoveryPending(true, "sess-c");
+    setComsActive(true, "sess-d");
+
+    resetSessionBridgeForTests();
+    assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
+    assert.equal(publishedTaskStore("sess-a"), null);
+    assert.equal(publishedWorkloadSources("sess-b"), null);
+    assert.equal(shouldDeferForMalformedRecovery(undefined, "sess-c"), false);
+    assert.equal(isComsActive("sess-d"), false);
   });
 
   it("ui-bridge leaves globalThis untouched when marking browser dispatch contexts", () => {

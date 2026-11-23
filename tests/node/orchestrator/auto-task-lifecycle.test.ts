@@ -24,9 +24,8 @@ import type { Task } from "../../../extensions/pitasks/types.js";
 import {
   publishTaskStore,
   publishTaskTelemetryActive,
-  TASK_STORE_SYMBOL,
-  TASK_TELEMETRY_ACTIVE_SYMBOL,
-} from "../../../extensions/shared/task-store-bridge.js";
+  resetSessionBridgeForTests,
+} from "../../../extensions/shared/session-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 /** The lifecycle logger's own file — a warn-only pin proves these lines are not debug. */
@@ -134,7 +133,7 @@ describe("recorded task store path", () => {
     originalTasks = process.env.PI_TASKS;
     originalScope = process.env.PI_TASK_SCOPE;
     // No live store: these assertions are about the recorded path alone.
-    delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+    resetSessionBridgeForTests();
   });
 
   afterEach(() => {
@@ -556,8 +555,7 @@ describe("live task store bridge resolution", () => {
   afterEach(() => {
     liveStore?.close();
     liveStore = null;
-    delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
-    delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+    resetSessionBridgeForTests();
     rmSync(rootDir, { recursive: true, force: true });
     rmSync(worktreeDir, { recursive: true, force: true });
   });

@@ -10,21 +10,20 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  DEFAULT_TASK_BRIDGE_SESSION_KEY,
-  TASK_STORE_SYMBOL,
-  TASK_TELEMETRY_ACTIVE_SYMBOL,
+  DEFAULT_BRIDGE_SESSION_KEY,
+  SESSION_BRIDGE_SYMBOL,
   clearTaskStore,
   clearTaskTelemetryActive,
   publishedTaskStore,
   publishedTaskTelemetryActive,
   publishTaskStore,
   publishTaskTelemetryActive,
-  resolveTaskBridgeSessionKey,
-} from "../../../extensions/shared/task-store-bridge.ts";
+  resetSessionBridgeForTests,
+  resolveBridgeSessionKey,
+} from "../../../extensions/shared/session-bridge.ts";
 
 const clear = (): void => {
-  delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
-  delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+  resetSessionBridgeForTests();
 };
 
 describe("task store bridge", () => {
@@ -63,8 +62,13 @@ describe("task store bridge", () => {
     assert.deepEqual(seen, [{ taskId: "42", active: false }]);
   });
 
-  it("ignores non-function values under the telemetry symbol", () => {
-    (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL] = { invalid: true };
+  it("ignores non-function values under the telemetry slot", () => {
+    (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] = { invalid: true };
+    assert.equal(publishedTaskTelemetryActive(), null);
+
+    (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] = new Map([
+      [DEFAULT_BRIDGE_SESSION_KEY, { taskStore: { telemetryActive: { invalid: true } } }],
+    ]);
     assert.equal(publishedTaskTelemetryActive(), null);
   });
 
@@ -129,27 +133,27 @@ describe("task store bridge", () => {
     assert.equal(publishedTaskTelemetryActive("sess-b"), null);
   });
 
-  it("resolves trimmed session IDs from ExtensionContext via resolveTaskBridgeSessionKey", () => {
+  it("resolves trimmed session IDs from ExtensionContext via resolveBridgeSessionKey", () => {
     assert.equal(
-      resolveTaskBridgeSessionKey({ sessionManager: { getSessionId: () => "  sess-99  " } }),
+      resolveBridgeSessionKey({ sessionManager: { getSessionId: () => "  sess-99  " } }),
       "sess-99",
     );
   });
 
-  it("falls back to DEFAULT_TASK_BRIDGE_SESSION_KEY when ExtensionContext lacks a usable session ID", () => {
-    assert.equal(resolveTaskBridgeSessionKey(undefined), DEFAULT_TASK_BRIDGE_SESSION_KEY);
-    assert.equal(resolveTaskBridgeSessionKey({}), DEFAULT_TASK_BRIDGE_SESSION_KEY);
-    assert.equal(resolveTaskBridgeSessionKey({ sessionManager: { getSessionId: () => "   " } }), DEFAULT_TASK_BRIDGE_SESSION_KEY);
-    assert.equal(resolveTaskBridgeSessionKey({ sessionManager: { getSessionId: () => 42 } }), DEFAULT_TASK_BRIDGE_SESSION_KEY);
+  it("falls back to DEFAULT_BRIDGE_SESSION_KEY when ExtensionContext lacks a usable session ID", () => {
+    assert.equal(resolveBridgeSessionKey(undefined), DEFAULT_BRIDGE_SESSION_KEY);
+    assert.equal(resolveBridgeSessionKey({}), DEFAULT_BRIDGE_SESSION_KEY);
+    assert.equal(resolveBridgeSessionKey({ sessionManager: { getSessionId: () => "   " } }), DEFAULT_BRIDGE_SESSION_KEY);
+    assert.equal(resolveBridgeSessionKey({ sessionManager: { getSessionId: () => 42 } }), DEFAULT_BRIDGE_SESSION_KEY);
     assert.equal(
-      resolveTaskBridgeSessionKey({
+      resolveBridgeSessionKey({
         sessionManager: {
           getSessionId: () => {
             throw new Error("boom");
           },
         },
       }),
-      DEFAULT_TASK_BRIDGE_SESSION_KEY,
+      DEFAULT_BRIDGE_SESSION_KEY,
     );
   });
 });

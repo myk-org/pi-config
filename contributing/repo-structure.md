@@ -118,14 +118,10 @@ pi-config/
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
-│   │   ├── malformed-recovery-bridge.ts # Cross-extension malformed-response recovery coordination with COMS (#1333)
-│   │   ├── session-bridge-map.ts    # Shared strict per-session globalThis[Symbol.for(...)] Map registry helper (#1337)
-│   │   ├── task-store-bridge.ts     # Session-keyed pitasks store & telemetry bridge (#1016, #1337)
-│   │   ├── workload-bridge.ts       # Session-keyed orchestrator workload bridge for coms/pitasks (#1083, #1337)
+│   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive) with auto-pruning (#1364)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery)
-│   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
 │   │   ├── widget-visibility.ts     # Shared collapse/expand widget state (expanded/collapsed, header-always-visible), globalThis reload persistence, shortcut validation/registration, and ui:toggle-all-widgets bridge
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
 │   ├── providers/                  # Default model restore & thinking-level persistence extension

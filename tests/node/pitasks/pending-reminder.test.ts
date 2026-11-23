@@ -23,7 +23,7 @@ import registerPitasks from "../../../extensions/pitasks/index.ts";
 import {
 	clearWorkloadSources,
 	publishWorkloadSources,
-} from "../../../extensions/shared/workload-bridge.ts";
+} from "../../../extensions/shared/session-bridge.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 

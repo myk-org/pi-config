@@ -11,7 +11,7 @@ import { writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { registerSubagentTool, taskIdError, validateTaskId } from "../../../extensions/orchestrator/subagent-tool.ts";
-import { publishTaskStore, TASK_STORE_SYMBOL } from "../../../extensions/shared/task-store-bridge.js";
+import { publishTaskStore, resetSessionBridgeForTests } from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -46,7 +46,7 @@ function storeWith(assignee: string) {
 
 describe("validateTaskId owner tasks (#1102)", () => {
 	afterEach(() => {
-		delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+		resetSessionBridgeForTests();
 	});
 
 	it("refuses a task assigned to the owner", async () => {
@@ -117,7 +117,7 @@ function syncHarness() {
 
 describe("sync subagent owner-task guard (#1102)", { concurrency: false }, () => {
 	afterEach(() => {
-		delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+		resetSessionBridgeForTests();
 	});
 
 	it("refuses a sync single call on an owner task", async () => {

@@ -20,11 +20,10 @@ import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
 import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
 import { setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import {
-	TASK_STORE_SYMBOL,
-	TASK_TELEMETRY_ACTIVE_SYMBOL,
 	publishedTaskStore,
 	publishedTaskTelemetryActive,
-} from "../../../extensions/shared/task-store-bridge.js";
+	resetSessionBridgeForTests,
+} from "../../../extensions/shared/session-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -346,8 +345,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.ok(taskStore.get(task.id)?.telemetry?.endedAt);
 		} finally {
 			handlers.get("session_shutdown")?.();
-			delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
-			delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+			resetSessionBridgeForTests();
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
 			else process.env.PI_SUBAGENT_CHILD = child;
 		}
@@ -378,8 +376,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.equal(taskStore.get(task.id)?.telemetry?.outputTokens, 29);
 		} finally {
 			handlers.get("session_shutdown")?.();
-			delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
-			delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+			resetSessionBridgeForTests();
 			if (piTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = piTasks;
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
@@ -408,8 +405,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.ok(publishedTaskTelemetryActive("sess-switched"));
 		} finally {
 			handlers.get("session_shutdown")?.();
-			delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
-			delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+			resetSessionBridgeForTests();
 			if (piTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = piTasks;
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
@@ -437,8 +433,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.equal(taskStore.get(taskB.id)?.telemetry?.outputTokens ?? 0, 0);
 		} finally {
 			handlersB.get("session_shutdown")?.();
-			delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
-			delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+			resetSessionBridgeForTests();
 			if (piTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = piTasks;
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;

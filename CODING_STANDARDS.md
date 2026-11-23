@@ -34,16 +34,16 @@ Extensions load independently and hook registration order is not guaranteed (for
 register `agent_end` before `orchestrator`).
 
 - **Use narrow typed bridges, never load-order assumptions:** Share cross-extension coordination through
-  dedicated modules under `extensions/shared/` backed by `Symbol.for("pi-config.<name>")` (e.g.,
-  `extensions/shared/malformed-recovery-bridge.ts`), never ad-hoc untyped globals or implicit
-  event-handler order.
+  `extensions/shared/session-bridge.ts` (backed by `Symbol.for("pi-config.sessionBridge")`), never ad-hoc
+  untyped globals or implicit event-handler order.
 - **Key shared state by session, not process global:** Store per-session coordination in a
-  `Map<sessionKey, Slot>` keyed via `resolveRecoverySessionKey(ctx)` rather than a single process-wide
-  boolean or callback. Return an unregister function, invoke it in `session_shutdown`, and prune empty
-  map entries so long-lived runtimes do not leak or cross-talk.
+  `Map<sessionKey, SessionBridgeSlot>` keyed via `resolveBridgeSessionKey(ctx)` rather than a single
+  process-wide boolean or callback. Return an unregister function, invoke it in `session_shutdown`, and
+  prune empty session slots (and the outer `globalThis` Map once empty) so long-lived runtimes do not
+  leak or cross-talk.
 - **Migrate pending state cleanly on session-key changes:** When a session key transitions from a
-  fallback (`DEFAULT_SESSION_KEY`) or switches on `session_start`, clear or transfer pending flags on the
-  previous key before rebinding to the new key.
+  fallback (`DEFAULT_BRIDGE_SESSION_KEY`) or switches on `session_start`, clear or transfer pending flags
+  on the previous key before rebinding to the new key.
 - **Never throw out of shared lifecycle hooks:** `before_agent_start`, `agent_end`, `tool_result`, and
   `session_shutdown` run alongside sibling extensions. Catch recoverable errors and log via `createLogger`
   so one extension cannot abort or stall others.

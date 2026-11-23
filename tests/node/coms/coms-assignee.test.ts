@@ -21,7 +21,7 @@ import { buildDrilldownRows } from "../../../extensions/coms/coms-drilldown.js";
 import pitasks, { taskStore } from "../../../extensions/pitasks/index.js";
 import { formatTaskRowLine } from "../../../extensions/pitasks/tasks-view.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
-import { clearWorkloadSources, publishWorkloadSources } from "../../../extensions/shared/workload-bridge.js";
+import { clearWorkloadSources, publishWorkloadSources } from "../../../extensions/shared/session-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const peerTask = (over: Partial<WorkloadTask> = {}): WorkloadTask => ({

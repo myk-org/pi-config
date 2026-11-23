@@ -19,7 +19,7 @@ import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize, type Si
 import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
 import { getSetting, getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
 import { assembleRuleText } from "./rule-placeholders.js";
-import { isComsActive } from "../shared/coms-active.js";
+import { isComsActive, resolveBridgeSessionKey } from "../shared/session-bridge.js";
 import { JsonlAppendLog } from "./state-jsonl.js";
 import { getProjectDataDir, getProjectMemoryDir } from "./utils.js";
 
@@ -102,7 +102,7 @@ function sameSettingValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR): string {
+function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR, sessionKey?: string): string {
   const userRulesDir = path.join(os.homedir(), ".pi", "agent", "rules");
   const projectRulesDir = path.join(cwd, ".pi", "rules");
 
@@ -152,9 +152,9 @@ function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR): 
     return "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
   }
 
-  const comsActive = isComsActive();
+  const comsActive = isComsActive(sessionKey);
   const reviewLoopMaxCycles = Number(getSetting(cwd, "review_loop_max_cycles"));
-  const cacheKey = `${path.resolve(cwd)}\0${sigParts.join("|")}`;
+  const cacheKey = `${path.resolve(cwd)}\0${comsActive ? "1" : "0"}\0${sigParts.join("|")}`;
   const cached = assembledRulesCache.get(cacheKey);
   if (
     cached &&
@@ -334,7 +334,7 @@ export function registerRules(
     // Load from: package rules/ → user ~/.pi/agent/rules/ → project .pi/rules/
     // Same-filename override: project > user > package
     if (!isSubagent) {
-      extra += loadOrAssembleRules(ctx.cwd, options?.packageRulesDir);
+      extra += loadOrAssembleRules(ctx.cwd, options?.packageRulesDir, resolveBridgeSessionKey(ctx));
     }
 
     // Async agent status — always show so the AI knows what's running.

@@ -7,9 +7,7 @@ import { join } from "node:path";
 import comsP2p from "../../../extensions/coms/coms-p2p.js";
 import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
 import { loadPitasks, summarizeTaskList } from "../../../extensions/coms/coms-shared.js";
-import { setComsActive } from "../../../extensions/shared/coms-active.js";
-import { TASK_STORE_SYMBOL, publishTaskStore } from "../../../extensions/shared/task-store-bridge.js";
-import { WORKLOAD_SOURCES_SYMBOL, publishWorkloadSources } from "../../../extensions/shared/workload-bridge.js";
+import { publishTaskStore, publishWorkloadSources, resetSessionBridgeForTests } from "../../../extensions/shared/session-bridge.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -142,15 +140,13 @@ afterEach(async () => {
 	for (const peer of startedPeers.splice(0)) {
 		await peer.shutdown();
 	}
-	setComsActive(false);
+	resetSessionBridgeForTests();
 	delete (globalThis as any).__piConfigSessionId;
 	delete (globalThis as any).__comsSelf;
 	delete (globalThis as any).__comsSelfOrigin;
 	delete (globalThis as any).__comsUserSend;
 	delete (globalThis as any).__coms_pidash_listener;
 	delete (globalThis as any).__coms_p2p_pidash_listener;
-	delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
-	delete (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL];
 });
 
 async function startP2pPeer(opts: {
