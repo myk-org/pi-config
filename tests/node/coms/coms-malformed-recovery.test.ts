@@ -34,8 +34,6 @@ afterEach(async () => {
     try { await peer.shutdown(); } catch { /* ignore */ }
   }
   resetMalformedRecoveryBridgeForTests();
-  (globalThis as any).__comsSelf = null;
-  (globalThis as any).__comsUserSend = null;
   for (const dir of cleanupDirs.splice(0)) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   }

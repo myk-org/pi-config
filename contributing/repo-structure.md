@@ -91,9 +91,19 @@ pi-config/
 │   │   └── utils.ts                 # Shared utilities (getProjectTmpDir, tryGetSystemPromptOptions, etc.)
 │   ├── coms/                        # Inter-agent communication extension (standalone)
 │   │   ├── index.ts                 # Entry point — registers coms
-│   │   ├── coms-wrapper.ts          # P2P agent communication wrapper (on-demand /coms command)
-│   │   ├── coms-shared.ts           # Shared utilities: proxy factory, flag parser, state persistence, response formatting, list rendering
-│   │   ├── coms-p2p.ts              # P2P implementation (forked from disler/pi-vs-claude-code)
+│   │   ├── coms-wrapper.ts          # On-demand `/coms` controller — drives `ComsPeerRuntime` and `ComsRegistry` directly (lifecycle, reload, inventory, pidash)
+│   │   ├── coms-registry.ts         # Unified peer registry, supervision inventory, socket probes (`probeStaleSocket`, `probeAlive`), and stale/orphan pruning
+│   │   ├── coms-p2p.ts              # Instantiable P2P peer runtime (`createComsPeerRuntime`, sockets, queue drain, tools, `/coms-queue`)
+│   │   ├── coms-shared.ts           # Shared utilities: flag parser, state persistence, active-tool sync, response formatting, inbound bundling
+│   │   ├── coms-peers.ts            # Peer inventory filtering, table/detail formatting, spawn/kill planning, `/coms tell` completions
+│   │   ├── coms-peers-ui.ts         # `/coms list` interactive overlay and multi-select composer
+│   │   ├── coms-describe.ts         # Socket-based peer workload describe RPC client and validator
+│   │   ├── coms-drilldown.ts        # Peer workload drilldown row builders
+│   │   ├── coms-workload.ts         # Active-only peer workload counts and formatting
+│   │   ├── coms-history.ts          # Size-rotated JSONL message history append/query helpers
+│   │   ├── queue-recovery.ts        # Body-free queue recovery previews and atomic clear helpers
+│   │   ├── mixed-turn.ts            # Pure mixed-turn detection helpers
+│   │   ├── peer-text.ts             # Peer-supplied text sanitization and origin-marker stripping
 │   │   └── themeMap.ts              # Theme utilities (forked from disler/pi-vs-claude-code)
 │   ├── pidash/                      # Live web dashboard extension (standalone)
 │   │   ├── index.ts                 # Entry point

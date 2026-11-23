@@ -5,6 +5,7 @@ import * as net from "node:net";
 import { join } from "node:path";
 
 import comsP2p from "../../../extensions/coms/coms-p2p.js";
+import { ComsRegistry } from "../../../extensions/coms/coms-registry.js";
 import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
 import { loadPitasks, summarizeTaskList } from "../../../extensions/coms/coms-shared.js";
 import { setComsActive } from "../../../extensions/shared/coms-active.js";
@@ -144,11 +145,6 @@ afterEach(async () => {
 	}
 	setComsActive(false);
 	delete (globalThis as any).__piConfigSessionId;
-	delete (globalThis as any).__comsSelf;
-	delete (globalThis as any).__comsSelfOrigin;
-	delete (globalThis as any).__comsUserSend;
-	delete (globalThis as any).__coms_pidash_listener;
-	delete (globalThis as any).__coms_p2p_pidash_listener;
 	delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
 	delete (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL];
 });
@@ -504,14 +500,8 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		}));
 
 		try {
-			// Fresh module instance so module-level `_pruned` starts false.
-			const sharedPath = "../../../extensions/coms/coms-shared.js?wt13-prune=1";
-			const isolatedShared: typeof import("../../../extensions/coms/coms-shared.js") = await import(sharedPath);
-			isolatedShared.pruneStaleRegistry(comsDir);
-
-			await waitUntil(() => !existsSync(orphanSock) && !existsSync(orphanPing));
-			// Allow in-flight ping connect for alive.sock.ping to settle.
-			await new Promise((r) => setTimeout(r, 50));
+			const registry = new ComsRegistry(comsDir);
+			await registry.pruneStaleStartup();
 
 			assert.equal(existsSync(orphanSock), false, "orphan .sock removed");
 			assert.equal(existsSync(orphanPing), false, "orphan .sock.ping removed");

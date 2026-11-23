@@ -16,6 +16,7 @@ import {
   type WorkloadTask,
 } from "../../../extensions/coms/coms-workload.js";
 import { isPeerTaskCreator } from "../../../extensions/coms/coms-shared.js";
+import { createComsPeerRuntime } from "../../../extensions/coms/coms-p2p.js";
 import { requestDescribe, validateDetail } from "../../../extensions/coms/coms-describe.js";
 import { buildDrilldownRows } from "../../../extensions/coms/coms-drilldown.js";
 import pitasks, { taskStore } from "../../../extensions/pitasks/index.js";
@@ -149,35 +150,34 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
 
       publishWorkloadSources({ agents: () => [], crons: () => [] }, sessionId);
 
-      let start: ((event: any, ctx: any) => Promise<void>) | undefined;
-      let shutdown: (() => Promise<void>) | undefined;
       const comsPi = {
         registerFlag() {},
         getFlag: (f: string) => (f === "cname" ? `peer-${tag}` : undefined),
         registerTool() {},
         registerCommand() {},
-        on(event: string, fn: any) {
-          if (event === "session_start") start = fn;
-          if (event === "session_shutdown") shutdown = fn;
-        },
+        on() {},
         sendMessage() {},
         events: { on() {}, emit() {} },
       };
-      const initComs = (await import(`../../../extensions/coms/coms-p2p.ts?assignee=${tag}`)).default;
-      initComs(comsPi as any);
+      const runtime = createComsPeerRuntime(comsPi as any, {
+        deferred: true,
+        comsDir: join(workspace, "coms"),
+        sessionId,
+        allowSubagentChild: true,
+        registerSignalHandlers: false,
+      });
       cleanups.push(() => {
         clearWorkloadSources(sessionId);
-        return shutdown?.();
+        return runtime.stop();
       });
-      (globalThis as any).__piConfigSessionId = sessionId;
-      await start!({}, {
+      const self = await runtime.start({
         cwd: workspace,
         model: { id: "test-model" },
         hasUI: false,
         ui: { notify() {} },
         sessionManager: { getSessionId: () => sessionId },
-      });
-      const endpoint = (globalThis as any).__comsSelf?.endpoint as string;
+      } as any);
+      const endpoint = self?.endpoint as string;
       assert.ok(endpoint);
       return { endpoint, workspace };
     } finally {

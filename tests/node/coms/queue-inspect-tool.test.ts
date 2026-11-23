@@ -3,6 +3,7 @@ import { afterEach, describe, it } from "node:test";
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
+import { createComsPeerRuntime } from "../../../extensions/coms/coms-p2p.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -55,17 +56,13 @@ function createPi(name: string): FakePi {
 async function startPeer(name: string, sessionId: string): Promise<FakePi> {
 	const pi = createPi(name);
 	peers.push(pi);
-	const init = (await import(`../../../extensions/coms/coms-p2p.ts?queue-inspect=${sessionId}`)).default;
-	const subagentChild = process.env.PI_SUBAGENT_CHILD;
-	try {
-		// This suite exercises the P2P extension itself, not its child-process guard.
-		process.env.PI_SUBAGENT_CHILD = "0";
-		init(pi as any);
-	} finally {
-		if (subagentChild === undefined) delete process.env.PI_SUBAGENT_CHILD;
-		else process.env.PI_SUBAGENT_CHILD = subagentChild;
-	}
-	(globalThis as any).__piConfigSessionId = sessionId;
+	createComsPeerRuntime(pi as any, {
+		deferred: false,
+		comsDir: join(workspace!, "coms"),
+		sessionId,
+		allowSubagentChild: true,
+		registerSignalHandlers: false,
+	});
 	await pi.start({}, {
 		cwd: workspace,
 		model: { id: "test-model" },
@@ -88,7 +85,7 @@ async function startQueuedPeers() {
 	return { sender, receiver };
 }
 
-describe("coms_queue_inspect execute result", { concurrency: false }, () => {
+describe("coms_queue_inspect execute result", () => {
 	async function startShutdownPeer() {
 		workspace = makeTempDir("coms-queue-inspect-");
 		mkdirSync(join(workspace, ".pi"));

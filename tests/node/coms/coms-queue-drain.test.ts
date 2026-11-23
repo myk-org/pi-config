@@ -22,7 +22,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 
-import comsP2p from "../../../extensions/coms/coms-p2p.js";
+import { createComsPeerRuntime, type ComsPeerRuntime } from "../../../extensions/coms/coms-p2p.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -30,6 +30,7 @@ interface FakePi {
 	tools: Map<string, any>;
 	handlers: Map<string, Function>;
 	messages: any[];
+	runtime: ComsPeerRuntime;
 	start: (event: any, ctx: any) => Promise<void>;
 	shutdown: () => Promise<void>;
 	ctx: any;
@@ -60,8 +61,6 @@ afterEach(async () => {
 	for (const peer of startedPeers.splice(0)) {
 		try { await peer.shutdown(); } catch { /* ignore */ }
 	}
-	(globalThis as any).__comsSelf = null;
-	(globalThis as any).__comsUserSend = null;
 	for (const dir of cleanupDirs.splice(0)) {
 		try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
 	}
@@ -118,10 +117,12 @@ async function startPeer(opts: {
 		["cname", opts.name],
 		["project", opts.project],
 	]);
+	let runtime!: ComsPeerRuntime;
 	const peer: FakePi = {
 		tools,
 		handlers,
 		messages,
+		get runtime() { return runtime; },
 		start: async () => {},
 		shutdown: async () => {},
 		ctx: null,
@@ -145,7 +146,12 @@ async function startPeer(opts: {
 	};
 
 	withSubagentChildEnv(undefined, () => {
-		comsP2p(fakePi);
+		runtime = createComsPeerRuntime(fakePi, {
+			deferred: false,
+			comsDir: opts.comsDir,
+			sessionId: opts.sessionId,
+			registerSignalHandlers: false,
+		});
 		assert.ok(tools.get("coms_send"), "coms_send tool must register");
 		assert.ok(handlers.get("turn_end"), "turn_end handler must register");
 		assert.ok(handlers.get("message_start"), "message_start handler must register");
@@ -153,7 +159,6 @@ async function startPeer(opts: {
 		assert.ok(handlers.get("agent_end"), "agent_end handler must register");
 	});
 
-	(globalThis as any).__piConfigSessionId = opts.sessionId;
 	peer.ctx = makeCtx(opts.cwd, opts.sessionId, "", { isIdle: opts.isIdle, abort: opts.abort });
 	peer.start = async (event: any, startCtx: any) => {
 		await handlers.get("session_start")!(event, startCtx);
@@ -163,9 +168,9 @@ async function startPeer(opts: {
 	};
 	startedPeers.push(peer);
 	await peer.start({}, peer.ctx);
-	const self = (globalThis as any).__comsSelf;
+	const self = runtime.getSelf();
 	assert.ok(self?.sessionId, "peer published coms identity");
-	peer.registryFile = join(opts.comsDir, "projects", opts.project, "agents", `${self.sessionId}.json`);
+	peer.registryFile = self.registryFile;
 	return peer;
 }
 
@@ -294,7 +299,7 @@ async function setupShutdownWork(project: string) {
 	return { comsDir, peerA, peerB, receiver, m1, m2 };
 }
 
-describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concurrency: false }, () => {
+describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 	it("drains FIFO at turn_end under active followUp starvation without ever firing agent_end", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const peerA = await startPeer({ name: "peer-a", sessionId: "sa-1226", project: "p-1226", cwd: workspace, comsDir });
@@ -690,9 +695,9 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 
 		// Restart the SAME closure (simulating /coms stop -> /coms start): state must be clean.
 		await receiver.start({}, receiver.ctx);
-		const restartedSelf = (globalThis as any).__comsSelf;
+		const restartedSelf = receiver.runtime.getSelf();
 		assert.ok(restartedSelf?.sessionId, "restarted peer published coms identity");
-		receiver.registryFile = join(comsDir, "projects", "psh-reset", "agents", `${restartedSelf.sessionId}.json`);
+		receiver.registryFile = restartedSelf.registryFile;
 		assert.equal(Boolean(readRegistry(receiver).busy), false, "busy must be false after restart");
 		assert.equal(readRegistry(receiver).queue_depth ?? 0, 0, "queue_depth must be 0 after restart");
 
@@ -771,8 +776,9 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 		// Shut down AND restart receiver BEFORE old sendEnvelope resolves.
 		await receiver.shutdown();
 		await receiver.start({}, receiver.ctx);
-		const restartedSelf = (globalThis as any).__comsSelf;
-		receiver.registryFile = join(comsDir, "projects", "pgen-1226", "agents", `${restartedSelf.sessionId}.json`);
+		const restartedSelf = receiver.runtime.getSelf();
+		assert.ok(restartedSelf?.registryFile, "restarted peer published registry file");
+		receiver.registryFile = restartedSelf.registryFile;
 
 		// Queue fresh work in the restarted session: n1 active (undelivered), n2 queued behind it.
 		const rn1 = await peerB.tools.get("coms_send").execute("sn1", { target: "receiver", prompt: "new work 1" });
@@ -866,8 +872,9 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", { concur
 
 		// Restart the same closure and receive a fresh prompt m2.
 		await receiver.start({}, receiver.ctx);
-		const restartedSelf = (globalThis as any).__comsSelf;
-		receiver.registryFile = join(comsDir, "projects", "pcr-1226", "agents", `${restartedSelf.sessionId}.json`);
+		const restartedSelf = receiver.runtime.getSelf();
+		assert.ok(restartedSelf?.registryFile, "restarted peer published registry file");
+		receiver.registryFile = restartedSelf.registryFile;
 		const r2 = await peerA.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "fresh after restart" });
 		const m2 = r2.details.msg_id as string;
 		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m2));

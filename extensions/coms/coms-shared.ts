@@ -1,19 +1,11 @@
 /**
- * coms-shared.ts — Shared utilities for coms wrapper.
- *
- * Handles reload resilience: when coms is active and the user runs /reload,
- * session_shutdown fires (upstream cleans up the old socket/connection),
- * then session_start fires with reason="reload". We detect this and
- * auto-reactivate with the same flags.
+ * coms-shared.ts — Shared utilities for the COMS extension.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
-import * as net from "node:net";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
-import * as os from "node:os";
-import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
 import { resolveStorePath } from "../pitasks/task-store.js";
 import { stripOriginMarker } from "./peer-text.js";
@@ -72,41 +64,36 @@ export function parseFlags(parts: string[], values: Map<string, any>): void {
     }
 }
 
-export interface DeferredUpstream {
-    /** Captured session_start handler from upstream */
-    capturedSessionStart: ((event: any, ctx: any) => Promise<void>) | null;
-    /** Captured session_shutdown handler from upstream */
-    capturedSessionShutdown: (() => Promise<void>) | null;
-    /** Flag values for upstream's getFlag calls */
-    flagValues: Map<string, any>;
-    /** Whether the upstream extension is active */
+export interface ComsPersistedState {
+    /** Whether the COMS peer runtime is active */
     active: boolean;
-    /** Tool names gated behind active state (defaultActive: false until COMS starts) */
-    deferredTools?: Set<string>;
-    /** In-flight activation, so two starts cannot share the process-wide origin/identity cell. */
-    activation?: Promise<{ ok: boolean; message: string }> | null;
-    /** Extra persisted state */
+    /** Flag values persisted across reload */
+    flagValues: Map<string, any>;
+    /** Extra persisted metadata (e.g. activation origin) */
     extra?: Record<string, any>;
 }
 
 /**
  * Sync COMS-gated tools (the 15 P2P tools + coms_stop) in the active tool set.
  */
-export function syncComsActiveTools(pi: ExtensionAPI, state: DeferredUpstream, active: boolean): void {
-    const gated = state.deferredTools;
-    if (!gated || gated.size === 0) return;
+export function syncComsActiveTools(
+    pi: ExtensionAPI,
+    gatedTools: ReadonlySet<string>,
+    active: boolean,
+): void {
+    if (!gatedTools || gatedTools.size === 0) return;
     if (typeof (pi as any).getActiveTools !== "function" || typeof (pi as any).setActiveTools !== "function") {
         log.debug("coms_active_tools_sync_skipped", { reason: "api_unavailable", active });
         return;
     }
     const current = pi.getActiveTools();
     if (active) {
-        const toAdd = [...gated].filter((name) => !current.includes(name));
+        const toAdd = [...gatedTools].filter((name) => !current.includes(name));
         if (toAdd.length === 0) return;
         pi.setActiveTools([...current, ...toAdd]);
         log.debug("coms_active_tools_added", { count: toAdd.length, tools: toAdd });
     } else {
-        const next = current.filter((name) => !gated.has(name));
+        const next = current.filter((name) => !gatedTools.has(name));
         if (next.length === current.length) return;
         pi.setActiveTools(next);
         log.debug("coms_active_tools_removed", { count: current.length - next.length });
@@ -114,289 +101,16 @@ export function syncComsActiveTools(pi: ExtensionAPI, state: DeferredUpstream, a
 }
 
 /**
- * Create a Proxy around the pi API that defers upstream extension activation.
- * On reload, session_shutdown passes through (upstream cleans up), then
- * session_start auto-reactivates if the persist key exists.
- */
-export function createDeferredProxy(
-    pi: ExtensionAPI,
-    state: DeferredUpstream,
-    inactiveMessage: string,
-    persistKey: string,
-): ExtensionAPI {
-    return new Proxy(pi, {
-        get(target: any, prop: string | symbol) {
-            if (typeof prop === 'symbol') {
-                const val = target[prop];
-                return typeof val === 'function' ? val.bind(target) : val;
-            }
-
-            switch (prop) {
-                case 'registerFlag':
-                    // MUST reach the real pi: flags are validated against what the loaded
-                    // extensions registered, and that validation happens at CLI parse time — long
-                    // before /coms start. Swallowing it made every coms flag an "Unknown option".
-                    return (name: string, options: unknown) => target.registerFlag(name, options);
-                case 'getFlag':
-                    // `/coms start --cname x` wins over the CLI flag, then the CLI flag, then pi's
-                    // own default. Keep both sources so either activation path works.
-                    return (name: string) => state.flagValues.get(name) ?? target.getFlag(name);
-                case 'registerCommand':
-                    // Upstream /coms is owned by the wrapper — swallow it.
-                    // Pass through utility commands (e.g. /coms-queue) so they
-                    // are always available on the real pi, with an active-gate in the handler.
-                    return (name: string, def: any) => {
-                        if (name === 'coms') return;
-                        const origHandler = def?.handler;
-                        if (typeof origHandler === 'function') {
-                            def.handler = async (args: string, ctx: any) => {
-                                if (!state.active) {
-                                    try {
-                                        ctx.ui.notify('📡 coms not active — no queue. Run /coms start first.', 'info');
-                                    } catch { /* ignore */ }
-                                    return;
-                                }
-                                return origHandler(args, ctx);
-                            };
-                        }
-                        return target.registerCommand(name, def);
-                    };
-                case 'registerTool':
-                    return (tool: any) => {
-                        if (typeof tool?.name === "string" && tool.name) {
-                            if (!state.deferredTools) state.deferredTools = new Set();
-                            state.deferredTools.add(tool.name);
-                        }
-                        tool.defaultActive = false;
-                        // Inject anti-loop warning into coms_send description
-                        if (tool.name === "coms_send" && tool.description && !tool.description.includes("DO NOT")) {
-                            tool.description +=
-                                "\n\n⚠️ DO NOT call this to REPLY to a `[from <peer>]` inbound — your final assistant text auto-sends as the reply.";
-                        }
-                        const origExecute = tool.execute;
-                        tool.execute = async (callId: string, params: any, signal?: AbortSignal, ...rest: any[]) => {
-                            if (!state.active) {
-                                return {
-                                    content: [{ type: "text" as const, text: inactiveMessage }],
-                                };
-                            }
-                            // For *_await tools: wrap with abort signal support
-                            // so ESC can interrupt the blocking wait
-                            if (tool.name?.endsWith("_await") && signal) {
-                                return Promise.race([
-                                    origExecute(callId, params, signal, ...rest),
-                                    new Promise<any>((_, reject) => {
-                                        if (signal.aborted) reject(new Error("aborted"));
-                                        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-                                    }),
-                                ]).catch((err) => ({
-                                    content: [{ type: "text" as const, text: `⚠️ ${tool.name} interrupted: ${err.message}` }],
-                                }));
-                            }
-                            return origExecute(callId, params, signal, ...rest);
-                        };
-                        return target.registerTool(tool);
-                    };
-                case 'on':
-                    return (event: string, handler: any) => {
-                        if (event === 'session_start') {
-                            state.capturedSessionStart = handler;
-                            // Register with real pi to auto-reactivate on reload
-                            return target.on(event, async (evt: any, ctx: any) => {
-                                if (evt?.reason !== "reload") return;
-                                // Check if coms was active before reload
-                                let wasActive = false;
-                                let savedFlags: Record<string, any> = {};
-                                let savedExtra: Record<string, any> = {};
-                                for (const entry of ctx.sessionManager.getEntries()) {
-                                    if (entry.type === "custom" && entry.customType === persistKey) {
-                                        wasActive = entry.data?.active === true;
-                                        savedFlags = entry.data?.flags || {};
-                                        savedExtra = entry.data?.extra || {};
-                                    }
-                                }
-                                if (wasActive) {
-                                    state.flagValues = new Map(Object.entries(savedFlags));
-                                    state.extra = savedExtra;
-                                    try {
-                                        await handler(evt, ctx);
-                                        state.active = true;
-                                        setComsActive(true);
-                                        syncComsActiveTools(target, state, true);
-                                    } catch (err) {
-                                        state.active = false;
-                                        setComsActive(false);
-                                        syncComsActiveTools(target, state, false);
-                                        persistState(target, persistKey, state);
-                                        const msg = err instanceof Error ? err.message : String(err);
-                                        const error = err instanceof Error ? err : new Error(msg);
-                                        log.error("reload reactivation failed", msg, error);
-                                    }
-                                } else {
-                                    syncComsActiveTools(target, state, false);
-                                }
-                            });
-                        }
-                        if (event === 'session_shutdown') {
-                            state.capturedSessionShutdown = handler;
-                            // Pass through — upstream needs to clean up socket/connection
-                            return target.on(event, handler);
-                        }
-                        return target.on(event, handler);
-                    };
-                default: {
-                    const val = target[prop];
-                    if (typeof val === 'function') {
-                        return val.bind(target);
-                    }
-                    return val;
-                }
-            }
-        }
-    }) as ExtensionAPI;
-}
-
-/**
  * Persist coms activation state so it survives reload.
  */
-export function persistState(pi: ExtensionAPI, persistKey: string, state: DeferredUpstream): void {
+export function persistState(pi: ExtensionAPI, persistKey: string, state: ComsPersistedState): void {
     try {
         const flags: Record<string, any> = {};
         for (const [k, v] of state.flagValues) flags[k] = v;
         pi.appendEntry(persistKey, { active: state.active, flags, extra: state.extra || {} });
-    } catch (e: any) { console.debug("[coms-shared] persist state failed:", e?.message || e); }
-}
-
-/**
- * Prune stale coms registry entries on startup — removes entries with dead PIDs.
- * Call from session_start in coms.ts.
- */
-let _pruned = false;
-/**
- * Prune stale coms registry entries — non-blocking.
- * Runs once per session.
- */
-export function pruneStaleRegistry(comsDir?: string): void {
-    if (_pruned) return;
-    _pruned = true;
-    const resolvedComsDir = comsDir || path.join(os.homedir(), ".pi", "coms");
-    // Run async to avoid blocking session_start
-    setImmediate(() => {
-        try {
-            const projectsDir = path.join(resolvedComsDir, "projects");
-            if (!fs.existsSync(projectsDir)) return;
-            let dirs: string[];
-            try { dirs = fs.readdirSync(projectsDir); } catch { return; }
-            const allEndpoints = new Set<string>();
-            for (const proj of dirs) {
-                try {
-                    const projDir = path.join(projectsDir, proj);
-                    if (!fs.lstatSync(projDir).isDirectory()) continue;
-                    const agentsDir = path.join(projDir, "agents");
-                    if (!fs.existsSync(agentsDir)) continue;
-                    for (const file of fs.readdirSync(agentsDir)) {
-                        if (!file.endsWith(".json")) continue;
-                        const fp = path.join(agentsDir, file);
-                        try {
-                            const data = JSON.parse(fs.readFileSync(fp, "utf-8"));
-                            if (typeof data?.pid !== "number") {
-                                try { fs.unlinkSync(fp); } catch {}
-                                continue;
-                            }
-                            // Check socket endpoint — reliable in containers (pid reuse)
-                            const endpoint = data?.endpoint;
-                            if (typeof endpoint !== "string" || !endpoint) {
-                                // No/invalid endpoint — old format entry, remove
-                                try { fs.unlinkSync(fp); } catch {}
-                                continue;
-                            }
-                            if (!fs.existsSync(endpoint)) {
-                                // Socket file gone — definitely dead
-                                try { fs.unlinkSync(fp); } catch {}
-                                continue;
-                            }
-                            allEndpoints.add(endpoint);
-                            // Socket exists — try connect to verify.
-                            // Prefer the ping endpoint (.ping) which runs on a separate
-                            // thread and is immune to main-thread event-loop blocks.
-                            // Probe liveness via .ping endpoint (immune to main-thread blocks).
-                            const pingEndpoint = `${endpoint}.ping`;
-                            const sock = net.createConnection(pingEndpoint);
-                            sock.setTimeout(500);
-                            sock.on("connect", () => sock.destroy()); // alive
-                            sock.on("error", (err: any) => {
-                                sock.destroy();
-                                // Only prune registry on definitive dead signals.
-                                // Never delete socket files — that's destructive and
-                                // irreversible, killing live peers whose ping worker
-                                // may have crashed while the main server is still alive.
-                                if (err?.code === "ECONNREFUSED" || err?.code === "ENOENT") {
-                                    try { fs.unlinkSync(fp); } catch {}
-                                }
-                            });
-                            sock.on("timeout", () => {
-                                sock.destroy();
-                                // Timeout means peer may be busy — only remove registry
-                                // entry, NOT the socket file. The peer's keepalive can
-                                // self-heal the registry, but a deleted socket file is
-                                // permanent and kills the peer's connectivity.
-                                try { fs.unlinkSync(fp); } catch {}
-                                // Do NOT unlink endpoint or endpoint.ping on timeout
-                            });
-                        } catch (e: any) {
-                            if (e?.code === "ESRCH" || e instanceof SyntaxError) {
-                                try { fs.unlinkSync(fp); } catch {}
-                            }
-                        }
-                    }
-                } catch { /* skip unreadable project directory */ }
-            }
-            // Cleanup orphan sockets (no matching registry entry)
-            const socketsDir = path.join(resolvedComsDir, "sockets");
-            if (fs.existsSync(socketsDir)) {
-                try {
-                    const orphanCandidates: Array<{ sp: string; parentEndpoint: string }> = [];
-                    for (const sf of fs.readdirSync(socketsDir)) {
-                        if (!sf.endsWith(".sock") && !sf.endsWith(".sock.ping")) continue;
-                        const sp = path.join(socketsDir, sf);
-                        // For .ping files, check if the parent .sock is in the endpoint set
-                        const parentEndpoint = sf.endsWith(".sock.ping") ? sp.slice(0, -5) : sp;
-                        if (!allEndpoints.has(parentEndpoint)) {
-                            orphanCandidates.push({ sp, parentEndpoint });
-                        }
-                    }
-                    if (orphanCandidates.length > 0) {
-                        // One fresh registry scan across all orphan candidates so concurrently registered peers survive
-                        // without rescanning once per orphan socket.
-                        let currentDirs: string[] = [];
-                        try { currentDirs = fs.readdirSync(projectsDir); } catch {}
-                        for (const p of currentDirs) {
-                            try {
-                                const pd = path.join(projectsDir, p);
-                                if (!fs.lstatSync(pd).isDirectory()) continue;
-                                const ad = path.join(pd, "agents");
-                                if (!fs.existsSync(ad)) continue;
-                                for (const f of fs.readdirSync(ad)) {
-                                    if (!f.endsWith(".json")) continue;
-                                    try {
-                                        const d = JSON.parse(fs.readFileSync(path.join(ad, f), "utf-8"));
-                                        if (typeof d?.endpoint === "string" && d.endpoint) {
-                                            allEndpoints.add(d.endpoint);
-                                        }
-                                    } catch {}
-                                }
-                            } catch {}
-                        }
-                        for (const { sp, parentEndpoint } of orphanCandidates) {
-                            if (!allEndpoints.has(parentEndpoint)) {
-                                try { fs.unlinkSync(sp); } catch {}
-                            }
-                        }
-                    }
-                } catch {}
-            }
-        } catch (e: any) { console.debug("[coms] async prune failed:", e?.message?.slice(0, 100)); }
-    });
+    } catch (e: unknown) {
+        log.debug("persist_state_failed", { error: e instanceof Error ? e.message : String(e) });
+    }
 }
 
 // ━━ Shared helpers (used by coms-p2p.ts) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

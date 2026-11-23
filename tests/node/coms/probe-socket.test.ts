@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { rmSync, mkdirSync, writeFileSync } from "node:fs";
-
 import { join } from "node:path";
 import * as net from "node:net";
 import { describe, it, afterEach } from "node:test";
+import { probeStaleSocket } from "../../../extensions/coms/coms-registry.js";
+import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
-
 
 describe("probeStaleSocket", () => {
 	let tmpDir: string | undefined;
@@ -25,15 +25,11 @@ describe("probeStaleSocket", () => {
 		tmpDir = makeTempDir("probe-active-");
 		const sockPath = join(tmpDir, "test.sock");
 
-		// Start a real Unix socket server
 		server = net.createServer(() => {});
 		await new Promise<void>((resolve) => {
 			server!.listen(sockPath, () => resolve());
 		});
 
-		const { probeStaleSocket } = await import(
-			`../../../extensions/coms/probe-socket.ts?t=${Date.now()}`
-		);
 		const result = await probeStaleSocket(sockPath, "test");
 		assert.equal(result, "in_use");
 	});
@@ -42,9 +38,6 @@ describe("probeStaleSocket", () => {
 		tmpDir = makeTempDir("probe-missing-");
 		const sockPath = join(tmpDir, "nonexistent.sock");
 
-		const { probeStaleSocket } = await import(
-			`../../../extensions/coms/probe-socket.ts?t=${Date.now() + 1}`
-		);
 		const result = await probeStaleSocket(sockPath, "test");
 		assert.equal(result, "stale");
 	});
@@ -53,7 +46,6 @@ describe("probeStaleSocket", () => {
 		tmpDir = makeTempDir("probe-refused-");
 		const sockPath = join(tmpDir, "refused.sock");
 
-		// Create and immediately close a server to get ECONNREFUSED
 		const srv = net.createServer(() => {});
 		await new Promise<void>((resolve) => {
 			srv.listen(sockPath, () => {
@@ -61,9 +53,6 @@ describe("probeStaleSocket", () => {
 			});
 		});
 
-		const { probeStaleSocket } = await import(
-			`../../../extensions/coms/probe-socket.ts?t=${Date.now() + 2}`
-		);
 		const result = await probeStaleSocket(sockPath, "test");
 		assert.equal(result, "stale");
 	});
@@ -72,28 +61,18 @@ describe("probeStaleSocket", () => {
 		tmpDir = makeTempDir("probe-timeout-");
 		const piDir = join(tmpDir, ".pi");
 		mkdirSync(piDir, { recursive: true });
-		// Set a very short timeout
 		writeFileSync(
 			join(piDir, "pi-config-settings.json"),
 			JSON.stringify({ coms_probe_timeout_ms: 100 }),
 			"utf-8",
 		);
-
-		const { clearSettingsCache } = await import(
-			`../../../extensions/orchestrator/project-settings.ts`
-		);
 		clearSettingsCache();
 
 		const sockPath = join(tmpDir, "timeout.sock");
-		// Don't create a server — socket won't exist → ENOENT → stale
-		const { probeStaleSocket } = await import(
-			`../../../extensions/coms/probe-socket.ts?t=${Date.now() + 3}`
-		);
 		const start = Date.now();
 		const result = await probeStaleSocket(sockPath, "test", tmpDir);
 		const elapsed = Date.now() - start;
 		assert.equal(result, "stale");
-		// Should resolve quickly (ENOENT), not wait for full timeout
 		assert.ok(elapsed < 5000, `Should not wait full timeout, took ${elapsed}ms`);
 	});
 });
