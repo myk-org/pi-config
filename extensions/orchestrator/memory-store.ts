@@ -976,10 +976,18 @@ export async function editMemoryEntry(cwd: string, input: EditMemoryInput): Prom
     const postAwaitEntries = readAllTopicEntries(cwd);
     const hasNewOrRepinned = postAwaitEntries.some((te) => !checkedSignatures.has(topicEntrySignature(te)));
     if (hasNewOrRepinned) {
+      // Embed newly visible entries before vector re-check so a concurrent writer
+      // whose topic write preceded its embedEntry still gets vector corroboration.
+      try {
+        await embedMissing(cwd, postAwaitEntries);
+      } catch (err) {
+        log.debug("memory-store: edit recheck pre-embed skipped:", err);
+      }
+      const recheckEntries = readAllTopicEntries(cwd);
       const recheckMatch = existsSync(topicPath)
         ? findTopicLine(readFileSync(topicPath, "utf-8"), category, text)
         : null;
-      const recheck = await findContradictionWithVector(cwd, newText, category, postAwaitEntries, {
+      const recheck = await findContradictionWithVector(cwd, newText, category, recheckEntries, {
         exclude: { category, text, pinned: recheckMatch?.pinned ?? initialMatch.pinned },
       });
       if (recheck.conflicts.length > 0) {

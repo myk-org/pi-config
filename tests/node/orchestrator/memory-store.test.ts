@@ -37,6 +37,7 @@ import {
   topicCharCap,
 } from "../../../extensions/orchestrator/memory-tree.js";
 import { registerMemoryTools } from "../../../extensions/orchestrator/memory-tools.js";
+import { findSynchronousContradictions } from "../../../extensions/orchestrator/memory-contradiction.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const REPO_ROOT = join(import.meta.dirname, "../../..");
@@ -408,6 +409,55 @@ describe("memory-store: editMemoryEntry persistence invariants", () => {
         ),
         "original entry must remain untouched after concurrent conflict rejection",
       );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an edit when an unembedded one-word-overlap pinned rule lands concurrently", async () => {
+    const cwd = makeTempDir("mem-store-edit-short-pinned-");
+    try {
+      await addMemoryEntry(cwd, { category: "lesson", text: "Document release steps clearly" });
+      const topicsDir = join(cwd, ".pi", "memory", "topics");
+
+      const editPromise = editMemoryEntry(cwd, {
+        category: "lesson",
+        text: "Document release steps clearly",
+        newText: "Always deploy to production",
+      });
+
+      // Concurrent short pinned rule written without an embedding yet (shares only "deploy")
+      writeFileSync(
+        join(topicsDir, "preferences.md"),
+        "# Preferences\n\n- [preference] Never deploy *(pinned)*\n",
+        "utf-8",
+      );
+
+      const res = await editPromise;
+      assert.equal(res.status, "rejected");
+      assert.match(res.message, /contradicts pinned memory/i);
+      assert.ok(
+        readAllTopicEntries(cwd).some(
+          (e) => e.category === "lesson" && e.text === "Document release steps clearly",
+        ),
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("findSynchronousContradictions detects unembedded short-rule conflicts without vector search", () => {
+    const cwd = makeTempDir("mem-store-sync-short-");
+    try {
+      const conflicts = findSynchronousContradictions(
+        cwd,
+        "Always deploy to production",
+        "lesson",
+        [{ category: "preference", text: "Never deploy", pinned: true }],
+      );
+      assert.equal(conflicts.length, 1);
+      assert.equal(conflicts[0]?.text, "Never deploy");
+      assert.equal(conflicts[0]?.pinned, true);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

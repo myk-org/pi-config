@@ -1935,13 +1935,18 @@ function buildConflictPool(
   return pool;
 }
 
-/** Shared synchronous candidate evaluation (corroboration gate + polarityClash). */
+/** Shared synchronous candidate evaluation (corroboration gate + polarityClash).
+ *  When `lexicalOnly` is true (no vector search ran), skip requiring vector
+ *  confirmation on 1-word overlaps so `polarityClash`'s whole-action subset
+ *  check still catches unembedded short-rule conflicts (e.g. "Never deploy"
+ *  vs "Always deploy to production"). */
 function evaluateConflictCandidates(
   text: string,
   candidates: readonly ConflictCandidate[],
   similarKeys: ReadonlySet<string>,
   similarityByText: ReadonlyMap<string, number>,
   getSharedCount: (key: string, candText: string) => number,
+  lexicalOnly = false,
 ): ConflictCandidate[] {
   const textShort = collapsedActionSize(contentWords(quotedMask(text)), text) <= 2;
   const textHasTimeword = TIMEWORD_RE.test(text);
@@ -1957,7 +1962,7 @@ function evaluateConflictCandidates(
     const shared = getSharedCount(candKey, candidate.text);
     if (shared === 0) continue;
     const vectorConfirmed = similarKeys.has(candKey);
-    let corroborated = shared >= 2 || vectorConfirmed;
+    let corroborated = lexicalOnly || shared >= 2 || vectorConfirmed;
     if (!corroborated) {
       // Short rules (Qodo 2c16ab75, PR #956 R2/R4), time-scoped rules (Qodo
       // 205f7330), and action-verb synonyms (Qodo a42dc6ce) can corroborate
@@ -1989,7 +1994,8 @@ function evaluateConflictCandidates(
 /**
  * Synchronous lexical/overlap contradiction check (zero awaits). Used as the
  * final pre-write guard inside `editMemoryEntry` so a concurrent write landing
- * during async embedding/vector checks cannot bypass contradiction detection.
+ * during async embedding/vector checks cannot bypass contradiction detection,
+ * including unembedded 1-word-overlap rules whose whole action clashes.
  */
 export function findSynchronousContradictions(
   cwd: string,
@@ -2010,7 +2016,7 @@ export function findSynchronousContradictions(
     sharedCounts.set(key, count);
     return count;
   };
-  return evaluateConflictCandidates(text, pool, new Set(), new Map(), getSharedCount);
+  return evaluateConflictCandidates(text, pool, new Set(), new Map(), getSharedCount, true);
 }
 
 /**
