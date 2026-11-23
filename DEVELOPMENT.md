@@ -42,12 +42,22 @@ top-level source directory, check that `release-map.toml` maps it to a package.
 # Linting / pre-commit checks
 prek run --all-files
 
-# Python tests
-uv run pytest
+# All suites (Python + Node)
+tox
 
-# TypeScript type-check gate (strict tsc --noEmit, all five projects)
+# Python tests
+uv run --group tests pytest
+
+# Node tests
+npx tsx --test tests/node/**/*.test.ts
+
+# TypeScript type-check gate (strict tsc --noEmit, all 7 projects incl. tests/node via tsconfig.tests.json)
 npm run typecheck
+npm run typecheck:tests
 ```
+
+Additional workspace test suites, `withSubagentChildEnv` hygiene, `npm pack` packaging rules, published-install
+invariants, and local `pi-docsite` preview instructions live in `contributing/testing-and-packaging.md`.
 
 ## Debugging a Running Container
 

@@ -155,7 +155,8 @@ step. Tools loaded by `tool_search` are recorded in the transcript and stay decl
 that branch.
 
 To confirm a server is healthy, run `/mcp` and check its state and tool count. pi logs
-MCP activity to `~/.pi/agent/mcp.log`.
+MCP activity to `~/.pi/agent/mcp.log`. Custom extensions must not collide with built-in
+replaceable MCP tool or command names.
 
 ## Resources
 
