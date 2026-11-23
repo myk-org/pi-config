@@ -61,6 +61,7 @@ pi-config/
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
 │   │   ├── malformed-response-recovery.ts # Bounded auto-retry on MALFORMED_RESPONSE provider stop reasons (#1333)
+│   │   ├── stream-loop-guard.ts     # Abort runaway streaming repetition/degeneration loops via message_update (#1374)
 │   │   ├── markdown-transformer.ts  # Display-only markdown transforms (memory badges, coms headers, review findings, settings, task/async status)
 │   │   ├── parse-model-override.ts  # Parse provider/model-id override strings for subagent model param
 │   │   ├── pi-config-review-state.ts # Review state machine (review loop enforcement)
