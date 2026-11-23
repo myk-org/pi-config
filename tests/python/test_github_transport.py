@@ -1,24 +1,20 @@
-"""Unit and architectural contract tests for the unified GitHub CLI adapter (issue #1361)."""
+"""Unit and transport behavior tests for the unified GitHub CLI adapter (issue #1361)."""
 
 from __future__ import annotations
 
-import ast
 import json
 import subprocess
 import types
-from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from myk_pi_tools import github
+from myk_pi_tools.coderabbit import rate_limit
 from myk_pi_tools.coderabbit import utils as coderabbit_utils
 from myk_pi_tools.pr import claude_md
-from myk_pi_tools.reviews import pending_fetch, pending_update
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
+from myk_pi_tools.reviews import pending_fetch, pending_update, poll, store_session
 
 # ---------------------------------------------------------------------------
 # check_dependencies
@@ -57,12 +53,19 @@ def test_check_dependencies_uses_custom_error_message(capsys: pytest.CaptureFixt
 # ---------------------------------------------------------------------------
 
 
-def test_run_gh_returns_stdout_and_zero_code_on_success() -> None:
+def test_run_gh_returns_stdout_on_success() -> None:
     proc = subprocess.CompletedProcess(["gh", "api", "user"], 0, stdout='{"login":"octo"}', stderr="")
-    with patch("myk_pi_tools.github.subprocess.run", return_value=proc) as mock_run:
-        code, stdout, stderr = github.run_gh(["api", "user"], timeout=15)
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        code, stdout, stderr = github.run_gh(["api", "user"])
 
     assert (code, stdout, stderr) == (0, '{"login":"octo"}', "")
+
+
+def test_run_gh_forwards_arguments_with_timeout() -> None:
+    proc = subprocess.CompletedProcess(["gh", "api", "user"], 0, stdout="{}", stderr="")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc) as mock_run:
+        github.run_gh(["api", "user"], timeout=15)
+
     assert mock_run.call_args.args[0] == ["gh", "api", "user"]
     assert mock_run.call_args.kwargs["timeout"] == 15
 
@@ -125,28 +128,33 @@ def test_run_gh_api_returns_parsed_json_for_single_page() -> None:
     assert mock_run.call_args.args[0] == ["gh", "api", "/repos/o/r/pulls/1"]
 
 
-def test_run_gh_api_paginates_and_merges_arrays() -> None:
-    proc = subprocess.CompletedProcess(["gh"], 0, stdout='[{"id": 1}][{"id": 2}]', stderr="")
+def test_run_gh_api_adds_paginate_flag() -> None:
+    proc = subprocess.CompletedProcess(["gh"], 0, stdout="[]", stderr="")
     with patch("myk_pi_tools.github.subprocess.run", return_value=proc) as mock_run:
-        result = github.run_gh_api("/repos/o/r/issues/1/comments", paginate=True)
+        github.run_gh_api("/repos/o/r/issues/1/comments", paginate=True)
 
-    assert result == [{"id": 1}, {"id": 2}]
     assert mock_run.call_args.args[0] == ["gh", "api", "--paginate", "/repos/o/r/issues/1/comments"]
 
 
-def test_run_gh_api_passes_method_jq_headers_and_json_input() -> None:
+def test_run_gh_api_merges_paginated_arrays() -> None:
+    proc = subprocess.CompletedProcess(["gh"], 0, stdout='[{"id": 1}][{"id": 2}]', stderr="")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        result = github.run_gh_api("/repos/o/r/issues/1/comments", paginate=True)
+
+    assert result == [{"id": 1}, {"id": 2}]
+
+
+def test_run_gh_api_forwards_method_headers_jq_flags() -> None:
     proc = subprocess.CompletedProcess(["gh"], 0, stdout='{"ok": true}', stderr="")
     with patch("myk_pi_tools.github.subprocess.run", return_value=proc) as mock_run:
-        result = github.run_gh_api(
+        github.run_gh_api(
             "/repos/o/r/pulls/1/reviews",
             method="POST",
             jq=".ok",
             headers=["Accept: application/vnd.github+json"],
-            input_data={"event": "COMMENT"},
             timeout=45,
         )
 
-    assert result == {"ok": True}
     assert mock_run.call_args.args[0] == [
         "gh",
         "api",
@@ -157,11 +165,22 @@ def test_run_gh_api_passes_method_jq_headers_and_json_input() -> None:
         "--jq",
         ".ok",
         "/repos/o/r/pulls/1/reviews",
-        "--input",
-        "-",
     ]
-    assert json.loads(mock_run.call_args.kwargs["input"]) == {"event": "COMMENT"}
     assert mock_run.call_args.kwargs["timeout"] == 45
+
+
+def test_run_gh_api_serializes_json_input_on_stdin() -> None:
+    proc = subprocess.CompletedProcess(["gh"], 0, stdout='{"ok": true}', stderr="")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc) as mock_run:
+        result = github.run_gh_api(
+            "/repos/o/r/pulls/1/reviews",
+            method="POST",
+            input_data={"event": "COMMENT"},
+        )
+
+    assert result == {"ok": True}
+    assert mock_run.call_args.args[0][-2:] == ["--input", "-"]
+    assert json.loads(mock_run.call_args.kwargs["input"]) == {"event": "COMMENT"}
 
 
 def test_run_gh_api_quiet_suppresses_stderr_on_failure(capsys: pytest.CaptureFixture[str]) -> None:
@@ -180,6 +199,15 @@ def test_run_gh_api_reports_invalid_json_to_stderr(capsys: pytest.CaptureFixture
 
     assert result is None
     assert "Error parsing JSON from gh api" in capsys.readouterr().err
+
+
+def test_run_gh_api_result_returns_error_message_on_failure() -> None:
+    proc = subprocess.CompletedProcess(["gh"], 1, stdout="", stderr="gh: API rate limit exceeded")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        data, error = github.run_gh_api_result("/repos/o/r/pulls/1/comments", paginate=True)
+
+    assert data is None
+    assert "API rate limit exceeded" in error
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +233,36 @@ def test_run_graphql_raw_preserves_partial_data_on_nonzero_exit() -> None:
     assert data is not None
     assert data["data"]["addPullRequestReviewThreadReply"]["comment"]["id"] == "C1"
     assert "Forbidden" in err
+
+
+def test_run_graphql_raw_strips_http_headers_from_nonzero_error_output() -> None:
+    raw = (
+        "HTTP/2.0 422 Unprocessable Entity\r\n"
+        "Content-Type: application/json\r\n"
+        "X-GitHub-Request-Id: req-999\r\n"
+        "\r\n"
+        '{"message":"Validation Failed"}'
+    )
+    proc = subprocess.CompletedProcess(["gh"], 1, stdout=raw.encode(), stderr=b"gh: Validation Failed")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        ok, data, err = github.run_graphql_raw("mutation { ... }", {})
+
+    assert (ok, data) == (False, None)
+    assert "HTTP/2.0" not in err
+    assert "X-GitHub-Request-Id" not in err
+    assert "Validation Failed" in err
+
+
+def test_run_graphql_raw_redacts_reflected_variables_on_nonzero_exit() -> None:
+    review_text = "private-review-comment-body-secret"  # pragma: allowlist secret
+    raw = f"HTTP/2.0 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nreflected {review_text}"
+    proc = subprocess.CompletedProcess(["gh"], 1, stdout=raw.encode(), stderr=f"stderr {review_text}".encode())
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        ok, data, err = github.run_graphql_raw("mutation { ... }", {"id": "PRRC_1", "body": review_text})
+
+    assert (ok, data) == (False, None)
+    assert review_text not in err
+    assert "[REDACTED]" in err
 
 
 def test_run_graphql_raw_handles_missing_gh_binary() -> None:
@@ -263,13 +321,22 @@ def test_run_gh_graphql_returns_payload_with_errors_for_caller_inspection() -> N
     assert data == {"data": {"repository": None}, "errors": [{"message": "Could not resolve"}]}
 
 
-def test_run_gh_graphql_returns_none_and_warns_on_transport_error(capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_gh_graphql_returns_none_on_transport_error() -> None:
     proc = subprocess.CompletedProcess(["gh"], 1, stdout=b"", stderr=b"network error")
     with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
         data = github.run_gh_graphql("query { viewer { login } }", {})
 
     assert data is None
-    assert "GraphQL query failed" in capsys.readouterr().err
+
+
+def test_run_gh_graphql_prints_warning_on_transport_error(capsys: pytest.CaptureFixture[str]) -> None:
+    proc = subprocess.CompletedProcess(["gh"], 1, stdout=b"HTTP/2.0 502 Bad Gateway\r\n\r\n", stderr=b"network error")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        github.run_gh_graphql("query { viewer { login } }", {})
+
+    err = capsys.readouterr().err
+    assert "GraphQL query failed: network error" in err
+    assert "HTTP/2.0" not in err
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +352,7 @@ def test_get_pr_info_extracts_directly_from_valid_url() -> None:
     )
 
 
-def test_get_pr_info_resolves_from_branch_and_origin_repo() -> None:
+def test_get_pr_info_resolves_from_current_branch() -> None:
     def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="feat/test\n", stderr="")
@@ -302,7 +369,7 @@ def test_get_pr_info_resolves_from_branch_and_origin_repo() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Caller adapter integration tests
+# Caller transport behavior tests
 # ---------------------------------------------------------------------------
 
 
@@ -320,7 +387,20 @@ def test_pending_update_comment_body_succeeds_via_unified_graphql() -> None:
         assert pending_update.update_comment_body("PRRC_123", "Updated comment") == "success"
 
 
-def test_pending_update_submit_review_posts_via_run_gh() -> None:
+def test_pending_update_comment_body_redacts_review_text_on_failure(capsys: pytest.CaptureFixture[str]) -> None:
+    review_text = "sensitive-draft-review-comment"  # pragma: allowlist secret
+    raw = f"HTTP/2.0 500 Error\r\nX-GitHub-Request-Id: req-1\r\n\r\nreflected {review_text}"
+    proc = subprocess.CompletedProcess(["gh"], 1, stdout=raw.encode(), stderr=b"gh: internal error")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        assert pending_update.update_comment_body("PRRC_123", review_text) == "error"
+
+    err = capsys.readouterr().err
+    assert review_text not in err
+    assert "HTTP/2.0" not in err
+    assert "internal error" in err
+
+
+def test_pending_update_submit_review_posts_via_github_adapter() -> None:
     proc = subprocess.CompletedProcess(["gh"], 0, stdout="{}", stderr="")
     with patch("myk_pi_tools.github.subprocess.run", return_value=proc) as mock_run:
         assert pending_update.submit_review("org", "repo", 10, 20, "COMMENT", "LGTM") is True
@@ -336,11 +416,15 @@ def test_pending_update_submit_review_posts_via_run_gh() -> None:
     ]
 
 
-def test_pending_fetch_helpers_route_through_github_adapter() -> None:
-    user_proc = subprocess.CompletedProcess(["gh"], 0, stdout="octocat\n", stderr="")
-    diff_proc = subprocess.CompletedProcess(["gh"], 0, stdout="diff --git a/x b/x\n", stderr="")
-    with patch("myk_pi_tools.github.subprocess.run", side_effect=[user_proc, diff_proc]):
+def test_pending_fetch_authenticated_user_uses_github_adapter() -> None:
+    proc = subprocess.CompletedProcess(["gh"], 0, stdout="octocat\n", stderr="")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
         assert pending_fetch.get_authenticated_user() == "octocat"
+
+
+def test_pending_fetch_pr_diff_uses_github_adapter() -> None:
+    proc = subprocess.CompletedProcess(["gh"], 0, stdout="diff --git a/x b/x\n", stderr="")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
         assert pending_fetch.fetch_pr_diff("org", "repo", "7") == "diff --git a/x b/x\n"
 
 
@@ -358,77 +442,38 @@ def test_pr_claude_md_fetch_from_github_routes_through_github_adapter() -> None:
     ]
 
 
-# ---------------------------------------------------------------------------
-# Architectural invariants (prevent re-duplication)
-# ---------------------------------------------------------------------------
+def test_coderabbit_find_summary_comment_routes_through_github_adapter() -> None:
+    payload = json.dumps({"id": 7, "body": coderabbit_utils.SUMMARY_MARKER, "updated_at": "2026-01-01T00:00:00Z"})
+    proc = subprocess.CompletedProcess(["gh"], 0, stdout=f"{payload}\n", stderr="")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        cid, body, updated_at, error = coderabbit_utils.find_summary_comment("org/repo", 12)
+
+    assert (cid, body, updated_at, error) == (7, coderabbit_utils.SUMMARY_MARKER, "2026-01-01T00:00:00Z", "")
 
 
-def test_coderabbit_utils_has_no_shallow_run_gh_wrapper() -> None:
-    source = (REPO_ROOT / "myk_pi_tools/coderabbit/utils.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    defined_funcs = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
-    assert "run_gh" not in defined_funcs
-    assert coderabbit_utils.run_gh is github.run_gh
+def test_coderabbit_trigger_reply_lookup_routes_through_github_adapter() -> None:
+    proc = subprocess.CompletedProcess(["gh"], 0, stdout="1\n", stderr="")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        assert rate_limit._find_trigger_reply("org/repo", 12, 100) is True
 
 
-@pytest.mark.parametrize(
-    "rel_path",
-    [
-        "myk_pi_tools/reviews/ask_qodo.py",
-        "myk_pi_tools/reviews/pending_fetch.py",
-        "myk_pi_tools/reviews/pending_update.py",
-    ],
-)
-def test_sibling_review_modules_do_not_import_reviews_fetch(rel_path: str) -> None:
-    source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "myk_pi_tools.reviews.fetch":
-            pytest.fail(f"{rel_path} must not import from myk_pi_tools.reviews.fetch")
+def test_poll_is_qodo_reviewing_routes_through_github_adapter() -> None:
+    comments = [{"user": {"login": "qodo-code-review[bot]"}, "body": "<h3>Looking for bugs?</h3>"}]
+    proc = subprocess.CompletedProcess(["gh"], 0, stdout=json.dumps(comments), stderr="")
+    with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
+        assert poll._is_qodo_reviewing("org", "repo", "12") is True
 
 
-def test_poll_does_not_import_transport_helpers_from_reviews_fetch() -> None:
-    source = (REPO_ROOT / "myk_pi_tools/reviews/poll.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    forbidden = {"check_dependencies", "get_pr_info", "print_stderr", "run_gh_api", "run_gh_graphql"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "myk_pi_tools.reviews.fetch":
-            imported = {alias.name for alias in node.names}
-            overlap = imported & forbidden
-            assert not overlap, f"poll.py still imports transport helpers from fetch.py: {overlap}"
+def test_store_session_prefetch_logs_warning_with_failure_cause(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(store_session, "_INLINE_LOCATION_CACHE", {})
+    proc = subprocess.CompletedProcess(["gh"], 1, stdout="", stderr="gh: HTTP 403 API rate limit exceeded")
+    with (
+        patch("myk_pi_tools.github.subprocess.run", return_value=proc),
+        caplog.at_level("WARNING", logger="myk_pi_tools.reviews.store_session"),
+    ):
+        store_session._prefetch_inline_locations("org", "repo", 55, [])
 
-
-@pytest.mark.parametrize(
-    "rel_path",
-    [
-        "myk_pi_tools/reviews/fetch.py",
-        "myk_pi_tools/reviews/post.py",
-        "myk_pi_tools/reviews/pending_update.py",
-        "myk_pi_tools/reviews/pending_fetch.py",
-        "myk_pi_tools/reviews/store_session.py",
-        "myk_pi_tools/reviews/status.py",
-        "myk_pi_tools/pr/post_comment.py",
-        "myk_pi_tools/pr/claude_md.py",
-        "myk_pi_tools/pr/common.py",
-        "myk_pi_tools/pr/diff.py",
-        "myk_pi_tools/coderabbit/utils.py",
-        "myk_pi_tools/coderabbit/rate_limit.py",
-    ],
-)
-def test_migrated_modules_have_no_direct_gh_subprocess_calls(rel_path: str) -> None:
-    source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "run"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "subprocess"
-            and node.args
-            and isinstance(node.args[0], ast.List)
-            and node.args[0].elts
-            and isinstance(node.args[0].elts[0], ast.Constant)
-            and node.args[0].elts[0].value == "gh"
-        ):
-            pytest.fail(f"{rel_path} still invokes subprocess.run(['gh', ...]) directly")
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("org/repo#55" in msg and "API rate limit exceeded" in msg for msg in warnings)

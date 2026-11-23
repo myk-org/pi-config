@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.db.storage import ReviewDB, ReviewDBError
-from myk_pi_tools.github import parse_pr_url, run_gh_api
+from myk_pi_tools.github import parse_pr_url, run_gh_api, run_gh_api_result
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.constants import ACTION_LEVEL_PRIORITY
 from myk_pi_tools.reviews.store import get_project_root
@@ -110,13 +110,14 @@ def _prefetch_inline_locations(
     back to per-ID _inline_location() only for cache misses. Fail-soft on gh
     errors or missing binary.
     """
-    items = run_gh_api(
+    items, error = run_gh_api_result(
         f"repos/{owner}/{repo}/pulls/{pr_number}/comments",
         paginate=True,
         timeout=60,
-        quiet=True,
     )
-    if isinstance(items, list):
+    if error:
+        log.warning("Batch inline location prefetch failed for %s/%s#%s: %s", owner, repo, pr_number, error)
+    elif isinstance(items, list):
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -132,7 +133,13 @@ def _prefetch_inline_locations(
             line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) else None
             _INLINE_LOCATION_CACHE[cid_str] = (path, line)
     else:
-        log.warning("Batch inline location prefetch failed for %s/%s#%s", owner, repo, pr_number)
+        log.warning(
+            "Batch inline location prefetch failed for %s/%s#%s: unexpected response type %s",
+            owner,
+            repo,
+            pr_number,
+            type(items).__name__,
+        )
 
     for inline_id in uncached_inline_ids:
         rest_id = _inline_rest_id(inline_id)

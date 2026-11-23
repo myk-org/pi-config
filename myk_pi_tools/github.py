@@ -36,6 +36,7 @@ __all__ = [
     "response_body_bytes",
     "run_gh",
     "run_gh_api",
+    "run_gh_api_result",
     "run_gh_graphql",
     "run_graphql",
     "run_graphql_raw",
@@ -142,7 +143,7 @@ def run_gh(
         return 1, "", f"gh CLI execution failed: {exc}"
 
 
-def run_gh_api(
+def run_gh_api_result(
     endpoint: str,
     *,
     paginate: bool = False,
@@ -151,9 +152,8 @@ def run_gh_api(
     jq: str | None = None,
     headers: Sequence[str] | None = None,
     timeout: int = 120,
-    quiet: bool = False,
-) -> Any | None:
-    """Run a GitHub REST API call via ``gh api`` and return parsed JSON or ``None`` on error."""
+) -> tuple[Any | None, str]:
+    """Run a GitHub REST API call via ``gh api`` and return ``(parsed_json, error_msg)``."""
     args: list[str] = ["api"]
     if method:
         args.extend(["--method", method])
@@ -174,31 +174,59 @@ def run_gh_api(
     code, stdout, stderr = run_gh(args, input=stdin_payload, timeout=timeout)
     if code != 0:
         err_clean = stderr.strip()
-        if "timed out" in err_clean.lower():
+        return None, err_clean or f"gh api exited with code {code}"
+
+    try:
+        if paginate:
+            return merge_paginated_json(stdout), ""
+        return json.loads(stdout), ""
+    except json.JSONDecodeError as exc:
+        return None, f"JSON parse error: {exc}"
+
+
+def run_gh_api(
+    endpoint: str,
+    *,
+    paginate: bool = False,
+    method: str | None = None,
+    input_data: Any | None = None,
+    jq: str | None = None,
+    headers: Sequence[str] | None = None,
+    timeout: int = 120,
+    quiet: bool = False,
+) -> Any | None:
+    """Run a GitHub REST API call via ``gh api`` and return parsed JSON or ``None`` on error."""
+    data, error = run_gh_api_result(
+        endpoint,
+        paginate=paginate,
+        method=method,
+        input_data=input_data,
+        jq=jq,
+        headers=headers,
+        timeout=timeout,
+    )
+    if error:
+        if error.startswith("JSON parse error:"):
+            if not quiet:
+                _print_stderr(f"Error parsing JSON from gh api: {error.removeprefix('JSON parse error: ')}")
+            if quiet:
+                log.debug("Failed to parse JSON from gh api %s: %s", endpoint, error)
+            else:
+                log.warning("Failed to parse JSON from gh api %s: %s", endpoint, error)
+        elif "timed out" in error.lower():
             if not quiet:
                 _print_stderr(f"Error: API call to {endpoint} timed out after {timeout} seconds")
             log.warning("GitHub API call to %s timed out after %ds", endpoint, timeout)
         else:
-            if err_clean and not quiet:
-                _print_stderr(f"Warning: API call to {endpoint} failed: {err_clean}")
+            if not quiet:
+                _print_stderr(f"Warning: API call to {endpoint} failed: {error}")
             if quiet:
-                log.debug("GitHub API call to %s failed (rc=%d): %s", endpoint, code, err_clean)
+                log.debug("GitHub API call to %s failed: %s", endpoint, error)
             else:
-                log.warning("GitHub API call to %s failed (rc=%d): %s", endpoint, code, err_clean)
+                log.warning("GitHub API call to %s failed: %s", endpoint, error)
         return None
 
-    try:
-        if paginate:
-            return merge_paginated_json(stdout)
-        return json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        if not quiet:
-            _print_stderr(f"Error parsing JSON from gh api: {exc}")
-        if quiet:
-            log.debug("Failed to parse JSON from gh api %s: %s", endpoint, exc)
-        else:
-            log.warning("Failed to parse JSON from gh api %s: %s", endpoint, exc)
-        return None
+    return data
 
 
 def post_issue_comment(
@@ -389,10 +417,25 @@ def response_body_bytes(stdout: bytes) -> bytes:
 def redact_response_preview(body: str, secrets: Sequence[str]) -> str:
     """Bound and redact a response preview without retaining request content."""
     preview = body
+    candidates: list[str] = []
     for secret in secrets:
-        if secret:
-            # JSON escaping is a common form when a proxy reflects the request body.
-            preview = preview.replace(secret, "[REDACTED]").replace(json.dumps(secret)[1:-1], "[REDACTED]")
+        if not secret:
+            continue
+        candidates.append(secret)
+        # Signed bodies append a footer after "\n\n---\n"; also redact the unsigned text
+        # and substantial individual lines in case an upstream proxy reflects an excerpt.
+        if "\n" in secret:
+            unsigned = secret.split("\n\n---\n", 1)[0].strip()
+            if unsigned and unsigned != secret:
+                candidates.append(unsigned)
+            for line in secret.splitlines():
+                stripped = line.strip()
+                if len(stripped) >= 8 and stripped not in candidates:
+                    candidates.append(stripped)
+
+    # Replace longest candidates first so substrings don't break longer matches.
+    for candidate in sorted(candidates, key=len, reverse=True):
+        preview = preview.replace(candidate, "[REDACTED]").replace(json.dumps(candidate)[1:-1], "[REDACTED]")
     preview = re.sub(
         r'(?i)((?:["\']?(?:authorization|(?:access[_-]?)?token|(?:api[_-]?)?key|'
         r'(?:client[_-]?)?secret|password|body|reply)["\']?(?:\s*[=:]\s*|\s+value\s*=\s*)))'
@@ -486,8 +529,11 @@ def run_graphql_raw(
 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
-    error_output = (stdout + ("\n" + stderr if stderr else "")).strip()
     _, body, _ = split_http_response(stdout)
+    secrets = [v for v in variables.values() if isinstance(v, str)]
+    safe_body = redact_response_preview(body, secrets).strip()
+    safe_stderr = redact_response_preview(stderr, secrets).strip()
+    error_output = "\n".join(part for part in (safe_body, safe_stderr) if part)
 
     if result.returncode != 0:
         # `gh api graphql` exits nonzero on GraphQL errors even when partial `data`
