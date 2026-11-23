@@ -20,7 +20,7 @@ import {
     type ComsPeerRuntime,
 } from "./coms-p2p.js";
 import { ComsRegistry, isRegistryRowAlive, resolveComsDir } from "./coms-registry.js";
-import { setComsActive } from "../shared/coms-active.js";
+import { resolveBridgeSessionKey, setComsActive } from "../shared/session-bridge.js";
 import { createLogger } from "../shared/logger.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
@@ -138,6 +138,16 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         },
     );
 
+    let activeSessionKey: string | undefined;
+    const syncComsActive = (nextActive: boolean, ctx?: any): void => {
+        const nextKey = ctx ? resolveBridgeSessionKey(ctx) : (activeSessionKey ?? resolveBridgeSessionKey(liveCtx));
+        if (activeSessionKey && activeSessionKey !== nextKey) {
+            setComsActive(false, activeSessionKey);
+        }
+        activeSessionKey = nextKey;
+        setComsActive(nextActive, nextKey);
+    };
+
     const ensurePidashRegistration = (): void => {
         if (pidashUnsubscribe) return;
         try {
@@ -195,11 +205,11 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                         throw new Error("no peer socket was created during reload reactivation");
                     }
                     active = true;
-                    setComsActive(true);
+                    syncComsActive(true, ctx);
                     syncComsActiveTools(pi, gatedTools, true);
                 } catch (err) {
                     active = false;
-                    setComsActive(false);
+                    syncComsActive(false, ctx);
                     syncComsActiveTools(pi, gatedTools, false);
                     persistCurrentState();
                     const msg = err instanceof Error ? err.message : String(err);
@@ -208,13 +218,14 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 }
             } else {
                 active = false;
+                syncComsActive(false, ctx);
                 syncComsActiveTools(pi, gatedTools, false);
             }
             return;
         }
 
         active = false;
-        setComsActive(false);
+        syncComsActive(false, ctx);
         syncComsActiveTools(pi, gatedTools, false);
         persistCurrentState();
 
@@ -231,15 +242,20 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         }
     });
 
-    pi.on("session_shutdown", async () => {
+    pi.on("session_shutdown", async (_evt: any, ctx: any) => {
         if (pidashUnsubscribe) {
             try { pidashUnsubscribe(); } catch { /* ignore */ }
             pidashUnsubscribe = null;
         }
+        const shutdownKey = ctx ? resolveBridgeSessionKey(ctx) : activeSessionKey;
         try {
             await runtime.stop();
         } catch (err) {
             log.warn("coms_shutdown_failed", { error: err instanceof Error ? err.message : String(err) });
+        } finally {
+            if (activeSessionKey) setComsActive(false, activeSessionKey);
+            if (shutdownKey && shutdownKey !== activeSessionKey) setComsActive(false, shutdownKey);
+            activeSessionKey = undefined;
         }
         // Keep persisted session state intact so `/reload` sees `active: true` and reactivates.
         active = false;
@@ -296,7 +312,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 log.warn("coms_stale_claim_shutdown_threw", { error: error instanceof Error ? error.message : String(error) });
             }
             active = false;
-            setComsActive(false);
+            syncComsActive(false, ctx);
             syncComsActiveTools(pi, gatedTools, false);
             persistCurrentState();
         }
@@ -321,12 +337,12 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             });
             if (!activationVerified(self, process.platform, existsSync)) {
                 log.error("coms_activation_unverified", { name: self?.name ?? null, endpoint: self?.endpoint ?? null });
-                setComsActive(false);
+                syncComsActive(false, ctx);
                 return { ok: false, message: "📡 coms start failed: no peer socket was created (see ~/.pi/logs/coms)." };
             }
             active = true;
             extra = { ...extra, origin: entry };
-            setComsActive(true);
+            syncComsActive(true, ctx);
             syncComsActiveTools(pi, gatedTools, true);
             persistCurrentState();
             const name = String(flagValues.get("cname") ?? self?.name ?? "peer");
@@ -334,7 +350,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             log.info("coms activated", { name, project, via: "tool-or-command" });
             return { ok: true, message: `📡 coms active — you are "${name}" on project "${project}". Peers: use coms_list.` };
         } catch (err: unknown) {
-            setComsActive(false);
+            syncComsActive(false, ctx);
             const msg = err instanceof Error ? err.message : String(err);
             log.error("coms activation failed", msg, err instanceof Error ? err : new Error(msg));
             return { ok: false, message: `📡 coms start failed: ${msg}` };
@@ -409,7 +425,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 log.warn("/coms stop: session shutdown threw", msg, error);
             }
             active = false;
-            setComsActive(false);
+            syncComsActive(false, ctx);
             syncComsActiveTools(pi, gatedTools, false);
             persistCurrentState();
             try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
@@ -553,11 +569,11 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             description: "Stop coms for THIS session: stop advertising this peer and drop the coms tools.",
             defaultActive: false,
             parameters: Type.Object({}),
-            async execute() {
+            async execute(_id?: string, _params?: any, _signal?: any, _onUpdate?: any, ctx?: any) {
                 if (!active) return { content: [{ type: "text" as const, text: "coms is not active." }], details: { ok: true, active: false } };
                 try { await runtime.stop(); } catch (e: unknown) { log.warn("coms_stop shutdown threw", e instanceof Error ? e.message : String(e)); }
                 active = false;
-                setComsActive(false);
+                syncComsActive(false, ctx);
                 syncComsActiveTools(pi, gatedTools, false);
                 persistCurrentState();
                 return { content: [{ type: "text" as const, text: "coms stopped for this session." }], details: { ok: true, active: false } };

@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, buildInboundContent, formatQueueStr, renderQueuePart, sanitizeComsName, syncComsActiveTools } from "../../../extensions/coms/coms-shared.js";
 import { createComsPeerRuntime } from "../../../extensions/coms/coms-p2p.js";
 import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
-import { setComsActive, isComsActive } from "../../../extensions/shared/coms-active.js";
+import { setComsActive, isComsActive, resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -356,7 +356,7 @@ describe("registerComs lifecycle, /coms-queue gating, and reload reactivation", 
 	});
 
 	it("reactivates COMS on reload when previously active", async () => {
-		setComsActive(false);
+		resetSessionBridge({ all: true });
 		const tmpRoot = makeTempDir("coms-reload-ok-");
 		const comsDir = path.join(tmpRoot, "coms");
 		const { pi, events, getActive } = makeStatefulPi();
@@ -387,20 +387,61 @@ describe("registerComs lifecycle, /coms-queue gating, and reload reactivation", 
 					},
 				},
 			);
-			assert.equal(isComsActive(), true);
+			assert.equal(isComsActive("reload-ok-sess"), true);
 			assert.equal(registered.runtime.isActive(), true);
 			assert.equal(registered.runtime.getSelf()?.origin, "tool");
 			assert.equal(getActive().includes("coms_send"), true);
 			assert.equal(getActive().includes("coms_stop"), true);
 		} finally {
 			await registered.runtime.stop();
-			setComsActive(false);
+			resetSessionBridge({ all: true });
+			fs.rmSync(tmpRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("isolates comsActive reload reactivation per session", async () => {
+		resetSessionBridge({ all: true });
+		const tmpRoot = makeTempDir("coms-reload-iso-");
+		const comsDir = path.join(tmpRoot, "coms");
+		const { pi, events } = makeStatefulPi();
+		const registered = registerComs(pi as any, {
+			comsDir,
+			sessionId: "sess-coms-a",
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
+		});
+		try {
+			const ctxA = {
+				cwd: tmpRoot,
+				hasUI: false,
+				ui: { notify: () => {}, setStatus: () => {}, setWidget: () => {} },
+				sessionManager: {
+					getSessionId: () => "sess-coms-a",
+					getEntries: () => [
+						{
+							type: "custom",
+							customType: "coms-state",
+							data: { active: true, flags: { cname: "iso-peer", project: "iso-proj" }, extra: {} },
+						},
+					],
+				},
+			};
+			await (events.get("session_start") ?? [])[0]({ reason: "reload" }, ctxA);
+			assert.equal(isComsActive("sess-coms-a"), true);
+			assert.equal(isComsActive("sess-coms-b"), false);
+
+			await (events.get("session_shutdown") ?? [])[0]({}, ctxA);
+			assert.equal(isComsActive("sess-coms-a"), false);
+		} finally {
+			await registered.runtime.stop();
+			resetSessionBridge({ all: true });
 			fs.rmSync(tmpRoot, { recursive: true, force: true });
 		}
 	});
 
 	it("clears persisted active state when reload reactivation fails", async () => {
-		setComsActive(true);
+		resetSessionBridge({ all: true });
+		setComsActive(true, "reload-fail-sess");
 		const tmpRoot = makeTempDir("coms-reload-fail-");
 		// Place a regular file where comsDir is expected so ensureProjectDirs throws/fails.
 		const blockedComsDir = path.join(tmpRoot, "not-a-dir");
@@ -433,14 +474,14 @@ describe("registerComs lifecycle, /coms-queue gating, and reload reactivation", 
 					},
 				},
 			);
-			assert.equal(isComsActive(), false);
+			assert.equal(isComsActive("reload-fail-sess"), false);
 			assert.equal(registered.runtime.isActive(), false);
 			assert.equal(getActive().includes("coms_list"), false);
 			assert.equal(getActive().includes("coms_stop"), false);
 			assert.ok(persisted.some((p) => p.key === "coms-state" && p.data?.active === false));
 		} finally {
 			await registered.runtime.stop();
-			setComsActive(false);
+			resetSessionBridge({ all: true });
 			fs.rmSync(tmpRoot, { recursive: true, force: true });
 		}
 	});
@@ -565,7 +606,6 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		getActive: ReturnType<typeof makeStatefulPi>["getActive"];
 		sessionCtx: any;
 	}) => Promise<void>): Promise<void> {
-		const { setComsActive } = await import("../../../extensions/shared/coms-active.js");
 		const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coms-gate-test-"));
 		const prevComsDir = process.env.PI_COMS_DIR;
 		process.env.PI_COMS_DIR = tmpRoot;
@@ -589,7 +629,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 			await fn({ pi, tools, commands, getActive, sessionCtx });
 		} finally {
 			try { await tools.get("coms_stop").execute("cleanup", {}); } catch {}
-			setComsActive(false);
+			resetSessionBridge({ all: true });
 			if (prevComsDir === undefined) delete process.env.PI_COMS_DIR;
 			else process.env.PI_COMS_DIR = prevComsDir;
 			fs.rmSync(tmpRoot, { recursive: true, force: true });

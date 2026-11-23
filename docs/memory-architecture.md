@@ -51,10 +51,11 @@ Every layer is a standalone module under `extensions/orchestrator/`:
 |---|---|---|
 | Scoring engine | `memory-scoring.ts` | Stability formula, lifecycle states, category budgets, rebuilds the score index. |
 | Situation report | `situation-report.ts` | Builds the token-budgeted prompt injection and the capacity header. |
-| Memory tree | `memory-tree.ts` | Topic-file organization and hotness scores. |
+| Memory tree | `memory-tree.ts` | Read-only topic-file index, canonical topic names, and hotness scores. |
 | Embeddings | `memory-embeddings.ts` | Local vector model, embedding store, hybrid search. |
 | Memory tools | `memory-tools.ts` | The `memory_*` tools exposed to the agent. |
-| Unified write path | `memory-write.ts` | Single add path with validation, grant guardrail, contradiction gate, dedup, and scope (issue #915). |
+| Deep memory store | `memory-store.ts` | Single mutation module owning all topic writes, cache invalidation, score/tombstone updates, embedding upkeep/pruning, and write/edit guardrails (issues #915, #1354). |
+| Contradiction engine | `memory-contradiction.ts` | Internal read-only NLP contradiction heuristics (clause-scoped polarity clash + vector narrowing). |
 | Session search | `session-search.ts` | Keyword index over past conversation summaries. |
 | Enforcement rules | `enforcement-rules.ts` | Code-enforced memories (triggers, actions, verifiers). |
 | Promotion queue | `promotion-queue.ts` | Graduates high-evidence memories into stronger structures. |
@@ -249,7 +250,7 @@ remains available for immediate capture.
 
 ### The write path guards against bad memories
 
-Every producer — `memory_add`, the preference extractor — funnels through `memory-write.ts`, which enforces,
+Every producer — `memory_add`, `memory_edit`, `memory_remove`, promotions, dreaming restores, and rebuilds — funnels through `memory-store.ts` (with contradiction heuristics isolated in `memory-contradiction.ts`), which enforces,
 in order:
 
 1. **Grant-phrase guardrail** — text that reads like a one-off permission ("you can merge this PR",

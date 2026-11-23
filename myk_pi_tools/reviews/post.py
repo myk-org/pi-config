@@ -40,18 +40,21 @@ import json
 import os
 import re
 import shlex
-import shutil
-import subprocess
 import sys
-import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.github import (
+    check_dependencies,
+    post_issue_comment,
+    run_graphql,
+    run_graphql_raw,
+)
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.constants import BODY_EMBEDDED_COMMENT_TYPES, QODO_STICKY_TYPES, QODO_USERS
-from myk_pi_tools.utils import atomic_write_json, post_issue_comment
+from myk_pi_tools.utils import atomic_write_json
 
 log = create_logger(__name__)
 
@@ -155,187 +158,6 @@ def validate_reply(reply: str, path: str, status: str, *, auto_skipped: bool = F
 def eprint(*args: Any, **kwargs: Any) -> None:
     """Print to stderr."""
     print(*args, file=sys.stderr, **kwargs)
-
-
-def check_dependencies() -> None:
-    """Check required dependencies are available."""
-    for cmd in ["gh"]:
-        if shutil.which(cmd) is None:
-            eprint(f"Error: '{cmd}' is required but not installed.")
-            sys.exit(1)
-
-
-_HTTP_RESPONSE = re.compile(r"HTTP/\d(?:\.\d)?\s+(\d{3})\b[^\r\n]*(?:\r?\n.*)*?\r?\n\r?\n")
-_HTTP_RESPONSE_BYTES = re.compile(rb"HTTP/\d(?:\.\d)?\s+\d{3}\b[^\r\n]*(?:\r?\n.*)*?\r?\n\r?\n")
-
-
-def _split_http_response(stdout: str) -> tuple[dict[str, str], str, str]:
-    """Return leading final HTTP response headers, body, and status from ``gh api --include`` output."""
-    offset = 0
-    response = _HTTP_RESPONSE.match(stdout)
-    if not response:
-        log.debug("No HTTP response headers found", extra={"output_chars": len(stdout)})
-        return {}, stdout, "unknown"
-    while response:
-        offset += response.end()
-        next_response = _HTTP_RESPONSE.match(stdout[offset:])
-        if not next_response:
-            break
-        response = next_response
-    headers = {
-        key.lower(): value.strip()
-        for line in response.group().splitlines()[1:]
-        if ":" in line
-        for key, value in [line.split(":", 1)]
-    }
-    body = stdout[offset:]
-    log.debug(
-        "Parsed HTTP response headers",
-        extra={"status": response.group(1), "header_count": len(headers), "body_chars": len(body)},
-    )
-    return headers, body, response.group(1)
-
-
-def _response_body_bytes(stdout: bytes) -> bytes:
-    """Return the body following contiguous leading ``gh api --include`` response blocks."""
-    offset = 0
-    response = _HTTP_RESPONSE_BYTES.match(stdout)
-    while response:
-        offset += response.end()
-        response = _HTTP_RESPONSE_BYTES.match(stdout[offset:])
-    body = stdout[offset:]
-    log.debug("Extracted HTTP response body bytes", extra={"body_bytes": len(body)})
-    return body
-
-
-def _redact_response_preview(body: str, secrets: list[str]) -> str:
-    """Bound and redact a response preview without retaining request content."""
-    preview = body
-    for secret in secrets:
-        if secret:
-            # JSON escaping is a common form when a proxy reflects the request body.
-            preview = preview.replace(secret, "[REDACTED]").replace(json.dumps(secret)[1:-1], "[REDACTED]")
-    preview = re.sub(
-        r'(?i)((?:["\']?(?:authorization|(?:access[_-]?)?token|(?:api[_-]?)?key|'
-        r'(?:client[_-]?)?secret|password|body|reply)["\']?(?:\s*[=:]\s*|\s+value\s*=\s*)))'
-        r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,}>]+)',
-        r"\1[REDACTED]",
-        preview,
-    )
-    preview = preview[:1_000]
-    log.debug(
-        "Redacted HTTP response preview",
-        extra={"body_chars": len(body), "secret_count": len(secrets), "preview_chars": len(preview)},
-    )
-    return preview
-
-
-def _graphql_parse_error(
-    stdout: str, response_bytes: int, error: json.JSONDecodeError, variables: dict[str, str]
-) -> str:
-    """Format safe diagnostics for a retryable successful HTTP response parse failure."""
-    headers, body, status = _split_http_response(stdout)
-    request_id = next(
-        (
-            headers[key]
-            for key in ("x-github-request-id", "x-request-id", "x-correlation-id", "request-id")
-            if key in headers
-        ),
-        "unavailable",
-    )
-    preview = _redact_response_preview(body, list(variables.values()))
-    diagnostic = (
-        "Retryable GraphQL response parse failure: endpoint=graphql method=POST "
-        f"status={status} content_type={headers.get('content-type', 'unknown')} "
-        f"response_bytes={response_bytes} request_id={request_id}; "
-        f"body_preview={preview!r}; parser_error={error}; "
-        f"parser_stack={traceback.format_exc().strip()}"
-    )
-    log.warning("%s", diagnostic)
-    return diagnostic
-
-
-def _run_graphql_raw(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, Any] | None, str]:
-    """Run a GraphQL query via ``gh api graphql`` and return ``(transport_ok, parsed_json, error_msg)``."""
-    payload = {"query": query, "variables": variables}
-    cmd = ["gh", "api", "graphql", "--include", "--input", "-"]
-    log.debug("Running GraphQL request", extra={"variable_count": len(variables)})
-
-    try:
-        result = subprocess.run(
-            cmd,
-            input=json.dumps(payload).encode(),
-            capture_output=True,
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        return False, None, "GraphQL query timed out after 120 seconds"
-
-    # Preserve raw bytes for exact response-length diagnostics; decode only for parsing/display.
-    stdout_bytes = result.stdout or b""
-    stderr_bytes = result.stderr or b""
-    if isinstance(stdout_bytes, str):  # Compatibility for test doubles.
-        stdout_bytes = stdout_bytes.encode()
-    if isinstance(stderr_bytes, str):
-        stderr_bytes = stderr_bytes.encode()
-    stdout = stdout_bytes.decode("utf-8", errors="replace")
-    stderr = stderr_bytes.decode("utf-8", errors="replace")
-    error_output = (stdout + ("\n" + stderr if stderr else "")).strip()
-    _, body, _ = _split_http_response(stdout)
-    if result.returncode != 0:
-        # `gh api graphql` exits nonzero on GraphQL errors even when partial `data`
-        # is present in stdout (e.g. reply succeeded, resolve failed). Preserve the
-        # JSON payload when usable `data` exists so callers can inspect mutations.
-        try:
-            partial = json.loads(body)
-        except json.JSONDecodeError:
-            partial = None
-        if isinstance(partial, dict) and isinstance(partial.get("data"), dict):
-            log.warning(
-                "GraphQL request exited nonzero with partial data",
-                extra={"returncode": result.returncode, "response_bytes": len(stdout_bytes)},
-            )
-            return True, partial, error_output
-        log.error(
-            "GraphQL request failed",
-            extra={
-                "returncode": result.returncode,
-                "response_bytes": len(stdout_bytes),
-                "stderr_bytes": len(stderr_bytes),
-            },
-        )
-        return False, None, error_output
-
-    log.debug(
-        "GraphQL request completed",
-        extra={"returncode": result.returncode, "response_bytes": len(stdout_bytes), "stderr_bytes": len(stderr_bytes)},
-    )
-
-    # Validate JSON response - parse the body only, not --include headers.
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError as error:
-        return False, None, _graphql_parse_error(stdout, len(_response_body_bytes(stdout_bytes)), error, variables)
-
-    return True, data, ""
-
-
-def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, Any] | str]:
-    """Run a GraphQL query via gh api graphql.
-
-    Returns (success, result) where result is parsed JSON on success or error string on failure.
-    """
-    ok, data, error_msg = _run_graphql_raw(query, variables)
-    if not ok or data is None:
-        return False, error_msg
-
-    # Check for GraphQL errors
-    if data.get("errors") and len(data["errors"]) > 0:
-        error_msg = data["errors"][0].get("message", "Unknown error")
-        return False, error_msg
-
-    log.debug("GraphQL response parsed", extra={"has_errors": False})
-    return True, data
 
 
 def _prepare_reply_body(body: str) -> str:
@@ -455,7 +277,7 @@ def reply_and_resolve_thread(thread_id: str, body: str) -> tuple[bool, bool]:
     }
     """
 
-    ok, data, err = _run_graphql_raw(query, {"threadId": thread_id, "body": body})
+    ok, data, err = run_graphql_raw(query, {"threadId": thread_id, "body": body})
     if not ok or data is None:
         eprint(f"Error posting reply and resolving thread: {err}")
         return False, False

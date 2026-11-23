@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from myk_pi_tools.db.storage import ReviewDB, ReviewDBError
+from myk_pi_tools.github import run_gh
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.utils import find_git_root
 
@@ -52,15 +53,10 @@ def get_current_pr() -> dict | None:
         if not branch_name or branch_name == "main":
             return None
 
-        pr_info = subprocess.run(
-            ["gh", "pr", "view", "--json", "number,title,headRefName"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if pr_info.returncode != 0:
+        code, stdout, _stderr = run_gh(["pr", "view", "--json", "number,title,headRefName"], timeout=10)
+        if code != 0:
             return None
-        data = json.loads(pr_info.stdout)
+        data = json.loads(stdout)
         return {
             "number": data.get("number"),
             "title": data.get("title", ""),
@@ -412,14 +408,9 @@ def run(pr_number: int | None = None, *, output_dir: str) -> None:
         pr_info = {"number": pr_number, "title": f"PR #{pr_number}", "branch": ""}
         # Try to get title from gh CLI
         try:
-            result = subprocess.run(
-                ["gh", "pr", "view", str(pr_number), "--json", "title,headRefName"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
+            code, stdout, _stderr = run_gh(["pr", "view", str(pr_number), "--json", "title,headRefName"], timeout=10)
+            if code == 0:
+                data = json.loads(stdout)
                 pr_info["title"] = data.get("title", pr_info["title"])
                 pr_info["branch"] = data.get("headRefName", "")
         except Exception:

@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import comsP2p from "../../../extensions/coms/coms-p2p.js";
 import { registerMalformedResponseRecovery } from "../../../extensions/orchestrator/malformed-response-recovery.js";
-import { resetMalformedRecoveryBridgeForTests } from "../../../extensions/shared/malformed-recovery-bridge.js";
+import { resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -33,7 +33,7 @@ afterEach(async () => {
   for (const peer of startedPeers.splice(0)) {
     try { await peer.shutdown(); } catch { /* ignore */ }
   }
-  resetMalformedRecoveryBridgeForTests();
+  resetSessionBridge({ all: true });
   for (const dir of cleanupDirs.splice(0)) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   }

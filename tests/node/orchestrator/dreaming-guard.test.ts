@@ -17,8 +17,8 @@ import {
   isProtectedTopicLine,
   restoreProtectedTopicLines,
   snapshotTopicLines,
-  topicLineCanonical,
 } from "../../../extensions/orchestrator/dreaming.js";
+import { canonicalizeTopicLine } from "../../../extensions/orchestrator/memory-line.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -63,10 +63,10 @@ describe("isProtectedTopicLine", () => {
   });
 });
 
-describe("topicLineCanonical", () => {
+describe("canonicalizeTopicLine", () => {
   it("drops markers and hash while keeping the category", () => {
-    assert.equal(topicLineCanonical(DISTILLED_LINE), `- [lesson] ${DISTILLED}`);
-    assert.equal(topicLineCanonical(PINNED), "- [preference] Ask before paying for a model");
+    assert.equal(canonicalizeTopicLine(DISTILLED_LINE), `- [lesson] ${DISTILLED}`);
+    assert.equal(canonicalizeTopicLine(PINNED), "- [preference] Ask before paying for a model");
   });
 });
 

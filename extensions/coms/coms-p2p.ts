@@ -39,14 +39,16 @@ import { ComsRegistry, probeAlive, probeStaleSocket, resolveComsDir, type Regist
 import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
 import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueRecoveryPreview } from "./queue-recovery.js";
 import { collectWorkload, openBlockers, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
-import { publishedWorkloadSources } from "../shared/workload-bridge.js";
-import { publishedTaskStore } from "../shared/task-store-bridge.js";
 import {
-	DEFAULT_SESSION_KEY,
+	DEFAULT_BRIDGE_SESSION_KEY,
+	consumeStreamLoopAborted,
+	hasStreamLoopAborted,
 	onMalformedRecoveryAborted,
-	resolveRecoverySessionKey,
+	publishedTaskStore,
+	publishedWorkloadSources,
+	resolveBridgeSessionKey,
 	shouldDeferForMalformedRecovery,
-} from "../shared/malformed-recovery-bridge.js";
+} from "../shared/session-bridge.js";
 import { sanitizePeerText } from "./peer-text.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
@@ -657,7 +659,7 @@ export function createComsPeerRuntime(
 	/** Inbound msg_id deferred on agent_end while malformed-response recovery runs (#1333). */
 	let deferredRecoveryInboundId: string | null = null;
 	let deferredRecoveryCtx: ExtensionContext | null = null;
-	let recoverySessionKey: string = DEFAULT_SESSION_KEY;
+	let recoverySessionKey: string = DEFAULT_BRIDGE_SESSION_KEY;
 	let unsubMalformedRecoveryAborted: (() => void) | null = null;
 	/** True once Pi emits message_start for currentInbound (#1226). */
 	let inboundDelivered = false;
@@ -877,7 +879,7 @@ export function createComsPeerRuntime(
 		return agentRunning;
 	}
 
-	function fulfillBundledInbounds(items: InboundContext[], ident: typeof identity): void {
+	function fulfillBundledInbounds(items: InboundContext[], ident: typeof identity, errorReason = "bundled"): void {
 		for (const bi of items) {
 			// Fire-and-forget — don't await, don't block finalization
 			if (ident) {
@@ -889,7 +891,7 @@ export function createComsPeerRuntime(
 					hops: 0,
 					timestamp: nowIso(),
 					response: null,
-					error: "bundled",
+					error: errorReason,
 					queued_msg_ids: [],
 				}).catch(() => { /* best-effort */ });
 			}
@@ -1803,11 +1805,11 @@ export function createComsPeerRuntime(
 	const PROGRESS_SIGNAL_INTERVAL_MS = 60_000;
 
 	function resolveComsRecoverySessionKey(ctx?: ExtensionContext | null, fallbackSessionId?: string): string {
-		const fromCtx = resolveRecoverySessionKey(ctx);
-		if (fromCtx !== DEFAULT_SESSION_KEY) return fromCtx;
+		const fromCtx = resolveBridgeSessionKey(ctx);
+		if (fromCtx !== DEFAULT_BRIDGE_SESSION_KEY) return fromCtx;
 		if (typeof fallbackSessionId === "string" && fallbackSessionId.trim()) return fallbackSessionId.trim();
 		if (identity?.pi_session_id?.trim()) return identity.pi_session_id.trim();
-		return DEFAULT_SESSION_KEY;
+		return DEFAULT_BRIDGE_SESSION_KEY;
 	}
 
 	function subscribeMalformedRecoveryAborted(sessionKey: string): void {
@@ -1847,7 +1849,7 @@ export function createComsPeerRuntime(
 		unsubMalformedRecoveryAborted = null;
 		deferredRecoveryInboundId = null;
 		deferredRecoveryCtx = null;
-		recoverySessionKey = DEFAULT_SESSION_KEY;
+		recoverySessionKey = DEFAULT_BRIDGE_SESSION_KEY;
 		currentCtx = ctx;
 		sessionGeneration++;
 		shuttingDown = false;
@@ -3834,7 +3836,7 @@ Do not respond to this message.`;
 	async function finalizeCurrentInbound(
 		ctx: ExtensionContext,
 		assistantMessage?: any,
-		opts: { streaming?: boolean } = {},
+		opts: { streaming?: boolean; abortError?: string } = {},
 	): Promise<void> {
 		if (shuttingDown || !currentInbound || !identity || finalizingInbound) return;
 		const gen = sessionGeneration;
@@ -3950,28 +3952,31 @@ Do not respond to this message.`;
 				return;
 			}
 
-			// Extract assistant text from turn_end's message, falling back to session branch walk for agent_end.
-			let lastAssistantText = "";
-			if (assistantMessage && assistantMessage.role === "assistant") {
-				lastAssistantText = extractAssistantText(assistantMessage);
-			} else {
-				for (const entry of ctx?.sessionManager?.getBranch?.() ?? []) {
-					if (entry.type === "message" && entry.message.role === "assistant") {
-						lastAssistantText = extractAssistantText(entry.message);
-					}
-				}
-			}
-
 			const bundledIds = new Set(bundledInbounds.map(bi => bi.msg_id));
 
-			let payload: any = lastAssistantText;
-			let error: string | null = null;
-			if (inbound.response_schema && typeof inbound.response_schema === "object") {
-				try {
-					payload = JSON.parse(lastAssistantText);
-				} catch {
-					error = "response not valid JSON";
-					payload = null;
+			let payload: any = null;
+			let error: string | null = opts.abortError ?? null;
+			if (!error) {
+				// Extract assistant text from turn_end's message, falling back to session branch walk for agent_end.
+				let lastAssistantText = "";
+				if (assistantMessage && assistantMessage.role === "assistant") {
+					lastAssistantText = extractAssistantText(assistantMessage);
+				} else {
+					for (const entry of ctx?.sessionManager?.getBranch?.() ?? []) {
+						if (entry.type === "message" && entry.message.role === "assistant") {
+							lastAssistantText = extractAssistantText(entry.message);
+						}
+					}
+				}
+
+				payload = lastAssistantText;
+				if (inbound.response_schema && typeof inbound.response_schema === "object") {
+					try {
+						payload = JSON.parse(lastAssistantText);
+					} catch {
+						error = "response not valid JSON";
+						payload = null;
+					}
 				}
 			}
 
@@ -4020,7 +4025,7 @@ Do not respond to this message.`;
 
 			const bundled = bundledInbounds;
 			bundledInbounds = [];
-			fulfillBundledInbounds(bundled, ident);
+			fulfillBundledInbounds(bundled, ident, opts.abortError ?? "bundled");
 
 			maybeRefreshWidget();
 
@@ -4042,6 +4047,11 @@ Do not respond to this message.`;
 		if (msg && msg.role !== "assistant") return;
 		// Let agent_end handle aborted/errored turns (runLoop exits immediately after turn_end).
 		if (msg?.stopReason === "error" || msg?.stopReason === "aborted") return;
+		const activeRecoveryKey = resolveComsRecoverySessionKey(
+			ctx,
+			recoverySessionKey !== DEFAULT_BRIDGE_SESSION_KEY ? recoverySessionKey : undefined,
+		);
+		if (hasStreamLoopAborted(activeRecoveryKey)) return;
 		const toolResults = Array.isArray(event?.toolResults) ? event.toolResults : [];
 		const hasToolCalls = Array.isArray(msg?.content) && msg.content.some((b: any) => b && b.type === "toolCall");
 		if (toolResults.length > 0 || hasToolCalls) return;
@@ -4087,10 +4097,15 @@ Do not respond to this message.`;
 		if (inboundDelivered) {
 			const activeRecoveryKey = resolveComsRecoverySessionKey(
 				ctx,
-				recoverySessionKey !== DEFAULT_SESSION_KEY ? recoverySessionKey : undefined,
+				recoverySessionKey !== DEFAULT_BRIDGE_SESSION_KEY ? recoverySessionKey : undefined,
 			);
 			if (activeRecoveryKey !== recoverySessionKey) {
 				subscribeMalformedRecoveryAborted(activeRecoveryKey);
+			}
+			if (consumeStreamLoopAborted(activeRecoveryKey)) {
+				log.warn("agent_end_stream_loop_aborted", currentInbound.msg_id);
+				await finalizeCurrentInbound(ctx, undefined, { abortError: "stream_repetition_loop_aborted" });
+				return;
 			}
 			if (shouldDeferForMalformedRecovery((event as any)?.messages, activeRecoveryKey)) {
 				deferredRecoveryInboundId = currentInbound.msg_id;
@@ -4496,7 +4511,7 @@ Do not respond to this message.`;
 		clearPoolVisibilityListeners();
 		unsubMalformedRecoveryAborted?.();
 		unsubMalformedRecoveryAborted = null;
-		recoverySessionKey = DEFAULT_SESSION_KEY;
+		recoverySessionKey = DEFAULT_BRIDGE_SESSION_KEY;
 		deferredRecoveryInboundId = null;
 		deferredRecoveryCtx = null;
 		if (shutdownCtx?.hasUI) {

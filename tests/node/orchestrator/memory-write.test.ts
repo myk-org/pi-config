@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addMemoryEntry, pruneExpiredEntries, removeMemoryEntry } from "../../../extensions/orchestrator/memory-write.js";
+import { addMemoryEntry, pruneExpiredEntries, removeMemoryEntry, removalsSince } from "../../../extensions/orchestrator/memory-store.js";
 import {
   entryHash,
   hasEnforcementFields,
@@ -23,7 +23,7 @@ import {
   isEntryActiveForSession,
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
-import { readAllTopicEntries, removalsSince, topicCharCap } from "../../../extensions/orchestrator/memory-tree.js";
+import { readAllTopicEntries, topicCharCap } from "../../../extensions/orchestrator/memory-tree.js";
 import { loadEnforcedEntries } from "../../../extensions/orchestrator/enforcement-rules.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -1604,7 +1604,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
   });
 
   it("the retry cap restores, not masks, the trailing text (Qodo bc5a3517)", async () => {
-    const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
+    const { quotedMask } = await import("../../../extensions/orchestrator/memory-contradiction.js");
     const flood = "never deploy production " + "' ".repeat(1100);
     const masked = quotedMask(flood);
     assert.equal(masked.length, flood.length, "same-length mask preserved");
@@ -1845,7 +1845,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
   });
 
   it("a quote after two backslashes is a real delimiter (Qodo 9468b527)", async () => {
-    const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
+    const { quotedMask } = await import("../../../extensions/orchestrator/memory-contradiction.js");
     const even = 'say \\\\"ok; sure\\\\" now';
     const maskedEven = quotedMask(even);
     assert.doesNotMatch(maskedEven, /ok; sure/, "even-backslash quote delimits and masks the payload");
@@ -2465,7 +2465,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
   });
 
   it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
-    const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
+    const { quotedMask } = await import("../../../extensions/orchestrator/memory-contradiction.js");
     const many = "never use npm " + "'".repeat(5000) + " and always run tests";
     const masked = quotedMask(many);
     assert.equal(masked.length, many.length, "same-length mask preserved");

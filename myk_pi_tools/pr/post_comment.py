@@ -29,12 +29,12 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.github import run_gh
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.pr.common import validate_pr_number, validate_repo_format
 
@@ -269,24 +269,19 @@ def post_review(
         ],
     }
 
-    try:
-        subprocess.run(
-            [
-                "gh",
-                "api",
-                f"/repos/{repo_full_name}/pulls/{pr_number}/reviews",
-                "-X",
-                "POST",
-                "--input",
-                "-",
-            ],
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=120,
-        )
-
+    code, _stdout, stderr = run_gh(
+        [
+            "api",
+            f"/repos/{repo_full_name}/pulls/{pr_number}/reviews",
+            "-X",
+            "POST",
+            "--input",
+            "-",
+        ],
+        input=json.dumps(payload),
+        timeout=120,
+    )
+    if code == 0:
         posted = [{"path": c.path, "line": c.line} for c in comments]
         return ReviewResult(
             status="success",
@@ -294,18 +289,7 @@ def post_review(
             posted=posted,
         )
 
-    except subprocess.CalledProcessError as e:
-        log.error(
-            "PR review post failed",
-            extra={"repo": repo_full_name, "pr": pr_number, "error": (e.stderr or "")[:500]},
-        )
-        return ReviewResult(
-            status="failed",
-            comment_count=len(comments),
-            failed=[{"path": c.path, "line": c.line} for c in comments],
-            error=e.stderr,
-        )
-    except subprocess.TimeoutExpired:
+    if "timed out" in stderr.lower():
         log.warning(
             "PR review post timed out",
             extra={"repo": repo_full_name, "pr": pr_number, "comments": len(comments)},
@@ -316,6 +300,17 @@ def post_review(
             failed=[{"path": c.path, "line": c.line} for c in comments],
             error="GitHub API request timed out after 120 seconds",
         )
+
+    log.error(
+        "PR review post failed",
+        extra={"repo": repo_full_name, "pr": pr_number, "error": stderr[:500]},
+    )
+    return ReviewResult(
+        status="failed",
+        comment_count=len(comments),
+        failed=[{"path": c.path, "line": c.line} for c in comments],
+        error=stderr,
+    )
 
 
 def run(owner_repo: str, pr_number: str, commit_sha: str, json_file: str) -> None:

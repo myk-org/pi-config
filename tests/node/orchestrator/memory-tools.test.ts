@@ -3,7 +3,7 @@ import { rmSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { registerMemoryTools } from "../../../extensions/orchestrator/memory-tools.js";
 import { registerSessionSearch } from "../../../extensions/orchestrator/session-search.js";
-import { addMemoryEntry } from "../../../extensions/orchestrator/memory-write.js";
+import { addMemoryEntry } from "../../../extensions/orchestrator/memory-store.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const originalChild = process.env.PI_SUBAGENT_CHILD;

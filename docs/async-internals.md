@@ -179,7 +179,7 @@ instead of assuming sole ownership.
 | Hook | Extension / File | State Mutated / Action | Guards & Ordering Notes |
 |------|------------------|------------------------|-------------------------|
 | `agent_end` | `extensions/coms/coms-p2p.ts` | Clears `agentRunning`; safety-net finalizes delivered `currentInbound` (replies to peer and drains FIFO queue), or re-injects once / aborts undelivered non-`followUp` inbounds. | Skipped on oneshot register; loads before `orchestrator`; defers when `shouldDeferForMalformedRecovery()` is true. |
-| `agent_end` | `extensions/orchestrator/malformed-response-recovery.ts` | Detects recoverable provider stop reasons (`MALFORMED_RESPONSE`, `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`); up to 2 consecutive retries, calls `markRecoveryPending(true)` and queues hidden `followUp` (`triggerTurn: true`); resets budget on normal turns; calls `notifyMalformedRecoveryAborted()` on send failure. | Coordinates with `coms-p2p` via `extensions/shared/malformed-recovery-bridge.ts`. |
+| `agent_end` | `extensions/orchestrator/malformed-response-recovery.ts` | Detects recoverable provider stop reasons (`MALFORMED_RESPONSE`, `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`); up to 2 consecutive retries, calls `markRecoveryPending(true)` and queues hidden `followUp` (`triggerTurn: true`); resets budget on normal turns; calls `notifyMalformedRecoveryAborted()` on send failure. | Coordinates with `coms-p2p` via `extensions/shared/session-bridge.ts`. |
 | `agent_end` | `extensions/orchestrator/review-ui.ts` | Refreshes cached `lastCtx` for background `reviewPoller` / `gitDirtyPoller` status-bar updates. | — |
 | `agent_end` | `extensions/orchestrator/status-line.ts` (2 handlers) | Cancels debounce timer and runs immediate git branch/status refresh (`updateBranch`); updates `lastActivityTime` and status-bar timestamp (`touchActivity`). | Guarded by `shutDown` / `ctx.hasUI`. |
 | `agent_end` | `extensions/pidash/pidash.ts` (2 handlers) | `forward("agent_end")` sets `activity = "idle"`, bumps `activitySequence`, buffers/forwards over WS; second handler auto-names unnamed sessions once from first user prompt (`setSessionName`). | Guarded by `shuttingDown`. |
@@ -193,7 +193,7 @@ instead of assuming sole ownership.
 | `turn_end` | `extensions/reload-flag/index.ts` | Fallback trigger (`maybeTrigger()`) for `.pi/run/reload.flag` if FS watcher missed it. | Guarded by `isLiveExtensionCtx` and `isHandshakeParticipant(ctx.mode)`. |
 | `session_shutdown` | `extensions/coms/coms-wrapper.ts` → `coms-p2p.ts` (`ComsPeerRuntime.stop()`) | Unsubscribes the single `pidash:request-commands` listener and calls `runtime.stop()`, which stops watchers/timers, broadcasts `"leaving"` presence, closes P2P socket/server and ping worker, unsubscribes malformed-recovery abort listener, removes `SIGINT`/`SIGTERM` handlers, and clears UI widget/status while preserving persisted reload state. | Reload cleans up old sockets and reactivates directly via `ComsPeerRuntime.start()` on `session_start` (`reason: "reload"`). |
 | `session_shutdown` | `extensions/openai-compatible-discovery/index.ts` | `restoreSources()` aborts in-flight discovery requests, increments `lifecycleGeneration`, unregisters augmented providers. | — |
-| `session_shutdown` | `extensions/orchestrator/index.ts` | Calls `clearWorkloadSources()` (`extensions/shared/workload-bridge.ts`) so torn-down runtimes do not serve coms drilldowns from dead getters. | — |
+| `session_shutdown` | `extensions/orchestrator/index.ts` | Unregisters its session workload slot in `extensions/shared/session-bridge.ts` so torn-down runtimes do not serve coms drilldowns from dead getters. | — |
 | `session_shutdown` | `extensions/orchestrator/async-agents.ts` | Nulls `asyncState.lastCtx`, stops poller interval and FS watcher, unsubscribes sync-run listener, calls `abortAllSyncAgentRuns()`. | — |
 | `session_shutdown` | `extensions/orchestrator/cron.ts` | `cleanupRuntime()` clears timers/watchers and releases durable leader locks; unlinks session cron file on `reason` in `["new", "fork", "quit"]`. | Preserves session cron file on `reload`/`resume`. |
 | `session_shutdown` | `extensions/orchestrator/dreaming.ts` | Stops auto-dream timer; spawns `runDreamAsync()` on `quit` (or unset `reason`). | Skipped when `shouldSkipOneshotShutdownDream(lastCtx?.mode)`, `dreamInFlight`, or `reason !== "quit"`. |
@@ -217,8 +217,10 @@ peer with an incomplete or failed turn before the orchestrator schedules its
 recovery `followUp`.
 
 Extensions avoid circular imports and load-order assumptions by coordinating through
-process-local `Symbol.for("pi-config.<name>")` slots in `extensions/shared/`.
-`extensions/shared/malformed-recovery-bridge.ts` is the canonical example:
+`extensions/shared/session-bridge.ts`, which owns a single process-local
+`globalThis[Symbol.for("pi-config.sessionBridge")]` `Map<sessionKey, SessionBridgeSlot>`
+with typed per-session slots (`taskStore`, `workload`, `malformedRecovery`, `comsActive`)
+and automatic empty-slot and outer-map pruning:
 
 - `malformed-response-recovery.ts` registers a synchronous predicate with
   `registerRecoveryCoordinator()`, marks retries in flight via
@@ -228,9 +230,8 @@ process-local `Symbol.for("pi-config.<name>")` slots in `extensions/shared/`.
   `agent_end` and subscribes via `onMalformedRecoveryAborted()` so deferred inbounds
   finalize cleanly if recovery aborts.
 
-Other lifecycle-spanning bridges using the same pattern:
-`extensions/shared/workload-bridge.ts`, `extensions/shared/task-store-bridge.ts`,
-`extensions/shared/ui-bridge.ts`, and `extensions/shared/widget-visibility.ts`.
+Other lifecycle-spanning bridges using the same cross-extension isolation principles:
+`extensions/shared/ui-bridge.ts` and `extensions/shared/widget-visibility.ts`.
 
 Checklist when adding a new `agent_end`, `turn_end`, or `session_shutdown` subscriber:
 

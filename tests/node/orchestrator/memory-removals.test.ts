@@ -13,7 +13,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
 
-import { recordRemoval, removalsSince } from "../../../extensions/orchestrator/memory-tree.js";
+import { recordRemoval, removalsSince } from "../../../extensions/orchestrator/memory-store.js";
 import { entryHash } from "../../../extensions/orchestrator/memory-scoring.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 

@@ -61,6 +61,7 @@ pi-config/
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
 │   │   ├── malformed-response-recovery.ts # Bounded auto-retry on MALFORMED_RESPONSE provider stop reasons (#1333)
+│   │   ├── stream-loop-guard.ts     # Abort runaway streaming repetition/degeneration loops via message_update (#1374)
 │   │   ├── markdown-transformer.ts  # Display-only markdown transforms (memory badges, coms headers, review findings, settings, task/async status)
 │   │   ├── parse-model-override.ts  # Parse provider/model-id override strings for subagent model param
 │   │   ├── pi-config-review-state.ts # Review state machine (review loop enforcement)
@@ -80,9 +81,12 @@ pi-config/
 │   │   ├── worktree.ts              # /worktree command — interactive overlay + list/prune subcommands
 │   │   ├── worktree-helpers.ts      # Pure worktree helpers (COMS peer matching, remove guards, table/status/prune formatting, clipboard)
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
-│   │   ├── memory-tools.ts              # AI-accessible memory tools (search, reinforce, add, remove)
-│   │   ├── memory-embeddings.ts         # Vector embedding support for semantic memory search (fastembed)
-│   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
+│   │   ├── memory-store.ts            # Deep memory store — owns all topic writes, cache invalidation, score/tombstone updates, and embedding upkeep/pruning
+│   │   ├── memory-contradiction.ts    # Internal NLP contradiction detection helper (clause-scoped polarity + vector narrowing)
+│   │   ├── memory-tools.ts            # AI-accessible memory tools (search, reinforce, add, remove, edit, reflect, consolidate)
+│   │   ├── memory-embeddings.ts       # Vector embedding support for semantic memory search (fastembed)
+│   │   ├── memory-tree.ts             # Read-only topic-file index and hotness scores
+│   │   ├── memory-line.ts             # Pure topic-line parser, formatter, and canonicalization helpers
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
 │   │   ├── project-settings.ts        # Deep settings store — schema-driven validation/parsing (settings-keys.json), legacy .jsonc migration, single coordinated cache, source detection, and locked atomic persistence with backups
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
@@ -114,8 +118,9 @@ pi-config/
 │   │       └── dist/               # Built output (generated, gitignored)
 │   ├── pidiff/                      # Diff viewer extension (standalone)
 │   │   ├── index.ts                 # Entry point
-│   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/run/ lockfiles)
-│   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
+│   │   ├── pidiff.ts                # Thin adapter over createDaemonClient + lockfile.ts (per-project diff server)
+│   │   ├── lockfile.ts              # Dedicated pidiff PID, port-probe, `.pi/run` lockfile, server-PID, and spawn-lock module
+│   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees; deep DiffSessionController in src/lib/diff-session-controller.ts)
 │   ├── openai-compatible-discovery/ # Config-gated /v1/models discovery on configured providers
 │   │   └── index.ts                 # Augments the source provider in Pi's ordinary model picker
 │   ├── reload-flag/                 # Agent-triggered extension reload (deploy → flag → ctx.reload → done marker)
@@ -125,17 +130,12 @@ pi-config/
 │   │   ├── provider-stream-log.ts   # Shared provider_stream_event hook (#848; gated on log_providers=debug)
 │   │   ├── resolve-binary.ts        # In-process PATH binary resolution
 │   │   ├── openai-compatible-discovery.ts # Discovery config, requests, header resolution, cache, diagnostics
-│   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
+│   │   ├── daemon-manager.ts        # Deep shared daemon client & lifecycle manager (spawn, health, WebSocket, heartbeat, reconnect, shutdown, /start|stop|restart|status) — shared by pidash and pidiff
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
-│   │   ├── malformed-recovery-bridge.ts # Cross-extension malformed-response recovery coordination with COMS (#1333)
-│   │   ├── session-bridge-map.ts    # Shared strict per-session globalThis[Symbol.for(...)] Map registry helper (#1337)
-│   │   ├── task-store-bridge.ts     # Session-keyed pitasks store & telemetry bridge (#1016, #1337)
-│   │   ├── workload-bridge.ts       # Session-keyed orchestrator workload bridge for coms/pitasks (#1083, #1337)
+│   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive, streamLoopAborted) with auto-pruning (#1364, #1374)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
-│   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery)
-│   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
 │   │   ├── widget-visibility.ts     # Shared collapse/expand widget state (expanded/collapsed, header-always-visible), globalThis reload persistence, shortcut validation/registration, and ui:toggle-all-widgets bridge
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
 │   ├── providers/                  # Default model restore & thinking-level persistence extension
@@ -189,11 +189,13 @@ pi-config/
 │   │   ├── storage.py               # Unified reviews.db storage module (ReviewDB, schema, migrations, title backfill)
 │   │   ├── query.py                 # Backwards-compatible re-export shim for myk_pi_tools.db.storage
 │   │   └── commands.py              # CLI commands for querying reviews.db
+│   ├── github.py                    # Unified GitHub CLI (gh) transport adapter (dependencies, REST, paginated JSON, GraphQL, PR resolution)
 │   ├── memory/
 │   ├── pr/
 │   │   └── pr_review_store.py       # PR review comment tracking (pr-reviews.db)
 │   ├── release/
-│   └── reviews/
+│   ├── reviews/
+│   └── utils.py                     # Shared utilities (git root, atomic JSON, stderr, backwards-compat re-exports from github.py)
 ├── scripts/                         # Utility scripts
 │   ├── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
 │   ├── remap-node-identity.sh       # Container init: remap `node` to PI_HOST_UID/GID (sourced by init-entrypoint.sh)

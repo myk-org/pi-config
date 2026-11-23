@@ -9,16 +9,16 @@ import {
   registerMalformedResponseRecovery,
 } from "../../../extensions/orchestrator/malformed-response-recovery.js";
 import {
-  MALFORMED_RECOVERY_BRIDGE_SYMBOL,
+  SESSION_BRIDGE_SYMBOL,
   onMalformedRecoveryAborted,
-  resetMalformedRecoveryBridgeForTests,
+  resetSessionBridge,
   shouldDeferForMalformedRecovery,
-} from "../../../extensions/shared/malformed-recovery-bridge.js";
+} from "../../../extensions/shared/session-bridge.js";
 import { SYSTEM_NOTE_MARKER } from "../../../extensions/shared/system-note.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 afterEach(() => {
-  resetMalformedRecoveryBridgeForTests();
+  resetSessionBridge({ all: true });
 });
 
 type Handler = (...args: any[]) => any;
@@ -536,7 +536,7 @@ describe("registerMalformedResponseRecovery", () => {
     const unsub = onMalformedRecoveryAborted(() => {}, "sess-prune");
 
     await sessionA.emit("session_start", { reason: "new" }, ctxA);
-    const bridgeMap = (globalThis as Record<symbol, unknown>)[MALFORMED_RECOVERY_BRIDGE_SYMBOL] as
+    const bridgeMap = (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] as
       | Map<string, unknown>
       | undefined;
     assert.equal(bridgeMap?.has("sess-prune"), true);
@@ -546,5 +546,6 @@ describe("registerMalformedResponseRecovery", () => {
 
     unsub();
     assert.equal(bridgeMap?.has("sess-prune"), false);
+    assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
   });
 });

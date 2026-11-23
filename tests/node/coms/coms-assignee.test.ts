@@ -22,7 +22,7 @@ import { buildDrilldownRows } from "../../../extensions/coms/coms-drilldown.js";
 import pitasks, { taskStore } from "../../../extensions/pitasks/index.js";
 import { formatTaskRowLine } from "../../../extensions/pitasks/tasks-view.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
-import { clearWorkloadSources, publishWorkloadSources } from "../../../extensions/shared/workload-bridge.js";
+import { publishWorkloadSources, resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const peerTask = (over: Partial<WorkloadTask> = {}): WorkloadTask => ({
@@ -119,7 +119,7 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
       await new Promise<void>((resolve) => { replyServer!.close(() => resolve()); }).catch(() => {});
       replyServer = undefined;
     }
-    clearWorkloadSources();
+    resetSessionBridge({ all: true });
     if (workspace) rmSync(workspace, { recursive: true, force: true });
     workspace = undefined;
   });
@@ -167,7 +167,7 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
         registerSignalHandlers: false,
       });
       cleanups.push(() => {
-        clearWorkloadSources(sessionId);
+        resetSessionBridge({ sessionKey: sessionId, slot: "workload" });
         return runtime.stop();
       });
       const self = await runtime.start({
