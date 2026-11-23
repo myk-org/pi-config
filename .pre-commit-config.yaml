@@ -34,7 +34,7 @@ repos:
       - id: check-toml
 
   - repo: https://github.com/PyCQA/flake8
-    rev: 7.3.0
+    rev: 7.5.0
     hooks:
       - id: flake8
         args: [--config=.flake8]
@@ -49,7 +49,7 @@ repos:
         exclude: ^docs/
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.14
+    rev: v0.17.6
     hooks:
       - id: ruff
       - id: ruff-format
@@ -61,7 +61,7 @@ repos:
         exclude: ^docs/
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.19.1
+    rev: v2.4.1
     hooks:
       - id: mypy
         additional_dependencies:
@@ -112,7 +112,7 @@ repos:
         files: \.(ts|tsx|mts)$|(^|/)(tsconfig\.typecheck\.json|tsconfig\.tests\.json|package\.json)$|/tsconfig\.json$
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.44.0
+    rev: v0.50.1
     hooks:
       - id: markdownlint
         exclude: ^docs/
