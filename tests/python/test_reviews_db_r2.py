@@ -453,6 +453,7 @@ class TestReadOnlySqliteIndexes1285:
         db_path = db_dir / "reviews.db"
         conn = sqlite3.connect(str(db_path))
         store.create_tables(conn)
+        store.run_title_backfill_once(conn)
         rid = store.insert_review(conn, "org", "repo", 12, "abc1234")
         store.insert_comment(conn, rid, "qodo", {"path": "a.py", "line": 1, "body": "**Bug**", "status": "addressed"})
         conn.commit()

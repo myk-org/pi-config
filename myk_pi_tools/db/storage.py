@@ -29,7 +29,7 @@ from myk_pi_tools.db.sqlite_helpers import (
     connect_rw,
     ensure_db_directory,
     has_all_migrations,
-    open_migrated_ro,
+    open_migrated_ro_with_status,
     resolve_db_path,
 )
 from myk_pi_tools.logger import create_logger
@@ -156,6 +156,7 @@ _DISMISSED_ADDRESSED_PLACEHOLDERS = ", ".join("?" for _ in _DISMISSED_ADDRESSED_
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 _STANDARD_SOURCES = ("human", "qodo", "coderabbit")
+_BACKFILL_BATCH_SIZE = 500
 
 
 class ReviewDBError(RuntimeError):
@@ -195,18 +196,27 @@ def create_tables(conn: sqlite3.Connection) -> bool:
 def backfill_titles(conn: sqlite3.Connection) -> int:
     """Fill ``comments.title`` for rows where it is NULL.
 
-    Runs the deterministic extractor (Python port of the TS engine) over the
-    raw body — the body column is never modified. Rows whose bodies yield no
-    title (badge-only, empty) keep NULL; readers fall back to body extraction
-    for those. Returns the number of rows updated.
+    Streams eligible rows in bounded batches (``_BACKFILL_BATCH_SIZE``) so
+    historical databases do not materialize all comment bodies in memory at
+    once. Runs the deterministic extractor (Python port of the TS engine) over
+    the raw body — the body column is never modified. Rows whose bodies yield
+    no title (badge-only, empty) keep NULL; readers fall back to body
+    extraction for those. Returns the number of rows updated.
     """
-    cursor = conn.execute("SELECT id, body FROM comments WHERE title IS NULL AND body IS NOT NULL")
+    select_cursor = conn.execute("SELECT id, body FROM comments WHERE title IS NULL AND body IS NOT NULL")
     updated = 0
-    for row_id, body in cursor.fetchall():
-        title = extract_finding_title(body)
-        if title:
-            conn.execute("UPDATE comments SET title = ? WHERE id = ?", (title, row_id))
-            updated += 1
+    while True:
+        batch = select_cursor.fetchmany(_BACKFILL_BATCH_SIZE)
+        if not batch:
+            break
+        updates: list[tuple[str, Any]] = []
+        for row_id, body in batch:
+            title = extract_finding_title(body)
+            if title:
+                updates.append((title, row_id))
+        if updates:
+            conn.executemany("UPDATE comments SET title = ? WHERE id = ?", updates)
+            updated += len(updates)
     return updated
 
 
@@ -229,6 +239,18 @@ def run_title_backfill_once(conn: sqlite3.Connection) -> None:
         )
         conn.commit()  # own transaction — survives later store failures
         log.info("Backfilled comments.title for %d row(s)", backfilled)
+
+
+def _title_backfill_up_to_date(conn: sqlite3.Connection) -> bool:
+    """Return True when title backfill is recorded, not applicable, or no rows need it."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(comments)").fetchall()}
+    if not {"id", "body", "title"}.issubset(cols):
+        return True
+    marker = conn.execute("SELECT 1 FROM schema_meta WHERE key = 'title_backfill_rows' LIMIT 1").fetchone()
+    if marker is not None:
+        return True
+    needs_backfill = conn.execute("SELECT 1 FROM comments WHERE title IS NULL AND body IS NOT NULL LIMIT 1").fetchone()
+    return needs_backfill is None
 
 
 def _backfill_if_eligible(conn: sqlite3.Connection) -> None:
@@ -429,28 +451,40 @@ class ReviewDB:
         """Open a read-only connection, migrating once on first access if needed."""
         try:
             if not self._schema_checked:
-                conn = open_migrated_ro(
+                conn, schema_current = open_migrated_ro_with_status(
                     self.db_path,
                     _COLUMN_MIGRATIONS,
                     table_ddls=_TABLE_DDLS,
                     index_migrations=_INDEX_MIGRATIONS,
                     required_tables=_REQUIRED_TABLES,
+                    extra_check=_title_backfill_up_to_date,
                     post_migrate=_backfill_if_eligible,
                     swallow_migration_errors=True,
                 )
-                self._schema_checked = True
+                if schema_current:
+                    self._schema_checked = True
                 return conn
             return connect_ro(self.db_path)
         except sqlite3.Error as exc:
             raise ReviewDBError(f"Failed to open database (read-only): {self.db_path.resolve()}") from exc
 
     def _connect_rw(self) -> sqlite3.Connection:
-        """Open a read-write connection with directory creation and FK enforcement."""
-        conn = connect_rw(self.db_path, ensure_dir=True, foreign_keys=True)
-        create_tables(conn)
-        run_title_backfill_once(conn)
-        self._schema_checked = True
-        return conn
+        """Open a read-write connection with directory creation, schema, and backfill."""
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = connect_rw(self.db_path, ensure_dir=True, foreign_keys=True)
+            create_tables(conn)
+            run_title_backfill_once(conn)
+            self._schema_checked = True
+            return conn
+        except sqlite3.Error as exc:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                conn.close()
+            raise ReviewDBError(f"Database error: {exc}") from exc
 
     def migrate(self) -> bool:
         """Ensure an existing database has all current tables, columns, indexes, and title backfill.
@@ -460,32 +494,44 @@ class ReviewDB:
         if not self.db_path.exists():
             return False
 
-        ro_conn = connect_ro(self.db_path)
+        ro_conn: sqlite3.Connection | None = None
         try:
+            ro_conn = connect_ro(self.db_path)
             if has_all_migrations(
                 ro_conn,
                 _COLUMN_MIGRATIONS,
                 required_tables=_REQUIRED_TABLES,
                 required_indexes=_INDEX_MIGRATIONS,
+                extra_check=_title_backfill_up_to_date,
             ):
                 self._schema_checked = True
                 return False
+        except sqlite3.Error as exc:
+            log.warning("Schema probe warning for %s: %s", self.db_path, exc)
+            return False
         finally:
-            ro_conn.close()
+            if ro_conn is not None:
+                ro_conn.close()
 
-        rw_conn = connect_rw(self.db_path, foreign_keys=False)
+        rw_conn: sqlite3.Connection | None = None
         try:
+            rw_conn = connect_rw(self.db_path, foreign_keys=False)
             create_tables(rw_conn)
             _backfill_if_eligible(rw_conn)
             rw_conn.commit()
             self._schema_checked = True
             return True
         except sqlite3.Error as exc:
-            rw_conn.rollback()
+            if rw_conn is not None:
+                try:
+                    rw_conn.rollback()
+                except sqlite3.Error:
+                    pass
             log.warning("Schema migration warning for %s: %s", self.db_path, exc)
             return False
         finally:
-            rw_conn.close()
+            if rw_conn is not None:
+                rw_conn.close()
 
     # ── Read queries ──────────────────────────────────────────────────────
 
@@ -495,8 +541,9 @@ class ReviewDB:
             log.debug("Database not found: %s", self.db_path)
             return []
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             cursor = conn.cursor()
             cursor.execute(
                 f"""
@@ -528,19 +575,21 @@ class ReviewDB:
                 }
                 for row in cursor.fetchall()
             ]
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("Database error in get_dismissed_comments: %s", exc)
             return []
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def get_replied_sticky_findings(self, owner: str, repo: str, pr_number: int) -> list[dict[str, Any]]:
         """Get Qodo sticky findings that were already replied to for a specific PR."""
         if not self.db_path.exists():
             return []
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -567,11 +616,12 @@ class ReviewDB:
                 }
                 for row in cursor.fetchall()
             ]
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("Database error in get_replied_sticky_findings: %s", exc)
             return []
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def find_similar_comment(
         self, owner: str, repo: str, path: str, body: str, threshold: float = 0.6
@@ -581,8 +631,9 @@ class ReviewDB:
             log.debug("Database not found: %s", self.db_path)
             return None
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             cursor = conn.cursor()
             cursor.execute(
                 f"""
@@ -622,11 +673,12 @@ class ReviewDB:
                     }
 
             return best_match
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("Database error in find_similar_comment: %s", exc)
             return None
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def get_stats_by_source(self) -> list[dict[str, Any]]:
         """Get addressed rate statistics grouped by comment source."""
@@ -634,8 +686,9 @@ class ReviewDB:
             log.debug("Database not found: %s", self.db_path)
             return []
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -665,11 +718,12 @@ class ReviewDB:
                     "addressed_rate": f"{rate:.1f}%",
                 })
             return results
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("Database error in get_stats_by_source: %s", exc)
             return []
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def get_duplicate_patterns(self, min_occurrences: int = 2) -> list[dict[str, Any]]:
         """Find recurring dismissed patterns (same path + similar body)."""
@@ -677,8 +731,9 @@ class ReviewDB:
             log.debug("Database not found: %s", self.db_path)
             return []
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             cursor = conn.cursor()
             cursor.execute(
                 f"""
@@ -726,11 +781,12 @@ class ReviewDB:
 
             patterns.sort(key=lambda x: x["occurrences"], reverse=True)
             return patterns
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("Database error in get_duplicate_patterns: %s", exc)
             return []
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def get_reviewer_stats(self) -> list[dict[str, Any]]:
         """Get statistics grouped by reviewer author."""
@@ -738,8 +794,9 @@ class ReviewDB:
             log.debug("Database not found: %s", self.db_path)
             return []
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -765,11 +822,12 @@ class ReviewDB:
                 }
                 for row in cursor.fetchall()
             ]
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("Database error in get_reviewer_stats: %s", exc)
             return []
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         """Run a read-only SELECT/CTE query against the database."""
@@ -813,16 +871,18 @@ class ReviewDB:
             log.debug("Database not found: %s", self.db_path)
             return []
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             cursor = conn.cursor()
             cursor.execute(sql, params)
             return [dict(row) for row in cursor.fetchall()]
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("Database error in query: %s", exc)
             return []
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     # ── Status queries (shared with reviews/status.py) ────────────────────
 
@@ -831,40 +891,45 @@ class ReviewDB:
         if not self.db_path.exists():
             return []
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             return _query_pr_comments_with_conn(conn, pr_number)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("get_pr_comments failed pr=%d: %s", pr_number, exc)
             return []
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def get_pr_repo_info(self, pr_number: int) -> tuple[str, str]:
         """Get ``(owner, repo)`` for ``pr_number``, or ``("", "")`` if absent."""
         if not self.db_path.exists():
             return ("", "")
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             row = conn.execute(
                 "SELECT owner, repo FROM reviews WHERE pr_number = ? LIMIT 1",
                 (pr_number,),
             ).fetchone()
             return (row["owner"], row["repo"]) if row else ("", "")
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("get_pr_repo_info failed pr=%d: %s", pr_number, exc)
             return ("", "")
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def get_pr_status_data(self, pr_number: int) -> tuple[str, str, list[dict[str, Any]]]:
         """Fetch ``(owner, repo, comments)`` for ``pr_number`` on a single RO connection."""
         if not self.db_path.exists():
             return ("", "", [])
 
-        conn = self._connect()
+        conn: sqlite3.Connection | None = None
         try:
+            conn = self._connect()
             row = conn.execute(
                 "SELECT owner, repo FROM reviews WHERE pr_number = ? LIMIT 1",
                 (pr_number,),
@@ -876,11 +941,12 @@ class ReviewDB:
                 log.error("get_pr_comments failed pr=%d: %s", pr_number, exc)
                 comments = []
             return (owner, repo, comments)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ReviewDBError) as exc:
             log.error("get_pr_status_data failed pr=%d: %s", pr_number, exc)
             return ("", "", [])
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def list_prs(self) -> list[dict[str, Any]]:
         """List per-PR summary counts stored in the database."""

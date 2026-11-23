@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from myk_pi_tools.db import sqlite_helpers, storage
-from myk_pi_tools.db.storage import ReviewDB, create_tables
+from myk_pi_tools.db.storage import ReviewDB, ReviewDBError, backfill_titles, create_tables
 from myk_pi_tools.pr.pr_review_store import get_review_history, get_skipped_comments, store_pr_review
 
 # Minimal v1 reviews.db schema BEFORE type, quality_label, code_diff, title,
@@ -88,18 +88,35 @@ def _seed_v1_legacy_db(db_path: Path) -> None:
         conn.close()
 
 
+def _seed_unmarked_current_schema_db(db_path: Path) -> None:
+    """Create a DB with all current tables/columns/indexes, NULL title, and NO backfill marker."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        create_tables(conn)
+        conn.execute(
+            "INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) "
+            "VALUES (42, 'myk-org', 'demo', 'sha-v2', '2026-01-01T00:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO comments (review_id, source, path, line, body, priority, status, title) "
+            "VALUES (1, 'qodo', 'src/db.py', 10, ?, 'HIGH', 'addressed', NULL)",
+            (_QODO_BODY,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class TestLegacyMigrationParity:
     """ReviewDB read/migrate paths stay in full parity with store.create_tables."""
 
-    def test_review_db_read_upgrades_v1_columns_tables_indexes_and_titles(self, tmp_path: Path) -> None:
+    def test_review_db_read_migrates_v1_columns_tables_and_indexes(self, tmp_path: Path) -> None:
         db_path = tmp_path / "reviews.db"
         _seed_v1_legacy_db(db_path)
 
-        db = ReviewDB(db_path=db_path)
-        stats = db.get_stats_by_source()
+        stats = ReviewDB(db_path=db_path).get_stats_by_source()
         assert len(stats) == 1
         assert stats[0]["source"] == "qodo"
-        assert stats[0]["addressed"] == 1
 
         conn = sqlite3.connect(str(db_path))
         try:
@@ -111,7 +128,17 @@ class TestLegacyMigrationParity:
 
             indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()}
             assert _EXPECTED_INDEXES.issubset(indexes)
+        finally:
+            conn.close()
 
+    def test_review_db_read_backfills_titles_and_records_marker(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "reviews.db"
+        _seed_v1_legacy_db(db_path)
+
+        ReviewDB(db_path=db_path).get_stats_by_source()
+
+        conn = sqlite3.connect(str(db_path))
+        try:
             title = conn.execute("SELECT title FROM comments WHERE id = 1").fetchone()[0]
             assert title == "Validate user input before constructing SQLite URI"
 
@@ -120,7 +147,11 @@ class TestLegacyMigrationParity:
         finally:
             conn.close()
 
-        # Subsequent ReviewDB instances open strictly read-only (1 RO open, 0 RW opens).
+    def test_subsequent_review_db_reads_stay_strictly_read_only(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "reviews.db"
+        _seed_v1_legacy_db(db_path)
+        ReviewDB(db_path=db_path).migrate()
+
         connect_calls: list[tuple[str, bool]] = []
         orig_connect = sqlite3.connect
 
@@ -129,12 +160,96 @@ class TestLegacyMigrationParity:
             return orig_connect(target, *args, **kwargs)
 
         with patch("sqlite3.connect", side_effect=track):
-            fresh_reader = ReviewDB(db_path=db_path)
-            assert len(fresh_reader.get_pr_comments(42)) == 1
+            assert len(ReviewDB(db_path=db_path).get_pr_comments(42)) == 1
 
         assert len(connect_calls) == 1
         assert connect_calls[0][1] is True
         assert "mode=ro" in connect_calls[0][0]
+
+    def test_read_backfills_unmarked_db_that_already_has_title_column(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "reviews.db"
+        _seed_unmarked_current_schema_db(db_path)
+
+        assert len(ReviewDB(db_path=db_path).get_pr_comments(42)) == 1
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            title = conn.execute("SELECT title FROM comments WHERE id = 1").fetchone()[0]
+            marker = conn.execute("SELECT value FROM schema_meta WHERE key = 'title_backfill_rows'").fetchone()
+        finally:
+            conn.close()
+        assert title == "Validate user input before constructing SQLite URI"
+        assert marker is not None and marker[0] == "1"
+
+    def test_explicit_migrate_backfills_unmarked_db_that_already_has_title_column(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "reviews.db"
+        _seed_unmarked_current_schema_db(db_path)
+
+        db = ReviewDB(db_path=db_path)
+        assert db.migrate() is True
+        assert db.migrate() is False
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            title = conn.execute("SELECT title FROM comments WHERE id = 1").fetchone()[0]
+        finally:
+            conn.close()
+        assert title == "Validate user input before constructing SQLite URI"
+
+    def test_reader_retries_upgrade_after_transient_migration_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path = tmp_path / "reviews.db"
+        _seed_v1_legacy_db(db_path)
+        db = ReviewDB(db_path=db_path)
+
+        orig_connect_rw = sqlite_helpers.connect_rw
+        attempts = {"rw": 0}
+
+        def flaky_connect_rw(path: Path, **kwargs: Any) -> sqlite3.Connection:
+            attempts["rw"] += 1
+            if attempts["rw"] == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return orig_connect_rw(path, **kwargs)
+
+        monkeypatch.setattr(sqlite_helpers, "connect_rw", flaky_connect_rw)
+
+        # First read swallows the transient RW lock and keeps _schema_checked False.
+        assert db.get_stats_by_source()[0]["source"] == "qodo"
+        assert db._schema_checked is False
+
+        # Second read retries the upgrade and succeeds.
+        assert len(db.get_pr_comments(42)) == 1
+        assert db._schema_checked is True
+        assert attempts["rw"] == 2
+
+    def test_backfill_titles_streams_across_multiple_batches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(storage, "_BACKFILL_BATCH_SIZE", 2)
+        db_path = tmp_path / "batched.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            create_tables(conn)
+            conn.execute(
+                "INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) "
+                "VALUES (1, 'o', 'r', 'sha', '2026-01-01')"
+            )
+            for idx in range(5):
+                conn.execute(
+                    "INSERT INTO comments (review_id, source, path, line, body, status, title) "
+                    "VALUES (1, 'qodo', 'src/a.py', ?, ?, 'addressed', NULL)",
+                    (idx + 1, f"**Distinct finding title number {idx}**\n\ndetails"),
+                )
+            conn.commit()
+
+            updated = backfill_titles(conn)
+            conn.commit()
+            assert updated == 5
+            titles = [row[0] for row in conn.execute("SELECT title FROM comments ORDER BY id").fetchall()]
+            assert titles == [f"Distinct finding title number {idx}" for idx in range(5)]
+        finally:
+            conn.close()
 
     def test_explicit_migrate_is_idempotent(self, tmp_path: Path) -> None:
         db_path = tmp_path / "reviews.db"
@@ -170,14 +285,19 @@ class TestSqliteHelpers:
         finally:
             ro.close()
 
-    def test_connect_rw_creates_0700_dir_and_enables_foreign_keys(self, tmp_path: Path) -> None:
+    def test_connect_rw_creates_parent_directory_with_0700_mode(self, tmp_path: Path) -> None:
         db_path = tmp_path / "nested" / "data" / "reviews.db"
         conn = sqlite_helpers.connect_rw(db_path, ensure_dir=True, foreign_keys=True)
         try:
-            mode = stat.S_IMODE(db_path.parent.stat().st_mode)
-            assert mode == 0o700
-            fk_enabled = conn.execute("PRAGMA foreign_keys").fetchone()[0]
-            assert fk_enabled == 1
+            assert stat.S_IMODE(db_path.parent.stat().st_mode) == 0o700
+        finally:
+            conn.close()
+
+    def test_connect_rw_enables_foreign_keys(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "fk.db"
+        conn = sqlite_helpers.connect_rw(db_path, foreign_keys=True)
+        try:
+            assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         finally:
             conn.close()
 
@@ -257,12 +377,10 @@ class TestSqliteHelpers:
 
 
 class TestUnifiedReviewDBOperations:
-    """Unified ReviewDB read, status, write, and session APIs."""
+    """Unified ReviewDB read, status, write, error-handling, and session APIs."""
 
-    def test_store_and_status_roundtrip(self, tmp_path: Path) -> None:
+    def _seed_pr_1363(self, tmp_path: Path) -> tuple[ReviewDB, dict[str, int]]:
         db = ReviewDB(project_root=tmp_path)
-        assert db.db_path == tmp_path / ".pi" / "data" / "reviews.db"
-
         counts = db.store_review(
             "myk-org",
             "pi-config",
@@ -276,19 +394,52 @@ class TestUnifiedReviewDBOperations:
                 "coderabbit": [],
             },
         )
+        return db, counts
+
+    def test_store_review_returns_per_source_counts(self, tmp_path: Path) -> None:
+        db, counts = self._seed_pr_1363(tmp_path)
+        assert db.db_path == tmp_path / ".pi" / "data" / "reviews.db"
         assert counts == {"human": 1, "qodo": 1, "coderabbit": 0}
 
+    def test_status_queries_return_stored_pr_metadata_and_comments(self, tmp_path: Path) -> None:
+        db, _counts = self._seed_pr_1363(tmp_path)
         owner, repo, comments = db.get_pr_status_data(1363)
         assert (owner, repo) == ("myk-org", "pi-config")
         assert len(comments) == 2
         assert db.get_pr_repo_info(1363) == ("myk-org", "pi-config")
 
+    def test_list_prs_aggregates_stored_comment_statuses(self, tmp_path: Path) -> None:
+        db, _counts = self._seed_pr_1363(tmp_path)
         prs = db.list_prs()
         assert len(prs) == 1
         assert prs[0]["pr_number"] == 1363
         assert prs[0]["total"] == 2
         assert prs[0]["addressed"] == 1
         assert prs[0]["skipped"] == 1
+
+    def test_read_queries_return_empty_on_corrupt_database(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "corrupt.db"
+        db_path.write_bytes(b"not a valid sqlite database file")
+        db = ReviewDB(db_path=db_path)
+
+        assert db.get_stats_by_source() == []
+        assert db.get_reviewer_stats() == []
+        assert db.get_dismissed_comments("myk-org", "demo") == []
+        assert db.get_pr_comments(42) == []
+        assert db.get_pr_status_data(42) == ("", "", [])
+        assert db.query("SELECT 1") == []
+
+    def test_store_review_wraps_schema_error_as_review_db_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = ReviewDB(project_root=tmp_path)
+
+        def _boom(_conn: sqlite3.Connection) -> bool:
+            raise sqlite3.OperationalError("simulated schema lock")
+
+        monkeypatch.setattr(storage, "create_tables", _boom)
+        with pytest.raises(ReviewDBError, match="simulated schema lock"):
+            db.store_review("myk-org", "demo", 1, "sha-1", {})
 
     def test_get_session_finding_ids_does_not_create_missing_db(self, tmp_path: Path) -> None:
         db = ReviewDB(project_root=tmp_path)

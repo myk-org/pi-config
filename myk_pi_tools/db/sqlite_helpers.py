@@ -96,8 +96,9 @@ def has_all_migrations(
     *,
     required_tables: Sequence[str] = (),
     required_indexes: Sequence[IndexMigration] = (),
+    extra_check: Callable[[sqlite3.Connection], bool] | None = None,
 ) -> bool:
-    """Return True when all required tables, migrated columns, and applicable indexes exist."""
+    """Return True when all required tables, migrated columns, indexes, and extra checks pass."""
     if required_tables:
         existing_tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
@@ -120,6 +121,9 @@ def has_all_migrations(
             # (keeps synthetic minimal test tables working without failing on missing columns).
             if all(col in cols for col in req_cols) and idx_name not in existing_indexes:
                 return False
+
+    if extra_check is not None and not extra_check(conn):
+        return False
 
     return True
 
@@ -160,21 +164,22 @@ def apply_migrations(
     return added
 
 
-def open_migrated_ro(
+def open_migrated_ro_with_status(
     db_path: Path,
     migrations: Sequence[ColumnMigration],
     *,
     table_ddls: Sequence[str] = (),
     index_migrations: Sequence[IndexMigration] = (),
     required_tables: Sequence[str] = (),
+    extra_check: Callable[[sqlite3.Connection], bool] | None = None,
     post_migrate: Callable[[sqlite3.Connection], None] | None = None,
     swallow_migration_errors: bool = False,
-) -> sqlite3.Connection:
+) -> tuple[sqlite3.Connection, bool]:
     """Open ``db_path`` read-only, upgrading schema on RW only when migrations lag.
 
-    Up-to-date databases take a single read-only open with zero write locks.
-    Out-of-date databases upgrade once on a short-lived RW connection and
-    reopen read-only.
+    Returns ``(connection, schema_current)``. ``schema_current`` is ``True`` when
+    the database was already current or the upgrade succeeded, and ``False`` when
+    ``swallow_migration_errors=True`` caught a transient probe/upgrade failure.
     """
     conn = connect_ro(db_path)
     try:
@@ -183,17 +188,25 @@ def open_migrated_ro(
             migrations,
             required_tables=required_tables,
             required_indexes=index_migrations,
+            extra_check=extra_check,
         )
+    except sqlite3.Error as exc:
+        if swallow_migration_errors:
+            log.warning("Schema probe warning for %s: %s", db_path, exc)
+            return conn, False
+        conn.close()
+        raise
     except Exception:
         conn.close()
         raise
 
     if up_to_date:
-        return conn
+        return conn, True
 
     conn.close()
     log.debug("Migrating legacy database before read: %s", db_path)
     rw_conn: sqlite3.Connection | None = None
+    migrated_ok = True
     try:
         rw_conn = connect_rw(db_path, foreign_keys=False)
         apply_migrations(
@@ -206,6 +219,7 @@ def open_migrated_ro(
             post_migrate(rw_conn)
         rw_conn.commit()
     except sqlite3.Error as exc:
+        migrated_ok = False
         if rw_conn is not None:
             try:
                 rw_conn.rollback()
@@ -218,4 +232,34 @@ def open_migrated_ro(
         if rw_conn is not None:
             rw_conn.close()
 
-    return connect_ro(db_path)
+    return connect_ro(db_path), migrated_ok
+
+
+def open_migrated_ro(
+    db_path: Path,
+    migrations: Sequence[ColumnMigration],
+    *,
+    table_ddls: Sequence[str] = (),
+    index_migrations: Sequence[IndexMigration] = (),
+    required_tables: Sequence[str] = (),
+    extra_check: Callable[[sqlite3.Connection], bool] | None = None,
+    post_migrate: Callable[[sqlite3.Connection], None] | None = None,
+    swallow_migration_errors: bool = False,
+) -> sqlite3.Connection:
+    """Open ``db_path`` read-only, upgrading schema on RW only when migrations lag.
+
+    Up-to-date databases take a single read-only open with zero write locks.
+    Out-of-date databases upgrade once on a short-lived RW connection and
+    reopen read-only.
+    """
+    conn, _schema_current = open_migrated_ro_with_status(
+        db_path,
+        migrations,
+        table_ddls=table_ddls,
+        index_migrations=index_migrations,
+        required_tables=required_tables,
+        extra_check=extra_check,
+        post_migrate=post_migrate,
+        swallow_migration_errors=swallow_migration_errors,
+    )
+    return conn
