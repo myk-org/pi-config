@@ -121,7 +121,7 @@ describe("sync subagent owner-task guard (#1102)", { concurrency: false }, () =>
 	});
 
 	it("refuses a sync single call on an owner task", async () => {
-		publishTaskStore(() => storeWith("user"));
+		publishTaskStore(() => storeWith("user"), "sess-sync-guard");
 		const h = syncHarness();
 		try {
 			const result = await h.run({ agent: "worker", task: "do the owner step", cwd: process.cwd(), estimatedSeconds: 5, taskId: "7" });
@@ -133,7 +133,7 @@ describe("sync subagent owner-task guard (#1102)", { concurrency: false }, () =>
 	});
 
 	it("refuses a sync parallel call on an owner task", async () => {
-		publishTaskStore(() => storeWith("user"));
+		publishTaskStore(() => storeWith("user"), "sess-sync-guard");
 		const h = syncHarness();
 		try {
 			const result = await h.run({
@@ -147,7 +147,7 @@ describe("sync subagent owner-task guard (#1102)", { concurrency: false }, () =>
 	});
 
 	it("refuses a sync chain call on an owner task", async () => {
-		publishTaskStore(() => storeWith("user"));
+		publishTaskStore(() => storeWith("user"), "sess-sync-guard");
 		const h = syncHarness();
 		try {
 			const result = await h.run({

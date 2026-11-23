@@ -443,7 +443,8 @@ export function registerRules(
     if (shouldSearch) {
       try {
         const { searchSessions } = await import("./session-search.js");
-        const sessionResults = searchSessions(ctx.cwd, prompt, 3);
+        const currentSessionId = (ctx as any).sessionManager?.getSessionId?.() || undefined;
+        const sessionResults = searchSessions(ctx.cwd, prompt, 3, { excludeSessionId: currentSessionId });
         if (sessionResults.length > 0) {
           log.info("context_injected", "session_history");
           sessionContext = "\n# Relevant Past Sessions\n\n" +

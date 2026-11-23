@@ -40,6 +40,8 @@ interface ProjectSettings {
   dco?: boolean;
   comment_signature?: boolean;
   review_loop_enforcement?: boolean;
+  /** Run a lightweight read-only post-merge PR retrospective. Default: false. */
+  pr_retro_on_merge?: boolean;
   /** Block orchestrator from using edit and write tools directly (must delegate to subagents). Default: false. */
   orchestrator_edit_write_block?: boolean;
   pidash_enable?: boolean;
@@ -124,6 +126,7 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "dco",
   "comment_signature",
   "review_loop_enforcement",
+  "pr_retro_on_merge",
   "orchestrator_edit_write_block",
   "pidash_enable",
   "pidiff_enable",
@@ -469,6 +472,7 @@ export function getSetting(cwd: string, key: "dream_interval_hours"): number;
 export function getSetting(cwd: string, key: "dco"): boolean;
 export function getSetting(cwd: string, key: "comment_signature"): boolean;
 export function getSetting(cwd: string, key: "review_loop_enforcement"): boolean;
+export function getSetting(cwd: string, key: "pr_retro_on_merge"): boolean;
 export function getSetting(cwd: string, key: "orchestrator_edit_write_block"): boolean;
 export function getSetting(cwd: string, key: "pidash_enable"): boolean;
 export function getSetting(cwd: string, key: "pidiff_enable"): boolean;

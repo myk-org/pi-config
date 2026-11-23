@@ -10,12 +10,16 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DEFAULT_TASK_BRIDGE_SESSION_KEY,
   TASK_STORE_SYMBOL,
   TASK_TELEMETRY_ACTIVE_SYMBOL,
+  clearTaskStore,
+  clearTaskTelemetryActive,
   publishedTaskStore,
   publishedTaskTelemetryActive,
   publishTaskStore,
   publishTaskTelemetryActive,
+  resolveTaskBridgeSessionKey,
 } from "../../../extensions/shared/task-store-bridge.ts";
 
 const clear = (): void => {
@@ -62,5 +66,90 @@ describe("task store bridge", () => {
   it("ignores non-function values under the telemetry symbol", () => {
     (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL] = { invalid: true };
     assert.equal(publishedTaskTelemetryActive(), null);
+  });
+
+  it("isolates published task stores between concurrent sessions", () => {
+    const storeA = { id: "a" };
+    const storeB = { id: "b" };
+    publishTaskStore(() => storeA, "sess-a");
+    publishTaskStore(() => storeB, "sess-b");
+
+    assert.equal(publishedTaskStore("sess-a"), storeA);
+    assert.equal(publishedTaskStore("sess-b"), storeB);
+  });
+
+  it("never substitutes a sole default or named entry for a mismatched session key", () => {
+    publishTaskStore(() => ({ id: "default" }));
+    assert.equal(publishedTaskStore("sess-explicit"), null);
+
+    clearTaskStore();
+    publishTaskStore(() => ({ id: "only" }), "sess-only");
+    assert.equal(publishedTaskStore(), null);
+    assert.equal(publishedTaskStore("sess-other"), null);
+
+    publishTaskTelemetryActive(() => {});
+    assert.equal(publishedTaskTelemetryActive("sess-explicit"), null);
+
+    clearTaskTelemetryActive();
+    publishTaskTelemetryActive(() => {}, "sess-only");
+    assert.equal(publishedTaskTelemetryActive(), null);
+    assert.equal(publishedTaskTelemetryActive("sess-other"), null);
+  });
+
+  it("ignores a stale task-store unregister handle after republishing", () => {
+    const storeA = { id: "a" };
+    const storeA2 = { id: "a2" };
+    const unregA = publishTaskStore(() => storeA, "sess-a");
+    publishTaskStore(() => storeA2, "sess-a");
+    unregA();
+    assert.equal(publishedTaskStore("sess-a"), storeA2);
+  });
+
+  it("preserves sibling task stores when clearing one session", () => {
+    const storeA = { id: "a" };
+    const storeB = { id: "b" };
+    publishTaskStore(() => storeA, "sess-a");
+    publishTaskStore(() => storeB, "sess-b");
+    clearTaskStore("sess-a");
+    assert.equal(publishedTaskStore("sess-a"), null);
+    assert.equal(publishedTaskStore("sess-b"), storeB);
+  });
+
+  it("isolates telemetry activation callbacks between concurrent sessions", () => {
+    const seen: string[] = [];
+    const unregTelA = publishTaskTelemetryActive((id) => seen.push(`a:${id}`), "sess-a");
+    publishTaskTelemetryActive((id) => seen.push(`b:${id}`), "sess-b");
+    publishedTaskTelemetryActive("sess-a")?.("1");
+    publishedTaskTelemetryActive("sess-b")?.("2");
+    assert.deepEqual(seen, ["a:1", "b:2"]);
+
+    unregTelA();
+    assert.equal(publishedTaskTelemetryActive("sess-a"), null);
+    clearTaskTelemetryActive("sess-b");
+    assert.equal(publishedTaskTelemetryActive("sess-b"), null);
+  });
+
+  it("resolves trimmed session IDs from ExtensionContext via resolveTaskBridgeSessionKey", () => {
+    assert.equal(
+      resolveTaskBridgeSessionKey({ sessionManager: { getSessionId: () => "  sess-99  " } }),
+      "sess-99",
+    );
+  });
+
+  it("falls back to DEFAULT_TASK_BRIDGE_SESSION_KEY when ExtensionContext lacks a usable session ID", () => {
+    assert.equal(resolveTaskBridgeSessionKey(undefined), DEFAULT_TASK_BRIDGE_SESSION_KEY);
+    assert.equal(resolveTaskBridgeSessionKey({}), DEFAULT_TASK_BRIDGE_SESSION_KEY);
+    assert.equal(resolveTaskBridgeSessionKey({ sessionManager: { getSessionId: () => "   " } }), DEFAULT_TASK_BRIDGE_SESSION_KEY);
+    assert.equal(resolveTaskBridgeSessionKey({ sessionManager: { getSessionId: () => 42 } }), DEFAULT_TASK_BRIDGE_SESSION_KEY);
+    assert.equal(
+      resolveTaskBridgeSessionKey({
+        sessionManager: {
+          getSessionId: () => {
+            throw new Error("boom");
+          },
+        },
+      }),
+      DEFAULT_TASK_BRIDGE_SESSION_KEY,
+    );
   });
 });
