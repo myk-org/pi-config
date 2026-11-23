@@ -62,9 +62,10 @@ export const PR_RETRO_AGENT: AgentConfig = {
 };
 
 const PR_URL_RE = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/i;
+const REPO_QUALIFIED_PR_RE = /(?:^|[\s(])([\w.-]+\/[\w.-]+)#(\d+)\b/;
 const REPO_FLAG_RE = /(?:^|\s)(?:-R|--repo)(?:=|\s+)([\w.-]+\/[\w.-]+)/;
 const MERGE_CONFIRM_RE =
-  /(?:\b(?:squashed\s+and\s+|rebased\s+and\s+)?merged\s+(?:pull\s+request|pr)\s*#?(\d+)|✓\s*(?:squashed\s+and\s+|rebased\s+and\s+)?merged\b|successfully\s+merged\b|\bstate["':\s]+MERGED\b|\bpr\s*#?(\d+)\s+(?:was\s+|has\s+been\s+)?merged\b)/i;
+  /(?:\b(?:squashed\s+and\s+|rebased\s+and\s+)?merged\s+(?:pull\s+request|pr)\s+(?:[\w.-]+\/[\w.-]+)?#?(\d+)|✓\s*(?:squashed\s+and\s+|rebased\s+and\s+)?merged\b|successfully\s+merged\b|\bstate["':\s]+MERGED\b|\bpr\s+(?:[\w.-]+\/[\w.-]+)?#?(\d+)\s+(?:was\s+|has\s+been\s+)?merged\b)/i;
 const MERGE_FAILURE_OR_DEFERRED_RE =
   /\b(?:merge\s+failed|failed\s+to\s+merge|could\s+not\s+merge|not\s+merged|cannot\s+merge|dry[- ]run|auto[- ]merge|will\s+be\s+automatically\s+merged)\b/i;
 
@@ -162,6 +163,10 @@ function extractPrFromText(text: string): DetectedMerge {
   const urlMatch = text.match(PR_URL_RE);
   if (urlMatch) {
     return { repo: urlMatch[1], prNumber: Number.parseInt(urlMatch[2], 10) };
+  }
+  const qualifiedMatch = text.match(REPO_QUALIFIED_PR_RE);
+  if (qualifiedMatch) {
+    return { repo: qualifiedMatch[1], prNumber: Number.parseInt(qualifiedMatch[2], 10) };
   }
   const numMatch =
     text.match(/(?:merged\s+(?:pull\s+request|pr)|pull\s+request|pr)\s*#?(\d+)/i) ??

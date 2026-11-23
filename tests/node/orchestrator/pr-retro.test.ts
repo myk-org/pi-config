@@ -664,6 +664,25 @@ describe("pr-retro extension hook", () => {
 		assert.equal(detectMergedPrFromBash("gh pr merge 123", "merge failed: checks pending"), null);
 	});
 
+	it("detects gh pr merge repository-qualified confirmation output (OWNER/REPO#N)", () => {
+		assert.deepEqual(
+			detectMergedPrFromBash("gh pr merge --squash", "Merged pull request myk-org/pi-config#1350 (feat: pr retro)"),
+			{ prNumber: 1350, repo: "myk-org/pi-config" },
+		);
+		assert.deepEqual(
+			detectMergedPrFromBash("gh pr merge --squash", "✓ Squashed and merged pull request myk-org/pi-config#1350 (feat)"),
+			{ prNumber: 1350, repo: "myk-org/pi-config" },
+		);
+		assert.deepEqual(
+			detectMergedPrFromBash("gh pr merge --rebase", "Rebased and merged pull request myk-org/pi-config#1350"),
+			{ prNumber: 1350, repo: "myk-org/pi-config" },
+		);
+		assert.equal(
+			detectMergedPrFromBash("gh pr merge --auto --squash", "✓ Pull request myk-org/pi-config#1350 will be automatically merged"),
+			null,
+		);
+	});
+
 	it("detects PR merge from synchronous github-expert subagent results only", () => {
 		assert.deepEqual(
 			detectMergedPrFromSubagent(
