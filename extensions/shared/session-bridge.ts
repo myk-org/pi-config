@@ -157,20 +157,26 @@ function getOrCreateMalformedRecoverySlot(key: string): MalformedRecoveryBridgeS
   return slot.malformedRecovery;
 }
 
-function isBridgeValueEmpty(value: unknown, seen = new Set<object>()): boolean {
+function isBridgeValueEmpty(value: unknown, visiting = new Set<object>()): boolean {
   if (value === undefined || value === null || value === false) return true;
   if (typeof value !== "object") return false;
   if (value instanceof Set || value instanceof Map) return value.size === 0;
   if (Array.isArray(value)) return value.length === 0;
-  if (seen.has(value)) return false;
-  seen.add(value);
-  for (const key of Object.keys(value)) {
-    const desc = Object.getOwnPropertyDescriptor(value, key);
-    if (!desc) continue;
-    if (typeof desc.get === "function") return false;
-    if (!isBridgeValueEmpty(desc.value, seen)) return false;
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  if (visiting.has(value)) return false;
+  visiting.add(value);
+  try {
+    for (const key of Reflect.ownKeys(value)) {
+      const desc = Object.getOwnPropertyDescriptor(value, key);
+      if (!desc) continue;
+      if (typeof desc.get === "function") return false;
+      if (!isBridgeValueEmpty(desc.value, visiting)) return false;
+    }
+    return true;
+  } finally {
+    visiting.delete(value);
   }
-  return true;
 }
 
 function pruneSessionSlot(map: Map<string, SessionBridgeSlot> | undefined, key: string): void {

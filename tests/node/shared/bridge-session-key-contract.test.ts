@@ -517,6 +517,37 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337, 
     assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
   });
 
+  it("prunes slots containing shared references to the same empty object", () => {
+    setComsActive(true, "sess-shared-empty");
+    const map = (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] as Map<
+      string,
+      Record<string, unknown>
+    >;
+    const sharedEmpty = {};
+    map.get("sess-shared-empty")!.futureSharedSlot = { nested: { a: sharedEmpty, b: sharedEmpty } };
+
+    setComsActive(false, "sess-shared-empty");
+    assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
+  });
+
+  it("preserves class-instance workload sources during sibling-slot pruning", () => {
+    class ClassWorkloadSources {
+      agents() {
+        return [{ id: "c1", agent: "worker", task: "C", status: "running", startedAt: 1 }];
+      }
+      crons() {
+        return [];
+      }
+    }
+
+    const sources = new ClassWorkloadSources();
+    publishWorkloadSources(sources, "sess-class");
+    setComsActive(true, "sess-class");
+    setComsActive(false, "sess-class");
+
+    assert.equal(publishedWorkloadSources("sess-class")?.agents()[0].id, "c1");
+  });
+
   it("resets all sessions in one call via resetSessionBridge({ all: true })", () => {
     publishTaskStore(() => ({ id: "a" }), "sess-a");
     publishWorkloadSources({ agents: () => [], crons: () => [] }, "sess-b");
