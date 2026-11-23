@@ -20,6 +20,7 @@ import {
 	parseReviewLoopMaxCycles,
 	parseSettingInput,
 	parseSettingsFile,
+	readSettingsObject,
 	resolveMainCheckoutRoot,
 	resolveSetting,
 	setGlobalSettingsPath,
@@ -684,5 +685,19 @@ describe("Deep settings store — unified schema, cache, and atomic persistence 
 		} finally {
 			rmSync(fakeRepo, { recursive: true, force: true });
 		}
+	});
+
+	it("readSettingsObject returns the full raw JSON object and degrades to {} on null, missing, or corrupt files", () => {
+		assert.deepEqual(readSettingsObject(null), {});
+		const missing = join(tmp, ".pi", "missing.json");
+		assert.deepEqual(readSettingsObject(missing), {});
+
+		mkdirSync(join(tmp, ".pi"), { recursive: true });
+		const file = join(tmp, ".pi", "pi-config-settings.json");
+		writeFileSync(file, JSON.stringify({ project_tmp_max_size: "4G", extra_unknown_key: 123 }));
+		assert.deepEqual(readSettingsObject(file), { project_tmp_max_size: "4G", extra_unknown_key: 123 });
+
+		writeFileSync(file, "{ invalid json");
+		assert.deepEqual(readSettingsObject(file), {});
 	});
 });

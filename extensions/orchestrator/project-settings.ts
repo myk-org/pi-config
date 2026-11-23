@@ -831,8 +831,8 @@ export function readSettingsFile(filePath: string): Record<string, unknown> | nu
   return null;
 }
 
-/** Read raw settings object, returning `{}` when missing or unparseable (non-mutating callers). */
-export function readSettingsObject(file: string | null, _key?: string): Record<string, unknown> {
+/** Read the full raw settings object, returning `{}` when missing or unparseable (non-mutating callers). */
+export function readSettingsObject(file: string | null): Record<string, unknown> {
   if (!file) return {};
   return readSettingsFile(file) ?? {};
 }
