@@ -92,4 +92,25 @@ describe("workload sources bridge", () => {
     const wire = toDescribeDetail(active, 10_000);
     assert.equal("taskId" in wire.agents[0], false);
   });
+
+  it("isolates concurrent sessions and preserves sibling entries on unregister", () => {
+    const first = { agents: () => [agent("a1")], crons: () => [] };
+    const second = { agents: () => [agent("b1")], crons: () => [cron("session:b")] };
+    const unregFirst = publishWorkloadSources(first, "sess-1");
+    publishWorkloadSources(second, "sess-2");
+
+    assert.equal(publishedWorkloadSources("sess-1")?.agents()[0].id, "a1");
+    assert.equal(publishedWorkloadSources("sess-2")?.agents()[0].id, "b1");
+    assert.equal(publishedWorkloadSources(), null, "ambiguous un-keyed read returns null with multiple sessions");
+
+    // Replacing sess-1 makes the old unregister handle a no-op.
+    const replaced = { agents: () => [agent("a2")], crons: () => [] };
+    publishWorkloadSources(replaced, "sess-1");
+    unregFirst();
+    assert.equal(publishedWorkloadSources("sess-1")?.agents()[0].id, "a2");
+
+    clearWorkloadSources("sess-1");
+    assert.equal(publishedWorkloadSources("sess-1"), null);
+    assert.equal(publishedWorkloadSources("sess-2")?.agents()[0].id, "b1");
+  });
 });

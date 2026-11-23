@@ -50,22 +50,101 @@ export interface WorkloadSources {
 }
 
 export const WORKLOAD_SOURCES_SYMBOL = Symbol.for("pi-config.workloadSources");
+export const DEFAULT_WORKLOAD_SESSION_KEY = "__default__";
 
-/** Publish the owner's getters. Called once from the orchestrator registration path. */
-export function publishWorkloadSources(sources: WorkloadSources): void {
-  (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL] = sources;
-  log.debug("workload_sources_published", { at: Date.now() });
+function normalizeSessionKey(sessionKey?: string): string {
+  if (typeof sessionKey === "string") {
+    const trimmed = sessionKey.trim();
+    if (trimmed) return trimmed;
+  }
+  return DEFAULT_WORKLOAD_SESSION_KEY;
 }
 
-/** The sources, or null when this process has no orchestrator extension (older build). */
-export function publishedWorkloadSources(): WorkloadSources | null {
-  const sources = (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL] as WorkloadSources | undefined;
-  if (!sources || typeof sources.agents !== "function" || typeof sources.crons !== "function") return null;
-  return sources;
+/** Resolve the per-session workload bridge key from an ExtensionContext (or DEFAULT_WORKLOAD_SESSION_KEY). */
+export function resolveWorkloadSessionKey(ctx?: any): string {
+  try {
+    const id = ctx?.sessionManager?.getSessionId?.();
+    return normalizeSessionKey(typeof id === "string" ? id : undefined);
+  } catch {
+    return DEFAULT_WORKLOAD_SESSION_KEY;
+  }
 }
 
-/** Drop the published getters on shutdown: a torn-down runtime must not answer a describe. */
-export function clearWorkloadSources(): void {
+function getExistingSourcesMap(): Map<string, WorkloadSources> | undefined {
+  const value = (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL];
+  return value instanceof Map ? (value as Map<string, WorkloadSources>) : undefined;
+}
+
+function getOrCreateSourcesMap(): Map<string, WorkloadSources> {
+  const g = globalThis as Record<symbol, unknown>;
+  let map = g[WORKLOAD_SOURCES_SYMBOL];
+  if (!(map instanceof Map)) {
+    map = new Map<string, WorkloadSources>();
+    g[WORKLOAD_SOURCES_SYMBOL] = map;
+  }
+  return map as Map<string, WorkloadSources>;
+}
+
+function pruneMapIfEmpty(map: Map<string, WorkloadSources> | undefined): void {
+  if (map && map.size === 0) {
+    delete (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL];
+  }
+}
+
+function isValidWorkloadSources(candidate: unknown): candidate is WorkloadSources {
+  const sources = candidate as WorkloadSources | undefined;
+  return Boolean(sources && typeof sources.agents === "function" && typeof sources.crons === "function");
+}
+
+/** Publish the owner's getters for a session. Returns an idempotent unregister callback. */
+export function publishWorkloadSources(sources: WorkloadSources, sessionKey?: string): () => void {
+  const key = normalizeSessionKey(sessionKey);
+  const map = getOrCreateSourcesMap();
+  map.set(key, sources);
+  log.debug("workload_sources_published", { sessionKey: key, at: Date.now() });
+  return () => {
+    const currentMap = getExistingSourcesMap();
+    if (currentMap && currentMap.get(key) === sources) {
+      currentMap.delete(key);
+      pruneMapIfEmpty(currentMap);
+      log.debug("workload_sources_unregistered", { sessionKey: key, at: Date.now() });
+    }
+  };
+}
+
+/** The sources for a session, or null when absent (or ambiguous across concurrent sessions). */
+export function publishedWorkloadSources(sessionKey?: string): WorkloadSources | null {
+  const map = getExistingSourcesMap();
+  if (!map) return null;
+  const key = normalizeSessionKey(sessionKey);
+  let candidate = map.get(key);
+  if (candidate === undefined) {
+    if (key !== DEFAULT_WORKLOAD_SESSION_KEY) {
+      // Compat fallback for single-session/test publishers that did not specify a session key.
+      if (map.size === 1 && map.has(DEFAULT_WORKLOAD_SESSION_KEY)) {
+        candidate = map.get(DEFAULT_WORKLOAD_SESSION_KEY);
+      }
+    } else if (map.size === 1) {
+      candidate = map.values().next().value;
+    } else if (map.size > 1) {
+      log.debug("workload_sources_ambiguous_default_lookup", { sessions: map.size });
+    }
+  }
+  return isValidWorkloadSources(candidate) ? candidate : null;
+}
+
+/** Drop the published getters for a session on shutdown: a torn-down runtime must not answer a describe. */
+export function clearWorkloadSources(sessionKey?: string): void {
+  const key = normalizeSessionKey(sessionKey);
+  const map = getExistingSourcesMap();
+  if (map) {
+    map.delete(key);
+    pruneMapIfEmpty(map);
+  }
+  log.debug("workload_sources_cleared", { sessionKey: key, at: Date.now() });
+}
+
+/** Reset the entire workload bridge map between tests. */
+export function resetWorkloadBridgeForTests(): void {
   delete (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL];
-  log.debug("workload_sources_cleared", { at: Date.now() });
 }

@@ -22,9 +22,12 @@ import {
 	type ToggleAllWidgetsEvent,
 } from "../shared/widget-visibility.js";
 import {
+	DEFAULT_TASK_BRIDGE_SESSION_KEY,
 	publishTaskStore,
 	publishTaskTelemetryActive,
 	publishedTaskTelemetryActive,
+	resolveTaskBridgeSessionKey,
+	type TaskTelemetryActiveCallback,
 } from "../shared/task-store-bridge.js";
 import { publishedWorkloadSources } from "../shared/workload-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
@@ -72,13 +75,13 @@ const log = createLogger("pitasks");
 let currentUiCtx: any = null;
 let currentStore: TaskStore | null = null;
 let currentWidget: TaskWidget | null = null;
-export function setTaskTelemetryActive(taskId: string, active = true): void {
+export function setTaskTelemetryActive(taskId: string, active = true, sessionKey?: string): void {
 	if (currentWidget) {
 		log.debug("task_telemetry_active", { taskId, active, via: "local" });
 		currentWidget.setActiveTask(taskId, active);
 		return;
 	}
-	const bridged = publishedTaskTelemetryActive();
+	const bridged = publishedTaskTelemetryActive(sessionKey);
 	log.debug("task_telemetry_active", { taskId, active, via: bridged ? "bridge" : "none" });
 	bridged?.(taskId, active);
 }
@@ -345,13 +348,26 @@ export default function (pi: ExtensionAPI) {
 	store.setOnChange(() => { widget.update(); broadcastTasks(); });
 	for (const taskId of resumedActiveTaskIds) widget.setActiveTask(taskId);
 	currentWidget = widget;
-	// Registration is the only publish site: getters and callbacks follow live bindings,
-	// and the getter follows store swaps while hiding shut-down stores.
-	publishTaskStore(() => (shuttingDown ? null : taskStore));
-	publishTaskTelemetryActive((taskId, active = true) => {
-		log.debug("task_telemetry_active_bridged", { taskId, active, hasWidget: Boolean(currentWidget) });
-		currentWidget?.setActiveTask(taskId, active);
-	});
+	// Registration and session transitions publish closure-local bindings keyed by sessionId so
+	// concurrent sessions in pi-sidecar never clobber each other's store or telemetry callback.
+	let bridgeSessionKey = DEFAULT_TASK_BRIDGE_SESSION_KEY;
+	let unregisterTaskStore: (() => void) | null = null;
+	let unregisterTaskTelemetry: (() => void) | null = null;
+	const getLiveStore = () => (shuttingDown ? null : store);
+	const onTelemetryActive: TaskTelemetryActiveCallback = (taskId, active = true) => {
+		log.debug("task_telemetry_active_bridged", { taskId, active, hasWidget: Boolean(!shuttingDown && widget) });
+		if (!shuttingDown) widget.setActiveTask(taskId, active);
+	};
+	const syncTaskBridge = (ctx?: any): void => {
+		const nextKey = ctx ? resolveTaskBridgeSessionKey(ctx) : bridgeSessionKey;
+		if (unregisterTaskStore && unregisterTaskTelemetry && nextKey === bridgeSessionKey) return;
+		unregisterTaskStore?.();
+		unregisterTaskTelemetry?.();
+		bridgeSessionKey = nextKey;
+		unregisterTaskStore = publishTaskStore(getLiveStore, bridgeSessionKey);
+		unregisterTaskTelemetry = publishTaskTelemetryActive(onTelemetryActive, bridgeSessionKey);
+	};
+	syncTaskBridge();
 	const instanceId = Math.random().toString(36).slice(2, 8);
 	(globalThis as any).__pitasks_active_instance = instanceId;
 
@@ -536,7 +552,9 @@ export default function (pi: ExtensionAPI) {
 				const now2 = Date.now();
 				if (now2 - lastStaleReminderAt < staleThreshold) return;
 				const allTasks = store.list();
-				const activeAsyncIds = collectActiveAsyncTaskIds(publishedWorkloadSources()?.agents());
+				const activeAsyncIds = collectActiveAsyncTaskIds(
+					publishedWorkloadSources(currentCtx?.sessionManager?.getSessionId?.())?.agents(),
+				);
 				const staleTasks = selectStaleTasks(allTasks, now2, staleThreshold, activeAsyncIds);
 				if (staleTasks.length > 0) {
 					if (!shouldFireReminder(agentBusy, staleTasks.length)) {
@@ -565,6 +583,10 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		shuttingDown = true;
+		unregisterTaskStore?.();
+		unregisterTaskStore = null;
+		unregisterTaskTelemetry?.();
+		unregisterTaskTelemetry = null;
 		turnTaskRefs.clear();
 		if (gcTimer) { clearInterval(gcTimer); gcTimer = null; }
 		if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
@@ -586,6 +608,7 @@ export default function (pi: ExtensionAPI) {
 		agentBusy = true;
 		log.debug("agentBusy", "turn_start");
 		currentCtx = ctx;
+		if (bridgeSessionKey === DEFAULT_TASK_BRIDGE_SESSION_KEY) syncTaskBridge(ctx);
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
@@ -622,6 +645,7 @@ export default function (pi: ExtensionAPI) {
 		agentBusy = false;
 		log.debug("agentBusy", "session_start reset");
 		currentCtx = ctx;
+		syncTaskBridge(ctx);
 		widget.reactivate(ctx.ui);
 		store.reopen();
 		store.setOnChange(() => { widget.update(); broadcastTasks(); });
@@ -660,6 +684,7 @@ export default function (pi: ExtensionAPI) {
 		agentBusy = true;
 		log.debug("agentBusy", "before_agent_start");
 		currentCtx = ctx;
+		if (bridgeSessionKey === DEFAULT_TASK_BRIDGE_SESSION_KEY) syncTaskBridge(ctx);
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);

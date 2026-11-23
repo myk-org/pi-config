@@ -852,8 +852,9 @@ export default function (pi: ExtensionAPI) {
 	 *  Null when any source is absent: a partial count would be a guess, and the viewer must show
 	 *  `unknown` instead. No filesystem fallback: this reads own in-process state only. */
 	function ownWorkload(): { counts: PeerWorkloadCounts; active: ActiveWorkload; tasksSummary: TasksSummary | null } | null {
-		const sources = publishedWorkloadSources();
-		const store = publishedTaskStore() as { list?: () => unknown[] } | null;
+		const sessionKey = resolveOwnPiSessionId(currentCtx) || undefined;
+		const sources = publishedWorkloadSources(sessionKey);
+		const store = publishedTaskStore(sessionKey) as { list?: () => unknown[] } | null;
 		if (!sources || typeof store?.list !== "function") {
 			log.debug("workload_sources_missing", { agentsAndCrons: !!sources, tasks: typeof store?.list === "function" });
 			return null;
@@ -897,7 +898,7 @@ export default function (pi: ExtensionAPI) {
 	 *  Prefer the live published TaskStore's own filePath first so mid-session PI_TASKS /
 	 *  PI_TASK_SCOPE mutations never desync advertised task_store_path from pitasks. */
 	function resolveOwnTaskStorePath(piSessionId: string, cwd: string): string | null {
-		const liveStore = publishedTaskStore() as { filePath?: string } | null;
+		const liveStore = publishedTaskStore(piSessionId || undefined) as { filePath?: string } | null;
 		const publishedFilePath = typeof liveStore?.filePath === "string" && liveStore.filePath.trim()
 			? liveStore.filePath.trim()
 			: null;

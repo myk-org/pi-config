@@ -118,6 +118,8 @@ pi-config/
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── malformed-recovery-bridge.ts # Cross-extension malformed-response recovery coordination with COMS (#1333)
+│   │   ├── task-store-bridge.ts     # Session-keyed pitasks store & telemetry bridge (#1016, #1337)
+│   │   ├── workload-bridge.ts       # Session-keyed orchestrator workload bridge for coms/pitasks (#1083, #1337)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model + openai-compatible-discovery)
@@ -235,3 +237,7 @@ pi-config/
 ├── tox.toml                         # Test runner config (Python + Node environments)
 └── pyproject.toml                   # Python project config (myk_pi_tools)
 ```
+
+- **Shared bridge invariant (`extensions/shared/*-bridge.ts`):** mutable `globalThis[Symbol.for(...)]` bridges must key per-session state in a
+  `Map<sessionId, ...>` with `session_shutdown` cleanup for multi-session `pi-sidecar` safety unless explicitly allowlisted in
+  `tests/node/shared/bridge-session-key-contract.test.ts`.

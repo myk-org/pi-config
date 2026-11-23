@@ -60,8 +60,8 @@ async function pitasksModule(): Promise<any> {
  *  Read from the global symbol registry: this tool's module instance cannot see the
  *  pitasks extension's `export let taskStore` binding (it snapshots `undefined`), which
  *  is why task-id validation silently failed open (issue #1016). */
-async function getTaskStore(): Promise<any> {
-  const published = publishedTaskStore();
+async function getTaskStore(sessionId?: string): Promise<any> {
+  const published = publishedTaskStore(sessionId);
   if (published) return published;
   // Fall back to the module binding for in-process loads that share this instance.
   const mod = await pitasksModule();
@@ -677,9 +677,9 @@ export function taskIdError(taskId: string, lookup: (id: string) => boolean): st
  *  load, so the first async call of a session validates too instead of failing open (issue #1016).
  *  An owner-assigned task is refused here: the lifecycle helpers never start or complete it, so
  *  spawning on it would do the owner's step and silently leave the task untouched (#1102). */
-export async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): Promise<string | null> {
+export async function validateTaskId(taskId: string, _cwd: string, sessionId?: string): Promise<string | null> {
   if (taskId === "-1") return null;
-  const store = await getTaskStore();
+  const store = await getTaskStore(sessionId);
   if (!store) return null; // pitasks genuinely unavailable — warned in getTaskStore
   try {
     const task = store.get(taskId);
@@ -1198,7 +1198,7 @@ export function registerSubagentTool(
       // Auto-mark linked task as in_progress (same as async path)
       const chainTaskId = s.taskId as string | undefined;
       if (chainTaskId && chainTaskId !== "-1") {
-        await autoMarkInProgress(chainTaskId, projectCwd || s.cwd, resolveTaskStorePath(projectCwd || s.cwd, sessionId)).catch(() => {});
+        await autoMarkInProgress(chainTaskId, projectCwd || s.cwd, resolveTaskStorePath(projectCwd || s.cwd, sessionId), undefined, sessionId).catch(() => {});
       }
       const r = await runSingleAgent(
         agents,
@@ -1235,7 +1235,7 @@ export function registerSubagentTool(
       }
       // Auto-complete linked task on success (same as async path)
       if (chainTaskId && chainTaskId !== "-1") {
-        await autoCompleteTask(chainTaskId, projectCwd || s.cwd, resolveTaskStorePath(projectCwd || s.cwd, sessionId)).catch(() => {});
+        await autoCompleteTask(chainTaskId, projectCwd || s.cwd, resolveTaskStorePath(projectCwd || s.cwd, sessionId), undefined, sessionId).catch(() => {});
       }
       prev = getFinalOutput(r.messages);
     }
@@ -1348,7 +1348,7 @@ export function registerSubagentTool(
     for (const t of params.tasks) {
       const tid = (t as any).taskId as string | undefined;
       if (tid && tid !== "-1") {
-        await autoMarkInProgress(tid, projectCwd || t.cwd, resolveTaskStorePath(projectCwd || t.cwd, sessionId)).catch(() => {});
+        await autoMarkInProgress(tid, projectCwd || t.cwd, resolveTaskStorePath(projectCwd || t.cwd, sessionId), undefined, sessionId).catch(() => {});
       }
     }
     const results = await mapWithConcurrency(
@@ -1391,7 +1391,7 @@ export function registerSubagentTool(
           r.stopReason !== "error" &&
           r.stopReason !== "aborted"
         ) {
-          await autoCompleteTask(tid, projectCwd || t.cwd, resolveTaskStorePath(projectCwd || t.cwd, sessionId)).catch(() => {});
+          await autoCompleteTask(tid, projectCwd || t.cwd, resolveTaskStorePath(projectCwd || t.cwd, sessionId), undefined, sessionId).catch(() => {});
         }
         return r;
       },
@@ -1463,7 +1463,7 @@ export function registerSubagentTool(
     // Auto-mark linked task as in_progress (same as async path)
     const syncTaskId = params.taskId as string | undefined;
     if (syncTaskId && syncTaskId !== "-1") {
-      await autoMarkInProgress(syncTaskId, projectCwd || params.cwd, resolveTaskStorePath(projectCwd || params.cwd, sessionId)).catch(() => {});
+      await autoMarkInProgress(syncTaskId, projectCwd || params.cwd, resolveTaskStorePath(projectCwd || params.cwd, sessionId), undefined, sessionId).catch(() => {});
     }
     log.info("sync_execute_start", params.agent, "taskId", syncTaskId ?? "none");
     const syncStartTime = Date.now();
@@ -1511,7 +1511,7 @@ export function registerSubagentTool(
       };
     // Auto-complete linked task on success (same as async path)
     if (syncTaskId && syncTaskId !== "-1") {
-      await autoCompleteTask(syncTaskId, projectCwd || params.cwd, resolveTaskStorePath(projectCwd || params.cwd, sessionId)).catch(() => {});
+      await autoCompleteTask(syncTaskId, projectCwd || params.cwd, resolveTaskStorePath(projectCwd || params.cwd, sessionId), undefined, sessionId).catch(() => {});
     }
     log.info("sync_execute_returning", params.agent);
     return {
