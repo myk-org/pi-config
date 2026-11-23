@@ -45,6 +45,7 @@ import { listTopics } from "./memory-tree.js";
 import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { registerTrail } from "./trail.js";
 import { registerReviewLearning } from "./review-learning.js";
+import { registerPrRetro } from "./pr-retro.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
@@ -178,6 +179,7 @@ export default function (pi: ExtensionAPI) {
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
   registerReviewLearning(pi);
+  registerPrRetro(pi, spawnAsyncAgent);
   registerTmpCleanup(pi);
   registerSessionSearch(pi);
   registerSettingsTui(pi);
