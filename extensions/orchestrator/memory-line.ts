@@ -49,6 +49,21 @@ export function canonicalTopicLine(entry: Pick<TopicEntry, "category" | "text">)
   return `- [${entry.category}] ${entry.text}`;
 }
 
+/** Extract line text without its `- [category] ` prefix, lock markers, or `{#id}` suffix. */
+export function extractTopicLineText(line: string): string {
+  const parsed = parseTopicLine(line);
+  if (parsed) return parsed.text;
+  return stripTopicMarkers(line.replace(/^- \[[a-z]+\] /, ""));
+}
+
+/** Canonical `- [category] text` form for a raw topic line (tolerates unknown/malformed lines). */
+export function canonicalizeTopicLine(line: string): string {
+  const parsed = parseTopicLine(line);
+  if (parsed) return canonicalTopicLine(parsed);
+  const category = /^- \[([a-z]+)\] /.exec(line)?.[1] ?? "";
+  return `- [${category}] ${extractTopicLineText(line)}`;
+}
+
 /** Build the file line for an entry, including markers and id. */
 export function formatTopicLine(entry: TopicEntry, enforced = false): string {
   const pin = entry.pinned ? " *(pinned)*" : "";

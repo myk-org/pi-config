@@ -19,7 +19,6 @@ import {
   type MemoryCategory,
   loadScores,
   entryHash,
-  rebuild,
 } from "./memory-scoring.js";
 import {
   CATEGORY_TO_TOPIC,
@@ -27,9 +26,8 @@ import {
   canonicalTopicLine,
   readAllTopicEntries,
 } from "./memory-tree.js";
-import { pruneEmbeddings } from "./memory-embeddings.js";
 import { formatPromotionsForReport } from "./promotion-queue.js";
-import { pruneExpiredEntries } from "./memory-write.js";
+import { rebuildMemoryStore } from "./memory-store.js";
 import {
   type QueryClass,
   SECTION_CATEGORY_MAP,
@@ -114,31 +112,12 @@ interface MemoryEntryWithText {
 }
 
 /**
- * Run a full rebuild cycle: rescore all entries from topics (source of truth).
+ * Run a full rebuild cycle: delegate expiry pruning, score rebuild, and stale
+ * embedding pruning to memory-store.ts.
  * Called on session_start, every 30 min, and after dreaming.
  */
 export function rebuildAndOrganize(cwd: string): void {
-  const topicsDir = join(getProjectMemoryDir(cwd), "topics");
-  if (!existsSync(topicsDir)) return;
-
-  // Prune expired scoped entries first (issue #915): session/task-scoped
-  // entries must not outlive their scope. Pruning removes topic lines, so it
-  // must happen before the rebuild re-initializes scores for topic entries.
-  try {
-    pruneExpiredEntries(cwd);
-  } catch {
-    // non-fatal — rebuild continues with whatever entries remain
-  }
-
-  const topicEntries = readAllTopicEntries(cwd);
-  if (topicEntries.length > 0) {
-    rebuild(cwd, topicEntries);
-    try {
-      pruneEmbeddings(cwd, topicEntries, () => readAllTopicEntries(cwd));
-    } catch {
-      // non-fatal — stale embeddings do not affect correctness
-    }
-  }
+  rebuildMemoryStore(cwd);
 }
 
 export interface SituationReportOptions {
