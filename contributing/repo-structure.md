@@ -80,9 +80,12 @@ pi-config/
 │   │   ├── worktree.ts              # /worktree command — interactive overlay + list/prune subcommands
 │   │   ├── worktree-helpers.ts      # Pure worktree helpers (COMS peer matching, remove guards, table/status/prune formatting, clipboard)
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
-│   │   ├── memory-tools.ts              # AI-accessible memory tools (search, reinforce, add, remove)
-│   │   ├── memory-embeddings.ts         # Vector embedding support for semantic memory search (fastembed)
-│   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
+│   │   ├── memory-store.ts            # Deep memory store — owns all topic writes, cache invalidation, score/tombstone updates, and embedding upkeep/pruning
+│   │   ├── memory-contradiction.ts    # Internal NLP contradiction detection helper (clause-scoped polarity + vector narrowing)
+│   │   ├── memory-tools.ts            # AI-accessible memory tools (search, reinforce, add, remove, edit, reflect, consolidate)
+│   │   ├── memory-embeddings.ts       # Vector embedding support for semantic memory search (fastembed)
+│   │   ├── memory-tree.ts             # Read-only topic-file index and hotness scores
+│   │   ├── memory-line.ts             # Pure topic-line parser, formatter, and canonicalization helpers
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
 │   │   ├── project-settings.ts        # Deep settings store — schema-driven validation/parsing (settings-keys.json), legacy .jsonc migration, single coordinated cache, source detection, and locked atomic persistence with backups
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
@@ -113,7 +116,7 @@ pi-config/
 │   ├── pidiff/                      # Diff viewer extension (standalone)
 │   │   ├── index.ts                 # Entry point
 │   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/run/ lockfiles)
-│   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
+│   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees; deep DiffSessionController in src/lib/diff-session-controller.ts)
 │   ├── openai-compatible-discovery/ # Config-gated /v1/models discovery on configured providers
 │   │   └── index.ts                 # Augments the source provider in Pi's ordinary model picker
 │   ├── reload-flag/                 # Agent-triggered extension reload (deploy → flag → ctx.reload → done marker)
@@ -126,14 +129,10 @@ pi-config/
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
-│   │   ├── malformed-recovery-bridge.ts # Cross-extension malformed-response recovery coordination with COMS (#1333)
-│   │   ├── session-bridge-map.ts    # Shared strict per-session globalThis[Symbol.for(...)] Map registry helper (#1337)
-│   │   ├── task-store-bridge.ts     # Session-keyed pitasks store & telemetry bridge (#1016, #1337)
-│   │   ├── workload-bridge.ts       # Session-keyed orchestrator workload bridge for coms/pitasks (#1083, #1337)
+│   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive) with auto-pruning (#1364)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery)
-│   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
 │   │   ├── widget-visibility.ts     # Shared collapse/expand widget state (expanded/collapsed, header-always-visible), globalThis reload persistence, shortcut validation/registration, and ui:toggle-all-widgets bridge
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
 │   ├── providers/                  # Default model restore & thinking-level persistence extension

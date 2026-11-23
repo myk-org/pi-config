@@ -10,7 +10,8 @@
 
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { entryHash, mutateScores, type MemoryCategory } from "./memory-scoring.js";
+import type { MemoryCategory } from "./memory-scoring.js";
+import { applyEntryProvenance } from "./memory-store.js";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 import { getProjectMemoryDir } from "./utils.js";
@@ -62,21 +63,7 @@ export function mergeProvenancePending(cwd: string): number {
     return 0;
   }
 
-  let updated = 0;
-  // Locked read-modify-write (issue #915)
-  mutateScores(cwd, (scores) => {
-    for (const item of pending.entries) {
-      if (!item?.category || !item?.text) continue;
-      const hash = entryHash(`- [${item.category}] ${item.text}`);
-      const entry = scores.entries[hash];
-      if (!entry) continue;
-
-      if (item.sourceSession) entry.sourceSession = item.sourceSession;
-      if (item.derivedFrom) entry.derivedFrom = item.derivedFrom;
-      if (item.informs?.length) entry.informs = item.informs;
-      updated += 1;
-    }
-  });
+  const updated = applyEntryProvenance(cwd, pending.entries);
 
   // Delete the consumed sidecar
   try { unlinkSync(getProvenancePendingPath(cwd)); } catch { /* ignore */ }

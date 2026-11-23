@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
 import { resolveStorePath } from "../pitasks/task-store.js";
-import { publishedTaskStore, publishedTaskTelemetryActive } from "../shared/task-store-bridge.js";
+import { publishedTaskStore, publishedTaskTelemetryActive } from "../shared/session-bridge.js";
 
 const log = createLogger("task-lifecycle");
 

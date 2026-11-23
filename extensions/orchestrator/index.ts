@@ -31,10 +31,10 @@ import { registerGithubAutocomplete } from "./github-autocomplete.js";
 import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { registerCron } from "./cron.js";
 import {
-  DEFAULT_WORKLOAD_SESSION_KEY,
+  DEFAULT_BRIDGE_SESSION_KEY,
   publishWorkloadSources,
-  resolveWorkloadSessionKey,
-} from "../shared/workload-bridge.js";
+  resolveBridgeSessionKey,
+} from "../shared/session-bridge.js";
 import { registerStatus } from "./status.js";
 import { registerWorktree } from "./worktree.js";
 import { registerNvim } from "./nvim.js";
@@ -159,14 +159,14 @@ export default function (pi: ExtensionAPI) {
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   // #1083: peers report their OWN workload — session crons live only in this process, so the
   // coms extension must read them here rather than scan for them.
-  let workloadSessionKey = DEFAULT_WORKLOAD_SESSION_KEY;
+  let workloadSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
   let unregisterWorkload: (() => void) | null = null;
   const publishOwnWorkload = (ctx?: any, preserveNamedOnMissingId = false): void => {
-    const resolvedKey = ctx ? resolveWorkloadSessionKey(ctx) : workloadSessionKey;
+    const resolvedKey = ctx ? resolveBridgeSessionKey(ctx) : workloadSessionKey;
     const nextKey =
       preserveNamedOnMissingId &&
-      resolvedKey === DEFAULT_WORKLOAD_SESSION_KEY &&
-      workloadSessionKey !== DEFAULT_WORKLOAD_SESSION_KEY
+      resolvedKey === DEFAULT_BRIDGE_SESSION_KEY &&
+      workloadSessionKey !== DEFAULT_BRIDGE_SESSION_KEY
         ? workloadSessionKey
         : resolvedKey;
     if (unregisterWorkload && nextKey !== workloadSessionKey) {

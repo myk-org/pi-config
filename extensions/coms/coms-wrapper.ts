@@ -13,7 +13,7 @@ import * as os from "node:os";
 import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, parseComsTell, syncComsActiveTools, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsInit from "./coms-p2p.js";
 import { getSetting } from "../orchestrator/project-settings.js";
-import { setComsActive } from "../shared/coms-active.js";
+import { resolveBridgeSessionKey, setComsActive } from "../shared/session-bridge.js";
 import { createLogger } from "../shared/logger.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
@@ -75,6 +75,14 @@ export function registerComs(pi: ExtensionAPI) {
     // Prune stale registry entries on session start (cleans up after crashes)
     // Also reset coms state on fresh starts (non-reload) to clear phantom peers
     let liveCtx: any = null;
+    const syncComsActive = (active: boolean, ctx?: any): void => {
+        const nextKey = ctx ? resolveBridgeSessionKey(ctx) : (state.sessionKey ?? resolveBridgeSessionKey(liveCtx));
+        if (state.sessionKey && state.sessionKey !== nextKey) {
+            setComsActive(false, state.sessionKey);
+        }
+        state.sessionKey = nextKey;
+        setComsActive(active, nextKey);
+    };
 
     pi.on("session_start", async (evt: any, ctx: any) => {
         liveCtx = ctx;
@@ -88,7 +96,7 @@ export function registerComs(pi: ExtensionAPI) {
         }
         if (evt?.reason !== "reload") {
             state.active = false;
-            setComsActive(false);
+            syncComsActive(false, ctx);
             syncComsActiveTools(pi, state, false);
             persistState(pi, PERSIST_KEY, state);
         }
@@ -154,7 +162,7 @@ export function registerComs(pi: ExtensionAPI) {
                 log.warn("coms_stale_claim_shutdown_threw", { error: String(error?.message ?? error) });
             }
             state.active = false;
-            setComsActive(false);
+            syncComsActive(false, ctx);
             syncComsActiveTools(pi, state, false);
             persistState(pi, PERSIST_KEY, state);
         }
@@ -183,11 +191,11 @@ export function registerComs(pi: ExtensionAPI) {
             const self = (globalThis as any).__comsSelf;
             if (!activationVerified(self, process.platform, existsSync)) {
                 log.error("coms_activation_unverified", { name: self?.name ?? null, endpoint: self?.endpoint ?? null });
-                setComsActive(false);
+                syncComsActive(false, ctx);
                 return { ok: false, message: "📡 coms start failed: no peer socket was created (see ~/.pi/logs/coms)." };
             }
             state.active = true;
-            setComsActive(true);
+            syncComsActive(true, ctx);
             syncComsActiveTools(pi, state, true);
             persistState(pi, PERSIST_KEY, state);
             const name = String(state.flagValues.get("cname") ?? state.flagValues.get("name") ?? "peer");
@@ -195,7 +203,7 @@ export function registerComs(pi: ExtensionAPI) {
             log.info("coms activated", { name, project, via: "tool-or-command" });
             return { ok: true, message: `📡 coms active — you are "${name}" on project "${project}". Peers: use coms_list.` };
         } catch (err: any) {
-            setComsActive(false);
+            syncComsActive(false, ctx);
             const msg = err?.message ?? String(err);
             log.error("coms activation failed", msg, err instanceof Error ? err : new Error(msg));
             return { ok: false, message: `📡 coms start failed: ${msg}` };
@@ -274,7 +282,7 @@ export function registerComs(pi: ExtensionAPI) {
                 }
             }
             state.active = false;
-            setComsActive(false);
+            syncComsActive(false, ctx);
             syncComsActiveTools(pi, state, false);
             persistState(pi, PERSIST_KEY, state);
             try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
@@ -426,11 +434,11 @@ export function registerComs(pi: ExtensionAPI) {
             description: "Stop coms for THIS session: stop advertising this peer and drop the coms tools.",
             defaultActive: false,
             parameters: Type.Object({}),
-            async execute() {
+            async execute(_id?: string, _params?: any, _signal?: any, _onUpdate?: any, ctx?: any) {
                 if (!state.active) return { content: [{ type: "text" as const, text: "coms is not active." }], details: { ok: true, active: false } };
                 try { await state.capturedSessionShutdown?.(); } catch (e: any) { log.warn("coms_stop shutdown threw", e?.message ?? String(e)); }
                 state.active = false;
-                setComsActive(false);
+                syncComsActive(false, ctx);
                 syncComsActiveTools(pi, state, false);
                 persistState(pi, PERSIST_KEY, state);
                 return { content: [{ type: "text" as const, text: "coms stopped for this session." }], details: { ok: true, active: false } };
