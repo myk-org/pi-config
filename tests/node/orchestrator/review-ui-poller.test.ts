@@ -256,9 +256,22 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
       ui: { theme: { fg: (_c: string, s: string) => s } },
     };
     for (const h of handlers.get("session_start") ?? []) h({}, ctx);
-    const nextCallback = async (): Promise<(res: { stdout: string; code: number }) => void> => {
+    const nextCallback = async (timeoutMs = 5000): Promise<(res: { stdout: string; code: number }) => void> => {
       if (pending.length === 0) {
-        await new Promise<void>((resolve) => waiters.push(resolve));
+        // Bounded ref'd timer both keeps Node 22's event loop alive while awaiting
+        // the .unref()'d poller tick and rejects cleanly if a regression stalls polling.
+        await new Promise<void>((resolve, reject) => {
+          const onReady = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+          const timer = setTimeout(() => {
+            const idx = waiters.indexOf(onReady);
+            if (idx >= 0) waiters.splice(idx, 1);
+            reject(new Error(`Timed out after ${timeoutMs}ms waiting for gitDirtyPoller callback`));
+          }, timeoutMs);
+          waiters.push(onReady);
+        });
       }
       return pending.shift()!;
     };
@@ -266,13 +279,10 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
       const cb = await nextCallback();
       cb(res);
     };
-    // Poller timers are .unref()'d; keep Node 22's event loop alive while tests await ticks.
-    const keepAlive = setInterval(() => {}, 100);
     const shutdown = () => {
       for (const h of handlers.get("session_shutdown") ?? []) h({}, ctx);
     };
     const cleanup = () => {
-      clearInterval(keepAlive);
       shutdown();
       fs.rmSync(tmp, { recursive: true, force: true });
     };
