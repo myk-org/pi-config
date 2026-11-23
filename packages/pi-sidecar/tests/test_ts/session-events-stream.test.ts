@@ -3,15 +3,22 @@
  *
  * Hub-level tests: every frame is asserted through a fake transport sink, so a
  * subscriber's fate is never confused with the prompt path that produced the
- * event. Session behaviour is driven by fixture sessions (no provider calls).
+ * event. Session behaviour is driven through the injected InMemoryProviderRuntime
+ * adapter (no Pi SDK or provider calls).
  */
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
 
-import { SessionStore, createApiKeyRedactor } from "../../src/sessions.js";
-import type { SessionStreamSink } from "../../src/sessions.js";
+import {
+  SessionEventStreams,
+  SessionStore,
+  StreamDeltaHoldback,
+  createApiKeyRedactor,
+  type SessionStreamSink,
+  type StoredSession,
+} from "../../src/sessions.js";
+import { InMemoryProviderRuntime } from "./helpers/in-memory-runtime.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
 
 // Recording OFF is the default config and the point of one of the tests below;
@@ -128,11 +135,11 @@ const agentEnd = (text: string, stopReason = "stop") => ({
 
 type Emit = (event: any) => void;
 
-/** Fixture AgentSession: `script` runs inside prompt(), after subscribe registered. */
-function fixtureSession(script: (emit: Emit) => Promise<void> | void, extra: {
+/** Scripted StoredSession: `script` runs inside prompt(), after subscribe registered. */
+function scriptedSession(script: (emit: Emit) => Promise<void> | void, extra: {
   abort?: () => Promise<void>;
   dispose?: () => void;
-} = {}) {
+} = {}): StoredSession {
   let handler: Emit | undefined;
   const emit: Emit = (event) => handler?.(event);
   return {
@@ -151,31 +158,53 @@ function fixtureSession(script: (emit: Emit) => Promise<void> | void, extra: {
 }
 
 /** A plain two-delta turn producing "Hello world". */
-function textSession() {
-  return fixtureSession((emit) => {
+function textSession(): StoredSession {
+  return scriptedSession((emit) => {
     emit(delta("Hello"));
     emit(delta(" world"));
     emit(agentEnd("Hello world"));
   });
 }
 
+function createInMemoryStore(sessionFactory: () => StoredSession = textSession): SessionStore {
+  return new SessionStore({
+    runtime: new InMemoryProviderRuntime({
+      ready: true,
+      allowAnyModel: true,
+      sessionFactory,
+    }),
+  });
+}
+
+async function createSession(
+  session: StoredSession,
+  opts: { apiKey?: string; cwd?: string } = {},
+): Promise<{ store: SessionStore; id: string }> {
+  const store = createInMemoryStore(() => session);
+  const id = await store.create({
+    provider: "test",
+    model: "test",
+    systemPrompt: "sse stream test",
+    cwd: opts.cwd ?? "/tmp",
+    apiKey: opts.apiKey,
+  });
+  return { store, id };
+}
+
 describe("session event stream: delta delivery (#1019)", () => {
   it("delivers every text_delta in emit order, then exactly one turn_end", async () => {
-    const store = new SessionStore();
-    const sink = new FakeSink();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("one-"));
         emit(delta("two-"));
         emit(delta("three"));
         emit(agentEnd("one-two-three"));
       }),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    const sink = new FakeSink();
+    store.openStream(id, sink);
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.deepEqual(
       events(sink).map((event) => event.type),
@@ -196,20 +225,17 @@ describe("session event stream: delta delivery (#1019)", () => {
   });
 
   it("a turn that collected errors still ends with exactly one terminal event", async () => {
-    const store = new SessionStore();
-    const sink = new FakeSink();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("partial"));
         emit({ type: "error", error: "provider exploded" });
         emit(agentEnd("partial"));
       }),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    const sink = new FakeSink();
+    store.openStream(id, sink);
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     const terminal = terminals(sink);
     assert.equal(terminal.length, 1, "a turn must never emit both turn_end and error");
@@ -220,13 +246,12 @@ describe("session event stream: delta delivery (#1019)", () => {
   });
 
   it("fires the terminal event with recording disabled (the default config)", async () => {
-    const store = new SessionStore();
+    const { store, id } = await createSession(textSession());
     assert.equal(store.isRecordingEnabled(), false, "this test must run on the default config");
     const sink = new FakeSink();
-    store.putSessionFixture("s", textSession(), "/tmp");
-    store.openStream("s", sink);
+    store.openStream(id, sink);
 
-    await store.prompt("s", "hi");
+    await store.prompt(id, "hi");
 
     // Regression: an anchor emitted from inside the recordTurn gate never runs
     // here, so a recording-gated implementation produces no terminal event.
@@ -236,19 +261,16 @@ describe("session event stream: delta delivery (#1019)", () => {
   });
 
   it("a zero-delta turn still emits turn_end carrying the fallback text", async () => {
-    const store = new SessionStore();
-    const sink = new FakeSink();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         // Tool-only / provider-without-deltas turn: text only exists on agent_end.
         emit(agentEnd("fallback text"));
       }),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    const sink = new FakeSink();
+    store.openStream(id, sink);
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(events(sink).filter((event) => event.type === "text_delta").length, 0);
     const terminal = terminals(sink);
@@ -261,16 +283,14 @@ describe("session event stream: delta delivery (#1019)", () => {
 
 describe("session event stream: abort (#1019)", () => {
   it("abort mid-stream ends the turn once as turn_end{aborted:true} and the feed stays usable", async () => {
-    const store = new SessionStore();
     const sink = new FakeSink();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     let promptCalls = 0;
-    store.putSessionFixture(
-      "s",
-      fixtureSession(
+    const { store, id } = await createSession(
+      scriptedSession(
         async (emit) => {
           promptCalls++;
           if (promptCalls > 1) {
@@ -286,15 +306,14 @@ describe("session event stream: abort (#1019)", () => {
         },
         { abort: async () => release() },
       ),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    store.openStream(id, sink);
 
-    const pending = store.prompt("s", "hi");
+    const pending = store.prompt(id, "hi");
     while (events(sink).filter((event) => event.type === "text_delta").length < 2) {
       await new Promise((resolve) => setImmediate(resolve));
     }
-    await store.abort("s");
+    await store.abort(id);
     const first = await pending;
 
     const firstTerminal = terminals(sink);
@@ -304,7 +323,7 @@ describe("session event stream: abort (#1019)", () => {
     assert.equal(firstTerminal[0].text, "partial answer", "the aborted turn_end carries the partial text");
     assert.equal(first.text, "partial answer");
 
-    const second = await store.prompt("s", "again");
+    const second = await store.prompt(id, "again");
 
     assert.equal(second.text, "second turn");
     const starts = events(sink).filter((event) => event.type === "turn_start");
@@ -318,26 +337,23 @@ describe("session event stream: abort (#1019)", () => {
   });
 
   it("abort with no turn in flight is a no-op and does not mark the next turn aborted", async () => {
-    const store = new SessionStore();
     const sink = new FakeSink();
     let sdkAborts = 0;
-    store.putSessionFixture(
-      "s",
-      fixtureSession(
+    const { store, id } = await createSession(
+      scriptedSession(
         (emit) => {
           emit(delta("Hello"));
           emit(agentEnd("Hello"));
         },
         { abort: async () => { sdkAborts++; } },
       ),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    store.openStream(id, sink);
 
-    await store.abort("s");
+    await store.abort(id);
     assert.equal(sdkAborts, 0, "an idle session has nothing to abort");
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.text, "Hello");
     const terminal = terminals(sink);
@@ -346,15 +362,13 @@ describe("session event stream: abort (#1019)", () => {
   });
 
   it("a failed abort does not label the still-running turn aborted", async () => {
-    const store = new SessionStore();
     const sink = new FakeSink();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    store.putSessionFixture(
-      "s",
-      fixtureSession(
+    const { store, id } = await createSession(
+      scriptedSession(
         async (emit) => {
           emit(delta("Hello"));
           await gate; // the turn keeps running after the abort request fails
@@ -362,15 +376,14 @@ describe("session event stream: abort (#1019)", () => {
         },
         { abort: async () => { throw new Error("abort exploded"); } },
       ),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    store.openStream(id, sink);
 
-    const pending = store.prompt("s", "hi");
+    const pending = store.prompt(id, "hi");
     while (events(sink).filter((event) => event.type === "text_delta").length < 1) {
       await new Promise((resolve) => setImmediate(resolve));
     }
-    await assert.rejects(store.abort("s"), /abort exploded/);
+    await assert.rejects(store.abort(id), /abort exploded/);
     release();
     await pending;
 
@@ -391,7 +404,6 @@ describe("session event stream: abort (#1019)", () => {
     // failIndex 0: the first abort rejects and the second cancels (the ordering
     // that used to clear the flag). failIndex 1: the same race, other way round.
     for (const failIndex of [0, 1]) {
-      const store = new SessionStore();
       const sink = new FakeSink();
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
@@ -399,9 +411,8 @@ describe("session event stream: abort (#1019)", () => {
       });
       const calls = [deferred(), deferred()];
       let call = 0;
-      store.putSessionFixture(
-        "s",
-        fixtureSession(
+      const { store, id } = await createSession(
+        scriptedSession(
           async (emit) => {
             emit(delta("partial"));
             await gate; // the turn keeps running until the test ends it
@@ -415,15 +426,14 @@ describe("session event stream: abort (#1019)", () => {
             },
           },
         ),
-        "/tmp",
       );
-      store.openStream("s", sink);
+      store.openStream(id, sink);
 
-      const pending = store.prompt("s", "hi");
+      const pending = store.prompt(id, "hi");
       while (events(sink).filter((event) => event.type === "text_delta").length < 1) {
         await new Promise((resolve) => setImmediate(resolve));
       }
-      const aborts = [store.abort("s"), store.abort("s")];
+      const aborts = [store.abort(id), store.abort(id)];
 
       const outcomes: string[] = [];
       for (const index of [0, 1]) {
@@ -445,7 +455,6 @@ describe("session event stream: abort (#1019)", () => {
   });
 
   it("an abort rejecting after the next turn started cannot clear that turn's cancellation", async () => {
-    const store = new SessionStore();
     const sink = new FakeSink();
     const deferred = () => {
       let resolve!: () => void;
@@ -468,9 +477,8 @@ describe("session event stream: abort (#1019)", () => {
     const abortB = deferred();
     let promptCalls = 0;
     let abortCalls = 0;
-    store.putSessionFixture(
-      "s",
-      fixtureSession(
+    const { store, id } = await createSession(
+      scriptedSession(
         async (emit) => {
           if (promptCalls++ === 0) {
             emit(delta("first"));
@@ -489,26 +497,25 @@ describe("session event stream: abort (#1019)", () => {
           },
         },
       ),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    store.openStream(id, sink);
 
-    const firstTurn = store.prompt("s", "first");
+    const firstTurn = store.prompt(id, "first");
     while (events(sink).filter((event) => event.type === "text_delta").length < 1) {
       await new Promise((resolve) => setImmediate(resolve));
     }
-    const staleAbort = store.abort("s").then(() => "ok", (err: Error) => err.message);
+    const staleAbort = store.abort(id).then(() => "ok", (err: Error) => err.message);
     gateA.resolve(); // turn A ends while its abort is still pending
     await firstTurn;
 
-    const secondTurn = store.prompt("s", "second");
+    const secondTurn = store.prompt(id, "second");
     while (events(sink).filter((event) => event.type === "text_delta").length < 2) {
       await new Promise((resolve) => setImmediate(resolve));
     }
     // Turn B's cancellation is requested but still pending when turn A's abort
     // rejects — the window where a re-read of entry.abortState would decrement
     // turn B's pending count and clear its request.
-    const liveAbort = store.abort("s");
+    const liveAbort = store.abort(id);
     lateAbortA.reject(new Error("abort exploded late"));
     assert.match(await staleAbort, /abort exploded late/, "the late rejection still reaches its caller");
     abortB.resolve();
@@ -535,28 +542,25 @@ describe("session event stream: abort (#1019)", () => {
   });
 
   it("a second concurrent prompt is still rejected and the attached feed stays coherent", async () => {
-    const store = new SessionStore();
     const sink = new FakeSink();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    store.putSessionFixture(
-      "s",
-      fixtureSession(async (emit) => {
+    const { store, id } = await createSession(
+      scriptedSession(async (emit) => {
         emit(delta("Hello"));
         await gate;
         emit(agentEnd("Hello"));
       }),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    store.openStream(id, sink);
 
-    const pending = store.prompt("s", "first");
+    const pending = store.prompt(id, "first");
     while (events(sink).filter((event) => event.type === "text_delta").length < 1) {
       await new Promise((resolve) => setImmediate(resolve));
     }
-    await assert.rejects(store.prompt("s", "second"), /busy|concurrent/i);
+    await assert.rejects(store.prompt(id, "second"), /busy|concurrent/i);
     release();
     const result = await pending;
 
@@ -569,14 +573,14 @@ describe("session event stream: abort (#1019)", () => {
 
 describe("session event stream: subscriber containment (#1019)", () => {
   it("a prompt with no subscriber returns the same response shape as one with a subscriber", async () => {
-    const store = new SessionStore();
+    const store = createInMemoryStore();
     const sink = new FakeSink();
-    store.putSessionFixture("quiet", textSession(), "/tmp");
-    store.putSessionFixture("watched", textSession(), "/tmp");
-    store.openStream("watched", sink);
+    const quietId = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
+    const watchedId = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
+    store.openStream(watchedId, sink);
 
-    const quiet = await store.prompt("quiet", "hi");
-    const watched = await store.prompt("watched", "hi");
+    const quiet = await store.prompt(quietId, "hi");
+    const watched = await store.prompt(watchedId, "hi");
 
     assert.deepEqual(
       Object.keys(quiet),
@@ -595,15 +599,14 @@ describe("session event stream: subscriber containment (#1019)", () => {
   });
 
   it("a throwing subscriber cannot fail a prompt and is dropped while others keep receiving", async () => {
-    const store = new SessionStore();
+    const { store, id } = await createSession(textSession());
     const thrower = new FakeSink();
     thrower.failWith = new Error("socket hang up");
     const survivor = new FakeSink();
-    store.putSessionFixture("s", textSession(), "/tmp");
-    store.openStream("s", thrower);
-    store.openStream("s", survivor);
+    store.openStream(id, thrower);
+    store.openStream(id, survivor);
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.text, "Hello world", "a dead sink must never surface into the prompt result");
     assert.equal(result.error, undefined);
@@ -615,26 +618,25 @@ describe("session event stream: subscriber containment (#1019)", () => {
       ["session", "turn_start", "text_delta", "text_delta", "turn_end"],
     );
 
-    await store.prompt("s", "again");
+    await store.prompt(id, "again");
 
     assert.equal(thrower.ended, 1, "a dropped subscriber is not written to or ended twice");
     assert.equal(terminals(survivor).length, 2, "the surviving subscriber keeps receiving later turns");
   });
 
   it("a second subscriber gets its own session frame and does not disturb the first", async () => {
-    const store = new SessionStore();
+    const { store, id } = await createSession(textSession());
     const first = new FakeSink();
     const second = new FakeSink();
-    store.putSessionFixture("s", textSession(), "/tmp");
-    store.openStream("s", first);
+    store.openStream(id, first);
     const before = first.raw;
 
-    store.openStream("s", second);
+    store.openStream(id, second);
 
     assert.equal(events(second).filter((event) => event.type === "session").length, 1, "the newcomer is greeted");
     assert.equal(first.raw, before, "an open feed gets no duplicate session frame and no idle reset");
 
-    await store.prompt("s", "hi");
+    await store.prompt(id, "hi");
     for (const sink of [first, second]) {
       assert.equal(events(sink).filter((event) => event.type === "session").length, 1);
       assert.equal(terminals(sink).length, 1, "both subscribers see the turn end");
@@ -642,15 +644,15 @@ describe("session event stream: subscriber containment (#1019)", () => {
   });
 
   it("a slow subscriber over the 1 MB budget is evicted alone", async () => {
-    const store = new SessionStore();
+    const store = createInMemoryStore();
+    const id = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
     const slow = new FakeSink();
     slow.pendingBytes = MAX_PENDING_BYTES + 1;
     const fast = new FakeSink();
-    store.putSessionFixture("s", textSession(), "/tmp");
-    store.openStream("s", slow);
-    store.openStream("s", fast);
+    store.openStream(id, slow);
+    store.openStream(id, fast);
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.text, "Hello world", "eviction must not disturb the turn");
     assert.equal(slow.ended, 1, "the subscriber past the byte budget is evicted");
@@ -664,22 +666,21 @@ describe("session event stream: subscriber containment (#1019)", () => {
     // Exactly at the budget is still within it (<=, not <).
     const edge = new FakeSink();
     edge.pendingBytes = MAX_PENDING_BYTES;
-    store.putSessionFixture("edge", textSession(), "/tmp");
-    store.openStream("edge", edge);
-    await store.prompt("edge", "hi");
+    const edgeId = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
+    store.openStream(edgeId, edge);
+    await store.prompt(edgeId, "hi");
     assert.equal(edge.ended, 0, "a subscriber at exactly the budget is kept");
     assert.equal(terminals(edge).length, 1);
   });
 
-  it("detaching on close leaves the hub empty with no lingering timers", (t) => {
+  it("detaching on close leaves the hub empty with no lingering timers", async (t) => {
+    const { store, id } = await createSession(textSession());
     t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
-    const store = new SessionStore();
     const first = new FakeSink();
     const second = new FakeSink();
-    store.putSessionFixture("s", textSession(), "/tmp");
 
-    const detachFirst = store.openStream("s", first);
-    const detachSecond = store.openStream("s", second);
+    const detachFirst = store.openStream(id, first);
+    const detachSecond = store.openStream(id, second);
     assert.equal(comments(first).length, 0);
 
     detachFirst();
@@ -687,8 +688,7 @@ describe("session event stream: subscriber containment (#1019)", () => {
 
     assert.equal(first.ended, 1);
     assert.equal(second.ended, 1);
-    const hub = (store as any).sessions.get("s").streams;
-    assert.equal(hub.size, 0, "subscriber count must return to zero");
+    assert.equal(store.streamCount(id), 0, "subscriber count must return to zero");
 
     // A cleared keepalive/idle timer must not fire after detach.
     t.mock.timers.tick(IDLE_MS + KEEPALIVE_MS * 4);
@@ -697,17 +697,16 @@ describe("session event stream: subscriber containment (#1019)", () => {
     assert.equal(second.ended, 1);
   });
 
-  it("detach is idempotent — a teardown that fires twice closes the sink once", () => {
-    const store = new SessionStore();
+  it("detach is idempotent — a teardown that fires twice closes the sink once", async () => {
+    const { store, id } = await createSession(textSession());
     const sink = new FakeSink();
-    store.putSessionFixture("s", textSession(), "/tmp");
-    const detach = store.openStream("s", sink);
+    const detach = store.openStream(id, sink);
 
     detach();
     detach();
     // Request and response teardown can both land (a retried or raced close).
     assert.equal(sink.ended, 1, "the sink is ended exactly once");
-    assert.equal((store as any).sessions.get("s").streams.size, 0);
+    assert.equal(store.streamCount(id), 0);
     assert.doesNotThrow(() => detach());
   });
 });
@@ -715,20 +714,17 @@ describe("session event stream: subscriber containment (#1019)", () => {
 describe("session event stream: redaction and framing (#1019)", () => {
   it("a delta echoing the session api_key arrives redacted in the frame", async () => {
     const secret = "sk-live-1019-fixture-secret"; // pragma: allowlist secret — synthetic test sentinel
-    const store = new SessionStore();
-    const sink = new FakeSink();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta(`key is ${secret}`));
         emit(agentEnd(`key is ${secret}`));
       }),
-      "/tmp",
+      { apiKey: secret },
     );
-    (store as any).sessions.get("s").redact = createApiKeyRedactor(secret);
-    store.openStream("s", sink);
+    const sink = new FakeSink();
+    store.openStream(id, sink);
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     const [deltaEvent] = events(sink).filter((event) => event.type === "text_delta");
     assert.equal(deltaEvent.delta, "key is [REDACTED]");
@@ -738,20 +734,17 @@ describe("session event stream: redaction and framing (#1019)", () => {
   });
 
   it("a delta containing an SSE frame cannot inject a second event", async () => {
-    const store = new SessionStore();
-    const sink = new FakeSink();
     const injected = '\n\ndata: {"x":1}';
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta(injected));
         emit(agentEnd(injected));
       }),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    const sink = new FakeSink();
+    store.openStream(id, sink);
 
-    await store.prompt("s", "hi");
+    await store.prompt(id, "hi");
 
     // Client-side: the injected text is one delta event, not an extra frame.
     const parsed = events(sink);
@@ -769,8 +762,8 @@ describe("session event stream: split-key redaction (#1019 holdback)", () => {
   const KEY = "sk-split-holdback-0123456789"; // pragma: allowlist secret — synthetic test sentinel
 
   /** One turn that streams `parts` in order, each part its own delta. */
-  function splitSession(parts: string[]) {
-    return fixtureSession((emit) => {
+  function splitSession(parts: string[]): StoredSession {
+    return scriptedSession((emit) => {
       for (const part of parts) emit(delta(part));
       emit(agentEnd(parts.join("")));
     });
@@ -780,13 +773,14 @@ describe("session event stream: split-key redaction (#1019 holdback)", () => {
     const before = "the key is ";
     // Every split point, so a fix that merely widens the buffer fails on some.
     for (let cut = 1; cut < KEY.length; cut++) {
-      const store = new SessionStore();
+      const { store, id } = await createSession(
+        splitSession([before, KEY.slice(0, cut), KEY.slice(cut), " done"]),
+        { apiKey: KEY },
+      );
       const sink = new FakeSink();
-      store.putSessionFixture("s", splitSession([before, KEY.slice(0, cut), KEY.slice(cut), " done"]), "/tmp");
-      (store as any).sessions.get("s").redact = createApiKeyRedactor(KEY);
-      store.openStream("s", sink);
+      store.openStream(id, sink);
 
-      const result = await store.prompt("s", "hi");
+      const result = await store.prompt(id, "hi");
 
       const deltas = events(sink).filter((event) => event.type === "text_delta").map((event) => event.delta);
       const streamed = deltas.join("");
@@ -813,17 +807,14 @@ describe("session event stream: split-key redaction (#1019 holdback)", () => {
     const asFramePayload = (needle: string) => JSON.stringify(needle).slice(1, -1);
     for (const form of [percent, jsonEscapedPercent]) {
       for (let cut = 1; cut < form.length; cut++) {
-        const store = new SessionStore();
-        const sink = new FakeSink();
-        store.putSessionFixture(
-          "s",
+        const { store, id } = await createSession(
           splitSession([`echo ${form.slice(0, cut)}`, `${form.slice(cut)} done`]),
-          "/tmp",
+          { apiKey: KEY },
         );
-        (store as any).sessions.get("s").redact = createApiKeyRedactor(KEY);
-        store.openStream("s", sink);
+        const sink = new FakeSink();
+        store.openStream(id, sink);
 
-        const result = await store.prompt("s", "hi");
+        const result = await store.prompt(id, "hi");
 
         const streamed = events(sink).filter((event) => event.type === "text_delta").map((event) => event.delta).join("");
         for (const needle of [KEY, percent, jsonEscapedPercent]) {
@@ -840,12 +831,11 @@ describe("session event stream: split-key redaction (#1019 holdback)", () => {
   });
 
   it("holds text back only for a session that carries a key", async () => {
-    const store = new SessionStore();
+    const { store, id } = await createSession(textSession());
     const sink = new FakeSink();
-    store.putSessionFixture("s", textSession(), "/tmp");
-    store.openStream("s", sink);
+    store.openStream(id, sink);
 
-    await store.prompt("s", "hi");
+    await store.prompt(id, "hi");
 
     // A key-free redactor needs no window: deltas go out as they arrive.
     assert.deepEqual(
@@ -856,12 +846,11 @@ describe("session event stream: split-key redaction (#1019 holdback)", () => {
 });
 
 describe("session event stream: keepalive and idle reaping (#1019)", () => {
-  it("sends a keepalive comment while the feed is idle", (t) => {
+  it("sends a keepalive comment while the feed is idle", async (t) => {
+    const { store, id } = await createSession(textSession());
     t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
-    const store = new SessionStore();
     const sink = new FakeSink();
-    store.putSessionFixture("s", textSession(), "/tmp");
-    store.openStream("s", sink);
+    store.openStream(id, sink);
 
     t.mock.timers.tick(KEEPALIVE_MS - 1);
     assert.equal(comments(sink).length, 0, "no keepalive before the interval elapses");
@@ -871,12 +860,11 @@ describe("session event stream: keepalive and idle reaping (#1019)", () => {
     assert.equal(events(sink).length, 1, "a keepalive adds no event");
   });
 
-  it("reaps a subscribe-only client on the idle timeout despite its keepalives", (t) => {
+  it("reaps a subscribe-only client on the idle timeout despite its keepalives", async (t) => {
+    const { store, id } = await createSession(textSession());
     t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
-    const store = new SessionStore();
     const sink = new FakeSink();
-    store.putSessionFixture("s", textSession(), "/tmp");
-    store.openStream("s", sink);
+    store.openStream(id, sink);
 
     t.mock.timers.tick(IDLE_MS - KEEPALIVE_MS);
     assert.ok(comments(sink).length >= 30, "keepalives keep flowing while the client is silent");
@@ -891,47 +879,47 @@ describe("session event stream: keepalive and idle reaping (#1019)", () => {
 });
 
 describe("session event stream: session lifecycle (#1019)", () => {
-  it("DELETE, cleanupStale and disposeAll all end that session's streams", async () => {
-    const store = new SessionStore();
+  it("DELETE, cleanupStale and disposeAll all end that session's streams", async (t) => {
+    t.mock.timers.enable({ apis: ["Date"] });
+    const store = createInMemoryStore();
 
-    store.putSessionFixture("deleted", textSession(), "/tmp");
+    const deletedId = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
     const deleted = new FakeSink();
-    store.openStream("deleted", deleted);
-    assert.equal(store.delete("deleted"), true);
+    store.openStream(deletedId, deleted);
+    assert.equal(store.delete(deletedId), true);
     assert.equal(deleted.ended, 1, "DELETE /sessions/:id ends the feed");
 
-    store.putSessionFixture("stale", textSession(), "/tmp");
+    const staleId = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
     const stale = new FakeSink();
-    store.openStream("stale", stale);
-    (store as any).sessions.get("stale").lastActivity = Date.now() - 60_000;
+    store.openStream(staleId, stale);
+    t.mock.timers.tick(60_000);
     assert.equal(store.cleanupStale(1_000), 1);
     assert.equal(stale.ended, 1, "cleanupStale ends the feed of the session it removes");
 
-    store.putSessionFixture("disposed", textSession(), "/tmp");
+    const disposedId = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
     const disposed = new FakeSink();
-    store.openStream("disposed", disposed);
+    store.openStream(disposedId, disposed);
     await store.disposeAll();
     assert.equal(disposed.ended, 1, "disposeAll ends the feed");
   });
 
-  it("enforces the per-session stream ceiling and rejects unknown sessions", () => {
-    const store = new SessionStore();
-    store.putSessionFixture("s", textSession(), "/tmp");
+  it("enforces the per-session stream ceiling and rejects unknown sessions", async () => {
+    const { store, id } = await createSession(textSession());
     const sinks: FakeSink[] = [];
     for (let i = 0; i < MAX_STREAMS_PER_SESSION; i++) {
       const sink = new FakeSink();
       sinks.push(sink);
-      store.openStream("s", sink);
+      store.openStream(id, sink);
     }
-    assert.equal((store as any).sessions.get("s").streams.size, MAX_STREAMS_PER_SESSION);
+    assert.equal(store.streamCount(id), MAX_STREAMS_PER_SESSION);
 
     assert.throws(
-      () => store.assertStreamAllowed("s"),
+      () => store.assertStreamAllowed(id),
       (err: any) => err.statusCode === 429 && /max 8/.test(err.message),
       "the 9th subscriber on one session is rejected with 429",
     );
     assert.throws(
-      () => store.openStream("s", new FakeSink()),
+      () => store.openStream(id, new FakeSink()),
       (err: any) => err.statusCode === 429,
       "openStream re-checks the ceiling",
     );
@@ -942,13 +930,11 @@ describe("session event stream: session lifecycle (#1019)", () => {
     );
   });
 
-  it("enforces the process-wide stream ceiling across sessions", () => {
-    const store = new SessionStore();
+  it("enforces the process-wide stream ceiling across sessions", async () => {
+    const store = createInMemoryStore();
     const ids: string[] = [];
     for (let session = 0; session < 5; session++) {
-      const id = `s${session}`;
-      ids.push(id);
-      store.putSessionFixture(id, textSession(), "/tmp");
+      ids.push(await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" }));
     }
     // 4 sessions × 8 = 32 — the global ceiling.
     for (const id of ids.slice(0, 4)) {
@@ -964,19 +950,16 @@ describe("session event stream: session lifecycle (#1019)", () => {
 
 describe("prompt response: stop_reason (#1111)", () => {
   it("a clean turn reports stop_reason end_turn and no error", async () => {
-    const store = new SessionStore();
-    const sink = new FakeSink();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("complete answer"));
         emit(agentEnd("complete answer", "end_turn"));
       }),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    const sink = new FakeSink();
+    store.openStream(id, sink);
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.stop_reason, "end_turn", "the response body alone identifies a normal stop");
     assert.equal(result.error, undefined);
@@ -986,20 +969,17 @@ describe("prompt response: stop_reason (#1111)", () => {
   });
 
   it("a partial reply that stopped on error is distinguishable from a clean end_turn", async () => {
-    const store = new SessionStore();
-    const sink = new FakeSink();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("partial"));
         emit({ type: "error", error: "provider exploded" });
         emit(agentEnd("partial", "error"));
       }),
-      "/tmp",
     );
-    store.openStream("s", sink);
+    const sink = new FakeSink();
+    store.openStream(id, sink);
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.text, "partial");
     assert.ok(result.error, "the collected error is still surfaced");
@@ -1010,17 +990,14 @@ describe("prompt response: stop_reason (#1111)", () => {
   });
 
   it("a rejected turn with partial text reports stop_reason error", async () => {
-    const store = new SessionStore();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("partial"));
         throw new Error("provider exploded mid-turn");
       }),
-      "/tmp",
     );
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.text, "partial");
     assert.ok(result.error, "the rejection is still surfaced as a structured result");
@@ -1029,18 +1006,15 @@ describe("prompt response: stop_reason (#1111)", () => {
   });
 
   it("a rejected turn with partial text and collected errors reports stop_reason error", async () => {
-    const store = new SessionStore();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("partial"));
         emit({ type: "error", error: "provider exploded" });
         throw new Error("connection lost");
       }),
-      "/tmp",
     );
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.text, "partial");
     assert.ok(result.error, "the collected and rejection errors are surfaced");
@@ -1048,16 +1022,13 @@ describe("prompt response: stop_reason (#1111)", () => {
   });
 
   it("a turn with no final assistant message and no error reports null", async () => {
-    const store = new SessionStore();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("partial"));
       }),
-      "/tmp",
     );
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.error, undefined);
     assert.equal(result.stop_reason, null, "nothing to guess when no assistant message ended the turn");
@@ -1067,52 +1038,61 @@ describe("prompt response: stop_reason (#1111)", () => {
 describe("session event stream: non-streaming redaction bypass & late subscriber (#1161)", () => {
   it("skips per-delta redaction when no SSE subscribers are attached while still redacting final response", async () => {
     const secret = "sk-non-stream-key-1161"; // pragma: allowlist secret — synthetic test sentinel
-    const store = new SessionStore();
     const realRedact = createApiKeyRedactor(secret);
     let redactCalls = 0;
-    const deltas = ["prefix ", ...Array.from({ length: 50 }, (_, i) => `c${i} `), "sk-non-", "stream-", "key-1161", " suffix"];
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
-        for (const chunk of deltas) emit(delta(chunk));
-        emit(agentEnd(deltas.join("")));
-      }),
-      "/tmp",
-    );
-    (store as any).sessions.get("s").redact = (value: string) => {
+    const countingRedact = (value: string) => {
       redactCalls++;
       return realRedact(value);
     };
+    const deltas = ["prefix ", ...Array.from({ length: 50 }, (_, i) => `c${i} `), "sk-non-", "stream-", "key-1161", " suffix"];
 
-    const result = await store.prompt("s", "hi");
+    // Verify holdback performs zero per-delta redaction calls when no subscribers are attached.
+    const hub = new SessionEventStreams();
+    const holdback = new StreamDeltaHoldback(countingRedact, hub, 1);
+    let acc = "";
+    for (const chunk of deltas) {
+      const prevLen = acc.length;
+      acc += chunk;
+      holdback.pushDelta(chunk, acc, prevLen);
+    }
+    holdback.flush();
+    assert.equal(redactCalls, 0, "expected zero per-delta redaction calls when streams.size === 0");
+
+    // End-to-end through SessionStore.prompt(): final response is still redacted.
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
+        for (const chunk of deltas) emit(delta(chunk));
+        emit(agentEnd(deltas.join("")));
+      }),
+      { apiKey: secret },
+    );
+
+    const result = await store.prompt(id, "hi");
 
     const expectedPrefix = `prefix ${Array.from({ length: 50 }, (_, i) => `c${i} `).join("")}`;
     assert.equal(result.text, `${expectedPrefix}[REDACTED] suffix`);
-    // Only 1 cwd diagnostic redaction + 1 final responseText redaction — never per-delta (54 deltas).
-    assert.equal(redactCalls, 2, "expected no per-delta redaction calls when streams.size === 0");
   });
 
   it("handles a subscriber attaching mid-turn without leaking pre-attach deltas or keys", async () => {
     const secret = "sk-late-attach-1161"; // pragma: allowlist secret — synthetic test sentinel
-    const store = new SessionStore();
     const sink = new FakeSink();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    let store!: SessionStore;
+    let id = "";
+    ({ store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("before "));
         emit(delta(secret));
-        store.openStream("s", sink);
+        store.openStream(id, sink);
         emit(delta(" after "));
         emit(delta(secret.slice(0, 8)));
         emit(delta(secret.slice(8)));
         emit(delta(" end"));
         emit(agentEnd(`before ${secret} after ${secret} end`));
       }),
-      "/tmp",
-    );
-    (store as any).sessions.get("s").redact = createApiKeyRedactor(secret);
+      { apiKey: secret },
+    ));
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.text, "before [REDACTED] after [REDACTED] end");
     const streamedDeltas = events(sink).filter((event) => event.type === "text_delta").map((event) => event.delta).join("");
@@ -1123,15 +1103,35 @@ describe("session event stream: non-streaming redaction bypass & late subscriber
 
   it("stops per-delta redaction after the only subscriber detaches mid-turn", async () => {
     const secret = "sk-detach-mid-turn-1161"; // pragma: allowlist secret — synthetic test sentinel
-    const store = new SessionStore();
-    const sink = new FakeSink();
     const realRedact = createApiKeyRedactor(secret);
     let redactCalls = 0;
-    let detach: (() => void) | undefined;
+    const countingRedact = (value: string) => {
+      redactCalls++;
+      return realRedact(value);
+    };
 
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    // Verify holdback stops invoking redact once the sole subscriber detaches.
+    const hub = new SessionEventStreams();
+    const hubSink = new FakeSink();
+    const detachHub = hub.add(hubSink);
+    const holdback = new StreamDeltaHoldback(countingRedact, hub, 1);
+    let acc = "hello ";
+    holdback.pushDelta("hello ", acc, 0);
+    detachHub();
+    for (let i = 0; i < 20; i++) {
+      const chunk = `chunk-${i} `;
+      const prevLen = acc.length;
+      acc += chunk;
+      holdback.pushDelta(chunk, acc, prevLen);
+    }
+    holdback.flush();
+    assert.equal(redactCalls, 1, "expected redact to stop immediately after sole subscriber detaches");
+
+    // End-to-end through SessionStore.prompt(): final response still redacts secret after detach.
+    const sink = new FakeSink();
+    let detach: (() => void) | undefined;
+    const { store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("hello "));
         detach?.();
         for (let i = 0; i < 20; i++) {
@@ -1140,42 +1140,35 @@ describe("session event stream: non-streaming redaction bypass & late subscriber
         emit(delta(secret));
         emit(agentEnd(`hello ${Array.from({ length: 20 }, (_, i) => `chunk-${i} `).join("")}${secret}`));
       }),
-      "/tmp",
+      { apiKey: secret },
     );
-    (store as any).sessions.get("s").redact = (value: string) => {
-      redactCalls++;
-      return realRedact(value);
-    };
-    detach = store.openStream("s", sink);
+    detach = store.openStream(id, sink);
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.ok(result.text.endsWith("[REDACTED]"));
     assert.ok(!result.text.includes(secret));
-    // Only the pre-detach delta(s) + 1 final responseText redaction should run, not 21+ delta calls.
-    assert.ok(redactCalls <= 3, `expected <= 3 redact calls after mid-turn detach, got ${redactCalls}`);
   });
 
   it("redacts a key split across a late subscriber attach boundary without leaking key tail or pre-attach text", async () => {
     const secret = "sk-split-across-attach-1161"; // pragma: allowlist secret — synthetic test sentinel
-    const store = new SessionStore();
     const sink = new FakeSink();
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    let store!: SessionStore;
+    let id = "";
+    ({ store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("pre-attach text "));
         emit(delta(secret.slice(0, 10)));
-        store.openStream("s", sink);
+        store.openStream(id, sink);
         emit(delta(secret.slice(10, 18)));
         emit(delta(secret.slice(18)));
         emit(delta(" post-attach"));
         emit(agentEnd(`pre-attach text ${secret} post-attach`));
       }),
-      "/tmp",
-    );
-    (store as any).sessions.get("s").redact = createApiKeyRedactor(secret);
+      { apiKey: secret },
+    ));
 
-    const result = await store.prompt("s", "hi");
+    const result = await store.prompt(id, "hi");
 
     assert.equal(result.text, "pre-attach text [REDACTED] post-attach");
     const streamedDeltas = events(sink).filter((event) => event.type === "text_delta").map((event) => event.delta).join("");
@@ -1187,26 +1180,24 @@ describe("session event stream: non-streaming redaction bypass & late subscriber
 
   it("drops stale holdback before a new subscriber attaches during a quiet gap", async () => {
     const secret = "sk-reattach-gap-1161"; // pragma: allowlist secret — synthetic test sentinel
-    const store = new SessionStore();
     const firstSink = new FakeSink();
     const secondSink = new FakeSink();
     let detachFirst: (() => void) | undefined;
-
-    store.putSessionFixture(
-      "s",
-      fixtureSession((emit) => {
+    let store!: SessionStore;
+    let id = "";
+    ({ store, id } = await createSession(
+      scriptedSession((emit) => {
         emit(delta("first-sub-only"));
         detachFirst?.();
-        store.openStream("s", secondSink);
+        store.openStream(id, secondSink);
         emit(delta(" second-sub-only"));
         emit(agentEnd("first-sub-only second-sub-only"));
       }),
-      "/tmp",
-    );
-    (store as any).sessions.get("s").redact = createApiKeyRedactor(secret);
-    detachFirst = store.openStream("s", firstSink);
+      { apiKey: secret },
+    ));
+    detachFirst = store.openStream(id, firstSink);
 
-    await store.prompt("s", "hi");
+    await store.prompt(id, "hi");
 
     const secondDeltas = events(secondSink).filter((event) => event.type === "text_delta").map((event) => event.delta).join("");
     assert.ok(!secondDeltas.includes("first-sub-only"), `stale holdback leaked to re-attached subscriber: ${secondDeltas}`);

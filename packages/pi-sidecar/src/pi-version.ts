@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 import { logger } from "./logger.js";
-import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
+import { resolveExtensionPathDetailed } from "./provider-runtime.js";
 
 /** Minimum @earendil-works/pi-coding-agent version the sidecar supports (same floor as pi-config orchestrator). */
 export const MIN_PI_VERSION = "1.6.0";
@@ -40,7 +40,7 @@ export function compareVersions(a: string, b: string): number {
  * Uses resolveExtensionPathDetailed()'s search-path fallback rather than a
  * plain `require.resolve('pkg/package.json')`: the SDK is an ESM-only package
  * with a strict `exports` map, which makes the plain form throw
- * `ERR_PACKAGE_PATH_NOT_EXPORTED` (see AGENTS.md §9 / resolve-extension-path.ts).
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED` (see AGENTS.md §9 / provider-runtime.ts).
  */
 export function getInstalledPiVersion(): string | null {
   try {

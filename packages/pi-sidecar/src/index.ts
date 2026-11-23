@@ -1,4 +1,23 @@
-export { SessionStore, type CreateSessionOptions, type CustomToolConfig, DEFAULT_TOOLS, resolveInternalAgentDir, INTERNAL_AGENT_DIR } from "./sessions.js";
+export {
+  SessionStore,
+  PiProviderRuntime,
+  type SessionStoreOptions,
+  type ProviderRuntime,
+  type PiProviderRuntimeOptions,
+  type StoredSession,
+  type ProviderStatus,
+  type DiscoveredProvider,
+  type DiscoveredModel,
+  type KeyScopedModel,
+  type KeyScopedModelsResult,
+  type CreateRuntimeSessionInput,
+  type CreatedRuntimeSession,
+  type CreateSessionOptions,
+  type CustomToolConfig,
+  DEFAULT_TOOLS,
+  resolveInternalAgentDir,
+  INTERNAL_AGENT_DIR,
+} from "./sessions.js";
 export { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 export { createHttpToolExecutor, normalizeHttpToolConfig, interpolate, type HttpToolConfig } from "./http-tool-executor.js";
 export { createLogger } from "./logger.js";

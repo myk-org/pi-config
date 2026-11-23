@@ -1,111 +1,61 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { SessionStore, hasKnownPricing } from "../../src/sessions.js";
+import {
+  PiProviderRuntime,
+  SessionStore,
+  hasKnownPricing,
+  type DiscoveredModel,
+  type InternalRuntimeHandle,
+} from "../../src/sessions.js";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import {
+  InMemoryProviderRuntime,
+  createNoopStoredSession,
+  type InMemoryProviderRuntimeOptions,
+} from "./helpers/in-memory-runtime.js";
 
 /**
  * Unit tests for SessionStore lifecycle (refresh / catalog / status / concurrency).
  *
- * Fully mocked runtime for catalog/lifecycle tests — never creates a real
- * AgentSessionRuntime.
+ * Driven through the injected in-memory ProviderRuntime adapter — never creates
+ * a real AgentSessionRuntime (except the explicit PiProviderRuntime shutdown test).
  */
 
-type DiscoveredModel = { id: string; name: string; provider: string };
-
-function fakeSession(): { dispose: () => void } {
-  return { dispose: () => {} };
-}
-
-function fixtureSession(overrides: {
-  prompt?: () => Promise<void>;
-} = {}): {
-  subscribe: () => () => void;
-  prompt: () => Promise<void>;
-  dispose: () => void;
-  abort: () => Promise<void>;
+function createTestStore(options: InMemoryProviderRuntimeOptions = {}): {
+  store: SessionStore;
+  runtime: InMemoryProviderRuntime;
 } {
-  return {
-    subscribe: () => () => {},
-    prompt: overrides.prompt ?? (async () => {}),
-    dispose: () => {},
-    abort: async () => {},
-  };
+  const runtime = new InMemoryProviderRuntime(options);
+  const store = new SessionStore({ runtime });
+  return { store, runtime };
 }
 
-function installMockRuntime(
-  store: any,
-  options: {
-    available?: DiscoveredModel[];
-    providerModels?: Record<string, DiscoveredModel[]>;
-  } = {},
-): { refreshCalls: number; available: DiscoveredModel[] } {
-  const available = options.available ?? [
-    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", provider: "google" },
-    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", provider: "google" },
-  ];
-  const providerModels = options.providerModels ?? {
-    google: available.filter((m) => m.provider === "google"),
-  };
-  const state = { refreshCalls: 0, available };
-
-  store.internalRuntime = {
-    dispose: async () => {},
-    services: {},
-    diagnostics: [],
-  };
-  store.modelRuntime = {
-    getProvider: (id: string) => {
-      const models = providerModels[id];
-      return models ? { getModels: () => models } : undefined;
-    },
-    getRegisteredNativeProvider: () => undefined,
-    getModel: (provider: string, modelId: string) => {
-      const models = providerModels[provider] ?? [];
-      return models.find((m) => m.id === modelId);
-    },
-    refresh: async () => {
-      state.refreshCalls += 1;
-      return { errors: new Map() };
-    },
-    checkAuth: async () => null,
-    getProviderAuthStatus: (provider: string) =>
-      provider === "google"
-        ? { configured: true, source: "environment", label: "MOCK_KEY" }
-        : undefined,
-  };
-  store.modelRegistry = {
-    getAvailable: () => state.available,
-    find: (provider: string, modelId: string) =>
-      state.available.find((m) => m.provider === provider && m.id === modelId),
-  };
-  return state;
-}
-
-describe("SessionStore (mocked runtime)", () => {
+describe("SessionStore (in-memory runtime adapter)", () => {
   it("is not ready before any discovery has run", () => {
-    const store = new SessionStore();
+    const { store } = createTestStore();
     assert.equal(store.ready, false);
     assert.equal(store.discoveryError, null);
     assert.equal(store.count(), 0);
   });
 
   it("refreshModels() marks ready and returns the mocked available catalog", async () => {
-    const store = new SessionStore() as any;
-    const state = installMockRuntime(store);
+    const { store, runtime } = createTestStore();
 
     const models = await store.refreshModels();
     assert.equal(store.ready, true);
     assert.equal(store.discoveryError, null);
-    assert.equal(models.length, state.available.length);
+    assert.equal(models.length, runtime.available.length);
     assert.ok(models.every((m: DiscoveredModel) => m.provider === "google"));
-    // Pre-installed internalRuntime → refresh path (not first-discovery create).
-    assert.equal(state.refreshCalls, 1);
+    assert.equal(runtime.refreshCalls, 1);
   });
 
   it("refreshModels() returns an empty available catalog without treating it as failure", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store, { available: [], providerModels: { google: [{ id: "gemini-2.5-flash", name: "Flash", provider: "google" }] } });
+    const { store } = createTestStore({
+      available: [],
+      providerModels: { google: [{ id: "gemini-2.5-flash", name: "Flash", provider: "google" }] },
+    });
 
     const models = await store.refreshModels();
     assert.equal(models.length, 0);
@@ -117,20 +67,18 @@ describe("SessionStore (mocked runtime)", () => {
     assert.equal(google.modelCount, 1);
   });
 
-  it("refreshModels() can be called again and hits ModelRuntime.refresh each time after init", async () => {
-    const store = new SessionStore() as any;
-    const state = installMockRuntime(store);
+  it("refreshModels() can be called again and hits runtime refresh each time", async () => {
+    const { store, runtime } = createTestStore();
 
     const first = await store.refreshModels();
     const second = await store.refreshModels();
     assert.equal(second.length, first.length);
-    assert.equal(state.refreshCalls, 2);
+    assert.equal(runtime.refreshCalls, 2);
     assert.equal(store.discoveryError, null);
   });
 
   it("getModels() matches the most recent refreshModels() snapshot", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store);
+    const { store } = createTestStore();
 
     const refreshed = await store.refreshModels();
     const listed = await store.getModels();
@@ -141,8 +89,7 @@ describe("SessionStore (mocked runtime)", () => {
   });
 
   it("getModels() triggers discovery when store is not yet ready", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store);
+    const { store } = createTestStore();
 
     assert.equal(store.ready, false);
     const listed = await store.getModels();
@@ -151,22 +98,18 @@ describe("SessionStore (mocked runtime)", () => {
   });
 
   it("concurrent getModels() before ready share one refreshModels pass", async () => {
-    const store = new SessionStore() as any;
-    const state = installMockRuntime(store);
+    const { store, runtime } = createTestStore();
 
     const [a, b] = await Promise.all([store.getModels(), store.getModels()]);
     assert.deepEqual(
       a.map((m: DiscoveredModel) => m.id).sort(),
       b.map((m: DiscoveredModel) => m.id).sort(),
     );
-    // Mock installs internalRuntime up front, so discovery hits ModelRuntime.refresh
-    // once; concurrent callers must join the same in-flight promise.
-    assert.equal(state.refreshCalls, 1);
+    assert.equal(runtime.refreshCalls, 1);
   });
 
   it("getProviderStatus() reports a registered builtin provider with a positive model count", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store);
+    const { store } = createTestStore();
     await store.refreshModels();
     const status = await store.getProviderStatus("google");
     assert.equal(status.provider, "google");
@@ -176,8 +119,7 @@ describe("SessionStore (mocked runtime)", () => {
   });
 
   it("getProviderStatus() reports registered=false and modelCount=0 for an unknown provider", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store);
+    const { store } = createTestStore();
     const status = await store.getProviderStatus("totally-unknown-provider-xyz");
     assert.equal(status.registered, false);
     assert.equal(status.modelCount, 0);
@@ -185,8 +127,7 @@ describe("SessionStore (mocked runtime)", () => {
   });
 
   it("create() rejects an unknown builtin model", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store);
+    const { store } = createTestStore();
     await store.refreshModels();
     await assert.rejects(
       () => store.create({ provider: "google", model: "not-a-real-model-xyz", systemPrompt: "test", cwd: "/tmp" }),
@@ -195,20 +136,22 @@ describe("SessionStore (mocked runtime)", () => {
   });
 
   describe("concurrent sessions interleaved with refresh", () => {
-    it("keeps the model catalog stable while mocked sessions are created/deleted concurrently with refreshModels()", async () => {
-      const store = new SessionStore() as any;
-      const state = installMockRuntime(store);
+    it("keeps the model catalog stable while in-memory sessions are created/deleted concurrently with refreshModels()", async () => {
+      const { store, runtime } = createTestStore();
 
       const baseline = await store.refreshModels();
       const baselineIds = baseline.map((m: DiscoveredModel) => `${m.provider}/${m.id}`).sort();
 
-      // Inject fake session entries — never call create() (that would hit the real SDK).
-      // putSessionFixture, not a hand-built entry: every entry now carries the
-      // #1019 stream hub that delete() closes.
-      const sessionIds = Array.from({ length: 5 }, (_, i) => `mock-session-${i}`);
-      for (const id of sessionIds) {
-        store.putSessionFixture(id, fakeSession(), "/tmp");
-      }
+      const sessionIds = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          store.create({
+            provider: "google",
+            model: "gemini-2.5-flash",
+            systemPrompt: "test",
+            cwd: "/tmp",
+          }),
+        ),
+      );
       assert.equal(store.count(), 5);
 
       const concurrentRefreshes = Array.from({ length: 3 }, () => store.refreshModels());
@@ -221,7 +164,7 @@ describe("SessionStore (mocked runtime)", () => {
           "every concurrent refreshModels() call must return the same stable catalog",
         );
       }
-      assert.ok(state.refreshCalls >= 2); // 1 baseline + ≥1 coalesced concurrent batch (inFlight join)
+      assert.ok(runtime.refreshCalls >= 2); // 1 baseline + ≥1 coalesced concurrent batch (inFlight join)
 
       const [idsToDelete, idsToKeep] = [sessionIds.slice(0, 3), sessionIds.slice(3)];
       const [deleteResults, finalRefresh] = await Promise.all([
@@ -250,11 +193,15 @@ describe("SessionStore (mocked runtime)", () => {
   });
 
   it("getProviderStatus() returns controlled 503 when discovery left no runtime", async () => {
-    const store = new SessionStore() as any;
-    // Simulate failed init: ready but no modelRuntime/modelRegistry.
-    store._ready = true;
-    store.modelRuntime = undefined;
-    store.modelRegistry = undefined;
+    const runtime = new PiProviderRuntime({
+      createInternalRuntime: async () => {
+        throw new Error("synthetic init failure");
+      },
+    });
+    const store = new SessionStore({ runtime });
+    await assert.rejects(() => store.refreshModels(), /synthetic init failure/);
+    assert.equal(store.ready, true);
+    assert.equal(store.discoveryError, "synthetic init failure");
     await assert.rejects(
       () => store.getProviderStatus("google"),
       (err: any) => err?.statusCode === 503 && /runtime unavailable/.test(String(err?.message)),
@@ -262,8 +209,7 @@ describe("SessionStore (mocked runtime)", () => {
   });
 
   it("create() rejects HEADLESS_EXCLUDED_PROVIDERS (e.g. github-copilot)", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store);
+    const { store } = createTestStore();
     await assert.rejects(
       () =>
         store.create({
@@ -276,96 +222,109 @@ describe("SessionStore (mocked runtime)", () => {
     );
   });
 
-  it("disposeAll() awaits in-flight runtimeInit and disposes a runtime assigned mid-shutdown", async () => {
-    const store = new SessionStore() as any;
+  it("disposeAll() awaits in-flight runtimeInit and disposes a runtime created mid-shutdown", async () => {
     let runtimeDisposed = false;
-    const fakeRuntime = {
+    let releaseInit!: (handle: InternalRuntimeHandle) => void;
+    const initGate = new Promise<InternalRuntimeHandle>((resolve) => {
+      releaseInit = resolve;
+    });
+
+    const piRuntime = new PiProviderRuntime({
+      createInternalRuntime: () => initGate,
+    });
+    const store = new SessionStore({ runtime: piRuntime });
+
+    const pendingProviders = store.getProviders();
+    const disposePromise = store.disposeAll();
+    assert.equal(store.disposed, true);
+
+    const modelRuntime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+    releaseInit({
+      services: { modelRuntime },
+      diagnostics: [],
+      takeUnreportedDiagnostics: () => [],
       dispose: async () => {
         runtimeDisposed = true;
       },
-    };
-
-    let resolveInit!: () => void;
-    store.runtimeInit = new Promise<void>((resolve) => {
-      resolveInit = () => {
-        store.internalRuntime = fakeRuntime;
-        resolve();
-      };
     });
 
-    const disposePromise = store.disposeAll();
-    assert.equal(store.disposed, true);
-    assert.equal(store.internalRuntime, undefined, "runtime must not exist yet mid-init");
-
-    resolveInit();
     await disposePromise;
-
-    assert.equal(runtimeDisposed, true, "runtime assigned during awaited init must be disposed");
-    assert.equal(store.internalRuntime, undefined);
-    assert.equal(store.runtimeInit, undefined);
+    await assert.rejects(pendingProviders, (err: any) => err?.statusCode === 503);
+    assert.equal(runtimeDisposed, true, "runtime created during awaited init must be disposed");
   });
 
   it("abort() reaches the SDK only while a turn is in flight (#1019)", async () => {
-    const store = new SessionStore();
     let aborted = false;
     let release!: () => void;
     const turn = new Promise<void>((resolve) => { release = resolve; });
-    store.putSessionFixture(
-      "s-abort",
-      {
-        ...fixtureSession(),
-        prompt: async () => {
-          await turn;
-        },
-        abort: async () => {
-          aborted = true;
-          release();
-        },
-      },
-      "/tmp/job-sidecar-768",
-    );
+    const { store } = createTestStore({
+      ready: true,
+      allowAnyModel: true,
+      sessionFactory: () =>
+        createNoopStoredSession({
+          prompt: async () => {
+            await turn;
+          },
+          abort: async () => {
+            aborted = true;
+            release();
+          },
+        }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "abort test",
+      cwd: "/tmp/job-sidecar-768",
+    });
     // An idle session has no turn to cancel — aborting must not flag the next one.
-    await store.abort("s-abort");
+    await store.abort(id);
     assert.equal(aborted, false);
 
-    const pending = store.prompt("s-abort", "hi");
-    await store.abort("s-abort");
+    const pending = store.prompt(id, "hi");
+    await store.abort(id);
     await pending;
     assert.equal(aborted, true);
   });
 
   /**
-   * Drives prompt() over a fixture session that reports `reportedTotal` as the
+   * Drives prompt() over an in-memory session that reports `reportedTotal` as the
    * turn cost, so cost and token assertions can live in separate tests.
    */
   const promptWithReportedCost = async (pricingKnown: boolean, reportedTotal: number | null, totalFromProvider?: boolean) => {
-    const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
-    const id = `s-pricing-${pricingKnown}-${reportedTotal}`;
-    store.putSessionFixture(
-      id,
-      {
-        subscribe: (cb: (event: unknown) => void) => {
-          emit = cb;
-          return () => {};
+    const { store } = createTestStore({
+      ready: true,
+      allowAnyModel: true,
+      sessionFactory: () => ({
+        session: {
+          subscribe: (cb: (event: unknown) => void) => {
+            emit = cb;
+            return () => {};
+          },
+          prompt: async () => {
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } });
+            emit({
+              type: "agent_end",
+              messages: [{
+                role: "assistant",
+                content: [{ type: "text", text: "done" }],
+                usage: { input: 10, output: 4, cacheRead: 3, cacheWrite: 2, cost: reportedTotal == null ? undefined : { total: reportedTotal, totalFromProvider } },
+              }],
+            });
+          },
+          dispose: () => {},
+          abort: async () => {},
         },
-        prompt: async () => {
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } });
-          emit({
-            type: "agent_end",
-            messages: [{
-              role: "assistant",
-              content: [{ type: "text", text: "done" }],
-              usage: { input: 10, output: 4, cacheRead: 3, cacheWrite: 2, cost: reportedTotal == null ? undefined : { total: reportedTotal, totalFromProvider } },
-            }],
-          });
-        },
-        dispose: () => {},
-        abort: async () => {},
-      },
-      "/tmp/job-pricing",
-      pricingKnown,
-    );
+        pricingKnown,
+      }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "pricing test",
+      cwd: "/tmp/job-pricing",
+    });
     return await store.prompt(id, "hi") as {
       usage: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; cost_usd: number | null; cost_partial: boolean };
     };
@@ -439,29 +398,36 @@ describe("SessionStore (mocked runtime)", () => {
    * and `cost_partial` must say so rather than let a partial figure read as complete.
    */
   it("prompt() flags a cost as partial when an unknown turn contributes nothing", async () => {
-    const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
-    store.putSessionFixture(
-      "s-pricing-partial",
-      {
-        subscribe: (cb: (event: unknown) => void) => {
-          emit = cb;
-          return () => {};
+    const { store } = createTestStore({
+      ready: true,
+      allowAnyModel: true,
+      sessionFactory: () => ({
+        session: {
+          subscribe: (cb: (event: unknown) => void) => {
+            emit = cb;
+            return () => {};
+          },
+          prompt: async () => {
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a" } });
+            emit({ type: "agent_end", messages: [
+              { role: "assistant", content: [{ type: "text", text: "a" }], usage: { input: 5, output: 2, cost: { total: 1.25 } } },
+              { role: "assistant", content: [{ type: "text", text: "b" }], usage: { input: 5, output: 2, cost: { total: 0 } } },
+            ] });
+          },
+          dispose: () => {},
+          abort: async () => {},
         },
-        prompt: async () => {
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a" } });
-          emit({ type: "agent_end", messages: [
-            { role: "assistant", content: [{ type: "text", text: "a" }], usage: { input: 5, output: 2, cost: { total: 1.25 } } },
-            { role: "assistant", content: [{ type: "text", text: "b" }], usage: { input: 5, output: 2, cost: { total: 0 } } },
-          ] });
-        },
-        dispose: () => {},
-        abort: async () => {},
-      },
-      "/tmp/job-pricing",
-      false,
-    );
-    const result = await store.prompt("s-pricing-partial", "hi") as { usage: { cost_usd: number | null; cost_partial: boolean } };
+        pricingKnown: false,
+      }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "partial cost test",
+      cwd: "/tmp/job-pricing",
+    });
+    const result = await store.prompt(id, "hi") as { usage: { cost_usd: number | null; cost_partial: boolean } };
     assert.equal(result.usage.cost_usd, 1.25, "the reported amount is kept");
     assert.equal(result.usage.cost_partial, true, "but the total is only a lower bound");
   });
@@ -472,29 +438,36 @@ describe("SessionStore (mocked runtime)", () => {
    * otherwise a mixed prompt returns a lower bound flagged as complete.
    */
   it("prompt() flags a cost as partial when an unknown turn reports no cost at all", async () => {
-    const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
-    store.putSessionFixture(
-      "s-pricing-omitted",
-      {
-        subscribe: (cb: (event: unknown) => void) => {
-          emit = cb;
-          return () => {};
+    const { store } = createTestStore({
+      ready: true,
+      allowAnyModel: true,
+      sessionFactory: () => ({
+        session: {
+          subscribe: (cb: (event: unknown) => void) => {
+            emit = cb;
+            return () => {};
+          },
+          prompt: async () => {
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a" } });
+            emit({ type: "agent_end", messages: [
+              { role: "assistant", content: [{ type: "text", text: "a" }], usage: { input: 5, output: 2, cost: { total: 2.5 } } },
+              { role: "assistant", content: [{ type: "text", text: "b" }], usage: { input: 5, output: 2 } },
+            ] });
+          },
+          dispose: () => {},
+          abort: async () => {},
         },
-        prompt: async () => {
-          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a" } });
-          emit({ type: "agent_end", messages: [
-            { role: "assistant", content: [{ type: "text", text: "a" }], usage: { input: 5, output: 2, cost: { total: 2.5 } } },
-            { role: "assistant", content: [{ type: "text", text: "b" }], usage: { input: 5, output: 2 } },
-          ] });
-        },
-        dispose: () => {},
-        abort: async () => {},
-      },
-      "/tmp/job-pricing",
-      false,
-    );
-    const result = await store.prompt("s-pricing-omitted", "hi") as { usage: { cost_usd: number | null; cost_partial: boolean } };
+        pricingKnown: false,
+      }),
+    });
+    const id = await store.create({
+      provider: "test",
+      model: "test",
+      systemPrompt: "omitted cost test",
+      cwd: "/tmp/job-pricing",
+    });
+    const result = await store.prompt(id, "hi") as { usage: { cost_usd: number | null; cost_partial: boolean } };
     assert.equal(result.usage.cost_usd, 2.5, "the reported amount is kept");
     assert.equal(result.usage.cost_partial, true, "an omitted cost is unknown, so the total is a lower bound");
   });

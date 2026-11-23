@@ -2,11 +2,12 @@ import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { Provider } from "@earendil-works/pi-ai";
 import { startSidecar } from "../../src/index.js";
 import { createServer } from "node:http";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { SessionStore, redactApiKey, resolveExt, snapshotLegacyAmbientProviders } from "../../src/sessions.js";
+import { PiProviderRuntime, SessionStore, redactApiKey, resolveExt, snapshotLegacyAmbientProviders } from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
 
@@ -23,6 +24,7 @@ const escaped = JSON.stringify(secret).slice(1, -1);
 describe("session API key", () => {
   let store: SessionStore;
   let runtime: ModelRuntime;
+  let legacyAmbientProviders: WeakSet<Provider>;
   let cwd: string;
   const seen: string[] = [];
   let echoError = false;
@@ -43,13 +45,8 @@ describe("session API key", () => {
     const keyOnly = fauxProvider({ provider: "test-key-only", models: [{ id: "local" }] });
     keyOnly.provider.auth = { apiKey: { name: "Key only", resolve: async ({ credential }: any) => credential ? { auth: { apiKey: credential.key }, source: "key" } : undefined } } as never; // pragma: allowlist secret — fake provider
     runtime.registerNativeProvider(keyOnly.provider);
-    store = new SessionStore();
-    Object.assign(store, {
-      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
-      modelRuntime: runtime,
-      modelRegistry: new ModelRegistry(runtime),
-      _ready: true,
-    });
+    legacyAmbientProviders = new WeakSet<Provider>();
+    store = new SessionStore({ runtime: new PiProviderRuntime({ modelRuntime: runtime, legacyAmbientProviders }) });
   });
   after(async () => {
     await store?.disposeAll();
@@ -145,13 +142,7 @@ describe("session API key", () => {
     const modelsPath = join(cwd, "models.json");
     writeFileSync(modelsPath, JSON.stringify({ providers: Object.fromEntries(ids.map((id) => [id, { modelOverrides: { local: { name: "Overlay" } } }])) }));
     const overlaidRuntime = await ModelRuntime.create({ modelsPath, refreshOnCreate: false });
-    const overlaidStore = new SessionStore();
-    Object.assign(overlaidStore, {
-      internalRuntime: { services: { modelRuntime: overlaidRuntime }, dispose: async () => {} },
-      modelRuntime: overlaidRuntime,
-      modelRegistry: new ModelRegistry(overlaidRuntime),
-      _ready: true,
-    });
+    const overlaidStore = new SessionStore({ runtime: new PiProviderRuntime({ modelRuntime: overlaidRuntime }) });
     try {
       for (const provider of ids) {
         const native = fauxProvider({ provider, models: [{ id: "local" }] });
@@ -194,12 +185,11 @@ describe("session API key", () => {
     const vertex = fauxProvider({ provider: "google-vertex-claude", models: [] });
     vertex.provider.auth = { apiKey: "$GOOGLE_CLOUD_PROJECT" } as never; // pragma: allowlist secret — synthetic env-var ref, not a credential
     const isolatedRuntime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-    const isolatedStore = new SessionStore();
-    Object.assign(isolatedStore, {
-      internalRuntime: { services: { modelRuntime: isolatedRuntime }, dispose: async () => {} },
-      modelRuntime: isolatedRuntime, modelRegistry: new ModelRegistry(isolatedRuntime), _ready: true,
+    const isolatedLegacy = new WeakSet<Provider>();
+    const isolatedStore = new SessionStore({
+      runtime: new PiProviderRuntime({ modelRuntime: isolatedRuntime, legacyAmbientProviders: isolatedLegacy }),
     });
-    snapshotLegacyAmbientProviders([{ provider: vertex.provider, extensionPath: vertexPath }], (isolatedStore as any).legacyAmbientProviders);
+    snapshotLegacyAmbientProviders([{ provider: vertex.provider, extensionPath: vertexPath }], isolatedLegacy);
     isolatedRuntime.registerNativeProvider(vertex.provider);
     assert.equal((await isolatedStore.getProviderStatus("google-vertex-claude")).supportsSessionApiKey, false);
     await assert.rejects(() => isolatedStore.create({ provider: "google-vertex-claude", model: "missing", systemPrompt: "hi", cwd, apiKey: secret }),
@@ -213,9 +203,9 @@ describe("session API key", () => {
     const previous = fauxProvider({ provider, models: [] });
     snapshotLegacyAmbientProviders([{ provider: previous.provider, extensionPath: resolveExt(
       "SIDECAR_VERTEX_EXTENSION_PATH", "@myk-org/pi-vertex-claude", "index.ts", "packages/pi-vertex-claude/index.ts",
-    ) }], (store as any).legacyAmbientProviders);
+    ) }], legacyAmbientProviders);
     runtime.registerNativeProvider(previous.provider);
-    snapshotLegacyAmbientProviders([{ provider: generic.provider, extensionPath: "/other-extension/index.ts" }], (store as any).legacyAmbientProviders);
+    snapshotLegacyAmbientProviders([{ provider: generic.provider, extensionPath: "/other-extension/index.ts" }], legacyAmbientProviders);
     runtime.registerNativeProvider(generic.provider);
     return provider;
   };

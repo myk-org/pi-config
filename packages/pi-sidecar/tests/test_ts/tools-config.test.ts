@@ -7,7 +7,7 @@ import { accessSync, statSync, writeFileSync, unlinkSync, rmSync } from "node:fs
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_TOOLS } from "../../src/sessions.js";
-import { resolveExtensionPath, resolveExtensionPathDetailed } from "../../src/resolve-extension-path.js";
+import { resolveExtensionPath, resolveExtensionPathDetailed } from "../../src/provider-runtime.js";
 import { parseBody } from "../../src/index.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig, type HttpToolConfig } from "../../src/http-tool-executor.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";

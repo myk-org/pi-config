@@ -1,10 +1,10 @@
 import { strict as assert } from "node:assert";
 import { createServer } from "node:http";
 import { it } from "node:test";
-import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { startSidecar } from "../../src/index.js";
 import { createApiKeyRedactor, isValidApiKey, SessionStore, redactDiagnostic } from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
+import { InMemoryProviderRuntime } from "./helpers/in-memory-runtime.js";
 
 const key = "secret-é-😀/"; // pragma: allowlist secret — test sentinel
 const variants = [
@@ -107,35 +107,51 @@ it("omits oversized diagnostics even when the key crosses the cap", () => {
 });
 
 it("preserves large successful session responses while redacting a boundary-spanning key", async () => {
-  const store = new SessionStore();
   const secret = "a é"; // pragma: allowlist secret — synthetic test sentinel
   const prefix = "z".repeat(16_383);
   const response = prefix + "a\\u0020%C3%A9" + "!".repeat(2_000_000);
-  store.putSessionFixture("large", {
-    prompt: async () => {}, subscribe: (onEvent: any) => {
-      onEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: response } });
-      return () => {};
-    }, dispose: () => {}, abort: async () => {},
-  }, "/tmp");
-  (store as any).sessions.get("large").redact = createApiKeyRedactor(secret);
+  const store = new SessionStore({
+    runtime: new InMemoryProviderRuntime({
+      ready: true,
+      allowAnyModel: true,
+      sessionFactory: () => ({
+        prompt: async () => {},
+        subscribe: (onEvent: any) => {
+          onEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: response } });
+          return () => {};
+        },
+        dispose: () => {},
+        abort: async () => {},
+      }),
+    }),
+  });
+  const id = await store.create({ provider: "test", model: "test", systemPrompt: "hi", cwd: "/tmp", apiKey: secret });
   try {
-    assert.equal((await store.prompt("large", "hi")).text, prefix + "[REDACTED]" + "!".repeat(2_000_000));
+    assert.equal((await store.prompt(id, "hi")).text, prefix + "[REDACTED]" + "!".repeat(2_000_000));
   } finally { await store.disposeAll(); }
 });
 
 it("omits eight-million-character prompt errors from results and logs", async () => {
-  const store = new SessionStore();
   const secret = "a".repeat(1023) + "X";
   const error = new Error("z".repeat(16_000) + secret + "a".repeat(8_000_000));
-  store.putSessionFixture("error", {
-    prompt: async () => { throw error; }, subscribe: () => () => {}, dispose: () => {}, abort: async () => {},
-  }, "/tmp");
-  (store as any).sessions.get("error").redact = createApiKeyRedactor(secret);
+  const store = new SessionStore({
+    runtime: new InMemoryProviderRuntime({
+      ready: true,
+      allowAnyModel: true,
+      sessionFactory: () => ({
+        prompt: async () => { throw error; },
+        subscribe: () => () => {},
+        dispose: () => {},
+        abort: async () => {},
+      }),
+    }),
+  });
+  const id = await store.create({ provider: "test", model: "test", systemPrompt: "hi", cwd: "/tmp", apiKey: secret });
   const lines: string[] = [];
   const old = logger.error;
   logger.error = (...args) => lines.push(args.join(" "));
   try {
-    await assert.rejects(store.prompt("error", "hi"), (err: any) =>
+    await assert.rejects(store.prompt(id, "hi"), (err: any) =>
       err.message === "[oversized diagnostic omitted]" && err.cause === error);
     assert.ok(lines.every(line => !line.includes(secret) && line.length < 20_000));
   } finally { logger.error = old; await store.disposeAll(); }
@@ -179,9 +195,17 @@ it("rejects oversized keys via HTTP without echoing them", async () => {
 });
 
 it("retains original error as cause while sanitizing creation stack", async () => {
-  const store = new SessionStore();
-  const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-  Object.assign(store, { _ready: true, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), ensureInternalRuntime: async () => { const err = new Error(`runtime ${key}`); err.stack = `Error: runtime ${key}\n at provider ${variants[0]}`; throw err; } });
+  const store = new SessionStore({
+    runtime: new InMemoryProviderRuntime({
+      ready: true,
+      allowAnyModel: true,
+      sessionFactory: async () => {
+        const err = new Error(`runtime ${key}`);
+        err.stack = `Error: runtime ${key}\n at provider ${variants[0]}`;
+        throw err;
+      },
+    }),
+  });
   const lines: string[] = [];
   const old = logger.error;
   logger.error = (...args) => lines.push(args.join(" "));
@@ -198,18 +222,26 @@ it("retains original error as cause while sanitizing creation stack", async () =
 });
 
 it("retains prompt rejection cause and sanitized stack", async () => {
-  const store = new SessionStore();
   const error = new Error(`failed ${key}`);
   error.stack = `Error: failed ${key}\n at tool ${variants[1]}`;
-  store.putSessionFixture("fixture", {
-    prompt: async () => { throw error; }, subscribe: () => () => {}, dispose: () => {}, abort: async () => {},
-  }, "/tmp");
-  (store as any).sessions.get("fixture").redact = createApiKeyRedactor(key);
+  const store = new SessionStore({
+    runtime: new InMemoryProviderRuntime({
+      ready: true,
+      allowAnyModel: true,
+      sessionFactory: () => ({
+        prompt: async () => { throw error; },
+        subscribe: () => () => {},
+        dispose: () => {},
+        abort: async () => {},
+      }),
+    }),
+  });
+  const id = await store.create({ provider: "test", model: "test", systemPrompt: "hi", cwd: "/tmp", apiKey: key });
   const lines: string[] = [];
   const old = logger.error;
   logger.error = (...args) => lines.push(args.join(" "));
   try {
-    await assert.rejects(store.prompt("fixture", "hi"), (err: any) => err.cause === error && !err.message.includes(key));
+    await assert.rejects(store.prompt(id, "hi"), (err: any) => err.cause === error && !err.message.includes(key));
     assert.ok(lines.some(line => line.includes("at tool") && line.includes("[REDACTED]")), lines.join("\n"));
     assert.ok(lines.every(line => !variants.some(variant => line.includes(variant))));
   } finally { logger.error = old; await store.disposeAll(); }
