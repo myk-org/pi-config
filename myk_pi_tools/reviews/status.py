@@ -11,13 +11,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 from html import escape
 from pathlib import Path
 from urllib.parse import quote
 
+from myk_pi_tools.db.storage import ReviewDB, ReviewDBError
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.utils import find_git_root
 
@@ -35,15 +35,6 @@ def get_project_root() -> Path:
     except RuntimeError as e:
         log(f"Error: {e}")
         sys.exit(1)
-
-
-def _connect_ro(db_path: Path) -> sqlite3.Connection:
-    """Open ``db_path`` read-only with ``sqlite3.Row`` factory."""
-    resolved = db_path.resolve()
-    db_uri = f"file:{quote(resolved.as_posix(), safe='/:')}?mode=ro"
-    conn = sqlite3.connect(db_uri, uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def get_current_pr() -> dict | None:
@@ -79,79 +70,42 @@ def get_current_pr() -> dict | None:
         return None
 
 
-def _query_comments_with_conn(conn: sqlite3.Connection, pr_number: int) -> list[dict]:
-    cursor = conn.execute(
-        """
-        SELECT c.source, c.path, c.line, c.body, c.status, c.reply,
-               c.priority, c.skip_reason, c.type, c.quality_label,
-               c.node_id, r.commit_sha, r.created_at
-        FROM comments c
-        JOIN reviews r ON c.review_id = r.id
-        WHERE r.pr_number = ?
-        ORDER BY r.created_at ASC, c.id ASC
-        """,
-        (pr_number,),
-    )
-    rows = [dict(row) for row in cursor.fetchall()]
-    logger.debug("query_comments pr=%d rows=%d", pr_number, len(rows))
-    return rows
-
-
 def query_comments(db_path: Path, pr_number: int) -> list[dict]:
     """Query all comments for a PR from the reviews DB."""
     if not db_path.exists():
         return []
-
-    conn = _connect_ro(db_path)
     try:
-        return _query_comments_with_conn(conn, pr_number)
-    except sqlite3.Error as e:
+        rows = ReviewDB(db_path=db_path).get_pr_comments(pr_number)
+    except ReviewDBError as e:
         logger.error("query_comments failed pr=%d: %s", pr_number, e)
         log(f"Database error: {e}")
         return []
-    finally:
-        conn.close()
+    logger.debug("query_comments pr=%d rows=%d", pr_number, len(rows))
+    return rows
 
 
 def get_pr_repo_info(db_path: Path, pr_number: int) -> tuple[str, str]:
     """Get owner/repo for a PR from the reviews DB."""
     if not db_path.exists():
         return ("", "")
-    conn = _connect_ro(db_path)
     try:
-        row = conn.execute(
-            "SELECT owner, repo FROM reviews WHERE pr_number = ? LIMIT 1",
-            (pr_number,),
-        ).fetchone()
-        return (row[0], row[1]) if row else ("", "")
-    except sqlite3.Error:
+        return ReviewDB(db_path=db_path).get_pr_repo_info(pr_number)
+    except ReviewDBError:
         return ("", "")
-    finally:
-        conn.close()
 
 
 def _fetch_pr_status_data(db_path: Path, pr_number: int) -> tuple[str, str, list[dict]]:
     """Fetch ``(owner, repo, comments)`` for ``pr_number`` on a single RO connection."""
     if not db_path.exists():
         return ("", "", [])
-    conn = _connect_ro(db_path)
     try:
-        row = conn.execute(
-            "SELECT owner, repo FROM reviews WHERE pr_number = ? LIMIT 1",
-            (pr_number,),
-        ).fetchone()
-        owner, repo = (row[0], row[1]) if row else ("", "")
-        try:
-            comments = _query_comments_with_conn(conn, pr_number)
-        except sqlite3.Error as e:
-            logger.error("query_comments failed pr=%d: %s", pr_number, e)
-            log(f"Database error: {e}")
-            comments = []
-        return (owner, repo, comments)
-    except sqlite3.Error:
+        owner, repo, comments = ReviewDB(db_path=db_path).get_pr_status_data(pr_number)
+    except ReviewDBError as e:
+        logger.error("query_comments failed pr=%d: %s", pr_number, e)
+        log(f"Database error: {e}")
         return ("", "", [])
-    finally:
-        conn.close()
+    logger.debug("query_comments pr=%d rows=%d", pr_number, len(comments))
+    return (owner, repo, comments)
 
 
 def extract_summary(body: str, max_len: int = 60) -> str:
@@ -417,29 +371,11 @@ def list_prs_from_db(db_path: Path) -> None:
         print("No reviews database found.")
         return
 
-    conn = _connect_ro(db_path)
     try:
-        cursor = conn.execute(
-            """
-            SELECT r.pr_number,
-                   COUNT(c.id) as total,
-                   SUM(CASE WHEN c.status = 'addressed' THEN 1 ELSE 0 END) as addressed,
-                   SUM(CASE WHEN c.status = 'skipped' THEN 1 ELSE 0 END) as skipped,
-                   SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END) as pending,
-                   MIN(r.created_at) as first_review,
-                   MAX(r.created_at) as last_review
-            FROM reviews r
-            JOIN comments c ON c.review_id = r.id
-            GROUP BY r.pr_number
-            ORDER BY r.pr_number DESC
-            """,
-        )
-        rows = cursor.fetchall()
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        rows = ReviewDB(db_path=db_path).list_prs()
+    except ReviewDBError as e:
+        print(f"{e}")
         return
-    finally:
-        conn.close()
 
     if not rows:
         print("No reviews stored in the database.")
@@ -449,7 +385,12 @@ def list_prs_from_db(db_path: Path) -> None:
     print(f"  {'PR':<8} {'Total':<8} {'Addressed':<11} {'Skipped':<9} {'Pending':<9} {'Last Review'}")
     print(f"  {'─' * 70}")
     for row in rows:
-        pr, total, addressed, skipped, pending, _first, last = row
+        pr = row["pr_number"]
+        total = row["total"]
+        addressed = row["addressed"]
+        skipped = row["skipped"]
+        pending = row["pending"]
+        last = row["last_review"]
         last_short = (last or "")[:10]
         print(f"  #{pr:<7} {total:<8} {addressed:<11} {skipped:<9} {pending:<9} {last_short}")
 
@@ -459,7 +400,8 @@ def list_prs_from_db(db_path: Path) -> None:
 def run(pr_number: int | None = None, *, output_dir: str) -> None:
     """Main entry point for reviews status command."""
     project_root = get_project_root()
-    db_path = project_root / ".pi" / "data" / "reviews.db"
+    db = ReviewDB(project_root=project_root)
+    db_path = db.db_path
 
     if not db_path.exists():
         print("No reviews database found. Run /review-handler first.")

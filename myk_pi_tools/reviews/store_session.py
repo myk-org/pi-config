@@ -21,23 +21,16 @@ The database is stored at: <project-root>/.pi/data/reviews.db
 """
 
 import json
-import sqlite3
 import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.db.storage import ReviewDB, ReviewDBError
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.constants import ACTION_LEVEL_PRIORITY
-from myk_pi_tools.reviews.store import (
-    create_tables,
-    ensure_database_directory,
-    get_project_root,
-    insert_comment,
-    insert_review,
-    run_title_backfill_once,
-)
+from myk_pi_tools.reviews.store import get_project_root
 from myk_pi_tools.utils import merge_paginated_json, parse_pr_url
 
 log = create_logger(__name__)
@@ -294,39 +287,15 @@ def store_session(json_path: Path) -> None:
         log.info("No findings in session JSON — nothing to store")
 
     project_root = get_project_root()
-    db_path = project_root / ".pi" / "data" / "reviews.db"
-    log.info(f"Database: {db_path}")
-
-    ensure_database_directory(db_path)
+    db = ReviewDB(project_root=project_root)
+    log.info("Database: %s", db.db_path)
 
     # Read pass WITHOUT the write lock (Qodo c47d2f7c + db081d9b): which
-    # session findings are already stored? Computed on a short-lived read
+    # session findings are already stored? Computed on a short-lived read-only
     # connection so the gh api pre-warm below only touches findings that
     # will actually be INSERTED — already-stored findings never re-query
     # GitHub on re-import.
-    existing_session_ids: set[Any] = set()
-    try:
-        read_conn = sqlite3.connect(str(db_path))
-        try:
-            existing_session_ids = {
-                row[0]
-                for row in read_conn.execute(
-                    """
-                    SELECT c.node_id FROM comments c
-                    JOIN reviews r ON c.review_id = r.id
-                    WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
-                      AND c.type = 'session_finding' AND c.node_id IS NOT NULL
-                    """,
-                    (owner, repo, pr_number),
-                )
-            }
-        finally:
-            read_conn.close()
-    except sqlite3.Error as e:
-        # Fresh database (no tables yet) — every finding is new. Anything
-        # else is surfaced with its database and error so operators can
-        # tell an uninitialized DB from a real failure (Qodo dc95d243).
-        log.warning(f"existing-session read pass failed for {db_path}: {e} — proceeding without idempotency check")
+    existing_session_ids = db.get_session_finding_ids(owner, repo, pr_number)
 
     # Pre-warm the inline-location cache BEFORE the write transaction opens
     # (Qodo c47d2f7c): the gh api lookups must not run while the SQLite write
@@ -353,116 +322,39 @@ def store_session(json_path: Path) -> None:
     elif uncached_inline_ids:
         _inline_location(owner, repo, uncached_inline_ids[0])
 
-    conn = sqlite3.connect(str(db_path))
+    # Deterministic order: earliest round first.
+    grouped_findings = [
+        (git_sha, groups[git_sha])
+        for git_sha in sorted(groups, key=lambda sha: _earliest_created_at(groups[sha]) or "")
+    ]
+
     try:
-        conn.execute("PRAGMA foreign_keys=ON")
-        create_tables(conn)
-        run_title_backfill_once(conn)
-
-        # Idempotency (Qodo 78903709): a review row for this PR+commit is
-        # NOT proof the session was stored — the ordinary store path can
-        # record GitHub comments for the same commit first. Skip a finding
-        # only when its own session UUID is already in the DB; skip the
-        # whole group only when every finding of the group is present.
-        # (Read on the write connection too — a concurrent import may have
-        # stored rows between the read pass and this transaction.)
-        existing_session_ids |= {
-            row[0]
-            for row in conn.execute(
-                """
-                SELECT c.node_id FROM comments c
-                JOIN reviews r ON c.review_id = r.id
-                WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
-                  AND c.type = 'session_finding' AND c.node_id IS NOT NULL
-                """,
-                (owner, repo, pr_number),
-            )
-        }
-
-        stored_findings = 0
-        refreshed_findings = 0
-        skipped_groups = 0
-        # Deterministic order: earliest round first.
-        for git_sha in sorted(groups, key=lambda sha: _earliest_created_at(groups[sha]) or ""):
-            findings = groups[git_sha]
-            missing = [f for f in findings if f.get("id") not in existing_session_ids]
-            # Refresh already-stored findings (Qodo 7be4f7fc): a finding
-            # stored mid-loop (pending) must reflect its LATER attribution
-            # (implemented/dismissed) once mark-implemented runs — a later
-            # poll re-reads the same JSON with updated statuses.
-            for finding in findings:
-                if finding in missing:
-                    continue
-                # Attribution only — the refresh never uses path/line, and
-                # _to_comment_row would fire a gh api lookup per stored
-                # finding on every round (Qodo db081d9b).
-                status, priority = _attribution(finding)
-                updated = conn.execute(
-                    """
-                    UPDATE comments SET status = ?, priority = ?
-                    WHERE node_id = ? AND type = 'session_finding'
-                      AND review_id IN (
-                          SELECT id FROM reviews WHERE owner = ? AND repo = ? AND pr_number = ?
-                      )
-                      AND (status != ? OR priority != ?)
-                    """,
-                    (
-                        status,
-                        priority,
-                        finding.get("id"),
-                        owner,
-                        repo,
-                        pr_number,
-                        status,
-                        priority,
-                    ),
-                )
-                if updated.rowcount > 0:
-                    refreshed_findings += 1
-
-            if not missing:
-                skipped_groups += 1
-                continue
-            # A later import for an already-imported commit appends to that
-            # commit's existing SESSION review row (Qodo 5355150b) — one
-            # review row per round, not one per import.
-            existing_row = conn.execute(
-                """
-                SELECT r.id FROM reviews r
-                JOIN comments c ON c.review_id = r.id
-                WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ? AND r.commit_sha = ?
-                  AND c.type = 'session_finding'
-                LIMIT 1
-                """,
-                (owner, repo, pr_number, git_sha),
-            ).fetchone()
-            if existing_row is not None:
-                review_id = existing_row[0]
-            else:
-                review_id = insert_review(
-                    conn, owner, repo, pr_number, git_sha, created_at=_earliest_created_at(missing)
-                )
-            for finding in missing:
-                insert_comment(conn, review_id, "qodo", _to_comment_row(finding, owner, repo))
-                stored_findings += 1
-
-        conn.commit()
-
-        if skipped_groups:
-            log.info(f"Skipped {skipped_groups} commit group(s) already stored")
-        if refreshed_findings:
-            log.info(f"Refreshed attribution on {refreshed_findings} already-stored finding(s)")
-        log.info(
-            f"Stored {stored_findings} session finding(s) across "
-            f"{len(groups) - skipped_groups} commit(s) for {owner}/{repo}#{pr_number}"
+        stored_findings, refreshed_findings, skipped_groups = db.store_session_findings(
+            owner,
+            repo,
+            pr_number,
+            grouped_findings,
+            attribution_fn=_attribution,
+            row_builder=lambda f: _to_comment_row(f, owner, repo),
+            created_at_fn=_earliest_created_at,
+            known_existing_ids=existing_session_ids,
         )
-
-    except sqlite3.Error as e:
-        conn.rollback()
-        log.error(f"Database error: {e}")
+    except ReviewDBError as e:
+        log.error("%s", e)
         sys.exit(1)
-    finally:
-        conn.close()
+
+    if skipped_groups:
+        log.info("Skipped %d commit group(s) already stored", skipped_groups)
+    if refreshed_findings:
+        log.info("Refreshed attribution on %d already-stored finding(s)", refreshed_findings)
+    log.info(
+        "Stored %d session finding(s) across %d commit(s) for %s/%s#%d",
+        stored_findings,
+        len(groups) - skipped_groups,
+        owner,
+        repo,
+        pr_number,
+    )
 
     # The session JSON is intentionally NOT deleted — it is the loop's record.
 

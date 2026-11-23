@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from myk_pi_tools.db.query import ReviewDB, _body_similarity
+from myk_pi_tools.db.storage import ReviewDB, _body_similarity
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
 from myk_pi_tools.reviews.constants import (

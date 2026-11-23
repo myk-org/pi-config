@@ -414,10 +414,11 @@ class TestReadOnlySqliteIndexes1285:
             connect_calls.append((target, bool(kwargs.get("uri"))))
             return orig_connect(target, *args, **kwargs)
 
-        with patch("myk_pi_tools.db.query.sqlite3.connect", side_effect=tracking_connect):
+        with patch("sqlite3.connect", side_effect=tracking_connect):
             db = ReviewDB(db_path=db_path)
             assert db.get_stats_by_source() == []
 
+        assert len(connect_calls) == 1
         assert all(uri for _, uri in connect_calls)
         assert all("mode=ro" in target for target, _ in connect_calls)
 
@@ -439,10 +440,11 @@ class TestReadOnlySqliteIndexes1285:
             connect_calls.append((target, bool(kwargs.get("uri"))))
             return orig_connect(target, *args, **kwargs)
 
-        with patch("myk_pi_tools.pr.pr_review_store.sqlite3.connect", side_effect=tracking_connect):
+        with patch("sqlite3.connect", side_effect=tracking_connect):
             assert len(get_skipped_comments("org", "repo", 1, db_path=db_path)) == 1
             assert len(get_review_history("org", "repo", 1, db_path=db_path)) == 1
 
+        assert len(connect_calls) == 2
         assert all(uri and "mode=ro" in target for target, uri in connect_calls)
 
     def test_status_run_opens_reviews_db_once(self, tmp_path: Path) -> None:
@@ -468,7 +470,7 @@ class TestReadOnlySqliteIndexes1285:
         with (
             patch("myk_pi_tools.reviews.status.get_project_root", return_value=tmp_path),
             patch("myk_pi_tools.reviews.status.subprocess.run", side_effect=OSError("no gh")),
-            patch("myk_pi_tools.reviews.status.sqlite3.connect", side_effect=counting_connect),
+            patch("sqlite3.connect", side_effect=counting_connect),
         ):
             status_run(pr_number=12, output_dir=str(tmp_path / "out"))
 

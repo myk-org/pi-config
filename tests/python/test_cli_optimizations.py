@@ -127,7 +127,7 @@ def test_db_stats_json_outputs_compact_json(tmp_path: Path) -> None:
     result = CliRunner().invoke(cli, ["db", "stats", "--json", "--db-path", str(db_path)])
     assert result.exit_code == 0, result.output
     parsed = _assert_compact_json(result.stdout)
-    assert [row["source"] for row in parsed] == ["qodo", "human"]
+    assert [row["source"] for row in parsed] == ["human", "qodo"]
 
 
 def test_release_detect_versions_outputs_compact_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
