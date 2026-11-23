@@ -24,9 +24,11 @@ user message     ──▶ chat-bridge (neutral) ──▶ prompt answer or new 
 | `extensions/shared/chat/chat-attachments.ts` | attachment classification, size caps, bounded downloads |
 | `extensions/shared/chat/chat-state.ts` | per-user watch state: versioned, atomic, `0600`, pruned |
 
-The Discord modules (`extensions/pidash/discord-*.ts`) are thin re-exports plus
-Discord defaults (2000-character limit, mention suppression, action rows), so
-existing imports and the npm pack are unchanged.
+The Discord modules (`extensions/pidash/discord-*.ts`) supply Discord-specific
+session routing (`discord-session-routing.ts`), Discord.js transport wiring
+(`discord-bot.ts`), and Discord defaults (2000-character limit, mention
+suppression, action rows, prompt controls, forum board), importing shared chat
+primitives directly from `extensions/shared/chat/`.
 
 ## Adding a client
 

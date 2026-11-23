@@ -8,8 +8,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { inboundRouteRecord, inboundTraceRecord } from "../../../extensions/pidash/discord-bot.ts";
-import type { InboundSession } from "../../../extensions/pidash/discord-prompt-targets.ts";
+import {
+  inboundRouteRecord,
+  inboundTraceRecord,
+  type InboundSession,
+} from "../../../extensions/pidash/discord-session-routing.ts";
 
 const targets = { "sess-a": { channelId: "chan-1", threadId: null } };
 

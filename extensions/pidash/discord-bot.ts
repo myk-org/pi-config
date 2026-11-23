@@ -1,8 +1,11 @@
 /**
- * Discord bot for pidash — bridges Discord to pi sessions.
+ * Discord bot for pidash — thin Discord.js transport adapter.
  *
- * Wiring only: the decisions live in the sibling `discord-*.ts` modules with
- * tests (format, attachments, answers, state, sessions-view, render, config).
+ * Session routing, prompt-target lifecycle, watch switching, reaction routing,
+ * state hydration/persistence, and unified session RPC live in
+ * `discord-session-routing.ts`; platform-neutral bridge logic lives in
+ * `extensions/shared/chat/`.
+ *
  * Enable by setting DISCORD_BOT_TOKEN plus DISCORD_ALLOWED_USERS (or
  * DISCORD_ALLOW_ALL=true) in ~/.pi/discord.env.
  */
@@ -22,7 +25,7 @@ import {
   MAX_IMAGE_BYTES,
   MAX_INLINE_TEXT_BYTES,
 } from "../shared/chat/chat-attachments.ts";
-import { renderPrompt, type PendingPrompt, type PromptMethod } from "../shared/chat/chat-prompts.ts";
+import type { PendingPrompt } from "../shared/chat/chat-prompts.ts";
 import { buildPromptControls } from "./discord-prompt-controls.ts";
 import {
   entriesFromModels,
@@ -31,11 +34,15 @@ import {
   slicePickerPage,
 } from "../shared/chat/chat-picker.ts";
 import { compareCommandPayloads } from "./discord-commands.ts";
-import { MAX_LAST_PROMPTS, MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
+import { MAX_LAST_PROMPT_CHARS, hardenFilePermissions, readState, writeState } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
 import { planBoard } from "./discord-board.ts";
-import { ensurePromptTarget, hydratableTargets, nudgeChannelId, nudgeDue, promptById, promptHeader, resolveInboundSession, shouldNudge, type InboundSession } from "./discord-prompt-targets.ts";
-import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
+import {
+  createDiscordSessionRouter,
+  promptById,
+  sessionIdFromTopic,
+  type DiscordRuntimeUserState,
+} from "./discord-session-routing.ts";
 import {
   buildSessionPage,
   renderSessionsPage,
@@ -46,32 +53,17 @@ import {
   type SessionSummary,
 } from "../shared/chat/chat-sessions.ts";
 import { streamingView } from "../shared/chat/chat-events.ts";
-import {
-  createChatBridge,
-  initialChatRuntime,
-  type ChatBridge,
-  type ChatRuntimeState,
-} from "../shared/chat/chat-bridge.ts";
+import { createChatBridge, type ChatBridge } from "../shared/chat/chat-bridge.ts";
 import type { ChatAdapter, ChatCapabilities, ChatTarget } from "../shared/chat/chat-types.ts";
-import {
-  hardenFilePermissions,
-  readState,
-  writeState,
-  MAX_THREADS_PER_USER,
-  type DiscordUserState,
-  type PersistedDiscordState,
-} from "../shared/chat/chat-state.ts";
 import { parseEnvFile, resolveDiscordConfig } from "./discord-config.ts";
-import { checkoutName } from "../shared/chat/chat-sessions.ts";
 
 const log = createLogger("pidash-discord");
 
-const INBOUND_DROP_LOG_WINDOW_MS = 60_000;
-const SEEN_MESSAGE_LIMIT = 500;
 const STREAM_EDIT_INTERVAL_MS = 1500;
 const TYPING_REFRESH_MS = 8000;
 /** One "not authorized" reply per user per window, not per message. */
 const UNAUTHORIZED_NOTICE_MS = 10 * 60 * 1000;
+const PICKER_CONTEXT_LIMIT = 50;
 
 /** Commands whose answer arrives as a broadcast event, with the exact type. */
 const PASSTHROUGH: Record<string, { command: string; eventType: string; label: string }> = {
@@ -81,104 +73,26 @@ const PASSTHROUGH: Record<string, { command: string; eventType: string; label: s
   mcp: { command: "mcp-list", eventType: "mcp-list", label: "MCP servers" },
 };
 
-/** Discord's runtime state = the engine's state + platform bookkeeping. */
-interface RuntimeUserState extends DiscordUserState, ChatRuntimeState {
-  typingInterval: ReturnType<typeof setInterval> | null;
-  typingSafety: ReturnType<typeof setTimeout> | null;
-  unauthorizedNotifiedAt: number;
-  /** Sessions whose target exists only to deliver a question — not ones the user watches. */
-  promptOnlyTargets?: Record<string, true>;
-  /** Set by /disconnect: no prompts, no thread creation, nothing until the user interacts again. */
-  deliveryMuted?: boolean;
-  /** responseChannelId that is a DM (threads cannot be created there). */
-  dmChannelId?: string | null;
-}
-
-export interface InboundRouteFacts {
-  /** Which refusal this is: channel-not-owned, no-target, ambiguous, session-disconnected, nothing-pending. */
-  reason: string;
-  channelId: string;
-  guildId?: string | null;
-  threadSessionId?: string | null;
-  watchedSessionId?: string | null;
-  watchLive: boolean;
-  targets?: Record<string, { channelId: string; threadId?: string | null }> | null;
-  ownsTarget: boolean;
-  /** The author. Several users can share one fallback channel, so a drop is per-user, not per-channel. */
-  userId?: string | null;
-  inbound?: InboundSession | null;
-}
-
-/** The record logged for every inbound message the bot refuses or drops.
- *
- *  A refusal nobody can see is undiagnosable: "Not watching any session" was reproduced by the user
- *  with no trace of which branch emitted it. Ids and state shape only — never message text, a display
- *  name or an attachment name, because a refusal that quotes the message leaks content into the log. */
-export function inboundRouteRecord(facts: InboundRouteFacts): Record<string, unknown> {
-  return {
-    reason: facts.reason,
-    channelId: facts.channelId,
-    guildId: facts.guildId ?? null,
-    isDm: !facts.guildId,
-    threadSessionId: facts.threadSessionId ?? null,
-    watchedSessionId: facts.watchedSessionId ?? null,
-    watchLive: facts.watchLive,
-    // Session ids only: a target's channel ids are addresses, not routing keys.
-    targetKeys: Object.keys(facts.targets ?? {}),
-    ownsTarget: facts.ownsTarget,
-    inboundSource: facts.inbound?.source ?? null,
-    inboundSessionId: facts.inbound?.sessionId ?? null,
-    deadWatch: Boolean(facts.inbound?.deadWatch),
-    deadTarget: Boolean(facts.inbound?.deadTarget),
-    ambiguous: Boolean(facts.inbound?.ambiguous),
-    userId: facts.userId ?? null,
-  };
-}
-
-export interface InboundTraceFacts {
-  /** "message" for a plain inbound message, otherwise the interaction kind. */
-  kind: string;
-  /** Which handler made the decision: messageCreate, message-context-menu, slash-command. */
-  handler: string;
-  channelId: string;
-  guildId?: string | null;
-  threadSessionId?: string | null;
-  watchedSessionId?: string | null;
-  watchLive: boolean;
-  targets?: Record<string, { channelId: string; threadId?: string | null }> | null;
-  commandName?: string | null;
-  watchedClientPresent?: boolean | null;
-  inbound?: InboundSession | null;
-  /** Where the message actually went when it answered a pending prompt: that session, not the
-   *  routed one, is what gets the text. Differs from `inbound.sessionId` only in that case. */
-  answerSessionId?: string | null;
-}
-
-/** The record logged where an inbound message is routed, and at the interaction guards.
- *
- *  Same shape as {@link inboundRouteRecord}, plus which handler decided and what it was looking at.
- *  Ids and state shape only — no message text, no user names. */
-export function inboundTraceRecord(facts: InboundTraceFacts): Record<string, unknown> {
-  const targetKeys = Object.keys(facts.targets ?? {});
-  return {
-    kind: facts.kind,
-    handler: facts.handler,
-    commandName: facts.commandName ?? null,
-    channelId: facts.channelId,
-    isDm: !facts.guildId,
-    // A channel is a thread only when a session claims it; an unknown thread routes nowhere anyway.
-    hasThread: Boolean(facts.threadSessionId),
-    threadSessionId: facts.threadSessionId ?? null,
-    watchedSessionId: facts.watchedSessionId ?? null,
-    watchLive: facts.watchLive,
-    watchedClientPresent: facts.watchedClientPresent ?? null,
-    targetsCount: targetKeys.length,
-    targetKeys,
-    inboundSessionId: facts.inbound?.sessionId ?? null,
-    inboundSource: facts.inbound?.source ?? null,
-    answerSessionId: facts.answerSessionId ?? null,
-  };
-}
+const COMMANDS = [
+  ["sessions", "List pi sessions — pick one to watch"],
+  ["status", "Show the watched session"],
+  ["stop", "Interrupt the running turn"],
+  ["disconnect", "Stop watching — clears the watch, its threads and pending questions"],
+  ["board", "Forum session board — one thread per session"],
+  ["compact", "Compact the watched session's context"],
+  ["model", "Show or set the model"],
+  ["thinking", "Show or set the thinking level"],
+  ["async", "List or kill background async agents"],
+  ["cron", "List or kill scheduled cron jobs"],
+  ["tasks", "List tasks in the watched session"],
+  ["coms", "List coms peers in the watched session's project"],
+  ["memory", "Memory status of the watched session"],
+  ["mcp", "MCP servers known to the watched session"],
+  ["diff", "Link to the session's diff viewer"],
+  ["watch", "Watch a session by name"],
+  ["notify", "Turn turn-complete notifications on or off"],
+  ["file", "Send a file from the session's working directory"],
+] as const;
 
 export function setupDiscordBot(opts: {
   piClients: Map<string, any>;
@@ -190,9 +104,6 @@ export function setupDiscordBot(opts: {
   const _require = createRequire(import.meta.url);
 
   const home = process.env.HOME;
-  // Credentials file may define the token itself. The path is resolved from the
-  // environment FIRST — the configured path used to be computed later and the
-  // file was already read from the default location (Qodo 6ebd5ca4).
   let envFile = process.env.PIDASH_DISCORD_ENV_FILE
     || path.join(home || "", ".pi", "discord.env");
   hardenFilePermissions(envFile);
@@ -241,281 +152,12 @@ export function setupDiscordBot(opts: {
       GatewayIntentBits.DirectMessageReactions,
       GatewayIntentBits.MessageContent,
     ],
-    // Reaction partials: a reaction on a message the bot did not cache still
-    // has to reach us, or shortcuts work only on recent messages.
     partials: [Partials.Channel, Partials.Message, Partials.Reaction],
   });
 
-  // ── state ────────────────────────────────────────────────────────────────
-  const persisted: PersistedDiscordState = readState(config.stateFile);
-  const runtime = new Map<string, RuntimeUserState>();
-
-  function makeRuntime(stored: DiscordUserState | undefined): RuntimeUserState {
-    const watched = stored?.watchedSessionId ?? null;
-    const channelId = stored?.threadId || stored?.responseChannelId || null;
-    const base = initialChatRuntime(watched, channelId ? { channelId, threadId: stored?.threadId ?? null } : null);
-    // Retained threads must keep their session's output after a restart: without
-    // rebuilding targets from the stored thread ids, a thread could send prompts
-    // and receive nothing (Qodo 8c6acae5).
-    const targets: Record<string, { channelId: string; threadId: string | null }> = {};
-    // Question-only threads are not subscriptions, and a muted user gets no target at all.
-    for (const [sessionId, threadId] of Object.entries(hydratableTargets(stored ?? {}))) {
-      targets[sessionId] = { channelId: threadId, threadId };
-    }
-    if (!stored?.deliveryMuted) {
-      for (const [sessionId, channelId] of Object.entries(stored?.dmTargets ?? {})) {
-        targets[sessionId] = { channelId, threadId: null };
-      }
-    }
-    if (watched && !targets[watched] && stored?.responseChannelId) {
-      targets[watched] = { channelId: stored.responseChannelId, threadId: null };
-    }
-    return {
-      ...base,
-      targets,
-      responseChannelId: stored?.responseChannelId ?? null,
-      threadId: stored?.threadId ?? null,
-      threads: { ...(stored?.threads ?? {}) },
-      updatedAt: stored?.updatedAt ?? Date.now(),
-      typingInterval: null,
-      typingSafety: null,
-      unauthorizedNotifiedAt: 0,
-      deliveryMuted: stored?.deliveryMuted === true,
-      promptOnlyTargets: { ...(stored?.promptOnlyTargets ?? {}) },
-      dmChannelId: stored?.dmChannelId ?? null,
-    };
-  }
-
-  // Saved watches must be live again after a restart: the loops below iterate
-  // `runtime`, and a lazily-created entry meant a restored watch received no
-  // output or approval prompts until its user happened to interact (Qodo).
-  let droppedUsers = 0;
-  for (const [userId, stored] of Object.entries(persisted.users)) {
-    // A user removed from the allowlist must stop receiving output; restoring
-    // their targets kept streaming session material to them (Qodo c30b0ca9).
-    if (!config.allowAll && !config.allowedUsers.has(userId)) {
-      delete persisted.users[userId];
-      droppedUsers += 1;
-      continue;
-    }
-    runtime.set(userId, makeRuntime(stored));
-  }
-  if (droppedUsers > 0) {
-    log.info("dropped users no longer on the allowlist", { dropped: droppedUsers });
-    persist();
-  }
-  log.info("discord state hydrated", { users: runtime.size, watching: [...runtime.values()].filter((s) => s.watchedSessionId).length });
-
-  function userState(userId: string): RuntimeUserState {
-    let state = runtime.get(userId);
-    if (!state) {
-      state = makeRuntime(persisted.users[userId]);
-      runtime.set(userId, state);
-    }
-    return state;
-  }
-
-  /**
-   * Remembered prompts worth keeping: only sessions this user still watches or
-   * retains a thread for, newest last, at most MAX_LAST_PROMPTS entries.
-   * Otherwise every session a user ever touched leaves message text on disk
-   * (Qodo a2f90e46).
-   */
-  function prunablePrompts(state: RuntimeUserState): NonNullable<RuntimeUserState["lastPrompts"]> {
-    const keep = new Set<string>(Object.keys(state.targets ?? {}));
-    if (state.watchedSessionId) keep.add(state.watchedSessionId);
-    const entries = Object.entries(state.lastPrompts ?? {}).filter(([sessionId]) => keep.has(sessionId));
-    return Object.fromEntries(entries.slice(-MAX_LAST_PROMPTS));
-  }
-
-  function persist(): void {
-    for (const [userId, state] of runtime) {
-      persisted.users[userId] = {
-        watchedSessionId: state.watchedSessionId,
-        responseChannelId: state.responseChannelId,
-        threadId: state.threadId ?? null,
-        threads: state.threads ?? {},
-        // Without this the 🔁 shortcut forgets every prompt on restart.
-        lastPrompts: prunablePrompts(state),
-        deliveryMuted: state.deliveryMuted === true,
-        promptOnlyTargets: { ...(state.promptOnlyTargets ?? {}) },
-        dmChannelId: state.dmChannelId ?? null,
-        dmTargets: Object.fromEntries(Object.entries(state.targets ?? {}).filter(([id, target]) =>
-          target.channelId === state.dmChannelId && !target.threadId && !state.promptOnlyTargets?.[id]
-        ).map(([id, target]) => [id, target.channelId])),
-        updatedAt: state.updatedAt,
-      };
-    }
-    writeState(config.stateFile, persisted);
-  }
-
-  /** userId owning a thread, so prompts inside it reach the right session. */
-  function userForThread(threadId: string): [string, RuntimeUserState] | null {
-    for (const [userId, state] of runtime) {
-      if (state.threadId === threadId) return [userId, state];
-      for (const known of Object.values(state.threads ?? {})) {
-        if (known === threadId) return [userId, state];
-      }
-    }
-    return null;
-  }
-
-  /** Ambient guild-gate drops repeat on every message in unrelated channels; throttle those per
-   *  channel+reason (and known bot user) while keeping every interactive refusal unthrottled. */
-  const dropLoggedAt = new Map<string, number>();
-  /** The routing decision last logged per channel. A busy channel repeats one decision for every
-   *  message it carries, so only a NEW decision gets a line — bounded, no timer. */
-  const routedDecisions = new Map<string, string>();
-  const fallbackDecisions = new Map<string, string>();
-
-  function hasBotState(state: RuntimeUserState | undefined): boolean {
-    return Boolean(state && (
-      state.watchedSessionId
-      || state.responseChannelId
-      || state.threadId
-      || Object.keys(state.threads ?? {}).length
-      || Object.keys(state.targets ?? {}).length
-    ));
-  }
-
-  function claimsSession(state: RuntimeUserState | undefined, sessionId: string): boolean {
-    return Boolean(state && (ownsSession(state, sessionId) || state.threads?.[sessionId]));
-  }
-
-  function logInboundDrop(
-    facts: Omit<InboundRouteFacts, "reason"> & { reason: string },
-    level: "info" | "warn" = "warn",
-    /** Which handler decided — merged into the same line, so one event is one line. */
-    trace?: InboundTraceFacts,
-    throttleKey?: string,
-  ): void {
-    if (throttleKey) {
-      const now = Date.now();
-      const last = dropLoggedAt.get(throttleKey);
-      if (last !== undefined && now - last < INBOUND_DROP_LOG_WINDOW_MS) return;
-      dropLoggedAt.delete(throttleKey);
-      if (dropLoggedAt.size >= SEEN_MESSAGE_LIMIT) {
-        const oldest = dropLoggedAt.keys().next().value;
-        if (oldest !== undefined) dropLoggedAt.delete(oldest);
-      }
-      dropLoggedAt.set(throttleKey, now);
-    }
-    const record = trace
-      ? { ...inboundRouteRecord(facts), ...inboundTraceRecord(trace) }
-      : inboundRouteRecord(facts);
-    // WARN is for a failure the user feels; a routine refusal is INFO (Qodo 52959087).
-    if (level === "warn") log.warn("discord_inbound_dropped", record);
-    else log.info("discord_inbound_dropped", record);
-  }
-
-  /** The owner's rule: "Not watching any session" is true only when NO session is connected. A
-   *  connected session is a session the input can go to, so refusing while something runs hides both
-   *  the reason and the message the user meant to send. Nothing is picked blind: the record says why,
-   *  how many candidates there were, and which handler asked. A live watch never reaches here — the
-   *  resolver already returned it as `watch` — so "the watched one if present" is that same rule. */
-  function routeToActiveSession(
-    resolved: InboundSession,
-    where: {
-      /** context-menu, slash-command:<name>, messageCreate — the site that had to refuse. */
-      handler: string;
-      channelId?: string | null;
-      guildId?: string | null;
-      watchedSessionId?: string | null;
-      userId?: string | null;
-    },
-  ): InboundSession {
-    const fallbackKey = `${where.handler}:${where.channelId ?? ""}:${where.userId ?? ""}`;
-    if (resolved.sessionId || resolved.ambiguous || resolved.deadTarget) {
-      fallbackDecisions.delete(fallbackKey);
-      return resolved;
-    }
-    const callerState = where.userId ? runtime.get(where.userId) : undefined;
-    const active = [...piClients.entries()]
-      .filter(([sessionId, client]) => Boolean(client?.ws) && (
-        claimsSession(callerState, sessionId)
-        || ![...runtime.entries()].some(([uid, other]) => uid !== where.userId && claimsSession(other, sessionId))
-      ))
-      .map(([sessionId]) => sessionId);
-    if (!active.length) {
-      fallbackDecisions.delete(fallbackKey);
-      return resolved;
-    }
-    const lastActivity = (sessionId: string) => Number(piClients.get(sessionId)?.session?.lastActivity) || 0;
-    const sessionId = active.reduce((newest, id) => (lastActivity(id) > lastActivity(newest) ? id : newest));
-    if (fallbackDecisions.get(fallbackKey) !== sessionId) {
-      fallbackDecisions.delete(fallbackKey);
-      if (fallbackDecisions.size >= SEEN_MESSAGE_LIMIT) {
-        const oldest = fallbackDecisions.keys().next().value;
-        if (oldest !== undefined) fallbackDecisions.delete(oldest);
-      }
-      fallbackDecisions.set(fallbackKey, sessionId);
-      log.debug("discord_inbound_fallback", {
-        reason: active.length === 1 ? "fallback_single_active" : "fallback_newest_active",
-        sessionId,
-        candidates: active.length,
-        handler: where.handler,
-        channelId: where.channelId ?? null,
-        guildId: where.guildId ?? null,
-        watchedSessionId: where.watchedSessionId ?? null,
-        userId: where.userId ?? null,
-      });
-    }
-    return { ...resolved, sessionId, source: "active" };
-  }
-
-  /** A prompt needs a real subscription before it can leave Discord. Never move the watch. */
-  async function establishReplyTarget(state: RuntimeUserState, sessionId: string, user: any): Promise<boolean> {
-    let target = state.targets?.[sessionId];
-    if (target) {
-      try {
-        const channel = await discord.channels.fetch(target.threadId || target.channelId, { force: true });
-        const permissions = channel?.permissionsFor?.(discord.user);
-        if (!channel?.isTextBased?.() || typeof channel.send !== "function" || channel.archived || channel.locked
-          || (permissions && !permissions.has(["ViewChannel", channel.isThread?.() ? "SendMessagesInThreads" : "SendMessages"]))) target = undefined;
-      } catch { target = undefined; }
-    }
-    if (!target) {
-      try {
-        const dm = await user.createDM();
-        if (!dm?.id) throw new Error("DM unavailable");
-        state.dmChannelId = dm.id;
-        target = { channelId: dm.id, threadId: null };
-      } catch {
-        log.warn("discord reply destination unavailable", { userId: user.id, sessionId });
-        return false;
-      }
-    }
-    state.targets = { ...state.targets, [sessionId]: target };
-    if (state.promptOnlyTargets) delete state.promptOnlyTargets[sessionId];
-    state.deliveryMuted = false;
-    persist();
-    log.debug("discord reply destination established", { userId: user.id, sessionId, channelId: target.channelId });
-    return true;
-  }
-
-  const seenMessages = new Set<string>();
-  function firstSighting(key: string): boolean {
-    if (!key) return true;
-    if (seenMessages.has(key)) return false;
-    seenMessages.add(key);
-    if (seenMessages.size > SEEN_MESSAGE_LIMIT) {
-      const oldest = seenMessages.values().next().value;
-      if (oldest) seenMessages.delete(oldest);
-    }
-    return true;
-  }
-
   const notifyUsers = new Set<string>();
 
-  // ── sending ──────────────────────────────────────────────────────────────
-  /**
-   * Send text, optionally with components ATTACHED IN THE SAME MESSAGE.
-   *
-   * The question flow used to post text and then edit the message to add its
-   * buttons; that edit failed silently in a DM and the user saw "reply with a
-   * number" with nothing to tap. One send, one failure mode, and failures are
-   * logged instead of swallowed.
-   */
+  // ── Discord transport helpers ────────────────────────────────────────────
   async function sendText(
     channelId: string,
     text: string,
@@ -527,10 +169,6 @@ export function setupDiscordBot(opts: {
       let lastId: string | null = null;
       const chunks = chunkDiscordText(text);
       for (let i = 0; i < chunks.length; i++) {
-        // Sends always notify. Suppressing them silenced the answer entirely:
-        // Discord edits never notify, so the ONE message that creates a reply
-        // is the only chance to buzz a phone. Streaming deltas arrive as edits
-        // (suppressed), so a long turn still rings once, not per delta.
         const payload: any = { content: chunks[i], ...NO_MENTIONS };
         if (i === chunks.length - 1 && components.length) payload.components = components;
         const sent = await (channel as any).send(payload);
@@ -539,23 +177,6 @@ export function setupDiscordBot(opts: {
       return lastId;
     } catch (error) {
       log.warn("discord send failed", { channelId, error: String(error) });
-      return null;
-    }
-  }
-
-  /** Components-v2 message (a card, not a text wall). */
-  async function sendCard(channelId: string, container: any, notify = false): Promise<string | null> {
-    try {
-      const channel = await discord.channels.fetch(channelId);
-      if (!channel || !channel.isTextBased()) return null;
-      const sent = await (channel as any).send({
-        components: [container],
-        flags: MessageFlags.IsComponentsV2 | (notify ? 0 : MessageFlags.SuppressNotifications),
-        ...NO_MENTIONS,
-      });
-      return sent?.id ?? null;
-    } catch (error) {
-      log.warn("discord card send failed", { channelId, error: String(error) });
       return null;
     }
   }
@@ -577,7 +198,7 @@ export function setupDiscordBot(opts: {
     }
   }
 
-  function startTyping(state: RuntimeUserState, channelId: string): void {
+  function startTyping(state: DiscordRuntimeUserState, channelId: string): void {
     clearTyping(state);
     const send = () => {
       discord.channels.fetch(channelId)
@@ -589,14 +210,13 @@ export function setupDiscordBot(opts: {
     state.typingSafety = setTimeout(() => clearTyping(state), 5 * 60 * 1000);
   }
 
-  function clearTyping(state: RuntimeUserState): void {
+  function clearTyping(state: DiscordRuntimeUserState): void {
     if (state.typingInterval) clearInterval(state.typingInterval);
     if (state.typingSafety) clearTimeout(state.typingSafety);
     state.typingInterval = null;
     state.typingSafety = null;
   }
 
-  /** First non-internal IPv4 so a phone on the LAN can open the dashboard. */
   function lanHost(): string | null {
     try {
       const os = _require("node:os") as typeof import("node:os");
@@ -609,10 +229,6 @@ export function setupDiscordBot(opts: {
     return null;
   }
 
-  /**
-   * Is a URL reachable from another device? The diff server binds 127.0.0.1,
-   * so a LAN link to it is a dead button on a phone. Probe before offering.
-   */
   async function isReachable(rawUrl: string): Promise<boolean> {
     const net = _require("node:net") as typeof import("node:net");
     let url: URL;
@@ -640,17 +256,9 @@ export function setupDiscordBot(opts: {
     return `http://${host}:${process.env.PI_PIDASH_PORT || 19190}`;
   }
 
-  /** Where inbound files land so the agent can use normal file tools on them. */
   function inboxDir(cwd: string | undefined): string {
     const base = cwd && cwd.trim() ? cwd : process.cwd();
     return `${base}/.pi/tmp/discord-inbox`;
-  }
-
-  function sessionName(sessionId: string | null): string {
-    if (!sessionId) return "none";
-    const client = piClients.get(sessionId);
-    if (!client) return "unknown";
-    return client.session.cwd.split("/").pop() || client.session.cwd;
   }
 
   function command(sessionId: string, payload: Record<string, unknown>): boolean {
@@ -665,7 +273,65 @@ export function setupDiscordBot(opts: {
     }
   }
 
-  // ── the shared chat engine, with Discord as its adapter ─────────────────
+  function sendPromptToSession(
+    sessionId: string,
+    payload: { text: string; images?: Array<{ data: string; mimeType: string; filename: string }> },
+  ): boolean {
+    const client = piClients.get(sessionId);
+    if (!client?.ws) return false;
+    try {
+      client.ws.send(JSON.stringify({ type: "prompt", text: payload.text, images: payload.images }));
+      return true;
+    } catch (error) {
+      log.warn("prompt send failed", { sessionId, error: String(error) });
+      return false;
+    }
+  }
+
+  // ── Session router (deep policy module behind the transport port) ────────
+  const router = createDiscordSessionRouter({
+    fetchChannel: (channelId, options) => (options ? discord.channels.fetch(channelId, options) : discord.channels.fetch(channelId)),
+    hasSendPermissions: (channel) => {
+      const permissions = channel?.permissionsFor?.(discord.user);
+      if (!permissions) return true;
+      return Boolean(permissions.has(["ViewChannel", channel.isThread?.() ? "SendMessagesInThreads" : "SendMessages"]));
+    },
+    createThread: async (parentChannelId, name, reason) => {
+      const parent: any = await discord.channels.fetch(parentChannelId);
+      const thread = await parent.threads.create({
+        name,
+        autoArchiveDuration: 1440,
+        reason,
+      });
+      return thread.id as string;
+    },
+    sendText: (channelId, text) => sendText(channelId, text),
+    clearTyping,
+    listLiveSessions: () => [...piClients.entries()]
+      .filter(([, client]) => Boolean(client?.ws))
+      .map(([sessionId, client]) => ({
+        sessionId,
+        lastActivity: Number(client?.session?.lastActivity) || 0,
+      })),
+    isSessionLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+    getSession: (sessionId) => piClients.get(sessionId)?.session ?? null,
+    getActiveSessions,
+    sendCommand: command,
+    sendPrompt: sendPromptToSession,
+    subscribeEvents: (hook) => {
+      piEventHooks.push(hook);
+      return () => {
+        const index = piEventHooks.indexOf(hook);
+        if (index >= 0) piEventHooks.splice(index, 1);
+      };
+    },
+    readPersistedState: () => readState(config.stateFile),
+    writePersistedState: (state) => writeState(config.stateFile, state),
+    isUserAllowed: (userId) => config.allowAll || config.allowedUsers.has(userId),
+    log,
+  });
+
+  // ── Shared chat bridge with Discord as its ChatAdapter ───────────────────
   const capabilities: ChatCapabilities = {
     maxMessageLength: DISCORD_TEXT_LIMIT,
     maxButtonsPerRow: BUTTONS_PER_ROW,
@@ -688,20 +354,48 @@ export function setupDiscordBot(opts: {
     },
     async setTyping(target: ChatTarget, active: boolean): Promise<void> {
       const channelId = target.threadId || target.channelId;
-      const state = [...runtime.values()].find((s) => (s.threadId || s.responseChannelId) === channelId);
+      const state = [...router.runtime.values()].find((s) => (s.threadId || s.responseChannelId) === channelId);
       if (!state) return;
       if (active) startTyping(state, channelId);
       else clearTyping(state);
     },
   };
 
-  /**
-   * Forum session board: one thread per session.
-   *
-   * A forum channel keeps sessions from competing for a single scrolling chat.
-   * The channel comes from DISCORD_FORUM_CHANNEL_ID — the bot never creates
-   * channels on its own.
-   */
+  const bridge: ChatBridge = createChatBridge({
+    adapter,
+    promptTtlMs: config.promptTtlMs,
+    streamEditIntervalMs: STREAM_EDIT_INTERVAL_MS,
+    users: () => router.runtime.entries(),
+    renderPrompt: async (target, prompt, body) => {
+      const controls = buildPromptControls(prompt, { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder });
+      const sentId = await sendText(target.threadId || target.channelId, body, controls);
+      if (!sentId) log.warn("question could not be delivered", { promptId: prompt.id, session: prompt.sessionId });
+      else log.info("question delivered with controls", { promptId: prompt.id, controls: controls.length });
+    },
+    sendToSession: (sessionId, payload) => {
+      const client = piClients.get(sessionId);
+      if (!client?.ws) return false;
+      try {
+        client.ws.send(JSON.stringify({ ...payload, sessionId }));
+        return true;
+      } catch (error) {
+        log.warn("bridge send failed", { sessionId, error: String(error) });
+        return false;
+      }
+    },
+  });
+
+  piEventHooks.push((sessionId: string, event: any) => {
+    if (event?.type === "extension_ui_request" || event?.type === "ui-dismiss" || event?.type === "ui_prompt_end") {
+      router.handleUiRequest(sessionId, event, bridge);
+      return;
+    }
+    if (router.runtime.size === 0) return;
+    if (piClients.get(sessionId)?.replaying) return;
+    bridge.onPiEvent(sessionId, event);
+  });
+
+  // ── Forum board ──────────────────────────────────────────────────────────
   async function renderBoard(): Promise<any> {
     const forumId = config.forumChannelId;
     if (!forumId) {
@@ -727,26 +421,19 @@ export function setupDiscordBot(opts: {
     }
 
     const plan = planBoard(
-      sessions.map((session: any) => ({ sessionId: String(session.sessionId), label: sessionName(String(session.sessionId)) })),
+      sessions.map((session: any) => ({ sessionId: String(session.sessionId), label: router.sessionName(String(session.sessionId)) })),
       Object.fromEntries(existing),
     );
-    const byId = new Map(sessions.map((session: any) => [String(session.sessionId), session]));
 
     let created = 0;
     for (const planned of plan.toCreate) {
       const sessionId = planned.sessionId;
-      const session: any = byId.get(sessionId) ?? {};
       try {
         const thread = await forum.threads.create({
-          name: truncateLine(sessionName(sessionId), 90),
-          // The starter message is readable by everyone with access to the
-          // forum, so it carries no working directory — the cwd stays in the
-          // ephemeral reply (Qodo 00e6ae39).
-          message: { content: `${sessionName(sessionId)} — pi session. Type here to prompt it.` },
+          name: truncateLine(router.sessionName(sessionId), 90),
+          message: { content: `${router.sessionName(sessionId)} — pi session. Type here to prompt it.` },
           reason: `pi session ${sessionId}`,
         });
-        // The topic is the thread's identity: without it every lookup misses and
-        // re-running the command would duplicate the board (Qodo 4fa32268).
         await thread.setTopic(`pi session:${sessionId}`).catch((error: any) =>
           log.warn("board topic could not be set", { sessionId, error: String(error) }));
         existing.set(sessionId, thread.id);
@@ -763,357 +450,42 @@ export function setupDiscordBot(opts: {
       components: [new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder().setCustomId("boardpick").setPlaceholder("Open a session thread").addOptions(plan.options),
       )],
-      // The menu only carries indexes; the ids ride with the message.
       ...(plan.sessionIds.length ? { boardSessionIds: plan.sessionIds } : {}),
     };
   }
 
-  /**
-   * Reaction shortcuts on the bot's own messages: ⏹ stop, 🔁 retry the last
-   * prompt, 🗑 delete. One tap beats a keyboard on a phone.
-   */
+  // ── Reaction shortcuts ───────────────────────────────────────────────────
   discord.on("messageReactionAdd", async (reaction: any, user: any) => {
     try {
       if (user?.bot) return;
       if (reaction?.partial) await reaction.fetch().catch(() => {});
       const message = reaction?.message?.partial ? await reaction.message.fetch().catch(() => null) : reaction?.message;
       if (!message || message.author?.id !== discord.user?.id) return;
-      const userId = String(user?.id ?? "");
-      if (!(config.allowAll || config.allowedUsers.has(userId))) return;
-      const state = runtime.get(userId);
-      if (!state) return;
-      const emoji = reaction.emoji?.name ?? "";
-      const action = reactionAction(emoji);
-      if (!action) return;
-      const channelId = String(message.channelId ?? "");
-      const sessionId = sessionForChannel(state.targets, state.watchedSessionId, state.target?.channelId, channelId);
-
-      if (action === "stop") {
-        if (!sessionId || !ownsSession(state, sessionId)) {
-          log.info("reaction stop refused", { userId, sessionId });
-          return;
-        }
-        const stopped = sessionId ? command(sessionId, { command: "abort" }) : false;
-        log.info("reaction stop", { userId, sessionId, stopped });
-        return;
-      }
-      if (action === "retry") {
-        const remembered = sessionId ? state.lastPrompts?.[sessionId] : null;
-        const client = sessionId ? piClients.get(sessionId) : null;
-        if (!remembered || !client?.ws) {
-          log.debug("reaction retry skipped", { userId, sessionId, hasPrompt: Boolean(remembered) });
-          return;
-        }
-        // A retry must send the SAME request. A truncated prompt or one that
-        // carried images cannot be reproduced, so say so instead of quietly
-        // submitting something else (Qodo bcacb8c5, 7e8820db).
-        if (remembered.truncated) {
-          await sendText(channelId, "That prompt was too long to keep in full, so 🔁 cannot resend it exactly.");
-          log.info("reaction retry refused", { userId, sessionId, reason: "truncated" });
-          return;
-        }
-        const text = remembered.hadImages
-          ? `${remembered.text}\n\n(The images from the original message are not re-sent.)`
-          : remembered.text;
-        bridge.expectEcho(state, sessionId!, text);
-        client.ws.send(JSON.stringify({ type: "prompt", text }));
-        log.info("reaction retry", { userId, sessionId, chars: text.length, hadImages: remembered.hadImages });
-        return;
-      }
-      if (action === "delete") {
-        // Deleting a bot reply is only allowed where this user is the owner of
-        // the target: a shared guild thread must not let one allowlisted user
-        // remove another's answer (Qodo e67e18a1).
-        if (!ownsChannel(state, channelId)) {
-          log.info("reaction delete refused", { userId, channelId });
-          return;
-        }
-        await message.delete().catch((error: any) => log.debug("reaction delete failed", { error: String(error) }));
-        log.info("reaction delete", { userId, messageId: message.id });
-        return;
-      }
+      await router.handleReaction({
+        userId: String(user?.id ?? ""),
+        channelId: String(message.channelId ?? ""),
+        emoji: reaction.emoji?.name ?? "",
+        messageId: message.id,
+        deleteMessage: () => message.delete(),
+        expectEcho: (state, sessionId, text) => bridge.expectEcho(state, sessionId, text),
+      });
     } catch (error) {
       log.warn("reaction handling failed", { error: String(error) });
     }
   });
 
-  const bridge: ChatBridge = createChatBridge({
-    adapter,
-    promptTtlMs: config.promptTtlMs,
-    streamEditIntervalMs: STREAM_EDIT_INTERVAL_MS,
-    users: () => runtime.entries(),
-    renderPrompt: async (target, prompt, body) => {
-      const controls = buildPromptControls(prompt, { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder });
-      const sentId = await sendText(target.threadId || target.channelId, body, controls);
-      if (!sentId) log.warn("question could not be delivered", { promptId: prompt.id, session: prompt.sessionId });
-      else log.info("question delivered with controls", { promptId: prompt.id, controls: controls.length });
-    },
-    sendToSession: (sessionId, payload) => {
-      const client = piClients.get(sessionId);
-      if (!client?.ws) return false;
-      try {
-        client.ws.send(JSON.stringify({ ...payload, sessionId }));
-        return true;
-      } catch (error) {
-        log.warn("bridge send failed", { sessionId, error: String(error) });
-        return false;
-      }
-    },
-  });
-
-  /**
-   * The daemon dispatches session events ONLY through registered hooks, so this
-   * registration is what makes the bot live at all. Questions take the Discord
-   * path (native buttons/menus); everything else goes through the engine.
-   */
-  piEventHooks.push((sessionId: string, event: any) => {
-    if (event?.type === "extension_ui_request") {
-      onUiRequest(sessionId, event);
-      return;
-    }
-    if (runtime.size === 0) return;
-    // Replay frames are history, not live activity.
-    if (piClients.get(sessionId)?.replaying) return;
-    bridge.onPiEvent(sessionId, event);
-  });
-
-  /** Target creation in flight, keyed by USER and session: two users waiting on the same session
-   *  need a target each, and sharing one promise gave the second user nothing. */
-  const targetInFlight = new Map<string, Promise<{ channelId: string; threadId: string | null } | null>>();
-  /** Sessions whose question was answered or cancelled one line in the watched channel. */
-  /** Throttled per USER and asking session: one user's nudge must not silence another's. */
-  const lastNudgeAt = new Map<string, number>();
-  /** Prompt ids that ended while their target was still being created. */
-  const endedPrompts = new Set<string>();
-
-  /** A GUILD channel that can hold a thread for `sessionId`, or null.
-   *  Never a DM (threads cannot be created in one) and never another session's thread (an answer
-   *  there would be routed to THAT session). */
-  async function threadParentFor(state: RuntimeUserState, sessionId: string): Promise<string | null> {
-    const candidates = [state.responseChannelId].filter((id): id is string => Boolean(id));
-    for (const channelId of candidates) {
-      const owners = Object.values(state.threads ?? {});
-      if (owners.includes(channelId)) continue; // somebody's thread, not a parent
-      try {
-        const channel: any = await discord.channels.fetch(channelId);
-        if (channel?.guildId && typeof channel?.threads?.create === "function") return channelId;
-      } catch { /* missing or not a guild channel */ }
-    }
-    return null;
-  }
-
-  /** True when `channelId` is another session's thread, so it must never be reused as a fallback. */
-  function isForeignThread(state: RuntimeUserState, channelId: string | null): boolean {
-    if (!channelId) return false;
-    return Object.values(state.threads ?? {}).includes(channelId);
-  }
-
-  /** A delivery target for `sessionId`, created on demand.
-   *
-   *  The routing, fallbacks, reuse and eviction live in `ensurePromptTarget` (pure module, injected
-   *  Discord calls, tested); this supplies the real calls and the user state. */
-  async function ensureSessionTarget(
-    userId: string,
-    state: RuntimeUserState,
-    sessionId: string,
-    name: string,
-  ): Promise<ChatTarget | null> {
-    return ensurePromptTarget(
-      {
-        fetchChannel: (channelId) => discord.channels.fetch(channelId),
-        createThread: async (parentChannelId, threadName) => {
-          const parent: any = await discord.channels.fetch(parentChannelId);
-          const thread = await parent.threads.create({
-            name: threadName,
-            autoArchiveDuration: 1440,
-            reason: `pi session ${name}`,
-          });
-          return thread.id as string;
-        },
-        persist,
-        inFlight: targetInFlight,
-        maxThreads: MAX_THREADS_PER_USER,
-        truncate: truncateLine,
-        log,
-      },
-      state,
-      { userId, sessionId, name },
-    );
-  }
-
-  async function isGuildChannel(channelId: string): Promise<boolean> {
-    try {
-      const channel: any = await discord.channels.fetch(channelId);
-      return Boolean(channel?.guildId);
-    } catch (error) {
-      // A deleted or invisible channel is not proof that this was a DM: log it and let the caller
-      // fall through its routes instead of silently choosing the DM one.
-      log.warn("channel lookup failed while routing a prompt", { channelId, error: String(error) });
-      return false;
-    }
-  }
-
-  /** One line in the watched channel when ANOTHER session asks, throttled per asking session. */
-  async function nudgeWatchedChannel(userId: string, state: RuntimeUserState, asked: string, name: string, target: ChatTarget): Promise<void> {
-    if (!shouldNudge({ watchedSessionId: state.watchedSessionId, askedSessionId: asked })) return;
-    // A watch without a channel (DM watch, or a thread that was never created) must still notify.
-    const channelId = nudgeChannelId({
-      watchedTargetChannelId: state.target?.channelId ?? null,
-      responseChannelId: state.responseChannelId ?? null,
-      askedChannelId: target.channelId,
-    });
-    if (!channelId) {
-      log.warn("nudge skipped: no channel to write to", { asked, watched: state.watchedSessionId });
-      return;
-    }
-    const now = Date.now();
-    const nudgeKey = `${userId}:${asked}`;
-    if (!nudgeDue(lastNudgeAt.get(nudgeKey), now)) return;
-    lastNudgeAt.set(nudgeKey, now);
-    try {
-      await sendText(channelId, `❓ **${truncateLine(name, 60)}** is asking a question → <#${target.channelId}>`);
-      log.info("nudged watched channel", { asked, watched: state.watchedSessionId });
-    } catch (error) {
-      log.debug("nudge failed", { asked, error: String(error) });
-    }
-  }
-
-  // ── ask-user prompts ─────────────────────────────────────────────────────
-  /**
-   * Rendering the native controls stays here (buttons/menus are Discord's), but
-   * the pending-prompt lifecycle — TTL, dismissal, answer validation — belongs to
-   * the engine, so the next client inherits it for free.
-   */
-  function onUiRequest(sessionId: string, event: any): void {
-    if (event?.type === "ui-dismiss" || event?.type === "ui_prompt_end") {
-      bridge.onUiEvent(sessionId, event);
-      // The question may still be waiting on a target: remember that it ended so the delivery
-      // below does not post a prompt nobody can answer.
-      if (typeof event?.id === "string") {
-        endedPrompts.add(event.id);
-        if (endedPrompts.size > 200) endedPrompts.delete(endedPrompts.values().next().value as string);
-      }
-      return;
-    }
-    const method = (event.method || "input") as PromptMethod;
-    const name = sessionNameFor(sessionId);
-    // Name the asking session in the prompt itself: a DM has no thread title, so a bare question
-    // left the user guessing which session asked.
-    const cwd = sessionCwdFor(sessionId);
-    const titled = { ...event, title: promptHeader({ name, cwd, title: event.title, sessionId }) };
-    // A fresh request reuses ids across sessions; an old "ended" marker must not hide it.
-    if (typeof event?.id === "string") endedPrompts.delete(event.id);
-    for (const [userId, state] of runtime) {
-      // `/disconnect` stops OUTPUT, never questions: a user with no session is exactly who needs
-      // to be told that a session is asking something.
-      // ANY session's question is delivered: a target is created on demand when the user never
-      // picked this session, so a background agent waiting for an answer is never invisible.
-      void (async () => {
-        const known = state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
-        const target = known ?? await ensureSessionTarget(userId, state, sessionId, name);
-        if (!target) {
-          log.error("prompt dropped: no delivery target", { userId, sessionId, method });
-          return;
-        }
-        // The target is prompt-only, so a muted user still gets the question and no output.
-        if (endedPrompts.has(event?.id)) {
-          log.debug("prompt skipped: ended while creating its target", { userId, sessionId });
-          return;
-        }
-        const prompt = bridge.askUser(sessionId, titled, state);
-        if (!prompt) return;
-        // Delivery (with controls) happens in renderPrompt; this only records who was asked.
-        log.info("prompt forwarded to discord", { userId, sessionId, method, promptId: prompt.id, created: !known });
-        // Nudge on EVERY question from another session (throttled), not only the first one.
-        await nudgeWatchedChannel(userId, state, sessionId, name, target);
-      })().catch((error: unknown) => {
-        log.error("prompt delivery failed", { userId, sessionId, error: String(error) });
-      });
-    }
-  }
-
-  /** The session whose thread an interaction arrived in, if any. Two sessions sharing a prompt id
-   *  are told apart by the thread the button was posted in. */
-  function interactionThreadSession(interaction: any): string | null {
-    const channelId = interaction?.channelId ?? interaction?.channel?.id ?? null;
-    if (!channelId) return null;
-    for (const [userId, state] of runtime) {
-      for (const [sessionId, threadId] of Object.entries(state.threads ?? {})) {
-        if (threadId === channelId && state.pendingPrompts?.[sessionId]) return sessionId;
-      }
-    }
-    return null;
-  }
-
-  /** The checkout a session runs in, for the prompt header. */
-  function sessionCwdFor(sessionId: string): string | null {
-    try {
-      const sessions = getActiveSessions() ?? [];
-      const found = sessions.find((session: any) => (session?.sessionId ?? session?.id) === sessionId);
-      return typeof found?.cwd === "string" && found.cwd ? found.cwd : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /** A readable name for a session, for thread titles and nudges. */
-  function sessionNameFor(sessionId: string): string {
-    try {
-      const sessions = getActiveSessions() ?? [];
-      const found = sessions.find((session: any) => (session?.sessionId ?? session?.id) === sessionId);
-      // Reuses the sessions-view rule: the checkout leads, because pi names a session after its
-      // first user message ("handoff-2026-11-06.md"), which says nothing about the project.
-      if (typeof found?.cwd === "string" && found.cwd) return checkoutName(found as any);
-      const named = typeof found?.name === "string" && found.name ? path.basename(found.name) : "";
-      return named || sessionId.slice(0, 8);
-    } catch {
-      return sessionId.slice(0, 8);
-    }
-  }
-
-  // ── slash commands ───────────────────────────────────────────────────────
-  const COMMANDS = [
-    ["sessions", "List pi sessions — pick one to watch"],
-    ["status", "Show the watched session"],
-    ["stop", "Interrupt the running turn"],
-    ["disconnect", "Stop watching — clears the watch, its threads and pending questions"],
-    ["board", "Forum session board — one thread per session"],
-    ["compact", "Compact the watched session's context"],
-    ["model", "Show or set the model"],
-    ["thinking", "Show or set the thinking level"],
-  ["async", "List or kill background async agents"],
-  ["cron", "List or kill scheduled cron jobs"],
-  ["tasks", "List tasks in the watched session"],
-    ["coms", "List coms peers in the watched session's project"],
-    ["memory", "Memory status of the watched session"],
-    ["mcp", "MCP servers known to the watched session"],
-    ["diff", "Link to the session's diff viewer"],
-    ["watch", "Watch a session by name"],
-    ["notify", "Turn turn-complete notifications on or off"],
-    ["file", "Send a file from the session's working directory"],
-  ] as const;
-
-  /**
-   * Do the registered commands still match what we want to register?
-   *
-   * Compares the fields that define a command — everything else Discord fills
-   * in (ids, versions, guild scope) is ignored so a restart is a no-op.
-   */
+  // ── Slash command registration ───────────────────────────────────────────
   async function registerCommands(clientId: string, guildId?: string): Promise<void> {
     const rest = new REST().setToken(config.token);
     const builders = COMMANDS.map(([name, description]) => {
       const builder = new SlashCommandBuilder()
         .setName(name)
         .setDescription(description)
-        // Usable in a DM and from a private channel: the bot should not require
-        // a server just to answer a question from a phone.
         .setContexts(
           InteractionContextType.Guild,
           InteractionContextType.BotDM,
           InteractionContextType.PrivateChannel,
         )
-        // User install lets an allowed user add PI to their own servers/DMs
-        // without an admin (requires enabling it in the Discord developer portal).
         .setIntegrationTypes(
           ApplicationIntegrationType.GuildInstall,
           ApplicationIntegrationType.UserInstall,
@@ -1128,8 +500,6 @@ export function setupDiscordBot(opts: {
       if (name === "file") builder.addStringOption((o: any) => o.setName("path").setDescription("Path relative to the session cwd").setRequired(true));
       return builder;
     });
-    // Right-click / long-press a message → send it to the agent. Cheapest big
-    // win on a phone: stack traces and log lines become tasks without copying.
     const askAbout = new ContextMenuCommandBuilder()
       .setName("Ask PI about this")
       .setType(ApplicationCommandType.Message)
@@ -1143,9 +513,6 @@ export function setupDiscordBot(opts: {
     const body = [...builders.map((b: any) => b.toJSON()), askAbout];
     const scope = guildId ? `guild:${guildId}` : "global";
     try {
-      // A bulk overwrite on every start reissues command ids, and a client that
-      // cached the old ones answers "This command is outdated" when tapped
-      // (live report). Only write when the definitions actually differ.
       const route = guildId
         ? Routes.applicationGuildCommands(clientId, guildId)
         : Routes.applicationCommands(clientId);
@@ -1163,10 +530,9 @@ export function setupDiscordBot(opts: {
     }
   }
 
-  // ── interaction helpers ──────────────────────────────────────────────────
+  // ── Interaction helpers & UI state maps ──────────────────────────────────
   const isComponent = (interaction: any) => Boolean(interaction.isButton?.() || interaction.isStringSelectMenu?.());
 
-  /** Reply whether this came from a component or a slash command. */
   async function acknowledge(interaction: any, content: string, ephemeral = true): Promise<void> {
     try {
       if (isComponent(interaction)) await interaction.update({ content, components: [] });
@@ -1177,7 +543,194 @@ export function setupDiscordBot(opts: {
     }
   }
 
-  // ── interactions ─────────────────────────────────────────────────────────
+  function resolvePrompt(prompt: PendingPrompt, raw: string, state: DiscordRuntimeUserState, interaction: any): void {
+    const answered = bridge.answer(state, raw, (content) => void acknowledge(interaction, content), prompt.sessionId);
+    if (answered) router.releasePromptOnlyTarget(state, prompt.sessionId);
+  }
+
+  async function switchWatch(state: DiscordRuntimeUserState, interaction: any, sessionId: string): Promise<void> {
+    const result = await router.switchWatch(state, {
+      userId: interaction.user.id,
+      username: interaction.user.username,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      canCreateThread: Boolean(interaction.channel?.threads?.create),
+      createThread: interaction.channel?.threads?.create
+        ? async (name, reason) => {
+          const thread = await interaction.channel.threads.create({
+            name,
+            autoArchiveDuration: 1440,
+            reason,
+          });
+          return thread.id as string;
+        }
+        : undefined,
+      openDm: async () => (await interaction.user.createDM())?.id ?? null,
+    }, sessionId);
+    await acknowledge(interaction, result.ackText);
+  }
+
+  interface PickerContext {
+    sessionId: string;
+    preferGroup: string | null;
+    ordered: ReturnType<typeof entriesFromModels>;
+  }
+  interface JobListContext {
+    sessionId: string;
+    kind: "async" | "cron";
+    stoppable: string[];
+  }
+
+  const pickerContexts = new Map<string, PickerContext>();
+  const jobLists = new Map<string, JobListContext>();
+  const boardLists = new Map<string, string[]>();
+
+  function rememberBounded<T>(map: Map<string, T>, key: string, value: T): void {
+    map.set(key, value);
+    while (map.size > PICKER_CONTEXT_LIMIT) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
+
+  function modelPickerComponents(page: ReturnType<typeof slicePickerPage>): any[] {
+    const rows: any[] = [new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`modelpick:${page.page}`)
+        .setPlaceholder(`Choose a model (${page.total})`)
+        .addOptions(page.items.map((entry, index) => ({
+          label: pickerLabel(entry),
+          value: String(page.offset + index),
+          default: entry.current === true,
+        }))),
+    )];
+    if (page.pages > 1) {
+      rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`modelpage:${page.page - 1}`).setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(page.page <= 1),
+        new ButtonBuilder().setCustomId(`modelpage:${page.page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page.page >= page.pages),
+      ));
+    }
+    return rows;
+  }
+
+  function sessionSummaries(): SessionSummary[] {
+    return getActiveSessions().map((session: any) => ({
+      sessionId: session.sessionId,
+      cwd: session.cwd,
+      model: session.model,
+      branch: session.branch,
+      active: session.active,
+      working: session.working,
+      name: session.name,
+      agentType: session.agentType,
+    }));
+  }
+
+  function sessionComponents(page: ReturnType<typeof buildSessionPage>, state: DiscordRuntimeUserState): any[] {
+    const rows: any[] = [];
+    for (let i = 0; i < page.items.length; i += BUTTONS_PER_ROW) {
+      const row = new ActionRowBuilder();
+      for (const session of page.items.slice(i, i + BUTTONS_PER_ROW)) {
+        row.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`watch:${session.sessionId}`)
+            .setLabel(truncateLine(sessionLabel(session), 80))
+            .setStyle(session.sessionId === state.watchedSessionId ? ButtonStyle.Success : ButtonStyle.Secondary),
+        );
+      }
+      rows.push(row);
+    }
+    const nav = new ActionRowBuilder();
+    let navUsed = false;
+    if (page.pages > 1) {
+      nav.addComponents(
+        new ButtonBuilder().setCustomId(`sessions:${page.page - 1}`).setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(page.page <= 1),
+        new ButtonBuilder().setCustomId(`sessions:${page.page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page.page >= page.pages),
+      );
+      navUsed = true;
+    }
+    if (state.watchedSessionId) {
+      nav.addComponents(new ButtonBuilder().setCustomId("unwatch").setLabel("Disconnect").setStyle(ButtonStyle.Danger));
+      navUsed = true;
+    }
+    if (navUsed) rows.push(nav);
+    return rows.slice(0, 5);
+  }
+
+  async function sendWorkspaceFile(interaction: any, cwd: string, relative: string): Promise<void> {
+    try {
+      const root = fs.realpathSync(path.resolve(cwd));
+      const candidate = path.resolve(root, relative);
+      const resolvedPath = fs.realpathSync(candidate);
+      if (resolvedPath !== root && !resolvedPath.startsWith(root + path.sep)) {
+        await acknowledge(interaction, "That path resolves outside the session directory.");
+        return;
+      }
+      const stat = fs.statSync(resolvedPath);
+      if (!stat.isFile()) {
+        await acknowledge(interaction, "That is not a file.");
+        return;
+      }
+      if (stat.size > MAX_IMAGE_BYTES) {
+        await acknowledge(interaction, `File is ${formatKB(stat.size)} — over the ${formatKB(MAX_IMAGE_BYTES)} limit.`);
+        return;
+      }
+      await interaction.deferReply({ ephemeral: true });
+      await interaction.editReply({
+        files: [{ attachment: fs.readFileSync(resolvedPath), name: path.basename(resolvedPath) }],
+        ...NO_MENTIONS,
+      });
+      log.info("file sent to discord", { userId: interaction.user.id, channelId: interaction.channelId, size: stat.size });
+    } catch (error) {
+      log.warn("workspace file delivery failed", { userId: interaction.user.id, channelId: interaction.channelId, code: (error as NodeJS.ErrnoException)?.code ?? null });
+      await acknowledge(interaction, "Could not read or deliver that file.");
+    }
+  }
+
+  async function statusCard(session: any, sessionId: string): Promise<any> {
+    const state = session.active ? (session.working ? "working" : "idle") : "detached";
+    const badge = session.working ? "🟢" : session.active ? "⚪" : "🔴";
+    const container = new ContainerBuilder()
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(`# ${badge} ${router.sessionName(sessionId)}`),
+      )
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+          `**${state}** · ${session.model || "—"}${session.thinkingLevel ? ` · thinking ${session.thinkingLevel}` : ""}`,
+        ),
+      )
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small))
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          session.branch ? `**Branch:** ${session.branch}` : null,
+          `**CWD:** \`${session.cwd}\``,
+          session.supportsImages === undefined ? null : `**Images:** ${session.supportsImages ? "supported" : "not supported"}`,
+          session.container ? "**Container:** 📦" : null,
+        ].filter(Boolean).join("\n")),
+      );
+
+    const links: any[] = [];
+    const candidates: Array<{ label: string; url: string }> = [];
+    const dashboard = dashboardUrl();
+    if (dashboard) candidates.push({ label: "Dashboard", url: dashboard });
+    const host = lanHost();
+    if (session.diffPort && host) {
+      candidates.push({ label: "Diff", url: `http://${host}:${session.diffPort}` });
+    }
+    const reachable = await Promise.all(candidates.map((candidate) => isReachable(candidate.url)));
+    candidates.forEach((candidate, index) => {
+      if (reachable[index]) {
+        links.push(new ButtonBuilder().setLabel(candidate.label).setStyle(ButtonStyle.Link).setURL(candidate.url));
+      } else {
+        log.debug("skipping unreachable link", { label: candidate.label, url: candidate.url });
+      }
+    });
+    if (links.length) container.addActionRowComponents(new ActionRowBuilder().addComponents(...links.slice(0, 5)));
+    return { components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral };
+  }
+
+  // ── Interactions ─────────────────────────────────────────────────────────
   discord.on("interactionCreate", async (interaction: any) => {
     const authorized = config.allowAll || config.allowedUsers.has(interaction.user?.id);
     if (!authorized) {
@@ -1188,7 +741,7 @@ export function setupDiscordBot(opts: {
       return;
     }
 
-    const state = userState(interaction.user.id);
+    const state = router.userState(interaction.user.id);
     state.updatedAt = Date.now();
 
     if (interaction.isAutocomplete?.()) {
@@ -1200,7 +753,7 @@ export function setupDiscordBot(opts: {
     if (isComponent(interaction)) {
       const customId: string = interaction.customId || "";
       if (customId === "unwatch") {
-        disconnectUser(state);
+        router.disconnectUser(state);
         await acknowledge(interaction, "Disconnected.");
         return;
       }
@@ -1223,7 +776,7 @@ export function setupDiscordBot(opts: {
           return;
         }
         command(picker.sessionId, { command: "set-model", modelId: choice.id });
-        await acknowledge(interaction, `Switching **${sessionName(picker.sessionId)}** to \`${choice.id}\`.`);
+        await acknowledge(interaction, `Switching **${router.sessionName(picker.sessionId)}** to \`${choice.id}\`.`);
         log.info("model chosen from picker", { session: picker.sessionId, modelId: choice.id });
         return;
       }
@@ -1234,8 +787,6 @@ export function setupDiscordBot(opts: {
           await acknowledge(interaction, "This model list expired — run `/model` again.");
           return;
         }
-        // Same entries + same preference as page 1: paging never reorders, so
-        // no model is skipped or shown twice across a boundary.
         const page = slicePickerPage(picker.ordered, Number(modelPage[1]));
         await interaction.update({
           content: `**Model** — page ${page.page}/${page.pages} of ${page.total}`,
@@ -1268,8 +819,6 @@ export function setupDiscordBot(opts: {
           await acknowledge(interaction, "That board list expired — run `/board` again.");
           return;
         }
-        // The forum thread already exists for this session: reuse it as the
-        // session's target instead of creating a second thread elsewhere.
         let threadId: string | null = null;
         try {
           const forum: any = await discord.channels.fetch(forumId);
@@ -1299,15 +848,16 @@ export function setupDiscordBot(opts: {
         }).catch(() => {});
         return;
       }
+
+      const interactionChannelId = interaction?.channelId ?? interaction?.channel?.id ?? null;
       const modalOpen = customId.match(/^answer-modal:([^:]+)$/);
       if (modalOpen) {
         const promptId = modalOpen[1];
-        const owned = promptById(state.pendingPrompts, promptId, interactionThreadSession(interaction));
+        const owned = promptById(state.pendingPrompts, promptId, router.interactionThreadSession(interactionChannelId));
         if (!owned) {
           await acknowledge(interaction, "That prompt is no longer waiting.");
           return;
         }
-        const prompt = owned;
         const modal = new ModalBuilder()
           .setCustomId(`answer-submit:${promptId}`)
           .setTitle("Your answer")
@@ -1315,7 +865,7 @@ export function setupDiscordBot(opts: {
             new ActionRowBuilder().addComponents(
               new TextInputBuilder()
                 .setCustomId("value")
-                .setLabel(truncateLine(prompt.options[0] || "Answer", 45))
+                .setLabel(truncateLine(owned.options[0] || "Answer", 45))
                 .setStyle(TextInputStyle.Paragraph)
                 .setRequired(true)
                 .setMaxLength(1800),
@@ -1328,9 +878,7 @@ export function setupDiscordBot(opts: {
       const answer = customId.match(/^answer:([^:]+):(.+)$/);
       if (answer) {
         const [, promptId, choice] = answer;
-        // Any session's prompt: answering must reach the asking session, and the bridge is told
-        // WHICH one, so the user's watch does not move to it.
-        const prompt = promptById(state.pendingPrompts, promptId, interactionThreadSession(interaction));
+        const prompt = promptById(state.pendingPrompts, promptId, router.interactionThreadSession(interactionChannelId));
         if (!prompt) {
           await acknowledge(interaction, "That prompt is no longer waiting.");
           return;
@@ -1343,73 +891,21 @@ export function setupDiscordBot(opts: {
     }
 
     if (interaction.isMessageContextMenuCommand?.()) {
-      const state = userState(interaction.user.id);
       const channelId = String(interaction.channelId ?? "");
-      // The SAME resolver every other inbound path uses. Asking "is a session watched" refused a
-      // channel that was delivering a live session's output — the bot was writing into it, so it is
-      // an address for that session (Qodo #1075).
-      const inbound = routeToActiveSession(resolveInboundSession({
-        channelId,
-        threadSessionId: Object.entries(state.threads ?? {}).find(([, threadId]) => threadId === channelId)?.[0] ?? null,
-        watchedSessionId: state.watchedSessionId ?? null,
-        targets: state.targets ?? {},
-        isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
-      }), {
-        handler: "context-menu",
+      const route = router.resolveInteractionRoute({
+        kind: "message-context-menu",
+        handler: "message-context-menu",
+        fallbackHandler: "context-menu",
         channelId,
         guildId: interaction.guildId,
-        watchedSessionId: state.watchedSessionId ?? null,
         userId: interaction.user.id,
+        disconnectedReply: "The watched session is disconnected.",
       });
-      const targetSession = inbound.sessionId;
-      if (!targetSession) {
-        // WARN, with the handler and the state it looked at: this refusal reached the user twice
-        // with nothing in the log naming which of the "Not watching any session" sites spoke.
-        logInboundDrop({
-          reason: inbound.ambiguous ? "interaction-ambiguous" : inbound.deadTarget ? "interaction-dead-target" : "interaction-no-watch",
-          channelId: interaction.channelId,
-          guildId: interaction.guildId,
-          watchedSessionId: state.watchedSessionId ?? null,
-          watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
-          targets: state.targets,
-          ownsTarget: false,
-          userId: interaction.user.id,
-          inbound,
-        }, "warn", {
-          kind: "message-context-menu",
-          handler: "message-context-menu",
-          channelId: interaction.channelId,
-          guildId: interaction.guildId,
-          watchedSessionId: state.watchedSessionId ?? null,
-          watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
-          targets: state.targets,
-          watchedClientPresent: false,
-          inbound,
-        });
-        // Two different refusals: a channel nobody watches and a channel whose session died both
-        // used to say "Not watching any session", which hid why it went quiet.
-        await interaction.reply({ content: inbound.ambiguous
-          ? "This channel carries more than one session. Send in that session's thread or use `/sessions`."
-          : inbound.deadTarget
-          ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
-          : "Not watching any session. Use `/sessions` first.", ephemeral: true }).catch(() => {});
+      if (!route.ok) {
+        await interaction.reply({ content: route.reply, ephemeral: true }).catch(() => {});
         return;
       }
-      const client = piClients.get(targetSession);
-      if (!client?.ws) {
-        logInboundDrop({
-          reason: "interaction-session-disconnected",
-          channelId: interaction.channelId,
-          guildId: interaction.guildId,
-          watchedSessionId: targetSession,
-          watchLive: false,
-          targets: state.targets,
-          ownsTarget: false,
-          userId: interaction.user.id,
-        });
-        await interaction.reply({ content: "The watched session is disconnected.", ephemeral: true }).catch(() => {});
-        return;
-      }
+      const targetSession = route.sessionId;
       const message = interaction.targetMessage;
       const attachmentNames = [...(message.attachments?.values?.() ?? [])].map((a: any) => a.name).filter(Boolean);
       const quoted = (message.content || "").trim();
@@ -1427,15 +923,22 @@ export function setupDiscordBot(opts: {
         "",
         "Look at this and tell me what to do.",
       ].filter(Boolean).join("\n");
-      // A menu prompt explicitly requests replies, without moving the user's watch.
-      if (!await establishReplyTarget(state, targetSession, interaction.user)) {
-        logInboundDrop({ reason: "interaction-reply-destination-unavailable", channelId, userId: interaction.user.id, watchedSessionId: targetSession, watchLive: true, ownsTarget: false });
+      const openDm = async () => (await interaction.user.createDM())?.id ?? null;
+      if (!await router.establishReplyTarget(route.state, targetSession, interaction.user.id, openDm)) {
+        router.logInboundDrop({
+          reason: "interaction-reply-destination-unavailable",
+          channelId,
+          userId: interaction.user.id,
+          watchedSessionId: targetSession,
+          watchLive: true,
+          ownsTarget: false,
+        });
         await acknowledge(interaction, "Could not open a private reply channel. Enable DMs and try again.");
         return;
       }
-      bridge.expectEcho(state, targetSession, prompt);
-      client.ws.send(JSON.stringify({ type: "prompt", text: prompt }));
-      await interaction.reply({ content: `Sent to **${sessionName(targetSession)}**.`, ephemeral: true }).catch(() => {});
+      bridge.expectEcho(route.state, targetSession, prompt);
+      sendPromptToSession(targetSession, { text: prompt });
+      await interaction.reply({ content: `Sent to **${router.sessionName(targetSession)}**.`, ephemeral: true }).catch(() => {});
       log.info("context menu prompt forwarded", { userId: interaction.user.id, session: targetSession, chars: prompt.length });
       return;
     }
@@ -1443,29 +946,25 @@ export function setupDiscordBot(opts: {
     if (interaction.isModalSubmit?.()) {
       const submit = String(interaction.customId || "").match(/^answer-submit:([^:]+)$/);
       if (!submit) return;
-      const owned = promptById(state.pendingPrompts, submit[1], interactionThreadSession(interaction));
+      const interactionChannelId = interaction?.channelId ?? interaction?.channel?.id ?? null;
+      const owned = promptById(state.pendingPrompts, submit[1], router.interactionThreadSession(interactionChannelId));
       if (!owned) {
         await acknowledge(interaction, "That prompt is no longer waiting.");
         return;
       }
-      const prompt = owned;
       const value = interaction.fields.getTextInputValue("value");
-      // Scoped to the PROMPT's session: answering in another session's thread must not move the
-      // user's watch to it (answerLiteral takes the session explicitly).
-      // literal: a typed "1" or "cancel" is the answer, not a menu index or the escape word.
-      bridge.answerLiteral(state, value, (content) => void acknowledge(interaction, content), prompt.sessionId);
+      bridge.answerLiteral(state, value, (content) => void acknowledge(interaction, content), owned.sessionId);
       return;
     }
 
     if (!interaction.isChatInputCommand?.()) return;
     const name = interaction.commandName;
-    let watched = state.watchedSessionId;
 
     if (name === "sessions") {
       const sessions = sessionSummaries();
       const built = buildSessionPage(sessions, 1);
       await interaction.reply({
-        content: sessions.length ? renderSessionsPage(built, watched) : "No active sessions.",
+        content: sessions.length ? renderSessionsPage(built, state.watchedSessionId) : "No active sessions.",
         components: sessions.length ? sessionComponents(built, state) : [],
         ephemeral: true,
       }).catch((error: any) => log.warn("sessions reply failed", { error: String(error) }));
@@ -1474,9 +973,9 @@ export function setupDiscordBot(opts: {
 
     if (name === "disconnect") {
       const wasWatching = state.watchedSessionId;
-      disconnectUser(state);
+      router.disconnectUser(state);
       await interaction.reply({
-        content: wasWatching ? `Disconnected from **${sessionName(wasWatching)}**.` : "Was not watching anything.",
+        content: wasWatching ? `Disconnected from **${router.sessionName(wasWatching)}**.` : "Was not watching anything.",
         ephemeral: true,
       }).catch(() => {});
       return;
@@ -1509,8 +1008,6 @@ export function setupDiscordBot(opts: {
       return;
     }
 
-    // /board aggregates EVERY session, so it needs no watched one: behind the guard below it
-    // answered "Not watching any session" to a command that would have worked (Qodo review).
     if (name === "board") {
       await interaction.deferReply({ ephemeral: true }).catch(() => {});
       const { boardSessionIds, ...view } = await renderBoard();
@@ -1518,71 +1015,29 @@ export function setupDiscordBot(opts: {
         log.warn("board reply failed", { error: String(error) });
         return null;
       });
-      if (reply?.id && Array.isArray(boardSessionIds)) rememberBoard(reply.id, boardSessionIds);
+      if (reply?.id && Array.isArray(boardSessionIds)) {
+        rememberBounded(boardLists, reply.id, boardSessionIds);
+        log.debug("board list stored", { messageId: reply.id, sessions: boardSessionIds.length });
+      }
       return;
     }
 
-    // Same owner rule as the message and menu paths: a connected session is a target, so the guard
-    // below may only refuse when NOTHING is connected (issue #1075).
-    const resolved = routeToActiveSession(resolveInboundSession({
-      channelId: interaction.channelId,
-      threadSessionId: Object.entries(state.threads ?? {}).find(([, threadId]) => threadId === interaction.channelId)?.[0] ?? null,
-      watchedSessionId: watched,
-      targets: state.targets,
-      isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
-    }), {
-      handler: `slash-command:${name}`,
+    const route = router.resolveInteractionRoute({
+      kind: "chat-input-command",
+      handler: "slash-command",
+      fallbackHandler: `slash-command:${name}`,
+      commandName: name,
       channelId: interaction.channelId,
       guildId: interaction.guildId,
-      watchedSessionId: watched,
       userId: interaction.user.id,
+      disconnectedReply: "The selected session is disconnected.",
     });
-    watched = resolved.sessionId;
-    if (!watched) {
-      logInboundDrop({
-        reason: resolved.ambiguous ? "interaction-ambiguous" : resolved.deadTarget ? "interaction-dead-target" : "interaction-no-watch",
-        channelId: interaction.channelId,
-        guildId: interaction.guildId,
-        watchedSessionId: state.watchedSessionId ?? null,
-        watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
-        targets: state.targets,
-        ownsTarget: false,
-        userId: interaction.user.id,
-        inbound: resolved,
-      }, "warn", {
-        kind: "chat-input-command",
-        handler: "slash-command",
-        commandName: name,
-        channelId: interaction.channelId,
-        guildId: interaction.guildId,
-        watchedSessionId: state.watchedSessionId ?? null,
-        watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
-        targets: state.targets,
-        watchedClientPresent: false,
-        inbound: resolved,
-      });
-      await acknowledge(interaction, resolved.ambiguous
-        ? "This channel carries more than one session. Send in that session's thread or use `/sessions`."
-        : resolved.deadTarget
-          ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
-          : "Not watching any session. Use `/sessions` first.");
+    if (!route.ok) {
+      await acknowledge(interaction, route.reply);
       return;
     }
+    const watched = route.sessionId;
     const client = piClients.get(watched);
-    if (!client?.ws) {
-      logInboundDrop({
-        reason: "interaction-session-disconnected",
-        channelId: interaction.channelId,
-        guildId: interaction.guildId,
-        watchedSessionId: watched,
-        watchLive: false,
-        targets: state.targets,
-        ownsTarget: false,
-        userId: interaction.user.id,
-      });
-      await acknowledge(interaction, "The selected session is disconnected.");
-      return;
-    }
     const session = client.session;
 
     if (name === "status") {
@@ -1602,9 +1057,8 @@ export function setupDiscordBot(opts: {
     const value = String(interaction.options?.getString?.("value") || "");
     if (name === "model") {
       if (!value) {
-        // No id given → picker. Typing a model id on a phone is not a thing.
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
-        const models = await requestModels(watched);
+        const models = await router.requestModels(watched);
         if (!models.length) {
           await interaction.editReply({ content: `Model: **${session.model || "—"}** (no model list available)` }).catch(() => {});
           return;
@@ -1613,7 +1067,6 @@ export function setupDiscordBot(opts: {
         const currentGroup = entries.find((entry) => entry.current)?.group
           ?? entries.find((entry) => entry.label === session.model)?.group
           ?? null;
-        // Order ONCE and keep it: a select value is an index into this list.
         const ordered = orderPickerEntries(entries, currentGroup);
         const page = slicePickerPage(ordered, 1);
         const reply: any = await interaction.editReply({
@@ -1623,7 +1076,10 @@ export function setupDiscordBot(opts: {
           log.warn("model picker failed", { error: String(error) });
           return null;
         });
-        if (reply?.id) rememberPicker(reply.id, { sessionId: watched ?? "", preferGroup: currentGroup, ordered });
+        if (reply?.id) {
+          rememberBounded(pickerContexts, reply.id, { sessionId: watched, preferGroup: currentGroup, ordered });
+          log.debug("picker context stored", { messageId: reply.id, session: watched, entries: ordered.length });
+        }
         return;
       }
       command(watched, { command: "set-model", modelId: value });
@@ -1655,478 +1111,50 @@ export function setupDiscordBot(opts: {
 
     if (name === "async" || name === "cron") {
       const isAsync = name === "async";
-      const sessionId = watched ?? "";
       await interaction.deferReply({ ephemeral: true }).catch(() => {});
-      const snapshot = await requestEvent(sessionId, {
+      const res = await router.requestSessionEvent({
+        sessionId: watched,
         command: isAsync ? "async-list" : "cron-list",
         eventType: isAsync ? "async-list" : "cron-list",
       });
-      if (!snapshot) {
+      if (!res.ok) {
         await interaction.editReply({ content: "No data for this session yet." }).catch(() => {});
         return;
       }
-      const view = renderJobsView(isAsync ? "async" : "cron", snapshot);
+      const view = renderJobsView(isAsync ? "async" : "cron", res.value);
       const rows: any[] = [];
       if (view.stoppable.length) {
         rows.push(new ActionRowBuilder().addComponents(
           ...view.stoppable.map((id, index) => new ButtonBuilder()
-            .setCustomId(`${isAsync ? "async-kill" : "cron-kill"}:${sessionId}:${id}`)
+            .setCustomId(`${isAsync ? "async-kill" : "cron-kill"}:${watched}:${id}`)
             .setLabel(`Stop ${index + 1}`)
             .setStyle(ButtonStyle.Danger)),
         ));
       }
       await interaction.editReply({ content: view.content, components: rows })
         .catch((error: any) => log.warn(`${name} reply failed`, { error: String(error) }));
-      log.info(`${name} listed`, { session: sessionId, stoppable: view.stoppable.length });
+      log.info(`${name} listed`, { session: watched, stoppable: view.stoppable.length });
       return;
     }
 
     const passthrough = PASSTHROUGH[name];
     if (passthrough) {
       await interaction.deferReply({ ephemeral: true }).catch(() => {});
-      const body = await requestOnce(watched, passthrough);
+      const body = await router.requestPassthrough(watched, passthrough);
       await interaction.editReply({ content: body }).catch(() => {});
       return;
     }
   });
 
-  /**
-   * Stop watching everything for this user.
-   *
-   * Disconnect used to live only behind /sessions → button; on a phone that is
-   * two screens away from "stop bothering me".
-   */
-  function disconnectUser(state: RuntimeUserState): void {
-    // A disconnected user is not being answered, so the typing timer must die
-    // with the watch — otherwise it refreshes for up to five minutes.
-    clearTyping(state);
-    state.watchedSessionId = null;
-    state.threadId = null;
-    state.target = null;
-    state.targets = {};
-    // No prompts for a disconnected user until they talk to the bot again: otherwise the next
-    // question from any session would create a thread and notify them anyway.
-    state.deliveryMuted = true;
-    state.promptOnlyTargets = {};
-    // Hydration rebuilds targets from threads and streams point at messages in
-    // those threads, so both must go or a restart resurrects the watch.
-    state.threads = {};
-    state.streams = {};
-    state.pendingPrompts = {};
-    state.pendingPrompt = null;
-    // Prompt history is message content on disk: disconnecting must forget it,
-    // not leave it behind for the next reader of the state file (Qodo 8fbf223f).
-    state.lastPrompts = {};
-    persist();
-  }
-
-  /** Native controls (buttons/menus) answer through the engine too. */
-  function resolvePrompt(prompt: PendingPrompt, raw: string, state: RuntimeUserState, interaction: any): void {
-    // Scoped to the prompt's session: cancelling in one thread must not stop
-    // another session's waiting agent (Qodo 1eec9a4d).
-    const answered = bridge.answer(state, raw, (content) => void acknowledge(interaction, content), prompt.sessionId);
-    if (answered) releasePromptOnlyTarget(state, prompt.sessionId);
-  }
-
-  /** A session that asked a question is not a session the user watches: once the answer is in, its
-   *  target goes away so its output stops streaming into a thread nobody asked to follow. The
-   *  thread itself is kept and reused by the next question. */
-  function releasePromptOnlyTarget(state: RuntimeUserState, sessionId: string): void {
-    if (!state.promptOnlyTargets?.[sessionId]) return;
-    delete state.promptOnlyTargets[sessionId];
-    if (state.watchedSessionId !== sessionId && state.targets) delete state.targets[sessionId];
-    persist();
-    log.debug("prompt-only target released", { sessionId });
-  }
-
-  /**
-   * Point this user at a session, reusing the thread already created for it.
-   *
-   * Creating a fresh thread on every selection lost the conversation history a
-   * user had built up (Qodo f649327c); threads are remembered per session.
-   */
-  async function switchWatch(state: RuntimeUserState, interaction: any, sessionId: string): Promise<void> {
-    const client = piClients.get(sessionId);
-    if (!client) {
-      await acknowledge(interaction, "Session no longer available.");
-      return;
-    }
-    state.watchedSessionId = client.session.sessionId;
-    // Watching is an explicit request for updates: a previous /disconnect no longer applies, and
-    // the session is no longer question-only — otherwise hydration would skip its target on restart.
-    state.deliveryMuted = false;
-    if (state.promptOnlyTargets) delete state.promptOnlyTargets[sessionId];
-    const name = sessionName(state.watchedSessionId);
-    state.threads = state.threads ?? {};
-
-    let threadId: string | null = state.threads[sessionId] ?? null;
-    if (threadId) {
-      // The remembered thread may have been deleted or archived.
-      try {
-        const existing = await discord.channels.fetch(threadId);
-        if (!existing) threadId = null;
-      } catch {
-        threadId = null;
-      }
-    }
-    if (!threadId && interaction.guildId && interaction.channel?.threads?.create) {
-      try {
-        const thread = await interaction.channel.threads.create({
-          name: truncateLine(name, 90),
-          autoArchiveDuration: 1440,
-          reason: `pi session ${name}`,
-        });
-        threadId = thread.id;
-        state.threads[sessionId] = thread.id;
-        const known = Object.entries(state.threads).sort((a, b) => a[1].localeCompare(b[1]));
-        if (known.length > MAX_THREADS_PER_USER) delete state.threads[known[0][0]];
-        log.info("created thread for session", { threadId, sessionId });
-      } catch (error) {
-        log.warn("thread creation failed, falling back to DM", { error: String(error) });
-      }
-    }
-    state.threadId = threadId;
-    const target = threadId
-      ? { channelId: threadId, threadId }
-      : state.responseChannelId
-        ? { channelId: state.responseChannelId, threadId: null }
-        : null;
-    state.target = target;
-    // Keep the per-session target map in step: a retained thread must keep
-    // receiving its own session's output after the user switches away.
-    state.targets = state.targets ?? {};
-    if (target) state.targets[sessionId] = target;
-    if (!threadId) {
-      try {
-        state.responseChannelId = (await interaction.user.createDM()).id;
-        // A DM cannot hold a thread: record it so it is never offered as a thread parent.
-        state.dmChannelId = state.responseChannelId;
-      } catch {
-        log.warn("could not open DM", { user: interaction.user.username });
-      }
-    }
-    if (!threadId && !state.responseChannelId && interaction.channelId) {
-      // Watching from a server where neither a thread nor a DM is available left
-      // the session with nowhere to write (Qodo a2346451).
-      state.responseChannelId = interaction.channelId;
-      log.info("falling back to the command channel for output", { channelId: interaction.channelId });
-    }
-    persist();
-
-    // A thread is guild-visible: no session inventory here, only the checkout.
-    const header = `Now watching **${name}**.`;
-    if (threadId) await sendText(threadId, `${header} Ask here; slash commands still work in the server.`);
-    await acknowledge(
-      interaction,
-      threadId ? `${header} Continue in the thread.` : `${header} (${client.session.model || "—"}) Send prompts in DM.`,
-    );
-  }
-
-  /**
-   * Send a file from the session's working directory.
-   *
-   * Symlinks are resolved before the containment check: a lexically-inside path
-   * whose real target is `~/.pi/discord.env` must not be postable into a guild
-   * thread (Qodo d9ff444e).
-   */
-  async function sendWorkspaceFile(interaction: any, cwd: string, relative: string): Promise<void> {
-    try {
-      const root = fs.realpathSync(path.resolve(cwd));
-      const candidate = path.resolve(root, relative);
-      const resolved = fs.realpathSync(candidate);
-      if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-        await acknowledge(interaction, "That path resolves outside the session directory.");
-        return;
-      }
-      const stat = fs.statSync(resolved);
-      if (!stat.isFile()) {
-        await acknowledge(interaction, "That is not a file.");
-        return;
-      }
-      if (stat.size > MAX_IMAGE_BYTES) {
-        await acknowledge(interaction, `File is ${formatKB(stat.size)} — over the ${formatKB(MAX_IMAGE_BYTES)} limit.`);
-        return;
-      }
-      // Files belong to this private request, never an ambient or stale guild destination.
-      await interaction.deferReply({ ephemeral: true });
-      await interaction.editReply({
-        files: [{ attachment: fs.readFileSync(resolved), name: path.basename(resolved) }],
-        ...NO_MENTIONS,
-      });
-      log.info("file sent to discord", { userId: interaction.user.id, channelId: interaction.channelId, size: stat.size });
-    } catch (error) {
-      log.warn("workspace file delivery failed", { userId: interaction.user.id, channelId: interaction.channelId, code: (error as NodeJS.ErrnoException)?.code ?? null });
-      await acknowledge(interaction, "Could not read or deliver that file.");
-    }
-  }
-
-  /**
-   * `/status` as a components-v2 card: title, state line, separator, details,
-   * and link buttons. The links use the LAN address because `localhost` on a
-   * phone points at the phone.
-   */
-  async function statusCard(session: any, sessionId: string): Promise<any> {
-    const state = session.active ? (session.working ? "working" : "idle") : "detached";
-    const badge = session.working ? "🟢" : session.active ? "⚪" : "🔴";
-    const container = new ContainerBuilder()
-      .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`# ${badge} ${sessionName(sessionId)}`),
-      )
-      .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(
-          `**${state}** · ${session.model || "—"}${session.thinkingLevel ? ` · thinking ${session.thinkingLevel}` : ""}`,
-        ),
-      )
-      .addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small))
-      .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent([
-          session.branch ? `**Branch:** ${session.branch}` : null,
-          `**CWD:** \`${session.cwd}\``,
-          session.supportsImages === undefined ? null : `**Images:** ${session.supportsImages ? "supported" : "not supported"}`,
-          session.container ? "**Container:** 📦" : null,
-        ].filter(Boolean).join("\n")),
-      );
-
-    // Only offer links a phone can actually open: the dashboard binds 0.0.0.0,
-    // the diff server binds 127.0.0.1 and would be a dead button.
-    const links: any[] = [];
-    const candidates: Array<{ label: string; url: string }> = [];
-    const dashboard = dashboardUrl();
-    if (dashboard) candidates.push({ label: "Dashboard", url: dashboard });
-    const host = lanHost();
-    if (session.diffPort && host) {
-      candidates.push({ label: "Diff", url: `http://${host}:${session.diffPort}` });
-    }
-    const reachable = await Promise.all(candidates.map((candidate) => isReachable(candidate.url)));
-    candidates.forEach((candidate, index) => {
-      if (reachable[index]) {
-        links.push(new ButtonBuilder().setLabel(candidate.label).setStyle(ButtonStyle.Link).setURL(candidate.url));
-      } else {
-        log.debug("skipping unreachable link", { label: candidate.label, url: candidate.url });
-      }
-    });
-    if (links.length) container.addActionRowComponents(new ActionRowBuilder().addComponents(...links.slice(0, 5)));
-    return { components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral };
-  }
-
-  /**
-   * What a picker message is for: the session it was opened FOR, the ordering
-   * it was built with, and the items it shows.
-   *
-   * Keyed by message id so a stale picker cannot retarget the session the user
-   * switched to, paging keeps the same ordering (no duplicated/skipped models
-   * across a boundary), and select values are list indexes — Discord caps
-   * option values at 100 chars, which silently truncated long model ids.
-   */
-  interface PickerContext {
-    sessionId: string;
-    preferGroup: string | null;
-    /** The EXACT ordered list shown to the user — select values index this. */
-    ordered: ReturnType<typeof entriesFromModels>;
-  }
-
-  const pickerContexts = new Map<string, PickerContext>();
-  interface JobListContext {
-    sessionId: string;
-    kind: "async" | "cron";
-    stoppable: string[];
-  }
-
-  /**
-   * Which jobs a Stop button refers to, keyed by message id.
-   *
-   * The old customId embedded the session id and split on ":", but session ids
-   * look like `123:/repo`, so Stop resolved session `123` and killed nothing.
-   */
-  const jobLists = new Map<string, JobListContext>();
-
-  const PICKER_CONTEXT_LIMIT = 50;
-
-  /** session ids per board message, so a picker index resolves to the full id. */
-  const boardLists = new Map<string, string[]>();
-
-  function rememberBoard(messageId: string, sessionIds: string[]): void {
-    boardLists.set(messageId, sessionIds);
-    while (boardLists.size > PICKER_CONTEXT_LIMIT) {
-      const oldest = boardLists.keys().next().value;
-      if (oldest === undefined) break;
-      boardLists.delete(oldest);
-    }
-    log.debug("board list stored", { messageId, sessions: sessionIds.length });
-  }
-
-  function rememberJobList(messageId: string, context: JobListContext): void {
-    jobLists.set(messageId, context);
-    while (jobLists.size > PICKER_CONTEXT_LIMIT) {
-      const oldest = jobLists.keys().next().value;
-      if (oldest === undefined) break;
-      jobLists.delete(oldest);
-    }
-  }
-
-  function rememberPicker(messageId: string, context: PickerContext): void {
-    pickerContexts.set(messageId, context);
-    while (pickerContexts.size > PICKER_CONTEXT_LIMIT) {
-      const oldest = pickerContexts.keys().next().value;
-      if (oldest === undefined) break;
-      pickerContexts.delete(oldest);
-    }
-    log.debug("picker context stored", { messageId, session: context.sessionId, entries: context.ordered.length });
-  }
-
-  /** Select menu for one page of models, plus prev/next when paged. */
-  function modelPickerComponents(page: ReturnType<typeof slicePickerPage>): any[] {
-    const rows: any[] = [new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`modelpick:${page.page}`)
-        .setPlaceholder(`Choose a model (${page.total})`)
-        .addOptions(page.items.map((entry, index) => ({
-          label: pickerLabel(entry),
-          // Index into the full list, resolved server-side: never truncated.
-          value: String(page.offset + index),
-          default: entry.current === true,
-        }))),
-    )];
-    if (page.pages > 1) {
-      rows.push(new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`modelpage:${page.page - 1}`).setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(page.page <= 1),
-        new ButtonBuilder().setCustomId(`modelpage:${page.page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page.page >= page.pages),
-      ));
-    }
-    return rows;
-  }
-
-  /** The session's model list, via the same command the browser uses. */
-  async function requestModels(sessionId: string): Promise<Array<{ id: string; name?: string; provider?: string }>> {
-    const requestId = `discord-models-${Date.now()}`;
-    return new Promise((resolve) => {
-      const done = (models: Array<{ id: string; name?: string; provider?: string }>) => {
-        clearTimeout(timer);
-        const index = piEventHooks.indexOf(hook);
-        if (index >= 0) piEventHooks.splice(index, 1);
-        resolve(models);
-      };
-      const timer = setTimeout(() => done([]), 5000);
-      const hook = (eventSessionId: string, event: any) => {
-        if (eventSessionId !== sessionId) return;
-        if (event?.type !== "models-list" || !Array.isArray(event.models)) return;
-        if (event.requestId && event.requestId !== requestId) return;
-        done(event.models);
-      };
-      piEventHooks.push(hook);
-      if (!command(sessionId, { command: "list-models", requestId })) done([]);
-    });
-  }
-
-  function sessionSummaries(): SessionSummary[] {
-    return getActiveSessions().map((session: any) => ({
-      sessionId: session.sessionId,
-      cwd: session.cwd,
-      model: session.model,
-      branch: session.branch,
-      active: session.active,
-      working: session.working,
-      name: session.name,
-      agentType: session.agentType,
-    }));
-  }
-
-  function sessionComponents(page: ReturnType<typeof buildSessionPage>, state: RuntimeUserState): any[] {
-    const rows: any[] = [];
-    for (let i = 0; i < page.items.length; i += BUTTONS_PER_ROW) {
-      const row = new ActionRowBuilder();
-      for (const session of page.items.slice(i, i + BUTTONS_PER_ROW)) {
-        row.addComponents(
-          new ButtonBuilder()
-            .setCustomId(`watch:${session.sessionId}`)
-            .setLabel(truncateLine(sessionLabel(session), 80))
-            .setStyle(session.sessionId === state.watchedSessionId ? ButtonStyle.Success : ButtonStyle.Secondary),
-        );
-      }
-      rows.push(row);
-    }
-    const nav = new ActionRowBuilder();
-    let navUsed = false;
-    if (page.pages > 1) {
-      nav.addComponents(
-        new ButtonBuilder().setCustomId(`sessions:${page.page - 1}`).setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(page.page <= 1),
-        new ButtonBuilder().setCustomId(`sessions:${page.page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page.page >= page.pages),
-      );
-      navUsed = true;
-    }
-    if (state.watchedSessionId) {
-      nav.addComponents(new ButtonBuilder().setCustomId("unwatch").setLabel("Disconnect").setStyle(ButtonStyle.Danger));
-      navUsed = true;
-    }
-    if (navUsed) rows.push(nav);
-    return rows.slice(0, 5);
-  }
-
-  /** One-shot request/response, matched by EXACT event type and request id. */
-  /** Ask the session for one event and return it structured (null when absent). */
-  async function requestEvent(
-    sessionId: string,
-    spec: { command: string; eventType: string },
-    timeoutMs = 5000,
-  ): Promise<any | null> {
-    const requestId = `discord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    return new Promise((resolve) => {
-      const done = (event: any | null) => {
-        clearTimeout(timer);
-        const index = piEventHooks.indexOf(hook);
-        if (index >= 0) piEventHooks.splice(index, 1);
-        resolve(event);
-      };
-      const timer = setTimeout(() => {
-        log.debug("request timed out", { sessionId, command: spec.command });
-        done(null);
-      }, timeoutMs);
-      const hook = (eventSessionId: string, event: any) => {
-        if (eventSessionId !== sessionId) return;
-        if (event?.type !== spec.eventType) return;
-        if (event?.requestId && event.requestId !== requestId) return;
-        done(event);
-      };
-      piEventHooks.push(hook);
-      if (!command(sessionId, { command: spec.command, requestId })) done(null);
-    });
-  }
-
-  async function requestOnce(
-    sessionId: string,
-    spec: { command: string; eventType: string; label: string },
-  ): Promise<string> {
-    const requestId = `discord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    return new Promise((resolve) => {
-      const done = (text: string) => {
-        clearTimeout(timer);
-        const index = piEventHooks.indexOf(hook);
-        if (index >= 0) piEventHooks.splice(index, 1);
-        resolve(text);
-      };
-      const timer = setTimeout(() => done("Timed out waiting for the session."), 5000);
-      const hook = (eventSessionId: string, event: any) => {
-        if (eventSessionId !== sessionId) return;
-        if (event?.type !== spec.eventType) return;
-        if (event?.requestId && event.requestId !== requestId) return;
-        done(`**${spec.label}**\n\`\`\`json\n${JSON.stringify(event).slice(0, 1600)}\n\`\`\``);
-      };
-      piEventHooks.push(hook);
-      if (!command(sessionId, { command: spec.command, requestId })) {
-        done("Session is not connected.");
-      }
-    });
-  }
-
-  // ── inbound messages (DMs and our threads) ───────────────────────────────
+  // ── Inbound messages (DMs and owned threads/targets) ─────────────────────
   discord.on("messageCreate", async (message: any) => {
     if (!message || message.author?.bot) return;
-    if (!firstSighting(message.id)) return;
+    if (!router.firstSighting(message.id)) return;
 
     const userId = message.author.id;
     const authorized = config.allowAll || config.allowedUsers.has(userId);
     if (!authorized) {
-      const state = userState(userId);
+      const state = router.userState(userId);
       const now = Date.now();
       if (now - state.unauthorizedNotifiedAt > UNAUTHORIZED_NOTICE_MS) {
         state.unauthorizedNotifiedAt = now;
@@ -2136,111 +1164,31 @@ export function setupDiscordBot(opts: {
       return;
     }
 
-    // Threads are guild channels; only ours are accepted. A message is routed by
-    // the SESSION its thread belongs to, so writing in an older session's thread
-    // cannot spill into whichever session is currently watched (Qodo 0d2dca6d).
-    let threadSessionId: string | null = null;
-    if (message.guildId) {
-      const existingState = runtime.get(userId);
-      const actorBucket = hasBotState(existingState) ? userId : "";
-      const byThread = userForThread(message.channelId);
-      // Somebody else's thread is never this author's channel.
-      if (byThread && byThread[0] !== userId) {
-        logInboundDrop({
-          reason: "thread-owned-by-other",
-          channelId: message.channelId,
-          guildId: message.guildId,
-          watchedSessionId: existingState?.watchedSessionId ?? null,
-          watchLive: Boolean(existingState?.watchedSessionId && piClients.get(existingState.watchedSessionId)?.ws),
-          targets: existingState?.targets,
-          ownsTarget: false,
-          userId,
-        }, "info", undefined, `${message.channelId}:thread-owned-by-other:${actorBucket}`);
-        return;
-      }
-      // A plain channel can be a fallback target for SEVERAL users, so the target is looked up in the
-      // author's own state: taking the first owner dropped everyone else's replies.
-      const ownsTarget = existingState?.target?.channelId === message.channelId
-        || Object.values(existingState?.targets ?? {}).some((target) => target?.channelId === message.channelId);
-      // The likeliest place a message dies: a channel that is neither this user's thread nor one of
-      // their targets. Silent before, so the user saw nothing and the log said nothing either.
-      if (!byThread && !ownsTarget) {
-        logInboundDrop({
-          reason: "channel-not-owned",
-          channelId: message.channelId,
-          guildId: message.guildId,
-          watchedSessionId: existingState?.watchedSessionId ?? null,
-          watchLive: Boolean(existingState?.watchedSessionId && piClients.get(existingState.watchedSessionId)?.ws),
-          targets: existingState?.targets,
-          ownsTarget: false,
-          userId,
-        }, "info", undefined, `${message.channelId}:channel-not-owned:${actorBucket}`);
-        return;
-      }
-      // A message is routed by the SESSION its thread belongs to, so writing in an older session's
-      // thread cannot spill into whichever session is currently watched (Qodo 0d2dca6d).
-      threadSessionId = byThread
-        ? Object.entries(byThread[1].threads ?? {}).find(([, threadId]) => threadId === message.channelId)?.[0] ?? null
-        : null;
-    }
-    const state = userState(userId);
-    // Talking to the bot again re-enables delivery after a /disconnect.
-    state.deliveryMuted = false;
-    state.updatedAt = Date.now();
-    if (!message.guildId) {
-      state.responseChannelId = message.channelId;
-      state.dmChannelId = message.channelId;
-      if (!state.threadId) {
-        state.targets = state.targets ?? {};
-        state.target = (state.watchedSessionId && state.targets[state.watchedSessionId])
-          || { channelId: message.channelId, threadId: null };
-        if (state.watchedSessionId) state.targets[state.watchedSessionId] = state.target;
-      }
-    }
-
-    const text = (message.content || "").trim();
-
-    // Inbound and outbound must agree on WHICH session a channel is. Outbound delivers through
-    // `targets`; inbound used to look only at the thread and the watch, so a channel that was
-    // streaming a session's output could still be told "not watching any session".
-    const resolveInbound = () => resolveInboundSession({
-      channelId: message.channelId,
-      threadSessionId,
-      watchedSessionId: state.watchedSessionId ?? null,
-      targets: state.targets ?? {},
-      isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
-    });
-    // The channel the bot streams this session's output into IS watching it, whatever the resolver
-    // could establish this instant: a momentarily missing `client.ws`, a target released by a prompt
-    // answer, a stale thread map. "Not watching any session" is false there, and saying it to the
-    // owner of that channel is the bug this guards (issue #1072). The watch is not cleared either:
-    // a disconnect is not proof the session is gone.
-    const streamsHere = (sessionId: string): boolean => {
-      const target = state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
-      return Boolean(target && (target.threadId || target.channelId) === message.channelId);
-    };
-    const streamingChannelFallback = (resolved: InboundSession): InboundSession =>
-      resolved.sessionId || resolved.ambiguous || !state.watchedSessionId || !streamsHere(state.watchedSessionId)
-        ? resolved
-        : { sessionId: state.watchedSessionId, source: "watch" };
-    // A thread is identity (never liveness) and one channel carrying two sessions is a real conflict;
-    // both are decided by the resolver and the fallback leaves them alone.
-    let inbound = routeToActiveSession(streamingChannelFallback(resolveInbound()), {
-      handler: "messageCreate",
+    const gate = router.resolveMessageGate({
+      userId,
       channelId: message.channelId,
       guildId: message.guildId,
-      watchedSessionId: state.watchedSessionId ?? null,
-      userId,
     });
+    if (!gate.allowed) return;
+    const { state, threadSessionId } = gate;
+
+    const text = (message.content || "").trim();
+    const resolveInbound = () => router.resolveMessageSession({
+      state,
+      userId,
+      channelId: message.channelId,
+      guildId: message.guildId,
+      threadSessionId,
+    });
+    let inbound = resolveInbound();
+
     const noTargetReply = () => message.reply(inbound.deadTarget
       ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
       : "Not watching any session. Use `/sessions` and pick one.").catch(() => {});
 
-    // Every refusal below leaves a trace: which channel, what it owns, what the resolver said, and why
-    // we stopped. Ids and state only.
     const authorOwnsChannel = state.target?.channelId === message.channelId
       || Object.values(state.targets ?? {}).some((target) => target?.channelId === message.channelId);
-    const drop = (reason: string, level: "info" | "warn" = "warn") => logInboundDrop({
+    const drop = (reason: string, level: "info" | "warn" = "warn") => router.logInboundDrop({
       reason,
       channelId: message.channelId,
       guildId: message.guildId,
@@ -2253,8 +1201,6 @@ export function setupDiscordBot(opts: {
       inbound,
     }, level);
 
-    // Control words come BEFORE a pending prompt: /stop must never be blocked by
-    // a question the agent is waiting on (Qodo a611b293).
     if (/^\/stop$/i.test(text)) {
       if (!inbound.sessionId) {
         drop("stop-no-target");
@@ -2265,65 +1211,46 @@ export function setupDiscordBot(opts: {
       await message.reply(sent ? "⏹️ Stop sent." : "Session is not connected.").catch(() => {});
       return;
     }
-    // Which pending question is this message answering? Routing (above) is about where a channel's
-    // output goes; a question delivered into THIS channel belongs to the session that asked here, even
-    // when the user watches a different one. Two asking here is a refusal: nobody can tell them apart.
-    const askersHere = message.guildId
-      ? Object.entries(state.targets ?? {})
-        .filter(([sessionId, target]) => Boolean(target)
-          && (target!.threadId === message.channelId || target!.channelId === message.channelId)
-          && Boolean((state.pendingPrompts ?? {})[sessionId]))
-        .map(([sessionId]) => sessionId)
-      : [];
-    if (askersHere.length > 1) {
+
+    const askers = router.resolveChannelAskers({
+      state,
+      channelId: message.channelId,
+      guildId: message.guildId,
+      inbound,
+    });
+    if (askers.ambiguous) {
       drop("ambiguous-askers");
       await message.reply("This channel carries more than one session. Send in that session's thread or use `/sessions`.").catch(() => {});
       return;
     }
-    // A DM names no session, so it answers the newest question.
-    const answerSession = message.guildId
-      ? askersHere[0] ?? (inbound.source === "active" ? undefined : inbound.sessionId ?? undefined)
-      : undefined;
-    const hasPrompt = message.guildId
-      ? Boolean(answerSession && (state.pendingPrompts ?? {})[answerSession])
-      : Boolean(state.pendingPrompt);
+    const { answerSession, hasPrompt } = askers;
+
     if (/^\/(cancel|dismiss)$/i.test(text)) {
       if (!hasPrompt) {
         drop("cancel-nothing-pending", "info");
         await message.reply("Nothing pending.").catch(() => {});
         return;
       }
-      // Guild questions name their asker; DMs intentionally answer the newest question.
       const dismissed = bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), answerSession);
       if (dismissed && answerSession && !(state.pendingPrompts ?? {})[answerSession]) {
-        releasePromptOnlyTarget(state, answerSession);
+        router.releasePromptOnlyTarget(state, answerSession);
       }
       return;
     }
-    // Routed where, and why — at DEBUG, once per DECISION: a branch decision is control flow, not a
-    // lifecycle event, and an append per message stalls a busy channel (Qodo #1075). The answer
-    // session is part of the decision: answering a pending prompt here sends the text THERE, so the
-    // record has to name both to be reconcilable with the bridge.
-    const decision = `${inbound.source}:${inbound.sessionId ?? ""}:${answerSession ?? ""}`;
-    if (routedDecisions.get(message.channelId) !== decision) {
-      if (routedDecisions.size > SEEN_MESSAGE_LIMIT) {
-        const oldest = routedDecisions.keys().next().value;
-        if (oldest !== undefined) routedDecisions.delete(oldest);
-      }
-      routedDecisions.set(message.channelId, decision);
-      log.debug("discord_inbound_routed", inboundTraceRecord({
-        kind: "message",
-        handler: "messageCreate",
-        channelId: message.channelId,
-        guildId: message.guildId,
-        threadSessionId,
-        watchedSessionId: state.watchedSessionId ?? null,
-        watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
-        targets: state.targets,
-        inbound,
-        answerSessionId: answerSession ?? null,
-      }));
-    }
+
+    router.logRoutedDecision(message.channelId, inbound, answerSession, {
+      kind: "message",
+      handler: "messageCreate",
+      channelId: message.channelId,
+      guildId: message.guildId,
+      threadSessionId,
+      watchedSessionId: state.watchedSessionId ?? null,
+      watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
+      targets: state.targets,
+      inbound,
+      answerSessionId: answerSession ?? null,
+    });
+
     if (hasPrompt) {
       const outcome = bridge.handleInbound(
         state, text,
@@ -2331,25 +1258,13 @@ export function setupDiscordBot(opts: {
         answerSession,
       );
       if (outcome === "answered" || outcome === "cancelled") {
-        // The answer is in, so this session's question target is done — button answers already do
-        // this; without it the channel kept routing to a session that no longer asked (Qodo 704cfa32).
-        if (answerSession) releasePromptOnlyTarget(state, answerSession);
+        if (answerSession) router.releasePromptOnlyTarget(state, answerSession);
         return;
       }
       if (outcome === "expired") {
         await message.reply("The waiting prompt expired; sending your message as a new prompt.").catch(() => {});
-        // The question that named this channel is gone, so the routing decision must be taken again —
-        // keeping it sent the text to a session that had already stopped asking (Qodo ce99abaf).
-        inbound = routeToActiveSession(streamingChannelFallback(resolveInbound()), {
-          handler: "messageCreate",
-          channelId: message.channelId,
-          guildId: message.guildId,
-          watchedSessionId: state.watchedSessionId ?? null,
-          userId,
-        });
+        inbound = resolveInbound();
       } else if (outcome === "not-an-answer" && (state.pendingPrompt?.method === "confirm" || hasPrompt) && text) {
-        // Not an answer to a yes/no question, but it IS a message the user meant
-        // to send: forward it and keep the prompt available (Qodo 85cacb2c).
         await message.reply("That isn't an answer to the pending question (still waiting). Forwarding it as a prompt.").catch(() => {});
       }
     }
@@ -2366,24 +1281,22 @@ export function setupDiscordBot(opts: {
       return;
     }
     if (inbound.source === "target") {
-      // Addressing, not subscribing: the watch stays where the user put it.
       log.debug("discord_prompt_via_target", { sessionId: targetSessionId, channelId: message.channelId });
     }
     const client = piClients.get(targetSessionId);
     if (!client?.ws) {
       drop("session-disconnected");
-      // A channel that streams the session says WHAT is wrong, so the reply is actionable and cannot
-      // be confused with "not watching" (issue #1072).
-      const streams = streamsHere(targetSessionId);
+      const streams = router.streamsHere(state, targetSessionId, message.channelId);
       await message.reply(inbound.source === "thread"
         ? "That thread's session is not connected."
         : streams
-          ? `This channel streams ${sessionNameFor(targetSessionId)}, but that session is not connected to the daemon right now.`
+          ? `This channel streams ${router.sessionNameFor(targetSessionId)}, but that session is not connected to the daemon right now.`
           : "The watched session is disconnected.").catch(() => {});
       return;
     }
 
-    if (inbound.source === "active" && !await establishReplyTarget(state, targetSessionId, message.author)) {
+    const openDm = async () => (await message.author.createDM())?.id ?? null;
+    if (inbound.source === "active" && !await router.establishReplyTarget(state, targetSessionId, userId, openDm)) {
       drop("reply-destination-unavailable");
       await message.reply("Could not open a private reply channel. Enable DMs and try again.").catch(() => {});
       return;
@@ -2402,8 +1315,6 @@ export function setupDiscordBot(opts: {
         const fetched = await fetchAttachment(plan.url, MAX_IMAGE_BYTES);
         if (fetched) {
           images.push({ data: fetched.buffer.toString("base64"), mimeType: fetched.contentType, filename: plan.filename });
-          // Also keep a copy in the workspace: base64 reaches the model, but the
-          // agent cannot open, re-read or move a blob with its own tools.
           const saved = saveInboundAttachment(inboxDir(client?.session?.cwd), plan.filename, fetched.buffer);
           if (saved) notes.push(`[Saved to ${saved}]`);
         } else {
@@ -2417,57 +1328,48 @@ export function setupDiscordBot(opts: {
           notes.push(`--- ${plan.filename} ---\n${fetched.buffer.toString("utf-8")}`);
           const saved = saveInboundAttachment(inboxDir(client?.session?.cwd), plan.filename, fetched.buffer);
           if (saved) notes.push(`[Saved to ${saved}]`);
+        } else {
+          notes.push(`[Could not download ${plan.filename} (too large or unavailable)]`);
         }
-        else notes.push(`[Could not download ${plan.filename} (too large or unavailable)]`);
         continue;
       }
       const described = describeSkippedAttachment(plan);
       if (described) notes.push(described);
     }
 
-    // A model without image input cannot use what we just downloaded; say so
-    // rather than sending a prompt that silently fails.
     const imageNote = imageSupportNote(client.session?.supportsImages, images.length);
     if (imageNote) {
       notes.push(imageNote);
       images.length = 0;
-      // The agent gets the note, but the person who sent the image needs to know
-      // it was dropped (Qodo e2a451fc).
       await message.reply(imageNote).catch(() => {});
     }
 
     if (!text && images.length === 0 && notes.length === 0) return;
 
     const fullText = notes.length ? (text ? `${text}\n\n` : "") + notes.join("\n\n") : text;
-    // The engine suppresses this echo per watcher using the state's marker.
-    bridge.expectEcho(state, targetSessionId!, fullText);
-    // Reaction shortcut 🔁 resends this without retyping. The flags record when
-    // a faithful replay is impossible (truncated text, images omitted).
+    bridge.expectEcho(state, targetSessionId, fullText);
     state.lastPrompts = {
       ...(state.lastPrompts ?? {}),
-      [targetSessionId!]: {
+      [targetSessionId]: {
         text: fullText.slice(0, MAX_LAST_PROMPT_CHARS),
         hadImages: images.length > 0,
         truncated: fullText.length > MAX_LAST_PROMPT_CHARS,
       },
     };
-    persist();
-    client.ws.send(JSON.stringify({ type: "prompt", text: fullText, images: images.length ? images : undefined }));
+    router.persist();
+    sendPromptToSession(targetSessionId, { text: fullText, images: images.length ? images : undefined });
     log.info("prompt forwarded from discord", {
       userId,
-      session: sessionName(targetSessionId),
+      session: router.sessionName(targetSessionId),
       chars: fullText.length,
       images: images.length,
-      // Visible here so a live upload proves the modality field reached us.
       supportsImages: client.session?.supportsImages ?? null,
     });
   });
 
-  // ── lifecycle ────────────────────────────────────────────────────────────
+  // ── Lifecycle ────────────────────────────────────────────────────────────
   discord.once("ready", async (client: any) => {
     log.info("bot connected", { tag: client.user.tag, allowAll: config.allowAll, allowed: config.allowedUsers.size });
-    // Visible capability per session: proves the producer -> hub -> bot chain
-    // end to end at startup, without waiting for someone to send an image.
     const active = getActiveSessions();
     log.info("session capabilities", {
       count: active.length,
@@ -2477,7 +1379,7 @@ export function setupDiscordBot(opts: {
         supportsImages: session.supportsImages ?? null,
       })),
     });
-    await registerCommands(client.user.id); // global: makes DMs work too
+    await registerCommands(client.user.id);
     for (const guild of discord.guilds.cache.values()) {
       await registerCommands(client.user.id, (guild as any).id);
     }
@@ -2492,21 +1394,17 @@ export function setupDiscordBot(opts: {
 
   discord.login(config.token).catch((error: any) => log.error("discord login failed", { error: String(error) }));
 
-  // Signals: shutdown must not swallow the daemon's own termination semantics —
-  // registering a handler replaces Node's default exit, so it exits explicitly.
   let shuttingDown = false;
   const shutdown = (signal?: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    for (const state of runtime.values()) clearTyping(state);
-    persist();
+    router.shutdown();
     try { discord.destroy(); } catch {}
     log.info("discord bot stopped", { signal: signal ?? null });
   };
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.once(signal, () => {
       shutdown(signal);
-      // Only exit when we did not inherit the handler chain of the daemon.
       if (signal === "SIGINT") process.exit(0);
     });
   }

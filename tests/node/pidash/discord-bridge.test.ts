@@ -15,7 +15,7 @@ import {
   MAX_IMAGE_BYTES,
   MAX_INLINE_TEXT_BYTES,
   formatKB,
-} from "../../../extensions/pidash/discord-attachments.ts";
+} from "../../../extensions/shared/chat/chat-attachments.ts";
 import {
   mapAnswer,
   toBridgeResponse,
@@ -25,7 +25,7 @@ import {
   resolvePromptTtlMs,
   isAnswerLike,
   type PendingPrompt,
-} from "../../../extensions/pidash/discord-answers.ts";
+} from "../../../extensions/shared/chat/chat-prompts.ts";
 import {
   buildSessionPage,
   pageCount,
@@ -33,17 +33,17 @@ import {
   renderSessionsPage,
   sessionLabel,
   filterSessionChoices,
+  boundListText,
   MAX_ACTION_ROWS,
   SESSIONS_PER_PAGE,
   type SessionSummary,
-} from "../../../extensions/pidash/discord-sessions-view.ts";
-import { renderEvent, initialRenderState, toolLine, streamingView, shouldSuppressEcho } from "../../../extensions/pidash/discord-render.ts";
+} from "../../../extensions/shared/chat/chat-sessions.ts";
+import { renderEvent, initialRenderState, toolLine, streamingView, shouldSuppressEcho } from "../../../extensions/shared/chat/chat-events.ts";
 import { resolveDiscordConfig, parseEnvFile } from "../../../extensions/pidash/discord-config.ts";
 import { createChatBridge, initialChatRuntime } from "../../../extensions/shared/chat/chat-bridge.ts";
 import { DEFAULT_CAPABILITIES } from "../../../extensions/shared/chat/chat-types.ts";
 import { createLogger } from "../../../extensions/shared/logger.ts";
-import { boundListText } from "../../../extensions/pidash/discord-sessions-view.ts";
-import { migrateState, pruneState, STATE_VERSION, emptyState } from "../../../extensions/pidash/discord-state.ts";
+import { migrateState, pruneState, STATE_VERSION, emptyState } from "../../../extensions/shared/chat/chat-state.ts";
 
 describe("discord chunking", () => {
   it("sends short text unchanged", () => {

@@ -4,7 +4,7 @@
  */
 import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ensurePromptTarget, evictableSessions, hydratableTargets, nudgeChannelId, promptHeader, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge, resolveInboundSession, type PromptTargetState } from "../../../extensions/pidash/discord-prompt-targets.ts";
+import { ensurePromptTarget, evictableSessions, hydratableTargets, nudgeChannelId, promptHeader, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge, resolveInboundSession, type PromptTargetState } from "../../../extensions/pidash/discord-session-routing.ts";
 
 describe("planPromptTarget", () => {
   const base = { existingChannelId: null, threadParentChannelId: "chan", dmChannelId: "dm-1", plainChannelId: "chan" };
