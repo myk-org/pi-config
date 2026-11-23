@@ -222,7 +222,8 @@ pi-config/
 ├── init-entrypoint.sh               # Container init (UID remap, HOME map, docker.sock, then entrypoint.sh)
 ├── entrypoint.sh                    # Container entrypoint (pi/package updates + gitignore, then pi)
 ├── README.md                        # Project README
-├── AGENTS.md                        # Contributor rules (this repo)
+├── AGENTS.md                        # Contributor rules & navigation pointers (this repo)
+├── CODING_STANDARDS.md              # Review-only engineering judgement standards (this repo)
 ├── pi-config-settings.example.json  # Example project settings file (plain JSON)
 ├── tests/                           # Test suite
 │   ├── node/                        # Node.js tests (tsx + node:test)

@@ -16,7 +16,10 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
 - Trigger types: `bash_contains`, `bash_regex`, `tool_name`, `file_modified`
 - Actions: `block`, `warn`, `run_after <cmd>`
 - Verifiers: `tool_called <tool> before <command>` at `turn_end`
-- Remote script exec blocks: `curl \| bash`, nested `$(bash -c "$(curl)")`, etc. (`checkRemoteExecBlock`)
+- Remote script exec blocks (`checkRemoteExecBlock` in `enforcement-helpers.ts`): blocks `curl \| bash`,
+  `eval $(curl)`, nested `$(bash -c "$(curl)")`, prefix assignments (`VAR=$(curl) cmd`), and path-prefixed exec
+  (`/bin/bash -c`), while allowing a safe `VAR=$(curl ...)` capture followed by an unrelated interpreter/`eval` call
+  (still blocking if exec consumes the captured var or reads untrackable stdin/file input)
 - `comment_signature`: injects `Assisted-by: PI (<model>)` into `gh pr|issue create|comment|edit` `--body` / heredoc (`injectGhBodySignature`)
 - Conflict handoff: in `git-expert`, `git add` / `git restore` / `git rm` / `git update-index` / `git reset` /
   `git checkout --ours|--theirs` and the `--continue` / `--skip` / `--quit` flags of
