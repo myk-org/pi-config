@@ -24,7 +24,7 @@ import type { Task } from "../../../extensions/pitasks/types.js";
 import {
   publishTaskStore,
   publishTaskTelemetryActive,
-  resetSessionBridgeForTests,
+  resetSessionBridge,
 } from "../../../extensions/shared/session-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -133,7 +133,7 @@ describe("recorded task store path", () => {
     originalTasks = process.env.PI_TASKS;
     originalScope = process.env.PI_TASK_SCOPE;
     // No live store: these assertions are about the recorded path alone.
-    resetSessionBridgeForTests();
+    resetSessionBridge();
   });
 
   afterEach(() => {
@@ -555,7 +555,7 @@ describe("live task store bridge resolution", () => {
   afterEach(() => {
     liveStore?.close();
     liveStore = null;
-    resetSessionBridgeForTests();
+    resetSessionBridge();
     rmSync(rootDir, { recursive: true, force: true });
     rmSync(worktreeDir, { recursive: true, force: true });
   });

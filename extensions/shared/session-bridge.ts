@@ -80,6 +80,8 @@ export interface SessionBridgeSlot {
   comsActive?: boolean;
 }
 
+export type SessionBridgeSlotName = keyof SessionBridgeSlot;
+
 /** Normalize an optional session ID to a non-empty bridge key (or DEFAULT_BRIDGE_SESSION_KEY). */
 export function normalizeBridgeSessionKey(sessionKey?: string): string {
   if (typeof sessionKey === "string") {
@@ -170,7 +172,10 @@ function pruneSessionSlot(map: Map<string, SessionBridgeSlot> | undefined, key: 
     if (!slot.comsActive) {
       delete slot.comsActive;
     }
-    if (!slot.taskStore && !slot.workload && !slot.malformedRecovery && !slot.comsActive) {
+    if (slot.workload === undefined) {
+      delete slot.workload;
+    }
+    if (Object.keys(slot).length === 0) {
       map.delete(key);
     }
   }
@@ -202,18 +207,6 @@ export function publishTaskStore(getStore: () => unknown, sessionKey?: string): 
   };
 }
 
-/** Clear the published task store for a session. */
-export function clearTaskStore(sessionKey?: string): void {
-  const key = normalizeBridgeSessionKey(sessionKey);
-  const map = getExistingBridgeMap();
-  const taskSlot = map?.get(key)?.taskStore;
-  if (taskSlot) {
-    delete taskSlot.store;
-    pruneSessionSlot(map, key);
-  }
-  log.debug("task_store_bridge_cleared", { sessionKey: key, at: Date.now() });
-}
-
 /** The published task store for a session, or null when absent for that exact session key. */
 export function publishedTaskStore(sessionKey?: string): unknown {
   const key = normalizeBridgeSessionKey(sessionKey);
@@ -237,18 +230,6 @@ export function publishTaskTelemetryActive(setActive: TaskTelemetryActiveCallbac
       log.debug("task_telemetry_bridge_unregistered", { sessionKey: key, at: Date.now() });
     }
   };
-}
-
-/** Clear the published telemetry-activation callback for a session. */
-export function clearTaskTelemetryActive(sessionKey?: string): void {
-  const key = normalizeBridgeSessionKey(sessionKey);
-  const map = getExistingBridgeMap();
-  const taskSlot = map?.get(key)?.taskStore;
-  if (taskSlot) {
-    delete taskSlot.telemetryActive;
-    pruneSessionSlot(map, key);
-  }
-  log.debug("task_telemetry_bridge_cleared", { sessionKey: key, at: Date.now() });
 }
 
 /** The published telemetry-activation callback for a session, or null when absent for that exact session key. */
@@ -288,18 +269,6 @@ export function publishedWorkloadSources(sessionKey?: string): WorkloadSources |
   const key = normalizeBridgeSessionKey(sessionKey);
   const candidate = getSessionSlot(key)?.workload;
   return isValidWorkloadSources(candidate) ? candidate : null;
-}
-
-/** Drop the published workload getters for a session on shutdown. */
-export function clearWorkloadSources(sessionKey?: string): void {
-  const key = normalizeBridgeSessionKey(sessionKey);
-  const map = getExistingBridgeMap();
-  const slot = map?.get(key);
-  if (slot) {
-    delete slot.workload;
-    pruneSessionSlot(map, key);
-  }
-  log.debug("workload_sources_cleared", { sessionKey: key, at: Date.now() });
 }
 
 // ── malformedRecovery slot ──────────────────────────────────────────────────
@@ -440,20 +409,37 @@ export function isComsActive(sessionKey?: string): boolean {
   return getSessionSlot(key)?.comsActive === true;
 }
 
-// ── Session teardown & test reset ───────────────────────────────────────────
+// ── Unified teardown & test reset ───────────────────────────────────────────
 
-/** Tear down all bridge slots for a single session and prune the outer global map if empty. */
-export function clearSessionBridge(sessionKey?: string): void {
+/**
+ * Single teardown and test-reset interface for the session bridge:
+ * - `resetSessionBridge()` (no args): wipes the entire process-local bridge map (test reset).
+ * - `resetSessionBridge(sessionKey)`: tears down all slots for that session and prunes the outer map if empty.
+ * - `resetSessionBridge(sessionKey, { slot })`: clears one typed slot for that session and prunes if empty.
+ */
+export function resetSessionBridge(
+  sessionKey?: string,
+  options?: { slot?: SessionBridgeSlotName },
+): void {
+  if (sessionKey === undefined && !options?.slot) {
+    delete (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL];
+    log.debug("session_bridge_reset_all");
+    return;
+  }
   const key = normalizeBridgeSessionKey(sessionKey);
   const map = getExistingBridgeMap();
-  if (!map || !map.delete(key)) return;
+  if (!map) return;
+  if (options?.slot) {
+    const entry = map.get(key);
+    if (!entry || typeof entry !== "object") return;
+    delete entry[options.slot];
+    pruneSessionSlot(map, key);
+    log.debug("session_bridge_slot_cleared", { sessionKey: key, slot: options.slot });
+    return;
+  }
+  if (!map.delete(key)) return;
   if (map.size === 0) {
     delete (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL];
   }
   log.debug("session_bridge_cleared", { sessionKey: key });
-}
-
-/** Wipe the entire process-local session bridge map between tests. */
-export function resetSessionBridgeForTests(): void {
-  delete (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL];
 }

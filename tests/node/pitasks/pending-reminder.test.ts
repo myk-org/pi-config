@@ -21,8 +21,8 @@ import * as indexModule from "../../../extensions/pitasks/index.ts";
 import * as reminders from "../../../extensions/pitasks/reminders.ts";
 import registerPitasks from "../../../extensions/pitasks/index.ts";
 import {
-	clearWorkloadSources,
 	publishWorkloadSources,
+	resetSessionBridge,
 } from "../../../extensions/shared/session-bridge.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -190,7 +190,7 @@ function boot(tasks: any[], settingsOverrides: Record<string, unknown> = {}) {
 		tick: () => { for (const fn of ticks) fn(); },
 		reminders: () => sent.filter(m => m.customType === "task-focus-reminder"),
 		restore: async () => {
-			clearWorkloadSources();
+			resetSessionBridge(undefined, { slot: "workload" });
 			await emit("session_shutdown");
 			global.setInterval = prevSetInterval;
 			process.chdir(prevCwd);

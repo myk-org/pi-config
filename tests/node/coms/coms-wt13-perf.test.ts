@@ -7,7 +7,7 @@ import { join } from "node:path";
 import comsP2p from "../../../extensions/coms/coms-p2p.js";
 import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
 import { loadPitasks, summarizeTaskList } from "../../../extensions/coms/coms-shared.js";
-import { publishTaskStore, publishWorkloadSources, resetSessionBridgeForTests } from "../../../extensions/shared/session-bridge.js";
+import { publishTaskStore, publishWorkloadSources, resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -140,7 +140,7 @@ afterEach(async () => {
 	for (const peer of startedPeers.splice(0)) {
 		await peer.shutdown();
 	}
-	resetSessionBridgeForTests();
+	resetSessionBridge();
 	delete (globalThis as any).__piConfigSessionId;
 	delete (globalThis as any).__comsSelf;
 	delete (globalThis as any).__comsSelfOrigin;

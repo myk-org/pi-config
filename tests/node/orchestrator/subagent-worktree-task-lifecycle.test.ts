@@ -8,7 +8,7 @@ import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agen
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
-import { publishTaskStore, resetSessionBridgeForTests } from "../../../extensions/shared/session-bridge.js";
+import { publishTaskStore, resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -154,7 +154,7 @@ function createWorktreeHarness(opts: WorktreeHarnessOptions = {}) {
     publishTaskStore(() => liveStore, sessionId);
   } else {
     seedStore.close();
-    resetSessionBridgeForTests();
+    resetSessionBridge();
   }
 
   const { scriptPath, traceDir, gateDir } = writeSyncChildScript(orchestratorCwd);
@@ -302,7 +302,7 @@ function createWorktreeHarness(opts: WorktreeHarnessOptions = {}) {
         }
       } finally {
         liveStore?.close();
-        resetSessionBridgeForTests();
+        resetSessionBridge();
         global.setInterval = previousSetInterval;
         process.argv[1] = previousArgv1;
         if (previousOrchStoreEnv === undefined) delete process.env.TEST_ORCH_STORE_PATH;

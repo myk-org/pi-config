@@ -12,10 +12,9 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_BRIDGE_SESSION_KEY,
   SESSION_BRIDGE_SYMBOL,
-  clearWorkloadSources,
   publishedWorkloadSources,
   publishWorkloadSources,
-  resetSessionBridgeForTests,
+  resetSessionBridge,
   resolveBridgeSessionKey,
 } from "../../../extensions/shared/session-bridge.ts";
 import { collectWorkload, toDescribeDetail } from "../../../extensions/coms/coms-workload.ts";
@@ -24,7 +23,7 @@ const agent = (id: string) => ({ id, agent: "worker", task: "t", status: "runnin
 const cron = (id: string) => ({ id, scope: "session", description: "d", task: "t", createdAt: 1 });
 
 const clear = (): void => {
-  resetSessionBridgeForTests();
+  resetSessionBridge();
 };
 
 describe("workload sources bridge", () => {
@@ -75,7 +74,7 @@ describe("workload sources bridge", () => {
   it("clears on shutdown, so a torn-down runtime cannot answer a describe", () => {
     publishWorkloadSources({ agents: () => [agent("a1")], crons: () => [] });
     assert.notEqual(publishedWorkloadSources(), null);
-    clearWorkloadSources();
+    resetSessionBridge(undefined, { slot: "workload" });
     assert.equal(publishedWorkloadSources(), null);
   });
 
@@ -115,7 +114,7 @@ describe("workload sources bridge", () => {
     publishWorkloadSources({ agents: () => [agent("def")], crons: () => [] });
     assert.equal(publishedWorkloadSources("sess-explicit"), null);
 
-    clearWorkloadSources();
+    resetSessionBridge(undefined, { slot: "workload" });
     publishWorkloadSources({ agents: () => [agent("named")], crons: () => [] }, "sess-only");
     assert.equal(publishedWorkloadSources(), null);
     assert.equal(publishedWorkloadSources("sess-other"), null);
@@ -133,7 +132,7 @@ describe("workload sources bridge", () => {
   it("preserves sibling sessions when clearing one session", () => {
     publishWorkloadSources({ agents: () => [agent("a1")], crons: () => [] }, "sess-1");
     publishWorkloadSources({ agents: () => [agent("b1")], crons: () => [] }, "sess-2");
-    clearWorkloadSources("sess-1");
+    resetSessionBridge("sess-1", { slot: "workload" });
     assert.equal(publishedWorkloadSources("sess-1"), null);
     assert.equal(publishedWorkloadSources("sess-2")?.agents()[0].id, "b1");
   });

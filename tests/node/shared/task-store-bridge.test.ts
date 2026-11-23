@@ -12,18 +12,16 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_BRIDGE_SESSION_KEY,
   SESSION_BRIDGE_SYMBOL,
-  clearTaskStore,
-  clearTaskTelemetryActive,
   publishedTaskStore,
   publishedTaskTelemetryActive,
   publishTaskStore,
   publishTaskTelemetryActive,
-  resetSessionBridgeForTests,
+  resetSessionBridge,
   resolveBridgeSessionKey,
 } from "../../../extensions/shared/session-bridge.ts";
 
 const clear = (): void => {
-  resetSessionBridgeForTests();
+  resetSessionBridge();
 };
 
 describe("task store bridge", () => {
@@ -86,7 +84,7 @@ describe("task store bridge", () => {
     publishTaskStore(() => ({ id: "default" }));
     assert.equal(publishedTaskStore("sess-explicit"), null);
 
-    clearTaskStore();
+    resetSessionBridge(undefined, { slot: "taskStore" });
     publishTaskStore(() => ({ id: "only" }), "sess-only");
     assert.equal(publishedTaskStore(), null);
     assert.equal(publishedTaskStore("sess-other"), null);
@@ -94,7 +92,7 @@ describe("task store bridge", () => {
     publishTaskTelemetryActive(() => {});
     assert.equal(publishedTaskTelemetryActive("sess-explicit"), null);
 
-    clearTaskTelemetryActive();
+    resetSessionBridge(undefined, { slot: "taskStore" });
     publishTaskTelemetryActive(() => {}, "sess-only");
     assert.equal(publishedTaskTelemetryActive(), null);
     assert.equal(publishedTaskTelemetryActive("sess-other"), null);
@@ -114,7 +112,7 @@ describe("task store bridge", () => {
     const storeB = { id: "b" };
     publishTaskStore(() => storeA, "sess-a");
     publishTaskStore(() => storeB, "sess-b");
-    clearTaskStore("sess-a");
+    resetSessionBridge("sess-a", { slot: "taskStore" });
     assert.equal(publishedTaskStore("sess-a"), null);
     assert.equal(publishedTaskStore("sess-b"), storeB);
   });
@@ -129,7 +127,7 @@ describe("task store bridge", () => {
 
     unregTelA();
     assert.equal(publishedTaskTelemetryActive("sess-a"), null);
-    clearTaskTelemetryActive("sess-b");
+    resetSessionBridge("sess-b", { slot: "taskStore" });
     assert.equal(publishedTaskTelemetryActive("sess-b"), null);
   });
 

@@ -11,14 +11,14 @@ import {
 import {
   SESSION_BRIDGE_SYMBOL,
   onMalformedRecoveryAborted,
-  resetSessionBridgeForTests,
+  resetSessionBridge,
   shouldDeferForMalformedRecovery,
 } from "../../../extensions/shared/session-bridge.js";
 import { SYSTEM_NOTE_MARKER } from "../../../extensions/shared/system-note.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 afterEach(() => {
-  resetSessionBridgeForTests();
+  resetSessionBridge();
 });
 
 type Handler = (...args: any[]) => any;

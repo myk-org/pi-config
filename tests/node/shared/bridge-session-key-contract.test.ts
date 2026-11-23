@@ -15,10 +15,6 @@ import { fileURLToPath } from "node:url";
 
 import {
   SESSION_BRIDGE_SYMBOL,
-  clearSessionBridge,
-  clearTaskStore,
-  clearTaskTelemetryActive,
-  clearWorkloadSources,
   isComsActive,
   markRecoveryPending,
   notifyMalformedRecoveryAborted,
@@ -30,7 +26,7 @@ import {
   publishedTaskTelemetryActive,
   publishedWorkloadSources,
   registerRecoveryCoordinator,
-  resetSessionBridgeForTests,
+  resetSessionBridge,
   setComsActive,
   shouldDeferForMalformedRecovery,
 } from "../../../extensions/shared/session-bridge.ts";
@@ -356,7 +352,7 @@ describe("extensions/shared/*-bridge.ts static session-key contract (#1337)", ()
 
 describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337, #1364)", () => {
   afterEach(() => {
-    resetSessionBridgeForTests();
+    resetSessionBridge();
   });
 
   it("isolates workload slot per session inside the single globalThis Map", () => {
@@ -382,7 +378,7 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337, 
     assert.equal(publishedWorkloadSources("sess-a"), null);
     assert.equal(publishedWorkloadSources("sess-b")?.agents()[0].id, "b1");
 
-    clearWorkloadSources("sess-b");
+    resetSessionBridge("sess-b", { slot: "workload" });
     assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
   });
 
@@ -416,8 +412,7 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337, 
     assert.equal(publishedTaskTelemetryActive("sess-a"), null);
     assert.ok(publishedTaskTelemetryActive("sess-b"));
 
-    clearTaskStore("sess-b");
-    clearTaskTelemetryActive("sess-b");
+    resetSessionBridge("sess-b", { slot: "taskStore" });
     assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
   });
 
@@ -471,7 +466,7 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337, 
     setComsActive(true, "sess-a");
     const unregCoord = registerRecoveryCoordinator(() => true, "sess-a");
 
-    clearTaskStore("sess-a");
+    resetSessionBridge("sess-a", { slot: "taskStore" });
     assert.equal(publishedTaskStore("sess-a"), null);
     assert.equal(isComsActive("sess-a"), true);
     assert.equal(shouldDeferForMalformedRecovery([], "sess-a"), true);
@@ -481,31 +476,31 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337, 
     assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
   });
 
-  it("clears all four slots for one session via clearSessionBridge without affecting siblings", () => {
+  it("clears all four slots for one session via resetSessionBridge without affecting siblings", () => {
     publishTaskStore(() => ({ id: "a" }), "sess-a");
     publishWorkloadSources({ agents: () => [], crons: () => [] }, "sess-a");
     markRecoveryPending(true, "sess-a");
     setComsActive(true, "sess-a");
     setComsActive(true, "sess-b");
 
-    clearSessionBridge("sess-a");
+    resetSessionBridge("sess-a");
     assert.equal(publishedTaskStore("sess-a"), null);
     assert.equal(publishedWorkloadSources("sess-a"), null);
     assert.equal(shouldDeferForMalformedRecovery(undefined, "sess-a"), false);
     assert.equal(isComsActive("sess-a"), false);
     assert.equal(isComsActive("sess-b"), true);
 
-    clearSessionBridge("sess-b");
+    resetSessionBridge("sess-b");
     assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
   });
 
-  it("resets all sessions in one call via resetSessionBridgeForTests", () => {
+  it("resets all sessions in one call via resetSessionBridge", () => {
     publishTaskStore(() => ({ id: "a" }), "sess-a");
     publishWorkloadSources({ agents: () => [], crons: () => [] }, "sess-b");
     markRecoveryPending(true, "sess-c");
     setComsActive(true, "sess-d");
 
-    resetSessionBridgeForTests();
+    resetSessionBridge();
     assert.equal((globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL], undefined);
     assert.equal(publishedTaskStore("sess-a"), null);
     assert.equal(publishedWorkloadSources("sess-b"), null);

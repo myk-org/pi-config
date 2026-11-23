@@ -22,7 +22,7 @@ import { setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import {
 	publishedTaskStore,
 	publishedTaskTelemetryActive,
-	resetSessionBridgeForTests,
+	resetSessionBridge,
 } from "../../../extensions/shared/session-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -345,7 +345,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.ok(taskStore.get(task.id)?.telemetry?.endedAt);
 		} finally {
 			handlers.get("session_shutdown")?.();
-			resetSessionBridgeForTests();
+			resetSessionBridge();
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
 			else process.env.PI_SUBAGENT_CHILD = child;
 		}
@@ -376,7 +376,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.equal(taskStore.get(task.id)?.telemetry?.outputTokens, 29);
 		} finally {
 			handlers.get("session_shutdown")?.();
-			resetSessionBridgeForTests();
+			resetSessionBridge();
 			if (piTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = piTasks;
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
@@ -405,7 +405,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.ok(publishedTaskTelemetryActive("sess-switched"));
 		} finally {
 			handlers.get("session_shutdown")?.();
-			resetSessionBridgeForTests();
+			resetSessionBridge();
 			if (piTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = piTasks;
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
@@ -433,7 +433,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.equal(taskStore.get(taskB.id)?.telemetry?.outputTokens ?? 0, 0);
 		} finally {
 			handlersB.get("session_shutdown")?.();
-			resetSessionBridgeForTests();
+			resetSessionBridge();
 			if (piTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = piTasks;
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
