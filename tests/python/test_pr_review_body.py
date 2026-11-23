@@ -107,7 +107,7 @@ def posted_payload(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         captured["payload"] = str(kwargs["input"])
         return subprocess.CompletedProcess(args=argv, returncode=0, stdout="{}", stderr="")
 
-    monkeypatch.setattr("myk_pi_tools.pr.post_comment.subprocess.run", fake_run)
+    monkeypatch.setattr("myk_pi_tools.github.subprocess.run", fake_run)
 
     result = post_review(
         "myk-org/pi-config",

@@ -61,6 +61,7 @@ pi-config/
 │   │   ├── git-helpers.ts           # Git, PR, and worktree query utilities
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
 │   │   ├── malformed-response-recovery.ts # Bounded auto-retry on MALFORMED_RESPONSE provider stop reasons (#1333)
+│   │   ├── stream-loop-guard.ts     # Abort runaway streaming repetition/degeneration loops via message_update (#1374)
 │   │   ├── markdown-transformer.ts  # Display-only markdown transforms (memory badges, coms headers, review findings, settings, task/async status)
 │   │   ├── parse-model-override.ts  # Parse provider/model-id override strings for subagent model param
 │   │   ├── pi-config-review-state.ts # Review state machine (review loop enforcement)
@@ -107,7 +108,8 @@ pi-config/
 │   │       └── dist/               # Built output (generated, gitignored)
 │   ├── pidiff/                      # Diff viewer extension (standalone)
 │   │   ├── index.ts                 # Entry point
-│   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/run/ lockfiles)
+│   │   ├── pidiff.ts                # Thin adapter over createDaemonClient + lockfile.ts (per-project diff server)
+│   │   ├── lockfile.ts              # Dedicated pidiff PID, port-probe, `.pi/run` lockfile, server-PID, and spawn-lock module
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees; deep DiffSessionController in src/lib/diff-session-controller.ts)
 │   ├── openai-compatible-discovery/ # Config-gated /v1/models discovery on configured providers
 │   │   └── index.ts                 # Augments the source provider in Pi's ordinary model picker
@@ -118,12 +120,11 @@ pi-config/
 │   │   ├── provider-stream-log.ts   # Shared provider_stream_event hook (#848; gated on log_providers=debug)
 │   │   ├── resolve-binary.ts        # In-process PATH binary resolution
 │   │   ├── openai-compatible-discovery.ts # Discovery config, requests, header resolution, cache, diagnostics
-│   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
+│   │   ├── daemon-manager.ts        # Deep shared daemon client & lifecycle manager (spawn, health, WebSocket, heartbeat, reconnect, shutdown, /start|stop|restart|status) — shared by pidash and pidiff
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
-│   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive) with auto-pruning (#1364)
+│   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive, streamLoopAborted) with auto-pruning (#1364, #1374)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
-│   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery)
 │   │   ├── widget-visibility.ts     # Shared collapse/expand widget state (expanded/collapsed, header-always-visible), globalThis reload persistence, shortcut validation/registration, and ui:toggle-all-widgets bridge
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
@@ -178,11 +179,13 @@ pi-config/
 │   │   ├── storage.py               # Unified reviews.db storage module (ReviewDB, schema, migrations, title backfill)
 │   │   ├── query.py                 # Backwards-compatible re-export shim for myk_pi_tools.db.storage
 │   │   └── commands.py              # CLI commands for querying reviews.db
+│   ├── github.py                    # Unified GitHub CLI (gh) transport adapter (dependencies, REST, paginated JSON, GraphQL, PR resolution)
 │   ├── memory/
 │   ├── pr/
 │   │   └── pr_review_store.py       # PR review comment tracking (pr-reviews.db)
 │   ├── release/
-│   └── reviews/
+│   ├── reviews/
+│   └── utils.py                     # Shared utilities (git root, atomic JSON, stderr, backwards-compat re-exports from github.py)
 ├── scripts/                         # Utility scripts
 │   ├── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
 │   ├── remap-node-identity.sh       # Container init: remap `node` to PI_HOST_UID/GID (sourced by init-entrypoint.sh)
