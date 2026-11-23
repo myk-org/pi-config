@@ -53,12 +53,12 @@ pi-config/
 │   │   ├── cron.ts                   # /cron scheduled tasks and session/project scope handling
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
 │   │   ├── skill-maintenance.ts     # /adopt-skill, marked-skill write guard, in-turn nudge, provenance + one-line notice
-│   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous) + memory-based enforcement rules
-│   │   ├── enforcement-helpers.ts   # Pure helpers for dangerous-command enforcement (read-only detection, .pi/tmp/ path validation)
+│   │   ├── bash-policy.ts           # Deep bash enforcement policy — unified shell lexing/scanning, DANGEROUS_RULES, git/conflict/trailer/dangerous evaluation
+│   │   ├── enforcement.ts           # Thin enforcement hook adapter over bash-policy.ts, enforcement-rules.ts, and pi-config-review-state.ts
 │   │   ├── enforcement-rules.ts     # Enforcement rules engine — trigger matching + action execution for memory-based enforcement
 │   │   ├── extended-autocomplete.ts  # Slash command argument completions (agents, branches, PRs, tags)
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
-│   │   ├── git-helpers.ts           # Git utility functions
+│   │   ├── git-helpers.ts           # Git, PR, and worktree query utilities
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
 │   │   ├── malformed-response-recovery.ts # Bounded auto-retry on MALFORMED_RESPONSE provider stop reasons (#1333)
 │   │   ├── markdown-transformer.ts  # Display-only markdown transforms (memory badges, coms headers, review findings, settings, task/async status)

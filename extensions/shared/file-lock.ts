@@ -3,7 +3,7 @@
  *
  * Consolidates O_EXCL lock acquisition, stale lock reclaim, and Atomics.wait
  * backoff across orchestrator modules (state-jsonl, trail, tmp-cleanup,
- * enforcement-helpers).
+ * bash-policy).
  */
 
 import { randomUUID } from "node:crypto";
