@@ -5,17 +5,11 @@ from __future__ import annotations
 import json
 import sys
 
+from myk_pi_tools.github import run_gh
 from myk_pi_tools.pr.common import validate_repo_format
-from myk_pi_tools.utils import run_gh as _run_gh
 
 # HTML comment marker in CodeRabbit's summary comment
 SUMMARY_MARKER = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
-
-
-def run_gh(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
-    """Run a gh CLI command and return (exit_code, stdout, stderr)."""
-    code, stdout, stderr = _run_gh(args, timeout=timeout)
-    return code, stdout.strip(), stderr.strip()
 
 
 def find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, str | None, str | None, str]:
@@ -24,7 +18,7 @@ def find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, s
     Returns (comment_id, comment_body, updated_at, error) where error is empty string on success.
     """
     owner, repo = owner_repo.split("/")
-    code, output, _stderr = run_gh(
+    code, raw_output, raw_stderr = run_gh(
         [
             "api",
             f"repos/{owner}/{repo}/issues/{pr_number}/comments",
@@ -34,9 +28,11 @@ def find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, s
         ],
         timeout=60,
     )
+    output = raw_output.strip()
+    stderr = raw_stderr.strip()
 
     if code != 0:
-        return None, None, None, f"GitHub API error: {_stderr}" if _stderr else "GitHub API request failed"
+        return None, None, None, f"GitHub API error: {stderr}" if stderr else "GitHub API request failed"
 
     if not output:
         return None, None, None, "No CodeRabbit summary comment found on this PR"

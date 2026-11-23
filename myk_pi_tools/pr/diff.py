@@ -13,10 +13,10 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from myk_pi_tools.github import merge_paginated_json, run_gh
 from myk_pi_tools.pr.common import PRInfo
 from myk_pi_tools.pr.common import fetch_pr_metadata as _fetch_pr_metadata
 from myk_pi_tools.pr.common import parse_args as _parse_args
-from myk_pi_tools.utils import merge_paginated_json, run_gh
 
 
 def parse_args(args: list[str]) -> PRInfo:

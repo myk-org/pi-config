@@ -8,18 +8,12 @@ Output: JSON with metadata and comments saved to <output_dir>/pr-<number>-pendin
 
 from __future__ import annotations
 
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from myk_pi_tools.reviews.fetch import (
-    check_dependencies,
-    parse_pr_url,
-    print_stderr,
-    run_gh_api,
-)
-from myk_pi_tools.utils import atomic_write_json
+from myk_pi_tools.github import check_dependencies, parse_pr_url, run_gh, run_gh_api
+from myk_pi_tools.utils import atomic_write_json, print_stderr
 
 # Maximum diff length to include in output (characters)
 MAX_DIFF_LENGTH = 50000
@@ -31,24 +25,15 @@ def get_authenticated_user() -> str | None:
     Returns:
         Username string or None on failure.
     """
-    try:
-        result = subprocess.run(
-            ["gh", "api", "user", "--jq", ".login"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        print_stderr("Error: gh api user timed out")
+    code, stdout, stderr = run_gh(["api", "user", "--jq", ".login"], timeout=30)
+    if code != 0:
+        if "timed out" in stderr.lower():
+            print_stderr("Error: gh api user timed out")
+        else:
+            print_stderr(f"Error: Could not get authenticated user: {stderr.strip()}")
         return None
 
-    if result.returncode != 0:
-        stderr = result.stderr or ""
-        print_stderr(f"Error: Could not get authenticated user: {stderr.strip()}")
-        return None
-
-    login = result.stdout.strip()
+    login = stdout.strip()
     return login if login else None
 
 
@@ -63,24 +48,18 @@ def fetch_pr_diff(owner: str, repo: str, pr_number: str) -> str | None:
     Returns:
         Diff text (truncated if over MAX_DIFF_LENGTH) or None on failure.
     """
-    try:
-        result = subprocess.run(
-            ["gh", "pr", "diff", pr_number, "-R", f"{owner}/{repo}"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        print_stderr("Error: gh pr diff timed out after 120 seconds")
+    code, stdout, stderr = run_gh(
+        ["pr", "diff", pr_number, "-R", f"{owner}/{repo}"],
+        timeout=120,
+    )
+    if code != 0:
+        if "timed out" in stderr.lower():
+            print_stderr("Error: gh pr diff timed out after 120 seconds")
+        else:
+            print_stderr(f"Warning: Could not fetch PR diff: {stderr.strip()}")
         return None
 
-    if result.returncode != 0:
-        stderr = result.stderr or ""
-        print_stderr(f"Warning: Could not fetch PR diff: {stderr.strip()}")
-        return None
-
-    diff_text = result.stdout
+    diff_text = stdout
     if len(diff_text) > MAX_DIFF_LENGTH:
         diff_text = diff_text[:MAX_DIFF_LENGTH] + "\n...[truncated]"
     return diff_text
@@ -187,8 +166,7 @@ def run(pr_url: str, *, output_dir: str) -> int:
     Returns:
         Exit code (0 for success, 1 for error).
     """
-    # Uses check_dependencies from fetch.py which calls sys.exit(1) on failure.
-    # This is consistent with the fetch.py pattern.
+    # Uses check_dependencies from github.py which calls sys.exit(1) on failure.
     check_dependencies()
 
     # Parse PR URL

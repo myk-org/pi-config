@@ -42,6 +42,8 @@ import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueR
 import { collectWorkload, openBlockers, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
 import {
 	DEFAULT_BRIDGE_SESSION_KEY,
+	consumeStreamLoopAborted,
+	hasStreamLoopAborted,
 	onMalformedRecoveryAborted,
 	publishedTaskStore,
 	publishedWorkloadSources,
@@ -985,7 +987,7 @@ export default function (pi: ExtensionAPI) {
 		return agentRunning;
 	}
 
-	function fulfillBundledInbounds(items: InboundContext[], ident: typeof identity): void {
+	function fulfillBundledInbounds(items: InboundContext[], ident: typeof identity, errorReason = "bundled"): void {
 		for (const bi of items) {
 			// Fire-and-forget — don't await, don't block finalization
 			if (ident) {
@@ -997,7 +999,7 @@ export default function (pi: ExtensionAPI) {
 					hops: 0,
 					timestamp: nowIso(),
 					response: null,
-					error: "bundled",
+					error: errorReason,
 					queued_msg_ids: [],
 				}).catch(() => { /* best-effort */ });
 			}
@@ -3943,7 +3945,7 @@ Do not respond to this message.`;
 	async function finalizeCurrentInbound(
 		ctx: ExtensionContext,
 		assistantMessage?: any,
-		opts: { streaming?: boolean } = {},
+		opts: { streaming?: boolean; abortError?: string } = {},
 	): Promise<void> {
 		if (shuttingDown || !currentInbound || !identity || finalizingInbound) return;
 		const gen = sessionGeneration;
@@ -4059,28 +4061,31 @@ Do not respond to this message.`;
 				return;
 			}
 
-			// Extract assistant text from turn_end's message, falling back to session branch walk for agent_end.
-			let lastAssistantText = "";
-			if (assistantMessage && assistantMessage.role === "assistant") {
-				lastAssistantText = extractAssistantText(assistantMessage);
-			} else {
-				for (const entry of ctx?.sessionManager?.getBranch?.() ?? []) {
-					if (entry.type === "message" && entry.message.role === "assistant") {
-						lastAssistantText = extractAssistantText(entry.message);
-					}
-				}
-			}
-
 			const bundledIds = new Set(bundledInbounds.map(bi => bi.msg_id));
 
-			let payload: any = lastAssistantText;
-			let error: string | null = null;
-			if (inbound.response_schema && typeof inbound.response_schema === "object") {
-				try {
-					payload = JSON.parse(lastAssistantText);
-				} catch {
-					error = "response not valid JSON";
-					payload = null;
+			let payload: any = null;
+			let error: string | null = opts.abortError ?? null;
+			if (!error) {
+				// Extract assistant text from turn_end's message, falling back to session branch walk for agent_end.
+				let lastAssistantText = "";
+				if (assistantMessage && assistantMessage.role === "assistant") {
+					lastAssistantText = extractAssistantText(assistantMessage);
+				} else {
+					for (const entry of ctx?.sessionManager?.getBranch?.() ?? []) {
+						if (entry.type === "message" && entry.message.role === "assistant") {
+							lastAssistantText = extractAssistantText(entry.message);
+						}
+					}
+				}
+
+				payload = lastAssistantText;
+				if (inbound.response_schema && typeof inbound.response_schema === "object") {
+					try {
+						payload = JSON.parse(lastAssistantText);
+					} catch {
+						error = "response not valid JSON";
+						payload = null;
+					}
 				}
 			}
 
@@ -4129,7 +4134,7 @@ Do not respond to this message.`;
 
 			const bundled = bundledInbounds;
 			bundledInbounds = [];
-			fulfillBundledInbounds(bundled, ident);
+			fulfillBundledInbounds(bundled, ident, opts.abortError ?? "bundled");
 
 			maybeRefreshWidget();
 
@@ -4151,6 +4156,11 @@ Do not respond to this message.`;
 		if (msg && msg.role !== "assistant") return;
 		// Let agent_end handle aborted/errored turns (runLoop exits immediately after turn_end).
 		if (msg?.stopReason === "error" || msg?.stopReason === "aborted") return;
+		const activeRecoveryKey = resolveComsRecoverySessionKey(
+			ctx,
+			recoverySessionKey !== DEFAULT_BRIDGE_SESSION_KEY ? recoverySessionKey : undefined,
+		);
+		if (hasStreamLoopAborted(activeRecoveryKey)) return;
 		const toolResults = Array.isArray(event?.toolResults) ? event.toolResults : [];
 		const hasToolCalls = Array.isArray(msg?.content) && msg.content.some((b: any) => b && b.type === "toolCall");
 		if (toolResults.length > 0 || hasToolCalls) return;
@@ -4200,6 +4210,11 @@ Do not respond to this message.`;
 			);
 			if (activeRecoveryKey !== recoverySessionKey) {
 				subscribeMalformedRecoveryAborted(activeRecoveryKey);
+			}
+			if (consumeStreamLoopAborted(activeRecoveryKey)) {
+				log.warn("agent_end_stream_loop_aborted", currentInbound.msg_id);
+				await finalizeCurrentInbound(ctx, undefined, { abortError: "stream_repetition_loop_aborted" });
+				return;
 			}
 			if (shouldDeferForMalformedRecovery((event as any)?.messages, activeRecoveryKey)) {
 				deferredRecoveryInboundId = currentInbound.msg_id;

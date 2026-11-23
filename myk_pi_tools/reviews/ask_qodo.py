@@ -14,9 +14,9 @@ import sys
 import time
 from datetime import UTC, datetime
 
+from myk_pi_tools.github import get_pr_info, post_issue_comment, run_gh_api
 from myk_pi_tools.reviews.constants import QODO_USERS
-from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr, run_gh_api
-from myk_pi_tools.utils import post_issue_comment
+from myk_pi_tools.utils import print_stderr
 
 
 def post_and_wait_for_qodo_reply(

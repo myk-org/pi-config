@@ -3,11 +3,12 @@
  *
  * Extensions load independently and share one Node process across concurrent sessions in hosts
  * such as `pi-sidecar`. All mutable per-session cross-extension state lives inside a single
- * `globalThis[SESSION_BRIDGE_SYMBOL]` `Map<sessionKey, SessionBridgeSlot>` with four typed slots:
+ * `globalThis[SESSION_BRIDGE_SYMBOL]` `Map<sessionKey, SessionBridgeSlot>` with five typed slots:
  *   - `taskStore`: live pitasks store getter & widget telemetry-activation callback (#1016)
  *   - `workload`: orchestrator async-agent & cron getters for coms/pitasks (#1083)
  *   - `malformedRecovery`: orchestrator <-> coms malformed-response retry coordination (#1333)
  *   - `comsActive`: per-session P2P coms active flag for rules assembly
+ *   - `streamLoopAborted`: orchestrator <-> coms stream repetition loop abort flag (#1374)
  *
  * Every lookup is strictly exact-keyed (`normalizeBridgeSessionKey`), never substituting another
  * session's entry or the default slot for a mismatched key. Empty session slots are pruned
@@ -78,6 +79,7 @@ export interface SessionBridgeSlot {
   workload?: WorkloadSources;
   malformedRecovery?: MalformedRecoveryBridgeSlot;
   comsActive?: boolean;
+  streamLoopAborted?: boolean;
 }
 
 export type SessionBridgeSlotName = keyof SessionBridgeSlot;
@@ -417,6 +419,43 @@ export function setComsActive(active: boolean, sessionKey?: string): void {
 export function isComsActive(sessionKey?: string): boolean {
   const key = normalizeBridgeSessionKey(sessionKey);
   return getSessionSlot(key)?.comsActive === true;
+}
+
+// ── streamLoopAborted slot ──────────────────────────────────────────────────
+
+/** Record that the active assistant turn in `sessionKey` was aborted by stream-loop-guard (#1374). */
+export function markStreamLoopAborted(sessionKey?: string): void {
+  const key = normalizeBridgeSessionKey(sessionKey);
+  getOrCreateSessionSlot(key).streamLoopAborted = true;
+  log.debug("stream_loop_abort_marked", { sessionKey: key });
+}
+
+/** Report whether `sessionKey` currently has an unconsumed stream-loop abort mark. */
+export function hasStreamLoopAborted(sessionKey?: string): boolean {
+  const key = normalizeBridgeSessionKey(sessionKey);
+  return getSessionSlot(key)?.streamLoopAborted === true;
+}
+
+/** Consume and clear the stream-loop abort mark for `sessionKey`, returning true if it was set. */
+export function consumeStreamLoopAborted(sessionKey?: string): boolean {
+  const key = normalizeBridgeSessionKey(sessionKey);
+  const map = getExistingBridgeMap();
+  const slot = map?.get(key);
+  if (!slot || slot.streamLoopAborted !== true) return false;
+  delete slot.streamLoopAborted;
+  pruneSessionSlot(map, key);
+  log.debug("stream_loop_abort_consumed", { sessionKey: key });
+  return true;
+}
+
+/** Clear any stream-loop abort mark for `sessionKey` and prune empty session slots. */
+export function clearStreamLoopAborted(sessionKey?: string): void {
+  const key = normalizeBridgeSessionKey(sessionKey);
+  const map = getExistingBridgeMap();
+  const slot = map?.get(key);
+  if (!slot || slot.streamLoopAborted === undefined) return;
+  delete slot.streamLoopAborted;
+  pruneSessionSlot(map, key);
 }
 
 // ── Unified teardown & test reset ───────────────────────────────────────────

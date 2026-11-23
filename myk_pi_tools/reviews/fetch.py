@@ -13,14 +13,19 @@ import hashlib
 import html
 import json
 import re
-import shutil
 import subprocess
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.db.storage import ReviewDB, _body_similarity
+from myk_pi_tools.github import (
+    check_dependencies,
+    get_pr_info,
+    parse_pr_url,
+    run_gh_api,
+    run_gh_graphql,
+)
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
 from myk_pi_tools.reviews.constants import (
@@ -37,7 +42,7 @@ from myk_pi_tools.reviews.title_extraction import (
     MAX_TITLE_CHARS,
     extract_finding_title,
 )
-from myk_pi_tools.utils import atomic_write_json, merge_paginated_json, parse_pr_url
+from myk_pi_tools.utils import atomic_write_json, print_stderr
 
 # Priority classification keywords
 HIGH_PRIORITY_KEYWORDS = re.compile(
@@ -64,156 +69,6 @@ def consume_fetch_context(owner: str, repo: str, pr_number: str) -> dict[str, An
     if ctx is not None and ctx.get("key") == (owner, repo, str(pr_number)):
         return ctx
     return None
-
-
-def print_stderr(msg: str) -> None:
-    """Print message to stderr."""
-    print(msg, file=sys.stderr)
-
-
-def check_dependencies() -> None:
-    """Check required dependencies."""
-    for cmd in ("gh", "git"):
-        if shutil.which(cmd) is None:
-            print_stderr(f"Error: '{cmd}' is required but not installed.")
-            sys.exit(1)
-
-
-def _get_upstream_repo() -> str | None:
-    """Get upstream remote's owner/repo if configured.
-
-    Returns:
-        Repository in 'owner/repo' format, or None.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "upstream"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return None
-
-        url = result.stdout.strip()
-        # Match SSH: git@github.com:owner/repo.git
-        match = re.match(r"git@github\.com:([^/]+/[^/]+?)(?:\.git)?$", url)
-        if match:
-            return match.group(1)
-        # Match SSH URL: ssh://git@github.com/owner/repo.git
-        match = re.match(r"ssh://git@github\.com/([^/]+/[^/]+?)(?:\.git)?$", url)
-        if match:
-            return match.group(1)
-        # Match HTTPS: https://github.com/owner/repo.git
-        match = re.match(r"https?://github\.com/([^/]+/[^/]+?)(?:\.git)?$", url)
-        if match:
-            return match.group(1)
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-    return None
-
-
-def get_pr_info(pr_url: str = "") -> tuple[str, str, str]:
-    """Get PR info using gh CLI.
-
-    Args:
-        pr_url: Optional PR URL or string that may contain a GitHub PR URL.
-            If a valid PR URL is found, owner/repo/number are extracted directly.
-
-    Returns:
-        Tuple of (owner, repo, pr_number)
-    """
-    # Try to extract PR info from URL first
-    if pr_url:
-        parsed = parse_pr_url(pr_url)
-        if parsed:
-            return parsed
-        print_stderr(f"Warning: '{pr_url}' did not match a GitHub PR URL pattern, falling back to branch detection")
-
-    # Get current branch
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            print_stderr("Error: Could not get current branch")
-            sys.exit(1)
-        current_branch = result.stdout.strip()
-        if current_branch == "HEAD":
-            print_stderr("Error: Detached HEAD; cannot infer PR from branch. Check out a branch with an open PR.")
-            sys.exit(1)
-    except subprocess.TimeoutExpired:
-        print_stderr("Error: git command timed out")
-        sys.exit(1)
-
-    # Try to find PR for current branch
-    # First try default repo (origin), then upstream if available
-    repos_to_try: list[str | None] = [None]  # None = default (origin)
-    upstream_repo = _get_upstream_repo()
-    if upstream_repo:
-        repos_to_try.append(upstream_repo)
-
-    pr_number: str | None = None
-    matched_repo: str | None = None
-
-    for target_repo in repos_to_try:
-        cmd = ["gh", "pr", "view", current_branch, "--json", "number", "--jq", ".number"]
-        if target_repo:
-            cmd.extend(["-R", target_repo])
-
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode == 0 and result.stdout.strip():
-                pr_number = result.stdout.strip()
-                matched_repo = target_repo
-                if target_repo:
-                    print_stderr(f"Found PR #{pr_number} on upstream ({target_repo})")
-                break
-        except subprocess.TimeoutExpired:
-            continue
-
-    if pr_number is None:
-        tried = "origin"
-        if upstream_repo:
-            tried += f" and upstream ({upstream_repo})"
-        print_stderr(f"Error: No PR found for branch '{current_branch}' on {tried}")
-        sys.exit(1)
-
-    # Get repository info
-    if matched_repo:
-        # We already know the repo from the -R flag
-        parts = matched_repo.split("/")
-        if len(parts) == 2:
-            return parts[0], parts[1], pr_number
-        print_stderr(f"Error: Unexpected repo format from upstream: '{matched_repo}'")
-        sys.exit(1)
-
-    # Fall back to gh repo view for the default repo
-    try:
-        result = subprocess.run(
-            ["gh", "repo", "view", "--json", "owner,name", "-q", '.owner.login + "/" + .name'],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            print_stderr("Error: Could not get repository information")
-            sys.exit(1)
-        repo_full_name = result.stdout.strip()
-    except subprocess.TimeoutExpired:
-        print_stderr("Error: gh repo view timed out")
-        sys.exit(1)
-
-    owner_repo = repo_full_name.split("/")
-    if len(owner_repo) != 2:
-        print_stderr(f"Error: Could not parse owner/repo from: '{repo_full_name}'")
-        sys.exit(1)
-
-    owner, repo = owner_repo
-    return owner, repo, pr_number
 
 
 def detect_source(author: str | None) -> str:
@@ -245,64 +100,6 @@ def classify_priority(body: str | None) -> str:
 
     # MEDIUM: improvements, suggestions (or default)
     return "MEDIUM"
-
-
-def run_gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any] | None:
-    """Run a GraphQL query via gh api graphql. Returns parsed JSON or None on error."""
-    payload = {"query": query, "variables": variables}
-    cmd = ["gh", "api", "graphql", "--input", "-"]
-
-    try:
-        result = subprocess.run(
-            cmd,
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        print_stderr("Error: GraphQL query timed out after 120 seconds")
-        return None
-
-    if result.returncode != 0:
-        if result.stderr:
-            print_stderr(f"Warning: GraphQL query failed: {result.stderr.strip()}")
-        return None
-
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-
-    return data
-
-
-def run_gh_api(endpoint: str, *, paginate: bool = False) -> Any | None:
-    """Run a REST API call via gh api. Returns parsed JSON or None on error."""
-    cmd = ["gh", "api"]
-    if paginate:
-        cmd.append("--paginate")
-    cmd.append(endpoint)
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    except subprocess.TimeoutExpired:
-        print_stderr(f"Error: API call to {endpoint} timed out after 120 seconds")
-        return None
-
-    if result.returncode != 0:
-        if result.stderr:
-            print_stderr(f"Warning: API call to {endpoint} failed: {result.stderr.strip()}")
-        return None
-
-    try:
-        # --paginate returns concatenated JSON arrays, merge them
-        if paginate:
-            return merge_paginated_json(result.stdout)
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        print_stderr(f"Error parsing JSON from gh api: {e}")
-        return None
 
 
 def fetch_review_threads(
@@ -1576,7 +1373,7 @@ def run(
     """
     global _LAST_FETCH_CONTEXT
     _LAST_FETCH_CONTEXT = None
-    check_dependencies()
+    check_dependencies(("gh", "git"))
 
     # Get PR info
     print_stderr("Getting PR information...")
