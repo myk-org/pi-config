@@ -239,6 +239,8 @@ pi-config/
 └── pyproject.toml                   # Python project config (myk_pi_tools)
 ```
 
+Cross-extension lifecycle hooks (`agent_end`, `turn_end`, `session_shutdown`): see [Async & Runtime Internals](../docs/async-internals.md#cross-extension-lifecycle-hooks).
+
 - **Shared bridge invariant (`extensions/shared/*-bridge.ts`):** mutable `globalThis[Symbol.for(...)]` bridges must key per-session state in a
   `Map<sessionId, ...>` with `session_shutdown` cleanup for multi-session `pi-sidecar` safety unless explicitly allowlisted in
   `tests/node/shared/bridge-session-key-contract.test.ts`.
