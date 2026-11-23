@@ -160,8 +160,14 @@ export default function (pi: ExtensionAPI) {
   // coms extension must read them here rather than scan for them.
   let workloadSessionKey = DEFAULT_WORKLOAD_SESSION_KEY;
   let unregisterWorkload: (() => void) | null = null;
-  const publishOwnWorkload = (ctx?: any): void => {
-    const nextKey = ctx ? resolveWorkloadSessionKey(ctx) : workloadSessionKey;
+  const publishOwnWorkload = (ctx?: any, preserveNamedOnMissingId = false): void => {
+    const resolvedKey = ctx ? resolveWorkloadSessionKey(ctx) : workloadSessionKey;
+    const nextKey =
+      preserveNamedOnMissingId &&
+      resolvedKey === DEFAULT_WORKLOAD_SESSION_KEY &&
+      workloadSessionKey !== DEFAULT_WORKLOAD_SESSION_KEY
+        ? workloadSessionKey
+        : resolvedKey;
     if (unregisterWorkload && nextKey !== workloadSessionKey) {
       unregisterWorkload();
       unregisterWorkload = null;
@@ -178,7 +184,7 @@ export default function (pi: ExtensionAPI) {
   });
   // A watched-session switch or any other ctx change shows up as a turn in the new ctx, so
   // re-publishing here keeps the getters bound to the session that is actually running.
-  pi.on("before_agent_start", (_event, ctx) => publishOwnWorkload(ctx));
+  pi.on("before_agent_start", (_event, ctx) => publishOwnWorkload(ctx, true));
   // A torn-down runtime must not keep answering coms drilldowns from dead getters.
   pi.on("session_shutdown", () => {
     log.debug("session_shutdown", "clearing workload sources");

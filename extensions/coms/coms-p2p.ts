@@ -3861,6 +3861,15 @@ Do not respond to this message.`;
 		},
 	});
 
+	// Refresh currentCtx as early as before_agent_start so describe/workload lookups stay aligned
+	// with orchestrator and pitasks re-keying on watched-session switches (#1337).
+	pi.on("before_agent_start" as any, (_event: any, ctx?: ExtensionContext) => {
+		if (ctx) {
+			currentCtx = ctx;
+			if (identity && resolveOwnPiSessionId(ctx) !== identity.pi_session_id) writeLiveRegistry();
+		}
+	});
+
 	// ━━ Track agent running state for mixed-turn detection (#731) ━━━━━━━━━
 	// Only mark as "user turn" if NO coms inbound is active (processingInbound false).
 	// When processingInbound is true, the agent is running a coms followUp — not a user turn.

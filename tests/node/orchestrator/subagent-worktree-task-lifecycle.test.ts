@@ -151,7 +151,7 @@ function createWorktreeHarness(opts: WorktreeHarnessOptions = {}) {
   let liveStore: TaskStore | null = null;
   if (publishLiveStore) {
     liveStore = seedStore;
-    publishTaskStore(() => liveStore);
+    publishTaskStore(() => liveStore, sessionId);
   } else {
     seedStore.close();
     delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];

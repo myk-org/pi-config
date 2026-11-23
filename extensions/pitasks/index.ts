@@ -76,12 +76,19 @@ let currentUiCtx: any = null;
 let currentStore: TaskStore | null = null;
 let currentWidget: TaskWidget | null = null;
 export function setTaskTelemetryActive(taskId: string, active = true, sessionKey?: string): void {
+	if (typeof sessionKey === "string" && sessionKey.trim()) {
+		const normalizedKey = sessionKey.trim();
+		const bridged = publishedTaskTelemetryActive(normalizedKey);
+		log.debug("task_telemetry_active", { taskId, active, sessionKey: normalizedKey, via: bridged ? "bridge" : "none" });
+		bridged?.(taskId, active);
+		return;
+	}
 	if (currentWidget) {
 		log.debug("task_telemetry_active", { taskId, active, via: "local" });
 		currentWidget.setActiveTask(taskId, active);
 		return;
 	}
-	const bridged = publishedTaskTelemetryActive(sessionKey);
+	const bridged = publishedTaskTelemetryActive();
 	log.debug("task_telemetry_active", { taskId, active, via: bridged ? "bridge" : "none" });
 	bridged?.(taskId, active);
 }
@@ -358,8 +365,14 @@ export default function (pi: ExtensionAPI) {
 		log.debug("task_telemetry_active_bridged", { taskId, active, hasWidget: Boolean(!shuttingDown && widget) });
 		if (!shuttingDown) widget.setActiveTask(taskId, active);
 	};
-	const syncTaskBridge = (ctx?: any): void => {
-		const nextKey = ctx ? resolveTaskBridgeSessionKey(ctx) : bridgeSessionKey;
+	const syncTaskBridge = (ctx?: any, preserveNamedOnMissingId = false): void => {
+		const resolvedKey = ctx ? resolveTaskBridgeSessionKey(ctx) : bridgeSessionKey;
+		const nextKey =
+			preserveNamedOnMissingId &&
+			resolvedKey === DEFAULT_TASK_BRIDGE_SESSION_KEY &&
+			bridgeSessionKey !== DEFAULT_TASK_BRIDGE_SESSION_KEY
+				? bridgeSessionKey
+				: resolvedKey;
 		if (unregisterTaskStore && unregisterTaskTelemetry && nextKey === bridgeSessionKey) return;
 		unregisterTaskStore?.();
 		unregisterTaskTelemetry?.();
@@ -608,7 +621,7 @@ export default function (pi: ExtensionAPI) {
 		agentBusy = true;
 		log.debug("agentBusy", "turn_start");
 		currentCtx = ctx;
-		if (bridgeSessionKey === DEFAULT_TASK_BRIDGE_SESSION_KEY) syncTaskBridge(ctx);
+		syncTaskBridge(ctx, true);
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
@@ -684,7 +697,7 @@ export default function (pi: ExtensionAPI) {
 		agentBusy = true;
 		log.debug("agentBusy", "before_agent_start");
 		currentCtx = ctx;
-		if (bridgeSessionKey === DEFAULT_TASK_BRIDGE_SESSION_KEY) syncTaskBridge(ctx);
+		syncTaskBridge(ctx, true);
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);

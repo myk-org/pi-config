@@ -57,7 +57,10 @@ const SHARED_DIR = join(REPO_ROOT, "extensions/shared");
  */
 const PROCESS_WIDE_SINGLETON_ALLOWLIST: ReadonlyMap<string, string> = new Map();
 
-/** Strip JS/TS comments while preserving string, template, and regex-safe literals. */
+/** Shared bridge backing helpers audited alongside `*-bridge.ts`. */
+const BRIDGE_HELPER_FILES = ["session-bridge-map.ts"] as const;
+
+/** Strip JS/TS comments while preserving string and template literals. */
 function stripComments(source: string): string {
   let out = "";
   let i = 0;
@@ -104,8 +107,8 @@ interface BridgeAuditResult {
 }
 
 /**
- * Audit one `*-bridge.ts` source string for un-allowlisted single-slot `globalThis` bindings.
- * Exported only via local testing below to prove the guardrail catches regressions.
+ * Audit one bridge module's source for un-allowlisted single-slot `globalThis` writes,
+ * including direct property writes, computed symbol assignments, and reflective/Object mutations.
  */
 function auditBridgeSource(
   fileName: string,
@@ -131,8 +134,22 @@ function auditBridgeSource(
   }
   const aliasPattern = [...globalAliases].join("|");
 
+  // Detect alternate mutation primitives targeting globalThis (or any alias):
+  // Object.assign(g, ...), Object.defineProperty(g, ...), Object.defineProperties(g, ...),
+  // Reflect.set(g, ...), Reflect.defineProperty(g, ...).
+  const altWriteRe = new RegExp(
+    `\\b(?:Object\\.(?:assign|definePropert(?:y|ies))|Reflect\\.(?:set|defineProperty))\\s*\\(\\s*(?:\\(\\s*)?(?:${aliasPattern})\\b`,
+    "g",
+  );
+  for (const match of code.matchAll(altWriteRe)) {
+    violations.push(`${fileName}: mutates globalThis via un-auditable primitive (${match[0].trim()})`);
+  }
+
   // Detect non-computed property assignments like `globalThis.__foo = ...`
-  const dotWriteRe = new RegExp(`(?:\\(\\s*)?\\b(?:${aliasPattern})\\b(?:\\s+as\\s+[^)]+\\))?\\s*\\.\\s*[A-Za-z_$][\\w$]*\\s*=[^=]`, "g");
+  const dotWriteRe = new RegExp(
+    `(?:\\(\\s*)?\\b(?:${aliasPattern})\\b(?:\\s+as\\s+[^)]+\\))?\\s*\\.\\s*[A-Za-z_$][\\w$]*\\s*=[^=]`,
+    "g",
+  );
   for (const match of code.matchAll(dotWriteRe)) {
     violations.push(`${fileName}: writes mutable dot-property directly on globalThis (${match[0].trim()})`);
   }
@@ -181,11 +198,13 @@ function auditBridgeSource(
 
 describe("extensions/shared/*-bridge.ts static session-key contract (#1337)", () => {
   it("audits every *-bridge.ts module under extensions/shared/", () => {
-    const bridgeFiles = readdirSync(SHARED_DIR)
-      .filter((name) => name.endsWith("-bridge.ts"))
-      .sort();
+    const sharedFiles = readdirSync(SHARED_DIR);
+    const bridgeFiles = [
+      ...sharedFiles.filter((name) => name.endsWith("-bridge.ts")),
+      ...BRIDGE_HELPER_FILES.filter((name) => sharedFiles.includes(name)),
+    ].sort();
 
-    assert.ok(bridgeFiles.length >= 4, `expected at least 4 bridge files, found: ${bridgeFiles.join(", ")}`);
+    assert.ok(bridgeFiles.length >= 5, `expected bridge modules plus shared helper, found: ${bridgeFiles.join(", ")}`);
 
     // Guard against stale allowlist entries.
     for (const allowedFile of PROCESS_WIDE_SINGLETON_ALLOWLIST.keys()) {
@@ -209,44 +228,115 @@ describe("extensions/shared/*-bridge.ts static session-key contract (#1337)", ()
     );
   });
 
-  it("rejects synthetic single-slot globalThis[Symbol.for(...)] bridges and accepts allowlisted or Map-keyed ones", () => {
+  it("rejects a single-slot globalThis[Symbol.for(...)] assignment", () => {
     const singleSlot = `
       export const SYM = Symbol.for("pi-config.badBridge");
       export function publish(val: unknown): void {
         (globalThis as Record<symbol, unknown>)[SYM] = val;
       }
     `;
-    const singleSlotResult = auditBridgeSource("bad-bridge.ts", singleSlot);
-    assert.ok(singleSlotResult.violations.length > 0, "single-slot globalThis write must fail audit");
+    assert.ok(auditBridgeSource("bad-bridge.ts", singleSlot).violations.length > 0);
+  });
 
+  it("rejects a single-slot getter object written to globalThis[Symbol.for(...)]", () => {
     const singleSlotGetter = `
       export const SYM = Symbol.for("pi-config.badGetterBridge");
       export function publish(getVal: () => unknown): void {
         (globalThis as Record<symbol, unknown>)[SYM] = { get current() { return getVal(); } };
       }
     `;
-    assert.ok(
-      auditBridgeSource("bad-getter-bridge.ts", singleSlotGetter).violations.length > 0,
-      "single-slot getter object on globalThis must fail audit",
-    );
+    assert.ok(auditBridgeSource("bad-getter-bridge.ts", singleSlotGetter).violations.length > 0);
+  });
 
+  it("rejects a mutable dot-property write on globalThis", () => {
     const dotProp = `
       export function publish(val: unknown): void {
         (globalThis as any).__badSlot = val;
       }
     `;
-    assert.ok(
-      auditBridgeSource("bad-dot-bridge.ts", dotProp).violations.length > 0,
-      "mutable dot-property on globalThis must fail audit",
-    );
+    assert.ok(auditBridgeSource("bad-dot-bridge.ts", dotProp).violations.length > 0);
+  });
 
-    const allowlisted = auditBridgeSource(
+  it("rejects Object.assign on globalThis even alongside a valid Map write", () => {
+    const mixedAssign = `
+      export const SYM = Symbol.for("pi-config.mixedBridge");
+      export const SYM2 = Symbol.for("pi-config.secondSlot");
+      function getMap(): Map<string, string> {
+        const g = globalThis as Record<symbol, unknown>;
+        let map = g[SYM];
+        if (!(map instanceof Map)) { map = new Map<string, string>(); g[SYM] = map; }
+        return map as Map<string, string>;
+      }
+      export function publish(val: string, sessionKey: string): () => void {
+        const map = getMap();
+        map.set(sessionKey, val);
+        Object.assign(globalThis, { [SYM2]: val });
+        return () => { map.delete(sessionKey); };
+      }
+    `;
+    const result = auditBridgeSource("mixed-assign-bridge.ts", mixedAssign);
+    assert.ok(result.violations.some((v) => v.includes("Object.assign")));
+  });
+
+  it("rejects Object.defineProperty on a globalThis alias alongside a valid Map write", () => {
+    const mixedDefine = `
+      export const SYM = Symbol.for("pi-config.mixedBridge");
+      export const SYM2 = Symbol.for("pi-config.secondSlot");
+      function getMap(): Map<string, string> {
+        const g = globalThis as Record<symbol, unknown>;
+        let map = g[SYM];
+        if (!(map instanceof Map)) { map = new Map<string, string>(); g[SYM] = map; }
+        return map as Map<string, string>;
+      }
+      export function publish(val: string, sessionKey: string): () => void {
+        const g = globalThis as Record<symbol, unknown>;
+        const map = getMap();
+        map.set(sessionKey, val);
+        Object.defineProperty(g, SYM2, { value: val, configurable: true });
+        return () => { map.delete(sessionKey); };
+      }
+    `;
+    const result = auditBridgeSource("mixed-define-bridge.ts", mixedDefine);
+    assert.ok(result.violations.some((v) => v.includes("Object.defineProperty")));
+  });
+
+  it("rejects Reflect.set on globalThis alongside a valid Map write", () => {
+    const mixedReflect = `
+      export const SYM = Symbol.for("pi-config.mixedBridge");
+      export const SYM2 = Symbol.for("pi-config.secondSlot");
+      function getMap(): Map<string, string> {
+        const g = globalThis as Record<symbol, unknown>;
+        let map = g[SYM];
+        if (!(map instanceof Map)) { map = new Map<string, string>(); g[SYM] = map; }
+        return map as Map<string, string>;
+      }
+      export function publish(val: string, sessionKey: string): () => void {
+        const map = getMap();
+        map.set(sessionKey, val);
+        Reflect.set(globalThis, SYM2, val);
+        return () => { map.delete(sessionKey); };
+      }
+    `;
+    const result = auditBridgeSource("mixed-reflect-bridge.ts", mixedReflect);
+    assert.ok(result.violations.some((v) => v.includes("Reflect.set")));
+  });
+
+  it("accepts an explicitly allowlisted process-wide singleton", () => {
+    const singleton = `
+      export const SYM = Symbol.for("pi-config.singletonBridge");
+      export function publish(val: unknown): void {
+        (globalThis as Record<symbol, unknown>)[SYM] = val;
+      }
+    `;
+    const result = auditBridgeSource(
       "singleton-bridge.ts",
-      singleSlot,
+      singleton,
       new Map([["singleton-bridge.ts", "process-wide singleton justification"]]),
     );
-    assert.deepEqual(allowlisted.violations, [], "explicitly allowlisted singleton must pass");
+    assert.deepEqual(result.violations, []);
+  });
 
+  it("accepts a Map-keyed per-session bridge", () => {
     const mapKeyed = `
       export const SYM = Symbol.for("pi-config.goodBridge");
       function getMap(): Map<string, string> {
@@ -264,11 +354,7 @@ describe("extensions/shared/*-bridge.ts static session-key contract (#1337)", ()
         return () => { map.delete(sessionKey); };
       }
     `;
-    assert.deepEqual(
-      auditBridgeSource("good-bridge.ts", mapKeyed).violations,
-      [],
-      "Map-keyed per-session bridge must pass",
-    );
+    assert.deepEqual(auditBridgeSource("good-bridge.ts", mapKeyed).violations, []);
   });
 });
 
@@ -279,7 +365,7 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     resetMalformedRecoveryBridgeForTests();
   });
 
-  it("workload-bridge stores a Map on globalThis and isolates concurrent sessions", () => {
+  it("workload-bridge stores per-session entries inside a Map on globalThis", () => {
     const sourcesA = {
       agents: () => [{ id: "a1", agent: "worker", task: "A", status: "running", startedAt: 1 }],
       crons: () => [],
@@ -292,25 +378,21 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     const unregA = publishWorkloadSources(sourcesA, "sess-a");
     publishWorkloadSources(sourcesB, "sess-b");
 
-    assert.ok(
-      (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL] instanceof Map,
-      "workload bridge must store a Map on globalThis",
-    );
+    assert.ok((globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL] instanceof Map);
     assert.equal(publishedWorkloadSources("sess-a")?.agents()[0].id, "a1");
     assert.equal(publishedWorkloadSources("sess-b")?.agents()[0].id, "b1");
     assert.equal(publishedWorkloadSources("sess-unknown"), null);
-    assert.equal(publishedWorkloadSources(), null, "un-keyed lookup must not guess across concurrent sessions");
+    assert.equal(publishedWorkloadSources(), null);
 
     unregA();
     assert.equal(publishedWorkloadSources("sess-a"), null);
     assert.equal(publishedWorkloadSources("sess-b")?.agents()[0].id, "b1");
 
     clearWorkloadSources("sess-b");
-    assert.equal(publishedWorkloadSources("sess-b"), null);
     assert.equal((globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL], undefined);
   });
 
-  it("task-store-bridge stores Maps on globalThis and isolates concurrent sessions", () => {
+  it("task-store-bridge stores per-session stores inside Maps on globalThis", () => {
     const storeA = { id: "store-a" };
     const storeB = { id: "store-b" };
     const callsA: string[] = [];
@@ -323,17 +405,16 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
 
     assert.ok((globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL] instanceof Map);
     assert.ok((globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL] instanceof Map);
-
     assert.equal(publishedTaskStore("sess-a"), storeA);
     assert.equal(publishedTaskStore("sess-b"), storeB);
     assert.equal(publishedTaskStore("sess-unknown"), null);
-    assert.equal(publishedTaskStore(), null, "un-keyed store lookup must not guess across concurrent sessions");
+    assert.equal(publishedTaskStore(), null);
 
     publishedTaskTelemetryActive("sess-a")?.("1");
     publishedTaskTelemetryActive("sess-b")?.("2");
     assert.deepEqual(callsA, ["1"]);
     assert.deepEqual(callsB, ["2"]);
-    assert.equal(publishedTaskTelemetryActive(), null, "un-keyed telemetry lookup must not guess across concurrent sessions");
+    assert.equal(publishedTaskTelemetryActive(), null);
 
     unregStoreA();
     unregTelA();
@@ -348,7 +429,7 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     assert.equal((globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL], undefined);
   });
 
-  it("malformed-recovery-bridge stores a Map on globalThis and isolates concurrent sessions", () => {
+  it("malformed-recovery-bridge isolates recovery state across concurrent sessions", () => {
     const abortedA: number[] = [];
     const abortedB: number[] = [];
     const unregCoordA = registerRecoveryCoordinator(() => true, "sess-a");
@@ -375,7 +456,7 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     markRecoveryPending(false, "sess-a");
   });
 
-  it("ui-bridge keeps no globalThis state and isolates concurrent session event buses", async () => {
+  it("ui-bridge leaves globalThis untouched when marking browser dispatch contexts", () => {
     const beforeSymbols = Object.getOwnPropertySymbols(globalThis).length;
     const ctxCopyA = { hasUI: true };
     const ctxCopyB = { hasUI: true };
@@ -383,7 +464,9 @@ describe("extensions/shared/*-bridge.ts runtime multi-session isolation (#1337)"
     assert.equal(isBrowserDispatch(ctxCopyA), true);
     assert.equal(isBrowserDispatch(ctxCopyB), false);
     assert.equal(Object.getOwnPropertySymbols(globalThis).length, beforeSymbols);
+  });
 
+  it("ui-bridge isolates responses across concurrent session event buses", async () => {
     const makeSessionPi = () => {
       const bus = new EventEmitter();
       const emitted: Array<{ channel: string; payload: any }> = [];
