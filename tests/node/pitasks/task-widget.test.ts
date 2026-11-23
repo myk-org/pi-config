@@ -19,7 +19,12 @@ import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
 import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
 import { setLogLevelPin } from "../../../extensions/shared/file-logger.js";
-import { TASK_STORE_SYMBOL, TASK_TELEMETRY_ACTIVE_SYMBOL } from "../../../extensions/shared/task-store-bridge.js";
+import {
+	TASK_STORE_SYMBOL,
+	TASK_TELEMETRY_ACTIVE_SYMBOL,
+	publishedTaskStore,
+	publishedTaskTelemetryActive,
+} from "../../../extensions/shared/task-store-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -367,7 +372,7 @@ describe("pitasks telemetry bridge", () => {
 			const isolatedPath = "../../../extensions/pitasks/index.js?isolated-bridge-instance=1";
 			const isolatedInstance: typeof import("../../../extensions/pitasks/index.js") = await import(isolatedPath);
 			assert.equal(isolatedInstance.taskStore, undefined);
-			isolatedInstance.setTaskTelemetryActive(task.id, true);
+			isolatedInstance.setTaskTelemetryActive(task.id, true, "widget-test");
 			await handlers.get("turn_end")!({ message: { role: "assistant", usage: { input: 13, output: 29 } } });
 			assert.equal(taskStore.get(task.id)?.telemetry?.inputTokens, 13);
 			assert.equal(taskStore.get(task.id)?.telemetry?.outputTokens, 29);
@@ -380,6 +385,64 @@ describe("pitasks telemetry bridge", () => {
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
 			else process.env.PI_SUBAGENT_CHILD = child;
 			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("rekeys task bridges on before_agent_start when a watched session switches", async () => {
+		const child = process.env.PI_SUBAGENT_CHILD;
+		const piTasks = process.env.PI_TASKS;
+		const handlers = new Map<string, Function>();
+		delete process.env.PI_SUBAGENT_CHILD;
+		process.env.PI_TASKS = "off";
+		try {
+			const api = { on(name: string, handler: Function) { handlers.set(name, handler); }, registerTool() {}, registerCommand() {}, events: { on() { return () => {}; }, emit() {} } };
+			pitasks(api as any);
+			await handlers.get("session_start")!({ reason: "startup" }, { ui: { setWidget() {} }, sessionManager: { getSessionId: () => "sess-old" } });
+			assert.ok(publishedTaskStore("sess-old"));
+			assert.ok(publishedTaskTelemetryActive("sess-old"));
+
+			await handlers.get("before_agent_start")!({}, { ui: { setWidget() {} }, sessionManager: { getSessionId: () => "sess-switched" } });
+			assert.equal(publishedTaskStore("sess-old"), null);
+			assert.equal(publishedTaskTelemetryActive("sess-old"), null);
+			assert.ok(publishedTaskStore("sess-switched"));
+			assert.ok(publishedTaskTelemetryActive("sess-switched"));
+		} finally {
+			handlers.get("session_shutdown")?.();
+			delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+			delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+			if (piTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = piTasks;
+			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = child;
+		}
+	});
+
+	it("never routes session-keyed telemetry into another session's currentWidget", async () => {
+		const child = process.env.PI_SUBAGENT_CHILD;
+		const piTasks = process.env.PI_TASKS;
+		const handlersB = new Map<string, Function>();
+		delete process.env.PI_SUBAGENT_CHILD;
+		process.env.PI_TASKS = "off";
+		try {
+			const apiB = { on(name: string, handler: Function) { handlersB.set(name, handler); }, registerTool() {}, registerCommand() {}, events: { on() { return () => {}; }, emit() {} } };
+			pitasks(apiB as any);
+			await handlersB.get("session_start")!({ reason: "startup" }, { ui: { setWidget() {} }, sessionManager: { getSessionId: () => "sess-b" } });
+			const taskB = taskStore.create("Session B task", "body", createdBy);
+			taskStore.update(taskB.id, { status: "in_progress" });
+
+			// Session A has no published telemetry callback; calling with "sess-a" must NOT activate Session B's widget.
+			setTaskTelemetryActive(taskB.id, true, "sess-a");
+			await handlersB.get("turn_end")!({ message: { role: "assistant", usage: { input: 17, output: 23 } } });
+			assert.equal(taskStore.get(taskB.id)?.telemetry?.inputTokens ?? 0, 0);
+			assert.equal(taskStore.get(taskB.id)?.telemetry?.outputTokens ?? 0, 0);
+		} finally {
+			handlersB.get("session_shutdown")?.();
+			delete (globalThis as Record<symbol, unknown>)[TASK_STORE_SYMBOL];
+			delete (globalThis as Record<symbol, unknown>)[TASK_TELEMETRY_ACTIVE_SYMBOL];
+			if (piTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = piTasks;
+			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = child;
 		}
 	});
 });

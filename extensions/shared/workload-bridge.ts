@@ -11,6 +11,15 @@
  * Same marker pattern as the pricing-provenance and task-store bridges.
  */
 import { createLogger } from "./logger.js";
+import {
+  DEFAULT_BRIDGE_SESSION_KEY,
+  clearBridgeSessionEntry,
+  getBridgeSessionEntry,
+  normalizeBridgeSessionKey,
+  resetBridgeMapForTests,
+  resolveBridgeSessionKey,
+  setBridgeSessionEntry,
+} from "./session-bridge-map.js";
 
 const log = createLogger("workload-bridge");
 
@@ -50,22 +59,41 @@ export interface WorkloadSources {
 }
 
 export const WORKLOAD_SOURCES_SYMBOL = Symbol.for("pi-config.workloadSources");
+export const DEFAULT_WORKLOAD_SESSION_KEY = DEFAULT_BRIDGE_SESSION_KEY;
 
-/** Publish the owner's getters. Called once from the orchestrator registration path. */
-export function publishWorkloadSources(sources: WorkloadSources): void {
-  (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL] = sources;
-  log.debug("workload_sources_published", { at: Date.now() });
+/** Resolve the per-session workload bridge key from an ExtensionContext (or DEFAULT_WORKLOAD_SESSION_KEY). */
+export function resolveWorkloadSessionKey(ctx?: any): string {
+  return resolveBridgeSessionKey(ctx);
 }
 
-/** The sources, or null when this process has no orchestrator extension (older build). */
-export function publishedWorkloadSources(): WorkloadSources | null {
-  const sources = (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL] as WorkloadSources | undefined;
-  if (!sources || typeof sources.agents !== "function" || typeof sources.crons !== "function") return null;
-  return sources;
+function isValidWorkloadSources(candidate: unknown): candidate is WorkloadSources {
+  const sources = candidate as WorkloadSources | undefined;
+  return Boolean(sources && typeof sources.agents === "function" && typeof sources.crons === "function");
 }
 
-/** Drop the published getters on shutdown: a torn-down runtime must not answer a describe. */
-export function clearWorkloadSources(): void {
-  delete (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL];
-  log.debug("workload_sources_cleared", { at: Date.now() });
+/** Publish the owner's getters for a session. Returns an idempotent unregister callback. */
+export function publishWorkloadSources(sources: WorkloadSources, sessionKey?: string): () => void {
+  const key = normalizeBridgeSessionKey(sessionKey);
+  log.debug("workload_sources_published", { sessionKey: key, at: Date.now() });
+  return setBridgeSessionEntry(WORKLOAD_SOURCES_SYMBOL, sources, key, (removedKey) => {
+    log.debug("workload_sources_unregistered", { sessionKey: removedKey, at: Date.now() });
+  });
+}
+
+/** The sources for a session, or null when absent for that exact session key. */
+export function publishedWorkloadSources(sessionKey?: string): WorkloadSources | null {
+  const candidate = getBridgeSessionEntry<WorkloadSources>(WORKLOAD_SOURCES_SYMBOL, sessionKey);
+  return isValidWorkloadSources(candidate) ? candidate : null;
+}
+
+/** Drop the published getters for a session on shutdown: a torn-down runtime must not answer a describe. */
+export function clearWorkloadSources(sessionKey?: string): void {
+  const key = normalizeBridgeSessionKey(sessionKey);
+  clearBridgeSessionEntry(WORKLOAD_SOURCES_SYMBOL, key);
+  log.debug("workload_sources_cleared", { sessionKey: key, at: Date.now() });
+}
+
+/** Reset the entire workload bridge map between tests. */
+export function resetWorkloadBridgeForTests(): void {
+  resetBridgeMapForTests(WORKLOAD_SOURCES_SYMBOL);
 }

@@ -30,7 +30,11 @@ import { registerSubagentTool } from "./subagent-tool.js";
 import { registerGithubAutocomplete } from "./github-autocomplete.js";
 import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { registerCron } from "./cron.js";
-import { publishWorkloadSources, clearWorkloadSources } from "../shared/workload-bridge.js";
+import {
+  DEFAULT_WORKLOAD_SESSION_KEY,
+  publishWorkloadSources,
+  resolveWorkloadSessionKey,
+} from "../shared/workload-bridge.js";
 import { registerStatus } from "./status.js";
 import { registerWorktree } from "./worktree.js";
 import { registerNvim } from "./nvim.js";
@@ -155,21 +159,38 @@ export default function (pi: ExtensionAPI) {
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   // #1083: peers report their OWN workload — session crons live only in this process, so the
   // coms extension must read them here rather than scan for them.
-  const publishOwnWorkload = (): void => publishWorkloadSources({ agents: getAsyncJobs, crons: getCronTasks });
+  let workloadSessionKey = DEFAULT_WORKLOAD_SESSION_KEY;
+  let unregisterWorkload: (() => void) | null = null;
+  const publishOwnWorkload = (ctx?: any, preserveNamedOnMissingId = false): void => {
+    const resolvedKey = ctx ? resolveWorkloadSessionKey(ctx) : workloadSessionKey;
+    const nextKey =
+      preserveNamedOnMissingId &&
+      resolvedKey === DEFAULT_WORKLOAD_SESSION_KEY &&
+      workloadSessionKey !== DEFAULT_WORKLOAD_SESSION_KEY
+        ? workloadSessionKey
+        : resolvedKey;
+    if (unregisterWorkload && nextKey !== workloadSessionKey) {
+      unregisterWorkload();
+      unregisterWorkload = null;
+    }
+    workloadSessionKey = nextKey;
+    unregisterWorkload = publishWorkloadSources({ agents: getAsyncJobs, crons: getCronTasks }, workloadSessionKey);
+  };
   publishOwnWorkload();
   // #1084: re-publish on every session transition. The getters themselves are live, but a
   // session switch/reload must not leave peers reading a binding from the previous session.
-  pi.on("session_start", () => {
+  pi.on("session_start", (_event, ctx) => {
     log.debug("workload_sources_republish", "session_start");
-    publishOwnWorkload();
+    publishOwnWorkload(ctx);
   });
   // A watched-session switch or any other ctx change shows up as a turn in the new ctx, so
   // re-publishing here keeps the getters bound to the session that is actually running.
-  pi.on("before_agent_start", () => publishOwnWorkload());
+  pi.on("before_agent_start", (_event, ctx) => publishOwnWorkload(ctx, true));
   // A torn-down runtime must not keep answering coms drilldowns from dead getters.
   pi.on("session_shutdown", () => {
     log.debug("session_shutdown", "clearing workload sources");
-    clearWorkloadSources();
+    unregisterWorkload?.();
+    unregisterWorkload = null;
   });
   registerSessionValidation(pi);
   registerGithubAutocomplete(pi);

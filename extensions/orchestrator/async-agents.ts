@@ -965,7 +965,7 @@ export function registerAsyncAgents(
       // ctx, so gating this on one left the task open forever after a reload.
       if (!job.fireAndForget && job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
         try {
-          const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.taskStorePath);
+          const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.taskStorePath, undefined, job.sessionId);
           log.info(`auto-completed task #${job.taskId}: ${completed}`);
         } catch (e: any) {
           autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
@@ -1461,7 +1461,7 @@ export function registerAsyncAgents(
 
     // Auto-mark linked task as in_progress AFTER successful spawn
     if (options?.taskId && options.taskId !== "-1") {
-      autoMarkInProgress(options.taskId, resolvedProjectCwd || cwd, taskStorePath)
+      autoMarkInProgress(options.taskId, resolvedProjectCwd || cwd, taskStorePath, undefined, resolvedSessionId || undefined)
         .catch(() => {});  // best-effort, don't block spawn
     }
 
