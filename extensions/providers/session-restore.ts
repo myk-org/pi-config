@@ -181,6 +181,12 @@ export function registerSessionRestore(
             if (run.settingModelKey === key) run.settingModelKey = undefined;
           }
         },
+      }).catch((err) => {
+        log.warn("restore-default-model session_start error", {
+          reason,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return false;
       });
 
       if (

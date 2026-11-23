@@ -130,7 +130,19 @@ describe("extensions/providers/index.ts direct tests (#1360)", () => {
     }
   });
 
-  it("registers one unified session_start flow and restores model before thinking level", async () => {
+  it("registers single handlers for each session restore lifecycle event", () => {
+    const fake = createFakePi();
+    providersExtension(fake.pi, {
+      thinkingStatePath: statePath,
+      argv: ["node", "pi"],
+    });
+    assert.equal(fake.handlers.get("session_start")?.length, 1);
+    assert.equal(fake.handlers.get("model_select")?.length, 1);
+    assert.equal(fake.handlers.get("thinking_level_select")?.length, 1);
+    assert.equal(fake.handlers.get("session_shutdown")?.length, 1);
+  });
+
+  it("startup restores default model before applying saved thinking level", async () => {
     writeThinkingLevelState(
       {
         version: 2,
@@ -156,11 +168,6 @@ describe("extensions/providers/index.ts direct tests (#1360)", () => {
       thinkingStatePath: statePath,
       argv: ["node", "pi"],
     });
-
-    assert.equal(fake.handlers.get("session_start")?.length, 1);
-    assert.equal(fake.handlers.get("model_select")?.length, 1);
-    assert.equal(fake.handlers.get("thinking_level_select")?.length, 1);
-    assert.equal(fake.handlers.get("session_shutdown")?.length, 1);
 
     const ctx = {
       model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
@@ -230,7 +237,7 @@ describe("extensions/providers/index.ts direct tests (#1360)", () => {
     assert.equal(fake.level(), "medium");
   });
 
-  it("enforces legacy project-trust gate (trusted merges project settings; untrusted/throwing fails closed)", async () => {
+  it("merges project settings when isProjectTrusted returns true", async () => {
     mkdirSync(join(projectDir, ".pi"), { recursive: true });
     writeFileSync(
       join(projectDir, ".pi", "settings.json"),
@@ -239,58 +246,67 @@ describe("extensions/providers/index.ts direct tests (#1360)", () => {
     const registry = {
       find: (provider: string, id: string) => fakeModel({ provider, id, reasoning: true }),
     };
-
-    // 1. Trusted project -> project default wins
-    {
-      const fake = createFakePi();
-      providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
-      const ctx = {
-        cwd: projectDir,
-        isProjectTrusted: () => true,
-        model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
-        modelRegistry: registry,
-      };
-      fake.setCtx(ctx);
-      fake.emit("session_start", { reason: "startup" }, ctx);
-      assert.equal(await until(() => fake.setModelCalls.length === 1), true);
-      assert.deepEqual(fake.setModelCalls, [{ provider: "proj", id: "proj-model" }]);
-    }
-
-    // 2. Untrusted project -> global default wins
-    {
-      const fake = createFakePi();
-      providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
-      const ctx = {
-        cwd: projectDir,
-        isProjectTrusted: () => false,
-        model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
-        modelRegistry: registry,
-      };
-      fake.setCtx(ctx);
-      fake.emit("session_start", { reason: "startup" }, ctx);
-      assert.equal(await until(() => fake.setModelCalls.length === 1), true);
-      assert.deepEqual(fake.setModelCalls, [{ provider: "foo", id: "foo-model" }]);
-    }
-
-    // 3. Throwing isProjectTrusted -> fails closed to global default
-    {
-      const fake = createFakePi();
-      providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
-      const ctx = {
-        cwd: projectDir,
-        isProjectTrusted: () => { throw new Error("trust probe boom"); },
-        model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
-        modelRegistry: registry,
-      };
-      fake.setCtx(ctx);
-      fake.emit("session_start", { reason: "startup" }, ctx);
-      assert.equal(await until(() => fake.setModelCalls.length === 1), true);
-      assert.deepEqual(fake.setModelCalls, [{ provider: "foo", id: "foo-model" }]);
-    }
+    const fake = createFakePi();
+    providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
+    const ctx = {
+      cwd: projectDir,
+      isProjectTrusted: () => true,
+      model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
+      modelRegistry: registry,
+    };
+    fake.setCtx(ctx);
+    fake.emit("session_start", { reason: "startup" }, ctx);
+    assert.equal(await until(() => fake.setModelCalls.length === 1), true);
+    assert.deepEqual(fake.setModelCalls, [{ provider: "proj", id: "proj-model" }]);
   });
 
-  it("enforces enabledModels scope, CLI --thinking override, and legacy single-slash thinking keys", async () => {
-    // 1. Legacy single-slash thinking key restores cleanly via index.ts
+  it("ignores project settings when isProjectTrusted returns false", async () => {
+    mkdirSync(join(projectDir, ".pi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pi", "settings.json"),
+      JSON.stringify({ defaultProvider: "proj", defaultModel: "proj-model" }),
+    );
+    const registry = {
+      find: (provider: string, id: string) => fakeModel({ provider, id, reasoning: true }),
+    };
+    const fake = createFakePi();
+    providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
+    const ctx = {
+      cwd: projectDir,
+      isProjectTrusted: () => false,
+      model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
+      modelRegistry: registry,
+    };
+    fake.setCtx(ctx);
+    fake.emit("session_start", { reason: "startup" }, ctx);
+    assert.equal(await until(() => fake.setModelCalls.length === 1), true);
+    assert.deepEqual(fake.setModelCalls, [{ provider: "foo", id: "foo-model" }]);
+  });
+
+  it("fails closed to global settings when isProjectTrusted throws", async () => {
+    mkdirSync(join(projectDir, ".pi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pi", "settings.json"),
+      JSON.stringify({ defaultProvider: "proj", defaultModel: "proj-model" }),
+    );
+    const registry = {
+      find: (provider: string, id: string) => fakeModel({ provider, id, reasoning: true }),
+    };
+    const fake = createFakePi();
+    providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
+    const ctx = {
+      cwd: projectDir,
+      isProjectTrusted: () => { throw new Error("trust probe boom"); },
+      model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
+      modelRegistry: registry,
+    };
+    fake.setCtx(ctx);
+    fake.emit("session_start", { reason: "startup" }, ctx);
+    assert.equal(await until(() => fake.setModelCalls.length === 1), true);
+    assert.deepEqual(fake.setModelCalls, [{ provider: "foo", id: "foo-model" }]);
+  });
+
+  it("restores saved thinking level from legacy single-slash key", async () => {
     mkdirSync(join(agentDir, "state"), { recursive: true });
     writeFileSync(
       statePath,
@@ -299,42 +315,51 @@ describe("extensions/providers/index.ts direct tests (#1360)", () => {
     const registry = {
       find: (provider: string, id: string) => fakeModel({ provider, id, reasoning: true }),
     };
-    {
-      const fake = createFakePi();
-      providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
-      const ctx = {
-        model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
-        modelRegistry: registry,
-      };
-      fake.setCtx(ctx);
-      fake.emit("session_start", { reason: "startup" }, ctx);
-      assert.equal(await until(() => fake.level() === "high"), true);
-    }
+    const fake = createFakePi();
+    providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
+    const ctx = {
+      model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
+      modelRegistry: registry,
+    };
+    fake.setCtx(ctx);
+    fake.emit("session_start", { reason: "startup" }, ctx);
+    assert.equal(await until(() => fake.level() === "high"), true);
+  });
 
-    // 2. --thinking CLI override prevents startup and model_select thinking overrides
-    {
-      const fake = createFakePi({ initialLevel: "low" });
-      providersExtension(fake.pi, {
-        thinkingStatePath: statePath,
-        argv: ["node", "pi", "--thinking=low"],
-      });
-      const ctx = {
-        model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
-        modelRegistry: registry,
-      };
-      fake.setCtx(ctx);
-      fake.emit("session_start", { reason: "startup" }, ctx);
-      assert.equal(await until(() => fake.setModelCalls.length === 1), true);
-      await settle(50);
-      assert.equal(fake.level(), "low");
+  it("CLI --thinking override preserves thinking level across startup/model_select", async () => {
+    mkdirSync(join(agentDir, "state"), { recursive: true });
+    writeFileSync(
+      statePath,
+      JSON.stringify({ version: 2, models: { "foo/foo-model": "high" } }),
+    );
+    const registry = {
+      find: (provider: string, id: string) => fakeModel({ provider, id, reasoning: true }),
+    };
+    const fake = createFakePi({ initialLevel: "low" });
+    providersExtension(fake.pi, {
+      thinkingStatePath: statePath,
+      argv: ["node", "pi", "--thinking=low"],
+    });
+    const ctx = {
+      model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
+      modelRegistry: registry,
+    };
+    fake.setCtx(ctx);
+    fake.emit("session_start", { reason: "startup" }, ctx);
+    assert.equal(await until(() => fake.setModelCalls.length === 1), true);
+    await settle(50);
+    assert.equal(fake.level(), "low");
 
-      const other = fakeModel({ provider: "foo", id: "foo-model", reasoning: true });
-      ctx.model = other;
-      fake.emit("model_select", { model: other, source: "set" }, ctx);
-      assert.equal(fake.level(), "low");
-    }
+    const other = fakeModel({ provider: "foo", id: "foo-model", reasoning: true });
+    ctx.model = other;
+    fake.emit("model_select", { model: other, source: "set" }, ctx);
+    assert.equal(fake.level(), "low");
+  });
 
-    // 3. enabledModels scope blocks cold-start default model restore
+  it("enabledModels scope blocks cold-start default model restore", async () => {
+    const registry = {
+      find: (provider: string, id: string) => fakeModel({ provider, id, reasoning: true }),
+    };
     writeFileSync(
       join(agentDir, "settings.json"),
       JSON.stringify({
@@ -343,18 +368,16 @@ describe("extensions/providers/index.ts direct tests (#1360)", () => {
         enabledModels: ["bar/bar-model"],
       }),
     );
-    {
-      const fake = createFakePi();
-      providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
-      const ctx = {
-        model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
-        modelRegistry: registry,
-      };
-      fake.setCtx(ctx);
-      fake.emit("session_start", { reason: "startup" }, ctx);
-      await settle();
-      assert.deepEqual(fake.setModelCalls, []);
-    }
+    const fake = createFakePi();
+    providersExtension(fake.pi, { thinkingStatePath: statePath, argv: ["node", "pi"] });
+    const ctx = {
+      model: fakeModel({ provider: "bar", id: "bar-model", reasoning: true }),
+      modelRegistry: registry,
+    };
+    fake.setCtx(ctx);
+    fake.emit("session_start", { reason: "startup" }, ctx);
+    await settle();
+    assert.deepEqual(fake.setModelCalls, []);
   });
 
   it("cleans up pending retry timers on session_shutdown with no further attempts", async () => {

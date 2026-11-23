@@ -122,7 +122,7 @@ describe("session-restore lifecycle (#901 / #1360)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("registers a single session_start handler alongside model_select, thinking_level_select, and session_shutdown", () => {
+  it("registers one handler per session restore lifecycle event", () => {
     const h = harness({ thinkingStatePath: statePath });
     assert.equal(h.handlerCounts.get("session_start"), 1);
     assert.equal(h.handlerCounts.get("model_select"), 1);
@@ -187,16 +187,24 @@ describe("session-restore lifecycle (#901 / #1360)", () => {
     assert.equal(h.level(), "off");
   });
 
-  it("new with no selected model fills the empty selection with the default and applies thinking level", async () => {
+  it("new with no selected model fills empty selection with default", async () => {
+    const h = harness({ thinkingStatePath: statePath });
+    const ctx = { model: undefined as any, modelRegistry: registry };
+    h.setCtx(ctx);
+    h.emit("session_start", { reason: "new" }, ctx);
+    await h.handle.waitForPendingRestore();
+    assert.deepEqual(h.setModelCalls, [
+      { id: DEFAULT_MODEL, provider: DEFAULT_PROVIDER },
+    ]);
+  });
+
+  it("new with no selected model restores saved thinking level after default fill", async () => {
     writeLastThinkingLevel("medium", statePath);
     const h = harness({ thinkingStatePath: statePath });
     const ctx = { model: undefined as any, modelRegistry: registry };
     h.setCtx(ctx);
     h.emit("session_start", { reason: "new" }, ctx);
     assert.equal(await h.handle.waitForPendingRestore(), true);
-    assert.deepEqual(h.setModelCalls, [
-      { id: DEFAULT_MODEL, provider: DEFAULT_PROVIDER },
-    ]);
     assert.equal(h.level(), "medium");
   });
 
@@ -214,20 +222,50 @@ describe("session-restore lifecycle (#901 / #1360)", () => {
     assert.deepEqual(h.setModelCalls, []);
   });
 
-  it("fork and reload skip both model and thinking restore", async () => {
+  it("fork skips model restore", async () => {
     writeLastThinkingLevel("high", statePath);
     const h = harness({ thinkingStatePath: statePath });
-    for (const reason of ["fork", "reload"]) {
-      const ctx = {
-        model: fakeModel({ id: "bar-model", provider: "bar", reasoning: true }),
-        modelRegistry: registry,
-      };
-      h.setCtx(ctx);
-      h.emit("session_start", { reason }, ctx);
-      assert.equal(await h.handle.waitForPendingRestore(), false);
-    }
+    const ctx = {
+      model: fakeModel({ id: "bar-model", provider: "bar", reasoning: true }),
+      modelRegistry: registry,
+    };
+    h.setCtx(ctx);
+    h.emit("session_start", { reason: "fork" }, ctx);
+    assert.equal(await h.handle.waitForPendingRestore(), false);
     assert.deepEqual(h.setModelCalls, []);
     assert.equal(h.level(), "off");
+  });
+
+  it("reload skips model restore", async () => {
+    writeLastThinkingLevel("high", statePath);
+    const h = harness({ thinkingStatePath: statePath });
+    const ctx = {
+      model: fakeModel({ id: "bar-model", provider: "bar", reasoning: true }),
+      modelRegistry: registry,
+    };
+    h.setCtx(ctx);
+    h.emit("session_start", { reason: "reload" }, ctx);
+    assert.equal(await h.handle.waitForPendingRestore(), false);
+    assert.deepEqual(h.setModelCalls, []);
+    assert.equal(h.level(), "off");
+  });
+
+  it("startup still restores thinking level when modelRegistry.find throws", async () => {
+    writeLastThinkingLevel("high", statePath);
+    const h = harness({ thinkingStatePath: statePath });
+    const ctx = {
+      model: fakeModel({ id: "bar-model", provider: "bar", reasoning: true }),
+      modelRegistry: {
+        find: () => {
+          throw new Error("registry lookup failed");
+        },
+      },
+    };
+    h.setCtx(ctx);
+    h.emit("session_start", { reason: "startup" }, ctx);
+    assert.equal(await h.handle.waitForPendingRestore(), true);
+    assert.deepEqual(h.setModelCalls, []);
+    assert.equal(h.level(), "high");
   });
 
   it("cancels an in-flight restore timer on session_shutdown", async () => {
