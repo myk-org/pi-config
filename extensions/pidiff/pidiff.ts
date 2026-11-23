@@ -1,96 +1,53 @@
 /**
  * pidiff — diff viewer extension (per-project server mode).
  *
- * Uses daemon-manager for spawn/connect/reconnect.
- * Each project gets its own server on a dynamically allocated port,
- * tracked via lockfiles in <cwd>/.pi/run/ (#1020 — the legacy .pi/tmp copies
- * are still read so a daemon started before the upgrade is detected).
- * Receives published review comments and injects into pi session.
+ * Thin adapter over `createDaemonClient` (`../shared/daemon-manager.ts`) and
+ * `./lockfile.ts`. Each project gets its own server on a dynamically allocated
+ * port, tracked via `.pi/run/pidiff.{port,pid,spawning}` lockfiles (with
+ * read-only fallback to pre-#1020 `.pi/tmp/` copies).
+ * Receives published review comments and injects them into the pi session.
  */
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as net from "node:net";
 import * as path from "node:path";
-import { createRequire } from "node:module";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
 import {
   checkHealth,
+  createDaemonClient,
   ensureUiBuilt,
-  spawnDaemon,
-  killDaemonByPid,
-  waitForDaemon,
-  findFreePort,
-  writeLockfile,
-  readLockfile,
-  findLiveLockfile,
-  removeLockfile,
   getGitBranch,
   registerDaemonCommand,
+  spawnDaemon,
+  waitForDaemon,
 } from "../shared/daemon-manager.js";
 import { createLogger } from "../shared/logger.js";
-import { setupExtensionReconnect, setupHeartbeat } from "../shared/ws-client.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { getProjectLegacyRunDir, getProjectRunDir } from "../orchestrator/utils.js";
-import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
-import { evaluateSpawnLock, acquireSpawnLocks, releaseSpawnLocks } from "./spawn-lock.js";
+import {
+  acquireSpawnLocks,
+  evaluateSpawnLock,
+  findRunningPidiffPort,
+  readLockfile,
+  releaseSpawnLocks,
+  resolveSpawnPort,
+  stopPidiffDaemon,
+  writeLockfile,
+} from "./lockfile.js";
 
-/** Re-export for callers/tests that import from pidiff. */
-export { evaluateSpawnLock } from "./spawn-lock.js";
+/** Re-exports for callers/tests that import directly from pidiff. */
+export { evaluateSpawnLock, findRunningPidiffPort } from "./lockfile.js";
 
-const RECONNECT_INTERVAL_MS = 5000;
 const ICON_DIFF = "";
 
 const log = createLogger("pidiff");
-/** String logger for daemon-manager / ws-client APIs that take `(msg: string) => void`. */
 const debugLog = (msg: string) => log.debug(msg);
-const WebSocket = createRequire(import.meta.url)("ws");
 
 function isGitRepo(cwd: string): boolean {
   try { execFileSync("git", ["rev-parse", "--git-dir"], { cwd, stdio: "ignore" }); return true; } catch { return false; }
-}
-
-/** Return true if port can be bound on 127.0.0.1. */
-function isPortFree(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once("error", () => { try { srv.close(); } catch {} resolve(false); });
-    srv.listen(port, "127.0.0.1", () => { srv.close(() => resolve(true)); });
-  });
-}
-
-/** Reuse preferred port if free; otherwise allocate a new one. */
-async function resolveSpawnPort(preferred: number | null | undefined): Promise<number> {
-  if (!preferred) {
-    const port = await findFreePort();
-    log.debug(`allocated new port: ${port}`);
-    return port;
-  }
-  if (await isPortFree(preferred)) {
-    log.debug(`reusing lockfile port: ${preferred}`);
-    return preferred;
-  }
-  log.debug(`lockfile port ${preferred} in use, allocating new port`);
-  const port = await findFreePort();
-  log.debug(`allocated new port: ${port}`);
-  return port;
-}
-
-/** Port of a pidiff daemon that answers /api/health, or null. `preferred` (this
- *  session's known port) is probed first; otherwise the lockfile records are
- *  tried `.pi/run` → legacy `.pi/tmp`. Reading only the FIRST record would let a
- *  stale `.pi/run` port hide a live pre-#1020 daemon, and the caller would then
- *  spawn a duplicate on top of it (#1020). Shared by connect() and `/pidiff start`. */
-export async function findRunningPidiffPort(
-  lockDir: string,
-  legacyLockDir: string,
-  preferred = 0,
-): Promise<number | null> {
-  if (preferred && await checkHealth(preferred)) return preferred;
-  const skipPorts = preferred ? new Set([preferred]) : undefined;
-  return findLiveLockfile([lockDir, legacyLockDir], skipPorts);
 }
 
 /**
@@ -137,13 +94,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
     return;
   }
 
-  let ws: any = null;
-  let connected = false;
-  let connecting = false;
-  let shuttingDown = false;
   let spawning = false;
-  let lastCtx: any = null;
-  let cleanupHeartbeat: (() => void) | null = null;
   let lockDir = ""; // Set on session_start from ctx.cwd — write target (.pi/run)
   let legacyLockDir = ""; // Pre-#1020 read-only fallback (.pi/tmp)
   let activePort = 0;
@@ -171,229 +122,134 @@ export function registerPidiff(pi: ExtensionAPI): void {
     });
   }
 
-  async function connect(ctx: any) {
-    log.debug(`connect() called, connected=${connected}, connecting=${connecting}`);
-    if (connected || connecting || shuttingDown) return;
-    if (!isLiveExtensionCtx(ctx)) {
-      log.debug("connect() skipped — stale ctx");
-      return;
-    }
-    connecting = true;
-    lastCtx = ctx;
-    if (!lockDir) { log.debug("connect: lockDir not set (session_start not fired yet)"); connecting = false; return; }
+  const client = createDaemonClient(pi, {
+    name: "pidiff",
+    settingKey: "pidiff_enable",
+    statusKey: "8-diff",
+    log,
 
-    // `port` is the preferred spawn port below (the URL stays stable across
-    // reloads); liveness is decided by the healthy-lockfile probe, which also
-    // looks past a stale `.pi/run` record at a live pre-#1020 daemon.
-    let port = activePort || readLockfile(lockDir, legacyLockDir)?.port || 0;
-    const livePort = await findRunningPidiffPort(lockDir, legacyLockDir, port);
-    const running = livePort !== null;
-    if (running) {
-      port = livePort;
-      log.debug(`healthy lockfile port=${port}`);
-    } else {
-      log.debug(`lockfile port=${port || "(none)"}, unhealthy — no daemon to reuse`);
-    }
-
-    if (!running) {
-      if (spawning) {
-        log.debug("daemon already spawning, waiting...");
-        connecting = false;
-        return;
+    async ensureRunning(ctx) {
+      if (!lockDir) {
+        log.debug("connect: lockDir not set (session_start not fired yet)");
+        return { port: null };
       }
 
-      // Atomic spawn guard — prevent two sessions from racing to spawn. A
-      // pre-#1020 session only checks .pi/tmp, so hold BOTH locks: one it never
-      // looks at cannot exclude it, and both would spawn (#1020).
+      // `port` is the preferred spawn port (keeps URL stable across reloads); liveness is
+      // decided by the healthy-lockfile probe, which also sees a live pre-#1020 daemon.
+      let port = activePort || readLockfile(lockDir, legacyLockDir)?.port || 0;
+      const livePort = await findRunningPidiffPort(lockDir, legacyLockDir, port);
+      if (livePort !== null) {
+        activePort = livePort;
+        log.debug(`healthy lockfile port=${livePort}`);
+        return { port: livePort };
+      }
+      log.debug(`lockfile port=${port || "(none)"}, unhealthy — no daemon to reuse`);
+
+      if (spawning) {
+        log.debug("daemon already spawning, waiting...");
+        return { port: null };
+      }
+
+      // Atomic spawn guard across legacy `.pi/tmp` + `.pi/run` (#1020).
       const { held, contended } = acquireSpawnLocks([legacyLockDir, lockDir]);
       if (contended !== null) {
-        // Another session is already spawning — check if spawner is still alive
         const lockDecision = evaluateSpawnLock(contended, getSetting(ctx.cwd, "pidiff_stale_lock_timeout_ms"));
         if (lockDecision.action === "recover" || lockDecision.action === "recover_pid_reuse") {
           log.info("stale_spawn_lock", lockDecision.reason);
           try { fs.unlinkSync(contended); } catch {}
-          connecting = false;
-          setTimeout(() => connect(ctx), 500);
-          return;
+          return { port: null, retryAfterMs: 500 };
         }
-        // Spawner is alive — wait for it
         log.debug("another session is spawning pidiff, waiting for lockfile...");
         for (let i = 0; i < 30; i++) {
-          await new Promise(r => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, 1000));
           const lock = readLockfile(lockDir, legacyLockDir);
           if (lock && await checkHealth(lock.port)) {
-            port = lock.port;
-            activePort = port;
-            break;
+            activePort = lock.port;
+            return { port: lock.port };
           }
         }
-        connecting = false;
-        if (port) setTimeout(() => connect(ctx), 1000);
-        return;
+        return { port: null };
       }
 
       spawning = true;
       try {
         log.debug("spawning daemon...");
-        // Reuse lockfile port if available — keeps URL stable across reload/restart
         port = await resolveSpawnPort(port);
         doSpawn(port, ctx.cwd);
         writeLockfile(lockDir, port, null, debugLog);
-        const ready = await waitForDaemon(port, getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s"), debugLog);
-        if (!ready) { connecting = false; return; }
+        const ready = await waitForDaemon(
+          port,
+          getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s"),
+          debugLog,
+        );
+        if (!ready) return { port: null };
+        activePort = port;
+        return { port };
       } finally {
         spawning = false;
         releaseSpawnLocks(held);
       }
-    }
+    },
 
-    activePort = port;
+    onOpen(wsClient, ctx, port) {
+      activePort = port;
+      setStatus(ctx);
+      wsClient.send(JSON.stringify({
+        type: "register",
+        pid: process.pid,
+        sessionId: `${process.pid}:${ctx.cwd}`,
+        cwd: ctx.cwd,
+        branch: getGitBranch(ctx.cwd),
+      }));
+    },
 
-    try {
-      log.debug(`connecting WebSocket to port ${activePort}...`);
-      const wsClient = new WebSocket(`ws://127.0.0.1:${activePort}/ws/pi`);
+    onMessage(data) {
+      const parsed = JSON.parse(data.toString());
+      if (parsed.type === "publish-review" && parsed.comments?.length > 0) {
+        log.debug(`review received: ${parsed.comments.length} comments`);
+        pi.sendUserMessage(formatReviewMessage(parsed), { deliverAs: "followUp" });
+      }
+    },
 
-      wsClient.on("open", () => {
-        log.debug("WebSocket connected");
-        ws = wsClient;
-        connected = true;
-        connecting = false;
+    beforeCommand(_args, ctx) {
+      if (isLiveExtensionCtx(ctx)) client.setLastCtx(ctx);
+    },
 
-        try {
-          setStatus(ctx);
+    prepareRestart() {
+      return activePort || readLockfile(lockDir, legacyLockDir)?.port || null;
+    },
 
-          // Register this session
-          const branch = getGitBranch(ctx.cwd);
-          wsClient.send(JSON.stringify({
-            type: "register",
-            pid: process.pid,
-            sessionId: `${process.pid}:${ctx.cwd}`,
-            cwd: ctx.cwd,
-            branch,
-          }));
-        } catch {
-          // ctx may be stale if session was replaced during WebSocket connect
-          log.debug("skipped registration — ctx is stale");
-        }
-
-        // Keepalive + dead connection detection
-        if (cleanupHeartbeat) cleanupHeartbeat();
-        cleanupHeartbeat = setupHeartbeat({
-          ws: wsClient,
-          log: debugLog,
-          onDead: () => {
-            connected = false; ws = null;
-            if (!shuttingDown && lastCtx) setTimeout(() => connect(lastCtx), 1000);
-          },
-        });
-      });
-
-      wsClient.on("message", (data: Buffer) => {
-        try {
-          const parsed = JSON.parse(data.toString());
-          if (parsed.type === "publish-review" && parsed.comments?.length > 0) {
-            log.debug(`review received: ${parsed.comments.length} comments`);
-            const message = formatReviewMessage(parsed);
-            pi.sendUserMessage(message, { deliverAs: "followUp" });
-          }
-        } catch (e: any) { log.debug(`message handler error: ${e.message}`); }
-      });
-
-      wsClient.on("close", () => {
-        log.debug("WebSocket closed");
-        connected = false; ws = null; connecting = false;
-        if (!shuttingDown) {
-          setTimeout(() => { if (lastCtx && !shuttingDown) connect(lastCtx); }, RECONNECT_INTERVAL_MS);
-        }
-      });
-
-      wsClient.on("error", (e: Error) => { log.debug(`WebSocket error: ${e.message}`); });
-    } catch (e: any) {
-      log.debug(`connect error: ${e.message}`);
-      connecting = false;
-    }
-  }
-
-  // /pidiff command
-  const pidiffCmdHandler = async (args: any, ctx: any) => {
-    lastCtx = ctx;
-    const cmd = (args || "").trim().toLowerCase();
-
-    if (cmd === "stop") {
-      if (ws) { try { ws.close(); } catch {} ws = null; }
-      connected = false;
-      const pidFile = path.join(lockDir, "pidiff.pid");
-      const legacyPidFile = path.join(legacyLockDir, "pidiff.pid");
-      killDaemonByPid(pidFile, debugLog, legacyPidFile);
-      killDaemonByPid(legacyPidFile, debugLog); // a pre-#1020 daemon is a second server — stop it too
-      removeLockfile(lockDir, debugLog, legacyLockDir);
+    stopDaemon() {
+      stopPidiffDaemon(lockDir, legacyLockDir, debugLog);
       activePort = 0;
-      if (ctx.hasUI) { ctx.ui.setStatus("8-diff", undefined); ctx.ui.notify("pidiff server stopped", "info"); }
-      return;
-    }
+    },
 
-    if (cmd === "start") {
-      // Same healthy-lockfile selection as connect(): probing only the first
-      // record would let a stale `.pi/run` port hide the live pre-#1020 daemon
-      // in `.pi/tmp` and start a duplicate next to it (#1020).
-      const livePort = await findRunningPidiffPort(lockDir, legacyLockDir);
-      if (livePort !== null) {
-        activePort = livePort;
-        if (ctx.hasUI) ctx.ui.notify(`pidiff already running at http://localhost:${activePort}`, "info");
-        if (!connected) connect(ctx);
-        return;
-      }
-      // Reuse lockfile port to keep URL stable — fall back if taken
-      const port = await resolveSpawnPort(readLockfile(lockDir, legacyLockDir)?.port);
+    findRunningPort() {
+      return findRunningPidiffPort(lockDir, legacyLockDir);
+    },
+
+    getStatusPort() {
+      return activePort || readLockfile(lockDir, legacyLockDir)?.port || null;
+    },
+
+    async spawnForCommand(ctx, mode, preferredPort) {
+      const preferred = mode === "restart"
+        ? (preferredPort || null)
+        : readLockfile(lockDir, legacyLockDir)?.port;
+      const port = await resolveSpawnPort(preferred);
       doSpawn(port, ctx.cwd);
       writeLockfile(lockDir, port, null, debugLog);
-      if (ctx.hasUI) ctx.ui.notify("Starting pidiff server...", "info");
-      if (await waitForDaemon(port, getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s"), debugLog)) {
-        activePort = port;
-        connect(ctx);
-        if (ctx.hasUI) ctx.ui.notify(`pidiff started at http://localhost:${activePort}`, "info");
-      } else {
-        if (ctx.hasUI) ctx.ui.notify("pidiff failed to start", "warning");
-      }
-      return;
-    }
+      return port;
+    },
 
-    if (cmd === "restart") {
-      if (ws) { try { ws.close(); } catch {} ws = null; }
-      connected = false;
-      const pidFile = path.join(lockDir, "pidiff.pid");
-      const legacyPidFile = path.join(legacyLockDir, "pidiff.pid");
-      // Reuse existing port to keep URL stable (read before removeLockfile)
-      const lock = readLockfile(lockDir, legacyLockDir);
-      const preferredPort = activePort || lock?.port || 0;
-      killDaemonByPid(pidFile, debugLog, legacyPidFile);
-      killDaemonByPid(legacyPidFile, debugLog); // a pre-#1020 daemon is a second server — stop it too
-      removeLockfile(lockDir, debugLog, legacyLockDir);
-      await new Promise(r => setTimeout(r, 1000));
-      // Verify preferred port is free after kill — fall back if taken by another process
-      const port = await resolveSpawnPort(preferredPort || null);
-      doSpawn(port, ctx.cwd);
-      writeLockfile(lockDir, port, null, debugLog);
-      if (ctx.hasUI) ctx.ui.notify("Restarting pidiff server...", "info");
-      if (await waitForDaemon(port, getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s"), debugLog)) {
-        activePort = port;
-        connect(ctx);
-        if (ctx.hasUI) ctx.ui.notify(`pidiff restarted at http://localhost:${activePort}`, "info");
-      } else {
-        if (ctx.hasUI) ctx.ui.notify("pidiff failed to restart", "warning");
-      }
-      return;
-    }
+    onCommandReady(port) {
+      activePort = port;
+    },
 
-    const lock = readLockfile(lockDir, legacyLockDir);
-    const statusPort = activePort || lock?.port || 0;
-    const running = statusPort ? await checkHealth(statusPort) : false;
-    let msg = `Server: ${running ? "running" : "stopped"}\nPort: ${statusPort || "(none)"}\n`;
-    msg += `Extension: ${connected ? "connected" : "disconnected"}`;
-    if (statusPort) msg += `\nURL: http://localhost:${statusPort}`;
-    if (ctx.hasUI) ctx.ui.notify(msg, "info");
-  };
-  registerDaemonCommand(pi, "pidiff", true, "pidiff_enable", pidiffCmdHandler);
+    getStartupTimeoutSeconds() {
+      return getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s");
+    },
+  });
 
   // Expose handler to pidash for browser command dispatch
   try {
@@ -403,7 +259,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
       // latent bug left as-is, typed to match reality.
       try { (pi.events as { removeListener?: (channel: string, handler: (data: unknown) => void) => void }).removeListener?.("pidash:request-commands", (globalThis as any).__pidiff_pidash_listener); } catch {}
     }
-    const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "pidiff", handler: pidiffCmdHandler });
+    const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "pidiff", handler: client.handleCommand });
     (globalThis as any).__pidiff_pidash_listener = registerWithPidash;
     registerWithPidash();
     pi.events.on("pidash:request-commands", registerWithPidash);
@@ -411,36 +267,15 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
   // Session lifecycle
   pi.on("session_start", async (_event, ctx) => {
-    lastCtx = ctx;
+    client.setLastCtx(ctx);
     lockDir = getProjectRunDir(ctx.cwd);
     legacyLockDir = getProjectLegacyRunDir(ctx.cwd);
     if (!isGitRepo(ctx.cwd)) return;
-    if (!connected && isLiveExtensionCtx(ctx) && ctx.mode === "tui") connect(ctx);
+    if (!client.connected && isLiveExtensionCtx(ctx) && ctx.mode === "tui") void client.connect(ctx);
   });
 
   pi.on("agent_end", (_event, ctx) => {
-    lastCtx = ctx;
-    if (connected) setStatus(ctx);
-  });
-
-  const cleanupReconnect = setupExtensionReconnect({
-    pi,
-    isConnected: () => connected,
-    isConnecting: () => connecting,
-    isShuttingDown: () => shuttingDown,
-    getLastCtx: () => lastCtx,
-    clearLastCtx: () => { lastCtx = null; },
-    connect,
-    log: debugLog,
-  });
-
-  pi.on("session_shutdown", () => {
-    // Server auto-exits when last pi session disconnects (onPiClose in pidiff-server.ts).
-    // No need to kill here — just disconnect and let the server decide.
-    shuttingDown = true;
-    cleanupReconnect();
-    if (cleanupHeartbeat) { cleanupHeartbeat(); cleanupHeartbeat = null; }
-    if (ws) { try { ws.close(); } catch {} ws = null; }
-    connected = false;
+    client.setLastCtx(ctx);
+    if (client.connected) setStatus(ctx);
   });
 }

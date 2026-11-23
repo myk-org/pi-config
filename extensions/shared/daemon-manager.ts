@@ -1,24 +1,41 @@
 /**
- * Shared daemon manager — reusable infrastructure for spawning, health-checking,
- * connecting to, and managing long-lived server daemons (pidash, pidiff, etc.).
+ * Shared daemon client & lifecycle manager — reusable infrastructure for spawning,
+ * health-checking, connecting to, keeping alive, reconnecting, shutting down, and
+ * managing `/start|stop|restart|status` commands for long-lived server daemons
+ * (pidash, pidiff).
  *
- * Used by pidash.ts and pidiff.ts to avoid duplicating the spawn/connect/reconnect logic.
+ * Absorbs WebSocket heartbeat/reconnect wiring (formerly `ws-client.ts`) behind
+ * `createDaemonClient`, keeping `pidash.ts` and `pidiff.ts` as thin adapters.
  */
 
 import * as fs from "node:fs";
 import * as http from "node:http";
-import * as net from "node:net";
 import * as path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createLogger } from "./logger.js";
+import { createLogger, type Logger } from "./logger.js";
 import { findJitiPath } from "./find-jiti.js";
+import { isLiveExtensionCtx } from "./live-ctx.js";
 import { buildUiDist } from "../../scripts/serve-ui.ts";
 
 const log = createLogger("daemon-manager");
 
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+const DEFAULT_RECONNECT_DELAY_MS = 5_000;
+const DEFAULT_HEARTBEAT_DEAD_RECONNECT_DELAY_MS = 1_000;
+const DEFAULT_RECONNECT_POLL_INTERVAL_MS = 15_000;
+const DEFAULT_RESTART_WAIT_MS = 1_000;
+
+let cachedWsCtor: any = null;
+function defaultCreateWebSocket(url: string): any {
+  if (!cachedWsCtor) {
+    cachedWsCtor = createRequire(import.meta.url)("ws");
+  }
+  return new cachedWsCtor(url);
+}
 
 // ── Health check ────────────────────────────────────────────────────
 
@@ -29,7 +46,7 @@ const HEALTH_CHECK_TIMEOUT_MS = 2000;
  *  then lost the occupied port and waited on a health check that never passed. */
 export const DAEMON_UP_STATUSES = new Set(["ok", "degraded"]);
 
-/** Parse a /api/health body into the daemon's state, or null when it is not a health response. */
+/** Parse a /api/health body into the daemon's state. */
 export function parseHealth(body: string): { running: boolean; degraded: boolean; startupError: string | null } {
   try {
     const data = JSON.parse(body);
@@ -59,18 +76,18 @@ export function checkHealth(port: number): Promise<boolean> {
 
 // ── UI build ────────────────────────────────────────────────────────
 
-export function ensureUiBuilt(callerUrl: string, uiDirName: string, log: (msg: string) => void): void {
+export function ensureUiBuilt(callerUrl: string, uiDirName: string, onLog: (msg: string) => void): void {
   const uiDir = path.resolve(
     path.dirname(fileURLToPath(callerUrl)),
     uiDirName,
   );
   if (fs.existsSync(path.join(uiDir, "dist"))) return;
-  buildUiDist(uiDir, uiDirName, log);
+  buildUiDist(uiDir, uiDirName, onLog);
 }
 
 export { findJitiPath, findJitiUnder } from "./find-jiti.js";
 
-// ── Spawn daemon ────────────────────────────────────────────────────
+// ── Spawn / kill / wait daemon ──────────────────────────────────────
 
 export interface SpawnOptions {
   /** Path to the server .ts file (relative to scripts/) */
@@ -121,213 +138,13 @@ export function spawnDaemon(opts: SpawnOptions): void {
   }
 }
 
-// ── Kill daemon ─────────────────────────────────────────────────────
-
-export function killDaemon(pattern: string, log: (msg: string) => void): void {
+export function killDaemon(pattern: string, onLog: (msg: string) => void): void {
   try {
     execSync(`pkill -f "${pattern}"`, { stdio: "ignore" });
-    log(`killed processes matching: ${pattern}`);
+    log.info("killed_daemon_pattern", { pattern });
+    onLog(`killed processes matching: ${pattern}`);
   } catch {}
 }
-
-// ── Kill daemon by PID ──────────────────────────────────────────────
-
-/** Kill a daemon by its stored PID. Returns true if killed.
- *  `legacyPidFile` is the pre-`.pi/run` location: a daemon started before the
- *  move wrote its PID there, so it must still be found (#1020). */
-export function killDaemonByPid(pidFile: string, log: (msg: string) => void, legacyPidFile?: string): boolean {
-  try {
-    if (!fs.existsSync(pidFile) && legacyPidFile && fs.existsSync(legacyPidFile)) pidFile = legacyPidFile;
-    if (!fs.existsSync(pidFile)) return false;
-    const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
-    if (isNaN(pid)) { log(`invalid PID in ${pidFile}`); return false; }
-    try { process.kill(pid, 0); } catch { log(`PID ${pid} not running`); fs.unlinkSync(pidFile); return false; }
-    // Verify PID belongs to a pidiff-server to avoid killing unrelated processes
-    try {
-      const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, "utf-8");
-      if (!cmdline.includes("pidiff-server")) {
-        log(`PID ${pid} is not a pidiff-server process — skipping kill`);
-        fs.unlinkSync(pidFile);
-        return false;
-      }
-    } catch { /* /proc not available (non-Linux) — proceed with kill */ }
-    process.kill(pid, "SIGTERM");
-    log(`killed daemon PID ${pid}`);
-    // Wait briefly for process to exit
-    // Sync sleep without spawning shell processes
-    const waitBuf = new Int32Array(new SharedArrayBuffer(4));
-    for (let i = 0; i < 10; i++) {
-      try { process.kill(pid, 0); } catch { break; }
-      Atomics.wait(waitBuf, 0, 0, 100);
-    }
-    // Force kill if still alive
-    try { process.kill(pid, "SIGKILL"); } catch {}
-    try { fs.unlinkSync(pidFile); } catch {}
-    return true;
-  } catch (e: any) { log(`killDaemonByPid error: ${e.message}`); return false; }
-}
-
-// ── Find free port ──────────────────────────────────────────────────
-
-/** Find a free TCP port by binding to port 0. */
-export function findFreePort(op = "listen"): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      if (typeof addr !== "object" || addr === null) {
-        // Unexpected address shape — the port-0 fallback below silently picks
-        // an arbitrary port, so leave a diagnostic for operators (Qodo PR #954).
-        log.warn("find_free_port_unexpected_address", { op, address: String(addr) });
-      }
-      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
-      srv.close(() => resolve(port));
-    });
-    srv.on("error", reject);
-  });
-}
-
-// ── Lockfile management ─────────────────────────────────────────────
-
-/** Write a lockfile with port and PID. */
-export function writeLockfile(lockDir: string, port: number, pid: number | null, log: (msg: string) => void): void {
-  try {
-    if (!fs.existsSync(lockDir)) fs.mkdirSync(lockDir, { recursive: true });
-    fs.writeFileSync(path.join(lockDir, "pidiff.port"), String(port), { mode: 0o600 });
-    if (pid !== null) fs.writeFileSync(path.join(lockDir, "pidiff.pid"), String(pid), { mode: 0o600 });
-    log(`lockfile written: port=${port} pid=${pid}`);
-  } catch (e: any) { log(`writeLockfile error: ${e.message}`); }
-}
-
-/** A pid file holds digits and a newline; anything bigger is not one. */
-const MAX_PID_FILE_BYTES = 64;
-
-/** True for a path that exists and is a regular file. Lockfiles are never FIFOs, and reading
- *  one would block the event loop, so every control-file read goes through this. */
-function isRegularFile(target: string): boolean {
-  try {
-    return fs.lstatSync(target).isFile();
-  } catch {
-    return false;
-  }
-}
-
-/** Read port from lockfile. Returns port number or null.
- *  `legacyDir` (`.pi/tmp`) is consulted only when the new dir has no lockfile:
- *  a daemon already running at upgrade time wrote its lockfile there (#1020).
- *  Reading never moves or deletes anything — moving a live daemon's record is what the
- *  sweep's liveness check exists to avoid. */
-export function readLockfile(lockDir: string, legacyDir?: string): { port: number; pid: number | null } | null {
-  const read = (dir: string): { port: number; pid: number | null } | null => {
-    try {
-      const portFile = path.join(dir, "pidiff.port");
-      // Only a regular file is a lockfile: the dirs are project-controlled, and reading a
-      // FIFO here would block the event loop for the whole session.
-      if (!isRegularFile(portFile)) return null;
-      const port = parseInt(fs.readFileSync(portFile, "utf-8").trim(), 10);
-      if (isNaN(port)) return null;
-      let pid: number | null = null;
-      const pidFile = path.join(dir, "pidiff.pid");
-      if (isRegularFile(pidFile)) {
-        pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
-        if (isNaN(pid)) pid = null;
-      }
-      return { port, pid };
-    } catch (e: any) { log.debug("readLockfile error: %s", e?.message); return null; }
-  };
-  return read(lockDir) ?? (legacyDir ? read(legacyDir) : null);
-}
-
-/** Read the pid from a lockfile, refusing anything but a regular file: the legacy dir is
- *  project-controlled, and reading a FIFO there would block session startup. */
-function readLegacyPid(pidFile: string): number | null {
-  try {
-    const st = fs.lstatSync(pidFile);
-    if (!st.isFile()) {
-      log.debug("legacy_pid_not_a_regular_file", { pidFile });
-      return null;
-    }
-    // The file is project-controlled: a pid is a few bytes, so refuse anything larger rather
-    // than reading an arbitrary file into memory during session start.
-    if (st.size > MAX_PID_FILE_BYTES) {
-      log.debug("legacy_pid_file_too_large", { pidFile, size: st.size });
-      return null;
-    }
-    const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
-    if (isNaN(pid) || pid <= 0) {
-      log.debug("legacy_pid_unparseable", { pidFile });
-      return null;
-    }
-    return pid;
-  } catch (e: any) {
-    log.debug("legacy_pid_unreadable", { pidFile, error: e?.message });
-    return null;
-  }
-}
-
-/** True when the legacy `.pi/tmp` lockfile belongs to a LIVE process. `EPERM` means the
- *  process exists under another user, so it counts as alive — treating it as dead would let
- *  the sweep delete a running daemon's files. */
-export function legacyLockfileOwnerAlive(legacyDir: string): boolean {
-  const pid = readLegacyPid(path.join(legacyDir, "pidiff.pid"));
-  if (pid === null) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e: any) {
-    if (e?.code === "EPERM") {
-      log.debug("legacy_daemon_owned_by_another_user", { pid });
-      return true;
-    }
-    log.debug("legacy_daemon_not_running", { pid, code: e?.code });
-    return false;
-  }
-}
-
-/** Control files a pre-`.pi/run` daemon owns inside the legacy dir. Private: the sweep asks
- *  `isLiveLegacyDaemonFile`, so neither module keeps a second copy of the names (#1020). */
-const LEGACY_CONTROL_FILES = new Set(["pidiff.port", "pidiff.pid"]);
-
-/** True when `name` is a legacy control file whose owner is still alive — the sweep's only
- *  exemption. A dead daemon's leftovers are ordinary throwaway. */
-export function isLiveLegacyDaemonFile(legacyDir: string, name: string): boolean {
-  if (!LEGACY_CONTROL_FILES.has(name)) return false;
-  return legacyLockfileOwnerAlive(legacyDir);
-}
-
-/** First lockfile port (in `dirs` order) whose daemon answers /api/health, or
- *  null. Ports in `skipPorts` or already probed in an earlier dir are skipped
- *  so dead ports are never probed twice. Exported for testing. */
-export async function findLiveLockfile(
-  dirs: string[],
-  skipPorts?: ReadonlySet<number>,
-  probe: (port: number) => Promise<boolean> = checkHealth,
-): Promise<number | null> {
-  const probed = new Set<number>(skipPorts);
-  for (const dir of dirs) {
-    if (!dir) continue;
-    const lock = readLockfile(dir);
-    if (!lock || probed.has(lock.port)) continue;
-    probed.add(lock.port);
-    if (await probe(lock.port)) return lock.port;
-  }
-  return null;
-}
-
-/** Clean up lockfiles (new dir plus the legacy `.pi/tmp` copies). */
-export function removeLockfile(lockDir: string, log: (msg: string) => void, legacyDir?: string): void {
-  try {
-    for (const dir of legacyDir ? [lockDir, legacyDir] : [lockDir]) {
-      const portFile = path.join(dir, "pidiff.port");
-      const pidFile = path.join(dir, "pidiff.pid");
-      if (fs.existsSync(portFile)) fs.unlinkSync(portFile);
-      if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
-    }
-    log("lockfiles removed");
-  } catch (e: any) { log(`removeLockfile error: ${e.message}`); }
-}
-
-// ── Wait for daemon ─────────────────────────────────────────────────
 
 const FAST_POLL_INTERVAL_MS = 200;
 const FAST_POLL_WINDOW_MS = 2000;
@@ -336,7 +153,7 @@ const SLOW_POLL_INTERVAL_MS = 1000;
 export async function waitForDaemon(
   port: number,
   maxWaitSeconds: number,
-  log: (msg: string) => void,
+  onLog: (msg: string) => void,
   probe: (port: number) => Promise<boolean> = checkHealth,
 ): Promise<boolean> {
   const budgetMs = Math.max(0, maxWaitSeconds * 1000);
@@ -346,18 +163,18 @@ export async function waitForDaemon(
     const interval = elapsed < FAST_POLL_WINDOW_MS ? FAST_POLL_INTERVAL_MS : SLOW_POLL_INTERVAL_MS;
     const waitMs = Math.min(interval, budgetMs - elapsed);
     if (waitMs <= 0) break;
-    await new Promise(r => setTimeout(r, waitMs));
+    await new Promise((r) => setTimeout(r, waitMs));
     if (await probe(port)) {
-      log(`daemon ready after ${((Date.now() - start) / 1000).toFixed(1)}s`);
+      onLog(`daemon ready after ${((Date.now() - start) / 1000).toFixed(1)}s`);
       return true;
     }
     elapsed = Date.now() - start;
   }
-  log(`daemon failed to start after ${maxWaitSeconds}s`);
+  onLog(`daemon failed to start after ${maxWaitSeconds}s`);
   return false;
 }
 
-// ── Extension lifecycle helpers ─────────────────────────────────────
+// ── Extension helpers ───────────────────────────────────────────────
 
 /** Return the current checked-out git branch for cwd, or "" on error / detached HEAD. */
 export function getGitBranch(cwd: string): string {
@@ -386,7 +203,7 @@ export function registerDaemonCommand(
         { value: "restart", label: "restart", description: `Restart ${name} server` },
         { value: "status", label: "status", description: `Show ${name} status` },
       ];
-      return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
+      return items.filter((i) => i.value.startsWith(prefix.toLowerCase()));
     },
     handler: enabled && handler
       ? async (args, ctx) => { await handler(args, ctx); }
@@ -399,4 +216,454 @@ export function registerDaemonCommand(
           }
         },
   });
+}
+
+// ── WebSocket heartbeat ─────────────────────────────────────────────
+
+export interface WsHeartbeatOptions {
+  /** The WebSocket client instance */
+  ws: any;
+  /** Interval in ms (default 30000) */
+  intervalMs?: number;
+  /** Called when connection is detected dead (no pong) */
+  onDead: () => void;
+  /** Logger function */
+  log: (msg: string) => void;
+}
+
+/** Set up ping/pong keepalive + dead connection detection on a WebSocket client.
+ *  Returns a cleanup function that clears the heartbeat interval. */
+export function setupHeartbeat(opts: WsHeartbeatOptions): () => void {
+  const { ws, intervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS, onDead, log: onLog } = opts;
+
+  ws.on("ping", () => { try { ws.pong(); } catch {} });
+
+  let pongReceived = true;
+  ws.on("pong", () => { pongReceived = true; });
+
+  const heartbeat = setInterval(() => {
+    if (ws.readyState !== 1) { // Not OPEN
+      clearInterval(heartbeat);
+      return;
+    }
+    if (!pongReceived) {
+      onLog("heartbeat: no pong received — connection dead, forcing reconnect");
+      clearInterval(heartbeat);
+      try { ws.terminate(); } catch {}
+      onDead();
+      return;
+    }
+    pongReceived = false;
+    try { ws.ping(); } catch {}
+  }, intervalMs);
+  if (typeof (heartbeat as any).unref === "function") (heartbeat as any).unref();
+
+  return () => clearInterval(heartbeat);
+}
+
+// ── Deep shared daemon client ───────────────────────────────────────
+
+export interface EnsureDaemonResult {
+  /** Port to connect to, or null to abort this connect attempt. */
+  port: number | null;
+  /** Optional retry delay in ms when another spawner held the lock and connect should retry. */
+  retryAfterMs?: number;
+}
+
+export interface DaemonClientAdapter<TConnectData = void> {
+  /** Extension/daemon name (e.g. "pidash", "pidiff"). */
+  name: string;
+  /** Setting key controlling whether the daemon is enabled (e.g. "pidash_enable"). */
+  settingKey: string;
+  /** Status bar slot key cleared on `/<name> stop` (e.g. "9-pidash", "8-diff"). */
+  statusKey: string;
+  /** Structured logger (`createLogger(...)`). */
+  log: Logger;
+
+  /** Ensure a daemon is running and return the port to connect to. */
+  ensureRunning: (ctx: any) => Promise<EnsureDaemonResult>;
+  /** Optional async preparation right before opening the WebSocket (return `{ abort: true }` to cancel). */
+  beforeOpen?: (ctx: any, port: number) => Promise<{ abort?: boolean; data?: TConnectData }>;
+  /** Called once the WebSocket opens and the client is marked connected. */
+  onOpen: (ws: any, ctx: any, port: number, data: TConnectData | undefined) => void;
+  /** Called for every inbound WebSocket message. */
+  onMessage: (data: Buffer, ws: any) => void | Promise<void>;
+  /** Optional hook called whenever the active WebSocket disconnects (close or dead heartbeat). */
+  onDisconnect?: () => void;
+  /** Optional hook called at the start of `session_shutdown` BEFORE closing the WebSocket. */
+  onBeforeShutdown?: (event: any, ws: any | null, connected: boolean) => void;
+
+  /** Optional pre-command guard/hook for `/<name> ...`. Return `false` to abort execution. */
+  beforeCommand?: (args: string, ctx: any) => boolean | void;
+  /** Optional hook before `stopDaemon` during `/<name> restart` to capture a preferred port. */
+  prepareRestart?: (ctx: any) => number | null;
+  /** Stop the daemon process (and clean lockfiles if applicable). */
+  stopDaemon: (ctx: any) => Promise<void> | void;
+  /** Return the port of an already-running daemon for `/<name> start`, or null if stopped. */
+  findRunningPort: (ctx: any) => Promise<number | null>;
+  /** Port to probe and display for `/<name> status` (0/null if none known). */
+  getStatusPort: (ctx: any) => number | null;
+  /** Spawn the daemon for `/<name> start` or `restart` and return the port to wait on. */
+  spawnForCommand: (ctx: any, mode: "start" | "restart", preferredPort?: number | null) => Promise<number>;
+  /** Optional hook invoked when `/<name> start|restart` resolves a live port before connecting. */
+  onCommandReady?: (port: number) => void;
+  /** Startup health-check wait budget in seconds for `/<name> start|restart`. */
+  getStartupTimeoutSeconds: (ctx: any) => number;
+  /** Optional hint appended to start/restart failure notifications. */
+  startFailureHint?: string;
+  /** If true, unknown `/<name> <arg>` shows usage instead of falling through to status. */
+  strictCommandUsage?: boolean;
+
+  // ── Tuning & test injection seams ────────────────────────────────
+  reconnectDelayMs?: number;
+  heartbeatDeadReconnectDelayMs?: number;
+  reconnectPollIntervalMs?: number;
+  heartbeatIntervalMs?: number;
+  restartWaitMs?: number;
+  createWebSocket?: (url: string) => any;
+  probeHealth?: (port: number) => Promise<boolean>;
+  waitReady?: (port: number, maxWaitSeconds: number, onLog: (msg: string) => void) => Promise<boolean>;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface DaemonClient {
+  /** Active open WebSocket, or null when disconnected. */
+  readonly ws: any;
+  /** True while the WebSocket is open and connected. */
+  readonly connected: boolean;
+  /** True while a connect attempt is in flight. */
+  readonly connecting: boolean;
+  /** True after `shutdown()` has run. */
+  readonly shuttingDown: boolean;
+  /** Most recent live ExtensionContext, or null. */
+  readonly lastCtx: any;
+  /** Update the stored `lastCtx` (e.g. from `session_start`, `agent_end`, event forwarding). */
+  setLastCtx: (ctx: any) => void;
+  /** Send a raw string or JSON-serializable payload if connected. Returns true if sent. */
+  send: (payload: string | object) => boolean;
+  /** Ensure the daemon is running and open the `/ws/pi` WebSocket. */
+  connect: (ctx: any) => Promise<void>;
+  /** Handle `/<name> start|stop|restart|status` (already registered on `pi`). */
+  handleCommand: (args: string, ctx: any) => Promise<void>;
+  /** Permanently tear down timers, heartbeat, reconnect poller, and WebSocket. */
+  shutdown: (event?: any) => void;
+}
+
+/**
+ * Create a managed daemon client for a pi extension.
+ *
+ * Owns WebSocket connection state, ping/pong heartbeat, `tool_result` + periodic
+ * reconnect, `/<name> start|stop|restart|status` command dispatch, and
+ * `session_shutdown` teardown.
+ */
+export function createDaemonClient<TConnectData = void>(
+  pi: ExtensionAPI,
+  adapter: DaemonClientAdapter<TConnectData>,
+): DaemonClient {
+  const debugLog = (msg: string) => adapter.log.debug(msg);
+  const reconnectDelayMs = adapter.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+  const heartbeatDeadReconnectDelayMs =
+    adapter.heartbeatDeadReconnectDelayMs ?? DEFAULT_HEARTBEAT_DEAD_RECONNECT_DELAY_MS;
+  const reconnectPollIntervalMs = adapter.reconnectPollIntervalMs ?? DEFAULT_RECONNECT_POLL_INTERVAL_MS;
+  const restartWaitMs = adapter.restartWaitMs ?? DEFAULT_RESTART_WAIT_MS;
+  const createWs = adapter.createWebSocket ?? defaultCreateWebSocket;
+  const probeHealth = adapter.probeHealth ?? checkHealth;
+  const waitReady = adapter.waitReady ?? waitForDaemon;
+  const sleep = adapter.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+  let activeSocket: any = null;
+  let ws: any = null;
+  let connected = false;
+  let connecting = false;
+  let shuttingDown = false;
+  let connectGen = 0;
+  let lastCtx: any = null;
+  let cleanupHeartbeat: (() => void) | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearHeartbeat(): void {
+    if (cleanupHeartbeat) {
+      cleanupHeartbeat();
+      cleanupHeartbeat = null;
+    }
+  }
+
+  function clearReconnectTimer(): void {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function scheduleReconnect(delayMs: number): void {
+    if (shuttingDown) return;
+    clearReconnectTimer();
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (lastCtx && !shuttingDown) void connect(lastCtx);
+    }, delayMs);
+    if (typeof (reconnectTimer as any).unref === "function") (reconnectTimer as any).unref();
+  }
+
+  /** Intentionally drop any active/pending socket and invalidate in-flight connect attempts. */
+  function disconnect(): void {
+    connectGen++;
+    clearReconnectTimer();
+    clearHeartbeat();
+    const prev = activeSocket;
+    activeSocket = null;
+    ws = null;
+    connected = false;
+    connecting = false;
+    if (prev) {
+      try { prev.close(); } catch {}
+    }
+  }
+
+  function send(payload: string | object): boolean {
+    if (!ws || !connected) return false;
+    try {
+      const raw = typeof payload === "string" ? payload : JSON.stringify(payload);
+      ws.send(raw);
+      return true;
+    } catch (e: any) {
+      adapter.log.debug("ws_send_error", { error: e?.message ?? String(e) });
+      return false;
+    }
+  }
+
+  async function connect(ctx: any): Promise<void> {
+    if (connected || connecting || shuttingDown) return;
+    if (!isLiveExtensionCtx(ctx)) {
+      adapter.log.debug("connect() skipped — stale ctx");
+      return;
+    }
+    adapter.log.debug(
+      `connect() called, connected=${connected}, connecting=${connecting}, shuttingDown=${shuttingDown}`,
+    );
+    connecting = true;
+    lastCtx = ctx;
+    const myGen = ++connectGen;
+
+    try {
+      const ensured = await adapter.ensureRunning(ctx);
+      if (shuttingDown || myGen !== connectGen || !isLiveExtensionCtx(ctx)) {
+        if (myGen === connectGen) connecting = false;
+        return;
+      }
+      if (ensured.port === null) {
+        connecting = false;
+        if (ensured.retryAfterMs !== undefined && !shuttingDown) {
+          scheduleReconnect(ensured.retryAfterMs);
+        }
+        return;
+      }
+      const port = ensured.port;
+
+      let connectData: TConnectData | undefined;
+      if (adapter.beforeOpen) {
+        const prep = await adapter.beforeOpen(ctx, port);
+        if (prep?.abort || shuttingDown || myGen !== connectGen || !isLiveExtensionCtx(ctx)) {
+          if (myGen === connectGen) connecting = false;
+          return;
+        }
+        connectData = prep?.data;
+      }
+
+      adapter.log.debug(`connecting WebSocket to port ${port}...`);
+      const wsClient = createWs(`ws://127.0.0.1:${port}/ws/pi`);
+      activeSocket = wsClient;
+
+      wsClient.on("open", () => {
+        if (shuttingDown || activeSocket !== wsClient) {
+          try { wsClient.close(); } catch {}
+          return;
+        }
+        adapter.log.debug("WebSocket connected");
+        ws = wsClient;
+        connected = true;
+        connecting = false;
+
+        try {
+          adapter.onOpen(wsClient, ctx, port, connectData);
+        } catch (err: any) {
+          adapter.log.debug(`onOpen error (likely stale ctx): ${err?.message ?? err}`);
+        }
+
+        clearHeartbeat();
+        cleanupHeartbeat = setupHeartbeat({
+          ws: wsClient,
+          intervalMs: adapter.heartbeatIntervalMs,
+          log: debugLog,
+          onDead: () => {
+            if (activeSocket !== wsClient) return;
+            activeSocket = null;
+            ws = null;
+            connected = false;
+            connecting = false;
+            clearHeartbeat();
+            adapter.onDisconnect?.();
+            if (!shuttingDown) {
+              scheduleReconnect(heartbeatDeadReconnectDelayMs);
+            }
+          },
+        });
+      });
+
+      wsClient.on("message", (data: Buffer) => {
+        try {
+          const result = adapter.onMessage(data, wsClient);
+          if (result && typeof (result as Promise<void>).catch === "function") {
+            (result as Promise<void>).catch((e: any) => {
+              adapter.log.debug(`message handler error: ${e?.message ?? e}`);
+            });
+          }
+        } catch (e: any) {
+          adapter.log.debug(`message handler error: ${e?.message ?? e}`);
+        }
+      });
+
+      wsClient.on("close", (code?: number, reason?: Buffer) => {
+        adapter.log.debug(
+          `WebSocket closed: code=${code ?? "none"} reason=${reason?.toString() || "none"}`,
+        );
+        if (activeSocket !== wsClient) return;
+        activeSocket = null;
+        ws = null;
+        connected = false;
+        connecting = false;
+        clearHeartbeat();
+        adapter.onDisconnect?.();
+        if (!shuttingDown) {
+          scheduleReconnect(reconnectDelayMs);
+        }
+      });
+
+      wsClient.on("error", (e: Error) => {
+        adapter.log.debug(`WebSocket error: ${e?.message ?? e}`);
+      });
+    } catch (e: any) {
+      adapter.log.debug(`connect error: ${e?.message ?? e}`);
+      if (myGen === connectGen) {
+        activeSocket = null;
+        connecting = false;
+      }
+    }
+  }
+
+  async function handleCommand(args: string, ctx: any): Promise<void> {
+    if (adapter.beforeCommand?.(args, ctx) === false) return;
+
+    const cmd = (args || "").trim().toLowerCase();
+    const hint = adapter.startFailureHint ?? "";
+
+    if (cmd === "stop") {
+      disconnect();
+      await adapter.stopDaemon(ctx);
+      if (ctx?.hasUI) {
+        ctx.ui.setStatus(adapter.statusKey, undefined);
+        ctx.ui.notify(`${adapter.name} server stopped`, "info");
+      }
+      return;
+    }
+
+    if (cmd === "start") {
+      const livePort = await adapter.findRunningPort(ctx);
+      if (livePort !== null) {
+        adapter.onCommandReady?.(livePort);
+        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} already running at http://localhost:${livePort}`, "info");
+        if (!connected) void connect(ctx);
+        return;
+      }
+      const port = await adapter.spawnForCommand(ctx, "start", null);
+      if (ctx?.hasUI) ctx.ui.notify(`Starting ${adapter.name} server...`, "info");
+      if (await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
+        adapter.onCommandReady?.(port);
+        void connect(ctx);
+        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} started at http://localhost:${port}`, "info");
+      } else {
+        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} failed to start${hint}`, "warning");
+      }
+      return;
+    }
+
+    if (cmd === "restart") {
+      disconnect();
+      const preferredPort = adapter.prepareRestart?.(ctx) ?? null;
+      await adapter.stopDaemon(ctx);
+      await sleep(restartWaitMs);
+      const port = await adapter.spawnForCommand(ctx, "restart", preferredPort);
+      if (ctx?.hasUI) ctx.ui.notify(`Restarting ${adapter.name} server...`, "info");
+      if (await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
+        adapter.onCommandReady?.(port);
+        void connect(ctx);
+        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} restarted at http://localhost:${port}`, "info");
+      } else {
+        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} failed to restart${hint}`, "warning");
+      }
+      return;
+    }
+
+    if (cmd === "status" || cmd === "" || !adapter.strictCommandUsage) {
+      const statusPort = adapter.getStatusPort(ctx);
+      const running = statusPort ? await probeHealth(statusPort) : false;
+      let msg = `Server: ${running ? "running" : "stopped"}\nPort: ${statusPort || "(none)"}\n`;
+      msg += `Extension: ${connected ? "connected" : "disconnected"}`;
+      if (statusPort) msg += `\nURL: http://localhost:${statusPort}`;
+      if (ctx?.hasUI) ctx.ui.notify(msg, "info");
+      return;
+    }
+
+    if (ctx?.hasUI) ctx.ui.notify(`Usage: /${adapter.name} start|stop|restart|status`, "info");
+  }
+
+  registerDaemonCommand(pi, adapter.name, true, adapter.settingKey, handleCommand);
+
+  // Reconnect fallback on tool_result (/reload recovery)
+  pi.on("tool_result", (_event, ctx) => {
+    if (!connected && !shuttingDown && isLiveExtensionCtx(ctx) && ctx.mode === "tui") {
+      void connect(ctx);
+    }
+  });
+
+  // Periodic reconnect poller
+  const reconnectPoller = setInterval(() => {
+    if (connected || connecting || shuttingDown) return;
+    if (!isLiveExtensionCtx(lastCtx)) {
+      if (lastCtx) {
+        adapter.log.debug("reconnect poller skipped — stale ctx");
+        lastCtx = null;
+      }
+      return;
+    }
+    if (lastCtx.mode === "tui") void connect(lastCtx);
+  }, reconnectPollIntervalMs);
+  if (typeof reconnectPoller.unref === "function") reconnectPoller.unref();
+
+  function shutdown(event?: any): void {
+    if (shuttingDown) return;
+    try {
+      adapter.onBeforeShutdown?.(event, ws, connected);
+    } catch (e: any) {
+      adapter.log.debug("onBeforeShutdown error", { error: e?.message ?? String(e) });
+    }
+    shuttingDown = true;
+    clearInterval(reconnectPoller);
+    disconnect();
+  }
+
+  pi.on("session_shutdown", (event) => { shutdown(event); });
+
+  return {
+    get ws() { return ws; },
+    get connected() { return connected; },
+    get connecting() { return connecting; },
+    get shuttingDown() { return shuttingDown; },
+    get lastCtx() { return lastCtx; },
+    setLastCtx(ctx: any) { lastCtx = ctx; },
+    send,
+    connect,
+    handleCommand,
+    shutdown,
+  };
 }

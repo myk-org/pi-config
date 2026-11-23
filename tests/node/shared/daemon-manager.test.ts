@@ -1,83 +1,112 @@
 /**
- * Tests for daemon-manager lockfile and port helpers.
+ * Tests for shared daemon-manager primitives and the deep `createDaemonClient` lifecycle.
  * Run with: npx tsx --test tests/node/shared/daemon-manager.test.ts
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile, parseHealth, getGitBranch, registerDaemonCommand, waitForDaemon } from "../../../extensions/shared/daemon-manager.js";
-import { setupExtensionReconnect } from "../../../extensions/shared/ws-client.js";
 import { execFileSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createServer, type Server } from "node:http";
+import {
+  createDaemonClient,
+  findJitiPath,
+  findJitiUnder,
+  getGitBranch,
+  parseHealth,
+  registerDaemonCommand,
+  spawnDaemon,
+  waitForDaemon,
+  type DaemonClient,
+  type DaemonClientAdapter,
+} from "../../../extensions/shared/daemon-manager.js";
+import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
+const testLog = createLogger("daemon-manager-test");
 
-describe("findLiveLockfile (#1020)", () => {
-  let server: Server | undefined;
+class FakeWebSocket extends EventEmitter {
+  readyState = 0; // CONNECTING
+  sent: string[] = [];
+  pings = 0;
+  pongs = 0;
+  closed = false;
+  terminated = false;
+  readonly url: string;
 
-  const listenHealthy = async (): Promise<number> => {
-    server = createServer((_req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ status: "ok" }));
-    });
-    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
-    return (server!.address() as { port: number }).port;
+  constructor(url: string) {
+    super();
+    this.url = url;
+  }
+
+  open(): void {
+    this.readyState = 1;
+    this.emit("open");
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  ping(): void {
+    this.pings++;
+  }
+
+  pong(): void {
+    this.pongs++;
+  }
+
+  close(code = 1000, reason = ""): void {
+    this.closed = true;
+    this.readyState = 3;
+    this.emit("close", code, Buffer.from(reason));
+  }
+
+  terminate(): void {
+    this.terminated = true;
+    this.readyState = 3;
+    this.emit("close", 1006, Buffer.from("terminated"));
+  }
+}
+
+function createFakePi() {
+  const listeners = new Map<string, Array<(event: unknown, ctx: unknown) => void>>();
+  const commands = new Map<string, any>();
+  const pi = {
+    on: (name: string, fn: (event: unknown, ctx: unknown) => void) => {
+      const list = listeners.get(name) ?? [];
+      list.push(fn);
+      listeners.set(name, list);
+    },
+    registerCommand: (name: string, opts: any) => {
+      commands.set(name, opts);
+    },
+  } as unknown as ExtensionAPI;
+
+  const emit = (name: string, event: unknown, ctx?: unknown) => {
+    for (const fn of listeners.get(name) ?? []) fn(event, ctx);
   };
 
-  afterEach(async () => {
-    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
-    server = undefined;
-  });
+  return { pi, commands, emit };
+}
 
-  it("finds the live daemon in the legacy dir when the new-dir record is stale", async () => {
-    const livePort = await listenHealthy();
-    const runDir = makeTempDir("dm-live-");
-    const legacyDir = makeTempDir("dm-live-legacy-");
-    try {
-      const deadPort = await findFreePort();
-      writeLockfile(runDir, deadPort, null, () => {}); // stale record shadows nothing yet
-      writeLockfile(legacyDir, livePort, null, () => {});
-      assert.strictEqual(readLockfile(runDir, legacyDir)!.port, deadPort, "plain read returns the stale record");
-      assert.strictEqual(await findLiveLockfile([runDir, legacyDir]), livePort);
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-      rmSync(legacyDir, { recursive: true, force: true });
-    }
-  });
-
-  it("returns null when no recorded port is healthy", async () => {
-    const runDir = makeTempDir("dm-live-");
-    try {
-      writeLockfile(runDir, await findFreePort(), null, () => {});
-      assert.strictEqual(await findLiveLockfile([runDir, ""]), null);
-    } finally { rmSync(runDir, { recursive: true, force: true }); }
-  });
-
-  it("skips ports in skipPorts and never probes the same dead port twice (#1269)", async () => {
-    const runDir = makeTempDir("dm-skip-run-");
-    const legacyDir = makeTempDir("dm-skip-legacy-");
-    try {
-      writeLockfile(runDir, 45001, null, () => {});
-      writeLockfile(legacyDir, 45001, null, () => {});
-      const probed: number[] = [];
-      const fakeProbe = async (port: number) => {
-        probed.push(port);
-        return false;
-      };
-      assert.strictEqual(await findLiveLockfile([runDir, legacyDir], new Set([45001]), fakeProbe), null);
-      assert.deepStrictEqual(probed, [], "preferred dead port must not be probed again");
-
-      assert.strictEqual(await findLiveLockfile([runDir, legacyDir], undefined, fakeProbe), null);
-      assert.deepStrictEqual(probed, [45001], "duplicate port across lock dirs probed only once");
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-      rmSync(legacyDir, { recursive: true, force: true });
-    }
-  });
-});
+function createFakeCtx(overrides: Record<string, unknown> = {}) {
+  const notifications: Array<{ msg: string; level?: string }> = [];
+  const statuses: Array<{ key: string; value: unknown }> = [];
+  const ctx = {
+    mode: "tui",
+    cwd: "/tmp/test-project",
+    hasUI: true,
+    ui: {
+      notify: (msg: string, level?: string) => notifications.push({ msg, level }),
+      setStatus: (key: string, value: unknown) => statuses.push({ key, value }),
+    },
+    ...overrides,
+  };
+  return { ctx, notifications, statuses };
+}
 
 describe("waitForDaemon (#1269)", () => {
   it("polls at 200ms initially for faster warm attach", async () => {
@@ -101,320 +130,6 @@ describe("waitForDaemon (#1269)", () => {
     });
     assert.equal(ok, false);
     assert.equal(checks, 0);
-  });
-});
-
-describe("lockfile operations", () => {
-  it("stores port and pid via writeLockfile, retrieves via readLockfile", () => {
-    const dir = makeTempDir("dm-test-");
-    try {
-      const log = () => {};
-      writeLockfile(dir, 12345, 99999, log);
-      const result = readLockfile(dir);
-      assert.ok(result);
-      assert.strictEqual(result!.port, 12345);
-      assert.strictEqual(result!.pid, 99999);
-    } finally { rmSync(dir, { recursive: true }); }
-  });
-
-  it("handles null pid in lockfile", () => {
-    const dir = makeTempDir("dm-test-");
-    try {
-      const log = () => {};
-      writeLockfile(dir, 8080, null, log);
-      const result = readLockfile(dir);
-      assert.ok(result);
-      assert.strictEqual(result!.port, 8080);
-      assert.strictEqual(result!.pid, null);
-    } finally { rmSync(dir, { recursive: true }); }
-  });
-
-  it("returns null for non-existent dir", () => {
-    const result = readLockfile("/tmp/nonexistent-dm-test-" + Date.now());
-    assert.strictEqual(result, null);
-  });
-});
-
-describe("removeLockfile", () => {
-  it("cleans up both lockfile entries", () => {
-    const dir = makeTempDir("dm-test-");
-    try {
-      const log = () => {};
-      writeLockfile(dir, 12345, 99999, log);
-      assert.ok(existsSync(join(dir, "pidiff.port")));
-      assert.ok(existsSync(join(dir, "pidiff.pid")));
-      removeLockfile(dir, log);
-      assert.ok(!existsSync(join(dir, "pidiff.port")));
-      assert.ok(!existsSync(join(dir, "pidiff.pid")));
-    } finally { rmSync(dir, { recursive: true }); }
-  });
-
-  it("handles missing files gracefully", () => {
-    const dir = makeTempDir("dm-test-");
-    try {
-      const log = () => {};
-      removeLockfile(dir, log); // should not throw
-    } finally { rmSync(dir, { recursive: true }); }
-  });
-});
-
-describe("legacy .pi/tmp lockfiles (#1020)", () => {
-  const mk = () => makeTempDir("dm-legacy-");
-
-  it("a daemon that started before the move is still found via the legacy dir", () => {
-    const runDir = mk();
-    const legacyDir = mk();
-    try {
-      writeLockfile(legacyDir, 41234, 4321, () => {});
-      assert.strictEqual(readLockfile(runDir), null, "new dir alone sees nothing");
-      assert.deepEqual(readLockfile(runDir, legacyDir), { port: 41234, pid: 4321 });
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-      rmSync(legacyDir, { recursive: true, force: true });
-    }
-  });
-
-  it("reading a legacy lockfile never moves or deletes it", () => {
-    const runDir = mk();
-    const legacyDir = mk();
-    try {
-      writeLockfile(legacyDir, 41234, 4321, () => {});
-      assert.deepEqual(readLockfile(runDir, legacyDir), { port: 41234, pid: 4321 });
-      // The legacy owner may be live: moving its record would let the sweep (or a crashed
-      // read) take it away and a later connect() would spawn a duplicate on that port.
-      assert.strictEqual(readFileSync(join(legacyDir, "pidiff.port"), "utf-8"), "41234");
-      assert.strictEqual(readFileSync(join(legacyDir, "pidiff.pid"), "utf-8"), "4321");
-      assert.equal(existsSync(join(runDir, "pidiff.port")), false, "no copy written into the run dir");
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-      rmSync(legacyDir, { recursive: true, force: true });
-    }
-  });
-
-  it("legacyLockfileOwnerAlive is false when there is no pid file", () => {
-    const dir = mk();
-    try {
-      assert.equal(legacyLockfileOwnerAlive(dir), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("legacyLockfileOwnerAlive is true for a live pid", () => {
-    const dir = mk();
-    try {
-      writeFileSync(join(dir, "pidiff.pid"), String(process.pid));
-      assert.equal(legacyLockfileOwnerAlive(dir), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("legacyLockfileOwnerAlive is false for pid 0", () => {
-    const dir = mk();
-    try {
-      writeFileSync(join(dir, "pidiff.pid"), "0");
-      assert.equal(legacyLockfileOwnerAlive(dir), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("legacyLockfileOwnerAlive is false for an unparseable pid", () => {
-    const dir = mk();
-    try {
-      writeFileSync(join(dir, "pidiff.pid"), "not-a-pid");
-      assert.equal(legacyLockfileOwnerAlive(dir), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("legacyLockfileOwnerAlive refuses an oversized pid file", () => {
-    // The file is project-controlled; a pid is a few bytes, so a large file is not read.
-    const dir = mk();
-    try {
-      writeFileSync(join(dir, "pidiff.pid"), "1".repeat(4096));
-      assert.equal(legacyLockfileOwnerAlive(dir), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("legacyLockfileOwnerAlive refuses a non-regular pid file instead of blocking", () => {
-    // The legacy dir is project-controlled: a FIFO here would block the read during the
-    // session-start sweep, so only a regular file counts.
-    const dir = mk();
-    try {
-      mkdirSync(join(dir, "pidiff.pid"));
-      assert.equal(legacyLockfileOwnerAlive(dir), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("legacyLockfileOwnerAlive treats EPERM as alive, not dead", () => {
-    // Another user's live process answers EPERM, not success. Reading that as "dead" would
-    // let the sweep delete a running daemon's control files.
-    const dir = mk();
-    const original = process.kill;
-    try {
-      writeFileSync(join(dir, "pidiff.pid"), "424242");
-      (process as unknown as { kill: unknown }).kill = () => {
-        const err = new Error("operation not permitted") as NodeJS.ErrnoException;
-        err.code = "EPERM";
-        throw err;
-      };
-      assert.equal(legacyLockfileOwnerAlive(dir), true);
-    } finally {
-      (process as unknown as { kill: unknown }).kill = original;
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("legacyLockfileOwnerAlive treats ESRCH as dead", () => {
-    const dir = mk();
-    const original = process.kill;
-    try {
-      writeFileSync(join(dir, "pidiff.pid"), "424243");
-      (process as unknown as { kill: unknown }).kill = () => {
-        const err = new Error("no such process") as NodeJS.ErrnoException;
-        err.code = "ESRCH";
-        throw err;
-      };
-      assert.equal(legacyLockfileOwnerAlive(dir), false);
-    } finally {
-      (process as unknown as { kill: unknown }).kill = original;
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("readLockfile ignores a non-regular port file instead of blocking", () => {
-    // The dirs are project-controlled: a FIFO here would block the event loop.
-    const dir = mk();
-    try {
-      mkdirSync(join(dir, "pidiff.port"));
-      assert.equal(readLockfile(dir), null);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("isLiveLegacyDaemonFile is true only for a legacy lockfile whose owner is alive", () => {
-    const dir = mk();
-    try {
-      writeLockfile(dir, 41234, process.pid, () => {});
-      assert.equal(isLiveLegacyDaemonFile(dir, "pidiff.port"), true);
-      assert.equal(isLiveLegacyDaemonFile(dir, "pidiff.pid"), true);
-      assert.equal(isLiveLegacyDaemonFile(dir, "reload.flag"), false, "not a lockfile");
-      writeFileSync(join(dir, "pidiff.pid"), "0");
-      assert.equal(isLiveLegacyDaemonFile(dir, "pidiff.port"), false, "dead owner");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("the new dir wins when both exist", () => {
-    const runDir = mk();
-    const legacyDir = mk();
-    try {
-      writeLockfile(legacyDir, 1000, null, () => {});
-      writeLockfile(runDir, 2000, null, () => {});
-      assert.strictEqual(readLockfile(runDir, legacyDir)!.port, 2000);
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-      rmSync(legacyDir, { recursive: true, force: true });
-    }
-  });
-
-  it("writing the lockfile never touches the legacy dir", () => {
-    const runDir = mk();
-    const legacyDir = mk();
-    try {
-      writeLockfile(legacyDir, 1000, null, () => {});
-      writeLockfile(runDir, 2000, null, () => {});
-      assert.strictEqual(readFileSync(join(legacyDir, "pidiff.port"), "utf-8"), "1000");
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-      rmSync(legacyDir, { recursive: true, force: true });
-    }
-  });
-
-  it("removeLockfile clears the legacy copies too", () => {
-    const runDir = mk();
-    const legacyDir = mk();
-    try {
-      writeLockfile(legacyDir, 41234, 4321, () => {});
-      removeLockfile(runDir, () => {}, legacyDir);
-      assert.ok(!existsSync(join(legacyDir, "pidiff.port")));
-      assert.ok(!existsSync(join(legacyDir, "pidiff.pid")));
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-      rmSync(legacyDir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("killDaemonByPid", () => {
-  it("reads the legacy pid file when the new one is absent", () => {
-    const runDir = makeTempDir("dm-test-");
-    const legacyDir = makeTempDir("dm-legacy-");
-    const legacyPidFile = join(legacyDir, "pidiff.pid");
-    try {
-      writeFileSync(legacyPidFile, "999999999"); // dead pid
-      const killed = killDaemonByPid(join(runDir, "pidiff.pid"), () => {}, legacyPidFile);
-      assert.strictEqual(killed, false);
-      assert.ok(!existsSync(legacyPidFile), "legacy pid file was read and cleaned up");
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-      rmSync(legacyDir, { recursive: true, force: true });
-    }
-  });
-  it("returns false for non-existent pid file", () => {
-    const log = () => {};
-    const result = killDaemonByPid("/tmp/nonexistent-pid-" + Date.now(), log);
-    assert.strictEqual(result, false);
-  });
-
-  it("returns false for invalid pid in file", () => {
-    const dir = makeTempDir("dm-test-");
-    const pidFile = join(dir, "test.pid");
-    try {
-      writeFileSync(pidFile, "not-a-number");
-      const log = () => {};
-      const result = killDaemonByPid(pidFile, log);
-      assert.strictEqual(result, false);
-    } finally { rmSync(dir, { recursive: true }); }
-  });
-
-  it("returns false for dead pid and cleans up file", () => {
-    const dir = makeTempDir("dm-test-");
-    const pidFile = join(dir, "test.pid");
-    try {
-      // Use a PID that's almost certainly not running
-      writeFileSync(pidFile, "999999999");
-      const log = () => {};
-      const result = killDaemonByPid(pidFile, log);
-      assert.strictEqual(result, false);
-      assert.ok(!existsSync(pidFile));
-    } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
-});
-
-describe("findFreePort", () => {
-  it("returns a valid port number", async () => {
-    const port = await findFreePort();
-    assert.ok(typeof port === "number");
-    assert.ok(port > 0);
-    assert.ok(port < 65536);
-  });
-
-  it("returns different ports on successive calls", async () => {
-    const port1 = await findFreePort();
-    const port2 = await findFreePort();
-    // Not guaranteed but very likely
-    assert.ok(typeof port1 === "number");
-    assert.ok(typeof port2 === "number");
   });
 });
 
@@ -474,7 +189,6 @@ describe("spawnDaemon", () => {
 
 describe("parseHealth", () => {
   it("treats a degraded daemon as running", () => {
-    // The regression: a bot-setup failure made callers spawn a second daemon that lost the port.
     const health = parseHealth(JSON.stringify({ status: "degraded", startupError: "discord setup failed", port: 19190 }));
     assert.equal(health.running, true);
     assert.equal(health.degraded, true);
@@ -493,88 +207,382 @@ describe("parseHealth", () => {
 });
 
 describe("getGitBranch (#1172)", () => {
-  it("returns the branch name in a git repo and empty string outside one", () => {
+  it("returns the branch name in a git repo", () => {
     const repo = makeTempDir("dm-branch-");
-    const nonRepo = makeTempDir("dm-nobranch-");
     try {
       execFileSync("git", ["init", "-b", "feat/test-branch"], { cwd: repo, stdio: "ignore" });
       assert.equal(getGitBranch(repo), "feat/test-branch");
-      assert.equal(getGitBranch(nonRepo), "");
     } finally {
       rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("returns empty string outside a git repo", () => {
+    const nonRepo = makeTempDir("dm-nobranch-");
+    try {
+      assert.equal(getGitBranch(nonRepo), "");
+    } finally {
       rmSync(nonRepo, { recursive: true, force: true });
     }
   });
 });
 
 describe("registerDaemonCommand (#1172)", () => {
-  it("registers completions and disabled notification when disabled", async () => {
-    const registered: Record<string, any> = {};
-    const pi = {
-      registerCommand: (name: string, opts: any) => { registered[name] = opts; },
-    } as unknown as ExtensionAPI;
-    const notices: string[] = [];
-    const ctx = { hasUI: true, ui: { notify: (msg: string) => notices.push(msg) } };
-
+  it("registers completions for a disabled command", async () => {
+    const { pi, commands } = createFakePi();
     registerDaemonCommand(pi, "pidash", false, "pidash_enable");
-    assert.equal(registered.pidash.description, "Manage pidash server — /pidash start|stop|restart|status");
+    const cmd = commands.get("pidash");
+    assert.equal(cmd.description, "Manage pidash server — /pidash start|stop|restart|status");
     assert.deepEqual(
-      registered.pidash.getArgumentCompletions("st").map((c: any) => c.value),
+      cmd.getArgumentCompletions("st").map((c: any) => c.value),
       ["start", "stop", "status"],
     );
-    await registered.pidash.handler("", ctx);
-    assert.deepEqual(notices, ["pidash is disabled (pidash_enable=false in pi-config-settings.json or PI_PIDASH_ENABLE=false)."]);
+  });
+
+  it("notifies when invoking a disabled daemon command", async () => {
+    const { pi, commands } = createFakePi();
+    const { ctx, notifications } = createFakeCtx();
+
+    registerDaemonCommand(pi, "pidash", false, "pidash_enable");
+    await commands.get("pidash").handler("", ctx);
+    assert.deepEqual(
+      notifications.map((n) => n.msg),
+      ["pidash is disabled (pidash_enable=false in pi-config-settings.json or PI_PIDASH_ENABLE=false)."],
+    );
   });
 
   it("delegates to the provided handler when enabled", async () => {
-    const registered: Record<string, any> = {};
-    const pi = {
-      registerCommand: (name: string, opts: any) => { registered[name] = opts; },
-    } as unknown as ExtensionAPI;
+    const { pi, commands } = createFakePi();
     const calls: string[] = [];
 
     registerDaemonCommand(pi, "pidiff", true, "pidiff_enable", (args) => { calls.push(args); });
-    await registered.pidiff.handler("status", {});
+    await commands.get("pidiff").handler("status", {});
     assert.deepEqual(calls, ["status"]);
   });
 });
 
-describe("setupExtensionReconnect (#1172)", () => {
-  it("connects on tool_result when disconnected in tui mode and clears stale ctx on poll", async () => {
-    let toolResultHandler: ((ev: unknown, ctx: unknown) => void) | undefined;
-    const pi = {
-      on: (name: string, fn: (ev: unknown, ctx: unknown) => void) => {
-        if (name === "tool_result") toolResultHandler = fn;
+describe("createDaemonClient lifecycle (#1358)", () => {
+  const clients: DaemonClient[] = [];
+
+  afterEach(() => {
+    for (const c of clients.splice(0)) c.shutdown();
+  });
+
+  function makeClient<T = void>(
+    overrides: Partial<DaemonClientAdapter<T>> = {},
+  ) {
+    const fakePi = createFakePi();
+    const sockets: FakeWebSocket[] = [];
+    const opened: Array<{ port: number; data: T | undefined }> = [];
+    const messages: string[] = [];
+    let disconnects = 0;
+    let stops = 0;
+    const spawns: Array<{ mode: string; preferredPort: number | null | undefined }> = [];
+    const readyPorts: number[] = [];
+
+    const client = createDaemonClient<T>(fakePi.pi, {
+      name: "testd",
+      settingKey: "testd_enable",
+      statusKey: "9-testd",
+      log: testLog,
+      ensureRunning: async () => ({ port: 19500 }),
+      onOpen: (_ws, _ctx, port, data) => { opened.push({ port, data }); },
+      onMessage: (data) => { messages.push(data.toString()); },
+      onDisconnect: () => { disconnects++; },
+      stopDaemon: () => { stops++; },
+      findRunningPort: async () => null,
+      getStatusPort: () => 19500,
+      spawnForCommand: async (_ctx, mode, preferredPort) => {
+        spawns.push({ mode, preferredPort });
+        return preferredPort ?? 19501;
       },
-    } as unknown as ExtensionAPI;
-    const connectedCtxs: any[] = [];
-    let lastCtx: any = {
-      get mode(): string { throw new Error("stale"); },
-    };
-    const logs: string[] = [];
-
-    const cleanup = setupExtensionReconnect({
-      pi,
-      isConnected: () => false,
-      isConnecting: () => false,
-      isShuttingDown: () => false,
-      getLastCtx: () => lastCtx,
-      clearLastCtx: () => { lastCtx = null; },
-      connect: (ctx) => connectedCtxs.push(ctx),
-      log: (msg) => logs.push(msg),
-      intervalMs: 15,
+      onCommandReady: (port) => { readyPorts.push(port); },
+      getStartupTimeoutSeconds: () => 5,
+      reconnectDelayMs: 30,
+      heartbeatDeadReconnectDelayMs: 15,
+      reconnectPollIntervalMs: 1000,
+      heartbeatIntervalMs: 1000,
+      restartWaitMs: 0,
+      sleep: async () => {},
+      probeHealth: async () => true,
+      waitReady: async () => true,
+      createWebSocket: (url) => {
+        const ws = new FakeWebSocket(url);
+        sockets.push(ws);
+        return ws;
+      },
+      ...overrides,
     });
+    clients.push(client);
+    return {
+      client,
+      ...fakePi,
+      sockets,
+      opened,
+      messages,
+      getDisconnects: () => disconnects,
+      getStops: () => stops,
+      spawns,
+      readyPorts,
+    };
+  }
 
-    try {
-      const liveCtx = { mode: "tui", cwd: "/tmp" };
-      toolResultHandler?.({}, liveCtx);
-      assert.deepEqual(connectedCtxs, [liveCtx]);
+  it("connects via WebSocket with beforeOpen data", async () => {
+    const h = makeClient<{ tag: string }>({
+      beforeOpen: async () => ({ data: { tag: "ready" } }),
+    });
+    const { ctx } = createFakeCtx();
 
-      await new Promise((r) => setTimeout(r, 40));
-      assert.equal(lastCtx, null);
-      assert.ok(logs.some((m) => m.includes("stale ctx")));
-    } finally {
-      cleanup();
-    }
+    await h.client.connect(ctx);
+    assert.equal(h.client.connecting, true);
+    assert.equal(h.client.connected, false);
+    assert.equal(h.sockets.length, 1);
+    assert.equal(h.sockets[0].url, "ws://127.0.0.1:19500/ws/pi");
+
+    h.sockets[0].open();
+    assert.equal(h.client.connected, true);
+    assert.equal(h.client.connecting, false);
+    assert.deepEqual(h.opened, [{ port: 19500, data: { tag: "ready" } }]);
+  });
+
+  it("forwards outbound send payloads while connected", async () => {
+    const h = makeClient();
+    const { ctx } = createFakeCtx();
+
+    assert.equal(h.client.send({ type: "dropped" }), false);
+    await h.client.connect(ctx);
+    h.sockets[0].open();
+
+    assert.equal(h.client.send({ type: "ping-test" }), true);
+    assert.deepEqual(h.sockets[0].sent, [JSON.stringify({ type: "ping-test" })]);
+  });
+
+  it("delivers inbound WebSocket frames to adapter onMessage", async () => {
+    const h = makeClient();
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    h.sockets[0].open();
+    h.sockets[0].emit("message", Buffer.from("hello"));
+    assert.deepEqual(h.messages, ["hello"]);
+  });
+
+  it("aborts connection cleanly when beforeOpen signals abort", async () => {
+    const h = makeClient({
+      beforeOpen: async () => ({ abort: true }),
+    });
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    assert.equal(h.client.connecting, false);
+    assert.equal(h.client.connected, false);
+    assert.equal(h.sockets.length, 0);
+  });
+
+  it("skips connect when ctx is stale", async () => {
+    const h = makeClient();
+    const staleCtx = { get mode(): string { throw new Error("stale"); } };
+
+    await h.client.connect(staleCtx);
+    assert.equal(h.sockets.length, 0);
+    assert.equal(h.client.connecting, false);
+  });
+
+  it("retries connect when ensureRunning returns retryAfterMs", async () => {
+    let calls = 0;
+    const h = makeClient({
+      ensureRunning: async () => {
+        calls++;
+        return calls === 1 ? { port: null, retryAfterMs: 15 } : { port: 19502 };
+      },
+    });
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    assert.equal(h.sockets.length, 0);
+    await new Promise((r) => setTimeout(r, 45));
+    assert.equal(h.sockets.length, 1);
+    assert.equal(h.sockets[0].url, "ws://127.0.0.1:19502/ws/pi");
+  });
+
+  it("terminates dead socket on missed heartbeat pong to force reconnect", async () => {
+    const h = makeClient({
+      heartbeatIntervalMs: 15,
+      heartbeatDeadReconnectDelayMs: 15,
+    });
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    const first = h.sockets[0];
+    first.open();
+    first.emit("ping");
+    assert.equal(first.pongs, 1);
+
+    await new Promise((r) => setTimeout(r, 75));
+    assert.equal(first.terminated, true);
+    assert.equal(h.getDisconnects(), 1);
+    assert.ok(h.sockets.length >= 2, "expected reconnect socket after heartbeat death");
+  });
+
+  it("reconnects after unexpected socket close", async () => {
+    const h = makeClient({ reconnectDelayMs: 20 });
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    h.sockets[0].open();
+    h.sockets[0].close(1006, "drop");
+
+    assert.equal(h.client.connected, false);
+    assert.equal(h.getDisconnects(), 1);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(h.sockets.length, 2);
+  });
+
+  it("reconnects on tool_result when disconnected in tui mode", async () => {
+    const h = makeClient();
+    const { ctx } = createFakeCtx();
+
+    h.emit("tool_result", {}, ctx);
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(h.sockets.length, 1);
+  });
+
+  it("clears stale lastCtx on periodic reconnect poll", async () => {
+    const h = makeClient({ reconnectPollIntervalMs: 15 });
+    const staleCtx = { get mode(): string { throw new Error("stale"); } };
+    h.client.setLastCtx(staleCtx);
+
+    await new Promise((r) => setTimeout(r, 45));
+    assert.equal(h.client.lastCtx, null);
+    assert.equal(h.sockets.length, 0);
+  });
+
+  it("invokes onBeforeShutdown before closing socket on session_shutdown", async () => {
+    let sawConnectedDuringBeforeShutdown = false;
+    const h = makeClient({
+      reconnectDelayMs: 15,
+      onBeforeShutdown: (_ev, ws, isConnected) => {
+        sawConnectedDuringBeforeShutdown = Boolean(ws && isConnected);
+        ws?.send(JSON.stringify({ type: "bye" }));
+      },
+    });
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    h.sockets[0].open();
+    h.emit("session_shutdown", { reason: "exit" }, ctx);
+
+    assert.equal(sawConnectedDuringBeforeShutdown, true);
+    assert.equal(h.client.shuttingDown, true);
+    assert.equal(h.client.connected, false);
+    assert.equal(h.sockets[0].closed, true);
+    assert.ok(h.sockets[0].sent.includes(JSON.stringify({ type: "bye" })));
+
+    await new Promise((r) => setTimeout(r, 40));
+    h.emit("tool_result", {}, ctx);
+    assert.equal(h.sockets.length, 1, "must not reconnect after shutdown");
+  });
+
+  it("handles /<name> stop without triggering a delayed reconnect", async () => {
+    const h = makeClient({ reconnectDelayMs: 15 });
+    const { ctx, notifications, statuses } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    h.sockets[0].open();
+    await h.commands.get("testd").handler("stop", ctx);
+
+    assert.equal(h.client.connected, false);
+    assert.equal(h.getStops(), 1);
+    assert.deepEqual(statuses, [{ key: "9-testd", value: undefined }]);
+    assert.deepEqual(notifications.map((n) => n.msg), ["testd server stopped"]);
+
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(h.sockets.length, 1, "intentional stop must not trigger close reconnect timer");
+  });
+
+  it("handles /<name> start when daemon is already running", async () => {
+    const h = makeClient({
+      findRunningPort: async () => 19510,
+    });
+    const { ctx, notifications } = createFakeCtx();
+
+    await h.commands.get("testd").handler("start", ctx);
+    assert.equal(h.spawns.length, 0);
+    assert.deepEqual(h.readyPorts, [19510]);
+    assert.deepEqual(notifications.map((n) => n.msg), ["testd already running at http://localhost:19510"]);
+  });
+
+  it("handles /<name> start when spawning succeeds", async () => {
+    const h = makeClient();
+    const { ctx, notifications } = createFakeCtx();
+
+    await h.commands.get("testd").handler("start", ctx);
+    assert.deepEqual(h.spawns, [{ mode: "start", preferredPort: null }]);
+    assert.deepEqual(h.readyPorts, [19501]);
+    assert.deepEqual(notifications.map((n) => n.msg), [
+      "Starting testd server...",
+      "testd started at http://localhost:19501",
+    ]);
+  });
+
+  it("notifies warning with startFailureHint when /<name> start fails", async () => {
+    const h = makeClient({
+      waitReady: async () => false,
+      startFailureHint: " — check logs",
+    });
+    const { ctx, notifications } = createFakeCtx();
+
+    await h.commands.get("testd").handler("start", ctx);
+    assert.deepEqual(notifications, [
+      { msg: "Starting testd server...", level: "info" },
+      { msg: "testd failed to start — check logs", level: "warning" },
+    ]);
+  });
+
+  it("handles /<name> restart passing prepareRestart port to spawnForCommand", async () => {
+    const h = makeClient({
+      prepareRestart: () => 19555,
+    });
+    const { ctx, notifications } = createFakeCtx();
+
+    await h.commands.get("testd").handler("restart", ctx);
+    assert.equal(h.getStops(), 1);
+    assert.deepEqual(h.spawns, [{ mode: "restart", preferredPort: 19555 }]);
+    assert.deepEqual(h.readyPorts, [19555]);
+    assert.deepEqual(notifications.map((n) => n.msg), [
+      "Restarting testd server...",
+      "testd restarted at http://localhost:19555",
+    ]);
+  });
+
+  it("handles /<name> status showing server health", async () => {
+    const h = makeClient({
+      getStatusPort: () => 19500,
+      probeHealth: async () => true,
+    });
+    const { ctx, notifications } = createFakeCtx();
+
+    await h.commands.get("testd").handler("status", ctx);
+    assert.equal(
+      notifications[0].msg,
+      "Server: running\nPort: 19500\nExtension: disconnected\nURL: http://localhost:19500",
+    );
+  });
+
+  it("shows usage for unknown subcommand when strictCommandUsage is enabled", async () => {
+    const h = makeClient({ strictCommandUsage: true });
+    const { ctx, notifications } = createFakeCtx();
+
+    await h.commands.get("testd").handler("bogus", ctx);
+    assert.deepEqual(notifications.map((n) => n.msg), ["Usage: /testd start|stop|restart|status"]);
+  });
+
+  it("aborts command when beforeCommand returns false", async () => {
+    const h = makeClient({ beforeCommand: () => false });
+    const { ctx, notifications } = createFakeCtx();
+
+    await h.commands.get("testd").handler("stop", ctx);
+    assert.equal(h.getStops(), 0);
+    assert.deepEqual(notifications, []);
   });
 });
