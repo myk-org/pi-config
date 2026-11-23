@@ -1,5 +1,24 @@
 # Changelog
 
+## [5.1.0] - 2026-11-23
+
+- Added opt-in post-merge PR retrospective (`/retro` prompt, collector script, and `pr_retro`
+  setting) (#1350).
+- Added streaming assistant repetition/degeneration loop abort guard (`stream-loop-guard.ts`) on
+  `message_update` with per-session COMS abort-reply protection (#1375).
+- Fixed `coms-welcome` banner to never force `triggerTurn` on reconnect/reload (#1352), enforced
+  per-session keying for cross-extension `globalThis` bridges (#1346), and scanned recent
+  uncompacted sessions in `session_search` (#1347).
+- Included compact open-task summary in `TaskUpdate` and `TaskBulkUpdate` tool responses (#1345).
+- Completed 9 architecture-deepening module consolidations across `pi-orchestrator-config`:
+  settings store (`project-settings.ts`, #1365), startup model/thinking restore (`session-restore.ts`,
+  #1366), unified cross-extension `session-bridge.ts` (#1369), unified `memory-store.ts` (#1370),
+  shared `daemon-manager.ts` + `pidiff/lockfile.ts` (#1371), `pidiff-ui` `DiffSessionController`
+  (#1372), `pidash` `discord-session-routing.ts` (#1377), `orchestrator` `bash-policy.ts` (#1378),
+  and COMS `ComsPeerRuntime` + `ComsRegistry` (#1379).
+- Documented cross-extension lifecycle hook ordering (#1344) and trimmed `AGENTS.md` to navigation
+  pointers with review-only `CODING_STANDARDS.md` (#1349).
+
 ## [5.0.0] - 2026-11-22
 
 - **BREAKING CHANGE:** Removed `acpx-provider` and `cli-provider` extensions, shared runtime provider
