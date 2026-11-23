@@ -344,7 +344,7 @@ Registered by `extensions/orchestrator/trail.ts` when `trail_enable` is on, whic
 | `trail_refresh` | Rebuild the local Trail map | none |
 | `trail_blast_radius` | Dependencies affected by the local diff | `depth` (1–10) |
 
-**Map-first gate.** On a substantive prompt the first project navigation of the turn is the map, not raw search: `read` of an indexed file and `grep`/`find`/`rg` are blocked until a `trail_*` call runs (or the agent reads a file:line pointer the retrieval injected). Unindexed paths — docs, lockfiles, `.pi/**` — are never blocked, and the gate fails open when there is no map.
+**Map-first gate.** On a substantive prompt the first project navigation of the turn is the map, not raw search: `read` of an indexed file and `grep`/`find`/`rg` are blocked until a `trail_*` call runs (or the agent reads a file:line pointer the retrieval injected). Unindexed paths — docs, lockfiles, `.pi/**` — are never blocked, and the gate fails open when there is no map. In linked git worktrees, maps live under `graft/` or `.trail/cache/` from the worktree root and never write into the main checkout's map.
 
 **`trail_repo_map` is capped.** The overview is a one-per-session orientation aid. A second call in the same session returns a redirect to `trail_find_code` instead of re-running the CLI, because repeated overviews replaced actual lookup in practice.
 
