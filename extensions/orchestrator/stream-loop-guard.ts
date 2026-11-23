@@ -5,14 +5,24 @@
  * repeated short lines (e.g. `.\n.\n.\n...`) or repeated 2–4 line blocks until
  * hitting the token limit. This module inspects `message_update` text/thinking
  * deltas with an O(1) sliding tail buffer, ignores fenced code blocks and
- * legitimate structural constructs, and calls `ctx.abort()` once per message on
- * unambiguous degeneration.
+ * legitimate structural constructs (GFM tables, bounded unified diff hunks,
+ * pretty-printed JSON containers, and Markdown list items), and calls
+ * `ctx.abort()` once per message on unambiguous degeneration.
  */
+import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createLogger } from "../shared/logger.js";
+import { createLogger, type Logger } from "../shared/logger.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import {
+  DEFAULT_BRIDGE_SESSION_KEY,
+  resolveBridgeSessionKey,
+} from "../shared/session-bridge-map.js";
+import {
+  clearStreamLoopAborted,
+  markStreamLoopAborted,
+} from "../shared/stream-loop-abort-bridge.js";
 
-const log = createLogger("orchestrator");
+const defaultLog = createLogger("orchestrator");
 
 export const CONSECUTIVE_LINE_THRESHOLD = 12;
 export const BLOCK_REPEAT_THRESHOLD = 5;
@@ -24,11 +34,24 @@ const MAX_RECENT_LINES = Math.max(
   MAX_BLOCK_SIZE * BLOCK_REPEAT_THRESHOLD,
 );
 const MAX_TRACKED_LINE_LEN = 512;
-const MAX_SAMPLE_LEN = 120;
 
-const BACKTICK_OPEN_RE = /^[ \t]*(`{3,})([^`]*)$/;
-const TILDE_OPEN_RE = /^[ \t]*(~{3,})(.*)$/;
+// CommonMark fenced code blocks allow only 0–3 leading spaces (4+ spaces or tabs are indented code).
+const BACKTICK_OPEN_RE = /^ {0,3}(`{3,})([^`]*)$/;
+const TILDE_OPEN_RE = /^ {0,3}(~{3,})(.*)$/;
+const BACKTICK_CLOSE_RE = /^ {0,3}(`{3,})[ \t]*$/;
+const TILDE_CLOSE_RE = /^ {0,3}(~{3,})[ \t]*$/;
+
+const GFM_TABLE_MULTI_COL_DELIM_RE = /^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/;
+const GFM_TABLE_SINGLE_COL_DELIM_RE = /^\|\s*:?-{3,}:?\s*\|$/;
+const DIFF_HUNK_HEADER_RE = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: |$)/;
+const MARKDOWN_LIST_ITEM_RE = /^(?:[-*+]|\d+[.)])\s+\S/;
 const CLOSING_DELIMITER_RE = /^[}\]),;]+$/;
+
+const JSON_STRUCTURAL_RE = /^[{\[\]}]+,?$/;
+const JSON_PROPERTY_RE = /^"(?:[^"\\]|\\.)*"\s*:\s*.+$/;
+const JSON_STRING_RE = /^"(?:[^"\\]|\\.)*",?$/;
+const JSON_NUMBER_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?,?$/;
+const JSON_LITERAL_RE = /^(?:true|false|null),?$/;
 
 export type StreamKind = "text" | "thinking";
 export type RepetitionKind = "repeated_line" | "repeated_block";
@@ -37,12 +60,20 @@ export interface StreamLoopDetection {
   kind: RepetitionKind;
   stream: StreamKind;
   runLength: number;
+  /** Redacted structural fingerprint (never contains raw streamed text or thinking). */
   sample: string;
+  sampleLength: number;
+  sampleHash: string;
 }
 
 interface FenceState {
   char: "`" | "~";
   length: number;
+}
+
+interface DiffHunkState {
+  oldRemaining: number;
+  newRemaining: number;
 }
 
 interface LineEntry {
@@ -59,31 +90,83 @@ function matchOpeningFence(line: string): FenceState | null {
 }
 
 function isClosingFence(line: string, fence: FenceState): boolean {
-  const trimmed = line.trim();
-  if (trimmed.length < fence.length) return false;
-  for (let i = 0; i < trimmed.length; i += 1) {
-    if (trimmed[i] !== fence.char) return false;
-  }
-  return true;
+  const match = fence.char === "`" ? BACKTICK_CLOSE_RE.exec(line) : TILDE_CLOSE_RE.exec(line);
+  return match !== null && match[1].length >= fence.length;
 }
 
-function isMarkdownTableRow(trimmed: string): boolean {
+function isGfmTableDelimiter(trimmed: string): boolean {
+  return GFM_TABLE_MULTI_COL_DELIM_RE.test(trimmed) || GFM_TABLE_SINGLE_COL_DELIM_RE.test(trimmed);
+}
+
+function isTablePipeRow(trimmed: string): boolean {
+  return trimmed.includes("|") && /[^|\s]/.test(trimmed);
+}
+
+function parseDiffHunkHeader(line: string): DiffHunkState | null {
+  const match = DIFF_HUNK_HEADER_RE.exec(line);
+  if (!match) return null;
+  const oldRemaining = match[1] !== undefined ? Number(match[1]) : 1;
+  const newRemaining = match[2] !== undefined ? Number(match[2]) : 1;
+  if (oldRemaining === 0 && newRemaining === 0) return null;
+  return { oldRemaining, newRemaining };
+}
+
+function isValidJsonLine(trimmed: string): boolean {
   return (
-    trimmed.length >= 3 &&
-    trimmed.startsWith("|") &&
-    trimmed.endsWith("|") &&
-    /[^|\s]/.test(trimmed)
+    JSON_STRUCTURAL_RE.test(trimmed) ||
+    JSON_PROPERTY_RE.test(trimmed) ||
+    JSON_STRING_RE.test(trimmed) ||
+    JSON_NUMBER_RE.test(trimmed) ||
+    JSON_LITERAL_RE.test(trimmed)
   );
 }
 
-function truncateSample(text: string): string {
-  return text.length <= MAX_SAMPLE_LEN ? text : `${text.slice(0, MAX_SAMPLE_LEN - 1)}…`;
+/** Net JSON container depth delta outside double-quoted strings, or null on unterminated string. */
+function computeJsonDepthDelta(trimmed: string): number | null {
+  let delta = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < trimmed.length; i += 1) {
+    const ch = trimmed[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{" || ch === "[") {
+      delta += 1;
+    } else if (ch === "}" || ch === "]") {
+      delta -= 1;
+    }
+  }
+  return inString ? null : delta;
+}
+
+function redactSample(text: string): { sample: string; sampleLength: number; sampleHash: string } {
+  const sampleLength = text.length;
+  const sampleHash = createHash("sha256").update(text).digest("hex").slice(0, 12);
+  return {
+    sample: `<redacted:len=${sampleLength},sha256=${sampleHash}>`,
+    sampleLength,
+    sampleHash,
+  };
 }
 
 class StreamLineTracker {
   private pendingLine = "";
   private pendingOversized = false;
   private openFence: FenceState | null = null;
+  private diffHunk: DiffHunkState | null = null;
+  private inMarkdownTable = false;
+  private prevLineTableHeader = false;
+  private jsonDepth = 0;
   private readonly recentLines: LineEntry[] = [];
 
   constructor(private readonly stream: StreamKind) {}
@@ -92,6 +175,10 @@ class StreamLineTracker {
     this.pendingLine = "";
     this.pendingOversized = false;
     this.openFence = null;
+    this.diffHunk = null;
+    this.inMarkdownTable = false;
+    this.prevLineTableHeader = false;
+    this.jsonDepth = 0;
     this.recentLines.length = 0;
   }
 
@@ -100,6 +187,10 @@ class StreamLineTracker {
       this.pendingLine.length > 0 ||
       this.pendingOversized ||
       this.openFence !== null ||
+      this.diffHunk !== null ||
+      this.inMarkdownTable ||
+      this.prevLineTableHeader ||
+      this.jsonDepth > 0 ||
       this.recentLines.length > 0
     );
   }
@@ -132,6 +223,34 @@ class StreamLineTracker {
     this.pendingLine += chunk;
   }
 
+  private clearStructuralContext(): void {
+    this.diffHunk = null;
+    this.inMarkdownTable = false;
+    this.prevLineTableHeader = false;
+    this.jsonDepth = 0;
+  }
+
+  private consumeDiffHunkLine(raw: string): boolean {
+    const hunk = this.diffHunk;
+    if (!hunk) return false;
+    if (raw === "\\ No newline at end of file") return true;
+    if (raw.startsWith("+") && hunk.newRemaining > 0) {
+      hunk.newRemaining -= 1;
+    } else if (raw.startsWith("-") && hunk.oldRemaining > 0) {
+      hunk.oldRemaining -= 1;
+    } else if ((raw.startsWith(" ") || raw === "") && hunk.oldRemaining > 0 && hunk.newRemaining > 0) {
+      hunk.oldRemaining -= 1;
+      hunk.newRemaining -= 1;
+    } else {
+      this.diffHunk = null;
+      return false;
+    }
+    if (hunk.oldRemaining === 0 && hunk.newRemaining === 0) {
+      this.diffHunk = null;
+    }
+    return true;
+  }
+
   private commitLine(): StreamLoopDetection | null {
     const raw = this.pendingLine.endsWith("\r")
       ? this.pendingLine.slice(0, -1)
@@ -142,6 +261,7 @@ class StreamLineTracker {
 
     if (oversized) {
       if (!this.openFence) {
+        this.clearStructuralContext();
         this.recentLines.length = 0;
       }
       return null;
@@ -158,12 +278,64 @@ class StreamLineTracker {
     const opened = matchOpeningFence(raw);
     if (opened) {
       this.openFence = opened;
+      this.clearStructuralContext();
+      this.recentLines.length = 0;
+      return null;
+    }
+
+    // Bounded unified diff hunks (`@@ -old,n +new,m @@`).
+    if (this.diffHunk && this.consumeDiffHunkLine(raw)) {
+      this.recentLines.length = 0;
+      return null;
+    }
+    const nextHunk = parseDiffHunkHeader(raw);
+    if (nextHunk) {
+      this.clearStructuralContext();
+      this.diffHunk = nextHunk;
       this.recentLines.length = 0;
       return null;
     }
 
     const trimmed = raw.trim();
-    if (isMarkdownTableRow(trimmed)) {
+
+    // Un-fenced pretty-printed JSON containers (`{` / `[`).
+    if (this.jsonDepth > 0) {
+      if (trimmed.length > 0 && isValidJsonLine(trimmed)) {
+        const delta = computeJsonDepthDelta(trimmed);
+        if (delta !== null) {
+          this.jsonDepth = Math.max(0, this.jsonDepth + delta);
+          this.prevLineTableHeader = false;
+          this.recentLines.length = 0;
+          return null;
+        }
+      }
+      this.jsonDepth = 0;
+    } else if (trimmed === "{" || trimmed === "[") {
+      this.inMarkdownTable = false;
+      this.prevLineTableHeader = false;
+      this.jsonDepth = 1;
+      this.recentLines.length = 0;
+      return null;
+    }
+
+    // GFM markdown tables require a header row followed by a delimiter row (`| --- |`).
+    if (this.inMarkdownTable) {
+      if (isTablePipeRow(trimmed)) {
+        this.recentLines.length = 0;
+        return null;
+      }
+      this.inMarkdownTable = false;
+    } else if (this.prevLineTableHeader && isGfmTableDelimiter(trimmed)) {
+      this.inMarkdownTable = true;
+      this.prevLineTableHeader = false;
+      this.recentLines.length = 0;
+      return null;
+    }
+    this.prevLineTableHeader = isTablePipeRow(trimmed) && !isGfmTableDelimiter(trimmed);
+
+    // Valid Markdown bullet/numbered list items (e.g. `- [ ] TODO`, `1. step`); bare `-` is not matched.
+    if (MARKDOWN_LIST_ITEM_RE.test(trimmed)) {
+      this.prevLineTableHeader = false;
       this.recentLines.length = 0;
       return null;
     }
@@ -200,7 +372,7 @@ class StreamLineTracker {
           kind: "repeated_line",
           stream: this.stream,
           runLength: CONSECUTIVE_LINE_THRESHOLD,
-          sample: truncateSample(last.trimmed),
+          ...redactSample(last.trimmed),
         };
       }
     }
@@ -244,15 +416,15 @@ class StreamLineTracker {
       }
 
       if (allBlocksMatch && !(allClosingOrEmpty && !allBlocksSameRaw)) {
-        const blockSample = this.recentLines
+        const blockText = this.recentLines
           .slice(start, start + blockSize)
           .map((entry) => entry.trimmed)
-          .join("\\n");
+          .join("\n");
         return {
           kind: "repeated_block",
           stream: this.stream,
           runLength: BLOCK_REPEAT_THRESHOLD,
-          sample: truncateSample(blockSample),
+          ...redactSample(blockText),
         };
       }
     }
@@ -292,19 +464,36 @@ export class StreamLoopGuard {
   }
 }
 
-export function registerStreamLoopGuard(pi: ExtensionAPI): void {
+export function registerStreamLoopGuard(
+  pi: ExtensionAPI,
+  opts?: { logger?: Logger },
+): void {
+  const log = opts?.logger ?? defaultLog;
   const guard = new StreamLoopGuard();
+  let currentSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
+  let markedSessionKey: string | null = null;
 
-  const reset = (reason: string): void => {
+  const clearMarkedAbort = (): void => {
+    if (markedSessionKey !== null) {
+      clearStreamLoopAborted(markedSessionKey);
+      markedSessionKey = null;
+    }
+  };
+
+  const reset = (reason: string, ctx?: unknown): void => {
+    clearMarkedAbort();
+    if (reason === "session_start" && ctx !== undefined) {
+      currentSessionKey = resolveBridgeSessionKey(ctx);
+    }
     if (guard.hasState()) {
       log.debug("stream_loop_guard_reset", { reason });
     }
     guard.reset();
   };
 
-  pi.on("turn_start", () => reset("turn_start"));
-  pi.on("message_start", () => reset("message_start"));
-  pi.on("session_start", () => reset("session_start"));
+  pi.on("turn_start", (_event, ctx) => reset("turn_start", ctx));
+  pi.on("message_start", (_event, ctx) => reset("message_start", ctx));
+  pi.on("session_start", (_event, ctx) => reset("session_start", ctx));
   pi.on("session_shutdown", () => reset("session_shutdown"));
 
   pi.on("message_update", (event, ctx) => {
@@ -340,14 +529,25 @@ export function registerStreamLoopGuard(pi: ExtensionAPI): void {
       stream: detection.stream,
       runLength: detection.runLength,
       sample: detection.sample,
+      sampleLength: detection.sampleLength,
+      sampleHash: detection.sampleHash,
     });
 
     if (!isLiveExtensionCtx(ctx)) return;
 
+    const fromCtx = resolveBridgeSessionKey(ctx);
+    const sessionKey = fromCtx !== DEFAULT_BRIDGE_SESSION_KEY ? fromCtx : currentSessionKey;
+    markStreamLoopAborted(sessionKey);
+    markedSessionKey = sessionKey;
+
     try {
       ctx.abort?.();
     } catch (err) {
-      log.warn("stream_repetition_loop_abort_failed", { error: String(err) });
+      clearMarkedAbort();
+      log.error(
+        "stream_repetition_loop_abort_failed",
+        err instanceof Error ? err : new Error(String(err)),
+      );
     }
 
     if (ctx.hasUI) {
