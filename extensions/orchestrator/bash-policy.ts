@@ -1,22 +1,1273 @@
 /**
- * Pure helper functions for dangerous-command enforcement.
- * Extracted to allow testing without SDK dependencies.
+ * Deep bash enforcement policy module — single coherent boundary owning:
+ * - Unified shell lexing, quoting, heredoc, and substitution scanning
+ * - Dangerous-pattern registry (DANGEROUS_RULES) and noexec syntax-check exemption
+ * - Git command classification, conflict-resolution detection, and identity/settings guards
+ * - Command-policy evaluation (evaluateBashPolicy, evaluateFileWritePolicy)
  */
 
 import { createLogger } from "../shared/logger.js";
 import { createHash } from "node:crypto";
-import { lstatSync, realpathSync, mkdirSync, rmdirSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, mkdirSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { acquireDirLock } from "../shared/file-lock.js";
-import { escapeRegExp, getProjectDataDir } from "./utils.js";
-import { getGlobalSettingsPath, getSettingsPath, loadGlobalSettings, loadProjectSettings, readSettingsFile, writeSettingsFile } from "./project-settings.js";
-import { DANGEROUS, WRAPPER_VALUE_OPTIONS, executableText, getCurrentBranch, isConflictResolutionCommand, matchHeredocOpener, segmentRunsGit, skipHeredocBody, tokenize, type HeredocSpec } from "./git-helpers.js";
+import { escapeRegExp, getProjectDataDir, realpathNearestExisting, sanitizeModelId } from "./utils.js";
+import {
+  getGlobalSettingsPath,
+  getSetting,
+  getSettingsPath,
+  LEGACY_SETTINGS_FILENAME,
+  loadGlobalSettings,
+  loadProjectSettings,
+  readSettingsFile,
+  SETTINGS_FILENAMES,
+  writeSettingsFile,
+} from "./project-settings.js";
+import {
+  getCurrentBranch,
+  getMainBranch,
+  getPrMergeStatus,
+  getProtectedBranches,
+  isBranchAhead,
+  isBranchMerged,
+  isGitRepo,
+  isInsideGitWorkTree,
+  listUnmergedFiles,
+  runGit,
+} from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
-enfLog.debug("enforcement-helpers module loaded");
+enfLog.debug("bash-policy module loaded");
+
+// ── Shell Lexing, Heredoc Scanning & Git Command Classification ─────────────
+
+/**
+ * Split a shell segment into words, honouring quotes and backslash escapes, so
+ * `conflicted\ repo` is one word and `-c core.editor="vim -f"` is one option.
+ */
+export function tokenize(text: string): string[] {
+  enfLog.debug("tokenize", "chars", text.length);
+  const tokens: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let has = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; has = true; continue; }
+    if (ch === "\\" && i + 1 < text.length) { current += text[i + 1]; i++; continue; }
+    if (/\s/.test(ch)) {
+      if (has) tokens.push(current);
+      current = "";
+      has = false;
+      continue;
+    }
+    current += ch;
+    has = true;
+  }
+  if (has) tokens.push(current);
+  return tokens;
+}
+
+/**
+ * The shell part of a command: what it would actually run.
+ *
+ * Quoted text is not automatically inert — `bash -c 'git add x'`,
+ * `eval '...'` and `"$(git add x)"` all execute — and a heredoc body is inert
+ * except for substitutions, while the text *after* the delimiter on the opener
+ * line still runs. So this scans rather than pattern-matches: literals are kept,
+ * `$(...)`, backticks and script arguments are descended into, heredoc bodies
+ * contribute only their substitutions, and an inert quoted span collapses to a
+ * placeholder token so `git -C "repo" add` stays parseable.
+ */
+type ScanMode = "full" | "words" | "body" | "literal-body";
+
+/**
+ * Emitted when nesting exceeded the scan depth: the scanner stopped early and
+ * did not see everything. Callers must treat it as "not safe to allow" rather
+ * than as absence of a command.
+ */
+const UNSCANNED = "\u0000unscanned-nesting\u0000";
+
+const SHELL_NAMES = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
+
+/** Return character count of a `\\\n` or `\\\r\n` line continuation at `i`, or 0. */
+function skipLineContinuation(s: string, i: number): number {
+  if (s[i] !== "\\") return 0;
+  if (s[i + 1] === "\n") return 2;
+  if (s[i + 1] === "\r" && s[i + 2] === "\n") return 3;
+  return 0;
+}
+
+/** Return index of the `\n` ending a `#` line comment starting at `hashIdx` (or `s.length`). */
+function skipLineComment(s: string, hashIdx: number): number {
+  const nl = s.indexOf("\n", hashIdx);
+  return nl === -1 ? s.length : nl;
+}
+
+/** Given the index of `'` in `$'...'`, return the closing `'` index honoring `\` escapes, or null. */
+function scanAnsiCQuoteEnd(s: string, openQuoteIdx: number): number | null {
+  let i = openQuoteIdx + 1;
+  while (i < s.length) {
+    const ch = s[i]!;
+    if (ch === "\\" && i + 1 < s.length) {
+      i += 2;
+      continue;
+    }
+    if (ch === "'") return i;
+    i++;
+  }
+  return null;
+}
+
+/** Given the index of `` ` ``, return the closing `` ` `` index honoring `\` escapes, or null. */
+function scanBacktickEnd(s: string, openIdx: number): number | null {
+  let i = openIdx + 1;
+  while (i < s.length) {
+    const ch = s[i]!;
+    if (ch === "\\" && i + 1 < s.length) {
+      i += 2;
+      continue;
+    }
+    if (ch === "`") return i;
+    i++;
+  }
+  return null;
+}
+
+/** If `s` at `i` starts a closed inline heredoc (`<<[-]\s*['"]?[\w-]+['"]?`), return the last index
+ *  of its terminator line (so a `for (;; i++)` loop resumes at the following `\n` or EOF), else null. */
+function skipInlineHeredoc(s: string, i: number): number | null {
+  if (s[i] !== "<" || s[i + 1] !== "<" || s[i + 2] === "<") return null;
+  const opener = matchHeredocOpener(s.slice(i), "comments");
+  if (!opener || !/^[\w-]+$/.test(opener.delim)) return null;
+  const nl = s.indexOf("\n", i + opener.length);
+  if (nl === -1) return null;
+  const { next, closed } = skipHeredocBody(
+    s,
+    nl + 1,
+    [{ delim: opener.delim, stripTabs: opener.stripTabs }],
+    { stripCr: true },
+  );
+  if (!closed) return null;
+  return next > 0 && s[next - 1] === "\n" ? next - 2 : next - 1;
+}
+
+interface BalancedParenScanOptions {
+  end?: number;
+  honorComments?: boolean;
+  honorHeredocs?: boolean;
+  honorAnsiC?: boolean;
+  honorBacktick?: boolean;
+  recurseDoubleQuote?: boolean;
+  singleQuoteEscapes?: boolean;
+  unquotedEscapes?: boolean;
+  onCloseParen?: (idx: number) => void;
+}
+
+/** Shared quote-aware scanner for balanced parentheses starting at `openParenIdx` (`(`).
+ *  Returns the matching `)` index, or `null` if unterminated before `end`. */
+function scanBalancedParen(
+  s: string,
+  openParenIdx: number,
+  opts: BalancedParenScanOptions = {},
+): number | null {
+  const limit = opts.end ?? s.length;
+  let depth = 1;
+  let quote: "'" | '"' | null = null;
+  for (let i = openParenIdx + 1; i < limit; i++) {
+    const ch = s[i]!;
+    if (quote !== null) {
+      if ((quote === '"' || opts.singleQuoteEscapes) && ch === "\\" && i + 1 < limit) {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (opts.honorComments && ch === "#" && (i === openParenIdx + 1 || /[\s(;&|]/.test(s[i - 1]!))) {
+      i = Math.min(limit, skipLineComment(s, i));
+      continue;
+    }
+    if (opts.honorHeredocs && ch === "<" && s[i + 1] === "<" && s[i + 2] !== "<") {
+      const end = skipInlineHeredoc(s, i);
+      if (end !== null && end < limit) {
+        i = end;
+        continue;
+      }
+    }
+    if (opts.unquotedEscapes && ch === "\\" && i + 1 < limit) {
+      i++;
+      continue;
+    }
+    if (opts.honorAnsiC && ch === "'" && i > 0 && s[i - 1] === "$") {
+      const close = scanAnsiCQuoteEnd(s, i);
+      if (close === null || close >= limit) return null;
+      i = close;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      if (opts.recurseDoubleQuote) {
+        const close = scanDoubleQuoteEnd(s, i, { honorHeredocs: opts.honorHeredocs, honorBacktick: false });
+        if (close === null || close >= limit) return null;
+        i = close;
+        continue;
+      }
+      quote = ch;
+      continue;
+    }
+    if (opts.honorBacktick && ch === "`") {
+      const close = scanBacktickEnd(s, i);
+      if (close === null || close >= limit) return null;
+      i = close;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+    } else if (ch === ")") {
+      opts.onCloseParen?.(i);
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return null;
+}
+
+interface DoubleQuoteScanOptions {
+  honorHeredocs?: boolean;
+  honorBacktick?: boolean;
+  lenientSubstParen?: boolean;
+}
+
+/** Shared closing-quote scanner for single and double quotes starting at `openIdx`.
+ *  Returns the closing quote index, or `null` if unterminated. */
+function scanDoubleQuoteEnd(
+  s: string,
+  openIdx: number,
+  opts: DoubleQuoteScanOptions = {},
+): number | null {
+  const q = s[openIdx];
+  if (q !== '"' && q !== "'") return null;
+  if (q === "'") {
+    const close = s.indexOf("'", openIdx + 1);
+    return close < 0 ? null : close;
+  }
+  for (let i = openIdx + 1; i < s.length; i++) {
+    if (opts.honorHeredocs && s[i] === "<" && s[i + 1] === "<") {
+      const end = skipInlineHeredoc(s, i);
+      if (end !== null) {
+        enfLog.debug("matchingQuoteIndex skip heredoc");
+        i = end;
+        continue;
+      }
+    }
+    if (s[i] === "\\" && i + 1 < s.length) {
+      i++;
+      continue;
+    }
+    if (s[i] === "$" && s[i + 1] === "(") {
+      const closeParen = opts.lenientSubstParen
+        ? matchingParen(s, i + 1)
+        : matchingSubstParenIndex(s, i + 1);
+      if (closeParen === null) return null;
+      i = closeParen;
+      continue;
+    }
+    if (opts.honorBacktick && s[i] === "`") {
+      const end = s.indexOf("`", i + 1);
+      if (end === -1) return null;
+      i = end;
+      continue;
+    }
+    if (s[i] === '"') return i;
+  }
+  return null;
+}
+
+/** Shared quote state machine backing `stripSingleQuotedRegions` and `maskQuotedRegions`:
+ *  - `"strip-single"`: collapses `'...'` to `''` while keeping `"..."` verbatim (double-quote aware).
+ *  - `"mask-all"`: replaces the interior of both `'...'` and `"..."` with a single space.
+ *  Both respect unquoted `\` escapes and re-emit unterminated quotes raw so a stray quote
+ *  cannot hide trailing executable text from security guards. */
+function scanQuotedRegions(input: string, mode: "strip-single" | "mask-all"): string {
+  let out = "";
+  let i = 0;
+  let quote: "'" | '"' | null = null;
+  let openIndex = -1;
+  while (i < input.length) {
+    const ch = input[i]!;
+    if (quote !== null) {
+      if (quote === '"' && ch === "\\" && i + 1 < input.length) {
+        if (mode === "strip-single") out += input.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (ch === quote) {
+        if (mode === "strip-single") {
+          out += quote === "'" ? "''" : '"';
+        } else {
+          out += " ";
+          out += quote;
+        }
+        quote = null;
+        i++;
+        continue;
+      }
+      if (mode === "strip-single" && quote === '"') out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < input.length) {
+      out += input.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      openIndex = i;
+      if (mode === "mask-all" || ch === '"') out += ch;
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  if (quote !== null && openIndex >= 0) {
+    if (mode === "strip-single") {
+      if (quote === "'") out += input.slice(openIndex);
+    } else {
+      out += input.slice(openIndex + 1);
+    }
+  }
+  return out;
+}
+
+/** Closing paren of a `$(`, ignoring parens inside quotes. */
+function matchingParen(cmd: string, open: number): number {
+  const close = scanBalancedParen(cmd, open, { singleQuoteEscapes: true });
+  if (close !== null) {
+    enfLog.debug("matching_paren", "at", close);
+    return close;
+  }
+  enfLog.debug("matching_paren_unterminated", "open", open);
+  return cmd.length;
+}
+
+/** Index of the closing quote, skipping over $( ) and backtick regions. */
+function closingQuote(cmd: string, open: number, quote: string): number {
+  const close = quote === "'"
+    ? (() => {
+        const idx = cmd.indexOf("'", open + 1);
+        return idx === -1 ? null : idx;
+      })()
+    : scanDoubleQuoteEnd(cmd, open, { honorBacktick: true, lenientSubstParen: true });
+  if (close !== null) {
+    enfLog.debug("closing_quote", "quote", quote, "at", close);
+    return close;
+  }
+  enfLog.debug("closing_quote_unterminated", "quote", quote, "open", open);
+  return cmd.length;
+}
+
+/**
+ * True when the quoted span at `at` is a script argument — the string a shell
+ * runs. Covers `bash -c`, bundled short flags (`bash -xc`), options before `-c`
+ * (`bash --login -c`), ANSI-C quoting (`bash -c $'…'`), and `eval`.
+ */
+function isScriptArgument(cmd: string, at: number): boolean {
+  const before = cmd.slice(0, at).replace(/[$]+$/, "").trimEnd();
+  const words = before.split(/\s+/);
+  // Walk back over option words to the command word that started them.
+  let i = words.length - 1;
+  let sawCommandOption = false;
+  while (i >= 0 && words[i].startsWith("-") && words[i].length > 1) {
+    if (words[i] === "-" || words[i].startsWith("--")) {
+      // A long option may take the script as its value.
+      if (/^--(command|login|noprofile|norc|interactive|posix|verbose|xtrace|echo|errexit|nounset|pipefail)$/.test(words[i])) sawCommandOption = true;
+    } else if (words[i].includes("c")) {
+      sawCommandOption = true;
+    }
+    i--;
+  }
+  // Compare the executable's name, so /bin/bash and /usr/bin/env-less paths
+  // resolve the same as a bare `bash`.
+  const command = (words[i] ?? "").split("/").pop() ?? "";
+  if (command === "eval" || command === "source" || command === ".") return true;
+  if (!SHELL_NAMES.has(command)) return false;
+  // A bare `bash 'script'` is a script file, not a script string.
+  enfLog.debug("script_argument", "command", command, "option", sawCommandOption);
+  return sawCommandOption;
+}
+
+/** Does `line` terminate the heredoc? Ordinary delimiters match exactly; `<<-` allows leading tabs. */
+function isHeredocTerminator(line: string, delim: string, stripTabs: boolean): boolean {
+  const isTerminator = stripTabs && line.charCodeAt(0) === 9 ? line.replace(/^\t+/, "") === delim : line === delim;
+  enfLog.debug("heredoc_terminator", "delim", delim, "strip_tabs", stripTabs, "matched", isTerminator);
+  return isTerminator;
+}
+
+export interface HeredocSpec {
+  delim: string;
+  expand?: boolean;
+  stripTabs: boolean;
+}
+
+export type HeredocGrammar = "executable" | "comments" | "piped-commit";
+
+const HEREDOC_OPENER_RES: Record<HeredocGrammar, RegExp> = {
+  executable: /^<<(-?)\s*(?:'([^']*)'|"([^"]*)"|([^\s;&|)'\n]+))/,
+  comments: /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|((?:\\.|[^\s;&|)'"\\`\n])+))/,
+  "piped-commit": /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s;&|()<>'"`]+))/,
+};
+
+export function matchHeredocOpener(
+  slice: string,
+  grammar: HeredocGrammar = "executable",
+): { delim: string; expand: boolean; stripTabs: boolean; length: number } | null {
+  const m = HEREDOC_OPENER_RES[grammar].exec(slice);
+  if (!m) return null;
+  const rawUnquoted = m[4];
+  const delim =
+    m[2] !== undefined
+      ? m[2]
+      : m[3] !== undefined
+        ? m[3]
+        : grammar === "comments"
+          ? rawUnquoted!.replace(/\\(.)/g, "$1")
+          : rawUnquoted!;
+  return {
+    delim,
+    expand: m[2] === undefined && m[3] === undefined,
+    stripTabs: m[1] === "-",
+    length: m[0].length,
+  };
+}
+
+export function skipHeredocBody(
+  cmd: string,
+  start: number,
+  pending: ReadonlyArray<HeredocSpec>,
+  opts?: { stripCr?: boolean; onBodyLine?: (line: string, index: number) => void },
+): { next: number; closed: boolean } {
+  let cursor = start;
+  let allClosed = true;
+  for (let hIdx = 0; hIdx < pending.length; hIdx++) {
+    const h = pending[hIdx]!;
+    let closed = false;
+    while (cursor <= cmd.length) {
+      let lineEnd = cmd.indexOf("\n", cursor);
+      const atEnd = lineEnd === -1;
+      if (atEnd) lineEnd = cmd.length;
+      const rawLine = cmd.slice(cursor, lineEnd);
+      const line = opts?.stripCr ? rawLine.replace(/\r$/, "") : rawLine;
+      if (isHeredocTerminator(line, h.delim, h.stripTabs)) {
+        cursor = atEnd ? cmd.length : lineEnd + 1;
+        closed = true;
+        break;
+      }
+      opts?.onBodyLine?.(rawLine, hIdx);
+      cursor = atEnd ? cmd.length : lineEnd + 1;
+      if (atEnd) break;
+    }
+    if (!closed) {
+      allClosed = false;
+      break;
+    }
+  }
+  return { next: cursor, closed: allClosed };
+}
+
+export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string {
+  if (depth > 6) return UNSCANNED;
+  const keepLiterals = mode === "full" || mode === "words";
+  const keepSubstitutions = mode !== "literal-body";
+  let out = "";
+  const pendingHeredocs: { delim: string; expand: boolean; stripTabs: boolean }[] = [];
+  const add = (s: string) => { out += s; };
+  let substitutions = 0;
+  let heredocs = 0;
+  let continuations = 0;
+  let comments = 0;
+  let hereStrings = 0;
+
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+
+    // A backslash escapes whatever follows: `conflicted\ repo` is one word with
+    // a space, and a backslash before a newline is a continuation the shell
+    // removes entirely. Leaving either in place breaks word splitting - which is
+    // how `git -C conflicted\ repo add` hid its subcommand from the matcher.
+    if (ch === "\\" && i + 1 < cmd.length) {
+      if (cmd[i + 1] === "\n") {
+        continuations++;
+        i++;
+        continue;
+      }
+      // The escape is kept: `conflicted\ repo` is one word, and the tokenizer
+      // downstream is what knows that. Stripping it here would turn it into two.
+      if (keepLiterals) {
+        add(ch);
+        add(cmd[i + 1]);
+      }
+      i++;
+      continue;
+    }
+
+    // A `#` at the start of a word begins a comment: nothing after it runs, so a
+    // heredoc-looking token inside one must not swallow the lines below.
+    if (ch === "#" && (i === 0 || /[\s;&|(]/.test(cmd[i - 1]))) {
+      let end = cmd.indexOf("\n", i);
+      if (end === -1) end = cmd.length;
+      comments++;
+      // The newline that ends a comment is a command boundary like any other:
+      // dropping it would join the next command onto the previous segment's text
+      // and read `note; git add x` as one segment starting with `note`.
+      if (end < cmd.length) add("\n");
+      i = end;
+      continue;
+    }
+
+    // A here-string (`<<<word`) is one data argument, not a heredoc. Its text
+    // is inert, but a substitution inside it still runs, so scan it for those.
+    if (ch === "<" && cmd[i + 1] === "<" && cmd[i + 2] === "<") {
+      let j = i + 3;
+      while (j < cmd.length && /[ \t]/.test(cmd[j])) j++;
+      const quote = cmd[j];
+      let end = j;
+      if (quote === "'" || quote === '"') {
+        end = closingQuote(cmd, j, quote);
+        add(` ${executableText(cmd.slice(j + 1, end), depth + 1, quote === '"' ? "body" : "literal-body")} `);
+        hereStrings++;
+      } else {
+        while (end < cmd.length && !/[\s;&|]/.test(cmd[end])) end++;
+        add(` ${executableText(cmd.slice(j, end), depth + 1, "body")} `);
+        hereStrings++;
+      }
+      i = end;
+      continue;
+    }
+
+    // Heredoc opener: remember the delimiter, keep scanning the same line.
+    if (ch === "<" && cmd[i + 1] === "<") {
+      const m = matchHeredocOpener(cmd.slice(i), "executable");
+      if (m) {
+        pendingHeredocs.push({
+          delim: m.delim,
+          expand: m.expand,
+          stripTabs: m.stripTabs,
+        });
+        heredocs++;
+        i += m.length - 1;
+        continue;
+      }
+    }
+
+    // Heredoc bodies start after this line. One cursor walks past each body and
+    // its terminator, so a second heredoc on the same line resumes in the right
+    // place instead of inside the first body.
+    if (ch === "\n" && pendingHeredocs.length > 0) {
+      const bodies: string[][] = pendingHeredocs.map(() => []);
+      const { next } = skipHeredocBody(cmd, i + 1, pendingHeredocs, {
+        onBodyLine: (line, hIdx) => bodies[hIdx]!.push(line),
+      });
+      for (let hIdx = 0; hIdx < pendingHeredocs.length; hIdx++) {
+        const h = pendingHeredocs[hIdx]!;
+        if (h.expand && keepSubstitutions) add(` ${executableText(bodies[hIdx]!.join("\n"), depth + 1, "body")} `);
+      }
+      pendingHeredocs.length = 0;
+      // A newline, so whatever follows the terminator starts its own command.
+      add("\n");
+      i = next - 1;
+      continue;
+    }
+
+    // Command substitution — always executes.
+    if (ch === "$" && cmd[i + 1] === "(" && keepSubstitutions) {
+      const end = matchingParen(cmd, i + 1);
+      substitutions++;
+      // Parenthesised so the substituted commands are command positions of their
+      // own rather than trailing arguments of the command that expanded them.
+      add(`(${executableText(cmd.slice(i + 2, end), depth + 1)})`);
+      i = end;
+      continue;
+    }
+    if (ch === "`" && keepSubstitutions) {
+      const end = cmd.indexOf("`", i + 1);
+      substitutions++;
+      add(`(${executableText(cmd.slice(i + 1, end === -1 ? cmd.length : end), depth + 1)})`);
+      i = end === -1 ? cmd.length : end;
+      continue;
+    }
+
+    // Inside a double-quoted span or a heredoc body an apostrophe is an ordinary
+    // character - "it's" is not a quote. Treating it as one swallowed the
+    // substitutions that follow, e.g. printf %s "it's $(git add a.txt)".
+    if (ch === "'" && !keepLiterals) {
+      if (keepSubstitutions) {
+        const end = cmd.indexOf("'", i + 1);
+        add(` ${executableText(cmd.slice(i + 1, end === -1 ? cmd.length : end), depth + 1, "body")} `);
+        i = end === -1 ? cmd.length : end;
+      }
+      continue;
+    }
+
+    // ANSI-C quoting: $'…' — literal, but still a script argument to `sh -c`.
+    const ansi = ch === "$" && cmd[i + 1] === "'";
+    if (ansi || ch === "'") {
+      const start = ansi ? i + 1 : i;
+      // No closing quote: bash reports an unexpected EOF and runs nothing at all,
+      // so the rest of the command is not executable. Treating the tail as run
+      // would be the unsafe direction — it would invent a staging command the
+      // shell never performs.
+      const end = cmd.indexOf("'", start + 1);
+      const content = cmd.slice(start + 1, end === -1 ? cmd.length : end);
+      // A quoted part glued to adjacent text is part of the same shell word
+      // (`g'add'` is `gadd`, `git''` is `git`), so it must be concatenated. Only
+      // a standalone quoted argument collapses to a placeholder.
+      // `$'…'` is its own word — the `$` is a token, not glued text. An
+      // unterminated quote is not glued either: bash reports an unexpected EOF
+      // and runs nothing, so the tail must not be read as a command.
+      const glued = !ansi && end !== -1 && start > 0 && !/[\s;&|(]/.test(cmd[start - 1]);
+      if (isScriptArgument(cmd, start)) {
+        // Newlines, not spaces: the script is a command of its own, so a cd or
+        // git inside it starts a segment rather than trailing an option word.
+        if (keepSubstitutions) add(`\n(${executableText(decodeAnsiC(content), depth + 1)})\n`);
+        else add(" _ ");
+      } else if (glued || /(?:\bgit|\bcd|\bpushd|\bchdir|-C)$/.test(out.trimEnd())) {
+        // The subcommand or a directory argument, quoted: `git 'add' x`,
+        // `cd 'work tree'`, `git -C 'my repo' add`. A directory is re-quoted so a
+        // name with a space stays one word for the directory walker.
+        const isDirArg = /(?:\bcd|\bpushd|\bchdir|-C)$/.test(out.trimEnd());
+        add(isDirArg ? `"${content}"` : content);
+      } else {
+        add(" _ ");
+      }
+      i = end === -1 ? cmd.length : end;
+      continue;
+    }
+    if (ch === '"') {
+      const end = closingQuote(cmd, i, '"');
+      const content = cmd.slice(i + 1, end);
+      const glued = i > 0 && !/[\s;&|(]/.test(cmd[i - 1]);
+      if (isScriptArgument(cmd, i)) {
+        if (keepSubstitutions) add(`\n(${executableText(content, depth + 1)})\n`);
+      } else if (glued || /(?:\bgit|\bcd|\bpushd|\bchdir|-C)$/.test(out.trimEnd())) {
+        // Part of a shell word, or a quoted directory argument: keep the text so
+        // the word survives concatenation. Quoting is re-emitted so a path with
+        // spaces still reaches the directory walker as one argument.
+        const isDirArg = /(?:\bcd|\bpushd|\bchdir|-C)$/.test(out.trimEnd());
+        add(isDirArg ? `"${content}"` : executableText(content, depth + 1, "full"));
+      } else if (keepSubstitutions) {
+        // Only the substitutions inside a double-quoted span execute.
+        substitutions++;
+        add(`(${executableText(content, depth + 1, "body")})`);
+      } else {
+        add(" _ ");
+      }
+      i = end;
+      continue;
+    }
+
+    if (keepLiterals) add(ch);
+  }
+  enfLog.debug("shell_scan", "depth", depth, "mode", mode, "heredocs", heredocs, "substitutions", substitutions, "continuations", continuations, "comments", comments, "here_strings", hereStrings);
+  return out;
+}
+
+/**
+ * Git commands that write a *resolution* of an in-progress merge/rebase/
+ * cherry-pick. Inspecting a conflicted tree (`git status`, `git diff`) and
+ * backing out (`--abort`) are deliberately not in this set.
+ */
+
+
+/** Shell keywords and `VAR=value` prefixes that precede a segment's command. */
+const SEGMENT_SKIP = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}", "(", ")", "function", "coproc"]);
+
+/**
+ * Words after which a `git` token is still executed rather than merely printed:
+ * these run the command that follows them, so `xargs git add` and
+ * `find . -exec git add` stage while `echo git add` does not.
+ */
+const GIT_EXECUTORS = new Set([
+  "xargs", "find", "-exec", "-execdir", "env", "sudo", "time", "nohup", "nice",
+  "ionice", "stdbuf", "setsid", "command", "exec", "timeout",
+  // These run their argument as commands. A shell is deliberately absent: its
+  // script argument is emitted as a segment of its own, and treating `bash` as a
+  // wrapper instead made `bash -c 'echo git add'` look like a staging command.
+  "eval", "source", ".",
+]);
+
+/** Wrapper options whose operand names something other than the command. */
+export const WRAPPER_VALUE_OPTIONS = new Set([
+  "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-r", "--role",
+  "-t", "--type", "-U", "--other-user", "-C", "--chdir", "--preserve-env",
+]);
+
+/** Options that change directory, which differ per wrapper. */
+const WRAPPER_CHDIR_OPTIONS: Record<string, Set<string>> = {
+  sudo: new Set(["-D", "--chdir"]),
+  env: new Set(["-C", "--chdir"]),
+};
+/** Git's own directory option. */
+/**
+ * Git's own options that name the repository. -C moves the working directory and
+ * --git-dir names the repository outright.
+ *
+ * Deliberately not --work-tree: the git directory is what selects the index that
+ * records a merge, so two work trees over one git directory share one conflict
+ * state and must not be treated as separate repositories.
+ */
+const GIT_CHDIR_OPTIONS = new Set(["-C", "--git-dir"]);
+
+/** For a wrapper with no directory option of its own. */
+const NO_CHDIR_OPTIONS = new Set<string>();
+
+/** Is this word the git executable? A full or relative path names it just as well. */
+function isGitWord(word: string): boolean {
+  return word === "git" || word.endsWith("/git");
+}
+
+/**
+ * Does this segment run git? A segment whose *command word* is git, or one that
+ * follows a wrapper which executes the rest. Matching the text alone is wrong:
+ * `cd ~/git/proj` contains the word without running anything.
+ */
+export function segmentRunsGit(segment: string): boolean {
+  const verdict = classifySegment(segment);
+  enfLog.debug("segment_runs_git", "verdict", verdict);
+  return verdict;
+}
+
+/**
+ * The index of the word that runs the segment's command: skips control keywords,
+ * inline assignments, and TRANSPARENT prefixes whose own options sit before the
+ * command they run (`rtk -v git add`). Every consumer that needs "what does this
+ * segment actually run" goes through here, so a prefix is never handled in one
+ * parser and forgotten in another (Qodo, PR #996).
+ */
+export function skipToCommandWord(words: string[]): number {
+  let k = 0;
+  while (k < words.length) {
+    // `function NAME { ... }` puts the name between the keyword and the body.
+    if (words[k] === "function") { k += 2; continue; }
+    if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
+    // rtk runs exactly the command after it, so the next word decides. It is not
+    // an executor: `rtk grep git add f` runs grep, it does not stage.
+    if (words[k] === "rtk") {
+      k += 1;
+      while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
+        k += WRAPPER_VALUE_OPTIONS.has(words[k]) ? 2 : 1;
+      }
+      continue;
+    }
+    break;
+  }
+  return k;
+}
+
+function classifySegment(segment: string): boolean {
+  const words = tokenize(segment.trim());
+  const k = skipToCommandWord(words);
+  if (k < words.length) {
+    // A segment can start mid-subshell, so `(git` is still the git command.
+    const head = words[k].replace(/^[()]+|[()]+$/g, "");
+    if (isGitWord(head)) return true;
+    if (executorRunsGit(words, k, head)) return true;
+  }
+  // A parenthesised group is real syntax, so a git command inside one runs even
+  // when the segment starts with something else: `printf %s ((git add x))`.
+  if (/[()]/.test(segment)) {
+    for (const inner of segment.split(/[()]+/)) {
+      if (inner.trim() && segmentRunsGit(inner)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The word lists of every git invocation that actually runs: a git token that is
+ * a segment's command word, or one that follows a word which executes what comes
+ * after it. An argument that merely names git - `echo git add a.txt` - is not a
+ * command. Words are kept as tokens and never rejoined: an option value may hold
+ * an escaped space, and joining would split it back into two words.
+ */
+function executedGitCommands(cmd: string): string[][] {
+  const kept: string[][] = [];
+  for (const raw of cmd.split(/[\n;&|()]+/)) {
+    const words = tokenize(raw.trim());
+    const k = skipToCommandWord(words);
+    if (k >= words.length) continue;
+    // A segment can start mid-subshell, so `(git` is still the git command.
+    const head = words[k].replace(/^[()]+|[()]+$/g, "");
+    if (isGitWord(head)) {
+      kept.push(words.slice(k));
+    } else if (executorRunsGit(words, k, head)) {
+      // The wrapper runs the rest, so any git token in the segment counts.
+      for (let i = k + 1; i < words.length; i++) {
+        if (isGitWord(words[i])) kept.push(words.slice(i));
+      }
+    }
+  }
+  enfLog.debug("executed_git_commands", "count", kept.length);
+  return kept;
+}
+
+/**
+ * Does a wrapper at `k` run git? `command -v git` prints the path instead of
+ * running anything, so a lookup is not an invocation.
+ */
+function executorRunsGit(words: string[], k: number, head: string): boolean {
+  if (!GIT_EXECUTORS.has(head)) return false;
+  if (head === "command" && /^-[vV]$/.test(words[k + 1] ?? "")) return false;
+  return words.slice(k + 1).some(isGitWord);
+}
+
+/** Global options whose value is the next word rather than an attached one. */
+const GLOBAL_VALUE_OPTIONS = new Set(["-C", "-c"]);
+const GLOBAL_LONG_VALUE_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace", "--exec-path"]);
+
+/**
+ * The index of the subcommand in a git word list.
+ *
+ * Only a few global options take their value as a separate word. Assuming every
+ * option does swallowed the subcommand itself — `git --no-pager add x` read
+ * `add` as the value of `--no-pager` and then found no subcommand at all.
+ */
+/** The index of the word that runs git, or -1. */
+function gitWordIndex(words: string[]): number {
+  const k = skipToCommandWord(words);
+  if (k < words.length) {
+    const head = words[k].replace(/^[()]+|[()]+$/g, "");
+    if (isGitWord(head)) return k;
+    // A wrapper runs whatever follows it. `command -v git` prints the path
+    // instead of running anything, and `sudo -u git` names a user, not a
+    // command - so a wrapper's own options are stepped over, operands included.
+    if (GIT_EXECUTORS.has(head) && !/^-[vV]$/.test(words[k + 1] ?? "")) {
+      // The operand of a wrapper option names something else: `sudo -u git`
+      // runs git as a user called git, and never runs it at all.
+      // Walk past the wrapper's own options. One that takes a value takes the
+      // next word too, and that word is its operand: in `sudo -u git merge` the
+      // git is the user to run as, and the command is merge.
+      let i = k + 1;
+      let from = i;
+      while (i < words.length) {
+        const tok = words[i];
+        if (!tok.startsWith("-") || tok === "-") break;
+        i += WRAPPER_VALUE_OPTIONS.has(tok) ? 2 : 1;
+        from = i;
+      }
+      for (let j = from; j < words.length; j++) if (isGitWord(words[j])) return j;
+    }
+    return -1;
+  }
+  return -1;
+}
+
+/** The index of the subcommand, given where the git word starts. */
+function gitSubcommandIndex(words: string[], gitAt = 0): number {
+  let k = gitAt + 1;
+  while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
+    const tok = words[k];
+    const attached = tok.length > 2 && !tok.startsWith("--") ? true : tok.includes("=");
+    const takesNext = tok.startsWith("--") ? GLOBAL_LONG_VALUE_OPTIONS.has(tok) : GLOBAL_VALUE_OPTIONS.has(tok);
+    if (!attached && takesNext && words[k + 1] && !words[k + 1].startsWith("-")) k += 2;
+    else k += 1;
+  }
+  return k;
+}
+
+/** The directory a git word list targets, via its global -C values, in order. */
+/**
+ * The directory a chdir option names, in whichever of its spellings it is
+ * written: separated (`-C dir`, `--chdir dir`), attached (`-Cdir`) or with an
+ * equals sign (`--chdir=dir`).
+ */
+function chdirValue(tok: string, options: Set<string>, next?: string): string | undefined {
+  for (const opt of options) {
+    if (tok === opt) return next;
+    // Only a long option separates its value with `=`. On a short one the
+    // equals sign is part of the name, so `-C=repo` names the directory
+    // `=repo` and not `repo`.
+    if (opt.startsWith("--") && tok.startsWith(`${opt}=`)) return tok.slice(opt.length + 1);
+    if (!opt.startsWith("--") && tok.startsWith(opt) && tok.length > opt.length) return tok.slice(opt.length);
+  }
+  return undefined;
+}
+
+/**
+ * The directories a git invocation is moved into by directory options, in order.
+ *
+ * Two regions contribute. Before the git word sits a chain of wrappers, each of
+ * which may change directory with its own option — and they disagree: sudo
+ * changes directory with -D and uses -C for a descriptor limit, while env -C and
+ * git -C both change directory. Which wrapper owns which option therefore has to
+ * be tracked as the words are read, rather than assumed from the first one.
+ */
+function gitScopeValues(words: string[], gitAt = 0): string[] {
+  const values: string[] = [];
+  let wrapper = "";
+  for (let i = 0; i < gitAt; i++) {
+    const tok = words[i];
+    if (!tok.startsWith("-") || tok === "-") {
+      wrapper = tok.replace(/^[()]+|[()]+$/g, "");
+      continue;
+    }
+    const opt = tok.split("=")[0];
+    const value = chdirValue(tok, WRAPPER_CHDIR_OPTIONS[wrapper] ?? NO_CHDIR_OPTIONS, words[i + 1]);
+    if (value !== undefined) {
+      values.push(value);
+      if (!tok.includes("=") && tok === opt) i++;
+      continue;
+    }
+    // Any other option may take a value of its own; step over it so a wrapper
+    // name is not mistaken for the command.
+    if (!tok.includes("=") && WRAPPER_VALUE_OPTIONS.has(opt) && words[i + 1]) i++;
+  }
+  // Git's own global options, up to the subcommand.
+  for (let i = gitAt + 1; i < words.length; i++) {
+    const tok = words[i];
+    if (!tok.startsWith("-") || tok === "-") break;
+    const value = chdirValue(tok, GIT_CHDIR_OPTIONS, words[i + 1]);
+    if (value !== undefined) {
+      values.push(value);
+      if (!tok.includes("=") && !tok.startsWith("--")) i++;
+      continue;
+    }
+    if (!tok.includes("=") && GLOBAL_LONG_VALUE_OPTIONS.has(tok) && words[i + 1]) i++;
+  }
+  enfLog.debug("git_scope_values", "count", values.length, "last", values[values.length - 1] ?? "cwd");
+  return values;
+}
+
+/** ANSI-C quoting turns these escapes into characters the shell really sees. */
+function decodeAnsiC(text: string): string {
+  return text.replace(/\\n/g, "\n").replace(/\\t/g, " ");
+}
+
+/**
+ * Does this command both *create* a conflict and stage a side of it?
+ *
+ * The index is read once, before the command runs, so `git merge branch &&
+ * git add conflicted.txt` sees a clean tree and then does in one line what the
+ * handoff exists to prevent. Reading only the sequencer and only the staging is
+ * enough: neither alone says anything, and together they are the whole bypass.
+ */
+export function createsAndResolvesConflict(command: string): boolean {
+  const scanned = executableText(command);
+  if (scanned.includes(UNSCANNED)) return true;
+  // Subcommands that merge, and therefore can leave conflicts behind.
+  const STARTERS = new Set(["merge", "rebase", "cherry-pick", "revert", "am", "pull"]);
+  // Flags that make a sequencer do the opposite: a backout resolves nothing and
+  // finishing an existing conflict is the handoff's job, not a way around it.
+  const BACKOUT = /--(?:abort|quit|continue|skip)\b/;
+  // `git stash list` reads; `stash pop` and `stash apply` merge and can conflict.
+  const STASH_STARTS = new Set(["pop", "apply", "branch"]);
+  const SIDE_PICKING = new Set(["update-index", "restore", "rm", "reset"]);
+
+  // Repositories in which a sequencer has already started, keyed by the directory
+  // each one actually resolves to. A later merge in a different repository must
+  // not be attributed to the first one, and staging is only a resolution in a
+  // repository that started it.
+  const started = new Set<string>();
+  for (const raw of scanned.split(/[\n;&|()]+/)) {
+    const words = tokenize(raw.trim());
+    const k = gitWordIndex(words);
+    if (k === -1) continue;
+    // Which repository this invocation targets: git applies each -C in turn.
+    let scope = "";
+    for (const c of gitScopeValues(words, k)) scope = resolve(scope || ".", c);
+    const k0 = gitSubcommandIndex(words, k);
+    const sub = (words[k0] ?? "").split("=")[0];
+    const rest = words.slice(k0 + 1).join(" ");
+    const starts =
+      (STARTERS.has(sub) && !BACKOUT.test(rest)) ||
+      (sub === "stash" && STASH_STARTS.has((words[k0 + 1] ?? "").split("=")[0]));
+    if (starts) started.add(scope);
+    // Staging counts only after the sequencer, and only in the same repository:
+    // `git -C a merge && git -C b add x` touches two unrelated trees.
+    const stages = sub === "add" || SIDE_PICKING.has(sub) || (sub === "checkout" && /(^|\s)--/.test(rest));
+    if (stages && started.has(scope)) {
+      enfLog.debug("conflict_created_and_resolved", "scope", scope || "cwd", "subcommand", sub);
+      return true;
+    }
+  }
+  enfLog.debug("conflict_created_and_resolved", "started", started.size, "resolved", false);
+  return false;
+}
+
+export function isConflictResolutionCommand(command: string): boolean {
+  const scanned = executableText(command);
+  // Nesting deeper than the scan depth means the scanner stopped early. Treat
+  // that as a resolution command rather than as proof there is none — checked on
+  // the scan itself, before filtering, or the marker would be filtered away.
+  if (scanned.includes(UNSCANNED)) {
+    enfLog.warn("conflict_command_unscanned", "depth_limit", 6);
+    return true;
+  }
+  // Every one of these clears an unmerged entry, which is picking a side:
+  //   git add / git rm / git restore   stage the working tree as-is
+  //   git reset                       drop the index entry
+  //   git checkout <side flags>       take one side, by flag or by revision
+  //   <sequencer> --continue/--skip   advance past the conflicted commit
+  // `--abort` is deliberately absent: it backs out rather than resolving.
+  //
+  // Subcommands come from the token stream, not from a `git ... add` pattern: an
+  // option value may contain a space, so `git -C conflicted\ repo add` is `add`
+  // with a two-word value, which no regex over the raw line can see past.
+  const STAGE_SUBCOMMANDS = new Set(["add", "rm", "restore", "reset", "update-index"]);
+  const SEQUENCERS = new Set(["merge", "rebase", "cherry-pick", "revert", "am"]);
+  let matches = false;
+  for (const words of executedGitCommands(scanned)) {
+    const k = gitSubcommandIndex(words);
+    const sub = words[k] || "";
+    const rest = words.slice(k + 1).join(" ");
+    // A subcommand the scanner could not read could be any of them.
+    if (sub === "_" || sub.includes("$")) {
+      enfLog.warn("conflict_command_dynamic_subcommand", "matches", true);
+      matches = true;
+      break;
+    }
+    if (
+      STAGE_SUBCOMMANDS.has(sub) ||
+      // A side flag, `-m` to re-merge, or `-- <path>` after a revision — each
+      // takes one side of the conflict.
+      (sub === "checkout" && /(^|\s)(?:--(?:ours|theirs|mine)\b|-m\b|--(?:\s|$))/.test(rest)) ||
+      (SEQUENCERS.has(sub) && /--(?:continue|skip|quit)\b/.test(rest))
+    ) {
+      matches = true;
+      break;
+    }
+  }
+  enfLog.debug("conflict_command_classified", "matches", matches);
+  return matches;
+}
+
+// ── Noexec Syntax-Check Exemption ──────────────────────────────────────────
+
+const NOEXEC_WRAPPERS_RE =
+  /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|(?:then|do|else|elif)\b|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b)\s+)*/i;
+const NOEXEC_SHELL_RE = /^(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh\b/i;
+const NOEXEC_DISALLOWED_CHARS_RE = /[$`'"\\]|<(?=\()|>(?=\()/;
+const NOEXEC_C_FLAG_RE = /^-[a-zA-Z]*c[a-zA-Z]*$/;
+const NOEXEC_N_FLAG_RE = /^-[a-zA-Z]*n/;
+
+/** `bash -n file`, `sh -n script`, `bash -x -n f` — the shell only PARSES: nothing is executed.
+ *  A syntax check is not a command to approve, so the gate must not treat it as running a shell.
+ *  Only an exact `-n` token counts; anything fuzzier stays dangerous. */
+export function isNoexecSyntaxCheck(statement: string): boolean {
+  // The calling shell expands and word-splits before the syntax check runs: `$(...)` executes,
+  // `${IFS}` splits one token into several options (`bash -n${IFS}+n${IFS}-c …`), backticks run,
+  // and `<(...)`/`>(...)` execute. ANY `$` is refused outright — a legitimate `bash -n script.sh`
+  // never needs one. Quotes and backslashes go too: the CALLING shell removes them before Bash
+  // parses, so `bash -n '+n' script.sh` would hand Bash a `+n` option while this predicate saw a
+  // harmless operand.
+  if (NOEXEC_DISALLOWED_CHARS_RE.test(statement)) return false;
+  const rest = statement.replace(NOEXEC_WRAPPERS_RE, "").trim();
+  const shellMatch = NOEXEC_SHELL_RE.exec(rest);
+  if (!shellMatch) return false;
+  const tokens = rest.slice(shellMatch[0].length).trim().split(/\s+/).filter(Boolean);
+
+  // `-n` only counts in the shell's OWN leading option block, and only if nothing turns it back
+  // off. The invocation accepts the `set` options, so `+n` re-enables execution:
+  //   `bash script.sh -n`  — operand, the script runs
+  //   `bash -- -n`         — `--` ends the options; it runs a FILE called `-n`
+  //   `bash -n +n script`  — noexec is switched off again
+  let noexec = false;
+  for (const token of tokens) {
+    if (token === "--") break; // option terminator: everything after is an operand
+    // `+` options enable modes again (`+n`, `+o noexec`, …). Refusing ALL of them keeps this
+    // predicate from having to model the whole `set` option table.
+    if (token.startsWith("+")) return false;
+    if (!token.startsWith("-")) break; // first operand (script name or argument)
+    // `-c` takes the program text — whatever follows is executed as parsed, so never exempt it.
+    if (NOEXEC_C_FLAG_RE.test(token)) return false;
+    if (NOEXEC_N_FLAG_RE.test(token)) noexec = true; // -n, -xn, -nx
+  }
+  return noexec;
+}
+
+// ── Unified Dangerous-Pattern Registry ─────────────────────────────────────
+
+/**
+ * Per-pattern explanation shown on the dangerous-command prompt (issue
+ * #1073): `why` names the rule that fired, `consequence` says what can be
+ * lost or exposed, and `grants` says what approving this statement permits.
+ */
+export interface DangerousExplanation {
+  why: string;
+  consequence: string;
+  grants: string;
+}
+
+/** Single source of truth pairing each dangerous regex with its label and prompt explanation. */
+export interface DangerousRule {
+  readonly pattern: RegExp;
+  readonly label: string;
+  readonly explanation: DangerousExplanation;
+}
+
+export const DANGEROUS_RULES: readonly DangerousRule[] = [
+  {
+    pattern: /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i,
+    label: "recursive delete (rm -r)",
+    explanation: {
+      why: "recursive delete — removes a directory tree",
+      consequence: "every file under it is gone; there is no recovery path",
+      grants: "this exact command — another target still prompts",
+    },
+  },
+  {
+    pattern: /\bsudo\b/i,
+    label: "sudo",
+    explanation: {
+      why: "sudo — runs the command as another user",
+      consequence: "it can change any file, service or user that user can reach, and the audit log names that user, not you",
+      grants: "this exact command — any other command behind sudo still prompts",
+    },
+  },
+  {
+    pattern: /\b(chmod|chown)\b.*777/i,
+    label: "chmod/chown 777",
+    explanation: {
+      why: "chmod/chown with a 777 argument",
+      consequence: "the target ends up world-writable or owned by someone else, so other local users can change it",
+      grants: "this exact command — other permission changes still prompt",
+    },
+  },
+  {
+    pattern: /\bmkfs\b/i,
+    label: "mkfs",
+    explanation: {
+      why: "mkfs — formats a filesystem",
+      consequence: "every file on that device is destroyed; there is no recovery path",
+      grants: "this exact command — the device or filesystem is not remembered",
+    },
+  },
+  {
+    pattern: /\bdd\b.*\bof=\/dev\//i,
+    label: "dd to a device",
+    explanation: {
+      why: "dd writing to a raw device",
+      consequence: "a mistyped of= erases a disk, a partition table or a boot sector",
+      grants: "this exact command — the target device is not remembered",
+    },
+  },
+  {
+    pattern: /\bgit\b[\s\S]*\breset\b[\s\S]*--hard\b/i,
+    label: "git reset --hard",
+    explanation: {
+      why: "git reset --hard — discards working-tree changes",
+      consequence: "uncommitted edits are lost; git cannot restore them",
+      grants: "this exact command — other resets still prompt",
+    },
+  },
+  {
+    pattern: /\bgit\b[\s\S]*\bclean\b[\s\S]*(?:--force|-\S*f)/i,
+    label: "git clean --force",
+    explanation: {
+      why: "git clean --force — deletes untracked files; -n/--dry-run deletes nothing",
+      consequence: "work that was never committed is removed; git cannot restore it",
+      grants: "this exact command — other cleans still prompt",
+    },
+  },
+  {
+    pattern: /\bfind\b[\s\S]*\s-delete\b/i,
+    label: "find -delete",
+    explanation: {
+      why: "find -delete — deletes every match",
+      consequence: "the matched set is usually larger than it looks; deleted files have no recovery path",
+      grants: "this exact command — a different search still prompts",
+    },
+  },
+  {
+    pattern: /\bfind\b[\s\S]*-exec(?:dir)?\s+(?:\/\S+\/)?rm\b/i,
+    label: "find -exec rm",
+    explanation: {
+      why: "find -exec rm — runs rm on every match",
+      consequence: "the matched set is usually larger than it looks; deleted files have no recovery path",
+      grants: "this exact command — a different search still prompts",
+    },
+  },
+  {
+    pattern: /\bxargs\s+(?:-\S+\s+)*(?:\/\S+\/)?rm\b/i,
+    label: "xargs rm",
+    explanation: {
+      why: "xargs rm — deletes whatever is piped in",
+      consequence: "the input can be any file your user can see; deleted files have no recovery path",
+      grants: "this exact command — another pipeline still prompts",
+    },
+  },
+  {
+    // Bare shell invocation (issue #947, hardened PR #948 R1+R2): the shell
+    // name must be in COMMAND POSITION — the first word of the statement
+    // (statements are split on `;`/`&&`/`||`/`|`/`&`, so a pipe target is its
+    // own statement), optionally behind LEADING REDIRECTIONS (`2>/dev/null sh`)
+    // and wrapper prefixes (sudo/env/timeout/nice/nohup/xargs/command/builtin/
+    // exec/rtk, VAR=value assignments, and control keywords left at the head of
+    // a split statement — `then sh`, `do zsh`, `else ksh`). Wrappers consume
+    // their option VALUES (`sudo -u root`, `env -u HOME`, `nice -n 10`,
+    // `timeout -s KILL 5` — the duration is consumed too) — a flag with a
+    // separate value argument must not shield the shell that follows it.
+    pattern: /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|(?:then|do|else|elif)\b|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b|xargs(?:\s+-\S+)*)\s+)*(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh(?:\s|$)/i,
+    label: "bare shell invocation",
+    explanation: {
+      why: "shell invocation — a shell runs a script whose effects the command line does not bound",
+      consequence: "an arbitrary, unreviewed script runs with your full user rights",
+      grants: "this exact command — a different script still prompts",
+    },
+  },
+];
+
+const DANGEROUS_RULE_BY_PATTERN = new Map<RegExp, DangerousRule>(
+  DANGEROUS_RULES.map((rule) => [rule.pattern, rule]),
+);
+
+/** Derived views from DANGEROUS_RULES — index alignment is guaranteed by construction. */
+export const DANGEROUS: RegExp[] = DANGEROUS_RULES.map((r) => r.pattern);
+export const DANGEROUS_LABELS: string[] = DANGEROUS_RULES.map((r) => r.label);
+export const DANGEROUS_EXPLANATIONS: DangerousExplanation[] = DANGEROUS_RULES.map((r) => r.explanation);
+
+/** Label for a DANGEROUS pattern object (O(1) lookup against DANGEROUS_RULES). */
+export function dangerousPatternLabel(pattern: RegExp): string {
+  return DANGEROUS_RULE_BY_PATTERN.get(pattern)?.label ?? String(pattern);
+}
+
+/** Explanation for a DANGEROUS pattern object (O(1) lookup against DANGEROUS_RULES). */
+export function dangerousPatternExplanation(pattern: RegExp): DangerousExplanation {
+  return (
+    DANGEROUS_RULE_BY_PATTERN.get(pattern)?.explanation ?? {
+      why: `matched ${String(pattern)}`,
+      consequence: "the matched command runs unchecked",
+      grants: "this exact command",
+    }
+  );
+}
+
+/** Every distinct explanation for the rules a statement trips — a chain (or
+ *  one statement) judged as a whole must not show only the first rule
+ *  (#1073 review: `sudo rm -rf /srv/data` hides one of the two risks). */
+export function dangerousPatternExplanations(patterns: RegExp[]): DangerousExplanation[] {
+  const seen = new Set<string>();
+  const out: DangerousExplanation[] = [];
+  for (const pattern of patterns) {
+    const ex = dangerousPatternExplanation(pattern);
+    if (seen.has(ex.why)) continue;
+    seen.add(ex.why);
+    out.push(ex);
+  }
+  return out;
+}
+
+// ── Policy Helpers, Scanners, Allowlists & Rewriters ───────────────────────
+
 
 export type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
 
@@ -150,19 +1401,14 @@ function scanUnquotedShellComments(
   while (i < cmd.length) {
     const ch = cmd[i]!;
 
+    const cont = skipLineContinuation(cmd, i);
+    if (cont > 0) {
+      enfLog.debug("scanUnquotedShellComments line continuation", cont === 2 ? "lf" : "crlf");
+      out += cmd.slice(i, i + cont);
+      i += cont;
+      continue;
+    }
     if (ch === "\\" && i + 1 < cmd.length) {
-      if (cmd[i + 1] === "\n") {
-        enfLog.debug("scanUnquotedShellComments line continuation lf");
-        out += "\\\n";
-        i += 2;
-        continue;
-      }
-      if (cmd[i + 1] === "\r" && cmd[i + 2] === "\n") {
-        enfLog.debug("scanUnquotedShellComments line continuation crlf");
-        out += "\\\r\n";
-        i += 3;
-        continue;
-      }
       out += cmd.slice(i, i + 2);
       i += 2;
       atWordStart = false;
@@ -170,29 +1416,16 @@ function scanUnquotedShellComments(
     }
 
     if (ch === "#" && atWordStart) {
-      while (i < cmd.length && cmd[i] !== "\n") i++;
+      i = skipLineComment(cmd, i);
       continue;
     }
 
     if (ch === "$" && cmd[i + 1] === "'") {
-      out += "$'";
-      i += 2;
-      let closed = false;
-      while (i < cmd.length) {
-        const sch = cmd[i]!;
-        if (sch === "\\" && i + 1 < cmd.length) {
-          out += cmd.slice(i, i + 2);
-          i += 2;
-          continue;
-        }
-        out += sch;
-        i++;
-        if (sch === "'") {
-          closed = true;
-          break;
-        }
-      }
-      if (!closed) enfLog.debug("scanUnquotedShellComments unclosed ansi-c quote");
+      const close = scanAnsiCQuoteEnd(cmd, i + 1);
+      if (close === null) enfLog.debug("scanUnquotedShellComments unclosed ansi-c quote");
+      const end = close === null ? cmd.length : close + 1;
+      out += cmd.slice(i, end);
+      i = end;
       atWordStart = false;
       continue;
     }
@@ -1381,58 +2614,7 @@ export const READ_ONLY_COMMANDS = new Set([
  * ("it's fine $(rm -rf /)") must not hide the substitution that follows.
  */
 function stripSingleQuotedRegions(stmt: string): string {
-  let out = "";
-  let i = 0;
-  let inSingle = false;
-  let inDouble = false;
-  let singleOpenIndex = -1;
-  while (i < stmt.length) {
-    const ch = stmt[i];
-    if (inSingle) {
-      if (ch === "'") {
-        inSingle = false;
-        out += "''";
-      }
-      i++;
-      continue;
-    }
-    if (inDouble) {
-      if (ch === "\\" && i + 1 < stmt.length) {
-        out += stmt.slice(i, i + 2);
-        i += 2;
-        continue;
-      }
-      if (ch === '"') inDouble = false;
-      out += ch;
-      i++;
-      continue;
-    }
-    if (ch === "\\" && i + 1 < stmt.length) {
-      // Unquoted \x is a literal pair (bash escapes) — a backslash must never
-      // turn the NEXT character into a quote delimiter. Without this, a
-      // nested strip of `echo \' $(rm -rf /) \'` would treat \' as opening a
-      // single-quoted region and hide the live deletion (Qodo PR #950 R2).
-      out += stmt.slice(i, i + 2);
-      i += 2;
-      continue;
-    }
-    if (ch === "'") {
-      inSingle = true;
-      singleOpenIndex = i;
-      i++;
-      continue;
-    }
-    if (ch === '"') {
-      inDouble = true;
-      out += ch;
-      i++;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  if (inSingle && singleOpenIndex >= 0) out += stmt.slice(singleOpenIndex);
-  return out;
+  return scanQuotedRegions(stmt, "strip-single");
 }
 
 /**
@@ -1444,46 +2626,7 @@ function stripSingleQuotedRegions(stmt: string): string {
  * must not hide the rest of the command from the guards.
  */
 export function maskQuotedRegions(cmd: string): string {
-  let out = "";
-  let i = 0;
-  let quote: "'" | '"' | null = null;
-  let openIndex = -1;
-  while (i < cmd.length) {
-    const ch = cmd[i];
-    if (quote !== null) {
-      if (quote === '"' && ch === "\\" && i + 1 < cmd.length) {
-        i += 2;
-        continue;
-      }
-      if (ch === quote) {
-        // Keep the delimiters, replace only the content — structure survives.
-        out += " ";
-        out += quote;
-        quote = null;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "\\" && i + 1 < cmd.length) {
-      // Unquoted \x is a literal pair — a backslash must never turn the next
-      // character into a quote delimiter (same rule as
-      // stripSingleQuotedRegions, Qodo PR #950 R2).
-      out += cmd.slice(i, i + 2);
-      i += 2;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      openIndex = i;
-      out += ch;
-      i++;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  if (quote !== null && openIndex >= 0) out += cmd.slice(openIndex + 1);
-  return out;
+  return scanQuotedRegions(cmd, "mask-all");
 }
 
 /**
@@ -1523,18 +2666,10 @@ export function extractSubshells(stmt: string): string[] {
     }
     // Backtick substitution — skip escaped backticks (\`)
     if (withoutSingleQuoted[i] === "`") {
-      let j = i + 1;
-      while (j < withoutSingleQuoted.length) {
-        if (withoutSingleQuoted[j] === "\\" && j + 1 < withoutSingleQuoted.length) {
-          j += 2; // skip escaped character
-          continue;
-        }
-        if (withoutSingleQuoted[j] === "`") break;
-        j++;
-      }
-      if (j < withoutSingleQuoted.length) {
-        results.push(stripSingleQuotedRegions(withoutSingleQuoted.slice(i + 1, j)));
-        i = j + 1;
+      const close = scanBacktickEnd(withoutSingleQuoted, i);
+      if (close !== null) {
+        results.push(stripSingleQuotedRegions(withoutSingleQuoted.slice(i + 1, close)));
+        i = close + 1;
         continue;
       }
     }
@@ -2502,44 +3637,13 @@ function maskQuotedProse(command: string): string {
     while (k < to) {
       const c = command[k]!;
       if (c === "$" && command[k + 1] === "(") {
-        let depth = 1;
-        let m = k + 2;
-        let q: string | null = null;
         const closers: number[] = [];
-        while (m < to && depth > 0) {
-          const d = command[m]!;
-          if (q) {
-            // Inside quotes: only the matching quote closes (double quotes
-            // process backslash escapes; single quotes do not).
-            if (q === '"' && d === "\\") {
-              m += 2;
-              continue;
-            }
-            if (d === q) q = null;
-            m++;
-            continue;
-          }
-          if (d === "'" || d === '"') {
-            q = d;
-            m++;
-            continue;
-          }
-          if (d === "\\") {
-            m += 2;
-            continue;
-          }
-          if (d === "(") depth++;
-          else if (d === ")") {
-            // EVERY unquoted `)` that decrements depth closes a (possibly
-            // nested) substitution — outer closer and inner closers alike —
-            // so all of them become sentinels (Qodo round 8: a quoted `)`
-            // stays live content).
-            closers.push(m);
-            depth--;
-          }
-          m++;
-        }
-        const stop = depth === 0 ? m : to;
+        const close = scanBalancedParen(command, k + 1, {
+          end: to,
+          unquotedEscapes: true,
+          onCloseParen: (p) => closers.push(p),
+        });
+        const stop = close !== null ? close + 1 : to;
         for (let x = k; x < stop; x++) out[x] = command[x]!;
         for (const p of closers) {
           if (p < stop) out[p] = SUBST_CLOSE_SENTINEL;
@@ -2565,8 +3669,7 @@ function maskQuotedProse(command: string): string {
     // Comment tail: `#` at a word start (${...} and =# forms excluded) is a
     // comment — blank to end of line, quotes inside cannot pair with code.
     if (ch === "#" && (i === 0 || /[\s(;&|`]/.test(command[i - 1]!))) {
-      let j = i;
-      while (j < command.length && command[j] !== "\n") j++;
+      const j = skipLineComment(command, i);
       blankRange(i, j);
       maskedSpans++;
       i = j;
@@ -3613,8 +4716,8 @@ function tokenizePipeSegment(segment: string): ParsedPipeSegment | null {
 
 	const skipSpace = (): void => {
 		while (i < segment.length) {
-			if (segment[i] === "\\" && segment[i + 1] === "\n") { i += 2; continue; }
-			if (segment[i] === "\\" && segment[i + 1] === "\r" && segment[i + 2] === "\n") { i += 3; continue; }
+			const cont = skipLineContinuation(segment, i);
+			if (cont > 0) { i += cont; continue; }
 			if (segment[i] === " " || segment[i] === "\t" || segment[i] === "\r") { i++; continue; }
 			break;
 		}
@@ -3629,8 +4732,8 @@ function tokenizePipeSegment(segment: string): ParsedPipeSegment | null {
 		let unquotedExpansion = false;
 		let has = false;
 		while (i < segment.length) {
-			if (segment[i] === "\\" && segment[i + 1] === "\n") { i += 2; continue; }
-			if (segment[i] === "\\" && segment[i + 1] === "\r" && segment[i + 2] === "\n") { i += 3; continue; }
+			const cont = skipLineContinuation(segment, i);
+			if (cont > 0) { i += cont; continue; }
 			const ch = segment[i]!;
 			if (ch === " " || ch === "\t" || ch === "\r" || ch === "<" || ch === ">") break;
 			if (ch === "&" && segment[i + 1] === ">") break;
@@ -3638,14 +4741,10 @@ function tokenizePipeSegment(segment: string): ParsedPipeSegment | null {
 			if (ch === "$" && segment[i + 1] === "'") {
 				unquoted = false;
 				sawNonLiteral = true;
-				let j = i + 2;
-				while (j < segment.length && segment[j] !== "'") {
-					if (segment[j] === "\\" && j + 1 < segment.length) j++;
-					j++;
-				}
-				if (j >= segment.length) return null;
-				value += segment.slice(i + 2, j);
-				i = j + 1;
+				const close = scanAnsiCQuoteEnd(segment, i + 1);
+				if (close === null) return null;
+				value += segment.slice(i + 2, close);
+				i = close + 1;
 				continue;
 			}
 			if (ch === "'" || ch === '"') {
@@ -3671,14 +4770,10 @@ function tokenizePipeSegment(segment: string): ParsedPipeSegment | null {
 				sawNonLiteral = true;
 				hasExpansion = true;
 				unquotedExpansion = true;
-				let j = i + 1;
-				while (j < segment.length && segment[j] !== "`") {
-					if (segment[j] === "\\" && j + 1 < segment.length) j++;
-					j++;
-				}
-				if (j >= segment.length) return null;
-				value += segment.slice(i, j + 1);
-				i = j + 1;
+				const close = scanBacktickEnd(segment, i);
+				if (close === null) return null;
+				value += segment.slice(i, close + 1);
+				i = close + 1;
 				continue;
 			}
 			if (ch === "$" && segment[i + 1] === "(") {
@@ -3980,8 +5075,7 @@ function findPipedCommitSpans(command: string): PipedCommitSpan[] | null {
 	for (let i = 0; i < command.length; i++) {
 		const ch = command[i]!;
 		if (ch === "#" && (i === 0 || /[\s(;&|]/.test(command[i - 1]!))) {
-			while (i < command.length && command[i] !== "\n") i++;
-			i--;
+			i = skipLineComment(command, i) - 1;
 			continue;
 		}
 		if (ch === "\\" && i + 1 < command.length) {
@@ -3997,13 +5091,9 @@ function findPipedCommitSpans(command: string): PipedCommitSpan[] | null {
 			}
 		}
 		if (ch === "'" && i > 0 && command[i - 1] === "$") {
-			let j = i + 1;
-			while (j < command.length && command[j] !== "'") {
-				if (command[j] === "\\" && j + 1 < command.length) j++;
-				j++;
-			}
-			if (j >= command.length) return null;
-			i = j;
+			const close = scanAnsiCQuoteEnd(command, i);
+			if (close === null) return null;
+			i = close;
 			continue;
 		}
 		if (ch === "'" || ch === '"') {
@@ -4016,12 +5106,9 @@ function findPipedCommitSpans(command: string): PipedCommitSpan[] | null {
 			continue;
 		}
 		if (ch === "`") {
-			i++;
-			while (i < command.length && command[i] !== "`") {
-				if (command[i] === "\\" && i + 1 < command.length) i++;
-				i++;
-			}
-			if (i >= command.length) return null;
+			const close = scanBacktickEnd(command, i);
+			if (close === null) return null;
+			i = close;
 			continue;
 		}
 		if (ch === "(" && i > 0 && (command[i - 1] === "$" || command[i - 1] === "<" || command[i - 1] === ">")) {
@@ -4202,100 +5289,21 @@ function normalizeGhBodyFooters(payload: string, signature: string): string {
 
 /** Closing paren of a `$(...)`, `<(...)`, or `>(...)`, honoring quotes, escapes, comments, and heredocs. */
 function matchingSubstParenIndex(s: string, openParenIdx: number): number | null {
-  let depth = 1;
-  for (let i = openParenIdx + 1; i < s.length; i++) {
-    const ch = s[i]!;
-    if (ch === "#" && (i === openParenIdx + 1 || /[\s(;&|]/.test(s[i - 1]!))) {
-      while (i < s.length && s[i] !== "\n") i++;
-      continue;
-    }
-    if (s.startsWith("<<", i) && s[i + 2] !== "<") {
-      const opener = /^<<(-?)[ \t]*(['"]?)([\w-]+)\2[^\n]*\n/.exec(s.slice(i));
-      if (opener) {
-        const closer = new RegExp(String.raw`\n${opener[1] ? "\\t*" : ""}${opener[3]}\r?(?=\n|$)`).exec(
-          s.slice(i + opener[0].length - 1),
-        );
-        if (closer) {
-          i += opener[0].length - 1 + closer.index + closer[0].length - 1;
-          continue;
-        }
-      }
-    }
-    if (ch === "\\" && i + 1 < s.length) {
-      i++;
-      continue;
-    }
-    if (ch === "'" && s[i - 1] === "$") {
-      i++;
-      while (i < s.length && s[i] !== "'") {
-        if (s[i] === "\\" && i + 1 < s.length) i++;
-        i++;
-      }
-      if (i >= s.length) return null;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      const close = matchingQuoteIndex(s, i);
-      if (close === null) return null;
-      i = close;
-      continue;
-    }
-    if (ch === "`") {
-      i++;
-      while (i < s.length && s[i] !== "`") {
-        if (s[i] === "\\" && i + 1 < s.length) i++;
-        i++;
-      }
-      if (i >= s.length) return null;
-      continue;
-    }
-    if (ch === "(") depth++;
-    else if (ch === ")") {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return null;
+  return scanBalancedParen(s, openParenIdx, {
+    honorComments: true,
+    honorHeredocs: true,
+    honorAnsiC: true,
+    honorBacktick: true,
+    recurseDoubleQuote: true,
+    unquotedEscapes: true,
+  });
 }
 
-/** Index of the matching closer for a quote at `openIdx`, honoring POSIX escapes. */
+/** Index of the matching closer for a quote at `openIdx`, honoring POSIX escapes and inline heredocs. */
 function matchingQuoteIndex(s: string, openIdx: number): number | null {
-  const q = s[openIdx];
-  if (q !== '"' && q !== "'") return null;
-  if (q === "'") {
-    const close = s.indexOf("'", openIdx + 1);
-    enfLog.debug("matchingQuoteIndex single", close != null && close >= 0);
-    return close < 0 ? null : close;
-  }
-  for (let i = openIdx + 1; i < s.length; i++) {
-    if (s.startsWith("<<", i)) {
-      const opener = /^<<(-?)[ \t]*(['"]?)([\w-]+)\2[^\n]*\n/.exec(s.slice(i));
-      if (opener) {
-        const closer = new RegExp(String.raw`\n${opener[1] ? "\\t*" : ""}${opener[3]}\r?(?=\n|$)`).exec(s.slice(i + opener[0].length - 1));
-        if (closer) {
-          enfLog.debug("matchingQuoteIndex skip heredoc", opener[3]);
-          i += opener[0].length - 1 + closer.index + closer[0].length - 1;
-          continue;
-        }
-      }
-    }
-    if (s[i] === "$" && s[i + 1] === "(") {
-      const closeParen = matchingSubstParenIndex(s, i + 1);
-      if (closeParen === null) return null;
-      i = closeParen;
-      continue;
-    }
-    if (s[i] === "\\") {
-      i++;
-      continue;
-    }
-    if (s[i] === '"') {
-      enfLog.debug("matchingQuoteIndex double", i);
-      return i;
-    }
-  }
-  enfLog.debug("matchingQuoteIndex unclosed double");
-  return null;
+  const close = scanDoubleQuoteEnd(s, openIdx, { honorHeredocs: true, honorBacktick: false });
+  enfLog.debug("matchingQuoteIndex", s[openIdx] === "'" ? "single" : "double", close !== null);
+  return close;
 }
 
 /**
@@ -4459,4 +5467,974 @@ export function failedFileEditSkipMessage(toolName: string, path: string): strin
   const msg = `enforcement: failed ${toolName} (path=${path}) — skipping file_modified triggers, nothing was modified`;
   enfLog.debug(msg);
   return msg;
+}
+
+// ── Deep Policy Evaluation Interface ────────────────────────────────────────
+
+/** Placeholder strings that are never a real model id — printing one in a trailer ships a bug. */
+const PLACEHOLDER_MODEL_IDS = new Set(["model", "pi_model", "$pi_model", "${pi_model}", "unknown"]);
+
+/** Resolve the model id used in commit trailers (env first, then ctx model id). */
+export function resolveCommitTrailerModelId(ctxModelId?: string | null): string {
+  for (const raw of [process.env.PI_PRIMARY_MODEL, process.env.PI_MODEL, ctxModelId]) {
+    const trimmed = (raw ?? "").trim();
+    if (!trimmed) continue;
+    if (PLACEHOLDER_MODEL_IDS.has(trimmed.toLowerCase())) {
+      enfLog.debug("commit_trailer: skipped placeholder model id", trimmed);
+      continue;
+    }
+    const clean = sanitizeModelId(trimmed);
+    if (clean) return clean;
+  }
+  enfLog.warn("commit_trailer: no model id resolved — trailer identity is unknown");
+  return "unknown";
+}
+
+/** Resolve the model id used in `comment_signature` footers (ctx model id first, then env). */
+export function resolveCommentSignatureModelId(ctxModelId?: string | null): string {
+  return (
+    sanitizeModelId(ctxModelId || process.env.PI_MODEL || process.env.PI_PRIMARY_MODEL) || "unknown"
+  );
+}
+
+function lstatStamp(p: string): string {
+  try {
+    const st = lstatSync(p, { bigint: true });
+    return `${st.dev}:${st.ino}:${st.mtimeNs}:${st.ctimeNs}:${st.isSymbolicLink()}`;
+  } catch {
+    return "missing";
+  }
+}
+
+let cachedProtectedSettings: {
+  key: string;
+  projectStamp: string;
+  globalStamp: string;
+  globalFileStamp: string;
+  targets: Set<string>;
+} | null = null;
+
+function getProtectedSettingsTargets(cwd: string): Set<string> {
+  const projectBase = dirname(getSettingsPath(cwd));
+  const globalPath = getGlobalSettingsPath();
+  const globalBase = dirname(globalPath);
+  const key = `${projectBase}\0${globalBase}\0${globalPath}`;
+  const projectStamp = lstatStamp(projectBase);
+  const globalStamp = lstatStamp(globalBase);
+  const globalFileStamp = lstatStamp(globalPath);
+  if (
+    cachedProtectedSettings &&
+    cachedProtectedSettings.key === key &&
+    cachedProtectedSettings.projectStamp === projectStamp &&
+    cachedProtectedSettings.globalStamp === globalStamp &&
+    cachedProtectedSettings.globalFileStamp === globalFileStamp
+  ) {
+    return cachedProtectedSettings.targets;
+  }
+  const toReal = (p: string): string => realpathNearestExisting(p) ?? p;
+  const targets = new Set<string>();
+  for (const base of [projectBase, globalBase]) {
+    for (const name of [...SETTINGS_FILENAMES, LEGACY_SETTINGS_FILENAME]) {
+      const full = join(base, name);
+      targets.add(full);
+      targets.add(toReal(full));
+    }
+  }
+  targets.add(globalPath);
+  targets.add(toReal(globalPath));
+  cachedProtectedSettings = { key, projectStamp, globalStamp, globalFileStamp, targets };
+  return targets;
+}
+
+/**
+ * Evaluate direct file edit/write attempts against protected targets:
+ * - `.pi/pi-config-settings.json(c)` and `~/.pi/pi-config-settings.json(c)` (dangerous allowlist protection)
+ * - Git identity config files (`~/.gitconfig`, `~/.config/git/config`, `.git/config`)
+ */
+export function evaluateFileWritePolicy(
+  filePath: string,
+  cwd: string,
+): { block: true; reason: string } | undefined {
+  const toReal = (p: string): string => realpathNearestExisting(p) ?? p;
+  const resolved = resolve(cwd, filePath);
+  const realResolved = toReal(resolved);
+  const settingsTargets = getProtectedSettingsTargets(cwd);
+  if (settingsTargets.has(resolved) || settingsTargets.has(realResolved)) {
+    enfLog.warn("protected_settings_file_write_blocked", { path: filePath });
+    return {
+      block: true,
+      reason:
+        "\u26d4 Direct modification of pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor, never agent tools.",
+    };
+  }
+  if (isGitIdentityConfigPath(resolved) || isGitIdentityConfigPath(realResolved)) {
+    enfLog.error("git_identity_config_file_write_blocked", { path: filePath });
+    return {
+      block: true,
+      reason:
+        "\u26d4 Git identity config is off-limits to agents. The git identity belongs to the human — " +
+        "if it is wrong, tell the user to fix their own git config.",
+    };
+  }
+  return undefined;
+}
+
+/** Minimal interactive UI surface needed by bash policy prompts. Null/undefined means headless. */
+export interface BashPolicyUi {
+  select(title: string, options: string[]): Promise<string | undefined>;
+  notify(message: string, level: "info" | "warning" | "error"): Promise<void> | void;
+}
+
+/** Input contract for the deep bash policy evaluator. */
+export interface BashPolicyInput {
+  command: string;
+  cwd: string;
+  hasTimeout?: boolean;
+  inContainer?: boolean;
+  isSubagentChild?: boolean;
+  agentName?: string;
+  ctxModelId?: string | null;
+  sessionId?: string | null;
+  ui?: BashPolicyUi | null;
+  /** Optional session-scoped trailer selection cache for comma-separated `commit_trailer`. */
+  trailerSelection?: { get(): string | null; set(value: string): void };
+  /** Optional repeat-command counter; returns consecutive count for the normalized command. */
+  trackRepeat?: (normalizedCommand: string) => number;
+  /** Optional review-loop commit gate checked for `git-expert` commits before git protection. */
+  checkReviewLoopCommit?: (
+    gitCwd: string,
+    branch: string | null,
+  ) => { block: true; reason: string } | undefined;
+}
+
+/** Narrow decision returned by `evaluateBashPolicy`. */
+export type BashPolicyDecision =
+  | { action: "allow"; modifiedCommand?: string; stripTimeout?: boolean }
+  | { action: "block"; reason: string };
+
+interface MutableCommand {
+  current: string;
+  modified: boolean;
+}
+
+/** Honest failure notice for a failed approval write — names the ACTUAL
+ * reason instead of a generic "settings unreadable" (Qodo PR #950 R8). */
+function approvalFailureMessage(
+  reason: "corrupt" | "write_failed" | "trust_unknown" | "project_untrusted",
+): string {
+  switch (reason) {
+    case "corrupt":
+      return "⚠️ Approval could not be saved — the settings file is unreadable/corrupt (nothing was overwritten). This approval is one-time; repair the file to persist approvals.";
+    case "write_failed":
+      return "⚠️ Approval could not be saved — writing the settings file failed (permissions/disk?). This approval is one-time; check the enforcement log for details.";
+    case "trust_unknown":
+      return "⚠️ Approval could not be saved — the project settings file's trust could not be verified (git check failed). This approval is one-time; retry once git is available so it can be stored safely.";
+    case "project_untrusted":
+      return '⚠️ Approval could not be saved to the project — its settings file is not trustable (git-tracked or symlinked). Choose "everywhere" to store the approval globally, or run once.';
+  }
+}
+
+async function notifyApprovalResults(failed: number, ui?: BashPolicyUi | null): Promise<void> {
+  if (failed > 0) {
+    await ui?.notify(
+      `⚠️ ${failed} approval${failed > 1 ? "s" : ""} could not be saved — treated as run-once (see the enforcement log for the reason).`,
+      "warning",
+    );
+  }
+}
+
+async function handleCommitTrailer(
+  command: string,
+  cmdRef: MutableCommand,
+  input: BashPolicyInput,
+  gitCwd: string,
+): Promise<EnforcementResult> {
+  // A placeholder trailer is REFUSED, never rewritten: the hook cannot safely tell
+  // command text from message prose, and rewriting the wrong span corrupts a message
+  // or edits an unrelated command (Qodo, PR #1004).
+  const placeholder = findPlaceholderTrailer(command);
+  if (placeholder) {
+    return {
+      block: true,
+      reason:
+        `⛔ Commit refused: the trailer carries an unresolved placeholder (${placeholder}). ` +
+        `Write \`TRAILER: PI (${resolveCommitTrailerModelId(input.ctxModelId)})\` instead of a MODEL/$PI_MODEL placeholder ` +
+        "and re-run the commit.",
+    };
+  }
+
+  const trailerSetting = getSetting(gitCwd, "commit_trailer");
+  if (typeof trailerSetting !== "string") return undefined;
+
+  const modelId = resolveCommitTrailerModelId(input.ctxModelId);
+
+  let trailerName: string;
+
+  if (trailerSetting.includes(",")) {
+    const options = trailerSetting
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (options.length === 0) {
+      return {
+        block: true,
+        reason: `⛔ Malformed commit_trailer setting: "${trailerSetting.replace(/[\x00-\x1f\x7f-\x9f]/g, "")}" — no valid trailer names found. Fix the setting in .pi/pi-config-settings.json or PI_COMMIT_TRAILER env var.`,
+      };
+    }
+    const cached = input.trailerSelection?.get() ?? null;
+    if (options.length === 1) {
+      trailerName = options[0];
+    } else if (cached && options.includes(cached)) {
+      trailerName = cached;
+    } else if (!input.ui) {
+      trailerName = options[0];
+    } else {
+      const selected = await input.ui.select("Select commit trailer:", options);
+      if (!selected || !options.includes(selected)) {
+        return {
+          block: true,
+          reason: "Commit trailer selection cancelled by user.",
+        };
+      }
+      trailerName = selected;
+      input.trailerSelection?.set(selected);
+    }
+  } else {
+    trailerName = trailerSetting;
+  }
+
+  const injected = injectCommitTrailer(cmdRef.current, trailerName, modelId);
+  if (injected !== null) {
+    cmdRef.current = injected;
+    cmdRef.modified = true;
+    return undefined;
+  }
+
+  const messageSpecs = commitMessageSpecs(command, input.cwd);
+  let unverified = messageSpecs.length === 0;
+  for (const spec of messageSpecs) {
+    if (spec.kind === "inline") {
+      unverified = true;
+      continue;
+    }
+    if (spec.kind === "opaque-file") {
+      return {
+        block: true,
+        reason:
+          `⛔ Commit refused: the \`-F\` message file path is opaque and cannot be resolved or verified, ` +
+          `so the \`${trailerName}\` trailer cannot be checked. Write the message to a literal readable file path with \`${trailerName}: PI (${modelId})\` in it, then re-run the commit.`,
+      };
+    }
+    const fileMessage = spec.path;
+    const candidatePaths = [
+      ...new Set(
+        [
+          fileMessage,
+          spec.rawOperand,
+          path.relative(input.cwd, fileMessage),
+          path.relative(spec.cwd, fileMessage),
+        ].filter((p) => p && p !== "."),
+      ),
+    ];
+    const maskedCommand = maskQuotedRegions(command);
+    if (candidatePaths.some((p) => bashWritesToPath(command, maskedCommand, escapeRegExp(p)))) {
+      enfLog.warn("commit_trailer: message file is written by the same command", fileMessage);
+      return {
+        block: true,
+        reason:
+          `⛔ Commit refused: this command writes ${fileMessage} and commits it in the same call, ` +
+          "so the message cannot be verified before it is read. Write the message (with the trailer) in one call and commit in the next.",
+      };
+    }
+    const state = messageFileTrailerState(fileMessage, trailerName, (p) => readFileSync(p, "utf8"));
+    if (state === "has") {
+      enfLog.debug("commit_trailer: message file already carries the trailer", fileMessage);
+      continue;
+    }
+    if (state === "missing") {
+      const quotedFile = `'${escapeForSingleQuote(fileMessage)}'`;
+      return {
+        block: true,
+        reason:
+          `⛔ Commit refused: the message file ${fileMessage} has no \`${trailerName}\` trailer. ` +
+          `Append it with the real id — \`printf '\\n\\n${trailerName}: PI (%s)\\n' "$PI_MODEL" >> ${quotedFile}\` — then re-run the commit.`,
+      };
+    }
+    return {
+      block: true,
+      reason:
+        `⛔ Commit refused: cannot read the message file ${fileMessage}, so the \`${trailerName}\` ` +
+        "trailer cannot be verified. Write the message to a file the hook can read, with the trailer in it, then re-run the commit.",
+    };
+  }
+  if (!unverified) return undefined;
+  if (!commandHasTrailerByName(stripUnquotedShellComments(command), trailerName)) {
+    return {
+      block: true,
+      reason:
+        `⛔ Commit refused: no \`${trailerName}\` trailer found and this commit shape is opaque to the hook ` +
+        `(the message is built in a way it cannot inspect). Add \`${trailerName}: PI (${modelId})\` to the message ` +
+        `yourself — e.g. \`printf '\\n\\n${trailerName}: PI (%s)\\n' "$PI_MODEL" >> <file>\` for \`-F <file>\` — then re-run the commit.`,
+    };
+  }
+  return undefined;
+}
+
+/** Git protection: worktrees, add ., gitignored files, hooks, protected branches, trailers, DCO */
+async function checkGitProtection(
+  command: string,
+  cmdRef: MutableCommand,
+  input: BashPolicyInput,
+  gitCwd: string,
+  prefetchedBranch?: string | null,
+): Promise<EnforcementResult> {
+  if (!/\bgit\b/.test(command)) return undefined;
+  if (!isGitRepo(gitCwd)) return undefined;
+
+  if (getSetting(gitCwd, "use_worktrees")) {
+    const blockedCheckout = realGitSub(command, "checkout") && !/\bgit\b.*\bcheckout\b.*\s--\s/.test(command);
+    const blockedSwitch = !blockedCheckout && realGitSub(command, "switch");
+    if (blockedCheckout || blockedSwitch) {
+      const mb = getMainBranch(gitCwd) || "main";
+      const hint = `Use: git worktree add .worktrees/<name> -b <branch> ${mb}`;
+      return {
+        block: true,
+        reason: `⛔ git ${blockedCheckout ? "checkout" : "switch"} blocked — use_worktrees is enabled. ${hint}`,
+      };
+    }
+  }
+
+  if (hasGitAddBulk(command)) {
+    return {
+      block: true,
+      reason: "⛔ 'git add .' / 'git add -A' forbidden. Stage specific files.",
+    };
+  }
+
+  if (hasGitAddForce(command)) {
+    return {
+      block: true,
+      reason: "⛔ 'git add -f/--force' forbidden. It bypasses .gitignore and stages ignored files.",
+    };
+  }
+
+  {
+    const staged = gitAddPathspecs(command);
+    if (staged && staged.length === 1) {
+      const checkIgnored = runGit(["check-ignore", "-q", staged[0]], gitCwd);
+      if (checkIgnored.code === 0) {
+        return {
+          block: true,
+          reason: `⛔ '${staged[0]}' is in .gitignore. Do not stage ignored files.`,
+        };
+      }
+    } else if (staged && staged.length > 1) {
+      const batched = runGit(["check-ignore", "--stdin", "-z"], gitCwd, `${staged.join("\0")}\0`);
+      const firstIgnored = batched.stdout.split("\0").find(Boolean);
+      if (firstIgnored) {
+        return {
+          block: true,
+          reason: `⛔ '${firstIgnored}' is in .gitignore. Do not stage ignored files.`,
+        };
+      }
+      if (batched.code !== 0 && batched.code !== 1) {
+        for (const file of staged) {
+          const checkIgnored = runGit(["check-ignore", "-q", file], gitCwd);
+          if (checkIgnored.code === 0) {
+            return {
+              block: true,
+              reason: `⛔ '${file}' is in .gitignore. Do not stage ignored files.`,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  if (command.includes("core.hooksPath=/dev/null") || command.includes('core.hooksPath="/dev/null"')) {
+    return {
+      block: true,
+      reason: "⛔ Bypassing git hooks via core.hooksPath=/dev/null is forbidden.",
+    };
+  }
+
+  const isCommit = realGitSub(command, "commit");
+  if (
+    isCommit &&
+    gitSubArgRegions(command, "commit").some((r) => /(?:^|\s)--no-verify\b/.test(stripQuotedSpans(r)))
+  ) {
+    return {
+      block: true,
+      reason: "⛔ --no-verify forbidden. Pre-commit hooks must run.",
+    };
+  }
+
+  const isPush = realGitSub(command, "push");
+  if (!isCommit && !isPush) return undefined;
+
+  const branch = prefetchedBranch !== undefined ? prefetchedBranch : getCurrentBranch(gitCwd);
+  const mainBranch = getMainBranch(gitCwd);
+  const protectedBranches = getProtectedBranches(gitCwd);
+
+  if (isCommit) {
+    if (!branch) {
+      return {
+        block: true,
+        reason: "⛔ Detached HEAD. Create a branch first: git checkout -b my-branch",
+      };
+    }
+    if (protectedBranches.has(branch) && !getSetting(gitCwd, "allow_push_to_protected_branches")) {
+      return {
+        block: true,
+        reason: `⛔ Cannot commit to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git commit in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
+      };
+    }
+
+    const pr = getPrMergeStatus(branch, gitCwd);
+    if (pr.merged) {
+      return {
+        block: true,
+        reason: `⛔ PR #${pr.info} for '${branch}' already merged. Create a new branch from ${mainBranch || "main"}.`,
+      };
+    }
+
+    if (command.includes("--amend") && isBranchAhead(gitCwd)) return undefined;
+
+    if (mainBranch && isBranchMerged(branch, mainBranch, gitCwd)) {
+      return {
+        block: true,
+        reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.`,
+      };
+    }
+
+    const trailerResult = await handleCommitTrailer(command, cmdRef, input, gitCwd);
+    if (trailerResult) return trailerResult;
+
+    if (getSetting(gitCwd, "dco")) {
+      const signed = injectSignoff(cmdRef.current);
+      if (signed !== cmdRef.current) {
+        enfLog.debug("DCO: injected --signoff into real git commit invocation");
+        cmdRef.current = signed;
+        cmdRef.modified = true;
+      }
+    }
+  }
+
+  if (isPush) {
+    if (!getSetting(gitCwd, "allow_push_to_protected_branches")) {
+      if (branch && protectedBranches.has(branch)) {
+        return {
+          block: true,
+          reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git push in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
+        };
+      }
+      const pb = pushTargetsProtectedBranch(command, protectedBranches);
+      if (pb) {
+        return {
+          block: true,
+          reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
+        };
+      }
+    }
+    if (branch) {
+      const pr = getPrMergeStatus(branch, gitCwd);
+      if (pr.merged) {
+        return {
+          block: true,
+          reason: `⛔ PR #${pr.info} for '${branch}' already merged. Create a new branch.`,
+        };
+      }
+      if (mainBranch && isBranchMerged(branch, mainBranch, gitCwd)) {
+        return {
+          block: true,
+          reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.`,
+        };
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/** Dangerous command evaluation + interactive UI / allowlist / session-grant loop. */
+async function checkDangerousCommands(
+  command: string,
+  cwd: string,
+  sessionId: string | null,
+  ui?: BashPolicyUi | null,
+): Promise<EnforcementResult> {
+  const statements = splitBashStatements(command);
+  const hasDangerous = statements.some((stmt) => {
+    if (isReadOnlyStatement(stmt)) return false;
+    if (isNoexecSyntaxCheck(stmt)) {
+      enfLog.info("dangerous_gate_noexec_syntax_check", {
+        statementHash: createHash("sha256").update(stmt).digest("hex").slice(0, 12),
+      });
+      return false;
+    }
+    return DANGEROUS.some((p) => p.test(stmt));
+  });
+  if (!hasDangerous) return undefined;
+
+  const relativeRm = statements
+    .map((stmt) => ({
+      stmt,
+      target: isReadOnlyStatement(stmt) ? null : relativeRecursiveRmTarget(stmt),
+    }))
+    .find((r) => r.target !== null);
+  if (relativeRm && relativeRm.target !== null) {
+    enfLog.warn("recursive_rm_relative_path_blocked", { target: relativeRm.target });
+    const nonLiteral = /[$`*?[\]]/.test(relativeRm.target);
+    const rewrite = nonLiteral
+      ? `Rewrite with a LITERAL full path (no variables or globs — an approval must bind to ` +
+        `one concrete folder) and re-run.`
+      : `Rewrite as rm -rf ${resolve(resolveEffectiveCwd(command, cwd), relativeRm.target)} (full path) and re-run. `;
+    return {
+      block: true,
+      reason:
+        `Blocked: recursive rm must use ABSOLUTE paths — "${relativeRm.stmt.trim()}" targets ` +
+        `"${relativeRm.target}", which is ${nonLiteral ? "not a literal path" : "relative"}. ` +
+        `A persistent "always allow" stores the statement text, so a relative ` +
+        `target would approve the same text in ANY directory. ${rewrite} ` +
+        `Do NOT bypass with an equivalent command (find -delete, git clean, perl, python ` +
+        `os.remove). Stop and report this block to the user if a rewrite is not possible.`,
+    };
+  }
+
+  const allRmInTmp = statements
+    .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt) && !isNoexecSyntaxCheck(stmt))
+    .every((stmt) => isRmInProjectTmp(stmt, cwd));
+  if (allRmInTmp) {
+    enfLog.info("dangerous_gate_rm_scratch_exempt", {
+      statements: statements.length,
+      statementHash: createHash("sha256").update(statements.join("\n")).digest("hex").slice(0, 12),
+    });
+    return undefined;
+  }
+
+  const dangerousStmts = [
+    ...new Set(
+      statements
+        .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt) && !isNoexecSyntaxCheck(stmt))
+        .map((stmt) => normalizeDangerousStatement(stmt)),
+    ),
+  ];
+  const unapproved: string[] = [];
+  const allowlists = loadDangerousAllowlists(cwd);
+  for (const stmt of dangerousStmts) {
+    if (isStdinFedShellStatement(stmt)) {
+      unapproved.push(stmt);
+      continue;
+    }
+    if (hasDangerousSessionApproval(sessionId, stmt)) {
+      enfLog.info("dangerous_command_allowed_session", {
+        dangerousPattern: DANGEROUS.filter((p) => p.test(stmt))
+          .map((p) => dangerousPatternLabel(p))
+          .join(", "),
+        hashPrefix: dangerousCommandHash(stmt).slice(0, 12),
+        persisted: false,
+      });
+      continue;
+    }
+    const allowMatch = matchDangerousAllowlist(allowlists, stmt);
+    if (!allowMatch) {
+      unapproved.push(stmt);
+      continue;
+    }
+    enfLog.warn("dangerous_command_allowlisted", {
+      dangerousPattern: String(DANGEROUS.find((p) => p.test(stmt)) ?? "unknown"),
+      entryHashPrefix: dangerousCommandHash(allowMatch.entry).slice(0, 12),
+      source: allowMatch.source,
+    });
+  }
+  if (unapproved.length === 0) return undefined;
+
+  if (!ui) {
+    return {
+      block: true,
+      reason:
+        "Dangerous command blocked (no UI for confirmation). Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user.",
+    };
+  }
+
+  const projectTrustable = projectSettingsTrust(cwd) === "untracked";
+  const decide = async (remaining: string[]): Promise<EnforcementResult | undefined> => {
+    const list = remaining
+      .map((stmt) => {
+        const rules = dangerousPatternExplanations(DANGEROUS.filter((p) => p.test(stmt)))
+          .map(
+            (e) =>
+              `    ↳ ${e.why}\n      · can be lost: ${e.consequence}\n      · approval covers: ${e.grants}`,
+          )
+          .join("\n");
+        const stdinFed = isStdinFedShellStatement(stmt)
+          ? "\n    ↳ reads its script from stdin — run-once only, never approvable beyond this run"
+          : "";
+        return `  ${stmt}\n${rules}${stdinFed}`;
+      })
+      .join("\n");
+    const scopeNote = projectTrustable
+      ? ""
+      : "\n\nℹ️ The project settings file is not trustable for approvals (git-tracked or\nsymlinked) — persistent approvals can only be stored globally.";
+    const persistable = remaining.filter((stmt) => !isStdinFedShellStatement(stmt));
+    const offeredScopes = dangerousApprovalScopes({
+      approvableBeyondRun: persistable.length > 0,
+      projectTrustable,
+      sessionAvailable: sessionId !== null,
+    });
+    const grants = offeredScopes.map((s) => `  • ${DANGEROUS_SCOPE_GRANTS[s]}`).join("\n");
+    const seen = new Map<string, number>();
+    const labelFor = (stmt: string): string => {
+      const base = stmt.length > 60 ? `${stmt.slice(0, 57)}…` : stmt;
+      const n = (seen.get(base) ?? 0) + 1;
+      seen.set(base, n);
+      return n === 1 ? base : `${base} (#${n})`;
+    };
+    const labeled = persistable.map((stmt) => ({ stmt, label: labelFor(stmt) }));
+    const options = [
+      "Yes — run once",
+      ...labeled.flatMap(({ label }) => [
+        ...(offeredScopes.includes("session") ? [`Allow for this session: ${label}`] : []),
+        ...(projectTrustable ? [`Always allow (this project): ${label}`] : []),
+        `Always allow (everywhere): ${label}`,
+      ]),
+      ...(persistable.length > 1
+        ? [
+            ...(projectTrustable ? ["Always allow all of the above (this project)"] : []),
+            "Always allow all of the above (everywhere)",
+          ]
+        : []),
+      "No",
+    ];
+    const promptTitle = `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}${scopeNote}\n\nWhat each answer grants:\n${grants}\n\nAllow?`;
+    const ok = await ui.select(promptTitle, options);
+    if (ok === "No" || ok === undefined) {
+      return {
+        block: true,
+        reason:
+          "Blocked by user. Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user.",
+      };
+    }
+    if (ok === "Yes — run once" || ok.startsWith("Always allow all of the above")) {
+      if (ok.startsWith("Always allow all of the above")) {
+        const scope = ok.endsWith("(everywhere)") ? "global" : "project";
+        const results = persistable.map((stmt) => addDangerousAllowlistEntry(cwd, stmt, scope));
+        const saved = results.filter((r) => r.ok);
+        const failed = results.length - saved.length;
+        const scopes = [...new Set(saved.map((r) => (r.ok ? r.scope : "")))];
+        enfLog.info("dangerous_command_allowlist_entry_added", {
+          count: saved.length,
+          failed,
+          storedIn: scopes.length === 1 ? `${scopes[0]} settings (dangerous_command_allowlist)` : scopes.join("+"),
+        });
+        await notifyApprovalResults(failed, ui);
+      }
+      return undefined;
+    }
+    if (ok.startsWith("Allow for this session: ")) {
+      const chosen = labeled.find(({ label }) => ok === `Allow for this session: ${label}`)?.stmt;
+      if (chosen !== undefined) {
+        grantDangerousSessionApproval(sessionId, chosen);
+        enfLog.info("dangerous_command_session_approval_granted", {
+          dangerousPattern: DANGEROUS.filter((p) => p.test(chosen))
+            .map((p) => dangerousPatternLabel(p))
+            .join(", "),
+          hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
+          persisted: false,
+        });
+        const still = remaining.filter((s) => s !== chosen);
+        if (still.length === 0) return undefined;
+        return decide(still);
+      }
+    }
+    if (ok.startsWith("Always allow (this project): ") || ok.startsWith("Always allow (everywhere): ")) {
+      const scope = ok.startsWith("Always allow (everywhere): ") ? "global" : "project";
+      const chosen = labeled.find(
+        ({ label }) => ok === `Always allow (${scope === "global" ? "everywhere" : "this project"}): ${label}`,
+      )?.stmt;
+      if (chosen !== undefined) {
+        const result = addDangerousAllowlistEntry(cwd, chosen, scope);
+        if (result.ok) {
+          enfLog.info("dangerous_command_allowlist_entry_added", {
+            dangerousPattern: dangerousPatternLabel(DANGEROUS.find((p) => p.test(chosen)) ?? /./),
+            hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
+            storedIn: `${result.scope} settings (dangerous_command_allowlist)`,
+          });
+        } else {
+          enfLog.warn("dangerous_allowlist_entry_add_failed", {
+            reason: result.reason,
+            hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
+          });
+          await ui.notify(approvalFailureMessage(result.reason), "warning");
+        }
+        const still = remaining.filter((s) => s !== chosen);
+        if (still.length === 0) return undefined;
+        return decide(still);
+      }
+    }
+    return undefined;
+  };
+  return decide(unapproved);
+}
+
+/**
+ * Evaluate a bash command against the complete enforcement policy pipeline.
+ * Single deep entry point called by the thin `enforcement.ts` hook adapter and
+ * directly by in-process policy tests.
+ */
+export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPolicyDecision> {
+  const command = input.command;
+  const cmdLower = command.trim().toLowerCase();
+  const cmdRef: MutableCommand = { current: command, modified: false };
+  let stripTimeout = false;
+
+  const isSubagentChild = input.isSubagentChild ?? process.env.PI_SUBAGENT_CHILD === "1";
+  const agentName = input.agentName !== undefined ? input.agentName : process.env.PI_AGENT_NAME;
+  const sessionId = input.sessionId ?? null;
+
+  // Block ALL bash commands targeting pi-config-review-state — no exceptions.
+  if (getSetting(input.cwd, "review_loop_enforcement") && cmdLower.includes("pi-config-review-state")) {
+    return {
+      action: "block",
+      reason:
+        "\u26d4 Bash command targeting pi-config-review-state blocked. The review state is managed exclusively by the enforcement system.",
+    };
+  }
+
+  // Block bash WRITES targeting the settings files (issue #949 / PR #950) and
+  // git identity config files (issue #995).
+  const maybeSettingsWrite = cmdLower.includes("pi-config-settings");
+  const maybeIdentityWrite =
+    cmdLower.includes("gitconfig") ||
+    cmdLower.includes("git/config") ||
+    unquotedSegments(command).some((seg) => runsNestedShell(tokenize(seg.text)));
+  if (maybeSettingsWrite || maybeIdentityWrite) {
+    const maskedCmd = maskQuotedRegions(command);
+    if (maybeSettingsWrite && bashWritesToPath(command, maskedCmd, "pi-config-settings")) {
+      return {
+        action: "block",
+        reason:
+          "\u26d4 Bash command writing pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor.",
+      };
+    }
+    if (maybeIdentityWrite && bashWritesToPath(command, maskedCmd, gitIdentityConfigSrc())) {
+      enfLog.error("git_identity_config_write_blocked");
+      return {
+        action: "block",
+        reason:
+          "\u26d4 Bash command writing a git identity config (~/.gitconfig, ~/.config/git/config, .git/config) blocked. " +
+          "The git identity belongs to the human — if it is wrong, tell the user to fix their own git config.",
+      };
+    }
+  }
+
+  // Block repeated identical commands (polling-by-spam) — orchestrator only.
+  if (!isSubagentChild && input.trackRepeat) {
+    const count = input.trackRepeat(normalizeForRepeatCheck(command));
+    if (count >= 3) {
+      return {
+        action: "block",
+        reason: `⛔ Same command executed ${count} times in a row. Use a subagent with async: true for polling/monitoring instead of repeating the command.`,
+      };
+    }
+  }
+
+  // Strip timeout on long-running poll commands (rate limit waits can exceed 30m).
+  if (/\bmyk-pi-tools\b[\s\S]*\breviews\s+poll\b/.test(command) && input.hasTimeout) {
+    stripTimeout = true;
+  }
+
+  const pythonCheck = checkPythonPipBlock(command, cmdLower);
+  if (pythonCheck) {
+    if ("autofix" in pythonCheck) {
+      cmdRef.current = pythonCheck.modifiedCommand;
+      cmdRef.modified = true;
+    } else {
+      return { action: "block", reason: pythonCheck.reason };
+    }
+  }
+
+  // Block memory writes from specialist agents — only orchestrator can write.
+  if (isSubagentChild && /\bmyk-pi-tools\b.*\bmemory\s+(add|delete)\b/.test(command)) {
+    return {
+      action: "block",
+      reason: "Memory writes are restricted to the orchestrator. Specialists can only search/list memories.",
+    };
+  }
+
+  // Block direct docker/podman CLI in container — force docker-safe wrapper.
+  if (input.inContainer && /(?:^|[|;&]\s*)(?:docker|podman)\s/.test(cmdLower) && !cmdLower.includes("docker-safe")) {
+    return {
+      action: "block",
+      reason: "Direct docker/podman forbidden. Use docker-safe for read-only container inspection (ps, logs, inspect, top, stats).",
+    };
+  }
+
+  // Block sleep inside loops / long sleeps — force async in the orchestrator.
+  const hasLoop = /\b(while|for|until)\b/.test(command);
+  const sleepMatch = command.match(/\bsleep\s+(\d+)/);
+  const asyncRouteAvailable = !isSubagentChild;
+  if (
+    asyncRouteAvailable &&
+    hasLoop &&
+    sleepMatch &&
+    parseInt(sleepMatch[1], 10) > getSetting(input.cwd, "enforcement_loop_sleep_threshold_s")
+  ) {
+    return {
+      action: "block",
+      reason: `⚠️ Polling loop with sleep ${sleepMatch[1]}s blocked. Use subagent with async: true for polling/monitoring tasks instead of blocking the session.`,
+    };
+  }
+
+  if (
+    asyncRouteAvailable &&
+    !hasLoop &&
+    sleepMatch &&
+    parseInt(sleepMatch[1], 10) > getSetting(input.cwd, "enforcement_sleep_threshold_s")
+  ) {
+    enfLog.info("dangerous_gate_sleep_blocked", {
+      seconds: Number(sleepMatch[1]),
+      threshold: getSetting(input.cwd, "enforcement_sleep_threshold_s"),
+    });
+    return {
+      action: "block",
+      reason: `⚠️ sleep ${sleepMatch[1]}s blocked — too long. Use subagent with async: true instead of blocking the session.`,
+    };
+  }
+
+  const remoteCheck = checkRemoteExecBlock(cmdLower);
+  if (remoteCheck && "block" in remoteCheck) {
+    return { action: "block", reason: remoteCheck.reason };
+  }
+
+  // comment_signature: inject Assisted-by footer into gh pr/issue create|comment|edit bodies.
+  if (getSetting(input.cwd, "comment_signature")) {
+    const modelId = resolveCommentSignatureModelId(input.ctxModelId);
+    const signature = `Assisted-by: PI (${modelId})`;
+    const injected = injectGhBodySignature(cmdRef.current, signature);
+    if (injected !== cmdRef.current) {
+      enfLog.info("comment_signature injected into gh body command", signature);
+      cmdRef.current = injected;
+      cmdRef.modified = true;
+    }
+  }
+
+  // Git identity belongs to the human (issue #995).
+  const identityOverride = gitIdentityOverride(command);
+  if (identityOverride) {
+    enfLog.error("git_identity_override_blocked", "source", identityOverride);
+    return {
+      action: "block",
+      reason:
+        `\u26d4 Git identity override blocked (${identityOverride}). The git identity belongs to the human: ` +
+        "never set user.name/user.email, GIT_AUTHOR_*/GIT_COMMITTER_*, --author, or `git config user.*`. " +
+        "If the identity is wrong, tell the user to fix their own git config.",
+    };
+  }
+
+  // Enforce git commit/push only via git-expert agent.
+  if (agentName !== "git-expert" && isRealGitCommitOrPush(command)) {
+    return {
+      action: "block",
+      reason: "⛔ git commit/push blocked. Use git-expert agent for commit and push operations.",
+    };
+  }
+
+  // Conflict resolution belongs to conflict-resolver (blocked for git-expert).
+  if (agentName === "git-expert" && createsAndResolvesConflict(command)) {
+    enfLog.error("conflict_created_and_resolved", "agent", agentName ?? "unknown");
+    return {
+      action: "block",
+      reason:
+        "\u26d4 This command starts a merge/rebase/cherry-pick and then stages a resolution of it. " +
+        "The conflict does not exist yet, so it cannot be checked. Delegate to the conflict-resolver " +
+        'agent (subagent(agent="conflict-resolver")), and let git-expert commit the staged result.',
+    };
+  }
+  if (agentName === "git-expert" && isConflictResolutionCommand(command)) {
+    const { all, envOverride, dynamicPath } = conflictCandidateDirs(command, input.cwd);
+    if (dynamicPath) {
+      return {
+        action: "block",
+        reason:
+          `⛔ ${dynamicPath} is expanded by the shell, so the repository it selects cannot be verified. ` +
+          "Do not resolve conflicts in git-expert — abort and delegate to the " +
+          `conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+      };
+    }
+    if (envOverride) {
+      return {
+        action: "block",
+        reason:
+          `⛔ ${envOverride} selects the Git repository or index for this command, so the conflict state ` +
+          "cannot be verified. Do not resolve conflicts in git-expert — abort and delegate to the " +
+          `conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+      };
+    }
+    const conflicted: string[] = [];
+    const unreadable: string[] = [];
+    for (const dir of all) {
+      const lookup = listUnmergedFiles(dir);
+      if (!lookup.ok) {
+        if (isInsideGitWorkTree(dir)) unreadable.push(dir);
+        continue;
+      }
+      for (const file of lookup.files) conflicted.push(dir === input.cwd ? file : `${dir} → ${file}`);
+    }
+    if (conflicted.length === 0 && unreadable.length > 0) {
+      enfLog.error("conflict_lookup_failed", unreadable.join(", "));
+      return {
+        action: "block",
+        reason:
+          `⛔ Could not read the unmerged index in ${unreadable.join(", ")}, so the conflict state is ` +
+          "unknown. Refusing to run a resolution command blind: run `git status` to see where you are, " +
+          `or delegate to the conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+      };
+    }
+    if (conflicted.length > 0) {
+      enfLog.error("conflict_resolution_blocked", conflicted.join(", "));
+      return {
+        action: "block",
+        reason:
+          `⛔ Unresolved conflicts in ${conflicted.join(", ")}. Do not resolve them in git-expert — ` +
+          `stop, report this message to the caller, and have it delegate to the conflict-resolver ` +
+          `agent (subagent(agent="conflict-resolver")). To back out instead: ` +
+          `git merge --abort / git rebase --abort / git cherry-pick --abort.`,
+      };
+    }
+  }
+
+  // Review-loop commit gate + git protection.
+  const hasGitWord = /\bgit\b/.test(command);
+  const isGitExpertCommit = agentName === "git-expert" && realGitSub(command, "commit");
+  const gitCwd = hasGitWord || isGitExpertCommit ? resolveEffectiveCwd(command, input.cwd) : input.cwd;
+  let prefetchedBranch: string | null | undefined = undefined;
+  if (isGitExpertCommit && input.checkReviewLoopCommit) {
+    prefetchedBranch = getCurrentBranch(gitCwd);
+    const reviewGate = input.checkReviewLoopCommit(gitCwd, prefetchedBranch);
+    if (reviewGate) return { action: "block", reason: reviewGate.reason };
+  }
+
+  const gitCheck = hasGitWord
+    ? await checkGitProtection(command, cmdRef, input, gitCwd, prefetchedBranch)
+    : undefined;
+  if (gitCheck && "block" in gitCheck) {
+    return { action: "block", reason: gitCheck.reason };
+  }
+
+  const tmpCheck = checkTempFileEnforcement(command, input.cwd);
+  if (tmpCheck && "block" in tmpCheck) {
+    return { action: "block", reason: tmpCheck.reason };
+  }
+
+  const dangerCheck = await checkDangerousCommands(command, input.cwd, sessionId, input.ui);
+  if (dangerCheck && "block" in dangerCheck) {
+    return { action: "block", reason: dangerCheck.reason };
+  }
+
+  return {
+    action: "allow",
+    ...(cmdRef.modified ? { modifiedCommand: cmdRef.current } : {}),
+    ...(stripTimeout ? { stripTimeout: true } : {}),
+  };
 }

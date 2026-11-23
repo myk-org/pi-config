@@ -191,8 +191,7 @@ can be lost) and `grants` (what approving that statement permits), so a chain
 is judged statement by statement instead of as one blob — and a statement that
 trips several rules (`sudo rm -rf /srv/data` is both a recursive delete and an
 escalation) shows every one of them. The rules and their explanations live in
-one table beside the pattern list (`DANGEROUS` / `DANGEROUS_EXPLANATIONS` in
-`extensions/orchestrator/git-helpers.ts`).
+one unified table (`DANGEROUS_RULES` in `extensions/orchestrator/bash-policy.ts`).
 
 **"Allow for this session"** is the middle scope (#1073): the statement is
 approved for the rest of the running session and **never written to any

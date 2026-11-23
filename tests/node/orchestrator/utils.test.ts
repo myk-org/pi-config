@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { escapeRegExp, sanitizeModelId } from "../../../extensions/orchestrator/utils.js";
-import { matchHeredocOpener, skipHeredocBody } from "../../../extensions/orchestrator/git-helpers.js";
+import { matchHeredocOpener, skipHeredocBody } from "../../../extensions/orchestrator/bash-policy.js";
 
 describe("orchestrator utils helpers (#1233)", () => {
   it("escapeRegExp escapes all RegExp metacharacters", () => {

@@ -5,7 +5,7 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
 
 | Tier | Meaning | Mechanism |
 |------|---------|-----------|
-| `code` | Runtime hooks act without relying on LLM compliance | `enforcement-rules.ts`, remote-exec helpers in `enforcement-helpers.ts` |
+| `code` | Runtime hooks act without relying on LLM compliance | `enforcement-rules.ts`, bash enforcement policy in `bash-policy.ts` |
 | `injected` | Present in situation report / rules markdown; LLM compliance only | Topic memories, package/user/project `rules/*.md` |
 | `aspirational` | Documented guidance with no injection or hook guarantee | Rare edge docs, stale comments |
 
@@ -16,7 +16,7 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
 - Trigger types: `bash_contains`, `bash_regex`, `tool_name`, `file_modified`
 - Actions: `block`, `warn`, `run_after <cmd>`
 - Verifiers: `tool_called <tool> before <command>` at `turn_end`
-- Remote script exec blocks (`checkRemoteExecBlock` in `enforcement-helpers.ts`): blocks `curl \| bash`,
+- Remote script exec blocks (`checkRemoteExecBlock` in `bash-policy.ts`): blocks `curl \| bash`,
   `eval $(curl)`, nested `$(bash -c "$(curl)")`, prefix assignments (`VAR=$(curl) cmd`), and path-prefixed exec
   (`/bin/bash -c`), while allowing a safe `VAR=$(curl ...)` capture followed by an unrelated interpreter/`eval` call
   (still blocking if exec consumes the captured var or reads untrackable stdin/file input)
