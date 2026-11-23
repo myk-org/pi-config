@@ -179,7 +179,7 @@ export default function (pi: ExtensionAPI) {
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
   registerReviewLearning(pi);
-  registerPrRetro(pi);
+  registerPrRetro(pi, spawnAsyncAgent);
   registerTmpCleanup(pi);
   registerSessionSearch(pi);
   registerSettingsTui(pi);

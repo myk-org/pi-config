@@ -10,7 +10,7 @@
  * Completions:
  *   /external-ai <Tab>           → ai-cli provider names + --fix, --peer, --cli-flags
  *   /pr-review <Tab>             → open PR numbers
- *   /retro <Tab>                 → open PR numbers
+ *   /retro <Tab>                 → recently merged PR numbers
  *   /coderabbit-rate-limit <Tab> → open PR numbers
  *   /review-local <Tab>          → git branch names
  *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
@@ -112,6 +112,7 @@ type CompletionFn = (prefix: string) => AutocompleteItem[] | null;
 interface AutocompleteContext {
   prCache: Cache<AutocompleteItem[]>;
   prUrlMap: Map<string, string>;
+  mergedPrCache: Cache<AutocompleteItem[]>;
   issueCache: Cache<AutocompleteItem[]>;
   branchCache: Cache<AutocompleteItem[]>;
   tagCache: Cache<AutocompleteItem[]>;
@@ -119,6 +120,7 @@ interface AutocompleteContext {
   modelCaches: Map<string, Cache<AutocompleteItem[]>>;
   lastCwd: string;
   fetchOpenPRs(cwd: string): Promise<void>;
+  fetchMergedPRs(cwd: string): Promise<void>;
   fetchOpenIssues(cwd: string): Promise<void>;
   fetchBranches(cwd: string): Promise<void>;
   fetchModels(provider: string, cwd: string): Promise<void>;
@@ -220,8 +222,8 @@ function registerCompletions(
     },
 
     "retro": (prefix: string) => {
-      void ctx.fetchOpenPRs(ctx.lastCwd);
-      return ctx.prCache.data ? filter(ctx.prCache.data, prefix.replace(/^#/, "")) : null;
+      void ctx.fetchMergedPRs(ctx.lastCwd);
+      return ctx.mergedPrCache.data ? filter(ctx.mergedPrCache.data, prefix.replace(/^#/, "")) : null;
     },
 
     "review-local": (prefix: string) => {
@@ -496,6 +498,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   const ctx = {} as AutocompleteContext;
   ctx.prCache = createCache<AutocompleteItem[]>();
   ctx.prUrlMap = new Map<string, string>();
+  ctx.mergedPrCache = createCache<AutocompleteItem[]>();
   ctx.issueCache = createCache<AutocompleteItem[]>();
   ctx.branchCache = createCache<AutocompleteItem[]>();
   ctx.tagCache = createCache<AutocompleteItem[]>();
@@ -531,6 +534,27 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       }
     } catch (e: any) { console.debug("[autocomplete] PR fetch failed:", e?.message || e); }
     ctx.prCache.loading = false;
+  };
+
+  ctx.fetchMergedPRs = async (cwd: string) => {
+    if (isFresh(ctx.mergedPrCache) || ctx.mergedPrCache.loading) return;
+    ctx.mergedPrCache.loading = true;
+    try {
+      const result = await pi.exec(
+        "gh", ["pr", "list", "--state", "merged", "--limit", "50", "--json", "number,title,url"],
+        { cwd, timeout: 10_000 },
+      );
+      if (result.code === 0) {
+        const prs = JSON.parse(result.stdout) as Array<{ number: number; title: string; url: string }>;
+        ctx.mergedPrCache.data = prs.map((pr) => ({
+          value: String(pr.number),
+          label: `#${pr.number}`,
+          description: pr.title,
+        }));
+        ctx.mergedPrCache.timestamp = Date.now();
+      }
+    } catch (e: any) { log.debug("merged PR fetch failed", { error: e?.message || String(e) }); }
+    ctx.mergedPrCache.loading = false;
   };
 
   ctx.fetchOpenIssues = async (cwd: string) => {

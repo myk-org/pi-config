@@ -9,6 +9,7 @@
  * Usage:
  *   node scripts/pr-retro-collect.mjs [--pr <number>] [--cwd <dir>] [--repo <owner/repo>]
  *                                     [--sessions-dir <dir>] [--force] [--no-record]
+ *                                     [--mark-done] [--max-bytes <n>]
  */
 
 import { execFileSync } from "node:child_process";
@@ -19,6 +20,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -35,9 +37,13 @@ export const MAX_STATE_ENTRIES = 500;
 export const DEFAULT_MAX_DIGEST_BYTES = 5120;
 export const LARGE_OUTPUT_THRESHOLD_BYTES = 4096;
 export const TRIVIAL_MAX_CHANGED_LINES = 20;
-const MAX_SCANNED_SESSIONS = 20;
+const MAX_MATCHED_SESSIONS = 20;
+const MAX_INSPECTED_SESSIONS = 200;
 const MAX_SESSION_BYTES = 16 * 1024 * 1024;
 const SESSION_WINDOW_PAD_MS = 60 * 60 * 1000;
+const STATE_LOCK_STALE_MS = 30_000;
+const STATE_LOCK_RETRIES = 40;
+const STATE_LOCK_WAIT_MS = 25;
 
 const VERSION_BUMP_TITLE_RE =
   /^(?:chore(?:\([^)]*\))?:\s*bump\s+version\b|release\s+v?\d|chore\(release\):)/i;
@@ -51,6 +57,11 @@ const TASK_TOOLS = new Set([
   "TaskBulkDelete",
   "TaskGet",
 ]);
+
+function syncSleepMs(ms) {
+  const buf = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buf, 0, 0, ms);
+}
 
 function defaultExec(cmd, args, cwd, timeout = 15_000) {
   return execFileSync(cmd, args, {
@@ -69,6 +80,7 @@ export function parseCliArgs(argv) {
     sessionsDir: null,
     force: false,
     record: true,
+    markDone: false,
     maxBytes: DEFAULT_MAX_DIGEST_BYTES,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -85,6 +97,8 @@ export function parseCliArgs(argv) {
       opts.force = true;
     } else if (arg === "--no-record") {
       opts.record = false;
+    } else if (arg === "--mark-done") {
+      opts.markDone = true;
     } else if (arg === "--max-bytes" && argv[i + 1]) {
       const n = Number.parseInt(argv[++i], 10);
       if (Number.isInteger(n) && n >= 1024 && n <= 32768) opts.maxBytes = n;
@@ -135,6 +149,14 @@ export function makeRetroKey(repoSlug, prNumber) {
   return `${repoSlug || "local"}#${prNumber}`;
 }
 
+export function flattenSlurpedPages(parsed) {
+  if (!Array.isArray(parsed)) return [];
+  if (parsed.length > 0 && parsed.every((item) => Array.isArray(item))) {
+    return parsed.flat();
+  }
+  return parsed;
+}
+
 export function loadRetroState(dataDir) {
   const filePath = join(dataDir, STATE_FILE_NAME);
   if (!existsSync(filePath)) return { version: 1, retroed: {} };
@@ -149,41 +171,117 @@ export function loadRetroState(dataDir) {
   return { version: 1, retroed: {} };
 }
 
-export function isAlreadyRetroed(state, key) {
-  return Boolean(state?.retroed && Object.prototype.hasOwnProperty.call(state.retroed, key));
+export function hasRetroReport(dataDir, prNumber) {
+  if (!dataDir || prNumber === null || prNumber === undefined) return false;
+  const num = String(prNumber).trim();
+  if (!/^\d+$/.test(num)) return false;
+  const reportPath = join(dataDir, "retros", `pr-${num}.md`);
+  try {
+    return existsSync(reportPath) && statSync(reportPath).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function isAlreadyRetroed(state, key, dataDir = null, prNumber = null) {
+  if (state?.retroed && Object.prototype.hasOwnProperty.call(state.retroed, key)) {
+    const entry = state.retroed[key];
+    const status = typeof entry?.status === "string" ? entry.status : "completed";
+    if (status === "completed" || status.startsWith("skipped_")) return true;
+  }
+  if (dataDir && prNumber !== null && hasRetroReport(dataDir, prNumber)) {
+    return true;
+  }
+  return false;
+}
+
+function withStateLock(dataDir, fn) {
+  mkdirSync(dataDir, { recursive: true });
+  const lockDir = join(dataDir, `.${STATE_FILE_NAME}.lock`);
+  let acquired = false;
+  for (let attempt = 0; attempt < STATE_LOCK_RETRIES; attempt += 1) {
+    try {
+      mkdirSync(lockDir);
+      acquired = true;
+      break;
+    } catch (err) {
+      if (err?.code !== "EEXIST") throw err;
+      try {
+        const st = statSync(lockDir);
+        if (Date.now() - st.mtimeMs > STATE_LOCK_STALE_MS) {
+          rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      syncSleepMs(STATE_LOCK_WAIT_MS);
+    }
+  }
+  if (!acquired) {
+    throw new Error(`Timed out acquiring state lock: ${lockDir}`);
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      rmSync(lockDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort lock cleanup */
+    }
+  }
 }
 
 export function markRetroed(dataDir, key, meta = {}) {
-  mkdirSync(dataDir, { recursive: true });
-  const filePath = join(dataDir, STATE_FILE_NAME);
-  const state = loadRetroState(dataDir);
-  state.retroed[key] = {
-    at: new Date().toISOString(),
-    ...meta,
-  };
-  const keys = Object.keys(state.retroed);
-  if (keys.length > MAX_STATE_ENTRIES) {
-    const sorted = keys.sort((a, b) =>
-      String(state.retroed[a]?.at ?? "").localeCompare(String(state.retroed[b]?.at ?? "")),
+  return withStateLock(dataDir, () => {
+    const filePath = join(dataDir, STATE_FILE_NAME);
+    const state = loadRetroState(dataDir);
+    state.retroed[key] = {
+      at: new Date().toISOString(),
+      status: "completed",
+      ...meta,
+    };
+    const keys = Object.keys(state.retroed);
+    if (keys.length > MAX_STATE_ENTRIES) {
+      const sorted = keys.sort((a, b) =>
+        String(state.retroed[a]?.at ?? "").localeCompare(String(state.retroed[b]?.at ?? "")),
+      );
+      for (const oldKey of sorted.slice(0, keys.length - MAX_STATE_ENTRIES)) {
+        delete state.retroed[oldKey];
+      }
+    }
+    const tmpPath = join(
+      dataDir,
+      `.${STATE_FILE_NAME}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
     );
-    for (const oldKey of sorted.slice(0, keys.length - MAX_STATE_ENTRIES)) {
-      delete state.retroed[oldKey];
-    }
-  }
-  const tmpPath = join(dataDir, `.${STATE_FILE_NAME}.${process.pid}.${Date.now()}.tmp`);
-  try {
-    writeFileSync(tmpPath, JSON.stringify(state, null, 2) + "\n", "utf-8");
-    renameSync(tmpPath, filePath);
-  } catch (err) {
     try {
-      unlinkSync(tmpPath);
-    } catch {
-      /* best-effort cleanup */
+      writeFileSync(tmpPath, JSON.stringify(state, null, 2) + "\n", "utf-8");
+      renameSync(tmpPath, filePath);
+    } catch (err) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        /* best-effort cleanup */
+      }
+      log.warn("mark_retroed_failed", { filePath, error: String(err?.message ?? err).slice(0, 160) });
+      throw err;
     }
-    log.warn("mark_retroed_failed", { filePath, error: String(err?.message ?? err).slice(0, 160) });
-    throw err;
+    return state;
+  });
+}
+
+function tryMarkRetroed(dataDir, key, meta = {}) {
+  try {
+    markRetroed(dataDir, key, meta);
+    return true;
+  } catch (err) {
+    log.warn("try_mark_retroed_failed", {
+      dataDir,
+      key,
+      error: String(err?.message ?? err).slice(0, 160),
+    });
+    return false;
   }
-  return state;
 }
 
 export function countCiFailures(statusCheckRollup) {
@@ -350,7 +448,7 @@ export function scanSessionLogs({
   }
 
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const selected = candidates.slice(0, MAX_SCANNED_SESSIONS);
+  const inspected = candidates.slice(0, MAX_INSPECTED_SESSIONS);
 
   const toolCounts = new Map();
   const cmdCounts = new Map();
@@ -371,7 +469,9 @@ export function scanSessionLogs({
     ...commitShas.slice(0, 6).map((s) => String(s).slice(0, 7)),
   ].filter(Boolean);
 
-  for (const { filePath } of selected) {
+  for (const { filePath } of inspected) {
+    if (sessionFilesMatched >= MAX_MATCHED_SESSIONS) break;
+
     let raw;
     try {
       raw = readFileSync(filePath, "utf-8");
@@ -399,7 +499,9 @@ export function scanSessionLogs({
     sessionsScanned += 1;
     const mentionsPr =
       matchTokens.length === 0 || matchTokens.some((tok) => raw.includes(tok));
-    if (mentionsPr) sessionFilesMatched += 1;
+    if (!mentionsPr) continue;
+
+    sessionFilesMatched += 1;
 
     for (const line of lines) {
       if (!line || line[0] !== "{") continue;
@@ -620,7 +722,7 @@ export function fitDigestBudget(digest, maxBytes = DEFAULT_MAX_DIGEST_BYTES) {
   return clone;
 }
 
-function fetchPrData({ prNumber, repoSlug, cwd, execFn }) {
+export function fetchPrData({ prNumber, repoSlug, cwd, execFn = defaultExec }) {
   const fields = [
     "number",
     "title",
@@ -666,19 +768,19 @@ function fetchPrData({ prNumber, repoSlug, cwd, execFn }) {
   let inlineComments = [];
   if (effectiveRepo) {
     try {
+      // --slurp wraps paginated page arrays in a single valid JSON array so multi-page PRs (>30 comments) parse cleanly
       const apiRaw = execFn(
         "gh",
-        ["api", `repos/${effectiveRepo}/pulls/${pr.number}/comments`, "--paginate"],
+        ["api", `repos/${effectiveRepo}/pulls/${pr.number}/comments`, "--paginate", "--slurp"],
         cwd,
         15_000,
       );
-      const parsed = JSON.parse(apiRaw);
-      if (Array.isArray(parsed)) inlineComments = parsed;
+      inlineComments = flattenSlurpedPages(JSON.parse(apiRaw));
     } catch (err) {
-      log.debug("inline_comments_fetch_failed", {
+      log.warn("inline_comments_fetch_failed", {
         repo: effectiveRepo,
         pr: pr.number,
-        error: String(err?.message ?? err).slice(0, 120),
+        error: String(err?.message ?? err).slice(0, 160),
       });
     }
   }
@@ -693,6 +795,7 @@ function fetchPrData({ prNumber, repoSlug, cwd, execFn }) {
  *   sessionsDir?: string,
  *   force?: boolean,
  *   record?: boolean,
+ *   markDone?: boolean,
  *   maxBytes?: number,
  *   execFn?: (cmd: string, args: string[], cwd: string, timeout?: number) => string,
  *   prDataOverride?: { pr: Record<string, any>, inlineComments?: any[], repoSlug?: string | null } | null,
@@ -705,6 +808,7 @@ export function collectPrRetro({
   sessionsDir = join(homedir(), ".pi", "agent", "sessions"),
   force = false,
   record = true,
+  markDone = false,
   maxBytes = DEFAULT_MAX_DIGEST_BYTES,
   execFn = defaultExec,
   prDataOverride = null,
@@ -713,11 +817,26 @@ export function collectPrRetro({
   const dataDir = join(repoRoot, ".pi", "data");
   const initialRepoSlug = resolveRepoSlug(cwd, repo, execFn);
 
+  // Explicit post-report completion mark (called only after .pi/data/retros/pr-<N>.md is written)
+  if (markDone) {
+    if (!pr || !/^\d+$/.test(String(pr))) {
+      throw new Error("--mark-done requires a numeric --pr <number>");
+    }
+    const key = makeRetroKey(initialRepoSlug, pr);
+    const saved = tryMarkRetroed(dataDir, key, { status: "completed" });
+    return {
+      status: "marked",
+      key,
+      prNumber: Number(pr),
+      ...(saved ? {} : { stateWriteWarning: true }),
+    };
+  }
+
   // Fast-path dedupe before hitting GitHub API when PR number & repo are known
   if (!force && pr && /^\d+$/.test(String(pr)) && initialRepoSlug) {
     const fastKey = makeRetroKey(initialRepoSlug, pr);
     const state = loadRetroState(dataDir);
-    if (isAlreadyRetroed(state, fastKey)) {
+    if (isAlreadyRetroed(state, fastKey, dataDir, pr)) {
       log.info("pr_retro_skipped_dedupe", { key: fastKey });
       return {
         status: "skipped",
@@ -742,7 +861,7 @@ export function collectPrRetro({
 
   if (!force) {
     const state = loadRetroState(dataDir);
-    if (isAlreadyRetroed(state, key)) {
+    if (isAlreadyRetroed(state, key, dataDir, prObj.number)) {
       log.info("pr_retro_skipped_dedupe", { key });
       return {
         status: "skipped",
@@ -751,11 +870,22 @@ export function collectPrRetro({
         prNumber: prObj.number,
       };
     }
+    // Never retro or permanently mark a still-open PR (e.g., gh pr merge --auto queued)
+    if (String(prObj.state || "").toUpperCase() !== "MERGED") {
+      log.info("pr_retro_skipped_not_merged", { key, state: prObj.state || null });
+      return {
+        status: "skipped",
+        reason: "not_merged",
+        key,
+        prNumber: prObj.number,
+        state: prObj.state || null,
+      };
+    }
   }
 
   const trivial = classifyTrivialPr(prObj, fetched.inlineComments);
   if (trivial.skip && !force) {
-    if (record) markRetroed(dataDir, key, { status: `skipped_${trivial.reason}` });
+    const stateSaved = record ? tryMarkRetroed(dataDir, key, { status: `skipped_${trivial.reason}` }) : true;
     log.info("pr_retro_skipped_trivial", { key, reason: trivial.reason, changedLines: trivial.changedLines });
     return {
       status: "skipped",
@@ -766,6 +896,7 @@ export function collectPrRetro({
       changedLines: trivial.changedLines,
       reviewFindings: trivial.reviewFindings,
       ciFailures: trivial.ciFailures,
+      ...(stateSaved ? {} : { stateWriteWarning: true }),
     };
   }
 
@@ -825,11 +956,13 @@ export function collectPrRetro({
   };
 
   const digest = fitDigestBudget(rawDigest, maxBytes);
-  if (record) markRetroed(dataDir, key, { status: "collected" });
+  // Note: do NOT mark "completed" here — state is marked only via --mark-done
+  // after .pi/data/retros/pr-<N>.md is written so failed analyzer runs can retry.
   log.info("pr_retro_collected", {
     key,
     bytes: Buffer.byteLength(JSON.stringify(digest), "utf-8"),
     sessionsScanned: sessions.sessionsScanned,
+    sessionFilesMatched: sessions.sessionFilesMatched,
     findings: trivial.reviewFindings,
     ciFailures: ci.failed,
   });
