@@ -124,15 +124,15 @@ pi-config/
 │   │   ├── workload-bridge.ts       # Session-keyed orchestrator workload bridge for coms/pitasks (#1083, #1337)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
-│   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model + openai-compatible-discovery)
+│   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery)
 │   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
 │   │   ├── widget-visibility.ts     # Shared collapse/expand widget state (expanded/collapsed, header-always-visible), globalThis reload persistence, shortcut validation/registration, and ui:toggle-all-widgets bridge
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
 │   ├── providers/                  # Default model restore & thinking-level persistence extension
-│   │   ├── index.ts                # Extension entry — wires model restore & thinking-level persistence
+│   │   ├── index.ts                # Extension entry — delegates to registerSessionRestore (skips meta invocations)
+│   │   ├── session-restore.ts      # Unified session_start / model_select / thinking_level_select / session_shutdown restore lifecycle (#1360)
 │   │   ├── restore-default-model.ts # Cold-start restore of saved default (provider-agnostic) after auth-race fallback (#753)
-│   │   ├── model-restore-wiring.ts # session_start wiring for cold-start default model restore
-│   │   └── last-thinking-level.ts  # Per-model thinking-level persistence across sessions
+│   │   └── last-thinking-level.ts  # Per-model thinking-level persistence, locking, clamping, and policy helpers
 │   └── image-gen/                   # Image generation extension (standalone)
 │       ├── index.ts                # Entry point — registers generate_image tool
 │       └── image-gen.ts            # Gemini API image generation (settings: image_model; env: GEMINI_API_KEY)
@@ -233,7 +233,7 @@ pi-config/
 ├── pi-config-settings.example.json  # Example project settings file (plain JSON)
 ├── tests/                           # Test suite
 │   ├── node/                        # Node.js tests (tsx + node:test)
-│   │   ├── providers/               # restore-default-model, model-restore-wiring, last-thinking-level tests
+│   │   ├── providers/               # index, session-restore, restore-default-model, last-thinking-level tests
 │   │   ├── orchestrator/            # Orchestrator extension tests
 │   │   ├── pidiff/                  # Pidiff extension tests
 │   │   └── shared/                  # Shared tests (oneshot, coms, daemon, pricing-provenance, provider-stream-log, OpenAI-compatible discovery)

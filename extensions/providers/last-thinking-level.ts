@@ -12,10 +12,8 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createLogger } from "../shared/logger.js";
-import { resolvePiAgentDir } from "./restore-default-model.js";
+import { resolvePiAgentDir } from "../shared/pi-agent-dir.js";
 
 const log = createLogger("providers");
 const STATE_VERSION = 2;
@@ -37,7 +35,7 @@ export type ThinkingLevelState = {
   models: Record<string, SavedThinkingLevel>;
 };
 
-type RuntimeModel = Pick<Model<any>, "id" | "provider" | "reasoning" | "thinkingLevelMap">;
+export type RuntimeModel = Pick<Model<any>, "id" | "provider" | "reasoning" | "thinkingLevelMap">;
 
 export function isThinkingLevel(value: unknown): value is SavedThinkingLevel {
   return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
@@ -197,12 +195,25 @@ export function writeLastThinkingLevel(
   return updateThinkingLevelState(statePath, state => { state.fallback = level; });
 }
 
+export function saveModelThinkingLevel(
+  modelKey: string,
+  level: SavedThinkingLevel,
+  statePath = resolveThinkingLevelStatePath(),
+): boolean {
+  const saved = updateThinkingLevelState(statePath, (state) => {
+    state.fallback = level;
+    state.models[modelKey] = level;
+  });
+  log.debug("thinking preference model saved", { model: modelKey, level, saved });
+  return saved;
+}
+
 export type ThinkingRestoreContext = {
   model?: RuntimeModel;
   sessionManager?: { getEntries?: () => Array<{ type?: string; customType?: string }> };
 };
 
-function hasExplicitThinkingArg(argv: string[]): boolean {
+export function hasExplicitThinkingArg(argv: string[]): boolean {
   const explicit = argv.some((arg, index) => arg === "--thinking" && argv[index + 1] !== undefined)
     || argv.some(arg => arg.startsWith("--thinking="));
   log.debug("thinking preference CLI override checked", { explicit });
@@ -236,7 +247,7 @@ export function shouldRestoreLastThinkingLevel(opts: {
   return restore;
 }
 
-function preferredLevel(
+export function preferredThinkingLevel(
   model: RuntimeModel,
   state: ThinkingLevelState,
 ): SavedThinkingLevel | undefined {
@@ -250,7 +261,7 @@ function preferredLevel(
   return level;
 }
 
-function clampSavedThinkingLevel(model: RuntimeModel, level: SavedThinkingLevel): SavedThinkingLevel {
+export function clampSavedThinkingLevel(model: RuntimeModel, level: SavedThinkingLevel): SavedThinkingLevel {
   const available = THINKING_LEVELS.filter((candidate) => {
     const mapped = model.thinkingLevelMap?.[candidate];
     return mapped !== null && ((candidate !== "xhigh" && candidate !== "max") || mapped !== undefined);
@@ -265,162 +276,4 @@ function clampSavedThinkingLevel(model: RuntimeModel, level: SavedThinkingLevel)
       ?? "off";
   log.debug("thinking preference level clamped", { model: modelThinkingKey(model), requested: level, effective });
   return effective;
-}
-
-export function registerLastThinkingLevel(
-  pi: ExtensionAPI,
-  opts: { statePath?: string; argv?: string[] } = {},
-): {
-  applyAfterModelRestore: (
-    event: { reason?: string },
-    ctx: ThinkingRestoreContext,
-    modelRestore: Promise<unknown>,
-  ) => Promise<boolean>;
-  setInternalThinkingLevel: (level: ThinkingLevel) => void;
-  restoreModel: (model: Model<any>, setModel: (model: Model<any>) => Promise<boolean>) => Promise<boolean>;
-} {
-  let generation = 0;
-  let activeModelKey: string | undefined;
-  let preserveCliLevel = false;
-  let modelEventGeneration = 0;
-  let lastModelEvent: { key: string | undefined; source: string; fromDefaultRestore: boolean } | undefined;
-  let defaultRestoreKey: string | undefined;
-  const suppressedEvents: Array<{ model: string | undefined; level: SavedThinkingLevel }> = [];
-
-  const setInternalThinkingLevel = (level: ThinkingLevel): void => {
-    const model = activeModelKey;
-    suppressedEvents.push({ model, level });
-    pi.setThinkingLevel(level);
-    log.debug("thinking preference internal level requested", { model, level });
-  };
-
-  const applyPreference = (model: RuntimeModel | undefined, reason: string): boolean => {
-    const key = modelThinkingKey(model);
-    if (!model || model.reasoning !== true || !key) {
-      log.debug("thinking preference model restore skipped", { model: key, reason, reasoning: model?.reasoning === true });
-      return false;
-    }
-    const requested = preferredLevel(model, readThinkingLevelState(opts.statePath));
-    if (!requested) return false;
-    const effective = clampSavedThinkingLevel(model, requested);
-    if (pi.getThinkingLevel() === effective) return false;
-    setInternalThinkingLevel(effective as ThinkingLevel);
-    log.info("thinking preference restored", { model: key, requested, effective, reason });
-    return true;
-  };
-
-  pi.on("session_start", (event, ctx) => {
-    activeModelKey = modelThinkingKey(ctx.model);
-    preserveCliLevel = hasExplicitThinkingArg(opts.argv ?? process.argv);
-    log.debug("thinking preference session tracking reset", {
-      reason: event.reason,
-      model: activeModelKey,
-      preserveCliLevel,
-      generation,
-    });
-  });
-
-  pi.on("thinking_level_select", (event, ctx) => {
-    const currentModelKey = modelThinkingKey(ctx.model);
-    const suppressedIndex = suppressedEvents.findIndex(item =>
-      item.model === currentModelKey && item.level === event.level,
-    );
-    if (suppressedIndex >= 0) {
-      suppressedEvents.splice(suppressedIndex, 1);
-      log.debug("thinking preference ignored internal change", {
-        model: currentModelKey,
-        level: event.level,
-      });
-      return;
-    }
-    if (currentModelKey !== activeModelKey) {
-      log.debug("thinking preference ignored automatic change", {
-        activeModel: activeModelKey,
-        currentModel: currentModelKey,
-        level: event.level,
-      });
-      return;
-    }
-    if (!isThinkingLevel(event.level) || !currentModelKey) {
-      log.warn("thinking preference ignored invalid explicit change", { model: currentModelKey, level: event.level });
-      return;
-    }
-    generation += 1;
-    const saved = updateThinkingLevelState(opts.statePath ?? resolveThinkingLevelStatePath(), state => {
-      state.fallback = event.level;
-      state.models[currentModelKey] = event.level;
-    });
-    log.info("thinking preference explicit change handled", { model: currentModelKey, level: event.level, generation, saved });
-  });
-
-  const restoreModel = async (model: Model<any>, setModel: (model: Model<any>) => Promise<boolean>): Promise<boolean> => {
-    defaultRestoreKey = modelThinkingKey(model);
-    try {
-      const restored = await setModel(model);
-      log.debug("thinking preference default model set completed", { model: defaultRestoreKey, restored });
-      return restored;
-    } finally {
-      defaultRestoreKey = undefined;
-    }
-  };
-
-  pi.on("model_select", (event, ctx) => {
-    const selectedKey = modelThinkingKey(event.model);
-    const currentKey = modelThinkingKey(ctx.model);
-    if (selectedKey !== currentKey) {
-      log.debug("thinking preference ignored stale model event", {
-        selectedModel: selectedKey,
-        currentModel: currentKey,
-        source: event.source,
-      });
-      return;
-    }
-    activeModelKey = selectedKey;
-    generation += 1;
-    modelEventGeneration = generation;
-    lastModelEvent = { key: selectedKey, source: event.source, fromDefaultRestore: event.source === "set" && selectedKey === defaultRestoreKey };
-    if (event.source === "restore" || selectedKey === defaultRestoreKey || preserveCliLevel) {
-      log.debug("thinking preference model event preserved session level", {
-        model: selectedKey,
-        source: event.source,
-        generation,
-      });
-      return;
-    }
-    applyPreference(event.model as RuntimeModel, `model_${event.source}`);
-  });
-
-  const applyAfterModelRestore = async (
-    event: { reason?: string },
-    ctx: ThinkingRestoreContext,
-    modelRestore: Promise<unknown>,
-  ): Promise<boolean> => {
-    activeModelKey = modelThinkingKey(ctx.model);
-    const startGeneration = generation;
-    const restored = await modelRestore.catch(() => false);
-    const key = modelThinkingKey(ctx.model);
-    const expectedRestoreEvent = restored === true
-      && generation === startGeneration + 1
-      && modelEventGeneration === generation
-      && lastModelEvent?.fromDefaultRestore === true
-      && lastModelEvent.key === key;
-    if (generation !== startGeneration && !expectedRestoreEvent) {
-      log.debug("thinking preference startup restore ignored stale work", {
-        reason: event.reason,
-        model: key,
-        startGeneration,
-        generation,
-      });
-      return false;
-    }
-    activeModelKey = key;
-
-    if (!shouldRestoreLastThinkingLevel({ reason: event.reason, ctx, argv: opts.argv })) {
-      log.debug("thinking preference startup restore skipped", { reason: event.reason, model: key });
-      return false;
-    }
-    return applyPreference(ctx.model, `session_${event.reason ?? "unknown"}`);
-  };
-
-  return { applyAfterModelRestore, setInternalThinkingLevel, restoreModel };
 }
