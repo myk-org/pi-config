@@ -406,7 +406,7 @@ describe("file-logger", () => {
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(settingsLog, /resolved standalone setting/);
+    assert.match(settingsLog, /resolved setting/);
     assert.match(bootstrapLog, /resolved log level/);
     assert.doesNotMatch(settingsLog + bootstrapLog, /do-not-log/);
   });
@@ -429,16 +429,16 @@ describe("file-logger", () => {
     assert.equal(result.status, 0, result.stderr || result.stdout);
   });
 
-  it("caches standalone repository resolution for repeated lookups", () => {
+  it("caches repository resolution for repeated lookups", () => {
     const root = makeTempDir("pi-file-log-cache-");
     mkdirSync(join(root, ".pi"));
     writeFileSync(join(root, ".pi", "pi-config-settings.json"), '{"log_coms":"debug"}');
     const script = `
-      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
+      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/project-settings.ts"))});
       let resolutions = 0;
       settings.setRepoRootResolverForTests(cwd => { resolutions++; return cwd; });
-      settings.getStandaloneSetting(process.cwd(), "log_coms");
-      settings.getStandaloneSetting(process.cwd() + "/.", "log_providers");
+      settings.getSetting(process.cwd(), "log_coms");
+      settings.getSetting(process.cwd() + "/.", "log_providers");
       if (resolutions !== 1) process.exit(1);
     `;
     const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
@@ -446,14 +446,14 @@ describe("file-logger", () => {
     assert.equal(result.status, 0, result.stderr || result.stdout);
   });
 
-  it("caches standalone repository fallback for repeated lookups", () => {
+  it("caches repository fallback for repeated lookups", () => {
     const root = makeTempDir("pi-file-log-cache-fallback-");
     const script = `
-      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
+      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/project-settings.ts"))});
       let resolutions = 0;
       settings.setRepoRootResolverForTests(cwd => { resolutions++; return cwd; });
-      settings.getStandaloneSetting(process.cwd(), "log_coms");
-      settings.getStandaloneSetting(process.cwd(), "log_providers");
+      settings.getSetting(process.cwd(), "log_coms");
+      settings.getSetting(process.cwd(), "log_providers");
       if (resolutions !== 1) process.exit(1);
     `;
     const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
@@ -461,9 +461,9 @@ describe("file-logger", () => {
     assert.equal(result.status, 0, result.stderr || result.stdout);
   });
 
-  it("caches standalone settings file reads within TTL and refreshes after clearStandaloneSettingsCache (#1207)", () => {
-    const root = makeTempDir("pi-standalone-settings-cache-");
-    const home = makeTempDir("pi-standalone-settings-home-");
+  it("shares a single coordinated cache between file-logger and clearSettingsCache (#1207, #1353)", () => {
+    const root = makeTempDir("pi-unified-settings-cache-");
+    const home = makeTempDir("pi-unified-settings-home-");
     mkdirSync(join(root, ".pi"));
     mkdirSync(join(home, ".pi"));
     writeFileSync(join(root, ".pi", "pi-config-settings.json"), '{"log_coms":"debug"}');
@@ -471,13 +471,19 @@ describe("file-logger", () => {
       import { writeFileSync } from "node:fs";
       import { join } from "node:path";
       process.env.HOME = ${JSON.stringify(home)};
-      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
+      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/project-settings.ts"))});
+      const fileLogger = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
       settings.setRepoRootResolverForTests(cwd => cwd);
-      if (settings.getStandaloneSetting(process.cwd(), "log_coms") !== "debug") process.exit(1);
+      if (settings.getSetting(process.cwd(), "log_coms") !== "debug") process.exit(1);
+      if (!fileLogger.isLevelEnabled("coms", "debug")) process.exit(2);
       writeFileSync(join(process.cwd(), ".pi", "pi-config-settings.json"), '{"log_coms":"error"}');
-      if (settings.getStandaloneSetting(process.cwd(), "log_coms") !== "debug") process.exit(2);
-      settings.clearStandaloneSettingsCache();
-      if (settings.getStandaloneSetting(process.cwd(), "log_coms") !== "error") process.exit(3);
+      // Still cached within 30s TTL
+      if (settings.getSetting(process.cwd(), "log_coms") !== "debug") process.exit(3);
+      // Single clearSettingsCache() invalidates the cache for BOTH getSetting and file-logger
+      settings.clearSettingsCache();
+      fileLogger.clearLogLevelCache();
+      if (settings.getSetting(process.cwd(), "log_coms") !== "error") process.exit(4);
+      if (fileLogger.isLevelEnabled("coms", "debug")) process.exit(5);
     `;
     const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
     rmSync(root, { recursive: true, force: true });

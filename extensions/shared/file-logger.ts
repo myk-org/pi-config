@@ -13,7 +13,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getStandaloneSetting } from "../orchestrator/settings-source.js";
+import { resolveSetting } from "../orchestrator/project-settings.js";
 import { formatErr, oneLine } from "./logger-core.mjs";
 
 var logLevelDecision: (message: string, context: object) => void;
@@ -147,10 +147,11 @@ const levelPins = new Map<string, number>();
 
 function resolveMinLevel(name: string): number {
   const settingKey = `log_${name.replace(/-/g, "_")}`;
-  const settingVal = getStandaloneSetting(process.cwd(), settingKey);
-  if (typeof settingVal === "string" && settingVal in LEVEL_ORDER) {
-    logLevelDecision("resolved log level", { name, source: "setting", level: settingVal });
-    return LEVEL_ORDER[settingVal];
+  const resolved = resolveSetting(process.cwd(), settingKey);
+  if (resolved && typeof resolved.value === "string" && resolved.value in LEVEL_ORDER) {
+    const source = resolved.source === "E" ? "environment" : resolved.source === "D" ? "default" : "setting";
+    logLevelDecision("resolved log level", { name, source, level: resolved.value });
+    return LEVEL_ORDER[resolved.value];
   }
 
   const envKey = `PI_LOG_${name.replace(/-/g, "_").toUpperCase()}`;

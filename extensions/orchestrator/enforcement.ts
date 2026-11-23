@@ -14,8 +14,7 @@ import { Type } from "typebox";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import path, { join, resolve, dirname } from "node:path";
-import { getGlobalSettingsPath, getSetting, getSettingsPath } from "./project-settings.js";
-import { LEGACY_SETTINGS_FILENAME, SETTINGS_FILENAMES } from "./settings-source.js";
+import { getGlobalSettingsPath, getSetting, getSettingsPath, LEGACY_SETTINGS_FILENAME, SETTINGS_FILENAMES } from "./project-settings.js";
 import { escapeRegExp, getProjectTmpDir, realpathNearestExisting, resolveWorktreeRoot, sanitizeModelId } from "./utils.js";
 import {
   conflictCandidateDirs,

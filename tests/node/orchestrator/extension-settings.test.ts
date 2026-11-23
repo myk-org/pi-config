@@ -6,14 +6,23 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+	SETTINGS_KEYS,
 	clearSettingsCache,
+	detectSource,
 	getSetting,
+	getSettingDynamic,
 	parseReviewLoopMaxCycles,
+	parseSettingInput,
+	parseSettingsFile,
+	resolveSetting,
 	setGlobalSettingsPath,
+	settingsBackupPath,
+	updateSetting,
+	validateSetting,
 } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -483,5 +492,155 @@ describe("Settings file discovery", () => {
 		clearSettingsCache();
 		assert.equal(getSetting(tmp, "pidash_port"), 9999);
 		assert.equal(getSetting(tmp, "image_model"), "updated-img");
+	});
+});
+
+describe("Deep settings store — unified schema, cache, and atomic persistence (#1353)", () => {
+	let tmp: string;
+	let globalTmp: string;
+	const savedEnv: Record<string, string | undefined> = {};
+
+	function setEnv(name: string, val: string | undefined): void {
+		if (!(name in savedEnv)) savedEnv[name] = process.env[name];
+		if (val === undefined) delete process.env[name];
+		else process.env[name] = val;
+	}
+
+	beforeEach(() => {
+		clearSettingsCache();
+		tmp = makeTempDir("pi-deep-settings-");
+		globalTmp = makeTempDir("pi-deep-settings-global-");
+		setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
+	});
+
+	afterEach(() => {
+		for (const [k, v] of Object.entries(savedEnv)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+			delete savedEnv[k];
+		}
+		setGlobalSettingsPath(null);
+		clearSettingsCache();
+		rmSync(tmp, { recursive: true, force: true });
+		rmSync(globalTmp, { recursive: true, force: true });
+	});
+
+	it("validates and resolves defaults for all keys in settings-keys.json without drift", () => {
+		const keys = Object.keys(SETTINGS_KEYS);
+		assert.ok(keys.length >= 72, `expected >=72 keys, got ${keys.length}`);
+		for (const key of keys) {
+			const def = SETTINGS_KEYS[key];
+			const check = validateSetting(key, def.default);
+			assert.equal(check.ok, true, `default for ${key} must validate cleanly`);
+			// Clear any env var that could override the default
+			if (def.env) setEnv(def.env, undefined);
+			assert.deepEqual(getSettingDynamic(tmp, key), def.default, `default mismatch for ${key}`);
+		}
+	});
+
+	it("enforces enum constraints consistently across file read, env, validateSetting, and parseSettingInput", () => {
+		const projectFile = join(tmp, ".pi", "pi-config-settings.json");
+		const globalFile = join(globalTmp, "pi-config-settings.json");
+		mkdirSync(join(tmp, ".pi"), { recursive: true });
+
+		// Invalid enum in project falls through to valid global value
+		writeFileSync(projectFile, JSON.stringify({ widgets_default_mode: "floating", log_coms: "loud" }));
+		writeFileSync(globalFile, JSON.stringify({ widgets_default_mode: "collapsed", log_coms: "warn" }));
+		clearSettingsCache();
+
+		assert.equal(parseSettingsFile(projectFile).widgets_default_mode, undefined);
+		assert.equal(parseSettingsFile(projectFile).log_coms, undefined);
+		assert.equal(getSetting(tmp, "widgets_default_mode"), "collapsed");
+		assert.equal(getSetting(tmp, "log_coms"), "warn");
+		assert.equal(detectSource("widgets_default_mode", SETTINGS_KEYS.widgets_default_mode, tmp), "G");
+
+		// Invalid enum in env falls through to default
+		rmSync(projectFile);
+		rmSync(globalFile);
+		clearSettingsCache();
+		setEnv("PI_WIDGETS_DEFAULT_MODE", "bogus");
+		setEnv("PI_LOG_COMS", "verbose");
+		assert.equal(getSetting(tmp, "widgets_default_mode"), "expanded");
+		assert.equal(getSetting(tmp, "log_coms"), "info");
+		assert.equal(detectSource("widgets_default_mode", SETTINGS_KEYS.widgets_default_mode, tmp), "D");
+
+		// validateSetting and parseSettingInput reject invalid enums and empty strings for enum keys
+		assert.equal(validateSetting("widgets_default_mode", "floating").ok, false);
+		assert.equal(validateSetting("widgets_default_mode", "").ok, false);
+		assert.equal(validateSetting("log_coms", "loud").ok, false);
+		assert.equal(validateSetting("log_coms", "").ok, false);
+		assert.equal(parseSettingInput("widgets_default_mode", "floating").ok, false);
+		assert.equal(parseSettingInput("log_coms", "(empty)").ok, false);
+		assert.deepEqual(parseSettingInput("widgets_default_mode", "collapsed"), { ok: true, value: "collapsed" });
+	});
+
+	it("enforces min/max/strict_digits/port consistently across read, env, and TUI input", () => {
+		// Out-of-range int rejected by parseSettingInput and validateSetting
+		assert.equal(validateSetting("review_loop_max_cycles", 0).ok, false);
+		assert.equal(validateSetting("review_loop_max_cycles", 11).ok, false);
+		assert.equal(parseSettingInput("review_loop_max_cycles", "0").ok, false);
+		assert.equal(parseSettingInput("review_loop_max_cycles", "11").ok, false);
+		assert.equal(parseSettingInput("review_loop_max_cycles", "01").ok, false);
+		assert.equal(parseSettingInput("pidash_port", "0").ok, false);
+		assert.equal(parseSettingInput("pidash_port", "70000").ok, false);
+		assert.deepEqual(parseSettingInput("pidash_port", "19191"), { ok: true, value: 19191 });
+		assert.deepEqual(parseSettingInput("pidash_port", ""), { ok: true, value: undefined });
+
+		// Out-of-range env var falls through to default
+		setEnv("PI_SYNC_AGENT_MAX_SECONDS", "9999");
+		assert.equal(getSetting(tmp, "sync_agent_max_seconds"), 60);
+		setEnv("PI_SYNC_AGENT_MAX_SECONDS", "120");
+		assert.equal(getSetting(tmp, "sync_agent_max_seconds"), 120);
+	});
+
+	it("preserves empty strings consistently for non-enum string settings", () => {
+		// Global sets a shortcut; project explicitly clears it with ""
+		const globalFile = join(globalTmp, "pi-config-settings.json");
+		writeFileSync(globalFile, JSON.stringify({ widget_tasks_shortcut: "alt+x", image_model: "gemini-2.5-flash-image" }));
+		clearSettingsCache();
+
+		assert.deepEqual(validateSetting("widget_tasks_shortcut", ""), { ok: true, value: "" });
+		assert.deepEqual(validateSetting("image_model", ""), { ok: true, value: "" });
+		assert.deepEqual(parseSettingInput("widget_tasks_shortcut", "(empty)"), { ok: true, value: "" });
+
+		const res = updateSetting(tmp, "project", "widget_tasks_shortcut", "");
+		assert.equal(res.ok, true);
+		// Cache auto-invalidated by updateSetting — no manual clearSettingsCache needed
+		assert.equal(getSetting(tmp, "widget_tasks_shortcut"), "");
+		assert.equal(resolveSetting(tmp, "widget_tasks_shortcut")?.source, "P");
+	});
+
+	it("updateSetting performs validated atomic write, preserves unknown keys, rotates backups, and auto-clears cache", () => {
+		const projectFile = join(tmp, ".pi", "pi-config-settings.json");
+		mkdirSync(join(tmp, ".pi"), { recursive: true });
+		writeFileSync(projectFile, JSON.stringify({ custom_future_key: "keep", dco: false }));
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "dco"), false);
+
+		// Invalid value is refused before touching disk
+		const bad = updateSetting(tmp, "project", "review_loop_max_cycles", 99);
+		assert.equal(bad.ok, false);
+		assert.equal(bad.reason, "invalid");
+		assert.equal(existsSync(settingsBackupPath(projectFile, 1)), false);
+
+		// Valid write rotates backup, preserves unknown keys, and immediately updates getSetting cache
+		const ok = updateSetting(tmp, "project", "dco", true);
+		assert.equal(ok.ok, true);
+		assert.equal(getSetting(tmp, "dco"), true);
+		assert.deepEqual(JSON.parse(readFileSync(settingsBackupPath(projectFile, 1), "utf-8")), {
+			custom_future_key: "keep",
+			dco: false,
+		});
+		assert.deepEqual(JSON.parse(readFileSync(projectFile, "utf-8")), {
+			custom_future_key: "keep",
+			dco: true,
+		});
+
+		// Corrupt file refuses write and leaves bytes untouched
+		writeFileSync(projectFile, "{ broken");
+		const corrupt = updateSetting(tmp, "project", "dco", false);
+		assert.equal(corrupt.ok, false);
+		assert.equal(corrupt.reason, "corrupt");
+		assert.equal(readFileSync(projectFile, "utf-8"), "{ broken");
 	});
 });

@@ -19,8 +19,7 @@ import { isLiveLegacyDaemonFile } from "../shared/daemon-manager.js";
 import { acquireMtimeFileLock } from "../shared/file-lock.js";
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
-import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, SETTINGS_KEYS } from "./project-settings.js";
-import { readSettingsObject } from "./settings-source.js";
+import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, readSettingsObject, SETTINGS_KEYS } from "./project-settings.js";
 import { getProjectRunDir, getProjectTmpDir } from "./utils.js";
 
 const log = createLogger("tmp_cleanup");

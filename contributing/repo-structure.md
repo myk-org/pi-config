@@ -44,8 +44,8 @@ pi-config/
 │   │   ├── cron-status-ui.ts        # /cron list overlay (uses overlay-dashboard)
 │   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
 │   │   ├── cron-store.ts            # Durable cron envelopes, atomic mutation, and leader locks
-│   │   ├── settings-tui.ts          # /pi-config-settings TUI overlay (uses overlay-dashboard)
-│   │   ├── settings-tui-helpers.ts  # Pure settings helpers (categories, source detection, formatting, file I/O, model-picker resolution: image_model google+image-capable filter + paired agent/internal_operations providers)
+│   │   ├── settings-tui.ts          # /pi-config-settings thin TUI overlay adapter (uses project-settings + overlay-dashboard)
+│   │   ├── settings-tui-helpers.ts  # Pure TUI presentation & model-picker helpers (categories, formatting, secret prefill, model-picker filtering)
 │   │   ├── settings-tui-submenus.ts # Submenu components (input, number, picker, select, string-list, overrides)
 │   │   ├── async-capability.ts      # Internal ops provider settings lookup (getInternalOpsProvider)
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
@@ -84,7 +84,7 @@ pi-config/
 │   │   ├── memory-embeddings.ts         # Vector embedding support for semantic memory search (fastembed)
 │   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
-│   │   ├── project-settings.ts        # Project-level settings (.pi/pi-config-settings.json)
+│   │   ├── project-settings.ts        # Deep settings store — schema-driven validation/parsing (settings-keys.json), legacy .jsonc migration, single coordinated cache, source detection, and locked atomic persistence with backups
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
 │   │   ├── subagent-child-spec.ts     # Shared sync/async subagent child CLI args, prompt, and env builder
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)

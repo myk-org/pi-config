@@ -181,4 +181,13 @@ describe("validateSettingValue", () => {
     assert.match(validateSettingValue("agent_overrides", "worker")!, /object/);
     assert.equal(validateSettingValue("agent_overrides", { worker: { model: "x" } }), null);
   });
+
+  it("allows empty strings for non-enum string keys while rejecting them for enum keys (#1353)", () => {
+    assert.equal(validateSettingValue("widget_tasks_shortcut", ""), null);
+    assert.equal(validateSettingValue("enforcement_allowed_commands", ""), null);
+    assert.equal(validateSettingValue("image_model", ""), null);
+    assert.match(validateSettingValue("widgets_default_mode", "")!, /must be one of/);
+    assert.match(validateSettingValue("log_coms", "loud")!, /must be one of/);
+    assert.equal(validateSettingValue("widgets_default_mode", "collapsed"), null);
+  });
 });

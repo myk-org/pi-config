@@ -12,8 +12,7 @@ import * as path from "node:path";
 import { join } from "node:path";
 import { acquireDirLock } from "../shared/file-lock.js";
 import { escapeRegExp, getProjectDataDir } from "./utils.js";
-import { getGlobalSettingsPath, getSettingsPath, loadGlobalSettings, loadProjectSettings } from "./project-settings.js";
-import { readSettingsFile, writeSettingsFile } from "./settings-tui-helpers.js";
+import { getGlobalSettingsPath, getSettingsPath, loadGlobalSettings, loadProjectSettings, readSettingsFile, writeSettingsFile } from "./project-settings.js";
 import { DANGEROUS, WRAPPER_VALUE_OPTIONS, executableText, getCurrentBranch, isConflictResolutionCommand, matchHeredocOpener, segmentRunsGit, skipHeredocBody, tokenize, type HeredocSpec } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");

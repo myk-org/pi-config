@@ -1,53 +1,24 @@
 /**
- * Settings TUI helpers — pure functions extracted for testability.
- * No pi-coding-agent or pi-tui dependencies.
+ * Settings TUI presentation & picker helpers — pure functions with no
+ * pi-coding-agent or pi-tui dependencies.
+ *
+ * Persistence, validation, source detection, and caching live in `project-settings.ts`.
  */
 
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join as joinPath, sep } from "node:path";
-import stripJsonComments from "strip-json-comments";
 import {
-  type SettingsKeyDef,
+  EMPTY_VALUE_SENTINEL,
   SETTINGS_KEYS,
-  getSetting,
-  getSettingsPath,
-  getGlobalSettingsPath,
+  getFilePathForScope,
+  isImageGenModelId,
+  parseSettingInput,
+  readSettingsFile,
+  type SettingsKeyDef,
 } from "./project-settings.js";
-import { LEGACY_SETTINGS_FILENAME, SETTINGS_FILENAMES, legacyMigrationBlocked, nearestRealPath } from "./settings-source.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("settings_tui");
 
-/** Sentinel value displayed for empty strings in the TUI. Centralized to prevent divergence. */
-export const EMPTY_VALUE_SENTINEL = "(empty)";
-
-const LOG_PREFIX = "[settings-tui]";
-const loggedErrors = new Set<string>();
-function logWarn(msg: string): void {
-  // Deduplicate: only log each unique message once per session to avoid spam
-  if (loggedErrors.has(msg)) return;
-  loggedErrors.add(msg);
-  try {
-    const logDir = joinPath(homedir(), ".pi", "logs");
-    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true, mode: 0o700 });
-    const logPath = joinPath(logDir, "settings-tui.log");
-    appendFileSync(logPath, `${new Date().toISOString()} ${LOG_PREFIX} ${msg}\n`);
-  } catch {}
-}
-
-const loggedDebug = new Set<string>();
-function logDebug(msg: string): void {
-  // Deduplicate per message — these sit on parse paths that run often
-  if (loggedDebug.has(msg)) return;
-  loggedDebug.add(msg);
-  try {
-    const logDir = joinPath(homedir(), ".pi", "logs");
-    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true, mode: 0o700 });
-    const logPath = joinPath(logDir, "settings-tui.log");
-    appendFileSync(logPath, `${new Date().toISOString()} ${LOG_PREFIX} DEBUG ${msg}\n`);
-  } catch {}
-}
+export { EMPTY_VALUE_SENTINEL };
 
 // ── Category grouping ───────────────────────────────────────────────
 
@@ -62,58 +33,12 @@ export interface CategoryDef {
 export const CATEGORIES: CategoryDef[] = (() => {
   const groupMap = new Map<string, string[]>();
   for (const [key, def] of Object.entries(SETTINGS_KEYS)) {
-    const group = (def as any).group || "Other";
+    const group = def.group || "Other";
     if (!groupMap.has(group)) groupMap.set(group, []);
     groupMap.get(group)!.push(key);
   }
   return [...groupMap.entries()].map(([label, keys]) => ({ label, keys }));
 })();
-
-// ── Source detection ─────────────────────────────────────────────────
-
-export type SettingSource = "P" | "G" | "E" | "D";
-
-export interface SettingsSourceSnapshot {
-  project: Record<string, unknown> | null;
-  global: Record<string, unknown> | null;
-}
-
-function readRawSettingsObject(filePath: string): Record<string, unknown> | null {
-  if (!existsSync(filePath)) return null;
-  try {
-    const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
-    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) return raw;
-  } catch (e: any) { logWarn(`parse error in ${filePath}: ${e?.message?.slice(0, 100)}`); }
-  return null;
-}
-
-/** Read project and global settings objects once so per-key source detection avoids N×2 file reads. */
-export function loadSettingsSourceSnapshot(cwd: string): SettingsSourceSnapshot {
-  return {
-    project: readRawSettingsObject(getSettingsPath(cwd)),
-    global: readRawSettingsObject(getGlobalSettingsPath()),
-  };
-}
-
-export function detectSource(
-  key: string,
-  def: SettingsKeyDef,
-  cwd: string,
-  snapshot?: SettingsSourceSnapshot,
-): SettingSource {
-  // Check project settings file
-  const projectRaw = snapshot ? snapshot.project : readRawSettingsObject(getSettingsPath(cwd));
-  if (projectRaw && key in projectRaw) return "P";
-
-  // Check global settings file (honors setGlobalSettingsPath for tests)
-  const globalRaw = snapshot ? snapshot.global : readRawSettingsObject(getGlobalSettingsPath());
-  if (globalRaw && key in globalRaw) return "G";
-
-  // Check env var
-  if (def.env && process.env[def.env] !== undefined && process.env[def.env] !== "") return "E";
-
-  return "D";
-}
 
 // ── Value formatting ────────────────────────────────────────────────
 
@@ -154,456 +79,22 @@ export function formatValue(key: string, value: unknown, def: SettingsKeyDef): s
   }
 }
 
-// ── Parse raw value for saving ──────────────────────────────────────
+// ── Thin TUI string parser delegating to unified schema validator ───
 
-export function parseRawValue(key: string, rawValue: string, def: SettingsKeyDef): unknown {
-  switch (def.type) {
-    case "bool":
-    case "bool_enable":
-      return rawValue === "true";
-
-    case "bool_or_string":
-      if (rawValue === "true") return true;
-      if (rawValue === "false") return false;
-      return rawValue;
-
-    case "int":
-    case "port": {
-      if (rawValue.trim() === "") return undefined;
-      const n = Number(rawValue);
-      return Number.isFinite(n) && Number.isInteger(n) ? n : def.default;
-    }
-
-    case "number": {
-      if (rawValue.trim() === "") return undefined;
-      const n = Number(rawValue);
-      return Number.isFinite(n) ? n : def.default;
-    }
-
-    case "string":
-      return rawValue === EMPTY_VALUE_SENTINEL ? "" : rawValue;
-
-    case "string_list": {
-      // StringListSubmenu commits JSON; accept a hand-typed single pattern too
-      try {
-        const parsed = JSON.parse(rawValue);
-        if (Array.isArray(parsed)) {
-          const list = parsed.filter((e): e is string => typeof e === "string" && e.length > 0);
-          logDebug(`string_list parsed ${list.length} entrie(s) for ${key}`);
-          return list;
-        }
-      } catch {
-        logDebug(`string_list raw value for ${key} is not JSON — treating as a single pattern`);
-      }
-      return rawValue.trim() !== "" ? [rawValue.trim()] : [];
-    }
-
-    default:
-      return rawValue;
+export function parseRawValue(key: string, rawValue: string, _def?: SettingsKeyDef): unknown {
+  const parsed = parseSettingInput(key, rawValue);
+  if (!parsed.ok) {
+    log.debug("parseRawValue rejected invalid input", { key, error: parsed.error });
+    return undefined;
   }
+  return parsed.value;
 }
 
-// ── Scope-aware file read/write ─────────────────────────────────────
-
-export function getFilePathForScope(scope: "project" | "global", cwd: string): string {
-  if (scope === "project") {
-    return getSettingsPath(cwd);
-  }
-  return getGlobalSettingsPath();
-}
-
-export function readSettingsFile(filePath: string): Record<string, unknown> | null {
-  if (!existsSync(filePath)) return {};
-  try {
-    const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
-    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) return raw;
-  } catch (e: any) { logWarn(`parse error in ${filePath}: ${e?.message?.slice(0, 100)}`); }
-  return null;
-}
-
-/** Thrown instead of writing when the target file cannot be parsed. A settings file that a
- *  human can still repair by hand must never be replaced by generated content. */
-export class SettingsFileCorruptError extends Error {
-  constructor(readonly filePath: string) {
-    super(`refusing to overwrite unparseable settings file: ${filePath}`);
-    this.name = "SettingsFileCorruptError";
-    log.error("settings_write_refused_corrupt", { filePath });
-  }
-}
-
-/** The cwd whose settings govern this file: the project root for a project file, and never a
- *  project override for a global one. A removed cwd must not block a save. */
-function settingCwdFor(filePath: string): string | null {
-  const parent = dirname(filePath);
-  if (basename(parent) === ".pi") {
-    const root = dirname(parent);
-    if (root === homedir()) return null; // global file: no project scope applies
-    return root;
-  }
-  try {
-    return process.cwd();
-  } catch {
-    return null;
-  }
-}
-
-/** Backup retention for this file: project setting where a project owns it, env/default for
- *  a global file — one project can never change another's retention. */
-function backupCountFor(filePath: string): number {
-  const def = SETTINGS_KEYS.settings_backup_count;
-  const fallback = Number(def?.default ?? 5);
-  const min = Number(def?.min ?? 0);
-  const max = Number(def?.max ?? 20);
-  // An out-of-range or non-integer value must not decide retention: `-1` would prune every
-  // backup and write none, and a huge value would rotate far past the documented limit.
-  const accept = (value: number): number | null =>
-    Number.isInteger(value) && value >= min && value <= max ? value : null;
-
-  // Validate the env value FIRST, for its diagnostic: `getSetting` substitutes the default
-  // before the range check can see it, so a malformed env var would otherwise be logged only
-  // on a global save and silently swallowed on a project one.
-  const raw = process.env.PI_SETTINGS_BACKUP_COUNT;
-  const envCount = raw !== undefined && raw.trim() !== "" ? accept(Number(raw)) : null;
-  if (raw !== undefined && raw.trim() !== "" && envCount === null) {
-    log.warn("settings_backup_count_invalid", { raw, min, max, fallback });
-  }
-
-  const cwd = settingCwdFor(filePath);
-  if (cwd !== null) {
-    const resolved = accept(Number(getSetting(cwd, "settings_backup_count")));
-    if (resolved !== null) return resolved;
-  }
-  return envCount ?? fallback;
-}
-
-/** Drop slots beyond the configured count, so lowering retention removes old copies. */
-function pruneExtraBackups(filePath: string, count: number): void {
-  const prefix = `${basename(filePath)}.bak.`;
-  let entries: string[] = [];
-  try {
-    entries = readdirSync(dirname(filePath));
-  } catch (e: any) {
-    log.warn("settings_backup_prune_scan_failed", { filePath, error: e?.message });
-    return;
-  }
-  for (const name of entries) {
-    if (!name.startsWith(prefix)) continue;
-    const slot = Number(name.slice(prefix.length));
-    if (!Number.isFinite(slot) || slot <= count) continue;
-    try {
-      unlinkSync(joinPath(dirname(filePath), name));
-    } catch (e: any) {
-      log.warn("settings_backup_prune_failed", { filePath, slot: name, error: e?.message });
-    }
-  }
-}
-
-/** Thrown when the previous version could not be preserved, so nothing is written. */
-export class SettingsBackupError extends Error {
-  constructor(readonly filePath: string, readonly cause?: unknown) {
-    super(`refusing to write settings without a backup: ${filePath}`);
-    this.name = "SettingsBackupError";
-  }
-}
-
-/** Depth of the interactive editing session (`/pi-config-settings`). While it is open the file
- *  is snapshotted ONCE, on the first change: a user who adjusts five values must not rotate the
- *  pre-visit state out of existence. Writes outside the TUI are discrete actions and keep their
- *  own backup. */
-let editSessionDepth = 0;
-const backedUpInSession = new Set<string>();
-/** Files this visit CREATED: their pre-visit state is "absent", so backing up the first partial
- *  version would misrepresent it. */
-const createdInSession = new Set<string>();
-/** Visit snapshots waiting to be promoted into the numbered chain when the visit closes. */
-const visitSnapshots = new Set<string>();
-
-/** A visit keeps its own copy, so an external save during the visit (which rotates the numbered
- *  chain) cannot destroy the state the user opened the TUI with. The process id is part of the
- *  name: two TUI processes editing one file must not overwrite each other's restore point. */
-function visitSnapshotPath(filePath: string): string {
-  return `${filePath}.bak.visit-${process.pid}`;
-}
-
-/** Reusable 4-byte buffer for synchronous lock backoff (avoids per-spin SharedArrayBuffer allocation). */
-const sleepBuf = new Int32Array(new SharedArrayBuffer(4));
-
-/** Serialize chain mutations across processes: rotating or promoting shifts `.bak.N` files, and a
- *  concurrent writer interleaving between the shift and the rename would lose a restore point. */
-function withChainLock<T>(filePath: string, fn: () => T): T {
-  // The lock is ONE file created with O_EXCL: creating it IS owning it. Splitting that into
-  // mkdir-then-write-pid left a window where the directory existed with no owner, and a reader
-  // could steal a lock a live writer was still acquiring — both then shifted the chain.
-  const lockPath = `${filePath}.bak.lock`;
-  let locked = false;
-  try {
-    for (let attempt = 0; attempt < 100 && !locked; attempt++) {
-      try {
-        writeFileSync(lockPath, String(process.pid), { flag: "wx", mode: 0o600 });
-        locked = true;
-      } catch {
-        // Take over a lock only when its OWNER IS GONE. Age alone is not evidence: a paused or
-        // slow owner could resume and mutate the chain alongside this process.
-        let stale = false;
-        try {
-          const ownerPid = Number(readFileSync(lockPath, "utf-8").trim());
-          if (Number.isInteger(ownerPid) && ownerPid > 0) {
-            try {
-              process.kill(ownerPid, 0); // alive — leave it alone
-            } catch {
-              stale = true; // owner is gone
-            }
-          } else {
-            // Created but not yet written, or a crash mid-write. A live acquisition writes its pid
-            // immediately, so this grace never steals from a live writer, and it is far shorter
-            // than the retry budget — an orphaned lock clears inside the same save.
-            stale = Date.now() - statSync(lockPath).mtimeMs > 200;
-          }
-        } catch {
-          // Vanished between the failed create and this read — retry immediately.
-        }
-        if (stale) {
-          // Atomic steal: rename first, so exactly one of several racing writers claims the stale
-          // lock. Deleting in place let two writers remove each other's fresh lock.
-          const grave = `${lockPath}.stale-${process.pid}-${Date.now()}`;
-          try {
-            renameSync(lockPath, grave);
-            unlinkSync(grave);
-          } catch {
-            /* another writer claimed it — retry the acquisition */
-          }
-        }
-        Atomics.wait(sleepBuf, 0, 0, 20);
-      }
-    }
-    if (!locked) {
-      // NEVER mutate the chain without the lock: a concurrent shift-and-rename loses a restore
-      // point, which is worse than refusing the save.
-      log.error("settings_backup_lock_timeout", { filePath });
-      throw new SettingsBackupError(filePath, new Error("backup lock timeout"));
-    }
-    return fn();
-  } finally {
-    if (locked) {
-      try {
-        // Only release a lock we still own: if it was stolen, it now belongs to someone else.
-        if (readFileSync(lockPath, "utf-8").trim() === String(process.pid)) unlinkSync(lockPath);
-      } catch {
-        /* already gone */
-      }
-    }
-  }
-}
-
-/** Promote one visit snapshot into the numbered chain (`.bak.1`), shifting older copies. */
-function promoteSnapshot(snapshotPath: string): void {
-  const filePath = snapshotPath.replace(/\.bak\.visit-\d+$/, "");
-  if (!existsSync(snapshotPath)) return;
-  withChainLock(filePath, () => promoteSnapshotLocked(snapshotPath, filePath));
-}
-
-/** Drop `.bak.<count>` and shift `.bak.(count-1)..1` up by one slot to make room at `.bak.1`. */
-function shiftBackupSlots(filePath: string, count: number): void {
-  const oldest = settingsBackupPath(filePath, count);
-  if (existsSync(oldest)) unlinkSync(oldest);
-  for (let slot = count - 1; slot >= 1; slot--) {
-    const from = settingsBackupPath(filePath, slot);
-    if (existsSync(from)) renameSync(from, settingsBackupPath(filePath, slot + 1));
-  }
-}
-
-function promoteSnapshotLocked(snapshotPath: string, filePath: string): void {
-  const count = backupCountFor(filePath);
-  if (count <= 0) {
-    unlinkSync(snapshotPath);
-    return;
-  }
-  shiftBackupSlots(filePath, count);
-  renameSync(snapshotPath, settingsBackupPath(filePath, 1));
-}
-
-/** Snapshots left by a process that is gone are promoted instead of being overwritten by the next
- *  visit — a crash must cost nothing. A snapshot owned by a LIVE process is left alone. */
-function reapStaleVisitSnapshots(filePath: string): void {
-  const dir = dirname(filePath);
-  const marker = `${basename(filePath)}.bak.visit-`;
-  let entries: string[] = [];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
-  }
-  for (const name of entries) {
-    if (!name.startsWith(marker)) continue;
-    const pid = Number(name.slice(marker.length));
-    if (!Number.isInteger(pid)) continue;
-    // Skip only a snapshot THIS process owns: a pid can be reused, and a reused pid must not
-    // cause a crashed editor's copy to be silently overwritten.
-    if (pid === process.pid && visitSnapshots.has(joinPath(dir, name))) continue;
-    try {
-      process.kill(pid, 0);
-      continue; // owner still alive
-    } catch {
-      /* dead: fall through and promote its snapshot */
-    }
-    try {
-      promoteSnapshot(joinPath(dir, name));
-      log.info("settings_visit_snapshot_recovered", { filePath, pid });
-    } catch (e: any) {
-      log.warn("settings_visit_snapshot_recover_failed", { filePath, pid, error: e?.message });
-    }
-  }
-}
-
-/** Move each visit snapshot into `.bak.1` (shifting the chain), once, when the visit closes. */
-function promoteVisitSnapshots(): void {
-  const failed = new Set<string>();
-  for (const snapshot of [...visitSnapshots]) {
-    try {
-      promoteSnapshot(snapshot);
-    } catch (e: any) {
-      // Kept in the set so a retry can still promote it; if the process ends first, the next
-      // visit reaps it by pid.
-      failed.add(snapshot);
-      log.warn("settings_visit_snapshot_promote_failed", { snapshot, error: e?.message });
-    }
-  }
-  visitSnapshots.clear();
-  for (const snapshot of failed) visitSnapshots.add(snapshot);
-}
-
-export function beginSettingsEditSession(): void {
-  editSessionDepth++;
-}
-
-export function endSettingsEditSession(): void {
-  editSessionDepth = Math.max(0, editSessionDepth - 1);
-  if (editSessionDepth === 0) {
-    promoteVisitSnapshots();
-    backedUpInSession.clear();
-    createdInSession.clear();
-  }
-}
-
-/** True when this write should rotate a backup. Only the settings TUI asks for dedupe; a browser
- *  save or an allowlist approval arriving mid-visit is a separate action and keeps its own
- *  restore point. */
-function shouldBackUp(filePath: string, dedupe: boolean): boolean {
-  if (!dedupe || editSessionDepth === 0) return true;
-  if (createdInSession.has(filePath)) return false;
-  return !backedUpInSession.has(filePath);
-}
-
-/** Path of the newest previous-version copy kept next to a settings file. */
-export function settingsBackupPath(filePath: string, slot = 1): string {
-  return `${filePath}.bak.${slot}`;
-}
-
-/** Keep `count` previous versions: shift `.bak.N-1` → `.bak.N`, then current → `.bak.1`.
- *  A count of 0 disables backups. Failures never block the write — they only log. */
-function rotateSettingsBackups(filePath: string, count: number): void {
-  if (count <= 0) return;
-  withChainLock(filePath, () => rotateSettingsBackupsLocked(filePath, count));
-}
-
-function rotateSettingsBackupsLocked(filePath: string, count: number): void {
-  try {
-    shiftBackupSlots(filePath, count);
-    copyFileSync(filePath, settingsBackupPath(filePath, 1));
-  } catch (e: any) {
-    // A write without its backup breaks the one guarantee this function exists for: if the
-    // new content is wrong there is nothing to fall back to.
-    log.error("settings_backup_failed", { filePath, error: e?.message });
-    throw new SettingsBackupError(filePath, e);
-  }
-}
-
-export function writeSettingsFile(
-  filePath: string,
-  data: Record<string, unknown>,
-  options: { dedupeBackup?: boolean } = {},
-): void {
-  // Write directly to target file: comments are lost on write, by design — the settings file is
-  // plain JSON and pi-config-settings.example.json (documented in docs/project-settings.md) is
-  // the reference.
-  const dir = dirname(filePath);
-
-  // Refuse BEFORE touching the filesystem: creating the parent of a rejected path would
-  // change a location the write is not allowed to reach.
-  if (process.env.NODE_TEST_CONTEXT !== undefined) {
-    // Test processes may only write under the OS temp tree (same safety net the global
-    // settings path has): a test once wrote a project's real settings file. Compare the REAL
-    // paths — a lexical check passes for a fixture whose `.pi` links to a real project.
-    const real = nearestRealPath(filePath);
-    const tmpRoot = realpathSync(tmpdir());
-    if (real !== tmpRoot && !real.startsWith(tmpRoot + sep)) {
-      throw new Error(`test process refused to write settings outside the temp tree: ${real}`);
-    }
-  }
-
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-
-  // A corrupt legacy `.jsonc` is repaired by hand, not bypassed: creating `.json` now would make
-  // the legacy file "ignored", so the human's fix could never be migrated. Same soft refusal as
-  // an unparseable target — the callers already report it and keep running.
-  if (SETTINGS_FILENAMES.includes(basename(filePath)) && legacyMigrationBlocked(dir)) {
-    throw new SettingsFileCorruptError(joinPath(dir, LEGACY_SETTINGS_FILENAME));
-  }
-
-  const existedBefore = existsSync(filePath);
-  if (!existedBefore && options.dedupeBackup === true && editSessionDepth > 0) {
-    // Created during this visit: nothing to restore to, and the first partial version is not the
-    // pre-visit state, so later writes in the same visit must not snapshot it.
-    createdInSession.add(filePath);
-  }
-
-  if (existedBefore) {
-    // A corrupt file is recoverable by hand; a cleared one is not. Refuse rather than
-    // overwrite — this is exactly how a project's settings were once emptied.
-    if (readSettingsFile(filePath) === null) throw new SettingsFileCorruptError(filePath);
-    // Keep the pre-change bytes — `settings_backup_count` of them, newest at `.bak.1`. Inside the
-    // settings TUI that happens once per visit, so editing several values keeps the state the user
-    // started from. Recorded only after a successful rotation, so a failed one is retried.
-    const count = backupCountFor(filePath);
-    // Pruning runs on EVERY write: lowering the retention during a visit must drop the slots
-    // above the new limit, and inside a visit only the rotation itself is deduped.
-    pruneExtraBackups(filePath, count);
-    if (options.dedupeBackup === true && editSessionDepth > 0) {
-      // Inside a visit the snapshot is the restore point; the chain is only touched at visit end.
-      if (shouldBackUp(filePath, true) && count > 0) {
-        try {
-          reapStaleVisitSnapshots(filePath);
-          copyFileSync(filePath, visitSnapshotPath(filePath));
-          backedUpInSession.add(filePath);
-          visitSnapshots.add(visitSnapshotPath(filePath));
-        } catch (e: any) {
-          log.error("settings_backup_failed", { filePath, error: e?.message });
-          throw new SettingsBackupError(filePath, e);
-        }
-      }
-    } else {
-      rotateSettingsBackups(filePath, count);
-    }
-  }
-  const content = JSON.stringify(data, null, 2) + "\n";
-  const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;
-  try {
-    writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600, flag: "wx" });
-    renameSync(tmpPath, filePath);
-  } catch (e: any) {
-    // Clean up temp file on failure
-    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch {}
-    throw e;
-  }
-}
-
-// ── Secret submit guard (extracted for testability) ────────────────
+// ── Secret submit guard (extracted for testability) ─────────────────
 
 /** Check if a secret input should be treated as "no change" (cancel). */
 export function isSecretNoChange(val: string | undefined, scopeHasValue: boolean): boolean {
   if (scopeHasValue) return false; // value exists in scope — user is editing, not creating
-  // Treat undefined, empty, whitespace-only, and the literal "(empty)" as no-change.
-  // "(empty)" is the display placeholder that parseRawValue converts to "".
   return val === undefined || val?.trim() === "" || val?.trim() === EMPTY_VALUE_SENTINEL;
 }
 
@@ -617,9 +108,8 @@ export function resolveSecretPrefill(
   const scopeData = preloadedScopeData !== undefined
     ? preloadedScopeData
     : readSettingsFile(getFilePathForScope(editScope, cwd));
-  const scopeValue = scopeData && typeof scopeData[key] === "string" ? scopeData[key] as string : null;
+  const scopeValue = scopeData && typeof scopeData[key] === "string" ? (scopeData[key] as string) : null;
   // Never prefill with the raw secret — always start empty to avoid exposing it on screen.
-  // The user must type a new value; empty submit is handled by isSecretNoChange.
   const prefill = "";
   const hint = scopeValue !== null
     ? "Value set in this scope — enter new value or empty to clear"
@@ -627,7 +117,7 @@ export function resolveSecretPrefill(
   return { scopeValue, prefill, hint };
 }
 
-// ── Provider-filtered model items ───────────────────────────────
+// ── Provider-filtered model items ───────────────────────────────────
 
 export type ModelSelectItem = {
   value: string;
@@ -638,17 +128,6 @@ export type ModelSelectItem = {
   /** Registry output modalities when present (`image` = image-generation capable). */
   output?: string[];
 };
-
-/** True when a model id looks like a Google/Gemini image-generation model. */
-export function isImageGenModelId(id: string): boolean {
-  const lower = id.toLowerCase();
-  const result =
-    lower.includes("imagen") ||
-    lower.includes("image-generation") ||
-    /(?:^|[-_./])image(?:[-_./]|$)/.test(lower);
-  log.debug("isImageGenModelId", { id, result });
-  return result;
-}
 
 /** Image-gen picker: prefer `output` includes `image`; else id pattern. Not `input` (vision). */
 export function isImageCapablePickerItem(item: ModelSelectItem): boolean {
@@ -704,7 +183,7 @@ export function resolveModelPickerProvider(
 
 /**
  * Models shown in the settings TUI picker for a key.
- * image_model: IMAGE_MODEL_PROVIDER + image-capable only — never falls back to all providers (empty list if none).
+ * image_model: IMAGE_MODEL_PROVIDER + image-capable only — never falls back to all providers.
  * agent_model / internal_operations_model: fall back to all models when filter is empty.
  */
 export function resolveModelPickerItems(
@@ -712,7 +191,6 @@ export function resolveModelPickerItems(
   allModels: ModelSelectItem[],
   provider?: string,
 ): ModelSelectItem[] {
-  // image_model is always google-filtered — ignore caller provider (even truthy non-google)
   const effectiveProvider = key === "image_model" ? IMAGE_MODEL_PROVIDER : provider;
   const filtered = filterModelsByProvider(allModels, effectiveProvider);
   if (key === "image_model") {
@@ -728,11 +206,6 @@ export function resolveModelPickerItems(
   return result;
 }
 
-/**
- * Decide picker vs free-text for a model settings key.
- * Call at submenu-open time (not build time) so paired provider changes are fresh.
- * image_model with an empty google list → free-text input (never show all providers).
- */
 export type ModelKeySubmenu =
   | { mode: "picker"; models: ModelSelectItem[]; provider?: string }
   | { mode: "input"; provider?: string };
@@ -752,9 +225,12 @@ export function resolveModelKeySubmenu(
   return { mode: "picker", models, provider };
 }
 
-// ── Source glyph (colored) ──────────────────────────────────────
+// ── Source glyph (colored) ──────────────────────────────────────────
 
-export function sourceGlyph(source: string, theme: { fg: (color: "success" | "accent" | "warning" | "dim", text: string) => string }): string {
+export function sourceGlyph(
+  source: string,
+  theme: { fg: (color: "success" | "accent" | "warning" | "dim", text: string) => string },
+): string {
   switch (source) {
     case "P": return theme.fg("success", "P");
     case "G": return theme.fg("accent", "G");
@@ -766,10 +242,6 @@ export function sourceGlyph(source: string, theme: { fg: (color: "success" | "ac
 
 // ── Registration helper (testable without pi-coding-agent) ──────────
 
-/**
- * Core registration logic extracted for testability.
- * Accepts a minimal pi-like object with registerCommand.
- */
 export function registerSettingsTuiCommand(
   pi: { registerCommand: (name: string, opts: { description: string; handler: (...args: any[]) => any }) => void },
   handler: (args: string, ctx: any) => Promise<void>,
