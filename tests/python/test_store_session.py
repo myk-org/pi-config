@@ -393,7 +393,7 @@ def test_insert_review_logs_at_debug_level(project_root: Path, caplog: pytest.Lo
         from myk_pi_tools.reviews.store import create_tables
 
         create_tables(conn)
-        with caplog.at_level(logging.DEBUG, logger="myk_pi_tools.reviews.store"):
+        with caplog.at_level(logging.DEBUG, logger="myk_pi_tools.db.storage"):
             insert_review(conn, "myk-org", "pi-config", 943, "sha-xyz", created_at="2026-02-01T10:00:00+00:00")
         assert any("insert_review" in record.message for record in caplog.records)
     finally:
@@ -656,7 +656,7 @@ def test_inline_lookups_finish_before_the_database_opens(project_root: Path, mon
     real_connect = sqlite3.connect
 
     def tracked_connect(database: object, *args: object, **kwargs: object) -> object:
-        events.append("db")
+        events.append("db_ro" if kwargs.get("uri") and "mode=ro" in str(database) else "db_rw")
         import typing
 
         return real_connect(
@@ -666,7 +666,7 @@ def test_inline_lookups_finish_before_the_database_opens(project_root: Path, mon
         )
 
     monkeypatch.setattr(sp, "run", fake_run)
-    monkeypatch.setattr(store_session.sqlite3, "connect", tracked_connect)
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
     base = _finding("uuid-lock-1", "Lock probe one", "Desc", "sha-lk", "2026-02-01T10:00:00+00:00")
     second = _finding("uuid-lock-2", "Lock probe two", "Desc", "sha-lk", "2026-02-01T11:00:00+00:00")
     # Real Qodo inline ids are strings (gh1:PRRT_...:<rest-id>) — the lookup
@@ -678,11 +678,23 @@ def test_inline_lookups_finish_before_the_database_opens(project_root: Path, mon
     store_session.run(str(json_path))
 
     assert events.count("gh") == 1, "single batch --paginate call pre-warms both findings"
-    # events: ["db" (lock-free read pass), "gh", "db" (write txn), ...]
-    assert events[0] == "db", "the read pass opens first (no write lock)"
-    write_db = events.index("db", 1)
+    # On a fresh DB (file does not exist yet), no read connection is needed:
+    # events == ["gh", "db_rw"]. Every gh lookup precedes the write transaction.
+    write_db = events.index("db_rw")
     assert all(i < write_db for i, e in enumerate(events) if e == "gh"), (
         "every gh lookup precedes the write transaction's connection"
+    )
+
+    # On an already-existing DB, a lock-free RO read pass runs first, then gh
+    # for any new finding, then the RW write transaction.
+    events.clear()
+    third = _finding("uuid-lock-3", "Lock probe three", "Desc", "sha-lk", "2026-02-01T12:00:00+00:00")
+    third["inline_comment_id"] = "gh1:PRRT_kw:3333333"
+    json_path2 = _write_session(project_root, _session_json([base, second, third]))
+    store_session.run(str(json_path2))
+
+    assert events == ["db_ro", "gh", "db_rw"], (
+        "existing DB runs lock-free RO read pass, then gh lookup, then RW write transaction"
     )
 
 

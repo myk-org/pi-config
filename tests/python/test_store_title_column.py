@@ -210,6 +210,7 @@ def test_store_reviews_does_not_rescan_null_titles_on_every_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Backfill runs ONCE (at migration); later stores never rescan NULL titles."""
+    from myk_pi_tools.db import storage
     from myk_pi_tools.reviews import store
 
     db_path = tmp_path / ".pi" / "data" / "reviews.db"
@@ -243,13 +244,13 @@ def test_store_reviews_does_not_rescan_null_titles_on_every_store(
 
     # First store MIGRATES (adds the title column) — exactly one backfill call.
     calls = []
-    real_backfill = store.backfill_titles
+    real_backfill = storage.backfill_titles
 
     def _counting_backfill(conn: sqlite3.Connection) -> int:
         calls.append(1)
         return real_backfill(conn)
 
-    monkeypatch.setattr(store, "backfill_titles", _counting_backfill)
+    monkeypatch.setattr(storage, "backfill_titles", _counting_backfill)
     store.store_reviews(json_path)
     assert calls == [1], "migration run backfills exactly once"
 
@@ -263,7 +264,7 @@ def test_store_reviews_does_not_rescan_null_titles_on_every_store(
         })
     )
     monkeypatch.setattr(
-        store, "backfill_titles", lambda _conn: (_ for _ in ()).throw(AssertionError("NULL titles rescanned"))
+        storage, "backfill_titles", lambda _conn: (_ for _ in ()).throw(AssertionError("NULL titles rescanned"))
     )
     store.store_reviews(json_path)
 
@@ -275,6 +276,7 @@ def test_failed_store_after_migration_keeps_the_backfill(tmp_path: Path, monkeyp
     column just appeared" loses it when the store's own transaction later
     rolls back. The backfill+marker commit in their own transaction first.
     """
+    from myk_pi_tools.db import storage
     from myk_pi_tools.reviews import store
 
     db_path = tmp_path / ".pi" / "data" / "reviews.db"
@@ -308,7 +310,7 @@ def test_failed_store_after_migration_keeps_the_backfill(tmp_path: Path, monkeyp
     def _boom(*_args: object, **_kwargs: object) -> int:
         raise sqlite3.OperationalError("simulated store failure")
 
-    monkeypatch.setattr(store, "insert_review", _boom)
+    monkeypatch.setattr(storage, "insert_review", _boom)
     with pytest.raises(SystemExit):
         store.store_reviews(json_path)
 

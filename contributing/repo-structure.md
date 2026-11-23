@@ -175,6 +175,10 @@ pi-config/
 │   ├── cli.py
 │   ├── coderabbit/
 │   ├── db/
+│   │   ├── sqlite_helpers.py        # Shared SQLite path, RO/RW connectors, and idempotent migration engine
+│   │   ├── storage.py               # Unified reviews.db storage module (ReviewDB, schema, migrations, title backfill)
+│   │   ├── query.py                 # Backwards-compatible re-export shim for myk_pi_tools.db.storage
+│   │   └── commands.py              # CLI commands for querying reviews.db
 │   ├── memory/
 │   ├── pr/
 │   │   └── pr_review_store.py       # PR review comment tracking (pr-reviews.db)

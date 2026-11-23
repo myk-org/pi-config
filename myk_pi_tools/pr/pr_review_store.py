@@ -15,15 +15,25 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
-from myk_pi_tools.utils import find_git_root
+from myk_pi_tools.db.sqlite_helpers import (
+    ColumnMigration,
+    IndexMigration,
+    apply_migrations,
+    connect_rw,
+    open_migrated_ro,
+    resolve_db_path,
+)
+from myk_pi_tools.logger import create_logger
+
+logger = create_logger(__name__)
 
 VALID_STATUSES = {"posted", "skipped", "resolved_external"}
 VALID_RESOLUTION_STATUSES = {"resolved_fixed", "resolved_accepted", "resolved_bad_fix", "resolved_no_fix"}
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS pr_reviews (
+PR_REVIEWS_DB_NAME = "pr-reviews.db"
+
+_PR_REVIEWS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS pr_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     repo TEXT NOT NULL,
@@ -31,9 +41,9 @@ CREATE TABLE IF NOT EXISTS pr_reviews (
     head_sha TEXT NOT NULL,
     author TEXT,
     created_at TEXT NOT NULL
-);
+);"""
 
-CREATE TABLE IF NOT EXISTS pr_comments (
+_PR_COMMENTS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS pr_comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     review_id INTEGER NOT NULL REFERENCES pr_reviews(id) ON DELETE CASCADE,
     thread_id TEXT,
@@ -45,15 +55,38 @@ CREATE TABLE IF NOT EXISTS pr_comments (
     posted_at TEXT,
     status TEXT DEFAULT 'posted',
     skip_reason TEXT
-);
+);"""
 
-CREATE INDEX IF NOT EXISTS idx_pr_comments_review_id ON pr_comments(review_id);
-CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr ON pr_reviews(owner, repo, pr_number);
-CREATE INDEX IF NOT EXISTS idx_pr_comments_posted_at ON pr_comments(posted_at);
-"""
+_TABLE_DDLS: tuple[str, ...] = (_PR_REVIEWS_TABLE_DDL, _PR_COMMENTS_TABLE_DDL)
+
+_INDEX_MIGRATIONS: tuple[IndexMigration, ...] = (
+    (
+        "idx_pr_comments_review_id",
+        "pr_comments",
+        ("review_id",),
+        "CREATE INDEX IF NOT EXISTS idx_pr_comments_review_id ON pr_comments(review_id);",
+    ),
+    (
+        "idx_pr_reviews_pr",
+        "pr_reviews",
+        ("owner", "repo", "pr_number"),
+        "CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr ON pr_reviews(owner, repo, pr_number);",
+    ),
+    (
+        "idx_pr_comments_posted_at",
+        "pr_comments",
+        ("posted_at",),
+        "CREATE INDEX IF NOT EXISTS idx_pr_comments_posted_at ON pr_comments(posted_at);",
+    ),
+)
+
+SCHEMA = (
+    f"\n{_PR_REVIEWS_TABLE_DDL}\n\n"
+    f"{_PR_COMMENTS_TABLE_DDL}\n\n" + "\n".join(sql for *_prefix, sql in _INDEX_MIGRATIONS) + "\n"
+)
 
 # Migration for existing databases that lack the new columns
-_MIGRATIONS = [
+_MIGRATIONS: tuple[ColumnMigration, ...] = (
     # pr_comments migrations
     ("pr_comments", "status", "ALTER TABLE pr_comments ADD COLUMN status TEXT DEFAULT 'posted'"),
     ("pr_comments", "skip_reason", "ALTER TABLE pr_comments ADD COLUMN skip_reason TEXT"),
@@ -61,66 +94,20 @@ _MIGRATIONS = [
     ("pr_reviews", "author", "ALTER TABLE pr_reviews ADD COLUMN author TEXT"),
     ("pr_comments", "resolution_status", "ALTER TABLE pr_comments ADD COLUMN resolution_status TEXT"),
     ("pr_comments", "author_response", "ALTER TABLE pr_comments ADD COLUMN author_response TEXT"),
-]
+)
 
 
 def log(message: str) -> None:
+    logger.info("%s", message)
     print(message, file=sys.stderr)
-
-
-def _get_project_root() -> Path:
-    """Detect main project root (resolves through git worktrees)."""
-    try:
-        return find_git_root()
-    except RuntimeError as e:
-        raise RuntimeError("Failed to detect project root — git not available or not in a repo") from e
-
-
-def _connect_ro(db_path: Path) -> sqlite3.Connection:
-    """Open ``db_path`` read-only with ``sqlite3.Row`` factory."""
-    resolved = db_path.resolve()
-    db_uri = f"file:{quote(resolved.as_posix(), safe='/:')}?mode=ro"
-    conn = sqlite3.connect(db_uri, uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _has_all_migration_columns(conn: sqlite3.Connection) -> bool:
-    """Return True when all migration-added columns already exist."""
-    table_columns: dict[str, set[str]] = {}
-    for table, col_name, _sql in _MIGRATIONS:
-        if table not in table_columns:
-            table_columns[table] = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if col_name not in table_columns[table]:
-            return False
-    return True
 
 
 def _get_db_path() -> Path:
     """Get the pr-reviews.db path."""
-    project_root = _get_project_root()
-    return project_root / ".pi" / "data" / "pr-reviews.db"
-
-
-def _run_migrations(conn: sqlite3.Connection) -> None:
-    """Apply schema migrations for existing databases."""
-    # Cache column info per table
-    table_columns: dict[str, set[str]] = {}
-
-    for table, col_name, sql in _MIGRATIONS:
-        if table not in table_columns:
-            # table names come from hardcoded _MIGRATIONS — safe, PRAGMA can't be parameterized
-            cursor = conn.execute(f"PRAGMA table_info({table})")
-            table_columns[table] = {row[1] for row in cursor.fetchall()}
-
-        if col_name not in table_columns[table]:
-            try:
-                conn.execute(sql)
-                table_columns[table].add(col_name)
-                log(f"Schema migration: added '{col_name}' column to {table}")
-            except sqlite3.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    raise
+    try:
+        return resolve_db_path(PR_REVIEWS_DB_NAME)
+    except RuntimeError as e:
+        raise RuntimeError("Failed to detect project root — git not available or not in a repo") from e
 
 
 def store_pr_review(
@@ -155,19 +142,10 @@ def store_pr_review(
     """
     if db_path is None:
         db_path = _get_db_path()
-    # Ensure directory exists
-    db_dir = db_path.parent
-    if not db_dir.exists():
-        db_dir.mkdir(parents=True, mode=0o700)
-    else:
-        try:
-            db_dir.chmod(0o700)
-        except OSError as exc:
-            log(f"Warning: could not chmod {db_dir}: {exc}")
 
     if not head_sha:
         # No SHA from the fetch metadata: resolve it in the process cwd (the
-        # worktree the CLI was invoked from), not in _get_project_root() — that
+        # worktree the CLI was invoked from), not in the main repo root — that
         # is the MAIN worktree, so its HEAD would be recorded for every review.
         from myk_pi_tools.reviews.store import get_current_commit_sha
 
@@ -194,11 +172,9 @@ def store_pr_review(
     log(f"Storing {len(comments)} PR review comment(s) for {owner}/{repo}#{pr_number}...")
     log(f"Database: {db_path}")
 
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_rw(db_path, ensure_dir=True, foreign_keys=True)
     try:
-        conn.executescript(SCHEMA)
-        _run_migrations(conn)
-        conn.execute("PRAGMA foreign_keys=ON")
+        apply_migrations(conn, _MIGRATIONS, table_ddls=_TABLE_DDLS, index_migrations=_INDEX_MIGRATIONS)
 
         cursor = conn.cursor()
         cursor.execute(
@@ -324,17 +300,9 @@ def get_skipped_comments(
     if not db_path.exists():
         return []
 
-    conn = _connect_ro(db_path)
+    conn: sqlite3.Connection | None = None
     try:
-        if not _has_all_migration_columns(conn):
-            conn.close()
-            rw_conn = sqlite3.connect(str(db_path))
-            try:
-                _run_migrations(rw_conn)
-                rw_conn.commit()
-            finally:
-                rw_conn.close()
-            conn = _connect_ro(db_path)
+        conn = open_migrated_ro(db_path, _MIGRATIONS)
         cursor = conn.execute(
             """
             SELECT c.path, c.line, c.body, c.severity, c.skip_reason, r.head_sha
@@ -350,7 +318,8 @@ def get_skipped_comments(
     except sqlite3.Error as e:
         raise RuntimeError(f"Failed to query skipped comments: {e}") from e
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def update_resolution(
@@ -389,11 +358,10 @@ def update_resolution(
     if not db_path.exists():
         return False
 
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_rw(db_path, foreign_keys=True)
     try:
-        _run_migrations(conn)
+        apply_migrations(conn, _MIGRATIONS)
         conn.commit()
-        conn.execute("PRAGMA foreign_keys=ON")
 
         # Find the most recent matching posted comment
         query = """
@@ -449,17 +417,9 @@ def get_review_history(
     if not db_path.exists():
         return []
 
-    conn = _connect_ro(db_path)
+    conn: sqlite3.Connection | None = None
     try:
-        if not _has_all_migration_columns(conn):
-            conn.close()
-            rw_conn = sqlite3.connect(str(db_path))
-            try:
-                _run_migrations(rw_conn)
-                rw_conn.commit()
-            finally:
-                rw_conn.close()
-            conn = _connect_ro(db_path)
+        conn = open_migrated_ro(db_path, _MIGRATIONS)
         cursor = conn.execute(
             """
             SELECT c.path, c.line, c.body, c.severity, c.status,
@@ -476,7 +436,8 @@ def get_review_history(
     except sqlite3.Error as e:
         raise RuntimeError(f"Failed to query review history: {e}") from e
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def run_store(json_path: str) -> int:

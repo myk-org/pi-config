@@ -35,7 +35,7 @@ def db_stats(by_source: bool, by_reviewer: bool, output_json: bool, db_path: str
         click.echo("Error: choose only one of --by-source or --by-reviewer", err=True)
         sys.exit(1)
 
-    from myk_pi_tools.db.query import ReviewDB, _format_table
+    from myk_pi_tools.db.storage import ReviewDB, _format_table
 
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
 
@@ -79,7 +79,7 @@ def db_patterns(min_occurrences: int, output_json: bool, db_path: str | None) ->
         # JSON output
         myk-pi-tools db patterns --json
     """
-    from myk_pi_tools.db.query import ReviewDB, _format_table
+    from myk_pi_tools.db.storage import ReviewDB, _format_table
 
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
     results = db_obj.get_duplicate_patterns(min_occurrences=min_occurrences)
@@ -109,7 +109,7 @@ def db_dismissed(owner: str, repo: str, output_json: bool, db_path: str | None) 
         # JSON output
         myk-pi-tools db dismissed --owner myk-org --repo pi-config --json
     """
-    from myk_pi_tools.db.query import ReviewDB, _format_table
+    from myk_pi_tools.db.storage import ReviewDB, _format_table
 
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
     results = db_obj.get_dismissed_comments(owner, repo)
@@ -141,7 +141,7 @@ def db_query(sql: str, output_json: bool, db_path: str | None) -> None:
         # JSON output
         myk-pi-tools db query "SELECT * FROM comments LIMIT 5" --json
     """
-    from myk_pi_tools.db.query import ReviewDB, _format_table
+    from myk_pi_tools.db.storage import ReviewDB, _format_table
 
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
 
@@ -196,7 +196,7 @@ def db_find_similar(owner: str, repo: str, threshold: float, output_json: bool, 
         click.echo("Error: JSON must contain 'path' and 'body' fields", err=True)
         sys.exit(1)
 
-    from myk_pi_tools.db.query import ReviewDB
+    from myk_pi_tools.db.storage import ReviewDB
 
     db_obj = ReviewDB(db_path=Path(db_path) if db_path else None)
     result = db_obj.find_similar_comment(owner, repo, path, body, threshold=threshold)
