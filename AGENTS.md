@@ -29,12 +29,11 @@ flow, `warn` recoverable issues, `error` failures) — use `createLogger`, never
 
 ## When Working On... (Navigation)
 
-- **Code review & engineering judgement calls (review-only):** `CODING_STANDARDS.md`
 - **Repository layout & module inventory:** `contributing/repo-structure.md`
-- **Local dev, extra test suites, `withSubagentChildEnv`, `npm pack`, & docs preview:** `DEVELOPMENT.md`
-- **pi-sidecar workspace, HTTP/Python API, `cost_usd`, & session `api_key` contracts:** `packages/pi-sidecar/README.md`, `packages/pi-sidecar/CONSUMER-GUIDE.md`, `docs/pi-sidecar.md`
+- **Workspace suites, `withSubagentChildEnv`, `npm pack`, published installs, & docs preview:** `contributing/testing-and-packaging.md`
+- **pi-sidecar workspace, HTTP/Python API, `cost_usd`, & session `api_key` contracts:** `docs/pi-sidecar.md`, `contributing/testing-and-packaging.md`
 - **Task completion contract (`assignee: "user"`, `completedBy`, `completionNote`, storage):** `docs/commands-and-tools.md`, `docs/configuration.md`
-- **Agents, routing, conflict handoff (`conflict-resolver`), & model overrides:** `docs/managing-custom-agents.md`, `rules/10-agent-routing.md`
+- **Agents, routing, conflict handoff (`conflict-resolver`), & model overrides:** `docs/managing-custom-agents.md`, `contributing/enforcement-honesty-map.md`
 - **Rules layers, conditional assembly (`{{IF:...}}`), & `settings-keys.json`:** `docs/rules-and-layers.md`, `docs/project-settings.md`
 - **Prompts, slash commands, templates, & autocomplete:** `docs/custom-slash-commands.md`, `docs/extension-commands.md`
 - **Async internals, oneshot guards, providers restore/thinking-level, & timer lifecycle:** `docs/async-internals.md`
@@ -45,7 +44,7 @@ flow, `warn` recoverable issues, `error` failures) — use `createLogger`, never
 - **Memory architecture & enforcement honesty map (`checkRemoteExecBlock`, `*(enforced)*`):** `docs/memory-architecture.md`, `contributing/enforcement-honesty-map.md`
 - **MCP (`builtin:mcp`) & stream logging (`log_providers`):** `docs/mcp-servers.md`, `docs/configuration.md`
 - **Skill self-improvement (`/adopt-skill`, provenance):** `docs/skill-self-improvement.md`
-- **Reviews CLI, `qodo_cli_state`, & mandatory Reviews DB ↔ `extensions/orchestrator/review-learning.ts` coupling:** `README.md#qodo-cli-read-source-qodo_cli_state`, `docs/curating-project-memory.md`
+- **Reviews CLI, `qodo_cli_state`, & mandatory Reviews DB ↔ `extensions/orchestrator/review-learning.ts` coupling:** `docs/automating-code-reviews.md`, `docs/curating-project-memory.md`
 - **Local review workflows (`/qodo-review`) & docs site (`docs/*.md` sources only):** `docs/built-in-workflows.md`, `docs/pi-docsite.md`
 
 ## Boundaries & When Blocked

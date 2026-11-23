@@ -56,16 +56,19 @@ register `agent_end` before `orchestrator`).
 
 Multiple sessions and concurrent callers may share one process or working tree.
 
-- **Keep request- and session-scoped secrets strictly isolated:** In `packages/pi-sidecar/` and provider
-  extensions, per-session `api_key` values and key-scoped model listings (`POST /models/for-api-key`) must
-  remain scoped to the owning request or session — never cache globally, persist to disk, return in
-  responses, log, or forward to nested agents.
+- **Keep request- and session-scoped credentials and listings isolated:** In `packages/pi-sidecar/` and provider
+  extensions, per-session `api_key` values must stay strictly in-memory for the owning request or session — never
+  cache globally, persist to disk, echo in API responses, log, or forward to nested agents. Key-scoped model
+  listings (`POST /models/for-api-key`) return `{ models, modelListingSupported }` only to that request and must
+  never be cached globally or shared across sessions.
 - **Clean up credentials and registries on every exit path:** Purge in-memory secrets, close streams, and
   remove active-run entries in `finally`, delete, expiry, and `session_shutdown` handlers so aborted or
   failing turns never leak state.
-- **Namespace filesystem state and publish atomically:** Scope per-session temp/run artifacts by session
-  ID or PID + OS `startToken` (e.g., `sync-<session>-<n>`, `reload.pending`). Write control/flag files to
-  a unique same-directory temp file, close, and atomically rename — never truncate in place.
+- **Namespace per-session artifacts and stamp shared control files:** Scope per-session temp directories by
+  session ID or PID (e.g., `sync-<session>-<n>`). For shared per-cwd control files that must stay at a fixed
+  path across restarts (e.g., `.pi/run/reload.pending`), keep the fixed filename and record owner PID + OS
+  `startToken` inside the payload instead of renaming the file. Write control/flag files to a unique
+  same-directory temp file, close, and atomically rename — never truncate in place.
 - **Respect trust boundaries and provenance:** Never infer unknown pricing as `0` — preserve
   `Symbol.for("pi-config.pricingUnknown")` (`extensions/shared/pricing-provenance.ts`) and
   `cost_usd: null` / `cost_partial: true`, and never coalesce `null` to `0`. Require explicit literal
