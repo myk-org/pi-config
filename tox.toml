@@ -18,16 +18,20 @@ allowlist_externals = ["node", "npm", "sh"]
 # bootstrap root workspaces and the standalone pidash-ui package when absent.
 # --legacy-peer-deps avoids an npm 10 Arborist #loadPeerSet edgesOut crash on
 # workspace peer-dependency resolution.
+# If host Node is compiled with small-icu without system full-i18n data (e.g.
+# Fedora nodejs RPM), Intl.Segmenter segfaults — fetch matching full-icu data
+# into the tox env dir and export NODE_ICU_DATA only when needed.
 commands_pre = [
   ["sh", "-c", "test -x node_modules/.bin/tsc && test -x node_modules/.bin/tsx || npm install --no-audit --no-fund --legacy-peer-deps"],
   ["sh", "-c", "test -d extensions/pidash/pidash-ui/node_modules || npm --prefix extensions/pidash/pidash-ui install --no-audit --no-fund --legacy-peer-deps"],
+  ["sh", "-c", "node -e 'Array.from(new Intl.Segmenter().segment(\"hi 👋\"))' 2>/dev/null || ls \"{env_dir}/icu/node_modules/full-icu\"/icudt*.dat >/dev/null 2>&1 || (mkdir -p \"{env_dir}/icu\" && node -e 'require(\"node:fs\").writeFileSync(process.argv[1], JSON.stringify(Object.create(null)))' \"{env_dir}/icu/package.json\" && npm --prefix \"{env_dir}/icu\" install --no-audit --no-fund full-icu)"],
 ]
 # Runs repo TypeScript typecheck plus the root Node, pi-docsite browser-asset
 # (jsdom), and pi-sidecar TypeScript test suites. Uses `node --import tsx` with
-# bounded concurrency to avoid tsx wrapper / container worker SIGSEGV crashes.
+# bounded concurrency to avoid tsx wrapper / container worker contention.
 commands = [
   ["npm", "run", "typecheck"],
-  ["node", "--import", "tsx", "--test", "--test-concurrency=4", "tests/node/**/*.test.ts"],
+  ["sh", "-c", "if ls \"{env_dir}/icu/node_modules/full-icu\"/icudt*.dat >/dev/null 2>&1; then export NODE_ICU_DATA=\"{env_dir}/icu/node_modules/full-icu\"; fi; node --import tsx --test --test-concurrency=4 'tests/node/**/*.test.ts'"],
   ["node", "--import", "tsx", "--test", "--test-concurrency=4", "packages/pi-docsite/tests/js/**/*.test.ts"],
-  ["node", "--import", "tsx", "--test", "--test-concurrency=4", "packages/pi-sidecar/tests/test_ts/*.test.ts"],
+  ["sh", "-c", "if ls \"{env_dir}/icu/node_modules/full-icu\"/icudt*.dat >/dev/null 2>&1; then export NODE_ICU_DATA=\"{env_dir}/icu/node_modules/full-icu\"; fi; node --import tsx --test --test-concurrency=4 'packages/pi-sidecar/tests/test_ts/*.test.ts'"],
 ]

@@ -266,10 +266,13 @@ describe("gitDirtyPoller async behavior (#1264)", () => {
       const cb = await nextCallback();
       cb(res);
     };
+    // Poller timers are .unref()'d; keep Node 22's event loop alive while tests await ticks.
+    const keepAlive = setInterval(() => {}, 100);
     const shutdown = () => {
       for (const h of handlers.get("session_shutdown") ?? []) h({}, ctx);
     };
     const cleanup = () => {
+      clearInterval(keepAlive);
       shutdown();
       fs.rmSync(tmp, { recursive: true, force: true });
     };

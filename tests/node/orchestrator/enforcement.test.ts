@@ -4413,6 +4413,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     delete process.env.__PI_PARENT_SESSION_ID;
     throwawaySessionId = `enforcement-gate-${process.pid}-${Date.now()}`;
     setGlobalSessionId(throwawaySessionId);
+    setLogLevelPin("enforcement", "debug");
     const logPath = getPiLogPath("enforcement");
     if (logPath) testLogDir = dirname(logPath);
     hooks = new Map();
@@ -4424,6 +4425,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   after(() => {
+    setLogLevelPin("enforcement", null);
     if (testLogDir && throwawaySessionId && path.basename(testLogDir) === throwawaySessionId) {
       rmSync(testLogDir, { recursive: true, force: true });
     }
