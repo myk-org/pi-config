@@ -190,7 +190,7 @@ function boot(tasks: any[], settingsOverrides: Record<string, unknown> = {}) {
 		tick: () => { for (const fn of ticks) fn(); },
 		reminders: () => sent.filter(m => m.customType === "task-focus-reminder"),
 		restore: async () => {
-			resetSessionBridge(undefined, { slot: "workload" });
+			resetSessionBridge({ slot: "workload" });
 			await emit("session_shutdown");
 			global.setInterval = prevSetInterval;
 			process.chdir(prevCwd);

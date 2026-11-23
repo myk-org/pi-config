@@ -18,7 +18,7 @@ import { SYSTEM_NOTE_MARKER } from "../../../extensions/shared/system-note.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 afterEach(() => {
-  resetSessionBridge();
+  resetSessionBridge({ all: true });
 });
 
 type Handler = (...args: any[]) => any;

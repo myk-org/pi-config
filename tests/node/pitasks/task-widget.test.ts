@@ -345,7 +345,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.ok(taskStore.get(task.id)?.telemetry?.endedAt);
 		} finally {
 			handlers.get("session_shutdown")?.();
-			resetSessionBridge();
+			resetSessionBridge({ all: true });
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
 			else process.env.PI_SUBAGENT_CHILD = child;
 		}
@@ -376,7 +376,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.equal(taskStore.get(task.id)?.telemetry?.outputTokens, 29);
 		} finally {
 			handlers.get("session_shutdown")?.();
-			resetSessionBridge();
+			resetSessionBridge({ all: true });
 			if (piTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = piTasks;
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
@@ -405,7 +405,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.ok(publishedTaskTelemetryActive("sess-switched"));
 		} finally {
 			handlers.get("session_shutdown")?.();
-			resetSessionBridge();
+			resetSessionBridge({ all: true });
 			if (piTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = piTasks;
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
@@ -433,7 +433,7 @@ describe("pitasks telemetry bridge", () => {
 			assert.equal(taskStore.get(taskB.id)?.telemetry?.outputTokens ?? 0, 0);
 		} finally {
 			handlersB.get("session_shutdown")?.();
-			resetSessionBridge();
+			resetSessionBridge({ all: true });
 			if (piTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = piTasks;
 			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;

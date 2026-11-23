@@ -59,7 +59,7 @@ export interface WorkloadSources {
 }
 
 interface TaskStoreBinding {
-  readonly current: unknown;
+  readonly getStore: () => unknown;
 }
 
 export interface TaskStoreBridgeSlot {
@@ -81,6 +81,10 @@ export interface SessionBridgeSlot {
 }
 
 export type SessionBridgeSlotName = keyof SessionBridgeSlot;
+
+export type ResetSessionBridgeOptions =
+  | { readonly all: true }
+  | { readonly sessionKey?: string; readonly slot?: SessionBridgeSlotName };
 
 /** Normalize an optional session ID to a non-empty bridge key (or DEFAULT_BRIDGE_SESSION_KEY). */
 export function normalizeBridgeSessionKey(sessionKey?: string): string {
@@ -153,29 +157,33 @@ function getOrCreateMalformedRecoverySlot(key: string): MalformedRecoveryBridgeS
   return slot.malformedRecovery;
 }
 
+function isBridgeValueEmpty(value: unknown, seen = new Set<object>()): boolean {
+  if (value === undefined || value === null || value === false) return true;
+  if (typeof value !== "object") return false;
+  if (value instanceof Set || value instanceof Map) return value.size === 0;
+  if (Array.isArray(value)) return value.length === 0;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  for (const key of Object.keys(value)) {
+    const desc = Object.getOwnPropertyDescriptor(value, key);
+    if (!desc) continue;
+    if (typeof desc.get === "function") return false;
+    if (!isBridgeValueEmpty(desc.value, seen)) return false;
+  }
+  return true;
+}
+
 function pruneSessionSlot(map: Map<string, SessionBridgeSlot> | undefined, key: string): void {
   if (!map) return;
   const slot = map.get(key);
   if (slot !== null && typeof slot === "object") {
-    if (slot.taskStore && !slot.taskStore.store && !slot.taskStore.telemetryActive) {
-      delete slot.taskStore;
+    const record = slot as Record<string, unknown>;
+    for (const [slotName, value] of Object.entries(record)) {
+      if (isBridgeValueEmpty(value)) {
+        delete record[slotName];
+      }
     }
-    if (
-      slot.malformedRecovery &&
-      !slot.malformedRecovery.willRecover &&
-      !slot.malformedRecovery.pending &&
-      (!(slot.malformedRecovery.onRecoveryAborted instanceof Set) ||
-        slot.malformedRecovery.onRecoveryAborted.size === 0)
-    ) {
-      delete slot.malformedRecovery;
-    }
-    if (!slot.comsActive) {
-      delete slot.comsActive;
-    }
-    if (slot.workload === undefined) {
-      delete slot.workload;
-    }
-    if (Object.keys(slot).length === 0) {
+    if (Object.keys(record).length === 0) {
       map.delete(key);
     }
   }
@@ -189,11 +197,7 @@ function pruneSessionSlot(map: Map<string, SessionBridgeSlot> | undefined, key: 
 /** Publish a getter over the live task store binding for a session. Returns an idempotent unregister callback. */
 export function publishTaskStore(getStore: () => unknown, sessionKey?: string): () => void {
   const key = normalizeBridgeSessionKey(sessionKey);
-  const binding: TaskStoreBinding = {
-    get current(): unknown {
-      return getStore();
-    },
-  };
+  const binding: TaskStoreBinding = { getStore };
   getOrCreateTaskStoreSlot(key).store = binding;
   log.debug("task_store_bridge_published", { sessionKey: key, at: Date.now() });
   return () => {
@@ -211,7 +215,7 @@ export function publishTaskStore(getStore: () => unknown, sessionKey?: string): 
 export function publishedTaskStore(sessionKey?: string): unknown {
   const key = normalizeBridgeSessionKey(sessionKey);
   const binding = getSessionSlot(key)?.taskStore?.store;
-  const store = binding && typeof binding === "object" ? (binding.current ?? null) : null;
+  const store = binding && typeof binding.getStore === "function" ? (binding.getStore() ?? null) : null;
   log.debug("task_store_bridge_read", { sessionKey: key, found: Boolean(store) });
   return store;
 }
@@ -413,28 +417,29 @@ export function isComsActive(sessionKey?: string): boolean {
 
 /**
  * Single teardown and test-reset interface for the session bridge:
- * - `resetSessionBridge()` (no args): wipes the entire process-local bridge map (test reset).
- * - `resetSessionBridge(sessionKey)`: tears down all slots for that session and prunes the outer map if empty.
- * - `resetSessionBridge(sessionKey, { slot })`: clears one typed slot for that session and prunes if empty.
+ * - `resetSessionBridge({ all: true })`: wipes the entire process-local bridge map (test reset).
+ * - `resetSessionBridge({ sessionKey })`: tears down all slots for that session (missing/blank
+ *   `sessionKey` normalizes to `DEFAULT_BRIDGE_SESSION_KEY`, never wiping sibling sessions) and
+ *   prunes the outer map if empty.
+ * - `resetSessionBridge({ sessionKey, slot })`: clears one typed slot for that session and prunes
+ *   empty session entries and the outer map automatically.
  */
-export function resetSessionBridge(
-  sessionKey?: string,
-  options?: { slot?: SessionBridgeSlotName },
-): void {
-  if (sessionKey === undefined && !options?.slot) {
+export function resetSessionBridge(options: ResetSessionBridgeOptions): void {
+  if ("all" in options && options.all === true) {
     delete (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL];
     log.debug("session_bridge_reset_all");
     return;
   }
-  const key = normalizeBridgeSessionKey(sessionKey);
+  const key = normalizeBridgeSessionKey("sessionKey" in options ? options.sessionKey : undefined);
   const map = getExistingBridgeMap();
   if (!map) return;
-  if (options?.slot) {
+  const slotName = "slot" in options ? options.slot : undefined;
+  if (slotName) {
     const entry = map.get(key);
     if (!entry || typeof entry !== "object") return;
-    delete entry[options.slot];
+    delete entry[slotName];
     pruneSessionSlot(map, key);
-    log.debug("session_bridge_slot_cleared", { sessionKey: key, slot: options.slot });
+    log.debug("session_bridge_slot_cleared", { sessionKey: key, slot: slotName });
     return;
   }
   if (!map.delete(key)) return;

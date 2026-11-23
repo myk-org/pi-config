@@ -506,7 +506,7 @@ describe("before_agent_start section injection", () => {
       assert.ok(!evWithoutComs.systemPromptOptions.sections.orchestrator_rules.includes("Coms Session Only Rule"));
       assert.ok(evWithoutComs.systemPromptOptions.sections.orchestrator_rules.includes("Always Rule"));
     } finally {
-      resetSessionBridge();
+      resetSessionBridge({ all: true });
       clearRulesCache();
       clearSettingsCache();
       fs.rmSync(cwd, { recursive: true, force: true });

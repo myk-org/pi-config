@@ -154,7 +154,7 @@ function createWorktreeHarness(opts: WorktreeHarnessOptions = {}) {
     publishTaskStore(() => liveStore, sessionId);
   } else {
     seedStore.close();
-    resetSessionBridge();
+    resetSessionBridge({ all: true });
   }
 
   const { scriptPath, traceDir, gateDir } = writeSyncChildScript(orchestratorCwd);
@@ -302,7 +302,7 @@ function createWorktreeHarness(opts: WorktreeHarnessOptions = {}) {
         }
       } finally {
         liveStore?.close();
-        resetSessionBridge();
+        resetSessionBridge({ all: true });
         global.setInterval = previousSetInterval;
         process.argv[1] = previousArgv1;
         if (previousOrchStoreEnv === undefined) delete process.env.TEST_ORCH_STORE_PATH;

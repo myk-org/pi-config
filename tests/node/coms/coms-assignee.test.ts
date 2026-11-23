@@ -118,7 +118,7 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
       await new Promise<void>((resolve) => { replyServer!.close(() => resolve()); }).catch(() => {});
       replyServer = undefined;
     }
-    resetSessionBridge();
+    resetSessionBridge({ all: true });
     if (workspace) rmSync(workspace, { recursive: true, force: true });
     workspace = undefined;
   });
@@ -166,7 +166,7 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
       const initComs = (await import(`../../../extensions/coms/coms-p2p.ts?assignee=${tag}`)).default;
       initComs(comsPi as any);
       cleanups.push(() => {
-        resetSessionBridge(sessionId, { slot: "workload" });
+        resetSessionBridge({ sessionKey: sessionId, slot: "workload" });
         return shutdown?.();
       });
       (globalThis as any).__piConfigSessionId = sessionId;

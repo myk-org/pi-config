@@ -46,7 +46,7 @@ function storeWith(assignee: string) {
 
 describe("validateTaskId owner tasks (#1102)", () => {
 	afterEach(() => {
-		resetSessionBridge();
+		resetSessionBridge({ all: true });
 	});
 
 	it("refuses a task assigned to the owner", async () => {
@@ -117,7 +117,7 @@ function syncHarness() {
 
 describe("sync subagent owner-task guard (#1102)", { concurrency: false }, () => {
 	afterEach(() => {
-		resetSessionBridge();
+		resetSessionBridge({ all: true });
 	});
 
 	it("refuses a sync single call on an owner task", async () => {

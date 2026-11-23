@@ -140,7 +140,7 @@ afterEach(async () => {
 	for (const peer of startedPeers.splice(0)) {
 		await peer.shutdown();
 	}
-	resetSessionBridge();
+	resetSessionBridge({ all: true });
 	delete (globalThis as any).__piConfigSessionId;
 	delete (globalThis as any).__comsSelf;
 	delete (globalThis as any).__comsSelfOrigin;

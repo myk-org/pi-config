@@ -133,7 +133,7 @@ describe("recorded task store path", () => {
     originalTasks = process.env.PI_TASKS;
     originalScope = process.env.PI_TASK_SCOPE;
     // No live store: these assertions are about the recorded path alone.
-    resetSessionBridge();
+    resetSessionBridge({ all: true });
   });
 
   afterEach(() => {
@@ -555,7 +555,7 @@ describe("live task store bridge resolution", () => {
   afterEach(() => {
     liveStore?.close();
     liveStore = null;
-    resetSessionBridge();
+    resetSessionBridge({ all: true });
     rmSync(rootDir, { recursive: true, force: true });
     rmSync(worktreeDir, { recursive: true, force: true });
   });

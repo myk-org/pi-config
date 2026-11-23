@@ -33,7 +33,7 @@ afterEach(async () => {
   for (const peer of startedPeers.splice(0)) {
     try { await peer.shutdown(); } catch { /* ignore */ }
   }
-  resetSessionBridge();
+  resetSessionBridge({ all: true });
   (globalThis as any).__comsSelf = null;
   (globalThis as any).__comsUserSend = null;
   for (const dir of cleanupDirs.splice(0)) {
