@@ -444,7 +444,8 @@ cannot derive a cost for those turns — unless the provider reports a billed to
 
 A catalog all-zero cost means the opposite: the price is known to be zero (an
 OpenRouter `:free` variant, for example), so such a model is free and reports a
-real `$0`. The two are told apart by provenance, not by the number, so no model
+real `$0`. The two are told apart by provenance (`Symbol.for("pi-config.pricingUnknown")`
+in `extensions/shared/pricing-provenance.ts`), not by the number, so no model
 or provider id is special-cased.
 
 So the four cases are:

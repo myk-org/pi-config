@@ -155,6 +155,16 @@ The pidash browser UI is a human clicking, so it counts as `user`. An unrecognis
 runtime value falls back to `user`. The async-status detail header appends
 `· killed by <origin>` for failed jobs.
 
+## Provider Restore & Runtime Lifecycle
+
+- **Saved default-model restore & thinking level (`extensions/providers/`):** Cold-start restore runs on `startup` and
+  `resume`, skips when `enabledModels` is non-empty, and merges trusted project settings. Per-model thinking levels are
+  persisted via `extensions/providers/last-thinking-level.ts`.
+- **Sidecar fatal exit & ops logs:** `bindSidecarListenExit()` exits with code `1` on fatal sidecar listen errors;
+  operational logs live under `~/.pi/logs/`.
+- **Timers & reload safety:** Guard timer and async callbacks with `isLiveExtensionCtx` (`extensions/shared/live-ctx.ts`)
+  and clear all intervals on `session_shutdown`.
+
 ## Cross-Extension Lifecycle Hooks
 
 Multiple extensions subscribe independently to `agent_end`, `turn_end`, and

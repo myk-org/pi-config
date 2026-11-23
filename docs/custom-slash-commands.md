@@ -180,6 +180,7 @@ Prompt templates are registered by Pi itself, so they do not go through the `reg
 - For PR numbers, mirror the existing `/pr-review` pattern.
 - For branch names, mirror the existing `/review-local` pattern.
 - For model/provider completions, see [External AI Agents & CLI](external-ai-agents.html) for details.
+- For generator prompts that emit another prompt (`prompts/create-X.md`), place the source template at `templates/X-prompt.md` using `{{PLACEHOLDER}}` tokens and no frontmatter.
 
 ## Related Pages
 
