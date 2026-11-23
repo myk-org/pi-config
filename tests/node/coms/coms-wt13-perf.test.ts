@@ -19,6 +19,7 @@ interface FakePi {
 	commands: Map<string, any>;
 	handlers: Map<string, Function>;
 	messages: any[];
+	sendMessageCalls: Array<{ msg: any; opts?: any }>;
 	activeTools: string[];
 	flags: Map<string, any>;
 	events: {
@@ -42,6 +43,7 @@ function createFakePi(flagOverrides: Record<string, any> = {}): FakePi {
 	const commands = new Map<string, any>();
 	const handlers = new Map<string, Function>();
 	const messages: any[] = [];
+	const sendMessageCalls: Array<{ msg: any; opts?: any }> = [];
 	const flags = new Map<string, any>(Object.entries(flagOverrides));
 	const listeners = new Map<string, Set<(data: unknown) => void>>();
 	let activeTools: string[] = [];
@@ -51,6 +53,7 @@ function createFakePi(flagOverrides: Record<string, any> = {}): FakePi {
 		commands,
 		handlers,
 		messages,
+		sendMessageCalls,
 		get activeTools() { return activeTools; },
 		set activeTools(v: string[]) { activeTools = v; },
 		flags,
@@ -89,8 +92,9 @@ function createFakePi(flagOverrides: Record<string, any> = {}): FakePi {
 		on(event: string, handler: Function) {
 			handlers.set(event, handler);
 		},
-		sendMessage(msg: any) {
+		sendMessage(msg: any, opts?: any) {
 			messages.push(msg);
+			sendMessageCalls.push({ msg, opts });
 		},
 		async shutdown() {
 			await handlers.get("session_shutdown")?.();
@@ -342,6 +346,46 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		assert.match(welcome.content, /auto-captured when your turn ends/);
 		assert.match(welcome.content, /## Connected peers/);
 		assert.match(welcome.content, /first-peer/);
+	});
+
+	it("#1351: coms-welcome always passes display:true and triggerTurn:false on solo boot, multi-peer boot, and reload/reconnect", async () => {
+		const { workspace } = makeWorkspace();
+		const first = await startP2pPeer({ name: "first-peer", sessionId: "fp-1351", project: "p-1351", cwd: workspace });
+
+		const soloWelcome = first.sendMessageCalls.find((c) => c.msg?.customType === "coms-welcome");
+		assert.ok(soloWelcome, "solo peer emits coms-welcome");
+		assert.equal(soloWelcome.msg.display, true);
+		assert.deepEqual(soloWelcome.opts, { triggerTurn: false });
+		assert.match(soloWelcome.msg.content, /You are "first-peer" on project "p-1351"/);
+		assert.match(soloWelcome.msg.content, /none yet — you are the first peer/);
+		assert.equal(soloWelcome.msg.content.includes("Do not respond to this message."), false);
+
+		const second = await startP2pPeer({ name: "second-peer", sessionId: "sp-1351", project: "p-1351", cwd: workspace });
+
+		const multiWelcome = second.sendMessageCalls.find((c) => c.msg?.customType === "coms-welcome");
+		assert.ok(multiWelcome, "multi-peer boot emits coms-welcome");
+		assert.equal(multiWelcome.msg.display, true);
+		assert.deepEqual(multiWelcome.opts, { triggerTurn: false });
+		assert.match(multiWelcome.msg.content, /You are "second-peer" on project "p-1351"/);
+		assert.match(multiWelcome.msg.content, /auto-captured when your turn ends/);
+		assert.match(multiWelcome.msg.content, /## Connected peers/);
+		assert.match(multiWelcome.msg.content, /first-peer/);
+		assert.equal(multiWelcome.msg.content.includes("Do not respond to this message."), false);
+
+		// Simulate reload/reconnect while first-peer is still active
+		const beforeReload = second.sendMessageCalls.length;
+		await second.shutdown();
+		(globalThis as any).__piConfigSessionId = "sp-1351";
+		await second.handlers.get("session_start")!({ reason: "reload" }, makeCtx(workspace, "sp-1351"));
+
+		const reloadWelcome = second.sendMessageCalls
+			.slice(beforeReload)
+			.find((c) => c.msg?.customType === "coms-welcome");
+		assert.ok(reloadWelcome, "reloaded peer emits coms-welcome");
+		assert.equal(reloadWelcome.msg.display, true);
+		assert.deepEqual(reloadWelcome.opts, { triggerTurn: false });
+		assert.match(reloadWelcome.msg.content, /first-peer/);
+		assert.equal(reloadWelcome.msg.content.includes("Do not respond to this message."), false);
 	});
 
 	it("#1241: registerComs keeps always-on wrapper tools registered and active", () => {

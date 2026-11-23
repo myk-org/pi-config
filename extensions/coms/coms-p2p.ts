@@ -2170,21 +2170,19 @@ export default function (pi: ExtensionAPI) {
 - When prompted with tasks, check TaskList, work in order with TaskUpdate, and report completion when done.
 
 ## Connected peers
-${peerList}
-Do not respond to this message.`;
+${peerList}`;
 
 			// Seed knownPeerSessions for every current peer so the retroactive
 			// welcome does not also trigger duplicate "peer joined" cards.
 			for (const [sid, card] of peerCards) knownPeerSessions.set(sid, card.name);
 
 			log.info("welcome_shown", "peers", peerCards.size);
-			log.debug("welcome_trigger_turn", peerCards.size > 0);
 			try {
 				pi.sendMessage({
 					customType: "coms-welcome",
 					content: welcomeMsg,
 					display: true,
-				}, { triggerTurn: peerCards.size > 0 });
+				}, { triggerTurn: false });
 			} catch {}
 		};
 
