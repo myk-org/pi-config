@@ -152,7 +152,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             if (typeof unsub === "function") pidashUnsubscribe = unsub;
             registerWithPidash();
         } catch (err) {
-            log.debug("pidash_command_register_failed", { error: err instanceof Error ? err.message : String(err) });
+            log.warn("pidash_command_register_failed", { error: err instanceof Error ? err.message : String(err) });
         }
     };
 

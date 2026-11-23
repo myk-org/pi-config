@@ -109,7 +109,7 @@ export function persistState(pi: ExtensionAPI, persistKey: string, state: ComsPe
         for (const [k, v] of state.flagValues) flags[k] = v;
         pi.appendEntry(persistKey, { active: state.active, flags, extra: state.extra || {} });
     } catch (e: unknown) {
-        log.debug("persist_state_failed", { error: e instanceof Error ? e.message : String(e) });
+        log.warn("persist_state_failed", { error: e instanceof Error ? e.message : String(e) });
     }
 }
 

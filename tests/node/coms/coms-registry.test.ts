@@ -134,8 +134,8 @@ describe("ComsRegistry", () => {
 		assert.deepEqual(parseRegistryWorkload({ agents: 2, tasks: 3, crons: 1 }), { agents: 2, tasks: 3, crons: 1 });
 	});
 
-	it("filters live inventory rows by heartbeat freshness, socket existence, and PID", () => {
-		const comsDir = createTempDir("coms-reg-live-");
+	it("excludes stale heartbeat entries from readLiveRows", () => {
+		const comsDir = createTempDir("coms-reg-live-hb-");
 		const registry = new ComsRegistry(comsDir);
 		registry.ensureProjectDirs("proj-live");
 
@@ -164,6 +164,18 @@ describe("ComsRegistry", () => {
 			}),
 			"proj-live",
 		);
+
+		const liveRows = registry.readLiveRows(now);
+		assert.deepEqual(liveRows.map((r) => r.name), ["live-peer"]);
+		assert.deepEqual(liveRows[0]?.workload, { agents: 1, tasks: 2, crons: 0 });
+	});
+
+	it("excludes entries missing a socket file from readLiveRows", () => {
+		const comsDir = createTempDir("coms-reg-live-sock-");
+		const registry = new ComsRegistry(comsDir);
+		registry.ensureProjectDirs("proj-live");
+
+		const now = Date.now();
 		registry.writeEntryAtomic(
 			makeEntry({
 				coms_session_id: "nosock-sid",
@@ -174,9 +186,29 @@ describe("ComsRegistry", () => {
 			"proj-live",
 		);
 
-		const liveRows = registry.readLiveRows(now);
-		assert.deepEqual(liveRows.map((r) => r.name), ["live-peer"]);
-		assert.deepEqual(liveRows[0]?.workload, { agents: 1, tasks: 2, crons: 0 });
+		assert.deepEqual(registry.readLiveRows(now), []);
+	});
+
+	it("excludes entries with a dead PID from readLiveRows", () => {
+		const comsDir = createTempDir("coms-reg-live-pid-");
+		const registry = new ComsRegistry(comsDir);
+		registry.ensureProjectDirs("proj-live");
+
+		const sock = registry.makeEndpoint("dead-pid-sid");
+		writeFileSync(sock, "");
+		const now = Date.now();
+		registry.writeEntryAtomic(
+			makeEntry({
+				coms_session_id: "dead-pid-sid",
+				name: "dead-pid-peer",
+				pid: 2_000_000_000,
+				endpoint: sock,
+				heartbeat_at: new Date(now - 1_000).toISOString(),
+			}),
+			"proj-live",
+		);
+
+		assert.deepEqual(registry.readLiveRows(now), []);
 	});
 
 	it("falls back to startedAt in isRegistryRowAlive before first heartbeat", () => {

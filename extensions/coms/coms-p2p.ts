@@ -652,8 +652,6 @@ export function createComsPeerRuntime(
 	let pingWorkerReady = false;
 	let keepaliveTimer: NodeJS.Timeout | null = null;
 	let staleCheckTimer: NodeJS.Timeout | null = null;
-	let includeExplicit = false;
-	let displayProject: string | null = null;
 	let currentCtx: ExtensionContext | null = null;
 	let currentInbound: InboundContext | null = null;
 	/** Inbound msg_id deferred on agent_end while malformed-response recovery runs (#1333). */
@@ -1999,8 +1997,6 @@ export function createComsPeerRuntime(
 			process.on("SIGTERM", handleSigterm);
 			signalsBound = true;
 		}
-		includeExplicit = false;
-		displayProject = project;
 
 		// 5. Audit log: boot.
 		setLogFilePrefix("coms", identity.name);
@@ -2016,7 +2012,7 @@ export function createComsPeerRuntime(
 			ctx.ui.setStatus("coms", `📡 ${name}@${project}`);
 			installPoolWidget(ctx);
 			ctx.ui.notify(
-				`📡 coms ready · ${name}@${project} · ${displayProject ?? project} pool`,
+				`📡 coms ready · ${name}@${project} · ${project} pool`,
 				"info",
 			);
 		} catch {
@@ -2030,7 +2026,7 @@ export function createComsPeerRuntime(
 		const existingPeers = registry.readEntries(project);
 		for (const entry of existingPeers) {
 			if (entry.coms_session_id === identity.coms_session_id) continue;
-			if (entry.explicit && !includeExplicit) continue;
+			if (entry.explicit) continue;
 			peerCards.set(entry.coms_session_id, {
 				name: entry.name,
 				endpoint: entry.endpoint,
