@@ -2170,7 +2170,8 @@ export default function (pi: ExtensionAPI) {
 - When prompted with tasks, check TaskList, work in order with TaskUpdate, and report completion when done.
 
 ## Connected peers
-${peerList}`;
+${peerList}
+Do not respond to this message.`;
 
 			// Seed knownPeerSessions for every current peer so the retroactive
 			// welcome does not also trigger duplicate "peer joined" cards.

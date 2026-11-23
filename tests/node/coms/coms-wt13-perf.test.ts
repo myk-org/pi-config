@@ -358,7 +358,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		assert.deepEqual(soloWelcome.opts, { triggerTurn: false });
 		assert.match(soloWelcome.msg.content, /You are "first-peer" on project "p-1351"/);
 		assert.match(soloWelcome.msg.content, /none yet — you are the first peer/);
-		assert.equal(soloWelcome.msg.content.includes("Do not respond to this message."), false);
+		assert.match(soloWelcome.msg.content, /Do not respond to this message\./);
 
 		const second = await startP2pPeer({ name: "second-peer", sessionId: "sp-1351", project: "p-1351", cwd: workspace });
 
@@ -370,7 +370,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		assert.match(multiWelcome.msg.content, /auto-captured when your turn ends/);
 		assert.match(multiWelcome.msg.content, /## Connected peers/);
 		assert.match(multiWelcome.msg.content, /first-peer/);
-		assert.equal(multiWelcome.msg.content.includes("Do not respond to this message."), false);
+		assert.match(multiWelcome.msg.content, /Do not respond to this message\./);
 
 		// Simulate reload/reconnect while first-peer is still active
 		const beforeReload = second.sendMessageCalls.length;
@@ -385,7 +385,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		assert.equal(reloadWelcome.msg.display, true);
 		assert.deepEqual(reloadWelcome.opts, { triggerTurn: false });
 		assert.match(reloadWelcome.msg.content, /first-peer/);
-		assert.equal(reloadWelcome.msg.content.includes("Do not respond to this message."), false);
+		assert.match(reloadWelcome.msg.content, /Do not respond to this message\./);
 	});
 
 	it("#1241: registerComs keeps always-on wrapper tools registered and active", () => {
