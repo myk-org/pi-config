@@ -29,15 +29,15 @@ function canonicalPath(target: string): string {
  *  resolution for this cwd/session. Callers record the result when the work starts — that
  *  string is the only thing a later write may trust. */
 export function resolveTaskStorePath(cwd: string, sessionId?: string): string | undefined {
-  const live = publishedTaskStore() as { filePath?: string } | null;
+  const live = publishedTaskStore(sessionId) as { filePath?: string } | null;
   if (typeof live?.filePath === "string") return live.filePath;
   return resolveStorePath(sessionId, { cwd });
 }
 
 /** Resolve the live pitasks store when it is the recorded one (bridge first, module binding
  *  second). Without a recorded path, a store in another directory is the wrong list. */
-async function resolveLiveStore(cwd: string, storePath?: string): Promise<any> {
-  let store: any = publishedTaskStore();
+async function resolveLiveStore(cwd: string, storePath?: string, sessionId?: string): Promise<any> {
+  let store: any = publishedTaskStore(sessionId);
   if (!store) {
     try {
       const mod = await import("../pitasks/index.js");
@@ -70,8 +70,8 @@ function unknownStore(label: string, taskId: string, nextStatus: string): false 
 }
 
 /** Activate or deactivate task telemetry via the published bridge (falling back to local import). */
-async function notifyTaskTelemetry(taskId: string, active: boolean): Promise<void> {
-  const bridged = publishedTaskTelemetryActive();
+async function notifyTaskTelemetry(taskId: string, active: boolean, sessionId?: string): Promise<void> {
+  const bridged = publishedTaskTelemetryActive(sessionId);
   if (bridged) {
     try {
       log.debug("task_lifecycle_telemetry", { taskId, active, via: "bridge" });
@@ -84,7 +84,7 @@ async function notifyTaskTelemetry(taskId: string, active: boolean): Promise<voi
   try {
     const mod = await import("../pitasks/index.js");
     log.debug("task_lifecycle_telemetry", { taskId, active, via: "module" });
-    mod.setTaskTelemetryActive(taskId, active);
+    mod.setTaskTelemetryActive(taskId, active, sessionId);
   } catch (e: any) {
     log.debug("task_lifecycle_telemetry_unavailable", { taskId, active, error: e?.message?.slice(0, 100) });
   }
@@ -132,6 +132,7 @@ async function transitionTaskStatus(
   nextStatus: "in_progress" | "completed",
   telemetryActive: boolean,
   _storeFactory?: (path: string) => any,
+  sessionId?: string,
 ): Promise<boolean> {
   if (!taskId || taskId === "-1") return false;
   const ownerRefusedEvent = nextStatus === "completed"
@@ -150,12 +151,12 @@ async function transitionTaskStatus(
     } finally { if (store && typeof store.close === "function") store.close(); }
   }
 
-  const store = await resolveLiveStore(cwd, storePath);
+  const store = await resolveLiveStore(cwd, storePath, sessionId);
   if (store) {
     try {
       const outcome = writeStatus(store, taskId, shouldUpdate, nextStatus, ownerRefusedEvent);
       if (outcome !== "written") return false;
-      await notifyTaskTelemetry(taskId, telemetryActive);
+      await notifyTaskTelemetry(taskId, telemetryActive, sessionId);
       return true;
     } catch (e: any) {
       log.warn("task_lifecycle_status_write_failed", { label, via: "live", taskId, targetStatus: nextStatus, errorType: e?.name ?? typeof e, error: String(e?.message ?? e).slice(0, 120) });
@@ -179,11 +180,11 @@ async function transitionTaskStatus(
 
 /** Auto-complete a task (in-process, no AI involvement). `storePath` is the file the job
  *  recorded at spawn time — without it nothing is written. */
-export async function autoCompleteTask(taskId: string, cwd: string, storePath?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
-  return transitionTaskStatus("autoCompleteTask", taskId, cwd, storePath, (status) => status !== "completed", "completed", false, _storeFactory);
+export async function autoCompleteTask(taskId: string, cwd: string, storePath?: string, _storeFactory?: (path: string) => any, sessionId?: string): Promise<boolean> {
+  return transitionTaskStatus("autoCompleteTask", taskId, cwd, storePath, (status) => status !== "completed", "completed", false, _storeFactory, sessionId);
 }
 
 /** Auto-mark a task in_progress (in-process, no AI involvement). */
-export async function autoMarkInProgress(taskId: string, cwd: string, storePath?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
-  return transitionTaskStatus("autoMarkInProgress", taskId, cwd, storePath, (status) => status === "pending", "in_progress", true, _storeFactory);
+export async function autoMarkInProgress(taskId: string, cwd: string, storePath?: string, _storeFactory?: (path: string) => any, sessionId?: string): Promise<boolean> {
+  return transitionTaskStatus("autoMarkInProgress", taskId, cwd, storePath, (status) => status === "pending", "in_progress", true, _storeFactory, sessionId);
 }

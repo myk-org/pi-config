@@ -392,14 +392,17 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		const { workspace } = makeWorkspace();
 		let listCalls = 0;
 		const storeFile = join(workspace, "tasks.json");
-		publishWorkloadSources({ agents: () => [], crons: () => [] });
-		publishTaskStore(() => ({
+		const mockStore = {
 			filePath: storeFile,
 			list: () => {
 				listCalls++;
 				return [{ id: "1", status: "pending", subject: "Task", blockedBy: [], assignee: "llm" }];
 			},
-		}));
+		};
+		for (const sid of ["cp-1", "sp-1"]) {
+			publishWorkloadSources({ agents: () => [], crons: () => [] }, sid);
+			publishTaskStore(() => mockStore, sid);
+		}
 
 		const peer = await startP2pPeer({ name: "card-peer", sessionId: "cp-1", project: "p-1245", cwd: workspace });
 		const sender = await startP2pPeer({ name: "sender-peer", sessionId: "sp-1", project: "p-1245", cwd: workspace });
@@ -409,7 +412,16 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		await new Promise((r) => setTimeout(r, 30));
 		listCalls = 0;
 
-		// Trigger writeLiveRegistry() via agent_start detecting a changed pi_session_id.
+		// before_agent_start runs before orchestrator/pitasks re-publish for the switched session:
+		// it refreshes currentCtx without prematurely writing workload: null or advancing pi_session_id.
+		await peer.handlers.get("before_agent_start")!({}, makeCtx(workspace, "changed-pi-session-id"));
+		await new Promise((r) => setTimeout(r, 30));
+		assert.equal(listCalls, 0, "before_agent_start defers writeLiveRegistry until bridges republish");
+
+		// Once orchestrator/pitasks publish for the new session, agent_start detects the changed
+		// pi_session_id and writes the registry with non-null workload exactly once.
+		publishWorkloadSources({ agents: () => [], crons: () => [] }, "changed-pi-session-id");
+		publishTaskStore(() => mockStore, "changed-pi-session-id");
 		await peer.handlers.get("agent_start")!({}, makeCtx(workspace, "changed-pi-session-id"));
 		await new Promise((r) => setTimeout(r, 30));
 		assert.equal(listCalls, 1, "agent_start writeLiveRegistry reads store.list() only once");

@@ -69,6 +69,7 @@ For what it looks like from the user side, see [Configuration & Settings](config
   Comments in the written file are lost on write, by design; the shipped `pi-config-settings.example.json`
   is the reference.
 - **Immediate save:** Each change writes immediately with `clearSettingsCache()`.
+- **Review group opt-ins:** `pr_retro_on_merge` (`PI_PR_RETRO_ON_MERGE`, default `false`) lives in the `Review` group and gates both the `{{IF:pr_retro_on_merge}}` rule block in `rules/20-code-review-loop.md` and the `extensions/orchestrator/pr-retro.ts` merge watcher.
 - **UI widget settings (`UI` category):** `widget_tasks_shortcut` (`alt+t`), `widget_coms_shortcut` (`alt+c`), `widget_all_shortcut` (`alt+w`) use free-text `InputSubmenu` (empty string disables the shortcut), and `widgets_default_mode` (`expanded` | `collapsed`) uses `SelectSubmenu`. Changes to widget shortcuts take effect after `/reload`.
 
 Files: `extensions/orchestrator/settings-tui.ts`, `settings-tui-helpers.ts`, `settings-tui-submenus.ts`.

@@ -67,6 +67,7 @@ pi-config/
 │   │   ├── resolve-agent-model.ts   # Resolve effective model/provider for an agent (priority chain)
 │   │   ├── review-ui.ts             # Review loop TUI — status bar indicator + transcript status cards
 │   │   ├── review-learning.ts      # Distill addressed review findings into memory lessons after `reviews address` (issue #918)
+│   │   ├── pr-retro.ts             # Opt-in post-merge PR retrospective trigger (gated on `pr_retro_on_merge`, issue #1343)
 │   │   ├── rule-placeholders.ts     # Rule assembly: frontmatter gates, {{IF}}/{{IFNOT}} conditionals, {{REVIEW_LOOP_MAX_CYCLES}}
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries
@@ -118,6 +119,9 @@ pi-config/
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── malformed-recovery-bridge.ts # Cross-extension malformed-response recovery coordination with COMS (#1333)
+│   │   ├── session-bridge-map.ts    # Shared strict per-session globalThis[Symbol.for(...)] Map registry helper (#1337)
+│   │   ├── task-store-bridge.ts     # Session-keyed pitasks store & telemetry bridge (#1016, #1337)
+│   │   ├── workload-bridge.ts       # Session-keyed orchestrator workload bridge for coms/pitasks (#1083, #1337)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model + openai-compatible-discovery)
@@ -146,6 +150,7 @@ pi-config/
 │   ├── refine-review.md
 │   ├── release.md
 │   ├── remember.md
+│   ├── retro.md
 │   ├── review-handler.md
 │   ├── review-local.md
 │   └── scout-and-plan.md
@@ -184,6 +189,7 @@ pi-config/
 │   ├── pidiff-git-diff.ts           # Batched git cat-file blob reader, diff status parser, and worktree list parser
 │   ├── pidiff-git-ignore.ts         # Chokidar gitignore filter (top-level dirs vs nested prefixes)
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
+│   ├── pr-retro-collect.mjs         # Deterministic $0 PR + session + check-config telemetry collector (issue #1343)
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
 ├── packages/                        # Workspace packages
 │   ├── pi-sidecar/                  # HTTP sidecar wrapping Pi SDK (@myk-org/pi-sidecar)
@@ -238,3 +244,7 @@ pi-config/
 ```
 
 Cross-extension lifecycle hooks (`agent_end`, `turn_end`, `session_shutdown`): see [Async & Runtime Internals](../docs/async-internals.md#cross-extension-lifecycle-hooks).
+
+- **Shared bridge invariant (`extensions/shared/*-bridge.ts`):** mutable `globalThis[Symbol.for(...)]` bridges must key per-session state in a
+  `Map<sessionId, ...>` with `session_shutdown` cleanup for multi-session `pi-sidecar` safety unless explicitly allowlisted in
+  `tests/node/shared/bridge-session-key-contract.test.ts`.

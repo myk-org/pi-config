@@ -10,10 +10,12 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DEFAULT_WORKLOAD_SESSION_KEY,
   WORKLOAD_SOURCES_SYMBOL,
   clearWorkloadSources,
   publishedWorkloadSources,
   publishWorkloadSources,
+  resolveWorkloadSessionKey,
 } from "../../../extensions/shared/workload-bridge.ts";
 import { collectWorkload, toDescribeDetail } from "../../../extensions/coms/coms-workload.ts";
 
@@ -91,5 +93,66 @@ describe("workload sources bridge", () => {
     const { active } = collectWorkload(sources.agents(), [], sources.crons());
     const wire = toDescribeDetail(active, 10_000);
     assert.equal("taskId" in wire.agents[0], false);
+  });
+
+  it("isolates workload sources between concurrent sessions", () => {
+    const first = { agents: () => [agent("a1")], crons: () => [] };
+    const second = { agents: () => [agent("b1")], crons: () => [cron("session:b")] };
+    publishWorkloadSources(first, "sess-1");
+    publishWorkloadSources(second, "sess-2");
+
+    assert.equal(publishedWorkloadSources("sess-1")?.agents()[0].id, "a1");
+    assert.equal(publishedWorkloadSources("sess-2")?.agents()[0].id, "b1");
+  });
+
+  it("never substitutes a sole default or named entry for a mismatched session key", () => {
+    publishWorkloadSources({ agents: () => [agent("def")], crons: () => [] });
+    assert.equal(publishedWorkloadSources("sess-explicit"), null);
+
+    clearWorkloadSources();
+    publishWorkloadSources({ agents: () => [agent("named")], crons: () => [] }, "sess-only");
+    assert.equal(publishedWorkloadSources(), null);
+    assert.equal(publishedWorkloadSources("sess-other"), null);
+  });
+
+  it("ignores a stale unregister handle after a session republishes", () => {
+    const first = { agents: () => [agent("a1")], crons: () => [] };
+    const replaced = { agents: () => [agent("a2")], crons: () => [] };
+    const unregFirst = publishWorkloadSources(first, "sess-1");
+    publishWorkloadSources(replaced, "sess-1");
+    unregFirst();
+    assert.equal(publishedWorkloadSources("sess-1")?.agents()[0].id, "a2");
+  });
+
+  it("preserves sibling sessions when clearing one session", () => {
+    publishWorkloadSources({ agents: () => [agent("a1")], crons: () => [] }, "sess-1");
+    publishWorkloadSources({ agents: () => [agent("b1")], crons: () => [] }, "sess-2");
+    clearWorkloadSources("sess-1");
+    assert.equal(publishedWorkloadSources("sess-1"), null);
+    assert.equal(publishedWorkloadSources("sess-2")?.agents()[0].id, "b1");
+  });
+
+  it("resolves trimmed session IDs from ExtensionContext via resolveWorkloadSessionKey", () => {
+    assert.equal(
+      resolveWorkloadSessionKey({ sessionManager: { getSessionId: () => "  sess-42  " } }),
+      "sess-42",
+    );
+  });
+
+  it("falls back to DEFAULT_WORKLOAD_SESSION_KEY when ExtensionContext lacks a usable session ID", () => {
+    assert.equal(resolveWorkloadSessionKey(undefined), DEFAULT_WORKLOAD_SESSION_KEY);
+    assert.equal(resolveWorkloadSessionKey({}), DEFAULT_WORKLOAD_SESSION_KEY);
+    assert.equal(resolveWorkloadSessionKey({ sessionManager: { getSessionId: () => "   " } }), DEFAULT_WORKLOAD_SESSION_KEY);
+    assert.equal(resolveWorkloadSessionKey({ sessionManager: { getSessionId: () => 123 } }), DEFAULT_WORKLOAD_SESSION_KEY);
+    assert.equal(
+      resolveWorkloadSessionKey({
+        sessionManager: {
+          getSessionId: () => {
+            throw new Error("boom");
+          },
+        },
+      }),
+      DEFAULT_WORKLOAD_SESSION_KEY,
+    );
   });
 });

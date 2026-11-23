@@ -133,6 +133,7 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
     process.env.PI_SUBAGENT_CHILD = "0";
     process.env.PI_TASKS = "off";
     try {
+      const sessionId = `peer-${tag}`;
       const pitasksHandlers = new Map<string, Function>();
       pitasks({
         on(name: string, fn: Function) { pitasksHandlers.set(name, fn); },
@@ -143,10 +144,10 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
       cleanups.push(() => pitasksHandlers.get("session_shutdown")?.());
       await pitasksHandlers.get("session_start")!(
         { reason: "new" },
-        { ui: { setWidget() {} }, sessionManager: { getSessionId: () => `pitasks-${tag}` } },
+        { ui: { setWidget() {} }, sessionManager: { getSessionId: () => sessionId } },
       );
 
-      publishWorkloadSources({ agents: () => [], crons: () => [] });
+      publishWorkloadSources({ agents: () => [], crons: () => [] }, sessionId);
 
       let start: ((event: any, ctx: any) => Promise<void>) | undefined;
       let shutdown: (() => Promise<void>) | undefined;
@@ -164,14 +165,17 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
       };
       const initComs = (await import(`../../../extensions/coms/coms-p2p.ts?assignee=${tag}`)).default;
       initComs(comsPi as any);
-      cleanups.push(() => shutdown?.());
-      (globalThis as any).__piConfigSessionId = `coms-${tag}`;
+      cleanups.push(() => {
+        clearWorkloadSources(sessionId);
+        return shutdown?.();
+      });
+      (globalThis as any).__piConfigSessionId = sessionId;
       await start!({}, {
         cwd: workspace,
         model: { id: "test-model" },
         hasUI: false,
         ui: { notify() {} },
-        sessionManager: { getSessionId: () => `coms-${tag}` },
+        sessionManager: { getSessionId: () => sessionId },
       });
       const endpoint = (globalThis as any).__comsSelf?.endpoint as string;
       assert.ok(endpoint);
