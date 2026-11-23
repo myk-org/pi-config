@@ -4,8 +4,9 @@
  * managing `/start|stop|restart|status` commands for long-lived server daemons
  * (pidash, pidiff).
  *
- * Absorbs WebSocket heartbeat/reconnect wiring (formerly `ws-client.ts`) behind
- * `createDaemonClient`, keeping `pidash.ts` and `pidiff.ts` as thin adapters.
+ * Absorbs WebSocket heartbeat/reconnect wiring (formerly `ws-client.ts`) and
+ * daemon spawn/health-probe orchestration behind `createDaemonClient`, keeping
+ * `pidash.ts` and `pidiff.ts` as thin adapters.
  */
 
 import * as fs from "node:fs";
@@ -263,11 +264,13 @@ export function setupHeartbeat(opts: WsHeartbeatOptions): () => void {
 
 // ── Deep shared daemon client ───────────────────────────────────────
 
-export interface EnsureDaemonResult {
-  /** Port to connect to, or null to abort this connect attempt. */
-  port: number | null;
-  /** Optional retry delay in ms when another spawner held the lock and connect should retry. */
-  retryAfterMs?: number;
+export type SpawnLockResult =
+  | { acquired: true; release: () => void }
+  | { acquired: false; port?: number | null; retryAfterMs?: number };
+
+export interface SpawnContext {
+  mode: "connect" | "start" | "restart";
+  preferredPort?: number | null;
 }
 
 export interface DaemonClientAdapter<TConnectData = void> {
@@ -280,8 +283,31 @@ export interface DaemonClientAdapter<TConnectData = void> {
   /** Structured logger (`createLogger(...)`). */
   log: Logger;
 
-  /** Ensure a daemon is running and return the port to connect to. */
-  ensureRunning: (ctx: any) => Promise<EnsureDaemonResult>;
+  /**
+   * Fixed daemon port (e.g. pidash). When provided, `createDaemonClient` uses it
+   * for default health probing and `/<name> status` unless overridden by
+   * `findRunningPort` / `getStatusPort`.
+   */
+  port?: number;
+  /** Optional readiness guard before `connect()` runs (e.g. pidiff requires `lockDir`). */
+  canConnect?: (ctx: any) => boolean;
+  /** Probe for an already-running daemon port. Defaults to probing `adapter.port`. */
+  findRunningPort?: (ctx: any) => Promise<number | null>;
+  /** Port to probe and display for `/<name> status`. Defaults to `adapter.port ?? null`. */
+  getStatusPort?: (ctx: any) => number | null;
+  /**
+   * Optional cross-process spawn lock acquired during auto-spawn in `connect()`.
+   * Return `{ acquired: true, release }` to proceed with spawning, or
+   * `{ acquired: false, port, retryAfterMs }` when another session holds the lock.
+   */
+  acquireSpawnLock?: (ctx: any) => Promise<SpawnLockResult>;
+  /** Spawn the daemon process and return the port to wait on. */
+  spawn: (ctx: any, opts: SpawnContext) => Promise<number> | number;
+  /** Optional hook invoked whenever a live daemon port is resolved (connect/start/restart). */
+  onPortResolved?: (port: number) => void;
+  /** Startup health-check wait budget in seconds. */
+  getStartupTimeoutSeconds: (ctx: any) => number;
+
   /** Optional async preparation right before opening the WebSocket (return `{ abort: true }` to cancel). */
   beforeOpen?: (ctx: any, port: number) => Promise<{ abort?: boolean; data?: TConnectData }>;
   /** Called once the WebSocket opens and the client is marked connected. */
@@ -299,16 +325,6 @@ export interface DaemonClientAdapter<TConnectData = void> {
   prepareRestart?: (ctx: any) => number | null;
   /** Stop the daemon process (and clean lockfiles if applicable). */
   stopDaemon: (ctx: any) => Promise<void> | void;
-  /** Return the port of an already-running daemon for `/<name> start`, or null if stopped. */
-  findRunningPort: (ctx: any) => Promise<number | null>;
-  /** Port to probe and display for `/<name> status` (0/null if none known). */
-  getStatusPort: (ctx: any) => number | null;
-  /** Spawn the daemon for `/<name> start` or `restart` and return the port to wait on. */
-  spawnForCommand: (ctx: any, mode: "start" | "restart", preferredPort?: number | null) => Promise<number>;
-  /** Optional hook invoked when `/<name> start|restart` resolves a live port before connecting. */
-  onCommandReady?: (port: number) => void;
-  /** Startup health-check wait budget in seconds for `/<name> start|restart`. */
-  getStartupTimeoutSeconds: (ctx: any) => number;
   /** Optional hint appended to start/restart failure notifications. */
   startFailureHint?: string;
   /** If true, unknown `/<name> <arg>` shows usage instead of falling through to status. */
@@ -333,6 +349,8 @@ export interface DaemonClient {
   readonly connected: boolean;
   /** True while a connect attempt is in flight. */
   readonly connecting: boolean;
+  /** True while this client is spawning and waiting on the daemon. */
+  readonly spawning: boolean;
   /** True after `shutdown()` has run. */
   readonly shuttingDown: boolean;
   /** Most recent live ExtensionContext, or null. */
@@ -352,9 +370,9 @@ export interface DaemonClient {
 /**
  * Create a managed daemon client for a pi extension.
  *
- * Owns WebSocket connection state, ping/pong heartbeat, `tool_result` + periodic
- * reconnect, `/<name> start|stop|restart|status` command dispatch, and
- * `session_shutdown` teardown.
+ * Owns daemon health probing, spawn/wait deduplication, WebSocket connection state,
+ * ping/pong heartbeat, `tool_result` + periodic reconnect, `/<name> start|stop|restart|status`
+ * command dispatch, and `session_shutdown` teardown.
  */
 export function createDaemonClient<TConnectData = void>(
   pi: ExtensionAPI,
@@ -368,16 +386,19 @@ export function createDaemonClient<TConnectData = void>(
   const restartWaitMs = adapter.restartWaitMs ?? DEFAULT_RESTART_WAIT_MS;
   const createWs = adapter.createWebSocket ?? defaultCreateWebSocket;
   const probeHealth = adapter.probeHealth ?? checkHealth;
-  const waitReady = adapter.waitReady ?? waitForDaemon;
+  const waitReady = adapter.waitReady ?? ((port, maxWaitSeconds, onLog) => waitForDaemon(port, maxWaitSeconds, onLog, probeHealth));
   const sleep = adapter.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   let activeSocket: any = null;
   let ws: any = null;
   let connected = false;
   let connecting = false;
+  let spawning = false;
+  let inFlightSpawn: Promise<number | null> | null = null;
   let shuttingDown = false;
   let connectGen = 0;
   let lastCtx: any = null;
+  let pendingConnectCtx: any = null;
   let cleanupHeartbeat: (() => void) | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -408,6 +429,7 @@ export function createDaemonClient<TConnectData = void>(
   /** Intentionally drop any active/pending socket and invalidate in-flight connect attempts. */
   function disconnect(): void {
     connectGen++;
+    pendingConnectCtx = null;
     clearReconnectTimer();
     clearHeartbeat();
     const prev = activeSocket;
@@ -418,6 +440,83 @@ export function createDaemonClient<TConnectData = void>(
     if (prev) {
       try { prev.close(); } catch {}
     }
+  }
+
+  async function findRunningPort(ctx: any): Promise<number | null> {
+    if (adapter.findRunningPort) return adapter.findRunningPort(ctx);
+    if (adapter.port === undefined) return null;
+    return (await probeHealth(adapter.port)) ? adapter.port : null;
+  }
+
+  function getStatusPort(ctx: any): number | null {
+    if (adapter.getStatusPort) return adapter.getStatusPort(ctx);
+    return adapter.port ?? null;
+  }
+
+  /**
+   * Ensure the daemon is running: probe health, deduplicate concurrent in-process spawns,
+   * acquire any cross-process spawn lock, spawn, and wait for `/api/health`.
+   */
+  async function ensureDaemonRunning(ctx: any): Promise<{ port: number | null; retryAfterMs?: number }> {
+    if (adapter.canConnect && !adapter.canConnect(ctx)) {
+      adapter.log.debug("connect skipped — adapter precondition not ready");
+      return { port: null };
+    }
+
+    const livePort = await findRunningPort(ctx);
+    adapter.log.debug(`daemon health probe: ${livePort !== null ? `running on ${livePort}` : "not running"}`);
+    if (livePort !== null) {
+      adapter.onPortResolved?.(livePort);
+      return { port: livePort };
+    }
+
+    if (inFlightSpawn) {
+      adapter.log.debug("daemon already spawning, awaiting in-flight startup...");
+      const port = await inFlightSpawn;
+      return { port };
+    }
+
+    let lock: SpawnLockResult = { acquired: true, release: () => {} };
+    if (adapter.acquireSpawnLock) {
+      lock = await adapter.acquireSpawnLock(ctx);
+      if (!lock.acquired) {
+        if (lock.port) adapter.onPortResolved?.(lock.port);
+        return { port: lock.port ?? null, retryAfterMs: lock.retryAfterMs };
+      }
+    }
+
+    const spawnPromise = (async (): Promise<number | null> => {
+      spawning = true;
+      try {
+        adapter.log.debug("spawning daemon...");
+        const port = await adapter.spawn(ctx, { mode: "connect" });
+        const ready = await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog);
+        if (!ready) return null;
+        adapter.onPortResolved?.(port);
+        return port;
+      } finally {
+        spawning = false;
+        inFlightSpawn = null;
+        lock.release();
+      }
+    })();
+
+    inFlightSpawn = spawnPromise;
+    const port = await spawnPromise;
+    return { port };
+  }
+
+  function finishAbortedConnect(abortedCtx: any, myGen: number): boolean {
+    if (myGen !== connectGen) return false;
+    connecting = false;
+    const nextCtx = pendingConnectCtx;
+    pendingConnectCtx = null;
+    if (nextCtx && nextCtx !== abortedCtx && !shuttingDown && !connected && isLiveExtensionCtx(nextCtx)) {
+      adapter.log.debug("retrying connect with newer session ctx");
+      void connect(nextCtx);
+      return true;
+    }
+    return false;
   }
 
   function send(payload: string | object): boolean {
@@ -432,28 +531,40 @@ export function createDaemonClient<TConnectData = void>(
     }
   }
 
-  async function connect(ctx: any): Promise<void> {
-    if (connected || connecting || shuttingDown) return;
+  async function connect(ctx: any, knownReadyPort?: number): Promise<void> {
+    if (connected || shuttingDown) return;
     if (!isLiveExtensionCtx(ctx)) {
       adapter.log.debug("connect() skipped — stale ctx");
+      return;
+    }
+    lastCtx = ctx;
+    if (connecting) {
+      // Remember the newest live ctx so if the in-flight connect aborts (e.g. old ctx
+      // became stale on session switch during daemon startup), we retry immediately
+      // instead of waiting for the 15s reconnect poller.
+      pendingConnectCtx = ctx;
+      adapter.log.debug("connect() queued newer ctx while connect in flight");
       return;
     }
     adapter.log.debug(
       `connect() called, connected=${connected}, connecting=${connecting}, shuttingDown=${shuttingDown}`,
     );
     connecting = true;
-    lastCtx = ctx;
+    pendingConnectCtx = null;
     const myGen = ++connectGen;
 
     try {
-      const ensured = await adapter.ensureRunning(ctx);
+      const ensured = knownReadyPort !== undefined
+        ? { port: knownReadyPort }
+        : await ensureDaemonRunning(ctx);
       if (shuttingDown || myGen !== connectGen || !isLiveExtensionCtx(ctx)) {
-        if (myGen === connectGen) connecting = false;
+        finishAbortedConnect(ctx, myGen);
         return;
       }
       if (ensured.port === null) {
-        connecting = false;
-        if (ensured.retryAfterMs !== undefined && !shuttingDown) {
+        const retried = finishAbortedConnect(ctx, myGen);
+        if (!retried && ensured.retryAfterMs !== undefined && !shuttingDown) {
+          if (!isLiveExtensionCtx(lastCtx) && isLiveExtensionCtx(ctx)) lastCtx = ctx;
           scheduleReconnect(ensured.retryAfterMs);
         }
         return;
@@ -464,10 +575,17 @@ export function createDaemonClient<TConnectData = void>(
       if (adapter.beforeOpen) {
         const prep = await adapter.beforeOpen(ctx, port);
         if (prep?.abort || shuttingDown || myGen !== connectGen || !isLiveExtensionCtx(ctx)) {
-          if (myGen === connectGen) connecting = false;
+          finishAbortedConnect(ctx, myGen);
           return;
         }
         connectData = prep?.data;
+      }
+
+      // If a newer session ctx arrived during startup/prep, switch to it right away
+      // instead of opening a socket registered to the superseded ctx.
+      if (pendingConnectCtx && pendingConnectCtx !== ctx && isLiveExtensionCtx(pendingConnectCtx)) {
+        finishAbortedConnect(ctx, myGen);
+        return;
       }
 
       adapter.log.debug(`connecting WebSocket to port ${port}...`);
@@ -483,6 +601,7 @@ export function createDaemonClient<TConnectData = void>(
         ws = wsClient;
         connected = true;
         connecting = false;
+        pendingConnectCtx = null;
 
         try {
           adapter.onOpen(wsClient, ctx, port, connectData);
@@ -546,7 +665,7 @@ export function createDaemonClient<TConnectData = void>(
       adapter.log.debug(`connect error: ${e?.message ?? e}`);
       if (myGen === connectGen) {
         activeSocket = null;
-        connecting = false;
+        finishAbortedConnect(ctx, myGen);
       }
     }
   }
@@ -568,18 +687,18 @@ export function createDaemonClient<TConnectData = void>(
     }
 
     if (cmd === "start") {
-      const livePort = await adapter.findRunningPort(ctx);
+      const livePort = await findRunningPort(ctx);
       if (livePort !== null) {
-        adapter.onCommandReady?.(livePort);
+        adapter.onPortResolved?.(livePort);
         if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} already running at http://localhost:${livePort}`, "info");
-        if (!connected) void connect(ctx);
+        if (!connected) void connect(ctx, livePort);
         return;
       }
-      const port = await adapter.spawnForCommand(ctx, "start", null);
+      const port = await adapter.spawn(ctx, { mode: "start", preferredPort: null });
       if (ctx?.hasUI) ctx.ui.notify(`Starting ${adapter.name} server...`, "info");
       if (await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
-        adapter.onCommandReady?.(port);
-        void connect(ctx);
+        adapter.onPortResolved?.(port);
+        void connect(ctx, port);
         if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} started at http://localhost:${port}`, "info");
       } else {
         if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} failed to start${hint}`, "warning");
@@ -592,11 +711,11 @@ export function createDaemonClient<TConnectData = void>(
       const preferredPort = adapter.prepareRestart?.(ctx) ?? null;
       await adapter.stopDaemon(ctx);
       await sleep(restartWaitMs);
-      const port = await adapter.spawnForCommand(ctx, "restart", preferredPort);
+      const port = await adapter.spawn(ctx, { mode: "restart", preferredPort });
       if (ctx?.hasUI) ctx.ui.notify(`Restarting ${adapter.name} server...`, "info");
       if (await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
-        adapter.onCommandReady?.(port);
-        void connect(ctx);
+        adapter.onPortResolved?.(port);
+        void connect(ctx, port);
         if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} restarted at http://localhost:${port}`, "info");
       } else {
         if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} failed to restart${hint}`, "warning");
@@ -605,7 +724,7 @@ export function createDaemonClient<TConnectData = void>(
     }
 
     if (cmd === "status" || cmd === "" || !adapter.strictCommandUsage) {
-      const statusPort = adapter.getStatusPort(ctx);
+      const statusPort = getStatusPort(ctx);
       const running = statusPort ? await probeHealth(statusPort) : false;
       let msg = `Server: ${running ? "running" : "stopped"}\nPort: ${statusPort || "(none)"}\n`;
       msg += `Extension: ${connected ? "connected" : "disconnected"}`;
@@ -658,6 +777,7 @@ export function createDaemonClient<TConnectData = void>(
     get ws() { return ws; },
     get connected() { return connected; },
     get connecting() { return connecting; },
+    get spawning() { return spawning; },
     get shuttingDown() { return shuttingDown; },
     get lastCtx() { return lastCtx; },
     setLastCtx(ctx: any) { lastCtx = ctx; },

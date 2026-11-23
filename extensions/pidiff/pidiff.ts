@@ -20,7 +20,6 @@ import {
   getGitBranch,
   registerDaemonCommand,
   spawnDaemon,
-  waitForDaemon,
 } from "../shared/daemon-manager.js";
 import { createLogger } from "../shared/logger.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
@@ -94,7 +93,6 @@ export function registerPidiff(pi: ExtensionAPI): void {
     return;
   }
 
-  let spawning = false;
   let lockDir = ""; // Set on session_start from ctx.cwd — write target (.pi/run)
   let legacyLockDir = ""; // Pre-#1020 read-only fallback (.pi/tmp)
   let activePort = 0;
@@ -128,67 +126,64 @@ export function registerPidiff(pi: ExtensionAPI): void {
     statusKey: "8-diff",
     log,
 
-    async ensureRunning(ctx) {
-      if (!lockDir) {
-        log.debug("connect: lockDir not set (session_start not fired yet)");
-        return { port: null };
-      }
+    canConnect() {
+      return Boolean(lockDir);
+    },
 
-      // `port` is the preferred spawn port (keeps URL stable across reloads); liveness is
-      // decided by the healthy-lockfile probe, which also sees a live pre-#1020 daemon.
-      let port = activePort || readLockfile(lockDir, legacyLockDir)?.port || 0;
-      const livePort = await findRunningPidiffPort(lockDir, legacyLockDir, port);
-      if (livePort !== null) {
-        activePort = livePort;
-        log.debug(`healthy lockfile port=${livePort}`);
-        return { port: livePort };
-      }
-      log.debug(`lockfile port=${port || "(none)"}, unhealthy — no daemon to reuse`);
+    findRunningPort() {
+      const preferred = activePort || readLockfile(lockDir, legacyLockDir)?.port || 0;
+      return findRunningPidiffPort(lockDir, legacyLockDir, preferred);
+    },
 
-      if (spawning) {
-        log.debug("daemon already spawning, waiting...");
-        return { port: null };
-      }
+    getStatusPort() {
+      return activePort || readLockfile(lockDir, legacyLockDir)?.port || null;
+    },
 
+    async acquireSpawnLock(ctx) {
       // Atomic spawn guard across legacy `.pi/tmp` + `.pi/run` (#1020).
       const { held, contended } = acquireSpawnLocks([legacyLockDir, lockDir]);
-      if (contended !== null) {
-        const lockDecision = evaluateSpawnLock(contended, getSetting(ctx.cwd, "pidiff_stale_lock_timeout_ms"));
-        if (lockDecision.action === "recover" || lockDecision.action === "recover_pid_reuse") {
-          log.info("stale_spawn_lock", lockDecision.reason);
-          try { fs.unlinkSync(contended); } catch {}
-          return { port: null, retryAfterMs: 500 };
-        }
-        log.debug("another session is spawning pidiff, waiting for lockfile...");
-        for (let i = 0; i < 30; i++) {
-          await new Promise((r) => setTimeout(r, 1000));
-          const lock = readLockfile(lockDir, legacyLockDir);
-          if (lock && await checkHealth(lock.port)) {
-            activePort = lock.port;
-            return { port: lock.port };
-          }
-        }
-        return { port: null };
+      if (contended === null) {
+        return { acquired: true, release: () => releaseSpawnLocks(held) };
       }
 
-      spawning = true;
-      try {
-        log.debug("spawning daemon...");
-        port = await resolveSpawnPort(port);
-        doSpawn(port, ctx.cwd);
-        writeLockfile(lockDir, port, null, debugLog);
-        const ready = await waitForDaemon(
-          port,
-          getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s"),
-          debugLog,
-        );
-        if (!ready) return { port: null };
-        activePort = port;
-        return { port };
-      } finally {
-        spawning = false;
-        releaseSpawnLocks(held);
+      const lockDecision = evaluateSpawnLock(contended, getSetting(ctx.cwd, "pidiff_stale_lock_timeout_ms"));
+      if (lockDecision.action === "recover" || lockDecision.action === "recover_pid_reuse") {
+        log.info("stale_spawn_lock", lockDecision.reason);
+        try { fs.unlinkSync(contended); } catch {}
+        return { acquired: false, port: null, retryAfterMs: 500 };
       }
+
+      log.debug("another session is spawning pidiff, waiting for lockfile...");
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        if (!isLiveExtensionCtx(ctx)) return { acquired: false, port: null };
+        const lock = readLockfile(lockDir, legacyLockDir);
+        if (lock && await checkHealth(lock.port)) {
+          return { acquired: false, port: lock.port };
+        }
+      }
+
+      // Retry quickly (1s) if the sibling spawner is still warming up instead of
+      // waiting for the 15s reconnect poller.
+      return { acquired: false, port: null, retryAfterMs: 1000 };
+    },
+
+    async spawn(ctx, { mode, preferredPort }) {
+      const preferred = mode === "restart"
+        ? (preferredPort || null)
+        : (activePort || readLockfile(lockDir, legacyLockDir)?.port || null);
+      const port = await resolveSpawnPort(preferred);
+      doSpawn(port, ctx.cwd);
+      writeLockfile(lockDir, port, null, debugLog);
+      return port;
+    },
+
+    onPortResolved(port) {
+      activePort = port;
+    },
+
+    getStartupTimeoutSeconds() {
+      return getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s");
     },
 
     onOpen(wsClient, ctx, port) {
@@ -222,32 +217,6 @@ export function registerPidiff(pi: ExtensionAPI): void {
     stopDaemon() {
       stopPidiffDaemon(lockDir, legacyLockDir, debugLog);
       activePort = 0;
-    },
-
-    findRunningPort() {
-      return findRunningPidiffPort(lockDir, legacyLockDir);
-    },
-
-    getStatusPort() {
-      return activePort || readLockfile(lockDir, legacyLockDir)?.port || null;
-    },
-
-    async spawnForCommand(ctx, mode, preferredPort) {
-      const preferred = mode === "restart"
-        ? (preferredPort || null)
-        : readLockfile(lockDir, legacyLockDir)?.port;
-      const port = await resolveSpawnPort(preferred);
-      doSpawn(port, ctx.cwd);
-      writeLockfile(lockDir, port, null, debugLog);
-      return port;
-    },
-
-    onCommandReady(port) {
-      activePort = port;
-    },
-
-    getStartupTimeoutSeconds() {
-      return getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s");
     },
   });
 

@@ -228,7 +228,7 @@ describe("getGitBranch (#1172)", () => {
 });
 
 describe("registerDaemonCommand (#1172)", () => {
-  it("registers completions for a disabled command", async () => {
+  it("registers completions for a disabled command", () => {
     const { pi, commands } = createFakePi();
     registerDaemonCommand(pi, "pidash", false, "pidash_enable");
     const cmd = commands.get("pidash");
@@ -273,30 +273,28 @@ describe("createDaemonClient lifecycle (#1358)", () => {
   ) {
     const fakePi = createFakePi();
     const sockets: FakeWebSocket[] = [];
-    const opened: Array<{ port: number; data: T | undefined }> = [];
+    const opened: Array<{ port: number; ctx: any; data: T | undefined }> = [];
     const messages: string[] = [];
     let disconnects = 0;
     let stops = 0;
     const spawns: Array<{ mode: string; preferredPort: number | null | undefined }> = [];
-    const readyPorts: number[] = [];
+    const resolvedPorts: number[] = [];
 
     const client = createDaemonClient<T>(fakePi.pi, {
       name: "testd",
       settingKey: "testd_enable",
       statusKey: "9-testd",
       log: testLog,
-      ensureRunning: async () => ({ port: 19500 }),
-      onOpen: (_ws, _ctx, port, data) => { opened.push({ port, data }); },
+      port: 19500,
+      onOpen: (_ws, ctx, port, data) => { opened.push({ port, ctx, data }); },
       onMessage: (data) => { messages.push(data.toString()); },
       onDisconnect: () => { disconnects++; },
       stopDaemon: () => { stops++; },
-      findRunningPort: async () => null,
-      getStatusPort: () => 19500,
-      spawnForCommand: async (_ctx, mode, preferredPort) => {
+      spawn: (_ctx, { mode, preferredPort }) => {
         spawns.push({ mode, preferredPort });
         return preferredPort ?? 19501;
       },
-      onCommandReady: (port) => { readyPorts.push(port); },
+      onPortResolved: (port) => { resolvedPorts.push(port); },
       getStartupTimeoutSeconds: () => 5,
       reconnectDelayMs: 30,
       heartbeatDeadReconnectDelayMs: 15,
@@ -323,17 +321,18 @@ describe("createDaemonClient lifecycle (#1358)", () => {
       getDisconnects: () => disconnects,
       getStops: () => stops,
       spawns,
-      readyPorts,
+      resolvedPorts,
     };
   }
 
-  it("connects via WebSocket with beforeOpen data", async () => {
+  it("connects via WebSocket with beforeOpen data when daemon is already healthy", async () => {
     const h = makeClient<{ tag: string }>({
       beforeOpen: async () => ({ data: { tag: "ready" } }),
     });
     const { ctx } = createFakeCtx();
 
     await h.client.connect(ctx);
+    assert.equal(h.spawns.length, 0, "must not spawn when health probe is already ok");
     assert.equal(h.client.connecting, true);
     assert.equal(h.client.connected, false);
     assert.equal(h.sockets.length, 1);
@@ -342,7 +341,182 @@ describe("createDaemonClient lifecycle (#1358)", () => {
     h.sockets[0].open();
     assert.equal(h.client.connected, true);
     assert.equal(h.client.connecting, false);
-    assert.deepEqual(h.opened, [{ port: 19500, data: { tag: "ready" } }]);
+    assert.deepEqual(h.opened.map(({ port, data }) => ({ port, data })), [{ port: 19500, data: { tag: "ready" } }]);
+  });
+
+  it("owns health-probe, spawn, waitReady lifecycle during connect", async () => {
+    let sawSpawningTrue = false;
+    const h = makeClient({
+      probeHealth: async () => false,
+      waitReady: async () => {
+        sawSpawningTrue = h.client.spawning;
+        return true;
+      },
+    });
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    assert.equal(sawSpawningTrue, true);
+    assert.equal(h.client.spawning, false);
+    assert.deepEqual(h.spawns, [{ mode: "connect", preferredPort: undefined }]);
+    assert.deepEqual(h.resolvedPorts, [19501]);
+    assert.equal(h.sockets.length, 1);
+    assert.equal(h.sockets[0].url, "ws://127.0.0.1:19501/ws/pi");
+  });
+
+  it("releases cross-process spawn lock after spawn finishes", async () => {
+    let released = 0;
+    const h = makeClient({
+      probeHealth: async () => false,
+      acquireSpawnLock: async () => ({ acquired: true, release: () => { released++; } }),
+    });
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    assert.equal(released, 1);
+    assert.equal(h.sockets.length, 1);
+  });
+
+  it("connects directly to port resolved by contended spawn lock without spawning", async () => {
+    const h = makeClient({
+      probeHealth: async () => false,
+      acquireSpawnLock: async () => ({ acquired: false, port: 19520 }),
+    });
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    assert.equal(h.spawns.length, 0);
+    assert.deepEqual(h.resolvedPorts, [19520]);
+    assert.equal(h.sockets.length, 1);
+    assert.equal(h.sockets[0].url, "ws://127.0.0.1:19520/ws/pi");
+  });
+
+  it("retries connect when contended spawn lock returns retryAfterMs", async () => {
+    let lockCalls = 0;
+    const h = makeClient({
+      probeHealth: async () => false,
+      acquireSpawnLock: async () => {
+        lockCalls++;
+        return lockCalls === 1
+          ? { acquired: false, port: null, retryAfterMs: 15 }
+          : { acquired: false, port: 19522 };
+      },
+    });
+    const { ctx } = createFakeCtx();
+
+    await h.client.connect(ctx);
+    assert.equal(h.sockets.length, 0);
+    await new Promise((r) => setTimeout(r, 45));
+    assert.equal(h.sockets.length, 1);
+    assert.equal(h.sockets[0].url, "ws://127.0.0.1:19522/ws/pi");
+  });
+
+  it("still schedules retryAfterMs when the same ctx re-calls connect during contended spawn lock", async () => {
+    let lockCalls = 0;
+    let releaseFirstLock!: () => void;
+    const firstLockGate = new Promise<void>((r) => { releaseFirstLock = r; });
+
+    const h = makeClient({
+      probeHealth: async () => false,
+      reconnectPollIntervalMs: 60_000,
+      acquireSpawnLock: async () => {
+        lockCalls++;
+        if (lockCalls === 1) {
+          await firstLockGate;
+          return { acquired: false, port: null, retryAfterMs: 15 };
+        }
+        return { acquired: false, port: 19523 };
+      },
+    });
+    const { ctx } = createFakeCtx();
+
+    const first = h.client.connect(ctx);
+    // Same ctx triggers connect again while first lock check is pending
+    await h.client.connect(ctx);
+    releaseFirstLock();
+    await first;
+
+    await new Promise((r) => setTimeout(r, 45));
+    assert.equal(h.sockets.length, 1);
+    assert.equal(h.sockets[0].url, "ws://127.0.0.1:19523/ws/pi");
+  });
+
+  it("still schedules retryAfterMs when a queued newer ctx goes stale before contended lock resolves", async () => {
+    let lockCalls = 0;
+    let staleQueued = false;
+    let releaseFirstLock!: () => void;
+    const firstLockGate = new Promise<void>((r) => { releaseFirstLock = r; });
+
+    const { ctx } = createFakeCtx();
+    const queuedCtx = {
+      get mode(): string {
+        if (staleQueued) throw new Error("stale");
+        return "tui";
+      },
+      cwd: "/tmp/transient-project",
+    };
+
+    const h = makeClient({
+      probeHealth: async () => false,
+      reconnectPollIntervalMs: 60_000,
+      acquireSpawnLock: async () => {
+        lockCalls++;
+        if (lockCalls === 1) {
+          await firstLockGate;
+          return { acquired: false, port: null, retryAfterMs: 15 };
+        }
+        return { acquired: false, port: 19524 };
+      },
+    });
+
+    const first = h.client.connect(ctx);
+    await h.client.connect(queuedCtx);
+    staleQueued = true;
+    releaseFirstLock();
+    await first;
+
+    await new Promise((r) => setTimeout(r, 45));
+    assert.equal(h.sockets.length, 1);
+    assert.equal(h.sockets[0].url, "ws://127.0.0.1:19524/ws/pi");
+  });
+
+  it("immediately retries a newer live ctx when the earlier ctx goes stale mid-connect", async () => {
+    let staleOld = false;
+    let releaseFirstProbe!: () => void;
+    const firstProbeGate = new Promise<void>((r) => { releaseFirstProbe = r; });
+    let probeCalls = 0;
+
+    const oldCtx = {
+      get mode(): string {
+        if (staleOld) throw new Error("stale");
+        return "tui";
+      },
+      cwd: "/tmp/old-project",
+    };
+    const { ctx: newCtx } = createFakeCtx({ cwd: "/tmp/new-project" });
+
+    const h = makeClient({
+      reconnectPollIntervalMs: 60_000, // prove retry does not wait for the 15s poller
+      findRunningPort: async () => {
+        probeCalls++;
+        if (probeCalls === 1) await firstProbeGate;
+        return 19530;
+      },
+    });
+
+    const firstConnect = h.client.connect(oldCtx);
+    // Session switches while first connect is awaiting daemon startup
+    staleOld = true;
+    await h.client.connect(newCtx);
+    releaseFirstProbe();
+    await firstConnect;
+
+    // Wait a tick for the queued retry to reach createWebSocket
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(h.sockets.length, 1, "newer ctx must connect immediately without waiting for poller");
+    h.sockets[0].open();
+    assert.equal(h.opened.length, 1);
+    assert.equal(h.opened[0].ctx, newCtx);
   });
 
   it("forwards outbound send payloads while connected", async () => {
@@ -386,23 +560,6 @@ describe("createDaemonClient lifecycle (#1358)", () => {
     await h.client.connect(staleCtx);
     assert.equal(h.sockets.length, 0);
     assert.equal(h.client.connecting, false);
-  });
-
-  it("retries connect when ensureRunning returns retryAfterMs", async () => {
-    let calls = 0;
-    const h = makeClient({
-      ensureRunning: async () => {
-        calls++;
-        return calls === 1 ? { port: null, retryAfterMs: 15 } : { port: 19502 };
-      },
-    });
-    const { ctx } = createFakeCtx();
-
-    await h.client.connect(ctx);
-    assert.equal(h.sockets.length, 0);
-    await new Promise((r) => setTimeout(r, 45));
-    assert.equal(h.sockets.length, 1);
-    assert.equal(h.sockets[0].url, "ws://127.0.0.1:19502/ws/pi");
   });
 
   it("terminates dead socket on missed heartbeat pong to force reconnect", async () => {
@@ -508,17 +665,19 @@ describe("createDaemonClient lifecycle (#1358)", () => {
 
     await h.commands.get("testd").handler("start", ctx);
     assert.equal(h.spawns.length, 0);
-    assert.deepEqual(h.readyPorts, [19510]);
+    assert.deepEqual(h.resolvedPorts, [19510]);
     assert.deepEqual(notifications.map((n) => n.msg), ["testd already running at http://localhost:19510"]);
   });
 
   it("handles /<name> start when spawning succeeds", async () => {
-    const h = makeClient();
+    const h = makeClient({
+      probeHealth: async () => false,
+    });
     const { ctx, notifications } = createFakeCtx();
 
     await h.commands.get("testd").handler("start", ctx);
     assert.deepEqual(h.spawns, [{ mode: "start", preferredPort: null }]);
-    assert.deepEqual(h.readyPorts, [19501]);
+    assert.deepEqual(h.resolvedPorts, [19501]);
     assert.deepEqual(notifications.map((n) => n.msg), [
       "Starting testd server...",
       "testd started at http://localhost:19501",
@@ -527,6 +686,7 @@ describe("createDaemonClient lifecycle (#1358)", () => {
 
   it("notifies warning with startFailureHint when /<name> start fails", async () => {
     const h = makeClient({
+      probeHealth: async () => false,
       waitReady: async () => false,
       startFailureHint: " — check logs",
     });
@@ -539,7 +699,7 @@ describe("createDaemonClient lifecycle (#1358)", () => {
     ]);
   });
 
-  it("handles /<name> restart passing prepareRestart port to spawnForCommand", async () => {
+  it("handles /<name> restart passing prepareRestart port to spawn", async () => {
     const h = makeClient({
       prepareRestart: () => 19555,
     });
@@ -548,7 +708,7 @@ describe("createDaemonClient lifecycle (#1358)", () => {
     await h.commands.get("testd").handler("restart", ctx);
     assert.equal(h.getStops(), 1);
     assert.deepEqual(h.spawns, [{ mode: "restart", preferredPort: 19555 }]);
-    assert.deepEqual(h.readyPorts, [19555]);
+    assert.deepEqual(h.resolvedPorts, [19555]);
     assert.deepEqual(notifications.map((n) => n.msg), [
       "Restarting testd server...",
       "testd restarted at http://localhost:19555",
@@ -557,7 +717,7 @@ describe("createDaemonClient lifecycle (#1358)", () => {
 
   it("handles /<name> status showing server health", async () => {
     const h = makeClient({
-      getStatusPort: () => 19500,
+      port: 19500,
       probeHealth: async () => true,
     });
     const { ctx, notifications } = createFakeCtx();

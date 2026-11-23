@@ -17,14 +17,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
 import {
-  checkHealth,
   createDaemonClient,
   ensureUiBuilt,
   getGitBranch,
   killDaemon,
   registerDaemonCommand,
   spawnDaemon as spawnDaemonGeneric,
-  waitForDaemon,
 } from "../shared/daemon-manager.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
@@ -164,7 +162,6 @@ export function registerPidash(
 
   // ── Closure state ──────────────────────────────────────────────────
 
-  let spawning = false;
   let lastCmdCtx: any = null;  // Command context with switchSession — updated by /pidash handler
   let statusInterval: ReturnType<typeof setInterval> | null = null;
   const sessionId = `${process.pid}:${process.cwd()}`;
@@ -610,26 +607,18 @@ export function registerPidash(
     settingKey: "pidash_enable",
     statusKey: "9-pidash",
     log,
+    port: pidashPort,
     startFailureHint: " — check ~/.pi/pidash-server.log",
     strictCommandUsage: true,
 
-    async ensureRunning() {
-      const running = await checkHealth(pidashPort);
-      log.debug(`daemon running: ${running}`);
-      if (!running) {
-        if (spawning) {
-          log.debug("daemon already spawning, waiting...");
-        } else {
-          spawning = true;
-          log.debug("spawning daemon...");
-          spawnDaemon(pidashPort);
-        }
-        // jiti cold compilation can take 30+ seconds on first run
-        const ready = await waitForDaemon(pidashPort, 60, debugLog);
-        spawning = false;
-        if (!ready) return { port: null };
-      }
-      return { port: pidashPort };
+    spawn() {
+      spawnDaemon(pidashPort);
+      return pidashPort;
+    },
+
+    getStartupTimeoutSeconds() {
+      // jiti cold compilation can take 30+ seconds on first run
+      return 60;
     },
 
     async beforeOpen(ctx) {
@@ -741,23 +730,6 @@ export function registerPidash(
 
     stopDaemon() {
       killDaemon("pidash-server", debugLog);
-    },
-
-    async findRunningPort() {
-      return (await checkHealth(pidashPort)) ? pidashPort : null;
-    },
-
-    getStatusPort() {
-      return pidashPort;
-    },
-
-    async spawnForCommand() {
-      spawnDaemon(pidashPort);
-      return pidashPort;
-    },
-
-    getStartupTimeoutSeconds() {
-      return 60;
     },
   });
 
