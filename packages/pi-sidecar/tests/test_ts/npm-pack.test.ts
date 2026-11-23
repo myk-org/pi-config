@@ -11,8 +11,11 @@ const PKG_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SENTINEL_WHEEL = "pi_sidecar_client-0.0.0-sentinel.whl";
 const SENTINEL_SDIST = "pi_sidecar_client-0.0.0-sentinel.tar.gz";
 // Same compiler the package's `build` script runs ("build": "tsc").
-const TSC = createRequire(import.meta.url).resolve("typescript/bin/tsc");
-const NODE_MODULES = join(dirname(TSC), "..", "..");
+const req = createRequire(import.meta.url);
+const TSC = req.resolve("typescript/bin/tsc");
+// Resolve hoisted node_modules via @types/node: typescript may be nested under
+// packages/pi-sidecar/node_modules when another workspace hoists a newer TS.
+const NODE_MODULES = join(dirname(req.resolve("@types/node/package.json")), "..", "..");
 
 /**
  * Pack a scratch copy of the real package, built for real inside the fixture.
