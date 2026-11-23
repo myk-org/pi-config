@@ -10,6 +10,9 @@
 Read project guidelines yourself before reviewing (never rely on the calling prompt).
 Check `AGENTS.md` in order (`AGENTS.md`, then `.agents/AGENTS.md`); fall back to `CLAUDE.md` (`CLAUDE.md`, then `.claude/CLAUDE.md`) only if no `AGENTS.md` exists anywhere.
 If multiple `AGENTS.md` files exist, read and merge ALL of them. Flag violations of project conventions, patterns, or rules as findings.
+Also check `CODING_STANDARDS.md` at repo root if it exists — it supplements `AGENTS.md` with review-only engineering
+judgement calls (async rollback, retry budgets, state isolation, multi-session safety, error handling); if both address
+the same rule, `AGENTS.md` takes precedence. Flag violations as findings.
 
 ## Domain Vocabulary
 

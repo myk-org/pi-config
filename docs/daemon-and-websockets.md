@@ -33,7 +33,7 @@ Two complementary servers handle real-time UI and IPC. They share the same WebSo
 
 **pidash** listens on a configured port (`pidash_port`, default `19190`, env `PI_PIDASH_PORT`). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under `~/.pi/pidash-server.log`.
 
-**pidiff** binds a free local port for the current project and records that port (and PID when known) under the project’s `.pi/run/` directory as `pidiff.port` / `pidiff.pid`. That avoids collisions when several projects run diffs at once. A concurrent-spawn guard uses a separate `pidiff.spawning` lock, cleared after `pidiff_stale_lock_timeout_ms` (default `60000`).
+**pidiff** binds a free local port for the current project and records that port (and PID when known) under the project’s `.pi/run/` directory as `pidiff.port` / `pidiff.pid` (with `.pi/tmp` read as a legacy fallback). That avoids collisions when several projects run diffs at once. A concurrent-spawn guard uses a separate `pidiff.spawning` lock, cleared after `pidiff_stale_lock_timeout_ms` (default `60000`). In the UI, Refresh reloads in place and is disabled while the WebSocket is down; nested `.gitignore` files do not skip top-level directories (handled by `scripts/pidiff-git-diff.ts` and `scripts/pidiff-git-ignore.ts`).
 
 > **Note:** Toggle either server with `pidash_enable` / `pidiff_enable` (or their env vars). See [Configuration & Settings](configuration.html).
 

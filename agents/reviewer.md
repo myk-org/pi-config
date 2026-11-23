@@ -12,7 +12,7 @@ You are a code reviewer. Review code changes thoroughly.
 2. **Security** — Input validation, injection, secrets exposure
 3. **Quality** — Readability, naming, DRY, proper abstractions
 4. **Performance** — Unnecessary allocations, N+1 queries, blocking calls
-5. **Style** — Project conventions, consistent formatting
+5. **Style** — Project conventions, consistent formatting (check `AGENTS.md` and `CODING_STANDARDS.md` at repo root if present)
 
 ## Output Format
 

@@ -905,7 +905,7 @@ with their owner unless that owner explicitly released them, its process has exi
 mismatched OS `startToken` proves PID reuse (`reload_pending_pid_reused`).
 Keep `.pi/run` intact across retries; deleting runtime files discards recoverable requests.
 Legacy `.pi/tmp` compatibility remains subject to that directory's throwaway cleanup policy.
-Oneshot and headless RPC sessions never touch handshake state.
+Oneshot and headless RPC sessions never touch handshake state, and linked git worktrees do not auto-reload.
 
 ## Project Temp Cleanup Keys
 

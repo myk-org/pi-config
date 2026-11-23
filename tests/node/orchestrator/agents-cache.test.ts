@@ -255,6 +255,7 @@ describe("agent {{INCLUDE:...}} resolution (#1261)", () => {
 			assert.doesNotMatch(agent.systemPrompt, /\{\{INCLUDE:/);
 			assert.match(agent.systemPrompt, /\$PI_REVIEW_BASE_BRANCH/);
 			assert.match(agent.systemPrompt, /\$PI_HAS_PR/);
+			assert.match(agent.systemPrompt, /CODING_STANDARDS\.md/);
 			assert.match(agent.systemPrompt, /uvx myk-pi-tools@latest pr get-review-history/);
 			assert.match(agent.systemPrompt, /## Prior Review Cycle/);
 		}
