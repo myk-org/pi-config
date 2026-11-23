@@ -1887,31 +1887,23 @@ export interface VectorMatchItem {
   similarity: number;
 }
 
-/**
- * Internal implementation returning both conflicts and the full pool's vector
- * matches so `addMemoryEntry()` can reuse same-category similarity scores in
- * Step 4a without running a second `vectorSearch()`.
- */
-export async function findContradictionWithVector(
-  cwd: string,
-  text: string,
-  category: string,
-  preloadedEntries?: TopicEntry[],
-  options?: { exclude?: { category: string; text: string; pinned?: boolean } },
-): Promise<{
-  conflicts: ConflictCandidate[];
-  vectorMatches: VectorMatchItem[];
-}> {
-  const topicEntries = preloadedEntries ?? readAllTopicEntries(cwd);
-  if (topicEntries.length === 0) return { conflicts: [], vectorMatches: [] };
-  const scores = loadScores(cwd);
-  const exclude = options?.exclude;
-  let excludedOnce = false;
+export interface ConflictExcludeTarget {
+  category: string;
+  text: string;
+  pinned?: boolean;
+}
 
-  // Protected pool: same category + pinned + enforced. These are the entries
-  // a one-off grant is most likely to contradict (issue #915 incident).
-  // Exclude at most one matching occurrence (the specific line being edited)
-  // and preserve pinned/enforced flags if duplicate lines exist in the topic.
+/** Build the protected conflict pool (same category + pinned + enforced),
+ *  excluding at most one matching occurrence and preserving pinned/enforced
+ *  flags across duplicate lines. */
+function buildConflictPool(
+  cwd: string,
+  category: string,
+  topicEntries: TopicEntry[],
+  exclude?: ConflictExcludeTarget,
+): ConflictCandidate[] {
+  const scores = loadScores(cwd);
+  let excludedOnce = false;
   const pool: ConflictCandidate[] = [];
   const poolByKey = new Map<string, ConflictCandidate>();
   for (const te of topicEntries) {
@@ -1940,6 +1932,105 @@ export async function findContradictionWithVector(
       pool.push(cand);
     }
   }
+  return pool;
+}
+
+/** Shared synchronous candidate evaluation (corroboration gate + polarityClash). */
+function evaluateConflictCandidates(
+  text: string,
+  candidates: readonly ConflictCandidate[],
+  similarKeys: ReadonlySet<string>,
+  similarityByText: ReadonlyMap<string, number>,
+  getSharedCount: (key: string, candText: string) => number,
+): ConflictCandidate[] {
+  const textShort = collapsedActionSize(contentWords(quotedMask(text)), text) <= 2;
+  const textHasTimeword = TIMEWORD_RE.test(text);
+  let textWords: Set<string> | null = null;
+
+  const conflicts: Array<{ candidate: ConflictCandidate; score: number }> = [];
+  for (const candidate of candidates) {
+    // Cheap corroboration gate FIRST (Qodo be128547): polarityClash is the
+    // expensive step (quotedMask retries, four splitClauses passes, nested
+    // clause loops) and the overlap counts are trivial — running the gate
+    // before the clash check skips it for every unrelated candidate.
+    const candKey = `${candidate.category}:${candidate.text}`;
+    const shared = getSharedCount(candKey, candidate.text);
+    if (shared === 0) continue;
+    const vectorConfirmed = similarKeys.has(candKey);
+    let corroborated = shared >= 2 || vectorConfirmed;
+    if (!corroborated) {
+      // Short rules (Qodo 2c16ab75, PR #956 R2/R4), time-scoped rules (Qodo
+      // 205f7330), and action-verb synonyms (Qodo a42dc6ce) can corroborate
+      // with a single shared content word.
+      if (
+        (textShort && collapsedActionSize(contentWords(quotedMask(candidate.text)), candidate.text) <= 2) ||
+        (textHasTimeword && TIMEWORD_RE.test(candidate.text))
+      ) {
+        corroborated = true;
+      } else {
+        textWords ??= contentWords(text);
+        const candWords = contentWords(candidate.text);
+        corroborated = ACTION_VERB_SYNONYMS.some(
+          ([x, y]) =>
+            (textWords!.has(x) && candWords.has(y)) ||
+            (textWords!.has(y) && candWords.has(x)),
+        );
+      }
+    }
+    if (!corroborated) continue;
+    if (!polarityClash(text, candidate.text)) continue;
+    const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
+    conflicts.push({ candidate, score: similarity * 10 + shared });
+  }
+  conflicts.sort((a, b) => b.score - a.score);
+  return conflicts.map((c) => c.candidate);
+}
+
+/**
+ * Synchronous lexical/overlap contradiction check (zero awaits). Used as the
+ * final pre-write guard inside `editMemoryEntry` so a concurrent write landing
+ * during async embedding/vector checks cannot bypass contradiction detection.
+ */
+export function findSynchronousContradictions(
+  cwd: string,
+  text: string,
+  category: string,
+  preloadedEntries?: TopicEntry[],
+  options?: { exclude?: ConflictExcludeTarget },
+): ConflictCandidate[] {
+  const topicEntries = preloadedEntries ?? readAllTopicEntries(cwd);
+  if (topicEntries.length === 0) return [];
+  const pool = buildConflictPool(cwd, category, topicEntries, options?.exclude);
+  if (pool.length === 0) return [];
+  const sharedCounts = new Map<string, number>();
+  const getSharedCount = (key: string, candText: string): number => {
+    const cached = sharedCounts.get(key);
+    if (cached !== undefined) return cached;
+    const count = sharedContentWords(text, candText);
+    sharedCounts.set(key, count);
+    return count;
+  };
+  return evaluateConflictCandidates(text, pool, new Set(), new Map(), getSharedCount);
+}
+
+/**
+ * Internal implementation returning both conflicts and the full pool's vector
+ * matches so `addMemoryEntry()` can reuse same-category similarity scores in
+ * Step 4a without running a second `vectorSearch()`.
+ */
+export async function findContradictionWithVector(
+  cwd: string,
+  text: string,
+  category: string,
+  preloadedEntries?: TopicEntry[],
+  options?: { exclude?: ConflictExcludeTarget },
+): Promise<{
+  conflicts: ConflictCandidate[];
+  vectorMatches: VectorMatchItem[];
+}> {
+  const topicEntries = preloadedEntries ?? readAllTopicEntries(cwd);
+  if (topicEntries.length === 0) return { conflicts: [], vectorMatches: [] };
+  const pool = buildConflictPool(cwd, category, topicEntries, options?.exclude);
   if (pool.length === 0) return { conflicts: [], vectorMatches: [] };
 
   // Vector-narrowed candidates (paraphrase-tolerant). Model may be
@@ -1995,50 +2086,14 @@ export async function findContradictionWithVector(
     log.debug("memory-write: conflict vector search unavailable, using overlap fallback", err);
   }
 
-  // Hoist per-text features outside the candidate loop.
-  const textShort = collapsedActionSize(contentWords(quotedMask(text)), text) <= 2;
-  const textHasTimeword = TIMEWORD_RE.test(text);
-  let textWords: Set<string> | null = null;
-
-  // Collect EVERY conflicting candidate, best score first — first match in
-  // file order could be a weaker conflict than the real one.
-  const conflicts: Array<{ candidate: ConflictCandidate; score: number }> = [];
-  for (const candidate of candidates) {
-    // Cheap corroboration gate FIRST (Qodo be128547): polarityClash is the
-    // expensive step (quotedMask retries, four splitClauses passes, nested
-    // clause loops) and the overlap counts are trivial — running the gate
-    // before the clash check skips it for every unrelated candidate.
-    const candKey = `${candidate.category}:${candidate.text}`;
-    const shared = getSharedCount(candKey, candidate.text);
-    if (shared === 0) continue;
-    const vectorConfirmed = similarKeys.has(candKey);
-    let corroborated = shared >= 2 || vectorConfirmed;
-    if (!corroborated) {
-      // Short rules (Qodo 2c16ab75, PR #956 R2/R4), time-scoped rules (Qodo
-      // 205f7330), and action-verb synonyms (Qodo a42dc6ce) can corroborate
-      // with a single shared content word.
-      if (
-        (textShort && collapsedActionSize(contentWords(quotedMask(candidate.text)), candidate.text) <= 2) ||
-        (textHasTimeword && TIMEWORD_RE.test(candidate.text))
-      ) {
-        corroborated = true;
-      } else {
-        textWords ??= contentWords(text);
-        const candWords = contentWords(candidate.text);
-        corroborated = ACTION_VERB_SYNONYMS.some(
-          ([x, y]) =>
-            (textWords!.has(x) && candWords.has(y)) ||
-            (textWords!.has(y) && candWords.has(x)),
-        );
-      }
-    }
-    if (!corroborated) continue;
-    if (!polarityClash(text, candidate.text)) continue;
-    const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
-    conflicts.push({ candidate, score: similarity * 10 + shared });
-  }
-  conflicts.sort((a, b) => b.score - a.score);
-  return { conflicts: conflicts.map((c) => c.candidate), vectorMatches };
+  const conflicts = evaluateConflictCandidates(
+    text,
+    candidates,
+    similarKeys,
+    similarityByText,
+    getSharedCount,
+  );
+  return { conflicts, vectorMatches };
 }
 
 /**

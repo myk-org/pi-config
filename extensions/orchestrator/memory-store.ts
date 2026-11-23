@@ -75,6 +75,7 @@ import {
   type ConflictCandidate,
   findContradiction,
   findContradictionWithVector,
+  findSynchronousContradictions,
 } from "./memory-contradiction.js";
 import { SKIP_MUTATE } from "./state-jsonl.js";
 import { getSetting } from "./project-settings.js";
@@ -836,13 +837,55 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
 
 // ── Edit Entry (in-place update with full write guards) ────────────────────
 
+function rejectEditConflicts(
+  category: string,
+  text: string,
+  newText: string,
+  conflicts: readonly ConflictCandidate[],
+): EditMemoryResult {
+  const pinned = conflicts.filter((c) => c.pinned);
+  const primary = pinned[0] ?? conflicts[0]!;
+  const more =
+    conflicts.length > 1
+      ? ` (and ${conflicts.length - 1} other conflicting ${conflicts.length - 1 === 1 ? "entry" : "entries"})`
+      : "";
+  log.warn("memory_edit_conflict_rejected", {
+    category,
+    text: text.slice(0, 60),
+    newText: newText.slice(0, 60),
+    conflicts: conflicts.length,
+    pinned: primary.pinned,
+  });
+  if (primary.pinned) {
+    return {
+      status: "rejected",
+      message:
+        `Rejected: edit contradicts pinned memory "[${primary.category}] ${primary.text}"${more}. ` +
+        `Pinned entries are user-explicit — ask the user (ask_user). If they confirm the rule ` +
+        `changed, remove or edit the pinned entry (memory_remove / memory_edit) first.`,
+    };
+  }
+  return {
+    status: "rejected",
+    message:
+      `Rejected: edit contradicts existing memory "[${primary.category}] ${primary.text}"` +
+      `${primary.enforced ? " (code-enforced)" : ""}${more}. ` +
+      `Ask the user (ask_user) which is correct, then remove or invalidate the conflicting ` +
+      `${conflicts.length > 1 ? "entries" : "entry"} before editing.`,
+  };
+}
+
+function topicEntrySignature(entry: { category: string; text: string; pinned: boolean }): string {
+  return `${entry.category}:${entry.text}:${entry.pinned ? 1 : 0}`;
+}
+
 /**
  * Update a memory entry in-place through the store, preserving markers, stable id,
  * enforcement binding, and scoring history.
  *
  * Enforces the same write guards as `addMemoryEntry` (marker-shape, grant-phrase,
- * task-scope, contradiction against other entries, duplicate target, and topic cap)
- * so `memory_edit` can never bypass memory write safety (issue #1354).
+ * task-scope, durability, contradiction against other entries, duplicate target,
+ * and topic cap) so `memory_edit` can never bypass memory write safety (issue #1354).
  */
 export async function editMemoryEntry(cwd: string, input: EditMemoryInput): Promise<EditMemoryResult> {
   const { category, text, newText } = input;
@@ -909,54 +952,46 @@ export async function editMemoryEntry(cwd: string, input: EditMemoryInput): Prom
 
     // Contradiction gate against all OTHER entries (excluding only the single line
     // selected for editing so any duplicate pinned/enforced entry still conflicts).
-    const topicEntries = readAllTopicEntries(cwd);
-    if (topicEntries.length > 0) {
+    // Pre-embed first, then re-read topic entries before vector search, and if
+    // concurrent writes add or pin entries during the await, re-run vector check
+    // once before entering the final synchronous pre-write critical section.
+    const preEmbedEntries = readAllTopicEntries(cwd);
+    if (preEmbedEntries.length > 0) {
       try {
-        await embedMissing(cwd, topicEntries);
+        await embedMissing(cwd, preEmbedEntries);
       } catch (err) {
         log.debug("memory-store: edit pre-embed skipped:", err);
       }
     }
-    const { conflicts } = await findContradictionWithVector(cwd, newText, category, topicEntries, {
+
+    let checkedEntries = readAllTopicEntries(cwd);
+    const firstCheck = await findContradictionWithVector(cwd, newText, category, checkedEntries, {
       exclude: { category, text, pinned: initialMatch.pinned },
     });
-    if (conflicts.length > 0) {
-      const pinned = conflicts.filter((c) => c.pinned);
-      const primary = pinned[0] ?? conflicts[0]!;
-      const more =
-        conflicts.length > 1
-          ? ` (and ${conflicts.length - 1} other conflicting ${conflicts.length - 1 === 1 ? "entry" : "entries"})`
-          : "";
-      log.warn("memory_edit_conflict_rejected", {
-        category,
-        text: text.slice(0, 60),
-        newText: newText.slice(0, 60),
-        conflicts: conflicts.length,
-        pinned: primary.pinned,
+    if (firstCheck.conflicts.length > 0) {
+      return rejectEditConflicts(category, text, newText, firstCheck.conflicts);
+    }
+
+    const checkedSignatures = new Set(checkedEntries.map(topicEntrySignature));
+    const postAwaitEntries = readAllTopicEntries(cwd);
+    const hasNewOrRepinned = postAwaitEntries.some((te) => !checkedSignatures.has(topicEntrySignature(te)));
+    if (hasNewOrRepinned) {
+      const recheckMatch = existsSync(topicPath)
+        ? findTopicLine(readFileSync(topicPath, "utf-8"), category, text)
+        : null;
+      const recheck = await findContradictionWithVector(cwd, newText, category, postAwaitEntries, {
+        exclude: { category, text, pinned: recheckMatch?.pinned ?? initialMatch.pinned },
       });
-      if (primary.pinned) {
-        return {
-          status: "rejected",
-          message:
-            `Rejected: edit contradicts pinned memory "[${primary.category}] ${primary.text}"${more}. ` +
-            `Pinned entries are user-explicit — ask the user (ask_user). If they confirm the rule ` +
-            `changed, remove or edit the pinned entry (memory_remove / memory_edit) first.`,
-        };
+      if (recheck.conflicts.length > 0) {
+        return rejectEditConflicts(category, text, newText, recheck.conflicts);
       }
-      return {
-        status: "rejected",
-        message:
-          `Rejected: edit contradicts existing memory "[${primary.category}] ${primary.text}"` +
-          `${primary.enforced ? " (code-enforced)" : ""}${more}. ` +
-          `Ask the user (ask_user) which is correct, then remove or invalidate the conflicting ` +
-          `${conflicts.length > 1 ? "entries" : "entry"} before editing.`,
-      };
     }
   }
 
-  // Re-read synchronously after all awaits so concurrent writes (memory_add,
-  // memory_remove, expiry prune, dream restore) are never clobbered or overwritten
-  // at a stale line index.
+  // Final synchronous critical section (zero awaits between fresh reads and
+  // writeTopicFile): concurrent writes (memory_add, memory_remove, expiry prune,
+  // dream restore) can never be clobbered, overwrite the wrong index, or slip a
+  // conflicting pinned/enforced rule past the contradiction guard.
   if (!existsSync(topicPath)) {
     return {
       status: "topic_missing",
@@ -972,6 +1007,16 @@ export async function editMemoryEntry(cwd: string, input: EditMemoryInput): Prom
     };
   }
   const { index: matchIndex, pinned: wasPinned, enforced: wasEnforced, id: wasId } = match;
+
+  if (newText !== text) {
+    const finalEntries = readAllTopicEntries(cwd);
+    const syncConflicts = findSynchronousContradictions(cwd, newText, category, finalEntries, {
+      exclude: { category, text, pinned: wasPinned },
+    });
+    if (syncConflicts.length > 0) {
+      return rejectEditConflicts(category, text, newText, syncConflicts);
+    }
+  }
 
   // Durability gate (issue #961): runs after contradiction check (so polarity flips
   // report the conflict) and uses the fresh pinned/scope state from disk.

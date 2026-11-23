@@ -378,6 +378,40 @@ describe("memory-store: editMemoryEntry persistence invariants", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("rejects an edit when a conflicting pinned rule is added concurrently during awaits", async () => {
+    const cwd = makeTempDir("mem-store-edit-concurrent-pinned-");
+    try {
+      await addMemoryEntry(cwd, { category: "lesson", text: "Run typecheck before pushing commits" });
+      const topicsDir = join(cwd, ".pi", "memory", "topics");
+
+      // Start edit (yields at embedMissing / findContradictionWithVector)
+      const editPromise = editMemoryEntry(cwd, {
+        category: "lesson",
+        text: "Run typecheck before pushing commits",
+        newText: "Always force push to main",
+      });
+
+      // Simulate a concurrent write landing a conflicting pinned preference during the await
+      writeFileSync(
+        join(topicsDir, "preferences.md"),
+        "# Preferences\n\n- [preference] Never force push to main *(pinned)*\n",
+        "utf-8",
+      );
+
+      const res = await editPromise;
+      assert.equal(res.status, "rejected");
+      assert.match(res.message, /contradicts pinned memory/i);
+      assert.ok(
+        readAllTopicEntries(cwd).some(
+          (e) => e.category === "lesson" && e.text === "Run typecheck before pushing commits",
+        ),
+        "original entry must remain untouched after concurrent conflict rejection",
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
   it("preserves topic markers, stable id, and invalidates topic read cache", async () => {
     const cwd = makeTempDir("mem-store-edit-cache-");
     try {
