@@ -179,11 +179,13 @@ pi-config/
 │   │   ├── storage.py               # Unified reviews.db storage module (ReviewDB, schema, migrations, title backfill)
 │   │   ├── query.py                 # Backwards-compatible re-export shim for myk_pi_tools.db.storage
 │   │   └── commands.py              # CLI commands for querying reviews.db
+│   ├── github.py                    # Unified GitHub CLI (gh) transport adapter (dependencies, REST, paginated JSON, GraphQL, PR resolution)
 │   ├── memory/
 │   ├── pr/
 │   │   └── pr_review_store.py       # PR review comment tracking (pr-reviews.db)
 │   ├── release/
-│   └── reviews/
+│   ├── reviews/
+│   └── utils.py                     # Shared utilities (git root, atomic JSON, stderr, backwards-compat re-exports from github.py)
 ├── scripts/                         # Utility scripts
 │   ├── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
 │   ├── remap-node-identity.sh       # Container init: remap `node` to PI_HOST_UID/GID (sourced by init-entrypoint.sh)

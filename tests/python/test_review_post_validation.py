@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from myk_pi_tools import github
 from myk_pi_tools.reviews import post
 from myk_pi_tools.reviews.post import is_linked_issue_spec_resolution
 
@@ -97,7 +98,7 @@ def test_run_graphql_returns_safe_diagnostics_for_unparseable_success_response(
 ) -> None:
     """Successful but malformed API responses remain actionable and safe to retry."""
     run = Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr=""))
-    monkeypatch.setattr(post.subprocess, "run", run)
+    monkeypatch.setattr(github.subprocess, "run", run)
 
     success, error = post.run_graphql("query { viewer { login } }", {"body": "reply secret", "token": "token secret"})
 
@@ -121,12 +122,12 @@ def test_run_graphql_logs_failed_subprocess_at_error_with_safe_metadata(
 ) -> None:
     """Nonzero GraphQL subprocess results emit an error-level operational event."""
     monkeypatch.setattr(
-        post.subprocess,
+        github.subprocess,
         "run",
         Mock(return_value=subprocess.CompletedProcess(["gh"], 1, stdout=b"response", stderr=b"failure")),
     )
 
-    with caplog.at_level("DEBUG", logger="myk_pi_tools.reviews.post"):
+    with caplog.at_level("DEBUG", logger="myk_pi_tools.github"):
         assert post.run_graphql("query", {}) == (False, "response\nfailure")
 
     record = next(record for record in caplog.records if record.message == "GraphQL request failed")
@@ -143,7 +144,7 @@ def test_run_graphql_redacts_secret_crossing_preview_boundary(monkeypatch: pytes
     secret = "reply-secret-crossing-preview-boundary"  # pragma: allowlist secret
     response = f"HTTP/2.0 200 OK\nContent-Type: text/html\n\n{'x' * 990}{secret}"
     monkeypatch.setattr(
-        post.subprocess,
+        github.subprocess,
         "run",
         Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr="")),
     )
@@ -162,7 +163,7 @@ def test_run_graphql_redacts_common_response_secret_fields(monkeypatch: pytest.M
     secret = "response-only-secret"  # pragma: allowlist secret
     response = f'HTTP/2.0 200 OK\nContent-Type: text/html\n\n<{field} value="{secret}">'
     monkeypatch.setattr(
-        post.subprocess,
+        github.subprocess,
         "run",
         Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr="")),
     )
@@ -178,7 +179,7 @@ def test_run_graphql_reports_raw_response_byte_length(monkeypatch: pytest.Monkey
     """Diagnostics report the received bytes rather than decoded replacement characters."""
     response = b"HTTP/2.0 200 OK\r\nContent-Type: text/html\r\n\r\n\xff"
     monkeypatch.setattr(
-        post.subprocess,
+        github.subprocess,
         "run",
         Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr=b"")),
     )
@@ -197,7 +198,7 @@ def test_run_graphql_parses_valid_included_response(monkeypatch: pytest.MonkeyPa
         f'{line_ending}{{"data": {{"ok": true}}}}'
     )
     monkeypatch.setattr(
-        post.subprocess,
+        github.subprocess,
         "run",
         Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr="")),
     )
@@ -207,7 +208,7 @@ def test_run_graphql_parses_valid_included_response(monkeypatch: pytest.MonkeyPa
 
 def test_split_http_response_selects_final_response_after_redirects() -> None:
     """Redirect/proxy headers use the final response."""
-    headers, body, status = post._split_http_response(
+    headers, body, status = github.split_http_response(
         "HTTP/1.1 302 Found\nLocation: https://api.github.com/graphql\n\n"
         "HTTP/2.0 200 OK\nContent-Type: application/json\n\n{}"
     )
@@ -216,15 +217,15 @@ def test_split_http_response_selects_final_response_after_redirects() -> None:
 
 def test_split_http_response_returns_fallback_for_headerless_output() -> None:
     """Missing headers stay diagnosable."""
-    assert post._split_http_response("not json") == ({}, "not json", "unknown")
+    assert github.split_http_response("not json") == ({}, "not json", "unknown")
 
 
 def test_response_helpers_emit_safe_structured_logs(caplog: pytest.LogCaptureFixture) -> None:
     """Response parsing logs only operational metadata."""
-    with caplog.at_level("DEBUG", logger="myk_pi_tools.reviews.post"):
-        post._split_http_response("HTTP/2.0 200 OK\nContent-Type: application/json\n\n{}")
-        post._response_body_bytes(b"HTTP/2.0 200 OK\n\n{}")
-        post._redact_response_preview('token="secret"', [])
+    with caplog.at_level("DEBUG", logger="myk_pi_tools.github"):
+        github.split_http_response("HTTP/2.0 200 OK\nContent-Type: application/json\n\n{}")
+        github.response_body_bytes(b"HTTP/2.0 200 OK\n\n{}")
+        github.redact_response_preview('token="secret"', [])
 
     assert {record.message for record in caplog.records} == {
         "Parsed HTTP response headers",
@@ -236,7 +237,7 @@ def test_response_helpers_emit_safe_structured_logs(caplog: pytest.LogCaptureFix
 def test_split_http_response_does_not_parse_http_like_body_content() -> None:
     """Only leading --include blocks are headers; HTTP-like body text remains a body."""
     body = "invalid\nHTTP/1.1 200 OK\nContent-Type: forged\n\nbody"
-    headers, parsed_body, status = post._split_http_response(f"HTTP/2.0 200 OK\nContent-Type: text/plain\n\n{body}")
+    headers, parsed_body, status = github.split_http_response(f"HTTP/2.0 200 OK\nContent-Type: text/plain\n\n{body}")
     assert (headers, parsed_body, status) == ({"content-type": "text/plain"}, body, "200")
 
 

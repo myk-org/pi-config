@@ -21,17 +21,16 @@ The database is stored at: <project-root>/.pi/data/reviews.db
 """
 
 import json
-import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.db.storage import ReviewDB, ReviewDBError
+from myk_pi_tools.github import parse_pr_url, run_gh_api
 from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.constants import ACTION_LEVEL_PRIORITY
 from myk_pi_tools.reviews.store import get_project_root
-from myk_pi_tools.utils import merge_paginated_json, parse_pr_url
 
 log = create_logger(__name__)
 
@@ -86,29 +85,15 @@ def _inline_location(owner: str, repo: str, inline_comment_id: Any) -> tuple[str
         return _INLINE_LOCATION_CACHE[rest_id]
     path: str | None = None
     line: int | None = None
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "api",
-                f"repos/{owner}/{repo}/pulls/comments/{rest_id}",
-                "--jq",
-                "[.path, (.line // .original_line)]",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=True,
-        )
-        parsed = json.loads(result.stdout)
-        if isinstance(parsed, list) and len(parsed) >= 2:
-            path = parsed[0] if isinstance(parsed[0], str) else None
-            line = parsed[1] if isinstance(parsed[1], int) else None
-    except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as e:
-        # OSError covers FileNotFoundError — a missing gh binary must degrade
-        # to path=None, never abort storage before the transaction commits
-        # (Qodo 8f3f78c2).
-        log.debug(f"Inline location lookup failed for comment {rest_id}: {e}")
+    parsed = run_gh_api(
+        f"repos/{owner}/{repo}/pulls/comments/{rest_id}",
+        jq="[.path, (.line // .original_line)]",
+        timeout=30,
+        quiet=True,
+    )
+    if isinstance(parsed, list) and len(parsed) >= 2:
+        path = parsed[0] if isinstance(parsed[0], str) else None
+        line = parsed[1] if isinstance(parsed[1], int) and not isinstance(parsed[1], bool) else None
     _INLINE_LOCATION_CACHE[rest_id] = (path, line)
     return (path, line)
 
@@ -125,20 +110,14 @@ def _prefetch_inline_locations(
     back to per-ID _inline_location() only for cache misses. Fail-soft on gh
     errors or missing binary.
     """
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "api",
-                f"repos/{owner}/{repo}/pulls/{pr_number}/comments",
-                "--paginate",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=True,
-        )
-        for item in merge_paginated_json(result.stdout):
+    items = run_gh_api(
+        f"repos/{owner}/{repo}/pulls/{pr_number}/comments",
+        paginate=True,
+        timeout=60,
+        quiet=True,
+    )
+    if isinstance(items, list):
+        for item in items:
             if not isinstance(item, dict):
                 continue
             cid = item.get("id")
@@ -152,8 +131,8 @@ def _prefetch_inline_locations(
             path = raw_path if isinstance(raw_path, str) else None
             line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) else None
             _INLINE_LOCATION_CACHE[cid_str] = (path, line)
-    except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as e:
-        log.warning(f"Batch inline location prefetch failed for {owner}/{repo}#{pr_number}: {e}")
+    else:
+        log.warning("Batch inline location prefetch failed for %s/%s#%s", owner, repo, pr_number)
 
     for inline_id in uncached_inline_ids:
         rest_id = _inline_rest_id(inline_id)

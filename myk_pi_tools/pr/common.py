@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-from myk_pi_tools.utils import parse_pr_url, run_gh
+from myk_pi_tools.github import parse_pr_url, run_gh
 
 _REPO_FORMAT_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
 _PR_NUMBER_RE = re.compile(r"^\d+$")
