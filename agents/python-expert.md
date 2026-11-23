@@ -41,6 +41,7 @@ You are a Python Expert specializing in clean, performant, and idiomatic Python 
 from dataclasses import dataclass
 from typing import Self
 
+
 @dataclass(frozen=True, slots=True)
 class User:
     name: str

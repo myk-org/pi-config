@@ -234,16 +234,14 @@ result = await call_ai_once(
             "description": "Get the status of a project",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "project_name": {"type": "string"}
-                },
-                "required": ["project_name"]
+                "properties": {"project_name": {"type": "string"}},
+                "required": ["project_name"],
             },
             "http": {
                 "method": "GET",
                 "url": "https://api.example.com/projects/{project_name}/status",
-                "headers": {"Authorization": "Bearer YOUR_TOKEN_HERE"}
-            }
+                "headers": {"Authorization": "Bearer YOUR_TOKEN_HERE"},
+            },
         }
     ],
 )
