@@ -36,7 +36,8 @@ function formatOpenTaskSummary(store: TaskStore): string {
 		if (task.assignee === "user") tags.push("you");
 		const blockers = openTaskBlockers(task, getTask);
 		if (blockers.length > 0) tags.push(`blocked by ${blockers.map(id => `#${id}`).join(", ")}`);
-		const cleanSubject = task.subject.replace(/\s+/g, " ").trim();
+		const rawSubject = typeof task.subject === "string" ? task.subject : "";
+		const cleanSubject = rawSubject.replace(/\s+/g, " ").trim();
 		const subject = cleanSubject.length > MAX_SUMMARY_SUBJECT_LEN
 			? `${cleanSubject.slice(0, MAX_SUMMARY_SUBJECT_LEN - 1)}…`
 			: cleanSubject;

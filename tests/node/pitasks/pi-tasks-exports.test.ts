@@ -4,7 +4,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import pitasks from "../../../extensions/pitasks/index.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
@@ -60,7 +60,7 @@ describe("TaskCreate guidance", () => {
 	});
 });
 
-describe("TaskUpdate and TaskBulkUpdate open-task summary (#1340)", () => {
+describe("TaskUpdate/TaskBulkUpdate open-task summary (#1340)", () => {
 	function makeTools(store: TaskStore) {
 		const tools = new Map<string, any>();
 		const pi = { registerTool: (tool: any) => { tools.set(tool.name, tool); } };
@@ -108,13 +108,32 @@ describe("TaskUpdate and TaskBulkUpdate open-task summary (#1340)", () => {
 		assert.equal(res.content[0].text, `Updated task #${t1.id} deleted\nNo open tasks`);
 	});
 
-	it("TaskUpdate keeps summary single-line with truncated subject and capped item count", async () => {
+	it("TaskUpdate normalizes multiline subjects to one truncated line", async () => {
+		const store = new TaskStore();
+		const [t1, t2] = store.createTasks([
+			{
+				subject: "Line one\nline two with a very long subject exceeding forty-eight characters easily",
+				description: "d",
+				createdBy: localCreatedBy,
+			},
+			{ subject: "Finish", description: "d", createdBy: localCreatedBy },
+		]);
+		const tools = makeTools(store);
+
+		const res = await tools.get("TaskUpdate").execute("call", { taskId: t2.id, status: "completed" });
+		const lines = res.content[0].text.split("\n");
+		assert.equal(lines.length, 2);
+		assert.equal(
+			lines[1],
+			`Open (1): #${t1.id} [pending] Line one line two with a very long subject exce…`,
+		);
+	});
+
+	it("TaskUpdate caps the open-task summary at 8 items with an overflow count", async () => {
 		const store = new TaskStore();
 		const created = store.createTasks(
 			Array.from({ length: 10 }, (_, idx) => ({
-				subject: idx === 0
-					? "Line one\nline two with a very long subject exceeding forty-eight characters easily"
-					: `Task ${idx + 1}`,
+				subject: `Task ${idx + 1}`,
 				description: "d",
 				createdBy: localCreatedBy,
 			})),
@@ -124,8 +143,58 @@ describe("TaskUpdate and TaskBulkUpdate open-task summary (#1340)", () => {
 		const res = await tools.get("TaskUpdate").execute("call", { taskId: created[9].id, status: "completed" });
 		const lines = res.content[0].text.split("\n");
 		assert.equal(lines.length, 2);
-		assert.match(lines[1], /^Open \(9\): #1 \[pending\] Line one line two with a very long subject exce…; /);
-		assert.match(lines[1], /\(\+1 more\)$/);
+		assert.match(lines[1], /^Open \(9\): #1 \[pending\] Task 1; .+; #8 \[pending\] Task 8 \(\+1 more\)$/);
+	});
+
+	it("TaskUpdate tolerates malformed open tasks with non-string subjects loaded from disk", async () => {
+		const dir = makeTempDir("task-summary-malformed-");
+		const file = join(dir, "tasks.json");
+		writeFileSync(
+			file,
+			JSON.stringify({
+				nextId: 3,
+				tasks: [
+					{ id: "1", subject: "Normal", description: "d", status: "pending" },
+					{ id: "2", subject: 42, description: "d", status: "pending" },
+				],
+			}),
+		);
+		const store = new TaskStore(file, { watch: false });
+		try {
+			const tools = makeTools(store);
+			const res = await tools.get("TaskUpdate").execute("call", { taskId: "1", status: "completed" });
+			assert.equal(res.content[0].text, "Updated task #1 status\nOpen (1): #2 [pending]");
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("TaskBulkUpdate tolerates malformed open tasks with missing subjects loaded from disk", async () => {
+		const dir = makeTempDir("task-bulk-summary-malformed-");
+		const file = join(dir, "tasks.json");
+		writeFileSync(
+			file,
+			JSON.stringify({
+				nextId: 3,
+				tasks: [
+					{ id: "1", subject: "Normal", description: "d", status: "pending" },
+					{ id: "2", description: "d", status: "pending" },
+				],
+			}),
+		);
+		const store = new TaskStore(file, { watch: false });
+		try {
+			const tools = makeTools(store);
+			const res = await tools.get("TaskBulkUpdate").execute("call", {
+				updates: [{ taskId: "1", status: "completed" }],
+			});
+			const lines = res.content[0].text.split("\n");
+			assert.equal(lines[lines.length - 1], "Open (1): #2 [pending]");
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("TaskBulkUpdate appends open-task summary for remaining work", async () => {
