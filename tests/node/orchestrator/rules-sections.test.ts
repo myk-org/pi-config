@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { clearRulesCache, registerRules } from "../../../extensions/orchestrator/rules.js";
 import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
+import { clearSessionScanCache, getProjectSessionsDir } from "../../../extensions/orchestrator/session-search.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -414,6 +415,67 @@ describe("before_agent_start section injection", () => {
       clearSettingsCache();
       fs.rmSync(cwd, { recursive: true, force: true });
       fs.rmSync(pkgRulesDir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes the active session from automatic past_sessions recall (#1342)", async () => {
+    const cwd = makeTempDir("rules-past-sessions-");
+    const agentDir = makeTempDir("rules-pi-agent-");
+    const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      clearRulesCache();
+      clearSettingsCache();
+      clearSessionScanCache();
+
+      const sessionsDir = getProjectSessionsDir(cwd);
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const activeSid = "active-turn-session-1";
+      const pastSid = "previous-chat-session-2";
+      fs.writeFileSync(
+        path.join(sessionsDir, `2026-11-22T18-00-00-000Z_${activeSid}.jsonl`),
+        [
+          JSON.stringify({ type: "session", version: 3, id: activeSid, timestamp: "2026-11-22T18:00:00.000Z", cwd }),
+          JSON.stringify({
+            type: "message",
+            timestamp: "2026-11-22T18:01:00.000Z",
+            message: { role: "user", content: "Investigating unique-autosession-topic in the current session" },
+          }),
+        ].join("\n") + "\n",
+      );
+      fs.writeFileSync(
+        path.join(sessionsDir, `2026-11-21T18-00-00-000Z_${pastSid}.jsonl`),
+        [
+          JSON.stringify({ type: "session", version: 3, id: pastSid, timestamp: "2026-11-21T18:00:00.000Z", cwd }),
+          JSON.stringify({
+            type: "message",
+            timestamp: "2026-11-21T18:01:00.000Z",
+            message: { role: "user", content: "Prior discussion about unique-autosession-topic yesterday" },
+          }),
+        ].join("\n") + "\n",
+      );
+
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+      const event = {
+        ...makeEvent(cwd),
+        messageType: "user",
+        prompt: "Tell me more about unique-autosession-topic",
+      };
+      await h.fn(event, { cwd, sessionManager: { getSessionId: () => activeSid } });
+
+      const pastSection = event.systemPromptOptions.sections.past_sessions ?? "";
+      assert.ok(pastSection.includes(pastSid.slice(0, 8)));
+      assert.ok(!pastSection.includes(activeSid.slice(0, 8)));
+    } finally {
+      if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+      clearSessionScanCache();
+      clearRulesCache();
+      clearSettingsCache();
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(agentDir, { recursive: true, force: true });
     }
   });
 });

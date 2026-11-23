@@ -41,6 +41,30 @@ function makeUserMsg(text: string, timestamp: string, asBlocks = true): Record<s
   };
 }
 
+function registerHandlers(): {
+  tools: Map<string, any>;
+  handlers: Map<string, Array<(...args: any[]) => any>>;
+} {
+  const tools = new Map<string, any>();
+  const handlers = new Map<string, Array<(...args: any[]) => any>>();
+  const pi = {
+    registerTool: (tool: any) => tools.set(tool.name, tool),
+    on: (event: string, fn: (...args: any[]) => any) => {
+      const list = handlers.get(event) ?? [];
+      list.push(fn);
+      handlers.set(event, list);
+    },
+  } as any;
+
+  withSubagentChildEnv(undefined, () => {
+    registerSessionSearch(pi);
+    assert.ok(tools.get("session_search"), "session_search tool must be registered in parent orchestrator");
+    return undefined;
+  });
+
+  return { tools, handlers };
+}
+
 beforeEach(() => {
   clearSessionScanCache();
 });
@@ -61,18 +85,24 @@ describe("session-search JSONL store", () => {
     }
   });
 
-  it("deduplicates identical summaries and caps at 500 entries", () => {
+  it("deduplicates identical summaries for the same session", () => {
     const cwd = makeCwd();
     try {
       const summary = "Repeated identical summary about caching behavior in the provider layer";
       indexSessionSummary(cwd, "sess-1", summary);
       indexSessionSummary(cwd, "sess-1", summary);
       assert.equal(searchSessions(cwd, "caching", 10).length, 1);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 
+  it("caps persisted entries at 500", () => {
+    const cwd = makeCwd();
+    try {
       for (let i = 0; i < 510; i++) {
         indexSessionSummary(cwd, `sess-${i}`, `Unique summary number ${i} about topic alpha`);
       }
-      // All entries are searchable but capped
       assert.ok(searchSessions(cwd, "topic alpha", 600).length <= 500);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -96,7 +126,6 @@ describe("session-search JSONL store", () => {
       const results = searchSessions(cwd, "migration testing", 5);
       assert.equal(results.length, 1);
       assert.equal(results[0]!.sessionId, "legacy-1");
-      // JSONL store now exists
       assert.ok(fs.existsSync(path.join(dataDir, "session-search.jsonl")));
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -105,15 +134,22 @@ describe("session-search JSONL store", () => {
 });
 
 describe("extractSessionSummaries (pi session file harvest)", () => {
-  it("extracts compaction and branch summaries, skipping short and corrupt lines", () => {
+  it("extracts compaction and branch summaries while skipping short or corrupt lines", () => {
     const dir = makeCwd();
     try {
       const file = path.join(dir, "session.jsonl");
       const lines = [
         JSON.stringify({ type: "message", role: "user", content: "hello" }),
-        JSON.stringify({ type: "compaction", summary: "The user worked on the memory system hardening pass and reviewed the conflict gate design in detail.", firstKeptEntryId: "abc" }),
+        JSON.stringify({
+          type: "compaction",
+          summary: "The user worked on the memory system hardening pass and reviewed the conflict gate design in detail.",
+          firstKeptEntryId: "abc",
+        }),
         "{corrupt json line",
-        JSON.stringify({ type: "branch_summary", summary: "Explored an alternative approach using vector-only conflict detection before returning to polarity heuristics." }),
+        JSON.stringify({
+          type: "branch_summary",
+          summary: "Explored an alternative approach using vector-only conflict detection before returning to polarity heuristics.",
+        }),
         JSON.stringify({ type: "compaction", summary: "too short" }),
       ];
       fs.writeFileSync(file, lines.join("\n"));
@@ -157,7 +193,7 @@ describe("extractSessionSummaries (pi session file harvest)", () => {
 });
 
 describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
-  it("finds a recent uncompacted/unclosed session via PI_CODING_AGENT_DIR slug resolution", () => {
+  it("finds an uncompacted session via PI_CODING_AGENT_DIR slug resolution", () => {
     const cwd = makeCwd();
     const agentDir = makeTempDir("pi-agent-dir-");
     const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -176,7 +212,6 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
         ]),
       );
 
-      // No .pi/data/session-search.jsonl exists yet (neither compacted nor shut down)
       assert.equal(fs.existsSync(path.join(cwd, ".pi", "data", "session-search.jsonl")), false);
 
       const results = searchSessions(cwd, "floorplan retrospective", 5);
@@ -192,7 +227,7 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
     }
   });
 
-  it("handles abnormally terminated sessions with truncated last lines and missing trailing newlines", () => {
+  it("skips a truncated trailing JSON line in an abnormally terminated session", () => {
     const cwd = makeCwd();
     const sessionsDir = makeTempDir("sessions-crash-");
     try {
@@ -220,11 +255,37 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
     }
   });
 
-  it("uses mtime caching on repeated queries and incremental byte-offset reads on appends", () => {
+  it("parses a valid final line without a trailing newline", () => {
     const cwd = makeCwd();
-    const sessionsDir = makeTempDir("sessions-cache-");
+    const sessionsDir = makeTempDir("sessions-no-nl-");
     try {
-      const sid = "active-incremental-01";
+      const sid = "no-trailing-newline-sid";
+      const file = path.join(sessionsDir, `2026-11-20T12-10-00-000Z_${sid}.jsonl`);
+      fs.writeFileSync(
+        file,
+        makeSessionJsonl(
+          [
+            { type: "session", version: 3, id: sid, timestamp: "2026-11-20T12:10:00.000Z", cwd },
+            makeUserMsg("Checking ringbuffer saturation metric in telemetry daemon", "2026-11-20T12:11:00.000Z"),
+          ],
+          false,
+        ),
+      );
+
+      const results = searchSessions(cwd, "ringbuffer saturation", 5, { sessionsDir });
+      assert.equal(results.length, 1);
+      assert.equal(results[0]!.sessionId, sid);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses the mtime cache on repeated queries of an unchanged session file", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-cache-hit-");
+    try {
+      const sid = "active-cache-hit-01";
       const file = path.join(sessionsDir, `2026-11-21T10-00-00-000Z_${sid}.jsonl`);
       fs.writeFileSync(
         file,
@@ -234,38 +295,75 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
         ]),
       );
 
-      // 1st query: full scan
-      const first = searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir });
-      assert.equal(first.length, 1);
+      assert.equal(searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir }).length, 1);
       assert.deepEqual(getSessionScanStats(), { cacheHits: 0, fullScans: 1, incrementalScans: 0 });
 
-      // 2nd query on unchanged file: cache hit (zero re-parse)
-      const second = searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir });
-      assert.equal(second.length, 1);
+      assert.equal(searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir }).length, 1);
       assert.deepEqual(getSessionScanStats(), { cacheHits: 1, fullScans: 1, incrementalScans: 0 });
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
 
-      // Append a new user message to the active file: incremental scan only
+  it("performs an incremental byte-offset scan when new lines are appended", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-inc-append-");
+    try {
+      const sid = "active-incremental-02";
+      const file = path.join(sessionsDir, `2026-11-21T10-00-00-000Z_${sid}.jsonl`);
+      fs.writeFileSync(
+        file,
+        makeSessionJsonl([
+          { type: "session", version: 3, id: sid, timestamp: "2026-11-21T10:00:00.000Z", cwd },
+          makeUserMsg("Initial discussion about sqlite WAL checkpoint tuning", "2026-11-21T10:01:00.000Z"),
+        ]),
+      );
+
+      searchSessions(cwd, "sqlite checkpoint", 5, { sessionsDir });
       fs.appendFileSync(
         file,
         JSON.stringify(
           makeUserMsg("Now debugging prometheus scrape timeout in sidecar", "2026-11-21T10:05:00.000Z"),
         ) + "\n",
       );
-      const third = searchSessions(cwd, "prometheus scrape", 5, { sessionsDir });
-      assert.equal(third.length, 1);
-      assert.equal(third[0]!.sessionId, sid);
-      assert.deepEqual(getSessionScanStats(), { cacheHits: 1, fullScans: 1, incrementalScans: 1 });
 
-      // Rewrite/truncate file: falls back to full scan
+      const results = searchSessions(cwd, "prometheus scrape", 5, { sessionsDir });
+      assert.equal(results.length, 1);
+      assert.equal(results[0]!.sessionId, sid);
+      assert.deepEqual(getSessionScanStats(), { cacheHits: 0, fullScans: 1, incrementalScans: 1 });
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to a full scan when a session file is truncated or rewritten shorter", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-rewrite-");
+    try {
+      const sid = "active-rewrite-03";
+      const file = path.join(sessionsDir, `2026-11-21T10-00-00-000Z_${sid}.jsonl`);
       fs.writeFileSync(
         file,
         makeSessionJsonl([
           { type: "session", version: 3, id: sid, timestamp: "2026-11-21T10:00:00.000Z", cwd },
-          makeUserMsg("Rewritten content focusing on graphql schema federation", "2026-11-21T10:10:00.000Z"),
+          makeUserMsg("Original prometheus scrape timeout investigation notes", "2026-11-21T10:01:00.000Z"),
+          makeUserMsg("Extra detail line that makes the original file longer", "2026-11-21T10:02:00.000Z"),
         ]),
       );
-      const fourth = searchSessions(cwd, "graphql federation", 5, { sessionsDir });
-      assert.equal(fourth.length, 1);
+
+      searchSessions(cwd, "prometheus scrape", 5, { sessionsDir });
+      fs.writeFileSync(
+        file,
+        makeSessionJsonl([
+          { type: "session", version: 3, id: sid, timestamp: "2026-11-21T10:00:00.000Z", cwd },
+          makeUserMsg("Rewritten graphql schema federation", "2026-11-21T10:10:00.000Z"),
+        ]),
+      );
+
+      const results = searchSessions(cwd, "graphql federation", 5, { sessionsDir });
+      assert.equal(results.length, 1);
       assert.equal(getSessionScanStats().fullScans, 2);
       assert.equal(searchSessions(cwd, "prometheus scrape", 5, { sessionsDir }).length, 0);
     } finally {
@@ -295,13 +393,15 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
 
       fs.appendFileSync(
         file,
-        "\n" + JSON.stringify(makeUserMsg("Follow-up on bloom filter false positive rate", "2026-11-21T11:02:00.000Z")) + "\n",
+        "\n" +
+          JSON.stringify(
+            makeUserMsg("Follow-up on bloom filter false positive rate", "2026-11-21T11:02:00.000Z"),
+          ) +
+          "\n",
       );
 
-      const firstTopic = searchSessions(cwd, "radix trie", 5, { sessionsDir });
-      const secondTopic = searchSessions(cwd, "bloom filter", 5, { sessionsDir });
-      assert.equal(firstTopic.length, 1);
-      assert.equal(secondTopic.length, 1);
+      assert.equal(searchSessions(cwd, "radix trie", 5, { sessionsDir }).length, 1);
+      assert.equal(searchSessions(cwd, "bloom filter", 5, { sessionsDir }).length, 1);
       assert.equal(getSessionScanStats().incrementalScans, 1);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -323,13 +423,10 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
         ]),
       );
 
-      // Before compaction: discovered via raw JSONL scan
-      const liveHits = searchSessions(cwd, "canary rollout", 5, { sessionsDir });
-      assert.equal(liveHits.length, 1);
-      assert.equal(liveHits[0]!.sessionId, sid);
+      assert.equal(searchSessions(cwd, "canary rollout", 5, { sessionsDir }).length, 1);
 
-      // Compaction/shutdown summary later recorded to store
-      const realSummary = "Completed canary rollout metrics implementation and added Prometheus alert rules for latency spikes.";
+      const realSummary =
+        "Completed canary rollout metrics implementation and added Prometheus alert rules for latency spikes.";
       indexSessionSummary(cwd, sid, realSummary);
 
       const postHits = searchSessions(cwd, "canary rollout", 5, { sessionsDir });
@@ -359,7 +456,6 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
           makeUserMsg("Day 2 task: benchmark websocket reconnection jitter in pidiff", "2026-11-21T14:00:00.000Z"),
         ]),
       );
-      // Store already has the Day 1 compaction summary (older than Day 2 mtime)
       const dataDir = path.join(cwd, ".pi", "data");
       fs.mkdirSync(dataDir, { recursive: true });
       fs.writeFileSync(
@@ -369,15 +465,9 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
         }) + "\n",
       );
 
-      // Day 1 compaction summary is found once (deduplicated)
-      const day1 = searchSessions(cwd, "OAuth PKCE", 5, { sessionsDir });
-      assert.equal(day1.length, 1);
-      assert.equal(day1[0]!.sessionId, sid);
-
-      // Pre-compaction raw message was superseded by compaction boundary
+      assert.equal(searchSessions(cwd, "OAuth PKCE", 5, { sessionsDir }).length, 1);
       assert.equal(searchSessions(cwd, "legacy-widget", 5, { sessionsDir }).length, 0);
 
-      // Day 2 uncompacted turn after compaction IS searchable
       const day2 = searchSessions(cwd, "websocket reconnection jitter", 5, { sessionsDir });
       assert.equal(day2.length, 1);
       assert.equal(day2[0]!.sessionId, sid);
@@ -387,23 +477,259 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
     }
   });
 
-  it("redacts secrets, filters command/system noise, and skips async subagent sessions", () => {
+  it("excludes the requested sessionId when excludeSessionId is passed", () => {
     const cwd = makeCwd();
-    const sessionsDir = makeTempDir("sessions-sanitize-");
+    const sessionsDir = makeTempDir("sessions-exclude-");
     try {
-      const fakeOpenAiKey = "sk-proj-" + "x".repeat(30);
-      const fakeAuthHeader = "Authorization: Bearer " + "b".repeat(32);
-      const fakeUrl = ["https://alice", "supersecretpass@registry.example.com/pkg"].join(":");
+      const activeSid = "active-current-session";
+      const otherSid = "older-past-session";
+      fs.writeFileSync(
+        path.join(sessionsDir, `2026-11-22T12-00-00-000Z_${activeSid}.jsonl`),
+        makeSessionJsonl([
+          { type: "session", version: 3, id: activeSid, timestamp: "2026-11-22T12:00:00.000Z", cwd },
+          makeUserMsg("Debugging shared-recall-topic in current active chat", "2026-11-22T12:01:00.000Z"),
+        ]),
+      );
+      fs.writeFileSync(
+        path.join(sessionsDir, `2026-11-21T12-00-00-000Z_${otherSid}.jsonl`),
+        makeSessionJsonl([
+          { type: "session", version: 3, id: otherSid, timestamp: "2026-11-21T12:00:00.000Z", cwd },
+          makeUserMsg("Earlier notes on shared-recall-topic from yesterday", "2026-11-21T12:01:00.000Z"),
+        ]),
+      );
 
-      // Direct redactSecrets unit assertions
-      const redacted = redactSecrets(`${fakeOpenAiKey} ${fakeAuthHeader} ${fakeUrl} api_key=my_secret_value_12345`);
-      assert.ok(!redacted.includes(fakeOpenAiKey));
-      assert.ok(!redacted.includes("b".repeat(32)));
-      assert.ok(!redacted.includes("supersecretpass"));
-      assert.ok(!redacted.includes("my_secret_value_12345"));
+      const hits = searchSessions(cwd, "shared-recall-topic", 5, {
+        sessionsDir,
+        excludeSessionId: activeSid,
+      });
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0]!.sessionId, otherSid);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
 
-      // Main user session containing secrets + noise + real message
-      const sid = "clean-session-77";
+  it("scans older unindexed sessions even when more than 20 newer sessions are already in the store", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-priority-");
+    try {
+      const oldUnindexedSid = "older-crashed-session-00";
+      const oldFile = path.join(sessionsDir, `2026-11-01T08-00-00-000Z_${oldUnindexedSid}.jsonl`);
+      fs.writeFileSync(
+        oldFile,
+        makeSessionJsonl([
+          { type: "session", version: 3, id: oldUnindexedSid, timestamp: "2026-11-01T08:00:00.000Z", cwd },
+          makeUserMsg("Unclosed historical investigation into shard-rebalance-deadlock", "2026-11-01T08:05:00.000Z"),
+        ]),
+      );
+      const oldTime = new Date("2026-11-01T08:05:00.000Z");
+      fs.utimesSync(oldFile, oldTime, oldTime);
+
+      // Create 25 newer sessions that are already cleanly indexed in the persisted store
+      for (let i = 1; i <= 25; i++) {
+        const sid = `newer-closed-${String(i).padStart(2, "0")}`;
+        const ts = `2026-11-20T10:${String(i).padStart(2, "0")}:00.000Z`;
+        const file = path.join(sessionsDir, `2026-11-20T10-${String(i).padStart(2, "0")}-00-000Z_${sid}.jsonl`);
+        fs.writeFileSync(
+          file,
+          makeSessionJsonl([
+            { type: "session", version: 3, id: sid, timestamp: ts, cwd },
+            makeUserMsg(`Routine maintenance work number ${i} on build scripts`, ts),
+          ]),
+        );
+        indexSessionSummary(cwd, sid, `Routine maintenance work number ${i} on build scripts completed.`);
+      }
+
+      const hits = searchSessions(cwd, "shard-rebalance-deadlock", 5, { sessionsDir });
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0]!.sessionId, oldUnindexedSid);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces unindexed branch summaries in canonical files when store has a newer entry", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-branch-summary-");
+    try {
+      const sid = "branch-unindexed-88";
+      const file = path.join(sessionsDir, `2026-11-20T09-00-00-000Z_${sid}.jsonl`);
+      fs.writeFileSync(
+        file,
+        makeSessionJsonl([
+          { type: "session", version: 3, id: sid, timestamp: "2026-11-20T09:00:00.000Z", cwd },
+          {
+            type: "branch_summary",
+            summary:
+              "Explored zero-copy mmap ring buffer architecture for streaming session search indexes before reverting.",
+            timestamp: "2026-11-20T10:00:00.000Z",
+          },
+        ]),
+      );
+
+      indexSessionSummary(
+        cwd,
+        sid,
+        "Earlier compaction summary covering parser refactor and lexical scoring adjustments across modules.",
+      );
+
+      const branchHits = searchSessions(cwd, "mmap ring buffer", 5, { sessionsDir });
+      assert.equal(branchHits.length, 1);
+      assert.equal(branchHits[0]!.sessionId, sid);
+
+      const storeHits = searchSessions(cwd, "parser refactor", 5, { sessionsDir });
+      assert.equal(storeHits.length, 1);
+      assert.equal(storeHits[0]!.sessionId, sid);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("probes the header and scans the tail window on files larger than 4MB", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-oversized-tail-");
+    try {
+      const sid = "oversized-header-probe-90";
+      const file = path.join(sessionsDir, "non-canonical-large.jsonl");
+      const header = JSON.stringify({
+        type: "session",
+        version: 3,
+        id: sid,
+        timestamp: "2026-11-22T07:00:00.000Z",
+        cwd,
+      });
+      const earlyMsg = JSON.stringify(
+        makeUserMsg("Ancient pre-window-dropped-keyword topic from start of file", "2026-11-22T07:01:00.000Z"),
+      );
+      const fillerChunk = JSON.stringify({
+        type: "message",
+        message: { role: "toolResult", content: [{ type: "text", text: "z".repeat(128 * 1024) }] },
+      });
+      // > 4MB of filler rows so st.size exceeds MAX_SCAN_BYTES
+      const filler = Array.from({ length: 34 }, () => fillerChunk).join("\n");
+      const tailMsg = JSON.stringify(
+        makeUserMsg("Recent tail-window-discovered-keyword benchmark results", "2026-11-22T07:30:00.000Z"),
+      );
+      fs.writeFileSync(file, `${header}\n${earlyMsg}\n${filler}\n${tailMsg}\n`);
+
+      const tailHits = searchSessions(cwd, "tail-window-discovered-keyword", 5, { sessionsDir });
+      assert.equal(tailHits.length, 1);
+      assert.equal(tailHits[0]!.sessionId, sid);
+      assert.equal(searchSessions(cwd, "pre-window-dropped-keyword", 5, { sessionsDir }).length, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers cleanly after an oversized single-line tail slice with no newline", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-oversized-nonl-");
+    try {
+      const sid = "oversized-tail-91";
+      const file = path.join(sessionsDir, `2026-11-22T08-00-00-000Z_${sid}.jsonl`);
+      const header = JSON.stringify({
+        type: "session",
+        version: 3,
+        id: sid,
+        timestamp: "2026-11-22T08:00:00.000Z",
+        cwd,
+      });
+      const hugeLine = JSON.stringify({
+        type: "message",
+        message: { role: "toolResult", content: [{ type: "text", text: "x".repeat(4 * 1024 * 1024 + 2048) }] },
+      });
+      fs.writeFileSync(file, `${header}\n${hugeLine}`);
+
+      assert.equal(searchSessions(cwd, "oversized-tail-recovery", 5, { sessionsDir }).length, 0);
+
+      fs.appendFileSync(
+        file,
+        "\n" +
+          JSON.stringify(
+            makeUserMsg("Resolving oversized-tail-recovery edge case after huge tool output", "2026-11-22T08:05:00.000Z"),
+          ) +
+          "\n",
+      );
+
+      const hits = searchSessions(cwd, "oversized-tail-recovery", 5, { sessionsDir });
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0]!.sessionId, sid);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("supersedes raw messages despite filesystem mtime clock skew when entries lack timestamps", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-mtime-skew-");
+    try {
+      const sid = "mtime-skew-session-5";
+      const file = path.join(sessionsDir, `2026-11-22T09-00-00-000Z_${sid}.jsonl`);
+      fs.writeFileSync(
+        file,
+        makeSessionJsonl([
+          { type: "session", version: 3, id: sid, cwd },
+          { type: "message", message: { role: "user", content: "Initial raw-only-skew-keyword brainstorming note" } },
+        ]),
+      );
+      const ahead = new Date(Date.now() + 200);
+      fs.utimesSync(file, ahead, ahead);
+
+      indexSessionSummary(
+        cwd,
+        sid,
+        "Authoritative compaction summary replacing raw brainstorming after clock-skew-superseded check.",
+      );
+
+      assert.equal(searchSessions(cwd, "raw-only-skew-keyword", 5, { sessionsDir }).length, 0);
+      const hits = searchSessions(cwd, "clock-skew-superseded", 5, { sessionsDir });
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0]!.sessionId, sid);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("session-search sanitization and subagent filtering", () => {
+  it("redacts prefixed env keys, API tokens, auth headers, and URL credentials in redactSecrets", () => {
+    const fakeOpenAiKey = "sk-proj-" + "x".repeat(30);
+    const fakeAuthHeader = "Authorization: Bearer " + "b".repeat(32);
+    const fakeUrl = ["https://alice", "supersecretpass@registry.example.com/pkg"].join(":");
+    const envVal = "val_" + "q".repeat(16);
+    const ghVal = "tok_" + "w".repeat(16);
+    const jsonVal = "jsn_" + "r".repeat(16);
+    const sample = [
+      fakeOpenAiKey,
+      fakeAuthHeader,
+      fakeUrl,
+      `api_key=bare_${"m".repeat(14)}`,
+      `OPENAI_API_KEY=${envVal}`,
+      `GITHUB_TOKEN=${ghVal}`,
+      JSON.stringify({ OPENAI_API_KEY: jsonVal }),
+    ].join(" ");
+
+    const redacted = redactSecrets(sample);
+    assert.ok(!redacted.includes(fakeOpenAiKey));
+    assert.ok(!redacted.includes("b".repeat(32)));
+    assert.ok(!redacted.includes("supersecretpass"));
+    assert.ok(!redacted.includes("m".repeat(14)));
+    assert.ok(!redacted.includes(envVal));
+    assert.ok(!redacted.includes(ghVal));
+    assert.ok(!redacted.includes(jsonVal));
+  });
+
+  it("filters slash commands and harness banners while preserving prompts after peer-joined prefixes", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-noise-");
+    try {
+      const sid = "noise-filter-session";
       fs.writeFileSync(
         path.join(sessionsDir, `2026-11-22T10-00-00-000Z_${sid}.jsonl`),
         makeSessionJsonl([
@@ -412,31 +738,73 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
           makeUserMsg("[IMPORTANT: internal system notice about specialtoken]", "2026-11-22T10:02:00.000Z"),
           makeUserMsg("📡 Connected to coms · You are peer-1", "2026-11-22T10:02:30.000Z"),
           makeUserMsg(
-            `📡 Peer joined: wt-1 [2026-11-22T10:03:00Z]\nDeploying webhook proxy with ${fakeOpenAiKey} and ${fakeUrl}`,
+            "📡 Peer joined: wt-1 [2026-11-22T10:03:00Z]\nDeploying webhook proxy with circuit breakers",
             "2026-11-22T10:03:00.000Z",
           ),
         ]),
       );
 
-      // Async subagent session that must be skipped
+      assert.equal(searchSessions(cwd, "compact focus", 5, { sessionsDir }).length, 0);
+      assert.equal(searchSessions(cwd, "specialtoken", 5, { sessionsDir }).length, 0);
+      assert.equal(searchSessions(cwd, "Connected to coms", 5, { sessionsDir }).length, 0);
+
+      const hits = searchSessions(cwd, "webhook proxy", 5, { sessionsDir });
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0]!.sessionId, sid);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips async subagent session files", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-subagent-");
+    try {
       fs.writeFileSync(
         path.join(sessionsDir, "2026-11-22T10-05-00-000Z_async-code-reviewer-quality-abc123.jsonl"),
         makeSessionJsonl([
-          { type: "session", version: 3, id: "async-code-reviewer-quality-abc123", timestamp: "2026-11-22T10:05:00.000Z", cwd },
+          {
+            type: "session",
+            version: 3,
+            id: "async-code-reviewer-quality-abc123",
+            timestamp: "2026-11-22T10:05:00.000Z",
+            cwd,
+          },
           makeUserMsg("Reviewing subagent-only-keyword diff in isolation", "2026-11-22T10:05:01.000Z"),
         ]),
       );
 
-      // Slash command & system notice filtered out
-      assert.equal(searchSessions(cwd, "compact focus", 5, { sessionsDir }).length, 0);
-      assert.equal(searchSessions(cwd, "specialtoken", 5, { sessionsDir }).length, 0);
-      // Async subagent session skipped
       assert.equal(searchSessions(cwd, "subagent-only-keyword", 5, { sessionsDir }).length, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
 
-      // Real prompt found with secrets stripped
+  it("redacts secrets in snippets returned from scanned session files", () => {
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-redact-snippet-");
+    try {
+      const sid = "clean-session-77";
+      const fakeOpenAiKey = "sk-proj-" + "x".repeat(30);
+      const fakeUrl = ["https://alice", "supersecretpass@registry.example.com/pkg"].join(":");
+      const liveEnvVal = "live_" + "v".repeat(16);
+      fs.writeFileSync(
+        path.join(sessionsDir, `2026-11-22T10-00-00-000Z_${sid}.jsonl`),
+        makeSessionJsonl([
+          { type: "session", version: 3, id: sid, timestamp: "2026-11-22T10:00:00.000Z", cwd },
+          makeUserMsg(
+            `Deploying webhook proxy with OPENAI_API_KEY=${liveEnvVal} ${fakeOpenAiKey} ${fakeUrl}`,
+            "2026-11-22T10:03:00.000Z",
+          ),
+        ]),
+      );
+
       const hits = searchSessions(cwd, "webhook proxy", 5, { sessionsDir });
       assert.equal(hits.length, 1);
       assert.equal(hits[0]!.sessionId, sid);
+      assert.ok(!hits[0]!.snippet.includes(liveEnvVal));
       assert.ok(!hits[0]!.snippet.includes(fakeOpenAiKey));
       assert.ok(!hits[0]!.snippet.includes("supersecretpass"));
       assert.match(hits[0]!.snippet, /\[REDACTED\]/);
@@ -448,25 +816,9 @@ describe("recent uncompacted session JSONL scanning (issue #1342)", () => {
 });
 
 describe("registerSessionSearch PI_SUBAGENT_CHILD and lifecycle hooks", () => {
-  it("registers session_search tool and hooks when PI_SUBAGENT_CHILD is unset", async () => {
-    const tools = new Map<string, any>();
-    const handlers = new Map<string, Array<(...args: any[]) => any>>();
-    const pi = {
-      registerTool: (tool: any) => tools.set(tool.name, tool),
-      on: (event: string, fn: (...args: any[]) => any) => {
-        const list = handlers.get(event) ?? [];
-        list.push(fn);
-        handlers.set(event, list);
-      },
-    } as any;
-
-    let sessionSearchTool: any;
-    withSubagentChildEnv(undefined, () => {
-      registerSessionSearch(pi);
-      sessionSearchTool = tools.get("session_search");
-      assert.ok(sessionSearchTool, "session_search tool must be registered in parent orchestrator");
-      return undefined;
-    });
+  it("registers session_search to search recent uncompacted sessions when PI_SUBAGENT_CHILD is unset", async () => {
+    const { tools } = registerHandlers();
+    const sessionSearchTool = tools.get("session_search");
 
     const cwd = makeCwd();
     const agentDir = makeTempDir("pi-agent-tool-");
@@ -493,8 +845,19 @@ describe("registerSessionSearch PI_SUBAGENT_CHILD and lifecycle hooks", () => {
       );
       assert.match(res.content[0].text, /Found 1 past session\(s\)/);
       assert.match(res.content[0].text, /tool-exe/);
+    } finally {
+      if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
 
-      // Exercise input + session_shutdown fallback with secret redaction
+  it("redacts secrets in session_shutdown fallback entries", () => {
+    const { handlers } = registerHandlers();
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-shutdown-redact-");
+    try {
       const startFn = handlers.get("session_start")?.[0];
       const inputFn = handlers.get("input")?.[0];
       const shutdownFn = handlers.get("session_shutdown")?.[0];
@@ -506,15 +869,27 @@ describe("registerSessionSearch PI_SUBAGENT_CHILD and lifecycle hooks", () => {
       inputFn({ text: `Configuring telemetry exporter with key ${fakeKey}` }, { cwd });
       shutdownFn({}, { cwd });
 
-      const shutdownHits = searchSessions(cwd, "telemetry exporter", 5, { sessionsDir });
-      assert.equal(shutdownHits.length, 1);
-      assert.equal(shutdownHits[0]!.sessionId, liveSid);
-      assert.ok(!shutdownHits[0]!.snippet.includes(fakeKey));
-      assert.match(shutdownHits[0]!.snippet, /\[REDACTED\]/);
+      const hits = searchSessions(cwd, "telemetry exporter", 5, { sessionsDir });
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0]!.sessionId, liveSid);
+      assert.ok(!hits[0]!.snippet.includes(fakeKey));
+      assert.match(hits[0]!.snippet, /\[REDACTED\]/);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
 
-      // Exercise session_compact (skip willRetry, index real summary)
+  it("skips willRetry compactions during session_compact", () => {
+    const { handlers } = registerHandlers();
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-compact-retry-");
+    try {
+      const startFn = handlers.get("session_start")?.[0];
       const compactFn = handlers.get("session_compact")?.[0];
-      assert.ok(compactFn);
+      assert.ok(startFn && compactFn);
+
+      startFn({}, { cwd, sessionManager: { getSessionId: () => "retry-sid", getSessionFile: () => "" } });
       compactFn(
         {
           willRetry: true,
@@ -524,25 +899,97 @@ describe("registerSessionSearch PI_SUBAGENT_CHILD and lifecycle hooks", () => {
         },
         { cwd },
       );
-      assert.equal(searchSessions(cwd, "skipped-retry-marker", 5, { sessionsDir }).length, 0);
 
+      assert.equal(searchSessions(cwd, "skipped-retry-marker", 5, { sessionsDir }).length, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("clears buffered sessionMessages on non-willRetry session_compact before shutdown fallback", () => {
+    const { handlers } = registerHandlers();
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-compact-clear-");
+    try {
+      const startFn = handlers.get("session_start")?.[0];
+      const inputFn = handlers.get("input")?.[0];
+      const compactFn = handlers.get("session_compact")?.[0];
+      const shutdownFn = handlers.get("session_shutdown")?.[0];
+      assert.ok(startFn && inputFn && compactFn && shutdownFn);
+
+      const sid = "compact-clears-buffer-sid";
+      startFn({}, { cwd, sessionManager: { getSessionId: () => sid, getSessionFile: () => "" } });
+      inputFn({ text: "Pre-compaction stale-prompt-marker message before compaction" }, { cwd });
       compactFn(
         {
           willRetry: false,
           compactionEntry: {
-            summary: "Real compaction summary documenting circuit-breaker-backoff strategy across upstream gateways.",
+            summary: "Authoritative compaction summary capturing compacted-summary-marker outcome cleanly.",
           },
         },
         { cwd },
       );
-      const compactHits = searchSessions(cwd, "circuit-breaker-backoff", 5, { sessionsDir });
-      assert.equal(compactHits.length, 1);
-      assert.equal(compactHits[0]!.sessionId, liveSid);
+      shutdownFn({}, { cwd });
+
+      assert.equal(searchSessions(cwd, "compacted-summary-marker", 5, { sessionsDir }).length, 1);
+      assert.equal(searchSessions(cwd, "stale-prompt-marker", 5, { sessionsDir }).length, 0);
     } finally {
-      if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-      else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
       fs.rmSync(cwd, { recursive: true, force: true });
-      fs.rmSync(agentDir, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists post-compaction sessionMessages during session_shutdown when file has summaries", () => {
+    const { handlers } = registerHandlers();
+    const cwd = makeCwd();
+    const sessionsDir = makeTempDir("sessions-post-compact-shutdown-");
+    try {
+      const sid = "post-compact-shutdown-sid";
+      const file = path.join(sessionsDir, `2026-11-22T16-00-00-000Z_${sid}.jsonl`);
+      fs.writeFileSync(
+        file,
+        makeSessionJsonl([
+          { type: "session", version: 3, id: sid, timestamp: "2026-11-22T16:00:00.000Z", cwd },
+          {
+            type: "compaction",
+            summary: "Earlier compaction summary documenting grpc-keepalive-tuning across load balancers.",
+            timestamp: "2026-11-22T16:10:00.000Z",
+          },
+        ]),
+      );
+
+      const startFn = handlers.get("session_start")?.[0];
+      const inputFn = handlers.get("input")?.[0];
+      const compactFn = handlers.get("session_compact")?.[0];
+      const shutdownFn = handlers.get("session_shutdown")?.[0];
+      assert.ok(startFn && inputFn && compactFn && shutdownFn);
+
+      startFn({}, { cwd, sessionManager: { getSessionId: () => sid, getSessionFile: () => file } });
+      inputFn({ text: "Pre-compaction message that compaction replaces" }, { cwd });
+      compactFn(
+        {
+          willRetry: false,
+          compactionEntry: {
+            summary: "Earlier compaction summary documenting grpc-keepalive-tuning across load balancers.",
+          },
+        },
+        { cwd },
+      );
+      inputFn({ text: "Post-compaction turn about shutdown-surviving-tail-topic" }, { cwd });
+      shutdownFn({}, { cwd });
+
+      // Verify post-compaction turn was persisted to the store even without scanning sessionsDir
+      const emptyDir = makeTempDir("sessions-empty-");
+      try {
+        assert.equal(searchSessions(cwd, "grpc-keepalive-tuning", 5, { sessionsDir: emptyDir }).length, 1);
+        assert.equal(searchSessions(cwd, "shutdown-surviving-tail-topic", 5, { sessionsDir: emptyDir }).length, 1);
+      } finally {
+        fs.rmSync(emptyDir, { recursive: true, force: true });
+      }
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
     }
   });
 

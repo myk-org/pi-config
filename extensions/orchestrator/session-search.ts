@@ -53,8 +53,10 @@ const MAX_USER_MESSAGE_CHARS = 300;
 const MAX_TAIL_USER_MESSAGES = 200;
 /** Max characters synthesized for an uncompacted/tail session summary. */
 const MAX_TAIL_SUMMARY_CHARS = 6000;
-/** Tolerance (ms) when comparing store timestamps against session activity timestamps. */
+/** Tolerance (ms) when comparing store timestamps against ISO entry activity timestamps. */
 const SUPERSEDE_TOLERANCE_MS = 5;
+/** Wider tolerance (ms) when falling back to filesystem mtime (coarse FS clock skew). */
+const MTIME_SUPERSEDE_TOLERANCE_MS = 1000;
 
 // ── Secret & Noise Sanitization ────────────────────────────────────────────
 
@@ -96,8 +98,8 @@ const SECRET_PATTERNS: Array<{ re: RegExp; replacement: string }> = [
     replacement: "$1[REDACTED]",
   },
   {
-    re: /\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|password|passwd|private[_-]?key)\s*[:=]\s*["']?)([^\s"',;}{]{8,})(["']?)/gi,
-    replacement: "$1[REDACTED]$3",
+    re: /\b((?:[A-Za-z0-9_-]{1,64}[_-])?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|secret[_-]?access[_-]?key|password|passwd|private[_-]?key)|[A-Za-z0-9_-]{1,64}[_-](?:token|secret))(["']?\s*[:=]\s*["']?)([^\s"',;}{]{8,})(["']?)/gi,
+    replacement: "$1$2[REDACTED]$4",
   },
   {
     re: /(https?:\/\/[^/\s:@]{1,128}:)([^/\s@]{1,256})(@)/gi,
@@ -272,6 +274,7 @@ interface CachedSessionScan extends ScanMutableState {
   committedByteOffset: number;
   effectiveSummaries: ScannedSummary[];
   effectiveTailSummary: string;
+  effectiveSawEntryTimestamp: boolean;
   effectiveLastActivityMs: number;
   effectiveLastActivityIso: string;
 }
@@ -285,6 +288,8 @@ export interface SessionScanStats {
 export interface SearchSessionsOptions {
   /** Override the project sessions directory (defaults to `~/.pi/agent/sessions/<cwd-slug>`). */
   sessionsDir?: string;
+  /** Exclude a session ID (e.g. the active session during automatic past-session recall). */
+  excludeSessionId?: string;
 }
 
 const fileScanCache = new Map<string, CachedSessionScan>();
@@ -547,6 +552,7 @@ function finalizeEffectiveView(
     committedByteOffset,
     effectiveSummaries: effective.summaries,
     effectiveTailSummary: buildTailSummary(effective.sessionName, effective.tailUserMessages),
+    effectiveSawEntryTimestamp: effective.sawEntryTimestamp,
     effectiveLastActivityMs: effective.lastActivityMs,
     effectiveLastActivityIso: effective.lastActivityIso,
   };
@@ -678,19 +684,26 @@ function scanSessionJsonlFile(filePath: string, st: Stats): CachedSessionScan | 
       const startOffset = st.size - MAX_SCAN_BYTES;
       const tailBuf = readRange(fd, startOffset, MAX_SCAN_BYTES);
       const skipPartial = tailBuf.indexOf(0x0a);
-      const bodyStart = skipPartial === -1 ? 0 : skipPartial + 1;
-      const bodyBuf = tailBuf.subarray(bodyStart);
-      const lastNl = bodyBuf.lastIndexOf(0x0a);
-      if (lastNl !== -1) {
-        applyBufferLines(state, bodyBuf.subarray(0, lastNl + 1).toString("utf-8"), false);
-        committedByteOffset = startOffset + bodyStart + lastNl + 1;
-        if (lastNl + 1 < bodyBuf.length) {
-          pending = bodyBuf.subarray(lastNl + 1).toString("utf-8");
+      if (skipPartial !== -1) {
+        const bodyStart = skipPartial + 1;
+        const bodyBuf = tailBuf.subarray(bodyStart);
+        const lastNl = bodyBuf.lastIndexOf(0x0a);
+        if (lastNl !== -1) {
+          applyBufferLines(state, bodyBuf.subarray(0, lastNl + 1).toString("utf-8"), false);
+          committedByteOffset = startOffset + bodyStart + lastNl + 1;
+          if (lastNl + 1 < bodyBuf.length) {
+            pending = bodyBuf.subarray(lastNl + 1).toString("utf-8");
+          }
+        } else {
+          committedByteOffset = startOffset + bodyStart;
+          if (bodyBuf.length > 0) {
+            pending = bodyBuf.toString("utf-8");
+          }
         }
-      } else if (bodyBuf.length > 0) {
-        committedByteOffset = startOffset + bodyStart;
-        pending = bodyBuf.toString("utf-8");
       }
+      // If tailBuf has no newline at all (a single line larger than MAX_SCAN_BYTES),
+      // leave committedByteOffset at 0 and pending empty so we neither parse a
+      // mid-line fragment nor lock incremental scanning to a non-newline boundary.
     }
 
     const scanned = finalizeEffectiveView(state, pending, st, committedByteOffset);
@@ -710,6 +723,7 @@ function scanRecentProjectSessions(
   cwd: string,
   latestStoreTsBySession: Map<string, number>,
   sessionsDir?: string,
+  excludeSessionId?: string,
 ): CachedSessionScan[] {
   const dir = sessionsDir ? resolve(sessionsDir) : getProjectSessionsDir(cwd);
   let names: string[];
@@ -722,14 +736,16 @@ function scanRecentProjectSessions(
     return [];
   }
 
-  const candidates: Array<{ filePath: string; st: Stats }> = [];
+  const candidates: Array<{ filePath: string; st: Stats; canonicalId: string | null }> = [];
   for (const name of names) {
     if (!name.endsWith(".jsonl") || isSubagentSessionFilename(name)) continue;
     const filePath = join(dir, name);
+    const canonicalId = extractCanonicalFilenameSessionId(filePath);
+    if (excludeSessionId && canonicalId === excludeSessionId) continue;
     try {
       const st = statSync(filePath);
       if (!st.isFile()) continue;
-      candidates.push({ filePath, st });
+      candidates.push({ filePath, st, canonicalId });
     } catch {
       continue; // file removed concurrently
     }
@@ -740,23 +756,38 @@ function scanRecentProjectSessions(
     return b.filePath.localeCompare(a.filePath);
   });
 
-  const scanned: CachedSessionScan[] = [];
-  for (const { filePath, st } of candidates.slice(0, MAX_RECENT_SESSION_FILES)) {
-    // Skip untouched canonical session files already indexed in the persisted store
-    const canonicalId = extractCanonicalFilenameSessionId(filePath);
-    if (canonicalId) {
-      const storeMs = latestStoreTsBySession.get(canonicalId);
-      if (storeMs !== undefined && storeMs >= st.mtimeMs - SUPERSEDE_TOLERANCE_MS) {
-        continue;
-      }
+  // Prioritize unindexed or modified-since-store sessions ahead of already-indexed
+  // sessions so newer cleanly-closed sessions never crowd out older crashed/unclosed
+  // sessions, while still scanning recent indexed files (via mtime cache) for
+  // unindexed branch summaries or post-compaction turns.
+  const priorityCandidates: typeof candidates = [];
+  const indexedCandidates: typeof candidates = [];
+  for (const item of candidates) {
+    const storeMs = item.canonicalId ? latestStoreTsBySession.get(item.canonicalId) : undefined;
+    if (storeMs !== undefined && item.st.mtimeMs <= storeMs + MTIME_SUPERSEDE_TOLERANCE_MS) {
+      indexedCandidates.push(item);
+    } else {
+      priorityCandidates.push(item);
     }
+  }
+
+  const selected = [
+    ...priorityCandidates.slice(0, MAX_RECENT_SESSION_FILES),
+    ...indexedCandidates.slice(0, MAX_RECENT_SESSION_FILES),
+  ];
+
+  const scanned: CachedSessionScan[] = [];
+  for (const { filePath, st } of selected) {
     const entry = scanSessionJsonlFile(filePath, st);
-    if (entry && !entry.isSubagent) scanned.push(entry);
+    if (entry && !entry.isSubagent && (!excludeSessionId || entry.sessionId !== excludeSessionId)) {
+      scanned.push(entry);
+    }
   }
 
   log.debug("session-search: scanned recent project sessions", {
     dir,
     candidates: candidates.length,
+    priority: priorityCandidates.length,
     scanned: scanned.length,
     stats: scanStats,
   });
@@ -783,8 +814,9 @@ export function searchSessions(
   const queryWords = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (queryWords.length === 0) return [];
 
+  const excludeSessionId = options?.excludeSessionId?.trim() || undefined;
   const store = loadStore(cwd);
-  const candidates: SessionEntry[] = [...store.entries];
+  const candidates: SessionEntry[] = [];
 
   const seenExact = new Set<string>();
   const latestStoreTsBySession = new Map<string, number>();
@@ -797,10 +829,18 @@ export function searchSessions(
         latestStoreTsBySession.set(entry.sessionId, parsed);
       }
     }
+    if (!excludeSessionId || entry.sessionId !== excludeSessionId) {
+      candidates.push(entry);
+    }
   }
 
   // Merge recent project session JSONLs (active, uncompacted, or abnormally terminated)
-  const scannedSessions = scanRecentProjectSessions(cwd, latestStoreTsBySession, options?.sessionsDir);
+  const scannedSessions = scanRecentProjectSessions(
+    cwd,
+    latestStoreTsBySession,
+    options?.sessionsDir,
+    excludeSessionId,
+  );
   for (const scanned of scannedSessions) {
     for (const s of scanned.effectiveSummaries) {
       const key = `${scanned.sessionId}\0${s.summary}`;
@@ -817,10 +857,13 @@ export function searchSessions(
       // If no compaction occurred on disk and a persisted store summary is at least
       // as recent as the session's last activity, the store entry supersedes raw messages.
       const storeMs = latestStoreTsBySession.get(scanned.sessionId);
+      const supersedeToleranceMs = scanned.effectiveSawEntryTimestamp
+        ? SUPERSEDE_TOLERANCE_MS
+        : MTIME_SUPERSEDE_TOLERANCE_MS;
       const supersededByStore =
         scanned.effectiveSummaries.length === 0 &&
         storeMs !== undefined &&
-        storeMs >= scanned.effectiveLastActivityMs - SUPERSEDE_TOLERANCE_MS;
+        storeMs >= scanned.effectiveLastActivityMs - supersedeToleranceMs;
 
       if (!supersededByStore) {
         const key = `${scanned.sessionId}\0${scanned.effectiveTailSummary}`;
@@ -969,6 +1012,9 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
       const cwd = sessionCwd || ctx.cwd;
       const sid = sessionId || ctx.sessionManager?.getSessionId?.() || `session-${Date.now()}`;
       indexSessionSummary(cwd, sid, summary);
+      // Compaction covers all prior turns; clear buffered raw messages so a later
+      // session_shutdown fallback does not re-index stale pre-compaction prompts.
+      sessionMessages = [];
       log.debug("session-search: indexed compaction summary", { reason: (event as any)?.reason });
     } catch (err) {
       log.warn("session-search: indexing failed on compact:", err);
@@ -989,6 +1035,11 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
           indexSessionSummary(sessionCwd, sessionId, summary);
         }
         log.info("session-search: harvested session summaries", summaries.length);
+        // Preserve any post-compaction user turns buffered after the last compaction
+        if (sessionMessages.length > 0) {
+          const tailSummary = sessionMessages.join(" | ").slice(0, 1000);
+          indexSessionSummary(sessionCwd, sessionId, tailSummary);
+        }
         return;
       }
 
