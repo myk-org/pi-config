@@ -145,6 +145,8 @@ When two agents use the same `name:`, Pi resolves them in this order:
 
 This is the easiest way to customize a built-in agent for one repo without affecting your other work.
 
+When adding or removing a bundled agent in `agents/<name>.md`, use a one-sentence `description` frontmatter, resolve packaged skills via `~/.pi/agent/npm/node_modules/pi-orchestrator-config/skills/<name>/SKILL.md` with a local fallback, and update `rules/10-agent-routing.md` (and `rules/50-agent-bug-reporting.md` when applicable).
+
 ### Reuse a built-in pattern instead of starting from scratch
 
 If your new agent is “like the existing one, but stricter,” copy the shape of a bundled specialist and change only what matters:

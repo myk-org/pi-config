@@ -135,6 +135,12 @@ For users, that shows up as more predictable behavior:
 - runaway agent-to-agent loops stop instead of spiraling forever
 - queue depth is visible in pool output and peer listings, and can be managed with `/coms-queue`
 
+### Queue Recovery
+
+Queue recovery uses a two-step preview flow: call `coms_queue_inspect` to obtain a 5-minute owner-bound `preview_id`,
+then pass that `preview_id` to `coms_queue_clear` or `coms_queue_delete` (never `clearPrevious`). RPC providers retain
+at most 20 previews and perform atomic snapshot clears via `clearQueueIfSnapshot`.
+
 ## Steering a Busy Peer
 
 `coms_send` accepts `steer: true` to inject a message into a peer's in-flight turn instead of queueing it behind the current work. A steer is a course correction: the peer is working from a now-invalid assumption, materially new information arrived, or you need it to stop or deprioritize. The steer is acknowledged but never answered separately — its effect shows up in the reply to the message that started the peer's turn.
@@ -159,7 +165,8 @@ Peer cards and `coms_list` include a busy indicator (`⚙busy`) whenever the pee
 
 Ticks survive drilldowns, cancelled composers, and blank input. A nonempty send attempt clears them, including when some or all deliveries fail, so a later `x` acts on the focused peer unless you select peers again. Ticks and restored focus identify the peer's session endpoint, so a replacement using the same name does not inherit them. The composer carries that endpoint through command delivery and refuses a changed recipient instead of sending to the replacement. If every selected peer has gone, no composer or send attempt occurs and ticks remain; close with Esc and reopen `/coms peers` to reset them. Successful single-peer sends also show one counted result, `sent 1 peer`.
 
-Only the command layer can claim human authorship. `coms_send`, `coms_broadcast`, and the `tasks` path always send `origin: "peer"`, their schemas have no `origin` parameter, and a spoofed value in tool input is ignored — an agent's own tool calls cannot manufacture an approval it did not get, and that is the whole guarantee. On the receiving side the inbound header and its machine-readable prefix say `USER (a human)`, and `coms_history` marks the record `(USER)`: that marker is display only and unauthenticated, because any process that can write to the peer's socket can assert `origin: "user"`. Verifying authorship would need signed identities, which coms does not have.
+Only the command layer can claim human authorship. `/coms tell` and the `m` composer set `origin: "user"` through
+`globalThis.__comsUserSend`, and `resolvePromptOrigin` accepts a literal `true` only. `coms_send`, `coms_broadcast`, and the `tasks` path always send `origin: "peer"`, their schemas have no `origin` parameter, and a spoofed value in tool input is ignored — an agent's own tool calls cannot manufacture an approval it did not get, and that is the whole guarantee. On the receiving side the inbound header and its machine-readable prefix say `USER (a human)`, and `coms_history` marks the record `(USER)`: that marker is display only and unauthenticated, because any process that can write to the peer's socket can assert `origin: "user"`. Verifying authorship would need signed identities, which coms does not have.
 
 ## Message History
 
