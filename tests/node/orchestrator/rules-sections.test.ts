@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { clearRulesCache, registerRules } from "../../../extensions/orchestrator/rules.js";
+import { resetSessionBridge, setComsActive } from "../../../extensions/shared/session-bridge.js";
 import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import { clearSessionScanCache, getProjectSessionsDir } from "../../../extensions/orchestrator/session-search.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -476,6 +477,40 @@ describe("before_agent_start section injection", () => {
       clearSettingsCache();
       fs.rmSync(cwd, { recursive: true, force: true });
       fs.rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates coms_active-gated rules per session", async () => {
+    const cwd = makeTempDir("rules-coms-iso-cwd-");
+    const pkgRulesDir = makeTempDir("rules-coms-iso-pkg-");
+    try {
+      fs.writeFileSync(
+        path.join(pkgRulesDir, "10-coms-gated.md"),
+        "---\nrequires: coms_active\n---\n# Coms Session Only Rule\n",
+      );
+      fs.writeFileSync(path.join(pkgRulesDir, "20-always.md"), "# Always Rule\n");
+
+      setComsActive(true, "sess-with-coms");
+      setComsActive(false, "sess-without-coms");
+
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi, undefined, { packageRulesDir: pkgRulesDir });
+      const h = getBeforeAgentStart(handlers);
+
+      const evWithComs = makeEvent(cwd);
+      await h.fn(evWithComs, { cwd, sessionManager: { getSessionId: () => "sess-with-coms" } });
+      const evWithoutComs = makeEvent(cwd);
+      await h.fn(evWithoutComs, { cwd, sessionManager: { getSessionId: () => "sess-without-coms" } });
+
+      assert.ok(evWithComs.systemPromptOptions.sections.orchestrator_rules.includes("Coms Session Only Rule"));
+      assert.ok(!evWithoutComs.systemPromptOptions.sections.orchestrator_rules.includes("Coms Session Only Rule"));
+      assert.ok(evWithoutComs.systemPromptOptions.sections.orchestrator_rules.includes("Always Rule"));
+    } finally {
+      resetSessionBridge({ all: true });
+      clearRulesCache();
+      clearSettingsCache();
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(pkgRulesDir, { recursive: true, force: true });
     }
   });
 });

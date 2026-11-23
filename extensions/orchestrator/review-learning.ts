@@ -64,7 +64,7 @@ import { createLogger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
 import { getOriginUrl, parseRemoteRepo, runGit } from "./git-helpers.js";
 import { getProjectDataDir, getProjectMemoryDir, resolveWorktreeRoot } from "./utils.js";
-import { addMemoryEntry } from "./memory-write.js";
+import { addMemoryEntry } from "./memory-store.js";
 import { entryHash, getScoresPath, loadScores } from "./memory-scoring.js";
 import { canonicalTopicLine, readAllTopicEntries } from "./memory-tree.js";
 

@@ -10,20 +10,20 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  DEFAULT_WORKLOAD_SESSION_KEY,
-  WORKLOAD_SOURCES_SYMBOL,
-  clearWorkloadSources,
+  DEFAULT_BRIDGE_SESSION_KEY,
+  SESSION_BRIDGE_SYMBOL,
   publishedWorkloadSources,
   publishWorkloadSources,
-  resolveWorkloadSessionKey,
-} from "../../../extensions/shared/workload-bridge.ts";
+  resetSessionBridge,
+  resolveBridgeSessionKey,
+} from "../../../extensions/shared/session-bridge.ts";
 import { collectWorkload, toDescribeDetail } from "../../../extensions/coms/coms-workload.ts";
 
 const agent = (id: string) => ({ id, agent: "worker", task: "t", status: "running", startedAt: 1 });
 const cron = (id: string) => ({ id, scope: "session", description: "d", task: "t", createdAt: 1 });
 
 const clear = (): void => {
-  delete (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL];
+  resetSessionBridge({ all: true });
 };
 
 describe("workload sources bridge", () => {
@@ -74,12 +74,17 @@ describe("workload sources bridge", () => {
   it("clears on shutdown, so a torn-down runtime cannot answer a describe", () => {
     publishWorkloadSources({ agents: () => [agent("a1")], crons: () => [] });
     assert.notEqual(publishedWorkloadSources(), null);
-    clearWorkloadSources();
+    resetSessionBridge({ slot: "workload" });
     assert.equal(publishedWorkloadSources(), null);
   });
 
   it("rejects a malformed publication instead of trusting it", () => {
-    (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL] = { agents: "nope" };
+    (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] = { agents: "nope" };
+    assert.equal(publishedWorkloadSources(), null);
+
+    (globalThis as Record<symbol, unknown>)[SESSION_BRIDGE_SYMBOL] = new Map([
+      [DEFAULT_BRIDGE_SESSION_KEY, { workload: { agents: "nope" } }],
+    ]);
     assert.equal(publishedWorkloadSources(), null);
   });
 
@@ -109,7 +114,7 @@ describe("workload sources bridge", () => {
     publishWorkloadSources({ agents: () => [agent("def")], crons: () => [] });
     assert.equal(publishedWorkloadSources("sess-explicit"), null);
 
-    clearWorkloadSources();
+    resetSessionBridge({ slot: "workload" });
     publishWorkloadSources({ agents: () => [agent("named")], crons: () => [] }, "sess-only");
     assert.equal(publishedWorkloadSources(), null);
     assert.equal(publishedWorkloadSources("sess-other"), null);
@@ -127,32 +132,32 @@ describe("workload sources bridge", () => {
   it("preserves sibling sessions when clearing one session", () => {
     publishWorkloadSources({ agents: () => [agent("a1")], crons: () => [] }, "sess-1");
     publishWorkloadSources({ agents: () => [agent("b1")], crons: () => [] }, "sess-2");
-    clearWorkloadSources("sess-1");
+    resetSessionBridge({ sessionKey: "sess-1", slot: "workload" });
     assert.equal(publishedWorkloadSources("sess-1"), null);
     assert.equal(publishedWorkloadSources("sess-2")?.agents()[0].id, "b1");
   });
 
-  it("resolves trimmed session IDs from ExtensionContext via resolveWorkloadSessionKey", () => {
+  it("resolves trimmed session IDs from ExtensionContext via resolveBridgeSessionKey", () => {
     assert.equal(
-      resolveWorkloadSessionKey({ sessionManager: { getSessionId: () => "  sess-42  " } }),
+      resolveBridgeSessionKey({ sessionManager: { getSessionId: () => "  sess-42  " } }),
       "sess-42",
     );
   });
 
-  it("falls back to DEFAULT_WORKLOAD_SESSION_KEY when ExtensionContext lacks a usable session ID", () => {
-    assert.equal(resolveWorkloadSessionKey(undefined), DEFAULT_WORKLOAD_SESSION_KEY);
-    assert.equal(resolveWorkloadSessionKey({}), DEFAULT_WORKLOAD_SESSION_KEY);
-    assert.equal(resolveWorkloadSessionKey({ sessionManager: { getSessionId: () => "   " } }), DEFAULT_WORKLOAD_SESSION_KEY);
-    assert.equal(resolveWorkloadSessionKey({ sessionManager: { getSessionId: () => 123 } }), DEFAULT_WORKLOAD_SESSION_KEY);
+  it("falls back to DEFAULT_BRIDGE_SESSION_KEY when ExtensionContext lacks a usable session ID", () => {
+    assert.equal(resolveBridgeSessionKey(undefined), DEFAULT_BRIDGE_SESSION_KEY);
+    assert.equal(resolveBridgeSessionKey({}), DEFAULT_BRIDGE_SESSION_KEY);
+    assert.equal(resolveBridgeSessionKey({ sessionManager: { getSessionId: () => "   " } }), DEFAULT_BRIDGE_SESSION_KEY);
+    assert.equal(resolveBridgeSessionKey({ sessionManager: { getSessionId: () => 123 } }), DEFAULT_BRIDGE_SESSION_KEY);
     assert.equal(
-      resolveWorkloadSessionKey({
+      resolveBridgeSessionKey({
         sessionManager: {
           getSessionId: () => {
             throw new Error("boom");
           },
         },
       }),
-      DEFAULT_WORKLOAD_SESSION_KEY,
+      DEFAULT_BRIDGE_SESSION_KEY,
     );
   });
 });

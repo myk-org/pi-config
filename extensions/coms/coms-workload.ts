@@ -16,7 +16,7 @@ import { formatDuration } from "../orchestrator/async-agents.js";
 import { formatTaskRowLine } from "../pitasks/tasks-view.js";
 import { sanitizePeerText } from "./peer-text.js";
 import { createLogger } from "../shared/logger.js";
-import type { WorkloadAgent, WorkloadCron } from "../shared/workload-bridge.js";
+import type { WorkloadAgent, WorkloadCron } from "../shared/session-bridge.js";
 
 const log = createLogger("coms-workload");
 

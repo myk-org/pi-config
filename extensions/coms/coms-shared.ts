@@ -13,7 +13,7 @@ import * as net from "node:net";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import * as os from "node:os";
-import { setComsActive } from "../shared/coms-active.js";
+import { resolveBridgeSessionKey, setComsActive } from "../shared/session-bridge.js";
 import { createLogger } from "../shared/logger.js";
 import { resolveStorePath } from "../pitasks/task-store.js";
 import { stripOriginMarker } from "./peer-text.js";
@@ -85,6 +85,8 @@ export interface DeferredUpstream {
     deferredTools?: Set<string>;
     /** In-flight activation, so two starts cannot share the process-wide origin/identity cell. */
     activation?: Promise<{ ok: boolean; message: string }> | null;
+    /** Session bridge key currently holding this instance's comsActive flag. */
+    sessionKey?: string;
     /** Extra persisted state */
     extra?: Record<string, any>;
 }
@@ -215,17 +217,22 @@ export function createDeferredProxy(
                                         savedExtra = entry.data?.extra || {};
                                     }
                                 }
+                                const sessionKey = resolveBridgeSessionKey(ctx);
+                                if (state.sessionKey && state.sessionKey !== sessionKey) {
+                                    setComsActive(false, state.sessionKey);
+                                }
+                                state.sessionKey = sessionKey;
                                 if (wasActive) {
                                     state.flagValues = new Map(Object.entries(savedFlags));
                                     state.extra = savedExtra;
                                     try {
                                         await handler(evt, ctx);
                                         state.active = true;
-                                        setComsActive(true);
+                                        setComsActive(true, sessionKey);
                                         syncComsActiveTools(target, state, true);
                                     } catch (err) {
                                         state.active = false;
-                                        setComsActive(false);
+                                        setComsActive(false, sessionKey);
                                         syncComsActiveTools(target, state, false);
                                         persistState(target, persistKey, state);
                                         const msg = err instanceof Error ? err.message : String(err);
@@ -233,14 +240,25 @@ export function createDeferredProxy(
                                         log.error("reload reactivation failed", msg, error);
                                     }
                                 } else {
+                                    setComsActive(false, sessionKey);
                                     syncComsActiveTools(target, state, false);
                                 }
                             });
                         }
                         if (event === 'session_shutdown') {
                             state.capturedSessionShutdown = handler;
-                            // Pass through — upstream needs to clean up socket/connection
-                            return target.on(event, handler);
+                            // Pass through — upstream needs to clean up socket/connection, then clear per-session bridge flag
+                            return target.on(event, async (evt: any, ctx?: any) => {
+                                try {
+                                    return await handler(evt, ctx);
+                                } finally {
+                                    const shutdownKey = ctx ? resolveBridgeSessionKey(ctx) : state.sessionKey;
+                                    if (shutdownKey) setComsActive(false, shutdownKey);
+                                    if (state.sessionKey && state.sessionKey !== shutdownKey) {
+                                        setComsActive(false, state.sessionKey);
+                                    }
+                                }
+                            });
                         }
                         return target.on(event, handler);
                     };

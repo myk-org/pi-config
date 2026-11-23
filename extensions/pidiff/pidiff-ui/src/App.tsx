@@ -2,19 +2,18 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEv
 import { MultiFileDiff, WorkerPoolContextProvider } from "@pierre/diffs/react";
 import type { FileContents, WorkerPoolOptions, WorkerInitializationRenderOptions } from "@pierre/diffs/react";
 import { useFileTree, FileTree, useFileTreeSelection } from "@pierre/trees/react";
-import { GitBranch, X, Send, Pencil } from "lucide-react";
-import { themeToTreeStyles } from "@pierre/trees";
+import { GitBranch, X, Send, Pencil, RefreshCw } from "lucide-react";
+import { themeToTreeStyles, type GitStatusEntry } from "@pierre/trees";
 import { cn } from "./lib/utils";
 import { pierreFileCacheKey } from "./lib/file-cache-key";
 import { createLogger } from "./lib/create-logger";
-import { runAppRefresh, beginRefreshUi } from "./lib/request-diffs";
-import { AppReconnectWatch } from "./lib/app-reconnect-watch";
-import { AppRefreshActions } from "./lib/app-refresh-actions";
+import { useDiffSessionController, type RefreshButtonState } from "./lib/diff-session-controller";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
 import { Switch } from "./components/ui/switch";
-import { useWebSocket } from "./hooks/useWebSocket";
-import type { DiffMode, DiffData, FileDiffData, GitCommit, ReviewComment, PiSession, Worktree } from "./types";
+import type { FileDiffData, GitCommit, OpenCommentForm, ReviewComment } from "./types";
+
+export type { OpenCommentForm };
 
 const log = createLogger("pidiff-ui");
 
@@ -30,7 +29,6 @@ const HIGHLIGHTER_OPTIONS: WorkerInitializationRenderOptions = {
   theme: { dark: "pierre-dark", light: "pierre-light" },
   langs: ["typescript", "tsx", "javascript", "jsx", "css", "json", "markdown", "python", "sh", "yaml", "html"],
 };
-import type { GitStatusEntry } from "@pierre/trees";
 
 // ── Tree theme (github-dark) ────────────────────────────────────────
 
@@ -69,12 +67,6 @@ export interface PreparedDiffFile {
 export interface IndexedFileComment {
   comment: ReviewComment;
   globalIndex: number;
-}
-
-export interface OpenCommentForm {
-  file: string;
-  side: "deletions" | "additions";
-  lineNumber: number;
 }
 
 const EMPTY_FILE_COMMENTS: readonly IndexedFileComment[] = [];
@@ -131,30 +123,58 @@ export function groupOpenFormsByFile(openForms: readonly OpenCommentForm[]): Map
   return byFile;
 }
 
+// ── RefreshButton ───────────────────────────────────────────────────
+
+export function RefreshButton({
+  button,
+  onRefresh,
+  className,
+  slot,
+}: {
+  button: RefreshButtonState;
+  onRefresh: () => void;
+  className?: string;
+  slot?: "header" | "banner";
+}) {
+  return (
+    <button
+      type="button"
+      data-pidiff-refresh="true"
+      data-pidiff-refresh-slot={slot ?? ""}
+      data-spinning={button.spinning ? "true" : "false"}
+      disabled={button.disabled}
+      onClick={onRefresh}
+      className={cn("inline-flex items-center gap-1.5", className)}
+    >
+      <RefreshCw className={cn("h-3 w-3", button.spinning && "animate-spin")} />
+      Refresh
+    </button>
+  );
+}
+
 // ── App ─────────────────────────────────────────────────────────────
 
 export function App() {
-  const { connected, send, onMessage } = useWebSocket();
+  const { state, controller } = useDiffSessionController();
+  const {
+    connected,
+    sessions,
+    activeSession,
+    activeWorktree,
+    diffData,
+    mode,
+    loading,
+    commits,
+    commitFrom,
+    commitTo,
+    stale,
+    staleWorktrees,
+    comments,
+    openForms,
+    refreshButton,
+  } = state;
 
-  // Sessions
-  const [sessions, setSessions] = useState<PiSession[]>([]);
-  const [activeSession, setActiveSession] = useState<PiSession | null>(() => {
-    try { const s = localStorage.getItem("pidiff-session"); return s ? JSON.parse(s) : null; } catch { return null; }
-  });
-  const [activeWorktree, setActiveWorktree] = useState<Worktree | null>(null);
-  const activeWorktreeRef = useRef<Worktree | null>(null);
-
-  const [diffData, setDiffData] = useState<DiffData>({
-    mode: "branch", files: [], branch: "",
-  });
-  const [mode, setMode] = useState<DiffMode>("branch");
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const [commits, setCommits] = useState<GitCommit[] | null>(null);
-  const [commitFrom, setCommitFrom] = useState("");
-  const [commitTo, setCommitTo] = useState("");
-
+  // Presentation-only diff viewer preferences
   const [diffStyle, setDiffStyle] = useState<"unified" | "split">("split");
   const [diffIndicators, setDiffIndicators] = useState<"bars" | "classic" | "none">("bars");
   const [lineDiffType, setLineDiffType] = useState<"word-alt" | "word" | "char" | "none">("word-alt");
@@ -164,227 +184,9 @@ export function App() {
   const [hunkSeparators, setHunkSeparators] = useState<"line-info" | "line-info-basic" | "metadata" | "simple">("line-info");
   const [fontSize, setFontSize] = useState(13);
   const [theme, setTheme] = useState<string>("pierre-dark");
-  const [stale, setStale] = useState(() => {
-    const testStale = Boolean((globalThis as { __pidiffTestStale?: boolean }).__pidiffTestStale);
-    log.debug("App stale init", { testStale });
-    return testStale;
-  });
-  const [staleWorktrees, setStaleWorktrees] = useState<Set<string>>(new Set());
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-
-  // Review comments — persist in localStorage
-  const [comments, setComments] = useState<ReviewComment[]>(() => {
-    try { const s = localStorage.getItem("pidiff-comments"); return s ? JSON.parse(s) : []; } catch { return []; }
-  });
-  const [openForms, setOpenForms] = useState<OpenCommentForm[]>([]);
-  const hasOpenForm = openForms.length > 0;
-  const commentsRef = useRef(comments);
-  commentsRef.current = comments;
-  const diffBranchRef = useRef(diffData.branch);
-  diffBranchRef.current = diffData.branch;
-
-  useEffect(() => {
-    try { localStorage.setItem("pidiff-comments", JSON.stringify(comments)); } catch {}
-  }, [comments]);
-
-  useEffect(() => {
-    try {
-      if (activeSession) localStorage.setItem("pidiff-session", JSON.stringify(activeSession));
-      else localStorage.removeItem("pidiff-session");
-    } catch {}
-  }, [activeSession]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const commitsRequested = useRef(false);
-  const activeSessionRef = useRef<PiSession | null>(null);
-  const loadingTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const refreshTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const modeRef = useRef(mode);
-  const scrollLock = useRef(0); // timestamp until which scroll-sync is paused
-  const selectedFileRef = useRef<string | null>(null);
   const explorer = useExplorerWidth(280, 180, 600);
-  useEffect(() => { modeRef.current = mode; }, [mode]);
-
-  // ── WebSocket ─────────────────────────────────────────────────────
-
-  useEffect(() => {
-    return onMessage((ev: any) => {
-      if (ev.type === "diff_update" && (ev.mode === modeRef.current || !ev.mode)) {
-        const committed: FileDiffData[] = (ev.committed || []).map((f: any) => ({ ...f, area: "committed" as const }));
-        const staged: FileDiffData[] = (ev.staged || []).map((f: any) => ({ ...f, area: "staged" as const }));
-        const unstaged: FileDiffData[] = (ev.unstaged || []).map((f: any) => ({ ...f, area: "unstaged" as const }));
-        // Deduplicate: unstaged > staged > committed
-        const seen = new Set<string>();
-        const allFiles: FileDiffData[] = [];
-        for (const f of unstaged) { seen.add(f.name); allFiles.push(f); }
-        for (const f of staged) { if (!seen.has(f.name)) { seen.add(f.name); allFiles.push(f); } }
-        for (const f of committed) { if (!seen.has(f.name)) allFiles.push(f); }
-        setDiffData({ mode: ev.mode || "branch", files: allFiles, branch: ev.branch || "", fromRef: ev.fromRef, toRef: ev.toRef });
-        setLoading(false);
-        setRefreshing(false);
-        // Don't clear stale here — only Refresh button clears it
-        if (loadingTimeout.current) clearTimeout(loadingTimeout.current);
-        if (refreshTimeout.current) clearTimeout(refreshTimeout.current);
-      }
-      if (ev.type === "commits-list" && ev.commits) {
-        setCommits(ev.commits);
-      }
-      if (ev.type === "status_changed") {
-        if (ev.changedWorktrees && Array.isArray(ev.changedWorktrees)) {
-          setStaleWorktrees(prev => {
-            const next = new Set(prev);
-            for (const p of ev.changedWorktrees) next.add(p);
-            return next;
-          });
-          // Show banner ONLY if the currently active tab is stale
-          const activePath = activeWorktreeRef.current?.path || activeSessionRef.current?.cwd;
-          if (activePath && ev.changedWorktrees.includes(activePath)) {
-            setStale(true);
-          }
-        } else {
-          setStale(true);
-        }
-      }
-      if (ev.type === "sessions-list" && ev.sessions) {
-        setSessions(ev.sessions);
-        // Restore saved session or auto-select first
-        if (!activeSessionRef.current && ev.sessions.length > 0) {
-          let saved: PiSession | null = null;
-          try { const s = localStorage.getItem("pidiff-session"); if (s) saved = JSON.parse(s); } catch {}
-          const target = saved ? ev.sessions.find((s: PiSession) => s.sessionId === saved!.sessionId) || ev.sessions[0] : ev.sessions[0];
-          setActiveSession(target);
-          activeSessionRef.current = target;
-          send({ type: "watch", sessionId: target.sessionId });
-          setLoading(true);
-        }
-      }
-      if (ev.type === "session_added" && ev.session) {
-        setSessions(prev => {
-          if (prev.find(s => s.sessionId === ev.session.sessionId)) return prev;
-          const next = [...prev, ev.session];
-          // Auto-select if first session
-          if (!activeSessionRef.current) {
-            setActiveSession(ev.session);
-            activeSessionRef.current = ev.session;
-            send({ type: "watch", sessionId: ev.session.sessionId });
-            setLoading(true);
-          }
-          return next;
-        });
-      }
-      if (ev.type === "session_removed" && ev.sessionId) {
-        setSessions(prev => prev.filter(s => s.sessionId !== ev.sessionId));
-        if (activeSessionRef.current?.sessionId === ev.sessionId) {
-          setActiveSession(null);
-          activeSessionRef.current = null;
-          setActiveWorktree(null);
-          activeWorktreeRef.current = null;
-          setStale(false);
-          setRefreshing(false);
-          setStaleWorktrees(new Set());
-          setDiffData({ mode: "branch", files: [], branch: "" });
-        }
-      }
-      if (ev.type === "session_updated" && ev.session) {
-        setSessions(prev => prev.map(s => s.sessionId === ev.session.sessionId ? { ...s, ...ev.session } : s));
-        if (activeSessionRef.current?.sessionId === ev.session.sessionId) {
-          setActiveSession(prev => prev ? { ...prev, ...ev.session } : prev);
-        }
-      }
-    });
-  }, [onMessage]);
-
-  useEffect(() => {
-    if (loading) {
-      loadingTimeout.current = setTimeout(() => setLoading(false), 10000);
-      return () => { if (loadingTimeout.current) clearTimeout(loadingTimeout.current); };
-    }
-  }, [loading]);
-
-  useEffect(() => {
-    if (refreshing) {
-      refreshTimeout.current = setTimeout(() => setRefreshing(false), 10000);
-      return () => { if (refreshTimeout.current) clearTimeout(refreshTimeout.current); };
-    }
-  }, [refreshing]);
-
-  // ── Mode switching ────────────────────────────────────────────────
-
-  const switchSession = useCallback((s: PiSession) => {
-    setActiveSession(s);
-    setActiveWorktree(null);
-    activeWorktreeRef.current = null;
-    activeSessionRef.current = s;
-    setMode("branch");
-    modeRef.current = "branch";
-    setDiffData({ mode: "branch", files: [], branch: s.branch });
-    setCommits(null);
-    setCommitFrom("");
-    setCommitTo("");
-    commitsRequested.current = false;
-    setStale(false);
-    setRefreshing(false);
-    setLoading(true);
-    send({ type: "watch", sessionId: s.sessionId });
-  }, [send]);
-
-  const switchWorktree = useCallback((wt: Worktree) => {
-    setActiveWorktree(wt);
-    activeWorktreeRef.current = wt;
-    setMode("branch");
-    modeRef.current = "branch";
-    setCommits(null);
-    setCommitFrom("");
-    setCommitTo("");
-    commitsRequested.current = false;
-    // Show stale banner if this tab has pending changes
-    setStale(staleWorktrees.has(wt.path));
-    // Always load data for the tab (no per-tab caching yet)
-    setDiffData({ mode: "branch", files: [], branch: wt.branch });
-    setRefreshing(false);
-    setLoading(true);
-    send({ type: "watch-worktree", worktreePath: wt.path });
-  }, [send, staleWorktrees]);
-
-  const switchMode = useCallback((m: DiffMode) => {
-    setMode(m);
-    modeRef.current = m;
-    if (m === "commits") {
-      setDiffData(d => ({ ...d, files: [] }));
-      if (!commitsRequested.current) {
-        commitsRequested.current = true;
-        send({ type: "request-commits" });
-      }
-    } else {
-      setLoading(true);
-      send({ type: "request-diffs", mode: m });
-    }
-  }, [send]);
-
-  const compareCommits = useCallback(() => {
-    if (!commitFrom || !commitTo) return;
-    setLoading(true);
-    send({ type: "request-diffs", mode: "commits", fromRef: commitFrom, toRef: commitTo });
-  }, [commitFrom, commitTo, send]);
-
-  const requestDiffs = useCallback(() => {
-    const result = runAppRefresh(
-      connected,
-      refreshing,
-      send,
-      modeRef.current,
-      diffData.fromRef,
-      diffData.toRef,
-      commitFrom,
-      commitTo,
-    );
-    if (!beginRefreshUi(result)) return;
-    setStale(false);
-    const activePath = activeWorktreeRef.current?.path || activeSessionRef.current?.cwd;
-    if (activePath) setStaleWorktrees(prev => { const next = new Set(prev); next.delete(activePath); return next; });
-    setRefreshing(true);
-    log.info("requestDiffs", { mode: modeRef.current, path: activePath || "" });
-  }, [send, connected, refreshing, commitFrom, commitTo, diffData.fromRef, diffData.toRef]);
 
   // ── File tree ─────────────────────────────────────────────────────
 
@@ -407,140 +209,46 @@ export function App() {
   useEffect(() => { model.resetPaths(paths); }, [model, paths]);
   useEffect(() => { model.setGitStatus(gitStatus); }, [model, gitStatus]);
 
-  // ── Tree ↔ Diff scroll sync ───────────────────────────────────────
-  //
-  // Two directions:
-  //  A) User clicks file in tree → scroll diff to that file
-  //  B) User scrolls diff → highlight file in tree
-  //
-  // To prevent loops: clicking sets a scrollLock timestamp.
-  // Scroll handler skips tree updates while locked.
-
-  // (A) Tree click → scroll diff
+  // Tree click → scroll diff pane to the newly selected file
   const selectedPaths = useFileTreeSelection(model);
   const prevSelectedRef = useRef<readonly string[]>([]);
 
   useEffect(() => {
-    // Only act on NEW selections (compare by reference — useFileTreeSelection returns new array)
     if (selectedPaths === prevSelectedRef.current) return;
     const prev = new Set(prevSelectedRef.current);
     prevSelectedRef.current = selectedPaths;
 
     if (!selectedPaths.length || !scrollRef.current) return;
 
-    // Find the newly selected path (one the user just clicked)
     let newPath: string | null = null;
     for (let i = selectedPaths.length - 1; i >= 0; i--) {
       if (!prev.has(selectedPaths[i])) { newPath = selectedPaths[i]; break; }
     }
     if (!newPath) return;
 
-    // Lock scroll-sync for 1 second to prevent the scroll handler from fighting
-    scrollLock.current = Date.now() + 1000;
-    setSelectedFile(newPath);
+    log.debug("scroll diff to selected file", { path: newPath });
     const el = scrollRef.current.querySelector(`[data-diff-file="${CSS.escape(newPath)}"]`);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [selectedPaths]);
 
-  // (B) Scroll diff → highlight tree — DISABLED (causes lag)
-  // TODO: Re-enable scroll-sync. The working approach uses:
-  //   - Debounced scroll listener on the diff container (scrollRef)
-  //   - Find topmost visible [data-diff-file] element via getBoundingClientRect
-  //   - Update tree selection via model.getItem(path)?.select() + deselect others
-  //   - Use scrollLock ref to prevent the tree selection change from
-  //     triggering scrollIntoView back (feedback loop)
-  // The lag comes from getItem/select/deselect triggering React re-renders
-  // on every scroll pause. Need to find a way to update the tree highlight
-  // without causing a full re-render (possibly via direct DOM manipulation
-  // on the tree's shadow DOM, or a @pierre/trees API that doesn't emit).
-
-  // ── Parsed diffs (using @pierre/diffs parser) ─────────────────────
-
   const empty = diffData.files.length === 0;
-
-  // ── Review comments ───────────────────────────────────────────────
-
-  const deleteComment = useCallback((index: number) => {
-    setComments(prev => prev.filter((_, i) => i !== index));
-  }, []);
-
-  const editComment = useCallback((index: number) => {
-    const c = commentsRef.current[index];
-    if (c) {
-      // Delete the old comment, then open a form at the same location pre-filled
-      // For now, delete and re-open a form so the user can re-type
-      setComments(prev => prev.filter((_, i) => i !== index));
-      const side: "deletions" | "additions" = c.side === "old" ? "deletions" : "additions";
-      setOpenForms(prev => {
-        if (prev.some(f => f.file === c.file && f.side === side && f.lineNumber === c.line)) return prev;
-        return [...prev, { file: c.file, side, lineNumber: c.line }];
-      });
-    }
-  }, []);
-
-  const addCommentForm = useCallback((file: string, side: "deletions" | "additions", lineNumber: number) => {
-    setOpenForms(prev => {
-      if (prev.some(f => f.file === file && f.side === side && f.lineNumber === lineNumber)) return prev;
-      return [...prev, { file, side, lineNumber }];
-    });
-  }, []);
-
-  const submitComment = useCallback((file: string, side: "deletions" | "additions", lineNumber: number, body: string) => {
-    if (!body.trim()) return;
-    const wt = activeWorktreeRef.current;
-    const branch = wt?.branch || diffBranchRef.current;
-    const worktreePath = wt?.path;
-    setComments(prev => [...prev, { file, line: lineNumber, side: side === "deletions" ? "old" : "new", body: body.trim(), branch, worktreePath }]);
-    setOpenForms(prev => prev.filter(f => !(f.file === file && f.side === side && f.lineNumber === lineNumber)));
-  }, []);
-
-  const cancelCommentForm = useCallback((file: string, side: "deletions" | "additions", lineNumber: number) => {
-    setOpenForms(prev => prev.filter(f => !(f.file === file && f.side === side && f.lineNumber === lineNumber)));
-  }, []);
-
-  const resolveComment = useCallback((index: number) => {
-    setComments(prev => prev.map((c, i) => i === index ? { ...c, resolved: true } : c));
-  }, []);
-
-  const replyToComment = useCallback((index: number, body: string) => {
-    setComments(prev => prev.map((c, i) => {
-      if (i !== index) return c;
-      const replies = [...(c.replies || []), { author: "You", body, timestamp: "now" }];
-      return { ...c, replies };
-    }));
-  }, []);
-
+  const hasOpenForm = openForms.length > 0;
   const preparedFiles = useMemo(() => prepareDiffFiles(diffData.files), [diffData.files]);
   const commentsByFile = useMemo(() => groupCommentsByFile(comments), [comments]);
   const openFormsByFile = useMemo(() => groupOpenFormsByFile(openForms), [openForms]);
-
-  const publish = useCallback(() => {
-    if (!comments.length) return;
-    send({ type: "publish-review", comments });
-    setComments([]);
-    try { localStorage.removeItem("pidiff-comments"); } catch {}
-  }, [comments, send, activeWorktree, diffData.branch]);
 
   // ── Render ────────────────────────────────────────────────────────
 
   return (
     <WorkerPoolContextProvider poolOptions={WORKER_POOL_OPTIONS} highlighterOptions={HIGHLIGHTER_OPTIONS}>
     <div className="flex h-screen flex-col bg-background text-foreground">
-      <AppReconnectWatch
-        connected={connected}
-        worktreePath={activeWorktreeRef.current?.path}
-        sessionId={activeSessionRef.current?.sessionId}
-        send={send}
-      />
-
       {/* ── Header ─────────────────────────────────────────────── */}
       <header className="flex-shrink-0 border-b border-border">
         <div className="flex items-center justify-between px-4 h-11 bg-card">
           <div className="flex items-center gap-3 h-full">
-            {activeSession && (
+            {activeSession ? (
               <span className="text-xs font-medium text-foreground">{activeSession.repo}</span>
-            )}
-            {!activeSession && (
+            ) : (
               <span className="text-xs text-muted-foreground">Waiting for session...</span>
             )}
             {activeSession && (
@@ -552,9 +260,9 @@ export function App() {
             <Separator orientation="vertical" className="h-5" />
             <div className="flex items-center gap-1">
               <Button variant={mode === "branch" ? "secondary" : "ghost"} size="sm"
-                className="h-7 px-3 text-xs" onClick={() => switchMode("branch")}>Branch</Button>
+                className="h-7 px-3 text-xs" onClick={() => controller.switchMode("branch")}>Branch</Button>
               <Button variant={mode === "commits" ? "secondary" : "ghost"} size="sm"
-                className="h-7 px-3 text-xs" onClick={() => switchMode("commits")}>Commits</Button>
+                className="h-7 px-3 text-xs" onClick={() => controller.switchMode("commits")}>Commits</Button>
             </div>
             {mode === "commits" && diffData.fromRef && diffData.toRef && (
               <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
@@ -571,15 +279,16 @@ export function App() {
                 className="h-6 px-2.5 text-[11px] rounded-none border-0" onClick={() => setDiffStyle("unified")}>Unified</Button>
             </div>
             {!connected && <span className="text-[10px] text-red-400">● disconnected</span>}
-            <AppRefreshActions
-              hasSession={Boolean(activeSession)}
-              stale={false}
-              refreshing={refreshing}
-              connected={connected}
-              onRefresh={requestDiffs}
-            />
+            {activeSession && (
+              <RefreshButton
+                slot="header"
+                button={refreshButton}
+                onRefresh={controller.refresh}
+                className="h-7 px-2.5 text-[11px] rounded-md border border-border"
+              />
+            )}
             {comments.length > 0 && (
-              <Button size="sm" className="h-7 gap-1.5 bg-green-600 hover:bg-green-500 text-white text-[11px]" onClick={publish}>
+              <Button size="sm" className="h-7 gap-1.5 bg-green-600 hover:bg-green-500 text-white text-[11px]" onClick={controller.publishReview}>
                 <Send className="h-3 w-3" /> Publish ({comments.length})
               </Button>
             )}
@@ -588,7 +297,6 @@ export function App() {
 
         {/* Settings toolbar */}
         <div className="flex items-center gap-3 px-4 py-1.5 bg-background/50 border-t border-border flex-wrap">
-          {/* Indicators */}
           <div className="flex items-center rounded-md border border-border overflow-hidden">
             {(["bars", "classic", "none"] as const).map(v => (
               <button key={v} onClick={() => setDiffIndicators(v)}
@@ -598,7 +306,6 @@ export function App() {
             ))}
           </div>
 
-          {/* Line diff type */}
           <select value={lineDiffType} onChange={e => setLineDiffType(e.target.value as any)}
             className="h-6 bg-card border border-border rounded-md px-1.5 text-[10px] text-foreground outline-none">
             {(["word-alt", "word", "char", "none"] as const).map(v => (
@@ -606,7 +313,6 @@ export function App() {
             ))}
           </select>
 
-          {/* Hunk separators */}
           <select value={hunkSeparators} onChange={e => setHunkSeparators(e.target.value as any)}
             className="h-6 bg-card border border-border rounded-md px-1.5 text-[10px] text-foreground outline-none">
             {(["line-info", "line-info-basic", "metadata", "simple"] as const).map(v => (
@@ -614,7 +320,6 @@ export function App() {
             ))}
           </select>
 
-          {/* Theme */}
           <select value={theme} onChange={e => setTheme(e.target.value)}
             className="h-6 bg-card border border-border rounded-md px-1.5 text-[10px] text-foreground outline-none">
             <optgroup label="Pierre">
@@ -659,7 +364,6 @@ export function App() {
             </optgroup>
           </select>
 
-          {/* Font size */}
           <select value={fontSize} onChange={e => setFontSize(Number(e.target.value))}
             className="h-6 bg-card border border-border rounded-md px-1.5 text-[10px] text-foreground outline-none">
             {[11, 12, 13, 14, 15, 16].map(v => (
@@ -669,7 +373,6 @@ export function App() {
 
           <Separator orientation="vertical" className="h-4" />
 
-          {/* Toggles with proper Switch */}
           <label className="flex items-center gap-1.5 text-[10px] text-foreground cursor-pointer">
             <Switch checked={!disableBackground} onCheckedChange={c => setDisableBackground(!c)} />
             Backgrounds
@@ -691,13 +394,14 @@ export function App() {
             ) : commits.length === 0 ? (
               <span className="text-xs text-muted-foreground py-1">No commits on this branch</span>
             ) : (<>
-              <CommitSelect label="Base (older)" value={commitFrom} onChange={setCommitFrom} commits={commits} />
-              <CommitSelect label="Head (newer)" value={commitTo} onChange={setCommitTo} commits={commits} />
-              <Button size="sm" className="h-8" onClick={compareCommits} disabled={!commitFrom || !commitTo}>Compare</Button>
+              <CommitSelect label="Base (older)" value={commitFrom} onChange={controller.setCommitFrom} commits={commits} />
+              <CommitSelect label="Head (newer)" value={commitTo} onChange={controller.setCommitTo} commits={commits} />
+              <Button size="sm" className="h-8" onClick={controller.compareCommits} disabled={!commitFrom || !commitTo}>Compare</Button>
             </>)}
           </div>
         )}
-        {/* Workspace tabs — always shown. Each branch/worktree is a tab. */}
+
+        {/* Workspace tabs — each branch/worktree is a tab. */}
         {activeSession && (() => {
           const tabs = activeSession.worktrees && activeSession.worktrees.length > 0
             ? activeSession.worktrees
@@ -708,7 +412,7 @@ export function App() {
                 const isActive = activeWorktree ? activeWorktree.path === wt.path : wt.isMain;
                 const isStale = staleWorktrees.has(wt.path);
                 return (
-                  <button key={wt.path} onClick={() => switchWorktree(wt)}
+                  <button key={wt.path} onClick={() => controller.switchWorktree(wt)}
                     className={cn(
                       "flex items-center gap-1.5 px-3 py-1 rounded-md text-xs whitespace-nowrap transition-colors",
                       isActive ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
@@ -726,13 +430,17 @@ export function App() {
       </header>
 
       {/* Stale banner */}
-      <AppRefreshActions
-        hasSession={false}
-        stale={stale}
-        refreshing={refreshing}
-        connected={connected}
-        onRefresh={requestDiffs}
-      />
+      {stale && (
+        <div className="flex items-center justify-between px-4 py-1.5 bg-amber-500/10 border-b border-amber-500/20">
+          <span className="text-xs text-amber-400">Files have changed since this diff was loaded</span>
+          <RefreshButton
+            slot="banner"
+            button={refreshButton}
+            onRefresh={controller.refresh}
+            className="h-6 px-2 text-[11px] rounded-md border border-amber-500/30 text-amber-400"
+          />
+        </div>
+      )}
 
       {/* ── Body ────────────────────────────────────────────────── */}
       {!activeSession ? (
@@ -764,26 +472,25 @@ export function App() {
               />
             </div>
 
-            {/* Pending comments */}
             {comments.length > 0 && (
               <div className="border-t border-border bg-card">
                 <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between">
                   <span>Pending ({comments.length})</span>
                   <Button size="sm" variant="ghost" className="h-5 text-[10px] text-green-400 hover:text-green-300 px-1.5"
-                    onClick={publish}>Publish</Button>
+                    onClick={controller.publishReview}>Publish</Button>
                 </div>
                 <div className="max-h-[200px] overflow-y-auto divide-y divide-border">
                   {comments.map((c, i) => (
                     <div key={i} className="flex items-start gap-1.5 px-3 py-1.5 text-[11px] group">
-                      <div className="flex-1 min-w-0 cursor-pointer" onClick={() => editComment(i)}>
+                      <div className="flex-1 min-w-0 cursor-pointer" onClick={() => controller.editComment(i)}>
                         <div className="text-muted-foreground font-mono text-[10px]">{c.file.split("/").pop()}:{c.line}</div>
                         <div className="text-foreground truncate">{c.body}</div>
                       </div>
                       <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => editComment(i)} className="text-muted-foreground hover:text-foreground p-0.5">
+                        <button onClick={() => controller.editComment(i)} className="text-muted-foreground hover:text-foreground p-0.5">
                           <Pencil className="h-2.5 w-2.5" />
                         </button>
-                        <button onClick={() => deleteComment(i)} className="text-muted-foreground hover:text-red-400 p-0.5">
+                        <button onClick={() => controller.deleteComment(i)} className="text-muted-foreground hover:text-red-400 p-0.5">
                           <X className="h-2.5 w-2.5" />
                         </button>
                       </div>
@@ -826,16 +533,18 @@ export function App() {
                   comments={commentsByFile.get(file.path) ?? EMPTY_FILE_COMMENTS}
                   openForms={openFormsByFile.get(file.path) ?? EMPTY_FILE_FORMS}
                   hasOpenForm={hasOpenForm}
-                  onAddCommentForm={addCommentForm} onSubmitComment={submitComment} onCancelCommentForm={cancelCommentForm}
-                  onEditComment={editComment} onDeleteComment={deleteComment}
-                  onResolveComment={resolveComment} onReplyComment={replyToComment} />
+                  onAddCommentForm={controller.addCommentForm}
+                  onSubmitComment={controller.submitComment}
+                  onCancelCommentForm={controller.cancelCommentForm}
+                  onEditComment={controller.editComment}
+                  onDeleteComment={controller.deleteComment}
+                  onResolveComment={controller.resolveComment}
+                  onReplyComment={controller.replyToComment} />
               ))}
             </div>
           </main>
         </div>
       )}
-
-
     </div>
     </WorkerPoolContextProvider>
   );
@@ -930,11 +639,9 @@ export const FileBlock = memo(function FileBlock({ oldFile, newFile, path, diffS
   const [selectedRange, setSelectedRange] = useState<{ start: number; end: number; side?: "deletions" | "additions"; endSide?: "deletions" | "additions" } | null>(null);
   const [collapsed, setCollapsed] = useState(false);
 
-  // Build lineAnnotations: combine open forms + submitted comments
   const lineAnnotations = useMemo(() => {
     const annotations: Array<{ side: "deletions" | "additions"; lineNumber: number; metadata: any }> = [];
 
-    // Open comment forms for this file
     for (const form of openForms) {
       annotations.push({
         side: form.side,
@@ -943,7 +650,6 @@ export const FileBlock = memo(function FileBlock({ oldFile, newFile, path, diffS
       });
     }
 
-    // Submitted comments for this file
     for (const { comment, globalIndex } of comments) {
       if (!comment.resolved) {
         annotations.push({
@@ -1128,7 +834,6 @@ function InlineComment({ comment, globalIndex, onEdit, onDelete, onResolve, onRe
   return (
     <div className="max-w-[95%] sm:max-w-[70%]" style={{ whiteSpace: "normal", margin: 20, fontFamily: "Geist Variable, sans-serif" }}>
       <div className="bg-card rounded-lg border p-5 shadow-sm">
-        {/* Main comment */}
         <div className="flex gap-2">
           <div className="relative -mt-0.5 flex-shrink-0">
             <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500 text-xs font-bold text-white">Y</div>
@@ -1142,7 +847,6 @@ function InlineComment({ comment, globalIndex, onEdit, onDelete, onResolve, onRe
           </div>
         </div>
 
-        {/* Replies */}
         {comment.replies && comment.replies.length > 0 && (
           <div className="ml-8 mt-4 space-y-4 sm:ml-[32px]">
             {comment.replies.map((reply, i) => (
@@ -1164,7 +868,6 @@ function InlineComment({ comment, globalIndex, onEdit, onDelete, onResolve, onRe
           </div>
         )}
 
-        {/* Reply form */}
         {replying && (
           <div className="ml-8 mt-4 sm:ml-[32px]">
             <textarea
@@ -1186,7 +889,6 @@ function InlineComment({ comment, globalIndex, onEdit, onDelete, onResolve, onRe
           </div>
         )}
 
-        {/* Actions */}
         <div className="ml-8 mt-4 flex items-center gap-4 sm:ml-[32px]">
           {!replying && (
             <button onClick={() => setReplying(true)}

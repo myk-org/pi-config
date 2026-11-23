@@ -335,7 +335,7 @@ describe("createDeferredProxy registerCommand", () => {
 	});
 
 	it("sets coms_active flag on reload reactivation", async () => {
-		const { setComsActive, isComsActive } = await import("../../../extensions/shared/coms-active.js");
+		const { setComsActive, isComsActive } = await import("../../../extensions/shared/session-bridge.js");
 		setComsActive(false);
 		assert.equal(isComsActive(), false);
 
@@ -371,7 +371,7 @@ describe("createDeferredProxy registerCommand", () => {
 	});
 
 	it("clears active state on reload reactivation failure, persists", async () => {
-		const { setComsActive, isComsActive } = await import("../../../extensions/shared/coms-active.js");
+		const { setComsActive, isComsActive } = await import("../../../extensions/shared/session-bridge.js");
 		setComsActive(true);
 		assert.equal(isComsActive(), true);
 
@@ -410,6 +410,47 @@ describe("createDeferredProxy registerCommand", () => {
 		assert.equal(isComsActive(), false);
 		assert.ok(persisted.some((p) => p.key === "coms-state" && p.data?.active === false));
 		setComsActive(false);
+	});
+
+	it("isolates comsActive reload reactivation per session", async () => {
+		const { isComsActive, resetSessionBridge } = await import("../../../extensions/shared/session-bridge.js");
+		resetSessionBridge({ all: true });
+		try {
+			const handlers: Record<string, Array<(...args: any[]) => Promise<void>>> = {};
+			const pi = {
+				registerCommand: () => {},
+				registerTool: () => {},
+				registerFlag: () => {},
+				getFlag: () => undefined,
+				on: (event: string, handler: any) => {
+					(handlers[event] ??= []).push(handler);
+				},
+				appendEntry: () => {},
+			};
+			const state = makeState(false);
+			const proxy = createDeferredProxy(pi as any, state, "not active", "coms-state");
+			proxy.on("session_start", async () => {});
+			proxy.on("session_shutdown", async () => {});
+
+			await handlers.session_start[0](
+				{ reason: "reload" },
+				{
+					sessionManager: {
+						getSessionId: () => "sess-coms-a",
+						getEntries: () => [
+							{ type: "custom", customType: "coms-state", data: { active: true, flags: {}, extra: {} } },
+						],
+					},
+				},
+			);
+			assert.equal(isComsActive("sess-coms-a"), true);
+			assert.equal(isComsActive("sess-coms-b"), false);
+
+			await handlers.session_shutdown[0]({}, { sessionManager: { getSessionId: () => "sess-coms-a" } });
+			assert.equal(isComsActive("sess-coms-a"), false);
+		} finally {
+			resetSessionBridge({ all: true });
+		}
 	});
 
 });
@@ -527,7 +568,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 	});
 
 	it("activates deferred tools on reload when previously active", async () => {
-		const { setComsActive } = await import("../../../extensions/shared/coms-active.js");
+		const { setComsActive } = await import("../../../extensions/shared/session-bridge.js");
 		setComsActive(false);
 		const { pi, events, getActive } = makeStatefulPi();
 		const state: DeferredUpstream = {
@@ -553,7 +594,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 	});
 
 	it("deactivates deferred tools when reload reactivation fails", async () => {
-		const { setComsActive } = await import("../../../extensions/shared/coms-active.js");
+		const { setComsActive } = await import("../../../extensions/shared/session-bridge.js");
 		setComsActive(false);
 		const { pi, events, getActive } = makeStatefulPi();
 		const state: DeferredUpstream = {
@@ -613,7 +654,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		getActive: ReturnType<typeof makeStatefulPi>["getActive"];
 		sessionCtx: any;
 	}) => Promise<void>): Promise<void> {
-		const { setComsActive } = await import("../../../extensions/shared/coms-active.js");
+		const { resetSessionBridge } = await import("../../../extensions/shared/session-bridge.js");
 		const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coms-gate-test-"));
 		const prevComsDir = process.env.PI_COMS_DIR;
 		process.env.PI_COMS_DIR = tmpRoot;
@@ -637,7 +678,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 			await fn({ pi, tools, commands, getActive, sessionCtx });
 		} finally {
 			try { await tools.get("coms_stop").execute("cleanup", {}); } catch {}
-			setComsActive(false);
+			resetSessionBridge({ all: true });
 			if (prevComsDir === undefined) delete process.env.PI_COMS_DIR;
 			else process.env.PI_COMS_DIR = prevComsDir;
 			fs.rmSync(tmpRoot, { recursive: true, force: true });
