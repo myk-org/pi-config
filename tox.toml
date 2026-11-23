@@ -1,4 +1,3 @@
-[tox]
 env_list = ["py", "node"]
 
 [env.py]
@@ -14,10 +13,25 @@ commands = [
 
 [env.node]
 skip_install = true
-allowlist_externals = ["npx"]
-# Second suite: the browser assets shipped in renderer/static, which have no
-# exports and can only be tested by running them against a DOM.
+allowlist_externals = ["node", "npm", "sh"]
+# Fresh CI worktrees have no node_modules (and package-lock.json is gitignored);
+# bootstrap root workspaces and the standalone pidash-ui package when absent.
+# --legacy-peer-deps avoids an npm 10 Arborist #loadPeerSet edgesOut crash on
+# workspace peer-dependency resolution.
+# If host Node is compiled with small-icu without system full-i18n data (e.g.
+# Fedora nodejs RPM), Intl.Segmenter segfaults — fetch exact version-matched
+# full-icu data into the tox env dir and export NODE_ICU_DATA only when needed.
+commands_pre = [
+  ["sh", "-c", "test -x node_modules/.bin/tsc && test -x node_modules/.bin/tsx || npm install --no-audit --no-fund --legacy-peer-deps"],
+  ["sh", "-c", "test -d extensions/pidash/pidash-ui/node_modules || npm --prefix extensions/pidash/pidash-ui install --no-audit --no-fund --legacy-peer-deps"],
+  ["sh", "-c", "node -e 'Array.from(new Intl.Segmenter().segment(\"hi 👋\"))' 2>/dev/null && exit 0; ICU_DAT=$(node -p \"'icudt' + process.versions.icu.split('.')[0] + (require('node:os').endianness() === 'LE' ? 'l' : 'b') + '.dat'\"); test -f \"{env_dir}/icu/node_modules/full-icu/$ICU_DAT\" && exit 0; rm -rf \"{env_dir}/icu\" && mkdir -p \"{env_dir}/icu\" && node -e 'require(\"node:fs\").writeFileSync(process.argv[1], JSON.stringify(Object.create(null)))' \"{env_dir}/icu/package.json\" && npm --prefix \"{env_dir}/icu\" install --no-audit --no-fund full-icu && test -f \"{env_dir}/icu/node_modules/full-icu/$ICU_DAT\""],
+]
+# Runs repo TypeScript typecheck plus the root Node, pi-docsite browser-asset
+# (jsdom), and pi-sidecar TypeScript test suites. Uses `node --import tsx` with
+# bounded concurrency to avoid tsx wrapper / container worker contention.
 commands = [
-  ["npx", "tsx", "--test", "tests/node/**/*.test.ts"],
-  ["npx", "tsx", "--test", "packages/pi-docsite/tests/js/**/*.test.ts"],
+  ["npm", "run", "typecheck"],
+  ["sh", "-c", "if ! node -e 'Array.from(new Intl.Segmenter().segment(\"hi 👋\"))' 2>/dev/null; then ICU_DAT=$(node -p \"'icudt' + process.versions.icu.split('.')[0] + (require('node:os').endianness() === 'LE' ? 'l' : 'b') + '.dat'\"); test -f \"{env_dir}/icu/node_modules/full-icu/$ICU_DAT\" && export NODE_ICU_DATA=\"{env_dir}/icu/node_modules/full-icu\"; fi; node --import tsx --test --test-concurrency=4 'tests/node/**/*.test.ts'"],
+  ["node", "--import", "tsx", "--test", "--test-concurrency=4", "packages/pi-docsite/tests/js/**/*.test.ts"],
+  ["sh", "-c", "if ! node -e 'Array.from(new Intl.Segmenter().segment(\"hi 👋\"))' 2>/dev/null; then ICU_DAT=$(node -p \"'icudt' + process.versions.icu.split('.')[0] + (require('node:os').endianness() === 'LE' ? 'l' : 'b') + '.dat'\"); test -f \"{env_dir}/icu/node_modules/full-icu/$ICU_DAT\" && export NODE_ICU_DATA=\"{env_dir}/icu/node_modules/full-icu\"; fi; node --import tsx --test --test-concurrency=4 'packages/pi-sidecar/tests/test_ts/*.test.ts'"],
 ]

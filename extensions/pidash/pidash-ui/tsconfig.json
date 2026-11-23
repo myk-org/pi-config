@@ -20,7 +20,6 @@
       "node",
       "vite/client"
     ],
-    "baseUrl": ".",
     "paths": {
       "@/*": [
         "./src/*"

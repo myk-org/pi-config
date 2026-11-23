@@ -215,7 +215,13 @@ describe("createAsyncDebugLogWriter", () => {
         createStream: () => stalled as any,
       });
       const start = Date.now();
-      await stalledWriter.flush(40);
+      // flush() unrefs its fallback timer; keep Node 22's event loop alive until it fires.
+      const keepAlive = setInterval(() => {}, 100);
+      try {
+        await stalledWriter.flush(40);
+      } finally {
+        clearInterval(keepAlive);
+      }
       assert.ok(Date.now() - start < 500);
       assert.equal(stalled.writableEnded, true);
     } finally {

@@ -201,11 +201,14 @@ describe("sweepProjectTmp", () => {
     const victim = makeEntry("old.bin", 4 * MB, 90);
     const realLstat = fsp.lstat;
     let calls = 0;
-    // Second look at the victim is the pre-delete identity check: swap the contents first.
+    // Second look at the victim is the pre-delete identity check: swap via
+    // create+rename so the replacement is guaranteed a fresh inode (unlink+create
+    // can reuse the same inode immediately on tmpfs/overlayfs).
     fsp.lstat = ((target: any, ...rest: any[]) => {
       if (target === victim && ++calls === 2) {
-        fs.rmSync(victim);
-        fs.writeFileSync(victim, Buffer.alloc(MB));
+        const replacement = `${victim}.replacement`;
+        fs.writeFileSync(replacement, Buffer.alloc(MB));
+        fs.renameSync(replacement, victim);
       }
       return (realLstat as any)(target, ...rest);
     }) as any;

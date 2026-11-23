@@ -11,7 +11,7 @@ import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { DANGEROUS, DANGEROUS_EXPLANATIONS, DANGEROUS_LABELS, dangerousPatternExplanation, dangerousPatternExplanations, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
-import { getPiLogPath, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
+import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, formatReviewStateSummary, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { clearSettingsCache, getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
@@ -4397,13 +4397,44 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     writeFileSync(file, JSON.stringify({ dangerous_command_allowlist: allowlist }, null, 2));
   };
 
+  let prevSessionId: string | undefined;
+  let prevSessionIdEnv: string | undefined;
+  let prevParentSessionIdEnv: string | undefined;
+  let throwawaySessionId: string | undefined;
+  let testLogDir: string | undefined;
+
   before(() => {
+    // Pin a throwaway session id (and clear any inherited parent session id)
+    // so audit-log assertions never depend on ambient __PI_CONFIG_SESSION_ID
+    // and cleanup never touches a parent agent's shared enforcement log dir.
+    prevSessionId = (globalThis as any).__piConfigSessionId;
+    prevSessionIdEnv = process.env.__PI_CONFIG_SESSION_ID;
+    prevParentSessionIdEnv = process.env.__PI_PARENT_SESSION_ID;
+    delete process.env.__PI_PARENT_SESSION_ID;
+    throwawaySessionId = `enforcement-gate-${process.pid}-${Date.now()}`;
+    setGlobalSessionId(throwawaySessionId);
+    setLogLevelPin("enforcement", "debug");
+    const logPath = getPiLogPath("enforcement");
+    if (logPath) testLogDir = dirname(logPath);
     hooks = new Map();
     registerEnforcement({
       on: (name: string, handler: Function) => hooks.set(name, handler),
       registerTool: () => {},
       registerCommand: () => {},
     } as any);
+  });
+
+  after(() => {
+    setLogLevelPin("enforcement", null);
+    if (testLogDir && throwawaySessionId && path.basename(testLogDir) === throwawaySessionId) {
+      rmSync(testLogDir, { recursive: true, force: true });
+    }
+    if (prevParentSessionIdEnv === undefined) delete process.env.__PI_PARENT_SESSION_ID;
+    else process.env.__PI_PARENT_SESSION_ID = prevParentSessionIdEnv;
+    if (prevSessionId === undefined) delete (globalThis as any).__piConfigSessionId;
+    else (globalThis as any).__piConfigSessionId = prevSessionId;
+    if (prevSessionIdEnv === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+    else process.env.__PI_CONFIG_SESSION_ID = prevSessionIdEnv;
   });
 
   beforeEach(() => {
@@ -5319,17 +5350,36 @@ describe("dangerous approval scopes + explanations (#1073)", () => {
 
   it("the store stays bounded when sessions never emit a shutdown (sidecar dispose)", () => {
     clearAllDangerousSessionApprovals();
+    const prevSid = (globalThis as any).__piConfigSessionId;
+    const prevSidEnv = process.env.__PI_CONFIG_SESSION_ID;
+    const prevParentSidEnv = process.env.__PI_PARENT_SESSION_ID;
+    delete process.env.__PI_PARENT_SESSION_ID;
+    const throwawaySid = `enforcement-evict-${process.pid}-${Date.now()}`;
+    setGlobalSessionId(throwawaySid);
     const logPath = getPiLogPath("enforcement");
-    const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
-    for (let i = 0; i < 70; i++) grantDangerousSessionApproval(`s${i}`, "sudo reboot now");
-    assert.equal(hasDangerousSessionApproval("s0", "sudo reboot now"), false, "oldest bucket evicted");
-    assert.ok(hasDangerousSessionApproval("s69", "sudo reboot now"), "newest bucket kept");
-    // An evicted grant is never silent: the user gets re-prompted, so the
-    // operator must be able to tell eviction from a clear.
-    const written = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
-    assert.match(written, /dangerous_session_grants_evicted/);
-    assert.doesNotMatch(written, /"s0"/, "the session id itself must not reach the log");
-    clearAllDangerousSessionApprovals();
+    const testLogDir = logPath ? dirname(logPath) : undefined;
+    try {
+      const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
+      for (let i = 0; i < 70; i++) grantDangerousSessionApproval(`s${i}`, "sudo reboot now");
+      assert.equal(hasDangerousSessionApproval("s0", "sudo reboot now"), false, "oldest bucket evicted");
+      assert.ok(hasDangerousSessionApproval("s69", "sudo reboot now"), "newest bucket kept");
+      // An evicted grant is never silent: the user gets re-prompted, so the
+      // operator must be able to tell eviction from a clear.
+      const written = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
+      assert.match(written, /dangerous_session_grants_evicted/);
+      assert.doesNotMatch(written, /"s0"/, "the session id itself must not reach the log");
+    } finally {
+      clearAllDangerousSessionApprovals();
+      if (testLogDir && path.basename(testLogDir) === throwawaySid) {
+        rmSync(testLogDir, { recursive: true, force: true });
+      }
+      if (prevParentSidEnv === undefined) delete process.env.__PI_PARENT_SESSION_ID;
+      else process.env.__PI_PARENT_SESSION_ID = prevParentSidEnv;
+      if (prevSid === undefined) delete (globalThis as any).__piConfigSessionId;
+      else (globalThis as any).__piConfigSessionId = prevSid;
+      if (prevSidEnv === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+      else process.env.__PI_CONFIG_SESSION_ID = prevSidEnv;
+    }
   });
 });
 
