@@ -15,15 +15,20 @@ import {
 	detectSource,
 	getSetting,
 	getSettingDynamic,
+	getSettingsPath,
+	isImageGenModelId,
 	parseReviewLoopMaxCycles,
 	parseSettingInput,
 	parseSettingsFile,
+	resolveMainCheckoutRoot,
 	resolveSetting,
 	setGlobalSettingsPath,
+	setSettingsLogger,
 	settingsBackupPath,
 	updateSetting,
 	validateSetting,
 } from "../../../extensions/orchestrator/project-settings.js";
+import { resolveRepoRoot as utilsResolveRepoRoot } from "../../../extensions/orchestrator/utils.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -642,5 +647,42 @@ describe("Deep settings store — unified schema, cache, and atomic persistence 
 		assert.equal(corrupt.ok, false);
 		assert.equal(corrupt.reason, "corrupt");
 		assert.equal(readFileSync(projectFile, "utf-8"), "{ broken");
+	});
+
+	it("does not emit bypass debug logs on hot getSetting, isImageGenModelId, or parseSettingInput calls", () => {
+		const debugMessages: string[] = [];
+		setSettingsLogger({
+			debug: (msg) => debugMessages.push(msg),
+			info: () => {},
+			warn: () => {},
+			error: () => {},
+		});
+		try {
+			getSetting(tmp, "dco");
+			getSettingDynamic(tmp, "log_coms");
+			isImageGenModelId("gemini-2.5-flash-image");
+			parseSettingInput("dangerous_command_allowlist", '["git status"]');
+			assert.deepEqual(debugMessages, [], "hot lookups must not spam the bypass logger");
+
+			// Opt-in audit mode (used by file-logger's 30s-cached resolveMinLevel) still emits diagnostics
+			resolveSetting(tmp, "log_coms", { audit: true });
+			assert.deepEqual(debugMessages, ["resolved setting"]);
+		} finally {
+			setSettingsLogger({});
+		}
+	});
+
+	it("shares a single repo-root resolver with utils.ts even when git fails on a fake .git layout", () => {
+		const fakeRepo = makeTempDir("pi-fake-repo-");
+		const nested = join(fakeRepo, "a", "b");
+		try {
+			mkdirSync(join(fakeRepo, ".git"), { recursive: true });
+			mkdirSync(nested, { recursive: true });
+			assert.equal(resolveMainCheckoutRoot(nested), fakeRepo);
+			assert.equal(utilsResolveRepoRoot(nested), fakeRepo);
+			assert.equal(getSettingsPath(nested), join(fakeRepo, ".pi", "pi-config-settings.json"));
+		} finally {
+			rmSync(fakeRepo, { recursive: true, force: true });
+		}
 	});
 });

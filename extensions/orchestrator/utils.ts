@@ -6,6 +6,10 @@ import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
+import {
+  resolveMainCheckoutRoot as resolveMainCheckoutRootCore,
+  tryResolveMainCheckoutRoot as tryResolveMainCheckoutRootCore,
+} from "./project-settings.js";
 
 const log = createLogger("utils");
 
@@ -80,60 +84,27 @@ export function getPiInvocation(args: string[]): { command: string; args: string
 }
 
 /** Resolve to the main git repo root when cwd is a worktree.
- *  Uses --git-common-dir → always returns the SHARED repo root.
- *  Use for shared resources: project settings, reviews.db. */
+ *  Delegates to the single canonical resolver in `project-settings.ts`. */
 export function resolveRepoRoot(cwd: string): string {
-  return resolveMainCheckoutRoot(cwd);
+  return resolveMainCheckoutRootCore(cwd);
 }
-
-const mainCheckoutRootCache = new Map<string, string>();
 
 /**
  * Resolve the main checkout root (the repo owning the worktree), or null when
- * `cwd` is not a git repo.
- *
- * Runs `git rev-parse --path-format=absolute --git-common-dir` and returns the
- * PARENT of the git-common-dir. In the main checkout itself the common dir is
- * `<root>/.git`, so this equals the repo root — callers can use it
- * unconditionally. `.pi/memory` and `.pi/data` are gitignored, so worktree
- * sessions must resolve them here to see the shared stores (issue #918).
+ * `cwd` is not a git repo. Delegates to the single canonical implementation in
+ * `project-settings.ts` so settings, memory, and data dirs never drift.
  */
 export function tryResolveMainCheckoutRoot(cwd: string): string | null {
-  const key = path.resolve(cwd);
-  const cached = mainCheckoutRootCache.get(key);
-  if (cached !== undefined) return cached === "" ? null : cached;
-  let root: string | null = null;
-  const runGit = (args: string[]): string | null => {
-    try {
-      const out = execFileSync("git", args, {
-        cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-      return out && !out.startsWith("fatal") ? out : null;
-    } catch {
-      return null;
-    }
-  };
-  // Preferred form: absolute path, any git version ≥ 2.31.
-  let gitCommonDir = runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  // Older git releases reject --path-format — fall back to the plain form
-  // (relative to cwd) and resolve it, mirroring Python's _get_git_root.
-  if (gitCommonDir === null) gitCommonDir = runGit(["rev-parse", "--git-common-dir"]);
-  if (gitCommonDir !== null) {
-    // Plain-form output may be cwd-relative (older git) — resolve against the
-    // queried cwd, never process.cwd().
-    root = path.dirname(path.resolve(key, gitCommonDir));
-  } else {
-    // Expected whenever the cwd is not a git repo — debug line in a file log,
-    // never console.*, which would dump it into the chat transcript.
-    log.debug("tryResolveMainCheckoutRoot", { cwd: key, reason: "git rev-parse failed (not a repo?)" });
+  const root = tryResolveMainCheckoutRootCore(cwd);
+  if (root === null) {
+    log.debug("tryResolveMainCheckoutRoot", { cwd: path.resolve(cwd), reason: "not a repo" });
   }
-  mainCheckoutRootCache.set(key, root ?? "");
   return root;
 }
 
 /** Main checkout root, or `cwd` itself when not inside a git repo. */
 export function resolveMainCheckoutRoot(cwd: string): string {
-  return tryResolveMainCheckoutRoot(cwd) ?? path.resolve(cwd);
+  return resolveMainCheckoutRootCore(cwd);
 }
 
 /**

@@ -147,7 +147,7 @@ const levelPins = new Map<string, number>();
 
 function resolveMinLevel(name: string): number {
   const settingKey = `log_${name.replace(/-/g, "_")}`;
-  const resolved = resolveSetting(process.cwd(), settingKey);
+  const resolved = resolveSetting(process.cwd(), settingKey, { audit: true });
   if (resolved && typeof resolved.value === "string" && resolved.value in LEVEL_ORDER) {
     const source = resolved.source === "E" ? "environment" : resolved.source === "D" ? "default" : "setting";
     logLevelDecision("resolved log level", { name, source, level: resolved.value });

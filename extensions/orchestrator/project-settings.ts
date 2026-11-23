@@ -147,32 +147,22 @@ function isInsideTempTree(targetPath: string): boolean {
   return target === base || target.startsWith(base + sep);
 }
 
-// ── Repository root resolution (cached, cycle-free) ─────────────────
+// ── Canonical repository root resolution (cached, cycle-free) ───────
 
-const REPO_ROOT_CACHE_MAX = 128;
-const repoRootCache = new Map<string, string>();
-let repoRootResolver: (cwd: string) => string = resolveRepoRootUncached;
+const REPO_ROOT_CACHE_MAX = 512;
+/** Cached main-checkout root per resolved cwd ("" represents "not a git repo"). LRU-evicted. */
+const mainCheckoutRootCache = new Map<string, string>();
+let repoRootResolverOverride: ((cwd: string) => string) | null = null;
+const overrideRepoRootCache = new Map<string, string>();
 
 export function setRepoRootResolverForTests(resolver: ((cwd: string) => string) | null): void {
-  repoRootResolver = resolver ?? resolveRepoRootUncached;
-  repoRootCache.clear();
+  repoRootResolverOverride = resolver;
+  overrideRepoRootCache.clear();
+  mainCheckoutRootCache.clear();
   clearSettingsCache();
 }
 
-function resolveRepoRoot(cwd: string): string {
-  const resolvedCwd = resolve(cwd);
-  const cached = repoRootCache.get(resolvedCwd);
-  if (cached !== undefined) return cached;
-  const root = repoRootResolver(resolvedCwd);
-  if (repoRootCache.size >= REPO_ROOT_CACHE_MAX) {
-    const oldest = repoRootCache.keys().next().value;
-    if (oldest !== undefined) repoRootCache.delete(oldest);
-  }
-  repoRootCache.set(resolvedCwd, root);
-  return root;
-}
-
-function resolveRepoRootUncached(cwd: string): string {
+function tryResolveMainCheckoutRootUncached(cwd: string): string | null {
   const runGit = (args: string[]): string | null => {
     try {
       const out = execFileSync("git", args, {
@@ -190,9 +180,7 @@ function resolveRepoRootUncached(cwd: string): string {
     runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"]) ??
     runGit(["rev-parse", "--git-common-dir"]);
   if (common !== null) {
-    const root = dirname(resolve(cwd, common));
-    log.debug("resolved settings repository root", { cwd, root });
-    return root;
+    return dirname(resolve(cwd, common));
   }
 
   // Fallback for fake/offline repos or linked worktrees when git CLI fails
@@ -208,9 +196,7 @@ function resolveRepoRootUncached(cwd: string): string {
           if (!gitDir.split(sep).join("/").includes("/.git/modules/")) {
             const commonFile = join(gitDir, "commondir");
             if (existsSync(commonFile)) {
-              const root = dirname(resolve(gitDir, readFileSync(commonFile, "utf8").trim()));
-              log.debug("resolved worktree repository root", { cwd, root });
-              return root;
+              return dirname(resolve(gitDir, readFileSync(commonFile, "utf8").trim()));
             }
           }
         }
@@ -223,8 +209,52 @@ function resolveRepoRootUncached(cwd: string): string {
     if (parent === current) break;
     current = parent;
   }
-  log.debug("settings repository root fallback", { cwd });
-  return resolve(cwd);
+  return null;
+}
+
+/**
+ * Resolve the main checkout root (the repo owning a worktree), or null when
+ * `cwd` is not inside a git repository. Single canonical implementation shared
+ * by `project-settings.ts` and `utils.ts` so settings, memory, and data dirs
+ * always resolve identically (even when git CLI fails).
+ */
+export function tryResolveMainCheckoutRoot(cwd: string): string | null {
+  const resolvedCwd = resolve(cwd);
+  const cached = mainCheckoutRootCache.get(resolvedCwd);
+  if (cached !== undefined) {
+    // Promote to MRU so hot roots like process.cwd() are never evicted by temp-dir bursts.
+    mainCheckoutRootCache.delete(resolvedCwd);
+    mainCheckoutRootCache.set(resolvedCwd, cached);
+    return cached === "" ? null : cached;
+  }
+  const root = tryResolveMainCheckoutRootUncached(resolvedCwd);
+  if (mainCheckoutRootCache.size >= REPO_ROOT_CACHE_MAX) {
+    const oldest = mainCheckoutRootCache.keys().next().value;
+    if (oldest !== undefined) mainCheckoutRootCache.delete(oldest);
+  }
+  mainCheckoutRootCache.set(resolvedCwd, root ?? "");
+  return root;
+}
+
+/** Main checkout root, or `resolve(cwd)` when not inside a git repo. */
+export function resolveMainCheckoutRoot(cwd: string): string {
+  return tryResolveMainCheckoutRoot(cwd) ?? resolve(cwd);
+}
+
+function resolveRepoRoot(cwd: string): string {
+  const resolvedCwd = resolve(cwd);
+  if (repoRootResolverOverride) {
+    const cached = overrideRepoRootCache.get(resolvedCwd);
+    if (cached !== undefined) return cached;
+    const root = repoRootResolverOverride(resolvedCwd);
+    if (overrideRepoRootCache.size >= REPO_ROOT_CACHE_MAX) {
+      const oldest = overrideRepoRootCache.keys().next().value;
+      if (oldest !== undefined) overrideRepoRootCache.delete(oldest);
+    }
+    overrideRepoRootCache.set(resolvedCwd, root);
+    return root;
+  }
+  return resolveMainCheckoutRoot(resolvedCwd);
 }
 
 // ── Legacy `.jsonc` one-time migration (issue #1086) ────────────────
@@ -428,12 +458,8 @@ export function findSettingsFile(dir: string, options: FindSettingsOptions = {})
   migrateLegacySettingsFile(dir, options);
   for (const name of SETTINGS_FILENAMES) {
     const file = join(dir, name);
-    if (existsSync(file)) {
-      log.debug("found settings file", { path: file });
-      return file;
-    }
+    if (existsSync(file)) return file;
   }
-  log.debug("settings file not found", { path: dir });
   return null;
 }
 
@@ -617,10 +643,6 @@ export function validateSetting(
       if (!Array.isArray(value)) return { ok: false, error: `${key} must be an array of strings` };
       if (mode === "lenient") {
         const list = value.filter((e): e is string => typeof e === "string" && e.length > 0);
-        const dropped = value.length - list.length;
-        if (dropped > 0) {
-          log.debug("dropped invalid string_list entries", { key, dropped });
-        }
         if (value.length > 0 && list.length === 0) {
           return { ok: false, error: `${key} has no valid string entries` };
         }
@@ -696,11 +718,10 @@ export function parseSettingInput(key: string, rawValue: string): ValidationResu
         const parsed = JSON.parse(rawValue);
         if (Array.isArray(parsed)) {
           const list = parsed.filter((e): e is string => typeof e === "string" && e.length > 0);
-          log.debug("parsed string_list input", { key, count: list.length });
           return { ok: true, value: list };
         }
       } catch {
-        log.debug("string_list input is not JSON — treating as single pattern", { key });
+        // Fall through to single-pattern parsing
       }
       const trimmed = rawValue.trim();
       return { ok: true, value: trimmed !== "" ? [trimmed] : [] };
@@ -779,12 +800,11 @@ function parseEnvSetting(key: string, def: SettingsKeyDef): unknown | undefined 
 /** True when a model id looks like a Google/Gemini image-generation model. */
 export function isImageGenModelId(id: string): boolean {
   const lower = id.toLowerCase();
-  const result =
+  return (
     lower.includes("imagen") ||
     lower.includes("image-generation") ||
-    /(?:^|[-_./])image(?:[-_./]|$)/.test(lower);
-  log.debug("isImageGenModelId", { id, result });
-  return result;
+    /(?:^|[-_./])image(?:[-_./]|$)/.test(lower)
+  );
 }
 
 // ── File reading & schema-driven parsing ────────────────────────────
@@ -812,14 +832,9 @@ export function readSettingsFile(filePath: string): Record<string, unknown> | nu
 }
 
 /** Read raw settings object, returning `{}` when missing or unparseable (non-mutating callers). */
-export function readSettingsObject(file: string | null, key?: string): Record<string, unknown> {
-  if (!file) {
-    log.debug("settings read skipped", { path: null, key });
-    return {};
-  }
-  const raw = readSettingsFile(file);
-  log.debug("settings read", { path: file, key, validObject: raw !== null });
-  return raw ?? {};
+export function readSettingsObject(file: string | null, _key?: string): Record<string, unknown> {
+  if (!file) return {};
+  return readSettingsFile(file) ?? {};
 }
 
 /** Parse and validate all known schema keys from a settings file. */
@@ -833,8 +848,6 @@ export function parseSettingsFile(filePath: string): ProjectSettings {
     const validated = validateSetting(key, raw[key], { mode: "lenient" });
     if (validated.ok) {
       result[key] = validated.value;
-    } else {
-      log.debug("ignored invalid setting value in file", { path: filePath, key });
     }
   }
   return result as ProjectSettings;
@@ -895,6 +908,8 @@ function readCachedLayer(scope: SettingsScope, cwd: string): CachedLayer {
 
   const cached = layerCache.get(cacheKey);
   if (cached && now - cached.checkedAt < SETTINGS_CACHE_TTL_MS) {
+    layerCache.delete(cacheKey);
+    layerCache.set(cacheKey, cached);
     return cached;
   }
 
@@ -933,32 +948,40 @@ export interface ResolvedSetting<T = AnySettingValue> {
 /**
  * Resolve a setting value and its winning source (`P` | `G` | `E` | `D`) through the
  * single coordinated cache and schema validator. Returns `null` for unknown keys.
+ *
+ * Pass `{ audit: true }` only from low-frequency bootstrap callers (e.g. `file-logger.ts`,
+ * cached 30s per logger) so hot `getSetting` calls never append to the bypass logger.
  */
-export function resolveSetting(cwd: string, key: string): ResolvedSetting | null {
+export function resolveSetting(
+  cwd: string,
+  key: string,
+  options?: { audit?: boolean },
+): ResolvedSetting | null {
   const def = SETTINGS_KEYS[key];
   if (!def) return null;
+  const audit = options?.audit === true;
 
   const projectLayer = readCachedLayer("project", cwd);
   const projectVal = (projectLayer.parsed as Record<string, unknown>)[key];
   if (projectVal !== undefined) {
-    log.debug("resolved setting", { key, source: "project", path: projectLayer.file });
+    if (audit) log.debug("resolved setting", { key, source: "project", path: projectLayer.file });
     return { value: projectVal as AnySettingValue, source: "P", path: projectLayer.file };
   }
 
   const globalLayer = readCachedLayer("global", cwd);
   const globalVal = (globalLayer.parsed as Record<string, unknown>)[key];
   if (globalVal !== undefined) {
-    log.debug("resolved setting", { key, source: "global", path: globalLayer.file });
+    if (audit) log.debug("resolved setting", { key, source: "global", path: globalLayer.file });
     return { value: globalVal as AnySettingValue, source: "G", path: globalLayer.file };
   }
 
   const envVal = parseEnvSetting(key, def);
   if (envVal !== undefined) {
-    log.debug("resolved setting", { key, source: "environment" });
+    if (audit) log.debug("resolved setting", { key, source: "environment" });
     return { value: envVal as AnySettingValue, source: "E" };
   }
 
-  log.debug("resolved setting", { key, source: "default" });
+  if (audit) log.debug("resolved setting", { key, source: "default" });
   const defaultVal =
     def.type === "string_list"
       ? (Array.isArray(def.default) ? [...(def.default as string[])] : [])
