@@ -1897,7 +1897,7 @@ export async function findContradictionWithVector(
   text: string,
   category: string,
   preloadedEntries?: TopicEntry[],
-  options?: { exclude?: { category: string; text: string } },
+  options?: { exclude?: { category: string; text: string; pinned?: boolean } },
 ): Promise<{
   conflicts: ConflictCandidate[];
   vectorMatches: VectorMatchItem[];
@@ -1905,22 +1905,39 @@ export async function findContradictionWithVector(
   const topicEntries = preloadedEntries ?? readAllTopicEntries(cwd);
   if (topicEntries.length === 0) return { conflicts: [], vectorMatches: [] };
   const scores = loadScores(cwd);
-  const excludeKey = options?.exclude
-    ? `${options.exclude.category}:${options.exclude.text}`
-    : null;
+  const exclude = options?.exclude;
+  let excludedOnce = false;
 
   // Protected pool: same category + pinned + enforced. These are the entries
   // a one-off grant is most likely to contradict (issue #915 incident).
+  // Exclude at most one matching occurrence (the specific line being edited)
+  // and preserve pinned/enforced flags if duplicate lines exist in the topic.
   const pool: ConflictCandidate[] = [];
-  const seen = new Set<string>();
+  const poolByKey = new Map<string, ConflictCandidate>();
   for (const te of topicEntries) {
+    if (
+      !excludedOnce &&
+      exclude &&
+      te.category === exclude.category &&
+      te.text === exclude.text &&
+      (exclude.pinned === undefined || te.pinned === exclude.pinned)
+    ) {
+      excludedOnce = true;
+      continue;
+    }
     const key = `${te.category}:${te.text}`;
-    if (key === excludeKey || seen.has(key)) continue;
     const scored = scores.entries[entryHash(`- [${te.category}] ${te.text}`)];
     const enforced = hasEnforcementFields(scored);
+    const existing = poolByKey.get(key);
+    if (existing) {
+      if (te.pinned) existing.pinned = true;
+      if (enforced) existing.enforced = true;
+      continue;
+    }
     if (te.category === category || te.pinned || enforced) {
-      seen.add(key);
-      pool.push({ text: te.text, category: te.category, pinned: te.pinned, enforced });
+      const cand: ConflictCandidate = { text: te.text, category: te.category, pinned: te.pinned, enforced };
+      poolByKey.set(key, cand);
+      pool.push(cand);
     }
   }
   if (pool.length === 0) return { conflicts: [], vectorMatches: [] };

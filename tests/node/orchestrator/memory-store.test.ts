@@ -276,9 +276,108 @@ describe("memory-store: editMemoryEntry guard enforcement", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("rejects editing an unpinned project preference to unmarked text", async () => {
+    const cwd = makeTempDir("mem-store-edit-durability-");
+    try {
+      await addMemoryEntry(cwd, { category: "preference", text: "Always use uv for Python" });
+      const res = await editMemoryEntry(cwd, {
+        category: "preference",
+        text: "Always use uv for Python",
+        newText: "use pip for this",
+      });
+      assert.equal(res.status, "rejected");
+      assert.match(res.message, /durability marker/i);
+      assert.equal(readAllTopicEntries(cwd)[0]?.text, "Always use uv for Python");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows editing a pinned preference to unmarked text", async () => {
+    const cwd = makeTempDir("mem-store-edit-pinned-pref-");
+    try {
+      await addMemoryEntry(cwd, {
+        category: "preference",
+        text: "Always use uv for Python",
+        pinned: true,
+      });
+      const res = await editMemoryEntry(cwd, {
+        category: "preference",
+        text: "Always use uv for Python",
+        newText: "use uv for Python scripts",
+      });
+      assert.equal(res.status, "updated");
+      assert.equal(readAllTopicEntries(cwd)[0]?.text, "use uv for Python scripts");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects editing an unpinned duplicate when a pinned duplicate contradicts the new text", async () => {
+    const cwd = makeTempDir("mem-store-edit-pinned-dup-");
+    try {
+      const topicsDir = join(cwd, ".pi", "memory", "topics");
+      mkdirSync(topicsDir, { recursive: true });
+      writeFileSync(
+        join(topicsDir, "lessons.md"),
+        [
+          "# Lessons",
+          "",
+          "- [lesson] Never force push to main",
+          "- [lesson] Never force push to main *(pinned)*",
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+
+      const res = await editMemoryEntry(cwd, {
+        category: "lesson",
+        text: "Never force push to main",
+        newText: "Always force push to main",
+      });
+      assert.equal(res.status, "rejected");
+      assert.match(res.message, /contradicts pinned memory/i);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("memory-store: editMemoryEntry persistence invariants", () => {
+  it("re-reads the topic file after async checks so concurrent writes are preserved", async () => {
+    const cwd = makeTempDir("mem-store-edit-concurrent-");
+    try {
+      await addMemoryEntry(cwd, { category: "lesson", text: "Target rule to update" });
+      const topicPath = join(cwd, ".pi", "memory", "topics", "lessons.md");
+
+      // Start edit (runs synchronously up to its first await, then yields)
+      const editPromise = editMemoryEntry(cwd, {
+        category: "lesson",
+        text: "Target rule to update",
+        newText: "Updated target rule",
+      });
+
+      // Simulate a concurrent write landing during the await window that shifts line indices
+      const current = readFileSync(topicPath, "utf-8");
+      const lines = current.split("\n");
+      lines.splice(1, 0, "- [lesson] Concurrent entry inserted before target");
+      writeFileSync(topicPath, lines.join("\n"), "utf-8");
+
+      const res = await editPromise;
+      assert.equal(res.status, "updated");
+
+      const entries = readAllTopicEntries(cwd).map((e) => e.text);
+      assert.ok(
+        entries.includes("Concurrent entry inserted before target"),
+        "concurrent write must not be clobbered",
+      );
+      assert.ok(entries.includes("Updated target rule"), "target line must be updated at its shifted index");
+      assert.ok(!entries.includes("Target rule to update"));
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
   it("preserves topic markers, stable id, and invalidates topic read cache", async () => {
     const cwd = makeTempDir("mem-store-edit-cache-");
     try {

@@ -357,6 +357,33 @@ function checkTextGuardrails(
   return null;
 }
 
+/** Shared durability gate (issue #961) for both addMemoryEntry and editMemoryEntry:
+ *  non-pinned, non-session preferences must carry a durability marker unless
+ *  confirmed via overrideConflicts. */
+function checkPreferenceDurability(
+  text: string,
+  category: string,
+  options: { pinned: boolean; isSessionScoped: boolean; overrideConflicts?: boolean },
+): string | null {
+  if (
+    category === "preference" &&
+    !options.pinned &&
+    !options.overrideConflicts &&
+    !options.isSessionScoped &&
+    !hasDurabilityMarker(text)
+  ) {
+    log.info("memory_unmarked_preference_rejected", { text: text.slice(0, 120) });
+    return (
+      `Rejected: "${text}" carries no durability marker (always, never, prefer, from now on, ` +
+      `by default…). A preference said once, unmarked, is a session instruction — it must not ` +
+      `apply to all future work. Either confirm with the user that it is a standing rule ` +
+      `(then rephrase as the rule itself, e.g. "Always commit and push before reporting done"), ` +
+      `store it with scope=session, or pin it with "remember this".`
+    );
+  }
+  return null;
+}
+
 // ── Entry Removal & Supersession ───────────────────────────────────────────
 
 /**
@@ -682,23 +709,13 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   }
 
   // 3b. Durability gate (issue #961)
-  if (
-    category === "preference" &&
-    !input.pinned &&
-    !input.overrideConflicts &&
-    input.scope !== "session" &&
-    !hasDurabilityMarker(text)
-  ) {
-    log.info("memory_unmarked_preference_rejected", { text: text.slice(0, 120) });
-    return {
-      status: "rejected",
-      message:
-        `Rejected: "${text}" carries no durability marker (always, never, prefer, from now on, ` +
-        `by default…). A preference said once, unmarked, is a session instruction — it must not ` +
-        `apply to all future work. Either confirm with the user that it is a standing rule ` +
-        `(then rephrase as the rule itself, e.g. "Always commit and push before reporting done"), ` +
-        `store it with scope=session, or pin it with "remember this".`,
-    };
+  const durabilityErr = checkPreferenceDurability(text, category, {
+    pinned: isPinned,
+    isSessionScoped: input.scope === "session",
+    overrideConflicts: input.overrideConflicts,
+  });
+  if (durabilityErr) {
+    return { status: "rejected", message: durabilityErr };
   }
 
   const canonicalLine = `- [${category}] ${text}`;
@@ -859,14 +876,13 @@ export async function editMemoryEntry(cwd: string, input: EditMemoryInput): Prom
   }
 
   const content = readFileSync(topicPath, "utf-8");
-  const match = findTopicLine(content, category, text);
-  if (!match) {
+  const initialMatch = findTopicLine(content, category, text);
+  if (!initialMatch) {
     return {
       status: "not_found",
       message: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.`,
     };
   }
-  const { index: matchIndex, pinned: wasPinned, enforced: wasEnforced, id: wasId } = match;
 
   // Determine whether the existing entry is session-scoped so session edits obey
   // the same scope exemption as addMemoryEntry.
@@ -891,7 +907,8 @@ export async function editMemoryEntry(cwd: string, input: EditMemoryInput): Prom
       };
     }
 
-    // Contradiction gate against all OTHER entries (excluding the target being edited)
+    // Contradiction gate against all OTHER entries (excluding only the single line
+    // selected for editing so any duplicate pinned/enforced entry still conflicts).
     const topicEntries = readAllTopicEntries(cwd);
     if (topicEntries.length > 0) {
       try {
@@ -901,7 +918,7 @@ export async function editMemoryEntry(cwd: string, input: EditMemoryInput): Prom
       }
     }
     const { conflicts } = await findContradictionWithVector(cwd, newText, category, topicEntries, {
-      exclude: { category, text },
+      exclude: { category, text, pinned: initialMatch.pinned },
     });
     if (conflicts.length > 0) {
       const pinned = conflicts.filter((c) => c.pinned);
@@ -937,6 +954,52 @@ export async function editMemoryEntry(cwd: string, input: EditMemoryInput): Prom
     }
   }
 
+  // Re-read synchronously after all awaits so concurrent writes (memory_add,
+  // memory_remove, expiry prune, dream restore) are never clobbered or overwritten
+  // at a stale line index.
+  if (!existsSync(topicPath)) {
+    return {
+      status: "topic_missing",
+      message: `Topic file not found for category "${category}".`,
+    };
+  }
+  const freshContent = readFileSync(topicPath, "utf-8");
+  const match = findTopicLine(freshContent, category, text);
+  if (!match) {
+    return {
+      status: "not_found",
+      message: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.`,
+    };
+  }
+  const { index: matchIndex, pinned: wasPinned, enforced: wasEnforced, id: wasId } = match;
+
+  // Durability gate (issue #961): runs after contradiction check (so polarity flips
+  // report the conflict) and uses the fresh pinned/scope state from disk.
+  const freshScored = loadScores(cwd).entries[oldHash];
+  const freshIsSessionScoped = freshScored?.scope === "session";
+  if (isSessionScoped && !freshIsSessionScoped) {
+    const freshGuardrailErr = checkTextGuardrails(newText, category, { isSessionScoped: false });
+    if (freshGuardrailErr) {
+      log.warn("memory_edit_guardrail_rejected", { category, text: text.slice(0, 60), newText: newText.slice(0, 60) });
+      return { status: "rejected", message: freshGuardrailErr };
+    }
+  }
+  const durabilityErr = checkPreferenceDurability(newText, category, {
+    pinned: wasPinned,
+    isSessionScoped: freshIsSessionScoped,
+  });
+  if (durabilityErr) {
+    return { status: "rejected", message: durabilityErr };
+  }
+
+  if (newText !== text && findTopicLine(freshContent, category, newText)) {
+    log.warn("memory_edit_duplicate_rejected", { category, newText: newText.slice(0, 60) });
+    return {
+      status: "rejected",
+      message: `Rejected: memory already exists: [${category}] ${newText}. Use memory_remove to drop duplicates.`,
+    };
+  }
+
   // Format replacement line preserving markers and stable id (issue #915)
   const replacement = formatTopicLine(
     {
@@ -947,7 +1010,7 @@ export async function editMemoryEntry(cwd: string, input: EditMemoryInput): Prom
     },
     wasEnforced,
   );
-  const lines = content.split("\n");
+  const lines = freshContent.split("\n");
   lines[matchIndex] = replacement;
   const newContent = lines.join("\n");
   const cap = topicCharCap(topicName);
