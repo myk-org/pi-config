@@ -104,4 +104,10 @@ describe("assertPiVersionFloor", () => {
       assert.throws(() => assertPiVersionFloor(), new RegExp(`below the required floor ${MIN_PI_VERSION}`));
     }
   });
+
+  it("keeps pi-version.ts free of SDK runtime imports so floor checks precede ESM linking", () => {
+    const source = fs.readFileSync(new URL("../../src/pi-version.ts", import.meta.url), "utf8");
+    assert.ok(!source.includes("provider-runtime"), "pi-version.ts must not import provider-runtime");
+    assert.ok(!source.includes('from "@earendil-works/'), "pi-version.ts must not statically import Pi SDK packages");
+  });
 });

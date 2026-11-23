@@ -1,14 +1,47 @@
-import { readFileSync } from "node:fs";
+import { accessSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { join } from "node:path";
 
-import { logger } from "./logger.js";
-import { resolveExtensionPathDetailed } from "./provider-runtime.js";
+import { createLogger, logger } from "./logger.js";
+
+const require = createRequire(import.meta.url);
+const piVersionLog = createLogger("pi-version");
 
 /** Minimum @earendil-works/pi-coding-agent version the sidecar supports (same floor as pi-config orchestrator). */
 export const MIN_PI_VERSION = "1.6.0";
 
-/** Not a real override — resolveExtensionPathDetailed() requires an env var name; this one is never set. */
-const UNUSED_ENV_VAR = "__SIDECAR_PI_VERSION_PACKAGE_JSON_INTERNAL__";
+/**
+ * Locate `<packageName>/package.json` using Node built-ins only (no SDK imports)
+ * so the version-floor check can run before any ESM SDK bindings link. Falls
+ * back to walking `require.resolve.paths()` when strict ESM `exports` block
+ * `require.resolve('<pkg>/package.json')` (`ERR_PACKAGE_PATH_NOT_EXPORTED`).
+ */
+function resolvePackageJsonPath(packageName: string): string | null {
+  try {
+    return require.resolve(`${packageName}/package.json`);
+  } catch (primaryErr) {
+    try {
+      const searchPaths = require.resolve.paths(packageName);
+      if (searchPaths) {
+        for (const searchDir of searchPaths) {
+          const candidate = join(searchDir, packageName, "package.json");
+          try {
+            accessSync(candidate);
+            return candidate;
+          } catch {
+            // not in this search dir, continue
+          }
+        }
+      }
+    } catch {
+      // fallback exhausted
+    }
+    const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+    piVersionLog.debug(`Package metadata lookup failed: package=${packageName}, reason=${errMsg}`);
+    return null;
+  }
+}
 
 /**
  * Parses a strict stable semver `x.y.z` (no prerelease/build suffix).
@@ -37,19 +70,20 @@ export function compareVersions(a: string, b: string): number {
  * Resolves the installed @earendil-works/pi-coding-agent version from its
  * package.json, or null if unresolvable.
  *
- * Uses resolveExtensionPathDetailed()'s search-path fallback rather than a
- * plain `require.resolve('pkg/package.json')`: the SDK is an ESM-only package
- * with a strict `exports` map, which makes the plain form throw
- * `ERR_PACKAGE_PATH_NOT_EXPORTED` (see AGENTS.md §9 / provider-runtime.ts).
+ * Uses resolvePackageJsonPath()'s search-path fallback rather than a plain
+ * `require.resolve('pkg/package.json')`: the SDK is an ESM-only package with a
+ * strict `exports` map, which makes the plain form throw
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED`. Keeping this lookup dependency-free ensures
+ * `assertPiVersionFloor()` runs before any SDK module imports link.
  */
 export function getInstalledPiVersion(): string | null {
   try {
-    const result = resolveExtensionPathDetailed(UNUSED_ENV_VAR, "@earendil-works/pi-coding-agent", "package.json");
-    if (!result.path) {
-      logger.debug(`[sidecar] PI_VERSION_RESOLVE_FAILED: package=@earendil-works/pi-coding-agent, reason=${result.error || "unknown"}`);
+    const pkgPath = resolvePackageJsonPath("@earendil-works/pi-coding-agent");
+    if (!pkgPath) {
+      logger.debug(`[sidecar] PI_VERSION_RESOLVE_FAILED: package=@earendil-works/pi-coding-agent, reason=not_found`);
       return null;
     }
-    const pkg = JSON.parse(readFileSync(result.path, "utf8")) as { version?: string };
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
     return pkg.version ?? null;
   } catch (err) {
     logger.debug(`[sidecar] PI_VERSION_RESOLVE_FAILED: package=@earendil-works/pi-coding-agent`, err);

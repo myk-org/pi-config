@@ -1134,7 +1134,13 @@ export class SessionStore {
     this.sessions.clear();
     logger.info(`[sidecar] SESSIONS_DISPOSED: count=${count}`);
 
-    await this.runtime.dispose();
+    try {
+      await this.runtime.dispose();
+    } catch (err) {
+      // Best-effort: log runtime teardown failures so shutdown still drains
+      // queued transcript writes instead of exiting early.
+      logger.error(`[sidecar] RUNTIME_DISPOSE_FAILED:`, err);
+    }
 
     // Drain outstanding transcript writes LAST (#923 review): sessions are
     // disposed above, so fallback records queued by disposal-rejected prompts

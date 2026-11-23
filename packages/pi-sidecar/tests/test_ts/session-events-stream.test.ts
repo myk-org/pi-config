@@ -879,23 +879,28 @@ describe("session event stream: keepalive and idle reaping (#1019)", () => {
 });
 
 describe("session event stream: session lifecycle (#1019)", () => {
-  it("DELETE, cleanupStale and disposeAll all end that session's streams", async (t) => {
-    t.mock.timers.enable({ apis: ["Date"] });
+  it("DELETE ends the deleted session's streams", async () => {
     const store = createInMemoryStore();
-
     const deletedId = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
     const deleted = new FakeSink();
     store.openStream(deletedId, deleted);
     assert.equal(store.delete(deletedId), true);
     assert.equal(deleted.ended, 1, "DELETE /sessions/:id ends the feed");
+  });
 
+  it("cleanupStale ends a stale session's streams", async (t) => {
+    t.mock.timers.enable({ apis: ["Date"] });
+    const store = createInMemoryStore();
     const staleId = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
     const stale = new FakeSink();
     store.openStream(staleId, stale);
     t.mock.timers.tick(60_000);
     assert.equal(store.cleanupStale(1_000), 1);
     assert.equal(stale.ended, 1, "cleanupStale ends the feed of the session it removes");
+  });
 
+  it("disposeAll ends every active session's streams", async () => {
+    const store = createInMemoryStore();
     const disposedId = await store.create({ provider: "test", model: "test", systemPrompt: "test", cwd: "/tmp" });
     const disposed = new FakeSink();
     store.openStream(disposedId, disposed);
@@ -903,7 +908,7 @@ describe("session event stream: session lifecycle (#1019)", () => {
     assert.equal(disposed.ended, 1, "disposeAll ends the feed");
   });
 
-  it("enforces the per-session stream ceiling and rejects unknown sessions", async () => {
+  it("enforces the per-session stream ceiling", async () => {
     const { store, id } = await createSession(textSession());
     const sinks: FakeSink[] = [];
     for (let i = 0; i < MAX_STREAMS_PER_SESSION; i++) {
@@ -923,6 +928,10 @@ describe("session event stream: session lifecycle (#1019)", () => {
       (err: any) => err.statusCode === 429,
       "openStream re-checks the ceiling",
     );
+  });
+
+  it("rejects unknown sessions with 404", () => {
+    const store = createInMemoryStore();
     assert.throws(
       () => store.assertStreamAllowed("missing"),
       (err: any) => err.statusCode === 404,

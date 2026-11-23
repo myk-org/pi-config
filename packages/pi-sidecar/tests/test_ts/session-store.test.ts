@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   PiProviderRuntime,
@@ -10,11 +12,13 @@ import {
 } from "../../src/sessions.js";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { logger } from "../../src/logger.js";
 import {
   InMemoryProviderRuntime,
   createNoopStoredSession,
   type InMemoryProviderRuntimeOptions,
 } from "./helpers/in-memory-runtime.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 /**
  * Unit tests for SessionStore lifecycle (refresh / catalog / status / concurrency).
@@ -67,7 +71,7 @@ describe("SessionStore (in-memory runtime adapter)", () => {
     assert.equal(google.modelCount, 1);
   });
 
-  it("refreshModels() can be called again and hits runtime refresh each time", async () => {
+  it("refreshModels() hits runtime refresh on repeated calls", async () => {
     const { store, runtime } = createTestStore();
 
     const first = await store.refreshModels();
@@ -222,7 +226,7 @@ describe("SessionStore (in-memory runtime adapter)", () => {
     );
   });
 
-  it("disposeAll() awaits in-flight runtimeInit and disposes a runtime created mid-shutdown", async () => {
+  it("disposeAll() disposes a runtime created while shutdown awaits runtimeInit", async () => {
     let runtimeDisposed = false;
     let releaseInit!: (handle: InternalRuntimeHandle) => void;
     const initGate = new Promise<InternalRuntimeHandle>((resolve) => {
@@ -251,6 +255,67 @@ describe("SessionStore (in-memory runtime adapter)", () => {
     await disposePromise;
     await assert.rejects(pendingProviders, (err: any) => err?.statusCode === 503);
     assert.equal(runtimeDisposed, true, "runtime created during awaited init must be disposed");
+  });
+
+  it("disposeAll() still drains transcript writes when runtime disposal rejects", async () => {
+    const dir = makeTempDir("sidecar-dispose-drain-");
+    const savedDir = process.env.PI_SIDECAR_TRANSCRIPTS_DIR;
+    const savedRec = process.env.RECORD_TRANSCRIPTS;
+    const origError = logger.error;
+    const errorLogs: string[] = [];
+    logger.error = (...args: unknown[]) => {
+      errorLogs.push(args.map(String).join(" "));
+    };
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
+    process.env.RECORD_TRANSCRIPTS = "1";
+    try {
+      let emit: (event: unknown) => void = () => {};
+      const { store } = createTestStore({
+        ready: true,
+        allowAnyModel: true,
+        sessionFactory: () => ({
+          subscribe: (cb: (event: unknown) => void) => {
+            emit = cb;
+            return () => {};
+          },
+          prompt: async () => {
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+            emit({
+              type: "agent_end",
+              messages: [
+                { role: "user", content: [{ type: "text", text: "hi" }] },
+                { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 2, output: 1 }, stopReason: "end_turn" },
+              ],
+            });
+          },
+          dispose: () => {},
+          abort: async () => {},
+        }),
+        onDispose: async () => {
+          throw new Error("synthetic runtime dispose failure");
+        },
+      });
+      const id = await store.create({
+        provider: "test",
+        model: "test",
+        systemPrompt: "dispose drain test",
+        cwd: "/tmp",
+      });
+      await store.prompt(id, "hi");
+      await store.disposeAll();
+      assert.ok(existsSync(join(dir, `${id}.jsonl`)), "transcript write must drain even when runtime.dispose() rejects");
+      assert.ok(
+        errorLogs.some((line) => line.includes("RUNTIME_DISPOSE_FAILED")),
+        "runtime dispose failure must be logged",
+      );
+    } finally {
+      logger.error = origError;
+      if (savedDir === undefined) delete process.env.PI_SIDECAR_TRANSCRIPTS_DIR;
+      else process.env.PI_SIDECAR_TRANSCRIPTS_DIR = savedDir;
+      if (savedRec === undefined) delete process.env.RECORD_TRANSCRIPTS;
+      else process.env.RECORD_TRANSCRIPTS = savedRec;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("abort() reaches the SDK only while a turn is in flight (#1019)", async () => {
