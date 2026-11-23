@@ -113,6 +113,14 @@ pi-config/
 │   │   ├── index.ts                 # Entry point
 │   │   ├── pidash.ts                # Dashboard logic (connects to pidash daemon, forwards provider response info)
 │   │   ├── browser-ops.ts           # #968 browser operations — settings read/write (project-settings modules) + pi mcp CLI
+│   │   ├── discord-bot.ts           # Thin Discord.js transport adapter wired to discord-session-routing + shared chat bridge
+│   │   ├── discord-session-routing.ts # Deep Discord session-routing module (inbound/interaction routing, prompt targets, watch switching, reactions, state hydration, unified session RPC)
+│   │   ├── discord-config.ts        # Discord bot env/config resolution and allowlist parsing
+│   │   ├── discord-format.ts        # Discord message limits, mention suppression, and formatting defaults
+│   │   ├── discord-commands.ts      # Slash-command payload canonicalization and diffing
+│   │   ├── discord-prompt-controls.ts # Discord button/select prompt control builders
+│   │   ├── discord-board.ts         # Forum session board planner
+│   │   ├── discord-jobs-view.ts     # Async/cron job list rendering for Discord
 │   │   └── pidash-ui/               # React + shadcn/ui web dashboard
 │   │       ├── src/                 # React source (components, hooks, types)
 │   │       └── dist/               # Built output (generated, gitignored)
