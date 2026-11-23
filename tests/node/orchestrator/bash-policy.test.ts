@@ -20,6 +20,11 @@ import {
   dangerousPatternLabel,
   evaluateBashPolicy,
   evaluateFileWritePolicy,
+  executableText,
+  resolveCommentSignatureModelId,
+  resolveCommitTrailerModelId,
+  segmentRunsGit,
+  skipToCommandWord,
   type BashPolicyUi,
 } from "../../../extensions/orchestrator/bash-policy.js";
 import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
@@ -485,5 +490,123 @@ describe("evaluateBashPolicy commit trailer and DCO checks", () => {
     assert.equal(second.action, "allow");
     assert.match(second.modifiedCommand ?? "", /Co-authored-by: PI \(/);
     assert.equal(promptCount, 1);
+  });
+});
+
+describe("executableText direct helper", () => {
+  it("strips inert single-quoted text to a placeholder", () => {
+    const scanned = executableText("echo 'git add conflicted.txt'");
+    assert.equal(scanned.includes("git add"), false);
+  });
+
+  it("strips quoted heredoc bodies without losing trailing commands", () => {
+    const scanned = executableText("cat <<'EOF'\ngit add secret.txt\nEOF\ngit status");
+    assert.equal(scanned.includes("git add"), false);
+    assert.match(scanned, /git status/);
+  });
+
+  it("descends into command substitutions inside double quotes", () => {
+    const scanned = executableText('echo "prefix $(git add file.txt)"');
+    assert.match(scanned, /git add file\.txt/);
+  });
+
+  it("descends into bash -c script arguments", () => {
+    const scanned = executableText("bash -c 'git reset --hard'");
+    assert.match(scanned, /git reset --hard/);
+  });
+
+  it("emits the unscanned sentinel past the recursion depth ceiling", () => {
+    const scanned = executableText("git status", 7);
+    assert.match(scanned, /unscanned-nesting/);
+  });
+});
+
+describe("skipToCommandWord direct helper", () => {
+  it("skips control keywords before the executable word", () => {
+    assert.equal(skipToCommandWord(["if", "then", "git", "status"]), 2);
+  });
+
+  it("skips leading environment variable assignments", () => {
+    assert.equal(skipToCommandWord(["FOO=1", "BAR=2", "rg", "needle"]), 2);
+  });
+
+  it("skips function keyword with its declared name", () => {
+    assert.equal(skipToCommandWord(["function", "helper", "{", "git", "diff"]), 3);
+  });
+
+  it("skips rtk wrapper along with its value-taking flags", () => {
+    assert.equal(skipToCommandWord(["rtk", "-u", "root", "-v", "git", "add", "a.ts"]), 4);
+  });
+});
+
+describe("segmentRunsGit direct helper", () => {
+  it("returns true for direct git commands", () => {
+    assert.equal(segmentRunsGit("git status --short"), true);
+  });
+
+  it("returns true for git behind an executor wrapper", () => {
+    assert.equal(segmentRunsGit("sudo -u dev git add a.ts"), true);
+  });
+
+  it("returns false when git appears only inside a directory path", () => {
+    assert.equal(segmentRunsGit("cd /home/user/git/project"), false);
+  });
+
+  it("returns false when git is printed by a non-executor command", () => {
+    assert.equal(segmentRunsGit("echo git commit -m msg"), false);
+  });
+});
+
+describe("model id resolvers", () => {
+  const savedPrimary = process.env.PI_PRIMARY_MODEL;
+  const savedModel = process.env.PI_MODEL;
+
+  afterEach(() => {
+    if (savedPrimary === undefined) delete process.env.PI_PRIMARY_MODEL;
+    else process.env.PI_PRIMARY_MODEL = savedPrimary;
+    if (savedModel === undefined) delete process.env.PI_MODEL;
+    else process.env.PI_MODEL = savedModel;
+  });
+
+  it("resolveCommitTrailerModelId prefers PI_PRIMARY_MODEL over PI_MODEL", () => {
+    process.env.PI_PRIMARY_MODEL = "primary-model";
+    process.env.PI_MODEL = "secondary-model";
+    assert.equal(resolveCommitTrailerModelId("ctx-model"), "primary-model");
+  });
+
+  it("resolveCommitTrailerModelId skips placeholder values to use context model", () => {
+    process.env.PI_PRIMARY_MODEL = "MODEL";
+    process.env.PI_MODEL = "$PI_MODEL";
+    assert.equal(resolveCommitTrailerModelId("real-ctx-model"), "real-ctx-model");
+  });
+
+  it("resolveCommitTrailerModelId falls back to unknown when only placeholders exist", () => {
+    process.env.PI_PRIMARY_MODEL = "unknown";
+    process.env.PI_MODEL = "${PI_MODEL}";
+    assert.equal(resolveCommitTrailerModelId("   "), "unknown");
+  });
+
+  it("resolveCommitTrailerModelId sanitizes unsafe characters from the model id", () => {
+    delete process.env.PI_PRIMARY_MODEL;
+    delete process.env.PI_MODEL;
+    assert.equal(resolveCommitTrailerModelId("claude;rm -rf /"), "clauderm -rf /");
+  });
+
+  it("resolveCommentSignatureModelId prefers context model id over env vars", () => {
+    process.env.PI_PRIMARY_MODEL = "primary-model";
+    process.env.PI_MODEL = "env-model";
+    assert.equal(resolveCommentSignatureModelId("live-ctx-model"), "live-ctx-model");
+  });
+
+  it("resolveCommentSignatureModelId falls back to PI_MODEL when context is absent", () => {
+    process.env.PI_PRIMARY_MODEL = "primary-model";
+    process.env.PI_MODEL = "env-model";
+    assert.equal(resolveCommentSignatureModelId(undefined), "env-model");
+  });
+
+  it("resolveCommentSignatureModelId falls back to unknown when all sources are empty", () => {
+    delete process.env.PI_PRIMARY_MODEL;
+    delete process.env.PI_MODEL;
+    assert.equal(resolveCommentSignatureModelId(""), "unknown");
   });
 });
