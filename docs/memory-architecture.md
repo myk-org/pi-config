@@ -226,6 +226,10 @@ This is why the same project memory can feel different depending on what you are
 Independently of scored memory, `session-search.ts` maintains a keyword index over past conversation summaries in
 `.pi/data/session-search.jsonl`. At session shutdown the index harvests Pi's own LLM-written compaction and branch
 summaries from the session file (issue #915), falling back to a join of user messages when no summaries exist.
+To cover active, uncompacted, and abnormally terminated sessions without waiting for compaction or clean shutdown
+(issue #1342), `searchSessions` also lazily scans recent project session JSONL files under
+`~/.pi/agent/sessions/<cwd-slug>/` using mtime-cached incremental byte-offset parsing, redacting embedded secrets,
+filtering command/system noise, and deduplicating against persisted summaries at zero LLM cost.
 Compaction summaries whose turn is retried (overflow recovery) are skipped so content is not double-indexed, and
 `before_agent_start` auto-injects matches from relevant past sessions alongside the situation report.
 

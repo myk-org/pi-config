@@ -1,24 +1,143 @@
 /**
- * Session Search — keyword search over past conversation summaries.
+ * Session Search — keyword search over past and recent conversation sessions.
  *
- * Indexes conversation summaries (pi's own LLM-written compaction and branch
- * summaries, harvested from the session file) into a JSONL store with simple
- * keyword matching. Provides a tool for the LLM to recall past discussions
- * at zero LLM cost.
+ * Combines persisted conversation summaries in `.pi/data/session-search.jsonl`
+ * (harvested on compaction and shutdown) with mtime-cached incremental lazy
+ * scanning of recent project session JSONL files under
+ * `~/.pi/agent/sessions/<cwd-slug>/`. This makes active, uncompacted, and
+ * abnormally terminated sessions searchable immediately at zero LLM cost.
  *
  * Inspired by Hermes Agent's session search layer.
  * JSONL persistence (issue #915 / #724 pattern) — no native deps.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+  type Stats,
+} from "node:fs";
+import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
+import { resolvePiAgentDir } from "../shared/pi-agent-dir.js";
 import { getProjectDataDir } from "./utils.js";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 
 const log = createLogger("memory");
+
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const STORE_FILENAME_JSONL = "session-search.jsonl";
+const LEGACY_STORE_FILENAME = "session-search.json";
+
+/** Max recent project session JSONL files scanned lazily during searchSessions. */
+const MAX_RECENT_SESSION_FILES = 20;
+/** Max cached file scan entries kept in memory (LRU eviction). */
+const MAX_SCAN_CACHE_ENTRIES = 200;
+/** Max bytes read per file scan to keep latency and memory bounded on huge logs. */
+const MAX_SCAN_BYTES = 4 * 1024 * 1024;
+/** Header probe size when tail-slicing files larger than MAX_SCAN_BYTES. */
+const HEADER_PROBE_BYTES = 4096;
+/** Prefix window inspected on large JSONL lines to avoid parsing huge tool/assistant rows. */
+const LINE_PREFIX_CHECK_CHARS = 512;
+/** Max characters kept per cleaned user message. */
+const MAX_USER_MESSAGE_CHARS = 300;
+/** Max trailing user messages retained per scanned session. */
+const MAX_TAIL_USER_MESSAGES = 200;
+/** Max characters synthesized for an uncompacted/tail session summary. */
+const MAX_TAIL_SUMMARY_CHARS = 6000;
+/** Tolerance (ms) when comparing store timestamps against session activity timestamps. */
+const SUPERSEDE_TOLERANCE_MS = 5;
+
+// ── Secret & Noise Sanitization ────────────────────────────────────────────
+
+const SECRET_PATTERNS: Array<{ re: RegExp; replacement: string }> = [
+  {
+    re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+    replacement: "[REDACTED_PRIVATE_KEY]",
+  },
+  {
+    re: /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g,
+    replacement: "[REDACTED]",
+  },
+  {
+    re: /\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{20,}\b/g,
+    replacement: "[REDACTED]",
+  },
+  {
+    re: /\bAIza[0-9A-Za-z_-]{35}\b/g,
+    replacement: "[REDACTED]",
+  },
+  {
+    re: /\bAKIA[0-9A-Z]{16}\b/g,
+    replacement: "[REDACTED]",
+  },
+  {
+    re: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g,
+    replacement: "[REDACTED]",
+  },
+  {
+    re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+    replacement: "[REDACTED]",
+  },
+  {
+    re: /\b(Authorization\s*:\s*(?:Bearer|Basic|Token)\s+)\S+/gi,
+    replacement: "$1[REDACTED]",
+  },
+  {
+    re: /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{20,}/gi,
+    replacement: "$1[REDACTED]",
+  },
+  {
+    re: /\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|password|passwd|private[_-]?key)\s*[:=]\s*["']?)([^\s"',;}{]{8,})(["']?)/gi,
+    replacement: "$1[REDACTED]$3",
+  },
+  {
+    re: /(https?:\/\/[^/\s:@]{1,128}:)([^/\s@]{1,256})(@)/gi,
+    replacement: "$1[REDACTED]$3",
+  },
+];
+
+const NOISE_PREFIXES = [
+  "/",
+  "[IMPORTANT:",
+  "[SYSTEM:",
+  "📡 Connected to coms",
+  "<system",
+];
+
+/** Strip common credentials, tokens, private keys, and auth headers from text. */
+export function redactSecrets(text: string): string {
+  let out = text;
+  for (const { re, replacement } of SECRET_PATTERNS) {
+    out = out.replace(re, replacement);
+  }
+  return out;
+}
+
+/**
+ * Normalize a user message for session search indexing, rejecting slash
+ * commands, system/harness banners, and very short fragments, and redacting
+ * embedded secrets.
+ */
+function cleanUserMessageForIndex(raw: string): string | null {
+  // Strip leading coms peer presence banners (e.g. "📡 Peer joined: ... [ts]")
+  let text = raw.replace(/^(?:📡\s*Peer (?:joined|left):[^\n]*\n?)+/g, "").trim();
+  if (text.length < 15) return null;
+  for (const prefix of NOISE_PREFIXES) {
+    if (text.startsWith(prefix)) return null;
+  }
+  text = redactSecrets(text).replace(/\s+/g, " ").trim();
+  if (text.length < 15) return null;
+  return text.slice(0, MAX_USER_MESSAGE_CHARS);
+}
 
 // ── Storage ────────────────────────────────────────────────────────────────
 
@@ -31,9 +150,6 @@ interface SessionEntry {
 interface SessionStore {
   entries: SessionEntry[];
 }
-
-const STORE_FILENAME_JSONL = "session-search.jsonl";
-const LEGACY_STORE_FILENAME = "session-search.json";
 
 function getStore(cwd: string): JsonlStateStore<SessionStore> {
   return createCachedStore<SessionStore>(
@@ -71,18 +187,20 @@ export function indexSessionSummary(
   summary: string,
 ): void {
   if (!summary || !summary.trim()) return;
+  const cleaned = redactSecrets(summary).trim();
+  if (!cleaned) return;
   const store = loadStore(cwd);
 
   // Avoid duplicate entries for the same session
   const exists = store.entries.some(
-    (e) => e.sessionId === sessionId && e.summary === summary.trim(),
+    (e) => e.sessionId === sessionId && e.summary === cleaned,
   );
   if (exists) return;
 
   store.entries.push({
     sessionId,
     timestamp: new Date().toISOString(),
-    summary: summary.trim(),
+    summary: cleaned,
   });
 
   // Keep max 500 entries (oldest dropped)
@@ -115,7 +233,8 @@ export function extractSessionSummaries(sessionFilePath: string): string[] {
           typeof entry?.summary === "string" &&
           entry.summary.length >= 50
         ) {
-          summaries.push(entry.summary);
+          const cleaned = redactSecrets(entry.summary).trim();
+          if (cleaned.length >= 50) summaries.push(cleaned);
         }
       } catch {
         continue; // skip corrupt/truncated lines
@@ -125,6 +244,524 @@ export function extractSessionSummaries(sessionFilePath: string): string[] {
   } catch {
     return [];
   }
+}
+
+// ── Lazy mtime-cached project session scanner ─────────────────────────────
+
+interface ScannedSummary {
+  summary: string;
+  timestamp: string;
+}
+
+interface ScanMutableState {
+  sessionId: string;
+  isSubagent: boolean;
+  sessionTimestamp: string;
+  sessionName: string;
+  summaries: ScannedSummary[];
+  tailUserMessages: string[];
+  sawEntryTimestamp: boolean;
+  lastActivityMs: number;
+  lastActivityIso: string;
+}
+
+interface CachedSessionScan extends ScanMutableState {
+  mtimeMs: number;
+  size: number;
+  ino: number;
+  committedByteOffset: number;
+  effectiveSummaries: ScannedSummary[];
+  effectiveTailSummary: string;
+  effectiveLastActivityMs: number;
+  effectiveLastActivityIso: string;
+}
+
+export interface SessionScanStats {
+  cacheHits: number;
+  fullScans: number;
+  incrementalScans: number;
+}
+
+export interface SearchSessionsOptions {
+  /** Override the project sessions directory (defaults to `~/.pi/agent/sessions/<cwd-slug>`). */
+  sessionsDir?: string;
+}
+
+const fileScanCache = new Map<string, CachedSessionScan>();
+const scanStats: SessionScanStats = {
+  cacheHits: 0,
+  fullScans: 0,
+  incrementalScans: 0,
+};
+
+/** Clear the in-memory session JSONL scan cache and counters (for tests). */
+export function clearSessionScanCache(): void {
+  fileScanCache.clear();
+  scanStats.cacheHits = 0;
+  scanStats.fullScans = 0;
+  scanStats.incrementalScans = 0;
+}
+
+/** Return cumulative cache hit / scan counters for diagnostics and tests. */
+export function getSessionScanStats(): SessionScanStats {
+  return { ...scanStats };
+}
+
+/**
+ * Compute pi's default session directory for a project cwd, matching
+ * `@earendil-works/pi-coding-agent`'s `getDefaultSessionDirPath`.
+ */
+export function getProjectSessionsDir(cwd: string, agentDir?: string | null): string {
+  const resolvedCwd = resolve(cwd);
+  const resolvedAgentDir = resolve(resolvePiAgentDir(agentDir));
+  const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+  return join(resolvedAgentDir, "sessions", safePath);
+}
+
+function isSubagentSessionFilename(filename: string): boolean {
+  return /(?:^|_)async-[^/]+\.jsonl$/.test(filename);
+}
+
+const CANONICAL_SESSION_FILE_RE = /^\d{4}-\d{2}-\d{2}T[^_]+_(.+)\.jsonl$/;
+
+function extractCanonicalFilenameSessionId(filePath: string): string | null {
+  const match = basename(filePath).match(CANONICAL_SESSION_FILE_RE);
+  return match && match[1] ? match[1] : null;
+}
+
+function deriveSessionIdFromFilename(filePath: string): string {
+  return extractCanonicalFilenameSessionId(filePath) ?? basename(filePath, ".jsonl");
+}
+
+function parseIsoTimestampMs(value: unknown): { ms: number; iso: string } | null {
+  if (typeof value === "string" && value.trim()) {
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms)) return { ms, iso: value.trim() };
+  }
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return { ms: value, iso: new Date(value).toISOString() };
+  }
+  return null;
+}
+
+function extractUserMessageText(entry: Record<string, unknown>): string | null {
+  const msg = (
+    entry.message && typeof entry.message === "object"
+      ? entry.message
+      : entry
+  ) as Record<string, unknown>;
+  if (msg.role !== "user") return null;
+  const content = msg.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (
+        block &&
+        typeof block === "object" &&
+        (block as Record<string, unknown>).type === "text" &&
+        typeof (block as Record<string, unknown>).text === "string"
+      ) {
+        parts.push((block as Record<string, unknown>).text as string);
+      }
+    }
+    return parts.join(" ");
+  }
+  return null;
+}
+
+function updateLastActivity(state: ScanMutableState, ts: { ms: number; iso: string } | null): void {
+  if (!ts) return;
+  if (!state.sawEntryTimestamp || ts.ms >= state.lastActivityMs) {
+    state.sawEntryTimestamp = true;
+    state.lastActivityMs = ts.ms;
+    state.lastActivityIso = ts.iso;
+  }
+}
+
+function isInterestingJsonlLine(raw: string, start: number, end: number): boolean {
+  const len = end - start;
+  if (len === 0) return false;
+  const head = len <= 1024 ? raw.slice(start, end) : raw.slice(start, start + LINE_PREFIX_CHECK_CHARS);
+  if (
+    head.includes('"compaction"') ||
+    head.includes('"branch_summary"') ||
+    head.includes('"session_info"') ||
+    head.includes('"type":"session"') ||
+    head.includes('"type": "session"')
+  ) {
+    return true;
+  }
+  return head.includes('"role":"user"') || head.includes('"role": "user"');
+}
+
+function applyJsonlLine(state: ScanMutableState, rawLine: string, forceParse: boolean): void {
+  const trimmed = rawLine.trim();
+  if (!trimmed) return;
+  if (!forceParse && !isInterestingJsonlLine(trimmed, 0, trimmed.length)) return;
+
+  let entry: unknown;
+  try {
+    entry = JSON.parse(trimmed);
+  } catch {
+    return; // skip corrupt or partially written lines
+  }
+  if (!entry || typeof entry !== "object") return;
+  const rec = entry as Record<string, unknown>;
+  const type = rec.type;
+
+  if (type === "session") {
+    if (typeof rec.id === "string" && rec.id.trim()) {
+      state.sessionId = rec.id.trim();
+      if (state.sessionId.startsWith("async-")) state.isSubagent = true;
+    }
+    const ts = parseIsoTimestampMs(rec.timestamp);
+    if (ts) {
+      state.sessionTimestamp = ts.iso;
+      updateLastActivity(state, ts);
+    }
+    return;
+  }
+
+  if (type === "session_info") {
+    if (typeof rec.name === "string" && rec.name.trim()) {
+      state.sessionName = redactSecrets(rec.name).replace(/\s+/g, " ").trim().slice(0, 120);
+    }
+    updateLastActivity(state, parseIsoTimestampMs(rec.timestamp));
+    return;
+  }
+
+  if (type === "compaction" || type === "branch_summary") {
+    if (typeof rec.summary === "string" && rec.summary.length >= 50) {
+      const cleaned = redactSecrets(rec.summary).trim();
+      if (cleaned.length >= 50) {
+        const ts = parseIsoTimestampMs(rec.timestamp);
+        state.summaries.push({
+          summary: cleaned,
+          timestamp: ts ? ts.iso : state.sessionTimestamp,
+        });
+        if (type === "compaction") {
+          // Compaction covers all prior conversation; retain only subsequent uncompacted turns.
+          state.tailUserMessages = [];
+        }
+        updateLastActivity(state, ts);
+      }
+    }
+    return;
+  }
+
+  if (type === "message") {
+    const rawText = extractUserMessageText(rec);
+    if (rawText === null) return;
+    const cleaned = cleanUserMessageForIndex(rawText);
+    if (!cleaned) return;
+    if (state.tailUserMessages[state.tailUserMessages.length - 1] !== cleaned) {
+      state.tailUserMessages.push(cleaned);
+      if (state.tailUserMessages.length > MAX_TAIL_USER_MESSAGES) {
+        // Keep opening prompt (topic anchor) + most recent messages
+        state.tailUserMessages = [
+          state.tailUserMessages[0]!,
+          ...state.tailUserMessages.slice(-(MAX_TAIL_USER_MESSAGES - 1)),
+        ];
+      }
+    }
+    const msgObj = rec.message && typeof rec.message === "object"
+      ? (rec.message as Record<string, unknown>)
+      : null;
+    updateLastActivity(
+      state,
+      parseIsoTimestampMs(rec.timestamp) ?? parseIsoTimestampMs(msgObj?.timestamp),
+    );
+  }
+}
+
+function buildTailSummary(sessionName: string, messages: string[]): string {
+  const prefix = sessionName ? `[${sessionName}] ` : "";
+  if (messages.length === 0) return "";
+  const full = prefix + messages.join(" | ");
+  if (full.length <= MAX_TAIL_SUMMARY_CHARS) return full;
+
+  // Keep opening message + as many most-recent messages as fit within budget
+  const first = messages[0]!;
+  const sep = " | ";
+  const remaining: string[] = [];
+  let budget = MAX_TAIL_SUMMARY_CHARS - prefix.length - first.length;
+  for (let i = messages.length - 1; i >= 1; i--) {
+    const msg = messages[i]!;
+    if (budget - sep.length - msg.length < 0) break;
+    remaining.push(msg);
+    budget -= sep.length + msg.length;
+  }
+  remaining.reverse();
+  const kept = remaining.length > 0 ? [first, ...remaining] : [first];
+  return (prefix + kept.join(sep)).slice(0, MAX_TAIL_SUMMARY_CHARS);
+}
+
+function readRange(fd: number, offset: number, length: number): Buffer {
+  const buf = Buffer.allocUnsafe(length);
+  let totalRead = 0;
+  while (totalRead < length) {
+    const n = readSync(fd, buf, totalRead, length - totalRead, offset + totalRead);
+    if (n <= 0) break;
+    totalRead += n;
+  }
+  return totalRead === length ? buf : buf.subarray(0, totalRead);
+}
+
+function applyBufferLines(state: ScanMutableState, text: string, parseFirstLineUnconditionally: boolean): void {
+  let pos = 0;
+  let first = parseFirstLineUnconditionally;
+  while (pos < text.length) {
+    let nl = text.indexOf("\n", pos);
+    if (nl === -1) nl = text.length;
+    if (first || isInterestingJsonlLine(text, pos, nl)) {
+      applyJsonlLine(state, text.slice(pos, nl), first);
+    }
+    first = false;
+    pos = nl + 1;
+  }
+}
+
+function finalizeEffectiveView(
+  committed: ScanMutableState,
+  pendingFragment: string,
+  st: Stats,
+  committedByteOffset: number,
+): CachedSessionScan {
+  let effective: ScanMutableState = committed;
+  if (pendingFragment.trim()) {
+    // Apply uncommitted trailing line onto a shallow copy so re-reading from
+    // committedByteOffset after an append never duplicates the line.
+    effective = {
+      ...committed,
+      summaries: [...committed.summaries],
+      tailUserMessages: [...committed.tailUserMessages],
+    };
+    applyJsonlLine(effective, pendingFragment, committedByteOffset === 0);
+  }
+  return {
+    ...committed,
+    mtimeMs: st.mtimeMs,
+    size: st.size,
+    ino: st.ino,
+    committedByteOffset,
+    effectiveSummaries: effective.summaries,
+    effectiveTailSummary: buildTailSummary(effective.sessionName, effective.tailUserMessages),
+    effectiveLastActivityMs: effective.lastActivityMs,
+    effectiveLastActivityIso: effective.lastActivityIso,
+  };
+}
+
+function setCachedScan(filePath: string, entry: CachedSessionScan): void {
+  // Refresh insertion order for simple LRU eviction
+  fileScanCache.delete(filePath);
+  fileScanCache.set(filePath, entry);
+  if (fileScanCache.size > MAX_SCAN_CACHE_ENTRIES) {
+    const oldestKey = fileScanCache.keys().next().value;
+    if (oldestKey !== undefined) fileScanCache.delete(oldestKey);
+  }
+}
+
+function scanSessionJsonlFile(filePath: string, st: Stats): CachedSessionScan | null {
+  const cached = fileScanCache.get(filePath);
+  if (
+    cached &&
+    cached.mtimeMs === st.mtimeMs &&
+    cached.size === st.size &&
+    cached.ino === st.ino
+  ) {
+    scanStats.cacheHits++;
+    setCachedScan(filePath, cached);
+    return cached;
+  }
+
+  // Incremental append path: same inode, file strictly grew, delta within cap
+  if (
+    cached &&
+    cached.ino === st.ino &&
+    st.size > cached.size &&
+    cached.committedByteOffset > 0 &&
+    cached.committedByteOffset <= st.size &&
+    st.size - cached.committedByteOffset <= MAX_SCAN_BYTES
+  ) {
+    let fd: number | null = null;
+    try {
+      fd = openSync(filePath, "r");
+      const deltaLen = st.size - cached.committedByteOffset;
+      const buf = deltaLen > 0 ? readRange(fd, cached.committedByteOffset, deltaLen) : Buffer.alloc(0);
+      scanStats.incrementalScans++;
+
+      const state: ScanMutableState = {
+        sessionId: cached.sessionId,
+        isSubagent: cached.isSubagent,
+        sessionTimestamp: cached.sessionTimestamp,
+        sessionName: cached.sessionName,
+        summaries: [...cached.summaries],
+        tailUserMessages: [...cached.tailUserMessages],
+        sawEntryTimestamp: cached.sawEntryTimestamp,
+        lastActivityMs: cached.lastActivityMs,
+        lastActivityIso: cached.lastActivityIso,
+      };
+
+      const lastNl = buf.lastIndexOf(0x0a);
+      let nextOffset = cached.committedByteOffset;
+      let pending = "";
+      if (lastNl !== -1) {
+        applyBufferLines(state, buf.subarray(0, lastNl + 1).toString("utf-8"), false);
+        nextOffset += lastNl + 1;
+        if (lastNl + 1 < buf.length) {
+          pending = buf.subarray(lastNl + 1).toString("utf-8");
+        }
+      } else if (buf.length > 0) {
+        pending = buf.toString("utf-8");
+      }
+
+      const updated = finalizeEffectiveView(state, pending, st, nextOffset);
+      setCachedScan(filePath, updated);
+      return updated;
+    } catch (err) {
+      log.warn("session-search: incremental session scan failed", { filePath, err });
+      return null;
+    } finally {
+      if (fd !== null) {
+        try { closeSync(fd); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  // Full scan (fresh, truncated, replaced, or oversized delta)
+  let fd: number | null = null;
+  try {
+    const mtimeIso = new Date(st.mtimeMs).toISOString();
+    const state: ScanMutableState = {
+      sessionId: deriveSessionIdFromFilename(filePath),
+      isSubagent: isSubagentSessionFilename(basename(filePath)),
+      sessionTimestamp: mtimeIso,
+      sessionName: "",
+      summaries: [],
+      tailUserMessages: [],
+      sawEntryTimestamp: false,
+      lastActivityMs: st.mtimeMs,
+      lastActivityIso: mtimeIso,
+    };
+
+    scanStats.fullScans++;
+    if (st.size === 0) {
+      const empty = finalizeEffectiveView(state, "", st, 0);
+      setCachedScan(filePath, empty);
+      return empty;
+    }
+
+    fd = openSync(filePath, "r");
+    let committedByteOffset = 0;
+    let pending = "";
+
+    if (st.size <= MAX_SCAN_BYTES) {
+      const buf = readRange(fd, 0, st.size);
+      const lastNl = buf.lastIndexOf(0x0a);
+      if (lastNl !== -1) {
+        applyBufferLines(state, buf.subarray(0, lastNl + 1).toString("utf-8"), true);
+        committedByteOffset = lastNl + 1;
+        if (lastNl + 1 < buf.length) {
+          pending = buf.subarray(lastNl + 1).toString("utf-8");
+        }
+      } else if (buf.length > 0) {
+        pending = buf.toString("utf-8");
+      }
+    } else {
+      // Oversized file: probe header line for authoritative sessionId, then scan tail window
+      const headerBuf = readRange(fd, 0, Math.min(HEADER_PROBE_BYTES, st.size));
+      const firstNl = headerBuf.indexOf(0x0a);
+      const headerLine = (firstNl === -1 ? headerBuf : headerBuf.subarray(0, firstNl)).toString("utf-8");
+      applyJsonlLine(state, headerLine, true);
+
+      const startOffset = st.size - MAX_SCAN_BYTES;
+      const tailBuf = readRange(fd, startOffset, MAX_SCAN_BYTES);
+      const skipPartial = tailBuf.indexOf(0x0a);
+      const bodyStart = skipPartial === -1 ? 0 : skipPartial + 1;
+      const bodyBuf = tailBuf.subarray(bodyStart);
+      const lastNl = bodyBuf.lastIndexOf(0x0a);
+      if (lastNl !== -1) {
+        applyBufferLines(state, bodyBuf.subarray(0, lastNl + 1).toString("utf-8"), false);
+        committedByteOffset = startOffset + bodyStart + lastNl + 1;
+        if (lastNl + 1 < bodyBuf.length) {
+          pending = bodyBuf.subarray(lastNl + 1).toString("utf-8");
+        }
+      } else if (bodyBuf.length > 0) {
+        committedByteOffset = startOffset + bodyStart;
+        pending = bodyBuf.toString("utf-8");
+      }
+    }
+
+    const scanned = finalizeEffectiveView(state, pending, st, committedByteOffset);
+    setCachedScan(filePath, scanned);
+    return scanned;
+  } catch (err) {
+    log.warn("session-search: session JSONL scan failed", { filePath, err });
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
+function scanRecentProjectSessions(
+  cwd: string,
+  latestStoreTsBySession: Map<string, number>,
+  sessionsDir?: string,
+): CachedSessionScan[] {
+  const dir = sessionsDir ? resolve(sessionsDir) : getProjectSessionsDir(cwd);
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (err: any) {
+    if (err?.code !== "ENOENT") {
+      log.warn("session-search: unable to read project sessions dir", { dir, err });
+    }
+    return [];
+  }
+
+  const candidates: Array<{ filePath: string; st: Stats }> = [];
+  for (const name of names) {
+    if (!name.endsWith(".jsonl") || isSubagentSessionFilename(name)) continue;
+    const filePath = join(dir, name);
+    try {
+      const st = statSync(filePath);
+      if (!st.isFile()) continue;
+      candidates.push({ filePath, st });
+    } catch {
+      continue; // file removed concurrently
+    }
+  }
+
+  candidates.sort((a, b) => {
+    if (b.st.mtimeMs !== a.st.mtimeMs) return b.st.mtimeMs - a.st.mtimeMs;
+    return b.filePath.localeCompare(a.filePath);
+  });
+
+  const scanned: CachedSessionScan[] = [];
+  for (const { filePath, st } of candidates.slice(0, MAX_RECENT_SESSION_FILES)) {
+    // Skip untouched canonical session files already indexed in the persisted store
+    const canonicalId = extractCanonicalFilenameSessionId(filePath);
+    if (canonicalId) {
+      const storeMs = latestStoreTsBySession.get(canonicalId);
+      if (storeMs !== undefined && storeMs >= st.mtimeMs - SUPERSEDE_TOLERANCE_MS) {
+        continue;
+      }
+    }
+    const entry = scanSessionJsonlFile(filePath, st);
+    if (entry && !entry.isSubagent) scanned.push(entry);
+  }
+
+  log.debug("session-search: scanned recent project sessions", {
+    dir,
+    candidates: candidates.length,
+    scanned: scanned.length,
+    stats: scanStats,
+  });
+
+  return scanned;
 }
 
 // ── Search sessions ────────────────────────────────────────────────────────
@@ -140,16 +777,71 @@ export function searchSessions(
   cwd: string,
   query: string,
   limit: number = 10,
+  options?: SearchSessionsOptions,
 ): SearchResult[] {
-  const store = loadStore(cwd);
-  if (store.entries.length === 0) return [];
-
+  if (limit <= 0) return [];
   const queryWords = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (queryWords.length === 0) return [];
 
-  const results: SearchResult[] = [];
+  const store = loadStore(cwd);
+  const candidates: SessionEntry[] = [...store.entries];
 
+  const seenExact = new Set<string>();
+  const latestStoreTsBySession = new Map<string, number>();
   for (const entry of store.entries) {
+    seenExact.add(`${entry.sessionId}\0${entry.summary.trim()}`);
+    const parsed = Date.parse(entry.timestamp);
+    if (Number.isFinite(parsed)) {
+      const prev = latestStoreTsBySession.get(entry.sessionId);
+      if (prev === undefined || parsed > prev) {
+        latestStoreTsBySession.set(entry.sessionId, parsed);
+      }
+    }
+  }
+
+  // Merge recent project session JSONLs (active, uncompacted, or abnormally terminated)
+  const scannedSessions = scanRecentProjectSessions(cwd, latestStoreTsBySession, options?.sessionsDir);
+  for (const scanned of scannedSessions) {
+    for (const s of scanned.effectiveSummaries) {
+      const key = `${scanned.sessionId}\0${s.summary}`;
+      if (seenExact.has(key)) continue;
+      seenExact.add(key);
+      candidates.push({
+        sessionId: scanned.sessionId,
+        timestamp: s.timestamp,
+        summary: s.summary,
+      });
+    }
+
+    if (scanned.effectiveTailSummary) {
+      // If no compaction occurred on disk and a persisted store summary is at least
+      // as recent as the session's last activity, the store entry supersedes raw messages.
+      const storeMs = latestStoreTsBySession.get(scanned.sessionId);
+      const supersededByStore =
+        scanned.effectiveSummaries.length === 0 &&
+        storeMs !== undefined &&
+        storeMs >= scanned.effectiveLastActivityMs - SUPERSEDE_TOLERANCE_MS;
+
+      if (!supersededByStore) {
+        const key = `${scanned.sessionId}\0${scanned.effectiveTailSummary}`;
+        if (!seenExact.has(key)) {
+          seenExact.add(key);
+          candidates.push({
+            sessionId: scanned.sessionId,
+            timestamp: scanned.effectiveLastActivityIso,
+            summary: scanned.effectiveTailSummary,
+          });
+        }
+      }
+    }
+  }
+
+  if (candidates.length === 0) return [];
+
+  // Keep highest-scoring (then most recent) match per sessionId to avoid duplicate session hits
+  const bestBySession = new Map<string, SearchResult>();
+
+  for (const entry of candidates) {
     const summaryLower = entry.summary.toLowerCase();
 
     // Score: count how many query words match
@@ -169,13 +861,24 @@ export function searchSessions(
     if (snippetStart > 0) snippet = "..." + snippet;
     if (snippetEnd < entry.summary.length) snippet = snippet + "...";
 
-    results.push({
+    const candidate: SearchResult = {
       sessionId: entry.sessionId,
       timestamp: entry.timestamp,
       snippet,
       score: matchCount / queryWords.length,
-    });
+    };
+
+    const existing = bestBySession.get(entry.sessionId);
+    if (
+      !existing ||
+      candidate.score > existing.score ||
+      (candidate.score === existing.score && candidate.timestamp.localeCompare(existing.timestamp) > 0)
+    ) {
+      bestBySession.set(entry.sessionId, candidate);
+    }
   }
+
+  const results = Array.from(bestBySession.values());
 
   // Sort by score (desc), then recency (desc)
   results.sort((a, b) => {
@@ -246,10 +949,10 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
 
   pi.on("input", (event, _ctx) => {
     const text = event?.text;
-    if (!text || text.length < 15) return;
-    // Skip slash commands and system-injected text
-    if (text.startsWith("/") || text.startsWith("[IMPORTANT:") || text.startsWith("[SYSTEM:")) return;
-    sessionMessages.push(text.slice(0, 200));
+    if (typeof text !== "string") return;
+    const cleaned = cleanUserMessageForIndex(text);
+    if (!cleaned) return;
+    sessionMessages.push(cleaned.slice(0, 200));
   });
 
   // Index compaction summaries when context is compacted
@@ -289,8 +992,8 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
         return;
       }
 
-      // Fallback: crude join of user messages (pre-#915 behavior)
-      if (sessionMessages.length < 3) return;
+      // Fallback: join cleaned user messages when no compaction occurred
+      if (sessionMessages.length === 0) return;
       const summary = sessionMessages.join(" | ").slice(0, 1000);
       indexSessionSummary(sessionCwd, sessionId, summary);
     } catch (err) {
