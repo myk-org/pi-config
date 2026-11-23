@@ -138,7 +138,7 @@ describe("subagent tool_result error propagation into file_modified matching", (
     mkdirSync(join(cwd, ".pi"), { recursive: true });
     priorChild = process.env.PI_SUBAGENT_CHILD;
     delete process.env.PI_SUBAGENT_CHILD;
-    const { addMemoryEntry } = await import("../../../extensions/orchestrator/memory-write.js");
+    const { addMemoryEntry } = await import("../../../extensions/orchestrator/memory-store.js");
     await addMemoryEntry(cwd, {
       text: "Markdown edits are tracked",
       category: "lesson",

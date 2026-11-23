@@ -351,7 +351,7 @@ describe("embedding pruning and compaction (#1202)", () => {
       "utf-8",
     );
 
-    const { pruneExpiredEntries } = await import("../../../extensions/orchestrator/memory-write.js");
+    const { pruneExpiredEntries } = await import("../../../extensions/orchestrator/memory-store.js");
     assert.equal(pruneExpiredEntries(cwd), 1);
 
     const raw = readFileSync(storePath, "utf-8").trim().split("\n");

@@ -6,10 +6,7 @@
  * Skill: queue + dream may auto-create under .pi/skills/.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { createLogger } from "../shared/logger.js";
-import { getProjectMemoryDir } from "./utils.js";
 import {
   type EnforcementAction,
   type EnforcementTrigger,
@@ -18,16 +15,12 @@ import {
   entryHash,
   hasEnforcementFields,
   loadScores,
-  mutateScores,
 } from "./memory-scoring.js";
+import { readAllTopicEntries } from "./memory-tree.js";
 import {
-  CATEGORY_TO_TOPIC,
-  canonicalTopicLine,
-  findTopicLine,
-  formatTopicLine,
-  invalidateTopicFileCache,
-  readAllTopicEntries,
-} from "./memory-tree.js";
+  applyEnforcementPromotions,
+  markEntryEnforced,
+} from "./memory-store.js";
 import {
   type PromotionCandidate,
   type PromotionCandidatePatch,
@@ -160,35 +153,13 @@ function looksProjectConvention(text: string): boolean {
   );
 }
 
-/** Mark *(enforced)* on the topic line for an entry. */
+/** Mark *(enforced)* on the topic line for an entry (delegates to memory-store). */
 export function markTopicEntryEnforced(
   cwd: string,
   category: MemoryCategory,
   text: string,
 ): boolean {
-  const topicName = CATEGORY_TO_TOPIC[category];
-  if (!topicName) return false;
-  const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
-  if (!existsSync(topicPath)) return false;
-
-  const content = readFileSync(topicPath, "utf-8");
-  const match = findTopicLine(content, category, text);
-  if (!match) return false;
-  if (match.enforced) return true; // already enforced
-
-  // Stable id binding marker (issue #915): keep an existing marker, or add
-  // one from the score entry so enforcement survives later text edits.
-  const scores = loadScores(cwd);
-  const entryId = scores.entries[entryHash(canonicalTopicLine({ category, text }))]?.id;
-  const id = match.id ?? entryId;
-  const lines = content.split("\n");
-  lines[match.index] = formatTopicLine(
-    { category, text, pinned: match.pinned, ...(id ? { id } : {}) },
-    true,
-  );
-  writeFileSync(topicPath, lines.join("\n"), "utf-8");
-  invalidateTopicFileCache(topicPath);
-  return true;
+  return markEntryEnforced(cwd, category, text);
 }
 
 export interface TopicScored {
@@ -359,27 +330,27 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
     toApply.push(c);
   }
 
-  // Single locked read-modify-write for all applied enforcement fields
-  if (toApply.length > 0) {
-    mutateScores(cwd, (latestScores) => {
-      for (const c of toApply) {
-        const hash = entryHash(`- [${c.category}] ${c.text}`);
-        const entry = latestScores.entries[hash];
-        if (!entry || hasEnforcementFields(entry)) continue;
-
-        entry.trigger = c.trigger as EnforcementTrigger;
-        entry.action = c.action as EnforcementAction;
-        if (c.verifier) entry.verifier = c.verifier;
-        entry.lifecycle = "active";
-      }
-    });
-  }
+  // Single deep-store mutation: locked score update + topic *(enforced)* markers
+  const appliedItems = applyEnforcementPromotions(
+    cwd,
+    toApply.map((c) => ({
+      category: c.category as MemoryCategory,
+      text: c.text,
+      trigger: c.trigger as EnforcementTrigger,
+      action: c.action as EnforcementAction,
+      ...(c.verifier ? { verifier: c.verifier } : {}),
+    })),
+  );
+  const appliedKeys = new Set(appliedItems.map((item) => `${item.category}:${item.text}`));
 
   for (const c of toApply) {
-    markTopicEntryEnforced(cwd, c.category as MemoryCategory, c.text);
-    toQueue.push({ ...c, status: "applied" });
-    applied += 1;
-    details.push(`enforced: [${c.category}] ${c.text}`);
+    if (appliedKeys.has(`${c.category}:${c.text}`)) {
+      toQueue.push({ ...c, status: "applied" });
+      applied += 1;
+      details.push(`enforced: [${c.category}] ${c.text}`);
+    } else {
+      toQueue.push({ ...c, status: "proposed" });
+    }
   }
 
   // Append-only / batched status updates — avoid lossy full rewrite and per-item I/O.
