@@ -24,7 +24,7 @@ Reviews a GitHub PR and posts inline review comments on selected findings.
 Create all 14 tasks upfront via `TaskCreate`, then immediately wire `addBlockedBy` via `TaskUpdate` per the table below (`TaskCreate` does not accept `addBlockedBy`):
 
 | Task | Title | blockedBy |
-|------|-------|-----------|
+| --- | --- | --- |
 | 1 | PR Detection | — |
 | 2 | Clone & checkout PR | 1 |
 | 3 | (auto-complete — reviewers read from clone) | 1 |

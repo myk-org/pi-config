@@ -14,7 +14,7 @@ and cross-checked against the repo-local `0.87.0` copy in `node_modules/`.
 Verified in `dist/core/agent-session.d.ts` and `dist/core/agent-session.js`:
 
 | | 0.87.0 (repo `node_modules`) | 0.99.1 (runtime) |
-|---|---|---|
+| --- | --- | --- |
 | `preflightResult` | `(success: boolean) => void` | `(disposition: PromptDisposition) => void` |
 | RPC reply data | no `disposition` field | `{ disposition }` |
 | `RpcClient.prompt()` | no return value | `Promise<PromptDisposition>` |
@@ -38,7 +38,7 @@ them can observe a disposition.
 ### (a) `pi.sendUserMessage(...)` — 5 sites, all pass `deliverAs`
 
 | file:line | call |
-|---|---|
+| --- | --- |
 | `extensions/orchestrator/cron.ts:116` | `pi.sendUserMessage(cmd, { deliverAs: "followUp" })` |
 | `extensions/orchestrator/cron.ts:184` | `pi.sendUserMessage(..., { deliverAs: "followUp" })` |
 | `extensions/pidash/pidash.ts:300` | `pi.sendUserMessage(content, { deliverAs: "followUp" })` |

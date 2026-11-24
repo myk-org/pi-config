@@ -24,7 +24,7 @@ import re
 import sqlite3
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -114,7 +114,7 @@ def _read_latest_jsonl_dict(jsonl_path: Path, chunk_size: int = 65536) -> dict[s
 
 
 @contextmanager
-def _jsonl_score_lock(jsonl_path: Path) -> Iterator[None]:
+def _jsonl_score_lock(jsonl_path: Path) -> Generator[None]:
     """Cross-process lock over memory-scores.jsonl, mirroring the TypeScript
     store's protocol (state-jsonl.ts): a `<file>.wlock` sidecar created with
     O_EXCL, holding the pid; a dead holder's lock is stolen. Keeps the Python

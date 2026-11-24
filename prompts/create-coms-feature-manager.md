@@ -103,7 +103,7 @@ If the user doesn't provide values, use `TBD` as the placeholder text (never lea
 Replace ALL `{{PLACEHOLDER}}` values in the template with project-specific values:
 
 | Placeholder | How to determine |
-|-------------|------------------|
+| --- | --- |
 | `{{TEST_COMMAND}}` | From Makefile, tox.ini, pyproject.toml, package.json |
 | `{{TEST_LOCATIONS}}` | Scan for test directories |
 | `{{VERIFICATION_STEP}}` | Based on project type — deploy+verify or just tests |

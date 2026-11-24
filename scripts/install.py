@@ -29,7 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -137,7 +137,7 @@ def _npm_global_prefix() -> Path:
 
 
 @contextmanager
-def _publication_lock(lock_path: Path) -> Iterator[None]:
+def _publication_lock(lock_path: Path) -> Generator[None]:
     lock_id = hashlib.sha256(os.fsencode(lock_path)).hexdigest()[:12]
     with lock_path.open("a+b") as lock:
         if lock.tell() == 0:

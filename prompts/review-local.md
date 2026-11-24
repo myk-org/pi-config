@@ -27,7 +27,7 @@ using `TaskUpdate` with `addBlockedBy`. The task system enforces execution order
 ### Task List
 
 | Task | Title | blockedBy |
-|------|-------|-----------|
+| --- | --- | --- |
 | 1 | Get diff | — |
 | 2 | Review — Code Quality | 1 |
 | 3 | Review — Guidelines | 1 |

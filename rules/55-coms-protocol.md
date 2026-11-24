@@ -8,7 +8,7 @@ requires: coms_active
 P2P communication system for talking to other pi sessions on the same machine.
 
 | System | Activation | Tool prefix | Transport |
-|--------|-----------|-------------|-----------|
+| --- | --- | --- | --- |
 | **P2P** (coms) | `coms_start` tool (or `/coms start`, or `pi --coms`) | `coms_` | Direct peer-to-peer |
 
 ## Activation
@@ -20,7 +20,7 @@ with no slash command and no new process. `coms_stop` ends it. `/coms start` and
 ## Two different things — do not confuse them
 
 | You want | Call | What happens |
-|---|---|---|
+| --- | --- | --- |
 | **This** chat to become a peer | `coms_start` | The session you are already in registers an identity and gains `coms_send`/`coms_list`. No new process, no new model. |
 | **Another** pi to work for you | supervisor + `scripts/coms-peer-supervisor.mjs` | A NEW pi process with its own session, model and context. It is a peer, not this session. |
 
@@ -37,7 +37,7 @@ prompt in the same breath; otherwise do not spawn.
 You can grow the pool instead of doing everything yourself:
 
 | Action | How |
-|---|---|
+| --- | --- |
 | Start a peer as its own real pi, with its own session | `pi --mode rpc --coms --cname <name> --project <p>` under `scripts/coms-peer-supervisor.mjs` (`~/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/`, falling back to this checkout): it holds the peer's stdin, records pids in `~/.pi/coms/peers/<name>.json`, and has no lifetime of its own |
 | Spawn a peer | `coms_peer_spawn` with `cname` (+ optional `purpose`, `project`, `cwd`) — starts a supervised `pi --coms` process with its own session. It registers in ~20-30s; `coms_peers` then lists it. No human needed and no shell command to remember |
 | See spawned peers | `coms_peers` (human: `/coms list`) scoped to THIS project by default; pass `project: "*"` (tool) or `/coms list --all` for every project. `/coms list` overlays like `/async-status`: ↑↓ navigate, x kill, X kill all, plain text when there is no UI |
@@ -52,7 +52,7 @@ fails. Use `coms_list` for connected peers.
 ## Tool Reference
 
 | Action | Tool |
-|--------|------|
+| --- | --- |
 | List connected peers | `coms_list` |
 | Send message / structured tasks | `coms_send` |
 | Poll for response | `coms_get` |

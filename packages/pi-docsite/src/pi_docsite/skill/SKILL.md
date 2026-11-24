@@ -38,7 +38,7 @@ do — do not mix the two in one workflow.
 Everything is a flag with a derived default. Run `pi-docsite --help` for the full list.
 
 | Flag | Default |
-|---|---|
+| --- | --- |
 | `--docs-dir` | `docs/` next to the script |
 | `--project-name` | the git remote's repo name |
 | `--repo-url` | git remote `origin` |
@@ -99,7 +99,7 @@ Precedence, highest first: frontmatter, then `nav.json`, then the fallback group
 Written into `--docs-dir` alongside the sources:
 
 | Output | Purpose |
-|---|---|
+| --- | --- |
 | `<slug>.html` | one page per `.md` |
 | `index.html` | landing page with the grouped navigation |
 | `search-index.json` | full page text for search, fetched once by every page |
@@ -139,7 +139,7 @@ page — and a blanket pattern hides those too.
 ## Troubleshooting
 
 | Symptom | Cause and fix |
-|---|---|
+| --- | --- |
 | `uvx: command not found` | `uv` is not installed. Install it from [docs.astral.sh/uv](https://docs.astral.sh/uv/), or fall back to `pip install pi-docsite` and say which you used. |
 | `docs/<slug>.md has N H1 headings, expected 1` | Add exactly one real H1, or close the code fence that is swallowing it. |
 | Page missing from the sidebar | It should not happen — the generator lists every `*.md`. If it does, check for a filename that does not end in `.md`. |

@@ -38,7 +38,7 @@ When `memory_add` reports a contradiction:
 After EVERY turn, check if anything worth remembering occurred:
 
 | Trigger / Event | Category | Notes |
-|---|---|---|
+| --- | --- | --- |
 | User says "remember" / `/remember` | best fit | Set `pinned: true` |
 | User corrects you / "don't do X" / "always do Y" | `lesson` or `preference` | Must pass standing test |
 | Something failed or took multiple fix attempts | `mistake` | Include root cause/fix |
@@ -54,7 +54,7 @@ After EVERY turn, check if anything worth remembering occurred:
 For mechanical rules ("when X happens, do/block/warn Y"), pass `trigger`, `action`, and optional `verifier` to `memory_add`:
 
 | Pattern | Enforcement | Example |
-|---|---|---|
+| --- | --- | --- |
 | Corrects a specific command/tool usage | `trigger` + `block` | "never use git add ." |
 | Requires action after a specific change | `trigger` + `run_after <cmd>` | "always deploy after code changes" |
 | Wants a warning on a specific pattern | `trigger` + `warn` | "warn when modifying config files" |

@@ -6,7 +6,7 @@ import logging
 import os
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,7 +39,7 @@ from pi_sidecar_client import (
 
 
 @contextmanager
-def session_server() -> Iterator[tuple[str, list[dict]]]:
+def session_server() -> Generator[tuple[str, list[dict]], None, None]:
     received: list[dict] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -70,7 +70,7 @@ def session_server() -> Iterator[tuple[str, list[dict]]]:
 
 
 @contextmanager
-def provider_server() -> Iterator[tuple[str, list[str]]]:
+def provider_server() -> Generator[tuple[str, list[str]], None, None]:
     received: list[str] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -106,7 +106,7 @@ def provider_server() -> Iterator[tuple[str, list[str]]]:
 
 
 @contextmanager
-def recording_server() -> Iterator[tuple[str, list[str]]]:
+def recording_server() -> Generator[tuple[str, list[str]], None, None]:
     """Serves GET /transcripts/recording for the #935 client tests."""
     received: list[str] = []
 
@@ -140,7 +140,7 @@ def recording_server() -> Iterator[tuple[str, list[str]]]:
 @contextmanager
 def key_models_server(
     status: int = 200, *, listing_supported: bool = True, empty: bool = False
-) -> Iterator[tuple[str, list[dict]]]:
+) -> Generator[tuple[str, list[dict]], None, None]:
     received: list[dict] = []
 
     class Handler(BaseHTTPRequestHandler):

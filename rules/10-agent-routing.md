@@ -3,7 +3,7 @@
 ## Routing Table
 
 | Domain/Tool | Agent |
-|---|---|
+| --- | --- |
 | Python (.py) | `python-expert` |
 | Go (.go) | `go-expert` |
 | Frontend (JS/TS/React/Vue/Angular) | `ts-expert` |

@@ -23,7 +23,7 @@ AI CLI tools directly via subprocess — giving full model access including all 
 ## Supported Providers
 
 | Provider | Binary | Notes |
-|----------|--------|-------|
+| --- | --- | --- |
 | `cursor` | `agent` | `--print` for non-interactive, `--workspace` for cwd |
 | `claude` | `claude` | `-p` for non-interactive print mode |
 | `gemini` | `gemini` | Stdin prompt |
@@ -80,7 +80,7 @@ Read via `cat .pi/external-ai-config.json 2>/dev/null`.
 Always pass `--model` to `ai-cli run`: use the `--model` value if specified, otherwise the provider's default:
 
 | Provider | Default model |
-|----------|---------------|
+| --- | --- |
 | `cursor` | `composer-2-fast` |
 | `claude` | `claude-sonnet-4-6` |
 | `gemini` | `gemini-2.5-flash` |
@@ -113,7 +113,7 @@ Sessions allow the AI CLI to maintain conversation context across prompts.
 **Session behavior by mode:**
 
 | Mode | Session behavior |
-|------|------------------|
+| --- | --- |
 | **Normal** (no flags) | Stateless — fresh session each call |
 | **`--resume`** | Continue the most recent session |
 | **`--session-id <id>`** | Resume a specific session by ID |
@@ -571,7 +571,7 @@ Items where the agent initially flagged but later agreed no change was needed.
 **Per round:**
 
 | Round | Provider | Model | Input tokens | Output tokens | Cache read | Cost | Duration |
-|-------|----------|-------|-------------|--------------|------------|------|----------|
+| --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | cursor | gpt-5.4-high | 27,668 | 1,423 | 24,064 | $0.0182 | 12s |
 | 2 | cursor | gpt-5.4-high | 29,104 | 892 | 26,200 | $0.0171 | 9s |
 | 3 | cursor | gpt-5.4-high | 30,332 | 416 | 28,100 | $0.0170 | 8s |
@@ -579,7 +579,7 @@ Items where the agent initially flagged but later agreed no change was needed.
 **Totals:**
 
 | Provider | Model | Rounds | Input tokens | Output tokens | Cache read | Cost | Duration |
-|----------|-------|--------|-------------|--------------|------------|------|----------|
+| --- | --- | --- | --- | --- | --- | --- | --- |
 | cursor | gpt-5.4-high | 3 | 87,104 | 2,731 | 78,364 | $0.0523 | 29s |
 
 Total: tokens=87,104 in / 2,731 out / 78,364 cache, cost=$0.0523, duration=29s

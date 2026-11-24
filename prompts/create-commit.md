@@ -30,7 +30,7 @@ This is the immutable source template. NEVER modify it.
 ### Step 2: Fill Placeholders
 
 | Placeholder | Value |
-|-------------|-------|
+| --- | --- |
 | `{{FILES}}` | Every file to commit, one hyphen bullet per file, exact paths — parse `git status --porcelain=v1 -z` per the rules below |
 | `{{MESSAGE}}` | Commit subject — the FIRST LINE of the raw arguments, nothing more. If empty, draft a conventional `type(scope): description` subject from the change set and confirm with the user |
 | `{{BODY}}` | The remainder of the raw arguments after the first line, if any — never duplicates `{{MESSAGE}}` content. Empty by default |

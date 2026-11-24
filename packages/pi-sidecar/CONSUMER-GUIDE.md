@@ -18,7 +18,7 @@ Keep the npm package and the Python client on the **same version**. They are rel
 and share one version number:
 
 | Package | Registry |
-|---|---|
+| --- | --- |
 | `@myk-org/pi-sidecar` | npm |
 | `pi-sidecar-client` | PyPI |
 | `pi-orchestrator-config` | npm |
@@ -266,7 +266,7 @@ npx pi-sidecar-start --help
 ## Environment Variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| --- | --- | --- |
 | `SIDECAR_PORT` | `9100` | Listen port (`9201` for start script). `startSidecar()` stamps this env while running (default, `options.port`, or `0` for ephemeral) and `close()` restores the inherited value. |
 | `SIDECAR_HOST` | `127.0.0.1` | Bind address |
 | `SIDECAR_URL` | `http://127.0.0.1:9100` | Python client base URL |
@@ -369,7 +369,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 ## API Quick Reference
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| --- | --- | --- |
 | `GET` | `/health` | Health check |
 | `GET` | `/models` | List all available models |
 | `GET` | `/models/:provider/status` | Provider diagnostics, including `supportsSessionApiKey` |
@@ -425,7 +425,7 @@ other values carry meaning, and conflating them is how unknown spend turns into
 a believable number:
 
 | Value | Meaning |
-|-------|---------|
+| --- | --- |
 | number | Costs were reported and accumulated. |
 | `null` | Nothing usable was reported, so no total can be given. |
 | number + `cost_partial: true` | A **lower bound**: at least one turn's cost could not be determined, so the real total may be higher — it may also be the same. |
@@ -503,7 +503,7 @@ response shape, same timing — and a dead or slow subscriber can never fail a
 prompt.
 
 | Event | Payload | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `session` | `{type, sessionId}` | sent on connect |
 | `turn_start` | `{type, turnId}` | one per accepted prompt; `turnId` is monotonic per session |
 | `text_delta` | `{type, turnId, delta}` | `delta` is already redacted server-side |
@@ -594,7 +594,7 @@ still compresses or buffers the response, deltas arrive as one burst at the end
 ## Provider Types
 
 | Provider | Source | Models | Cost reported |
-|----------|--------|--------|--------------|
+| --- | --- | --- | --- |
 | `google` | Native (API key) | Gemini models in the catalog | ✅ Yes |
 | `google` | Key-scoped listing | Model ids **not** in the catalog | ⚠️ `null` unless the provider reports a real cost |
 | `google-vertex` | Native (ADC) | Gemini via Vertex | ✅ Yes |
