@@ -9,7 +9,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { setUvAvailable, isUvAvailable } from "./enforcement-helpers.js";
+import { setUvAvailable, isUvAvailable } from "./bash-policy.js";
 import { checkMinPiVersion } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { resolveBinary } from "../shared/resolve-binary.js";

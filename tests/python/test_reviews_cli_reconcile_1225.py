@@ -542,7 +542,7 @@ def _run_fetch_scenario(
         }
     }
 
-    monkeypatch.setattr(fetch_mod, "check_dependencies", lambda: None)
+    monkeypatch.setattr(fetch_mod, "check_dependencies", lambda *_a, **_kw: None)
     monkeypatch.setattr(fetch_mod, "get_pr_info", lambda pr_url="": ("org", "repo", "42"))  # noqa: ARG005
     monkeypatch.setattr(fetch_mod, "run_gh_graphql", lambda _q, _v: graphql_response)
     monkeypatch.setattr(fetch_mod, "fetch_qodo_cli_threads", lambda _u, _h: (cli_threads, cli_state))

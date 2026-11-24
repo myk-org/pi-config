@@ -2,7 +2,7 @@
  * #1077 — envelope origin: who authored a prompt.
  *
  * The command layer (`/coms tell`, the peers overlay composer) delivers through
- * `globalThis.__comsUserSend` and stamps origin "user". Every agent tool (`coms_send`,
+ * `ComsPeerRuntime.sendAsUser()` and stamps origin "user". Every agent tool (`coms_send`,
  * `coms_broadcast`) leaves it unset, so tool input can never claim human authority — the unit
  * cases pin the pure decision, and the integration cases pin it end to end through a real
  * envelope to a real receiver.
@@ -13,6 +13,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { createComsPeerRuntime, type ComsPeerRuntime } from "../../../extensions/coms/coms-p2p.js";
 
 import {
 	buildBundledContent,
@@ -239,6 +241,7 @@ interface FakePi {
 	tools: Map<string, any>;
 	handlers: Map<string, any>;
 	messages: any[];
+	runtime: ComsPeerRuntime;
 	start: (event: any, ctx: any) => Promise<void>;
 	shutdown?: () => Promise<void>;
 	endpoint?: string;
@@ -263,6 +266,7 @@ function createPi(name: string): FakePi {
 		tools,
 		handlers,
 		messages,
+		runtime: undefined as any,
 		get start() {
 			if (!start) throw new Error("session_start handler was not registered");
 			return start;
@@ -285,17 +289,13 @@ function createPi(name: string): FakePi {
 async function startPeer(name: string, sessionId: string): Promise<FakePi> {
 	const pi = createPi(name);
 	peers.push(pi);
-	const init = (await import(`../../../extensions/coms/coms-p2p.ts?prompt-origin=${sessionId}`)).default;
-	const subagentChild = process.env.PI_SUBAGENT_CHILD;
-	try {
-		// This suite exercises the P2P extension itself, not its child-process guard.
-		process.env.PI_SUBAGENT_CHILD = "0";
-		init(pi as any);
-	} finally {
-		if (subagentChild === undefined) delete process.env.PI_SUBAGENT_CHILD;
-		else process.env.PI_SUBAGENT_CHILD = subagentChild;
-	}
-	(globalThis as any).__piConfigSessionId = sessionId;
+	pi.runtime = createComsPeerRuntime(pi as any, {
+		deferred: false,
+		comsDir: join(workspace!, "coms"),
+		sessionId,
+		allowSubagentChild: true,
+		registerSignalHandlers: false,
+	});
 	const ctx = {
 		cwd: workspace,
 		model: { id: "test-model" },
@@ -305,11 +305,10 @@ async function startPeer(name: string, sessionId: string): Promise<FakePi> {
 	};
 	(pi as any).ctx = ctx;
 	await pi.start({}, ctx);
-	pi.endpoint = (globalThis as any).__comsSelf?.endpoint;
+	pi.endpoint = pi.runtime.getSelf()?.endpoint;
 	return pi;
 }
 
-/** Receiver first, sender last: `__comsUserSend` is process-wide, so the sender must publish it. */
 async function startPair(receiverName = "receiver", senderName = "sender") {
 	workspace = makeTempDir("coms-prompt-origin-");
 	mkdirSync(join(workspace, ".pi"));
@@ -334,7 +333,7 @@ async function waitForInbound(receiver: FakePi, count = 1): Promise<any> {
 	return received[count - 1];
 }
 
-describe("envelope origin end to end (#1077)", { concurrency: false }, () => {
+describe("envelope origin end to end (#1077)", () => {
 	it("coms_send cannot claim human authority, even with a spoofed origin in its input", async () => {
 		const { sender, receiver } = await startPair();
 		const tool = sender.tools.get("coms_send");
@@ -358,9 +357,8 @@ describe("envelope origin end to end (#1077)", { concurrency: false }, () => {
 
 	it("the command layer's send arrives marked as the user, and history keeps it", async () => {
 		const { sender, receiver } = await startPair();
-		const send = (globalThis as any).__comsUserSend as (p: { target: string; prompt: string }) => Promise<{ ok: boolean; message: string }>;
-		assert.equal(typeof send, "function", "the command-layer bridge is published");
-		const result = await send({ target: "receiver", prompt: "ship it — I decided" });
+		assert.equal(sender.runtime.isActive(), true, "the sender runtime is active");
+		const result = await sender.runtime.sendAsUser({ target: "receiver", prompt: "ship it — I decided" });
 		assert.equal(result.ok, true);
 		const inbound = await waitForInbound(receiver);
 		assert.match(inbound.customType, /\(from the USER\)/);
@@ -383,8 +381,7 @@ describe("envelope origin end to end (#1077)", { concurrency: false }, () => {
 		}
 		await sender.handlers.get("message_start")({ message: { role: "custom", ...inboundMessages(sender)[0] } });
 
-		const send = (globalThis as any).__comsUserSend as (p: { target: string; prompt: string }) => Promise<{ ok: boolean; message: string }>;
-		assert.equal((await send({ target: "receiver", prompt: "carry on" })).ok, true);
+		assert.equal((await sender.runtime.sendAsUser({ target: "receiver", prompt: "carry on" })).ok, true);
 
 		// Same turn: the agent's answer to the receiver's question must still be captured.
 		const reply = "all green";
@@ -403,17 +400,20 @@ describe("envelope origin end to end (#1077)", { concurrency: false }, () => {
 		assert.equal(String(receiver.messages.find((m) => /coms response from sender/.test(String(m?.customType)))?.content).includes(reply), true);
 	});
 
-	it("re-publishes the user bridge after a stop and start (Qodo: dead after restart)", async () => {
+	it("re-enables sendAsUser after a stop and start cycle", async () => {
 		workspace = makeTempDir("coms-prompt-origin-restart-");
 		mkdirSync(join(workspace, ".pi"));
 		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
 		const peer = await startPeer("solo", "solo-session");
-		assert.equal(typeof (globalThis as any).__comsUserSend, "function");
+		assert.equal(peer.runtime.isActive(), true);
 		await peer.shutdown?.();
-		assert.equal((globalThis as any).__comsUserSend, null, "shutdown clears the bridge");
-		// `/coms stop` + `/coms start`: activation must publish it again, not only extension init.
+		assert.equal(peer.runtime.isActive(), false, "shutdown deactivates runtime");
+		const inactiveSend = await peer.runtime.sendAsUser({ target: "anyone", prompt: "hi" });
+		assert.equal(inactiveSend.ok, false);
+		assert.match(inactiveSend.message, /not active/);
+		// `/coms stop` + `/coms start`: activation must make sendAsUser active again.
 		await peer.start({}, (peer as any).ctx);
-		assert.equal(typeof (globalThis as any).__comsUserSend, "function");
+		assert.equal(peer.runtime.isActive(), true);
 	});
 
 	for (const behavior of ["raw fragment name still receives", "inbound reply hint retains the sender address"]) it(behavior, async () => {
@@ -429,22 +429,21 @@ describe("envelope origin end to end (#1077)", { concurrency: false }, () => {
 	});
 
 	it("refuses a replacement resolved after composition", async () => {
-		const { receiver } = await startPair();
+		const { sender, receiver } = await startPair();
 		assert.ok(receiver.endpoint);
 		const request = buildTellRequest({ name: "receiver", endpoint: receiver.endpoint }, "do not deliver");
-		const send = (globalThis as any).__comsUserSend;
+		assert.ok(request);
 		await receiver.shutdown?.();
 		const replacement = await startPeer("receiver", "replacement-session");
-		const result = await send(request);
+		const result = await sender.runtime.sendAsUser(request);
 		assert.equal(result.ok, false);
 		assert.match(result.message, /changed|replacement/);
 		assert.equal(inboundMessages(replacement).length, 0);
 	});
 
 	it("reports a delivery failure instead of dropping it", async () => {
-		await startPair();
-		const send = (globalThis as any).__comsUserSend as (p: { target: string; prompt: string }) => Promise<{ ok: boolean; message: string }>;
-		const result = await send({ target: "nobody-here", prompt: "hello?" });
+		const { sender } = await startPair();
+		const result = await sender.runtime.sendAsUser({ target: "nobody-here", prompt: "hello?" });
 		assert.equal(result.ok, false);
 		assert.match(result.message, /no live peer "nobody-here"/);
 	});

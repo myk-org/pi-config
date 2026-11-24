@@ -350,11 +350,10 @@ Registered by `extensions/orchestrator/trail.ts` when `trail_enable` is on, whic
 
 ## Duplicate registrations
 
-Three names are registered twice in source. The second registration is either a stub or is swallowed, so there is no user-visible conflict — but it is worth knowing if you grep the code.
+Two names are registered twice in source. Both branches are mutually exclusive stubs, so there is no user-visible conflict — but it is worth knowing if you grep the code.
 
 | Name | Registrations | Which one you get |
 |---|---|---|
-| `/coms` | `coms-wrapper.ts` (`start \| stop \| status`) and `coms-p2p.ts` (force-refresh the pool widget, `--all` / `--project <name>`) | The wrapper's version. `coms-wrapper` loads `coms-p2p` through a proxy that explicitly swallows the upstream `/coms` registration ("Upstream /coms is owned by the wrapper"). The widget-refresh handler and its `--all` / `--project` flags are therefore dead in the default wrapper setup. |
 | `/pidash` | `pidash.ts` twice | Two mutually exclusive branches: one registered when the dashboard is disabled (notify-only stub), one when it is enabled. Exactly one is live. |
 | `/pidiff` | `pidiff.ts` twice | Same pattern as `/pidash`: disabled-branch stub, or the full server management command. |
 

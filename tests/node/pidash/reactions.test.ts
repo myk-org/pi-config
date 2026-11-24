@@ -13,7 +13,7 @@ import {
   reactionAction,
   sessionForChannel,
   sessionIdFromTopic,
-} from "../../../extensions/pidash/discord-reactions.ts";
+} from "../../../extensions/pidash/discord-session-routing.ts";
 
 describe("reaction emoji mapping", () => {
   it("maps stop", () => {

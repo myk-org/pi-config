@@ -20,12 +20,10 @@ from myk_pi_tools.coderabbit.utils import (
     find_summary_comment as _find_summary_comment,
 )
 from myk_pi_tools.coderabbit.utils import (
-    run_gh as _run_gh,
-)
-from myk_pi_tools.coderabbit.utils import (
     validate_owner_repo as _validate_owner_repo,
 )
-from myk_pi_tools.utils import post_issue_comment
+from myk_pi_tools.github import post_issue_comment
+from myk_pi_tools.github import run_gh as _run_gh
 
 _RATE_LIMITED_MARKER = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->"
 _REVIEWS_PAUSED_MARKER = "<!-- This is an auto-generated comment: reviews paused by coderabbit.ai -->"
@@ -184,7 +182,7 @@ def _find_trigger_reply(owner_repo: str, pr_number: int, trigger_comment_id: int
         timeout=60,
     )
     if code != 0:
-        return stderr or "API request failed"
+        return stderr.strip() or "API request failed"
     try:
         return int(output.strip()) > 0
     except (ValueError, TypeError):

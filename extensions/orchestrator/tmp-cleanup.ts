@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isLiveLegacyDaemonFile } from "../shared/daemon-manager.js";
+import { isLiveLegacyDaemonFile } from "../pidiff/lockfile.js";
 import { acquireMtimeFileLock } from "../shared/file-lock.js";
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";

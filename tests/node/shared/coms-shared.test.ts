@@ -7,9 +7,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, buildInboundContent, formatQueueStr, renderQueuePart, sanitizeComsName, createDeferredProxy, syncComsActiveTools, type DeferredUpstream } from "../../../extensions/coms/coms-shared.js";
+import { formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, buildInboundContent, formatQueueStr, renderQueuePart, sanitizeComsName, syncComsActiveTools } from "../../../extensions/coms/coms-shared.js";
+import { createComsPeerRuntime } from "../../../extensions/coms/coms-p2p.js";
 import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
+import { setComsActive, isComsActive, resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
 describe("formatComsResponseText", () => {
 	it("formats error response without queue", () => {
@@ -259,200 +262,229 @@ describe("buildInboundContent", () => {
 	});
 });
 
-describe("createDeferredProxy registerCommand", () => {
-	function makeState(active = false): DeferredUpstream {
-		return {
-			capturedSessionStart: null,
-			capturedSessionShutdown: null,
-			flagValues: new Map(),
-			active,
-		};
-	}
-
-	function makePi() {
+describe("registerComs lifecycle, /coms-queue gating, and reload reactivation", () => {
+	function makeStatefulPi() {
+		const tools = new Map<string, any>();
+		let activeTools: string[] = ["read", "bash"];
+		const events = new Map<string, Array<(...args: any[]) => any>>();
 		const commands = new Map<string, any>();
-		return {
-			commands,
-			registerCommand: (name: string, def: any) => { commands.set(name, def); },
-			registerTool: () => {},
-			registerFlag: () => {},
-			getFlag: () => undefined,
-			on: () => {},
-			appendEntry: () => {},
-		};
-	}
-
-	it("swallows wrapper-owned /coms", () => {
-		const pi = makePi();
-		const state = makeState(true);
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "test-key");
-		proxy.registerCommand("coms", { description: "upstream", handler: async () => {} });
-		assert.equal(pi.commands.has("coms"), false);
-	});
-
-	it("registers /coms-queue on real pi", () => {
-		const pi = makePi();
-		const state = makeState(false);
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "test-key");
-		let called = false;
-		proxy.registerCommand("coms-queue", {
-			description: "queue",
-			handler: async () => { called = true; },
-		});
-		assert.ok(pi.commands.has("coms-queue"));
-		assert.equal(pi.commands.get("coms-queue").description, "queue");
-		assert.equal(called, false);
-	});
-
-	it("gates /coms-queue when inactive", async () => {
-		const pi = makePi();
-		const state = makeState(false);
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "test-key");
-		let called = false;
-		const notifies: string[] = [];
-		proxy.registerCommand("coms-queue", {
-			description: "queue",
-			handler: async () => { called = true; },
-		});
-		await pi.commands.get("coms-queue").handler("", {
-			ui: { notify: (msg: string) => { notifies.push(msg); } },
-		});
-		assert.equal(called, false);
-		assert.ok(notifies.some(m => m.includes("coms not active")));
-	});
-
-	it("forwards /coms-queue when active", async () => {
-		const pi = makePi();
-		const state = makeState(true);
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "test-key");
-		let called = false;
-		proxy.registerCommand("coms-queue", {
-			description: "queue",
-			handler: async () => { called = true; },
-		});
-		await pi.commands.get("coms-queue").handler("", { ui: { notify: () => {} } });
-		assert.equal(called, true);
-	});
-
-	it("sets coms_active flag on reload reactivation", async () => {
-		const { setComsActive, isComsActive } = await import("../../../extensions/shared/session-bridge.js");
-		setComsActive(false);
-		assert.equal(isComsActive(), false);
-
-		const handlers: Array<(evt: any, ctx: any) => Promise<void>> = [];
+		const persisted: Array<{ key: string; data: any }> = [];
+		const busListeners = new Map<string, Array<(data: unknown) => void>>();
+		const emittedBus: Array<{ channel: string; data: unknown }> = [];
 		const pi = {
-			registerCommand: () => {},
-			registerTool: () => {},
-			registerFlag: () => {},
-			getFlag: () => undefined,
-			on: (_event: string, handler: any) => {
-				handlers.push(handler);
-			},
-			appendEntry: () => {},
-		};
-		const state = makeState(false);
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
-		proxy.on("session_start", async () => {});
-
-		assert.equal(handlers.length, 1);
-		await handlers[0](
-			{ reason: "reload" },
-			{
-				sessionManager: {
-					getEntries: () => [
-						{ type: "custom", customType: "coms-state", data: { active: true, flags: {}, extra: {} } },
-					],
+			tools,
+			commands,
+			persisted,
+			busListeners,
+			emittedBus,
+			events: {
+				emit: (channel: string, data: unknown) => {
+					emittedBus.push({ channel, data });
+					for (const fn of [...(busListeners.get(channel) ?? [])]) fn(data);
+				},
+				on: (channel: string, fn: (data: unknown) => void) => {
+					const list = busListeners.get(channel) ?? [];
+					list.push(fn);
+					busListeners.set(channel, list);
+					return () => {
+						const cur = busListeners.get(channel);
+						if (!cur) return;
+						const idx = cur.indexOf(fn);
+						if (idx >= 0) cur.splice(idx, 1);
+					};
 				},
 			},
-		);
-		assert.equal(state.active, true);
-		assert.equal(isComsActive(), true);
-		setComsActive(false);
-	});
-
-	it("clears active state on reload reactivation failure, persists", async () => {
-		const { setComsActive, isComsActive } = await import("../../../extensions/shared/session-bridge.js");
-		setComsActive(true);
-		assert.equal(isComsActive(), true);
-
-		const handlers: Array<(evt: any, ctx: any) => Promise<void>> = [];
-		const persisted: Array<{ key: string; data: any }> = [];
-		const pi = {
-			registerCommand: () => {},
-			registerTool: () => {},
+			registerCommand: (name: string, def: any) => { commands.set(name, def); },
+			registerTool: (tool: any) => {
+				tools.set(tool.name, tool);
+				if (tool.defaultActive !== false && !activeTools.includes(tool.name)) {
+					activeTools.push(tool.name);
+				}
+			},
 			registerFlag: () => {},
 			getFlag: () => undefined,
-			on: (_event: string, handler: any) => {
-				handlers.push(handler);
+			getActiveTools: () => [...activeTools],
+			setActiveTools: (names: string[]) => { activeTools = [...names]; },
+			on: (event: string, handler: any) => {
+				const list = events.get(event) ?? [];
+				list.push(handler);
+				events.set(event, list);
 			},
 			appendEntry: (key: string, data: any) => {
 				persisted.push({ key, data });
 			},
+			sendMessage: () => {},
 		};
-		const state = makeState(true);
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
-		proxy.on("session_start", async () => {
-			throw new Error("reactivate boom");
-		});
+		return { pi, tools, events, commands, persisted, busListeners, emittedBus, getActive: () => [...activeTools] };
+	}
 
-		assert.equal(handlers.length, 1);
-		await handlers[0](
-			{ reason: "reload" },
-			{
-				sessionManager: {
-					getEntries: () => [
-						{ type: "custom", customType: "coms-state", data: { active: true, flags: {}, extra: {} } },
-					],
-				},
-			},
-		);
-		assert.equal(state.active, false);
-		assert.equal(isComsActive(), false);
-		assert.ok(persisted.some((p) => p.key === "coms-state" && p.data?.active === false));
-		setComsActive(false);
+	it("registers wrapper /coms without an upstream duplicate", () => {
+		const { pi, commands } = makeStatefulPi();
+		registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
+		assert.ok(commands.has("coms"));
+		assert.ok(commands.has("coms-queue"));
+		assert.match(commands.get("coms").description, /start \| stop \| status/);
 	});
 
-	it("isolates comsActive reload reactivation per session", async () => {
-		const { isComsActive, resetSessionBridge } = await import("../../../extensions/shared/session-bridge.js");
-		resetSessionBridge({ all: true });
-		try {
-			const handlers: Record<string, Array<(...args: any[]) => Promise<void>>> = {};
-			const pi = {
-				registerCommand: () => {},
-				registerTool: () => {},
-				registerFlag: () => {},
-				getFlag: () => undefined,
-				on: (event: string, handler: any) => {
-					(handlers[event] ??= []).push(handler);
-				},
-				appendEntry: () => {},
-			};
-			const state = makeState(false);
-			const proxy = createDeferredProxy(pi as any, state, "not active", "coms-state");
-			proxy.on("session_start", async () => {});
-			proxy.on("session_shutdown", async () => {});
+	it("gates /coms-queue when COMS runtime is inactive", async () => {
+		const { pi, commands } = makeStatefulPi();
+		registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
+		const notifies: string[] = [];
+		await commands.get("coms-queue").handler("", {
+			hasUI: false,
+			ui: { notify: (msg: string) => { notifies.push(msg); } },
+		});
+		assert.ok(notifies.some((m) => m.includes("coms not active")));
+	});
 
-			await handlers.session_start[0](
+	it("registers one pidash:request-commands listener covering coms commands", async () => {
+		const { pi, events, busListeners, emittedBus } = makeStatefulPi();
+		registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
+
+		const listeners = busListeners.get("pidash:request-commands") ?? [];
+		assert.equal(listeners.length, 1);
+
+		emittedBus.length = 0;
+		pi.events.emit("pidash:request-commands", undefined);
+		const registered = emittedBus
+			.filter((e) => e.channel === "pidash:register-command")
+			.map((e) => (e.data as any)?.name);
+		assert.deepEqual(registered, ["coms", "coms-queue"]);
+
+		for (const handler of events.get("session_shutdown") ?? []) await handler();
+		assert.equal((busListeners.get("pidash:request-commands") ?? []).length, 0);
+	});
+
+	it("reactivates COMS on reload when previously active", async () => {
+		resetSessionBridge({ all: true });
+		const tmpRoot = makeTempDir("coms-reload-ok-");
+		const comsDir = path.join(tmpRoot, "coms");
+		const { pi, events, getActive } = makeStatefulPi();
+		const registered = registerComs(pi as any, {
+			comsDir,
+			sessionId: "reload-ok-sess",
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
+		});
+		try {
+			const startHandlers = events.get("session_start") ?? [];
+			assert.equal(startHandlers.length, 1);
+			await startHandlers[0](
 				{ reason: "reload" },
 				{
+					cwd: tmpRoot,
+					hasUI: false,
+					ui: { notify: () => {}, setStatus: () => {}, setWidget: () => {} },
 					sessionManager: {
-						getSessionId: () => "sess-coms-a",
+						getSessionId: () => "reload-ok-sess",
 						getEntries: () => [
-							{ type: "custom", customType: "coms-state", data: { active: true, flags: {}, extra: {} } },
+							{
+								type: "custom",
+								customType: "coms-state",
+								data: { active: true, flags: { cname: "reload-peer", project: "reload-proj" }, extra: { origin: "tool" } },
+							},
 						],
 					},
 				},
 			);
-			assert.equal(isComsActive("sess-coms-a"), true);
-			assert.equal(isComsActive("sess-coms-b"), false);
-
-			await handlers.session_shutdown[0]({}, { sessionManager: { getSessionId: () => "sess-coms-a" } });
-			assert.equal(isComsActive("sess-coms-a"), false);
+			assert.equal(isComsActive("reload-ok-sess"), true);
+			assert.equal(registered.runtime.isActive(), true);
+			assert.equal(registered.runtime.getSelf()?.origin, "tool");
+			assert.equal(getActive().includes("coms_send"), true);
+			assert.equal(getActive().includes("coms_stop"), true);
 		} finally {
+			await registered.runtime.stop();
 			resetSessionBridge({ all: true });
+			fs.rmSync(tmpRoot, { recursive: true, force: true });
 		}
 	});
 
+	it("isolates comsActive reload reactivation per session", async () => {
+		resetSessionBridge({ all: true });
+		const tmpRoot = makeTempDir("coms-reload-iso-");
+		const comsDir = path.join(tmpRoot, "coms");
+		const { pi, events } = makeStatefulPi();
+		const registered = registerComs(pi as any, {
+			comsDir,
+			sessionId: "sess-coms-a",
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
+		});
+		try {
+			const ctxA = {
+				cwd: tmpRoot,
+				hasUI: false,
+				ui: { notify: () => {}, setStatus: () => {}, setWidget: () => {} },
+				sessionManager: {
+					getSessionId: () => "sess-coms-a",
+					getEntries: () => [
+						{
+							type: "custom",
+							customType: "coms-state",
+							data: { active: true, flags: { cname: "iso-peer", project: "iso-proj" }, extra: {} },
+						},
+					],
+				},
+			};
+			await (events.get("session_start") ?? [])[0]({ reason: "reload" }, ctxA);
+			assert.equal(isComsActive("sess-coms-a"), true);
+			assert.equal(isComsActive("sess-coms-b"), false);
+
+			await (events.get("session_shutdown") ?? [])[0]({}, ctxA);
+			assert.equal(isComsActive("sess-coms-a"), false);
+		} finally {
+			await registered.runtime.stop();
+			resetSessionBridge({ all: true });
+			fs.rmSync(tmpRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("clears persisted active state when reload reactivation fails", async () => {
+		resetSessionBridge({ all: true });
+		setComsActive(true, "reload-fail-sess");
+		const tmpRoot = makeTempDir("coms-reload-fail-");
+		// Place a regular file where comsDir is expected so ensureProjectDirs throws/fails.
+		const blockedComsDir = path.join(tmpRoot, "not-a-dir");
+		fs.writeFileSync(blockedComsDir, "blocker");
+		const { pi, events, persisted, getActive } = makeStatefulPi();
+		const registered = registerComs(pi as any, {
+			comsDir: blockedComsDir,
+			sessionId: "reload-fail-sess",
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
+		});
+		try {
+			syncComsActiveTools(pi as any, new Set(["coms_list", "coms_stop"]), true);
+			const startHandlers = events.get("session_start") ?? [];
+			await startHandlers[0](
+				{ reason: "reload" },
+				{
+					cwd: tmpRoot,
+					hasUI: false,
+					ui: { notify: () => {} },
+					sessionManager: {
+						getSessionId: () => "reload-fail-sess",
+						getEntries: () => [
+							{
+								type: "custom",
+								customType: "coms-state",
+								data: { active: true, flags: { cname: "fail-peer", project: "fail-proj" }, extra: {} },
+							},
+						],
+					},
+				},
+			);
+			assert.equal(isComsActive("reload-fail-sess"), false);
+			assert.equal(registered.runtime.isActive(), false);
+			assert.equal(getActive().includes("coms_list"), false);
+			assert.equal(getActive().includes("coms_stop"), false);
+			assert.ok(persisted.some((p) => p.key === "coms-state" && p.data?.active === false));
+		} finally {
+			await registered.runtime.stop();
+			resetSessionBridge({ all: true });
+			fs.rmSync(tmpRoot, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("defaultActive gating for COMS tools (#1158)", () => {
@@ -489,135 +521,55 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		return { pi, tools, events, commands, getActive: () => [...activeTools] };
 	}
 
-	it("marks deferred tools defaultActive false", () => {
+	it("marks deferred peer runtime tools defaultActive false", () => {
 		const { pi, tools, getActive } = makeStatefulPi();
-		const state: DeferredUpstream = {
-			capturedSessionStart: null,
-			capturedSessionShutdown: null,
-			flagValues: new Map(),
-			active: false,
-			deferredTools: new Set(),
-		};
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
-		proxy.registerTool({
-			name: "coms_send",
-			description: "send",
-			parameters: {},
-			execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
-		} as any);
+		const runtime = createComsPeerRuntime(pi as any, {
+			deferred: true,
+			inactiveMessage: "inactive",
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
+		});
 
 		assert.equal(tools.get("coms_send")?.defaultActive, false);
-		assert.equal(state.deferredTools?.has("coms_send"), true);
+		assert.equal(runtime.gatedToolNames.has("coms_send"), true);
 		assert.deepEqual(getActive(), ["read", "bash"]);
 	});
 
-	it("blocks execution of inactive deferred tools", async () => {
+	it("blocks execution of inactive deferred peer runtime tools", async () => {
 		const { pi, tools } = makeStatefulPi();
-		const state: DeferredUpstream = {
-			capturedSessionStart: null,
-			capturedSessionShutdown: null,
-			flagValues: new Map(),
-			active: false,
-			deferredTools: new Set(),
-		};
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
-		let executed = false;
-		proxy.registerTool({
-			name: "coms_send",
-			description: "send",
-			parameters: {},
-			execute: async () => { executed = true; return { content: [{ type: "text", text: "ok" }] }; },
-		} as any);
+		createComsPeerRuntime(pi as any, {
+			deferred: true,
+			inactiveMessage: "inactive",
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
+		});
 
-		const res = await tools.get("coms_send").execute("id1", {});
-		assert.equal(executed, false);
+		const res = await tools.get("coms_send").execute("id1", { target: "nobody", prompt: "hi" });
 		assert.equal(res.content[0].text, "inactive");
 	});
 
-	it("adds deferred tools via syncComsActiveTools when activated", () => {
+	it("adds gated tools via syncComsActiveTools when activated", () => {
 		const { pi, getActive } = makeStatefulPi();
-		const state: DeferredUpstream = {
-			capturedSessionStart: null,
-			capturedSessionShutdown: null,
-			flagValues: new Map(),
-			active: false,
-			deferredTools: new Set(),
-		};
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
-		proxy.registerTool({ name: "coms_send", description: "send", parameters: {}, execute: async () => ({ content: [] }) } as any);
-
-		syncComsActiveTools(pi as any, state, true);
+		syncComsActiveTools(pi as any, new Set(["coms_send"]), true);
 		assert.deepEqual(getActive(), ["read", "bash", "coms_send"]);
 	});
 
-	it("removes deferred tools via syncComsActiveTools when deactivated", () => {
+	it("removes gated tools via syncComsActiveTools when deactivated", () => {
 		const { pi, getActive } = makeStatefulPi();
-		const state: DeferredUpstream = {
-			capturedSessionStart: null,
-			capturedSessionShutdown: null,
-			flagValues: new Map(),
-			active: true,
-			deferredTools: new Set(),
-		};
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
-		proxy.registerTool({ name: "coms_send", description: "send", parameters: {}, execute: async () => ({ content: [] }) } as any);
-
-		syncComsActiveTools(pi as any, state, true);
-		syncComsActiveTools(pi as any, state, false);
+		const gated = new Set(["coms_send"]);
+		syncComsActiveTools(pi as any, gated, true);
+		syncComsActiveTools(pi as any, gated, false);
 		assert.deepEqual(getActive(), ["read", "bash"]);
 	});
 
-	it("activates deferred tools on reload when previously active", async () => {
-		const { setComsActive } = await import("../../../extensions/shared/session-bridge.js");
-		setComsActive(false);
-		const { pi, events, getActive } = makeStatefulPi();
-		const state: DeferredUpstream = {
-			capturedSessionStart: null,
-			capturedSessionShutdown: null,
-			flagValues: new Map(),
-			active: false,
-			deferredTools: new Set(["coms_stop"]),
-		};
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
-		proxy.registerTool({ name: "coms_list", description: "list", parameters: {}, execute: async () => ({ content: [] }) } as any);
-		proxy.on("session_start", async () => {});
-
-		const reloadHandlers = events.get("session_start") ?? [];
-		assert.equal(reloadHandlers.length, 1);
-
-		await reloadHandlers[0](
-			{ reason: "reload" },
-			{ sessionManager: { getEntries: () => [{ type: "custom", customType: "coms-state", data: { active: true } }] } },
-		);
-		assert.deepEqual(getActive(), ["read", "bash", "coms_stop", "coms_list"]);
-		setComsActive(false);
-	});
-
-	it("deactivates deferred tools when reload reactivation fails", async () => {
-		const { setComsActive } = await import("../../../extensions/shared/session-bridge.js");
-		setComsActive(false);
-		const { pi, events, getActive } = makeStatefulPi();
-		const state: DeferredUpstream = {
-			capturedSessionStart: null,
-			capturedSessionShutdown: null,
-			flagValues: new Map(),
-			active: false,
-			deferredTools: new Set(["coms_stop"]),
-		};
-		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
-		proxy.registerTool({ name: "coms_list", description: "list", parameters: {}, execute: async () => ({ content: [] }) } as any);
-		syncComsActiveTools(pi as any, state, true);
-		proxy.on("session_start", async () => {
-			throw new Error("boom");
+	it("includes anti-loop reply warning directly in coms_send description", () => {
+		const { pi, tools } = makeStatefulPi();
+		createComsPeerRuntime(pi as any, {
+			deferred: true,
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
 		});
-
-		const reloadHandlers = events.get("session_start") ?? [];
-		await reloadHandlers[0](
-			{ reason: "reload" },
-			{ sessionManager: { getEntries: () => [{ type: "custom", customType: "coms-state", data: { active: true } }] } },
-		);
-		assert.deepEqual(getActive(), ["read", "bash"]);
-		setComsActive(false);
+		assert.match(tools.get("coms_send")?.description ?? "", /DO NOT call this to REPLY/);
 	});
 
 	it("registerComs gates 16 tools while keeping discovery tools active", async () => {
@@ -654,7 +606,6 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		getActive: ReturnType<typeof makeStatefulPi>["getActive"];
 		sessionCtx: any;
 	}) => Promise<void>): Promise<void> {
-		const { resetSessionBridge } = await import("../../../extensions/shared/session-bridge.js");
 		const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coms-gate-test-"));
 		const prevComsDir = process.env.PI_COMS_DIR;
 		process.env.PI_COMS_DIR = tmpRoot;

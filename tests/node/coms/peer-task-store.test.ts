@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { createComsInboundTasks, resolvePeerTaskStorePath } from "../../../extensions/coms/coms-shared.js";
+import { createComsPeerRuntime } from "../../../extensions/coms/coms-p2p.js";
 import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import pitasks, {
@@ -100,8 +101,6 @@ async function startComsPeer(opts: {
 	clearSettingsCache();
 
 	const fakePi = createFakePi(opts.name);
-	const tag = `${opts.name}-${++seq}`;
-	const init = (await import(`../../../extensions/coms/coms-p2p.ts?peer-task-store=${tag}`)).default;
 
 	const prevSubagent = process.env.PI_SUBAGENT_CHILD;
 	const prevOneshot = process.env.PI_ONESHOT;
@@ -122,8 +121,14 @@ async function startComsPeer(opts: {
 		(globalThis as any).__piConfigSessionId = opts.presetGlobalSessionId;
 	}
 
+	let self: { sessionId: string; endpoint: string } | null = null;
+	let runtime!: ReturnType<typeof createComsPeerRuntime>;
 	try {
-		init(fakePi as any);
+		runtime = createComsPeerRuntime(fakePi as any, {
+			deferred: false,
+			comsDir: opts.comsDir,
+			registerSignalHandlers: false,
+		});
 		const startHandler = fakePi.handlers.get("session_start");
 		const shutdownHandler = fakePi.handlers.get("session_shutdown");
 		assert.ok(startHandler, "coms session_start handler must register");
@@ -140,6 +145,7 @@ async function startComsPeer(opts: {
 				? { getSessionId: () => opts.piSessionId }
 				: undefined,
 		});
+		self = runtime.getSelf();
 	} finally {
 		if (prevSubagent === undefined) delete process.env.PI_SUBAGENT_CHILD;
 		else process.env.PI_SUBAGENT_CHILD = prevSubagent;
@@ -153,8 +159,7 @@ async function startComsPeer(opts: {
 		else (globalThis as any).__piConfigSessionId = prevGlobalSid;
 	}
 
-	const self = (globalThis as any).__comsSelf as { sessionId: string; endpoint: string } | null;
-	assert.ok(self?.sessionId, "peer must publish __comsSelf");
+	assert.ok(self?.sessionId, "peer must publish runtime identity");
 	return {
 		name: opts.name,
 		tools: fakePi.tools,
@@ -163,7 +168,7 @@ async function startComsPeer(opts: {
 		comsSessionId: self.sessionId,
 		endpoint: self.endpoint,
 		cwd: opts.cwd,
-		shutdown: () => fakePi.handlers.get("session_shutdown")(),
+		shutdown: () => runtime.stop(),
 	};
 }
 

@@ -40,16 +40,14 @@ Status handling:
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
-import sys
 import threading
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.github import check_dependencies, run_gh, run_gh_api, run_graphql_raw
 from myk_pi_tools.logger import create_logger
-from myk_pi_tools.reviews.fetch import print_stderr, run_gh_api
+from myk_pi_tools.utils import print_stderr
 
 log = create_logger(__name__)
 
@@ -118,13 +116,6 @@ def backfill_node_ids(
     print_stderr(f"Backfilled {filled}/{len(needs_backfill)} comment(s)")
 
 
-def check_dependencies() -> None:
-    """Check required dependencies are available."""
-    if shutil.which("gh") is None:
-        print_stderr("Error: 'gh' is required but not installed.")
-        sys.exit(1)
-
-
 # GraphQL mutation template for updating a pending review comment body.
 _UPDATE_COMMENT_MUTATION = """
 mutation($id: ID!, $body: String!) {
@@ -160,40 +151,23 @@ def update_comment_body(node_id: str | None, refined_body: str) -> str:
 
     from myk_pi_tools.comment_signature import append_signature
 
-    payload = json.dumps({
-        "query": _UPDATE_COMMENT_MUTATION,
-        "variables": {"id": node_id, "body": append_signature(refined_body)},
-    })
-
-    try:
-        result = subprocess.run(
-            ["gh", "api", "graphql", "--input", "-"],
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            encoding="utf-8",
-        )
-    except subprocess.TimeoutExpired:
-        print_stderr(f"Error: Update comment {node_id} timed out after 120 seconds")
-        return "error"
-
-    if result.returncode != 0:
-        stderr = result.stderr or ""
-        print_stderr(f"Error updating comment {node_id}: {stderr.strip()}")
-        if "NOT_FOUND" in stderr or "Could not resolve" in stderr:
+    ok, response, error_msg = run_graphql_raw(
+        _UPDATE_COMMENT_MUTATION,
+        {"id": node_id, "body": append_signature(refined_body)},
+        timeout=120,
+    )
+    if not ok or response is None:
+        if "timed out" in error_msg.lower():
+            print_stderr(f"Error: Update comment {node_id} timed out after 120 seconds")
+        else:
+            print_stderr(f"Error updating comment {node_id}: {error_msg}")
+        if "NOT_FOUND" in error_msg or "Could not resolve" in error_msg:
             return "not_found"
         return "error"
 
-    # GraphQL can return 200 with errors in the response body.
-    try:
-        response = json.loads(result.stdout)
-    except (json.JSONDecodeError, TypeError):
-        print_stderr(f"Warning: Could not parse GraphQL response for {node_id}")
-        return "error"
-
     if "errors" in response:
-        error_msgs = [e.get("message", "") for e in response["errors"]]
+        raw_errors = response["errors"]
+        error_msgs = [e.get("message", "") if isinstance(e, dict) else str(e) for e in raw_errors]
         combined = "; ".join(error_msgs)
         print_stderr(f"GraphQL error updating comment {node_id}: {combined}")
         if any("NOT_FOUND" in m or "Could not resolve" in m for m in error_msgs):
@@ -227,22 +201,16 @@ def submit_review(
     endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
     payload = json.dumps({"event": action, "body": summary})
 
-    try:
-        result = subprocess.run(
-            ["gh", "api", "--method", "POST", endpoint, "--input", "-"],
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            encoding="utf-8",
-        )
-    except subprocess.TimeoutExpired:
-        print_stderr(f"Error: Submit review {review_id} timed out after 120 seconds")
-        return False
-
-    if result.returncode != 0:
-        stderr = result.stderr or ""
-        print_stderr(f"Error submitting review {review_id}: {stderr.strip()}")
+    code, _stdout, stderr = run_gh(
+        ["api", "--method", "POST", endpoint, "--input", "-"],
+        input=payload,
+        timeout=120,
+    )
+    if code != 0:
+        if "timed out" in stderr.lower():
+            print_stderr(f"Error: Submit review {review_id} timed out after 120 seconds")
+        else:
+            print_stderr(f"Error submitting review {review_id}: {stderr.strip()}")
         return False
 
     return True

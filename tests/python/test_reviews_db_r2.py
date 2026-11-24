@@ -51,7 +51,7 @@ class TestCombinedReplyResolve1271:
             }
         })
         proc = subprocess.CompletedProcess(["gh"], 0, stdout=f"HTTP/1.1 200 OK\r\n\r\n{gql_body}".encode(), stderr=b"")
-        with patch("myk_pi_tools.reviews.post.subprocess.run", return_value=proc) as mock_run:
+        with patch("myk_pi_tools.github.subprocess.run", return_value=proc) as mock_run:
             reply_ok, resolve_ok = post.reply_and_resolve_thread("T1", "Fixed in abc123")
 
         assert (reply_ok, resolve_ok) == (True, True)
@@ -71,7 +71,7 @@ class TestCombinedReplyResolve1271:
         proc = subprocess.CompletedProcess(
             ["gh"], 1, stdout=f"HTTP/1.1 200 OK\r\n\r\n{gql_body}".encode(), stderr=b"GraphQL error"
         )
-        with patch("myk_pi_tools.reviews.post.subprocess.run", return_value=proc):
+        with patch("myk_pi_tools.github.subprocess.run", return_value=proc):
             reply_ok, resolve_ok = post.reply_and_resolve_thread("T1", "Fixed")
 
         assert (reply_ok, resolve_ok) == (True, False)
@@ -88,7 +88,7 @@ class TestCombinedReplyResolve1271:
             ["gh"], 1, stdout=f"HTTP/1.1 200 OK\r\n\r\n{gql_body}".encode(), stderr=b"GraphQL error"
         )
         with (
-            patch("myk_pi_tools.reviews.post.subprocess.run", return_value=proc),
+            patch("myk_pi_tools.github.subprocess.run", return_value=proc),
             patch.object(post, "unresolve_thread", return_value=True) as mock_unresolve,
         ):
             reply_ok, resolve_ok = post.reply_and_resolve_thread("T1", "Fixed")
@@ -159,7 +159,7 @@ class TestCombinedReplyResolve1271:
             ["gh"], 1, stdout=f"HTTP/1.1 200 OK\r\n\r\n{gql_body}".encode(), stderr=b"GraphQL error"
         )
         with (
-            patch("myk_pi_tools.reviews.post.subprocess.run", return_value=proc),
+            patch("myk_pi_tools.github.subprocess.run", return_value=proc),
             pytest.raises(SystemExit) as exc,
         ):
             post.run(str(review_path))
@@ -564,14 +564,14 @@ class TestSharedHelpersTokenCleanup1294To1300:
         assert list(tmp_path.iterdir()) == []
 
     def test_run_gh_missing_binary_returns_error(self) -> None:
-        with patch("myk_pi_tools.utils.subprocess.run", side_effect=FileNotFoundError):
+        with patch("myk_pi_tools.github.subprocess.run", side_effect=FileNotFoundError):
             code, _out, err = run_gh(["--version"])
             assert code == 1
             assert "gh CLI not found" in err
 
     def test_post_issue_comment_returns_stdout(self) -> None:
         ok_proc = subprocess.CompletedProcess(["gh"], 0, stdout='{"id": 7}', stderr="")
-        with patch("myk_pi_tools.utils.subprocess.run", return_value=ok_proc):
+        with patch("myk_pi_tools.github.subprocess.run", return_value=ok_proc):
             ok, stdout, err = post_issue_comment("o", "r", 1, "hi")
             assert ok is True
             assert '"id": 7' in stdout

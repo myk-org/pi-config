@@ -14,18 +14,17 @@ Output: Combined CLAUDE.md + AGENTS.md content (or empty if none found)
 
 from __future__ import annotations
 
-import logging
 import re
-import shutil
 import subprocess
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from myk_pi_tools.github import check_dependencies, run_gh
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.pr.common import PRInfo
 from myk_pi_tools.pr.common import parse_args as _parse_args
 
-log = logging.getLogger(__name__)
+log = create_logger(__name__)
 
 _AT_INCLUDE = re.compile(r"^@([A-Za-z0-9._-]+\.md)\s*$")
 
@@ -85,27 +84,18 @@ def fetch_from_github(owner: str, repo: str, file_path: str) -> str | None:
     Returns:
         File content as string, or None if not found.
     """
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "api",
-                f"/repos/{owner}/{repo}/contents/{file_path}",
-                "-H",
-                "Accept: application/vnd.github.raw",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=60,
-        )
-        return result.stdout if result.stdout else None
-    except (
-        subprocess.CalledProcessError,
-        FileNotFoundError,
-        subprocess.TimeoutExpired,
-    ):
+    code, stdout, _stderr = run_gh(
+        [
+            "api",
+            f"/repos/{owner}/{repo}/contents/{file_path}",
+            "-H",
+            "Accept: application/vnd.github.raw",
+        ],
+        timeout=60,
+    )
+    if code != 0:
         return None
+    return stdout if stdout else None
 
 
 def expand_at_includes(text: str, source: Path) -> str:
@@ -212,12 +202,10 @@ def run(args: list[str]) -> None:
 
     # If nothing found locally, try GitHub API
     if not sections:
-        if shutil.which("gh") is None:
-            print(
-                "Error: GitHub CLI (gh) not found. Install gh to fetch project context files.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        check_dependencies(
+            ("gh",),
+            error_message="Error: GitHub CLI (gh) not found. Install gh to fetch project context files.",
+        )
 
         sections.extend(_collect_remote(pr_info.owner, pr_info.repo, remote_paths))
 

@@ -11,12 +11,13 @@ import { rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
-import { resolveEffectiveCwd, conflictCandidateDirs } from "../../../extensions/orchestrator/enforcement-helpers.js";
 import {
+  conflictCandidateDirs,
   createsAndResolvesConflict,
   isConflictResolutionCommand,
-  listUnmergedFiles,
-} from "../../../extensions/orchestrator/git-helpers.js";
+  resolveEffectiveCwd,
+} from "../../../extensions/orchestrator/bash-policy.js";
+import { listUnmergedFiles } from "../../../extensions/orchestrator/git-helpers.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 
 

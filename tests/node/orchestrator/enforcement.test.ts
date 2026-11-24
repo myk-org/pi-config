@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { DANGEROUS, DANGEROUS_EXPLANATIONS, DANGEROUS_LABELS, dangerousPatternExplanation, dangerousPatternExplanations, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
+import { DANGEROUS, DANGEROUS_EXPLANATIONS, DANGEROUS_LABELS, DANGEROUS_RULES, dangerousPatternExplanation, dangerousPatternExplanations, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/bash-policy.js";
 import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, formatReviewStateSummary, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
@@ -71,7 +71,7 @@ import {
   isRealGhBodyCommand,
   isGitIdentityConfigPath,
   pushTargetsProtectedBranch,
-} from "../../../extensions/orchestrator/enforcement-helpers.js";
+} from "../../../extensions/orchestrator/bash-policy.js";
 
 
 describe("comment signature hook model switches", () => {
@@ -1666,7 +1666,7 @@ describe("stripHeredocBodies", () => {
 });
 
 // ── Test command detection (isTestRunnerCommand) ──
-// Tests the exported isTestRunnerCommand from enforcement-helpers.ts.
+// Tests the exported isTestRunnerCommand from bash-policy.ts.
 
 describe("isTestRunnerCommand", () => {
 
