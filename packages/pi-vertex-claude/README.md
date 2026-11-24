@@ -47,7 +47,7 @@ piv() {
 ## Available Models
 
 | Model | Context | Output |
-|-------|---------|--------|
+| --- | --- | --- |
 | `claude-opus-4-8` | 1M | 128K |
 | `claude-opus-4-6` | 200K | 128K |
 | `claude-sonnet-4-6` | 200K | 64K |
@@ -74,7 +74,7 @@ export VERTEX_CLAUDE_1M=true
 This adds `-1m` variants alongside the standard models:
 
 | Model | Context | Output |
-|-------|---------|--------|
+| --- | --- | --- |
 | `claude-opus-4-6-1m` | 1M | 128K |
 | `claude-sonnet-4-6-1m` | 1M | 64K |
 

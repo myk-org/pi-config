@@ -26,7 +26,7 @@ Before starting any work, create ALL tasks upfront using `TaskCreate`, then set 
 ### Task List
 
 | Task | Title | blockedBy |
-|------|-------|-----------|
+| --- | --- | --- |
 | 1 | Issue detection | — |
 | 2 | Context gathering | 1 |
 | 3 | Duplicate scan | 1 |

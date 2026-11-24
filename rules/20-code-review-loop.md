@@ -32,7 +32,7 @@ Use `cycle` from `pi-config-review-state.jsonl` (shown by `/review-status`) — 
 ## Review Agents & Deduplication
 
 | Agent | Focus |
-|---|---|
+| --- | --- |
 | `code-reviewer-quality` | General code quality and maintainability |
 | `code-reviewer-guidelines` | Project guidelines and style adherence (AGENTS.md) |
 | `code-reviewer-security` | Bugs, logic errors, and security vulnerabilities |

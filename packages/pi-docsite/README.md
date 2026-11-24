@@ -31,7 +31,7 @@ uv add pi-docsite      # then: uv run pi-docsite --docs-dir docs
 Everything is a flag with a derived default, so the same command works in any repo:
 
 | Flag | Default |
-|---|---|
+| --- | --- |
 | `--docs-dir` | `docs/` next to the script |
 | `--project-name` | the git remote's repo name |
 | `--repo-url` | git remote `origin` |
@@ -125,7 +125,7 @@ the frontmatter contract, what gets generated, and how to debug a failure.
 ## Output
 
 | File | Purpose |
-|---|---|
+| --- | --- |
 | `<slug>.html` | one per `.md` |
 | `index.html` | landing page with grouped navigation |
 | `search-index.json` | full page text for search, fetched once by every page |

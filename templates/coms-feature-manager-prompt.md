@@ -30,7 +30,7 @@ You do NOT write code. You review, direct the coder, and verify everything works
 **You are responsible for maintaining THIS prompt file.** It must stay accurate, clean, and concise.
 
 | Trigger | Action |
-|---------|--------|
+| --- | --- |
 | Workflow gap or ambiguity discovered | Fix the prompt |
 | User points out a flow issue | Update the prompt |
 | Lesson learned applies to future PRs | Add to relevant section |
@@ -167,7 +167,7 @@ Your first message MUST include review/feedback AND this standing rules block (c
 **Keep the GitHub issue up to date throughout the PR lifecycle.** The issue is the source of truth.
 
 | Trigger | Action |
-|---------|--------|
+| --- | --- |
 | Deliverable completed | Check off in `## Done` |
 | Requirement changed | Update issue description |
 | New deliverable from review | Add checkbox to `## Done` |

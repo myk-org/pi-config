@@ -88,7 +88,7 @@ For code changes that appear in the diff but are NOT mentioned in either the PR 
 ## Severity Mapping
 
 | Finding | Severity |
-|---|---|
+| --- | --- |
 | PR claims file/class/method that doesn't exist in diff | `[SUGGESTION]` |
 | Issue deliverable not implemented | `[SUGGESTION]` |
 | Code changes not mentioned in PR or issue | `[SUGGESTION]` |

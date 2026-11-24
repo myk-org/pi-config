@@ -183,18 +183,20 @@ result = await call_ai_once(
     "Look up user 42",
     ai_provider="gemini",
     ai_model="gemini-2.5-flash",
-    custom_tools=[{
-        "name": "fetch_data",
-        "description": "Fetch user data by ID",
-        "parameters": {
-            "type": "object",
-            "properties": {"userId": {"type": "string"}},
-        },
-        "http": {
-            "method": "GET",
-            "url": "https://api.example.com/users/{userId}",
-        },
-    }],
+    custom_tools=[
+        {
+            "name": "fetch_data",
+            "description": "Fetch user data by ID",
+            "parameters": {
+                "type": "object",
+                "properties": {"userId": {"type": "string"}},
+            },
+            "http": {
+                "method": "GET",
+                "url": "https://api.example.com/users/{userId}",
+            },
+        }
+    ],
 )
 ```
 

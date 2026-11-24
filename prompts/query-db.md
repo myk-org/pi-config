@@ -93,7 +93,7 @@ Returns matches with similarity scores to help identify recurring patterns that 
 **reviews table:**
 
 | Column | Type |
-|--------|------|
+| --- | --- |
 | id | INTEGER PRIMARY KEY |
 | pr_number | INTEGER |
 | owner | TEXT |
@@ -104,7 +104,7 @@ Returns matches with similarity scores to help identify recurring patterns that 
 **comments table:**
 
 | Column | Type |
-|--------|------|
+| --- | --- |
 | id | INTEGER PRIMARY KEY |
 | review_id | INTEGER (FK -> reviews.id) |
 | source | TEXT (human/qodo/coderabbit) |

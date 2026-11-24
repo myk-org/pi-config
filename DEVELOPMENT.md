@@ -9,7 +9,7 @@ pi -ne -e ~/git/pi-config/extensions/orchestrator/index.ts
 ```
 
 | Flag | Purpose |
-|------|---------|
+| --- | --- |
 | `-ne` | Disables extension discovery so the installed version doesn't conflict |
 | `-e <path>` | Loads the extension from a local file for this session only |
 

@@ -16,7 +16,7 @@ If code was added, changed, or removed — check that relevant docs are updated.
 Use this documentation updates table:
 
 | Change | Check these files |
-|--------|-------------------|
+| --- | --- |
 | New feature/command/tool | `README.md` (feature table, usage examples) |
 | New or modified extension module | `contributing/repo-structure.md` (repository structure) |
 | New agent added/removed | `contributing/repo-structure.md`, routing rules, bug reporting agent list |

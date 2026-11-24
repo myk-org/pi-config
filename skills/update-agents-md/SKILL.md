@@ -104,7 +104,7 @@ A task is complete when ALL pass:
 These limits apply to the AGENTS.md files you CREATE, not to this skill guide.
 
 | Metric | Target | Why |
-|--------|--------|-----|
+| --- | --- | --- |
 | Total file | Under 150 lines | Longer files actively hurt (Augment, measured) |
 | Per section | Under 50 lines | Context window truncation risk |
 | Reference files | 3-10 max | Agent reads 90%+ when referenced from AGENTS.md |
@@ -125,7 +125,7 @@ For migration procedures, see `docs/migrations.md`.
 When the agent needs to choose what patterns to include:
 
 | If you want to improve... | Use this pattern |
-|--------------------------|-----------------|
+| --- | --- |
 | Reuse of existing code | 3-10 line examples from actual prod code |
 | Following codebase conventions | Decision tables for ambiguous choices |
 | Wiring of complex features | Numbered procedural workflows |
@@ -137,7 +137,7 @@ When the agent needs to choose what patterns to include:
 ## Anti-Patterns (NEVER do these)
 
 | Anti-Pattern | Why it fails | Fix |
-|-------------|-------------|-----|
+| --- | --- | --- |
 | Prose paragraphs without commands | Agent can't verify compliance | Add the command that proves it |
 | "Be careful with X" | Not a constraint — no trigger, no action | "Run `cmd` before X. Abort if Y." |
 | Contradictory priorities without ordering | Agent skips verification, rushes to code | Number priorities: P1 > P2 > P3 |
@@ -162,7 +162,7 @@ When the agent needs to choose what patterns to include:
 ## Cross-Tool Compatibility
 
 | Tool | Native file | Reads AGENTS.md? |
-|------|------------|-------------------|
+| --- | --- | --- |
 | Codex CLI | AGENTS.md | Yes (native) |
 | Cursor | `.cursor/rules` | Yes (native) |
 | GitHub Copilot | `.github/copilot-instructions.md` | Yes (native) |

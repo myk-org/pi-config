@@ -47,7 +47,7 @@ simple JSON API. Ships with a Python client for easy integration.
 ## Packages
 
 | Package | Language | Install |
-|---------|----------|---------|
+| --- | --- | --- |
 | `@myk-org/pi-sidecar` | TypeScript | `npm install @myk-org/pi-sidecar` |
 | `pi-sidecar-client` | Python ≥ 3.10 | `uv pip install pi-sidecar-client` |
 
@@ -160,7 +160,7 @@ Files honored from the configured dir (read once at process start — restart th
 sidecar after changing them):
 
 | File | Effect |
-|------|--------|
+| --- | --- |
 | `models.json` | Custom pi providers registered on the shared runtime — listed by `GET /models` and `GET /providers`, usable in `POST /sessions`; providers flagged `trustKeyScopedListing` also serve `POST /models/for-api-key` |
 | `auth.json` | Provider credentials for the shared runtime (same format as interactive pi's `auth.json`) |
 | `settings.json` | Seeded into the in-memory settings store for the internal runtime and every session (e.g. `defaultProvider`) |
@@ -302,7 +302,7 @@ the transcript of a session that is still open. Files belonging to active
 sessions are excluded from both age and size pruning.
 
 | Env var | Effect |
-|---|---|
+| --- | --- |
 | `RECORD_TRANSCRIPTS` | `1`/`true`/`yes`/`on` enables recording; anything else (or unset) disables it |
 | `PI_SIDECAR_TRANSCRIPTS_DIR` | Override the transcript directory (default `~/.pi/sidecar/transcripts`) |
 | `PI_SIDECAR_TRANSCRIPTS_MAX_AGE_DAYS` | Delete transcript files older than this many days (`0`/unset disables age pruning) |
@@ -321,7 +321,7 @@ The env value is the boot-time default; recording can also be flipped at
 runtime, without a restart, over HTTP:
 
 | Endpoint | Effect |
-|---|---|
+| --- | --- |
 | `GET /transcripts/recording` | `{"enabled": bool, "source": "env" \| "override"}` — the effective state |
 | `POST /transcripts/recording` | `{"enabled": true\|false}` — sets an in-memory override |
 | `POST /transcripts/recording/reset` | Drops the override; the env default governs again |
@@ -373,7 +373,7 @@ response shape, same timing — and a dead or slow subscriber can never fail a
 prompt.
 
 | Event | Payload | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `session` | `{type, sessionId}` | sent on connect |
 | `turn_start` | `{type, turnId}` | one per accepted prompt; `turnId` is monotonic per session |
 | `text_delta` | `{type, turnId, delta}` | `delta` is already redacted server-side |

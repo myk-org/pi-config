@@ -58,16 +58,17 @@ Write one minimal test showing what should happen.
 ```python
 def test_retries_failed_operations_3_times():
     attempts = 0
+
     def operation():
         nonlocal attempts
         attempts += 1
         if attempts < 3:
-            raise Exception('fail')
-        return 'success'
+            raise Exception("fail")
+        return "success"
 
     result = retry_operation(operation)
 
-    assert result == 'success'
+    assert result == "success"
     assert attempts == 3
 ```
 
@@ -78,9 +79,9 @@ Clear name, tests real behavior, one thing.
 ```python
 def test_retry_works():
     mock = MagicMock()
-    mock.side_effect = [Exception(), Exception(), 'success']
+    mock.side_effect = [Exception(), Exception(), "success"]
     result = retry_operation(mock)
-    assert result == 'success'  # What about retry count? Timing?
+    assert result == "success"  # What about retry count? Timing?
 ```
 
 Vague name, tests mock not real code.

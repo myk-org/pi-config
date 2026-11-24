@@ -65,7 +65,7 @@ grep -n "<<<<<<\|======\|>>>>>>" <file>
 Classify each side's changes by intent:
 
 | Type | Indicators | Resolution Priority |
-|------|-----------|---------------------|
+| --- | --- | --- |
 | Security fix | "security", "vuln", "CVE" in commit message | Highest — always keep |
 | Bug fix | "fix", "bug", "patch" in commit message; small targeted change | Highest — always keep |
 | Refactor | "refactor", "cleanup", "rename"; no behavior change | Medium — preserve both if compatible |
@@ -208,7 +208,7 @@ Both sides added different config entries → merge sections:
 ## Anti-Patterns
 
 | Don't | Why | Instead |
-|-------|-----|---------|
+| --- | --- | --- |
 | `git checkout --ours .` | Discards ALL incoming changes | Resolve file by file |
 | Manually edit lock files | Corrupts dependency resolution | Regenerate from scratch |
 | Skip git blame | Wrong intent, wrong resolution | Always check commit history |

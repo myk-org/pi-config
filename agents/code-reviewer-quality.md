@@ -55,7 +55,7 @@ If the repo's AGENTS.md or coding standards endorse a pattern the baseline would
 Skip anything linters/formatters already enforce.
 
 | Smell | What to Look For | How to Fix |
-|-------|-------------------|------------|
+| --- | --- | --- |
 | Mysterious Name | Name doesn't reveal purpose | Rename; if no honest name fits, the design is unclear |
 | Duplicated Code | Same logic shape in multiple hunks/files in the diff | Extract shared shape, call from both |
 | Feature Envy | Method reaches into another object's data more than its own | Move method to the envied object |

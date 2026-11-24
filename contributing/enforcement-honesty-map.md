@@ -4,7 +4,7 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
 **checkability**, not importance — prose rules can still be load-bearing.
 
 | Tier | Meaning | Mechanism |
-|------|---------|-----------|
+| --- | --- | --- |
 | `code` | Runtime hooks act without relying on LLM compliance | `enforcement-rules.ts`, bash enforcement policy in `bash-policy.ts` |
 | `injected` | Present in situation report / rules markdown; LLM compliance only | Topic memories, package/user/project `rules/*.md` |
 | `aspirational` | Documented guidance with no injection or hook guarantee | Rare edge docs, stale comments |
