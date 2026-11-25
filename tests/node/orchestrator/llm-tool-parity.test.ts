@@ -27,6 +27,7 @@ function createFakePi(opts: { getCommands?: () => any[] } = {}) {
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
   const handlers = new Map<string, Array<(...args: any[]) => any>>();
+  const busListeners = new Map<string, Array<(data: unknown) => void>>();
   const pi = {
     registerTool: (tool: any) => { tools.set(tool.name, tool); },
     registerCommand: (name: string, cmd: any) => { commands.set(name, cmd); },
@@ -36,7 +37,22 @@ function createFakePi(opts: { getCommands?: () => any[] } = {}) {
       handlers.set(event, list);
     },
     sendMessage: () => {},
-    events: { on: () => () => {}, emit: () => {} },
+    events: {
+      on: (channel: string, fn: (data: unknown) => void) => {
+        const list = busListeners.get(channel) ?? [];
+        list.push(fn);
+        busListeners.set(channel, list);
+        return () => {
+          const cur = busListeners.get(channel);
+          if (!cur) return;
+          const idx = cur.indexOf(fn);
+          if (idx >= 0) cur.splice(idx, 1);
+        };
+      },
+      emit: (channel: string, data: unknown) => {
+        for (const fn of [...(busListeners.get(channel) ?? [])]) fn(data);
+      },
+    },
     ...(opts.getCommands ? { getCommands: opts.getCommands } : {}),
   } as unknown as ExtensionAPI;
 
@@ -313,17 +329,117 @@ describe("skill_adopt tool (#1384)", () => {
 describe("memory_dream tool (#1384)", () => {
   it("reports initial enabled idle dreaming status", async () => {
     const cwd = makeTempDir("dream-status-");
-    const { pi, tools } = createFakePi();
+    const { pi, tools, commands } = createFakePi();
 
     withSubagentChildEnv(undefined, () => {
       registerDreaming(pi, () => ({ id: "dream-1" }));
     });
+
+    assert.equal(commands.has("dream"), false, "/dream slash command is removed");
+    assert.equal(commands.has("dream-auto"), false, "/dream-auto slash command is removed");
 
     const res = await tools.get("memory_dream").execute("call-1", { action: "status" }, undefined, undefined, { cwd });
     assert.equal(res.details.enabled, true);
     assert.equal(res.details.inFlight, false);
     assert.match(textOf(res), /Auto-dreaming: enabled/);
     assert.match(textOf(res), /Dream in flight: no/);
+  });
+
+  it("honors dream_auto_enable=false from PI_DREAM_AUTO_ENABLE env var", async () => {
+    const cwd = makeTempDir("dream-env-off-");
+    const { pi, tools, emit } = createFakePi();
+    let spawns = 0;
+    const prev = process.env.PI_DREAM_AUTO_ENABLE;
+    process.env.PI_DREAM_AUTO_ENABLE = "false";
+    try {
+      withSubagentChildEnv(undefined, () => {
+        registerDreaming(pi, () => {
+          spawns++;
+          return { id: "dream-x" };
+        });
+      });
+      emit("session_start", { reason: "startup" }, { cwd, mode: "interactive" });
+      const status = await tools.get("memory_dream").execute("call-1", { action: "status" }, undefined, undefined, { cwd });
+      assert.equal(status.details.enabled, false);
+      assert.match(textOf(status), /Auto-dreaming: disabled/);
+      emit("session_shutdown", { reason: "quit" });
+      assert.equal(spawns, 0, "shutdown dream is skipped when dream_auto_enable is false");
+    } finally {
+      if (prev === undefined) delete process.env.PI_DREAM_AUTO_ENABLE;
+      else process.env.PI_DREAM_AUTO_ENABLE = prev;
+    }
+  });
+
+  it("arms dreaming timers immediately when dream_auto_enable is enabled mid-session", async () => {
+    const cwd = makeTempDir("dream-live-enable-");
+    const { pi, tools, emit } = createFakePi();
+    const origSetInterval = globalThis.setInterval;
+    const origClearInterval = globalThis.clearInterval;
+    const activeIntervals = new Set<any>();
+    (globalThis as any).setInterval = (fn: any, ms: number) => {
+      const handle = { fn, ms, unref() {} };
+      activeIntervals.add(handle);
+      return handle;
+    };
+    (globalThis as any).clearInterval = (handle: any) => {
+      activeIntervals.delete(handle);
+    };
+    const prev = process.env.PI_DREAM_AUTO_ENABLE;
+    process.env.PI_DREAM_AUTO_ENABLE = "false";
+    try {
+      withSubagentChildEnv(undefined, () => {
+        registerDreaming(pi, () => ({ id: "dream-live-on" }));
+      });
+      emit("session_start", { reason: "startup" }, { cwd, mode: "interactive" });
+      assert.equal(activeIntervals.size, 0, "no timers when session starts with dream_auto_enable=false");
+
+      process.env.PI_DREAM_AUTO_ENABLE = "true";
+      pi.events.emit("orchestrator:settings-changed", { key: "dream_auto_enable", cwd });
+      assert.equal(activeIntervals.size, 2, "enabling mid-session starts dream and rebuild timers");
+      const statusOn = await tools.get("memory_dream").execute("c1", { action: "status" }, undefined, undefined, { cwd });
+      assert.equal(statusOn.details.enabled, true);
+    } finally {
+      globalThis.setInterval = origSetInterval;
+      globalThis.clearInterval = origClearInterval;
+      if (prev === undefined) delete process.env.PI_DREAM_AUTO_ENABLE;
+      else process.env.PI_DREAM_AUTO_ENABLE = prev;
+    }
+  });
+
+  it("clears dreaming timers immediately when dream_auto_enable is disabled mid-session", async () => {
+    const cwd = makeTempDir("dream-live-disable-");
+    const { pi, tools, emit } = createFakePi();
+    const origSetInterval = globalThis.setInterval;
+    const origClearInterval = globalThis.clearInterval;
+    const activeIntervals = new Set<any>();
+    (globalThis as any).setInterval = (fn: any, ms: number) => {
+      const handle = { fn, ms, unref() {} };
+      activeIntervals.add(handle);
+      return handle;
+    };
+    (globalThis as any).clearInterval = (handle: any) => {
+      activeIntervals.delete(handle);
+    };
+    const prev = process.env.PI_DREAM_AUTO_ENABLE;
+    process.env.PI_DREAM_AUTO_ENABLE = "true";
+    try {
+      withSubagentChildEnv(undefined, () => {
+        registerDreaming(pi, () => ({ id: "dream-live-off" }));
+      });
+      emit("session_start", { reason: "startup" }, { cwd, mode: "interactive" });
+      assert.equal(activeIntervals.size, 2, "timers start when dream_auto_enable=true");
+
+      process.env.PI_DREAM_AUTO_ENABLE = "false";
+      pi.events.emit("orchestrator:settings-changed", { key: "dream_auto_enable", cwd });
+      assert.equal(activeIntervals.size, 0, "disabling mid-session stops both timers");
+      const statusOff = await tools.get("memory_dream").execute("c2", { action: "status" }, undefined, undefined, { cwd });
+      assert.equal(statusOff.details.enabled, false);
+    } finally {
+      globalThis.setInterval = origSetInterval;
+      globalThis.clearInterval = origClearInterval;
+      if (prev === undefined) delete process.env.PI_DREAM_AUTO_ENABLE;
+      else process.env.PI_DREAM_AUTO_ENABLE = prev;
+    }
   });
 
   it("triggers background consolidation reporting the job id", async () => {

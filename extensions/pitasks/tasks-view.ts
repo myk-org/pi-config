@@ -1,64 +1,16 @@
 /**
- * tasks-view.ts — Pure /tasks view + command routing helpers (no TUI deps).
+ * tasks-view.ts — Pure /tasks view helpers (no TUI deps).
  *
- * Kept separate from tasks-ui.ts so the row/detail mapping and the subcommand
- * parser can be unit-tested without pi-tui or an ExtensionCommandContext.
+ * Kept separate from tasks-ui.ts so row/detail mapping and overlay action helpers
+ * can be unit-tested without pi-tui or an ExtensionCommandContext.
  */
 import type { Task, TaskCompletedBy, TaskStatus } from "./types.js";
 import { createLogger } from "../shared/logger.js";
 import { matchesOverlayKey } from "../orchestrator/overlay-dashboard.js";
-import { parseWidgetCommandAction, type WidgetCommandAction } from "../shared/widget-visibility.js";
 
 const log = createLogger("pitasks");
 
-export const TASKS_USAGE =
-	"Usage: /tasks [mine | create | start <id> | done <id> | clear completed | clear all | widget [expand|collapse|toggle]]";
 export const TASKS_EMPTY_MESSAGE = "No tasks.";
-/** Text output (headless or browser) carries the actions the overlay cannot offer there. */
-export const TASKS_HINT =
-	"Subcommands: /tasks mine · create · start <id> · done <id> · clear completed · clear all · widget [expand|collapse|toggle]";
-
-export type TasksCommand =
-	| { kind: "list"; mine?: boolean }
-	| { kind: "create" }
-	| { kind: "start"; id: string }
-	| { kind: "done"; id: string }
-	| { kind: "clear-completed" }
-	| { kind: "clear-all" }
-	| { kind: "widget"; action: WidgetCommandAction }
-	| { kind: "usage" };
-
-/** `/tasks <args>` — the command never opens a nested menu. */
-export function parseTasksCommand(args: string | undefined): TasksCommand {
-	const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
-	const [sub, target] = parts;
-	if (!sub) return { kind: "list" };
-	if (sub === "mine") {
-		if (parts.length > 1) return { kind: "usage" };
-		return { kind: "list", mine: true };
-	}
-	if (sub === "create") {
-		if (parts.length > 1) return { kind: "usage" };
-		return { kind: "create" };
-	}
-	if (sub === "start" || sub === "done") {
-		const id = (target ?? "").replace(/^#/, "");
-		if (parts.length !== 2 || !/^\d+$/.test(id)) return { kind: "usage" };
-		return { kind: sub, id };
-	}
-	if (sub === "clear" && parts.length === 2) {
-		if (target === "completed") return { kind: "clear-completed" };
-		if (target === "all") return { kind: "clear-all" };
-	}
-	if (sub === "widget") {
-		if (parts.length > 2) return { kind: "usage" };
-		const action = parseWidgetCommandAction(target);
-		if (!action) return { kind: "usage" };
-		return { kind: "widget", action };
-	}
-	log.debug("tasks_command_unrecognised", { args: (args ?? "").slice(0, 80) });
-	return { kind: "usage" };
-}
 
 export interface TaskRowView {
 	/** Status icon kept from the old menu flow. */
@@ -173,14 +125,15 @@ export function formatTasksPlainText(
 		tasks.length === 0
 			? [TASKS_EMPTY_MESSAGE]
 			: selectTaskRows(tasks).map((task) => formatTaskRowLine(task, lookup));
-	return [...rows, TASKS_HINT].join("\n");
+	return rows.join("\n");
 }
 
-/** List keys beyond the shared ones (j/k, Enter, x, Esc) — issues #1087, #1090, #1391. */
-export function tasksOverlayIntent(key: string): "add" | "edit" | "done" | undefined {
+/** List keys beyond the shared ones (j/k, Enter, x, Esc) — issues #1087, #1090, #1391, #1392. */
+export function tasksOverlayIntent(key: string): "add" | "edit" | "done" | "start" | undefined {
 	if (matchesOverlayKey(key, "n")) return "add";
 	if (matchesOverlayKey(key, "e")) return "edit";
 	if (matchesOverlayKey(key, "d")) return "done";
+	if (matchesOverlayKey(key, "s")) return "start";
 	return undefined;
 }
 
@@ -250,7 +203,7 @@ export type TaskCompletionPlan =
 
 /** Esc cancels without writing; an empty line completes without a note. */
 export function planTaskCompletion(input: string | undefined): TaskCompletionPlan {
-	if (input === undefined) {
+	if (input == null) {
 		log.debug("task_completion_planned", { kind: "skip", reason: "cancelled" });
 		return { kind: "skip", reason: "cancelled" };
 	}
@@ -362,6 +315,7 @@ export function applyTaskAction(
 /** The store writes the overlay performs. `completedBy` and the note ride with the completion. */
 export type TaskOverlayUpdate =
 	| { status: "deleted" }
+	| { status: "in_progress" }
 	| { subject: string }
 	| { status: TaskStatus; completedBy: TaskCompletedBy; completionNote?: string };
 
@@ -378,6 +332,8 @@ export function tasksOverlayDeps(
 	onUserCompleted?: (task: { id: string; subject: string; completionNote?: string }) => unknown,
 	/** Called once after bulk completion with every persisted user-assigned task; returns false if submission failed. */
 	onUserBulkCompleted?: (tasks: ReadonlyArray<{ id: string; subject: string }>, note?: string) => boolean,
+	/** Called when a task transitions to `in_progress` via `s`. */
+	onStarted?: (id: string) => void,
 ): TasksUiDeps {
 	return {
 		listTasks: () => store.list(),
@@ -406,6 +362,12 @@ export function tasksOverlayDeps(
 			log.info("task_deleted", { id });
 			return true;
 		},
+		startTask: (id) =>
+			applyTaskAction("start", id, {
+				get: (taskId) => store.get(taskId),
+				update: (taskId) => store.update(taskId, { status: "in_progress" }),
+				onChanged: (taskId) => onStarted?.(taskId),
+			}),
 		completeTask: (id, opts) => {
 			const task = store.get(id);
 			if (!task) {
@@ -466,6 +428,8 @@ export interface TasksUiDeps {
 	listTasks: () => Task[];
 	/** Delete by task id. Returns true when the task was removed. */
 	deleteTask: (id: string) => boolean;
+	/** Start a task (`in_progress`); returns transition outcome. */
+	startTask?: (id: string) => TaskActionOutcome;
 	/** Close a task; `by: "user"` is the owner pressing `d`, with their optional note.
 	 *  `silent: true` suppresses the per-task owner notice so bulk `d` can send one combined report. */
 	completeTask: (id: string, opts: { by: TaskCompletedBy; note?: string; silent?: boolean }) => boolean;

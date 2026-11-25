@@ -438,4 +438,51 @@ describe("coms_local_queue tool (#1384)", () => {
     assert.equal(secondaryResponses.length, 1);
     assert.equal(secondaryResponses[0].error, "killed_by_user");
   });
+
+  it("kills multiple Space-selected inbound messages in the queue overlay (#1392)", async () => {
+    const { workspace, comsDir } = makeWorkspace();
+    const peer = await bootPeer({
+      name: "receiver",
+      sessionId: "sess-queue-multi",
+      project: "test-proj",
+      cwd: workspace,
+      comsDir,
+    });
+    const sender = await createSenderServer(join(comsDir, "sender-multi.sock"), "sess-sender", "coordinator", workspace);
+
+    await sender.sendPrompt(peer.endpoint, "q-1", "First active prompt");
+    await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "q-1"));
+    await peer.handlers.get("agent_start")?.({}, {});
+    await sender.sendPrompt(peer.endpoint, "q-2", "Second queued prompt");
+    await sender.sendPrompt(peer.endpoint, "q-3", "Third queued prompt");
+
+    const ctx: any = {
+      hasUI: true,
+      ui: {
+        notify: () => {},
+        custom: async (factory: any) => {
+          return await new Promise((resolve) => {
+            const fakeTui = { terminal: { rows: 24 }, requestRender: () => {} };
+            const fakeTheme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+            const comp = factory(fakeTui, fakeTheme, { matches: () => false }, (v: any) => resolve(v));
+            comp.handleInput("j"); // move to q-2
+            comp.handleInput(" "); // select q-2
+            comp.handleInput("j"); // move to q-3
+            comp.handleInput(" "); // select q-3
+            comp.handleInput("x"); // kill selected (q-2, q-3)
+            comp.handleInput("\x1b"); // Esc close
+            comp.dispose?.();
+          });
+        },
+      },
+    };
+    await peer.runtime.openQueueOverlay("", ctx);
+    await waitUntil(() =>
+      sender.received.some((e) => e.type === "response" && e.msg_id === "q-2") &&
+      sender.received.some((e) => e.type === "response" && e.msg_id === "q-3"),
+    );
+
+    const remaining = await peer.tools.get("coms_local_queue").execute("call-list", { action: "list" });
+    assert.deepEqual(remaining.details.items.map((i: any) => i.msg_id), ["q-1"]);
+  });
 });

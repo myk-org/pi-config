@@ -303,7 +303,7 @@ describe("openComsPeersOverlay delivery truth (#1084 findings 1-3)", () => {
     });
     assert.deepEqual(inputTitles, [], "no dialog for a send that cannot happen");
     assert.equal(notifications.length, 1);
-    assert.match(notifications[0], /nothing sent .*reopen \/coms peers to reset selection · 2 peers left before sending: beta, gamma/);
+    assert.match(notifications[0], /nothing sent .*reopen \/coms to reset selection · 2 peers left before sending: beta, gamma/);
     assert.equal(notifications[0].startsWith("\u26a0"), true);
   });
 
@@ -452,7 +452,7 @@ describe("openComsPeersOverlay selection lifetime", () => {
       },
     });
     assert.deepEqual(inputTitles, [], "no composer for a vanished selection");
-    assert.match(notifications[0], /nothing sent .*reopen \/coms peers to reset selection · 1 peer left before sending: alpha$/);
+    assert.match(notifications[0], /nothing sent .*reopen \/coms to reset selection · 1 peer left before sending: alpha$/);
     const replacement = reopened.listSpec.listItems()[0];
     assert.notEqual(replacement.id, oldId);
     assert.equal(reopened.initialSelectionIds.includes(replacement.id), false);
@@ -485,5 +485,36 @@ describe("openComsPeersOverlay keeps the ticks across a drilldown (#1084)", () =
     assert.equal(opened.length, 3);
     assert.deepEqual(opened[2].initialSelectionIds, opened[2].listSpec.listItems().map((row: Row) => row.id));
     assert.equal(typeof opened[0].listSpec.onSelectionChange, "function", "the overlay reports ticks back");
+  });
+});
+
+describe("openComsPeersOverlay scope toggle (f) and inbound queue (q) (#1392)", () => {
+  it("toggles between this project and all projects on f", async () => {
+    const scopesSeen: Array<string | undefined> = [];
+    const thisProj = { ...worker, name: "local-peer", project: "repo", endpoint: "/tmp/local.sock" };
+    const otherProj = { ...worker, name: "other-peer", project: "other", endpoint: "/tmp/other.sock" };
+    const { ctx } = makeCtx(["f", "close"], undefined);
+    await openComsPeersOverlay(ctx, {
+      listPeers: (scope) => {
+        scopesSeen.push(scope);
+        return scope === "all" ? [thisProj, otherProj] : [thisProj];
+      },
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+    });
+    assert.ok(scopesSeen.includes("project"));
+    assert.ok(scopesSeen.includes("all"));
+  });
+
+  it("opens local inbound queue overlay on q and returns to peer list", async () => {
+    let queueOpens = 0;
+    const { ctx } = makeCtx(["q"], undefined, ["close"]);
+    await openComsPeersOverlay(ctx, {
+      listPeers: () => [worker],
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+      openQueue: async () => { queueOpens++; },
+    });
+    assert.equal(queueOpens, 1);
   });
 });

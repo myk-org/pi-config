@@ -452,7 +452,7 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
     const h = harness();
     try {
       h.spawn();
-      await h.commands.get("async-status")!.handler("", h.ctx);
+      await h.commands.get("async")!.handler("", h.ctx);
       assert.equal(h.overlayOpens(), 1);
     } finally { h.restore(); }
   });

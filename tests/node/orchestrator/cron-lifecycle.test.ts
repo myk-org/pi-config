@@ -66,9 +66,16 @@ function makeCron() {
 
 function context(cwd: string, sessionId = "session-one", trusted = true) { return { cwd, mode: "interactive", hasUI: false, model: {}, isProjectTrusted: () => trusted, sessionManager: { getSessionId: () => sessionId } }; }
 
-describe("cron command validation", { concurrency: false }, () => {
-  for (const args of [undefined, "", " \t\n ", "--persist", " --persist --persist ", "add", "add --persist", "--persist add \t"]) {
-    it(`rejects an empty scheduling request: ${JSON.stringify(args)}`, async (t) => {
+describe("cron zero-arg command (#1392)", { concurrency: false }, () => {
+  it("registers /cron with no argument completions", () => {
+    const h = makeCron();
+    registerCron(h.pi, () => assert.fail("must not spawn an agent"));
+    assert.ok(h.commands.has("cron"));
+    assert.equal(h.commands.get("cron").getArgumentCompletions, undefined);
+  });
+
+  for (const args of [undefined, "", "list", "--persist", "add every hour check issues"]) {
+    it(`falls back to plain-text list without LLM dispatch when headless: ${JSON.stringify(args)}`, async (t) => {
       const cwd = makeTempDir("pi-cron-command-"); dirs.push(cwd);
       const h = makeCron();
       const cron = registerCron(h.pi, () => assert.fail("must not spawn an agent"));
@@ -80,63 +87,170 @@ describe("cron command validation", { concurrency: false }, () => {
       assert.deepEqual(h.messages, []);
       assert.equal(writes.mock.calls.filter(call => String(call.arguments[0]).startsWith(cwd)).length, 0);
       assert.deepEqual(cron.getCronTasks(), []);
-      assert.equal(h.timeouts.length, 0);
-      assert.equal(h.intervals.length, 0);
-      assert.deepEqual(notifications, [["/cron requires a message for the LLM to work on.", "warning"]]);
+      assert.deepEqual(notifications, [["No scheduled tasks.", "info"]]);
     });
   }
 
-  it("keeps existing schedules unchanged on rejection", async (t) => {
+  it("prints existing schedules in plain text when headless", async () => {
     const cwd = makeTempDir("pi-cron-command-"); dirs.push(cwd);
     const h = makeCron();
-    const cron = registerCron(h.pi, () => assert.fail("must not spawn an agent"));
+    registerCron(h.pi, () => assert.fail("must not spawn an agent"));
     h.handlers.get("session_start")![0]({}, context(cwd));
-    for (let i = 0; i < 3; i++) await h.tool().execute("seed", { action: "add", task: "check issues", interval_seconds: 60 });
-    const before = structuredClone(cron.getCronTasks());
-    const writes = t.mock.method(fs, "writeFileSync");
+    await h.tool().execute("seed", { action: "add", task: "check issues", description: "Issue check", interval_seconds: 60 });
+    const notifications: unknown[][] = [];
+    await h.commands.get("cron").handler("", { ...context(cwd), ui: { notify: (...values: unknown[]) => notifications.push(values) } });
+    assert.equal(notifications.length, 1);
+    assert.match(String(notifications[0][0]), /Issue check/);
+    assert.deepEqual(h.messages, []);
+  });
+
+  it("moves a cron between session and durable project storage preserving fields", async () => {
+    const cwd = makeTempDir("pi-cron-scope-"); dirs.push(cwd);
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", {
+      action: "add",
+      task: "check PRs",
+      description: "PR watch",
+      interval_seconds: 120,
+      model: "google/gemini-2.5-flash",
+    });
+    const created = cron.getCronTasks()[0];
+    cron.togglePaused(`session:${created.id}`);
+    assert.equal(cron.getCronTasks()[0].paused, true);
+
+    // Move session -> project (persist)
+    const toPersist = cron.setScope(`session:${created.id}`, "project");
+    assert.deepEqual(toPersist, { ok: true, scope: "project", id: `persist:${created.id}` });
+    const persisted = cron.getCronTasks()[0];
+    assert.equal(persisted.scope, "project");
+    assert.equal(persisted.task, "check PRs");
+    assert.equal(persisted.description, "PR watch");
+    assert.equal(persisted.intervalMs, 120_000);
+    assert.equal(persisted.model, "google/gemini-2.5-flash");
+    assert.equal(persisted.paused, true);
+    const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
+    assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 1);
+
+    // Move project -> session
+    const toSession = cron.setScope(`persist:${created.id}`, "session");
+    assert.deepEqual(toSession, { ok: true, scope: "session", id: `session:${created.id}` });
+    const restored = cron.getCronTasks()[0];
+    assert.equal(restored.scope, "session");
+    assert.equal(restored.task, "check PRs");
+    assert.equal(restored.model, "google/gemini-2.5-flash");
+    assert.equal(restored.paused, true);
+    assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 0);
+  });
+
+  it("refuses persisting a session cron in an untrusted project without arming committed repo crons", async () => {
+    const cwd = makeTempDir("pi-cron-untrusted-"); dirs.push(cwd);
+    const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(durablePath), { recursive: true });
+    fs.writeFileSync(
+      durablePath,
+      JSON.stringify({
+        version: 1,
+        tasks: [{ id: "repo-cron", scope: "project", cwd, description: "evil", task: "echo pwn", intervalMs: 60_000, createdAt: 1 }],
+      }),
+    );
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
+    h.handlers.get("session_start")![0]({}, context(cwd, "untrusted-sess", false));
+    // Repo cron must remain leaderless/unarmed.
+    const repoTaskBefore = cron.getCronTasks().find((t) => t.id === "repo-cron");
+    assert.equal(repoTaskBefore?.leader, false);
+    assert.equal(h.timeouts.length, 0);
+
+    await h.tool().execute("seed", { action: "add", task: "local check", interval_seconds: 60 });
+    const sessionTask = cron.getCronTasks().find((t) => t.scope === "session")!;
+    const res = cron.setScope(`session:${sessionTask.id}`, "project");
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /not trusted/i);
+    assert.equal(cron.getCronTasks().find((t) => t.id === "repo-cron")?.leader, false);
+    assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 1);
+  });
+
+  it("refuses adding a project cron in an untrusted project without modifying crons.json", async () => {
+    const cwd = makeTempDir("pi-cron-untrusted-add-"); dirs.push(cwd);
+    const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(durablePath), { recursive: true });
+    fs.writeFileSync(
+      durablePath,
+      JSON.stringify({
+        version: 1,
+        tasks: [{ id: "repo-cron", scope: "project", cwd, description: "repo", task: "echo repo", intervalMs: 60_000, createdAt: 1 }],
+      }),
+    );
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
+    h.handlers.get("session_start")![0]({}, context(cwd, "untrusted-add", false));
+    const res = await h.tool().execute("seed", { action: "add", persist: true, task: "new persistent", interval_seconds: 60 });
+    assert.match(res.content[0].text, /not trusted/i);
+    assert.equal(h.timeouts.length, 0, "untrusted project must never arm project cron timers");
+    assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 1, "crons.json must remain unchanged");
+    assert.equal(cron.getCronTasks().every((t) => t.leader === false), true);
+  });
+
+  it("preserves the live session file via atomic write when session-store cleanup fails", async (t) => {
+    const cwd = makeTempDir("pi-cron-rollback-"); dirs.push(cwd);
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
+    h.handlers.get("session_start")![0]({}, context(cwd, "rollback-sess"));
+    await h.tool().execute("seed", { action: "add", task: "check", interval_seconds: 60 });
+    const created = cron.getCronTasks()[0];
+
+    const origWrite = fs.writeFileSync;
+    const mockWrite = t.mock.method(fs, "writeFileSync", (filePath: any, ...rest: any[]) => {
+      if (path.basename(String(filePath)).startsWith("cron-") && String(filePath).endsWith(".tmp")) {
+        throw new Error("simulated session-store ENOSPC");
+      }
+      return (origWrite as any).call(fs, filePath, ...rest);
+    });
     syncBuiltinESMExports();
-    t.after(() => { writes.mock.restore(); syncBuiltinESMExports(); });
-    const ctx = { ...context(cwd), ui: { notify() {} } };
-    await h.commands.get("cron").handler("--persist", ctx);
-    assert.deepEqual(cron.getCronTasks(), before);
-    assert.equal(writes.mock.calls.filter(call => String(call.arguments[0]).startsWith(cwd)).length, 0);
-    assert.deepEqual(h.messages, []);
+    t.after(() => { mockWrite.mock.restore(); syncBuiltinESMExports(); });
+
+    const res = cron.setScope(`session:${created.id}`, "project");
+    assert.equal(res.ok, false);
+    assert.equal(cron.getCronTasks()[0].scope, "session", "in-memory scope stays session on failure");
+    const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
+    assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 0, "durable write was rolled back");
+    const sessionFiles = fs.readdirSync(path.join(cwd, ".pi", "tmp")).filter((f) => f.startsWith("cron-") && f.endsWith(".json"));
+    assert.equal(sessionFiles.length, 1);
+    const liveSessionTasks = JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "tmp", sessionFiles[0]), "utf8"));
+    assert.equal(liveSessionTasks.length, 1, "live session file remained intact after failed temp write");
   });
 
-  it("removes known IDs locally through each alias", async () => {
-    const cwd = makeTempDir("pi-cron-command-"); dirs.push(cwd);
+  it("preserves a concurrent peer edit instead of deleting it during setScope rollback", async (t) => {
+    const cwd = makeTempDir("pi-cron-peer-edit-"); dirs.push(cwd);
     const h = makeCron();
-    const cron = registerCron(h.pi, () => assert.fail("must not spawn an agent"));
-    h.handlers.get("session_start")![0]({}, context(cwd));
-    for (let i = 0; i < 3; i++) await h.tool().execute("seed", { action: "add", task: "check issues", interval_seconds: 60 });
-    const before = cron.getCronTasks();
-    const ctx = { ...context(cwd), ui: { notify() {} } };
-    for (const [index, verb] of ["remove", "rm", "delete"].entries()) {
-      await h.commands.get("cron").handler(`${verb} session:${before[index].id}`, ctx);
-      assert.equal(cron.getCronTasks().length, 2 - index);
-    }
-    assert.deepEqual(h.messages, []);
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
+    h.handlers.get("session_start")![0]({}, context(cwd, "peer-edit-sess"));
+    await h.tool().execute("seed", { action: "add", task: "check", interval_seconds: 60 });
+    const created = cron.getCronTasks()[0];
+    const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
+
+    const origWrite = fs.writeFileSync;
+    const mockWrite = t.mock.method(fs, "writeFileSync", (filePath: any, ...rest: any[]) => {
+      if (path.basename(String(filePath)).startsWith("cron-") && String(filePath).endsWith(".tmp")) {
+        // Simulate another peer modifying the durable record before session cleanup fails.
+        const env = JSON.parse(fs.readFileSync(durablePath, "utf8"));
+        env.tasks[0].paused = true;
+        (origWrite as any).call(fs, durablePath, JSON.stringify(env));
+        throw new Error("simulated session-store failure");
+      }
+      return (origWrite as any).call(fs, filePath, ...rest);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { mockWrite.mock.restore(); syncBuiltinESMExports(); });
+
+    const res = cron.setScope(`session:${created.id}`, "project");
+    assert.equal(res.ok, false);
+    const remaining = JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks;
+    assert.equal(remaining.length, 1, "peer-modified durable record must not be deleted by rollback");
+    assert.equal(remaining[0].paused, true);
   });
-
-  for (const args of ["every hour check issues", "add every hour check issues", "--persist add every hour check issues", "add a label every hour", "address issues every hour", "remove", "unknown-command"]) {
-    it(`dispatches non-empty text once: ${args}`, async () => {
-      const h = makeCron();
-      registerCron(h.pi, () => assert.fail("command must not spawn directly"));
-      await h.commands.get("cron").handler(args, context(process.cwd()));
-      assert.equal(h.messages.length, 1);
-      assert.ok(h.messages[0].message.endsWith(`User request: "${args.replace("--persist ", "")}"`));
-      assert.ok(h.messages[0].message.includes(`Set persist to ${args.includes("--persist")}.`));
-    });
-  }
-
-  for (const args of ["list", "list-all", "--persist list", "remove session:missing", "rm session:missing", "delete session:missing", "--scope project", "--project"]) {
-    it(`keeps local handling without LLM dispatch: ${args}`, async () => {
-      const h = makeCron();
-      registerCron(h.pi, () => assert.fail("local commands must not spawn"));
-      await h.commands.get("cron").handler(args, { ...context(process.cwd()), ui: { notify() {} } });
-      assert.deepEqual(h.messages, []);
-    });
-  }
 });
 
 describe("cron lifecycle", { concurrency: false }, () => {

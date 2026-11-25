@@ -6,10 +6,11 @@ import { getProjectTmpDir } from "./utils.js";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
-import { formatCronSchedule, formatCronStatusSlot, cronStateLabel, toCronStatusTaskView, type CronPauseResult } from "./cron-status-format.js";
+import { formatCronSchedule, formatCronStatusSlot, cronStateLabel, toCronStatusTaskView, type CronPauseResult, type CronScopeResult } from "./cron-status-format.js";
 import { parseModelOverride } from "./parse-model-override.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
 import { setSlot } from "./status-bar.js";
+import { isBrowserDispatch } from "../shared/live-ctx.js";
 import { acquireLeaderLock, durableCronSupported, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, readDurableCronStoreOutcome, refreshLeaderLock, releaseLeaderLock, setDurableCronPaused, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
 
 const log = createLogger("cron");
@@ -36,29 +37,16 @@ function validateSessionCronTask(task: unknown): asserts task is CronTask {
 }
 function writeSessionTasks(file: string, tasks: Iterable<CronTask>) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, JSON.stringify([...tasks]), { mode: 0o600 });
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify([...tasks]), { mode: 0o600 });
+    fs.renameSync(temp, file);
+  } catch (error) {
+    try { fs.unlinkSync(temp); } catch {}
+    throw error;
+  }
 }
 export const qualifyCronId = (task: Pick<CronTask, "scope" | "id">) => `${task.scope === "project" ? "persist" : "session"}:${task.id}`;
-let currentCronTasks: () => Iterable<CronTask> = () => [];
-export function cronRemoveAutocompleteItems(tasks: Iterable<Pick<CronTask, "scope" | "id" | "description" | "task">>) {
-  const seen = new Set<string>();
-  const items = [];
-  for (const task of tasks) {
-    const id = qualifyCronId(task);
-    if (!seen.has(id)) { seen.add(id); items.push({ value: id, label: id, description: task.description || task.task }); }
-  }
-  return items;
-}
-export function getCronRemoveAutocompleteItems() { return cronRemoveAutocompleteItems(currentCronTasks()); }
-export function parseCronScope(args: string[]): { scope: CronScope; rest: string[]; error?: string } {
-  let scope: CronScope = "session"; const rest: string[] = [];
-  for (const arg of args) {
-    if (arg === "--persist") { scope = "project"; continue; }
-    if (arg === "--scope" || arg === "--project") return { scope, rest, error: `"${arg}" is not supported; use --persist for a persistent cron` };
-    rest.push(arg);
-  }
-  return { scope, rest };
-}
 function parseQualifiedId(qualified: string): { scope: CronScope; id: string } | null {
   const [kind, id] = qualified.split(":", 2);
   const scope = kind === "persist" ? "project" : kind as CronScope;
@@ -159,10 +147,21 @@ export function decideCronArm(task: { paused?: boolean; scope: CronScope; leader
   return "arm";
 }
 
-export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronTasks: () => CronTask[]; togglePaused: (id: string) => CronPauseResult; syncProjectCrons: () => void } {
-  if (process.env.PI_SUBAGENT_CHILD === "1") return { getCronTasks: () => [], togglePaused: () => ({ ok: false, paused: false }), syncProjectCrons: () => {} };
+export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
+  getCronTasks: () => CronTask[];
+  togglePaused: (id: string) => CronPauseResult;
+  setScope: (id: string, targetScope: CronScope) => CronScopeResult;
+  syncProjectCrons: () => void;
+} {
+  if (process.env.PI_SUBAGENT_CHILD === "1") {
+    return {
+      getCronTasks: () => [],
+      togglePaused: () => ({ ok: false, paused: false }),
+      setScope: (_id, scope) => ({ ok: false, scope, error: "Unavailable in subagent child" }),
+      syncProjectCrons: () => {},
+    };
+  }
   const tasks = new Map<string, CronTask>(); const timers = new Map<string, Timer>();
-  currentCronTasks = () => tasks.values();
   const owned = new Map<string, CronLockOwner>(); const instanceId = randomUUID(); let ctx: any; let watchers: fs.FSWatcher[] = []; let health: ReturnType<typeof setInterval> | undefined;
   function cleanupRuntime(releaseLocks = true) {
     log.debug("cron_cleanup_runtime", { timers: timers.size, watchers: watchers.length, locks: owned.size, releaseLocks });
@@ -363,8 +362,13 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     }
     updateStatus();
   }
+  const isProjectTrusted = () => typeof ctx?.isProjectTrusted !== "function" || ctx.isProjectTrusted() === true;
   function add(scope: CronScope, details: any) {
     if (scope !== "session" && scope !== "project") throw new Error("scope must be session or project");
+    if (durable(scope) && !isProjectTrusted()) {
+      log.warn("cron_create_untrusted_refused", { scope });
+      throw new Error("Project is not trusted — cannot persist crons here.");
+    }
     if (durable(scope) && !durableCronSupported()) throw new Error("Persistent cron scheduling is unavailable on this platform");
     validateSchedule(details);
     const task: CronTask = { id: randomUUID(), scope, cwd: ctx?.cwd || process.cwd(), description: details.description || details.task.slice(0, 60), task: details.task, intervalMs: details.interval_seconds !== undefined ? details.interval_seconds * 1000 : undefined, atHour: details.at_hour, atMinute: details.at_minute ?? (details.at_hour !== undefined ? 0 : undefined), model: normalizeModel(details.model), createdAt: Date.now(), leader: scope === "session" };
@@ -496,7 +500,167 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       return { content: [{ type: "text", text: selected.length ? selected.map(t => `${qualifyCronId(t)} | ${formatCronSchedule(t)} | ${t.description} | ${t.model || "inherited model"} | ${cronStateLabel(t)}`).join("\n") : "No scheduled tasks." }] };
     } catch (error: any) { return { content: [{ type: "text", text: `Error: ${error.message}` }] }; }
   }, } as any);
-  pi.registerCommand("cron", { description: "Schedule tasks with a message: add <request>, list, list-all, remove <id>; use --persist to keep a cron", handler: async (args, commandCtx) => { ctx = commandCtx; const parsed = parseCronScope((args || "").trim().split(/\s+/).filter(Boolean)); if (parsed.error) { ctx.ui?.notify(parsed.error, "warning"); return; } const [sub, ...rest] = parsed.rest; if (sub === "list" || sub === "list-all") { const showAll = sub === "list-all"; if (ctx.hasUI) await openCronStatusOverlay(ctx, { title: showAll ? "All cron tasks" : "Cron tasks", listTasks: () => [...tasks.values()].filter(t => showAll || !args.includes("--persist") || t.scope === "project").map(t => toCronStatusTaskView(t, { overlayId: qualifyCronId(t), isLocal: t.scope === "session", sessionLabel: t.leader === false ? `${t.scope} (waiting for leader)` : t.scope })), removeTask: remove, togglePaused }); return; } if (["remove", "rm", "delete"].includes(sub) && rest[0]) { ctx.ui?.notify(remove(rest[0]) ? "Cron removed." : "Task not found.", "info"); return; } if (!parsed.rest.length || (sub === "add" && !rest.length)) { log.debug("cron_command_rejected", { reason: "empty_message", scope: parsed.scope, add: sub === "add" }); ctx.ui?.notify("/cron requires a message for the LLM to work on.", "warning"); return; } pi.sendUserMessage(`Schedule this cron request using cron_manage. Set persist to ${parsed.scope === "project"}. Use persistence only when the user requests it. User request: "${parsed.rest.join(" ")}"`, { deliverAs: "followUp" }); }});
+  /** Move a cron safely between session and durable project storage, preserving all task fields. */
+  function setScope(qualified: string, targetScope: CronScope): CronScopeResult {
+    const parsed = parseQualifiedId(qualified);
+    if (!parsed) {
+      log.warn("cron_scope_missing", { id: qualified, targetScope });
+      return { ok: false, scope: targetScope, error: "Task not found." };
+    }
+    let task = tasks.get(parsed.id);
+    if (!task && parsed.scope === "project" && ctx) {
+      syncStore("project", projectStore(ctx.cwd));
+      task = tasks.get(parsed.id);
+    }
+    if (!task || task.scope !== parsed.scope) {
+      log.warn("cron_scope_missing", { id: qualified, targetScope });
+      return { ok: false, scope: parsed.scope, error: "Task not found." };
+    }
+    if (task.scope === targetScope) {
+      return { ok: true, scope: targetScope, id: qualifyCronId(task) };
+    }
+    if (targetScope === "project") {
+      if (!isProjectTrusted()) {
+        log.warn("cron_scope_untrusted", { id: qualified });
+        return { ok: false, scope: "session", error: "Project is not trusted — cannot persist crons here." };
+      }
+      if (!durableCronSupported()) {
+        log.warn("cron_scope_durable_unsupported", { id: qualified });
+        return { ok: false, scope: "session", error: "Persistent cron scheduling is unavailable on this platform" };
+      }
+      const { leader: _leader, ...base } = task;
+      const durableTask: DurableCronTask = { ...base, scope: "project" };
+      const file = projectStore(task.cwd);
+      const writtenSnapshot = JSON.stringify(durableTask);
+      let wroteDurable = false;
+      try {
+        validateDurableCronTask(durableTask);
+        // Write to destination store FIRST, then atomically replace session store; roll back durable write
+        // only if the stored record still matches what this move wrote (so a peer edit is never deleted).
+        mutateDurableCronStore(file, old => [...old.filter(t => t.id !== task.id), durableTask]);
+        wroteDurable = true;
+        if (sessionStore) {
+          writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session" && t.id !== task.id));
+        }
+      } catch (error: any) {
+        if (wroteDurable) {
+          try {
+            let preservedPeerEdit = false;
+            mutateDurableCronStore(file, old => old.filter(t => {
+              if (t.id !== task.id) return true;
+              if (JSON.stringify(t) === writtenSnapshot) return false;
+              preservedPeerEdit = true;
+              return true;
+            }));
+            if (preservedPeerEdit) {
+              log.warn("cron_scope_persist_rollback_skipped_peer_modified", { id: qualified });
+            }
+          }
+          catch (rollbackErr: any) {
+            log.error("cron_scope_persist_rollback_failed", { id: qualified, error: rollbackErr?.message || String(rollbackErr) });
+          }
+        }
+        log.error("cron_scope_persist_failed", { id: qualified, error: error?.message || String(error) });
+        return { ok: false, scope: "session", error: error?.message || "Failed to persist cron" };
+      }
+      task.scope = "project";
+      if (owned.has(file) && isLeaderLockCurrent(file, owned.get(file)!)) {
+        task.leader = true;
+        start(task);
+      } else {
+        task.leader = false;
+        stop(task.id);
+        election();
+      }
+      updateStatus();
+      log.info("cron_scope_moved", { id: qualifyCronId(task), from: "session", to: "project" });
+      return { ok: true, scope: "project", id: qualifyCronId(task) };
+    }
+
+    // Moving project -> session: re-read durable store first so peer edits/pauses are preserved.
+    const state = storedTaskState(task);
+    if (state === "removed") {
+      stop(task.id); tasks.delete(task.id); updateStatus();
+      log.warn("cron_scope_missing_durable", { id: qualified });
+      return { ok: false, scope: "project", error: "Task no longer exists." };
+    }
+    if (state === "read_error") {
+      log.error("cron_scope_durable_unreadable", { id: qualified });
+      return { ok: false, scope: "project", error: "Could not read project cron store." };
+    }
+    const sessionTask: CronTask = { ...task, scope: "session", leader: true };
+    let wroteSession = false;
+    try {
+      validateSessionCronTask(sessionTask);
+      // Write to session store FIRST so a failure preserves the durable record.
+      if (sessionStore) {
+        writeSessionTasks(sessionStore, [...[...tasks.values()].filter(t => t.scope === "session"), sessionTask]);
+        wroteSession = true;
+      }
+      mutateDurableCronStore(projectStore(task.cwd), old => old.filter(t => t.id !== task.id));
+    } catch (error: any) {
+      if (wroteSession && sessionStore) {
+        try { writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session")); } catch {}
+      }
+      log.error("cron_scope_to_session_failed", { id: qualified, error: error?.message || String(error) });
+      return { ok: false, scope: "project", error: error?.message || "Failed to move cron to session" };
+    }
+    task.scope = "session";
+    task.leader = true;
+    start(task);
+    updateStatus();
+    log.info("cron_scope_moved", { id: qualifyCronId(task), from: "project", to: "session" });
+    return { ok: true, scope: "session", id: qualifyCronId(task) };
+  }
+  function formatCronPlainText(): string {
+    const all = [...tasks.values()];
+    if (all.length === 0) return "No scheduled tasks.";
+    return all
+      .map(t => `${qualifyCronId(t)} | ${formatCronSchedule(t)} | ${t.description} | ${t.model || "inherited model"} | ${cronStateLabel(t)}`)
+      .join("\n");
+  }
+  pi.registerCommand("cron", {
+    description: "Open the cron tasks TUI overlay",
+    handler: async (_args, commandCtx) => {
+      ctx = commandCtx;
+      log.debug("cron_command_open", { hasUI: !!ctx?.hasUI, browser: isBrowserDispatch(ctx), count: tasks.size });
+      if (!ctx.hasUI || isBrowserDispatch(ctx)) {
+        ctx.ui?.notify(formatCronPlainText(), "info");
+        return;
+      }
+      await openCronStatusOverlay(ctx, {
+        title: "Cron tasks",
+        listTasks: () =>
+          [...tasks.values()].map(t =>
+            toCronStatusTaskView(t, {
+              overlayId: qualifyCronId(t),
+              isLocal: t.scope === "session",
+              sessionLabel: t.scope === "project" && t.leader === false ? "persist (waiting for leader)" : t.scope === "project" ? "persist" : "session",
+            }),
+          ),
+        removeTask: remove,
+        togglePaused,
+        setScope,
+        addTask: (input) => {
+          try {
+            const created = add(input.scope, input);
+            return { ok: true, id: qualifyCronId(created) };
+          } catch (error: any) {
+            return { ok: false, error: error?.message || String(error) };
+          }
+        },
+        editTask: (id, patch) => {
+          try {
+            const updated = edit(id, patch);
+            if (!updated) return { ok: false, error: "Task not found." };
+            return { ok: true, id: qualifyCronId(updated) };
+          } catch (error: any) {
+            return { ok: false, error: error?.message || String(error) };
+          }
+        },
+      });
+    },
+  });
   pi.events.on("pidash:cron-kill", (target: unknown) => {
     if (target !== "all") { if (typeof target === "string") remove(target); return; }
     const byStore = new Map<string, Set<string>>();
@@ -537,5 +701,5 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       try { fs.unlinkSync(sessionStore); } catch (error: any) { if (error?.code !== "ENOENT") log.warn("cron session cleanup failed", error?.message || error); }
     }
   });
-  return { getCronTasks: () => [...tasks.values()], togglePaused, syncProjectCrons: () => { for (const s of stores()) syncStore(s.scope, s.file); } };
+  return { getCronTasks: () => [...tasks.values()], togglePaused, setScope, syncProjectCrons: () => { for (const s of stores()) syncStore(s.scope, s.file); } };
 }

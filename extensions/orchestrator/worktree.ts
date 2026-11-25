@@ -1,12 +1,12 @@
 /**
- * /worktree command — interactive worktree overlay + list/prune subcommands.
+ * /worktree command — interactive zero-arg worktree TUI overlay.
  * Built on openListDetailOverlay / OverlayScrollDetail.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { isBrowserDispatch, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
 import {
   countLinkedWorktrees,
@@ -19,6 +19,7 @@ import {
 import {
   OVERLAY_OPTS,
   OverlayScrollDetail,
+  bulkResultMessage,
   matchesOverlayKey,
   openListDetailOverlay,
   type OverlayRowParts,
@@ -342,9 +343,11 @@ export async function openWorktreeOverlay(
   }
 
   let reselectId: string | undefined = views.find((w) => w.isCurrent)?.id ?? views[0]?.id;
+  const selectedIds = new Set<string>();
 
   type ListAction =
     | { kind: "detail"; wt: WorktreeView }
+    | { kind: "remove"; targets: WorktreeView[] }
     | { kind: "refresh" }
     | { kind: "prune" };
 
@@ -355,6 +358,7 @@ export async function openWorktreeOverlay(
     await openOverlay<string, WorktreeView>(ctx, {
       emptyMessage: "Not in a git repository (no worktrees found).",
       initialSelectionId: reselectId,
+      initialSelectionIds: [...selectedIds],
       listSpec: {
         title: "Worktrees",
         countLabel: (items) => {
@@ -366,15 +370,26 @@ export async function openWorktreeOverlay(
           const dirty = items.filter((w) => (w.dirty?.total ?? 0) > 0).length;
           return `worktrees · ${linked} linked${dirty > 0 ? ` · ${dirty} dirty` : ""}`;
         },
-        footerHints: "↑↓/jk navigate · Enter detail · p prune · r refresh · Esc close",
+        footerHints: "↑↓/jk navigate · Space select · d/x remove · p prune · r refresh · Enter detail · Esc close",
         listItems: () => views,
         rowParts: (wt, theme) => buildWorktreeRowParts(wt, ctx.cwd, theme),
+        selectable: true,
+        onSelectionChange: (ids) => {
+          selectedIds.clear();
+          for (const id of ids) selectedIds.add(String(id));
+        },
         onSelect: (wt) => {
           reselectId = wt.id;
           listQueue.push({ kind: "detail", wt });
         },
-        onKey: (key, wt) => {
+        onKey: (key, wt, selected) => {
           if (wt) reselectId = wt.id;
+          if (matchesOverlayKey(key, "d") || matchesOverlayKey(key, "x")) {
+            const targets = selected.length > 0 ? [...selected] : wt ? [wt] : [];
+            if (targets.length === 0) return false;
+            listQueue.push({ kind: "remove", targets });
+            return "close";
+          }
           if (matchesOverlayKey(key, "r")) {
             listQueue.push({ kind: "refresh" });
             return "close";
@@ -390,6 +405,82 @@ export async function openWorktreeOverlay(
 
     const action = listQueue.pop();
     if (!action || !isLiveExtensionCtx(ctx)) return;
+
+    if (action.kind === "remove") {
+      const removable: WorktreeView[] = [];
+      const blocked: Array<{ wt: WorktreeView; reason: string }> = [];
+      for (const target of action.targets) {
+        const guard = canRemoveWorktree(target);
+        if (guard.allowed) removable.push(target);
+        else blocked.push({ wt: target, reason: guard.reason });
+      }
+      if (removable.length === 0) {
+        const msg =
+          blocked.length === 1
+            ? blocked[0].reason
+            : `Cannot remove ${blocked.length} selected worktrees: ${blocked
+                .map((b) => `${displayWorktreePath(b.wt.path, ctx.cwd)} (${b.reason})`)
+                .join("; ")}`;
+        safeNotify(ctx, msg, "warning");
+        continue;
+      }
+
+      let confirmed = false;
+      const blockedNote =
+        blocked.length > 0
+          ? `\n(${blocked.length} selected worktree${blocked.length === 1 ? "" : "s"} skipped: protected/dirty/active)`
+          : "";
+      try {
+        if (removable.length === 1) {
+          const wt = removable[0];
+          const label = formatWorktreeLabel(wt);
+          const rel = displayWorktreePath(wt.path, ctx.cwd);
+          confirmed = await ctx.ui.confirm(
+            "Remove worktree?",
+            `Remove worktree "${rel}" (${label})?\nPath: ${wt.path}${blockedNote}`,
+          );
+        } else {
+          const listText = removable
+            .map((w) => `- ${displayWorktreePath(w.path, ctx.cwd)} (${formatWorktreeLabel(w)})`)
+            .join("\n");
+          confirmed = await ctx.ui.confirm(
+            `Remove ${removable.length} worktrees?`,
+            `Remove these worktrees?\n${listText}${blockedNote}`,
+          );
+        }
+      } catch (e: any) {
+        log.debug("worktree_confirm_failed", { count: removable.length, error: e?.message || String(e) });
+        return;
+      }
+      if (!isLiveExtensionCtx(ctx)) return;
+      if (!confirmed) {
+        log.debug("worktree_remove_cancelled", { count: removable.length });
+        continue;
+      }
+
+      selectedIds.clear();
+      if (removable.length === 1 && blocked.length === 0) {
+        const removed = await executeGuardedWorktreeRemove(ctx.cwd, removable[0].path, deps);
+        safeNotify(ctx, removed.message, removed.ok ? "info" : "warning");
+      } else {
+        const failed: string[] = blocked.map((b) => displayWorktreePath(b.wt.path, ctx.cwd));
+        for (const wt of removable) {
+          const res = await executeGuardedWorktreeRemove(ctx.cwd, wt.path, deps);
+          if (!res.ok) failed.push(displayWorktreePath(wt.path, ctx.cwd));
+        }
+        const total = removable.length + blocked.length;
+        log.info("worktree_bulk_remove", { total, failed: failed.length });
+        safeNotify(
+          ctx,
+          bulkResultMessage("removed", "worktree", total, failed),
+          failed.length === 0 ? "info" : "warning",
+        );
+      }
+      views = await loadWorktreeViews(ctx.cwd, deps, true);
+      if (!isLiveExtensionCtx(ctx) || views.length === 0) return;
+      reselectId = views.find((w) => w.isCurrent)?.id ?? views[0]?.id;
+      continue;
+    }
 
     if (action.kind === "refresh") {
       views = await loadWorktreeViews(ctx.cwd, deps, true, { forceRefreshPrs: true });
@@ -538,34 +629,15 @@ export function registerWorktree(pi: ExtensionAPI, deps: WorktreeDeps = {}): voi
   };
 
   pi.registerCommand("worktree", {
-    description: "Inspect and manage git worktrees (/worktree [list|prune])",
-    handler: async (args, ctx) => {
-      const sub = (args || "").trim().toLowerCase();
-      log.debug("worktree_command", { sub: sub || "overlay", hasUI: !!ctx?.hasUI });
-
-      if (sub === "list") {
+    description: "Open the git worktrees TUI overlay",
+    handler: async (_args, ctx) => {
+      log.debug("worktree_command", { hasUI: !!ctx?.hasUI, browser: isBrowserDispatch(ctx) });
+      if (!ctx?.hasUI || isBrowserDispatch(ctx)) {
         const views = await loadWorktreeViews(ctx.cwd, effectiveDeps, true);
-        emitOutput(pi, ctx, formatWorktreeTable(views, ctx.cwd, { hyperlinks: !!ctx?.hasUI }), "info");
+        emitOutput(pi, ctx, formatWorktreeTable(views, ctx.cwd, { hyperlinks: false }), "info");
         return;
       }
-
-      if (sub === "prune") {
-        const res = await runWorktreePrune(ctx.cwd, effectiveDeps);
-        emitOutput(pi, ctx, res.message, res.ok ? "info" : "warning");
-        return;
-      }
-
-      if (sub === "") {
-        if (!ctx?.hasUI) {
-          const views = await loadWorktreeViews(ctx.cwd, effectiveDeps, true);
-          emitOutput(pi, ctx, formatWorktreeTable(views, ctx.cwd, { hyperlinks: false }), "info");
-          return;
-        }
-        await openWorktreeOverlay(ctx, effectiveDeps);
-        return;
-      }
-
-      emitOutput(pi, ctx, `Unknown subcommand "${sub}". Usage: /worktree [list|prune]`, "warning");
+      await openWorktreeOverlay(ctx, effectiveDeps);
     },
   });
 
@@ -574,7 +646,7 @@ export function registerWorktree(pi: ExtensionAPI, deps: WorktreeDeps = {}): voi
       name: "worktree_status",
       label: "Worktree Status",
       description:
-        "Inspect git worktrees (path, branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata. Equivalent to /worktree list and /worktree prune.",
+        "Inspect git worktrees (path, branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata.",
       parameters: Type.Object({
         action: Type.Union([Type.Literal("list"), Type.Literal("prune")], {
           description: "'list' to list git worktrees with dirty counts, PRs, and active COMS peers; 'prune' to run git worktree prune -v.",

@@ -1083,35 +1083,69 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
       assert.deepEqual(childRegistered, []);
     });
 
-    it("emits clickable OSC 8 PR links on /worktree list in TUI", async () => {
-      const { handler } = setupWorktreeCommand();
-      const notified: string[] = [];
-      await handler("list", { hasUI: true, cwd: "/repo", ui: { notify: (m: string) => notified.push(m) } });
-      assert.match(notified[0], /Worktrees \(4 total, 3 linked\)/);
-      assert.ok(notified[0].includes(hyperlink("#1323", prUrl)));
-    });
-
-    it("runs /worktree prune with worktrees-changed notification", async () => {
-      const { handler, emittedEvents } = setupWorktreeCommand();
-      const notified: string[] = [];
-      await handler("prune", { hasUI: true, cwd: "/repo", ui: { notify: (m: string) => notified.push(m) } });
-      assert.match(notified[0], /No stale worktrees to prune/);
-      assert.ok(emittedEvents.includes("orchestrator:worktrees-changed"));
-    });
-
-    it("warns on unknown /worktree subcommand", async () => {
-      const { handler } = setupWorktreeCommand();
-      const notified: string[] = [];
-      await handler("bogus", { hasUI: true, cwd: "/repo", ui: { notify: (m: string) => notified.push(m) } });
-      assert.match(notified[0], /Unknown subcommand/);
-    });
-
-    it("falls back to markdown table via sendMessage when headless", async () => {
+    it("falls back to markdown table via sendMessage when headless regardless of args", async () => {
       const { handler, sentMessages } = setupWorktreeCommand();
       await handler("", { hasUI: false, cwd: "/repo" });
       assert.equal(sentMessages.length, 1);
       assert.match(sentMessages[0], /Worktrees \(4 total, 3 linked\)/);
       assert.ok(sentMessages[0].includes(`[#1323](${prUrl})`));
+    });
+
+    it("removes multiple Space-selected clean worktrees via guarded multi-select d/x", async () => {
+      const removedPaths: string[] = [];
+      const confirmPrompts: string[] = [];
+      const notified: Array<{ msg: string; level: string }> = [];
+      let viewsList = [
+        { path: "/repo", head: "aaaa", branch: "main", isMain: true, isCurrent: true, detached: false, bare: false, locked: false, prunable: false },
+        { path: "/repo/.worktrees/w1", head: "bbbb", branch: "feat/1", isMain: false, isCurrent: false, detached: false, bare: false, locked: false, prunable: false },
+        { path: "/repo/.worktrees/w2", head: "cccc", branch: "feat/2", isMain: false, isCurrent: false, detached: false, bare: false, locked: false, prunable: false },
+      ];
+      const runner: GitAsyncRunner = async (args) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          const out = viewsList
+            .map((w) => `worktree ${w.path}\nHEAD ${w.head}\nbranch refs/heads/${w.branch}\n`)
+            .join("\n");
+          return { stdout: out, stderr: "", code: 0 };
+        }
+        if (args[0] === "status") return { stdout: "", stderr: "", code: 0 };
+        if (args[0] === "worktree" && args[1] === "remove") {
+          removedPaths.push(args[2]);
+          viewsList = viewsList.filter((w) => w.path !== args[2]);
+          return { stdout: "", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      };
+      let openCount = 0;
+      const ctx: any = {
+        hasUI: true,
+        cwd: "/repo",
+        mode: "tui",
+        ui: {
+          notify: (msg: string, level: string) => notified.push({ msg, level }),
+          confirm: async (title: string) => {
+            confirmPrompts.push(title);
+            return true;
+          },
+        },
+      };
+      await openWorktreeOverlay(ctx, {
+        runGitAsync: runner,
+        readLivePeers: () => [],
+        fetchOpenPrs: async () => new Map(),
+        openOverlay: (async (_c: any, opts: any) => {
+          openCount++;
+          if (openCount === 1) {
+            const items = opts.listSpec.listItems();
+            const w1 = items.find((i: any) => i.path === "/repo/.worktrees/w1")!;
+            const w2 = items.find((i: any) => i.path === "/repo/.worktrees/w2")!;
+            const res = opts.listSpec.onKey?.("x", w1, [w1, w2]);
+            assert.equal(res, "close");
+          }
+        }) as any,
+      });
+      assert.deepEqual(confirmPrompts, ["Remove 2 worktrees?"]);
+      assert.deepEqual(removedPaths, ["/repo/.worktrees/w1", "/repo/.worktrees/w2"]);
+      assert.match(notified.at(-1)?.msg ?? "", /removed 2 worktrees/i);
     });
   });
 
@@ -1152,7 +1186,7 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
     }
   });
 
-  it("completes /worktree subcommands (list, prune) via extended-autocomplete", () => {
+  it("does not attach argument completions to zero-arg /worktree via extended-autocomplete", () => {
     const commands = new Map<string, any>();
     const mockPi: any = {
       registerCommand(name: string, opts: any) { commands.set(name, opts); },
@@ -1164,12 +1198,7 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
       mockPi.registerCommand("worktree", { description: "worktree", handler: async () => {} });
     });
     const cmd = commands.get("worktree");
-    assert.ok(cmd?.getArgumentCompletions);
-    const all = cmd.getArgumentCompletions("");
-    assert.deepEqual(all?.map((i: any) => i.value), ["list", "prune"]);
-    const pr = cmd.getArgumentCompletions("pru");
-    assert.deepEqual(pr?.map((i: any) => i.value), ["prune"]);
-    assert.equal(cmd.getArgumentCompletions("list extra"), null);
+    assert.equal(cmd?.getArgumentCompletions, undefined);
   });
 
   it("includes 1-line Worktrees summary in /status when linked worktrees exist", async () => {

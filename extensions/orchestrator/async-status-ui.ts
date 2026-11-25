@@ -1,5 +1,5 @@
 /**
- * /async-status fullscreen overlay — list dashboard → live output detail.
+ * /async fullscreen overlay — list dashboard → live output detail.
  */
 
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";

@@ -113,12 +113,7 @@ Use this when you want to inspect the memory directory itself, back it up, or co
 
 ### Consolidate memory in the background
 
-```text
-/dream
-/dream-auto on
-```
-
-Use `/dream` for a one-time background consolidation pass. Use `/dream-auto on` to let Pi keep consolidating memories automatically over time.
+Configure automatic dreaming in `/pi-config-settings` (`dream_auto_enable`, default `true`, and `dream_interval_hours`, default `3`), or ask Pi to trigger/toggle it via `memory_dream`.
 
 Background consolidation helps by:
 
@@ -127,7 +122,7 @@ Background consolidation helps by:
 - reorganizing topic files
 - preserving pinned entries
 
-If you want to tune the schedule, set `dream_interval_hours` in your project settings. See [Background Memory Consolidation (Dreaming)](background-dreaming.html) and [Configuration & Settings](configuration.html) for details.
+See [Background Memory Consolidation (Dreaming)](background-dreaming.html) and [Configuration & Settings](configuration.html) for details.
 
 ### Migrate older memory data into topic files
 
@@ -182,8 +177,8 @@ See [Implementing Command Guards](safety-enforcements.html) for details.
 ## Troubleshooting
 
 - **A saved rule does not seem to affect later sessions:** Run `myk-pi-tools memory show` and confirm the entry is present. If it is critical, save it again as a pinned memory with a shorter, clearer summary.
-- **Automatic background consolidation does not run:** Confirm `/dream-auto` is enabled and check `dream_interval_hours` (and optional `internal_operations_provider` / `internal_operations_model`) in [Configuration & Settings](configuration.html).
-- **Memory feels too noisy or repetitive:** Check `myk-pi-tools memory status`, keep entries one-line and specific, then run `/dream` to consolidate the store.
+- **Automatic background consolidation does not run:** Confirm `dream_auto_enable` is `true` and check `dream_interval_hours` (and optional `internal_operations_provider` / `internal_operations_model`) in [Configuration & Settings](configuration.html).
+- **Memory feels too noisy or repetitive:** Check `myk-pi-tools memory status`, keep entries one-line and specific, then ask Pi to run `memory_dream(action="run")` to consolidate the store.
 - **You need deeper scoring and lifecycle details:** See [Memory Architecture](memory-architecture.html) for details.
 
 ## Related Pages

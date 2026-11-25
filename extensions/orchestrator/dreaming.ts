@@ -7,7 +7,8 @@
  * When enabled, spawns a worker agent every 3 hours (and on session quit)
  * that reads the session file, extracts memories, and writes topic files directly.
  * No CLI calls — the worker reads/writes files using read/write tools.
- * Users toggle with /dream-auto on|off.
+ * Configured via `dream_auto_enable` / `dream_interval_hours` in `/pi-config-settings`
+ * and controlled programmatically via the `memory_dream` tool.
  */
 
 import { createLogger } from "../shared/logger.js";
@@ -138,9 +139,14 @@ export function registerDreaming(
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
   let dreamTimer: ReturnType<typeof setInterval> | null = null;
-  let enabled = true;
+  let enabledOverride: boolean | null = null;
   let lastCwd = "";
   let lastCtx: any = null;
+
+  function isAutoDreamEnabled(cwd: string): boolean {
+    if (enabledOverride !== null) return enabledOverride;
+    return Boolean(getSetting(cwd, "dream_auto_enable"));
+  }
 
   let dreamInFlight = false;
   let currentDreamId = "";
@@ -287,14 +293,14 @@ export function registerDreaming(
 
     // LLM dreaming
     dreamTimer = setInterval(() => {
-      if (enabled && lastCwd) runDreamAsync(lastCwd);
+      if (lastCwd && isAutoDreamEnabled(lastCwd)) runDreamAsync(lastCwd);
     }, effectiveMs);
     if (dreamTimer.unref) dreamTimer.unref();
 
     // Scoring rebuild — every 30 min (cheap, no LLM, just rescores + reorganizes topics)
     if (!rebuildTimer) {
       rebuildTimer = setInterval(() => {
-        if (enabled && lastCwd) {
+        if (lastCwd && isAutoDreamEnabled(lastCwd)) {
           try {
             rebuildAndOrganize(lastCwd);
           } catch (err) {
@@ -319,57 +325,24 @@ export function registerDreaming(
 
   function setAutoDream(on: boolean, cwd: string, ctx?: any): string {
     if (on) {
-      enabled = true;
+      enabledOverride = true;
       lastCwd = cwd;
       if (ctx) lastCtx = ctx;
       startTimer(cwd);
       const hrs = getEffectiveIntervalHours(cwd);
       return `Auto-dreaming enabled (every ${hrs}h + session end)`;
     }
-    enabled = false;
+    enabledOverride = false;
     stopTimer();
     return "Auto-dreaming disabled";
   }
-
-  // /dream-auto command — toggle auto-dreaming
-  pi.registerCommand("dream-auto", {
-    description: "Toggle automatic memory dreaming (every 3h + session end)",
-    handler: async (args, ctx) => {
-      const arg = (args || "").trim().toLowerCase();
-
-      if (arg === "on") {
-        const msg = setAutoDream(true, ctx.cwd, ctx);
-        ctx.ui.notify(`🌙 ${msg}`, "info");
-      } else if (arg === "off") {
-        const msg = setAutoDream(false, ctx.cwd, ctx);
-        ctx.ui.notify(msg, "info");
-      } else {
-        const status = enabled ? "enabled" : "disabled";
-        ctx.ui.notify(`Auto-dreaming is ${status}. Use: /dream-auto on|off`, "info");
-      }
-    },
-  });
-
-  // /dream command — manual trigger for memory consolidation
-  pi.registerCommand("dream", {
-    description: "Run memory consolidation now (background, non-blocking)",
-    handler: async (_args, ctx) => {
-      if (dreamInFlight) {
-        ctx.ui.notify("Dream already running — wait for it to finish", "warning");
-        return;
-      }
-      lastCwd = ctx.cwd;
-      lastCtx = ctx;
-      runDreamAsync(ctx.cwd);
-    },
-  });
 
   if (typeof pi.registerTool === "function") {
     pi.registerTool({
       name: "memory_dream",
       label: "Memory Dream",
       description:
-        "Inspect background memory dreaming status, trigger consolidation now, or toggle automatic dreaming (equivalent to /dream and /dream-auto).",
+        "Inspect background memory dreaming status, trigger consolidation now, or toggle automatic dreaming for this session.",
       parameters: Type.Object({
         action: Type.Union(
           [Type.Literal("status"), Type.Literal("run"), Type.Literal("auto_on"), Type.Literal("auto_off")],
@@ -382,15 +355,16 @@ export function registerDreaming(
       async execute(_callId, params, _signal, _onUpdate, ctx) {
         const cwd = ctx?.cwd || lastCwd || process.cwd();
         if (params.action === "status") {
+          const autoEnabled = isAutoDreamEnabled(cwd);
           const intervalHours = getEffectiveIntervalHours(cwd);
           const text = [
-            `Auto-dreaming: ${enabled ? "enabled" : "disabled"} (interval: ${intervalHours}h + session end)`,
+            `Auto-dreaming: ${autoEnabled ? "enabled" : "disabled"} (interval: ${intervalHours}h + session end)`,
             `Dream in flight: ${dreamInFlight ? `yes (${currentDreamId || "starting"})` : "no"}`,
           ].join("\n");
-          log.debug("memory_dream_tool_status", { enabled, inFlight: dreamInFlight, intervalHours });
+          log.debug("memory_dream_tool_status", { enabled: autoEnabled, inFlight: dreamInFlight, intervalHours });
           return {
             content: [{ type: "text" as const, text }],
-            details: { action: "status", enabled, inFlight: dreamInFlight, currentDreamId: currentDreamId || null, intervalHours },
+            details: { action: "status", enabled: autoEnabled, inFlight: dreamInFlight, currentDreamId: currentDreamId || null, intervalHours },
           };
         }
         if (params.action === "run") {
@@ -441,20 +415,42 @@ export function registerDreaming(
     });
   }
 
+  function syncAutoDreamTimer(cwd: string) {
+    if (!cwd || lastCtx?.mode === "print" || lastCtx?.mode === "json") return;
+    lastCwd = cwd;
+    if (isAutoDreamEnabled(cwd)) startTimer(cwd);
+    else stopTimer();
+  }
+
+  pi.events?.on?.("orchestrator:settings-changed", (data: unknown) => {
+    const payload = data as { key?: string; cwd?: string } | undefined;
+    if (payload?.key !== "dream_auto_enable" && payload?.key !== "dream_interval_hours") return;
+    if (payload.key === "dream_auto_enable") enabledOverride = null;
+    const targetCwd = payload.cwd || lastCwd;
+    if (targetCwd) {
+      log.debug("dream_settings_changed", { key: payload.key, enabled: isAutoDreamEnabled(targetCwd) });
+      syncAutoDreamTimer(targetCwd);
+    }
+  });
+
   // Set initial dream status on first agent start (fires on /reload too, unlike session_start)
+  // and keep timers synchronized with project/global settings if edited mid-session.
   let initialized = false;
   pi.on("before_agent_start", (_event, ctx) => {
+    lastCtx = ctx;
+    if (ctx.cwd) lastCwd = ctx.cwd;
     if (!initialized) {
       initialized = true;
-      lastCtx = ctx;
       updateDreamStatus();
     }
+    syncAutoDreamTimer(ctx.cwd);
   });
 
   // Update cwd on session start
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
     lastCtx = ctx;
+    enabledOverride = null;
     dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
     // Skip auto-dream timer in print/json; shutdown dream is skipped in
     // session_shutdown via shouldSkipOneshotShutdownDream.
@@ -463,7 +459,7 @@ export function registerDreaming(
       return;
     }
     updateDreamStatus();
-    if (enabled) startTimer(ctx.cwd);
+    syncAutoDreamTimer(ctx.cwd);
   });
 
   // Shutdown dream: runDreamAsync → spawnAsyncAgent (not detached/unref'd).
@@ -474,7 +470,7 @@ export function registerDreaming(
       log.info("skip shutdown dream: oneshot print/json");
       return;
     }
-    if (!enabled || !lastCwd || dreamInFlight) return;
+    if (!lastCwd || !isAutoDreamEnabled(lastCwd) || dreamInFlight) return;
 
     // Only dream on quit — skip for fork/new/resume/reload since the
     // session continues or transitions, not ending meaningfully.

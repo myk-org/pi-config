@@ -14,13 +14,13 @@ Start a background agent with a plain-English request:
 
 > Run the `security-auditor` on the `src/` directory in the background. Let me know when it's done.
 
-Schedule a recurring task with `/cron`:
+Manage recurring tasks with the zero-arg `/cron` TUI overlay (or ask Pi to schedule one via `cron_manage`):
 
 ```bash
-/cron Run the test-automator every 30 minutes
+/cron
 ```
 
-Use these when you want non-blocking work right away: one-off jobs through natural language, recurring jobs through `/cron`.
+Use these when you want non-blocking work right away: one-off jobs through natural language, recurring jobs through `/cron` or `cron_manage`.
 
 ## Step-by-Step
 
@@ -37,7 +37,7 @@ Pi can keep your main session free while the background job runs and report back
 Open the async overlay:
 
 ```bash
-/async-status
+/async
 ```
 
 This shows queued and running jobs, elapsed time, and live output. Press `Enter` to inspect a job, press `x` to kill the focused job, press `Space` to multi-select rows and `x` again to kill the whole selection, or press `X` to immediately kill every running and queued job (no confirmation prompt).
@@ -46,72 +46,49 @@ Sync subagents run in the foreground of your turn, but they are real child proce
 
 3. Stop async work when needed.
 
-Use the same `/async-status` overlay:
+Use the same `/async` overlay:
 
 - `Space` toggles rows into a selection (`Enter` inspects a row without losing ticks, `Esc` clears the selection first), and `x` kills every active job in the selection (reporting inline if none are active).
 - `X` immediately kills every running and queued job. There is no confirmation prompt.
 
 > **Tip:** If you only need to stop one job, `x` on the focused row is safer because it shows the exact running entries before you kill them.
 
-4. Create a recurring schedule.
+4. Create, edit, pause, persist, or remove scheduled tasks.
 
-Use `/cron` with natural language. A scheduling message is required. Bare `/cron`, whitespace-only input, `--persist` alone, and `add` without a request are rejected locally without calling the LLM or changing schedules:
-
-
-```bash
-/cron Every day at 9:00 AM, run the git-expert to generate a daily summary.
-```
-
-Pi turns that into a recurring task for the current session.
-
-5. Review or remove scheduled tasks.
-
-List tasks in the current session:
+Open the zero-arg cron TUI:
 
 ```bash
-/cron list
+/cron
 ```
 
-List tasks across active Pi sessions:
+Inside `/cron`:
 
-```bash
-/cron list-all
-```
+- `n` adds a new cron task (prompt/command, schedule such as `5m` or `09:30`, optional description, persist choice, optional model override).
+- `e` edits the focused cron in place.
+- `p` pauses or resumes the focused cron (or all `Space`-selected crons).
+- `t` toggles persist/session scope for the focused cron (or all `Space`-selected crons), safely moving tasks between session storage and `.pi/cron/crons.json`.
+- `x` deletes the focused cron (or all `Space`-selected crons).
+- `f` cycles the scope filter (`all` → `session` → `persist`).
+- `Enter` opens the detail view.
 
-Remove a task by ID:
-
-```bash
-/cron remove 1
-```
-
-`/cron rm <id>` and `/cron delete <id>` are accepted aliases. In the cron overlays, you can also press `x` to remove the selected task.
-
-6. Make a schedule survive a Pi restart.
-
-Prefix any `/cron` request with `--persist`:
-
-```bash
-/cron --persist Every day at 9:00 AM, run the git-expert to generate a daily summary.
-```
-
-Persisted tasks are written to `.pi/cron/crons.json` in the project and reloaded by later sessions.
+You can also ask Pi in plain English to create, edit, pause, resume, or remove schedules using the `cron_manage` tool.
 
 ## Advanced Usage
 
 ### Pick the Right Monitoring Command
 
 | Goal | Command | What you get |
-|---|---|---|
-| Watch async jobs | `/async-status` | Fullscreen list, live output, kill with `x` |
-| Watch foreground subagents | `/async-status` | Sync rows carry a `sync` marker, current tool and elapsed time; `x` aborts them |
-| Kill the focused job | `/async-status` → `x` | Kills the highlighted job |
-| Kill several jobs | `/async-status` → `Space`, `Space`, `x` | Kills every multi-selected job |
-| Kill every running job | `/async-status` → `a` | Confirmation prompt, then kills all running and queued jobs |
-| See local schedules | `/cron list` | Fullscreen list of this session's recurring tasks |
-| See only persisted schedules | `/cron --persist list` | Filters the overlay down to project-scoped crons |
-| See all session schedules | `/cron list-all` | Cross-session view of active cron files |
-| Remove a known cron | `/cron remove <id>` | Direct removal by task ID |
-| Disable a cron without deleting it | `/cron list` → `p` | Toggles `⏸ paused`; the definition is kept and a persisted flag survives restarts. Resuming schedules a fresh interval (missed runs are not caught up), and a paused cron is not counted as a peer's active work |
+| --- | --- | --- |
+| Watch async jobs | `/async` | Fullscreen list, live output, kill with `x` |
+| Watch foreground subagents | `/async` | Sync rows carry a `sync` marker, current tool and elapsed time; `x` aborts them |
+| Kill the focused job | `/async` → `x` | Kills the highlighted job |
+| Kill several jobs | `/async` → `Space`, `Space`, `x` | Kills every multi-selected job |
+| Kill every running job | `/async` → `X` | Immediately kills all running and queued jobs |
+| Open cron overlay | `/cron` | Fullscreen list of session and persisted schedules |
+| Filter cron scope | `/cron` → `f` | Cycles between `all`, `session`, and `persist` |
+| Add or edit a cron | `/cron` → `n` / `e` | Interactive dialog to create or update a cron |
+| Toggle persist/session | `/cron` → `t` | Moves focused or `Space`-selected crons between session and `.pi/cron/crons.json` |
+| Disable a cron without deleting it | `/cron` → `p` | Toggles `⏸ paused` (single or `Space`-selected); resuming starts a fresh interval |
 
 ### Pick the Model for Background Work
 
@@ -120,11 +97,9 @@ Detached agents are resolved through the same chain as any other subagent
 so a plain `agent_model` setting is all you need to pin background work to a specific model.
 It is a `string` setting, default `""`, meaning "inherit the parent session's model".
 
-To pin one schedule without moving the whole session, name the model in the request:
+To pin one schedule without moving the whole session, enter a model override in `/cron` (`n` or `e`), or ask Pi via `cron_manage`:
 
-```bash
-/cron --persist Every hour, check upstream releases using openrouter/anthropic/claude-opus-5.
-```
+> Every hour, check upstream releases using `openrouter/anthropic/claude-opus-5` and persist it.
 
 `cron_manage` stores that on the task and passes it as the subagent `explicit` override for
 that run only. A bare `model-id` keeps the normal provider resolution chain. An unpinned cron
@@ -158,17 +133,17 @@ Cron tasks have two scopes, chosen by the `--persist` flag:
 
 Session-scoped tasks survive `/reload` inside the running process but are deleted on a real exit. Project-scoped tasks are reloaded by later sessions, and a leader lease in the same directory guarantees only one session executes a given task — other sessions show it as `project (waiting for leader)`.
 
-> **Note:** If you need to confirm what is still scheduled, run `/cron list` or `/cron list-all` after reconnecting instead of assuming an older schedule is still active.
+> **Note:** If you need to confirm what is still scheduled, run `/cron` after reconnecting instead of assuming an older schedule is still active.
 
-> **Tip:** `/cron` with free text does not schedule anything by itself. It re-enters the conversation with a request to call the `cron_manage` tool (`add`, `list`, `edit`, `pause`, `resume`, `remove`), and `persist` is set to `true` only when you passed `--persist`. Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour` (or alone when editing an existing daily schedule). `model` accepts `provider/model-id` or a bare `model-id`; leaving it out uses the worker's normal model resolution, and passing `model: ""` on `edit` clears a pinned model back to inherited. Use `edit` to update a cron in place (preserving its ID, run history, and paused state) and `pause`/`resume` to toggle execution without deleting it.
+> **Tip:** The LLM manages crons via `cron_manage` (`add`, `list`, `edit`, `pause`, `resume`, `remove`). Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour` (or alone when editing an existing daily schedule). `model` accepts `provider/model-id` or a bare `model-id`; leaving it out uses the worker's normal model resolution, and passing `model: ""` on `edit` clears a pinned model back to inherited. Use `edit` to update a cron in place (preserving its ID, run history, and paused state) and `pause`/`resume` to toggle execution without deleting it.
 
 ## Troubleshooting
 
 - **Async job does not start:** Confirm you asked for it in the background (`async: true`) and that you ended your turn — Pi delivers results automatically and does not expect a polling loop. Agents declared async-only force `async: true` and refuse sync chain mode.
 - **You want the result to update a task automatically:** Pass a numeric `taskId` from the task tools. It is optional; when set, the finished job marks that task `completed` for you.
-- **You want live output but nothing appears:** Use `/async-status` from a TUI session. The fullscreen overlay is the supported live-view interface. A sync row has no output pane — everything it printed is already in your transcript.
-- **The footer counts an agent you cannot find in `/async-status`:** A sync agent registers for exactly as long as its child process lives. A count that does not fall back to `0` means a child is still alive — open `/async-status`, find the `sync` row and press `x` to abort it.
-- **A cron task seems stuck or outdated:** Run `/cron list` or `/cron list-all` to inspect or pause/remove it, or ask Pi to update it in place with `cron_manage` (`edit`, `pause`, `resume`).
+- **You want live output but nothing appears:** Use `/async` from a TUI session. The fullscreen overlay is the supported live-view interface. A sync row has no output pane — everything it printed is already in your transcript.
+- **The footer counts an agent you cannot find in `/async`:** A sync agent registers for exactly as long as its child process lives. A count that does not fall back to `0` means a child is still alive — open `/async`, find the `sync` row and press `x` to abort it.
+- **A cron task seems stuck or outdated:** Open `/cron` to inspect, edit, pause, or delete it, or ask Pi to update it in place with `cron_manage` (`edit`, `pause`, `resume`).
 - **You want browser-based monitoring instead of terminal overlays:** See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
 
 ## Related Pages

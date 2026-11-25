@@ -1,7 +1,7 @@
 /**
  * tasks-ui.ts — /tasks fullscreen list → detail overlay.
  *
- * Same shared component as /cron list and /async-status (openListDetailOverlay +
+ * Same shared component as /cron and /async (openListDetailOverlay +
  * OverlayScrollDetail), so j/k, Enter, x and Esc mean the same thing everywhere.
  */
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -14,6 +14,7 @@ import {
 	openListDetailOverlay,
 	OverlayScrollDetail,
 	type OverlayNotice,
+	type OverlayNotify,
 } from "../orchestrator/overlay-dashboard.js";
 import type { Task } from "./types.js";
 import {
@@ -79,8 +80,8 @@ async function promptLine(
 	});
 }
 
-const TASKS_LIST_HINTS = "Space select · x delete · n add · e edit · d done · f mine/all · Enter view · Esc close";
-const TASKS_SELECTED_HINTS = "Space toggle · d done · x delete · Enter view · Esc clear";
+const TASKS_LIST_HINTS = "Space select · x delete · n add · e edit · s start · d done · f mine/all · Enter view · Esc close";
+const TASKS_SELECTED_HINTS = "Space toggle · s start · d done · x delete · Enter view · Esc clear";
 
 /** Complete a multi-selected batch of tasks (shared by immediate LLM-only and post-note user flows). */
 function applyBulkTaskCompletion(
@@ -145,6 +146,31 @@ function applyBulkTaskCompletion(
 		notice: { message, level: names.length === 0 && !noticeFailed ? "info" : "warning" },
 		clearSelection: true,
 	};
+}
+
+function bulkStartTasks(deps: TasksUiDeps, selected: readonly Task[], notify: OverlayNotify): void {
+	if (!deps.startTask) return;
+	const targets = selected.filter((t) => t.status !== "in_progress");
+	if (targets.length === 0) {
+		log.debug("tasks_overlay_bulk_start_unchanged", { selected: selected.length });
+		notify("Selected tasks are already in progress.", "info");
+		return;
+	}
+	const failed: string[] = [];
+	for (const t of targets) {
+		try {
+			const outcome = deps.startTask(t.id);
+			if (outcome !== "applied" && outcome !== "unchanged") failed.push(`#${t.id}`);
+		} catch (err) {
+			log.error("tasks_overlay_bulk_start_threw", { taskId: t.id, error: err instanceof Error ? err.message : String(err) });
+			failed.push(`#${t.id}`);
+		}
+	}
+	log.info("tasks_overlay_bulk_start", { selected: selected.length, targets: targets.length, failed: failed.length });
+	notify(
+		bulkResultMessage("started", "task", targets.length, failed),
+		failed.length === 0 ? "info" : "warning",
+	);
 }
 
 /** Open the task list overlay; loops list → detail until the list is closed. `mine` starts the
@@ -227,6 +253,21 @@ export async function openTasksOverlay(
 						}
 						const intent = tasksOverlayIntent(key);
 						if (!intent) return false;
+						if (intent === "start") {
+							if (!deps.startTask) return false;
+							if (selected.length > 0) {
+								bulkStartTasks(deps, selected, notify);
+								return "redraw";
+							}
+							if (!task) return false;
+							const outcome = deps.startTask(task.id);
+							log.info("tasks_overlay_start", { taskId: task.id, outcome });
+							if (outcome === "blocked") notify(`Task #${task.id} has open blockers.`, "warning");
+							else if (outcome === "refused") notify(`Task #${task.id} is completed and cannot be restarted.`, "warning");
+							else if (outcome === "unchanged") notify(`Task #${task.id} is already in progress.`, "info");
+							else if (outcome === "missing") notify(`No task #${task.id}.`, "warning");
+							return "redraw";
+						}
 						if (selected.length > 0) {
 							if (intent === "done") {
 								const open = selected.filter((t) => t.status !== "completed");

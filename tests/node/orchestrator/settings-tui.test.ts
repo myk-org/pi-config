@@ -34,6 +34,7 @@ import {
   loadSettingsSourceSnapshot,
   readSettingsFile,
   writeSettingsFile,
+  updateSetting,
   beginSettingsEditSession,
   endSettingsEditSession,
   getFilePathForScope,
@@ -1579,5 +1580,72 @@ describe("settings-tui snapshot & lazy metadata (#1267)", () => {
 
     buildSettingItems(tmpDir, "project", stubTheme, fakeRegistry);
     assert.equal(getAvailableCalls, 1);
+  });
+
+  it("declares dream_auto_enable under Memory group with default true (#1392)", () => {
+    const def = SETTINGS_KEYS.dream_auto_enable;
+    assert.ok(def);
+    assert.equal(def.type, "bool");
+    assert.equal(def.default, true);
+    assert.equal(def.env, "PI_DREAM_AUTO_ENABLE");
+    assert.equal(def.group, "Memory");
+    const memCat = CATEGORIES.find((c) => c.label === "Memory");
+    assert.ok(memCat?.keys.includes("dream_auto_enable"));
+  });
+
+  it("reports changed=false when deleting an unset setting from scope", () => {
+    const cwd = makeTempDir("settings-delete-noop-");
+    const res = updateSetting(cwd, "project", "dream_auto_enable", undefined);
+    assert.equal(res.ok, true);
+    assert.equal(res.ok ? res.changed : undefined, false);
+  });
+
+  it("reports changed=true when deleting an existing setting from scope", () => {
+    const cwd = makeTempDir("settings-delete-hit-");
+    updateSetting(cwd, "project", "dream_auto_enable", false);
+    const res = updateSetting(cwd, "project", "dream_auto_enable", undefined);
+    assert.equal(res.ok, true);
+    assert.equal(res.ok ? res.changed : undefined, true);
+  });
+
+  it("skips orchestrator:settings-changed emit when deleting an unset setting in the overlay", async () => {
+    const cwd = makeTempDir("settings-overlay-del-noop-");
+    const emitted: unknown[] = [];
+    const commands = new Map<string, any>();
+    const fakePi: any = {
+      registerCommand: (name: string, opts: any) => commands.set(name, opts),
+      events: { emit: (ch: string, data: unknown) => { if (ch === "orchestrator:settings-changed") emitted.push(data); } },
+    };
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    delete process.env.PI_SUBAGENT_CHILD;
+    try {
+      const { initTheme } = await import("@earendil-works/pi-coding-agent");
+      initTheme();
+      const { registerSettingsTui } = await import("../../../extensions/orchestrator/settings-tui.js");
+      registerSettingsTui(fakePi);
+      const handler = commands.get("pi-config-settings")?.handler;
+      assert.ok(handler);
+      const notifications: string[] = [];
+      await handler("", {
+        hasUI: true,
+        mode: "tui",
+        cwd,
+        ui: {
+          notify: (msg: string) => notifications.push(msg),
+          custom: async (factory: any) =>
+            await new Promise((resolve) => {
+              const fakeTui = { terminal: { rows: 30 }, requestRender: () => {} };
+              const comp = factory(fakeTui, stubTheme, {}, (v: any) => resolve(v));
+              comp.handleInput("\x1b[3~"); // Delete on first unset setting
+              resolve(undefined);
+            }),
+        },
+      });
+      assert.equal(emitted.length, 0, "deleting an unset setting must not emit settings-changed");
+      assert.ok(notifications.some((m) => m.includes("is not set in project scope")));
+    } finally {
+      if (prevChild === undefined) delete process.env.PI_SUBAGENT_CHILD;
+      else process.env.PI_SUBAGENT_CHILD = prevChild;
+    }
   });
 });

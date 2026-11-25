@@ -8,7 +8,7 @@ Commands and tools are different things: a **command** is something you type (`/
 
 | Kind | Count | Where they come from |
 |---|---|---|
-| Slash commands | 17 | `registerCommand(...)` across `extensions/` |
+| Slash commands | 14 | `registerCommand(...)` across `extensions/` |
 | Always-registered tools | 45 | `registerTool(...)` across `extensions/` |
 | Code-map tools | 7 | `trail.ts`, on by default when the `trail` binary exists (`trail_enable`) |
 
@@ -16,88 +16,56 @@ Counts verified against source. Two names are registered in more than one place 
 
 ## Slash commands
 
-### /async-status
+### /adopt-skill
+
+Full-screen overlay listing all adoptable skills (showing `maintained` vs `unmarked` status) so you can mark one or more non-package skills as maintained (`skill-maintenance: auto`).
+
+- **Arguments:** none
+- **Keys in the overlay:** `↑↓`/`jk` navigate, `Space` multi-select, `a`/`Enter` adopt focused or selected skills, `Esc` close
+- **No terminal / browser:** prints the plain-text list of adoptable skills and their status
+
+```text
+/adopt-skill
+```
+
+### /async
 
 Full-screen overlay listing running and queued async agents, with live output per agent.
 
 - **Arguments:** none
 - **Keys in the overlay:** `↑↓`/`jk` navigate, `Enter` view output (preserves multi-selection on `Esc` back), `Space` multi-select, `x` kill (focused row, or the whole selection — reports inline if no selected jobs are active), `X` kill all running/queued, `Esc` clears active selection first, then closes
 
-```
-/async-status
+```text
+/async
 ```
 
 ### /coms
 
-Start, stop, or inspect P2P inter-agent communication. Coms is off by default and is activated explicitly with `/coms start`; all `coms_*` tools return "coms not active" until then.
+Full-screen P2P peers overlay with scope switching and local inbound queue management. Activate coms programmatically via `coms_start` or at launch via `pi --coms`.
 
-- **Arguments:** `start | stop | status | tell [--project <p>] <peer> <message> | list [--all] | kill <peer|all>` (no argument shows the status)
+- **Arguments:** none
+- **Keys in the overlay:** `↑↓`/`jk` navigate, `Space` multi-select, `f` toggle scope (`this project` / `all projects`), `q` open local inbound queue (`Space` multi-select `x` kill), `m` message focused or selected peers as the user (`origin: "user"`), `x` kill focused or selected supervised peers, `X` kill all supervised peers in scope, `Enter` drilldown into peer workload, `Esc` close
+- **No terminal / browser:** prints the plain-text peer table for this project
 
+```text
+/coms
 ```
-/coms start
-/coms status
-/coms tell impl-42 rerun the failing suite — I already approved it
-/coms stop
-```
-
-`/coms tell` sends the message as YOU: the envelope carries `origin: "user"`, so the peer can tell a human decided from another model guessing. Agent tools cannot set that (`coms_send` always sends `origin: "peer"`), and a failed delivery is reported rather than dropped. Argument completion lives with the command in `extensions/coms/coms-wrapper.ts` (peer names come from the live registry, so a dead peer never completes) — `tell` completes exactly like `kill`, including `--project`.
 
 See [Inter-Agent Communication](inter-agent-communication.html) for the peer protocol and message semantics.
 
-### /coms-queue
-
-Overlay of your queued inbound messages on a peer. Selecting a message shows the full prompt.
-
-- **Arguments:** none
-- **Keys in the overlay:** `↑↓`/`jk` select, `Enter` view, `x` kill, `Esc` close
-- **Requires active coms** — otherwise it notifies `📡 coms not active — no queue. Run /coms start first.`
-
-```
-/coms-queue
-```
-
 ### /cron
 
-Schedule, list, and remove cron tasks. Non-empty scheduling requests are forwarded to the model as a `cron_manage` request, so you describe the schedule in natural language.
-`add <request>` is also forwarded, not scheduled directly. Bare `/cron`, whitespace-only input, `--persist` alone, and `add` without a request show
-`/cron requires a message for the LLM to work on.` without calling the model or changing schedules.
+Full-screen overlay for session and persistent project cron tasks.
 
-- **Arguments:** `list | list-all | remove <id>` (also `rm` / `delete`), plus the `--persist` flag
-- **Flags:** `--persist` scope the task to the project (`.pi/cron/crons.json`) instead of the session. `--scope` and `--project` are rejected with an error pointing at `--persist`.
-- **Listing:** `list` opens a cron status overlay; `list-all` shows every scope instead of just project-scoped tasks. In the overlay `Space` multi-selects rows,
-  `p` pauses/resumes the focused cron (or selected group), and `x` removes the focused or selected crons
+- **Arguments:** none
+- **Keys in the overlay:** `↑↓`/`jk` navigate, `Space` multi-select, `n` add cron, `e` edit focused cron, `p` pause/resume (single or multi-select), `t` toggle persist/session (single or multi-select — moves crons safely between session storage and `.pi/cron/crons.json`), `x` delete (single or multi-select), `f` toggle scope filter (`all` / `session` / `persist`), `Enter` detail, `Esc` close
+- **No terminal / browser:** prints the plain-text list of scheduled tasks
 
-```
-/cron list
-/cron list-all
-/cron --persist every weekday at 09:00, summarize yesterday's PR comments
-/cron remove 3f2a1c
+```text
+/cron
 ```
 
 More detail: [Async Agents and Cron](async-agents-and-cron.html).
-
-### /dream
-
-Run memory consolidation (dreaming) now, in the background, non-blocking. If a dream is already running you get a warning instead of a second run.
-
-- **Arguments:** none
-
-```
-/dream
-```
-
-More detail: [Background Memory Consolidation (Dreaming)](background-dreaming.html).
-
-### /dream-auto
-
-Toggle automatic memory dreaming, which otherwise runs every 3 hours and at session end.
-
-- **Arguments:** `on | off` (no argument reports the current state)
-
-```
-/dream-auto on
-/dream-auto off
-```
 
 
 ### /nvim-changed-files
@@ -117,12 +85,11 @@ More detail: [Neovim Integration](neovim-integration.html).
 
 Full-screen interactive settings editor: category tabs, per-key editing, project/global scope, and delete.
 
-- **Arguments:** `[project | global]` — optional, selects the initial scope; `Tab` also toggles scope inside the TUI
+- **Arguments:** none — `Tab` toggles Project/Global scope inside the TUI
 - **Keys in the TUI:** `←→` category, `Tab` scope, `↑↓` navigate, `Enter` edit, `Del` remove, `Esc` close
 
-```
+```text
 /pi-config-settings
-/pi-config-settings global
 ```
 
 More detail: [Configuration & Settings](configuration.html).
@@ -194,12 +161,12 @@ Unified session status in one notification: async agents, cron tasks, git branch
 
 ### /tasks
 
-Task manager for the current session's task list.
+Zero-arg fullscreen task manager overlay for the current session's task list.
 
-- **Arguments:** optional subcommand — none (list), `mine` (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
-- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` navigate, `Space` multi-selects (preserved across `Enter` → detail → `Esc`), `Enter` opens a task,
-  `n` adds a task from one line, `e` edits the focused task's subject, `d` marks the focused task (or all selected open tasks) done, `f` toggles `mine`/`all`,
-  `x` deletes the focused task (or the `Space`-selected tasks), `Esc` clears an active selection first and closes on the next press. Bulk outcomes and warnings display in an inline banner inside the overlay
+- **Arguments:** none
+- **List view:** the same fullscreen list → detail overlay as `/cron` and `/async`: `↑↓`/`j`/`k` navigate, `Space` multi-selects (preserved across `Enter` → detail → `Esc`), `Enter` opens a task,
+  `n` adds a task from one line, `e` edits the focused task's subject, `s` starts the focused or selected tasks (`in_progress`), `d` marks the focused task (or all selected open tasks) done,
+  `f` toggles `mine`/`all`, `x` deletes the focused task (or the `Space`-selected tasks), `Esc` clears an active selection first and closes on the next press. Bulk outcomes and warnings display in an inline banner inside the overlay
 - **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store (`n` and `e` refuse while rows are selected). An empty board opens
   the create dialog directly, since there is no row to press `n` on. `n` asks who the task is for (`you` or `llm`) once the line is accepted. The edit dialog starts
   pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
@@ -209,38 +176,39 @@ Task manager for the current session's task list.
   the selection, and a non-empty note is saved as `completionNote` on the completed `you` tasks and included in one combined `task-completed-by-user` notice. On a
   single focused task assigned to `you` it opens the same optional note dialog first, recording `completionNote` and `completedBy`, and sends
   `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns the result on its next turn
+- **`s`:** moves a focused pending task or all `Space`-selected pending tasks to `in_progress`, refusing open blockers or completed work
 - **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] [you|llm] <subject>`; a task with currently open blockers is marked `⛔ blocked`.
   Tasks assigned to `you` sort above `[llm]` tasks within their status group
 - **Assignee:** a task is `llm` (the agent does it, the default for every existing task) or `user` (only the owner can — a merge, a live check in a real UI, an approval).
-  User tasks never produce a reminder and are not counted as an agent's open work; `/tasks mine` (and `f` in the overlay) shows only them
+  User tasks never produce a reminder and are not counted as an agent's open work; `f` in the overlay filters to them
 - **Detail / TaskGet:** detail shows subject, status, completed-by, outcome note, owner, blocked-by (currently open blockers), description, created and updated;
   completion attribution and the verbatim note are also readable via `TaskGet`. Reopening clears the old outcome in single and bulk updates. Manual completion always
   records the actor as `user`, regardless of assignee; legacy completed records read as completed by `llm`. Only user-assigned manual completions send a notice, queued as
   a follow-up after the agent finishes its run. Failed notice submission is logged without note text and is not retried automatically
-- **`create`:** prompts for subject and description (bridged, so pidash can answer it too). Headless sessions receive guidance to use `TaskCreate` or an interactive UI.
-- **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op, and `start` refuses open
-  blockers or reopening completed work. `done` records manual attribution and sends the same owner-task notice as the overlay, without a note. To attach a note, use `d`
-  on a user task in the terminal overlay
 - **Enforcement:** `TaskUpdate`, `TaskBulkUpdate` and automatic job lifecycle transitions cannot start or complete user-assigned tasks. Combining reassignment with status
   cannot bypass this guard. Reassignment alone, editing and deletion remain supported
 - **Empty mine view:** `f` still returns to all tasks and `n` still creates a task. Cancelling either the subject or assignee prompt writes nothing
-- **Existing `clear completed` / `clear all` subcommands:** delete matching tasks and report the count. Status-based bulk clearing is a subcommand, not an overlay key;
-  the overlay deletes the focused task or `Space`-selected tasks with `x`.
-- **Pidash task-panel complete:** uses the same manual completion operation as `/tasks done`, records `completedBy: user`, and submits one follow-up notice only for a
+- **Pidash task-panel complete:** uses the same manual completion operation, records `completedBy: user`, and submits one follow-up notice only for a
   user-assigned task. Repeated completion is a no-op, including after a failed notice submission. The panel does not offer a completion note; use the terminal overlay to
   attach one.
-- **No terminal, or a command sent from the pidash browser:** the same rows are printed as plain text (followed by the subcommand hint) instead of opening the overlay —
+- **No terminal, or a command sent from the pidash browser:** the same rows are printed as plain text instead of opening the overlay —
   a browser user cannot see or drive a terminal overlay, so text is the honest answer
 - **Note:** when the task scope is `session` and the list becomes empty, the backing file is deleted.
 
-```
+```text
 /tasks
-/tasks mine
-/tasks create
-/tasks start 3
-/tasks done 3
-/tasks clear completed
-/tasks clear all
+```
+
+### /worktree
+
+Zero-arg fullscreen git worktrees overlay.
+
+- **Arguments:** none
+- **Keys in the overlay:** `↑↓`/`jk` navigate, `Space` multi-select, `d`/`x` guarded remove (single or multi-select with confirmation), `p` prune stale metadata, `r` refresh, `Enter` detail (`c` copy path, `d` remove, `p` prune, `r` refresh), `Esc` close
+- **No terminal / browser:** prints the plain-text markdown table of worktrees
+
+```text
+/worktree
 ```
 
 More detail: [Daemon and WebSockets](daemon-and-websockets.html) for how task state is persisted and shared.
@@ -249,7 +217,7 @@ More detail: [Daemon and WebSockets](daemon-and-websockets.html) for how task st
 
 ### coms_* (15 tools)
 
-All require active coms (`/coms start`); while inactive every one of them returns the same "coms not active" text. See [Inter-Agent Communication](inter-agent-communication.html) for the protocol, peer discovery, and queue semantics.
+All require active coms (`coms_start`); while inactive every one of them returns the same "coms not active" text. See [Inter-Agent Communication](inter-agent-communication.html) for the protocol, peer discovery, and queue semantics.
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
@@ -261,7 +229,7 @@ All require active coms (`/coms start`); while inactive every one of them return
 | `coms_queue_delete` | Irreversibly delete one specific queued message of yours | `target`, `msg_id`, `preview_id` |
 | `coms_queue_edit` | Replace the content of one of your pending queued messages | `target`, `msg_id`, `new_content` |
 | `coms_queue_prioritize` | Move one of your pending messages to the front of the peer's queue | `target`, `msg_id` |
-| `coms_local_queue` | Inspect or cancel messages in THIS session's own inbound coms queue (equivalent to `/coms-queue`) | `action` (`list`, `kill`), `msg_id` (required for `kill`) |
+| `coms_local_queue` | Inspect or cancel messages in THIS session's own inbound coms queue (TUI: `/coms` → `q`) | `action` (`list`, `kill`), `msg_id` (required for `kill`) |
 | `coms_tasks_create` | Create several tasks on a peer's task list, auto-add a "Report completion to sender" task blocked by all of them, and message the peer to start work | `target`, `tasks[]` (`subject`, `description`, at least one) |
 | `coms_task_list` | List a peer's tasks without sending it a message | `target` |
 | `coms_task_get` | Fetch one peer task with status, owner, description, and blocker state | `target`, `task_id` |
@@ -284,7 +252,7 @@ Project memory, backed by topic files under `.pi/memory/topics/`. See [Memory Ar
 | `memory_remove` | Delete an entry that is wrong, outdated, or superseded | `text`, `category` |
 | `memory_reinforce` | Bump evidence and last-reinforced time on an existing entry, raising its stability score; may trigger promotion | `entryText` (exact text without category prefix), `category` |
 | `memory_consolidate` | Produce a consolidation report: patterns, contradictions, merge candidates, and skills derived from recurring workflows | none |
-| `memory_dream` | Inspect background memory dreaming status, trigger consolidation now, or toggle auto-dreaming (equivalent to `/dream` and `/dream-auto`) | `action` (`status`, `run`, `auto_on`, `auto_off`) |
+| `memory_dream` | Inspect background memory dreaming status, trigger consolidation now, or toggle auto-dreaming for this session | `action` (`status`, `run`, `auto_on`, `auto_off`) |
 
 ### Task* (7 tools)
 

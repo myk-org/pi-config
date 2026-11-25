@@ -175,7 +175,7 @@ async function startP2pPeer(opts: {
 
 describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, () => {
 	// ── #1239 ────────────────────────────────────────────────────────────────
-	it("#1239: staleCheckTimer does not leak intervals across /coms stop -> /coms start cycles", async () => {
+	it("#1239: staleCheckTimer does not leak intervals across coms_stop -> coms_start cycles", async () => {
 		const { workspace } = makeWorkspace();
 		const pi = createFakePi();
 		startedPeers.push(pi);
@@ -212,19 +212,20 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		try {
 			const ctx = makeCtx(workspace, "wrapper-timer-session");
 			await pi.handlers.get("session_start")!({ reason: "startup" }, ctx);
-			const comsCmd = pi.commands.get("coms");
+			const comsStart = pi.tools.get("coms_start");
+			const comsStop = pi.tools.get("coms_stop");
 
-			await comsCmd.handler("start --cname timer-peer --project timer-proj", ctx);
+			await comsStart.execute("start-1", { cname: "timer-peer", project: "timer-proj" }, undefined, undefined, ctx);
 			assert.equal(activeStaleTimers.size, 1, "first start registers one staleCheckTimer");
 
-			await comsCmd.handler("stop", ctx);
+			await comsStop.execute("stop-1", {}, undefined, undefined, ctx);
 			assert.equal(activeStaleTimers.size, 0, "first stop clears staleCheckTimer");
 			assert.equal(active60sTimers.size, 0, "first stop clears all 60s timers");
 
-			await comsCmd.handler("start --cname timer-peer --project timer-proj", ctx);
+			await comsStart.execute("start-2", { cname: "timer-peer", project: "timer-proj" }, undefined, undefined, ctx);
 			assert.equal(activeStaleTimers.size, 1, "second start registers one staleCheckTimer");
 
-			await comsCmd.handler("stop", ctx);
+			await comsStop.execute("stop-2", {}, undefined, undefined, ctx);
 			assert.equal(activeStaleTimers.size, 0, "second stop clears staleCheckTimer");
 			assert.equal(active60sTimers.size, 0, "second stop clears all 60s timers");
 
@@ -266,8 +267,8 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		assert.match(bodies, /ping-by-name/);
 	});
 
-	it("#1239: /coms getArgumentCompletions for kill and tell lists live peers without supervision files", async () => {
-		const { workspace, comsDir } = makeWorkspace();
+	it("#1392: /coms is a zero-arg TUI command with no argument completions", async () => {
+		const { workspace } = makeWorkspace();
 		const pi = createFakePi();
 		startedPeers.push(pi);
 
@@ -277,31 +278,9 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		});
 		await pi.handlers.get("session_start")!({ reason: "startup" }, makeCtx(workspace, "comp-session"));
 
-		// Write only a live registry entry + dummy endpoint; no peers/ supervision directory.
-		const agentsDir = join(comsDir, "projects", "proj-x", "agents");
-		const socketsDir = join(comsDir, "sockets");
-		mkdirSync(agentsDir, { recursive: true });
-		mkdirSync(socketsDir, { recursive: true });
-		const sockPath = join(socketsDir, "live-peer-sess.sock");
-		writeFileSync(sockPath, "");
-		writeFileSync(join(agentsDir, "live-peer-sess.json"), JSON.stringify({
-			coms_session_id: "live-peer-sess",
-			name: "live-peer",
-			pid: process.pid,
-			endpoint: sockPath,
-			heartbeat_at: new Date().toISOString(),
-		}));
-		assert.equal(existsSync(join(comsDir, "peers")), false, "no supervision directory exists");
-
 		const comsCmd = pi.commands.get("coms");
-		const killCompletions = comsCmd.getArgumentCompletions("kill ");
-		assert.ok(killCompletions, "kill completions returned");
-		assert.ok(killCompletions.some((c: any) => c.label === "live-peer" && c.value === "kill live-peer"));
-		assert.ok(killCompletions.some((c: any) => c.label === "all"));
-
-		const tellCompletions = comsCmd.getArgumentCompletions("tell ");
-		assert.ok(tellCompletions, "tell completions returned");
-		assert.ok(tellCompletions.some((c: any) => c.label === "live-peer"));
+		assert.equal(comsCmd.getArgumentCompletions, undefined);
+		assert.equal(pi.commands.has("coms-queue"), false, "/coms-queue is folded into /coms");
 	});
 
 	// ── #1241 ────────────────────────────────────────────────────────────────
