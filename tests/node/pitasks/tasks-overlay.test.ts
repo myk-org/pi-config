@@ -15,6 +15,7 @@ import {
 	toTaskRowView,
 } from "../../../extensions/pitasks/tasks-view.ts";
 import type { Task, TaskStatus } from "../../../extensions/pitasks/types.ts";
+import { TaskStore } from "../../../extensions/pitasks/task-store.ts";
 import { openTasksOverlay } from "../../../extensions/pitasks/tasks-ui.ts";
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { fakeCommandCtx, fakeCustom, type FakeCustomFactory } from "../helpers/fake-extension-ctx.js";
@@ -854,7 +855,7 @@ describe("openTasksOverlay footer (#1089)", () => {
 		const footer = frames[0].find((line) => line.includes("Space select")) ?? "";
 		assert.equal(
 			footer.trim(),
-			"Space select · x delete · n add · e edit · s start · d done · f mine/all · Enter view · Esc close",
+			"Space select · x del · n add · e edit · s start · d done · u undo · f mine/all · Enter · Esc close",
 		);
 	});
 });
@@ -1012,5 +1013,164 @@ describe("openTasksOverlay multi-select start and done (#1392)", () => {
 		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
 		assert.equal(memory.tasks[1].status, "pending");
 		assert.match(notifications.at(-1)?.message ?? "", /open blockers/i);
+	});
+});
+
+describe("openTasksOverlay reopen key u (#1391)", () => {
+	const localCreator = { type: "local" as const, origin: "user", session: "", project: "" };
+
+	it("reopens a completed task on u clearing completion metadata", async () => {
+		const store = new TaskStore();
+		const created = store.create("owner step", "", localCreator, undefined, undefined, "user");
+		store.update(created.id, { status: "completed", completedBy: "user", completionNote: "done earlier" });
+		const before = store.get(created.id)!;
+		assert.equal(before.completedBy, "user");
+		assert.equal(before.completionNote, "done earlier");
+		assert.ok(before.statusHistory.completed_at !== null);
+
+		const { ctx, notifications, lastFrames } = makeTasksCtx([["u", "close"]]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(store));
+
+		const reopened = store.get(created.id)!;
+		assert.equal(reopened.status, "pending");
+		assert.equal(reopened.completedBy, undefined);
+		assert.equal(reopened.completionNote, undefined);
+		assert.equal(reopened.statusHistory.completed_at, null);
+		assert.ok(reopened.updatedAt >= before.updatedAt);
+		assert.deepEqual(notifications, [{ message: `Reopened #${created.id}.`, level: "info" }]);
+		assert.match(lastFrames[0], new RegExp(`ℹ Reopened #${created.id}\\.`));
+	});
+
+	it("reopens an in_progress task back to pending on u", async () => {
+		const store = new TaskStore();
+		const created = store.create("active step", "", localCreator);
+		store.update(created.id, { status: "in_progress" });
+		const deactivated: string[] = [];
+
+		const { ctx } = makeTasksCtx([["u", "close"]]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(store, (id) => deactivated.push(id)));
+
+		assert.equal(store.get(created.id)?.status, "pending");
+		assert.deepEqual(deactivated, [created.id]);
+	});
+
+	it("reports unchanged inline notice without writing when u is pressed on a pending task", async () => {
+		let writes = 0;
+		const { ctx, notifications, lastFrames } = makeTasksCtx([["u", "close"]]);
+		const tasks = [task({ id: "4", status: "pending" })];
+		await openTasksOverlay(ctx, tasksOverlayDeps({
+			list: () => tasks,
+			get: (id) => tasks.find((t) => t.id === id),
+			create: () => ({ id: "9" }),
+			update: () => { writes++; return undefined; },
+		}));
+		assert.equal(writes, 0);
+		assert.deepEqual(notifications, [{ message: "Task #4 is already pending.", level: "info" }]);
+		assert.match(lastFrames[0], /ℹ Task #4 is already pending\./);
+	});
+
+	it("bulk-reopens selected non-pending tasks in place on u", async () => {
+		const store = new TaskStore();
+		const t1 = store.create("first", "", localCreator, undefined, undefined, "user");
+		const t2 = store.create("second", "", localCreator);
+		store.update(t1.id, { status: "in_progress" });
+		store.update(t2.id, { status: "completed", completedBy: "user", completionNote: "oops" });
+
+		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "u", "close"]]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(store));
+
+		assert.equal(store.get(t1.id)?.status, "pending");
+		assert.equal(store.get(t2.id)?.status, "pending");
+		assert.equal(store.get(t2.id)?.completedBy, undefined);
+		assert.equal(store.get(t2.id)?.completionNote, undefined);
+		assert.deepEqual(notifications, [{ message: "reopened 2 tasks", level: "info" }]);
+		assert.match(lastFrames[0], /ℹ reopened 2 tasks/);
+		assert.doesNotMatch(lastFrames[0], /2 selected/, "bulk u clears selection when tasks reopened");
+	});
+
+	it("skips already-pending tasks during bulk u with inline counts", async () => {
+		const store = new TaskStore();
+		const t1 = store.create("already open", "", localCreator);
+		const t2 = store.create("finished", "", localCreator);
+		store.update(t2.id, { status: "completed", completedBy: "user" });
+
+		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "u", "close"]]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(store));
+
+		assert.equal(store.get(t1.id)?.status, "pending");
+		assert.equal(store.get(t2.id)?.status, "pending");
+		assert.deepEqual(notifications, [{ message: "reopened 1 task (1 already pending)", level: "info" }]);
+		assert.match(lastFrames[0], /ℹ reopened 1 task \(1 already pending\)/);
+	});
+
+	it("keeps selection intact when every selected task is already pending on u", async () => {
+		let writes = 0;
+		const tasks = [
+			task({ id: "1", status: "pending" }),
+			task({ id: "2", status: "pending" }),
+		];
+		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "u", "close"]]);
+		await openTasksOverlay(ctx, tasksOverlayDeps({
+			list: () => tasks,
+			get: (id) => tasks.find((t) => t.id === id),
+			create: () => ({ id: "9" }),
+			update: () => { writes++; return undefined; },
+		}));
+		assert.equal(writes, 0);
+		assert.deepEqual(notifications, [{ message: "All 2 selected tasks are already pending.", level: "info" }]);
+		assert.match(lastFrames[0], /2 selected/);
+	});
+
+	it("isolates failures during bulk u while keeping selection if none succeeded", async () => {
+		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "u", "close"]]);
+		const tasks = [
+			task({ id: "1", status: "completed" }),
+			task({ id: "2", status: "completed" }),
+		];
+		await openTasksOverlay(ctx, {
+			listTasks: () => tasks,
+			deleteTask: () => true,
+			completeTask: () => true,
+			reopenTask: (id) => {
+				if (id === "1") throw new Error("store locked");
+				return "missing";
+			},
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		});
+		assert.deepEqual(notifications, [{ message: "reopened 0 of 2 tasks — failed: #1, #2", level: "warning" }]);
+		assert.match(lastFrames[0], /2 selected/, "keeps selection when zero tasks reopened");
+	});
+
+	it("isolates a single throw during bulk u while reopening remaining tasks", async () => {
+		const reopened: string[] = [];
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "u", "close"]]);
+		const tasks = [
+			task({ id: "1", status: "completed" }),
+			task({ id: "2", status: "completed" }),
+		];
+		await openTasksOverlay(ctx, {
+			listTasks: () => tasks,
+			deleteTask: () => true,
+			completeTask: () => true,
+			reopenTask: (id) => {
+				if (id === "1") throw new Error("store locked");
+				reopened.push(id);
+				return "applied";
+			},
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		});
+		assert.deepEqual(reopened, ["2"]);
+		assert.deepEqual(notifications, [{ message: "reopened 1 of 2 tasks — failed: #1", level: "warning" }]);
+	});
+
+	it("recognizes Kitty CSI-u u sequences in tasksOverlayIntent", () => {
+		assert.equal(tasksOverlayIntent("u"), "reopen");
+		assert.equal(tasksOverlayIntent("\x1b[117u"), "reopen");
+		assert.equal(tasksOverlayIntent("\x1b[117;129u"), "reopen");
+		assert.equal(tasksOverlayIntent("\x1b[1493::117u"), "reopen");
+		assert.equal(tasksOverlayIntent("\x1b[117;1:3u"), undefined);
+		assert.equal(tasksOverlayIntent("U"), undefined);
 	});
 });

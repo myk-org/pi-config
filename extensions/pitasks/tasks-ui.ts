@@ -80,8 +80,8 @@ async function promptLine(
 	});
 }
 
-const TASKS_LIST_HINTS = "Space select · x delete · n add · e edit · s start · d done · f mine/all · Enter view · Esc close";
-const TASKS_SELECTED_HINTS = "Space toggle · s start · d done · x delete · Enter view · Esc clear";
+const TASKS_LIST_HINTS = "Space select · x del · n add · e edit · s start · d done · u undo · f mine/all · Enter · Esc close";
+const TASKS_SELECTED_HINTS = "Space toggle · s start · d done · u undo · x del · Enter · Esc clear";
 
 /** Complete a multi-selected batch of tasks (shared by immediate LLM-only and post-note user flows). */
 function applyBulkTaskCompletion(
@@ -171,6 +171,74 @@ function bulkStartTasks(deps: TasksUiDeps, selected: readonly Task[], notify: Ov
 		bulkResultMessage("started", "task", targets.length, failed),
 		failed.length === 0 ? "info" : "warning",
 	);
+}
+
+/** Reopen selected non-pending tasks back to `pending` in place; isolates per-task errors. */
+function applyBulkTaskReopen(
+	deps: TasksUiDeps,
+	selected: readonly Task[],
+): { notice: OverlayNotice; clearSelection: boolean } {
+	if (!deps.reopenTask) {
+		return { notice: { message: "Reopen is not available.", level: "warning" }, clearSelection: false };
+	}
+	const targets = selected.filter((t) => t.status !== "pending");
+	const skipped = selected.length - targets.length;
+	if (targets.length === 0) {
+		log.debug("tasks_overlay_bulk_reopen_unchanged", { selected: selected.length });
+		return {
+			notice: {
+				message:
+					selected.length === 1
+						? `Task #${selected[0].id} is already pending.`
+						: `All ${selected.length} selected tasks are already pending.`,
+				level: "info",
+			},
+			clearSelection: false,
+		};
+	}
+	const failed: string[] = [];
+	let reopened = 0;
+	let runtimeSkipped = skipped;
+	for (const t of targets) {
+		try {
+			const outcome = deps.reopenTask(t.id);
+			if (outcome === "applied") reopened++;
+			else if (outcome === "unchanged") runtimeSkipped++;
+			else failed.push(`#${t.id}`);
+		} catch (err) {
+			log.error("tasks_overlay_bulk_reopen_threw", {
+				taskId: t.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			failed.push(`#${t.id}`);
+		}
+	}
+	log.info("tasks_overlay_bulk_reopen", {
+		selected: selected.length,
+		targets: targets.length,
+		reopened,
+		skipped: runtimeSkipped,
+		failed: failed.length,
+	});
+	if (reopened === 0 && failed.length === 0) {
+		return {
+			notice: {
+				message:
+					selected.length === 1
+						? `Task #${selected[0].id} is already pending.`
+						: `All ${selected.length} selected tasks are already pending.`,
+				level: "info",
+			},
+			clearSelection: false,
+		};
+	}
+	const attempted = reopened + failed.length;
+	const base = bulkResultMessage("reopened", "task", attempted, failed);
+	const message = runtimeSkipped > 0 ? `${base} (${runtimeSkipped} already pending)` : base;
+	return {
+		notice: { message, level: failed.length === 0 ? "info" : "warning" },
+		clearSelection: reopened > 0,
+	};
 }
 
 /** Open the task list overlay; loops list → detail until the list is closed. `mine` starts the
@@ -266,6 +334,21 @@ export async function openTasksOverlay(
 							else if (outcome === "refused") notify(`Task #${task.id} is completed and cannot be restarted.`, "warning");
 							else if (outcome === "unchanged") notify(`Task #${task.id} is already in progress.`, "info");
 							else if (outcome === "missing") notify(`No task #${task.id}.`, "warning");
+							return "redraw";
+						}
+						if (intent === "reopen") {
+							if (!deps.reopenTask) return false;
+							if (selected.length > 0) {
+								const { notice, clearSelection } = applyBulkTaskReopen(deps, selected);
+								notify(notice.message, notice.level);
+								return clearSelection ? "redraw-clear" : "redraw";
+							}
+							if (!task) return false;
+							const outcome = deps.reopenTask(task.id);
+							log.info("tasks_overlay_reopen", { taskId: task.id, outcome });
+							if (outcome === "unchanged") notify(`Task #${task.id} is already pending.`, "info");
+							else if (outcome === "missing") notify(`No task #${task.id}.`, "warning");
+							else if (outcome === "applied") notify(`Reopened #${task.id}.`, "info");
 							return "redraw";
 						}
 						if (selected.length > 0) {

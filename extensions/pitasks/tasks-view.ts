@@ -129,11 +129,12 @@ export function formatTasksPlainText(
 }
 
 /** List keys beyond the shared ones (j/k, Enter, x, Esc) — issues #1087, #1090, #1391, #1392. */
-export function tasksOverlayIntent(key: string): "add" | "edit" | "done" | "start" | undefined {
+export function tasksOverlayIntent(key: string): "add" | "edit" | "done" | "start" | "reopen" | undefined {
 	if (matchesOverlayKey(key, "n")) return "add";
 	if (matchesOverlayKey(key, "e")) return "edit";
 	if (matchesOverlayKey(key, "d")) return "done";
 	if (matchesOverlayKey(key, "s")) return "start";
+	if (matchesOverlayKey(key, "u")) return "reopen";
 	return undefined;
 }
 
@@ -258,20 +259,20 @@ export function bulkTaskCompletionNotice(
 	};
 }
 
-export type TaskAction = "start" | "done";
+export type TaskAction = "start" | "done" | "reopen";
 export type TaskActionOutcome = "applied" | "missing" | "unchanged" | "refused" | "blocked";
 
-/** What `/tasks start|done <id>` would do to a task in this status. */
+/** What `/tasks` status transitions do to a task in this status. */
 export type TaskTransition =
 	| { kind: "set"; status: TaskStatus }
 	/** Already in the target status — idempotent, no write. */
 	| { kind: "none" }
-	/** Completed work is not reopened by `start`; `done` on it stays idempotent. */
+	/** Completed work is not reopened by `start`; `done` and `reopen` stay idempotent on their target status. */
 	| { kind: "refused" };
 
 export function nextTaskStatus(current: string, action: TaskAction): TaskTransition {
 	if (action === "start" && current === "completed") return { kind: "refused" };
-	const target: TaskStatus = action === "start" ? "in_progress" : "completed";
+	const target: TaskStatus = action === "start" ? "in_progress" : action === "reopen" ? "pending" : "completed";
 	return current === target ? { kind: "none" } : { kind: "set", status: target };
 }
 
@@ -316,6 +317,7 @@ export function applyTaskAction(
 export type TaskOverlayUpdate =
 	| { status: "deleted" }
 	| { status: "in_progress" }
+	| { status: "pending" }
 	| { subject: string }
 	| { status: TaskStatus; completedBy: TaskCompletedBy; completionNote?: string };
 
@@ -368,6 +370,29 @@ export function tasksOverlayDeps(
 				update: (taskId) => store.update(taskId, { status: "in_progress" }),
 				onChanged: (taskId) => onStarted?.(taskId),
 			}),
+		reopenTask: (id) => {
+			const task = store.get(id);
+			if (!task) {
+				log.warn("task_reopen_missing", { id });
+				return "missing";
+			}
+			const transition = nextTaskStatus(task.status, "reopen");
+			if (transition.kind === "none") {
+				log.debug("task_reopen_unchanged", { id, status: task.status });
+				return "unchanged";
+			}
+			const result = store.update(id, { status: "pending" });
+			if (result !== undefined && typeof result === "object" && result !== null && "task" in result) {
+				const updated = (result as { task?: Task }).task;
+				if (!updated || updated.status !== "pending") {
+					log.warn("task_reopen_not_persisted", { id });
+					return "missing";
+				}
+			}
+			onDeleted?.(id);
+			log.info("task_reopened", { id, from: task.status });
+			return "applied";
+		},
 		completeTask: (id, opts) => {
 			const task = store.get(id);
 			if (!task) {
@@ -430,6 +455,8 @@ export interface TasksUiDeps {
 	deleteTask: (id: string) => boolean;
 	/** Start a task (`in_progress`); returns transition outcome. */
 	startTask?: (id: string) => TaskActionOutcome;
+	/** Reopen a completed or in-progress task back to `pending`; returns transition outcome. */
+	reopenTask?: (id: string) => TaskActionOutcome;
 	/** Close a task; `by: "user"` is the owner pressing `d`, with their optional note.
 	 *  `silent: true` suppresses the per-task owner notice so bulk `d` can send one combined report. */
 	completeTask: (id: string, opts: { by: TaskCompletedBy; note?: string; silent?: boolean }) => boolean;
