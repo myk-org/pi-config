@@ -37,7 +37,14 @@ function validateSessionCronTask(task: unknown): asserts task is CronTask {
 }
 function writeSessionTasks(file: string, tasks: Iterable<CronTask>) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, JSON.stringify([...tasks]), { mode: 0o600 });
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify([...tasks]), { mode: 0o600 });
+    fs.renameSync(temp, file);
+  } catch (error) {
+    try { fs.unlinkSync(temp); } catch {}
+    throw error;
+  }
 }
 export const qualifyCronId = (task: Pick<CronTask, "scope" | "id">) => `${task.scope === "project" ? "persist" : "session"}:${task.id}`;
 function parseQualifiedId(qualified: string): { scope: CronScope; id: string } | null {
@@ -358,6 +365,10 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
   const isProjectTrusted = () => typeof ctx?.isProjectTrusted !== "function" || ctx.isProjectTrusted() === true;
   function add(scope: CronScope, details: any) {
     if (scope !== "session" && scope !== "project") throw new Error("scope must be session or project");
+    if (durable(scope) && !isProjectTrusted()) {
+      log.warn("cron_create_untrusted_refused", { scope });
+      throw new Error("Project is not trusted — cannot persist crons here.");
+    }
     if (durable(scope) && !durableCronSupported()) throw new Error("Persistent cron scheduling is unavailable on this platform");
     validateSchedule(details);
     const task: CronTask = { id: randomUUID(), scope, cwd: ctx?.cwd || process.cwd(), description: details.description || details.task.slice(0, 60), task: details.task, intervalMs: details.interval_seconds !== undefined ? details.interval_seconds * 1000 : undefined, atHour: details.at_hour, atMinute: details.at_minute ?? (details.at_hour !== undefined ? 0 : undefined), model: normalizeModel(details.model), createdAt: Date.now(), leader: scope === "session" };
@@ -365,10 +376,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
     if (durable(scope)) mutateDurableCronStore(projectStore(task.cwd), old => [...old, task as DurableCronTask]);
     tasks.set(task.id, task);
     // We may already own the relevant lock; schedule synchronously rather than waiting for fs.watch.
-    // Never run leader election or arm project crons in an untrusted checkout.
-    if (scope === "session") { task.leader = true; start(task); }
-    else if (!isProjectTrusted()) { task.leader = false; log.info("cron_created_untrusted", { id: qualifyCronId(task) }); }
-    else if (owned.has(projectStore(task.cwd)) && isLeaderLockCurrent(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) { task.leader = true; start(task); }
+    if (scope === "session" || (owned.has(projectStore(task.cwd)) && isLeaderLockCurrent(projectStore(task.cwd), owned.get(projectStore(task.cwd))!))) { task.leader = true; start(task); }
     else election();
     if (scope === "session") persist(task, "nextRun");
     updateStatus(); log.info("cron_created", { scope, id: qualifyCronId(task) }); return task;
@@ -523,11 +531,12 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
       const { leader: _leader, ...base } = task;
       const durableTask: DurableCronTask = { ...base, scope: "project" };
       const file = projectStore(task.cwd);
+      const writtenSnapshot = JSON.stringify(durableTask);
       let wroteDurable = false;
       try {
         validateDurableCronTask(durableTask);
-        // Write to destination store FIRST, then remove from session store; roll back durable write on failure
-        // so the cron can never exist in both stores simultaneously.
+        // Write to destination store FIRST, then atomically replace session store; roll back durable write
+        // only if the stored record still matches what this move wrote (so a peer edit is never deleted).
         mutateDurableCronStore(file, old => [...old.filter(t => t.id !== task.id), durableTask]);
         wroteDurable = true;
         if (sessionStore) {
@@ -535,7 +544,18 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
         }
       } catch (error: any) {
         if (wroteDurable) {
-          try { mutateDurableCronStore(file, old => old.filter(t => t.id !== task.id)); }
+          try {
+            let preservedPeerEdit = false;
+            mutateDurableCronStore(file, old => old.filter(t => {
+              if (t.id !== task.id) return true;
+              if (JSON.stringify(t) === writtenSnapshot) return false;
+              preservedPeerEdit = true;
+              return true;
+            }));
+            if (preservedPeerEdit) {
+              log.warn("cron_scope_persist_rollback_skipped_peer_modified", { id: qualified });
+            }
+          }
           catch (rollbackErr: any) {
             log.error("cron_scope_persist_rollback_failed", { id: qualified, error: rollbackErr?.message || String(rollbackErr) });
           }

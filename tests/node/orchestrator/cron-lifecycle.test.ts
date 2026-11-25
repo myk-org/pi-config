@@ -172,7 +172,7 @@ describe("cron zero-arg command (#1392)", { concurrency: false }, () => {
     assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 1);
   });
 
-  it("does not run leader election when adding a project cron in an untrusted project", async () => {
+  it("refuses adding a project cron in an untrusted project without modifying crons.json", async () => {
     const cwd = makeTempDir("pi-cron-untrusted-add-"); dirs.push(cwd);
     const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
     fs.mkdirSync(path.dirname(durablePath), { recursive: true });
@@ -186,12 +186,14 @@ describe("cron zero-arg command (#1392)", { concurrency: false }, () => {
     const h = makeCron();
     const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
     h.handlers.get("session_start")![0]({}, context(cwd, "untrusted-add", false));
-    await h.tool().execute("seed", { action: "add", persist: true, task: "new persistent", interval_seconds: 60 });
+    const res = await h.tool().execute("seed", { action: "add", persist: true, task: "new persistent", interval_seconds: 60 });
+    assert.match(res.content[0].text, /not trusted/i);
     assert.equal(h.timeouts.length, 0, "untrusted project must never arm project cron timers");
+    assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 1, "crons.json must remain unchanged");
     assert.equal(cron.getCronTasks().every((t) => t.leader === false), true);
   });
 
-  it("rolls back durable write when session-store cleanup fails during setScope to project", async (t) => {
+  it("preserves the live session file via atomic write when session-store cleanup fails", async (t) => {
     const cwd = makeTempDir("pi-cron-rollback-"); dirs.push(cwd);
     const h = makeCron();
     const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
@@ -201,8 +203,8 @@ describe("cron zero-arg command (#1392)", { concurrency: false }, () => {
 
     const origWrite = fs.writeFileSync;
     const mockWrite = t.mock.method(fs, "writeFileSync", (filePath: any, ...rest: any[]) => {
-      if (String(filePath).includes("cron-") && String(filePath).endsWith(".json")) {
-        throw new Error("simulated session-store EACCES");
+      if (path.basename(String(filePath)).startsWith("cron-") && String(filePath).endsWith(".tmp")) {
+        throw new Error("simulated session-store ENOSPC");
       }
       return (origWrite as any).call(fs, filePath, ...rest);
     });
@@ -214,6 +216,40 @@ describe("cron zero-arg command (#1392)", { concurrency: false }, () => {
     assert.equal(cron.getCronTasks()[0].scope, "session", "in-memory scope stays session on failure");
     const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
     assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 0, "durable write was rolled back");
+    const sessionFiles = fs.readdirSync(path.join(cwd, ".pi", "tmp")).filter((f) => f.startsWith("cron-") && f.endsWith(".json"));
+    assert.equal(sessionFiles.length, 1);
+    const liveSessionTasks = JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "tmp", sessionFiles[0]), "utf8"));
+    assert.equal(liveSessionTasks.length, 1, "live session file remained intact after failed temp write");
+  });
+
+  it("preserves a concurrent peer edit instead of deleting it during setScope rollback", async (t) => {
+    const cwd = makeTempDir("pi-cron-peer-edit-"); dirs.push(cwd);
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
+    h.handlers.get("session_start")![0]({}, context(cwd, "peer-edit-sess"));
+    await h.tool().execute("seed", { action: "add", task: "check", interval_seconds: 60 });
+    const created = cron.getCronTasks()[0];
+    const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
+
+    const origWrite = fs.writeFileSync;
+    const mockWrite = t.mock.method(fs, "writeFileSync", (filePath: any, ...rest: any[]) => {
+      if (path.basename(String(filePath)).startsWith("cron-") && String(filePath).endsWith(".tmp")) {
+        // Simulate another peer modifying the durable record before session cleanup fails.
+        const env = JSON.parse(fs.readFileSync(durablePath, "utf8"));
+        env.tasks[0].paused = true;
+        (origWrite as any).call(fs, durablePath, JSON.stringify(env));
+        throw new Error("simulated session-store failure");
+      }
+      return (origWrite as any).call(fs, filePath, ...rest);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { mockWrite.mock.restore(); syncBuiltinESMExports(); });
+
+    const res = cron.setScope(`session:${created.id}`, "project");
+    assert.equal(res.ok, false);
+    const remaining = JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks;
+    assert.equal(remaining.length, 1, "peer-modified durable record must not be deleted by rollback");
+    assert.equal(remaining[0].paused, true);
   });
 });
 

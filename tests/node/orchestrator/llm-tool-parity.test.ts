@@ -370,8 +370,8 @@ describe("memory_dream tool (#1384)", () => {
     }
   });
 
-  it("starts and stops dreaming timers immediately when dream_auto_enable changes mid-session", async () => {
-    const cwd = makeTempDir("dream-live-toggle-");
+  it("arms dreaming timers immediately when dream_auto_enable is enabled mid-session", async () => {
+    const cwd = makeTempDir("dream-live-enable-");
     const { pi, tools, emit } = createFakePi();
     const origSetInterval = globalThis.setInterval;
     const origClearInterval = globalThis.clearInterval;
@@ -388,19 +388,47 @@ describe("memory_dream tool (#1384)", () => {
     process.env.PI_DREAM_AUTO_ENABLE = "false";
     try {
       withSubagentChildEnv(undefined, () => {
-        registerDreaming(pi, () => ({ id: "dream-live" }));
+        registerDreaming(pi, () => ({ id: "dream-live-on" }));
       });
       emit("session_start", { reason: "startup" }, { cwd, mode: "interactive" });
       assert.equal(activeIntervals.size, 0, "no timers when session starts with dream_auto_enable=false");
 
-      // Turn ON mid-session (e.g. via /pi-config-settings)
       process.env.PI_DREAM_AUTO_ENABLE = "true";
       pi.events.emit("orchestrator:settings-changed", { key: "dream_auto_enable", cwd });
       assert.equal(activeIntervals.size, 2, "enabling mid-session starts dream and rebuild timers");
       const statusOn = await tools.get("memory_dream").execute("c1", { action: "status" }, undefined, undefined, { cwd });
       assert.equal(statusOn.details.enabled, true);
+    } finally {
+      globalThis.setInterval = origSetInterval;
+      globalThis.clearInterval = origClearInterval;
+      if (prev === undefined) delete process.env.PI_DREAM_AUTO_ENABLE;
+      else process.env.PI_DREAM_AUTO_ENABLE = prev;
+    }
+  });
 
-      // Turn OFF mid-session
+  it("clears dreaming timers immediately when dream_auto_enable is disabled mid-session", async () => {
+    const cwd = makeTempDir("dream-live-disable-");
+    const { pi, tools, emit } = createFakePi();
+    const origSetInterval = globalThis.setInterval;
+    const origClearInterval = globalThis.clearInterval;
+    const activeIntervals = new Set<any>();
+    (globalThis as any).setInterval = (fn: any, ms: number) => {
+      const handle = { fn, ms, unref() {} };
+      activeIntervals.add(handle);
+      return handle;
+    };
+    (globalThis as any).clearInterval = (handle: any) => {
+      activeIntervals.delete(handle);
+    };
+    const prev = process.env.PI_DREAM_AUTO_ENABLE;
+    process.env.PI_DREAM_AUTO_ENABLE = "true";
+    try {
+      withSubagentChildEnv(undefined, () => {
+        registerDreaming(pi, () => ({ id: "dream-live-off" }));
+      });
+      emit("session_start", { reason: "startup" }, { cwd, mode: "interactive" });
+      assert.equal(activeIntervals.size, 2, "timers start when dream_auto_enable=true");
+
       process.env.PI_DREAM_AUTO_ENABLE = "false";
       pi.events.emit("orchestrator:settings-changed", { key: "dream_auto_enable", cwd });
       assert.equal(activeIntervals.size, 0, "disabling mid-session stops both timers");

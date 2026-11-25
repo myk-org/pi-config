@@ -537,6 +537,8 @@ class SettingsOverlay implements Component {
               ? `Failed to delete: settings file is corrupt (${delResult.file})`
               : `Failed to delete: ${delResult.error || "unknown error"}`;
             this.notify(msg, "error");
+          } else if (delResult.changed === false) {
+            this.notify(`${selectedItem.id} is not set in ${this.editScope} scope`, "info");
           } else {
             this.notify(`Deleted ${selectedItem.id} from ${this.editScope} scope`, "info");
             refreshItem(selectedItem, this.cwd, this.theme);

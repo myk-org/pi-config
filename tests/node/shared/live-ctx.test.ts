@@ -68,9 +68,13 @@ describe("emitIfLive", () => {
 });
 
 describe("markBrowserDispatch & isBrowserDispatch", () => {
-  it("returns false before tagging and true after markBrowserDispatch", () => {
+  it("returns false before markBrowserDispatch tags a context", () => {
     const ctx: Record<string, unknown> = { hasUI: true };
     assert.equal(isBrowserDispatch(ctx), false);
+  });
+
+  it("returns true after markBrowserDispatch tags a context", () => {
+    const ctx: Record<string, unknown> = { hasUI: true };
     markBrowserDispatch(ctx);
     assert.equal(isBrowserDispatch(ctx), true);
   });

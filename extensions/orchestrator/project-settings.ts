@@ -1368,7 +1368,7 @@ export function writeSettingsFile(
 }
 
 export type UpdateSettingResult =
-  | { ok: true; file: string }
+  | { ok: true; file: string; changed?: boolean }
   | { ok: false; reason: "invalid" | "corrupt" | "write_error"; file: string; error: string; cause?: unknown };
 
 /**
@@ -1410,16 +1410,16 @@ export function updateSetting(
   }
 
   if (clearing) {
-    if (!(key in current)) return { ok: true, file: filePath };
+    if (!(key in current)) return { ok: true, file: filePath, changed: false };
     delete current[key];
-    if (Object.keys(current).length === 0 && !existsSync(filePath)) return { ok: true, file: filePath };
+    if (Object.keys(current).length === 0 && !existsSync(filePath)) return { ok: true, file: filePath, changed: false };
   } else {
     current[key] = validatedValue;
   }
 
   try {
     writeSettingsFile(filePath, current, options);
-    return { ok: true, file: filePath };
+    return { ok: true, file: filePath, changed: true };
   } catch (error) {
     if (error instanceof SettingsFileCorruptError) {
       return { ok: false, reason: "corrupt", file: filePath, error: error.message, cause: error };
