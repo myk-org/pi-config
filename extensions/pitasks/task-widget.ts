@@ -77,17 +77,29 @@ function fitRowWithBadge(
 	const prefixWidth = visibleWidth(prefix);
 	const badgeWidth = visibleWidth(boundBadge);
 	const tailWidth = visibleWidth(tail);
-	if (prefixWidth + visibleWidth(fullTitle) + badgeWidth + tailWidth <= maxWidth) {
-		return `${prefix}${styleTitle(fullTitle)}${boundBadge}${tail}`;
+	if (prefixWidth + visibleWidth(fullTitle) + 1 + badgeWidth + tailWidth <= maxWidth) {
+		return `${prefix}${styleTitle(fullTitle)} ${boundBadge}${tail}`;
 	}
-	const budgetWithTail = maxWidth - prefixWidth - badgeWidth - tailWidth;
-	const budgetWithoutTail = maxWidth - prefixWidth - badgeWidth;
-	const titleBudget = budgetWithTail >= 8 ? budgetWithTail : budgetWithoutTail >= 4 ? budgetWithoutTail : 0;
-	if (titleBudget > 0) {
-		const fitted = truncateToWidth(rawTitle, titleBudget);
-		return truncateToWidth(`${prefix}${styleTitle(fitted)}${boundBadge}${tail}`, maxWidth);
+	const budgetWithTail = maxWidth - prefixWidth - 1 - badgeWidth - tailWidth;
+	if (budgetWithTail >= 8) {
+		const fitted = truncateToWidth(rawTitle, budgetWithTail, "…");
+		const row = fitted
+			? `${prefix}${styleTitle(fitted)} ${boundBadge}${tail}`
+			: `${prefix}${boundBadge}${tail}`;
+		return truncateToWidth(row, maxWidth);
 	}
-	return truncateToWidth(`${prefix}${styleTitle(fullTitle)}${boundBadge}${tail}`, maxWidth);
+	const budgetWithoutTail = maxWidth - prefixWidth - 1 - badgeWidth;
+	if (budgetWithoutTail >= 1) {
+		const fitted = truncateToWidth(rawTitle, budgetWithoutTail, "…");
+		const row = fitted
+			? `${prefix}${styleTitle(fitted)} ${boundBadge}`
+			: `${prefix}${boundBadge}`;
+		return truncateToWidth(row, maxWidth);
+	}
+	if (prefixWidth + badgeWidth <= maxWidth) {
+		return `${prefix}${boundBadge}`;
+	}
+	return truncateToWidth(`${prefix}${boundBadge}`, maxWidth);
 }
 
 function truncateFromTop(tasks: any[], limit: number): any[] { return tasks.slice(-limit); }
@@ -390,7 +402,7 @@ export class TaskWidget {
 			})() : "";
 
 			const boundBadgeText = task.status === "completed" ? "" : formatBoundAgentsBadge(boundByTask.get(task.id));
-			const boundBadge = boundBadgeText ? ` ${theme.fg("warning", boundBadgeText)}` : "";
+			const boundBadge = boundBadgeText ? theme.fg("warning", boundBadgeText) : "";
 
 			const tag = theme.fg("dim", toTaskRowView(task).tag);
 			if (task.status === "in_progress") {

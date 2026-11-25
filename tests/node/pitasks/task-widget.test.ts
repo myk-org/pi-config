@@ -901,6 +901,43 @@ describe("TaskWidget bound live async agent badge (#1386)", () => {
 		}
 	});
 
+	it("preserves the live badge on narrow in_progress rows when fewer than 4 title columns remain", () => {
+		const store = new TaskStore();
+		const task = store.create("Implement bound live async agent badge in widget", "body", createdBy);
+		store.update(task.id, { status: "in_progress" });
+		const widget = new TaskWidget(store, {}, () => [
+			{ id: "job-1", agent: "ts-expert", status: "running", taskId: task.id },
+		]);
+		try {
+			// prefix ("  ✴ #1 [llm] ") is 13 cols, badge ("[⏳ ts-expert]") is 15 cols -> 3 cols left for title at width 31
+			const width = 31;
+			const line = renderWithWidth(widget, width)().find(l => l.includes(`#${task.id}`));
+			assert.ok(line);
+			assert.ok(visibleWidth(line) <= width, `expected visible width <= ${width}, got ${visibleWidth(line)}`);
+			assert.match(line, /\[⏳ ts-expert\]/);
+		} finally {
+			widget.dispose();
+		}
+	});
+
+	it("preserves the live badge on narrow pending rows when no title columns remain", () => {
+		const store = new TaskStore();
+		const task = store.create("Implement bound live async agent badge in widget", "body", createdBy);
+		const widget = new TaskWidget(store, {}, () => [
+			{ id: "job-1", agent: "ts-expert", status: "queued", taskId: task.id },
+		]);
+		try {
+			// prefix ("  ◻ #1 [llm] ") is 13 cols, badge ("[⏳ ts-expert]") is 15 cols -> exact 28-col fit
+			const width = 28;
+			const line = renderWithWidth(widget, width)().find(l => l.includes(`#${task.id}`));
+			assert.ok(line);
+			assert.ok(visibleWidth(line) <= width, `expected visible width <= ${width}, got ${visibleWidth(line)}`);
+			assert.match(line, /\[⏳ ts-expert\]/);
+		} finally {
+			widget.dispose();
+		}
+	});
+
 	it("truncates task lines with badges to narrow terminal column width", () => {
 		const store = new TaskStore();
 		const task = store.create("Implement bound live async agent badge in widget", "body", createdBy);
