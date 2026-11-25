@@ -186,13 +186,29 @@ export class QuestionViewport implements Component {
   }
 }
 
+export type BridgedBlockedKind = "permission" | "question" | "auth";
+
 export interface BridgedUi {
   /** Single choice from a list. Resolves undefined when cancelled. */
-  select(ctx: any, title: string, options: string[]): Promise<string | undefined>;
+  select(
+    ctx: any,
+    title: string,
+    options: string[],
+    opts?: { blockedKind?: BridgedBlockedKind },
+  ): Promise<string | undefined>;
   /** Yes/no. Resolves false when cancelled or denied. */
-  confirm(ctx: any, title: string, message?: string): Promise<boolean>;
+  confirm(
+    ctx: any,
+    title: string,
+    message?: string,
+    opts?: { blockedKind?: BridgedBlockedKind },
+  ): Promise<boolean>;
   /** Free text. Resolves undefined when cancelled. */
-  input(ctx: any, title: string): Promise<string | undefined>;
+  input(
+    ctx: any,
+    title: string,
+    opts?: { blockedKind?: BridgedBlockedKind },
+  ): Promise<string | undefined>;
 }
 
 function requestId(method: string): string {
@@ -215,21 +231,35 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
     title: string,
     options: string[] = [],
     message?: string,
+    opts?: { blockedKind?: BridgedBlockedKind },
   ): Promise<T | undefined> {
     if (!ctx?.hasUI) {
       log.debug("bridged prompt skipped — no UI", { method });
       return undefined;
     }
 
+    const blockedKind: BridgedBlockedKind =
+      opts?.blockedKind ?? (method === "confirm" ? "permission" : "question");
+
     // No ui.custom (older runtime / embedded mock) — plain prompt, TUI only.
     if (typeof ctx.ui?.custom !== "function") {
-      log.debug("bridged prompt degraded — no ui.custom", { method });
-      if (method === "select") return await ctx.ui.select(title, options) as T | undefined;
+      log.debug("bridged prompt degraded — no ui.custom", { method, blockedKind });
+      const dialogOpts = opts?.blockedKind ? { blockedKind: opts.blockedKind } : undefined;
+      if (method === "select") {
+        return (
+          dialogOpts ? await ctx.ui.select(title, options, dialogOpts) : await ctx.ui.select(title, options)
+        ) as T | undefined;
+      }
       // The confirm wrapper compares against the "__confirmed__"/"Yes" sentinels, so a raw
       // boolean here was always rejected — every prompt without ui.custom cancelled, and an
       // approval could never succeed. Translate the answer to the sentinel the caller expects.
-      if (method === "confirm") return ((await ctx.ui.confirm(title, message)) ? "__confirmed__" : "__denied__") as T | undefined;
-      return await ctx.ui.input(title) as T | undefined;
+      if (method === "confirm") {
+        const confirmed = await ctx.ui.confirm(title, message, { blockedKind });
+        return (confirmed ? "__confirmed__" : "__denied__") as T | undefined;
+      }
+      return (
+        dialogOpts ? await ctx.ui.input(title, undefined, dialogOpts) : await ctx.ui.input(title)
+      ) as T | undefined;
     }
 
     const id = requestId(method);
@@ -280,7 +310,8 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
     });
 
     // Report "blocked on user input" (OSC 7501) while the dialog is visible.
-    const blocked = { kind: "question" as const, message: message ? `${title} — ${message}` : title };
+    const firstLine = (s?: string) => s?.split(/\r?\n/).find((l) => l.trim().length > 0)?.trim() ?? "";
+    const blocked = { kind: blockedKind, message: firstLine(title) || firstLine(message) || title };
     log.debug("bridged prompt opened with blocked status", { id, method, kind: blocked.kind });
 
     try {
@@ -615,10 +646,11 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
   }
 
   return {
-    select: (ctx, title, options) => bridged<string>(ctx, "select", title, options),
-    confirm: (ctx, title, message) => bridged<string>(ctx, "confirm", title, ["Yes", "No"], message).then(
-      (v) => v === "__confirmed__" || v === "Yes",
-    ),
-    input: (ctx, title) => bridged<string>(ctx, "input", title),
+    select: (ctx, title, options, opts) => bridged<string>(ctx, "select", title, options, undefined, opts),
+    confirm: (ctx, title, message, opts) =>
+      bridged<string>(ctx, "confirm", title, ["Yes", "No"], message, opts).then(
+        (v) => v === "__confirmed__" || v === "Yes",
+      ),
+    input: (ctx, title, opts) => bridged<string>(ctx, "input", title, [], undefined, opts),
   };
 }

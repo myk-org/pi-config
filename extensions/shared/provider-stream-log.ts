@@ -13,7 +13,7 @@
  * namespace → ~/.pi/logs/providers/<session-id>/main.log. Never console.*
  */
 
-import type { ExtensionAPI, ProviderStreamEvent } from "@earendil-works/pi-coding-agent";
+import type { AfterProviderResponseEvent, ExtensionAPI, ProviderStreamEvent } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "./logger.js";
 
 const LOG_NAME = "providers";
@@ -27,9 +27,26 @@ const MAX_DEPTH = 4;
 const MAX_EVENTS_PER_TURN = 2000;
 
 const SECRET_KEY = /api[-_]?key|authorization|bearer|token|secret|password|cookie/i;
+const SAFE_RESPONSE_HEADERS = new Set(["retry-after", "x-request-id", "request-id", "cf-ray"]);
 
 function truncate(text: string): string {
   return text.length > MAX_VALUE_LEN ? `${text.slice(0, MAX_VALUE_LEN)}…(+${text.length - MAX_VALUE_LEN})` : text;
+}
+
+function extractSafeResponseHeaders(headers: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!headers || typeof headers !== "object") return out;
+  const record = headers as Record<string, unknown>;
+  for (const key in record) {
+    if (!Object.hasOwn(record, key)) continue;
+    const lower = key.toLowerCase();
+    if (!SAFE_RESPONSE_HEADERS.has(lower)) continue;
+    const val = record[key];
+    if (typeof val === "string" && val.length > 0) {
+      out[lower] = truncate(val);
+    }
+  }
+  return out;
 }
 
 /**
@@ -63,11 +80,27 @@ export function previewStreamData(value: unknown, depth = 0): string {
 }
 
 /**
- * Register the provider stream log hook. No-op unless provider debug logging is
- * enabled — see the gating note above.
+ * Register provider HTTP response + stream diagnostic hooks.
+ * `after_provider_response` fires once per HTTP response (never per chunk), so
+ * it is always registered to log 4xx/5xx errors and safe retry headers.
+ * `provider_stream_event` + `turn_start` remain gated behind debug logging.
  */
 export function registerProviderStreamLog(pi: ExtensionAPI): void {
   const log = createLogger(LOG_NAME, PREFIX);
+
+  pi.on("after_provider_response", (event: AfterProviderResponseEvent) => {
+    try {
+      const safeHeaders = extractSafeResponseHeaders(event?.headers);
+      if (typeof event?.status === "number" && event.status >= 400) {
+        log.warn("provider_http_error", { status: event.status, ...safeHeaders });
+      } else if (log.isDebugEnabled()) {
+        log.debug("provider_http_response", { status: event?.status, ...safeHeaders });
+      }
+    } catch (err) {
+      log.error("provider response logging failed", err);
+    }
+  });
+
   if (!log.isDebugEnabled()) return;
 
   let seen = 0;

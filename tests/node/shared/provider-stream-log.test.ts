@@ -101,32 +101,95 @@ function logFile(home: string): string {
 }
 
 describe("provider-stream-log", () => {
-  it("does not register when provider debug logging is off", async () => {
+  it("registers only after_provider_response when provider debug logging is off", async () => {
     const { mod } = await loadModule("info");
     const pi = fakePi();
 
     mod.registerProviderStreamLog(pi.api);
 
-    assert.deepEqual(pi.registered, []);
+    assert.deepEqual(pi.registered, ["after_provider_response"]);
   });
 
-  it("does not register when provider logging is off entirely", async () => {
+  it("registers only after_provider_response when provider logging is off entirely", async () => {
     const { mod } = await loadModule("off");
     const pi = fakePi();
 
     mod.registerProviderStreamLog(pi.api);
 
-    assert.deepEqual(pi.registered, []);
+    assert.deepEqual(pi.registered, ["after_provider_response"]);
   });
 
-  it("registers the stream hook once when provider debug logging is on", async () => {
+  it("registers all diagnostic hooks when provider debug logging is on", async () => {
     const { mod } = await loadModule("debug");
     const pi = fakePi();
 
     mod.registerProviderStreamLog(pi.api);
 
-    assert.deepEqual(pi.registered.sort(), ["provider_stream_event", "turn_start"]);
+    assert.deepEqual(pi.registered.sort(), ["after_provider_response", "provider_stream_event", "turn_start"]);
     assert.equal(pi.handlers.get("provider_stream_event")!.length, 1);
+  });
+
+  it("skips 2xx provider responses when provider debug logging is off", async () => {
+    const { mod, home } = await loadModule("info");
+    const pi = fakePi();
+    mod.registerProviderStreamLog(pi.api);
+
+    const handler = pi.handlers.get("after_provider_response")![0]!;
+    handler({
+      type: "after_provider_response",
+      status: 200,
+      headers: { "x-request-id": "ok-should-not-log-at-info" },
+    });
+
+    assert.equal(existsSync(logFile(home)), false);
+  });
+
+  it("logs 4xx/5xx provider responses at warn with allowlisted truncated headers", async () => {
+    const { mod, home } = await loadModule("info");
+    const pi = fakePi();
+    mod.registerProviderStreamLog(pi.api);
+
+    const handler = pi.handlers.get("after_provider_response")![0]!;
+    handler({
+      type: "after_provider_response",
+      status: 429,
+      headers: {
+        "Retry-After": "30",
+        "X-Request-Id": "req-123",
+        "CF-Ray": "r".repeat(300),
+        Authorization: "Bearer super-secret", // pragma: allowlist secret — fake fixture
+        Cookie: "session=secret-cookie",
+        "Set-Cookie": "sid=secret-set-cookie",
+        "X-Unknown-Header": "unknown-val",
+      },
+    });
+
+    const body = readFileSync(logFile(home), "utf-8");
+    assert.match(body, /provider_http_error/);
+    assert.match(body, /"status":429/);
+    assert.match(body, /"retry-after":"30"/);
+    assert.match(body, /"x-request-id":"req-123"/);
+    assert.match(body, /"cf-ray":"r{200}…\(\+100\)"/);
+    assert.doesNotMatch(body, /super-secret|secret-cookie|secret-set-cookie|unknown-val/);
+  });
+
+  it("logs 2xx provider responses at debug when debug logging is enabled", async () => {
+    const { mod, home } = await loadModule("debug");
+    const pi = fakePi();
+    mod.registerProviderStreamLog(pi.api);
+
+    const handler = pi.handlers.get("after_provider_response")![0]!;
+    handler({
+      type: "after_provider_response",
+      status: 200,
+      headers: { "Request-Id": "req-ok-1", Authorization: "Bearer secret" }, // pragma: allowlist secret — fake fixture
+    });
+
+    const body = readFileSync(logFile(home), "utf-8");
+    assert.match(body, /provider_http_response/);
+    assert.match(body, /"status":200/);
+    assert.match(body, /"request-id":"req-ok-1"/);
+    assert.doesNotMatch(body, /secret/);
   });
 
   it("logs provider, api, model and redacted, truncated data", async () => {

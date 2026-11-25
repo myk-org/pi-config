@@ -595,7 +595,7 @@ export async function copyTextToClipboard(
       : platform === "win32"
         ? [{ cmd: "clip", args: [], label: "clip" }]
         : [
-            ...(waylandDisplay ? [{ cmd: "wl-copy", args: [], label: "wl-copy" }] : []),
+            ...(waylandDisplay ? [{ cmd: "wl-copy", args: ["--type", "text/plain"], label: "wl-copy" }] : []),
             { cmd: "xclip", args: ["-selection", "clipboard"], label: "xclip" },
             { cmd: "xsel", args: ["--clipboard", "--input"], label: "xsel" },
           ];

@@ -1,8 +1,13 @@
 /** #968 B — ui-bridge race semantics: browser/TUI first-answer-wins, dismiss, confirm mapping. */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { Container } from "@earendil-works/pi-tui";
 import { createBridgedUi, isBrowserDispatch, markBrowserDispatch } from "../../../extensions/shared/ui-bridge.ts";
+import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.ts";
+import { clearSettingsCache, getGlobalSettingsPath, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
 type Handler = (data: unknown) => void;
 
@@ -536,5 +541,182 @@ describe("ui-bridge bounded viewport, on-demand filter, peek, and Esc cancel (#1
 
     comp.handleInput("\x1b");
     assert.equal(await p, undefined);
+  });
+});
+
+describe("ui-bridge blockedKind (OSC 7501)", () => {
+  function captureBlockedCtx() {
+    const customOpts: Array<any> = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        custom: (render: any, opts?: any) => {
+          customOpts.push(opts);
+          return new Promise((resolve) => {
+            render({ requestRender: () => {} }, { fg: (_c: string, s: string) => s }, {}, resolve);
+            resolve(undefined);
+          });
+        },
+        notify: () => {},
+      },
+    };
+    return { ctx, customOpts };
+  }
+
+  it("defaults confirm blocked kind to permission", async () => {
+    const { ctx, customOpts } = captureBlockedCtx();
+    const bridged = createBridgedUi(fakePi() as any);
+
+    await bridged.confirm(ctx as any, "Allow command?", "Extra body");
+
+    assert.deepEqual(customOpts[0]?.blocked, { kind: "permission", message: "Allow command?" });
+  });
+
+  it("defaults select blocked kind to question", async () => {
+    const { ctx, customOpts } = captureBlockedCtx();
+    const bridged = createBridgedUi(fakePi() as any);
+
+    await bridged.select(ctx as any, "Pick one", ["a", "b"]);
+
+    assert.deepEqual(customOpts[0]?.blocked, { kind: "question", message: "Pick one" });
+  });
+
+  it("defaults input blocked kind to question", async () => {
+    const { ctx, customOpts } = captureBlockedCtx();
+    const bridged = createBridgedUi(fakePi() as any);
+
+    await bridged.input(ctx as any, "Enter name");
+
+    assert.deepEqual(customOpts[0]?.blocked, { kind: "question", message: "Enter name" });
+  });
+
+  it("uses the first non-empty title line in the blocked message", async () => {
+    const { ctx, customOpts } = captureBlockedCtx();
+    const bridged = createBridgedUi(fakePi() as any);
+
+    await bridged.select(ctx as any, "\n  Pick one  \nSecond line\nThird line", ["a", "b"]);
+
+    assert.deepEqual(customOpts[0]?.blocked, { kind: "question", message: "Pick one" });
+  });
+
+  it("forwards explicit blockedKind overrides on bridged prompts", async () => {
+    const { ctx, customOpts } = captureBlockedCtx();
+    const bridged = createBridgedUi(fakePi() as any);
+
+    await bridged.select(ctx as any, "⚠️ Dangerous command", ["Allow", "Block"], {
+      blockedKind: "permission",
+    });
+    await bridged.input(ctx as any, "API key", { blockedKind: "auth" });
+
+    assert.deepEqual(
+      customOpts.map((o) => o?.blocked),
+      [
+        { kind: "permission", message: "⚠️ Dangerous command" },
+        { kind: "auth", message: "API key" },
+      ],
+    );
+  });
+
+  it("sets blockedKind to permission on enforcement bash approval prompts", async () => {
+    const tmp = makeTempDir("pi-ui-bridge-enforcement-");
+    const prevGlobalSettings = getGlobalSettingsPath();
+    const prevSubagentChild = process.env.PI_SUBAGENT_CHILD;
+    setGlobalSettingsPath(join(tmp, "global-settings.json"));
+    clearSettingsCache();
+    delete process.env.PI_SUBAGENT_CHILD;
+
+    try {
+      const basePi = fakePi();
+      const hooks = new Map<string, Function>();
+      const enforcementPi = {
+        ...basePi,
+        on: (name: string, handler: Function) => { hooks.set(name, handler); },
+        registerTool: () => {},
+        registerCommand: () => {},
+      };
+      registerEnforcement(enforcementPi as any, false);
+
+      const { ctx, customOpts } = captureBlockedCtx();
+      const toolCall = hooks.get("tool_call")!;
+      await toolCall(
+        { type: "tool_call", toolName: "bash", input: { command: "rm -rf /nonexistent/ui-bridge-blocked-kind-test" } },
+        { ...ctx, cwd: tmp },
+      );
+
+      assert.equal(customOpts.length, 1);
+      assert.equal(customOpts[0]?.blocked?.kind, "permission");
+    } finally {
+      if (prevSubagentChild === undefined) delete process.env.PI_SUBAGENT_CHILD;
+      else process.env.PI_SUBAGENT_CHILD = prevSubagentChild;
+      setGlobalSettingsPath(prevGlobalSettings);
+      clearSettingsCache();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults fallback ctx.ui.confirm blockedKind to permission without explicit opts", async () => {
+    const confirmArgs: any[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        confirm: async (...args: any[]) => { confirmArgs.push(args); return true; },
+      },
+    };
+    const bridged = createBridgedUi(fakePi() as any);
+
+    assert.equal(await bridged.confirm(ctx as any, "Sure?", "Body"), true);
+    assert.deepEqual(confirmArgs, [["Sure?", "Body", { blockedKind: "permission" }]]);
+  });
+
+  it("preserves explicit blockedKind overrides on fallback ctx.ui.confirm", async () => {
+    const confirmArgs: any[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        confirm: async (...args: any[]) => { confirmArgs.push(args); return true; },
+      },
+    };
+    const bridged = createBridgedUi(fakePi() as any);
+
+    assert.equal(await bridged.confirm(ctx as any, "Auth?", "Body", { blockedKind: "auth" }), true);
+    assert.deepEqual(confirmArgs, [["Auth?", "Body", { blockedKind: "auth" }]]);
+  });
+
+  it("forwards blockedKind on fallback ctx.ui.select only when specified", async () => {
+    const selectArgs: any[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: async (...args: any[]) => { selectArgs.push(args); return args[1][0]; },
+      },
+    };
+    const bridged = createBridgedUi(fakePi() as any);
+
+    await bridged.select(ctx as any, "Pick", ["a"]);
+    await bridged.select(ctx as any, "Allow?", ["Yes"], { blockedKind: "permission" });
+
+    assert.deepEqual(selectArgs, [
+      ["Pick", ["a"]],
+      ["Allow?", ["Yes"], { blockedKind: "permission" }],
+    ]);
+  });
+
+  it("forwards blockedKind on fallback ctx.ui.input only when specified", async () => {
+    const inputArgs: any[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        input: async (...args: any[]) => { inputArgs.push(args); return "ok"; },
+      },
+    };
+    const bridged = createBridgedUi(fakePi() as any);
+
+    await bridged.input(ctx as any, "Name");
+    await bridged.input(ctx as any, "Token", { blockedKind: "auth" });
+
+    assert.deepEqual(inputArgs, [
+      ["Name"],
+      ["Token", undefined, { blockedKind: "auth" }],
+    ]);
   });
 });
