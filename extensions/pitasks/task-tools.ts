@@ -60,7 +60,7 @@ export function registerTaskTools(
 
 - **subject** / **description**: imperative outcome title + context/acceptance criteria.
 - **activeForm**: present-continuous spinner text while \`in_progress\` (defaults to \`subject\`).
-- **assignee**: \`llm\` (default) or \`user\` (owner-only actions: merge, live UI check, approval — one task per action; never assign \`user\` to work an agent could do itself, and never start/edit/complete a \`user\` task — owners close it in \`/tasks\`; delete obsolete ones via \`TaskUpdate(status: "deleted")\` or \`TaskBulkDelete\`).
+- **assignee**: \`llm\` (default) or \`user\` (owner-only actions: merge, live UI check, approval — one task per action; never assign \`user\` to work an agent could do itself, and never start/edit/complete a \`user\` task — owners close it in \`/tasks\`; delete only still-\`pending\` obsolete ones when verified done externally or created in error via \`TaskUpdate(status: "deleted")\` or \`TaskBulkDelete\`).
 - **agentType**: optional descriptive metadata only; does not dispatch or execute an agent.`,
 		promptGuidelines: [
 			"When working on complex multi-step tasks, use TaskCreate to track progress and TaskUpdate to update status.",
@@ -155,7 +155,7 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskUpdate",
 		label: "TaskUpdate",
-		description: `Update a task (\`pending\` → \`in_progress\` → \`completed\`, or \`deleted\` to remove). Refuses starting or completing an existing or resulting \`user\`-assigned task (including reassignment combined with status); deleting obsolete \`user\`-assigned tasks (\`status: "deleted"\`) and reassignment alone are supported.
+		description: `Update a task (\`pending\` → \`in_progress\` → \`completed\`, or \`deleted\` to remove). Refuses starting or completing an existing or resulting \`user\`-assigned task (including reassignment combined with status); deleting still-\`pending\` obsolete \`user\`-assigned tasks (\`status: "deleted"\`, e.g., created in error or verified done externally) and reassignment alone are supported.
 
 - Returns remaining open tasks (call \`TaskList\` only when full board state is unknown); use \`TaskGet\` when full details are needed.
 - Mark \`in_progress\` BEFORE starting work; mark \`completed\` ONLY when fully done with tests passing and no unresolved blockers.
@@ -222,7 +222,7 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskBulkDelete",
 		label: "TaskBulkDelete",
-		description: "Delete multiple tasks at once by ID. Deleting obsolete user-assigned tasks is supported (starting or completing user-assigned tasks remains refused via TaskUpdate/TaskBulkUpdate).",
+		description: "Delete multiple tasks at once by ID. Deleting still-pending obsolete user-assigned tasks (e.g., created in error or verified done externally) is supported; starting or completing user-assigned tasks remains refused via TaskUpdate/TaskBulkUpdate.",
 		parameters: Type.Object({
 			taskIds: Type.Array(Type.String(), { description: "Task IDs to delete" }),
 		}),
@@ -238,7 +238,7 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskBulkUpdate",
 		label: "TaskBulkUpdate",
-		description: "Update multiple tasks at once and return a remaining open-task summary (call TaskList only when full board state is unknown). More efficient than calling TaskUpdate multiple times. User-assigned tasks cannot be started or completed; deleting (status: \"deleted\") and other updates remain supported.",
+		description: "Update multiple tasks at once and return a remaining open-task summary (call TaskList only when full board state is unknown). More efficient than calling TaskUpdate multiple times. User-assigned tasks cannot be started or completed; deleting still-pending obsolete ones (status: \"deleted\") and other updates remain supported.",
 		parameters: Type.Object({
 			updates: Type.Array(Type.Object({
 				taskId: Type.String({ description: "Task ID to update" }),
