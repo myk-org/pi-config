@@ -69,8 +69,9 @@ For mechanical rules ("when X happens, do/block/warn Y"), pass `trigger`, `actio
 
 ## Dreaming, Skills & Promotions
 
-- **Dreaming (`/dream` or shutdown):** extracts outcomes, updates topic files, distills `.pi/memory/preference-candidates.jsonl`, and follows the same NEVER-memorize
-  rules above (see `40-critical-rules.md` for `fireAndForget`).
+- **Dreaming (`memory_dream`, `/dream`, or shutdown):** use `memory_dream(action="status"|"run"|"auto_on"|"auto_off")` to inspect state, trigger consolidation, or toggle
+  auto-dreaming. Dreaming extracts outcomes, updates topic files, distills `.pi/memory/preference-candidates.jsonl`, and follows the same NEVER-memorize rules above (see
+  `40-critical-rules.md` for `fireAndForget`).
 - **Skills (procedural memory):** save recurring multi-step workflows (3+ steps, repeated 2+ times, trial-and-error, or non-obvious commands) via `/create-skill <name>`.
 - **Promotions:** `.pi/memory/promotions.md` graduates recurring lessons (`memory_consolidate`/dreaming write candidates there; `evidenceCount` ≥ 3 →
   `skill`/`enforcement`; ≥ 5 → `project_rule`, **propose only — NEVER auto-write `rules/` or `.pi/rules/`**).

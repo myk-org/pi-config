@@ -45,6 +45,7 @@ interface StatusPayload {
   cwd: string;
   exitCode?: number | null;
   error?: string;
+  tool?: string;
   outputLines: number;
 }
 
@@ -151,6 +152,18 @@ async function run(config: RunConfig): Promise<void> {
         try {
           const ev = JSON.parse(trimmed);
 
+          if (ev.type === "tool_execution_start" && typeof ev.toolName === "string") {
+            status.tool = ev.toolName;
+            status.lastUpdate = Date.now();
+            status.outputLines = lineCount;
+            writeJson(statusPath, status);
+          } else if (ev.type === "tool_execution_end" && status.tool) {
+            delete status.tool;
+            status.lastUpdate = Date.now();
+            status.outputLines = lineCount;
+            writeJson(statusPath, status);
+          }
+
           // Extract final output and usage from message_end events inline
           if (ev.type === "message_end" && ev.message?.role === "assistant") {
             for (const p of ev.message.content || []) {
@@ -203,6 +216,7 @@ async function run(config: RunConfig): Promise<void> {
   }
 
   // Write final status
+  delete status.tool;
   status.state = exitCode === 0 ? "complete" : "failed";
   status.endedAt = endedAt;
   status.lastUpdate = endedAt;

@@ -57,7 +57,7 @@ fails. Use `coms_list` for connected peers.
 | Send message / structured tasks | `coms_send` |
 | Poll for response | `coms_get` |
 | Clear / delete / edit / prioritize your queued msgs | `coms_queue_clear` / `coms_queue_delete` / `coms_queue_edit` / `coms_queue_prioritize` |
-| View local queue | `/coms-queue` |
+| View / kill local inbound queue | `coms_local_queue` (human: `/coms-queue`) |
 | Create / update / delete / list / get peer tasks | `coms_tasks_create` / `coms_task_update` / `coms_task_delete` / `coms_task_list` / `coms_task_get` |
 
 ## Inbound Messages — How to Reply
