@@ -3,5 +3,5 @@
   "compilerOptions": {
     "rootDir": "."
   },
-  "include": ["index.ts", "logger.ts"]
+  "include": ["index.ts", "logger.ts", "test/stream-type-check.ts"]
 }
