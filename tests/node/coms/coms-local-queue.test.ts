@@ -298,4 +298,57 @@ describe("coms_local_queue tool (#1384)", () => {
     assert.equal(res.details.killed, false);
     assert.match(textOf(res), /No queued inbound message found/i);
   });
+
+  it("drains the next queued inbound on agent_end after killing the active message mid-turn", async () => {
+    const { workspace, comsDir } = makeWorkspace();
+    const peer = await bootPeer({
+      name: "receiver",
+      sessionId: "sess-kill-active-midturn",
+      project: "test-proj",
+      cwd: workspace,
+      comsDir,
+    });
+    const sender = await createSenderServer(join(comsDir, "sender-active.sock"), "sess-sender", "coordinator", workspace);
+
+    await sender.sendPrompt(peer.endpoint, "msg-active", "Active prompt");
+    await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "msg-active"));
+    await peer.handlers.get("agent_start")?.({}, {});
+    await sender.sendPrompt(peer.endpoint, "msg-next", "Queued next prompt");
+
+    const killRes = await peer.tools.get("coms_local_queue").execute("call-1", { action: "kill", msg_id: "msg-active" });
+    assert.equal(killRes.details.killed, true);
+    await waitUntil(() => sender.received.some((e) => e.type === "response" && e.msg_id === "msg-active"));
+
+    // Mid-turn: next message must not be injected while the cancelled turn is still running
+    assert.equal(peer.messages.some((m) => m?.details?.msg_id === "msg-next"), false);
+
+    // Once agent_end fires, the pending message drains cleanly
+    await peer.handlers.get("agent_end")?.({ messages: [] }, {
+      cwd: workspace,
+      hasUI: false,
+      ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {} },
+      sessionManager: { getSessionId: () => "sess-kill-active-midturn", getBranch: () => [] },
+    });
+    await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "msg-next"));
+  });
+
+  it("drains the next queued inbound immediately when killing the active message while idle", async () => {
+    const { workspace, comsDir } = makeWorkspace();
+    const peer = await bootPeer({
+      name: "receiver",
+      sessionId: "sess-kill-active-idle",
+      project: "test-proj",
+      cwd: workspace,
+      comsDir,
+    });
+    const sender = await createSenderServer(join(comsDir, "sender-idle.sock"), "sess-sender", "coordinator", workspace);
+
+    await sender.sendPrompt(peer.endpoint, "msg-active-idle", "Active prompt");
+    await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "msg-active-idle"));
+    await sender.sendPrompt(peer.endpoint, "msg-next-idle", "Queued next prompt");
+
+    const killRes = await peer.tools.get("coms_local_queue").execute("call-1", { action: "kill", msg_id: "msg-active-idle" });
+    assert.equal(killRes.details.killed, true);
+    await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "msg-next-idle"));
+  });
 });

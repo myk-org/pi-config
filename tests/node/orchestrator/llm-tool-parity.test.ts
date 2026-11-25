@@ -381,6 +381,31 @@ describe("memory_dream tool (#1384)", () => {
     assert.match(textOf(res), /worker unavailable/);
   });
 
+  it("clears in-flight state when spawn returns an error alongside an id", async () => {
+    const cwd = makeTempDir("dream-id-err-");
+    const { pi, tools } = createFakePi();
+    let attempt = 0;
+
+    withSubagentChildEnv(undefined, () => {
+      registerDreaming(pi, () => {
+        attempt++;
+        if (attempt === 1) return { id: "ghost-id", error: "runner unavailable" };
+        return { id: "dream-retry" };
+      });
+    });
+
+    const first = await tools.get("memory_dream").execute("call-1", { action: "run" }, undefined, undefined, { cwd });
+    assert.equal(first.details.ok, false);
+    assert.match(textOf(first), /runner unavailable/);
+
+    const status = await tools.get("memory_dream").execute("call-2", { action: "status" }, undefined, undefined, { cwd });
+    assert.equal(status.details.inFlight, false);
+
+    const second = await tools.get("memory_dream").execute("call-3", { action: "run" }, undefined, undefined, { cwd });
+    assert.equal(second.details.ok, true);
+    assert.equal(second.details.id, "dream-retry");
+  });
+
   it("disables automatic dreaming on auto_off", async () => {
     const cwd = makeTempDir("dream-toggle-off-");
     const { pi, tools, emit } = createFakePi();
@@ -557,6 +582,52 @@ describe("async_status tool (#1384)", () => {
 
     h1.end(true);
     h2.end(true);
+    emit("session_shutdown");
+  });
+
+  it("retrieves in-memory output tail for a running sync job without output.log", async () => {
+    const tmpDir = makeTempDir("async-status-sync-mem-");
+    const { pi, tools, emit } = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerAsyncAgents(pi, () => {});
+    });
+
+    const handle = beginSyncAgentRun({
+      agent: "ts-expert",
+      task: "Streamed sync output",
+      cwd: tmpDir,
+    });
+    handle.appendOutput("Scanning files...\n");
+    handle.appendOutput("SYNC_TAIL_OK");
+
+    const res = await tools.get("async_status").execute("call-1", { id: handle.id });
+    assert.equal(res.details.found, true);
+    assert.match(textOf(res), /SYNC_TAIL_OK/);
+
+    handle.end(true);
+    emit("session_shutdown");
+  });
+
+  it("retains in-memory output tail for a recently finished sync job", async () => {
+    const tmpDir = makeTempDir("async-status-sync-done-");
+    const { pi, tools, emit } = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerAsyncAgents(pi, () => {});
+    });
+
+    const handle = beginSyncAgentRun({
+      agent: "worker",
+      task: "Completed sync output",
+      cwd: tmpDir,
+    });
+    handle.appendOutput("FINISHED_SYNC_MARKER");
+    handle.end(true);
+
+    const res = await tools.get("async_status").execute("call-1", { id: handle.id });
+    assert.equal(res.details.found, true);
+    assert.match(textOf(res), /FINISHED_SYNC_MARKER/);
+    assert.match(textOf(res), /Status: complete/);
+
     emit("session_shutdown");
   });
 });

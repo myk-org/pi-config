@@ -239,31 +239,31 @@ export function registerDreaming(
     );
     // Dream runs as fireAndForget async agent.
     // onComplete callback triggers rebuildAndOrganize when dream finishes.
-    currentDreamId = id;
-    if (!id) {
+    if (!id || error) {
       dreamInFlight = false;
+      currentDreamId = "";
       updateDreamStatus();
       return { started: false, id: "", error: error || "Failed to start dream worker" };
-    } else {
-      // Safety fallback: if onComplete never fires (runner crash/hang),
-      // reset dreamInFlight after 30 min so future dreams aren't blocked.
-      // Capture the current dream ID to avoid cross-run races.
-      const dreamId = id;
-      const fallbackTimer = setTimeout(() => {
-        if (dreamInFlight && currentDreamId === dreamId) {
-          dreamInFlight = false;
-          updateDreamStatus();
-          fileLog(
-            "dreaming",
-            "warn",
-            "dreaming",
-            "fallback: reset dreamInFlight after 30 min (onComplete never fired)",
-          );
-        }
-      }, 30 * 60 * 1000);
-      if (fallbackTimer.unref) fallbackTimer.unref();
-      return { started: true, id };
     }
+    currentDreamId = id;
+    // Safety fallback: if onComplete never fires (runner crash/hang),
+    // reset dreamInFlight after 30 min so future dreams aren't blocked.
+    // Capture the current dream ID to avoid cross-run races.
+    const dreamId = id;
+    const fallbackTimer = setTimeout(() => {
+      if (dreamInFlight && currentDreamId === dreamId) {
+        dreamInFlight = false;
+        updateDreamStatus();
+        fileLog(
+          "dreaming",
+          "warn",
+          "dreaming",
+          "fallback: reset dreamInFlight after 30 min (onComplete never fired)",
+        );
+      }
+    }, 30 * 60 * 1000);
+    if (fallbackTimer.unref) fallbackTimer.unref();
+    return { started: true, id };
   }
 
   let rebuildTimer: ReturnType<typeof setInterval> | null = null;
@@ -408,7 +408,7 @@ export function registerDreaming(
               details: { action: "run", ok: true, id: res.id },
             };
           }
-          log.warn("memory_dream_tool_start_failed", { error: res.error });
+          log.error("memory_dream_tool_start_failed", { error: res.error });
           return {
             content: [{ type: "text" as const, text: `Failed to start memory dreaming: ${res.error || "unknown error"}.` }],
             details: { action: "run", ok: false, error: res.error },

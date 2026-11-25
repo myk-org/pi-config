@@ -678,6 +678,8 @@ export function createComsPeerRuntime(
 	let agentRunning = false;
 	let bundledInbounds: InboundContext[] = [];
 	let processingInbound = false;
+	/** Set when the active inbound is killed mid-turn so agent_end drains queued follow-ups (#1384). */
+	let pendingDrainAfterKill = false;
 
 	function rememberClosedId(target: Set<string>, msgId: string): void {
 		if (!msgId || target.has(msgId)) return;
@@ -3394,11 +3396,21 @@ Do not respond to this message.`;
 	): Promise<{ killed: true; msg_id: string; sender_name: string } | { killed: false }> {
 		const ib = inboundQueue.get(msgId) ?? (currentInbound?.msg_id === msgId ? currentInbound : undefined);
 		if (!ib || ib.fulfilled) return { killed: false };
+		const wasActive = currentInbound?.msg_id === msgId;
+		const gen = sessionGeneration;
 		ib.fulfilled = true;
 		inboundQueue.delete(msgId);
-		if (currentInbound?.msg_id === msgId) {
+		rememberClosedId(closedInboundMsgIds, msgId);
+		let bundledToCancel: InboundContext[] = [];
+		if (wasActive) {
+			if ((ib.pendingSteers ?? 0) > 0) {
+				rememberClosedId(closedSteerTargetIds, ib.msg_id);
+			}
 			currentInbound = null;
 			inboundDelivered = false;
+			bundledToCancel = bundledInbounds;
+			bundledInbounds = [];
+			pendingDrainAfterKill = true;
 		}
 		maybeRefreshWidget();
 		// Send error response to sender
@@ -3412,8 +3424,18 @@ Do not respond to this message.`;
 					queued_msg_ids: [],
 				});
 			} catch { /* best-effort */ }
+			if (bundledToCancel.length > 0 && sessionGeneration === gen) {
+				for (const b of bundledToCancel) rememberClosedId(closedInboundMsgIds, b.msg_id);
+				fulfillBundledInbounds(bundledToCancel, identity, "killed_by_user");
+			}
 		}
-		log.info("queue_kill", msgId, "sender", ib.sender_name);
+		log.info("queue_kill", msgId, "sender", ib.sender_name, "wasActive", wasActive);
+		// If killed between turns (agent idle), drain next queued inbound immediately;
+		// if killed mid-turn, defer draining until agent_end so we never inject into the running turn.
+		if (wasActive && !agentRunning && pendingDrainAfterKill && sessionGeneration === gen && !shuttingDown && identity) {
+			pendingDrainAfterKill = false;
+			await drainNextInbound({ bundle: true, onFail: "drop", ctx: currentCtx }, gen);
+		}
 		return { killed: true, msg_id: ib.msg_id, sender_name: ib.sender_name };
 	}
 
@@ -4197,6 +4219,8 @@ Do not respond to this message.`;
 			return;
 		}
 		if (!currentInbound || !identity) {
+			const shouldDrainKilled = Boolean(identity && !shuttingDown && pendingDrainAfterKill);
+			pendingDrainAfterKill = false;
 			// Drain any orphaned inbounds — can't send responses without identity,
 			// but must clear the queue to prevent permanent buildup
 			if (!identity) {
@@ -4214,6 +4238,11 @@ Do not respond to this message.`;
 			comsSendCalledThisTurn.clear();
 			setProcessingInbound(false);
 			log.debug("agent_end_early", "currentInbound", currentInbound?.msg_id ?? "null", "processingInbound", processingInbound);
+			if (shouldDrainKilled) {
+				const gen = sessionGeneration;
+				log.info("agent_end_drain_after_kill");
+				await drainNextInbound({ bundle: true, onFail: "drop", ctx }, gen);
+			}
 			return;
 		}
 
@@ -4533,6 +4562,7 @@ Do not respond to this message.`;
 		inboundDelivered = false;
 		finalizingInbound = false;
 		processingInbound = false;
+		pendingDrainAfterKill = false;
 		agentRunning = false;
 		agentRunningUserTurn = false;
 		inboundSetDuringUserTurn = false;

@@ -1678,7 +1678,8 @@ export function registerAsyncAgents(
     const asyncJobs: AsyncStatusJobView[] = Array.from(asyncState.jobs.values())
       .sort(newestFirst)
       .map(j => {
-        const live = j.workerDir ? readAsyncStatus(j.workerDir) : null;
+        const isActive = j.status === "running" || j.status === "queued";
+        const live = isActive && j.workerDir ? readAsyncStatus(j.workerDir) : null;
         const currentTool = typeof live?.tool === "string"
           ? live.tool
           : typeof live?.currentTool === "string"
@@ -1791,7 +1792,11 @@ export function registerAsyncAgents(
             ? readPartialWorkerOutput({ id: job.id, workerDir: job.workerDir }, budget)
             : "";
           if (!tail) {
-            const memOutput = asyncState.jobs.get(job.id)?.output?.trim() ?? "";
+            const memOutput = (
+              asyncState.jobs.get(job.id)?.output
+              ?? listSyncAgentRunsWithFinished().find((r) => r.id === job.id)?.outputTail
+              ?? ""
+            ).trim();
             if (memOutput) {
               tail = memOutput.length > budget
                 ? `${TRUNCATION_MARKER}${memOutput.slice(-budget)}`
