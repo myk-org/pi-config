@@ -423,7 +423,7 @@ interface SessionEntry {
    * cancelled the turn, so a concurrent abort's rejection cannot clear
    * `requested` while another abort is still in flight.
    */
-  abortState: { requested: boolean; pending: number; succeeded: boolean };
+  abortState: { requested: boolean; pending: number; succeeded: boolean; onSucceeded?: () => void };
   /** Bounded per-session LRU cache for optional `request_id` deduplication (#1397). */
   requestCache: Map<string, RequestCacheEntry>;
   requestCacheBytes: number;
@@ -781,11 +781,13 @@ export class SessionStore {
       bytes: estimateRequestCacheBytes(message),
     };
     const inflightPromise = this.executePrompt(id, entry, message).then(
-      ({ result, aborted }) => {
+      ({ result, abortState }) => {
         if (this.sessions.get(id) === entry && entry.requestCache.get(requestId) === cacheEntry) {
-          if (aborted || result.stop_reason === "aborted" || result.error !== undefined || result.stop_reason === "error") {
+          const confirmedAborted = abortState.succeeded || result.stop_reason === "aborted";
+          const failed = result.error !== undefined || result.stop_reason === "error";
+          if (confirmedAborted || failed) {
             this.deleteRequestCacheEntry(entry, requestId);
-            const reason = aborted || result.stop_reason === "aborted" ? "turn_aborted" : "turn_failed";
+            const reason = confirmedAborted ? "turn_aborted" : "turn_failed";
             promptDedupLog.debug(`[sidecar] PROMPT_DEDUP_EVICTED: session=${id}, request_id=${safeReqId}, reason=${reason}`);
           } else {
             const completedBytes = estimateRequestCacheBytes(message, result);
@@ -798,7 +800,24 @@ export class SessionStore {
               const delta = Math.max(0, completedBytes - cacheEntry.bytes);
               this.evictCompletedEntries(id, entry, delta, requestId);
               entry.requestCacheBytes = Math.max(0, entry.requestCacheBytes - cacheEntry.bytes) + completedBytes;
-              entry.requestCache.set(requestId, { status: "completed", message, result, bytes: completedBytes });
+              const completedEntry: Extract<RequestCacheEntry, { status: "completed" }> = {
+                status: "completed",
+                message,
+                result,
+                bytes: completedBytes,
+              };
+              entry.requestCache.set(requestId, completedEntry);
+              if (abortState.pending > 0) {
+                // Pending abort may still settle; evict only if it actually cancels the turn.
+                abortState.onSucceeded = () => {
+                  if (this.sessions.get(id) === entry && entry.requestCache.get(requestId) === completedEntry) {
+                    this.deleteRequestCacheEntry(entry, requestId);
+                    promptDedupLog.debug(
+                      `[sidecar] PROMPT_DEDUP_EVICTED: session=${id}, request_id=${safeReqId}, reason=turn_aborted`,
+                    );
+                  }
+                };
+              }
             }
           }
         }
@@ -817,7 +836,11 @@ export class SessionStore {
     return clonePromptResult(await inflightPromise);
   }
 
-  private async executePrompt(id: string, entry: SessionEntry, message: string): Promise<{ result: PromptResult; aborted: boolean }> {
+  private async executePrompt(
+    id: string,
+    entry: SessionEntry,
+    message: string,
+  ): Promise<{ result: PromptResult; abortState: SessionEntry["abortState"] }> {
     entry.lastActivity = Date.now();
     entry.inFlight = true;
     // #1019: one monotonic turn id per prompt. The single terminal event for
@@ -825,7 +848,8 @@ export class SessionStore {
     // post-redaction tail below — never from the recordTurn-gated sites.
     // Reset here, not at turn end, so an abort still settling from the previous
     // turn cannot clear a request made for this one.
-    entry.abortState = { requested: false, pending: 0, succeeded: false };
+    const abortState: SessionEntry["abortState"] = { requested: false, pending: 0, succeeded: false };
+    entry.abortState = abortState;
     const turnId = entry.streams.nextTurnId();
     entry.streams.emit({ type: "turn_start", turnId });
     // Transcript turn state is mutated only when recording is enabled — the
@@ -1230,7 +1254,7 @@ export class SessionStore {
     if (errors.length > 0) {
       const errorText = formatErrors();
       logger.error(`[sidecar] Prompt completed with errors: session=${id}, errors=${errorText}`);
-      return { result: { text: responseText, usage, error: errorText, stop_reason: stopReason }, aborted };
+      return { result: { text: responseText, usage, error: errorText, stop_reason: stopReason }, abortState };
     }
 
     // Empty text is valid for tool-only responses — warn but don't error
@@ -1238,7 +1262,7 @@ export class SessionStore {
       logger.warn(`[sidecar] AI returned empty text: session=${id}, tokens_in=${usage.input_tokens}, tokens_out=${usage.output_tokens}`);
     }
 
-    return { result: { text: responseText, usage, stop_reason: stopReason }, aborted };
+    return { result: { text: responseText, usage, stop_reason: stopReason }, abortState };
   }
 
   async abort(id: string): Promise<void> {
@@ -1270,10 +1294,16 @@ export class SessionStore {
       // none already cancelled it: clearing the flag here is what let a
       // concurrent rejection hide a real cancellation.
       state.pending = Math.max(0, state.pending - 1);
-      if (state.pending === 0 && !state.succeeded) state.requested = false;
+      if (state.pending === 0 && !state.succeeded) {
+        state.requested = false;
+        state.onSucceeded = undefined;
+      }
       throw err;
     }
     state.pending = Math.max(0, state.pending - 1);
+    const onSucceeded = state.onSucceeded;
+    state.onSucceeded = undefined;
+    onSucceeded?.();
     logger.info(`[sidecar] Session aborted: ${id}`);
   }
 

@@ -2017,6 +2017,59 @@ async def test_stream_prompt_preserves_live_streaming_for_non_replayed_turn(prom
     assert "replayed" not in events[3]
 
 
+@pytest.mark.asyncio
+async def test_stream_prompt_yields_delayed_replay_after_feed_eof() -> None:
+    """When SSE feed hits EOF while a replayed prompt is still pending, yield the delayed replay."""
+    gate = asyncio.Event()
+    transport = _SseTransport(
+        [STREAM_FRAMES[0]],
+        hang=False,
+        prompt_hangs=False,
+        prompt_gate=gate,
+        prompt_replayed=True,
+        prompt_text="cached after eof",
+    )
+    stream = _stream_client(transport).stream_prompt("s1", "hello", request_id="req-eof")
+    assert (await anext(stream))["type"] == "session"
+    pending = asyncio.ensure_future(anext(stream))
+    await asyncio.sleep(0.05)
+    assert not pending.done()
+    gate.set()
+    terminal = await asyncio.wait_for(pending, timeout=1.0)
+    assert terminal == {
+        "type": "turn_end",
+        "turnId": None,
+        "text": "cached after eof",
+        "aborted": False,
+        "replayed": True,
+    }
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+    assert transport.stream.closed
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_raises_on_feed_eof_when_delayed_prompt_is_not_replayed() -> None:
+    """When SSE feed hits EOF and a pending non-replayed prompt finishes, raise RuntimeError."""
+    gate = asyncio.Event()
+    transport = _SseTransport(
+        [STREAM_FRAMES[0]],
+        hang=False,
+        prompt_hangs=False,
+        prompt_gate=gate,
+        prompt_replayed=False,
+    )
+    stream = _stream_client(transport).stream_prompt("s1", "hello", request_id="req-eof-miss")
+    assert (await anext(stream))["type"] == "session"
+    pending = asyncio.ensure_future(anext(stream))
+    await asyncio.sleep(0.05)
+    assert not pending.done()
+    gate.set()
+    with pytest.raises(RuntimeError, match="ended before turn_end/error"):
+        await asyncio.wait_for(pending, timeout=1.0)
+    assert transport.stream.closed
+
+
 class TestLogLevelFromEnv:
     """PI_SIDECAR_LOG_LEVEL must never make the client unimportable (rootcoz#453).
 

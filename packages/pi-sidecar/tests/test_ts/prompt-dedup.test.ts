@@ -661,6 +661,46 @@ describe("SessionStore prompt deduplication (#1397)", () => {
     assert.equal(retried.replayed, undefined);
   });
 
+  it("retains completed request_id cache when a pending abort subsequently rejects", async () => {
+    const promptEntered = createDeferred();
+    const promptGate = createDeferred();
+    const abortEntered = createDeferred();
+    const abortDeferred = createDeferred();
+
+    const fixture = createTestFixture(
+      async (_message, emit) => {
+        promptEntered.resolve();
+        await promptGate.promise;
+        emitStandardReply(emit, "completed-ok");
+      },
+      async () => {
+        abortEntered.resolve();
+        await abortDeferred.promise;
+      },
+    );
+
+    const id = await fixture.createSession();
+
+    const firstPromise = fixture.store.prompt(id, "normal-finish", "req-failed-abort");
+    await promptEntered.promise;
+
+    const abortPromise = fixture.store.abort(id);
+    await abortEntered.promise;
+
+    promptGate.resolve();
+    const first = await firstPromise;
+    assert.equal(first.stop_reason, "end_turn");
+    assert.equal(first.text, "completed-ok");
+
+    abortDeferred.reject(new Error("abort failed"));
+    await assert.rejects(abortPromise, /abort failed/);
+
+    const replayed = await fixture.store.prompt(id, "normal-finish", "req-failed-abort");
+    assert.equal(fixture.getPromptCalls(), 1);
+    assert.deepEqual(replayed, { ...first, replayed: true });
+    assert.equal(replayed.replayed, true);
+  });
+
   it("enforces bounded LRU eviction at MAX_REQUEST_CACHE_ENTRIES (64)", async () => {
     assert.equal(MAX_REQUEST_CACHE_ENTRIES, 64);
 

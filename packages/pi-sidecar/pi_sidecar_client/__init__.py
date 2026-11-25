@@ -378,14 +378,16 @@ async def _iter_sse_events(response: httpx.Response) -> AsyncIterator[dict[str, 
 
 
 def _replay_terminal_frame(result: AIResult) -> dict[str, Any]:
-    """Synthesize a terminal SSE frame for a completed request_id cache replay."""
-    if result.error:
-        return {"type": "error", "turnId": None, "message": result.error, "replayed": True}
+    """Synthesize a terminal SSE frame for a completed request_id cache replay.
+
+    The sidecar evicts failed and aborted turns instead of caching them, so
+    completed replays always represent successful turns.
+    """
     return {
         "type": "turn_end",
         "turnId": None,
         "text": result.text,
-        "aborted": result.stop_reason == "aborted",
+        "aborted": False,
         "replayed": True,
     }
 
@@ -741,8 +743,8 @@ class SidecarClient:
         `request_id` coalesce onto the active turn's SSE feed. When `request_id`
         hits a completed cached response (`replayed=True`), `stream_prompt()`
         immediately closes the SSE feed and yields a synthesized terminal frame
-        (`turn_end` with the cached `text`, or `error` if the cached turn
-        failed) with `replayed=True` instead of waiting on SSE frames.
+        (`turn_end` with the cached `text`) with `replayed=True` instead of
+        waiting on SSE frames.
 
         The feed is **per session, not per caller**, so the turn is correlated
         through the prompt call: the server allows one in-flight turn per
@@ -863,11 +865,22 @@ class SidecarClient:
                                 return
                 # Feed closed with no terminal frame (idle reap, slow-subscriber
                 # eviction, session deleted, shutdown): never report success.
+                # When request_id is set and prompt() is still pending, wait for
+                # its verdict so a delayed cached replay isn't lost on SSE drop.
+                if request_id is not None and not prompt_ok and not prompt_task.done():
+                    await asyncio.wait({prompt_task})
                 detail = ""
                 if prompt_task.done() and not prompt_task.cancelled():
                     if (failure := prompt_task.exception()) is not None:
                         raise failure
-                    if prompt_error := prompt_task.result().error:
+                    prompt_result = prompt_task.result()
+                    if prompt_result.replayed:
+                        logger.debug("Stream prompt completed via cached replay after feed EOF: session=%s", session_id)
+                        yield _replay_terminal_frame(prompt_result)
+                        return
+                    if not prompt_result.success and prompt_result.status_code != 200:
+                        raise RuntimeError(f"Sidecar prompt failed: {prompt_result.error}")
+                    if prompt_error := prompt_result.error:
                         detail = f": {prompt_error}"
                 raise RuntimeError(f"Sidecar event stream ended before turn_end/error{detail}")
             finally:
