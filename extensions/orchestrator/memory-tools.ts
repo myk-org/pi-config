@@ -96,10 +96,14 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
       // Lazy migration: embed any entries missing from the vector store
       if (!state.embeddingsMigrated) {
         try {
-          await embedMissing(cwd, topicEntries);
-          state.embeddingsMigrated = true; // Only mark done on success
-        } catch {
-          log.debug("memory: embedding migration failed, will retry next search");
+          const embedded = await embedMissing(cwd, topicEntries);
+          if (embedded >= 0) {
+            state.embeddingsMigrated = true; // Only mark done on success
+          } else {
+            log.warn("memory: embedding migration failed, will retry next search");
+          }
+        } catch (err) {
+          log.warn("memory: embedding migration failed, will retry next search", {}, err);
         }
       }
       const scores = loadScores(cwd);

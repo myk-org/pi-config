@@ -384,6 +384,89 @@ class TestMemoryStatus:
         assert "promotion candidates (proposed): 1" in result.output
         assert "bash_contains git add ." in result.output
 
+    def test_status_prefers_sqlite_state_db_over_stale_legacy_json(self, tmp_path: Path) -> None:
+        topics_dir = tmp_path / "memory" / "topics"
+        topics_dir.mkdir(parents=True)
+        (topics_dir / "lessons.md").write_text(
+            "# Lessons\n\n- [lesson] Never force push\n",
+            encoding="utf-8",
+        )
+        # Stale legacy memory-scores.json still on disk with an old rule
+        (tmp_path / "memory" / "memory-scores.json").write_text(
+            json.dumps({
+                "entries": {
+                    "stale": {
+                        "class": "lesson",
+                        "trigger": "bash_contains legacy-stale-cmd",
+                        "action": "block",
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        # Current SQLite state.db holds the updated post-migration rule
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        conn = sqlite3.connect(str(data_dir / "state.db"))
+        conn.execute(
+            "CREATE TABLE kv_state ("
+            "store_key TEXT PRIMARY KEY, payload TEXT NOT NULL, "
+            "revision INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO kv_state (store_key, payload, revision, updated_at) VALUES (?, ?, 2, ?)",
+            (
+                "memory-scoring",
+                json.dumps({
+                    "entries": {
+                        "fresh": {
+                            "class": "lesson",
+                            "trigger": "bash_contains git push --force",
+                            "action": "block",
+                        }
+                    }
+                }),
+                "2026-07-18T00:00:00Z",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(memory, ["--file-path", str(topics_dir), "status"])
+        assert result.exit_code == 0, result.output
+        assert "code-tier (enforced scores): 1" in result.output
+        assert "bash_contains git push --force" in result.output
+        assert "legacy-stale-cmd" not in result.output
+
+    def test_status_fails_instead_of_falling_back_to_legacy_when_state_db_corrupt(self, tmp_path: Path) -> None:
+        topics_dir = tmp_path / "memory" / "topics"
+        topics_dir.mkdir(parents=True)
+        (topics_dir / "lessons.md").write_text("# Lessons\n", encoding="utf-8")
+        # Stale legacy file on disk
+        (tmp_path / "memory" / "memory-scores.json").write_text(
+            json.dumps({
+                "entries": {
+                    "stale": {
+                        "class": "lesson",
+                        "trigger": "bash_contains legacy-stale-cmd",
+                        "action": "block",
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        # Corrupt state.db must fail loudly rather than presenting stale legacy entries
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "state.db").write_text("NOT A SQLITE DATABASE", encoding="utf-8")
+
+        runner = CliRunner()
+        result = runner.invoke(memory, ["--file-path", str(topics_dir), "status"])
+        assert result.exit_code != 0
+        assert "Failed to read memory-scoring" in result.output
+        assert "legacy-stale-cmd" not in result.output
+
 
 class TestEntryHashParity:
     """Issue #915: the Python CLI must agree with the TypeScript hash (SHA-256, 16 hex)."""
@@ -504,3 +587,38 @@ class TestReadLatestJsonlDict:
         assert latest is not None
         assert h not in latest["entries"]
         assert latest["entries"]["keep"] == state["entries"]["keep"]  # type: ignore[index]
+
+    def test_forget_cleans_sqlite_state_db(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "SQLite target rule")
+        h = _entry_hash("- [lesson] SQLite target rule")
+        data_dir = memory_file.file_path.parent.parent / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        db_path = data_dir / "state.db"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE kv_state ("
+            "store_key TEXT PRIMARY KEY, payload TEXT NOT NULL, "
+            "revision INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO kv_state (store_key, payload, revision, updated_at) VALUES (?, ?, 1, ?)",
+            (
+                "memory-scoring",
+                json.dumps({"entries": {h: {"class": "lesson", "score": 2.0}, "keep": {"class": "lesson"}}}),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        assert memory_file.forget("lesson", "SQLite target rule") is True
+
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute("SELECT payload, revision FROM kv_state WHERE store_key = 'memory-scoring'").fetchone()
+        conn.close()
+        assert row is not None
+        payload = json.loads(row[0])
+        assert h not in payload["entries"]
+        assert "keep" in payload["entries"]
+        assert row[1] == 2

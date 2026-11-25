@@ -339,7 +339,42 @@ class MemoryFile:
         # (Qodo round 2, PR #916).
         legacy_h = _legacy_fnv_hash(canonical)
 
-        # Clean up the JSONL score store (current) — remove the key from the
+        # Clean up the SQLite state DB (current — issue #1399) when present.
+        state_db_path = self.file_path.parent.parent / "data" / "state.db"
+        if state_db_path.exists():
+            conn: sqlite3.Connection | None = None
+            try:
+                conn = sqlite3.connect(str(state_db_path), timeout=5.0, isolation_level=None)
+                conn.execute("PRAGMA busy_timeout = 5000")
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT payload FROM kv_state WHERE store_key = ?",
+                    ("memory-scoring",),
+                ).fetchone()
+                if row and isinstance(row[0], str):
+                    latest = json.loads(row[0])
+                    entries = latest.get("entries") if isinstance(latest, dict) else None
+                    if isinstance(entries, dict) and (h in entries or legacy_h in entries):
+                        entries.pop(h, None)
+                        entries.pop(legacy_h, None)
+                        conn.execute(
+                            "UPDATE kv_state SET payload = ?, revision = revision + 1, "
+                            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE store_key = ?",
+                            (json.dumps(latest), "memory-scoring"),
+                        )
+                conn.execute("COMMIT")
+            except (sqlite3.Error, json.JSONDecodeError, OSError) as e:
+                if conn is not None:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                log(f"Failed to clean up state.db memory-scoring: {e}")
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        # Clean up the JSONL score store (legacy) — remove the key from the
         # latest state and append the updated state as a new line. The whole
         # read-modify-write runs under the same cross-process lock protocol
         # as the TypeScript store (`.wlock` + O_EXCL + pid liveness), so a

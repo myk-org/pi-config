@@ -1,14 +1,14 @@
 /**
  * Session Search — keyword search over past and recent conversation sessions.
  *
- * Combines persisted conversation summaries in `.pi/data/session-search.jsonl`
- * (harvested on compaction and shutdown) with mtime-cached incremental lazy
- * scanning of recent project session JSONL files under
- * `~/.pi/agent/sessions/<cwd-slug>/`. This makes active, uncompacted, and
+ * Combines persisted conversation summaries in `.pi/data/state.db`
+ * (`kv_state` key `"session-search"`, issue #1399; legacy `session-search.jsonl`
+ * and `session-search.json` auto-migrated once on first access) with
+ * mtime-cached incremental lazy scanning of recent project session JSONL files
+ * under `~/.pi/agent/sessions/<cwd-slug>/`. This makes active, uncompacted, and
  * abnormally terminated sessions searchable immediately at zero LLM cost.
  *
  * Inspired by Hermes Agent's session search layer.
- * JSONL persistence (issue #915 / #724 pattern) — no native deps.
  */
 
 import {
@@ -27,13 +27,18 @@ import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
 import { resolvePiAgentDir } from "../shared/pi-agent-dir.js";
 import { getProjectDataDir } from "./utils.js";
-import { createCachedStore } from "./state-jsonl.js";
-import type { JsonlStateStore } from "./state-jsonl.js";
+import {
+  createSqliteStateStore,
+  getProjectStateDbPath,
+  SKIP_MUTATE,
+  type SqliteStateStore,
+} from "./state-db.js";
 
 const log = createLogger("memory");
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
+const SESSION_SEARCH_STORE_KEY = "session-search";
 const STORE_FILENAME_JSONL = "session-search.jsonl";
 const LEGACY_STORE_FILENAME = "session-search.json";
 
@@ -164,9 +169,27 @@ interface SessionStore {
   entries: SessionEntry[];
 }
 
-function getStore(cwd: string): JsonlStateStore<SessionStore> {
-  return createCachedStore<SessionStore>(
-    getProjectDataDir(cwd), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 50 },
+function getStore(cwd: string): SqliteStateStore<SessionStore> {
+  const dataDir = getProjectDataDir(cwd);
+  return createSqliteStateStore<SessionStore>(
+    getProjectStateDbPath(cwd),
+    SESSION_SEARCH_STORE_KEY,
+    {
+      legacyFiles: [
+        join(dataDir, STORE_FILENAME_JSONL),
+        join(dataDir, LEGACY_STORE_FILENAME),
+      ],
+    },
+  );
+}
+
+function isValidSessionEntry(e: unknown): e is SessionEntry {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    typeof (e as any).sessionId === "string" &&
+    typeof (e as any).timestamp === "string" &&
+    typeof (e as any).summary === "string"
   );
 }
 
@@ -177,19 +200,7 @@ function loadStore(cwd: string): SessionStore {
     log.warn("session-search: corrupt store shape, resetting");
     return { entries: [] };
   }
-  // Filter to only valid entries
-  const entries = data.entries.filter(
-    (e: unknown): e is SessionEntry =>
-      typeof e === "object" && e !== null &&
-      typeof (e as any).sessionId === "string" &&
-      typeof (e as any).timestamp === "string" &&
-      typeof (e as any).summary === "string"
-  );
-  return { entries };
-}
-
-function saveStore(cwd: string, store: SessionStore): void {
-  getStore(cwd).write(store);
+  return { entries: data.entries.filter(isValidSessionEntry) };
 }
 
 // ── Index a session summary ────────────────────────────────────────────────
@@ -202,26 +213,31 @@ export function indexSessionSummary(
   if (!summary || !summary.trim()) return;
   const cleaned = redactSecrets(summary).trim();
   if (!cleaned) return;
-  const store = loadStore(cwd);
 
-  // Avoid duplicate entries for the same session
-  const exists = store.entries.some(
-    (e) => e.sessionId === sessionId && e.summary === cleaned,
+  getStore(cwd).mutate(
+    (store) => {
+      const validEntries =
+        store && typeof store === "object" && Array.isArray(store.entries)
+          ? store.entries.filter(isValidSessionEntry)
+          : [];
+      // Avoid duplicate entries for the same session
+      const exists = validEntries.some(
+        (e) => e.sessionId === sessionId && e.summary === cleaned,
+      );
+      if (exists) return SKIP_MUTATE;
+
+      validEntries.push({
+        sessionId,
+        timestamp: new Date().toISOString(),
+        summary: cleaned,
+      });
+
+      // Keep max 500 entries (oldest dropped)
+      const trimmed = validEntries.length > 500 ? validEntries.slice(-500) : validEntries;
+      return { entries: trimmed };
+    },
+    { entries: [] },
   );
-  if (exists) return;
-
-  store.entries.push({
-    sessionId,
-    timestamp: new Date().toISOString(),
-    summary: cleaned,
-  });
-
-  // Keep max 500 entries (oldest dropped)
-  if (store.entries.length > 500) {
-    store.entries = store.entries.slice(-500);
-  }
-
-  saveStore(cwd, store);
 }
 
 // ── Harvest pi session summaries ──────────────────────────────────────────

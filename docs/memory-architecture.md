@@ -15,33 +15,35 @@ The memory system is local, file-backed, and layered. Topic files are the source
 | Layer | What it stores | Where it lives | Why it matters |
 |---|---|---|---|
 | Topic files | Human-readable memory entries by category | `.pi/memory/topics/*.md` | This is the canonical memory content. |
-| Score index | Stability score, evidence count, lifecycle, enforcement metadata | `.pi/memory/memory-scores.jsonl` | Decides which memories stay active and which fade out. A legacy `memory-scores.json` is auto-migrated on first access. |
-| Embedding store | Local vectors for semantic matching | `.pi/memory/embeddings.json` | Lets Pi retrieve related memories even when the wording changes. |
+| Score index | Stability score, evidence count, lifecycle, enforcement metadata | `.pi/data/state.db` (`kv_state` key `memory-scoring`) | Decides which memories stay active and which fade out. Legacy `.pi/memory/memory-scores.jsonl` and `memory-scores.json` are auto-migrated once on first access. |
+| Embedding store | Local 384-dim `Float32Array` BLOB vectors for semantic matching | `.pi/data/state.db` (`embedding_meta` + `embeddings` tables) | Lets Pi retrieve related memories even when the wording changes, ~4× smaller than JSON float arrays. Legacy `.pi/memory/embeddings.jsonl` and `embeddings.json` are auto-migrated once on first access. |
 | Situation report | Token-budgeted summary for prompt injection | Built at runtime | Determines what memory the agent actually sees during a turn. |
 | Promotion queue | Candidates for skills, enforcement, or project rules | `.pi/memory/promotions.md` | Captures repeated patterns that may deserve stronger structure. |
-| Provenance sidecar | Source-session metadata waiting to be merged | `.pi/memory/provenance-pending.jsonl` | Preserves where a memory came from without letting background jobs edit the score file directly. |
+| Provenance pending / sidecar | Source-session metadata waiting to be merged | `.pi/data/state.db` (`kv_state` key `memory-provenance`) + optional dream sidecar `.pi/memory/provenance-pending.jsonl` | Preserves where a memory came from without letting background jobs edit the score store directly. |
 
 ### End-to-end flow
 
 1. A memory enters the system from a direct tool call, the Python CLI, or background consolidation.
 2. The entry is written into a category topic file such as `lessons.md` or `preferences.md`.
-3. The scoring engine rebuilds `memory-scores.jsonl`, recalculates stability, and assigns a lifecycle state.
-4. The embedding layer lazily creates or refreshes local vectors for semantic search.
+3. The scoring engine updates the `memory-scoring` store in `.pi/data/state.db`, recalculates stability, and assigns a lifecycle state.
+4. The embedding layer lazily creates or refreshes binary `Float32Array` BLOB vectors in `.pi/data/state.db` for semantic search.
 5. On `before_agent_start`, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, and injects that material as structured system-prompt sections (`project_memory`, `contextual_memories`, `past_sessions`) at the tail of the prompt.
 6. As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.
 
-> **Note:** The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.
+> **Note:** The architecture is intentionally split between human-editable topic files and a WAL-mode SQLite state store (`.pi/data/state.db`, built-in `node:sqlite`, `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`). That keeps memory easy to inspect while providing atomic cross-process concurrency across Pi sessions and COMS peers.
 
 #### Worktrees share the main checkout’s stores
 
 `.pi/memory` and `.pi/data` are gitignored, so a session running inside a git
 worktree (`.worktrees/<name>`, the parallel-issues workflow) would otherwise see
-empty stores. All memory and data paths are therefore resolved through the
-worktree’s **main checkout** — the parent of `git rev-parse --git-common-dir` —
-matching the Python side’s `get_project_root()`. In the main checkout itself
-this is a no-op (the common dir is `<root>/.git`), so resolution is uniform.
-`.pi/tmp` stays per-cwd by design: pidiff runs one server per cwd and tracks its
-port there, and sharing that across worktrees would collide.
+empty stores. All memory and shared project data paths — including `.pi/data/state.db`
+for `memory-scoring`, `memory-embeddings`, `memory-provenance`, and `session-search` —
+are therefore resolved through the worktree’s **main checkout** — the parent of
+`git rev-parse --git-common-dir` — matching the Python side’s `get_project_root()`.
+In the main checkout itself this is a no-op (the common dir is `<root>/.git`), so
+resolution is uniform. `pi-config-review-state` stays worktree-scoped in
+`<worktree-root>/.pi/data/state.db` so each issue branch tracks its own review loop
+independently, and `.pi/tmp` stays per-cwd by design.
 
 ### Implementation map
 
@@ -49,6 +51,7 @@ Every layer is a standalone module under `extensions/orchestrator/`:
 
 | Component | File | Role |
 |---|---|---|
+| State database | `state-db.ts` | Shared `node:sqlite` (`DatabaseSync`) WAL store for `.pi/data/state.db` (and worktree-scoped review state), schema versioning, `BEGIN IMMEDIATE` transactions, `Float32Array` BLOB encoding, handle caching, and one-time legacy JSONL/JSON migration. |
 | Scoring engine | `memory-scoring.ts` | Stability formula, lifecycle states, category budgets, rebuilds the score index. |
 | Situation report | `situation-report.ts` | Builds the token-budgeted prompt injection and the capacity header. |
 | Memory tree | `memory-tree.ts` | Read-only topic-file index, canonical topic names, and hotness scores. |
@@ -129,7 +132,7 @@ The system also applies caps so one category cannot crowd out everything else. C
 
 ### Topic organization is separate from scoring
 
-Topic files are organized for readability, while `memory-scores.jsonl` is organized for ranking and lifecycle management. That separation lets Pi:
+Topic files are organized for readability, while the `memory-scoring` store in `.pi/data/state.db` is organized for ranking and lifecycle management. That separation lets Pi:
 
 - reorder and trim injected memory without rewriting your topic structure every turn
 - archive cold topic files when their newest entries have aged past roughly two half-lives
@@ -137,15 +140,16 @@ Topic files are organized for readability, while `memory-scores.jsonl` is organi
 
 User-visible effect: your memory files stay understandable, while the agent still gets a compact, prioritized view.
 
-### Embeddings are local and file-backed
+### Embeddings are local and SQLite-backed
 
-Semantic retrieval is handled by `memory-embeddings.ts`. It uses the local `Xenova/bge-small-en-v1.5` model through `@huggingface/transformers`, produces 384-dimensional vectors, and stores them in `.pi/memory/embeddings.json`.
+Semantic retrieval is handled by `memory-embeddings.ts`. It uses the local `Xenova/bge-small-en-v1.5` model through `@huggingface/transformers`, produces 384-dimensional vectors, and stores them as binary `Float32Array` BLOB rows in `.pi/data/state.db` (`embedding_meta` and `embeddings` tables).
 
 Important details:
 
 - The model is loaded lazily on first real use.
-- Embeddings are cached per process for speed.
-- The on-disk store is updated with atomic write-then-rename behavior.
+- Query embeddings are cached per process for speed.
+- Stored vectors are updated per-key inside atomic SQLite WAL transactions instead of rewriting a multi-megabyte JSON file.
+- Legacy `.pi/memory/embeddings.jsonl` and `embeddings.json` files are auto-migrated once on first access without modifying the legacy files.
 - If the model cannot load, memory features degrade gracefully instead of failing the turn.
 - New entries are deduplicated at write time: a candidate whose embedding is at least `0.90` similar to an existing entry reinforces that entry instead of adding a duplicate.
 - Search is hybrid — keyword plus vector — with a keyword-only fallback when the embedding model is unavailable.
@@ -225,7 +229,8 @@ This is why the same project memory can feel different depending on what you are
 ### Session search recalls past conversations
 
 Independently of scored memory, `session-search.ts` maintains a keyword index over past conversation summaries in
-`.pi/data/session-search.jsonl`. At session shutdown the index harvests Pi's own LLM-written compaction and branch
+`.pi/data/state.db` (`kv_state` key `session-search`; legacy `.pi/data/session-search.jsonl` and `session-search.json`
+auto-migrate once on first access). At session shutdown the index harvests Pi's own LLM-written compaction and branch
 summaries from the session file (issue #915), falling back to a join of user messages when no summaries exist.
 To cover active, uncompacted, and abnormally terminated sessions without waiting for compaction or clean shutdown
 (issue #1342), `searchSessions` also lazily scans recent project session JSONL files under
@@ -312,9 +317,14 @@ A few important boundaries keep this safe:
 
 > **Warning:** Enforced memories are text-hash keyed. If background maintenance rewrites the text of an enforced entry, the binding would break, so the system explicitly protects those entries.
 
-### Provenance is merged through a sidecar
+### Provenance is merged through pending state and sidecars
 
-Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to `.pi/memory/provenance-pending.jsonl`. The orchestrator then merges that sidecar into `memory-scores.jsonl` on completion and deletes it. (A `.pi/memory/provenance-pending.json` from older versions is still read for backward compatibility.)
+Background consolidation can attach metadata such as the source session or what a memory informs. Programmatic callers
+store pending provenance in `.pi/data/state.db` (`kv_state` key `memory-provenance`), while background LLM dream agents
+can still write a single JSON line to `.pi/memory/provenance-pending.jsonl` without touching `state.db` directly. The
+orchestrator merges both into `memory-scoring` inside `.pi/data/state.db` on completion and clears the pending row and
+consumed sidecar only after commit succeeds. (A legacy `.pi/memory/provenance-pending.json` is also read for backward
+compatibility.)
 
 This keeps the scoring index authoritative while still preserving traceability.
 

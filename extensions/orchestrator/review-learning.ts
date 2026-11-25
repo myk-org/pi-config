@@ -65,7 +65,7 @@ import { getSetting } from "./project-settings.js";
 import { getOriginUrl, parseRemoteRepo, runGit } from "./git-helpers.js";
 import { getProjectDataDir, getProjectMemoryDir, resolveWorktreeRoot } from "./utils.js";
 import { addMemoryEntry } from "./memory-store.js";
-import { entryHash, getScoresPath, loadScores } from "./memory-scoring.js";
+import { entryHash, getScoresRevision, loadScores } from "./memory-scoring.js";
 import { canonicalTopicLine, readAllTopicEntries } from "./memory-tree.js";
 
 const log = createLogger("review-learning");
@@ -1131,7 +1131,8 @@ interface IssueGroup {
 
 function lessonLookupSignature(cwd: string): string {
   const memDir = getProjectMemoryDir(cwd);
-  const scoresJsonlSig = statSignature(getScoresPath(cwd));
+  const scoresRev = getScoresRevision(cwd);
+  const scoresJsonlSig = statSignature(join(memDir, "memory-scores.jsonl"));
   const scoresJsonSig = statSignature(join(memDir, "memory-scores.json"));
   const topicsDir = join(memDir, "topics");
   let topicsSig = "";
@@ -1146,7 +1147,7 @@ function lessonLookupSignature(cwd: string): string {
       topicsSig = "";
     }
   }
-  return `${scoresJsonlSig}|${scoresJsonSig}|${topicsSig}`;
+  return `rev:${scoresRev}|${scoresJsonlSig}|${scoresJsonSig}|${topicsSig}`;
 }
 
 function getLessonsByCommentId(

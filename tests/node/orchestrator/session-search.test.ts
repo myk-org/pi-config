@@ -125,7 +125,7 @@ describe("session-search JSONL store", () => {
       const results = searchSessions(cwd, "migration testing", 5);
       assert.equal(results.length, 1);
       assert.equal(results[0]!.sessionId, "legacy-1");
-      assert.ok(fs.existsSync(path.join(dataDir, "session-search.jsonl")));
+      assert.ok(fs.existsSync(path.join(dataDir, "state.db")));
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

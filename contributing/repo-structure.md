@@ -71,8 +71,9 @@ pi-config/
 │   │   ├── pr-retro.ts             # Opt-in post-merge PR retrospective trigger (gated on `pr_retro_on_merge`, issue #1343)
 │   │   ├── rule-placeholders.ts     # Rule assembly: frontmatter gates, {{IF}}/{{IFNOT}} conditionals, {{REVIEW_LOOP_MAX_CYCLES}}
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
-│   │   ├── session-search.ts            # Keyword search over past conversation summaries
-│   │   ├── state-jsonl.ts               # JSONL state persistence (JsonlStateStore + JsonlAppendLog)
+│   │   ├── session-search.ts            # Keyword search over past conversation summaries (SQLite-backed via state-db.ts)
+│   │   ├── state-db.ts                  # Shared node:sqlite WAL state store (.pi/data/state.db, Float32 BLOB embeddings, legacy JSONL migration)
+│   │   ├── state-jsonl.ts               # JSONL append log + legacy JSONL helpers (JsonlAppendLog, truncateJsonlFile, parseLastValidLine)
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
 │   │   ├── status.ts                # /status command + session_status tool — unified session status snapshot (incl. worktree summary)

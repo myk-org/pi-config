@@ -11,7 +11,26 @@ import {
   cosineSimilarity,
   EMBEDDING_POOLING,
 } from "../../../extensions/orchestrator/memory-embeddings.js";
+import {
+  closeStateDbs,
+  getProjectStateDbPath,
+  openStateDb,
+} from "../../../extensions/orchestrator/state-db.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+
+function readSqliteEmbeddings(cwd: string): { pooling: string | null; keys: string[] } {
+  const db = openStateDb(getProjectStateDbPath(cwd));
+  const meta = db
+    .prepare("SELECT pooling FROM embedding_meta WHERE id = 1")
+    .get() as { pooling?: string } | undefined;
+  const rows = db
+    .prepare("SELECT entry_key FROM embeddings ORDER BY entry_key")
+    .all() as Array<{ entry_key: string }>;
+  return {
+    pooling: meta?.pooling ?? null,
+    keys: rows.map((r) => r.entry_key),
+  };
+}
 
 
 // Hardcoded to match NEAR_DUPLICATE_THRESHOLD in memory-tools.ts (0.90).
@@ -84,11 +103,12 @@ describe("embeddings cache invalidation", () => {
   });
 
   afterEach(() => {
+    closeStateDbs();
     rmSync(cwd, { recursive: true, force: true });
   });
 
   it("clears entries when store has different pooling", async () => {
-    // Write a store with old "cls" pooling and some fake entries
+    // Write a legacy store with old "cls" pooling and some fake entries
     const storePath = join(cwd, ".pi", "memory", "embeddings.jsonl");
     const oldStore = {
       model: "Xenova/bge-small-en-v1.5",
@@ -101,21 +121,16 @@ describe("embeddings cache invalidation", () => {
     };
     writeFileSync(storePath, JSON.stringify(oldStore) + "\n", "utf-8");
 
-    // Import embedEntry which triggers loadStore internally
     const { embedEntry } = await import("../../../extensions/orchestrator/memory-embeddings.js");
 
-    // embedEntry will call loadStore which should detect pooling mismatch and clear
-    // The model may not be available in test, but loadStore runs before model check
+    // embedEntry migrates legacy embeddings into state.db, detects pooling mismatch, and clears
     await embedEntry(cwd, "test entry", "lesson");
 
-    // Read the store back — last valid JSONL line has the updated state
-    const raw = readFileSync(storePath, "utf-8");
-    const lines = raw.split("\n").filter(Boolean);
-    const updatedStore = JSON.parse(lines[lines.length - 1]);
+    const updatedStore = readSqliteEmbeddings(cwd);
     assert.equal(updatedStore.pooling, "mean");
     // Old entries should be gone (cleared by invalidation)
-    assert.ok(!updatedStore.entries["abc123"], "Old CLS entry should be cleared");
-    assert.ok(!updatedStore.entries["def456"], "Old CLS entry should be cleared");
+    assert.ok(!updatedStore.keys.includes("abc123"), "Old CLS entry should be cleared");
+    assert.ok(!updatedStore.keys.includes("def456"), "Old CLS entry should be cleared");
   });
 
   it("preserves entries when pooling matches", async () => {
@@ -133,12 +148,10 @@ describe("embeddings cache invalidation", () => {
     const { embedEntry } = await import("../../../extensions/orchestrator/memory-embeddings.js");
     await embedEntry(cwd, "test entry", "lesson");
 
-    const raw = readFileSync(storePath, "utf-8");
-    const lines = raw.split("\n").filter(Boolean);
-    const updatedStore = JSON.parse(lines[lines.length - 1]);
+    const updatedStore = readSqliteEmbeddings(cwd);
     assert.equal(updatedStore.pooling, "mean");
     // Existing entry should still be there
-    assert.ok(updatedStore.entries["abc123"], "Existing mean entry should be preserved");
+    assert.ok(updatedStore.keys.includes("abc123"), "Existing mean entry should be preserved");
   });
 });
 
@@ -203,6 +216,7 @@ describe("embedding pruning and compaction (#1202)", () => {
   });
 
   afterEach(() => {
+    closeStateDbs();
     rmSync(cwd, { recursive: true, force: true });
   });
 
@@ -232,9 +246,7 @@ describe("embedding pruning and compaction (#1202)", () => {
     const pruned = pruneEmbeddings(cwd, [{ text: "Keep me", category: "lesson" }]);
     assert.equal(pruned, 2);
 
-    const raw = readFileSync(storePath, "utf-8").trim().split("\n");
-    const latest = JSON.parse(raw[raw.length - 1]!);
-    assert.deepEqual(Object.keys(latest.entries), [liveKey]);
+    assert.deepEqual(readSqliteEmbeddings(cwd).keys, [liveKey]);
   });
 
   it("rebuildAndOrganize prunes orphaned embeddings", async () => {
@@ -286,9 +298,7 @@ describe("embedding pruning and compaction (#1202)", () => {
     const { rebuildAndOrganize } = await import("../../../extensions/orchestrator/situation-report.js");
     rebuildAndOrganize(cwd);
 
-    const raw = readFileSync(storePath, "utf-8").trim().split("\n");
-    const latest = JSON.parse(raw[raw.length - 1]!);
-    assert.deepEqual(Object.keys(latest.entries), [liveKey]);
+    assert.deepEqual(readSqliteEmbeddings(cwd).keys, [liveKey]);
   });
 
   it("pruneExpiredEntries removes expired entry embeddings", async () => {
@@ -354,9 +364,7 @@ describe("embedding pruning and compaction (#1202)", () => {
     const { pruneExpiredEntries } = await import("../../../extensions/orchestrator/memory-store.js");
     assert.equal(pruneExpiredEntries(cwd), 1);
 
-    const raw = readFileSync(storePath, "utf-8").trim().split("\n");
-    const latest = JSON.parse(raw[raw.length - 1]!);
-    assert.deepEqual(Object.keys(latest.entries), [liveKey]);
+    assert.deepEqual(readSqliteEmbeddings(cwd).keys, [liveKey]);
   });
 
   it("rebuildAndOrganize preserves embeddings when topics directory is empty", async () => {
@@ -375,6 +383,9 @@ describe("embedding pruning and compaction (#1202)", () => {
     const { rebuildAndOrganize } = await import("../../../extensions/orchestrator/situation-report.js");
     rebuildAndOrganize(cwd);
 
+    // Ensure migration ran or preserves legacy untouched until accessed
+    const { pruneEmbeddings } = await import("../../../extensions/orchestrator/memory-embeddings.js");
+    assert.equal(pruneEmbeddings(cwd, []), 0);
     const raw = readFileSync(storePath, "utf-8").trim().split("\n");
     const latest = JSON.parse(raw[raw.length - 1]!);
     assert.deepEqual(Object.keys(latest.entries), ["existing_key"]);
@@ -414,12 +425,10 @@ describe("embedding pruning and compaction (#1202)", () => {
     );
     assert.equal(pruned, 1);
 
-    const raw = readFileSync(storePath, "utf-8").trim().split("\n");
-    const latest = JSON.parse(raw[raw.length - 1]!);
-    assert.deepEqual(Object.keys(latest.entries).sort(), [concurrentKey, liveKey].sort());
+    assert.deepEqual(readSqliteEmbeddings(cwd).keys.sort(), [concurrentKey, liveKey].sort());
   });
 
-  it("compacts embeddings.jsonl at compactThreshold=3", async () => {
+  it("removes individual embedding rows atomically in SQLite without rewriting legacy JSONL", async () => {
     const { createHash } = await import("node:crypto");
     const key = (text: string) =>
       createHash("sha256").update(`[lesson] ${text}`).digest("hex").slice(0, 16);
@@ -439,14 +448,16 @@ describe("embedding pruning and compaction (#1202)", () => {
     );
 
     const { removeEmbedding } = await import("../../../extensions/orchestrator/memory-embeddings.js");
-    // Initial file has 1 line; 2 removals reach compactThreshold=3 -> compacts to 1 line
     removeEmbedding(cwd, "item-0", "lesson");
-    assert.equal(readFileSync(storePath, "utf-8").trim().split("\n").length, 2);
+    assert.equal(readSqliteEmbeddings(cwd).keys.length, 4);
     removeEmbedding(cwd, "item-1", "lesson");
-    const linesAfterCompact = readFileSync(storePath, "utf-8").trim().split("\n");
-    assert.equal(linesAfterCompact.length, 1, `expected compacted single line, got ${linesAfterCompact.length}`);
-    // Subsequent removals stay bounded below compactThreshold
+    assert.equal(readSqliteEmbeddings(cwd).keys.length, 3);
     removeEmbedding(cwd, "item-2", "lesson");
-    assert.equal(readFileSync(storePath, "utf-8").trim().split("\n").length, 2);
+    assert.deepEqual(
+      readSqliteEmbeddings(cwd).keys.sort(),
+      [key("item-3"), key("item-4")].sort(),
+    );
+    // Legacy JSONL file stays untouched as a lossless backup
+    assert.equal(readFileSync(storePath, "utf-8").trim().split("\n").length, 1);
   });
 });

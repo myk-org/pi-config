@@ -26,7 +26,7 @@ import {
   clearReviewLearningCaches,
   resolveRepoInfo,
 } from "../../../extensions/orchestrator/review-learning.js";
-import { entryHash, getScoresPath, loadScores, type MemoryCategory, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
+import { entryHash, loadScores, mutateScores, type MemoryCategory, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { getProjectDataDir } from "../../../extensions/orchestrator/utils.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -854,7 +854,7 @@ describe("review-learning per-turn cache invalidation (#1197)", () => {
     assert.equal(after[0]!.text, "src/api.py: Validate inputs at boundary");
   });
 
-  it("invalidates memoized lesson lookup when only memory-scores.jsonl derivedFrom changes", () => {
+  it("invalidates memoized lesson lookup when only memory-scoring derivedFrom changes", () => {
     const cwd = cwdWithDb([[{ path: "src/api.py", body: "Raw DB comment body about caching" }]]);
     const lessonText = "src/api.py: Invalidate score cache on derivedFrom update";
     seedLessonEntry(cwd, lessonText);
@@ -863,13 +863,13 @@ describe("review-learning per-turn cache invalidation (#1197)", () => {
     const before = collectPathFindings(cwd, ["src/api.py"], repoInfo);
     assert.equal(before[0]!.text, "Raw DB comment body about caching");
 
-    // Mutate only memory-scores.jsonl to attach derivedFrom provenance (topics/*.md untouched)
-    const scoresPath = getScoresPath(cwd);
-    const lines = fs.readFileSync(scoresPath, "utf-8").trim().split("\n");
-    const latest = JSON.parse(lines[lines.length - 1]!);
+    // Mutate only the SQLite memory-scoring store to attach derivedFrom provenance (topics/*.md untouched)
     const hash = entryHash(`- [lesson] ${lessonText}`);
-    latest.entries[hash].derivedFrom = "reviews.db:1;myk-org/demo";
-    fs.writeFileSync(scoresPath, JSON.stringify(latest) + "\n", "utf-8");
+    mutateScores(cwd, (latest) => {
+      if (latest.entries[hash]) {
+        latest.entries[hash]!.derivedFrom = "reviews.db:1;myk-org/demo";
+      }
+    });
 
     const after = collectPathFindings(cwd, ["src/api.py"], repoInfo);
     assert.equal(after[0]!.text, lessonText);

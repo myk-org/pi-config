@@ -12,7 +12,7 @@ import { lstatSync, readFileSync, realpathSync, mkdirSync, rmdirSync } from "nod
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { acquireDirLock } from "../shared/file-lock.js";
 import { escapeRegExp, getProjectDataDir, realpathNearestExisting, sanitizeModelId } from "./utils.js";
 import {
@@ -6192,13 +6192,167 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
   const agentName = input.agentName !== undefined ? input.agentName : process.env.PI_AGENT_NAME;
   const sessionId = input.sessionId ?? null;
 
-  // Block ALL bash commands targeting pi-config-review-state — no exceptions.
-  if (getSetting(input.cwd, "review_loop_enforcement") && cmdLower.includes("pi-config-review-state")) {
-    return {
-      action: "block",
-      reason:
-        "\u26d4 Bash command targeting pi-config-review-state blocked. The review state is managed exclusively by the enforcement system.",
+  // Block bash commands tampering with review state storage (legacy pi-config-review-state
+  // files, SQLite .pi/data/state.db / WAL / SHM / kv_state, or .pi/run/review-tracked —
+  // including globs, brace expansions, shell variable indirection, nested `-c`/`eval`
+  // scripts, and adjacent redirects like `>.pi/data/state.db`) while allowing inert mentions
+  // and ordinary file commands (e.g. `grep kv_state src/`, `ls state.db`, `rm harmless `).
+  if (getSetting(input.cwd, "review_loop_enforcement")) {
+    const stateDbPathRe =
+      /(?:^|[\s"'`=:(/<>|;&])\.pi\/data\/state\.d(?:b(?:-wal|-shm)?|[?*[{][^\s"'`;|&)]*)(?=$|[\s"'`;|&){*?[\]\\])/i;
+    const piDirTargetRe =
+      /(?:^|[\s"'`=:(/<>|;&])\.pi(?:\/(?:data|run))?\/?(?=$|[\s"'`;|&)])/i;
+    const piProtectedFileRe =
+      /(?:^|[\s"'`=:(/<>|;&])\.pi\/(?:data\/(?:state\.[^\s"'`;|&)]*|[^\s"'`;|&)]*[*?[{][^\s"'`;|&)]*)|run\/(?:review-tracked[^\s"'`;|&)]*|[^\s"'`;|&)]*[*?[{][^\s"'`;|&)]*))(?=$|[\s"'`;|&){*?[\]\\])/i;
+    const adjacentRedirectRe = /(?:>>?|>\|)\s*["']?[^\s"'`;|&)]*\.pi\/(?:data\/state\.d|run\/review-tracked)/i;
+    const sqliteInvokeRe = /\b(?:node:sqlite|databasesync|sqlite3|better-sqlite3)\b/i;
+    const fileMutateCmds = new Set(["rm", "unlink", "mv", "cp", "truncate", "dd", "shred", "install", "ln"]);
+
+    const stripOuterQuotes = (s: string): string =>
+      (s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\""))
+        ? s.slice(1, -1)
+        : s;
+
+    // Normalize repeated `/` and `.` / `..` segments so paths like `.pi/data//state.db`
+    // or `./.pi/./data/../data/state.db` match protected-path checks reliably.
+    const normalizePathOperand = (raw: string): string => {
+      const unquoted = stripOuterQuotes(raw);
+      if (!unquoted.includes("/")) return unquoted;
+      return path.posix.normalize(unquoted.replace(/\/+/g, "/"));
     };
+
+    const normalizeSlashesInText = (text: string): string =>
+      text.replace(/\/{2,}/g, "/").replace(/\/\.(?=\/)/g, "");
+
+    const targetsProtectedPath = (text: string): boolean => {
+      const normalized = normalizeSlashesInText(text);
+      return (
+        stateDbPathRe.test(normalized) ||
+        piDirTargetRe.test(normalized) ||
+        piProtectedFileRe.test(normalized)
+      );
+    };
+
+    const expandVars = (text: string, vars: Map<string, string>): string => {
+      if (vars.size === 0 || !text.includes("$")) return text;
+      return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)\b/g, (m, a, b) => {
+        const name = (a ?? b) as string;
+        return vars.has(name) ? vars.get(name)! : m;
+      });
+    };
+
+    const recordAssignments = (tokens: string[], vars: Map<string, string>): boolean => {
+      let sawProtected = false;
+      for (const tok of tokens) {
+        if (tok === "export" || tok === "local" || tok === "readonly" || tok === "declare" || tok === "typeset") {
+          continue;
+        }
+        const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(tok);
+        if (!m) break;
+        const val = expandVars(stripOuterQuotes(m[2]!), vars);
+        vars.set(m[1]!, val);
+        if (targetsProtectedPath(val) || /\.pi(?:\/(?:data|run))?\b/i.test(val)) {
+          sawProtected = true;
+        }
+      }
+      return sawProtected;
+    };
+
+    const extractNestedShellScripts = (tokens: string[], cmdIdx: number, cmdWord: string): string[] => {
+      const scripts: string[] = [];
+      if (cmdWord === "eval") {
+        const evalArgs: string[] = [];
+        for (let i = cmdIdx + 1; i < tokens.length; i++) {
+          const tok = tokens[i]!;
+          if (evalArgs.length === 0 && tok === "--") continue;
+          evalArgs.push(stripOuterQuotes(tok));
+        }
+        if (evalArgs.length > 0) scripts.push(evalArgs.join(" "));
+        return scripts;
+      }
+      for (let i = cmdIdx + 1; i < tokens.length - 1; i++) {
+        const tok = tokens[i]!;
+        if (/^-[a-zA-Z]*c$/.test(tok)) {
+          const arg = stripOuterQuotes(tokens[i + 1]!);
+          if (arg) scripts.push(arg);
+        }
+      }
+      return scripts;
+    };
+
+    const hasSqliteTamperInText = (text: string): boolean =>
+      sqliteInvokeRe.test(text) &&
+      (/\bkv_state\b/i.test(text) ||
+        stateDbPathRe.test(text) ||
+        (/\.pi\/data\b/i.test(text) && !/\b(?:pr-)?reviews\.db\b/i.test(text)));
+
+    const inspectScriptForTamper = (script: string, parentVars: Map<string, string>, depth = 0): boolean => {
+      if (depth > 3) return false;
+      if (script.toLowerCase().includes("pi-config-review-state")) return true;
+      const vars = new Map(parentVars);
+      let sawProtectedAssignment = false;
+
+      for (const seg of unquotedSegments(script)) {
+        const rawTokens = tokenize(seg.text);
+        if (rawTokens.length === 0) continue;
+        if (recordAssignments(rawTokens, vars)) {
+          sawProtectedAssignment = true;
+        }
+
+        const expandedSeg = expandVars(seg.text, vars);
+        const normalizedSeg = normalizeSlashesInText(expandedSeg);
+        const maskedSeg = maskQuotedRegions(normalizedSeg);
+        if (
+          adjacentRedirectRe.test(maskedSeg) ||
+          (targetsProtectedPath(normalizedSeg) &&
+            bashWritesToPath(
+              normalizedSeg,
+              maskedSeg,
+              "\\.pi/(?:data/state\\.d(?:b(?:-wal|-shm)?|[?*[{][^\\s\"'`;|&)]*)|run/review-tracked)",
+            )) ||
+          hasSqliteTamperInText(normalizedSeg)
+        ) {
+          return true;
+        }
+
+        const expandedTokens = tokenize(expandedSeg);
+        if (expandedTokens.length === 0) continue;
+        const cmdIdx = skipToCommandWord(expandedTokens);
+        const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
+
+        if (fileMutateCmds.has(cmdWord)) {
+          if (
+            targetsProtectedPath(normalizedSeg) ||
+            expandedTokens
+              .slice(cmdIdx + 1)
+              .some((tok) => !tok.startsWith("-") && targetsProtectedPath(normalizePathOperand(tok)))
+          ) {
+            return true;
+          }
+          // Fail closed if an earlier segment assigned a protected path to a variable and
+          // this mutating command still has an unresolved variable operand (`$foo`/`${foo}`).
+          if (sawProtectedAssignment && /\$(?:\{[A-Za-z_]|[A-Za-z_])/.test(expandedSeg)) {
+            return true;
+          }
+        }
+
+        if (cmdWord === "eval" || runsNestedShell(expandedTokens)) {
+          for (const innerScript of extractNestedShellScripts(expandedTokens, cmdIdx, cmdWord)) {
+            if (inspectScriptForTamper(innerScript, vars, depth + 1)) return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    if (inspectScriptForTamper(command, new Map())) {
+      enfLog.warn("review_state_bash_blocked");
+      return {
+        action: "block",
+        reason:
+          "\u26d4 Bash command targeting review state storage (pi-config-review-state / state.db) blocked. The review state is managed exclusively by the enforcement system.",
+      };
+    }
   }
 
   // Block bash WRITES targeting the settings files (issue #949 / PR #950) and
