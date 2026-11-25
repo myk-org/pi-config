@@ -564,11 +564,25 @@ describe("formatBoundAgentsBadge (#1386)", () => {
 		);
 	});
 
-	it("sanitizes control characters and truncates long display names", () => {
+	it("strips ANSI escapes from display names", () => {
 		const badge = formatBoundAgentsBadge([
-			{ agent: "worker", name: "\x1b[31mReview\n\tvery long agent display name exceeding limit\x1b[0m" },
+			{ agent: "worker", name: "\x1b[31mReview PR\x1b[0m" },
+		]);
+		assert.equal(badge, "[⏳ worker · Review PR]");
+	});
+
+	it("normalizes control characters in display names", () => {
+		const badge = formatBoundAgentsBadge([
+			{ agent: "worker", name: "Review\n\tPR" },
 		]);
 		assert.doesNotMatch(badge, /[\x00-\x1f\x7f]/);
+		assert.equal(badge, "[⏳ worker · Review PR]");
+	});
+
+	it("truncates long display names with an ellipsis", () => {
+		const badge = formatBoundAgentsBadge([
+			{ agent: "worker", name: "Review very long agent display name exceeding limit" },
+		]);
 		assert.equal(badge, "[⏳ worker · Review very long agent…]");
 	});
 
@@ -581,6 +595,15 @@ describe("formatBoundAgentsBadge (#1386)", () => {
 			]),
 			"[⏳ code-reviewer-quality ×3]",
 		);
+	});
+
+	it("treats distinct long agent types sharing a 27-char prefix as mixed types", () => {
+		const badge = formatBoundAgentsBadge([
+			{ agent: "very-long-custom-agent-type-alpha" },
+			{ agent: "very-long-custom-agent-type-beta" },
+		]);
+		assert.match(badge, /^\[⏳ 2 agents: /);
+		assert.doesNotMatch(badge, /×2/);
 	});
 
 	it("formats mixed multi-type agents as [⏳ <N> agents: <a1>, <a2>]", () => {
@@ -615,18 +638,102 @@ describe("TaskWidget bound live async agent badge (#1386)", () => {
 		return render;
 	}
 
-	it("renders a single bound running agent on an in_progress task and supersedes metadata.agentId", () => {
+	async function withBridgedPitasks(
+		sessionId: string,
+		getAgents: () => any[],
+		fn: (ctx: {
+			handlers: Map<string, Function>;
+			eventListeners: Map<string, Set<Function>>;
+			emit: (name: string, payload?: unknown) => void;
+			getRender: () => (() => string[]) | undefined;
+			getRenders: () => number;
+		}) => Promise<void>,
+	): Promise<void> {
+		const child = process.env.PI_SUBAGENT_CHILD;
+		const piTasks = process.env.PI_TASKS;
+		const handlers = new Map<string, Function>();
+		const eventListeners = new Map<string, Set<Function>>();
+		let renderFn: (() => string[]) | undefined;
+		let renders = 0;
+		delete process.env.PI_SUBAGENT_CHILD;
+		process.env.PI_TASKS = "off";
+		const unregisterWorkload = publishWorkloadSources(
+			{ agents: getAgents, crons: () => [] },
+			sessionId,
+		);
+		try {
+			const api = {
+				on(name: string, handler: Function) { handlers.set(name, handler); },
+				registerTool() {},
+				registerCommand() {},
+				events: {
+					on(name: string, handler: Function) {
+						let set = eventListeners.get(name);
+						if (!set) { set = new Set(); eventListeners.set(name, set); }
+						set.add(handler);
+						return () => { set!.delete(handler); };
+					},
+					emit(name: string, payload?: unknown) {
+						for (const fnListener of eventListeners.get(name) ?? []) fnListener(payload);
+					},
+				},
+			};
+			pitasks(api as any);
+			const context = {
+				ui: {
+					setWidget(_name: string, value: any) {
+						if (value) {
+							renderFn = value({ terminal: { columns: 200 }, requestRender() { renders++; } }, theme).render;
+						}
+					},
+				},
+				sessionManager: { getSessionId: () => sessionId },
+			};
+			await handlers.get("session_start")!({ reason: "startup" }, context);
+			await fn({
+				handlers,
+				eventListeners,
+				emit: (name, payload) => api.events.emit(name, payload),
+				getRender: () => renderFn,
+				getRenders: () => renders,
+			});
+		} finally {
+			unregisterWorkload();
+			handlers.get("session_shutdown")?.();
+			resetSessionBridge({ all: true });
+			if (piTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = piTasks;
+			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = child;
+		}
+	}
+
+	it("renders a single bound running agent badge on an in_progress task", () => {
 		const store = new TaskStore();
-		const task = store.create("Build badge", "body", createdBy, undefined, { agentId: "abcde12345" });
+		const task = store.create("Build badge", "body", createdBy);
 		store.update(task.id, { status: "in_progress" });
-		const agents: BoundAsyncAgent[] = [
+		const widget = new TaskWidget(store, {}, () => [
 			{ id: "job-1", agent: "ts-expert", status: "running", taskId: task.id },
-		];
-		const widget = new TaskWidget(store, {}, () => agents);
+		]);
 		try {
 			const line = renderWithWidth(widget, 200)().find(l => l.includes(`#${task.id}`));
 			assert.ok(line);
 			assert.match(line, /\[⏳ ts-expert\]/);
+		} finally {
+			widget.dispose();
+		}
+	});
+
+	it("omits metadata.agentId fallback when a live bound agent is present", () => {
+		const store = new TaskStore();
+		const task = store.create("Build badge", "body", createdBy, undefined, { agentId: "abcde12345" });
+		store.update(task.id, { status: "in_progress" });
+		const widget = new TaskWidget(store, {}, () => [
+			{ id: "job-1", agent: "ts-expert", status: "running", taskId: task.id },
+		]);
+		try {
+			const line = renderWithWidth(widget, 200)().find(l => l.includes(`#${task.id}`));
+			assert.ok(line);
 			assert.doesNotMatch(line, /\(agent abcde\)/);
 		} finally {
 			widget.dispose();
@@ -713,7 +820,7 @@ describe("TaskWidget bound live async agent badge (#1386)", () => {
 		}
 	});
 
-	it("clears the badge and stops the timer once a bound agent finishes", () => {
+	it("clears the bound agent badge once the agent finishes", () => {
 		const store = new TaskStore();
 		const task = store.create("Queued work", "body", createdBy);
 		const agents: BoundAsyncAgent[] = [
@@ -722,19 +829,79 @@ describe("TaskWidget bound live async agent badge (#1386)", () => {
 		const widget = new TaskWidget(store, {}, () => agents);
 		try {
 			const render = renderWithWidth(widget, 200);
-			assert.equal(widget.hasActiveTimer(), true, "timer should stay active while visible pending task has live bound agent");
 			assert.match(render().join("\n"), /\[⏳ ts-expert\]/);
 
 			agents[0] = { ...agents[0], status: "complete" };
 			widget.update();
-			assert.equal(widget.hasActiveTimer(), false, "timer should stop once bound agent finishes");
 			assert.doesNotMatch(render().join("\n"), /\[⏳/);
 		} finally {
 			widget.dispose();
 		}
 	});
 
-	it("truncates task lines with badges to terminal column width", () => {
+	it("keeps the timer active for a visible pending bound agent until it finishes", () => {
+		const store = new TaskStore();
+		const task = store.create("Queued work", "body", createdBy);
+		const agents: BoundAsyncAgent[] = [
+			{ id: "job-1", agent: "ts-expert", status: "running", taskId: task.id },
+		];
+		const widget = new TaskWidget(store, {}, () => agents);
+		try {
+			renderWithWidth(widget, 200);
+			assert.equal(widget.hasActiveTimer(), true);
+
+			agents[0] = { ...agents[0], status: "complete" };
+			widget.update();
+			assert.equal(widget.hasActiveTimer(), false);
+		} finally {
+			widget.dispose();
+		}
+	});
+
+	it("preserves the live badge on long in_progress task titles within terminal width", () => {
+		const store = new TaskStore();
+		const task = store.create(
+			"Implement a very long task description that would otherwise consume every single terminal column",
+			"body",
+			createdBy,
+		);
+		store.update(task.id, { status: "in_progress" });
+		const widget = new TaskWidget(store, {}, () => [
+			{ id: "job-1", agent: "ts-expert", name: "Wire badge", status: "running", taskId: task.id },
+		]);
+		try {
+			const width = 80;
+			const line = renderWithWidth(widget, width)().find(l => l.includes(`#${task.id}`));
+			assert.ok(line);
+			assert.ok(visibleWidth(line) <= width, `expected visible width <= ${width}, got ${visibleWidth(line)}`);
+			assert.match(line, /\[⏳ ts-expert · Wire badge\]/);
+		} finally {
+			widget.dispose();
+		}
+	});
+
+	it("preserves the live badge on long pending task titles within terminal width", () => {
+		const store = new TaskStore();
+		const task = store.create(
+			"Pending task with an extremely long title that would otherwise push the live agent badge off screen",
+			"body",
+			createdBy,
+		);
+		const widget = new TaskWidget(store, {}, () => [
+			{ id: "job-1", agent: "python-expert", name: "Run pytest", status: "queued", taskId: task.id },
+		]);
+		try {
+			const width = 80;
+			const line = renderWithWidth(widget, width)().find(l => l.includes(`#${task.id}`));
+			assert.ok(line);
+			assert.ok(visibleWidth(line) <= width, `expected visible width <= ${width}, got ${visibleWidth(line)}`);
+			assert.match(line, /\[⏳ python-expert · Run pytest\]/);
+		} finally {
+			widget.dispose();
+		}
+	});
+
+	it("truncates task lines with badges to narrow terminal column width", () => {
 		const store = new TaskStore();
 		const task = store.create("Implement bound live async agent badge in widget", "body", createdBy);
 		store.update(task.id, { status: "in_progress" });
@@ -752,12 +919,27 @@ describe("TaskWidget bound live async agent badge (#1386)", () => {
 		}
 	});
 
-	it("ignores unlinked async agents with taskId '-1' or missing taskId", () => {
+	it("ignores unlinked async agents with taskId '-1'", () => {
 		const store = new TaskStore();
 		const task = store.create("Unbound task", "body", createdBy);
 		store.update(task.id, { status: "in_progress" });
 		const widget = new TaskWidget(store, {}, () => [
 			{ id: "job-1", agent: "worker", status: "running", taskId: "-1" },
+		]);
+		try {
+			const line = renderWithWidth(widget, 200)().find(l => l.includes(`#${task.id}`));
+			assert.ok(line);
+			assert.doesNotMatch(line, /\[⏳/);
+		} finally {
+			widget.dispose();
+		}
+	});
+
+	it("ignores async agents with missing taskId", () => {
+		const store = new TaskStore();
+		const task = store.create("Unbound task", "body", createdBy);
+		store.update(task.id, { status: "in_progress" });
+		const widget = new TaskWidget(store, {}, () => [
 			{ id: "job-2", agent: "scout", status: "running" },
 		]);
 		try {
@@ -769,73 +951,47 @@ describe("TaskWidget bound live async agent badge (#1386)", () => {
 		}
 	});
 
-	it("refreshes the tasks widget via publishedWorkloadSources on pidash:async-status and cleans up on shutdown", async () => {
-		const child = process.env.PI_SUBAGENT_CHILD;
-		const piTasks = process.env.PI_TASKS;
-		const handlers = new Map<string, Function>();
-		const eventListeners = new Map<string, Set<Function>>();
-		let renderFn: (() => string[]) | undefined;
-		let renders = 0;
-		delete process.env.PI_SUBAGENT_CHILD;
-		process.env.PI_TASKS = "off";
+	it("refreshes the tasks widget via publishedWorkloadSources when pidash:async-status fires", async () => {
 		let agents: any[] = [];
-		const unregisterWorkload = publishWorkloadSources(
-			{ agents: () => agents, crons: () => [] },
-			"badge-live-session",
-		);
-		try {
-			const api = {
-				on(name: string, handler: Function) { handlers.set(name, handler); },
-				registerTool() {},
-				registerCommand() {},
-				events: {
-					on(name: string, handler: Function) {
-						let set = eventListeners.get(name);
-						if (!set) { set = new Set(); eventListeners.set(name, set); }
-						set.add(handler);
-						return () => { set!.delete(handler); };
-					},
-					emit(name: string, payload?: unknown) {
-						for (const fn of eventListeners.get(name) ?? []) fn(payload);
-					},
-				},
-			};
-			pitasks(api as any);
-			const context = {
-				ui: {
-					setWidget(_name: string, value: any) {
-						if (value) {
-							renderFn = value({ terminal: { columns: 200 }, requestRender() { renders++; } }, theme).render;
-						}
-					},
-				},
-				sessionManager: { getSessionId: () => "badge-live-session" },
-			};
-			await handlers.get("session_start")!({ reason: "startup" }, context);
+		await withBridgedPitasks("badge-live-refresh", () => agents, async ({ emit, getRender, getRenders }) => {
 			const task = taskStore.create("Live bridged task", "body", createdBy);
-			assert.ok(renderFn);
-			assert.doesNotMatch(renderFn().join("\n"), /\[⏳/);
+			const render = getRender();
+			assert.ok(render);
+			assert.doesNotMatch(render().join("\n"), /\[⏳/);
 
-			const beforeEmit = renders;
+			const beforeEmit = getRenders();
 			agents = [{ id: "j1", agent: "ts-expert", name: "Wire badge", task: "t", status: "running", startedAt: Date.now(), taskId: task.id }];
-			api.events.emit("pidash:async-status", { count: 1 });
-			assert.ok(renders > beforeEmit, "pidash:async-status should trigger widget re-render");
-			assert.match(renderFn().join("\n"), /\[⏳ ts-expert · Wire badge\]/);
+			emit("pidash:async-status", { count: 1 });
+			assert.ok(getRenders() > beforeEmit);
+			assert.match(render().join("\n"), /\[⏳ ts-expert · Wire badge\]/);
 
 			agents = [{ id: "j1", agent: "ts-expert", name: "Wire badge", task: "t", status: "complete", startedAt: Date.now(), taskId: task.id }];
-			api.events.emit("pidash:async-status", { count: 0 });
-			assert.doesNotMatch(renderFn().join("\n"), /\[⏳/);
+			emit("pidash:async-status", { count: 0 });
+			assert.doesNotMatch(render().join("\n"), /\[⏳/);
+		});
+	});
 
+	it("unsubscribes the pidash:async-status listener on session_shutdown", async () => {
+		await withBridgedPitasks("badge-live-shutdown", () => [], async ({ handlers, eventListeners }) => {
+			assert.equal(eventListeners.get("pidash:async-status")?.size ?? 0, 1);
 			handlers.get("session_shutdown")!();
-			assert.equal(eventListeners.get("pidash:async-status")?.size ?? 0, 0, "shutdown should unsubscribe pidash:async-status listener");
+			assert.equal(eventListeners.get("pidash:async-status")?.size ?? 0, 0);
+		});
+	});
+
+	it("renders tasks without a badge when the bound-agents provider throws", () => {
+		const store = new TaskStore();
+		const task = store.create("Resilient task", "body", createdBy);
+		store.update(task.id, { status: "in_progress" });
+		const widget = new TaskWidget(store, {}, () => {
+			throw new Error("boom");
+		});
+		try {
+			const line = renderWithWidth(widget, 200)().find(l => l.includes(`#${task.id}`));
+			assert.ok(line);
+			assert.doesNotMatch(line, /\[⏳/);
 		} finally {
-			unregisterWorkload();
-			handlers.get("session_shutdown")?.();
-			resetSessionBridge({ all: true });
-			if (piTasks === undefined) delete process.env.PI_TASKS;
-			else process.env.PI_TASKS = piTasks;
-			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
-			else process.env.PI_SUBAGENT_CHILD = child;
+			widget.dispose();
 		}
 	});
 });

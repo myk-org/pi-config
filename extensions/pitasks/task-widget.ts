@@ -2,7 +2,7 @@
  * task-widget.ts — Persistent widget showing task list with status icons and progress.
  * Copied from @tintinweb/pi-tasks (MIT license).
  */
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import { formatWidgetShortcutHint, type WidgetMode } from "../shared/widget-visibility.js";
 import type { TaskStore } from "./task-store.js";
@@ -53,15 +53,41 @@ export function formatBoundAgentsBadge(
 		}
 		return `[⏳ ${agent}]`;
 	}
-	const types = agents.map((a) => truncateBadgeText(sanitizeBadgeText(a?.agent), MAX_BADGE_AGENT_CHARS) || "agent");
-	const uniqueTypes = [...new Set(types)];
-	if (uniqueTypes.length === 1) {
-		return `[⏳ ${uniqueTypes[0]} ×${agents.length}]`;
+	const rawTypes = agents.map((a) => sanitizeBadgeText(a?.agent) || "agent");
+	const uniqueRawTypes = [...new Set(rawTypes)];
+	if (uniqueRawTypes.length === 1) {
+		return `[⏳ ${truncateBadgeText(uniqueRawTypes[0], MAX_BADGE_AGENT_CHARS)} ×${agents.length}]`;
 	}
-	const listed = uniqueTypes.length <= 2
-		? uniqueTypes.join(", ")
-		: `${uniqueTypes.slice(0, 2).join(", ")}, +${uniqueTypes.length - 2}`;
+	const displayTypes = uniqueRawTypes.slice(0, 2).map((t) => truncateBadgeText(t, MAX_BADGE_AGENT_CHARS));
+	const listed = uniqueRawTypes.length <= 2
+		? displayTypes.join(", ")
+		: `${displayTypes.join(", ")}, +${uniqueRawTypes.length - 2}`;
 	return `[⏳ ${agents.length} agents: ${listed}]`;
+}
+
+function fitRowWithBadge(
+	prefix: string,
+	rawTitle: string,
+	fullTitle: string,
+	styleTitle: (text: string) => string,
+	boundBadge: string,
+	tail: string,
+	maxWidth: number,
+): string {
+	const prefixWidth = visibleWidth(prefix);
+	const badgeWidth = visibleWidth(boundBadge);
+	const tailWidth = visibleWidth(tail);
+	if (prefixWidth + visibleWidth(fullTitle) + badgeWidth + tailWidth <= maxWidth) {
+		return `${prefix}${styleTitle(fullTitle)}${boundBadge}${tail}`;
+	}
+	const budgetWithTail = maxWidth - prefixWidth - badgeWidth - tailWidth;
+	const budgetWithoutTail = maxWidth - prefixWidth - badgeWidth;
+	const titleBudget = budgetWithTail >= 8 ? budgetWithTail : budgetWithoutTail >= 4 ? budgetWithoutTail : 0;
+	if (titleBudget > 0) {
+		const fitted = truncateToWidth(rawTitle, titleBudget);
+		return truncateToWidth(`${prefix}${styleTitle(fitted)}${boundBadge}${tail}`, maxWidth);
+	}
+	return truncateToWidth(`${prefix}${styleTitle(fullTitle)}${boundBadge}${tail}`, maxWidth);
 }
 
 function truncateFromTop(tasks: any[], limit: number): any[] { return tasks.slice(-limit); }
@@ -267,7 +293,7 @@ export class TaskWidget {
 		try {
 			raw = this.getBoundAgents();
 		} catch (err) {
-			log.debug("bound_agents_lookup_failed", { error: String(err) });
+			log.warn("bound_agents_lookup_failed", { error: String(err) });
 			return byTask;
 		}
 		if (!raw) return byTask;
@@ -367,18 +393,29 @@ export class TaskWidget {
 			const boundBadge = boundBadgeText ? ` ${theme.fg("warning", boundBadgeText)}` : "";
 
 			const tag = theme.fg("dim", toTaskRowView(task).tag);
-			let text: string;
 			if (task.status === "in_progress") {
+				const prefix = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} `;
 				const form = task.activeForm || task.subject;
 				const agentId = !boundBadgeText ? task.metadata?.agentId : undefined;
 				const agentLabel = agentId ? ` (agent ${agentId.slice(0, 5)})` : "";
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${theme.fg("accent", form + agentLabel + "…")}${boundBadge}${stats}`;
+				const rawTitle = form + agentLabel;
+				const fullTitle = rawTitle + "…";
+				if (boundBadge) {
+					lines.push(fitRowWithBadge(prefix, rawTitle, fullTitle, (s) => theme.fg("accent", s), boundBadge, stats + suffix, w));
+				} else {
+					lines.push(truncate(`${prefix}${theme.fg("accent", fullTitle)}${stats}${suffix}`));
+				}
 			} else if (task.status === "completed") {
-				text = `  ${icon} ${tag} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}${stats}`;
+				const text = `  ${icon} ${tag} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}${stats}`;
+				lines.push(truncate(text + suffix));
 			} else {
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${task.subject}${boundBadge}${stats}`;
+				const prefix = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} `;
+				if (boundBadge) {
+					lines.push(fitRowWithBadge(prefix, task.subject, task.subject, (s) => s, boundBadge, stats + suffix, w));
+				} else {
+					lines.push(truncate(`${prefix}${task.subject}${stats}${suffix}`));
+				}
 			}
-			lines.push(truncate(text + suffix));
 		}
 
 		if (overflowLine && hiddenAt !== "top") lines.push(overflowLine);
