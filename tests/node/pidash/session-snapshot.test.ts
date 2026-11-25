@@ -11,8 +11,10 @@ import type { ChatMessage, SessionInfo, TokenUsage } from "../../../extensions/p
 import {
   applyEventToViewState,
   buildSessionSnapshot,
+  createAsyncAgentRegistry,
   createPidashSessionState,
   finalizeAsyncAgentDisconnect,
+  isLoopbackAddress,
   processPiPendingUiEvent,
   reconcileActiveAsyncAgents,
   recordPendingUiRequest,
@@ -20,7 +22,10 @@ import {
   sendSessionSnapshot,
   type ActiveAsyncAgentInfo,
 } from "../../../scripts/pidash-session-state.ts";
-import { appendAsyncAgentEventText } from "../../../extensions/shared/pidash-transcript-reducer.ts";
+import {
+  appendAsyncAgentEventText,
+  ASYNC_AGENT_TEXT_MAX,
+} from "../../../extensions/shared/pidash-transcript-reducer.ts";
 import { installReactDomShim } from "./react-dom-shim.mjs";
 
 const mounted: Root[] = [];
@@ -78,6 +83,8 @@ async function mountHandler(session: SessionInfo = makeSession()) {
   const { container } = installReactDomShim();
   let emit: (ev: any) => void = () => {};
   let resetHandlerState: (nextSessionId?: string | null) => void = () => {};
+  let setLastUserText: (text: string) => void = () => {};
+  let addMsg: (role: ChatMessage["role"], text: string, className?: string, meta?: ChatMessage["meta"]) => string = () => "";
   let latest: {
     messages: ChatMessage[];
     model: string;
@@ -106,6 +113,8 @@ async function mountHandler(session: SessionInfo = makeSession()) {
       () => {},
     );
     resetHandlerState = state.resetHandlerState;
+    setLastUserText = state.setLastUserText;
+    addMsg = state.addMsg;
     latest = {
       messages: state.messages,
       model: state.model,
@@ -124,6 +133,8 @@ async function mountHandler(session: SessionInfo = makeSession()) {
   return {
     emit: (ev: any) => emit(ev),
     resetHandlerState: (nextSessionId?: string | null) => resetHandlerState(nextSessionId),
+    setLastUserText: (text: string) => setLastUserText(text),
+    addMsg: (role: ChatMessage["role"], text: string, className?: string, meta?: ChatMessage["meta"]) => addMsg(role, text, className, meta),
     state: () => latest,
     renders: () => renderCount,
   };
@@ -439,6 +450,80 @@ describe("SessionViewState server snapshot (#1398)", () => {
     resetSessionViewState(reregistered);
     assert.deepEqual(buildSessionSnapshot(reregistered).availableCommands, []);
   });
+
+  it("enforces loopback validation, valid session registration, capacity limits, and bounded async text", () => {
+    assert.equal(isLoopbackAddress("127.0.0.1"), true);
+    assert.equal(isLoopbackAddress("::1"), true);
+    assert.equal(isLoopbackAddress("::ffff:127.0.0.1"), true);
+    assert.equal(isLoopbackAddress("192.168.1.25"), false);
+    assert.equal(isLoopbackAddress("10.0.0.5"), false);
+    assert.equal(isLoopbackAddress(undefined), false);
+
+    const { state, client } = makeClient();
+    const broadcasted: any[] = [];
+    const registry = createAsyncAgentRegistry(state.sessions, (ev) => broadcasted.push(ev), { maxAgents: 2 });
+    const ws1 = {};
+    const ws2 = {};
+    const ws3 = {};
+
+    // Reject unknown sessionId
+    assert.equal(registry.register(ws1, { id: "bad-sess", agent: "worker", sessionId: "unknown" }), null);
+    assert.equal(registry.agents.size, 0);
+
+    // Accept up to maxAgents=2 for a valid session
+    assert.ok(registry.register(ws1, { id: "a1", agent: "worker", cwd: "/repo", sessionId: client.session.sessionId }));
+    assert.ok(registry.register(ws2, { id: "a2", agent: "worker", cwd: "/repo", sessionId: client.session.sessionId }));
+    assert.equal(registry.register(ws3, { id: "a3", agent: "worker", cwd: "/repo", sessionId: client.session.sessionId }), null);
+
+    // Flood progress text well past ASYNC_AGENT_TEXT_MAX — both registry and snapshot card stay bounded
+    const hugeChunk = "x".repeat(ASYNC_AGENT_TEXT_MAX);
+    registry.event(ws1, { id: "a1", event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: hugeChunk } } });
+    registry.event(ws1, { id: "a1", event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "TAIL-MARKER" } } });
+
+    const info = registry.agents.get("a1");
+    assert.ok(info);
+    assert.ok(info.text.length <= ASYNC_AGENT_TEXT_MAX);
+    assert.ok(info.text.endsWith("TAIL-MARKER"));
+
+    const snap = buildSessionSnapshot(client);
+    const card = snap.messages.find((m) => m.id === snap.live.asyncMsgs["a1"].msgId);
+    assert.ok(card);
+    assert.ok(snap.live.asyncMsgs["a1"].text.length <= ASYNC_AGENT_TEXT_MAX);
+    assert.ok(card.text.includes("TAIL-MARKER"));
+  });
+
+  it("prevents an older closing async socket from failing or deleting a live replacement socket", () => {
+    const { state, client } = makeClient();
+    const broadcasted: any[] = [];
+    const registry = createAsyncAgentRegistry(state.sessions, (ev) => broadcasted.push(ev));
+    const oldSocket = {};
+    const newSocket = {};
+
+    assert.ok(registry.register(oldSocket, { id: "dup-job", agent: "worker", cwd: "/repo", sessionId: client.session.sessionId }));
+    assert.ok(registry.register(newSocket, { id: "dup-job", agent: "worker", cwd: "/repo", sessionId: client.session.sessionId }));
+
+    // Stale events and disconnect from oldSocket must be ignored
+    assert.equal(
+      registry.event(oldSocket, { id: "dup-job", event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "stale" } } }),
+      false,
+    );
+    assert.equal(registry.disconnect(oldSocket, "dup-job"), false);
+    assert.equal(broadcasted.some((ev) => ev.type === "async_agent_complete"), false);
+    assert.equal(registry.agents.get("dup-job")?.ws, newSocket);
+
+    // Replacement socket continues updating and completing normally
+    assert.equal(
+      registry.event(newSocket, { id: "dup-job", event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "live progress" } } }),
+      true,
+    );
+    assert.equal(registry.complete(newSocket, { id: "dup-job", success: true }), true);
+
+    const snap = buildSessionSnapshot(client);
+    const doneCard = snap.messages.find((m) => m.className === "async-agent-done");
+    assert.ok(doneCard);
+    assert.ok(doneCard.text.includes("live progress"));
+    assert.ok(doneCard.text.startsWith("✅"));
+  });
 });
 
 describe("useMessageHandler session_snapshot hydration (#1398)", () => {
@@ -592,5 +677,28 @@ describe("useMessageHandler session_snapshot hydration (#1398)", () => {
     assert.equal(h.state().messages[0].text, "new session msg");
     assert.equal(h.state().model, "new-model");
     assert.equal(h.state().streaming, true);
+  });
+
+  it("does not duplicate a locally sent prompt when streaming deltas arrive before Pi echoes message_start", async () => {
+    const h = await mountHandler(makeSession());
+
+    await act(async () => {
+      // Simulate App.tsx handleSend while assistant is mid-stream
+      h.emit({ type: "agent_start" });
+      h.emit({ type: "message_start", message: { role: "assistant" } });
+      h.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Working..." } });
+      h.setLastUserText("steer now");
+      h.addMsg("user", "steer now");
+      // Ongoing streaming deltas and tool calls arrive before Pi echoes the user prompt
+      h.emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "still thinking" } });
+      h.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " more text" } });
+      h.emit({ type: "tool_execution_start", toolName: "bash", toolCallId: "t1", args: { command: "pwd" } });
+      // Now Pi echoes the matching user message_start
+      h.emit({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "steer now" }] } });
+    });
+
+    const userMsgs = h.state().messages.filter((m) => m.role === "user");
+    assert.equal(userMsgs.length, 1);
+    assert.equal(userMsgs[0].text, "steer now");
   });
 });

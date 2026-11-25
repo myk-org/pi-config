@@ -9,12 +9,17 @@
 
 import type { ChatMessage, MessageRole, SessionCommandInfo, TokenUsage } from "./types.ts";
 
+export const ASYNC_AGENT_TEXT_MAX = 32_768;
+const TRUNCATED_PREFIX = "...(truncated)\n";
+
 export interface TranscriptRefs {
   think: { id: string; text: string; startTs: number };
   assist: { id: string; text: string };
   tool: { id: string; name: string; startTs: number; callId: string };
   asyncMsgs: Map<string, { msgId: string; text: string }>;
   lastUserText: string;
+  /** Local prompts already rendered by the browser awaiting Pi's echoed user message_start. */
+  pendingLocalUserTexts?: string[];
 }
 
 export interface TranscriptAddOptions {
@@ -67,7 +72,11 @@ export function textFromMessage(msg: any): string {
  * Shared by both the transcript reducer and the daemon's `asyncAgents` registry
  * so progress arriving during a Pi reconnect is preserved verbatim.
  */
-export function appendAsyncAgentEventText(tracked: { text: string }, inner: any): boolean {
+export function appendAsyncAgentEventText(
+  tracked: { text: string },
+  inner: any,
+  maxChars = ASYNC_AGENT_TEXT_MAX,
+): boolean {
   if (!inner || typeof inner !== "object") return false;
   let changed = false;
 
@@ -92,6 +101,13 @@ export function appendAsyncAgentEventText(tracked: { text: string }, inner: any)
     const result = String(inner.result.content[0].text).slice(0, 200);
     tracked.text += `\n${inner.isError ? "✗" : "✓"} ${result}`;
     changed = true;
+  }
+
+  if (changed && maxChars > 0 && tracked.text.length > maxChars) {
+    const keep = Math.max(0, maxChars - TRUNCATED_PREFIX.length);
+    tracked.text = keep > 0
+      ? TRUNCATED_PREFIX + tracked.text.slice(-keep)
+      : tracked.text.slice(-maxChars);
   }
 
   return changed;
@@ -158,9 +174,14 @@ export function applyTranscriptEvent(
       if (!msg) return true;
       if (msg.role === "user") {
         const t = textFromMessage(msg);
-        if (t && t !== refs.lastUserText) {
-          refs.lastUserText = t;
-          sink.add("user", t, undefined, undefined, { timestamp: ts });
+        if (t) {
+          const localIdx = refs.pendingLocalUserTexts?.indexOf(t) ?? -1;
+          if (localIdx !== -1) {
+            refs.pendingLocalUserTexts!.splice(localIdx, 1);
+          } else if (t !== refs.lastUserText) {
+            refs.lastUserText = t;
+            sink.add("user", t, undefined, undefined, { timestamp: ts });
+          }
         }
       } else if (msg.role === "assistant") {
         refs.think = { id: "", text: "", startTs: 0 };

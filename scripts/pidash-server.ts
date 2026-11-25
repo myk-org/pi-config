@@ -14,23 +14,21 @@ import { createRequire } from "node:module";
 import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import {
-  applyEventToViewState,
   clearPendingUiRequests,
+  createAsyncAgentRegistry,
   disconnectPidashSession,
   dismissAllViewAsks,
-  finalizeAsyncAgentDisconnect,
   forwardBrowserUiResponse,
   isInteractiveUiRequest,
+  isLoopbackAddress,
   processPiPendingUiEvent,
   reconcileActiveAsyncAgents,
   registerPidashSession,
   resetSessionViewState,
   sendSessionSnapshot,
   updatePidashSession,
-  type ActiveAsyncAgentInfo,
   type PiClient,
 } from "./pidash-session-state.ts";
-import { appendAsyncAgentEventText } from "../extensions/shared/pidash-transcript-reducer.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
 import { applyActivityEvent, initialActivityState, shouldAcceptActivityEvent } from "../extensions/pidash/activity-state.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
@@ -63,7 +61,7 @@ const piEventHooks: Array<(sessionId: string, event: any) => void> = [];
 const _require = createRequire(import.meta.url);
 const WebSocket = _require("ws");
 const asyncWss = new WebSocket.Server({ noServer: true });
-const asyncAgents = new Map<string, ActiveAsyncAgentInfo>();
+let asyncRegistry: ReturnType<typeof createAsyncAgentRegistry>;
 
 function getActiveSessions(): SessionInfo[] {
   return Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
@@ -154,7 +152,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
 
   if (parsed.type === "replay_complete" && piClient) {
     piClient.replaying = false;
-    reconcileActiveAsyncAgents(piClient, asyncAgents.values());
+    reconcileActiveAsyncAgents(piClient, asyncRegistry.agents.values());
     log(`replay complete for ${piClient.session.sessionId}`);
     return;
   }
@@ -340,6 +338,12 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
 
   extraUpgrades: (pathname, req, socket, head) => {
     if (pathname === "/ws/async") {
+      if (!isLoopbackAddress(req.socket?.remoteAddress)) {
+        log(`rejected non-loopback /ws/async upgrade from ${req.socket?.remoteAddress || "unknown"}`);
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return true;
+      }
       asyncWss.handleUpgrade(req, socket, head, (ws: any) => asyncWss.emit("connection", ws, req));
       return true;
     }
@@ -349,7 +353,9 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
   onShutdown: () => debugLogWriter.flush(),
 });
 
-// Async agent WebSocket handler
+asyncRegistry = createAsyncAgentRegistry(piClients, broadcastToBrowsers);
+
+// Async agent WebSocket handler (loopback-only, validated against active sessions)
 function handleAsyncConnection(ws: any) {
   log("async agent WebSocket connected");
   let agentId: string | null = null;
@@ -359,71 +365,34 @@ function handleAsyncConnection(ws: any) {
       const parsed = JSON.parse(data.toString());
 
       if (parsed.type === "async_register") {
-        log(`async agent registered: ${parsed.id} (${parsed.agent})`);
-        agentId = parsed.id;
-        asyncAgents.set(agentId, {
-          id: parsed.id,
-          agent: parsed.agent,
-          task: parsed.task,
-          cwd: parsed.cwd,
-          sessionId: parsed.sessionId,
-          text: "",
-        });
-        const asyncStartEvent = {
-          type: "async_agent_start",
-          id: parsed.id,
-          agent: parsed.agent,
-          task: parsed.task,
-          cwd: parsed.cwd,
-          sessionId: parsed.sessionId,
-        };
-        const target = parsed.sessionId ? piClients.get(parsed.sessionId) : undefined;
-        if (target) applyEventToViewState(target, asyncStartEvent);
-        broadcastToBrowsers(asyncStartEvent);
+        if (agentId && agentId !== parsed.id) {
+          asyncRegistry.disconnect(ws, agentId);
+          agentId = null;
+        }
+        const info = asyncRegistry.register(ws, parsed);
+        if (info) {
+          agentId = info.id;
+          log(`async agent registered: ${info.id} (${info.agent})`);
+        }
         return;
       }
 
       if (parsed.type === "async_event" && parsed.id) {
-        log(`async event from ${parsed.id}: ${parsed.event?.type}`);
-        const info = asyncAgents.get(parsed.id);
-        if (info) appendAsyncAgentEventText(info, parsed.event);
-        const sessionId = info?.sessionId;
-        const asyncProgressEvent = {
-          type: "async_agent_event",
-          id: parsed.id,
-          event: parsed.event,
-          sessionId,
-        };
-        const target = sessionId ? piClients.get(sessionId) : undefined;
-        if (target) applyEventToViewState(target, asyncProgressEvent);
-        broadcastToBrowsers(asyncProgressEvent);
+        if (asyncRegistry.event(ws, parsed)) {
+          log(`async event from ${parsed.id}: ${parsed.event?.type}`);
+        }
         return;
       }
 
       if (parsed.type === "async_complete" && parsed.id) {
-        const sessionId = asyncAgents.get(parsed.id)?.sessionId;
-        asyncAgents.delete(parsed.id);
-        const asyncCompleteEvent = {
-          type: "async_agent_complete",
-          id: parsed.id,
-          success: parsed.success,
-          sessionId,
-        };
-        const target = sessionId ? piClients.get(sessionId) : undefined;
-        if (target) applyEventToViewState(target, asyncCompleteEvent);
-        broadcastToBrowsers(asyncCompleteEvent);
+        asyncRegistry.complete(ws, parsed);
         return;
       }
     } catch (e: any) { log(`async message error: ${e.message}`); }
   });
 
   const cleanupAsyncAgent = () => {
-    if (!agentId) return;
-    const info = asyncAgents.get(agentId);
-    if (!info) return;
-    asyncAgents.delete(agentId);
-    const target = info.sessionId ? piClients.get(info.sessionId) : undefined;
-    finalizeAsyncAgentDisconnect(target, info, broadcastToBrowsers);
+    asyncRegistry.disconnect(ws, agentId);
   };
 
   ws.on("close", cleanupAsyncAgent);

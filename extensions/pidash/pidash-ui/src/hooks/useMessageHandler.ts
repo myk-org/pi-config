@@ -39,6 +39,7 @@ function emptyTranscriptRefs(): TranscriptRefs {
     tool: { id: "", name: "", startTs: 0, callId: "" },
     asyncMsgs: new Map(),
     lastUserText: "",
+    pendingLocalUserTexts: [],
   };
 }
 
@@ -372,6 +373,7 @@ export function useMessageHandler(
           assist: ev.live?.assist ? { ...ev.live.assist } : { id: "", text: "" },
           tool: ev.live?.tool ? { ...ev.live.tool } : { id: "", name: "", startTs: 0, callId: "" },
           lastUserText: ev.live?.lastUserText || "",
+          pendingLocalUserTexts: [],
           asyncMsgs: new Map(
             Object.entries(ev.live?.asyncMsgs ?? {})
               .filter(([, entry]) => Boolean(entry && typeof entry.msgId === "string"))
@@ -453,7 +455,10 @@ export function useMessageHandler(
   }, []);
 
   const setLastUserText = useCallback((text: string) => {
-    refsRef.current.lastUserText = text;
+    if (!text) return;
+    const queue = refsRef.current.pendingLocalUserTexts ?? (refsRef.current.pendingLocalUserTexts = []);
+    queue.push(text);
+    if (queue.length > 20) queue.shift();
   }, []);
 
   return {

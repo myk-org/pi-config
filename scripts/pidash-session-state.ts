@@ -8,7 +8,9 @@ import type {
   TokenUsage,
 } from "../extensions/shared/types.ts";
 import {
+  appendAsyncAgentEventText,
   applyTranscriptEvent,
+  ASYNC_AGENT_TEXT_MAX,
   type TranscriptAddOptions,
   type TranscriptRefs,
   type TranscriptSink,
@@ -20,6 +22,11 @@ const log = createLogger("pidash");
 
 export const PENDING_UI_REQUESTS_MAX = 50;
 export const VIEW_STATE_MESSAGES_MAX = 1000;
+export const ASYNC_AGENTS_MAX = 100;
+
+export function isLoopbackAddress(addr: string | undefined | null): boolean {
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
 
 export interface PendingUiRequestStore {
   pendingUiRequests: Map<string, string>;
@@ -45,6 +52,7 @@ export interface ActiveAsyncAgentInfo {
   cwd: string;
   sessionId?: string;
   text: string;
+  ws?: any;
 }
 
 export interface PiClient extends PendingUiRequestStore {
@@ -363,6 +371,117 @@ export function finalizeAsyncAgentDisconnect(
     id: info.id,
     sessionId: info.sessionId,
   });
+}
+
+/**
+ * Bounded, socket-owned registry for `/ws/async` worker connections.
+ *
+ * Validates that registrations target a known Pi session, caps total tracked
+ * workers and per-worker progress text, and enforces socket ownership so an
+ * older closing socket can never fail or delete a live replacement registration.
+ */
+export function createAsyncAgentRegistry(
+  piClients: Map<string, PiClient>,
+  broadcast: (event: object) => void,
+  opts: { maxAgents?: number; maxTextChars?: number } = {},
+) {
+  const maxAgents = opts.maxAgents ?? ASYNC_AGENTS_MAX;
+  const maxTextChars = opts.maxTextChars ?? ASYNC_AGENT_TEXT_MAX;
+  const agents = new Map<string, ActiveAsyncAgentInfo>();
+
+  return {
+    agents,
+
+    register(ws: any, parsed: any): ActiveAsyncAgentInfo | null {
+      const id = typeof parsed?.id === "string" ? parsed.id : "";
+      const sessionId = typeof parsed?.sessionId === "string" ? parsed.sessionId : "";
+      if (!id || !sessionId || !piClients.has(sessionId)) {
+        log.warn("rejected async_register for invalid id or unknown session", { id, sessionId });
+        return null;
+      }
+      if (!agents.has(id) && agents.size >= maxAgents) {
+        log.warn("rejected async_register: registry capacity reached", { id, sessionId, maxAgents });
+        return null;
+      }
+      const info: ActiveAsyncAgentInfo = {
+        id,
+        agent: typeof parsed.agent === "string" ? parsed.agent : "agent",
+        task: typeof parsed.task === "string" ? parsed.task : "",
+        cwd: typeof parsed.cwd === "string" ? parsed.cwd : "",
+        sessionId,
+        text: "",
+        ws,
+      };
+      agents.set(id, info);
+      const startEvent = {
+        type: "async_agent_start",
+        id: info.id,
+        agent: info.agent,
+        task: info.task,
+        cwd: info.cwd,
+        sessionId: info.sessionId,
+      };
+      const target = piClients.get(sessionId);
+      if (target) applyEventToViewState(target, startEvent);
+      broadcast(startEvent);
+      return info;
+    },
+
+    event(ws: any, parsed: any): boolean {
+      const id = typeof parsed?.id === "string" ? parsed.id : "";
+      if (!id) return false;
+      const info = agents.get(id);
+      if (!info || info.ws !== ws) {
+        log.debug("ignored async_event from non-owning socket", { id });
+        return false;
+      }
+      appendAsyncAgentEventText(info, parsed.event, maxTextChars);
+      const progressEvent = {
+        type: "async_agent_event",
+        id,
+        event: parsed.event,
+        sessionId: info.sessionId,
+      };
+      const target = info.sessionId ? piClients.get(info.sessionId) : undefined;
+      if (target) applyEventToViewState(target, progressEvent);
+      broadcast(progressEvent);
+      return true;
+    },
+
+    complete(ws: any, parsed: any): boolean {
+      const id = typeof parsed?.id === "string" ? parsed.id : "";
+      if (!id) return false;
+      const info = agents.get(id);
+      if (!info || info.ws !== ws) {
+        log.debug("ignored async_complete from non-owning socket", { id });
+        return false;
+      }
+      agents.delete(id);
+      const completeEvent = {
+        type: "async_agent_complete",
+        id,
+        success: parsed.success,
+        sessionId: info.sessionId,
+      };
+      const target = info.sessionId ? piClients.get(info.sessionId) : undefined;
+      if (target) applyEventToViewState(target, completeEvent);
+      broadcast(completeEvent);
+      return true;
+    },
+
+    disconnect(ws: any, id: string | null): boolean {
+      if (!id) return false;
+      const info = agents.get(id);
+      if (!info || info.ws !== ws) {
+        log.debug("ignored async disconnect for non-owning socket", { id });
+        return false;
+      }
+      agents.delete(id);
+      const target = info.sessionId ? piClients.get(info.sessionId) : undefined;
+      finalizeAsyncAgentDisconnect(target, info, broadcast);
+      return true;
+    },
+  };
 }
 
 export function buildSessionSnapshot(client: PiClient): SessionSnapshotPayload {
