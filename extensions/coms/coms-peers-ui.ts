@@ -1,8 +1,9 @@
 /**
- * Coms peer overlay — the same interaction as `/async-status`, for the peer inventory.
+ * Coms peer overlay — the same interaction as `/async`, for the peer inventory.
  *
  * The text list answered "who exists?"; this answers it in the place a user acts: navigate with
- * j/k, `x` kills the focused peer, `X` kills every live peer, `m` writes the focused peer a message
+ * j/k, `f` toggles this project / all projects, `q` opens the local inbound queue overlay,
+ * `x` kills the focused/selected peer(s), `X` kills every live peer, `m` writes a message
  * as the user, Esc closes. Detail pane shows where the peer runs and how healthy it is (heartbeat
  * age, socket, queue, context), which is the state a headless peer can actually expose — it has no
  * screen to watch.
@@ -22,13 +23,17 @@ import type { RegistryRow } from "./coms-peers.js";
 
 const log = createLogger("coms-peers-ui");
 
+export type ComsPeerScope = "project" | "all";
+
 export interface ComsPeersOverlayDeps {
   /** Live rows, freshly read each render (a peer can die or join while the overlay is open). */
-  listPeers: () => RegistryRow[];
+  listPeers: (scope?: ComsPeerScope) => RegistryRow[];
   /** Kill one peer; returns what happened so the overlay can say so. */
   killPeer: (row: RegistryRow) => string;
-  /** Kill every live peer. */
-  killAll: () => string;
+  /** Kill every live peer in the active scope. */
+  killAll: (scope?: ComsPeerScope) => string;
+  /** Open the local inbound queue overlay (`q` key). */
+  openQueue?: () => Promise<void>;
   /** Send the user's own message to a peer (#1077). Absent means no composer is offered.
    *  Returns a stated outcome: a caller that sniffs text to decide delivery counts a dead socket
    *  as a success (#1084). */
@@ -53,34 +58,53 @@ export async function openComsPeersOverlay(
   deps: ComsPeersOverlayDeps,
 ): Promise<void> {
   const openOverlay = deps.openOverlay ?? openListDetailOverlay;
+  let projectScope: ComsPeerScope = "project";
   // Names can be reused; ticks and focus belong to this session's endpoint.
-  const toRows = (): Row[] => deps.listPeers().map((row) => ({ ...row, id: `${row.project}:${row.name}\0${row.endpoint}` }));
-  // `m` needs the whole terminal for a text dialog, and Enter navigates a level deeper, so the
-  // list closes and is re-opened after each. The overlay hands the focused row over through these
-  // queues (a bare variable would be narrowed to null across the await, since the assignment
-  // happens inside its callback).
-  // Each entry: the rows that survived to this moment, and the selected ids that had already gone.
+  const toRows = (): Row[] =>
+    deps.listPeers(projectScope).map((row) => ({ ...row, id: `${row.project}:${row.name}\0${row.endpoint}` }));
+  // `m` needs the whole terminal for a text dialog, `q` opens the inbound queue overlay, and Enter
+  // navigates a level deeper, so the list closes and is re-opened after each.
   const composeQueue: Array<{ rows: Row[]; missing: readonly string[] }> = [];
   // The ticks belong to the USER, not to one dashboard instance: entering a drilldown re-opens the
   // list with a fresh instance, so the selection survives here instead (a `Set` the overlay seeds
   // and reports back into). Same reason `reselectPeer` exists for the cursor.
   const selectedIds = new Set<string>();
   const peerQueue: Row[] = [];
+  let queueRequested = false;
   // #1084: Esc from the drilldown returns to the peer list focused on the peer it came from.
   let reselectPeer: string | undefined;
 
+  const footerHints = [
+    "↑↓/jk navigate",
+    "Space select",
+    ...(deps.tellPeer ? ["m message"] : []),
+    "x kill",
+    "X kill all",
+    "f scope",
+    ...(deps.openQueue ? ["q queue"] : []),
+    "Esc close",
+  ].join(" · ");
+
   for (;;) {
+    const allowEmpty =
+      Boolean(deps.openQueue) ||
+      deps.listPeers("project").length > 0 ||
+      deps.listPeers("all").length > 0;
     await openOverlay<string, Row>(ctx, {
       emptyMessage: deps.emptyMessage ?? "No peers in the coms registry.",
+      allowEmpty,
       initialSelectionId: reselectPeer,
       initialSelectionIds: [...selectedIds],
       listSpec: {
         title: "Coms peers",
         countLabel: (rows) => `${rows.length} peer${rows.length === 1 ? "" : "s"}`,
-        borderTitle: (rows) => `peers · ${rows.filter((r) => r.busy).length} busy / ${rows.length}`,
-        footerHints: deps.tellPeer
-          ? "↑↓/jk navigate · Space select · m message · x kill peer · X kill all · Esc close"
-          : "↑↓/jk navigate · Space select · x kill peer · X kill all · Esc close",
+        borderTitle: (rows) =>
+          `peers (${projectScope === "all" ? "all projects" : "this project"}) · ${rows.filter((r) => r.busy).length} busy / ${rows.length}`,
+        emptyBody: () =>
+          projectScope === "all"
+            ? (deps.openQueue ? "No peers in any project. Press q for inbound queue." : "No peers in any project.")
+            : (deps.openQueue ? "No peers in this project. Press f for all projects or q for inbound queue." : "No peers in this project. Press f for all projects."),
+        footerHints,
         listItems: toRows,
         rowParts: (row, theme: Theme) => {
           // #1083: the peer's own active work — or `unknown`, never a fabricated 0.
@@ -98,6 +122,20 @@ export async function openComsPeersOverlay(
             ],
           };
         },
+        onKey: (key, row) => {
+          if (key === "f") {
+            projectScope = projectScope === "project" ? "all" : "project";
+            log.debug("overlay_scope_toggled", { scope: projectScope });
+            return "redraw";
+          }
+          if (key === "q" && deps.openQueue) {
+            if (row) reselectPeer = row.id;
+            queueRequested = true;
+            log.debug("overlay_open_queue_requested");
+            return "close";
+          }
+          return false;
+        },
         onX: (row) => {
           // No detail pane holds a result any more, so the outcome is notified where the user looks.
           const killed = deps.killPeer(row);
@@ -111,8 +149,8 @@ export async function openComsPeersOverlay(
           try { ctx.ui.notify(sanitizePeerText(results, 120), "info"); } catch {}
         },
         onKillAll: () => {
-          const killed = deps.killAll();
-          log.info("overlay_kill_all");
+          const killed = deps.killAll(projectScope);
+          log.info("overlay_kill_all", { scope: projectScope });
           try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
         },
         // The overlay keeps no state across re-opens: it reports the ticks and takes them back.
@@ -127,6 +165,12 @@ export async function openComsPeersOverlay(
         onSelect: (row) => { peerQueue.push(row); },
       },
     });
+
+    if (queueRequested && deps.openQueue) {
+      queueRequested = false;
+      await deps.openQueue();
+      continue;
+    }
 
     const inspected = peerQueue.pop();
     if (inspected) {
@@ -149,7 +193,7 @@ export async function openComsPeersOverlay(
     // Everyone left before the dialog opened: say nothing was sent, do not ask for text.
     if (targets.length === 0) {
       log.warn("overlay_tell_nothing_sent", { selected: total, missing: missing.length });
-      try { ctx.ui.notify(sanitizePeerText(`⚠️ nothing sent · Esc closes; reopen /coms peers to reset selection${goneNote}`, 160), "error"); } catch {}
+      try { ctx.ui.notify(sanitizePeerText(`⚠️ nothing sent · Esc closes; reopen /coms to reset selection${goneNote}`, 160), "error"); } catch {}
       continue;
     }
 

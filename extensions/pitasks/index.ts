@@ -5,16 +5,14 @@
  * Added: store export for coms direct access.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { isAbsolute } from "node:path";
 import { TaskStore, resolveStorePath, type ResolveStorePathOptions } from "./task-store.js";
 import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
-import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { isBrowserDispatch, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
 	TOGGLE_ALL_WIDGETS_EVENT,
-	applyWidgetAction,
 	cycleWidgetMode,
 	getRegisteredWidgetShortcut,
 	getWidgetMode,
@@ -30,18 +28,13 @@ import {
 	resolveBridgeSessionKey,
 	type TaskTelemetryActiveCallback,
 } from "../shared/session-bridge.js";
-import { createBridgedUi } from "../shared/ui-bridge.js";
 import { openTasksOverlay } from "./tasks-ui.js";
 import {
-	TASKS_USAGE,
-	applyTaskAction,
 	formatTasksPlainText,
-	parseTasksCommand,
 	selectTaskRows,
 	taskCompletionNotice,
 	tasksOverlayDeps,
 } from "./tasks-view.js";
-import { isBrowserDispatch } from "../shared/ui-bridge.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import {
@@ -491,6 +484,9 @@ export default function (pi: ExtensionAPI) {
 				log.error("task_completed_notice_failed", { taskId: task.id, errorType: error instanceof Error ? error.name : typeof error });
 				ui?.notify(`Task #${task.id} completed, but its notice could not be submitted. Read it with TaskGet.`, "warning");
 			}
+		}, (taskId) => {
+			widget.setActiveTask(taskId, true);
+			widget.update();
 		});
 	}
 	function handleTaskOp(data: any): void {
@@ -773,122 +769,24 @@ export default function (pi: ExtensionAPI) {
 		widget.update();
 	});
 
-	// /tasks command — extracted so it can be re-registered on reload
+	// /tasks command — zero-arg TUI overlay (extracted so it can be re-registered on reload)
 	let tasksCmdHandler: any;
-	function completeTasksArgs(prefix: string): AutocompleteItem[] | null {
-		const tokens = prefix.trim().split(/\s+/).filter(Boolean);
-		const atNextToken = prefix.endsWith(" ") || tokens.length === 0;
-		const lastPart = atNextToken ? "" : tokens[tokens.length - 1];
-		const completed = atNextToken ? tokens : tokens.slice(0, -1);
-		const base = atNextToken ? prefix : prefix.slice(0, prefix.length - lastPart.length);
-		const mk = (items: { v: string; l: string; d: string }[]): AutocompleteItem[] | null => {
-			const mapped: AutocompleteItem[] = items.map((i) => ({ value: base + i.v, label: i.l, description: i.d }));
-			if (!lastPart.trim()) return mapped.length > 0 ? mapped : null;
-			const filtered = fuzzyFilter(mapped, lastPart, (i) => `${i.label} ${i.description || ""}`);
-			return filtered.length > 0 ? filtered : null;
-		};
-		if (completed.length === 0) {
-			return mk([
-				{ v: "mine", l: "mine", d: "Show only tasks assigned to you" },
-				{ v: "create", l: "create", d: "Create a new task" },
-				{ v: "start ", l: "start", d: "Mark a task in progress: start <id>" },
-				{ v: "done ", l: "done", d: "Mark a task completed: done <id>" },
-				{ v: "clear ", l: "clear", d: "Clear completed or all tasks" },
-				{ v: "widget ", l: "widget", d: "Collapse or expand tasks widget: expand | collapse | toggle" },
-			]);
-		}
-		if (completed[0] === "clear" && completed.length === 1) {
-			return mk([
-				{ v: "completed", l: "completed", d: "Remove completed tasks" },
-				{ v: "all", l: "all", d: "Remove all tasks" },
-			]);
-		}
-		if (completed[0] === "widget" && completed.length === 1) {
-			return mk([
-				{ v: "expand", l: "expand", d: "Show full task list widget" },
-				{ v: "collapse", l: "collapse", d: "Collapse to 1-line header (pauses spinner)" },
-				{ v: "toggle", l: "toggle", d: "Toggle between expanded and collapsed" },
-			]);
-		}
-		return null;
-	}
 	function registerTasksCommand(): void {
 		log.debug("registerTasksCommand called");
 		pi.registerCommand("tasks", {
-			description: "Tasks: list overlay, create, start, done, clear completed|all, widget [expand|collapse|toggle]",
-			getArgumentCompletions: completeTasksArgs,
-			handler: tasksCmdHandler = async (args: string, ctx: any) => {
-				const cmd = parseTasksCommand(args);
-				log.debug("/tasks handler called", cmd.kind);
-				if (cmd.kind === "usage") { ctx.ui?.notify(TASKS_USAGE, "warning"); return; }
-				if (cmd.kind === "widget") {
-					const cwd = ctx?.cwd || process.cwd();
-					const next = applyWidgetAction("tasks", cmd.action, cwd);
-					if (ctx?.ui) {
-						currentCtx = ctx;
-						currentUiCtx = ctx.ui;
-						currentWidget?.setUICtx(ctx.ui);
-					}
-					currentWidget?.setMode(next);
-					log.info("tasks_widget_mode_updated", { mode: next, action: cmd.action });
-					ctx.ui?.notify(`Tasks widget: ${next}`, "info");
-					return;
-				}
-				if (cmd.kind === "clear-completed" || cmd.kind === "clear-all") {
-					const cleared = cmd.kind === "clear-completed" ? taskStore.clearCompleted() : taskStore.clearAll();
-					if (taskScope === "session") taskStore.deleteFileIfEmpty();
-					currentWidget?.update();
-					log.info("tasks_cleared", { scope: cmd.kind, cleared });
-					ctx.ui?.notify(`Cleared ${cleared} task${cleared === 1 ? "" : "s"}.`, "info");
-					return;
-				}
-				const manualTasks = manualTaskOperations(ctx.ui);
-				if (cmd.kind === "start" || cmd.kind === "done") {
-					const outcome = applyTaskAction(cmd.kind, cmd.id, {
-						get: (taskId) => taskStore.get(taskId),
-						update: (taskId, status) => {
-							if (status === "completed") manualTasks.completeTask(taskId, { by: "user" });
-							else taskStore.update(taskId, { status });
-						},
-						onChanged: (taskId, status) => {
-							currentWidget?.setActiveTask(taskId, status === "in_progress");
-							currentWidget?.update();
-						},
-					});
-					if (outcome === "blocked") { ctx.ui?.notify(`Task #${cmd.id} has open blockers; complete them before /tasks start ${cmd.id}.`, "warning"); return; }
-					if (outcome === "missing") { ctx.ui?.notify(`No task #${cmd.id}.`, "warning"); return; }
-					if (outcome === "refused") { ctx.ui?.notify(`Task #${cmd.id} is completed; it is not restarted by /tasks start.`, "warning"); return; }
-					if (outcome === "unchanged") { ctx.ui?.notify(`Task #${cmd.id} is already ${cmd.kind === "done" ? "completed" : "in progress"}.`, "info"); return; }
-					ctx.ui?.notify(`Task #${cmd.id} → ${cmd.kind === "done" ? "completed" : "in progress"}.`, "info");
-					return;
-				}
-				if (cmd.kind === "create") {
-					if (!ctx.hasUI && !isBrowserDispatch(ctx)) {
-						log.info("tasks_create_requires_input");
-						ctx.ui?.notify("/tasks create requires an interactive UI. Use the TaskCreate tool with subject and description in a headless session.", "warning");
-						return;
-					}
-					// #968 part B: prompts are bridged — answerable from TUI or pidash browser
-					const bridgedUi = createBridgedUi(pi);
-					const subject = await bridgedUi.input(ctx, "Task subject");
-					if (!subject) return;
-					const description = await bridgedUi.input(ctx, "Task description");
-					if (!description) return;
-					taskStore.create(subject, description, { type: "local", origin: "user", session: "", project: process.cwd() });
-					currentWidget?.update();
-					log.info("tasks_created_via_command");
-					return;
-				}
-				// list — the fullscreen overlay needs a real terminal. No UI, or a command dispatched
-				// from the pidash browser (whose user cannot see the terminal), gets the same plain text.
+			description: "Open the tasks TUI overlay",
+			handler: tasksCmdHandler = async (_args: string, ctx: any) => {
+				log.debug("/tasks handler called", { hasUI: !!ctx?.hasUI, browser: isBrowserDispatch(ctx) });
+				// The fullscreen overlay needs a real terminal. No UI, or a command dispatched
+				// from the pidash browser (whose user cannot see the terminal), gets plain text.
 				if (!ctx.hasUI || isBrowserDispatch(ctx)) {
 					const allTasks = taskStore.list();
-					const tasks = selectTaskRows(allTasks, { mine: cmd.mine });
-					log.debug("tasks_list_plain_text", { hasUI: !!ctx.hasUI, browser: isBrowserDispatch(ctx), count: tasks.length, mine: !!cmd.mine });
+					const tasks = selectTaskRows(allTasks);
+					log.debug("tasks_list_plain_text", { hasUI: !!ctx.hasUI, browser: isBrowserDispatch(ctx), count: tasks.length });
 					ctx.ui?.notify(formatTasksPlainText(tasks, (id) => allTasks.find((t) => t.id === id)), "info");
 					return;
 				}
-				await openTasksOverlay(ctx, manualTasks, { mine: cmd.mine });
+				await openTasksOverlay(ctx, manualTaskOperations(ctx.ui));
 			},
 		});
 	}

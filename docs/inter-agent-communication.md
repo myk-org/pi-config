@@ -65,7 +65,7 @@ The pool widget and peer list append `⏳2 ☰5 ⏰1` — running agents, **open
 Every peer-supplied string is sanitized before rendering — name, purpose, subject, cwd, socket path, task ids and states: escape sequences and control characters are stripped, whitespace collapsed, and each field capped (purpose/subject/cwd 120, id/state 40, socket 80). A peer cannot move the viewer's cursor, clear its screen, or forge a prompt, and sanitization is render-only: a peer is still addressed by its raw name.
 
 Selecting a peer in the `/coms` peer overlay opens a navigable drilldown: a `peer info` row first (name, project, cwd, purpose, creator, socket, heartbeat, state and the workload line — the registry fields the peer list already holds), then a list of that peer's sections with their counts (`async agents (3)`, `tasks (5)`, `crons (1)`), and Enter on a section
-opens the same overlay `/async-status`, `/tasks` and `/cron list` use, fed by that peer's answer —
+opens the same overlay `/async`, `/tasks` and `/cron` use, fed by that peer's answer —
 agent identity and elapsed time, task rows in the exact format `/tasks` renders, and cron schedules.
 Esc walks back one level (section → sections → peer list) and lands on the row you came from, not on the first one. The drilldown is **read-only**: acting on
 another session's tasks or crons would need a remote command protocol, and a key that silently does
@@ -133,7 +133,7 @@ Queueing prevents dropped messages when a peer is busy, while hop limits stop ag
 For users, that shows up as more predictable behavior:
 - busy peers do not lose messages
 - runaway agent-to-agent loops stop instead of spiraling forever
-- queue depth is visible in pool output and peer listings, and can be managed with `/coms-queue`
+- queue depth is visible in pool output and peer listings, and can be managed from `/coms` (`q` opens the local inbound queue with `Space` multi-select `x` kill) or via `coms_local_queue`
 
 ### Queue Recovery
 
@@ -161,11 +161,11 @@ Peer cards and `coms_list` include a busy indicator (`⚙busy`) whenever the pee
 
 ## Messaging a Peer as the User
 
-`/coms tell <peer> <message>` (or `/coms tell --project <p> <peer> <message>`) delivers a message to a peer with `origin: "user"`, so the receiver reads it as a human's words rather than another model's. In `/coms list`, `m` opens a one-line composer for the **selection** — every peer ticked with Space, or the focused peer when nothing is ticked — and sends the same text to each one. Delivery is synchronous and counted: you get one line, `sent 3 peers`, or `sent 2 of 3 · failed 1: beta (<reason>)`, and peers that left between selecting and sending are named rather than silently skipped (`nothing sent`, with the missing names and recovery instructions). A failure — no such peer, dead socket, coms stopped — is never reported as sent.
+In `/coms`, `m` opens a one-line composer for the **selection** — every peer ticked with `Space`, or the focused peer when nothing is ticked — and sends the same text to each one with `origin: "user"`, so the receiver reads it as a human's words rather than another model's. Delivery is synchronous and counted: you get one line, `sent 3 peers`, or `sent 2 of 3 · failed 1: beta (<reason>)`, and peers that left between selecting and sending are named rather than silently skipped (`nothing sent`, with the missing names and recovery instructions). A failure — no such peer, dead socket, coms stopped — is never reported as sent.
 
-Ticks survive drilldowns, cancelled composers, and blank input. A nonempty send attempt clears them, including when some or all deliveries fail, so a later `x` acts on the focused peer unless you select peers again. Ticks and restored focus identify the peer's session endpoint, so a replacement using the same name does not inherit them. The composer carries that endpoint through command delivery and refuses a changed recipient instead of sending to the replacement. If every selected peer has gone, no composer or send attempt occurs and ticks remain; close with Esc and reopen `/coms peers` to reset them. Successful single-peer sends also show one counted result, `sent 1 peer`.
+Ticks survive drilldowns, cancelled composers, and blank input. A nonempty send attempt clears them, including when some or all deliveries fail, so a later `x` acts on the focused peer unless you select peers again. Ticks and restored focus identify the peer's session endpoint, so a replacement using the same name does not inherit them. The composer carries that endpoint through command delivery and refuses a changed recipient instead of sending to the replacement. If every selected peer has gone, no composer or send attempt occurs and ticks remain; close with Esc and reopen `/coms` to reset them. Successful single-peer sends also show one counted result, `sent 1 peer`.
 
-Only the command layer can claim human authorship. `/coms tell` and the `m` composer set `origin: "user"` through
+Only the command layer can claim human authorship. The `m` composer sets `origin: "user"` through
 `ComsPeerRuntime.sendAsUser()`, and `resolvePromptOrigin` accepts a literal `true` only. `coms_send`, `coms_broadcast`, and the `tasks` path always send `origin: "peer"`, their schemas have no `origin` parameter, and a spoofed value in tool input is ignored — an agent's own tool calls cannot manufacture an approval it did not get, and that is the whole guarantee. On the receiving side the inbound header and its machine-readable prefix say `USER (a human)`, and `coms_history` marks the record `(USER)`: that marker is display only and unauthenticated, because any process that can write to the peer's socket can assert `origin: "user"`. Verifying authorship would need signed identities, which coms does not have.
 
 ## Message History
@@ -182,10 +182,10 @@ The internals mostly stay out of your way, but they explain several behaviors yo
 | A reply shows up later without polling | The receiver's normal assistant reply was captured and sent back over the socket |
 | A peer disappeared from the list | Its registry entry was removed after failing a socket probe |
 | A delegated task arrives with structure | The sender included `tasks`, and the receiver rendered them as assigned work |
-| `/coms` shows a different set of peers | You toggled `include_explicit` or switched the displayed project |
+| `/coms` shows a different set of peers | You pressed `f` to toggle `this project` / `all projects` |
 | A peer shows `⚙busy` | It is currently processing an inbound message |
 | A pending reply shows a progress note | The peer sent a progress signal (~60s interval) while still working |
-| An inbound says `(from the USER)` | A human sent it with `/coms tell` or the `m` composer. The marker is display only and unauthenticated — any local process can assert it |
+| An inbound says `(from the USER)` | A human sent it with the `m` composer in `/coms`. The marker is display only and unauthenticated — any local process can assert it |
 
 A few practical implications are worth remembering:
 
@@ -197,8 +197,7 @@ A few practical implications are worth remembering:
 
 | Command | What it does |
 | :--- | :--- |
-| `/coms` | Force-refresh the pool widget. `--all` toggles `include_explicit`; `--project <name>` switches the displayed project. |
-| `/coms-queue` | View and manage queued inbound messages, including killing them. |
+| `/coms` | Zero-arg fullscreen P2P peers overlay: `f` toggles scope (`this project` / `all projects`), `q` opens the local inbound queue (`Space` multi-select `x` kill), `Space` multi-selects for `m` message or `x` kill, `X` kills all supervised peers in scope, `Enter` drills into peer workload. Plain text when headless. |
 
 ## Related Pages
 

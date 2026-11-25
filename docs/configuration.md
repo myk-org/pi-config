@@ -414,6 +414,22 @@ export PI_TRAIL_ENABLE=true
 
 ## Background & Async Keys
 
+### `dream_auto_enable`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+| --- | --- | --- | --- | --- | --- |
+| `dream_auto_enable` | bool | `true` | `PI_DREAM_AUTO_ENABLE` | Enable automatic background memory dreaming (periodic + session end). | When `false`, skips periodic and session-quit dreaming passes. |
+
+```json
+{
+  "dream_auto_enable": true
+}
+```
+
+```bash
+export PI_DREAM_AUTO_ENABLE=false
+```
+
 ### `dream_interval_hours`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |

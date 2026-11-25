@@ -14,19 +14,16 @@ the internals that are not visible from usage alone.
 | `/pidash` | `pidash/pidash.ts` | Manage pidash daemon (start/stop/restart/status) |
 | `/pidiff` | `pidiff/pidiff.ts` | Manage pidiff per-project server (start/stop/restart/status) |
 | `/status` | `status.ts` | Unified session status snapshot (includes 1-line `Worktrees:` summary when linked worktrees exist) |
-| `/worktree [list\|prune]` | `worktree.ts` + `worktree-helpers.ts` | Fullscreen list→detail overlay for git worktrees (branch/detached, dirty counts, locked/prunable flags, active COMS peer, `c` copy path, guarded `d` remove, `p` prune, `r` refresh); `list` prints a plain-text table; `prune` runs `git worktree prune -v` |
+| `/worktree` | `worktree.ts` + `worktree-helpers.ts` | Zero-arg fullscreen list→detail overlay for git worktrees (`Space` multi-select guarded `d`/`x` remove, `p` prune, `r` refresh, `Enter` detail with `c` copy path); plain-text table when headless |
 | `/review-status [worktree-path]` | `enforcement.ts` | Show review loop state, optionally for a specific worktree |
-| `/async-status` | `async-agents.ts` + `async-status-ui.ts` | Fullscreen overlay: list async agents → live output; `x` kills the focused job (or the whole `Space` multi-selection), `X` kills all running/queued immediately (no confirmation) |
-| `/dream` | `dreaming.ts` | Memory consolidation |
-| `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |
-| `/adopt-skill <name>` | `skill-maintenance.ts` | Mark a project skill as maintained (`skill-maintenance: auto`) so agents may patch it; autocompletes unmarked skills |
-| `/cron` | `cron.ts` + `cron-store.ts` + `cron-status-ui.ts` | Schedule session tasks, or persistent tasks with `--persist` |
-| `/pi-config-settings [project\|global]` | `settings-tui.ts` + `settings-tui-helpers.ts` | Interactive settings editor overlay |
+| `/async` | `async-agents.ts` + `async-status-ui.ts` | Zero-arg fullscreen overlay: list async agents → live output; `x` kills the focused job (or the whole `Space` multi-selection), `X` kills all running/queued immediately (no confirmation) |
+| `/adopt-skill` | `skill-maintenance.ts` | Zero-arg fullscreen overlay listing all adoptable skills (`maintained` vs `unmarked`) with `Space` multi-select + `a`/`Enter` batch adopt |
+| `/cron` | `cron.ts` + `cron-store.ts` + `cron-status-ui.ts` | Zero-arg fullscreen overlay (`n` add, `e` edit, `x` delete, `p` pause/resume, `t` toggle persist/session, `f` scope filter `all`/`session`/`persist`, `Space` multi-select, `Enter` detail) |
+| `/pi-config-settings` | `settings-tui.ts` + `settings-tui-helpers.ts` | Zero-arg interactive settings editor overlay (`Tab` switches Project/Global scope) |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
-| `/coms` | `coms/coms-wrapper.ts` | P2P agent communication (`start`/`stop`/`status`/`tell`/`list`/`kill`/`widget [expand\|collapse\|toggle]`) |
-| `/coms-queue` | `coms/coms-p2p.ts` | View and kill queued peer messages |
+| `/coms` | `coms/coms-wrapper.ts` + `coms-peers-ui.ts` + `coms-p2p.ts` | Zero-arg fullscreen P2P peers overlay (`f` scope toggle, `q` local inbound queue with `Space` multi-select `x` kill, `Space` multi-select `m` message / `x` kill, `X` kill all, `Enter` drilldown) |
 | `/repair` | `session-validation.ts` | Repair session — fix orphaned tool calls that break API requests |
-| `/tasks` | `pitasks/index.ts` + `tasks-ui.ts` | Task list overlay (like `/cron list`), plus `create`, `start`/`done <id>`, `clear completed\|all`, and `widget [expand\|collapse\|toggle]` |
+| `/tasks` | `pitasks/index.ts` + `tasks-ui.ts` | Zero-arg fullscreen task list overlay (`Space` multi-select `s` start / `d` done / `x` delete, `n` add, `e` edit, `f` mine/all, `Enter` detail) |
 
 ## Cron Delivery Internals
 
@@ -41,13 +38,12 @@ guarantees underneath:
 - Leadership uses a PID-reuse-safe process-creation token; if a process cannot obtain one, durable leadership fails closed.
 - Add/remove mutations use a bounded transaction lock, so they remain safe without process identity.
 - Invalid stored task records are logged and skipped before timers are created.
-- `/cron list-all` labels each task plus persistent leader/follower state; it does not inspect another Pi process's private session-cron file.
+- `/cron` (`f` scope toggle) labels each task plus persistent leader/follower state; it does not inspect another Pi process's private session-cron file.
 
 ## Widget Collapse/Expand & Shortcuts
 
 The `tasks` (`aboveEditor`) and `coms-pool` (`belowEditor`) widgets support two display modes — `expanded` (full view with `[<key> collapse]` in the header) and `collapsed` (1-line header with live counts and `[<key> expand]`, pausing the 150ms task spinner timer so collapsed mode causes zero idle redraws). The 1-line header always remains visible whenever tasks exist or COMS is active, and active modes persist on `globalThis` across `/reload`:
 
-- **Slash commands:** `/tasks widget [expand|collapse|toggle]` and `/coms widget [expand|collapse|toggle]` (both support tab autocomplete and accept `show`/`hide`/`compact` aliases).
 - **Configurable keyboard shortcuts** (registered via `pi.registerShortcut()`, empty string disables):
   - `widget_tasks_shortcut` (default `alt+t`): collapse/expand the tasks widget.
   - `widget_coms_shortcut` (default `alt+c`): collapse/expand the coms widget.

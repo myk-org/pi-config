@@ -1728,10 +1728,10 @@ export function registerAsyncAgents(
     return formatDuration(ms);
   }
 
-  // /async-status — fullscreen overlay list → live output detail
+  // /async — fullscreen overlay list → live output detail
   async function handleAsyncStatus(ctx: any): Promise<void> {
     if (!ctx.hasUI) return;
-    log.debug("opening_async_status_overlay", { jobs: asyncState.jobs.size, syncRuns: syncAgentRunCount() });
+    log.debug("opening_async_overlay", { jobs: asyncState.jobs.size, syncRuns: syncAgentRunCount() });
     await openAsyncStatusOverlay(ctx, {
       listJobs: listAllJobs,
       killJob: (id) => killSyncAgent(id) ?? killAsyncAgent(id, "user"),
@@ -1740,8 +1740,8 @@ export function registerAsyncAgents(
     });
   }
 
-  // /async-status command
-  pi.registerCommand("async-status", {
+  // /async command
+  pi.registerCommand("async", {
     description: "Fullscreen overlay: list async agents, view live output, kill with x",
     handler: async (_args, ctx) => handleAsyncStatus(ctx),
   });
@@ -1751,7 +1751,7 @@ export function registerAsyncAgents(
       name: "async_status",
       label: "Async Status",
       description:
-        "List running and recent async/sync subagent jobs (ID, name, agent, status, elapsed time, current tool), or pass id to inspect a specific job's metadata and recent output tail (equivalent to /async-status).",
+        "List running and recent async/sync subagent jobs (ID, name, agent, status, elapsed time, current tool), or pass id to inspect a specific job's metadata and recent output tail (equivalent to /async).",
       parameters: Type.Object({
         id: Type.Optional(Type.String({
           description: "Optional job ID (exact or unique prefix) to inspect a single job's details and output tail.",

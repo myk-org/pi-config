@@ -57,6 +57,13 @@
     "default": false,
     "group": "Review"
   },
+  "dream_auto_enable": {
+    "description": "Enable automatic background memory dreaming (periodic + session end)",
+    "type": "bool",
+    "env": "PI_DREAM_AUTO_ENABLE",
+    "default": true,
+    "group": "Memory"
+  },
   "dream_interval_hours": {
     "description": "Hours between automatic memory dreaming",
     "type": "number",

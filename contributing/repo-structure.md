@@ -37,11 +37,11 @@ pi-config/
 │   │   ├── agents.ts                # Agent discovery
 │   │   ├── ask-user.ts              # ask_user tool
 │   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery, onComplete callbacks, async_status tool)
-│   │   ├── overlay-dashboard.ts     # Shared fullscreen list→detail overlay (async/cron)
+│   │   ├── overlay-dashboard.ts     # Shared fullscreen list→detail overlay (async/cron/tasks/coms/worktree/adopt-skill)
 │   │   ├── overlay-dashboard-utils.ts # Pure selection reconcile helpers
-│   │   ├── async-status-ui.ts       # /async-status overlay (uses overlay-dashboard)
+│   │   ├── async-status-ui.ts       # /async overlay (uses overlay-dashboard)
 │   │   ├── async-status-parse.ts    # Pure output.log JSONL → display line parser
-│   │   ├── cron-status-ui.ts        # /cron list overlay (uses overlay-dashboard)
+│   │   ├── cron-status-ui.ts        # /cron overlay (uses overlay-dashboard)
 │   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
 │   │   ├── cron-store.ts            # Durable cron envelopes, atomic mutation, and leader locks
 │   │   ├── settings-tui.ts          # /pi-config-settings thin TUI overlay adapter (uses project-settings + overlay-dashboard)
@@ -78,7 +78,7 @@ pi-config/
 │   │   ├── status.ts                # /status command + session_status tool — unified session status snapshot (incl. worktree summary)
 │   │   ├── status-bar.ts            # Ordered status bar slot registry (time, async, crons, dream, git, worktrees, trail, review)
 │   │   ├── status-line.ts           # Git status ([wt] tag, 4a-worktrees badge), notifications, container indicator, last-activity timestamp
-│   │   ├── worktree.ts              # /worktree command + worktree_status tool — interactive overlay + list/prune subcommands
+│   │   ├── worktree.ts              # /worktree zero-arg TUI overlay + worktree_status tool
 │   │   ├── worktree-helpers.ts      # Pure worktree helpers (COMS peer matching, remove guards, table/status/prune formatting, clipboard)
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
 │   │   ├── memory-store.ts            # Deep memory store — owns all topic writes, cache invalidation, score/tombstone updates, and embedding upkeep/pruning
@@ -97,10 +97,10 @@ pi-config/
 │   │   ├── index.ts                 # Entry point — registers coms
 │   │   ├── coms-wrapper.ts          # On-demand `/coms` controller — drives `ComsPeerRuntime` and `ComsRegistry` directly (lifecycle, reload, inventory, pidash)
 │   │   ├── coms-registry.ts         # Unified peer registry, supervision inventory, socket probes (`probeStaleSocket`, `probeAlive`), and stale/orphan pruning
-│   │   ├── coms-p2p.ts              # Instantiable P2P peer runtime (`createComsPeerRuntime`, sockets, queue drain, tools incl. `coms_local_queue`, `/coms-queue`)
+│   │   ├── coms-p2p.ts              # Instantiable P2P peer runtime (`createComsPeerRuntime`, sockets, queue drain, tools incl. `coms_local_queue`, inbound queue overlay)
 │   │   ├── coms-shared.ts           # Shared utilities: flag parser, state persistence, active-tool sync, response formatting, inbound bundling
-│   │   ├── coms-peers.ts            # Peer inventory filtering, table/detail formatting, spawn/kill planning, `/coms tell` completions
-│   │   ├── coms-peers-ui.ts         # `/coms list` interactive overlay and multi-select composer
+│   │   ├── coms-peers.ts            # Peer inventory filtering, table/detail formatting, spawn/kill planning
+│   │   ├── coms-peers-ui.ts         # `/coms` interactive overlay (`f` scope, `q` queue, multi-select composer/kill, drilldown)
 │   │   ├── coms-describe.ts         # Socket-based peer workload describe RPC client and validator
 │   │   ├── coms-drilldown.ts        # Peer workload drilldown row builders
 │   │   ├── coms-workload.ts         # Active-only peer workload counts and formatting

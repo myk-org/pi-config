@@ -17,18 +17,20 @@ import path from "node:path";
 import {
   adoptSkill,
   appendProvenance,
-  completeUnmarkedSkills,
   diffSkillTree,
+  formatAdoptableSkillsPlainText,
   formatSkillReviewNotice,
   invalidateSkillMaintenanceCache,
   isAdoptableSkill,
   isMarkedSkill,
   isPackageSkillPath,
   isRegisteredPackageTarget,
+  listAdoptableSkillRows,
   listUnmarkedSkills,
   MAINTAINER_INSTRUCTION,
   MARKER_LINE,
   markedSkillsInText,
+  openAdoptSkillOverlay,
   provenancePath,
   registerSkillMaintenance,
   skillsFromCommands,
@@ -270,9 +272,9 @@ describe("isMarkedSkill & stampSkill", () => {
   });
 });
 
-// ── package exclusion, listUnmarkedSkills & completeUnmarkedSkills ──────────
+// ── package exclusion, listUnmarkedSkills & listAdoptableSkillRows ──────────
 
-describe("listUnmarkedSkills & completeUnmarkedSkills", () => {
+describe("listUnmarkedSkills & listAdoptableSkillRows", () => {
   it("lists unmarked project, user-global, .agents/skills, and symlinked shared skills while excluding marked and package skills", () => {
     const { cwd, root } = project();
     const sharedDir = tempDir("shared-skills-");
@@ -315,12 +317,19 @@ describe("listUnmarkedSkills & completeUnmarkedSkills", () => {
       "shared-tool",
     ]);
 
-    const completions = completeUnmarkedSkills(cwd, "tool", skills);
-    assert.deepEqual(completions, [
-      { value: "agents-tool", label: "agents-tool", description: "project — mark for maintenance" },
-      { value: "global-tool", label: "global-tool", description: "user — mark for maintenance" },
-      { value: "shared-tool", label: "shared-tool", description: "project — mark for maintenance" },
-    ]);
+    const rows = listAdoptableSkillRows(cwd, skills);
+    assert.deepEqual(
+      rows.map((r) => `${r.name}:${r.maintained ? "maintained" : "unmarked"}`),
+      [
+        "agents-tool:unmarked",
+        "global-tool:unmarked",
+        "proj-unmarked:unmarked",
+        "shared-tool:unmarked",
+        "proj-marked:maintained",
+      ],
+    );
+    assert.match(formatAdoptableSkillsPlainText(rows), /○ agents-tool.*unmarked/);
+    assert.match(formatAdoptableSkillsPlainText(rows), /✔ proj-marked.*maintained/);
   });
 
   it("listUnmarkedSkills skips .pi/skills disk scan when skills are supplied", () => {
@@ -331,14 +340,58 @@ describe("listUnmarkedSkills & completeUnmarkedSkills", () => {
     assert.deepEqual(listUnmarkedSkills(cwd), ["disk-only"]);
   });
 
-  it("completeUnmarkedSkills skips .pi/skills disk scan when skills are supplied", () => {
+  it("openAdoptSkillOverlay adopts multi-selected skills on a and Enter", async () => {
     const { cwd, root } = project();
-    writeSkill(root, "disk-only", UNMARKED);
+    const s1 = writeSkill(root, "alpha", UNMARKED);
+    const s2 = writeSkill(root, "beta", UNMARKED);
+    const s3 = writeSkill(root, "gamma", UNMARKED);
+    const skills = [
+      makeSkillInfo("alpha", s1, "project", "top-level"),
+      makeSkillInfo("beta", s2, "project", "top-level"),
+      makeSkillInfo("gamma", s3, "project", "top-level"),
+    ];
+    const notifications: Array<{ msg: string; level: string }> = [];
+    let calls = 0;
+    const ctx: any = {
+      hasUI: true,
+      cwd,
+      ui: { notify: (msg: string, level: string) => notifications.push({ msg, level }) },
+    };
 
-    assert.deepEqual(completeUnmarkedSkills(cwd, "disk", []), []);
-    assert.deepEqual(completeUnmarkedSkills(cwd, "disk"), [
-      { value: "disk-only", label: "disk-only", description: "project — mark for maintenance" },
-    ]);
+    // Multi-select alpha & beta, press 'a', then Esc on reopen
+    await openAdoptSkillOverlay(ctx, {
+      listSkills: () => listAdoptableSkillRows(cwd, skills),
+      adoptSkill: (name) => adoptSkill(cwd, name, skills),
+      openOverlay: (async (_c: any, opts: any) => {
+        calls++;
+        if (calls === 1) {
+          const items = opts.listSpec.listItems();
+          opts.listSpec.onSelectionChange?.([items[0].id, items[1].id]);
+          const outcome = opts.listSpec.onKey?.("a", items[0], [items[0], items[1]]);
+          assert.equal(outcome, "close");
+        }
+      }) as any,
+    });
+    assert.equal(isMarkedSkill(fs.readFileSync(s1, "utf-8")), true);
+    assert.equal(isMarkedSkill(fs.readFileSync(s2, "utf-8")), true);
+    assert.equal(isMarkedSkill(fs.readFileSync(s3, "utf-8")), false);
+    assert.match(notifications[0]?.msg ?? "", /adopted 2 skills/i);
+
+    // Single adopt gamma via Enter (onSelect)
+    calls = 0;
+    await openAdoptSkillOverlay(ctx, {
+      listSkills: () => listAdoptableSkillRows(cwd, skills),
+      adoptSkill: (name) => adoptSkill(cwd, name, skills),
+      openOverlay: (async (_c: any, opts: any) => {
+        calls++;
+        if (calls === 1) {
+          const items = opts.listSpec.listItems();
+          const gamma = items.find((i: any) => i.name === "gamma")!;
+          opts.listSpec.onSelect?.(gamma);
+        }
+      }) as any,
+    });
+    assert.equal(isMarkedSkill(fs.readFileSync(s3, "utf-8")), true);
   });
 });
 
@@ -789,12 +842,13 @@ describe("registerSkillMaintenance", () => {
       );
       assert.doesNotThrow(() => emit("turn_end", {}, ctx));
 
-      // /adopt-skill autocomplete still finds fallback .pi/skills/
+      // Zero-arg /adopt-skill has no argument completions and falls back to plain-text listing when headless
       const adoptCmd = commands.get("adopt-skill");
       assert.ok(adoptCmd);
-      const items = adoptCmd.getArgumentCompletions("fall");
-      assert.equal(items.length, 1);
-      assert.equal(items[0].value, "fallback-s");
+      assert.equal(adoptCmd.getArgumentCompletions, undefined);
+      const notices: string[] = [];
+      await adoptCmd.handler("", { cwd, hasUI: false, ui: { notify: (m: string) => notices.push(m) } });
+      assert.match(notices[0] ?? "", /fallback-s/);
     }
   });
 

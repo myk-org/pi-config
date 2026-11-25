@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { activationVerified, describePeerOrigin, filterRegistry, formatPeerDetailLines, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, projectProblem, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { activationVerified, describePeerOrigin, filterRegistry, formatPeerDetailLines, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, projectProblem, planPeerKills, resolveKillScope, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -382,24 +382,6 @@ describe("resolveKillScope", () => {
   it("looks a NAMED peer up across projects, since naming one is already specific", () => {
     assert.deepEqual(resolveKillScope({ name: "builder" }, "own"), { name: "builder", project: undefined });
     assert.deepEqual(resolveKillScope({ name: "builder", project: "other" }, "own"), { name: "builder", project: "other" });
-  });
-});
-
-describe("resolveListScope", () => {
-  it("defaults to the caller's project", () => {
-    assert.equal(resolveListScope(["list"], "own"), "own");
-  });
-
-  it("widens to every project with --all", () => {
-    assert.equal(resolveListScope(["list", "--all"], "own"), undefined);
-  });
-
-  it("treats --project * as every project, so the view and its kill-all agree", () => {
-    assert.equal(resolveListScope(["list", "--project", "*"], "own"), undefined);
-  });
-
-  it("honours an explicit --project namespace", () => {
-    assert.equal(resolveListScope(["list", "--project", "other"], "own"), "other");
   });
 });
 

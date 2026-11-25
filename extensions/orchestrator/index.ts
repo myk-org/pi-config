@@ -5,7 +5,7 @@
  * - Subagent tool (based on pi's subagent example, with package agent discovery)
  * - Enforcement handlers (python/pip, git protection, dangerous commands)
  * - Rule injection & memory loading (before_agent_start)
- * - Slash commands (/async-status, /dream-auto)
+ * - Slash commands (/async, /cron, /worktree, /adopt-skill, /pi-config-settings)
  * - Notifications and status line
  * - Session validation (required tools check)
  * - Async agent infrastructure

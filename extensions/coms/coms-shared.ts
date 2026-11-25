@@ -328,18 +328,6 @@ export function buildTellRequest(
 	return { target: peer.name, prompt, ...(peer.project ? { project: peer.project } : {}), ...(peer.endpoint ? { expectedEndpoint: peer.endpoint } : {}) };
 }
 
-/** Parse `/coms tell [--project <p>] <peer> <message…>` (the text after "tell"). The message is
- *  taken from the raw argument, not from tokens, so its original spacing and dashes survive. */
-export function parseComsTell(detail: string): { peer: string; message: string; project?: string } | null {
-	const match = detail.trim().match(/^(?:--project\s+(\S+)\s+)?(\S+)\s+([\s\S]+)$/);
-	if (!match) return null;
-	const [, project, peer, message] = match;
-	const text = message.trim();
-	if (!text) return null;
-	tellLog.debug("tell_parsed", { hasProject: !!project, messageLength: text.length });
-	return { peer, message: text, ...(project ? { project } : {}) };
-}
-
 /** Build the customType string for coms inbound display (shown as the header by pi).
  *  Sanitizes all inputs since senderName/senderCwd come from untrusted peers. */
 export function formatComsInboundType(senderName: string, selfName: string, senderCwd: string, origin?: PromptOrigin): string {

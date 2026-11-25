@@ -2,12 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	TASKS_EMPTY_MESSAGE,
-	TASKS_HINT,
-	TASKS_USAGE,
 	applyTaskAction,
 	formatTasksPlainText,
 	nextTaskStatus,
-	parseTasksCommand,
 	planTaskCompose,
 	taskComposePrompt,
 	taskDetailRows,
@@ -47,69 +44,7 @@ function task(overrides: Partial<Task> = {}): Task {
 	};
 }
 
-describe("parseTasksCommand", () => {
-	it("defaults to the list overlay", () => {
-		assert.deepEqual(parseTasksCommand(""), { kind: "list" });
-		assert.deepEqual(parseTasksCommand(undefined), { kind: "list" });
-		assert.deepEqual(parseTasksCommand("   "), { kind: "list" });
-	});
-
-	it("routes create", () => {
-		assert.deepEqual(parseTasksCommand("create"), { kind: "create" });
-		assert.deepEqual(parseTasksCommand("  create  "), { kind: "create" });
-	});
-
-	it("routes clear completed", () => {
-		assert.deepEqual(parseTasksCommand("clear completed"), { kind: "clear-completed" });
-	});
-
-	it("routes clear all", () => {
-		assert.deepEqual(parseTasksCommand("clear all"), { kind: "clear-all" });
-	});
-
-	it("routes start by id", () => {
-		assert.deepEqual(parseTasksCommand("start 3"), { kind: "start", id: "3" });
-	});
-
-	it("routes done by id, with or without a hash", () => {
-		assert.deepEqual(parseTasksCommand("done 12"), { kind: "done", id: "12" });
-		assert.deepEqual(parseTasksCommand("  done  #7  "), { kind: "done", id: "7" });
-	});
-
-	it("prints usage for start/done without a usable id", () => {
-		assert.deepEqual(parseTasksCommand("start"), { kind: "usage" });
-		assert.deepEqual(parseTasksCommand("done"), { kind: "usage" });
-		assert.deepEqual(parseTasksCommand("done abc"), { kind: "usage" });
-		assert.deepEqual(parseTasksCommand("done #"), { kind: "usage" });
-		assert.deepEqual(parseTasksCommand("done 3 4"), { kind: "usage" });
-	});
-
-	it("prints usage for an unknown subcommand", () => {
-		assert.deepEqual(parseTasksCommand("view"), { kind: "usage" });
-		assert.deepEqual(parseTasksCommand("create extra"), { kind: "usage" });
-	});
-
-	it("prints usage for an incomplete clear", () => {
-		assert.deepEqual(parseTasksCommand("clear"), { kind: "usage" });
-		assert.deepEqual(parseTasksCommand("clear pending"), { kind: "usage" });
-	});
-
-	it("never acts on a clear with extra words", () => {
-		assert.deepEqual(parseTasksCommand("clear completed now"), { kind: "usage" });
-		assert.deepEqual(parseTasksCommand("clear all please"), { kind: "usage" });
-		assert.deepEqual(parseTasksCommand("done 3 now"), { kind: "usage" });
-		assert.deepEqual(parseTasksCommand("start 3 4"), { kind: "usage" });
-	});
-
-	it("documents the usage string", () => {
-		assert.match(TASKS_USAGE, /^Usage: \/tasks/);
-		assert.match(TASKS_USAGE, /start <id>/);
-		assert.match(TASKS_USAGE, /done <id>/);
-		assert.match(TASKS_USAGE, /clear completed/);
-	});
-});
-
-describe("start / done subcommands", () => {
+describe("start / done task actions", () => {
 	const run = (action: "start" | "done", id: string, tasks: Task[]) => {
 		const updates: Array<[string, TaskStatus]> = [];
 		const outcome = applyTaskAction(action, id, {
@@ -239,7 +174,6 @@ describe("formatTasksPlainText", () => {
 			"◻ #4 [pending] [llm] wait on 3",
 			"◻ #5 [pending] [llm] wait on 4 ⛔ blocked",
 			"✔ #3 [completed] [llm] wire the overlay",
-			TASKS_HINT,
 		]);
 	});
 
@@ -250,13 +184,6 @@ describe("formatTasksPlainText", () => {
 		];
 		const text = formatTasksPlainText([all[1]], (id) => all.find((t) => t.id === id));
 		assert.equal(text.split("\n")[0], "◻ #2 [pending] [you] merge PR ⛔ blocked");
-	});
-
-	it("always names the subcommands the text output replaces", () => {
-		for (const hint of ["create", "start <id>", "done <id>", "clear completed", "clear all"]) {
-			assert.match(TASKS_HINT, new RegExp(hint.replace(/[<>]/g, (c) => `\\${c}`)));
-		}
-		assert.equal(formatTasksPlainText([task()]).split("\n").at(-1), TASKS_HINT);
 	});
 });
 
@@ -279,6 +206,10 @@ describe("tasksOverlayDeps", () => {
 
 	it("maps e to edit", () => {
 		assert.equal(tasksOverlayIntent("e"), "edit");
+	});
+
+	it("maps s to start", () => {
+		assert.equal(tasksOverlayIntent("s"), "start");
 	});
 
 	it("ignores every other key", () => {
@@ -466,7 +397,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		]);
 	});
 
-	for (const key of ["n", "e", "d"]) {
+	for (const key of ["n", "e"]) {
 		it(`refuses ${key} while a selection exists, without opening a dialog`, async () => {
 			const { ctx, notifications, openedCount } = makeTasksCtx([[" ", key, "close"]]);
 			const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
@@ -527,7 +458,11 @@ function inMemoryStore(initial: Task[] = []) {
 			list: () => tasks,
 			get: (id: string) => tasks.find((t) => t.id === id),
 			create: (subject: string) => { created.push(subject); const next = task({ id: String(tasks.length + 1), subject, status: "pending" }); tasks.push(next); return { id: next.id }; },
-			update: () => undefined,
+			update: (id: string, fields: StoreUpdateFields) => {
+				const current = tasks.find((t) => t.id === id);
+				if (current && fields.status && fields.status !== "deleted") current.status = fields.status;
+				if (current && fields.subject) current.subject = fields.subject;
+			},
 		},
 	};
 }
@@ -541,7 +476,7 @@ describe("openTasksOverlay footer (#1089)", () => {
 		const footer = frames[0].find((line) => line.includes("Space select")) ?? "";
 		assert.equal(
 			footer.trim(),
-			"Space select · x delete · n add · e edit · d done · f mine/all · Enter view · Esc close",
+			"Space select · x delete · n add · e edit · s start · d done · f mine/all · Enter view · Esc close",
 		);
 	});
 });
@@ -649,5 +584,54 @@ describe("openTasksOverlay emptied mine filter (#1102)", () => {
 		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store), { mine: true });
 		assert.deepEqual(memory.deleted, ["1"]);
 		assert.deepEqual(closeAfterKeys, [2], "the explicit close ended the list, not the delete");
+	});
+});
+
+describe("openTasksOverlay multi-select start and done (#1392)", () => {
+	it("starts a single focused pending task on s", async () => {
+		const { ctx } = makeTasksCtx([["s", "close"]]);
+		const memory = inMemoryStore([task({ id: "1", status: "pending" })]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.equal(memory.tasks[0].status, "in_progress");
+	});
+
+	it("starts all Space-selected pending tasks on s", async () => {
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "s", "close"]]);
+		const memory = inMemoryStore([
+			task({ id: "1", status: "pending" }),
+			task({ id: "2", status: "pending" }),
+			task({ id: "3", status: "pending" }),
+		]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.equal(memory.tasks[0].status, "in_progress");
+		assert.equal(memory.tasks[1].status, "in_progress");
+		assert.equal(memory.tasks[2].status, "pending");
+		assert.match(notifications.at(-1)?.message ?? "", /started 2 tasks/i);
+	});
+
+	it("completes all Space-selected tasks on d", async () => {
+		// selectTaskRows sorts pending rows (#1, #3) above in_progress (#2).
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const memory = inMemoryStore([
+			task({ id: "1", status: "pending", assignee: "user" }),
+			task({ id: "2", status: "in_progress", assignee: "llm" }),
+			task({ id: "3", status: "pending", assignee: "llm" }),
+		]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.equal(memory.tasks[0].status, "completed");
+		assert.equal(memory.tasks[2].status, "completed");
+		assert.equal(memory.tasks[1].status, "in_progress");
+		assert.match(notifications.at(-1)?.message ?? "", /completed 2 tasks/i);
+	});
+
+	it("reports blocked task when s is pressed on a blocked row", async () => {
+		const { ctx, notifications } = makeTasksCtx([["j", "s", "close"]]);
+		const memory = inMemoryStore([
+			task({ id: "1", status: "pending" }),
+			task({ id: "2", status: "pending", blockedBy: ["1"] }),
+		]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.equal(memory.tasks[1].status, "pending");
+		assert.match(notifications.at(-1)?.message ?? "", /open blockers/i);
 	});
 });

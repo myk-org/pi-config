@@ -108,7 +108,7 @@ Use `ctx.hasUI` for simple UI guards (`notify`, `select`, `confirm`). Use argv h
 
 `asyncState.jobs` only ever held background jobs, so a running sync subagent — a real
 child `pi` process, several at once in parallel mode — was invisible in the footer,
-`/async-status` and pidash. `extensions/orchestrator/sync-agent-runs.ts` is a
+`/async` and pidash. `extensions/orchestrator/sync-agent-runs.ts` is a
 process-local registry that closes that gap: `beginSyncAgentRun()` on spawn,
 `end(ok)` from the `finally` in `runSingleAgent` so abort/throw/error paths cannot leak
 an entry, `setTool()` for the current tool, `setAbort()` for the kill escalation, and
@@ -117,7 +117,7 @@ an entry, `setTool()` for the current tool, `setAbort()` for the kill escalation
 
 - Footer: `formatAgentsStatus(asyncRunning, syncRunning)` — `💤 agents: 0` idle,
   `⏳ async: N` for async-only (unchanged look), `⏳ agents: T (A async, S sync)` when mixed.
-- `/async-status`: sync rows carry `mode: "sync"` and are stopped through
+- `/async`: sync rows carry `mode: "sync"` and are stopped through
   `abortSyncAgentRun` (by run id, never by agent name). A sync run is also stopped by
   cancelling the parent turn. The pidash row is display-only: the browser has no sync
   kill button, and a pidash kill never reaches a sync child

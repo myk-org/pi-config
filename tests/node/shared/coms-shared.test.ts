@@ -318,26 +318,26 @@ describe("registerComs lifecycle, /coms-queue gating, and reload reactivation", 
 		return { pi, tools, events, commands, persisted, busListeners, emittedBus, getActive: () => [...activeTools] };
 	}
 
-	it("registers wrapper /coms without an upstream duplicate", () => {
+	it("registers zero-arg /coms without a separate /coms-queue command", () => {
 		const { pi, commands } = makeStatefulPi();
 		registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
 		assert.ok(commands.has("coms"));
-		assert.ok(commands.has("coms-queue"));
-		assert.match(commands.get("coms").description, /start \| stop \| status/);
+		assert.equal(commands.has("coms-queue"), false);
+		assert.equal(commands.get("coms").getArgumentCompletions, undefined);
 	});
 
-	it("gates /coms-queue when COMS runtime is inactive", async () => {
-		const { pi, commands } = makeStatefulPi();
-		registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
+	it("gates inbound queue overlay when COMS runtime is inactive", async () => {
+		const { pi } = makeStatefulPi();
+		const { runtime } = registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
 		const notifies: string[] = [];
-		await commands.get("coms-queue").handler("", {
+		await runtime.openQueueOverlay("", {
 			hasUI: false,
 			ui: { notify: (msg: string) => { notifies.push(msg); } },
 		});
 		assert.ok(notifies.some((m) => m.includes("coms not active")));
 	});
 
-	it("registers one pidash:request-commands listener covering coms commands", async () => {
+	it("registers one pidash:request-commands listener covering /coms", async () => {
 		const { pi, events, busListeners, emittedBus } = makeStatefulPi();
 		registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
 
@@ -349,7 +349,7 @@ describe("registerComs lifecycle, /coms-queue gating, and reload reactivation", 
 		const registered = emittedBus
 			.filter((e) => e.channel === "pidash:register-command")
 			.map((e) => (e.data as any)?.name);
-		assert.deepEqual(registered, ["coms", "coms-queue"]);
+		assert.deepEqual(registered, ["coms"]);
 
 		for (const handler of events.get("session_shutdown") ?? []) await handler();
 		assert.equal((busListeners.get("pidash:request-commands") ?? []).length, 0);
@@ -668,17 +668,84 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		});
 	});
 
-	it("toggles gated tools via /coms slash lifecycle", async () => {
-		await withComsTempSession(async ({ commands, getActive, sessionCtx }) => {
+	it("renders plain-text peer list when /coms runs without UI", async () => {
+		await withComsTempSession(async ({ commands, sessionCtx }) => {
+			const notices: string[] = [];
 			const comsCmd = commands.get("coms");
-			await comsCmd.handler("start --cname gate-peer2 --project gate-proj", sessionCtx);
-			for (const name of gatedNames) {
-				assert.equal(getActive().includes(name), true, `${name} should be active after /coms start`);
-			}
-			await comsCmd.handler("stop", sessionCtx);
-			for (const name of gatedNames) {
-				assert.equal(getActive().includes(name), false, `${name} should be inactive after /coms stop`);
-			}
+			await comsCmd.handler("", { ...sessionCtx, hasUI: false, ui: { notify: (msg: string) => notices.push(msg) } });
+			assert.equal(notices.length, 1);
+			assert.match(notices[0], /No peers in project/);
 		});
+	});
+
+	it("kills supervised peers across all projects when X is pressed in all-projects scope", async () => {
+		const tmpRoot = makeTempDir("coms-killall-scope-");
+		const comsDir = path.join(tmpRoot, "coms");
+		const workspace = path.join(tmpRoot, "workspace");
+		fs.mkdirSync(workspace, { recursive: true });
+		const ownProj = workspace.replace(/^[\\/]+/, "").replace(/[\\/]+/g, "__");
+		const peersDir = path.join(comsDir, "peers");
+		const socketsDir = path.join(comsDir, "sockets");
+		fs.mkdirSync(peersDir, { recursive: true });
+		fs.mkdirSync(socketsDir, { recursive: true });
+
+		const seedPeer = (name: string, project: string, pid: number) => {
+			const agentsDir = path.join(comsDir, "projects", project, "agents");
+			fs.mkdirSync(agentsDir, { recursive: true });
+			const sock = path.join(socketsDir, `${name}.sock`);
+			fs.writeFileSync(sock, "");
+			fs.writeFileSync(path.join(agentsDir, `${name}.json`), JSON.stringify({
+				coms_session_id: `sess-${name}`,
+				name,
+				pid,
+				cwd: workspace,
+				endpoint: sock,
+				heartbeat_at: new Date().toISOString(),
+			}));
+			fs.writeFileSync(path.join(peersDir, `${name}@${project}.json`), JSON.stringify({
+				cname: name,
+				project,
+				pid,
+				childPid: pid,
+			}));
+		};
+		seedPeer("local-worker", ownProj, 999991);
+		seedPeer("other-worker", "other-project", 999992);
+
+		const { pi, commands, events } = makeStatefulPi();
+		registerComs(pi as any, { comsDir, allowSubagentChild: true, registerSignalHandlers: false });
+		const killedPids: number[] = [];
+		const origKill = process.kill;
+		(process as any).kill = (pid: number, sig?: string | number) => {
+			if (sig === 0) return true;
+			killedPids.push(pid);
+			return true;
+		};
+		try {
+			const sessionCtx: any = {
+				cwd: workspace,
+				hasUI: true,
+				sessionManager: { getSessionId: () => "killall-sess", getEntries: () => [] },
+				ui: {
+					notify: () => {},
+					custom: async (factory: any) =>
+						await new Promise((resolve) => {
+							const fakeTui = { terminal: { rows: 24 }, requestRender: () => {} };
+							const fakeTheme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+							const comp = factory(fakeTui, fakeTheme, { matches: () => false }, (v: any) => resolve(v));
+							comp.handleInput("f"); // toggle to all projects
+							comp.handleInput("X"); // kill all in all-projects scope
+							comp.handleInput("\x1b");
+							comp.dispose?.();
+						}),
+				},
+			};
+			for (const fn of events.get("session_start") ?? []) await fn({ reason: "startup" }, sessionCtx);
+			await commands.get("coms").handler("", sessionCtx);
+			assert.deepEqual(killedPids.sort(), [999991, 999992], "X in all-projects view signals both own and other project supervised peers");
+		} finally {
+			process.kill = origKill;
+			for (const fn of events.get("session_shutdown") ?? []) await fn({}, {});
+		}
 	});
 });

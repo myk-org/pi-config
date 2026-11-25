@@ -109,7 +109,8 @@ like `<API_KEY>` or `$ENV_VAR`. Skills are stored in plain text.
 
 - **Always include `skill-maintenance: auto`** in the frontmatter — it opts the skill into maintenance so agents
   keep it true when it drifts. If omitted when creating a brand-new `.pi/skills/<name>/SKILL.md`, skill maintenance
-  auto-adopts it on write; existing unmarked skills in any scope get it via `/adopt-skill <name>`
+  auto-adopts it on write; existing unmarked skills in any scope get it via `skill_adopt(action="adopt", name="<name>")`
+  (or `/adopt-skill` TUI for humans)
 - **Be specific** — exact commands, exact file paths, exact verification steps
 - **No fluff** — skip background, motivation, history — just the procedure
 - **Include pitfalls** — what went wrong during this session and how it was resolved

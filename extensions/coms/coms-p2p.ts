@@ -508,13 +508,13 @@ export function createComsPeerRuntime(
 			isActive: () => false,
 			sendAsUser: async () => ({ ok: false, message: "coms is disabled in subagent child sessions." }),
 			openQueueOverlay: async (_args: string, ctx: any) => {
-				try { ctx?.ui?.notify?.("📡 coms not active — no queue. Run /coms start first.", "info"); } catch { /* ignore */ }
+				try { ctx?.ui?.notify?.("📡 coms not active — no queue. Activate coms with coms_start first.", "info"); } catch { /* ignore */ }
 			},
 			gatedToolNames,
 		};
 	}
 	const deferred = options.deferred === true;
-	const inactiveMessage = options.inactiveMessage ?? "⚠️ coms not active. Run `/coms start` first.";
+	const inactiveMessage = options.inactiveMessage ?? "⚠️ coms not active. Call `coms_start` first.";
 	const registerSignalHandlers = options.registerSignalHandlers !== false;
 
 	// Per-instance runtime configuration & registry (zero module-level mutable globals).
@@ -3452,7 +3452,7 @@ Do not respond to this message.`;
 		name: "coms_local_queue",
 		label: "Coms Local Queue",
 		description:
-			"Inspect or kill messages in THIS session's own inbound coms queue (equivalent to /coms-queue). Use action='list' to view processing and pending inbound messages, or action='kill' with msg_id to cancel one and notify the sender.",
+			"Inspect or kill messages in THIS session's own inbound coms queue (equivalent to /coms → q). Use action='list' to view processing and pending inbound messages, or action='kill' with msg_id to cancel one and notify the sender.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("list"), Type.Literal("kill")], {
 				description: "'list' to view this session's inbound coms queue; 'kill' to cancel a queued message by msg_id.",
@@ -4389,65 +4389,68 @@ Do not respond to this message.`;
 		}
 	});
 
-	// ━━ /coms-queue command — view and kill queued messages ━━━━━━━━━━━━━━━
+	// ━━ Local inbound queue overlay (opened from /coms via `q`) ━━━━━━━━━━━
 	const openQueueOverlay = async (_args: string, ctx: any): Promise<void> => {
 		if (!identity) {
-			try { ctx?.ui?.notify?.("📡 coms not active — no queue. Run /coms start first.", "info"); } catch { /* ignore */ }
+			try { ctx?.ui?.notify?.("📡 coms not active — no queue. Activate coms with coms_start first.", "info"); } catch { /* ignore */ }
 			return;
 		}
-			await openListDetailOverlay(ctx, {
-				emptyMessage: "No queued coms messages.",
-				listSpec: {
-					title: "Coms Queue",
-					countLabel: (items) => `${items.length} message${items.length === 1 ? "" : "s"}`,
-					borderTitle: (items) => {
-						const processing = items.filter(i => i.status === "processing").length;
-						return `queue · ${processing} processing / ${items.length}`;
+		await openListDetailOverlay(ctx, {
+			emptyMessage: "No queued coms messages.",
+			listSpec: {
+				title: "Coms Queue",
+				countLabel: (items) => `${items.length} message${items.length === 1 ? "" : "s"}`,
+				borderTitle: (items) => {
+					const processing = items.filter(i => i.status === "processing").length;
+					return `queue · ${processing} processing / ${items.length}`;
+				},
+				footerHints: "↑↓/jk select · Space multi-select · Enter view · x kill · Esc back",
+				listItems: listLocalInboundQueue,
+				rowParts: (item, theme) => {
+					const shortId = item.msg_id.length > 8 ? item.msg_id.slice(-8) : item.msg_id;
+					const preview = item.prompt.length > 40 ? `${item.prompt.slice(0, 40)}…` : item.prompt;
+					const statusColor = item.status === "processing" ? "warning" : "dim";
+					return {
+						glyph: item.status === "processing" ? theme.fg("warning", "■") : theme.fg("dim", "○"),
+						title: item.sender_name,
+						idLabel: theme.fg("dim", shortId),
+						rightParts: [
+							theme.fg("dim", preview),
+							theme.fg(statusColor, item.status),
+						],
+					};
+				},
+				selectable: true,
+				onX: (item) => { void killLocalInboundQueueItem(item.id); },
+				onXSelected: (items) => {
+					log.info("queue_bulk_kill", { count: items.length });
+					// Kill pending items first so killing an active item never drains a selected pending item.
+					const ordered = [...items].sort((a, b) => (a.status === "pending" ? 0 : 1) - (b.status === "pending" ? 0 : 1));
+					for (const item of ordered) void killLocalInboundQueueItem(item.id);
+				},
+			},
+			createDetail: (item, tui, theme, done) => {
+				return new OverlayScrollDetail(tui, theme, {
+					followTail: false,
+					emptyBody: "(no prompt)",
+					footerHints: "↑↓/jk scroll · x kill · Esc back",
+					onX: () => {
+						void killLocalInboundQueueItem(item.id);
+						return true;
 					},
-					footerHints: "↑↓/jk select · Enter view · x kill · Esc close",
-					listItems: listLocalInboundQueue,
-					rowParts: (item, theme) => {
+					getHeader: (t) => {
 						const shortId = item.msg_id.length > 8 ? item.msg_id.slice(-8) : item.msg_id;
-						const preview = item.prompt.length > 40 ? `${item.prompt.slice(0, 40)}…` : item.prompt;
-						const statusColor = item.status === "processing" ? "warning" : "dim";
-						return {
-							glyph: item.status === "processing" ? theme.fg("warning", "■") : theme.fg("dim", "○"),
-							title: item.sender_name,
-							idLabel: theme.fg("dim", shortId),
-							rightParts: [
-								theme.fg("dim", preview),
-								theme.fg(statusColor, item.status),
-							],
-						};
+						return (
+							t.fg("accent", t.bold(item.sender_name)) +
+							t.fg("dim", ` · ${shortId}`) +
+							t.fg("muted", ` · ${item.status}`)
+						);
 					},
-					onX: (item) => { void killLocalInboundQueueItem(item.id); },
-				},
-				createDetail: (item, tui, theme, done) => {
-					return new OverlayScrollDetail(tui, theme, {
-						followTail: false,
-						emptyBody: "(no prompt)",
-						footerHints: "↑↓/jk scroll · x kill · Esc back",
-						onX: () => {
-							void killLocalInboundQueueItem(item.id);
-							return true;
-						},
-						getHeader: (t) => {
-							const shortId = item.msg_id.length > 8 ? item.msg_id.slice(-8) : item.msg_id;
-							return (
-								t.fg("accent", t.bold(item.sender_name)) +
-								t.fg("dim", ` · ${shortId}`) +
-								t.fg("muted", ` · ${item.status}`)
-							);
-						},
-						getBodyLines: () => item.prompt.split("\n"),
-					}, done);
-				},
-			});
+					getBodyLines: () => item.prompt.split("\n"),
+				}, done);
+			},
+		});
 	};
-	pi.registerCommand("coms-queue", {
-		description: "View and manage queued coms inbound messages",
-		handler: openQueueOverlay,
-	});
 
 	// ━━ Clean shutdown ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let shuttingDown = false;

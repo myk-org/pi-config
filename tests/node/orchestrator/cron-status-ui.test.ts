@@ -368,3 +368,199 @@ describe("openCronStatusOverlay multi-select (#1087)", () => {
     assert.equal(callsFor10, callsFor1);
   });
 });
+
+describe("openCronStatusOverlay scope filter, persist toggle, add and edit (#1392)", () => {
+  it("toggles a single focused session cron to persist on t", async () => {
+    const { ctx, notifications } = makeCtx(["t"]);
+    const moved: Array<[string, string]> = [];
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => [{ ...row({ id: "1" }), isLocal: true }],
+      removeTask: () => true,
+      togglePaused: () => ({ ok: true, paused: false }),
+      setScope: (id, scope) => {
+        moved.push([id, scope]);
+        return { ok: true, scope, id: `persist:1` };
+      },
+    });
+    assert.deepEqual(moved, [["session:1", "project"]]);
+    assert.match(notifications[0]?.message ?? "", /Moved #session:1 to persist/);
+  });
+
+  it("persists every selected session cron when pressing t on a mixed selection", async () => {
+    const { ctx, notifications } = makeCtx([" ", "j", " ", "t"]);
+    const moved: Array<[string, string]> = [];
+    const tasks = [
+      { ...row({ id: "1" }), id: "session:1", taskId: "session:1", isLocal: true },
+      { ...row({ id: "2" }), id: "persist:2", taskId: "persist:2", isLocal: false },
+    ];
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => tasks,
+      removeTask: () => true,
+      togglePaused: () => ({ ok: true, paused: false }),
+      setScope: (id, scope) => {
+        moved.push([id, scope]);
+        return { ok: true, scope, id: `persist:1` };
+      },
+    });
+    assert.deepEqual(moved, [["session:1", "project"]]);
+    assert.match(notifications[0]?.message ?? "", /persisted 2 crons/i);
+  });
+
+  it("moves every selected persisted cron to session when pressing t on all-persist selection", async () => {
+    const { ctx, notifications } = makeCtx([" ", "j", " ", "t"]);
+    const moved: Array<[string, string]> = [];
+    const tasks = [
+      { ...row({ id: "1" }), id: "persist:1", taskId: "persist:1", isLocal: false },
+      { ...row({ id: "2" }), id: "persist:2", taskId: "persist:2", isLocal: false },
+    ];
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => tasks,
+      removeTask: () => true,
+      togglePaused: () => ({ ok: true, paused: false }),
+      setScope: (id, scope) => {
+        moved.push([id, scope]);
+        return { ok: true, scope, id: id.replace("persist:", "session:") };
+      },
+    });
+    assert.deepEqual(moved, [["persist:1", "session"], ["persist:2", "session"]]);
+    assert.match(notifications[0]?.message ?? "", /moved to session 2 crons/i);
+  });
+
+  it("cycles all -> session -> persist scope filter on f", async () => {
+    const tasks = [
+      { ...row({ id: "1", description: "sess-only" }), id: "session:1", taskId: "session:1", isLocal: true },
+      { ...row({ id: "2", description: "pers-only" }), id: "persist:2", taskId: "persist:2", isLocal: false },
+    ];
+    const renders: string[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify: () => {},
+        custom: async (factory: any) => {
+          const fakeTui = { terminal: { rows: 24 }, requestRender: () => {} };
+          const fakeTheme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+          const comp = factory(fakeTui, fakeTheme, { matches: () => false }, () => {});
+          try {
+            renders.push(comp.render(120).join("\n"));
+            comp.handleInput("f");
+            renders.push(comp.render(120).join("\n"));
+            comp.handleInput("f");
+            renders.push(comp.render(120).join("\n"));
+          } finally {
+            comp.dispose?.();
+          }
+          return null;
+        },
+      },
+    } as any;
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => tasks,
+      removeTask: () => true,
+      togglePaused: () => ({ ok: true, paused: false }),
+    });
+    assert.match(renders[0], /sess-only/);
+    assert.match(renders[0], /pers-only/);
+    assert.match(renders[1], /sess-only/);
+    assert.doesNotMatch(renders[1], /pers-only/);
+    assert.doesNotMatch(renders[2], /sess-only/);
+    assert.match(renders[2], /pers-only/);
+  });
+
+  it("adds a new cron via n dialog", async () => {
+    const added: any[] = [];
+    const answers = ["Check CI", "10m", "CI watch", "y", "google/gemini-2.5-flash"];
+    let open = 0;
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify: () => {},
+        custom: async (factory: any) => {
+          open++;
+          if (open === 1) {
+            return await new Promise((resolve) => {
+              const fakeTui = { terminal: { rows: 24 }, requestRender: () => {} };
+              const fakeTheme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+              const comp = factory(fakeTui, fakeTheme, { matches: () => false }, (v: any) => resolve(v));
+              comp.handleInput("n");
+              comp.dispose?.();
+            });
+          }
+          if (open >= 2 && open <= 6) {
+            return answers[open - 2];
+          }
+          return null;
+        },
+      },
+    } as any;
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => [],
+      removeTask: () => true,
+      togglePaused: () => ({ ok: true, paused: false }),
+      addTask: (input) => {
+        added.push(input);
+        return { ok: true, id: "persist:new-1" };
+      },
+    });
+    assert.deepEqual(added, [
+      {
+        scope: "project",
+        task: "Check CI",
+        description: "CI watch",
+        model: "google/gemini-2.5-flash",
+        interval_seconds: 600,
+      },
+    ]);
+  });
+
+  it("edits the focused cron via e dialog", async () => {
+    const edited: Array<[string, any]> = [];
+    const answers = ["Updated desc", "Updated prompt", "15m", ""];
+    let open = 0;
+    const existing = {
+      ...row({ id: "1", description: "Old desc", task: "Old prompt", intervalMs: 60_000, model: "google/gemini-2.5-flash" }),
+      isLocal: true,
+    };
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify: () => {},
+        custom: async (factory: any) => {
+          open++;
+          if (open === 1) {
+            return await new Promise((resolve) => {
+              const fakeTui = { terminal: { rows: 24 }, requestRender: () => {} };
+              const fakeTheme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+              const comp = factory(fakeTui, fakeTheme, { matches: () => false }, (v: any) => resolve(v));
+              comp.handleInput("e");
+              comp.dispose?.();
+            });
+          }
+          if (open >= 2 && open <= 5) {
+            return answers[open - 2];
+          }
+          return null;
+        },
+      },
+    } as any;
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => [existing],
+      removeTask: () => true,
+      togglePaused: () => ({ ok: true, paused: false }),
+      editTask: (id, patch) => {
+        edited.push([id, patch]);
+        return { ok: true, id };
+      },
+    });
+    assert.deepEqual(edited, [
+      [
+        "session:1",
+        {
+          description: "Updated desc",
+          task: "Updated prompt",
+          interval_seconds: 900,
+          model: "",
+        },
+      ],
+    ]);
+  });
+});

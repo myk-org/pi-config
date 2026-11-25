@@ -1,7 +1,7 @@
 /**
  * tasks-ui.ts — /tasks fullscreen list → detail overlay.
  *
- * Same shared component as /cron list and /async-status (openListDetailOverlay +
+ * Same shared component as /cron and /async (openListDetailOverlay +
  * OverlayScrollDetail), so j/k, Enter, x and Esc mean the same thing everywhere.
  */
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -76,7 +76,48 @@ async function promptLine(
 	});
 }
 
-const TASKS_LIST_HINTS = "Space select · x delete · n add · e edit · d done · f mine/all · Enter view · Esc close";
+const TASKS_LIST_HINTS = "Space select · x delete · n add · e edit · s start · d done · f mine/all · Enter view · Esc close";
+
+function bulkCompleteTasks(ctx: ExtensionCommandContext, deps: TasksUiDeps, selected: readonly Task[]): void {
+	const targets = selected.filter((t) => t.status !== "completed");
+	if (targets.length === 0) {
+		log.debug("tasks_overlay_bulk_complete_unchanged", { selected: selected.length });
+		ctx.ui.notify("Selected tasks are already completed.", "info");
+		return;
+	}
+	const { failed, errors } = bulkRemove(targets, (t) => deps.completeTask(t.id, { by: "user" }));
+	const names = failed.map((t) => `#${t.id}`);
+	log.info("tasks_overlay_bulk_complete", { selected: selected.length, targets: targets.length, failed: names.length, errors });
+	ctx.ui.notify(
+		bulkResultMessage("completed", "task", targets.length, names),
+		names.length === 0 ? "info" : "warning",
+	);
+}
+
+function bulkStartTasks(ctx: ExtensionCommandContext, deps: TasksUiDeps, selected: readonly Task[]): void {
+	if (!deps.startTask) return;
+	const targets = selected.filter((t) => t.status !== "in_progress");
+	if (targets.length === 0) {
+		log.debug("tasks_overlay_bulk_start_unchanged", { selected: selected.length });
+		ctx.ui.notify("Selected tasks are already in progress.", "info");
+		return;
+	}
+	const failed: string[] = [];
+	for (const t of targets) {
+		try {
+			const outcome = deps.startTask(t.id);
+			if (outcome !== "applied" && outcome !== "unchanged") failed.push(`#${t.id}`);
+		} catch (err) {
+			log.error("tasks_overlay_bulk_start_threw", { taskId: t.id, error: err instanceof Error ? err.message : String(err) });
+			failed.push(`#${t.id}`);
+		}
+	}
+	log.info("tasks_overlay_bulk_start", { selected: selected.length, targets: targets.length, failed: failed.length });
+	ctx.ui.notify(
+		bulkResultMessage("started", "task", targets.length, failed),
+		failed.length === 0 ? "info" : "warning",
+	);
+}
 
 /** Open the task list overlay; loops list → detail until the list is closed. `mine` starts the
  *  overlay on the owner's rows only; `f` toggles the same filter in place (#1090). */
@@ -142,11 +183,30 @@ export async function openTasksOverlay(
 						}
 						const intent = tasksOverlayIntent(key);
 						if (!intent) return false;
-						// Act/edit/done are single-row by nature: acting on the focused row while rows are picked
+						if (intent === "done" && selected.length > 0) {
+							bulkCompleteTasks(ctx, deps, selected);
+							return "redraw";
+						}
+						if (intent === "start") {
+							if (!deps.startTask) return false;
+							if (selected.length > 0) {
+								bulkStartTasks(ctx, deps, selected);
+								return "redraw";
+							}
+							if (!task) return false;
+							const outcome = deps.startTask(task.id);
+							log.info("tasks_overlay_start", { taskId: task.id, outcome });
+							if (outcome === "blocked") ctx.ui.notify(`Task #${task.id} has open blockers.`, "warning");
+							else if (outcome === "refused") ctx.ui.notify(`Task #${task.id} is completed and cannot be restarted.`, "warning");
+							else if (outcome === "unchanged") ctx.ui.notify(`Task #${task.id} is already in progress.`, "info");
+							else if (outcome === "missing") ctx.ui.notify(`No task #${task.id}.`, "warning");
+							return "redraw";
+						}
+						// Add/edit are single-row by nature: acting on the focused row while rows are picked
 						// would silently ignore the selection, so refuse and leave the rows selected.
 						if (selected.length > 0) {
 							log.debug("tasks_overlay_key_refused", { intent, selected: selected.length });
-							const label = intent === "add" ? "Add" : intent === "edit" ? "Edit" : "Done";
+							const label = intent === "add" ? "Add" : "Edit";
 							ctx.ui.notify(
 								`${label} works on one task — clear the selection (Space) first.`,
 								"warning",

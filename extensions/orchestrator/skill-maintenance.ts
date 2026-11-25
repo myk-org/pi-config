@@ -4,18 +4,20 @@
  * Non-blocking skill maintenance without a background model call:
  * - Pi's `pi.getCommands()` supplies loaded skills across project, user, and symlinked
  *   shared directories (falling back to `.pi/skills/` only when `pi.getCommands()` is unavailable);
- * - `/adopt-skill <name>` stamps `skill-maintenance: auto` on any non-package skill
- *   (brand-new `<project>/.pi/skills/<name>/SKILL.md` writes auto-adopt);
+ * - `/adopt-skill` opens a zero-arg TUI overlay to stamp `skill-maintenance: auto` on one or more
+ *   non-package skills (brand-new `<project>/.pi/skills/<name>/SKILL.md` writes auto-adopt);
  * - failed adopted skills steer mid-turn; edits log to `.pi/data/skill-review.jsonl`
  *   with a one-line turn summary.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
 import { fileLog } from "../shared/file-logger.js";
+import { isBrowserDispatch } from "../shared/live-ctx.js";
+import { bulkResultMessage, openListDetailOverlay } from "./overlay-dashboard.js";
 import { truncateJsonlFile, withFileLock } from "./state-jsonl.js";
 import { getProjectDataDir, realpathNearestExisting, resolveMainCheckoutRoot } from "./utils.js";
 
@@ -522,19 +524,138 @@ function collectAdoptableUnmarkedSkills(projectCwd: string, skills?: readonly Re
   return unmarked.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export interface AdoptableSkillRow {
+  id: string;
+  name: string;
+  scope: string;
+  filePath: string;
+  maintained: boolean;
+}
+
+export function listAdoptableSkillRows(
+  projectCwd: string,
+  skills?: readonly RegisteredSkillInfo[],
+): AdoptableSkillRow[] {
+  const rows: AdoptableSkillRow[] = [];
+  for (const resolved of resolvedAdoptableMap(projectCwd, skills).values()) {
+    const maintained = isSkillFileMarked(resolved.skill.filePath) === true;
+    rows.push({
+      id: resolved.skill.name,
+      name: resolved.skill.name,
+      scope: resolved.skill.scope,
+      filePath: resolved.skill.filePath,
+      maintained,
+    });
+  }
+  return rows.sort((a, b) => Number(a.maintained) - Number(b.maintained) || a.name.localeCompare(b.name));
+}
+
+export function formatAdoptableSkillsPlainText(rows: readonly AdoptableSkillRow[]): string {
+  if (rows.length === 0) return "No adoptable skills found.";
+  return rows
+    .map((row) => `${row.maintained ? "✔" : "○"} ${row.name} (${row.scope}) — ${row.maintained ? "maintained" : "unmarked"}`)
+    .join("\n");
+}
+
 export function listUnmarkedSkills(projectCwd: string, skills?: readonly RegisteredSkillInfo[]): string[] {
   return collectAdoptableUnmarkedSkills(projectCwd, skills).map((s) => s.name);
 }
 
-export function completeUnmarkedSkills(
-  projectCwd: string,
-  prefix: string,
-  skills?: readonly RegisteredSkillInfo[],
-): Array<{ value: string; label: string; description?: string }> {
-  const needle = (prefix ?? "").trim().toLowerCase();
-  return collectAdoptableUnmarkedSkills(projectCwd, skills)
-    .filter((s) => s.name.toLowerCase().includes(needle))
-    .map((s) => ({ value: s.name, label: s.name, description: `${s.scope} — mark for maintenance` }));
+export interface AdoptSkillOverlayDeps {
+  listSkills: () => AdoptableSkillRow[];
+  adoptSkill: (name: string) => AdoptResult;
+  openOverlay?: typeof openListDetailOverlay;
+}
+
+export async function openAdoptSkillOverlay(
+  ctx: ExtensionCommandContext,
+  deps: AdoptSkillOverlayDeps,
+): Promise<void> {
+  const openOverlay = deps.openOverlay ?? openListDetailOverlay;
+  const selectedIds = new Set<string>();
+  let reselectId: string | undefined;
+
+  for (;;) {
+    const queue: Array<{ targets: string[] }> = [];
+
+    await openOverlay<string, AdoptableSkillRow>(ctx, {
+      emptyMessage: "No adoptable skills found.",
+      initialSelectionId: reselectId,
+      initialSelectionIds: [...selectedIds],
+      listSpec: {
+        title: "Adopt skills",
+        countLabel: (items) => `${items.length} skill${items.length === 1 ? "" : "s"}`,
+        borderTitle: (items) => {
+          const maintained = items.filter((s) => s.maintained).length;
+          return `skills · ${maintained} maintained / ${items.length}`;
+        },
+        footerHints: "↑↓/jk navigate · Space select · a/Enter adopt · Esc close",
+        listItems: () => deps.listSkills(),
+        rowParts: (item, theme: Theme) => ({
+          glyph: item.maintained ? theme.fg("success", "✔") : theme.fg("warning", "○"),
+          title: item.name,
+          idLabel: theme.fg("dim", item.scope),
+          rightParts: [
+            item.maintained ? theme.fg("success", "maintained") : theme.fg("warning", "unmarked"),
+          ],
+        }),
+        selectable: true,
+        onSelectionChange: (ids) => {
+          selectedIds.clear();
+          for (const id of ids) selectedIds.add(String(id));
+        },
+        onKey: (key, item, selected) => {
+          if (item) reselectId = item.id;
+          if (key === "a") {
+            const targets = selected.length > 0 ? selected.map((s) => s.name) : item ? [item.name] : [];
+            if (targets.length === 0) return false;
+            queue.push({ targets });
+            return "close";
+          }
+          return false;
+        },
+        onSelect: (item) => {
+          reselectId = item.id;
+          const current = deps.listSkills();
+          const targets =
+            selectedIds.size > 0
+              ? current.filter((s) => selectedIds.has(s.id)).map((s) => s.name)
+              : [item.name];
+          queue.push({ targets });
+        },
+      },
+    });
+
+    const req = queue.pop();
+    if (!req) return;
+    selectedIds.clear();
+
+    const uniqueTargets = [...new Set(req.targets)];
+    if (uniqueTargets.length === 1) {
+      const res = deps.adoptSkill(uniqueTargets[0]);
+      log.info("adopt_skill_overlay_single", { name: uniqueTargets[0], ok: res.ok });
+      ctx.ui.notify(res.message, res.ok ? "info" : "warning");
+      continue;
+    }
+
+    const currentByName = new Map(deps.listSkills().map((s) => [s.name, s]));
+    const toAdopt = uniqueTargets.filter((name) => !currentByName.get(name)?.maintained);
+    if (toAdopt.length === 0) {
+      log.debug("adopt_skill_overlay_bulk_unchanged", { selected: uniqueTargets.length });
+      ctx.ui.notify("Selected skills are already maintained.", "info");
+      continue;
+    }
+    const failed: string[] = [];
+    for (const name of toAdopt) {
+      const res = deps.adoptSkill(name);
+      if (!res.ok) failed.push(name);
+    }
+    log.info("adopt_skill_overlay_bulk", { selected: uniqueTargets.length, toAdopt: toAdopt.length, failed: failed.length });
+    ctx.ui.notify(
+      bulkResultMessage("adopted", "skill", toAdopt.length, failed),
+      failed.length === 0 ? "info" : "warning",
+    );
+  }
 }
 
 export function adoptSkill(projectCwd: string, name: string, skills?: readonly RegisteredSkillInfo[]): AdoptResult {
@@ -927,24 +1048,20 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("adopt-skill", {
-    description: "Mark a skill as maintained (skill-maintenance: auto) so agents keep it true",
-    getArgumentCompletions: (prefix: string) => completeUnmarkedSkills(currentCwd, prefix, getLiveSkills()),
-    handler: async (args, ctx) => {
+    description: "Open the adopt-skill TUI overlay to mark skills as maintained",
+    handler: async (_args, ctx) => {
       currentCwd = ctx.cwd;
       const liveSkills = getLiveSkills();
-      const name = (args ?? "").trim().split(/\s+/)[0] ?? "";
-      if (!name) {
-        const available = listUnmarkedSkills(ctx.cwd, liveSkills);
-        ctx.ui.notify(
-          available.length > 0
-            ? `Usage: /adopt-skill <name>. Unmarked skills: ${available.join(", ")}`
-            : "Usage: /adopt-skill <name>. Every adoptable skill is already maintained.",
-          "info",
-        );
+      log.debug("adopt_skill_command_open", { hasUI: !!ctx?.hasUI, browser: isBrowserDispatch(ctx) });
+      if (!ctx?.hasUI || isBrowserDispatch(ctx)) {
+        const rows = listAdoptableSkillRows(ctx.cwd, liveSkills);
+        ctx.ui?.notify(formatAdoptableSkillsPlainText(rows), "info");
         return;
       }
-      const result = adoptSkill(ctx.cwd, name, liveSkills);
-      ctx.ui.notify(result.message, result.ok ? "info" : "warning");
+      await openAdoptSkillOverlay(ctx, {
+        listSkills: () => listAdoptableSkillRows(ctx.cwd, getLiveSkills()),
+        adoptSkill: (name) => adoptSkill(ctx.cwd, name, getLiveSkills()),
+      });
     },
   });
 
@@ -953,7 +1070,7 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
       name: "skill_adopt",
       label: "Skill Adopt",
       description:
-        "List adoptable skills not yet marked with skill-maintenance: auto, or adopt a named skill so agents keep it accurate (equivalent to /adopt-skill).",
+        "List adoptable skills not yet marked with skill-maintenance: auto, or adopt a named skill so agents keep it accurate (programmatic counterpart to /adopt-skill).",
       parameters: Type.Object({
         action: Type.Union([Type.Literal("list"), Type.Literal("adopt")], {
           description: "'list' to list unmarked adoptable skills; 'adopt' to mark a named skill as maintained.",

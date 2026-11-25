@@ -418,7 +418,7 @@ test("a row stop fails that one result and lets its sibling finish", { timeout: 
     const [slowResult, fastResult] = await Promise.all([slow, fast]);
     assert.equal(slowResult.exitCode, 1);
     assert.equal(slowResult.stoppedByRegistry, true, "a stopped result is marked so it is not penalised");
-    assert.match(slowResult.stderr, /stopped from \/async-status/);
+    assert.match(slowResult.stderr, /stopped from \/async/);
     assert.equal(fastResult.exitCode, 0, "the sibling must not be collateral");
 
     assert.equal(syncAgentRunCount(), 0);
@@ -445,7 +445,7 @@ test("a stop that lands before the spawn kills the fresh child", { timeout: 30_0
   try {
     const result = await runSingleAgent(h.agents, "helper", "slow early stop", h.cwd, undefined, undefined, undefined, () => ({} as any));
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, /stopped from \/async-status/);
+    assert.match(result.stderr, /stopped from \/async/);
     assert.equal(listSyncAgentRunsWithFinished()[0].status, "failed");
   } finally {
     unsubscribe();

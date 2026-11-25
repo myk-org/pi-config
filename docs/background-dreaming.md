@@ -20,7 +20,7 @@ You should care because it changes what the agent remembers without requiring co
 | Trigger | Source | Default behavior |
 |---|---|---|
 | Automatic timer | Dreaming extension | Enabled by default; runs every `dream_interval_hours` (default `3`). |
-| Manual run | `/dream` | Starts a background pass immediately. |
+| Manual run | `memory_dream(action="run")` | Starts a background pass immediately. |
 | Session quit | `session_shutdown` hook | Runs one final pass, but only on `quit` — skipped for `new`/`fork`/`resume`/`reload` and in `print`/`json` mode. |
 | Rebuild timer | Rebuild worker | Re-scores topic files every 30 minutes, while auto-dreaming is enabled. |
 
@@ -198,10 +198,10 @@ User-visible effect:
 ### Controls You Can Use
 
 | Control | Effect |
-|---|---|
-| `/dream` | Starts a manual background pass. |
-| `/dream-auto on` | Enables periodic dreaming for the current project. |
-| `/dream-auto off` | Disables the automatic timer for the current project. |
+| --- | --- |
+| `memory_dream` tool | Programmatic control (`status`, `run`, `auto_on`, `auto_off`) |
+| `dream_auto_enable` | Enables/disables automatic dreaming (periodic + session end) in `/pi-config-settings`. `bool`, default `true`. |
+| `PI_DREAM_AUTO_ENABLE` | Environment-variable override for `dream_auto_enable`. |
 | `dream_interval_hours` | Adjusts the automatic interval in project or global settings. `number`, default `3`. |
 | `PI_DREAM_INTERVAL_HOURS` | Environment-variable override for the interval. |
 | `internal_operations_provider` | Optional provider override for background internal operations like dreaming. `string`, default `""`. |
@@ -214,7 +214,7 @@ Dreaming spawns the `worker` agent asynchronously. When both `internal_operation
 
 User-visible effect:
 
-- Manual `/dream` may appear to do nothing except show a warning.
+- Manual `memory_dream(action="run")` may report a failure if async LLM settings are invalid.
 - Auto-dreaming may remain enabled, but individual runs can be skipped until async LLM settings are valid.
 
 > **Tip:** See [Configuration & Settings](configuration.html) for the exact settings used to control the dream interval and async LLM fallback.

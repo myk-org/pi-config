@@ -2,7 +2,7 @@
  * Extended autocomplete — argument completions for slash commands.
  *
  * Two mechanisms:
- * 1. getArgumentCompletions on extension commands (dream-auto, etc.)
+ * 1. getArgumentCompletions on extension commands (review-status, etc.)
  *    — injected via registerCommand wrapping
  * 2. addAutocompleteProvider for prompt templates (pr-review, review-local, etc.)
  *    — stacked provider that intercepts /command <arg> patterns
@@ -16,14 +16,7 @@
  *   /review-handler <Tab>        → --autorabbit, --autoqodo
  *   /qodo-review <Tab>           → --autofix, --fast, --deep, --ticket
  *   /review-status <Tab>         → active worktree paths
- *   /worktree <Tab>              → list, prune
  *   /create-skill <Tab>          → (free-text name)
- *   /cron <Tab>                  → add, list, remove
- *   /dream-auto <Tab>            → on, off
- *
- * NOT here: `/coms`. `kill` and `tell` (and their `--project` scope) are completed in
- * `extensions/coms/coms-wrapper.ts`, because peer-name completion needs the live registry rows so a
- * dead peer never completes. Keep the two consistent there; do not enumerate them here.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -31,7 +24,6 @@ import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } 
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
-import { getCronRemoveAutocompleteItems } from "./cron.js";
 import { listWorktreesAsync, type GitAsyncRunner } from "./git-helpers.js";
 
 const log = createLogger("autocomplete");
@@ -120,11 +112,6 @@ function registerCompletions(
 
   // ── Completion definitions ──────────────────────────────────────
 
-  // `/adopt-skill` is NOT here on purpose: it completes live project state (the
-  // unmarked skills under `.pi/skills/`), so it registers its own
-  // `getArgumentCompletions` in `skill-maintenance.ts` — the same pattern as `/coms`
-  // in `extensions/coms/coms-wrapper.ts`. Add a note here if you are looking for it.
-
   const completions: Record<string, CompletionFn> = {
     "pr-review": (prefix: string) => {
       void ctx.fetchOpenPRs(ctx.lastCwd);
@@ -212,59 +199,6 @@ function registerCompletions(
       return filter(cache.data, prefix);
     },
 
-    "worktree": (prefix: string) => {
-      const parts = prefix.trimStart().split(/\s+/);
-      if (parts.length > 1) return null;
-      return filter([
-        { value: "list", label: "list", description: "Show compact plain-text table of worktrees" },
-        { value: "prune", label: "prune", description: "Prune stale git worktree administrative files" },
-      ], parts[0] || "");
-    },
-
-
-    "dream-auto": (prefix: string) => {
-      return filter([
-        { value: "on", label: "on", description: "Enable auto-dreaming (every 3h + session end)" },
-        { value: "off", label: "off", description: "Disable auto-dreaming" },
-      ], prefix);
-    },
-
-    "cron": (prefix: string) => {
-      const parts = prefix.split(/\s+/);
-      const lastPart = parts[parts.length - 1] || "";
-      const sub = parts[0]?.toLowerCase();
-      // First level: subcommands
-      if (parts.length <= 1 && !(["add", "list", "list-all", "remove", "rm", "delete"].includes(sub))) {
-        return filter([
-          { value: "add ", label: "add", description: "Add a scheduled task" },
-          { value: "list", label: "list", description: "List visible scheduled tasks" },
-          { value: "list-all", label: "list-all", description: "Show session and project cron tasks" },
-          { value: "remove ", label: "remove", description: "Remove a scheduled task" },
-        ], lastPart);
-      }
-      if (sub === "add" && parts.length <= 2) {
-        return filter([
-          { value: "every", label: "every", description: "Interval-based (e.g., every 2h)" },
-          { value: "at", label: "at", description: "Time-based (e.g., at 12:00)" },
-          { value: "--persist", label: "--persist", description: "Keep this cron across Pi sessions" },
-        ], lastPart);
-      }
-      if (["add", "list"].includes(sub) && !parts.includes("--persist")) {
-        return filter([{ value: "--persist", label: "--persist", description: "Keep this cron across Pi sessions" }], lastPart);
-      }
-      if (sub === "remove" || sub === "rm" || sub === "delete") {
-        const selected = new Set(parts.slice(1, -1));
-        return filter(getCronRemoveAutocompleteItems().filter((item) => !selected.has(item.value)), lastPart);
-      }
-      return null;
-    },
-    "pi-config-settings": (prefix: string) => {
-      return filter([
-        { value: "project", label: "project", description: "Edit project-level settings" },
-        { value: "global", label: "global", description: "Edit global settings" },
-      ], prefix);
-    },
-
   };
 
   // ── Mechanism 1: registerCommand wrapping for extension commands ─
@@ -297,7 +231,6 @@ function setupPromptTemplateInterceptor(
   const promptTemplateCommands = new Set([
     "pr-review", "retro", "issue-review", "coderabbit-rate-limit",
     "review-local", "release", "review-handler", "qodo-review", "create-skill", "create-coms-feature-manager",
-    "pi-config-settings",
   ]);
 
   pi.on("session_start", (_event, sessionCtx) => {

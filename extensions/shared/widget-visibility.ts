@@ -20,7 +20,6 @@ const log = createLogger("widget-visibility");
 
 export type WidgetId = "tasks" | "coms";
 export type WidgetMode = "expanded" | "collapsed";
-export type WidgetCommandAction = WidgetMode | "toggle";
 export type WidgetShortcutSettingKey =
   | "widget_tasks_shortcut"
   | "widget_coms_shortcut"
@@ -128,18 +127,6 @@ export function normalizeWidgetMode(raw: unknown, fallback: WidgetMode = "expand
   return fallback;
 }
 
-/** Parse `/tasks widget [expand|collapse|toggle]` or `/coms widget [...]` arg (plus show/hide aliases). */
-export function parseWidgetCommandAction(raw: string | undefined): WidgetCommandAction | null {
-  if (raw === undefined || raw.trim() === "") return "toggle";
-  const lower = raw.trim().toLowerCase();
-  if (lower === "toggle" || lower === "cycle") return "toggle";
-  if (lower === "expand" || lower === "expanded" || lower === "show") return "expanded";
-  if (lower === "collapse" || lower === "collapsed" || lower === "compact" || lower === "hide" || lower === "hidden") {
-    return "collapsed";
-  }
-  return null;
-}
-
 /** Format the header shortcut badge: `[<key> collapse]` when expanded, `[<key> expand]` when collapsed. */
 export function formatWidgetShortcutHint(shortcutHint: string | null, mode: WidgetMode): string {
   if (!shortcutHint) return "";
@@ -175,10 +162,6 @@ export function cycleWidgetMode(id: WidgetId, cwd?: string): WidgetMode {
   const current = getWidgetMode(id, cwd);
   const next = nextWidgetMode(current);
   return setWidgetMode(id, next, cwd);
-}
-
-export function applyWidgetAction(id: WidgetId, action: WidgetCommandAction, cwd?: string): WidgetMode {
-  return action === "toggle" ? cycleWidgetMode(id, cwd) : setWidgetMode(id, action, cwd);
 }
 
 /**

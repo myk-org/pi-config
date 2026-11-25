@@ -55,7 +55,7 @@ Never instruct agents to read `pi-config-settings.json` manually.
 
 ## Settings TUI
 
-The `/pi-config-settings [project|global]` slash command opens an interactive TUI overlay for editing settings.
+The zero-arg `/pi-config-settings` slash command opens an interactive TUI overlay for editing settings.
 For what it looks like from the user side, see [Configuration & Settings](configuration.html); the internals:
 
 - **Two scopes:** `project` (writes to `<repo>/.pi/pi-config-settings.json`) and `global` (writes to `~/.pi/pi-config-settings.json`). Press Tab to switch.
