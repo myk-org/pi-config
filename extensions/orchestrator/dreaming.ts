@@ -93,9 +93,11 @@ export function buildDreamPrompt(
     `   NOT ~/.agents/) with YAML frontmatter:\n` +
     `   ---\n` +
     `   name: <name>\n` +
-    `   description: "What this skill does and when to use it"\n` +
+    `   description: "<what it does>. Use when <concrete user trigger phrases/keywords>"\n` +
     `   skill-maintenance: auto\n` +
     `   ---\n` +
+    `   Pi only loads name+description at startup (body stays hidden until matched), so pack description\n` +
+    `   with concrete trigger keywords/phrases users actually type (lead with MANDATORY if always-apply).\n` +
     `8. Write current ISO timestamp to ${topicsDir}/../.dream-watermark.\n` +
     `9. Promotions: append candidates to ${topicsDir}/../promotions.md:\n` +
     `   ### <12-char-id>\n` +

@@ -27,8 +27,8 @@ export const MARKER_LINE = `${MARKER_KEY}: ${MARKER_VALUE}`;
 export const PROVENANCE_FILE = "skill-review.jsonl";
 export const MAINTAINER_INSTRUCTION =
   "**IMPORTANT — keep this skill true:** this skill is adopted and it is your responsibility to fix or improve it " +
-  "whenever it is wrong, incomplete, or misleading while you use it (and its description, if routing was wrong), " +
-  "then say one line: `Skill updated: <name> — <why>`.";
+  "whenever it is wrong, incomplete, or misleading while you use it (and add missing trigger keywords to its description " +
+  "if routing missed), then say one line: `Skill updated: <name> — <why>`.";
 
 const PROVENANCE_MAX_BYTES = 1_000_000;
 const PROVENANCE_KEEP_LINES = 2000;

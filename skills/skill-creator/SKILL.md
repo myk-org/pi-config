@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: "Save successful workflows as reusable pi skills. Use when a workflow worked well and should be preserved for future use."
+description: "Save successful workflows as reusable pi skills. Use when asked to create or save a skill ('create a skill', '/create-skill') or preserve a workflow."
 ---
 
 # Create Skills from Experience
@@ -25,7 +25,7 @@ After completing a task that involved a non-obvious workflow:
 ```markdown
 ---
 name: skill-name
-description: "One-line description of what this skill does and when to use it."
+description: "What this skill does. Use when <concrete user phrases, keywords, files, or triggers>."
 skill-maintenance: auto
 ---
 
@@ -50,7 +50,9 @@ skill-maintenance: auto
 ## Rules
 
 - **name**: lowercase, hyphenated, max 64 chars
-- **description**: one line, max 1024 chars, explains WHEN to use it
+- **description**: one line, max 1024 chars — Pi ONLY injects `name` and `description` at startup (the body stays
+  unloaded until `description` matches), so treat it as routing keywords: state what it does, include concrete
+  `Use when ...` trigger phrases/keywords the user actually types, and lead with `MANDATORY` for always-apply workflows
 - **skill-maintenance**: always `auto` — opts the skill into maintenance so agents keep it true when it drifts
   (omitting it on a brand-new `.pi/skills/<name>/SKILL.md` auto-adopts on write; existing unmarked loaded skills
   — project, user-global, or symlinked shared — can be opted in with `/adopt-skill <name>`)
