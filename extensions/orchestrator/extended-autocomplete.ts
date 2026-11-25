@@ -4,11 +4,10 @@
  * Two mechanisms:
  * 1. getArgumentCompletions on extension commands (dream-auto, etc.)
  *    — injected via registerCommand wrapping
- * 2. addAutocompleteProvider for prompt templates (external-ai, review-local, etc.)
+ * 2. addAutocompleteProvider for prompt templates (pr-review, review-local, etc.)
  *    — stacked provider that intercepts /command <arg> patterns
  *
  * Completions:
- *   /external-ai <Tab>           → ai-cli provider names + --fix, --peer, --cli-flags
  *   /pr-review <Tab>             → open PR numbers
  *   /retro <Tab>                 → recently merged PR numbers
  *   /coderabbit-rate-limit <Tab> → open PR numbers
@@ -54,21 +53,6 @@ function createCache<T>(): Cache<T> {
 function isFresh<T>(cache: Cache<T>): boolean {
   return !!cache.data && Date.now() - cache.timestamp < CACHE_TTL_MS;
 }
-
-// ── Static completions ──────────────────────────────────────────────
-
-const AI_CLI_PROVIDERS: AutocompleteItem[] = [
-  "cursor", "claude", "gemini",
-].map((a) => ({ value: a, label: a, description: "ai-cli provider" }));
-
-const AI_CLI_FLAGS: AutocompleteItem[] = [
-  { value: "--fix", label: "--fix", description: "Agent can modify files" },
-  { value: "--peer", label: "--peer", description: "AI-to-AI peer review loop" },
-  { value: "--resume", label: "--resume", description: "Continue most recent session" },
-  { value: "--session-id ", label: "--session-id", description: "Resume a specific session by ID" },
-  { value: "--model ", label: "--model", description: "Set model (e.g., gpt-5.4-high)" },
-  { value: "--cli-flags ", label: "--cli-flags", description: "Extra flags passed to AI CLI binary" },
-];
 
 // ── Filter helper ───────────────────────────────────────────────────
 
@@ -117,13 +101,11 @@ interface AutocompleteContext {
   branchCache: Cache<AutocompleteItem[]>;
   tagCache: Cache<AutocompleteItem[]>;
   worktreeCaches: Map<string, Cache<AutocompleteItem[]>>;
-  modelCaches: Map<string, Cache<AutocompleteItem[]>>;
   lastCwd: string;
   fetchOpenPRs(cwd: string): Promise<void>;
   fetchMergedPRs(cwd: string): Promise<void>;
   fetchOpenIssues(cwd: string): Promise<void>;
   fetchBranches(cwd: string): Promise<void>;
-  fetchModels(provider: string, cwd: string): Promise<void>;
   fetchTags(cwd: string): Promise<void>;
   fetchWorktrees(cwd: string): Promise<void>;
 }
@@ -144,66 +126,6 @@ function registerCompletions(
   // in `extensions/coms/coms-wrapper.ts`. Add a note here if you are looking for it.
 
   const completions: Record<string, CompletionFn> = {
-    "external-ai": (prefix: string) => {
-      const parts = prefix.split(/\s+/);
-      const lastPart = parts[parts.length - 1] || "";
-      const prevPart = parts.length >= 2 ? parts[parts.length - 2] : "";
-
-      // After --model: show model completions for the detected provider
-      // After --cli-flags or --session-id: free-text, no completions
-      if (prevPart === "--cli-flags" || prevPart === "--session-id") return null;
-
-      if (prevPart === "--model") {
-        // Find the provider from earlier tokens
-        const knownProviders = ["cursor", "claude", "gemini"];
-        let provider = "";
-        for (const p of parts) {
-          const base = p.includes(":") ? p.split(":")[0] : p;
-          if (knownProviders.includes(base)) { provider = base; break; }
-        }
-        if (provider) {
-          void ctx.fetchModels(provider, ctx.lastCwd);
-          const cache = ctx.modelCaches.get(provider);
-          if (cache?.data) {
-            return filter(cache.data, lastPart);
-          }
-        }
-        return null;
-      }
-
-      // First token: provider or provider:model
-      if (parts.length <= 1) {
-        // Check if user typed "provider:" — show models for that provider
-        const colonIdx = lastPart.indexOf(":");
-        if (colonIdx >= 0) {
-          const provider = lastPart.substring(0, colonIdx);
-          const modelPrefix = lastPart.substring(colonIdx + 1);
-          const knownProviders = ["cursor", "claude", "gemini"];
-          if (knownProviders.includes(provider)) {
-            void ctx.fetchModels(provider, ctx.lastCwd);
-            const cache = ctx.modelCaches.get(provider);
-            if (cache?.data) {
-              const items = cache.data.map((m) => ({
-                ...m,
-                value: `${provider}:${m.value}`,
-              }));
-              return filter(items, modelPrefix ? `${provider}:${modelPrefix}` : "");
-            }
-            return null;
-          }
-        }
-        return filter(AI_CLI_PROVIDERS, lastPart);
-      }
-
-      // Subsequent tokens: flags
-      if (lastPart.startsWith("-") || lastPart === "") {
-        const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
-        const available = AI_CLI_FLAGS.filter((f) => !usedFlags.has(f.value.trim()));
-        return filter(available, lastPart);
-      }
-      return null;
-    },
-
     "pr-review": (prefix: string) => {
       void ctx.fetchOpenPRs(ctx.lastCwd);
       if (!ctx.prCache.data) return null;
@@ -367,45 +289,19 @@ function setupPromptTemplateInterceptor(
   completions: Record<string, CompletionFn>,
 ): void {
   log.debug("Setting up prompt template autocomplete interceptor");
-  // Prompt templates (external-ai, review-local, etc.) are registered by
+  // Prompt templates (pr-review, review-local, etc.) are registered by
   // pi itself — not through our registerCommand wrapper. We intercept
   // them in the autocomplete provider, which runs before the built-in.
 
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
-    "external-ai", "pr-review", "retro", "issue-review", "coderabbit-rate-limit",
+    "pr-review", "retro", "issue-review", "coderabbit-rate-limit",
     "review-local", "release", "review-handler", "qodo-review", "create-skill", "create-coms-feature-manager",
     "pi-config-settings",
   ]);
 
-  // /external-ai-models-refresh command — clears cache and re-fetches
-  pi.registerCommand("external-ai-models-refresh", {
-    description: "Refresh AI CLI model cache (cursor, claude, gemini)",
-    async handler(_args, handlerCtx) {
-      ctx.modelCaches.clear();
-      handlerCtx.ui.notify("Refreshing AI CLI models...", "info");
-      await Promise.allSettled(
-        ["cursor", "claude", "gemini"].map((p) => ctx.fetchModels(p, handlerCtx.cwd)),
-      );
-      const counts = ["cursor", "claude", "gemini"]
-        .map((p) => `${p}: ${ctx.modelCaches.get(p)?.data?.length ?? 0}`)
-        .join(", ");
-      handlerCtx.ui.notify(`AI CLI models refreshed (${counts})`, "info");
-    },
-  });
-
-  let modelsPrefetched = false;
-
   pi.on("session_start", (_event, sessionCtx) => {
     ctx.lastCwd = sessionCtx.cwd;
-
-    // Pre-fetch AI CLI models once on first start (not on /new)
-    if (!modelsPrefetched) {
-      modelsPrefetched = true;
-      for (const provider of ["cursor", "claude", "gemini"]) {
-        void ctx.fetchModels(provider, sessionCtx.cwd);
-      }
-    }
 
     if (sessionCtx.mode !== "tui") return;
 
@@ -503,7 +399,6 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   ctx.branchCache = createCache<AutocompleteItem[]>();
   ctx.tagCache = createCache<AutocompleteItem[]>();
   ctx.worktreeCaches = new Map<string, Cache<AutocompleteItem[]>>();
-  ctx.modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
   ctx.lastCwd = "";
 
   const piGitRunner: GitAsyncRunner = async (args, dir) => {
@@ -608,42 +503,6 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       }
     } catch (e: any) { console.debug("[autocomplete] branch fetch failed:", e?.message || e); }
     ctx.branchCache.loading = false;
-  };
-
-  ctx.fetchModels = async (provider: string, cwd: string) => {
-    let cache = ctx.modelCaches.get(provider);
-    if (!cache) {
-      cache = createCache<AutocompleteItem[]>();
-      ctx.modelCaches.set(provider, cache);
-    }
-    if (isFresh(cache) || cache.loading) return;
-    cache.loading = true;
-    try {
-      const result = await pi.exec(
-        "myk-pi-tools", ["ai-cli", "models", provider],
-        { cwd, timeout: 30_000 },
-      );
-      if (result.code === 0) {
-        const items: AutocompleteItem[] = [];
-        try {
-          const parsed = JSON.parse(result.stdout);
-          if (Array.isArray(parsed)) {
-            for (const m of parsed) {
-              if (m.id) {
-                items.push({
-                  value: m.id,
-                  label: m.id,
-                  description: m.name || m.id,
-                });
-              }
-            }
-          }
-        } catch (e: any) { console.debug("[autocomplete] model JSON parse failed:", e?.message || e); }
-        cache.data = items;
-        cache.timestamp = Date.now();
-      }
-    } catch (e: any) { console.debug("[autocomplete] model fetch failed:", e?.message || e); }
-    cache.loading = false;
   };
 
   ctx.fetchTags = async (cwd: string) => {

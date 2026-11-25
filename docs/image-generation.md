@@ -169,5 +169,4 @@ See [Configuration & Settings](configuration.html) for the full settings referen
 
 - [Configuration & Settings](configuration.html)
 - [Installation & Quickstart](quickstart.html)
-- [External AI Agents & CLI](external-ai-agents.html)
 - [Google Vertex Claude Provider](vertex-claude-provider.html)

@@ -259,6 +259,15 @@ describe("isMarkedSkill & stampSkill", () => {
     assert.ok(stamped.content.includes("# Plain Skill"));
     assert.equal(stampSkill(stamped.content).changed, false);
   });
+
+  it("includes startup routing, trigger-keyword, MANDATORY, and YAML-quoting guidance in MAINTAINER_INSTRUCTION (#1383)", () => {
+    assert.match(MAINTAINER_INSTRUCTION, /IMPORTANT — keep this skill true/);
+    assert.match(MAINTAINER_INSTRUCTION, /`name` and `description` at startup/);
+    assert.match(MAINTAINER_INSTRUCTION, /trigger phrases\/keywords/i);
+    assert.match(MAINTAINER_INSTRUCTION, /\bMANDATORY\b/);
+    assert.match(MAINTAINER_INSTRUCTION, /single quotes/i);
+    assert.match(MAINTAINER_INSTRUCTION, /Skill updated:/);
+  });
 });
 
 // ── package exclusion, listUnmarkedSkills & completeUnmarkedSkills ──────────

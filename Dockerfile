@@ -101,7 +101,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     exit 1; \
   fi
 
-# Install agent-browser, pi-web-access, gemini-cli, and Trail-code (pi itself is installed at runtime in entrypoint.sh)
+# Install agent-browser, pi-web-access, and Trail-code (pi itself is installed at runtime in entrypoint.sh)
 # Trail-code installs in two isolated passes: an --ignore-scripts audit whose tree is deleted after the
 # allowlist is derived, then a strict --allow-scripts install that is verified before it is published
 # atomically, so no unapproved dependency lifecycle script ever runs in the final image.
@@ -109,7 +109,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 COPY scripts/trail-allow-scripts.mjs /usr/local/lib/scripts/trail-allow-scripts.mjs
 COPY extensions/shared/logger-core.mjs extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm install -g agent-browser pi-web-access @google/gemini-cli && \
+  npm install -g agent-browser pi-web-access && \
   TRAIL_AUDIT="$(mktemp -d)" && \
   TRAIL_STAGE="" && \
   TRAIL_LINK="" && \
@@ -142,8 +142,6 @@ ENV TERM=xterm-256color
 ENV COLORTERM=truecolor
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
 
-# Cursor auth: create config dir (auth.json mounted or symlinked at runtime)
-RUN mkdir -p /home/node/.config/cursor
 
 # agent-browser: use Playwright's Chromium with container-safe flags
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
@@ -167,9 +165,6 @@ USER root
 RUN chown node:node /home/node
 USER node
 
-# Install Cursor Agent CLI and Claude Code (after uv tools)
-RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
-RUN /bin/bash -o pipefail -c "curl -fsSL https://claude.ai/install.sh | bash"
 
 # CodeRabbit CLI — local AI code reviews
 RUN CI=true /bin/bash -o pipefail -c "curl -fsSL https://cli.coderabbit.ai/install.sh | sh"
