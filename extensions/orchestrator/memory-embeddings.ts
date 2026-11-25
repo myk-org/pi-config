@@ -3,23 +3,43 @@
  *
  * Embeds memory entries and search queries using Xenova/bge-small-en-v1.5 via
  * @huggingface/transformers (in-process ONNX, no Python, no subprocess).
- * Stores embeddings in .pi/memory/embeddings.jsonl (JSONL persistence, issue #724).
- * Legacy embeddings.json auto-migrated on first access.
+ * Stores embeddings as compact binary Float32Array BLOBs in `.pi/data/state.db`
+ * (`embedding_meta` + `embeddings` tables, issue #1399).
+ * Legacy `.pi/memory/embeddings.jsonl` and `embeddings.json` are auto-migrated
+ * once on first access.
  *
  * Falls back gracefully when the model is unavailable — callers always get a
  * result (possibly empty) and never throw.
  */
 
 import { createHash } from "node:crypto";
-import { createCachedStore } from "./state-jsonl.js";
-import type { JsonlStateStore } from "./state-jsonl.js";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import {
+  blobToFloat32Array,
+  encodeFloat32Blob,
+  getProjectStateDbPath,
+  isStoreMigratedInCache,
+  isStoreMigrationFailedInCache,
+  markStoreMigratedInCache,
+  markStoreMigrationFailedInCache,
+  openStateDb,
+  parseLastValidLine,
+  withTransaction,
+} from "./state-db.js";
 import { getProjectMemoryDir } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("memory");
 
+const EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
 const EMBEDDING_DIM = 384;
 export const EMBEDDING_POOLING = "mean";
+
+const EMBEDDINGS_STORE_KEY = "memory-embeddings";
+const STORE_FILENAME_JSONL = "embeddings.jsonl";
+const LEGACY_STORE_FILENAME = "embeddings.json";
 
 // Lazy-loaded pipeline — initialized once per process
 let pipelineInstance: any = null;
@@ -33,45 +53,168 @@ const PIPELINE_RETRY_BACKOFF_MS = 10 * 60 * 1000;
 // In-memory embedding cache for queries
 const queryCache = new Map<string, number[]>();
 
-interface EmbeddingStore {
-  model: string;
-  dim: number;
+interface LegacyEmbeddingStore {
+  model?: string;
+  dim?: number;
   pooling?: string;
-  entries: Record<string, number[]>; // text hash → vector
+  entries?: Record<string, unknown>;
 }
 
-const STORE_FILENAME_JSONL = "embeddings.jsonl";
-const LEGACY_STORE_FILENAME = "embeddings.json";
-
-function getEmbeddingStore(cwd: string): JsonlStateStore<EmbeddingStore> {
-  return createCachedStore<EmbeddingStore>(
-    getProjectMemoryDir(cwd), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 3 },
-  );
+function upsertEmbeddingMeta(db: DatabaseSync, now: string): void {
+  db.prepare(
+    `INSERT INTO embedding_meta (id, model, dim, pooling, updated_at)
+     VALUES (1, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       model = excluded.model,
+       dim = excluded.dim,
+       pooling = excluded.pooling,
+       updated_at = excluded.updated_at`,
+  ).run(EMBEDDING_MODEL, EMBEDDING_DIM, EMBEDDING_POOLING, now);
 }
 
-function loadStore(cwd: string): EmbeddingStore {
-  const store = getEmbeddingStore(cwd);
-  const data = store.read();
-  if (data !== null) {
-    // Invalidate cache when pooling strategy changes — CLS and mean vectors are incompatible
-    if (data.pooling !== EMBEDDING_POOLING) {
-      // pooling strategy changed — clear incompatible cached embeddings
-      data.entries = {};
-      data.pooling = EMBEDDING_POOLING;
-      queryCache.clear();
-      saveStore(cwd, data);
+/** One-time idempotent lossless migration from legacy JSONL/JSON embedding files into Float32 BLOBs. */
+function ensureEmbeddingsMigrated(cwd: string): string {
+  const dbPath = getProjectStateDbPath(cwd);
+  if (
+    isStoreMigratedInCache(dbPath, EMBEDDINGS_STORE_KEY) ||
+    isStoreMigrationFailedInCache(dbPath, EMBEDDINGS_STORE_KEY)
+  ) {
+    return dbPath;
+  }
+
+  const db = openStateDb(dbPath);
+  if (
+    db.prepare("SELECT 1 FROM embedding_meta WHERE id = 1").get() ||
+    db.prepare("SELECT 1 FROM migrated_stores WHERE store_key = ?").get(EMBEDDINGS_STORE_KEY)
+  ) {
+    markStoreMigratedInCache(dbPath, EMBEDDINGS_STORE_KEY);
+    return dbPath;
+  }
+
+  const memDir = getProjectMemoryDir(cwd);
+  const legacyCandidates = [
+    join(memDir, STORE_FILENAME_JSONL),
+    join(memDir, LEGACY_STORE_FILENAME),
+  ].filter((p) => existsSync(p));
+  if (legacyCandidates.length === 0) return dbPath;
+
+  let migratedSource: string | null = null;
+  let migratedCount = 0;
+  let migratedPooling = "";
+  let sawCorrupt = false;
+
+  withTransaction(dbPath, (txDb) => {
+    if (
+      txDb.prepare("SELECT 1 FROM embedding_meta WHERE id = 1").get() ||
+      txDb.prepare("SELECT 1 FROM migrated_stores WHERE store_key = ?").get(EMBEDDINGS_STORE_KEY)
+    ) {
+      return;
     }
-    return data;
+
+    for (const legacyPath of legacyCandidates) {
+      let raw: string;
+      try {
+        raw = readFileSync(legacyPath, "utf-8");
+      } catch (err) {
+        log.warn("embeddings_legacy_read_failed", { sourcePath: legacyPath }, err);
+        continue;
+      }
+      if (!raw.trim()) continue;
+      const parsed = parseLastValidLine<LegacyEmbeddingStore>(raw);
+      if (!parsed) {
+        sawCorrupt = true;
+        log.warn("embeddings_legacy_parse_failed", { sourcePath: legacyPath });
+        continue;
+      }
+
+      const now = new Date().toISOString();
+      const model = typeof parsed.model === "string" && parsed.model ? parsed.model : EMBEDDING_MODEL;
+      const dim = typeof parsed.dim === "number" && Number.isFinite(parsed.dim) && parsed.dim > 0
+        ? Math.floor(parsed.dim)
+        : EMBEDDING_DIM;
+      // Preserve absent pooling as "" so pooling-change invalidation clears incompatible vectors.
+      const pooling = typeof parsed.pooling === "string" ? parsed.pooling : "";
+
+      txDb
+        .prepare(
+          "INSERT INTO embedding_meta (id, model, dim, pooling, updated_at) VALUES (1, ?, ?, ?, ?)",
+        )
+        .run(model, dim, pooling, now);
+
+      const insertVec = txDb.prepare(
+        "INSERT OR REPLACE INTO embeddings (entry_key, vector, updated_at) VALUES (?, ?, ?)",
+      );
+      if (parsed.entries && typeof parsed.entries === "object" && !Array.isArray(parsed.entries)) {
+        for (const [key, vec] of Object.entries(parsed.entries)) {
+          if (
+            Array.isArray(vec) &&
+            vec.length > 0 &&
+            vec.every((n) => typeof n === "number" && Number.isFinite(n))
+          ) {
+            insertVec.run(key, encodeFloat32Blob(vec as number[]), now);
+            migratedCount++;
+          }
+        }
+      }
+
+      txDb
+        .prepare(
+          "INSERT INTO migrated_stores (store_key, source_path, migrated_at) VALUES (?, ?, ?)",
+        )
+        .run(EMBEDDINGS_STORE_KEY, legacyPath, now);
+      migratedSource = legacyPath;
+      migratedPooling = pooling;
+      break;
+    }
+  });
+
+  if (migratedSource) {
+    markStoreMigratedInCache(dbPath, EMBEDDINGS_STORE_KEY);
+    log.info("embeddings_migrated_legacy", {
+      sourcePath: migratedSource,
+      count: migratedCount,
+      pooling: migratedPooling,
+    });
+  } else if (sawCorrupt) {
+    markStoreMigrationFailedInCache(dbPath, EMBEDDINGS_STORE_KEY);
+  } else if (
+    db.prepare("SELECT 1 FROM embedding_meta WHERE id = 1").get() ||
+    db.prepare("SELECT 1 FROM migrated_stores WHERE store_key = ?").get(EMBEDDINGS_STORE_KEY)
+  ) {
+    markStoreMigratedInCache(dbPath, EMBEDDINGS_STORE_KEY);
   }
-  return { model: "Xenova/bge-small-en-v1.5", dim: EMBEDDING_DIM, pooling: EMBEDDING_POOLING, entries: {} };
+
+  return dbPath;
 }
 
-function saveStore(cwd: string, store: EmbeddingStore): void {
-  try {
-    getEmbeddingStore(cwd).write(store);
-  } catch {
-    // save failed — non-fatal, embeddings will be recomputed on next access
+/** Check pooling inside an active write transaction; clears incompatible vectors if pooling changed. */
+function enforcePoolingInTx(txDb: DatabaseSync, now: string): boolean {
+  const meta = txDb
+    .prepare("SELECT pooling FROM embedding_meta WHERE id = 1")
+    .get() as { pooling?: string } | undefined;
+  if (meta && meta.pooling !== EMBEDDING_POOLING) {
+    txDb.exec("DELETE FROM embeddings");
+    upsertEmbeddingMeta(txDb, now);
+    queryCache.clear();
+    log.info("embeddings_pooling_invalidated", { from: meta.pooling, to: EMBEDDING_POOLING });
+    return true;
   }
+  return false;
+}
+
+/** Migrate legacy store if needed and invalidate cached vectors if pooling strategy changed. */
+function ensureReadyEmbeddingsDb(cwd: string): string {
+  const dbPath = ensureEmbeddingsMigrated(cwd);
+  const db = openStateDb(dbPath);
+  const meta = db
+    .prepare("SELECT pooling FROM embedding_meta WHERE id = 1")
+    .get() as { pooling?: string } | undefined;
+  if (meta && meta.pooling !== EMBEDDING_POOLING) {
+    withTransaction(dbPath, (txDb) => {
+      enforcePoolingInTx(txDb, new Date().toISOString());
+    });
+  }
+  return dbPath;
 }
 
 /** SHA-256 hash for embedding keys — includes category to avoid cross-category collisions */
@@ -156,14 +299,14 @@ async function embedQuery(query: string): Promise<number[] | null> {
   return vectors[0];
 }
 
-export function cosineSimilarity(a: number[], b: number[]): number {
+export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
   const len = Math.min(a.length, b.length);
   if (len === 0) return 0;
   let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < len; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+    dot += a[i]! * b[i]!;
+    normA += a[i]! * a[i]!;
+    normB += b[i]! * b[i]!;
   }
   if (normA === 0 || normB === 0) return 0;
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
@@ -172,39 +315,39 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 // ── Public API ──────────────────────────────────────────────────────────
 
 /**
- * Embed a single memory entry and store it. Called on memory_add.
+ * Embed a single memory entry and store it as a Float32 BLOB. Called on memory_add.
  * No-op if model is unavailable.
  */
 export async function embedEntry(cwd: string, text: string, category?: string): Promise<void> {
   try {
-    const store = loadStore(cwd);
+    const dbPath = ensureReadyEmbeddingsDb(cwd);
     const hash = embeddingKey(text, category);
-    if (store.entries[hash]) return; // Already embedded
+    const existing = openStateDb(dbPath)
+      .prepare("SELECT 1 FROM embeddings WHERE entry_key = ?")
+      .get(hash);
+    if (existing) return; // Already embedded
 
     const vectors = await embed([text]);
     if (!vectors || vectors.length === 0) return;
 
-    const initial: EmbeddingStore = {
-      model: "Xenova/bge-small-en-v1.5",
-      dim: EMBEDDING_DIM,
-      pooling: EMBEDDING_POOLING,
-      entries: {},
-    };
-    getEmbeddingStore(cwd).mutate((latest) => {
-      if (latest.pooling !== EMBEDDING_POOLING) {
-        latest.entries = {};
-        latest.pooling = EMBEDDING_POOLING;
-        queryCache.clear();
-      }
-      latest.entries[hash] = vectors[0]!;
-    }, initial);
-  } catch {
-    // embedEntry failed — non-fatal
+    const now = new Date().toISOString();
+    withTransaction(dbPath, (txDb) => {
+      enforcePoolingInTx(txDb, now);
+      upsertEmbeddingMeta(txDb, now);
+      txDb
+        .prepare(
+          "INSERT OR REPLACE INTO embeddings (entry_key, vector, updated_at) VALUES (?, ?, ?)",
+        )
+        .run(hash, encodeFloat32Blob(vectors[0]!), now);
+    });
+    markStoreMigratedInCache(dbPath, EMBEDDINGS_STORE_KEY);
+  } catch (err) {
+    log.debug("embed_entry_failed", { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
 /**
- * Remove one or more entries' embeddings from the store in a single locked RMW.
+ * Remove one or more entries' embeddings from the store in a single atomic transaction.
  */
 export function removeEmbeddings(
   cwd: string,
@@ -212,31 +355,24 @@ export function removeEmbeddings(
 ): number {
   if (entries.length === 0) return 0;
   try {
-    const pre = loadStore(cwd);
-    if (Object.keys(pre.entries).length === 0) return 0;
+    const dbPath = ensureReadyEmbeddingsDb(cwd);
     const keysToRemove = entries.map((e) => embeddingKey(e.text, e.category));
-    if (!keysToRemove.some((k) => pre.entries[k])) return 0;
 
     let removed = 0;
-    getEmbeddingStore(cwd).mutate((latest) => {
-      if (latest.pooling !== EMBEDDING_POOLING) {
-        latest.entries = {};
-        latest.pooling = EMBEDDING_POOLING;
-        queryCache.clear();
-        return;
-      }
+    withTransaction(dbPath, (txDb) => {
+      if (enforcePoolingInTx(txDb, new Date().toISOString())) return;
+      const del = txDb.prepare("DELETE FROM embeddings WHERE entry_key = ?");
       for (const hash of keysToRemove) {
-        if (latest.entries[hash]) {
-          delete latest.entries[hash];
-          removed++;
-        }
+        const info = del.run(hash);
+        removed += Number(info.changes ?? 0);
       }
     });
     if (removed > 0) {
       log.debug("embeddings_removed", { removed });
     }
     return removed;
-  } catch {
+  } catch (err) {
+    log.debug("embeddings_remove_failed", { error: err instanceof Error ? err.message : String(err) });
     return 0;
   }
 }
@@ -251,8 +387,8 @@ export function removeEmbedding(cwd: string, text: string, category?: string): v
 /**
  * Prune orphaned embeddings whose keys no longer match any live topic entry.
  * Guards against empty liveEntries (never wipes embeddings on an empty/failed read)
- * and revalidates live entries inside the store lock when `getFreshLiveEntries` is
- * supplied so concurrent adds are never lost.
+ * and revalidates live entries inside the write transaction when `getFreshLiveEntries`
+ * is supplied so concurrent adds are never lost.
  */
 export function pruneEmbeddings(
   cwd: string,
@@ -261,42 +397,46 @@ export function pruneEmbeddings(
 ): number {
   if (liveEntries.length === 0) return 0;
   try {
-    const pre = loadStore(cwd);
-    const existingKeys = Object.keys(pre.entries);
-    if (existingKeys.length === 0) return 0;
+    const dbPath = ensureReadyEmbeddingsDb(cwd);
+    const existingRows = openStateDb(dbPath)
+      .prepare("SELECT entry_key FROM embeddings")
+      .all() as Array<{ entry_key: string }>;
+    if (existingRows.length === 0) return 0;
 
     const snapshotKeys = new Set(liveEntries.map((e) => embeddingKey(e.text, e.category)));
-    if (!existingKeys.some((k) => !snapshotKeys.has(k))) return 0;
+    if (!existingRows.some((r) => !snapshotKeys.has(r.entry_key))) return 0;
 
     let pruned = 0;
-    let remaining = existingKeys.length;
-    getEmbeddingStore(cwd).mutate((latest) => {
-      if (latest.pooling !== EMBEDDING_POOLING) {
-        latest.entries = {};
-        latest.pooling = EMBEDDING_POOLING;
-        queryCache.clear();
+    let remaining = existingRows.length;
+    withTransaction(dbPath, (txDb) => {
+      if (enforcePoolingInTx(txDb, new Date().toISOString())) {
         remaining = 0;
         return;
       }
       const currentLive = getFreshLiveEntries ? getFreshLiveEntries() : liveEntries;
+      const allRows = txDb
+        .prepare("SELECT entry_key FROM embeddings")
+        .all() as Array<{ entry_key: string }>;
       if (currentLive.length === 0) {
-        remaining = Object.keys(latest.entries).length;
+        remaining = allRows.length;
         return;
       }
       const liveKeys = new Set(currentLive.map((e) => embeddingKey(e.text, e.category)));
-      for (const key of Object.keys(latest.entries)) {
-        if (!liveKeys.has(key)) {
-          delete latest.entries[key];
-          pruned++;
+      const del = txDb.prepare("DELETE FROM embeddings WHERE entry_key = ?");
+      for (const row of allRows) {
+        if (!liveKeys.has(row.entry_key)) {
+          const info = del.run(row.entry_key);
+          pruned += Number(info.changes ?? 0);
         }
       }
-      remaining = Object.keys(latest.entries).length;
+      remaining = allRows.length - pruned;
     });
     if (pruned > 0) {
       log.info("embeddings_pruned", { pruned, remaining });
     }
     return pruned;
-  } catch {
+  } catch (err) {
+    log.debug("embeddings_prune_failed", { error: err instanceof Error ? err.message : String(err) });
     return 0;
   }
 }
@@ -312,8 +452,10 @@ export async function vectorSearch(
   entries: { text: string; category: string; pinned: boolean }[],
   topK: number = 20,
 ): Promise<{ text: string; category: string; pinned: boolean; similarity: number }[]> {
-  const store = loadStore(cwd);
-  if (Object.keys(store.entries).length === 0) return [];
+  const dbPath = ensureReadyEmbeddingsDb(cwd);
+  const db = openStateDb(dbPath);
+  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM embeddings").get() as { cnt?: number } | undefined;
+  if (!countRow || !countRow.cnt) return [];
 
   const queryVec = await embedQuery(query);
   if (!queryVec || queryVec.length === 0) return [];
@@ -327,11 +469,21 @@ export async function vectorSearch(
   if (normQuery === 0) return [];
   const sqrtNormQuery = Math.sqrt(normQuery);
 
+  const rows = db
+    .prepare("SELECT entry_key, vector FROM embeddings")
+    .all() as Array<{ entry_key: string; vector: Uint8Array }>;
+  const vectorsByKey = new Map<string, Float32Array>();
+  for (const row of rows) {
+    if (row.vector instanceof Uint8Array && row.vector.byteLength > 0 && row.vector.byteLength % 4 === 0) {
+      vectorsByKey.set(row.entry_key, blobToFloat32Array(row.vector));
+    }
+  }
+
   // Score all entries that have embeddings
   const scored: { text: string; category: string; pinned: boolean; similarity: number }[] = [];
   for (const entry of entries) {
     const hash = embeddingKey(entry.text, entry.category);
-    const entryVec = store.entries[hash];
+    const entryVec = vectorsByKey.get(hash);
     if (!entryVec || entryVec.length === 0) continue;
     let similarity: number;
     if (entryVec.length === queryVec.length) {
@@ -362,24 +514,41 @@ export async function embedMissing(
   cwd: string,
   entries: { text: string; category: string }[],
 ): Promise<number> {
-  const store = loadStore(cwd);
-  const missing = entries.filter(e => !store.entries[embeddingKey(e.text, e.category)]);
+  const dbPath = ensureReadyEmbeddingsDb(cwd);
+  const existingRows = openStateDb(dbPath)
+    .prepare("SELECT entry_key FROM embeddings")
+    .all() as Array<{ entry_key: string }>;
+  const existing = new Set(existingRows.map((r) => r.entry_key));
+
+  const missing = entries.filter((e) => !existing.has(embeddingKey(e.text, e.category)));
   if (missing.length === 0) return 0;
 
   // Batch embed all missing entries
-  const texts = missing.map(e => e.text);
+  const texts = missing.map((e) => e.text);
   const vectors = await embed(texts);
   if (!vectors || vectors.length !== texts.length) return 0;
 
   let stored = 0;
-  for (let i = 0; i < missing.length; i++) {
-    const vec = vectors[i];
-    // Validate vector dimensions — skip corrupted results
-    if (!Array.isArray(vec) || vec.length !== EMBEDDING_DIM) continue;
-    store.entries[embeddingKey(missing[i].text, missing[i].category)] = vec;
-    stored++;
-  }
-  saveStore(cwd, store);
+  const now = new Date().toISOString();
+  withTransaction(dbPath, (txDb) => {
+    enforcePoolingInTx(txDb, now);
+    upsertEmbeddingMeta(txDb, now);
+    const insertVec = txDb.prepare(
+      "INSERT OR REPLACE INTO embeddings (entry_key, vector, updated_at) VALUES (?, ?, ?)",
+    );
+    for (let i = 0; i < missing.length; i++) {
+      const vec = vectors[i];
+      // Validate vector dimensions — skip corrupted results
+      if (!Array.isArray(vec) || vec.length !== EMBEDDING_DIM) continue;
+      insertVec.run(
+        embeddingKey(missing[i]!.text, missing[i]!.category),
+        encodeFloat32Blob(vec),
+        now,
+      );
+      stored++;
+    }
+  });
+  markStoreMigratedInCache(dbPath, EMBEDDINGS_STORE_KEY);
   return stored;
 }
 

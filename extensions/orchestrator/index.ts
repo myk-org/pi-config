@@ -44,6 +44,7 @@ import { registerSkillMaintenance } from "./skill-maintenance.js";
 import { registerMemoryTools } from "./memory-tools.js";
 import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
+import { closeStateDbs } from "./state-db.js";
 import { registerSettingsTui } from "./settings-tui.js";
 import { buildSituationReport } from "./situation-report.js";
 import { listTopics } from "./memory-tree.js";
@@ -190,11 +191,13 @@ export default function (pi: ExtensionAPI) {
   // A watched-session switch or any other ctx change shows up as a turn in the new ctx, so
   // re-publishing here keeps the getters bound to the session that is actually running.
   pi.on("before_agent_start", (_event, ctx) => publishOwnWorkload(ctx, true));
-  // A torn-down runtime must not keep answering coms drilldowns from dead getters.
+  // A torn-down runtime must not keep answering coms drilldowns from dead getters
+  // or hold open SQLite state DB handles.
   pi.on("session_shutdown", () => {
-    log.debug("session_shutdown", "clearing workload sources");
+    log.debug("session_shutdown", "clearing workload sources and closing state DBs");
     unregisterWorkload?.();
     unregisterWorkload = null;
+    closeStateDbs();
   });
   registerSessionValidation(pi);
   registerGithubAutocomplete(pi);

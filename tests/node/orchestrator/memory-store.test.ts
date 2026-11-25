@@ -38,6 +38,10 @@ import {
 } from "../../../extensions/orchestrator/memory-tree.js";
 import { registerMemoryTools } from "../../../extensions/orchestrator/memory-tools.js";
 import { findSynchronousContradictions } from "../../../extensions/orchestrator/memory-contradiction.js";
+import {
+  getProjectStateDbPath,
+  openStateDb,
+} from "../../../extensions/orchestrator/state-db.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const REPO_ROOT = join(import.meta.dirname, "../../..");
@@ -62,11 +66,11 @@ function seedEmbeddingsFile(cwd: string, entries: Record<string, number[]>): voi
 }
 
 function readEmbeddingKeys(cwd: string): string[] {
-  const raw = readFileSync(join(cwd, ".pi", "memory", "embeddings.jsonl"), "utf-8")
-    .trim()
-    .split("\n");
-  const latest = JSON.parse(raw[raw.length - 1]!) as { entries: Record<string, number[]> };
-  return Object.keys(latest.entries);
+  const db = openStateDb(getProjectStateDbPath(cwd));
+  const rows = db
+    .prepare("SELECT entry_key FROM embeddings ORDER BY entry_key")
+    .all() as Array<{ entry_key: string }>;
+  return rows.map((r) => r.entry_key);
 }
 
 describe("memory-store: editMemoryEntry guard enforcement", () => {

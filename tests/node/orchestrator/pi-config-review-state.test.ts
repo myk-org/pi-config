@@ -6,7 +6,7 @@ import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   readReviewState,
@@ -1008,10 +1008,11 @@ describe("review subject", () => {
     assert.equal(subjectKey({ kind: "other", id: "x" }), "other:x");
   });
 
-  it("survives a state file written before subjects existed", () => {
-    // A legacy line: no subject fields at all. It must read, not throw, and report no subject.
+  it("survives a legacy state file written before subjects existed", () => {
+    // A legacy JSONL line: no subject fields at all. It must migrate cleanly into SQLite, not throw, and report no subject.
     const legacy = { status: "has_findings", cycle: 46, reviewers_pending: [], reviewers_total: 5, findings_count: 8 };
-    writeFileSync(statePath(cwd), `${JSON.stringify(legacy)}\n`);
+    const legacyPath = join(dirname(statePath(cwd)), "pi-config-review-state.jsonl");
+    writeFileSync(legacyPath, `${JSON.stringify(legacy)}\n`);
     const s = readReviewState(cwd);
     assert.equal(s.cycle, 46, "an old counter is shown as-is, never silently reset");
     assert.equal(s.subject, null);

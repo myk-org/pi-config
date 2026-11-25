@@ -115,7 +115,7 @@ export function buildDreamPrompt(
     `   project_rule: propose only — NEVER write rules/ or .pi/rules/; discard: stale noise; never reopen applied/rejected.\n` +
     `10. Provenance sidecar (optional): write newly extracted entries to ${topicsDir}/../provenance-pending.jsonl\n` +
     `   as one JSON line: {"entries":[{"category":"lesson","text":"<exact>","sourceSession":"<basename>","derivedFrom":"<opt>","informs":["opt"]}]}\n` +
-    `   Do NOT edit memory-scores.jsonl — onComplete merges the sidecar.`
+    `   Do NOT edit state.db or memory-scores.jsonl — onComplete merges the sidecar.`
   );
 }
 

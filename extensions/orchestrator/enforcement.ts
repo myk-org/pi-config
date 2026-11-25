@@ -152,10 +152,20 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
       const filePath: string | undefined = (event as any).input?.path;
       if (filePath) {
-        if (resolve(ctx.cwd, filePath) === statePath(ctx.cwd)) {
+        const resolvedPath = resolve(ctx.cwd, filePath);
+        const reviewDbPath = statePath(ctx.cwd);
+        const reviewDataDir = dirname(reviewDbPath);
+        const protectedReviewPaths = new Set([
+          reviewDbPath,
+          `${reviewDbPath}-wal`,
+          `${reviewDbPath}-shm`,
+          join(reviewDataDir, "pi-config-review-state.jsonl"),
+          join(reviewDataDir, "pi-config-review-state.json"),
+        ]);
+        if (protectedReviewPaths.has(resolvedPath)) {
           return {
             block: true,
-            reason: "⛔ Direct modification of pi-config-review-state.jsonl blocked. The review state is managed by the enforcement system.",
+            reason: "⛔ Direct modification of review state storage (state.db / pi-config-review-state) blocked. The review state is managed by the enforcement system.",
           };
         }
         const writeDecision = evaluateFileWritePolicy(filePath, ctx.cwd);

@@ -16,7 +16,7 @@ import {
 } from "../../../extensions/orchestrator/memory-promotion.js";
 import {
   entryHash,
-  getScoresPath,
+  getScoresRevision,
   loadScores,
   saveScores,
   type ScoredEntry,
@@ -333,19 +333,18 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
     }
   });
 
-  it("does not append a no-op snapshot to memory-scores.jsonl when nothing is auto-applied (#1262)", () => {
+  it("does not bump memory-scoring revision when nothing is auto-applied (#1262)", () => {
     const cwd = makeTempDir("promo-noop-");
     try {
       seedMemory(cwd, "Always prefer concise commit messages", "preference", EVIDENCE_ENFORCEMENT);
       // Run one-time hashAlgo migration before measuring promotion writes
       loadScores(cwd);
-      const scoresPath = getScoresPath(cwd);
-      const linesBefore = fs.readFileSync(scoresPath, "utf-8").trim().split("\n").length;
+      const revBefore = getScoresRevision(cwd);
 
       const res = applySafePromotions(cwd);
       assert.equal(res.applied, 0);
-      const linesAfter = fs.readFileSync(scoresPath, "utf-8").trim().split("\n").length;
-      assert.equal(linesAfter, linesBefore, "no-op promotion pass must not append to memory-scores.jsonl");
+      const revAfter = getScoresRevision(cwd);
+      assert.equal(revAfter, revBefore, "no-op promotion pass must not write to memory-scoring store");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

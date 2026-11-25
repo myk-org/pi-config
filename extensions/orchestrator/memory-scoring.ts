@@ -13,8 +13,8 @@ import { createLogger } from "../shared/logger.js";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { createCachedStore, SKIP_MUTATE } from "./state-jsonl.js";
-import type { JsonlStateStore } from "./state-jsonl.js";
+import { createSqliteStateStore, getProjectStateDbPath, SKIP_MUTATE } from "./state-db.js";
+import type { SqliteStateStore } from "./state-db.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectMemoryDir } from "./utils.js";
 import { parseTopicLine } from "./memory-line.js";
@@ -240,20 +240,29 @@ export function hasEnforcementFields(entry: ScoredEntry | undefined): boolean {
 }
 
 // ── Scores File I/O ────────────────────────────────────────────────────────
-// Persistence: append-only JSONL via JsonlStateStore (issue #724).
-// Legacy memory-scores.json is auto-migrated on first access.
+// Persistence: SQLite WAL via state-db.ts (.pi/data/state.db, issue #1399).
+// Legacy memory-scores.jsonl / memory-scores.json are auto-migrated once on first access.
 
+const SCORES_STORE_KEY = "memory-scoring";
 const SCORES_FILENAME_JSONL = "memory-scores.jsonl";
 const LEGACY_SCORES_FILENAME = "memory-scores.json";
 
-function getScoresStore(cwd: string): JsonlStateStore<ScoresFile> {
-  return createCachedStore<ScoresFile>(
-    getProjectMemoryDir(cwd), SCORES_FILENAME_JSONL, LEGACY_SCORES_FILENAME, { compactThreshold: 50 },
+function getScoresStore(cwd: string): SqliteStateStore<ScoresFile> {
+  const memDir = getProjectMemoryDir(cwd);
+  return createSqliteStateStore<ScoresFile>(
+    getProjectStateDbPath(cwd),
+    SCORES_STORE_KEY,
+    {
+      legacyFiles: [
+        join(memDir, SCORES_FILENAME_JSONL),
+        join(memDir, LEGACY_SCORES_FILENAME),
+      ],
+    },
   );
 }
 
 export function getScoresPath(cwd: string): string {
-  return join(getProjectMemoryDir(cwd), SCORES_FILENAME_JSONL);
+  return getProjectStateDbPath(cwd);
 }
 
 /** Monotonic write/reload revision for the project's scores store. */

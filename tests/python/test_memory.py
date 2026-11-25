@@ -504,3 +504,38 @@ class TestReadLatestJsonlDict:
         assert latest is not None
         assert h not in latest["entries"]
         assert latest["entries"]["keep"] == state["entries"]["keep"]  # type: ignore[index]
+
+    def test_forget_cleans_sqlite_state_db(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "SQLite target rule")
+        h = _entry_hash("- [lesson] SQLite target rule")
+        data_dir = memory_file.file_path.parent.parent / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        db_path = data_dir / "state.db"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE kv_state ("
+            "store_key TEXT PRIMARY KEY, payload TEXT NOT NULL, "
+            "revision INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO kv_state (store_key, payload, revision, updated_at) VALUES (?, ?, 1, ?)",
+            (
+                "memory-scoring",
+                json.dumps({"entries": {h: {"class": "lesson", "score": 2.0}, "keep": {"class": "lesson"}}}),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        assert memory_file.forget("lesson", "SQLite target rule") is True
+
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute("SELECT payload, revision FROM kv_state WHERE store_key = 'memory-scoring'").fetchone()
+        conn.close()
+        assert row is not None
+        payload = json.loads(row[0])
+        assert h not in payload["entries"]
+        assert "keep" in payload["entries"]
+        assert row[1] == 2

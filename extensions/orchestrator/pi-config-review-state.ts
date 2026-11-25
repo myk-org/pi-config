@@ -1,21 +1,25 @@
 /**
  * Review state machine — tracks code review loop status.
- * State stored in <worktree-root>/.pi/data/pi-config-review-state.jsonl (per-worktree, not shared).
- * Each worktree gets its own state file via resolveWorktreeRoot (--show-toplevel).
+ * State stored in `<worktree-root>/.pi/data/state.db` (`kv_state` key
+ * `"pi-config-review-state"`, per-worktree, not shared).
+ * Each worktree gets its own state DB via `getWorktreeStateDbPath` (`--show-toplevel`).
  * Used by enforcement to block git commit until all reviewers approve.
  *
- * Persistence: append-only JSONL via JsonlStateStore (issue #724).
- * Each state mutation appends a single JSON line. The latest valid line
- * is the current state. Auto-compaction prevents unbounded growth.
- * On first access, migrates any legacy pi-config-review-state.json automatically.
+ * Persistence: WAL-mode SQLite via `state-db.ts` (issue #1399) with atomic
+ * `BEGIN IMMEDIATE` transactions. Legacy `pi-config-review-state.jsonl` / `.json`
+ * files are auto-migrated once on first access.
  */
 
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
 import { createLogger } from "../shared/logger.js";
-import { createCachedStore } from "./state-jsonl.js";
-import type { JsonlStateStore } from "./state-jsonl.js";
+import {
+  createSqliteStateStore,
+  getWorktreeStateDbPath,
+  SKIP_MUTATE,
+  type SqliteStateStore,
+} from "./state-db.js";
 import { getHeadSha } from "./git-helpers.js";
 import { resolveWorktreeRoot } from "./utils.js";
 
@@ -92,6 +96,7 @@ export interface ReviewState {
   tests_passed: boolean;
 }
 
+const REVIEW_STATE_STORE_KEY = "pi-config-review-state";
 const STATE_FILE_JSONL = "pi-config-review-state.jsonl";
 const LEGACY_STATE_FILE = "pi-config-review-state.json";
 
@@ -104,12 +109,22 @@ function getWorktreeDataDir(cwd: string): string {
   return dir;
 }
 
-function getStore(cwd: string): JsonlStateStore<ReviewState> {
-  return createCachedStore<ReviewState>(getWorktreeDataDir(cwd), STATE_FILE_JSONL, LEGACY_STATE_FILE);
+function getStore(cwd: string): SqliteStateStore<ReviewState> {
+  const dir = getWorktreeDataDir(cwd);
+  return createSqliteStateStore<ReviewState>(
+    getWorktreeStateDbPath(cwd),
+    REVIEW_STATE_STORE_KEY,
+    {
+      legacyFiles: [
+        join(dir, STATE_FILE_JSONL),
+        join(dir, LEGACY_STATE_FILE),
+      ],
+    },
+  );
 }
 
 export function statePath(cwd: string): string {
-  return join(getWorktreeDataDir(cwd), STATE_FILE_JSONL);
+  return getWorktreeStateDbPath(cwd);
 }
 
 function defaultState(): ReviewState {
@@ -193,76 +208,27 @@ export function readReviewState(cwd: string): ReviewState {
   }
 }
 
-function acquireLock(lock: string): boolean {
-  const maxRetries = 100;
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      writeFileSync(lock, String(process.pid), { flag: "wx" });
-      return true;
-    } catch {
-      // Lock exists — check if holder is alive
-      try {
-        const pid = parseInt(readFileSync(lock, "utf-8").trim(), 10);
-        // Reentrant: safe because Node.js is single-threaded — nested
-        // withStateLock calls within the same process can't interleave.
-        if (pid === process.pid) return true;
-        if (pid) {
-          try { process.kill(pid, 0); } catch {
-            // Holder is dead — steal lock
-            try { unlinkSync(lock); } catch { /* race */ }
-            continue;
-          }
-        }
-      } catch {
-        // Corrupt lock — remove and retry
-        try { unlinkSync(lock); } catch { /* race */ }
-        continue;
-      }
-      // Holder is alive — bounded tight spin (100 iterations ≈ instant, sub-ms)
-    }
-  }
-  return false;
-}
+/** Execute an atomic read-modify-write inside SQLite `BEGIN IMMEDIATE`.
+ *  Transition notifications fire after `COMMIT` succeeds. */
+function mutateReviewState<T>(
+  cwd: string,
+  fn: (state: ReviewState) => { result: T; persist: boolean; notify: boolean },
+): T {
+  let outcome!: { result: T; persist: boolean; notify: boolean };
+  let committedState: ReviewState | null = null;
 
-function releaseLock(lock: string): void {
-  try { unlinkSync(lock); } catch { /* ignore */ }
-}
+  getStore(cwd).mutate((raw) => {
+    const state = normalizeRawState(raw);
+    outcome = fn(state);
+    if (!outcome.persist) return SKIP_MUTATE;
+    committedState = state;
+    return state;
+  }, defaultState());
 
-function writeState(cwd: string, state: ReviewState): void {
-  try {
-    const store = getStore(cwd);
-    store.write(state);
-  } catch {
-    // write failed — non-fatal, state file may be stale
+  if (outcome.notify && committedState !== null) {
+    notifyTransition(committedState);
   }
-}
-
-const lockDepth = new Map<string, number>();
-
-/** Execute a read-modify-write operation on the state file with a lock.
- *  Throws if lock cannot be acquired (never proceeds without mutual exclusion). */
-function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
-  // Ensure the data directory exists once before spinning on lock acquisition.
-  const key = statePath(cwd);
-  const lock = `${key}.lock`;
-  const depth = lockDepth.get(key) || 0;
-  if (depth === 0) {
-    if (!acquireLock(lock)) {
-      throw new Error("[pi-config-review-state] failed to acquire lock — aborting to prevent state corruption");
-    }
-  }
-  lockDepth.set(key, depth + 1);
-  try {
-    return fn(readReviewState(cwd));
-  } finally {
-    const newDepth = (lockDepth.get(key) || 1) - 1;
-    if (newDepth <= 0) {
-      lockDepth.delete(key);
-      releaseLock(lock);
-    } else {
-      lockDepth.set(key, newDepth);
-    }
-  }
+  return outcome.result;
 }
 
 /** Mark that files were edited — review is needed. Resets any previous CLEAN state.
@@ -272,7 +238,7 @@ function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
  *  or "none") — continuing from "has_findings"/"needs_review" preserves it so the
  *  max-cycles cap is reachable across fix-edit-review iterations. */
 export function markNeedsReview(cwd: string): void {
-  withStateLock(cwd, (state) => {
+  mutateReviewState(cwd, (state) => {
     const prevStatus = state.status;
     const prevTestsPassed = state.tests_passed;
     state.edit_seq = (state.edit_seq ?? 0) + 1;
@@ -297,11 +263,9 @@ export function markNeedsReview(cwd: string): void {
       state.edited_during_cycle = false;
       state.tests_passed = false;
     }
-    writeState(cwd, state);
     // Skip notification if nothing meaningful changed (e.g., repeated edits while already needs_review)
-    if (state.status !== prevStatus || state.tests_passed !== prevTestsPassed) {
-      notifyTransition(state);
-    }
+    const notify = state.status !== prevStatus || state.tests_passed !== prevTestsPassed;
+    return { result: undefined, persist: true, notify };
   });
 }
 
@@ -315,7 +279,7 @@ export function addReviewerPending(cwd: string, reviewerName: string, subject: R
   if (!subject || typeof subject !== "object") {
     throw new Error("[pi-config-review-state] addReviewerPending requires the review subject");
   }
-  withStateLock(cwd, (state) => {
+  mutateReviewState(cwd, (state) => {
     if (!state.reviewers_pending.includes(reviewerName)) {
       state.reviewers_pending.push(reviewerName);
       state.reviewers_pending_at[reviewerName] = Date.now();
@@ -341,8 +305,7 @@ export function addReviewerPending(cwd: string, reviewerName: string, subject: R
     }
     state.status = "in_progress";
     log.debug("review_round_start", { reviewer: reviewerName, subject: key, cycle: state.cycle, subjectChanged, previousSubject: previousKey });
-    writeState(cwd, state);
-    notifyTransition(state);
+    return { result: undefined, persist: true, notify: true };
   });
 }
 
@@ -350,14 +313,16 @@ export function addReviewerPending(cwd: string, reviewerName: string, subject: R
  *  `since` (the job's startedAt) rejects a result older than the pending entry it would clear:
  *  a late result from a previous round must not approve the round running now. */
 export function recordReviewerResult(cwd: string, reviewerName: string, findingsCount: number, opts?: { since?: number }): boolean {
-  return withStateLock(cwd, (state) => {
+  return mutateReviewState(cwd, (state) => {
     const pendingSince = state.reviewers_pending_at[reviewerName];
     if (opts?.since !== undefined && pendingSince !== undefined && pendingSince > opts.since) {
       // This round registered the reviewer AFTER the job that produced the result started.
       log.warn("reviewer_result_stale", { agent: reviewerName, pending_added_at: pendingSince, job_started_at: opts.since });
-      return state.reviewers_pending.length === 0;
+      return { result: state.reviewers_pending.length === 0, persist: false, notify: false };
     }
-    if (!state.reviewers_pending.includes(reviewerName)) return state.reviewers_pending.length === 0;
+    if (!state.reviewers_pending.includes(reviewerName)) {
+      return { result: state.reviewers_pending.length === 0, persist: false, notify: false };
+    }
     state.reviewers_pending = state.reviewers_pending.filter(n => n !== reviewerName);
     delete state.reviewers_pending_at[reviewerName];
     state.findings_count += findingsCount;
@@ -373,9 +338,7 @@ export function recordReviewerResult(cwd: string, reviewerName: string, findings
         }
       }
     }
-    writeState(cwd, state);
-    notifyTransition(state);
-    return state.reviewers_pending.length === 0;
+    return { result: state.reviewers_pending.length === 0, persist: true, notify: true };
   });
 }
 
@@ -417,11 +380,10 @@ export function isCommitAllowed(cwd: string): boolean {
 
 /** Mark that tests have passed. Only meaningful when review status is being tracked. */
 export function markTestsPassed(cwd: string): void {
-  withStateLock(cwd, (state) => {
-    if (state.status === "none") return; // No tracking active
+  mutateReviewState(cwd, (state) => {
+    if (state.status === "none") return { result: undefined, persist: false, notify: false };
     state.tests_passed = true;
-    writeState(cwd, state);
-    notifyTransition(state);
+    return { result: undefined, persist: true, notify: true };
   });
 }
 
@@ -429,11 +391,10 @@ export function markTestsPassed(cwd: string): void {
  *  Called when a detected test command exits non-zero.
  *  Resets to false on any file edit via markNeedsReview(). */
 export function markTestsFailed(cwd: string): void {
-  withStateLock(cwd, (state) => {
-    if (state.status === "none") return; // No tracking active
+  mutateReviewState(cwd, (state) => {
+    if (state.status === "none") return { result: undefined, persist: false, notify: false };
     state.tests_passed = false;
-    writeState(cwd, state);
-    notifyTransition(state);
+    return { result: undefined, persist: true, notify: true };
   });
 }
 
@@ -458,9 +419,9 @@ export function countFindings(output: string): number {
 /** Reset review state — for testing or manual override.
  *  Preserves monotonic `edit_seq` so concurrent pollers never see an ABA revision collision. */
 export function resetReviewState(cwd: string): void {
-  withStateLock(cwd, (prev) => {
+  mutateReviewState(cwd, (prev) => {
     const next: ReviewState = { ...defaultState(), edit_seq: prev.edit_seq ?? 0 };
-    writeState(cwd, next);
-    notifyTransition(next);
+    Object.assign(prev, next);
+    return { result: undefined, persist: true, notify: true };
   });
 }

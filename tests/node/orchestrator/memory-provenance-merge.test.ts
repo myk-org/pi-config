@@ -18,11 +18,20 @@ import {
   saveScores,
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
+import {
+  closeStateDbs,
+  getProjectStateDbPath,
+  openStateDb,
+} from "../../../extensions/orchestrator/state-db.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
 describe("mergeProvenancePending", () => {
-  it("merges sidecar into scores then deletes pending file", () => {
+  afterEach(() => {
+    closeStateDbs();
+  });
+
+  it("merges pending entries from state.db into scores then clears pending row", () => {
     const cwd = makeTempDir("prov-merge-");
     try {
       const topicsDir = path.join(cwd, ".pi", "memory", "topics");
@@ -55,6 +64,60 @@ describe("mergeProvenancePending", () => {
           informs: ["git"],
         },
       ]);
+      const db = openStateDb(getProjectStateDbPath(cwd));
+      assert.ok(db.prepare("SELECT 1 FROM kv_state WHERE store_key = 'memory-provenance'").get());
+
+      const updated = mergeProvenancePending(cwd);
+      assert.equal(updated, 1);
+      assert.equal(
+        db.prepare("SELECT 1 FROM kv_state WHERE store_key = 'memory-provenance'").get(),
+        undefined,
+      );
+
+      const after = loadScores(cwd).entries[hash]!;
+      assert.equal(after.sourceSession, "dream-session-9");
+      assert.equal(after.derivedFrom, "weekly review");
+      assert.deepEqual(after.informs, ["git"]);
+    } finally {
+      closeStateDbs();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("merges dream-written JSONL sidecar into scores then deletes pending file", () => {
+    const cwd = makeTempDir("prov-sidecar-");
+    try {
+      const topicsDir = path.join(cwd, ".pi", "memory", "topics");
+      fs.mkdirSync(topicsDir, { recursive: true });
+      const text = "Always run typecheck before push";
+      fs.writeFileSync(
+        path.join(topicsDir, "lessons.md"),
+        `# Lessons\n\n- [lesson] ${text}\n`,
+      );
+
+      const hash = entryHash(`- [lesson] ${text}`);
+      saveScores(cwd, {
+        entries: {
+          [hash]: {
+            class: "lesson",
+            score: 1,
+            evidenceCount: 1,
+            cue: "explicit",
+            firstSeen: new Date().toISOString(),
+            lastReinforced: new Date().toISOString(),
+            userState: "auto",
+            lifecycle: "active",
+          },
+        },
+        lastRebuild: new Date().toISOString(),
+      });
+
+      fs.writeFileSync(
+        getProvenancePendingPath(cwd),
+        JSON.stringify({
+          entries: [{ category: "lesson", text, sourceSession: "dream-jsonl-1", informs: ["ci"] }],
+        }) + "\n",
+      );
       assert.ok(fs.existsSync(getProvenancePendingPath(cwd)));
 
       const updated = mergeProvenancePending(cwd);
@@ -62,10 +125,10 @@ describe("mergeProvenancePending", () => {
       assert.equal(fs.existsSync(getProvenancePendingPath(cwd)), false);
 
       const after = loadScores(cwd).entries[hash]!;
-      assert.equal(after.sourceSession, "dream-session-9");
-      assert.equal(after.derivedFrom, "weekly review");
-      assert.deepEqual(after.informs, ["git"]);
+      assert.equal(after.sourceSession, "dream-jsonl-1");
+      assert.deepEqual(after.informs, ["ci"]);
     } finally {
+      closeStateDbs();
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
