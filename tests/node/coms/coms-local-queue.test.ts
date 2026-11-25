@@ -351,4 +351,91 @@ describe("coms_local_queue tool (#1384)", () => {
     assert.equal(killRes.details.killed, true);
     await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "msg-next-idle"));
   });
+
+  it("queues a newly arriving peer message behind the post-kill drained message", async () => {
+    const { workspace, comsDir } = makeWorkspace();
+    const peer = await bootPeer({
+      name: "receiver",
+      sessionId: "sess-kill-keep-busy",
+      project: "test-proj",
+      cwd: workspace,
+      comsDir,
+    });
+    const sender = await createSenderServer(join(comsDir, "sender-busy.sock"), "sess-sender", "coordinator", workspace);
+
+    await sender.sendPrompt(peer.endpoint, "msg-1", "First active prompt");
+    await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "msg-1"));
+    await peer.handlers.get("agent_start")?.({}, {});
+    await sender.sendPrompt(peer.endpoint, "msg-2", "Queued second prompt");
+
+    await peer.tools.get("coms_local_queue").execute("call-1", { action: "kill", msg_id: "msg-1" });
+    await peer.handlers.get("agent_end")?.({ messages: [] }, {
+      cwd: workspace,
+      hasUI: false,
+      ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {} },
+      sessionManager: { getSessionId: () => "sess-kill-keep-busy", getBranch: () => [] },
+    });
+    await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "msg-2"));
+
+    // A third message arriving while msg-2 is active must queue behind msg-2, not replace it
+    await sender.sendPrompt(peer.endpoint, "msg-3", "Third late prompt");
+    const listRes = await peer.tools.get("coms_local_queue").execute("call-2", { action: "list" });
+    assert.equal(listRes.details.items.length, 2);
+    assert.equal(listRes.details.items[0].msg_id, "msg-2");
+    assert.equal(listRes.details.items[0].status, "processing");
+    assert.equal(listRes.details.items[1].msg_id, "msg-3");
+    assert.equal(listRes.details.items[1].status, "pending");
+  });
+
+  it("sends exactly one response when killing a bundled secondary inbound before finalize", async () => {
+    const { workspace, comsDir } = makeWorkspace();
+    const peer = await bootPeer({
+      name: "receiver",
+      sessionId: "sess-kill-bundled",
+      project: "test-proj",
+      cwd: workspace,
+      comsDir,
+    });
+    const sender = await createSenderServer(join(comsDir, "sender-bundle.sock"), "sess-sender", "coordinator", workspace);
+
+    // Send an initial active message, then queue two more from the same sender so they bundle on drain
+    await sender.sendPrompt(peer.endpoint, "msg-0", "Initial prompt");
+    await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "msg-0"));
+    await sender.sendPrompt(peer.endpoint, "msg-bundle-primary", "Primary bundled prompt");
+    await sender.sendPrompt(peer.endpoint, "msg-bundle-secondary", "Secondary bundled prompt");
+
+    // Kill msg-0 while idle so msg-bundle-primary + msg-bundle-secondary drain as a bundle
+    await peer.tools.get("coms_local_queue").execute("call-1", { action: "kill", msg_id: "msg-0" });
+    await waitUntil(() => peer.messages.some((m) => m?.details?.msg_id === "msg-bundle-primary"));
+
+    // Mark bundled primary delivered via message_start
+    const primaryMsg = peer.messages.find((m) => m?.details?.msg_id === "msg-bundle-primary");
+    await peer.handlers.get("message_start")?.({ message: { role: "custom", ...primaryMsg } });
+
+    // Kill the bundled secondary message
+    const killRes = await peer.tools.get("coms_local_queue").execute("call-2", { action: "kill", msg_id: "msg-bundle-secondary" });
+    assert.equal(killRes.details.killed, true);
+    await waitUntil(() => sender.received.some((e) => e.type === "response" && e.msg_id === "msg-bundle-secondary"));
+
+    // Finalize the primary via turn_end — bundled secondary must NOT receive a second response
+    await peer.handlers.get("turn_end")?.(
+      {
+        type: "turn_end",
+        turnIndex: 0,
+        message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done" }] },
+        toolResults: [],
+      },
+      {
+        cwd: workspace,
+        hasUI: false,
+        ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {} },
+        sessionManager: { getSessionId: () => "sess-kill-bundled", getBranch: () => [] },
+      },
+    );
+    await waitUntil(() => sender.received.some((e) => e.type === "response" && e.msg_id === "msg-bundle-primary"));
+
+    const secondaryResponses = sender.received.filter((e) => e.type === "response" && e.msg_id === "msg-bundle-secondary");
+    assert.equal(secondaryResponses.length, 1);
+    assert.equal(secondaryResponses[0].error, "killed_by_user");
+  });
 });

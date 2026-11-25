@@ -883,6 +883,7 @@ export function createComsPeerRuntime(
 
 	function fulfillBundledInbounds(items: InboundContext[], ident: typeof identity, errorReason = "bundled"): void {
 		for (const bi of items) {
+			if (bi.fulfilled) continue;
 			// Fire-and-forget — don't await, don't block finalization
 			if (ident) {
 				sendEnvelope(bi.sender_endpoint, {
@@ -952,6 +953,7 @@ export function createComsPeerRuntime(
 			const next = allPending[0];
 			currentInbound = next;
 			inboundDelivered = false;
+			setProcessingInbound(true);
 			try {
 				injectInbound(next, { streaming: opts.streaming, ctx: opts.ctx });
 				writeLiveRegistry();
@@ -995,6 +997,7 @@ export function createComsPeerRuntime(
 			currentInbound = next;
 			inboundDelivered = false;
 			bundledInbounds = [];
+			setProcessingInbound(true);
 			log.debug("agent_end_fifo_next", next.msg_id, "from", next.sender_name);
 			try {
 				injectInbound(next, { streaming: opts.streaming, ctx: opts.ctx });
@@ -1018,6 +1021,7 @@ export function createComsPeerRuntime(
 		currentInbound = primary;
 		inboundDelivered = false;
 		bundledInbounds = senderPending.slice(1);
+		setProcessingInbound(true);
 		const bundle = buildBundledContent(primary.sender_name, senderPending);
 		log.debug("fifo_bundle", senderPending.length, "from", primary.sender_name, "origins", senderPending.map((ib) => ib.origin ?? "peer").join(","));
 		try {
@@ -3394,7 +3398,10 @@ Do not respond to this message.`;
 	async function killLocalInboundQueueItem(
 		msgId: string,
 	): Promise<{ killed: true; msg_id: string; sender_name: string } | { killed: false }> {
-		const ib = inboundQueue.get(msgId) ?? (currentInbound?.msg_id === msgId ? currentInbound : undefined);
+		const ib =
+			inboundQueue.get(msgId)
+			?? (currentInbound?.msg_id === msgId ? currentInbound : undefined)
+			?? bundledInbounds.find((b) => b.msg_id === msgId);
 		if (!ib || ib.fulfilled) return { killed: false };
 		const wasActive = currentInbound?.msg_id === msgId;
 		const gen = sessionGeneration;
@@ -3411,6 +3418,8 @@ Do not respond to this message.`;
 			bundledToCancel = bundledInbounds;
 			bundledInbounds = [];
 			pendingDrainAfterKill = true;
+		} else {
+			bundledInbounds = bundledInbounds.filter((b) => b.msg_id !== msgId);
 		}
 		maybeRefreshWidget();
 		// Send error response to sender
@@ -4236,13 +4245,14 @@ Do not respond to this message.`;
 			inboundSetDuringUserTurn = false;
 			userMessageDuringInbound = false;
 			comsSendCalledThisTurn.clear();
-			setProcessingInbound(false);
-			log.debug("agent_end_early", "currentInbound", currentInbound?.msg_id ?? "null", "processingInbound", processingInbound);
 			if (shouldDrainKilled) {
 				const gen = sessionGeneration;
 				log.info("agent_end_drain_after_kill");
 				await drainNextInbound({ bundle: true, onFail: "drop", ctx }, gen);
+				return;
 			}
+			setProcessingInbound(false);
+			log.debug("agent_end_early", "currentInbound", currentInbound?.msg_id ?? "null", "processingInbound", processingInbound);
 			return;
 		}
 
