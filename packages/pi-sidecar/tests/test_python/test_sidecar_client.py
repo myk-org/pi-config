@@ -2070,6 +2070,24 @@ async def test_stream_prompt_raises_on_feed_eof_when_delayed_prompt_is_not_repla
     assert transport.stream.closed
 
 
+@pytest.mark.asyncio
+async def test_stream_prompt_does_not_stall_on_feed_eof_during_live_request_id_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When SSE feed hits EOF during a live request_id turn, bound the wait and cancel the prompt."""
+    monkeypatch.setattr(pi_sidecar_client, "_EOF_REPLAY_GRACE_SECONDS", 0.05)
+    transport = _SseTransport(STREAM_FRAMES[:1], hang=False, prompt_hangs=True)
+
+    async def _consume() -> None:
+        async for _ in _stream_client(transport).stream_prompt("s1", "hello", request_id="req-live-eof"):
+            pass
+
+    with pytest.raises(RuntimeError, match="ended before turn_end/error"):
+        await asyncio.wait_for(_consume(), timeout=1.0)
+    assert transport.prompt_cancelled is True
+    assert transport.stream.closed is True
+
+
 class TestLogLevelFromEnv:
     """PI_SIDECAR_LOG_LEVEL must never make the client unimportable (rootcoz#453).
 

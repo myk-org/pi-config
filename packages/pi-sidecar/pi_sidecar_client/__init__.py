@@ -328,6 +328,8 @@ def _extract_error_detail(resp: httpx.Response, fallback: str, *, require_str: b
 
 # Event types that end one turn on GET /sessions/:id/events (#1019).
 _STREAM_TERMINAL_EVENTS = frozenset({"turn_end", "error"})
+# Post-EOF grace window to collect a delayed cached replay without stalling.
+_EOF_REPLAY_GRACE_SECONDS = 1.0
 
 
 def _parse_sse_frame(lines: list[str]) -> dict[str, Any] | None:
@@ -865,10 +867,13 @@ class SidecarClient:
                                 return
                 # Feed closed with no terminal frame (idle reap, slow-subscriber
                 # eviction, session deleted, shutdown): never report success.
-                # When request_id is set and prompt() is still pending, wait for
-                # its verdict so a delayed cached replay isn't lost on SSE drop.
+                # When request_id is set and prompt() is still pending, wait briefly
+                # for its verdict so a delayed cached replay isn't lost on SSE drop.
                 if request_id is not None and not prompt_ok and not prompt_task.done():
-                    await asyncio.wait({prompt_task})
+                    grace = _EOF_REPLAY_GRACE_SECONDS
+                    if timeout is not None and timeout > 0:
+                        grace = min(grace, float(timeout))
+                    await asyncio.wait({prompt_task}, timeout=grace)
                 detail = ""
                 if prompt_task.done() and not prompt_task.cancelled():
                     if (failure := prompt_task.exception()) is not None:
