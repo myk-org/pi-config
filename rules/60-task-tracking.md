@@ -58,8 +58,11 @@ anything that needs their hands or credentials — create it as a task with
 - one task per owner action; subject = the action; description = what to do and
   what "done" looks like;
 - never assign the owner something an agent could do itself;
-- never start, edit or complete a user-assigned task on their behalf — they close
+- never start, edit, or complete a user-assigned task on their behalf — they close
   it in `/tasks` (`d`, optional note);
+- you **must delete** obsolete `[you]` tasks via `TaskUpdate(status: "deleted")`
+  or `TaskBulkDelete` as soon as the external action (e.g., a PR merge) is observed
+  done or if a task was created prematurely;
 - when they close one you receive a message with their note: read it, act on it,
   and do not re-ask;
 - user tasks never nag and never count as the agent's own open work.
