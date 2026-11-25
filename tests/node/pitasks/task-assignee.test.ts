@@ -494,7 +494,7 @@ describe("d in /tasks closes the focused task (#1090)", () => {
 		};
 		await openTasksOverlay(ctx, deps, { mine: true });
 		assert.match(screens[0], /#2 \[pending\] \[you\] owner row/);
-		assert.match(screens[0], /d done · f mine\/all .* Esc close/, "the footer names the new keys");
+		assert.match(screens[0], /d done · u undo · f mine\/all .* Esc close/, "the footer names the new keys");
 		assert.doesNotMatch(screens[0], /agent row/, "mine hides the agent's rows");
 	});
 

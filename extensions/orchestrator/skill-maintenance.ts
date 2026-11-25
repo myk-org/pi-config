@@ -17,7 +17,12 @@ import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
 import { fileLog } from "../shared/file-logger.js";
 import { isBrowserDispatch } from "../shared/live-ctx.js";
-import { bulkResultMessage, openListDetailOverlay } from "./overlay-dashboard.js";
+import {
+  bulkResultMessage,
+  matchesOverlayKey,
+  openListDetailOverlay,
+  type OverlayNotice,
+} from "./overlay-dashboard.js";
 import { truncateJsonlFile, withFileLock } from "./state-jsonl.js";
 import { getProjectDataDir, realpathNearestExisting, resolveMainCheckoutRoot } from "./utils.js";
 
@@ -574,14 +579,18 @@ export async function openAdoptSkillOverlay(
   const openOverlay = deps.openOverlay ?? openListDetailOverlay;
   const selectedIds = new Set<string>();
   let reselectId: string | undefined;
+  let pendingNotice: OverlayNotice | undefined;
 
   for (;;) {
     const queue: Array<{ targets: string[] }> = [];
+    const noticeForOpen = pendingNotice;
+    pendingNotice = undefined;
 
     await openOverlay<string, AdoptableSkillRow>(ctx, {
       emptyMessage: "No adoptable skills found.",
       initialSelectionId: reselectId,
       initialSelectionIds: [...selectedIds],
+      initialNotice: noticeForOpen,
       listSpec: {
         title: "Adopt skills",
         countLabel: (items) => `${items.length} skill${items.length === 1 ? "" : "s"}`,
@@ -606,7 +615,7 @@ export async function openAdoptSkillOverlay(
         },
         onKey: (key, item, selected) => {
           if (item) reselectId = item.id;
-          if (key === "a") {
+          if (matchesOverlayKey(key, "a")) {
             const targets = selected.length > 0 ? selected.map((s) => s.name) : item ? [item.name] : [];
             if (targets.length === 0) return false;
             queue.push({ targets });
@@ -634,7 +643,9 @@ export async function openAdoptSkillOverlay(
     if (uniqueTargets.length === 1) {
       const res = deps.adoptSkill(uniqueTargets[0]);
       log.info("adopt_skill_overlay_single", { name: uniqueTargets[0], ok: res.ok });
-      ctx.ui.notify(res.message, res.ok ? "info" : "warning");
+      const level = res.ok ? "info" : "warning";
+      pendingNotice = { message: res.message, level };
+      ctx.ui.notify(res.message, level);
       continue;
     }
 
@@ -642,7 +653,9 @@ export async function openAdoptSkillOverlay(
     const toAdopt = uniqueTargets.filter((name) => !currentByName.get(name)?.maintained);
     if (toAdopt.length === 0) {
       log.debug("adopt_skill_overlay_bulk_unchanged", { selected: uniqueTargets.length });
-      ctx.ui.notify("Selected skills are already maintained.", "info");
+      const msg = "Selected skills are already maintained.";
+      pendingNotice = { message: msg, level: "info" };
+      ctx.ui.notify(msg, "info");
       continue;
     }
     const failed: string[] = [];
@@ -651,10 +664,10 @@ export async function openAdoptSkillOverlay(
       if (!res.ok) failed.push(name);
     }
     log.info("adopt_skill_overlay_bulk", { selected: uniqueTargets.length, toAdopt: toAdopt.length, failed: failed.length });
-    ctx.ui.notify(
-      bulkResultMessage("adopted", "skill", toAdopt.length, failed),
-      failed.length === 0 ? "info" : "warning",
-    );
+    const msg = bulkResultMessage("adopted", "skill", toAdopt.length, failed);
+    const level = failed.length === 0 ? "info" : "warning";
+    pendingNotice = { message: msg, level };
+    ctx.ui.notify(msg, level);
   }
 }
 
