@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  appendEventBuffer,
+  applyEventToViewState,
   clearPendingUiRequests,
   createPidashSessionState,
   dismissPendingUiRequest,
@@ -9,7 +9,7 @@ import {
   isInteractiveUiRequest,
   processPiPendingUiEvent,
   recordPendingUiRequest,
-  replayClientToWatcher,
+  sendSessionSnapshot,
   snapshotPendingUiRequests,
   updatePidashSession,
 } from "../../../scripts/pidash-session-state.ts";
@@ -122,23 +122,6 @@ describe("pidash session registration", () => {
     assert.equal(client.session.active, false);
     assert.equal(client.session.streaming, false);
     assert.deepEqual(updates.at(-1), { type: "session_updated", session: client.session });
-  });
-});
-
-describe("appendEventBuffer (#1265)", () => {
-  it("trims amortized once trimAt is reached while preserving newest entries in order", () => {
-    const buf: string[] = [];
-    for (let i = 0; i < 11; i++) {
-      appendEventBuffer(buf, `e-${i}`, 10, 12);
-    }
-    assert.equal(buf.length, 11);
-    assert.equal(buf[0], "e-0");
-
-    // 12th push triggers amortized splice down to max=10
-    appendEventBuffer(buf, "e-11", 10, 12);
-    assert.equal(buf.length, 10);
-    assert.equal(buf[0], "e-2");
-    assert.equal(buf.at(-1), "e-11");
   });
 });
 
@@ -276,38 +259,40 @@ describe("pidash server pending UI wiring (#1331)", () => {
     return { parsed, raw: JSON.stringify(parsed) };
   }
 
-  it("sends pending UI requests after replay_end when replaying to a watcher", () => {
+  it("sends a single session_snapshot frame containing messages and pending UI requests to a watcher", () => {
     const { client } = liveClient();
-    const buffered = JSON.stringify({ type: "message_start", message: { role: "user", content: "hi" } });
+    applyEventToViewState(client, { type: "message_start", message: { role: "user", content: "hi" } });
     const req = uiRequest("ask-replay", "select");
-    appendEventBuffer(client.eventBuffer, buffered);
     recordPendingUiRequest(client, req.parsed, req.raw);
 
     const frames: string[] = [];
-    const result = replayClientToWatcher({ send: (msg) => frames.push(msg) }, client);
+    const result = sendSessionSnapshot({ send: (msg) => frames.push(msg) }, client);
 
-    assert.deepEqual(result, { bufferedCount: 1, pendingCount: 1 });
-    assert.deepEqual(frames, [
-      JSON.stringify({ type: "replay_start" }),
-      buffered,
-      JSON.stringify({ type: "replay_end" }),
-      req.raw,
-    ]);
+    assert.deepEqual(result, { messageCount: 1, pendingCount: 1 });
+    assert.equal(frames.length, 1);
+    const snapshot = JSON.parse(frames[0]);
+    assert.equal(snapshot.type, "session_snapshot");
+    assert.equal(snapshot.sessionId, client.session.sessionId);
+    assert.equal(snapshot.messages.length, 1);
+    assert.equal(snapshot.messages[0].role, "user");
+    assert.equal(snapshot.messages[0].text, "hi");
+    assert.deepEqual(snapshot.pendingUiRequests, [req.parsed]);
   });
 
-  it("reports zero pending requests when replaying a client with no open prompts", () => {
+  it("reports zero pending requests when snapshotting a client with no open prompts", () => {
     const { client } = liveClient();
     const frames: string[] = [];
-    const result = replayClientToWatcher({ send: (msg) => frames.push(msg) }, client);
+    const result = sendSessionSnapshot({ send: (msg) => frames.push(msg) }, client);
 
-    assert.deepEqual(result, { bufferedCount: 0, pendingCount: 0 });
-    assert.deepEqual(frames, [
-      JSON.stringify({ type: "replay_start" }),
-      JSON.stringify({ type: "replay_end" }),
-    ]);
+    assert.deepEqual(result, { messageCount: 0, pendingCount: 0 });
+    assert.equal(frames.length, 1);
+    const snapshot = JSON.parse(frames[0]);
+    assert.equal(snapshot.type, "session_snapshot");
+    assert.deepEqual(snapshot.messages, []);
+    assert.deepEqual(snapshot.pendingUiRequests, []);
   });
 
-  it("records a live interactive extension_ui_request without buffering it", () => {
+  it("records a live interactive extension_ui_request in pendingUiRequests and viewState", () => {
     const { client } = liveClient();
     const req = uiRequest("ask-live", "confirm");
 
@@ -315,7 +300,8 @@ describe("pidash server pending UI wiring (#1331)", () => {
 
     assert.equal(action, "recorded");
     assert.deepEqual(snapshotPendingUiRequests(client), [req.raw]);
-    assert.deepEqual(client.eventBuffer, []);
+    assert.equal(client.viewState.messages.length, 1);
+    assert.equal(client.viewState.messages[0].className, "ask|ask-live|confirm|Yes|||No");
   });
 
   it("fans out a live extension_ui_request to session watchers", () => {
@@ -339,17 +325,21 @@ describe("pidash server pending UI wiring (#1331)", () => {
 
     assert.equal(action, "dismissed");
     assert.deepEqual(snapshotPendingUiRequests(client), []);
+    assert.equal(client.viewState.messages[0].className, "ask-answered|ask-dismiss");
   });
 
-  it("buffers ui-dismiss events for future watchers", () => {
+  it("forwards ui-dismiss events and marks matching viewState prompts answered", () => {
     const { client } = liveClient("s-buf");
+    const req = uiRequest("ask-buf", "select");
+    processPiPendingUiEvent(client, req.parsed, req.raw, () => {});
+
     const dismiss = { type: "ui-dismiss", id: "ask-buf" };
     const dismissRaw = JSON.stringify(dismiss);
     const watched: Array<[string, object | string]> = [];
 
     processPiPendingUiEvent(client, dismiss, dismissRaw, (sid, ev) => watched.push([sid, ev]));
 
-    assert.deepEqual(client.eventBuffer, [dismissRaw]);
+    assert.equal(client.viewState.messages[0].className, "ask-answered|ask-buf");
     assert.deepEqual(watched, [["s-buf", dismissRaw]]);
   });
 
@@ -362,7 +352,7 @@ describe("pidash server pending UI wiring (#1331)", () => {
 
     assert.equal(action, null);
     assert.deepEqual(snapshotPendingUiRequests(client), []);
-    assert.deepEqual(client.eventBuffer, []);
+    assert.deepEqual(client.viewState.messages, []);
   });
 
   it("forwards extension_ui_response to the pi socket", () => {

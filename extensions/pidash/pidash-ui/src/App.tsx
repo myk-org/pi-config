@@ -120,7 +120,7 @@ export function App() {
     setSearchQuery("");
     setSearchType("all");
     setScrollKey(k => k + 1);
-    resetHandlerState();
+    resetHandlerState(s.sessionId);
     send({ type: "watch", sessionId: s.sessionId });
     send({ type: "pidash-command", sessionId: s.sessionId, command: "list-commands" });
     // Auto-collapse sidebar on mobile
@@ -159,6 +159,7 @@ export function App() {
     if (connected && watchedSessionIdRef.current) {
       log.debug("watching session", { sessionId: watchedSessionIdRef.current, reconnect: true });
       send({ type: "watch", sessionId: watchedSessionIdRef.current });
+      send({ type: "pidash-command", sessionId: watchedSessionIdRef.current, command: "list-commands" });
     }
   }, [connected, send]);
 

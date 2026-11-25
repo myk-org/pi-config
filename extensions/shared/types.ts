@@ -37,3 +37,73 @@ export interface SessionInfo {
   /** Exact authoritative Trail savings for this parent Pi session. */
   trailTokenSavings?: number;
 }
+
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  totalTokens?: number;
+  reasoning?: number;
+}
+
+export type MessageRole = "user" | "assistant" | "tool" | "thinking" | "system";
+
+export interface ChatMessage {
+  id: string;
+  role: MessageRole;
+  text: string;
+  className?: string;
+  timestamp?: number;
+  meta?: {
+    turns?: number;
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    contextTokens?: number;
+    model?: string;
+    startTs?: number;
+    endTs?: number;
+    cost?: number;
+    callId?: string;
+  };
+}
+
+export interface SessionCommandInfo {
+  name: string;
+  description: string;
+}
+
+export interface PendingUiRequestPayload {
+  type: "extension_ui_request";
+  id: string;
+  method: "select" | "confirm" | "input";
+  title?: string;
+  message?: string;
+  options?: string[];
+  timestamp?: number;
+  [key: string]: unknown;
+}
+
+export interface SessionLiveState {
+  think: { id: string; text: string; startTs: number };
+  assist: { id: string; text: string };
+  tool: { id: string; name: string; startTs: number; callId: string };
+  asyncMsgs: Record<string, { msgId: string; text: string }>;
+  lastUserText: string;
+}
+
+/** Canonical server-side snapshot sent to a browser on watch / reconnect. */
+export interface SessionSnapshotPayload {
+  type: "session_snapshot";
+  sessionId: string;
+  messages: ChatMessage[];
+  live: SessionLiveState;
+  model: string;
+  tokens: TokenUsage | null;
+  streaming: boolean;
+  queuedCount: number;
+  streamingBehavior: string | null;
+  availableCommands: SessionCommandInfo[];
+  pendingUiRequests: PendingUiRequestPayload[];
+}

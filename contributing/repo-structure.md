@@ -141,6 +141,7 @@ pi-config/
 │   │   ├── openai-compatible-discovery.ts # Discovery config, requests, header resolution, cache, diagnostics
 │   │   ├── daemon-manager.ts        # Deep shared daemon client & lifecycle manager (spawn, health, WebSocket, heartbeat, reconnect, shutdown, /start|stop|restart|status, daemon_manage tool) — shared by pidash and pidiff
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
+│   │   ├── pidash-transcript-reducer.ts # Pure browser-safe transcript reducer shared by pidash daemon and pidash-ui (#1398)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive, streamLoopAborted) with auto-pruning (#1364, #1374)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep

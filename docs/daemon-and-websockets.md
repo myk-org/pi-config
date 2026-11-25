@@ -23,7 +23,7 @@ Two complementary servers handle real-time UI and IPC. They share the same WebSo
 2. The extension checks whether a healthy daemon already answers `/api/health`.
 3. If not, it spawns the server script and waits until health checks succeed.
 4. The terminal connects on `/ws/pi` and begins forwarding session events.
-5. The browser connects on `/ws/browser` and receives the same live stream (plus buffered catch-up when needed). Background agent and cron status arrive on a separate `/ws/async` socket.
+5. The browser connects on `/ws/browser`, receives a single canonical `session_snapshot` for the watched session, and then continues on the live event stream. Background agent and cron status arrive on a separate `/ws/async` socket.
 
 > **Tip:** Check daemon health with `/pidash status` or `/pidiff status`. See [Using the Web Dashboard](using-the-web-dashboard.html) for day-to-day UI usage.
 
@@ -41,7 +41,7 @@ Two complementary servers handle real-time UI and IPC. They share the same WebSo
 
 Clients probe `http://127.0.0.1:<port>/api/health` before trusting a daemon. WebSocket connections use ping/pong heartbeats; a missed pong forces reconnect. A periodic reconnect poller also re-attaches sessions that started before the daemon was ready.
 
-While disconnected, the pidash client buffers recent events and replays them when the socket comes back — so a browser refresh usually catches up instead of starting blank.
+On the server side, the pidash daemon maintains an incrementally updated, bounded `SessionViewState` per Pi session (committed messages trimmed at message boundaries, in-flight thinking/assistant/tool/async progress, active model, token usage, streaming and queue status, available commands, and open `pendingUiRequests`). When a browser watches a session or reconnects, the daemon sends one `{ type: "session_snapshot", ... }` frame instead of streaming thousands of raw delta events. The browser hydrates messages, live streaming refs, status indicators, and active `ask_user` prompts in a single pass, then applies subsequent live deltas directly on top of the hydrated state. `session_snapshot` resets cleanly on `replay_start` and `session_switch`. Background worker updates on `/ws/async` are restricted to loopback upgrades, validated against active sessions, and bounded per worker so active async cards stay within memory limits.
 
 ### Async agent isolation
 
@@ -55,7 +55,7 @@ Token streams and tool activity originate inside the `pi` session. Extensions fo
 
 ## How it Affects the User
 
-- **Refresh without losing context:** Closing the laptop or reloading the dashboard usually reconnects to the same pidash daemon and replays buffered activity.
+- **Refresh without losing context:** Closing the laptop or reloading the dashboard reconnects to the pidash daemon and restores the session from a single `session_snapshot` frame, including in-flight streams and open interactive prompts.
 - **Multiple terminals, one dashboard:** Several `pi` sessions can share pidash; the UI lists them so you can jump between projects.
 - **Project-local diffs:** Opening pidiff in repo A does not collide with repo B, because each project owns its lockfiles and port under `.pi/run/`.
 - **Files appear under `.pi/tmp/`:** Expect job folders, result JSON, and debug logs there, plus pidiff lockfiles under `.pi/run/`. They are project-scoped working state, not source code — keep `.pi/` out of git (the installer can configure this; see [Installation & Quickstart](quickstart.html)).
