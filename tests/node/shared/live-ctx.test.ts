@@ -1,6 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { emitIfLive, isLiveExtensionCtx } from "../../../extensions/shared/live-ctx.js";
+import {
+	emitIfLive,
+	isBrowserDispatch,
+	isLiveExtensionCtx,
+	markBrowserDispatch,
+} from "../../../extensions/shared/live-ctx.js";
 
 describe("isLiveExtensionCtx", () => {
 	it("returns false for nullish and non-objects", () => {
@@ -59,5 +64,28 @@ describe("emitIfLive", () => {
     assert.equal(emitIfLive(stale, "subagents:completed", { id: "s1" }), false);
     assert.equal(emitIfLive(listener, "subagents:completed", { id: "s2" }), false);
     // Both are reported; only the second is an error, and both carry the job id in the log line.
+  });
+});
+
+describe("markBrowserDispatch & isBrowserDispatch", () => {
+  it("returns false before tagging and true after markBrowserDispatch", () => {
+    const ctx: Record<string, unknown> = { hasUI: true };
+    assert.equal(isBrowserDispatch(ctx), false);
+    markBrowserDispatch(ctx);
+    assert.equal(isBrowserDispatch(ctx), true);
+  });
+
+  it("returns false for null, undefined, primitives, and untagged objects", () => {
+    assert.equal(isBrowserDispatch(null), false);
+    assert.equal(isBrowserDispatch(undefined), false);
+    assert.equal(isBrowserDispatch("browser"), false);
+    assert.equal(isBrowserDispatch(42), false);
+    assert.equal(isBrowserDispatch({}), false);
+  });
+
+  it("ignores non-object inputs safely in markBrowserDispatch", () => {
+    assert.doesNotThrow(() => markBrowserDispatch(null));
+    assert.doesNotThrow(() => markBrowserDispatch(undefined));
+    assert.doesNotThrow(() => markBrowserDispatch("str"));
   });
 });

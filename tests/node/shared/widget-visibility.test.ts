@@ -8,7 +8,6 @@ import {
   TOGGLE_ALL_WIDGETS_EVENT,
   WIDGET_MODE_CHANGED_EVENT,
   WIDGET_VISIBILITY_SYMBOL,
-  applyWidgetAction,
   cycleWidgetMode,
   formatComsCollapsedHeader,
   formatComsTopBorder,
@@ -20,7 +19,6 @@ import {
   nextWidgetMode,
   normalizeShortcut,
   normalizeWidgetMode,
-  parseWidgetCommandAction,
   registerWidgetShortcut,
   resetWidgetVisibilityState,
   setWidgetMode,
@@ -237,24 +235,6 @@ describe("widget-visibility settings, state, shortcuts, headers", () => {
     const store = (globalThis as Record<symbol, any>)[WIDGET_VISIBILITY_SYMBOL];
     assert.equal(store?.warnedKeys?.has("invalid_widget_mode:bogus-repeat"), true);
     assert.equal(store?.warnedKeys?.size, 1);
-  });
-
-  it("parses widget command actions including show/hide aliases", () => {
-    assert.equal(parseWidgetCommandAction(undefined), "toggle");
-    assert.equal(parseWidgetCommandAction(""), "toggle");
-    assert.equal(parseWidgetCommandAction("toggle"), "toggle");
-    assert.equal(parseWidgetCommandAction("expand"), "expanded");
-    assert.equal(parseWidgetCommandAction("expanded"), "expanded");
-    assert.equal(parseWidgetCommandAction("show"), "expanded");
-    assert.equal(parseWidgetCommandAction("collapse"), "collapsed");
-    assert.equal(parseWidgetCommandAction("collapsed"), "collapsed");
-    assert.equal(parseWidgetCommandAction("compact"), "collapsed");
-    assert.equal(parseWidgetCommandAction("hide"), "collapsed");
-    assert.equal(parseWidgetCommandAction("hidden"), "collapsed");
-    assert.equal(parseWidgetCommandAction("invalid"), null);
-
-    assert.equal(applyWidgetAction("coms", "collapsed", tempDir), "collapsed");
-    assert.equal(applyWidgetAction("coms", "toggle", tempDir), "expanded");
   });
 
   it("normalizes valid shortcut key strings while rejecting malformed ones", () => {

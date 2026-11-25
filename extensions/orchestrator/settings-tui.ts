@@ -395,6 +395,7 @@ class SettingsOverlay implements Component {
   private categoryIndex: number;
   private done: (value: undefined) => void;
   private notify: (msg: string, level: "info" | "error") => void;
+  private onSettingChanged?: (key: string) => void;
   private settingsList!: SettingsList;
   private currentItems: SettingItem[];
   private cachedAvailableAgents?: string[];
@@ -409,6 +410,7 @@ class SettingsOverlay implements Component {
     initialScope: "project" | "global",
     done: (value: undefined) => void,
     notify: (msg: string, level: "info" | "error") => void,
+    onSettingChanged?: (key: string) => void,
   ) {
     this.tui = tui;
     this.theme = theme;
@@ -418,6 +420,7 @@ class SettingsOverlay implements Component {
     this.categoryIndex = 0;
     this.done = done;
     this.notify = notify;
+    this.onSettingChanged = onSettingChanged;
     this.currentItems = [];
     this.rebuild();
   }
@@ -481,6 +484,7 @@ class SettingsOverlay implements Component {
         // Update label + value in-place (SettingsList stores items by reference, no render cache)
         const item = this.currentItems.find((i) => i.id === id);
         if (item) refreshItem(item, this.cwd, this.theme);
+        this.onSettingChanged?.(id);
         // SettingsOverlay render cache must be cleared; SettingsList has no render cache
         this.invalidate();
         this.tui.requestRender();
@@ -536,6 +540,7 @@ class SettingsOverlay implements Component {
           } else {
             this.notify(`Deleted ${selectedItem.id} from ${this.editScope} scope`, "info");
             refreshItem(selectedItem, this.cwd, this.theme);
+            this.onSettingChanged?.(selectedItem.id);
           }
           this.invalidate();
           this.tui.requestRender();
@@ -620,7 +625,7 @@ class SettingsOverlay implements Component {
 
 // ── Main command handler ────────────────────────────────────────
 
-async function openSettingsTui(ctx: ExtensionCommandContext): Promise<void> {
+async function openSettingsTui(ctx: ExtensionCommandContext, pi?: ExtensionAPI): Promise<void> {
   log.info("settings_opened");
   if (!ctx.hasUI) return;
   if (ctx.mode !== "tui") {
@@ -640,7 +645,18 @@ async function openSettingsTui(ctx: ExtensionCommandContext): Promise<void> {
   try {
     await ctx.ui.custom<undefined>(
       (tui, theme, _kb, done) =>
-        new SettingsOverlay(tui, theme, cwd, modelRegistry, editScope, done, (msg, level) => ctx.ui.notify(msg, level)),
+        new SettingsOverlay(
+          tui,
+          theme,
+          cwd,
+          modelRegistry,
+          editScope,
+          done,
+          (msg, level) => ctx.ui.notify(msg, level),
+          (key) => {
+            try { pi?.events?.emit?.("orchestrator:settings-changed", { key, cwd }); } catch {}
+          },
+        ),
       OVERLAY_OPTS,
     );
   } finally {
@@ -652,6 +668,6 @@ async function openSettingsTui(ctx: ExtensionCommandContext): Promise<void> {
 
 export function registerSettingsTui(pi: ExtensionAPI): void {
   registerSettingsTuiCommand(pi, async (_args, ctx) => {
-    await openSettingsTui(ctx);
+    await openSettingsTui(ctx, pi);
   });
 }

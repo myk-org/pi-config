@@ -677,4 +677,75 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 			assert.match(notices[0], /No peers in project/);
 		});
 	});
+
+	it("kills supervised peers across all projects when X is pressed in all-projects scope", async () => {
+		const tmpRoot = makeTempDir("coms-killall-scope-");
+		const comsDir = path.join(tmpRoot, "coms");
+		const workspace = path.join(tmpRoot, "workspace");
+		fs.mkdirSync(workspace, { recursive: true });
+		const ownProj = workspace.replace(/^[\\/]+/, "").replace(/[\\/]+/g, "__");
+		const peersDir = path.join(comsDir, "peers");
+		const socketsDir = path.join(comsDir, "sockets");
+		fs.mkdirSync(peersDir, { recursive: true });
+		fs.mkdirSync(socketsDir, { recursive: true });
+
+		const seedPeer = (name: string, project: string, pid: number) => {
+			const agentsDir = path.join(comsDir, "projects", project, "agents");
+			fs.mkdirSync(agentsDir, { recursive: true });
+			const sock = path.join(socketsDir, `${name}.sock`);
+			fs.writeFileSync(sock, "");
+			fs.writeFileSync(path.join(agentsDir, `${name}.json`), JSON.stringify({
+				coms_session_id: `sess-${name}`,
+				name,
+				pid,
+				cwd: workspace,
+				endpoint: sock,
+				heartbeat_at: new Date().toISOString(),
+			}));
+			fs.writeFileSync(path.join(peersDir, `${name}@${project}.json`), JSON.stringify({
+				cname: name,
+				project,
+				pid,
+				childPid: pid,
+			}));
+		};
+		seedPeer("local-worker", ownProj, 999991);
+		seedPeer("other-worker", "other-project", 999992);
+
+		const { pi, commands, events } = makeStatefulPi();
+		registerComs(pi as any, { comsDir, allowSubagentChild: true, registerSignalHandlers: false });
+		const killedPids: number[] = [];
+		const origKill = process.kill;
+		(process as any).kill = (pid: number, sig?: string | number) => {
+			if (sig === 0) return true;
+			killedPids.push(pid);
+			return true;
+		};
+		try {
+			const sessionCtx: any = {
+				cwd: workspace,
+				hasUI: true,
+				sessionManager: { getSessionId: () => "killall-sess", getEntries: () => [] },
+				ui: {
+					notify: () => {},
+					custom: async (factory: any) =>
+						await new Promise((resolve) => {
+							const fakeTui = { terminal: { rows: 24 }, requestRender: () => {} };
+							const fakeTheme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+							const comp = factory(fakeTui, fakeTheme, { matches: () => false }, (v: any) => resolve(v));
+							comp.handleInput("f"); // toggle to all projects
+							comp.handleInput("X"); // kill all in all-projects scope
+							comp.handleInput("\x1b");
+							comp.dispose?.();
+						}),
+				},
+			};
+			for (const fn of events.get("session_start") ?? []) await fn({ reason: "startup" }, sessionCtx);
+			await commands.get("coms").handler("", sessionCtx);
+			assert.deepEqual(killedPids.sort(), [999991, 999992], "X in all-projects view signals both own and other project supervised peers");
+		} finally {
+			process.kill = origKill;
+			for (const fn of events.get("session_shutdown") ?? []) await fn({}, {});
+		}
+	});
 });

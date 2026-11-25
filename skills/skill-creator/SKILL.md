@@ -56,7 +56,8 @@ skill-maintenance: auto
   Never put double quotes (`"`) inside the double-quoted YAML value — use single quotes (`'...'`) or plain text instead
 - **skill-maintenance**: always `auto` — opts the skill into maintenance so agents keep it true when it drifts
   (omitting it on a brand-new `.pi/skills/<name>/SKILL.md` auto-adopts on write; existing unmarked loaded skills
-  — project, user-global, or symlinked shared — can be opted in with `/adopt-skill <name>`)
+  — project, user-global, or symlinked shared — can be opted in with `skill_adopt(action="adopt", name="<name>")`
+  or the `/adopt-skill` TUI)
 - **Body**: concrete steps, exact commands, verification
 - **No fluff**: skip background, motivation, history — just the procedure
 - **Include pitfalls**: what goes wrong and how to avoid it

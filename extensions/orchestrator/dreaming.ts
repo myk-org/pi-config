@@ -415,14 +415,35 @@ export function registerDreaming(
     });
   }
 
+  function syncAutoDreamTimer(cwd: string) {
+    if (!cwd || lastCtx?.mode === "print" || lastCtx?.mode === "json") return;
+    lastCwd = cwd;
+    if (isAutoDreamEnabled(cwd)) startTimer(cwd);
+    else stopTimer();
+  }
+
+  pi.events?.on?.("orchestrator:settings-changed", (data: unknown) => {
+    const payload = data as { key?: string; cwd?: string } | undefined;
+    if (payload?.key !== "dream_auto_enable" && payload?.key !== "dream_interval_hours") return;
+    if (payload.key === "dream_auto_enable") enabledOverride = null;
+    const targetCwd = payload.cwd || lastCwd;
+    if (targetCwd) {
+      log.debug("dream_settings_changed", { key: payload.key, enabled: isAutoDreamEnabled(targetCwd) });
+      syncAutoDreamTimer(targetCwd);
+    }
+  });
+
   // Set initial dream status on first agent start (fires on /reload too, unlike session_start)
+  // and keep timers synchronized with project/global settings if edited mid-session.
   let initialized = false;
   pi.on("before_agent_start", (_event, ctx) => {
+    lastCtx = ctx;
+    if (ctx.cwd) lastCwd = ctx.cwd;
     if (!initialized) {
       initialized = true;
-      lastCtx = ctx;
       updateDreamStatus();
     }
+    syncAutoDreamTimer(ctx.cwd);
   });
 
   // Update cwd on session start
@@ -438,8 +459,7 @@ export function registerDreaming(
       return;
     }
     updateDreamStatus();
-    if (isAutoDreamEnabled(ctx.cwd)) startTimer(ctx.cwd);
-    else stopTimer();
+    syncAutoDreamTimer(ctx.cwd);
   });
 
   // Shutdown dream: runDreamAsync → spawnAsyncAgent (not detached/unref'd).

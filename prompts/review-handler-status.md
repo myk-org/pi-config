@@ -12,7 +12,7 @@ Show the live state of running autoqodo/autorabbit review-handler agents.
 
 ### Steps
 
-1. Run `/async-status`. Look for agents whose task contains `reviews poll`.
+1. Call `async_status` (or open `/async` in TUI). Look for agents whose task contains `reviews poll`.
    If none found → "No review handler agents running — nothing to show."
 
 2. For each running review agent, extract the PR number from the agent's task or worktree cwd.

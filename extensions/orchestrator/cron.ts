@@ -355,6 +355,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
     }
     updateStatus();
   }
+  const isProjectTrusted = () => typeof ctx?.isProjectTrusted !== "function" || ctx.isProjectTrusted() === true;
   function add(scope: CronScope, details: any) {
     if (scope !== "session" && scope !== "project") throw new Error("scope must be session or project");
     if (durable(scope) && !durableCronSupported()) throw new Error("Persistent cron scheduling is unavailable on this platform");
@@ -364,7 +365,10 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
     if (durable(scope)) mutateDurableCronStore(projectStore(task.cwd), old => [...old, task as DurableCronTask]);
     tasks.set(task.id, task);
     // We may already own the relevant lock; schedule synchronously rather than waiting for fs.watch.
-    if (scope === "session" || (owned.has(projectStore(task.cwd)) && isLeaderLockCurrent(projectStore(task.cwd), owned.get(projectStore(task.cwd))!))) { task.leader = true; start(task); }
+    // Never run leader election or arm project crons in an untrusted checkout.
+    if (scope === "session") { task.leader = true; start(task); }
+    else if (!isProjectTrusted()) { task.leader = false; log.info("cron_created_untrusted", { id: qualifyCronId(task) }); }
+    else if (owned.has(projectStore(task.cwd)) && isLeaderLockCurrent(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) { task.leader = true; start(task); }
     else election();
     if (scope === "session") persist(task, "nextRun");
     updateStatus(); log.info("cron_created", { scope, id: qualifyCronId(task) }); return task;
@@ -508,26 +512,38 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
       return { ok: true, scope: targetScope, id: qualifyCronId(task) };
     }
     if (targetScope === "project") {
+      if (!isProjectTrusted()) {
+        log.warn("cron_scope_untrusted", { id: qualified });
+        return { ok: false, scope: "session", error: "Project is not trusted — cannot persist crons here." };
+      }
       if (!durableCronSupported()) {
         log.warn("cron_scope_durable_unsupported", { id: qualified });
         return { ok: false, scope: "session", error: "Persistent cron scheduling is unavailable on this platform" };
       }
       const { leader: _leader, ...base } = task;
       const durableTask: DurableCronTask = { ...base, scope: "project" };
+      const file = projectStore(task.cwd);
+      let wroteDurable = false;
       try {
         validateDurableCronTask(durableTask);
-        // Write to destination store FIRST so a lock timeout or disk error leaves the session task intact.
-        mutateDurableCronStore(projectStore(task.cwd), old => [...old.filter(t => t.id !== task.id), durableTask]);
+        // Write to destination store FIRST, then remove from session store; roll back durable write on failure
+        // so the cron can never exist in both stores simultaneously.
+        mutateDurableCronStore(file, old => [...old.filter(t => t.id !== task.id), durableTask]);
+        wroteDurable = true;
+        if (sessionStore) {
+          writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session" && t.id !== task.id));
+        }
       } catch (error: any) {
+        if (wroteDurable) {
+          try { mutateDurableCronStore(file, old => old.filter(t => t.id !== task.id)); }
+          catch (rollbackErr: any) {
+            log.error("cron_scope_persist_rollback_failed", { id: qualified, error: rollbackErr?.message || String(rollbackErr) });
+          }
+        }
         log.error("cron_scope_persist_failed", { id: qualified, error: error?.message || String(error) });
         return { ok: false, scope: "session", error: error?.message || "Failed to persist cron" };
       }
       task.scope = "project";
-      if (sessionStore) {
-        try { writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session")); }
-        catch (error: any) { log.warn("cron_scope_session_cleanup_failed", { id: qualified, error: error?.message || String(error) }); }
-      }
-      const file = projectStore(task.cwd);
       if (owned.has(file) && isLeaderLockCurrent(file, owned.get(file)!)) {
         task.leader = true;
         start(task);

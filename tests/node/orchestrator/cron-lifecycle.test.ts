@@ -143,6 +143,78 @@ describe("cron zero-arg command (#1392)", { concurrency: false }, () => {
     assert.equal(restored.paused, true);
     assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 0);
   });
+
+  it("refuses persisting a session cron in an untrusted project without arming committed repo crons", async () => {
+    const cwd = makeTempDir("pi-cron-untrusted-"); dirs.push(cwd);
+    const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(durablePath), { recursive: true });
+    fs.writeFileSync(
+      durablePath,
+      JSON.stringify({
+        version: 1,
+        tasks: [{ id: "repo-cron", scope: "project", cwd, description: "evil", task: "echo pwn", intervalMs: 60_000, createdAt: 1 }],
+      }),
+    );
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
+    h.handlers.get("session_start")![0]({}, context(cwd, "untrusted-sess", false));
+    // Repo cron must remain leaderless/unarmed.
+    const repoTaskBefore = cron.getCronTasks().find((t) => t.id === "repo-cron");
+    assert.equal(repoTaskBefore?.leader, false);
+    assert.equal(h.timeouts.length, 0);
+
+    await h.tool().execute("seed", { action: "add", task: "local check", interval_seconds: 60 });
+    const sessionTask = cron.getCronTasks().find((t) => t.scope === "session")!;
+    const res = cron.setScope(`session:${sessionTask.id}`, "project");
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /not trusted/i);
+    assert.equal(cron.getCronTasks().find((t) => t.id === "repo-cron")?.leader, false);
+    assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 1);
+  });
+
+  it("does not run leader election when adding a project cron in an untrusted project", async () => {
+    const cwd = makeTempDir("pi-cron-untrusted-add-"); dirs.push(cwd);
+    const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(durablePath), { recursive: true });
+    fs.writeFileSync(
+      durablePath,
+      JSON.stringify({
+        version: 1,
+        tasks: [{ id: "repo-cron", scope: "project", cwd, description: "repo", task: "echo repo", intervalMs: 60_000, createdAt: 1 }],
+      }),
+    );
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
+    h.handlers.get("session_start")![0]({}, context(cwd, "untrusted-add", false));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "new persistent", interval_seconds: 60 });
+    assert.equal(h.timeouts.length, 0, "untrusted project must never arm project cron timers");
+    assert.equal(cron.getCronTasks().every((t) => t.leader === false), true);
+  });
+
+  it("rolls back durable write when session-store cleanup fails during setScope to project", async (t) => {
+    const cwd = makeTempDir("pi-cron-rollback-"); dirs.push(cwd);
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn"));
+    h.handlers.get("session_start")![0]({}, context(cwd, "rollback-sess"));
+    await h.tool().execute("seed", { action: "add", task: "check", interval_seconds: 60 });
+    const created = cron.getCronTasks()[0];
+
+    const origWrite = fs.writeFileSync;
+    const mockWrite = t.mock.method(fs, "writeFileSync", (filePath: any, ...rest: any[]) => {
+      if (String(filePath).includes("cron-") && String(filePath).endsWith(".json")) {
+        throw new Error("simulated session-store EACCES");
+      }
+      return (origWrite as any).call(fs, filePath, ...rest);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { mockWrite.mock.restore(); syncBuiltinESMExports(); });
+
+    const res = cron.setScope(`session:${created.id}`, "project");
+    assert.equal(res.ok, false);
+    assert.equal(cron.getCronTasks()[0].scope, "session", "in-memory scope stays session on failure");
+    const durablePath = path.join(cwd, ".pi", "cron", "crons.json");
+    assert.equal(JSON.parse(fs.readFileSync(durablePath, "utf8")).tasks.length, 0, "durable write was rolled back");
+  });
 });
 
 describe("cron lifecycle", { concurrency: false }, () => {

@@ -389,7 +389,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
             killAll: (scope) => {
                 const resolved = resolveKillScope(
-                    { all: true, project: scope === "all" ? undefined : ownProject() },
+                    { all: true, project: scope === "all" ? "*" : ownProject() },
                     ownProject(),
                     log,
                 );
