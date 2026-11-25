@@ -160,19 +160,43 @@ export async function openTasksOverlay(
 									return "redraw";
 								}
 								// Complete all selected open tasks (including user-assigned tasks via { by: "user" }
-								// without blocking on N sequential note dialogs); isolate failures per task.
-								const { failed, errors } = bulkRemove(open, (t) => deps.completeTask(t.id, { by: "user" }));
+								// without blocking on N sequential note dialogs); isolate failures per task and
+								// send at most ONE combined owner notice after the loop.
+								const batchNotice = typeof deps.notifyUserCompleted === "function";
+								const { failed, errors } = bulkRemove(open, (t) =>
+									deps.completeTask(t.id, { by: "user", ...(batchNotice ? { silent: true } : {}) }),
+								);
+								const failedIds = new Set(failed.map((t) => t.id));
+								const completedUserTasks = open
+									.filter((t) => t.assignee === "user" && !failedIds.has(t.id))
+									.map((t) => ({ id: t.id, subject: t.subject }));
+								let noticeFailed = false;
+								if (batchNotice && completedUserTasks.length > 0) {
+									try {
+										noticeFailed = !deps.notifyUserCompleted!(completedUserTasks);
+									} catch (err) {
+										noticeFailed = true;
+										log.error("tasks_overlay_bulk_notice_threw", {
+											count: completedUserTasks.length,
+											error: err instanceof Error ? err.message : String(err),
+										});
+									}
+								}
 								const names = failed.map((t) => `#${t.id}`);
 								log.info("tasks_overlay_bulk_complete", {
 									selected: selected.length,
 									open: open.length,
 									skipped,
 									failed: names.length,
+									noticeFailed,
 									errors,
 								});
 								const base = bulkResultMessage("completed", "task", open.length, names);
-								const msg = skipped > 0 ? `${base} (${skipped} already completed)` : base;
-								notify(msg, names.length === 0 ? "info" : "warning");
+								const withSkipped = skipped > 0 ? `${base} (${skipped} already completed)` : base;
+								const msg = noticeFailed
+									? `${withSkipped} — owner notice failed to submit; read via TaskGet`
+									: withSkipped;
+								notify(msg, names.length === 0 && !noticeFailed ? "info" : "warning");
 								return "redraw-clear";
 							}
 							// Add/edit are single-row by nature: acting on the focused row while rows are picked

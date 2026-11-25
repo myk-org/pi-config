@@ -406,7 +406,7 @@ describe("selection survives a re-opened dashboard (#1084)", () => {
 });
 
 describe("Kitty CSI-u / layout-safe overlay key matching (#1391)", () => {
-  it("matches plain letters, Kitty CSI-u, NumLock/CapsLock, repeat, and non-Latin base layout keys", () => {
+  it("matches lowercase letters across plain, Kitty CSI-u, lock bits, repeat, and non-Latin layouts", () => {
     for (const seq of [
       "x",
       "\x1b[120u",
@@ -426,7 +426,7 @@ describe("Kitty CSI-u / layout-safe overlay key matching (#1391)", () => {
     }
   });
 
-  it("matches uppercase bindings via Shift while rejecting lowercase, Ctrl, and release events", () => {
+  it("matches uppercase bindings via Shift without matching lowercase", () => {
     for (const seq of [
       "X",
       "\x1b[120;2u",
@@ -440,43 +440,73 @@ describe("Kitty CSI-u / layout-safe overlay key matching (#1391)", () => {
       assert.equal(matchesOverlayKey(seq, "x"), false, `expected ${JSON.stringify(seq)} NOT to match "x"`);
       assert.equal(normalizeOverlayKey(seq), "X");
     }
+  });
 
+  it("rejects Ctrl-modified letters and Kitty key-release events", () => {
     assert.equal(matchesOverlayKey("\x1b[120;5u", "x"), false, "Ctrl+x must not match plain x");
     assert.equal(matchesOverlayKey("\x1b[120;1:3u", "x"), false, "key release must be ignored");
     assert.equal(matchesOverlayKey("\x1b[120;2:3u", "X"), false, "shifted key release must be ignored");
     assert.equal(normalizeOverlayKey("\x1b[120;1:3u"), "");
   });
 
-  it("handles Kitty CSI-u j/k, Space, x, X, m, and onKey inside OverlayListDashboard", () => {
+  it("selects with Kitty Space and kills selection with non-Latin x under NumLock", () => {
     const h = harness({ selectable: true });
     try {
       h.press("\x1b[32;129u");     // Space + NumLock → select a
       h.press("\x1b[106;129u");    // j + NumLock → focus b
-      h.press("\x1b[32;1:3u");     // Space release → ignored!
       h.press("\x1b[1505::120u");  // non-Latin base 'x' → kills selected ["a"]
       assert.deepEqual(h.kills, [["a"]]);
+    } finally {
+      h.dispose();
+    }
+  });
 
-      h.press("\x1b[107u");        // k → focus a
-      h.press("\x1b[109;65u");     // m + CapsLock → compose on focused a
+  it("ignores Kitty key-release events inside OverlayListDashboard", () => {
+    const h = harness({ selectable: true });
+    try {
+      h.press("\x1b[32;129u");   // Space press → select a
+      h.press("\x1b[32;1:3u");   // Space release → must not untoggle a
+      h.press("\x1b[120;1:3u");  // x release → must not kill
+      assert.deepEqual(h.kills, []);
+      assert.deepEqual(h.selectionChanges, [["a"]]);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("navigates with Kitty k and composes with m under CapsLock", () => {
+    const h = harness({ selectable: true });
+    try {
+      h.press("j");            // focus b
+      h.press("\x1b[107u");    // k → focus a
+      h.press("\x1b[109;65u"); // m + CapsLock → compose on focused a
       assert.deepEqual(h.composes, [{ ids: ["a"], missing: [] }]);
     } finally {
       h.dispose();
     }
+  });
 
-    const h2 = harness({ selectable: true });
+  it("triggers kill-all with Kitty Shift+x", () => {
+    const h = harness({ selectable: true });
     try {
-      h2.press("\x1b[120:88;2u");  // Shift+x → kill all
-      assert.equal(h2.killAllCalls, 1);
-      h2.press("\x1b[113;129u");   // q + NumLock → normalized to "q" for onKey
-      assert.equal(h2.keyCalls.at(-1)?.key, "q");
+      h.press("\x1b[120:88;2u");
+      assert.equal(h.killAllCalls, 1);
     } finally {
-      h2.dispose();
+      h.dispose();
     }
   });
 
-  it("handles Kitty CSI-u j/k, x, and onKey inside OverlayScrollDetail", () => {
-    let xCalls = 0;
-    const seenKeys: string[] = [];
+  it("normalizes Kitty CSI-u keys before handing them to onKey", () => {
+    const h = harness({ selectable: true });
+    try {
+      h.press("\x1b[113;129u"); // q + NumLock
+      assert.equal(h.keyCalls.at(-1)?.key, "q");
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("scrolls with Kitty j/k inside OverlayScrollDetail", () => {
     const lines = Array.from({ length: 30 }, (_, i) => `line-${i}`);
     const detail = new OverlayScrollDetail(
       fakeTui({ rows: 14 }),
@@ -486,24 +516,43 @@ describe("Kitty CSI-u / layout-safe overlay key matching (#1391)", () => {
         tickMs: 60_000,
         getHeader: () => "header",
         getBodyLines: () => lines,
-        onX: () => { xCalls++; return false; },
-        onKey: (key) => { seenKeys.push(key); return false; },
       },
       () => {},
     );
     try {
-      const before = detail.render(60).join("\n");
-      assert.match(before, /line-0/);
+      assert.match(detail.render(60).join("\n"), /line-0/);
       detail.handleInput("\x1b[106;129u"); // j + NumLock
       const afterJ = detail.render(60).join("\n");
       assert.doesNotMatch(afterJ, /line-0/);
       assert.match(afterJ, /line-1/);
       detail.handleInput("\x1b[107u");     // k
       assert.match(detail.render(60).join("\n"), /line-0/);
+    } finally {
+      detail.dispose();
+    }
+  });
+
+  it("dispatches Kitty x and normalized onKey while ignoring release in OverlayScrollDetail", () => {
+    let xCalls = 0;
+    const seenKeys: string[] = [];
+    const detail = new OverlayScrollDetail(
+      fakeTui({ rows: 14 }),
+      fakeTheme(),
+      {
+        footerHints: "Esc back",
+        tickMs: 60_000,
+        getHeader: () => "header",
+        getBodyLines: () => ["line-0"],
+        onX: () => { xCalls++; return false; },
+        onKey: (key) => { seenKeys.push(key); return false; },
+      },
+      () => {},
+    );
+    try {
       detail.handleInput("\x1b[1505::120u"); // non-Latin 'x'
       detail.handleInput("\x1b[120;1:3u");   // release ignored
-      assert.equal(xCalls, 1);
       detail.handleInput("\x1b[112;129u");   // p + NumLock → normalized to "p"
+      assert.equal(xCalls, 1);
       assert.deepEqual(seenKeys, ["p"]);
     } finally {
       detail.dispose();
@@ -531,14 +580,21 @@ describe("OverlayListDashboard inline feedback banner (#1391)", () => {
     }
   });
 
-  it("clears inline notice on next navigation or Space toggle", () => {
+  it("clears inline notice on next navigation key", () => {
     const h = harness({ selectable: true, noticeTimeoutMs: 0 });
     try {
       h.dash.setNotice("Heads up", "info");
       assert.match(h.dash.render(80).join("\n"), /ℹ Heads up/);
       h.press("j");
       assert.doesNotMatch(h.dash.render(80).join("\n"), /Heads up/);
+    } finally {
+      h.dispose();
+    }
+  });
 
+  it("clears inline notice on Space toggle", () => {
+    const h = harness({ selectable: true, noticeTimeoutMs: 0 });
+    try {
       h.dash.setNotice("Second notice", "error");
       assert.match(h.dash.render(80).join("\n"), /✖ Second notice/);
       h.press(" ");
@@ -580,6 +636,19 @@ describe("OverlayListDashboard multi-select UX & openListDetailOverlay persisten
     }
   });
 
+  it("does not count vanished selected rows in badge/footer and lets Esc close immediately", () => {
+    const h = harness({ selectable: true, persisted: ["gone-1", "gone-2"] });
+    try {
+      const frame = h.dash.render(120).join("\n");
+      assert.doesNotMatch(frame, /selected/, "stale ids must not render a phantom selection badge");
+      assert.match(frame, /Esc close/);
+      h.press("\x1b");
+      assert.deepEqual(h.closedWith, [null], "first Esc closes immediately when no visible row is selected");
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("clears active selection on first Esc and closes overlay on second Esc", () => {
     const h = harness({ selectable: true });
     try {
@@ -607,18 +676,57 @@ describe("OverlayListDashboard multi-select UX & openListDetailOverlay persisten
     }
   });
 
-  it("preserves multi-selection across Enter -> detail -> Esc in openListDetailOverlay and prunes deleted rows", async () => {
-    let rows = [{ id: "1" }, { id: "2" }, { id: "3" }];
+  it("preserves multi-selection across Enter -> detail -> Esc in openListDetailOverlay", async () => {
+    const rows = [{ id: "1" }, { id: "2" }, { id: "3" }];
     const killedSelected: string[][] = [];
-    // 1st open: Space #1, j, Space #2, Enter -> detail
-    // 2nd open (detail): Esc back
-    // 3rd open (list reopened): Enter on #2 -> detail
-    // 4th open (detail): x deletes #2 -> closes detail
-    // 5th open (list reopened): x kills remaining selection (#1 only!), then Esc closes
     const scripts = [
       [" ", "j", " ", "\r"],
       ["\x1b"],
-      ["\r"],
+      ["x", "\x1b"],
+    ];
+    const frames: string[] = [];
+    let openIndex = 0;
+    const custom = (<T,>(factory: FakeCustomFactory<T>) => {
+      const keys = scripts[openIndex++] ?? ["\x1b"];
+      return fakeCustom(factory, keys, {
+        onOpen: (comp) => { frames.push(comp.render(100).join("\n")); },
+      });
+    }) satisfies ExtensionUIContext["custom"];
+    const ctx = fakeCommandCtx({ notify: () => {}, custom });
+
+    await openListDetailOverlay(ctx, {
+      emptyMessage: "Empty",
+      listSpec: {
+        title: "Items",
+        countLabel: (items) => `${items.length}`,
+        borderTitle: (items) => `items · ${items.length}`,
+        listItems: () => rows,
+        rowParts: (item) => ({ glyph: "■", title: item.id, idLabel: "", rightParts: [] }),
+        selectable: true,
+        onXSelected: (selected) => { killedSelected.push(selected.map((s) => s.id)); },
+      },
+      createDetail: (item, tui, theme, done) =>
+        new OverlayScrollDetail(
+          tui,
+          theme,
+          {
+            footerHints: "Esc back",
+            getHeader: () => item.id,
+            getBodyLines: () => [item.id],
+          },
+          done,
+        ),
+    });
+
+    assert.match(frames[2], /2 selected/, "returning from detail preserves both ticks");
+    assert.deepEqual(killedSelected, [["1", "2"]]);
+  });
+
+  it("prunes a row deleted inside detail view from multi-selection on return", async () => {
+    let rows = [{ id: "1" }, { id: "2" }, { id: "3" }];
+    const killedSelected: string[][] = [];
+    const scripts = [
+      [" ", "j", " ", "\r"],
       ["x"],
       ["x", "\x1b"],
     ];
@@ -660,8 +768,7 @@ describe("OverlayListDashboard multi-select UX & openListDetailOverlay persisten
         ),
     });
 
-    assert.match(frames[2], /2 selected/, "returning from detail preserves both ticks");
-    assert.match(frames[4], /1 selected/, "deleting #2 inside detail prunes #2 and keeps #1");
+    assert.match(frames[2], /1 selected/, "deleting #2 inside detail prunes #2 and keeps #1");
     assert.deepEqual(killedSelected, [["1"]]);
   });
 });

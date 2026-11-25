@@ -35,6 +35,7 @@ import { openTasksOverlay } from "./tasks-ui.js";
 import {
 	TASKS_USAGE,
 	applyTaskAction,
+	bulkTaskCompletionNotice,
 	formatTasksPlainText,
 	parseTasksCommand,
 	selectTaskRows,
@@ -442,10 +443,26 @@ export default function (pi: ExtensionAPI) {
 			try {
 				pi.sendMessage(taskCompletionNotice(task), { triggerTurn: true, deliverAs: "followUp" });
 				log.info("task_completed_notice_sent", { taskId: task.id });
+				return true;
 			} catch (error) {
 				// Submission may have succeeded before throwing; never retry or log its content.
 				log.error("task_completed_notice_failed", { taskId: task.id, errorType: error instanceof Error ? error.name : typeof error });
 				ui?.notify(`Task #${task.id} completed, but its notice could not be submitted. Read it with TaskGet.`, "warning");
+				return false;
+			}
+		}, (tasks) => {
+			if (tasks.length === 0) return true;
+			try {
+				pi.sendMessage(bulkTaskCompletionNotice(tasks), { triggerTurn: true, deliverAs: "followUp" });
+				log.info("task_completed_bulk_notice_sent", { taskIds: tasks.map((t) => t.id) });
+				return true;
+			} catch (error) {
+				// Submission may have succeeded before throwing; never retry or log task note content.
+				log.error("task_completed_bulk_notice_failed", {
+					taskIds: tasks.map((t) => t.id),
+					errorType: error instanceof Error ? error.name : typeof error,
+				});
+				return false;
 			}
 		});
 	}

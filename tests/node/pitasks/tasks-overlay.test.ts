@@ -5,6 +5,7 @@ import {
 	TASKS_HINT,
 	TASKS_USAGE,
 	applyTaskAction,
+	bulkTaskCompletionNotice,
 	formatTasksPlainText,
 	nextTaskStatus,
 	parseTasksCommand,
@@ -480,39 +481,144 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		});
 	}
 
-	it("d bulk-completes selected open llm and user tasks without note dialogs and renders inline banner", async () => {
+	it("d bulk-completes selected open tasks in place without note dialogs", async () => {
 		// Row order from sortTaskRows: #1 (pending, user), #3 (pending, llm), #2 (in_progress, llm).
-		const { ctx, notifications, openedCount, lastFrames } = makeTasksCtx([[" ", "j", "j", " ", "d", "close"]]);
+		const { ctx, openedCount } = makeTasksCtx([[" ", "j", "j", " ", "d", "close"]]);
 		const tasks = [
 			task({ id: "1", status: "pending", assignee: "user", subject: "owner work" }),
 			task({ id: "2", status: "in_progress", assignee: "llm", subject: "agent work" }),
 			task({ id: "3", status: "pending", assignee: "llm", subject: "unselected" }),
 		];
 		const completed: Array<{ id: string; by: string }> = [];
-		const userNotices: string[] = [];
+		const deps = tasksOverlayDeps({
+			list: () => tasks,
+			get: (id) => tasks.find((t) => t.id === id),
+			create: () => ({ id: "99" }),
+			update: (id, fields) => {
+				if ("status" in fields && fields.status === "completed") {
+					completed.push({ id, by: fields.completedBy });
+					const target = tasks.find((t) => t.id === id);
+					if (target) target.status = "completed";
+				}
+			},
+		});
+		await openTasksOverlay(ctx, deps);
+		assert.equal(openedCount(), 1, "bulk d completes in place without note dialogs");
+		assert.deepEqual(completed, [{ id: "1", by: "user" }, { id: "2", by: "user" }]);
+	});
+
+	it("d renders the bulk completion count inline and clears multi-selection", async () => {
+		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const tasks = [
+			task({ id: "1", status: "pending" }),
+			task({ id: "2", status: "pending" }),
+		];
+		await openTasksOverlay(ctx, {
+			listTasks: () => tasks,
+			deleteTask: () => true,
+			completeTask: (id) => {
+				const target = tasks.find((t) => t.id === id);
+				if (target) target.status = "completed";
+				return true;
+			},
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		});
+		assert.deepEqual(notifications, [{ message: "completed 2 tasks", level: "info" }]);
+		assert.match(lastFrames[0], /ℹ completed 2 tasks/, "inline feedback banner rendered inside overlay");
+		assert.doesNotMatch(lastFrames[0], /2 selected/, "bulk d clears multi-selection");
+	});
+
+	it("d sends one combined owner notice for multiple selected user tasks (#1391)", async () => {
+		const { ctx } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const tasks = [
+			task({ id: "1", status: "pending", assignee: "user", subject: "first owner step" }),
+			task({ id: "2", status: "pending", assignee: "user", subject: "second owner step" }),
+		];
+		const singleNotices: string[] = [];
+		const bulkNotices: Array<ReadonlyArray<{ id: string; subject: string }>> = [];
 		const deps = tasksOverlayDeps(
 			{
 				list: () => tasks,
 				get: (id) => tasks.find((t) => t.id === id),
 				create: () => ({ id: "99" }),
 				update: (id, fields) => {
-					if ("status" in fields && fields.status === "completed") {
-						completed.push({ id, by: fields.completedBy });
-						const target = tasks.find((t) => t.id === id);
-						if (target) target.status = "completed";
-					}
+					const target = tasks.find((t) => t.id === id);
+					if (target && "status" in fields && fields.status === "completed") target.status = "completed";
+					return { task: target, changedFields: ["status"], warnings: [] };
 				},
 			},
 			undefined,
-			(t) => userNotices.push(t.id),
+			(t) => { singleNotices.push(t.id); },
+			(batch) => { bulkNotices.push(batch); return true; },
 		);
 		await openTasksOverlay(ctx, deps);
-		assert.equal(openedCount(), 1, "bulk d completes in place without note dialogs");
-		assert.deepEqual(completed, [{ id: "1", by: "user" }, { id: "2", by: "user" }]);
-		assert.deepEqual(userNotices, ["1"]);
-		assert.deepEqual(notifications, [{ message: "completed 2 tasks", level: "info" }]);
-		assert.match(lastFrames[0], /ℹ completed 2 tasks/, "inline feedback banner rendered inside overlay");
-		assert.doesNotMatch(lastFrames[0], /2 selected/, "bulk d clears multi-selection");
+		assert.deepEqual(singleNotices, [], "bulk d must not fire per-task notices");
+		assert.deepEqual(bulkNotices, [[
+			{ id: "1", subject: "first owner step" },
+			{ id: "2", subject: "second owner step" },
+		]]);
+		const combined = bulkTaskCompletionNotice(bulkNotices[0]);
+		assert.equal(combined.customType, "task-completed-by-user");
+		assert.match(combined.content, /2 tasks marked done by you:/);
+		assert.match(combined.content, /#1 "first owner step"/);
+		assert.match(combined.content, /#2 "second owner step"/);
+	});
+
+	it("d surfaces owner-notice submission failure in the inline banner without losing completion count (#1391)", async () => {
+		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const tasks = [
+			task({ id: "1", status: "pending", assignee: "user", subject: "owner step" }),
+			task({ id: "2", status: "pending", assignee: "llm", subject: "agent step" }),
+		];
+		const deps = tasksOverlayDeps(
+			{
+				list: () => tasks,
+				get: (id) => tasks.find((t) => t.id === id),
+				create: () => ({ id: "99" }),
+				update: (id, fields) => {
+					const target = tasks.find((t) => t.id === id);
+					if (target && "status" in fields && fields.status === "completed") target.status = "completed";
+					return { task: target, changedFields: ["status"], warnings: [] };
+				},
+			},
+			undefined,
+			undefined,
+			() => false,
+		);
+		await openTasksOverlay(ctx, deps);
+		assert.equal(notifications.length, 1);
+		assert.equal(notifications[0].level, "warning");
+		assert.match(notifications[0].message, /completed 2 tasks — owner notice failed to submit/);
+		assert.match(lastFrames[0], /⚠ completed 2 tasks — owner notice failed to submit/);
+	});
+
+	it("d reports a concurrently deleted task as failed instead of completed (#1391)", async () => {
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const tasks = [
+			task({ id: "1", status: "pending", assignee: "user", subject: "vanished before lock" }),
+			task({ id: "2", status: "pending", assignee: "llm", subject: "still present" }),
+		];
+		const notifiedBatches: Array<ReadonlyArray<{ id: string; subject: string }>> = [];
+		const deps = tasksOverlayDeps(
+			{
+				list: () => tasks,
+				get: (id) => tasks.find((t) => t.id === id),
+				create: () => ({ id: "99" }),
+				update: (id, fields) => {
+					if (id === "1") return { task: undefined, changedFields: [], warnings: [] };
+					const target = tasks.find((t) => t.id === id);
+					if (target && "status" in fields && fields.status === "completed") target.status = "completed";
+					return { task: target, changedFields: ["status"], warnings: [] };
+				},
+			},
+			undefined,
+			undefined,
+			(batch) => { notifiedBatches.push(batch); return true; },
+		);
+		await openTasksOverlay(ctx, deps);
+		assert.deepEqual(notifiedBatches, [], "deleted user task must not trigger owner notice");
+		assert.deepEqual(notifications, [{ message: "completed 1 of 2 tasks — failed: #1", level: "warning" }]);
 	});
 
 	it("d skips already-completed tasks in a mixed selection and reports counts", async () => {

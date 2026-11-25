@@ -282,9 +282,9 @@ export class OverlayListDashboard<
   }
 
   /** The rows Space picked, in list order; ids whose row is gone are dropped. */
-  private selectedItems(): TItem[] {
+  private selectedItems(items: readonly TItem[] = this.items()): TItem[] {
     if (this.multi.size === 0) return [];
-    return this.items().filter((item) => this.multi.has(item.id));
+    return items.filter((item) => this.multi.has(item.id));
   }
 
   private cleanup(): boolean {
@@ -310,12 +310,13 @@ export class OverlayListDashboard<
     if (isKeyRelease(data)) return;
     const items = this.items();
     reconcileSelection(this.selection, items);
+    const selected = this.selectedItems(items);
 
-    if (matchesKey(data, Key.escape) && this.multi.size > 0) {
+    if (matchesKey(data, Key.escape) && selected.length > 0) {
       this.multi.clear();
       this.spec.onSelectionChange?.([]);
       this.clearNotice();
-      log.debug("list_multi_select_clear", { reason: "escape" });
+      log.debug("list_multi_select_clear", { reason: "escape", count: selected.length });
       this.invalidate();
       this.tui.requestRender(true);
       return;
@@ -376,7 +377,7 @@ export class OverlayListDashboard<
     const action = this.spec.onKey?.(
       normalizedKey,
       items[this.selection.index],
-      this.selectedItems(),
+      selected,
       this.emitNotice,
     );
     if (action === "close") {
@@ -453,12 +454,13 @@ export class OverlayListDashboard<
     if (matchesOverlayKey(data, "x")) {
       this.clearNotice();
       if (this.multi.size > 0) {
-        const selected = this.selectedItems();
         // Cleared unconditionally: killed jobs disappear, and stale ids would leak.
         this.multi.clear();
         this.spec.onSelectionChange?.([]);
+      }
+      if (selected.length > 0) {
         log.debug("list_multi_x", { count: selected.length });
-        if (selected.length > 0) this.spec.onXSelected?.(selected, this.emitNotice);
+        this.spec.onXSelected?.(selected, this.emitNotice);
         if (this.items().length === 0 && !this.keepOpenWhenEmpty) {
           this.close(null);
           return;
@@ -486,7 +488,8 @@ export class OverlayListDashboard<
     const theme = this.theme;
     const items = this.items();
     reconcileSelection(this.selection, items);
-    log.debug("list_render", { items: items.length, focused: this.selection.index, multi: this.multi.size });
+    const selectedCount = this.selectedItems(items).length;
+    log.debug("list_render", { items: items.length, focused: this.selection.index, multi: selectedCount });
 
     const rows = this.tui.terminal.rows || 30;
     const bodyHeight = Math.max(5, rows - (this.notice ? 6 : 5));
@@ -507,8 +510,8 @@ export class OverlayListDashboard<
     );
 
     const baseBorderTitle = this.spec.borderTitle(items);
-    const borderTitle = this.multi.size > 0
-      ? (baseBorderTitle ? `${baseBorderTitle} · ${this.multi.size} selected` : `${this.multi.size} selected`)
+    const borderTitle = selectedCount > 0
+      ? (baseBorderTitle ? `${baseBorderTitle} · ${selectedCount} selected` : `${selectedCount} selected`)
       : baseBorderTitle;
     lines.push(
       theme.fg("border", "╭") +
@@ -542,7 +545,7 @@ export class OverlayListDashboard<
       lines.push(truncateToWidth(theme.fg(color, `  ${prefix} ${this.notice.message}`), width));
     }
 
-    lines.push(truncateToWidth(theme.fg("dim", `  ${this.footerText()}`), width));
+    lines.push(truncateToWidth(theme.fg("dim", `  ${this.footerText(selectedCount)}`), width));
 
     this.cachedLines = lines;
     this.cachedWidth = width;
@@ -552,19 +555,19 @@ export class OverlayListDashboard<
   /** Spec hints, falling back to the shared defaults (+ toggle hint when selectable). The bulk
    *  keys named are only the ones this spec really wires, so a list that has `x` but no `X` does
    *  not advertise a selection action that goes nowhere. */
-  private footerText(): string {
-    const base = this.baseFooterText();
-    if (this.multi.size === 0) return base;
+  private footerText(selectedCount: number): string {
+    const base = this.baseFooterText(selectedCount);
+    if (selectedCount === 0) return base;
     const withEscClear = /\bEsc close\b/.test(base)
       ? base.replace(/\bEsc close\b/, "Esc clear")
       : /\bEsc clear\b/.test(base)
         ? base
         : `${base} · Esc clear`;
-    return `${this.multi.size} selected · ${withEscClear}`;
+    return `${selectedCount} selected · ${withEscClear}`;
   }
 
-  private baseFooterText(): string {
-    if (this.multi.size > 0 && this.spec.selectedFooterHints) return this.spec.selectedFooterHints;
+  private baseFooterText(selectedCount: number): string {
+    if (selectedCount > 0 && this.spec.selectedFooterHints) return this.spec.selectedFooterHints;
     if (this.spec.footerHints) return this.spec.footerHints;
     if (!this.spec.selectable) return DEFAULT_LIST_HINTS;
     const bulk = [...(this.spec.onXSelected ? ["x"] : []), ...(this.spec.onKillAll ? ["X"] : [])];
