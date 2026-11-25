@@ -336,7 +336,7 @@ model contract. It does not filter discovery results or claim that the endpoint 
 - `false` disables automatic review-agent and test-agent dispatch. Manual reviews and test runs are optional. No review state, cycle, or result is required before commit.
 
 When `review_loop_enforcement` is enabled, the loop stops once all reviewers approve with 0 findings and tests pass
-(`tests_passed: true` in `pi-config-review-state.jsonl`). `tests_passed` is set only by a detected
+(`tests_passed: true` in `review_status` / `<worktree-root>/.pi/data/state.db`). `tests_passed` is set only by a detected
 successful test command; completion of async `test-runner` or `test-automator` agents does not set it.
 OR after `review_loop_max_cycles` total cycles (default `3`,
 valid integers `1`-`10`; env: digit string `"1"`-`"10"` only (after trim)) — whichever comes first. Each cycle

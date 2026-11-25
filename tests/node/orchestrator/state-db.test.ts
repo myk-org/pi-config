@@ -5,11 +5,19 @@
  * Run with: npx tsx --test tests/node/orchestrator/state-db.test.ts
  */
 
-import { describe, it, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -38,8 +46,10 @@ import {
 } from "../../../extensions/orchestrator/memory-scoring.js";
 import {
   EMBEDDING_POOLING,
+  embedMissing,
   pruneEmbeddings,
   removeEmbedding,
+  vectorSearch,
 } from "../../../extensions/orchestrator/memory-embeddings.js";
 import {
   getProvenancePendingPath,
@@ -52,10 +62,14 @@ import {
 } from "../../../extensions/orchestrator/session-search.js";
 import {
   addReviewerPending,
+  isCommitAllowed,
+  isReviewClean,
   markNeedsReview,
   readReviewState,
   statePath,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
+import { evaluateBashPolicy } from "../../../extensions/orchestrator/bash-policy.js";
+import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const GIT_ENV = {
@@ -76,6 +90,7 @@ function trackTempDir(prefix: string): string {
 
 afterEach(() => {
   closeStateDbs();
+  clearSettingsCache();
   while (cleanupDirs.length > 0) {
     const dir = cleanupDirs.pop()!;
     rmSync(dir, { recursive: true, force: true });
@@ -103,7 +118,7 @@ describe("state-db: schema init, WAL pragmas, and handle lifecycle", () => {
     assert.equal(version.v, CURRENT_SCHEMA_VERSION);
   });
 
-  it("caches handles per path and cleanly closes via closeStateDb / closeStateDbs", () => {
+  it("caches handles per path and reopens after closeStateDb / closeStateDbs", () => {
     const dir = trackTempDir("state-db-cache-");
     const dbPath = join(dir, ".pi", "data", "state.db");
 
@@ -120,20 +135,32 @@ describe("state-db: schema init, WAL pragmas, and handle lifecycle", () => {
     assert.notStrictEqual(db3, db4);
   });
 
-  it("reopens transparently if the underlying db file is unlinked and recreated", () => {
-    const dir = trackTempDir("state-db-reopen-");
+  it("returns null on read after the underlying db file is unlinked externally", () => {
+    const dir = trackTempDir("state-db-reopen-read-");
     const dbPath = join(dir, ".pi", "data", "state.db");
     const store = createSqliteStateStore<{ v: number }>(dbPath, "test-key");
     store.write({ v: 1 });
     assert.deepEqual(store.read(), { v: 1 });
 
-    // Simulate external wipe
     for (const suffix of ["", "-wal", "-shm"]) {
       const p = `${dbPath}${suffix}`;
       if (existsSync(p)) unlinkSync(p);
     }
 
     assert.equal(store.read(), null);
+  });
+
+  it("persists new writes cleanly after the db file is unlinked and recreated", () => {
+    const dir = trackTempDir("state-db-reopen-write-");
+    const dbPath = join(dir, ".pi", "data", "state.db");
+    const store = createSqliteStateStore<{ v: number }>(dbPath, "test-key");
+    store.write({ v: 1 });
+
+    for (const suffix of ["", "-wal", "-shm"]) {
+      const p = `${dbPath}${suffix}`;
+      if (existsSync(p)) unlinkSync(p);
+    }
+
     store.write({ v: 2 });
     assert.deepEqual(store.read(), { v: 2 });
   });
@@ -222,11 +249,40 @@ describe("state-db: SqliteStateStore mutate, SKIP_MUTATE, and revision semantics
     assert.deepEqual(store.read(), { msg: "v2-from-peer" });
     assert.equal(store.getRevision(), 2);
   });
+
+  it("retries fallback migration after a transient read error even when another candidate is corrupt", () => {
+    if (process.getuid?.() === 0) return; // root ignores chmod 0o000
+    const dir = trackTempDir("state-db-transient-fallback-");
+    const dbPath = join(dir, ".pi", "data", "state.db");
+    const corruptJsonl = join(dir, "legacy.jsonl");
+    const validJson = join(dir, "legacy.json");
+
+    writeFileSync(corruptJsonl, "{not valid json\n", "utf-8");
+    writeFileSync(validJson, JSON.stringify({ ok: 42 }), "utf-8");
+    chmodSync(validJson, 0o000);
+
+    try {
+      const store = createSqliteStateStore<{ ok: number }>(dbPath, "transient-test", {
+        legacyFiles: [corruptJsonl, validJson],
+      });
+      // First read sees corrupt .jsonl + unreadable .json -> must NOT permanently suppress retry
+      assert.equal(store.read(), null);
+
+      chmodSync(validJson, 0o600);
+      assert.deepEqual(store.read(), { ok: 42 });
+    } finally {
+      try {
+        chmodSync(validJson, 0o600);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
 });
 
 // ── Float32Array BLOB Encoding & Embeddings Migration ──────────────────────
 
-describe("state-db: Float32Array BLOB round-trip and memory-embeddings migration", () => {
+describe("state-db: Float32Array BLOB round-trip and memory-embeddings resilience", () => {
   it("round-trips Float32 vectors accurately, including unaligned byteOffset slices", () => {
     const vec = Array.from({ length: 384 }, (_, i) => Math.sin(i * 0.17) * 0.5);
     const blob = encodeFloat32Blob(vec);
@@ -239,7 +295,6 @@ describe("state-db: Float32Array BLOB round-trip and memory-embeddings migration
       `expected BLOB (${blob.byteLength}B) to be much smaller than JSON (${jsonSize}B)`,
     );
 
-    // Aligned round-trip
     const decoded = decodeFloat32Blob(blob);
     assert.equal(decoded.length, vec.length);
     for (let i = 0; i < vec.length; i++) {
@@ -256,7 +311,7 @@ describe("state-db: Float32Array BLOB round-trip and memory-embeddings migration
     assert.ok(Math.abs(f32[10]! - vec[10]!) < 1e-6);
   });
 
-  it("migrates legacy embeddings.jsonl to Float32 BLOBs losslessly, idempotently, without modifying legacy file", () => {
+  it("migrates legacy embeddings.jsonl to Float32 BLOBs losslessly and idempotently without modifying legacy file", () => {
     const cwd = trackTempDir("state-db-emb-mig-");
     const memDir = join(cwd, ".pi", "memory");
     mkdirSync(memDir, { recursive: true });
@@ -276,23 +331,20 @@ describe("state-db: Float32Array BLOB round-trip and memory-embeddings migration
       "\n{truncated-tail";
     writeFileSync(legacyPath, legacyRaw, "utf-8");
 
-    // First operation triggers migration (parses last valid JSONL line, ignores truncated tail)
     const pruned = pruneEmbeddings(cwd, [{ text: "keep-one", category: "lesson" }]);
     assert.equal(pruned, 1);
 
-    // Verify Float32 BLOB stored in state.db
     const db = openStateDb(getProjectStateDbPath(cwd));
     const row = db
       .prepare("SELECT vector FROM embeddings WHERE entry_key = ?")
       .get(k1) as { vector: Uint8Array } | undefined;
     assert.ok(row && row.vector instanceof Uint8Array);
-    assert.equal(row.vector.byteLength, 16); // 4 floats * 4 bytes
+    assert.equal(row.vector.byteLength, 16);
     const decoded = decodeFloat32Blob(row.vector);
     for (let i = 0; i < v1.length; i++) {
       assert.ok(Math.abs(decoded[i]! - v1[i]!) < 1e-6);
     }
 
-    // Legacy file must remain intact on disk
     assert.equal(readFileSync(legacyPath, "utf-8"), legacyRaw);
 
     // Idempotency: closing handles and removing remaining key does NOT re-import legacy file
@@ -303,45 +355,79 @@ describe("state-db: Float32Array BLOB round-trip and memory-embeddings migration
       .get() as { cnt: number };
     assert.equal(remaining.cnt, 0);
   });
+
+  it("returns empty results from vectorSearch and 0 from embedMissing when state.db cannot be opened", async () => {
+    const cwd = trackTempDir("state-db-emb-failsoft-");
+    // Place a directory at state.db so DatabaseSync fails to open it
+    mkdirSync(join(cwd, ".pi", "data", "state.db"), { recursive: true });
+
+    const searchResult = await vectorSearch(cwd, "test query", [
+      { text: "Rule A", category: "lesson", pinned: false },
+    ]);
+    assert.deepEqual(searchResult, []);
+
+    const embedded = await embedMissing(cwd, [{ text: "Rule A", category: "lesson" }]);
+    assert.equal(embedded, 0);
+  });
 });
 
 // ── Lossless Migration Across All 5 Stores ─────────────────────────────────
 
 describe("state-db: lossless one-time legacy migration for all 5 stores", () => {
-  it("migrates memory-scoring from legacy .jsonl (and falls back to .json) losslessly", () => {
-    const cwd = trackTempDir("state-db-score-mig-");
+  const sampleEntry = (evidenceCount: number): ScoredEntry => ({
+    class: "lesson",
+    score: 3.14,
+    evidenceCount,
+    cue: "explicit",
+    firstSeen: "2026-01-01T00:00:00.000Z",
+    lastReinforced: "2026-01-02T00:00:00.000Z",
+    userState: "pinned",
+    lifecycle: "active",
+  });
+
+  it("migrates memory-scoring from legacy memory-scores.jsonl losslessly and idempotently", () => {
+    const cwd = trackTempDir("state-db-score-jsonl-");
     const memDir = join(cwd, ".pi", "memory");
     mkdirSync(memDir, { recursive: true });
     const hash = entryHash("- [lesson] Always run typecheck");
-    const entry: ScoredEntry = {
-      class: "lesson",
-      score: 3.14,
-      evidenceCount: 4,
-      cue: "explicit",
-      firstSeen: "2026-01-01T00:00:00.000Z",
-      lastReinforced: "2026-01-02T00:00:00.000Z",
-      userState: "pinned",
-      lifecycle: "active",
-    };
 
-    const legacyJson = join(memDir, "memory-scores.json");
+    const legacyJsonl = join(memDir, "memory-scores.jsonl");
     writeFileSync(
-      legacyJson,
-      JSON.stringify({ entries: { [hash]: entry }, lastRebuild: "2026-01-02T00:00:00.000Z", hashAlgo: "sha256-16" }),
+      legacyJsonl,
+      JSON.stringify({ entries: { [hash]: sampleEntry(2) }, lastRebuild: "2026-01-01T00:00:00.000Z", hashAlgo: "sha256-16" }) +
+        "\n" +
+        JSON.stringify({ entries: { [hash]: sampleEntry(5) }, lastRebuild: "2026-01-02T00:00:00.000Z", hashAlgo: "sha256-16" }) +
+        "\n",
     );
 
     const loaded = loadScores(cwd);
-    assert.equal(loaded.entries[hash]?.evidenceCount, 4);
-    assert.equal(loaded.entries[hash]?.userState, "pinned");
+    assert.equal(loaded.entries[hash]?.evidenceCount, 5);
     assert.equal(getScoresRevision(cwd), 1);
-    assert.ok(existsSync(legacyJson), "legacy file preserved untouched");
+    assert.ok(existsSync(legacyJsonl), "legacy file preserved untouched");
 
-    // Mutate in SQLite, close handle, reopen — must stay mutated (never re-migrated)
     mutateScores(cwd, (s) => {
       s.entries[hash]!.evidenceCount = 9;
     });
     closeStateDbs();
     assert.equal(loadScores(cwd).entries[hash]?.evidenceCount, 9);
+  });
+
+  it("falls back to legacy memory-scores.json when memory-scores.jsonl is absent", () => {
+    const cwd = trackTempDir("state-db-score-json-");
+    const memDir = join(cwd, ".pi", "memory");
+    mkdirSync(memDir, { recursive: true });
+    const hash = entryHash("- [lesson] Always run typecheck");
+
+    const legacyJson = join(memDir, "memory-scores.json");
+    writeFileSync(
+      legacyJson,
+      JSON.stringify({ entries: { [hash]: sampleEntry(4) }, lastRebuild: "2026-01-02T00:00:00.000Z", hashAlgo: "sha256-16" }),
+    );
+
+    const loaded = loadScores(cwd);
+    assert.equal(loaded.entries[hash]?.evidenceCount, 4);
+    assert.equal(loaded.entries[hash]?.userState, "pinned");
+    assert.ok(existsSync(legacyJson), "legacy file preserved untouched");
   });
 
   it("migrates session-search from legacy .jsonl without losing entries", () => {
@@ -367,14 +453,38 @@ describe("state-db: lossless one-time legacy migration for all 5 stores", () => 
     assert.equal(found[0]!.sessionId, "sess-legacy-1");
     assert.ok(existsSync(legacyPath));
 
-    // Subsequent atomic index appends cleanly in SQLite
     indexSessionSummary(cwd, "sess-new-2", "Added Float32 BLOB vector tests");
     closeStateDbs();
     assert.equal(searchSessions(cwd, "Float32 BLOB", 5).length, 1);
     assert.equal(searchSessions(cwd, "WAL storage migration", 5).length, 1);
   });
 
-  it("migrates pi-config-review-state from legacy .json and .jsonl losslessly", () => {
+  it("filters null and malformed entries during indexSessionSummary after migrating a dirty legacy snapshot", () => {
+    const cwd = trackTempDir("state-db-sess-malformed-");
+    const dataDir = join(cwd, ".pi", "data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(
+      join(dataDir, "session-search.jsonl"),
+      JSON.stringify({
+        entries: [
+          null,
+          { sessionId: 123, timestamp: "2026-02-01T00:00:00.000Z" },
+          {
+            sessionId: "valid-1",
+            timestamp: "2026-02-01T00:00:00.000Z",
+            summary: "Valid historical session entry before corruption",
+          },
+        ],
+      }) + "\n",
+    );
+
+    // Must not throw on null/malformed entries when indexing a new summary
+    indexSessionSummary(cwd, "valid-2", "Fresh summary indexed after malformed legacy migration");
+    assert.equal(searchSessions(cwd, "Fresh summary indexed", 5).length, 1);
+    assert.equal(searchSessions(cwd, "Valid historical session", 5).length, 1);
+  });
+
+  it("migrates pi-config-review-state from legacy .json losslessly", () => {
     const cwd = trackTempDir("state-db-rev-mig-");
     const dataDir = dirname(statePath(cwd));
     const legacyJson = join(dataDir, "pi-config-review-state.json");
@@ -397,7 +507,7 @@ describe("state-db: lossless one-time legacy migration for all 5 stores", () => 
     assert.ok(existsSync(legacyJson));
   });
 
-  it("merges both SQLite-pending and dream JSONL sidecar provenance entries", () => {
+  it("merges combined SQLite-pending and dream JSONL sidecar provenance entries", () => {
     const cwd = trackTempDir("state-db-prov-both-");
     const topicsDir = join(cwd, ".pi", "memory", "topics");
     mkdirSync(topicsDir, { recursive: true });
@@ -437,6 +547,69 @@ describe("state-db: lossless one-time legacy migration for all 5 stores", () => 
     const scores = loadScores(cwd);
     assert.equal(scores.entries[h1]?.sourceSession, "db-src");
     assert.equal(scores.entries[h2]?.sourceSession, "sidecar-src");
+  });
+});
+
+// ── Review-State Fail-Soft Reads, Fail-Closed Gate & Bash Enforcement ──────
+
+describe("state-db: review-state resilience and bash commit-gate enforcement", () => {
+  it("falls back to defaultState in readReviewState while failing closed in isCommitAllowed/isReviewClean when state.db is unreadable", () => {
+    const cwd = trackTempDir("state-db-rev-failclosed-");
+    // Corrupt state.db file (not a valid SQLite database)
+    const dbPath = statePath(cwd);
+    writeFileSync(dbPath, "NOT A VALID SQLITE DATABASE", "utf-8");
+
+    const state = readReviewState(cwd);
+    assert.equal(state.status, "none");
+    assert.equal(isReviewClean(cwd), false, "isReviewClean must fail closed on corrupt state.db");
+    assert.equal(isCommitAllowed(cwd), false, "isCommitAllowed must fail closed on corrupt state.db");
+  });
+
+  it("blocks bash commands modifying state.db via node:sqlite even without spelling pi-config-review-state literally", async () => {
+    const cwd = trackTempDir("state-db-bash-guard-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true }),
+      "utf-8",
+    );
+    clearSettingsCache();
+
+    // Dynamic key construction + node:sqlite against .pi/data/state.db
+    const forgedCmd = `node -e 'import { DatabaseSync } from "node:sqlite"; const k = "pi-config-" + "review-state"; const db = new DatabaseSync(".pi/data/state.db"); db.prepare("UPDATE kv_state SET payload=? WHERE store_key=?").run("{\\"status\\":\\"clean\\",\\"tests_passed\\":true}", k);'`;
+    const decision = await evaluateBashPolicy({
+      command: forgedCmd,
+      cwd,
+      hasTimeout: false,
+      inContainer: false,
+      isSubagentChild: false,
+      ui: null,
+    });
+    assert.equal(decision.action, "block");
+
+    // Also blocks dynamic filename construction using node:sqlite on .pi/data
+    const splitPathCmd = `node -e 'import { DatabaseSync } from "node:sqlite"; const db = new DatabaseSync(".pi/data/" + "sta" + "te.db"); db.exec("DELETE FROM kv_state");'`;
+    const decision2 = await evaluateBashPolicy({
+      command: splitPathCmd,
+      cwd,
+      hasTimeout: false,
+      inContainer: false,
+      isSubagentChild: false,
+      ui: null,
+    });
+    assert.equal(decision2.action, "block");
+
+    // Also blocks WAL/SHM deletion
+    const walCmd = "rm -f .pi/data/state.db-wal .pi/data/state.db-shm";
+    const decision3 = await evaluateBashPolicy({
+      command: walCmd,
+      cwd,
+      hasTimeout: false,
+      inContainer: false,
+      isSubagentChild: false,
+      ui: null,
+    });
+    assert.equal(decision3.action, "block");
   });
 });
 
@@ -510,10 +683,14 @@ describe("state-db: concurrent multi-handle and multi-process WAL writes", () =>
 // ── Worktree Isolation vs Shared Project State DB ──────────────────────────
 
 describe("state-db: worktree isolation for pi-config-review-state vs shared project stores", () => {
-  it("isolates pi-config-review-state per worktree while sharing memory-scoring via main checkout", () => {
-    const mainRepo = trackTempDir("state-db-wt-main-");
-    const wtA = join(mainRepo, ".worktrees", "wt-a");
-    const wtB = join(mainRepo, ".worktrees", "wt-b");
+  let mainRepo: string;
+  let wtA: string;
+  let wtB: string;
+
+  beforeEach(() => {
+    mainRepo = trackTempDir("state-db-wt-main-");
+    wtA = join(mainRepo, ".worktrees", "wt-a");
+    wtB = join(mainRepo, ".worktrees", "wt-b");
 
     execFileSync("git", ["init", "-q"], { cwd: mainRepo, env: GIT_ENV });
     writeFileSync(join(mainRepo, "README.md"), "# test\n");
@@ -521,56 +698,61 @@ describe("state-db: worktree isolation for pi-config-review-state vs shared proj
     execFileSync("git", ["commit", "-qm", "init"], { cwd: mainRepo, env: GIT_ENV });
     execFileSync("git", ["worktree", "add", "-q", "-b", "branch-a", wtA], { cwd: mainRepo, env: GIT_ENV });
     execFileSync("git", ["worktree", "add", "-q", "-b", "branch-b", wtB], { cwd: mainRepo, env: GIT_ENV });
+  });
 
-    try {
-      // Per-worktree DB paths for review state are distinct
-      assert.notEqual(getWorktreeStateDbPath(mainRepo), getWorktreeStateDbPath(wtA));
-      assert.notEqual(getWorktreeStateDbPath(wtA), getWorktreeStateDbPath(wtB));
-      assert.equal(statePath(wtA), getWorktreeStateDbPath(wtA));
-
-      // Project DB path is shared across main, wtA, and wtB
-      assert.equal(getProjectStateDbPath(wtA), getProjectStateDbPath(mainRepo));
-      assert.equal(getProjectStateDbPath(wtB), getProjectStateDbPath(mainRepo));
-
-      // Review state mutations stay isolated per worktree
-      markNeedsReview(wtA);
-      addReviewerPending(wtA, "code-reviewer-quality", { kind: "local", head_sha: "abc1234" });
-      assert.equal(readReviewState(wtA).status, "in_progress");
-      assert.equal(readReviewState(wtB).status, "none");
-      assert.equal(readReviewState(mainRepo).status, "none");
-
-      // Memory-scoring mutations from wtA are immediately visible from wtB and main
-      const hash = entryHash("- [lesson] Shared across worktrees");
-      saveScores(wtA, {
-        entries: {
-          [hash]: {
-            class: "lesson",
-            score: 2.0,
-            evidenceCount: 2,
-            cue: "explicit",
-            firstSeen: "2026-01-01T00:00:00.000Z",
-            lastReinforced: "2026-01-01T00:00:00.000Z",
-            userState: "auto",
-            lifecycle: "active",
-          },
-        },
-        lastRebuild: "2026-01-01T00:00:00.000Z",
-        hashAlgo: "sha256-16",
-      });
-      assert.equal(loadScores(wtB).entries[hash]?.evidenceCount, 2);
-      assert.equal(loadScores(mainRepo).entries[hash]?.evidenceCount, 2);
-    } finally {
-      closeStateDbs();
+  afterEach(() => {
+    closeStateDbs();
+    for (const wt of [wtA, wtB]) {
       try {
-        execFileSync("git", ["worktree", "remove", wtA, "--force"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
-      } catch {
-        /* ignore */
-      }
-      try {
-        execFileSync("git", ["worktree", "remove", wtB, "--force"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
+        execFileSync("git", ["worktree", "remove", wt, "--force"], {
+          cwd: mainRepo,
+          stdio: "ignore",
+          env: GIT_ENV,
+        });
       } catch {
         /* ignore */
       }
     }
+  });
+
+  it("resolves distinct per-worktree review DB paths and a single shared project DB path", () => {
+    assert.notEqual(getWorktreeStateDbPath(mainRepo), getWorktreeStateDbPath(wtA));
+    assert.notEqual(getWorktreeStateDbPath(wtA), getWorktreeStateDbPath(wtB));
+    assert.equal(statePath(wtA), getWorktreeStateDbPath(wtA));
+
+    assert.equal(getProjectStateDbPath(wtA), getProjectStateDbPath(mainRepo));
+    assert.equal(getProjectStateDbPath(wtB), getProjectStateDbPath(mainRepo));
+  });
+
+  it("isolates pi-config-review-state mutations per worktree", () => {
+    markNeedsReview(wtA);
+    addReviewerPending(wtA, "code-reviewer-quality", { kind: "local", head_sha: "abc1234" });
+
+    assert.equal(readReviewState(wtA).status, "in_progress");
+    assert.equal(readReviewState(wtB).status, "none");
+    assert.equal(readReviewState(mainRepo).status, "none");
+  });
+
+  it("shares memory-scoring state across worktrees via the main checkout state.db", () => {
+    const hash = entryHash("- [lesson] Shared across worktrees");
+    saveScores(wtA, {
+      entries: {
+        [hash]: {
+          class: "lesson",
+          score: 2.0,
+          evidenceCount: 2,
+          cue: "explicit",
+          firstSeen: "2026-01-01T00:00:00.000Z",
+          lastReinforced: "2026-01-01T00:00:00.000Z",
+          userState: "auto",
+          lifecycle: "active",
+        },
+      },
+      lastRebuild: "2026-01-01T00:00:00.000Z",
+      hashAlgo: "sha256-16",
+    });
+
+    assert.equal(loadScores(wtB).entries[hash]?.evidenceCount, 2);
+    assert.equal(loadScores(mainRepo).entries[hash]?.evidenceCount, 2);
   });
 });

@@ -102,6 +102,7 @@ function ensureEmbeddingsMigrated(cwd: string): string {
   let migratedCount = 0;
   let migratedPooling = "";
   let sawCorrupt = false;
+  let sawReadError = false;
 
   withTransaction(dbPath, (txDb) => {
     if (
@@ -116,6 +117,7 @@ function ensureEmbeddingsMigrated(cwd: string): string {
       try {
         raw = readFileSync(legacyPath, "utf-8");
       } catch (err) {
+        sawReadError = true;
         log.warn("embeddings_legacy_read_failed", { sourcePath: legacyPath }, err);
         continue;
       }
@@ -175,7 +177,7 @@ function ensureEmbeddingsMigrated(cwd: string): string {
       count: migratedCount,
       pooling: migratedPooling,
     });
-  } else if (sawCorrupt) {
+  } else if (sawCorrupt && !sawReadError) {
     markStoreMigrationFailedInCache(dbPath, EMBEDDINGS_STORE_KEY);
   } else if (
     db.prepare("SELECT 1 FROM embedding_meta WHERE id = 1").get() ||
@@ -342,7 +344,7 @@ export async function embedEntry(cwd: string, text: string, category?: string): 
     });
     markStoreMigratedInCache(dbPath, EMBEDDINGS_STORE_KEY);
   } catch (err) {
-    log.debug("embed_entry_failed", { error: err instanceof Error ? err.message : String(err) });
+    log.warn("embed_entry_failed", { category }, err);
   }
 }
 
@@ -372,7 +374,7 @@ export function removeEmbeddings(
     }
     return removed;
   } catch (err) {
-    log.debug("embeddings_remove_failed", { error: err instanceof Error ? err.message : String(err) });
+    log.warn("embeddings_remove_failed", { count: entries.length }, err);
     return 0;
   }
 }
@@ -436,7 +438,7 @@ export function pruneEmbeddings(
     }
     return pruned;
   } catch (err) {
-    log.debug("embeddings_prune_failed", { error: err instanceof Error ? err.message : String(err) });
+    log.warn("embeddings_prune_failed", { liveCount: liveEntries.length }, err);
     return 0;
   }
 }
@@ -444,7 +446,7 @@ export function pruneEmbeddings(
 /**
  * Search memory entries by vector similarity.
  * Returns entries sorted by similarity score (highest first).
- * Returns empty array if model is unavailable or no embeddings exist.
+ * Returns empty array if model is unavailable, DB fails, or no embeddings exist.
  */
 export async function vectorSearch(
   cwd: string,
@@ -452,57 +454,64 @@ export async function vectorSearch(
   entries: { text: string; category: string; pinned: boolean }[],
   topK: number = 20,
 ): Promise<{ text: string; category: string; pinned: boolean; similarity: number }[]> {
-  const dbPath = ensureReadyEmbeddingsDb(cwd);
-  const db = openStateDb(dbPath);
-  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM embeddings").get() as { cnt?: number } | undefined;
-  if (!countRow || !countRow.cnt) return [];
+  try {
+    const dbPath = ensureReadyEmbeddingsDb(cwd);
+    const countRow = openStateDb(dbPath)
+      .prepare("SELECT COUNT(*) AS cnt FROM embeddings")
+      .get() as { cnt?: number } | undefined;
+    if (!countRow || !countRow.cnt) return [];
 
-  const queryVec = await embedQuery(query);
-  if (!queryVec || queryVec.length === 0) return [];
+    const queryVec = await embedQuery(query);
+    if (!queryVec || queryVec.length === 0) return [];
 
-  // Precompute query norm once outside the entry loop
-  let normQuery = 0;
-  for (let i = 0; i < queryVec.length; i++) {
-    const q = queryVec[i]!;
-    normQuery += q * q;
-  }
-  if (normQuery === 0) return [];
-  const sqrtNormQuery = Math.sqrt(normQuery);
-
-  const rows = db
-    .prepare("SELECT entry_key, vector FROM embeddings")
-    .all() as Array<{ entry_key: string; vector: Uint8Array }>;
-  const vectorsByKey = new Map<string, Float32Array>();
-  for (const row of rows) {
-    if (row.vector instanceof Uint8Array && row.vector.byteLength > 0 && row.vector.byteLength % 4 === 0) {
-      vectorsByKey.set(row.entry_key, blobToFloat32Array(row.vector));
+    // Precompute query norm once outside the entry loop
+    let normQuery = 0;
+    for (let i = 0; i < queryVec.length; i++) {
+      const q = queryVec[i]!;
+      normQuery += q * q;
     }
-  }
+    if (normQuery === 0) return [];
+    const sqrtNormQuery = Math.sqrt(normQuery);
 
-  // Score all entries that have embeddings
-  const scored: { text: string; category: string; pinned: boolean; similarity: number }[] = [];
-  for (const entry of entries) {
-    const hash = embeddingKey(entry.text, entry.category);
-    const entryVec = vectorsByKey.get(hash);
-    if (!entryVec || entryVec.length === 0) continue;
-    let similarity: number;
-    if (entryVec.length === queryVec.length) {
-      let dot = 0;
-      let normEntry = 0;
-      for (let i = 0; i < queryVec.length; i++) {
-        const e = entryVec[i]!;
-        dot += queryVec[i]! * e;
-        normEntry += e * e;
+    // Re-acquire handle via openStateDb after await (closeStateDbs or unlink may have closed prior handle).
+    const rows = openStateDb(dbPath)
+      .prepare("SELECT entry_key, vector FROM embeddings")
+      .all() as Array<{ entry_key: string; vector: Uint8Array }>;
+    const vectorsByKey = new Map<string, Float32Array>();
+    for (const row of rows) {
+      if (row.vector instanceof Uint8Array && row.vector.byteLength > 0 && row.vector.byteLength % 4 === 0) {
+        vectorsByKey.set(row.entry_key, blobToFloat32Array(row.vector));
       }
-      similarity = normEntry === 0 ? 0 : dot / (sqrtNormQuery * Math.sqrt(normEntry));
-    } else {
-      similarity = cosineSimilarity(queryVec, entryVec);
     }
-    scored.push({ ...entry, similarity });
-  }
 
-  scored.sort((a, b) => b.similarity - a.similarity);
-  return scored.slice(0, topK);
+    // Score all entries that have embeddings
+    const scored: { text: string; category: string; pinned: boolean; similarity: number }[] = [];
+    for (const entry of entries) {
+      const hash = embeddingKey(entry.text, entry.category);
+      const entryVec = vectorsByKey.get(hash);
+      if (!entryVec || entryVec.length === 0) continue;
+      let similarity: number;
+      if (entryVec.length === queryVec.length) {
+        let dot = 0;
+        let normEntry = 0;
+        for (let i = 0; i < queryVec.length; i++) {
+          const e = entryVec[i]!;
+          dot += queryVec[i]! * e;
+          normEntry += e * e;
+        }
+        similarity = normEntry === 0 ? 0 : dot / (sqrtNormQuery * Math.sqrt(normEntry));
+      } else {
+        similarity = cosineSimilarity(queryVec, entryVec);
+      }
+      scored.push({ ...entry, similarity });
+    }
+
+    scored.sort((a, b) => b.similarity - a.similarity);
+    return scored.slice(0, topK);
+  } catch (err) {
+    log.warn("vector_search_failed", { entryCount: entries.length }, err);
+    return [];
+  }
 }
 
 /**
@@ -514,42 +523,47 @@ export async function embedMissing(
   cwd: string,
   entries: { text: string; category: string }[],
 ): Promise<number> {
-  const dbPath = ensureReadyEmbeddingsDb(cwd);
-  const existingRows = openStateDb(dbPath)
-    .prepare("SELECT entry_key FROM embeddings")
-    .all() as Array<{ entry_key: string }>;
-  const existing = new Set(existingRows.map((r) => r.entry_key));
+  try {
+    const dbPath = ensureReadyEmbeddingsDb(cwd);
+    const existingRows = openStateDb(dbPath)
+      .prepare("SELECT entry_key FROM embeddings")
+      .all() as Array<{ entry_key: string }>;
+    const existing = new Set(existingRows.map((r) => r.entry_key));
 
-  const missing = entries.filter((e) => !existing.has(embeddingKey(e.text, e.category)));
-  if (missing.length === 0) return 0;
+    const missing = entries.filter((e) => !existing.has(embeddingKey(e.text, e.category)));
+    if (missing.length === 0) return 0;
 
-  // Batch embed all missing entries
-  const texts = missing.map((e) => e.text);
-  const vectors = await embed(texts);
-  if (!vectors || vectors.length !== texts.length) return 0;
+    // Batch embed all missing entries
+    const texts = missing.map((e) => e.text);
+    const vectors = await embed(texts);
+    if (!vectors || vectors.length !== texts.length) return 0;
 
-  let stored = 0;
-  const now = new Date().toISOString();
-  withTransaction(dbPath, (txDb) => {
-    enforcePoolingInTx(txDb, now);
-    upsertEmbeddingMeta(txDb, now);
-    const insertVec = txDb.prepare(
-      "INSERT OR REPLACE INTO embeddings (entry_key, vector, updated_at) VALUES (?, ?, ?)",
-    );
-    for (let i = 0; i < missing.length; i++) {
-      const vec = vectors[i];
-      // Validate vector dimensions — skip corrupted results
-      if (!Array.isArray(vec) || vec.length !== EMBEDDING_DIM) continue;
-      insertVec.run(
-        embeddingKey(missing[i]!.text, missing[i]!.category),
-        encodeFloat32Blob(vec),
-        now,
+    let stored = 0;
+    const now = new Date().toISOString();
+    withTransaction(dbPath, (txDb) => {
+      enforcePoolingInTx(txDb, now);
+      upsertEmbeddingMeta(txDb, now);
+      const insertVec = txDb.prepare(
+        "INSERT OR REPLACE INTO embeddings (entry_key, vector, updated_at) VALUES (?, ?, ?)",
       );
-      stored++;
-    }
-  });
-  markStoreMigratedInCache(dbPath, EMBEDDINGS_STORE_KEY);
-  return stored;
+      for (let i = 0; i < missing.length; i++) {
+        const vec = vectors[i];
+        // Validate vector dimensions — skip corrupted results
+        if (!Array.isArray(vec) || vec.length !== EMBEDDING_DIM) continue;
+        insertVec.run(
+          embeddingKey(missing[i]!.text, missing[i]!.category),
+          encodeFloat32Blob(vec),
+          now,
+        );
+        stored++;
+      }
+    });
+    markStoreMigratedInCache(dbPath, EMBEDDINGS_STORE_KEY);
+    return stored;
+  } catch (err) {
+    log.warn("embed_missing_failed", { entryCount: entries.length }, err);
+    return 0;
+  }
 }
 
 /**

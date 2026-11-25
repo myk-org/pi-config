@@ -183,6 +183,16 @@ function getStore(cwd: string): SqliteStateStore<SessionStore> {
   );
 }
 
+function isValidSessionEntry(e: unknown): e is SessionEntry {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    typeof (e as any).sessionId === "string" &&
+    typeof (e as any).timestamp === "string" &&
+    typeof (e as any).summary === "string"
+  );
+}
+
 function loadStore(cwd: string): SessionStore {
   const data = getStore(cwd).read();
   if (data === null) return { entries: [] };
@@ -190,15 +200,7 @@ function loadStore(cwd: string): SessionStore {
     log.warn("session-search: corrupt store shape, resetting");
     return { entries: [] };
   }
-  // Filter to only valid entries
-  const entries = data.entries.filter(
-    (e: unknown): e is SessionEntry =>
-      typeof e === "object" && e !== null &&
-      typeof (e as any).sessionId === "string" &&
-      typeof (e as any).timestamp === "string" &&
-      typeof (e as any).summary === "string"
-  );
-  return { entries };
+  return { entries: data.entries.filter(isValidSessionEntry) };
 }
 
 // ── Index a session summary ────────────────────────────────────────────────
@@ -214,28 +216,25 @@ export function indexSessionSummary(
 
   getStore(cwd).mutate(
     (store) => {
-      if (!store || typeof store !== "object" || !Array.isArray(store.entries)) {
-        return {
-          entries: [{ sessionId, timestamp: new Date().toISOString(), summary: cleaned }],
-        };
-      }
+      const validEntries =
+        store && typeof store === "object" && Array.isArray(store.entries)
+          ? store.entries.filter(isValidSessionEntry)
+          : [];
       // Avoid duplicate entries for the same session
-      const exists = store.entries.some(
+      const exists = validEntries.some(
         (e) => e.sessionId === sessionId && e.summary === cleaned,
       );
       if (exists) return SKIP_MUTATE;
 
-      store.entries.push({
+      validEntries.push({
         sessionId,
         timestamp: new Date().toISOString(),
         summary: cleaned,
       });
 
       // Keep max 500 entries (oldest dropped)
-      if (store.entries.length > 500) {
-        store.entries = store.entries.slice(-500);
-      }
-      return store;
+      const trimmed = validEntries.length > 500 ? validEntries.slice(-500) : validEntries;
+      return { entries: trimmed };
     },
     { entries: [] },
   );

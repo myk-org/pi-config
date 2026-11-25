@@ -196,14 +196,19 @@ function normalizeRawState(raw: any): ReviewState {
   };
 }
 
-export function readReviewState(cwd: string): ReviewState {
-  const store = getStore(cwd);
-  const raw = store.read();
+/** Strict read that surfaces SQLite/store failures (used by commit gate to fail closed). */
+function readReviewStateStrict(cwd: string): ReviewState {
+  const raw = getStore(cwd).read();
   if (raw === null) return defaultState();
+  return normalizeRawState(raw);
+}
+
+/** Fail-soft read for UI/status hooks — logs and returns defaults if state.db is locked or corrupt. */
+export function readReviewState(cwd: string): ReviewState {
   try {
-    return normalizeRawState(raw);
-  } catch {
-    // failed to parse state — return defaults
+    return readReviewStateStrict(cwd);
+  } catch (err) {
+    log.warn("review_state_read_failed", { cwd }, err);
     return defaultState();
   }
 }
@@ -342,9 +347,16 @@ export function recordReviewerResult(cwd: string, reviewerName: string, findings
   });
 }
 
-/** Check if the review state is clean (all reviewers approved, no edits since). */
+/** Check if the review state is clean (all reviewers approved, no edits since).
+ *  Fails closed (returns false) if reading state.db throws (locked/corrupt DB). */
 export function isReviewClean(cwd: string): boolean {
-  const state = readReviewState(cwd);
+  let state: ReviewState;
+  try {
+    state = readReviewStateStrict(cwd);
+  } catch (err) {
+    log.warn("review_clean_check_read_failed", { cwd }, err);
+    return false;
+  }
   if (state.status === "none") return true; // No tracking active — nothing to enforce
   if (state.status !== "clean") return false;
   if (!state.tests_passed) return false;
@@ -365,11 +377,17 @@ function subjectIsCurrent(cwd: string, subject: ReviewSubject | null): boolean {
 }
 
 /** Check if commit is allowed — clean review, no tracking, or max cycles exhausted FOR THIS
- *  SUBJECT. Without the subject check, an exhausted cap from an earlier loop licensed commits on
- *  new work that had never been reviewed. */
+ *  SUBJECT. Fails closed (returns false) when reading state.db fails. */
 export function isCommitAllowed(cwd: string): boolean {
-  if (isReviewClean(cwd)) return true;
-  const state = readReviewState(cwd);
+  let state: ReviewState;
+  try {
+    state = readReviewStateStrict(cwd);
+  } catch (err) {
+    log.warn("commit_gate_review_state_read_failed", { cwd }, err);
+    return false;
+  }
+  if (state.status === "none") return true;
+  if (state.status === "clean" && state.tests_passed) return true;
   // Allow commit when max review cycles exhausted — cap reached, no reviewers running
   if ((state.status === "has_findings" || state.status === "clean" || state.status === "needs_review") && state.reviewers_pending.length === 0) {
     const maxCycles = getSetting(cwd, "review_loop_max_cycles");

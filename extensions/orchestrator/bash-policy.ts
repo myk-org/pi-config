@@ -6192,13 +6192,24 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
   const agentName = input.agentName !== undefined ? input.agentName : process.env.PI_AGENT_NAME;
   const sessionId = input.sessionId ?? null;
 
-  // Block ALL bash commands targeting pi-config-review-state — no exceptions.
-  if (getSetting(input.cwd, "review_loop_enforcement") && cmdLower.includes("pi-config-review-state")) {
-    return {
-      action: "block",
-      reason:
-        "\u26d4 Bash command targeting pi-config-review-state blocked. The review state is managed exclusively by the enforcement system.",
-    };
+  // Block ALL bash commands targeting review state storage (legacy pi-config-review-state
+  // files or SQLite state.db / WAL / SHM / kv_state) — no exceptions when enforcement is on.
+  if (getSetting(input.cwd, "review_loop_enforcement")) {
+    const targetsReviewState =
+      cmdLower.includes("pi-config-review-state") ||
+      /(?:^|[^\w-])state\.db(?:-wal|-shm)?(?=$|[^\w-])/i.test(command) ||
+      /\bkv_state\b/i.test(command) ||
+      (/\b(?:node:sqlite|databasesync|sqlite3)\b/i.test(command) &&
+        /\.pi\/data\b/i.test(command) &&
+        !/\b(?:pr-)?reviews\.db\b/i.test(command));
+    if (targetsReviewState) {
+      enfLog.warn("review_state_bash_blocked");
+      return {
+        action: "block",
+        reason:
+          "\u26d4 Bash command targeting review state storage (pi-config-review-state / state.db) blocked. The review state is managed exclusively by the enforcement system.",
+      };
+    }
   }
 
   // Block bash WRITES targeting the settings files (issue #949 / PR #950) and

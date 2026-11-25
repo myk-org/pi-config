@@ -384,6 +384,61 @@ class TestMemoryStatus:
         assert "promotion candidates (proposed): 1" in result.output
         assert "bash_contains git add ." in result.output
 
+    def test_status_prefers_sqlite_state_db_over_stale_legacy_json(self, tmp_path: Path) -> None:
+        topics_dir = tmp_path / "memory" / "topics"
+        topics_dir.mkdir(parents=True)
+        (topics_dir / "lessons.md").write_text(
+            "# Lessons\n\n- [lesson] Never force push\n",
+            encoding="utf-8",
+        )
+        # Stale legacy memory-scores.json still on disk with an old rule
+        (tmp_path / "memory" / "memory-scores.json").write_text(
+            json.dumps({
+                "entries": {
+                    "stale": {
+                        "class": "lesson",
+                        "trigger": "bash_contains legacy-stale-cmd",
+                        "action": "block",
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        # Current SQLite state.db holds the updated post-migration rule
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        conn = sqlite3.connect(str(data_dir / "state.db"))
+        conn.execute(
+            "CREATE TABLE kv_state ("
+            "store_key TEXT PRIMARY KEY, payload TEXT NOT NULL, "
+            "revision INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO kv_state (store_key, payload, revision, updated_at) VALUES (?, ?, 2, ?)",
+            (
+                "memory-scoring",
+                json.dumps({
+                    "entries": {
+                        "fresh": {
+                            "class": "lesson",
+                            "trigger": "bash_contains git push --force",
+                            "action": "block",
+                        }
+                    }
+                }),
+                "2026-07-18T00:00:00Z",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(memory, ["--file-path", str(topics_dir), "status"])
+        assert result.exit_code == 0, result.output
+        assert "code-tier (enforced scores): 1" in result.output
+        assert "bash_contains git push --force" in result.output
+        assert "legacy-stale-cmd" not in result.output
+
 
 class TestEntryHashParity:
     """Issue #915: the Python CLI must agree with the TypeScript hash (SHA-256, 16 hex)."""

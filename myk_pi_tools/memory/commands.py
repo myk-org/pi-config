@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
+
+from myk_pi_tools.memory.store import _read_latest_jsonl_dict
 
 if TYPE_CHECKING:
     from myk_pi_tools.memory.store import MemoryFile
@@ -149,6 +152,38 @@ def _count_topic_entries(topics_dir: Path) -> int:
 
 
 def _load_scores(topics_dir: Path) -> dict:
+    # Prefer SQLite state.db (`kv_state` key `memory-scoring`, issue #1399)
+    # when present; fall back to legacy JSONL/JSON only before migration.
+    state_db_path = topics_dir.parent.parent / "data" / "state.db"
+    if state_db_path.is_file():
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(state_db_path), timeout=5.0)
+            row = conn.execute(
+                "SELECT payload FROM kv_state WHERE store_key = ?",
+                ("memory-scoring",),
+            ).fetchone()
+            if row and isinstance(row[0], str):
+                data = json.loads(row[0])
+                if isinstance(data, dict):
+                    entries = data.get("entries")
+                    return entries if isinstance(entries, dict) else {}
+        except (sqlite3.Error, json.JSONDecodeError, OSError):
+            pass
+        finally:
+            if conn is not None:
+                conn.close()
+
+    jsonl_path = topics_dir.parent / "memory-scores.jsonl"
+    if jsonl_path.is_file():
+        try:
+            data = _read_latest_jsonl_dict(jsonl_path)
+            if isinstance(data, dict):
+                entries = data.get("entries")
+                return entries if isinstance(entries, dict) else {}
+        except OSError:
+            pass
+
     scores_path = topics_dir.parent / "memory-scores.json"
     if not scores_path.is_file():
         return {}

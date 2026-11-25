@@ -375,6 +375,7 @@ export class SqliteStateStore<T> {
 
     let migratedSource: string | null = null;
     let sawCorrupt = false;
+    let sawReadError = false;
     withTransaction(this.dbPath, (txDb) => {
       // Re-check inside BEGIN IMMEDIATE — a concurrent process may have migrated first.
       if (
@@ -389,6 +390,7 @@ export class SqliteStateStore<T> {
         try {
           raw = readFileSync(legacyPath, "utf-8");
         } catch (err) {
+          sawReadError = true;
           log.warn("state_db_legacy_read_failed", {
             storeKey: this.storeKey,
             sourcePath: legacyPath,
@@ -428,8 +430,10 @@ export class SqliteStateStore<T> {
         sourcePath: migratedSource,
         dbPath: this.dbPath,
       });
-    } else if (sawCorrupt) {
-      // All existing legacy files were unparseable — avoid re-reading corrupt files on every access.
+    } else if (sawCorrupt && !sawReadError) {
+      // Every existing candidate was read cleanly and none held valid state —
+      // avoid re-reading corrupt files on every access. Transient read errors
+      // leave migration retryable on the next access.
       entry.migrationFailedKeys.add(this.storeKey);
     } else {
       // Re-check if a concurrent process beat us inside the transaction.

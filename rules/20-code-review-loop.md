@@ -9,12 +9,12 @@ After ANY code change, send ALL 6 agents (5 reviewers + `test-runner`) IN PARALL
 `enforcement.ts` blocks `git commit` until step 6 holds. MUST loop until clean or the max cycle cap is reached (`review_loop_max_cycles`, range `1`-`10`, default `3`,
 current `{{REVIEW_LOOP_MAX_CYCLES}}`; disable loop via `review_loop_enforcement: false`).
 
-🚫 **NEVER manipulate review state directly** (`pi-config-review-state.ts`, `addReviewerPending`/`recordReviewerResult`, or JSON edits) — enforcement detects and blocks
+🚫 **NEVER manipulate review state directly** (`pi-config-review-state.ts`, `addReviewerPending`/`recordReviewerResult`, or `state.db` / JSON edits) — enforcement detects and blocks
 it.
 
 ### Workflow (1 cycle = dispatch → fix/explain → check `state.cycle`)
 
-Use `cycle` from `pi-config-review-state.jsonl` (shown by `/review-status`) — never track cycles separately.
+Use `cycle` from `review_status` / `/review-status` (`state.db` key `pi-config-review-state`) — never track cycles separately.
 
 1. Specialist writes/fixes code.
 2. Send ALL 6 agents IN PARALLEL (`async: true`). **Cycle 2+:** include `<prior-review-cycle>` findings + responses in every reviewer prompt (mandatory).
@@ -73,7 +73,7 @@ explanation or incomplete fix → re-raise with specific pushback.
 
 - **Exceptions:** `chore/bump-version` branches skip review dirty-tracking and commit blocking; minor test/config-only fixes skip re-review (go to step 5); substantive
   code changes require full re-review.
-- **`tests_passed` (`pi-config-review-state.jsonl`):** code-enforced for commits before cap. Bash hooks auto-set it from test exit codes (`pytest`, `npm test`, `npx tsx
+- **`tests_passed` (`review_status` / `state.db`):** code-enforced for commits before cap. Bash hooks auto-set it from test exit codes (`pytest`, `npm test`, `npx tsx
   --test`, `tox`, `go test`, `vitest`, `jest`, `mocha`); `test-runner`/`test-automator` completion alone never sets it. Any file edit resets `tests_passed: false` via
   `markNeedsReview()` (except `chore/bump-version`), so `test-runner` in the batch always validates latest code.
 
@@ -90,7 +90,7 @@ For automated review flows (autorabbit, autoqodo), run two stages in order inste
 1. **Stage 1 — Spec Compliance:** requirements met, all deliverables implemented, no scope creep.
 2. **Stage 2 — Code Quality:** quality, security, guidelines adherence.
 
-Both stages share **one** `review_loop_max_cycles` budget (`cycle` in `pi-config-review-state.jsonl`): loop the active stage until clean or cap is reached, following step
+Both stages share **one** `review_loop_max_cycles` budget (`cycle` in `review_status` / `state.db`): loop the active stage until clean or cap is reached, following step
 5a and two-outcome reporting. If Stage 1 hits the cap while not clean (fixed-unverified or not-fixed), stop completely without entering Stage 2; if hit in Stage 2, stop
 looping Stage 2.
 {{/IF}}
