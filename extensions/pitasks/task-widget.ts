@@ -12,6 +12,57 @@ const log = createLogger("pitasks");
 
 const SPINNER = ["✳", "✴", "✵", "✶", "✷", "✸", "✹", "✺", "✻", "✼", "✽"];
 const DEFAULT_MAX_VISIBLE_TASKS = 10;
+const MAX_BADGE_AGENT_CHARS = 28;
+const MAX_BADGE_NAME_CHARS = 24;
+
+export interface BoundAsyncAgent {
+	id?: string;
+	agent: string;
+	name?: string;
+	status?: string;
+	taskId?: string;
+}
+
+export type BoundAgentsProvider = () => ReadonlyArray<BoundAsyncAgent> | null | undefined;
+
+function sanitizeBadgeText(raw: string | undefined): string {
+	if (typeof raw !== "string") return "";
+	return raw
+		.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+		.replace(/[\x00-\x1f\x7f]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function truncateBadgeText(text: string, maxChars: number): string {
+	if (text.length <= maxChars) return text;
+	return `${text.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+}
+
+/** Format a compact live async-agent badge for a task row (empty string when none). */
+export function formatBoundAgentsBadge(
+	agents: ReadonlyArray<Pick<BoundAsyncAgent, "agent" | "name">> | null | undefined,
+): string {
+	if (!agents || agents.length === 0) return "";
+	if (agents.length === 1) {
+		const rawAgent = sanitizeBadgeText(agents[0]?.agent);
+		const agent = truncateBadgeText(rawAgent, MAX_BADGE_AGENT_CHARS) || "agent";
+		const rawName = sanitizeBadgeText(agents[0]?.name);
+		if (rawName && rawName !== rawAgent && rawName !== agent) {
+			return `[⏳ ${agent} · ${truncateBadgeText(rawName, MAX_BADGE_NAME_CHARS)}]`;
+		}
+		return `[⏳ ${agent}]`;
+	}
+	const types = agents.map((a) => truncateBadgeText(sanitizeBadgeText(a?.agent), MAX_BADGE_AGENT_CHARS) || "agent");
+	const uniqueTypes = [...new Set(types)];
+	if (uniqueTypes.length === 1) {
+		return `[⏳ ${uniqueTypes[0]} ×${agents.length}]`;
+	}
+	const listed = uniqueTypes.length <= 2
+		? uniqueTypes.join(", ")
+		: `${uniqueTypes.slice(0, 2).join(", ")}, +${uniqueTypes.length - 2}`;
+	return `[⏳ ${agents.length} agents: ${listed}]`;
+}
 
 function truncateFromTop(tasks: any[], limit: number): any[] { return tasks.slice(-limit); }
 function truncateFromBottom(tasks: any[], limit: number): any[] { return tasks.slice(0, limit); }
@@ -46,7 +97,11 @@ export class TaskWidget {
 	private mode: WidgetMode = "expanded";
 	private shortcutHint: string | null = null;
 
-	constructor(private store: TaskStore, private config: Record<string, any> = {}) {
+	constructor(
+		private store: TaskStore,
+		private config: Record<string, any> = {},
+		private getBoundAgents?: BoundAgentsProvider,
+	) {
 		if (log.isDebugEnabled()) log.debug("widget_created", { taskCount: store.list().length });
 	}
 
@@ -205,21 +260,58 @@ export class TaskWidget {
 		try { return this.buildWidgetLines(tui, theme); } catch { return []; }
 	}
 
-	private buildWidgetLines(tui: any, theme: any): string[] {
+	private collectBoundAgentsByTask(): Map<string, BoundAsyncAgent[]> {
+		const byTask = new Map<string, BoundAsyncAgent[]>();
+		if (!this.getBoundAgents) return byTask;
+		let raw: ReadonlyArray<BoundAsyncAgent> | null | undefined;
+		try {
+			raw = this.getBoundAgents();
+		} catch (err) {
+			log.debug("bound_agents_lookup_failed", { error: String(err) });
+			return byTask;
+		}
+		if (!raw) return byTask;
+		for (const job of raw) {
+			if (!job) continue;
+			if (job.status !== "running" && job.status !== "queued") continue;
+			const taskId = job.taskId != null ? String(job.taskId).trim() : "";
+			if (!taskId || taskId === "-1") continue;
+			const list = byTask.get(taskId);
+			if (list) list.push(job);
+			else byTask.set(taskId, [job]);
+		}
+		return byTask;
+	}
+
+	private sortTasks(snapshot: any[]): any[] {
 		// Active work first so truncation never hides a running spinner behind 10+ pending rows;
 		// within each status group, the owner's tasks sort before the agent's (#1090).
 		const statusRank = (status: string): number =>
 			status === "in_progress" ? 0 : status === "pending" ? 1 : 2;
-		const snapshot = this.store.list();
-		if (log.isDebugEnabled()) log.debug("task_widget_render", { taskCount: snapshot.length });
-		if (snapshot.length === 0) return [];
-		const taskById = new Map(snapshot.map((t) => [t.id, t]));
-		const tasks = [...snapshot].sort(
+		return [...snapshot].sort(
 			(a, b) =>
 				statusRank(a.status) - statusRank(b.status) ||
 				taskAssigneeRank(a) - taskAssigneeRank(b) ||
 				Number(a.id) - Number(b.id),
 		);
+	}
+
+	private selectVisibleTasks(sortedTasks: any[]): { visible: any[]; hiddenAt: string } {
+		const showAll = this.config.showAll ?? false;
+		const limit = this.config.maxVisible ?? DEFAULT_MAX_VISIBLE_TASKS;
+		const hiddenAt = this.config.hiddenAt ?? "bottom";
+		return {
+			visible: showAll ? sortedTasks : TRUNCATE_FNS[hiddenAt](sortedTasks, limit),
+			hiddenAt,
+		};
+	}
+
+	private buildWidgetLines(tui: any, theme: any): string[] {
+		const snapshot = this.store.list();
+		if (log.isDebugEnabled()) log.debug("task_widget_render", { taskCount: snapshot.length });
+		if (snapshot.length === 0) return [];
+		const taskById = new Map(snapshot.map((t) => [t.id, t]));
+		const tasks = this.sortTasks(snapshot);
 		const w = tui.terminal.columns;
 		const truncate = (line: string) => truncateToWidth(line, w);
 
@@ -241,14 +333,13 @@ export class TaskWidget {
 		if (this.mode === "collapsed") return [headerLine];
 		const lines: string[] = [headerLine];
 
-		const showAll = this.config.showAll ?? false;
-		const limit = this.config.maxVisible ?? DEFAULT_MAX_VISIBLE_TASKS;
-		const hiddenAt = this.config.hiddenAt ?? "bottom";
-		const visible = showAll ? tasks : TRUNCATE_FNS[hiddenAt](tasks, limit);
+		const { visible, hiddenAt } = this.selectVisibleTasks(tasks);
 		const hiddenCount = tasks.length - visible.length;
 		const overflowLine = hiddenCount > 0 ? truncate(theme.fg("dim", `    … and ${hiddenCount} more`)) : undefined;
 
 		if (overflowLine && hiddenAt === "top") lines.push(overflowLine);
+
+		const boundByTask = this.collectBoundAgentsByTask();
 
 		for (const task of visible) {
 			let icon: string;
@@ -272,23 +363,33 @@ export class TaskWidget {
 				return ` ${theme.fg("dim", tokenParts.length ? `(${elapsed} · ${tokenParts.join(" ")})` : `(${elapsed})`)}`;
 			})() : "";
 
+			const boundBadgeText = task.status === "completed" ? "" : formatBoundAgentsBadge(boundByTask.get(task.id));
+			const boundBadge = boundBadgeText ? ` ${theme.fg("warning", boundBadgeText)}` : "";
+
 			const tag = theme.fg("dim", toTaskRowView(task).tag);
 			let text: string;
 			if (task.status === "in_progress") {
 				const form = task.activeForm || task.subject;
-				const agentId = task.metadata?.agentId;
+				const agentId = !boundBadgeText ? task.metadata?.agentId : undefined;
 				const agentLabel = agentId ? ` (agent ${agentId.slice(0, 5)})` : "";
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${theme.fg("accent", form + agentLabel + "…")}${stats}`;
+				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${theme.fg("accent", form + agentLabel + "…")}${boundBadge}${stats}`;
 			} else if (task.status === "completed") {
 				text = `  ${icon} ${tag} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}${stats}`;
 			} else {
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${task.subject}${stats}`;
+				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${task.subject}${boundBadge}${stats}`;
 			}
 			lines.push(truncate(text + suffix));
 		}
 
 		if (overflowLine && hiddenAt !== "top") lines.push(overflowLine);
 		return lines;
+	}
+
+	private hasVisibleBoundAgents(tasks: any[]): boolean {
+		const boundByTask = this.collectBoundAgentsByTask();
+		if (boundByTask.size === 0) return false;
+		const { visible } = this.selectVisibleTasks(this.sortTasks(tasks));
+		return visible.some((t) => t.status !== "completed" && boundByTask.has(t.id));
 	}
 
 	update(): void {
@@ -308,7 +409,9 @@ export class TaskWidget {
 			if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
 			return;
 		}
-		const hasActiveSpinner = this.mode === "expanded" && tasks.some(t => t.status === "in_progress");
+		const hasActiveSpinner =
+			this.mode === "expanded" &&
+			(tasks.some(t => t.status === "in_progress") || this.hasVisibleBoundAgents(tasks));
 		if (hasActiveSpinner) this.ensureTimer();
 		else if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
 		if (this.mode === "expanded") this.widgetFrame++;
