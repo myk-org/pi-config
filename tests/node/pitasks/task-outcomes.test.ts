@@ -165,6 +165,33 @@ it("preserves reassignment without a status transition", async () => {
  await tools(store).TaskUpdate.execute("call", { taskId: t.id, assignee: "llm" });
  assert.equal(store.get(t.id)?.assignee, "llm");
 });
+for (const status of ["in_progress", "completed"] as const) {
+ it(`refuses TaskUpdate ${status} on a user-assigned task (#1406)`, async () => {
+  const store = new TaskStore();
+  const t = store.create("merge PR", "", creator, undefined, undefined, "user");
+  const result = await tools(store).TaskUpdate.execute("call", { taskId: t.id, status });
+  assert.equal(store.get(t.id)?.status, "pending");
+  assert.match(result.content[0].text, /only the user/);
+ });
+}
+it("deletes an obsolete user-assigned task via TaskUpdate status deleted (#1406)", async () => {
+ const store = new TaskStore();
+ const t = store.create("merge PR", "", creator, undefined, undefined, "user");
+ const result = await tools(store).TaskUpdate.execute("call", { taskId: t.id, status: "deleted" });
+ assert.equal(store.get(t.id), undefined);
+ assert.match(result.content[0].text, /Updated task #1 deleted/);
+});
+it("deletes obsolete user-assigned tasks via TaskBulkDelete (#1406)", async () => {
+ const store = new TaskStore();
+ const first = store.create("merge PR #1", "", creator, undefined, undefined, "user");
+ const second = store.create("merge PR #2", "", creator, undefined, undefined, "user");
+ const agent = store.create("keep agent work", "", creator);
+ const result = await tools(store).TaskBulkDelete.execute("call", { taskIds: [first.id, second.id] });
+ assert.equal(store.get(first.id), undefined);
+ assert.equal(store.get(second.id), undefined);
+ assert.equal(store.get(agent.id)?.subject, "keep agent work");
+ assert.equal(result.content[0].text, "Deleted 2 task(s)");
+});
 it("exposes the completion outcome through TaskGet", async () => {
  const store = new TaskStore();
  const t = store.create("step", "", creator);

@@ -110,4 +110,11 @@ describe("task rule contract (#1003)", () => {
   it("requires board reconciliation before new dispatch (#1016)", () => {
     assert.ok(taskRule.includes("Before dispatching new work, reconcile the board"));
   });
+
+  it("requires deleting obsolete pending user-assigned tasks once verified done externally (#1406)", () => {
+    assert.ok(taskRule.includes("**must delete** a still-`pending` obsolete `[you]` task"));
+    assert.ok(taskRule.includes('TaskUpdate(status: "deleted")'));
+    assert.ok(taskRule.includes("TaskBulkDelete"));
+    assert.ok(taskRule.includes("never delete `in_progress` or `completed` `[you]` tasks"));
+  });
 });
