@@ -10,6 +10,7 @@ import { Container, Input, Text } from "@earendil-works/pi-tui";
 import {
 	bulkRemove,
 	bulkResultMessage,
+	matchesOverlayKey,
 	openListDetailOverlay,
 	OverlayScrollDetail,
 } from "../orchestrator/overlay-dashboard.js";
@@ -77,6 +78,7 @@ async function promptLine(
 }
 
 const TASKS_LIST_HINTS = "Space select · x delete · n add · e edit · d done · f mine/all · Enter view · Esc close";
+const TASKS_SELECTED_HINTS = "Space toggle · d done · x delete · Enter view · Esc clear";
 
 /** Open the task list overlay; loops list → detail until the list is closed. `mine` starts the
  *  overlay on the owner's rows only; `f` toggles the same filter in place (#1090). */
@@ -120,6 +122,7 @@ export async function openTasksOverlay(
 						return `tasks · ${done} done / ${tasks.length}${mineOnly ? " · mine" : ""}`;
 					},
 					footerHints: TASKS_LIST_HINTS,
+					selectedFooterHints: TASKS_SELECTED_HINTS,
 					listItems: () => {
 						const allTasks = deps.listTasks();
 						taskById = new Map(allTasks.map((t) => [t.id, t]));
@@ -134,21 +137,50 @@ export async function openTasksOverlay(
 							rightParts: row.blocked ? [theme.fg("warning", "⛔ blocked")] : [],
 						};
 					},
-					onKey: (key, task, selected) => {
-						if (key === "f") {
+					onKey: (key, task, selected, notify) => {
+						if (matchesOverlayKey(key, "f")) {
 							mineOnly = !mineOnly;
 							log.debug("tasks_overlay_filter", { mine: mineOnly });
 							return "redraw";
 						}
 						const intent = tasksOverlayIntent(key);
 						if (!intent) return false;
-						// Act/edit/done are single-row by nature: acting on the focused row while rows are picked
-						// would silently ignore the selection, so refuse and leave the rows selected.
 						if (selected.length > 0) {
+							if (intent === "done") {
+								const open = selected.filter((t) => t.status !== "completed");
+								const skipped = selected.length - open.length;
+								if (open.length === 0) {
+									log.debug("tasks_overlay_bulk_complete_unchanged", { selected: selected.length });
+									notify(
+										selected.length === 1
+											? `Task #${selected[0].id} is already completed.`
+											: `All ${selected.length} selected tasks are already completed.`,
+										"info",
+									);
+									return "redraw";
+								}
+								// Complete all selected open tasks (including user-assigned tasks via { by: "user" }
+								// without blocking on N sequential note dialogs); isolate failures per task.
+								const { failed, errors } = bulkRemove(open, (t) => deps.completeTask(t.id, { by: "user" }));
+								const names = failed.map((t) => `#${t.id}`);
+								log.info("tasks_overlay_bulk_complete", {
+									selected: selected.length,
+									open: open.length,
+									skipped,
+									failed: names.length,
+									errors,
+								});
+								const base = bulkResultMessage("completed", "task", open.length, names);
+								const msg = skipped > 0 ? `${base} (${skipped} already completed)` : base;
+								notify(msg, names.length === 0 ? "info" : "warning");
+								return "redraw-clear";
+							}
+							// Add/edit are single-row by nature: acting on the focused row while rows are picked
+							// would silently ignore the selection, so refuse and leave the rows selected.
 							log.debug("tasks_overlay_key_refused", { intent, selected: selected.length });
-							const label = intent === "add" ? "Add" : intent === "edit" ? "Edit" : "Done";
-							ctx.ui.notify(
-								`${label} works on one task — clear the selection (Space) first.`,
+							const label = intent === "add" ? "Add" : "Edit";
+							notify(
+								`${label} works on one task — clear the selection (Esc) first.`,
 								"warning",
 							);
 							return "redraw";
@@ -162,7 +194,7 @@ export async function openTasksOverlay(
 							// `completeTask` drops a note for a task it finds already done, so never prompt for one.
 							if (task.status === "completed") {
 								log.debug("tasks_overlay_complete_unchanged", { taskId: task.id });
-								ctx.ui.notify(`Task #${task.id} is already completed.`, "info");
+								notify(`Task #${task.id} is already completed.`, "info");
 								return "redraw";
 							}
 							// The owner closes their own task with an optional note; the agent's task just closes.
@@ -181,14 +213,14 @@ export async function openTasksOverlay(
 						deps.deleteTask(task.id);
 					},
 					selectable: true,
-					onXSelected: (tasks) => {
+					onXSelected: (tasks, notify) => {
 						// Same destructive action `x` does per row, so no confirmation — but the row store can
 						// reject a delete, and those ids must be named rather than counted as deleted. Each delete
 						// is isolated: a throw on one task must not abort the rest of the selection.
 						const { failed, errors } = bulkRemove(tasks, (task) => deps.deleteTask(task.id));
 						const names = failed.map((task) => `#${task.id}`);
 						log.info("tasks_overlay_bulk_delete", { selected: tasks.length, failed: names.length, errors });
-						ctx.ui.notify(
+						notify(
 							bulkResultMessage("deleted", "task", tasks.length, names),
 							names.length === 0 ? "info" : "warning",
 						);

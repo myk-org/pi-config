@@ -840,6 +840,64 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
     );
   });
 
+  it("handles Kitty CSI-u keys for list r/p and detail c/d/p/r in openWorktreeOverlay (#1391)", async () => {
+    const notifications: Array<{ msg: string; level: string }> = [];
+    const copied: string[] = [];
+    let pruneCount = 0;
+    const runner: GitAsyncRunner = async (args) => {
+      if (args[0] === "worktree" && args[1] === "list") return { stdout: SAMPLE_PORCELAIN, code: 0 };
+      if (args[0] === "worktree" && args[1] === "prune") {
+        pruneCount++;
+        return { stdout: "", code: 0 };
+      }
+      if (args[0] === "log") return { stdout: "init", code: 0 };
+      if (args[0] === "status") return { stdout: "", code: 0 };
+      return { stdout: "", code: 0 };
+    };
+    let listOpens = 0;
+    const fakeOpenOverlay: any = async (_ctx: any, opts: any) => {
+      listOpens++;
+      const items = opts.listSpec.listItems();
+      if (listOpens === 1) {
+        assert.equal(opts.listSpec.onKey("\x1b[112;129u", items[0], []), "close"); // Kitty p + NumLock
+      } else if (listOpens === 2) {
+        opts.listSpec.onSelect(items[1]);
+      }
+    };
+    const detailKeys = ["\x1b[1489::99u", "\x1b[114;129u", "\x1b"]; // non-Latin 'c', Kitty 'r' + NumLock, Esc
+    const theme = fakeTheme();
+    const tui = fakeTui();
+    const ctx: any = {
+      hasUI: true,
+      cwd: "/repo",
+      ui: {
+        theme,
+        notify: (msg: string, level: string) => notifications.push({ msg, level }),
+        custom: async (factory: any) => {
+          let resolveDone!: () => void;
+          const p = new Promise<void>((r) => { resolveDone = r; });
+          const comp = factory(tui, theme, {}, () => resolveDone());
+          comp.handleInput(detailKeys.shift() ?? "\x1b");
+          comp.dispose?.();
+          await p;
+          return null;
+        },
+      },
+    };
+    await openWorktreeOverlay(ctx, {
+      runGitAsync: runner,
+      readLivePeers: () => [],
+      fetchOpenPrs: async () => new Map(),
+      copyToClipboard: async (text) => {
+        copied.push(text);
+        return { ok: true, method: "test" };
+      },
+      openOverlay: fakeOpenOverlay,
+    });
+    assert.equal(pruneCount, 1);
+    assert.deepEqual(copied, ["/repo/.worktrees/feat-a"]);
+  });
+
   it("exits overlay remove branch cleanly when ctx.ui.confirm throws on stale context", async () => {
     let confirmAttempted = false;
     const runner: GitAsyncRunner = async (args) => {

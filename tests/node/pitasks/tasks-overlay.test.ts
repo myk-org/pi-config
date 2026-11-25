@@ -466,18 +466,156 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		]);
 	});
 
-	for (const key of ["n", "e", "d"]) {
+	for (const key of ["n", "e"]) {
 		it(`refuses ${key} while a selection exists, without opening a dialog`, async () => {
-			const { ctx, notifications, openedCount } = makeTasksCtx([[" ", key, "close"]]);
+			const { ctx, notifications, openedCount, frames } = makeTasksCtx([[" ", key, "close"]]);
 			const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
 			await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
 			assert.equal(openedCount(), 1, "the list is not re-opened: no dialog ran");
 			assert.deepEqual(memory.created, []);
 			assert.equal(notifications.length, 1);
 			assert.equal(notifications[0].level, "warning");
-			assert.match(notifications[0].message, /clear the selection \(Space\)/);
+			assert.match(notifications[0].message, /clear the selection \(Esc\)/);
+			assert.ok(frames.length >= 1);
 		});
 	}
+
+	it("d bulk-completes selected open llm and user tasks without note dialogs and renders inline banner", async () => {
+		// Row order from sortTaskRows: #1 (pending, user), #3 (pending, llm), #2 (in_progress, llm).
+		const { ctx, notifications, openedCount, lastFrames } = makeTasksCtx([[" ", "j", "j", " ", "d", "close"]]);
+		const tasks = [
+			task({ id: "1", status: "pending", assignee: "user", subject: "owner work" }),
+			task({ id: "2", status: "in_progress", assignee: "llm", subject: "agent work" }),
+			task({ id: "3", status: "pending", assignee: "llm", subject: "unselected" }),
+		];
+		const completed: Array<{ id: string; by: string }> = [];
+		const userNotices: string[] = [];
+		const deps = tasksOverlayDeps(
+			{
+				list: () => tasks,
+				get: (id) => tasks.find((t) => t.id === id),
+				create: () => ({ id: "99" }),
+				update: (id, fields) => {
+					if ("status" in fields && fields.status === "completed") {
+						completed.push({ id, by: fields.completedBy });
+						const target = tasks.find((t) => t.id === id);
+						if (target) target.status = "completed";
+					}
+				},
+			},
+			undefined,
+			(t) => userNotices.push(t.id),
+		);
+		await openTasksOverlay(ctx, deps);
+		assert.equal(openedCount(), 1, "bulk d completes in place without note dialogs");
+		assert.deepEqual(completed, [{ id: "1", by: "user" }, { id: "2", by: "user" }]);
+		assert.deepEqual(userNotices, ["1"]);
+		assert.deepEqual(notifications, [{ message: "completed 2 tasks", level: "info" }]);
+		assert.match(lastFrames[0], /ℹ completed 2 tasks/, "inline feedback banner rendered inside overlay");
+		assert.doesNotMatch(lastFrames[0], /2 selected/, "bulk d clears multi-selection");
+	});
+
+	it("d skips already-completed tasks in a mixed selection and reports counts", async () => {
+		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const tasks = [
+			task({ id: "1", status: "pending" }),
+			task({ id: "2", status: "completed" }),
+		];
+		const completed: string[] = [];
+		await openTasksOverlay(ctx, {
+			listTasks: () => tasks,
+			deleteTask: () => true,
+			completeTask: (id) => {
+				completed.push(id);
+				const target = tasks.find((t) => t.id === id);
+				if (target) target.status = "completed";
+				return true;
+			},
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		});
+		assert.deepEqual(completed, ["1"]);
+		assert.deepEqual(notifications, [{ message: "completed 1 task (1 already completed)", level: "info" }]);
+		assert.match(lastFrames[0], /completed 1 task \(1 already completed\)/);
+	});
+
+	it("d reports inline notice when every selected task is already completed", async () => {
+		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const tasks = [
+			task({ id: "1", status: "completed" }),
+			task({ id: "2", status: "completed" }),
+		];
+		let writes = 0;
+		await openTasksOverlay(ctx, {
+			listTasks: () => tasks,
+			deleteTask: () => true,
+			completeTask: () => { writes++; return true; },
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		});
+		assert.equal(writes, 0);
+		assert.deepEqual(notifications, [{ message: "All 2 selected tasks are already completed.", level: "info" }]);
+		assert.match(lastFrames[0], /All 2 selected tasks are already completed\./);
+		assert.match(lastFrames[0], /2 selected/, "no-op bulk d keeps selection intact");
+	});
+
+	it("d isolates failures and throws during bulk completion", async () => {
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const completed: string[] = [];
+		await openTasksOverlay(ctx, {
+			listTasks: () => [task({ id: "1", status: "pending" }), task({ id: "2", status: "pending" })],
+			deleteTask: () => true,
+			completeTask: (id) => {
+				if (id === "1") throw new Error("store locked");
+				completed.push(id);
+				return true;
+			},
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		});
+		assert.deepEqual(completed, ["2"]);
+		assert.deepEqual(notifications, [{ message: "completed 1 of 2 tasks — failed: #1", level: "warning" }]);
+	});
+
+	it("accepts Kitty CSI-u keys for n/e/d/f/x in tasksOverlayIntent and openTasksOverlay", async () => {
+		assert.equal(tasksOverlayIntent("\x1b[110;129u"), "add");
+		assert.equal(tasksOverlayIntent("\x1b[101u"), "edit");
+		assert.equal(tasksOverlayIntent("\x1b[1490::100u"), "done");
+		assert.equal(tasksOverlayIntent("\x1b[100;1:3u"), undefined);
+
+		const { ctx, notifications } = makeTasksCtx([["\x1b[32;129u", "\x1b[1490::100u", "close"]]);
+		const completed: string[] = [];
+		await openTasksOverlay(ctx, {
+			listTasks: () => [task({ id: "1", status: "pending" })],
+			deleteTask: () => true,
+			completeTask: (id) => { completed.push(id); return true; },
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		});
+		assert.deepEqual(completed, ["1"]);
+		assert.deepEqual(notifications, [{ message: "completed 1 task", level: "info" }]);
+	});
+
+	it("preserves multi-selection across Enter -> detail -> Esc in openTasksOverlay", async () => {
+		const { ctx, notifications } = makeTasksCtx([
+			[" ", "j", " ", "\r"],
+			["\x1b"],
+			["d", "close"],
+		]);
+		const completed: string[] = [];
+		await openTasksOverlay(ctx, {
+			listTasks: () => [
+				task({ id: "1", status: "pending" }),
+				task({ id: "2", status: "pending" }),
+			],
+			deleteTask: () => true,
+			completeTask: (id) => { completed.push(id); return true; },
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		});
+		assert.deepEqual(completed, ["1", "2"]);
+		assert.deepEqual(notifications, [{ message: "completed 2 tasks", level: "info" }]);
+	});
 
 	it("still acts on the focused row when nothing is selected", async () => {
 		const { ctx, openedCount } = makeTasksCtx([["e"], ["\n"]]);
@@ -496,16 +634,26 @@ function makeTasksCtx(opens: string[][]) {
 	const notifications: Array<{ message: string; level: string | undefined }> = [];
 	/** Rendered frame of every list that opened — the footer is asserted through what is drawn. */
 	const frames: Array<readonly string[]> = [];
+	/** Last rendered frame of each open before close — captures inline feedback banners. */
+	const lastFrames: string[] = [];
 	/** How many keys each open had received when it closed — tells a key that closed the list
 	 *  in place from one that only redrew it. */
 	const closeAfterKeys: number[] = [];
 	let opened = 0;
 	const custom = (<T,>(factory: FakeCustomFactory<T>) => {
-		const keys = opens[opened];
+		const idx = opened;
+		const keys = opens[idx];
 		opened += 1;
 		if (!keys) return Promise.resolve(null as never); // a further open: close it
 		return fakeCustom(factory, keys, {
-			onOpen: (component) => { frames.push(component.render?.(100) ?? []); },
+			onOpen: (component) => {
+				const rendered = component.render?.(100) ?? [];
+				frames.push(rendered);
+				lastFrames[idx] = rendered.join("\n");
+			},
+			onKey: (_key, _delivered, component) => {
+				lastFrames[idx] = (component.render?.(100) ?? []).join("\n");
+			},
 			onClose: (delivered) => { closeAfterKeys.push(delivered); },
 		});
 	}) satisfies ExtensionUIContext["custom"];
@@ -514,7 +662,7 @@ function makeTasksCtx(opens: string[][]) {
 		input: async () => undefined,
 		custom,
 	});
-	return { ctx, notifications, openedCount: () => opened, frames, closeAfterKeys };
+	return { ctx, notifications, openedCount: () => opened, frames, lastFrames, closeAfterKeys };
 }
 
 function inMemoryStore(initial: Task[] = []) {

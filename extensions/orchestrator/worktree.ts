@@ -18,6 +18,7 @@ import {
 import {
   OVERLAY_OPTS,
   OverlayScrollDetail,
+  matchesOverlayKey,
   openListDetailOverlay,
   type OverlayRowParts,
 } from "./overlay-dashboard.js";
@@ -373,11 +374,11 @@ export async function openWorktreeOverlay(
         },
         onKey: (key, wt) => {
           if (wt) reselectId = wt.id;
-          if (key === "r") {
+          if (matchesOverlayKey(key, "r")) {
             listQueue.push({ kind: "refresh" });
             return "close";
           }
-          if (key === "p") {
+          if (matchesOverlayKey(key, "p")) {
             listQueue.push({ kind: "prune" });
             return "close";
           }
@@ -429,11 +430,11 @@ export async function openWorktreeOverlay(
             },
             getBodyLines: (t) => buildWorktreeDetailLines(wt, detail, t),
             onKey: (key) => {
-              if (key === "c") {
+              if (matchesOverlayKey(key, "c")) {
                 detailQueue.push("copy");
                 return "close";
               }
-              if (key === "d") {
+              if (matchesOverlayKey(key, "d")) {
                 const guard = canRemoveWorktree(wt);
                 if (!guard.allowed) {
                   safeNotify(ctx, guard.reason, "warning");
@@ -442,11 +443,11 @@ export async function openWorktreeOverlay(
                 detailQueue.push("remove");
                 return "close";
               }
-              if (key === "p") {
+              if (matchesOverlayKey(key, "p")) {
                 detailQueue.push("prune");
                 return "close";
               }
-              if (key === "r") {
+              if (matchesOverlayKey(key, "r")) {
                 detailQueue.push("refresh");
                 return "close";
               }

@@ -98,22 +98,22 @@ export async function openComsPeersOverlay(
             ],
           };
         },
-        onX: (row) => {
+        onX: (row, notify) => {
           // No detail pane holds a result any more, so the outcome is notified where the user looks.
           const killed = deps.killPeer(row);
           log.info("overlay_kill_peer", { name: row.name, project: row.project });
-          try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
+          notify(sanitizePeerText(killed, 120), "info");
         },
         selectable: true,
-        onXSelected: (rows) => {
+        onXSelected: (rows, notify) => {
           const results = rows.map((row) => deps.killPeer(row)).join(" · ");
           log.info("overlay_kill_selection", { count: rows.length });
-          try { ctx.ui.notify(sanitizePeerText(results, 120), "info"); } catch {}
+          notify(sanitizePeerText(results, 120), "info");
         },
-        onKillAll: () => {
+        onKillAll: (notify) => {
           const killed = deps.killAll();
           log.info("overlay_kill_all");
-          try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
+          notify(sanitizePeerText(killed, 120), "info");
         },
         // The overlay keeps no state across re-opens: it reports the ticks and takes them back.
         onSelectionChange: (ids) => {

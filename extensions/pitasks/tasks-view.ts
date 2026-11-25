@@ -6,6 +6,7 @@
  */
 import type { Task, TaskCompletedBy, TaskStatus } from "./types.js";
 import { createLogger } from "../shared/logger.js";
+import { matchesOverlayKey } from "../orchestrator/overlay-dashboard.js";
 import { parseWidgetCommandAction, type WidgetCommandAction } from "../shared/widget-visibility.js";
 
 const log = createLogger("pitasks");
@@ -175,11 +176,11 @@ export function formatTasksPlainText(
 	return [...rows, TASKS_HINT].join("\n");
 }
 
-/** List keys beyond the shared ones (j/k, Enter, x, Esc) — issues #1087, #1090. */
+/** List keys beyond the shared ones (j/k, Enter, x, Esc) — issues #1087, #1090, #1391. */
 export function tasksOverlayIntent(key: string): "add" | "edit" | "done" | undefined {
-	if (key === "n") return "add";
-	if (key === "e") return "edit";
-	if (key === "d") return "done";
+	if (matchesOverlayKey(key, "n")) return "add";
+	if (matchesOverlayKey(key, "e")) return "edit";
+	if (matchesOverlayKey(key, "d")) return "done";
 	return undefined;
 }
 

@@ -15,8 +15,10 @@ import {
 import {
   bulkRemove,
   bulkResultMessage,
+  matchesOverlayKey,
   openListDetailOverlay,
   OverlayScrollDetail,
+  type OverlayNotify,
 } from "./overlay-dashboard.js";
 import { createLogger } from "../shared/logger.js";
 
@@ -50,9 +52,9 @@ export interface CronStatusUiDeps {
  * tell from the notify what actually happened.
  */
 function setGroupPaused(
-  ctx: ExtensionCommandContext,
   deps: CronStatusUiDeps,
   rows: readonly CronStatusTaskView[],
+  notify: OverlayNotify,
 ): void {
   const pause = rows.some((row) => !row.paused);
   const failed: string[] = [];
@@ -62,7 +64,7 @@ function setGroupPaused(
     if (!deps.togglePaused(row.id).ok) failed.push(`#${row.taskId}`);
   }
   log.info("cron_overlay_bulk_pause", { selected: rows.length, pause, failed: failed.length });
-  ctx.ui.notify(
+  notify(
     bulkResultMessage(pause ? "paused" : "resumed", "cron", rows.length, failed),
     failed.length === 0 ? "info" : "warning",
   );
@@ -105,10 +107,10 @@ export async function openCronStatusOverlay(
           rightParts,
         };
       },
-      onKey: (key, task, selected) => {
-        if (key !== "p") return false;
+      onKey: (key, task, selected, notify) => {
+        if (!matchesOverlayKey(key, "p")) return false;
         if (selected.length > 0) {
-          setGroupPaused(ctx, deps, selected);
+          setGroupPaused(deps, selected, notify);
           // Stays open: the rows must flip between `⏸ paused` and the active text in place.
           return "redraw";
         }
@@ -117,7 +119,7 @@ export async function openCronStatusOverlay(
         log.debug("cron_overlay_pause_key", { id: task.id, paused: !!task.paused, ok: result.ok });
         // A failed write must not show a green state: the row would claim a pause the store never
         // accepted, and a follow-up `p` would then read the wrong starting state.
-        if (!result.ok) ctx.ui.notify(`Could not save the pause state of #${task.taskId}.`, "warning");
+        if (!result.ok) notify(`Could not save the pause state of #${task.taskId}.`, "warning");
         // Stays open: the row must flip between `⏸ paused` and the active text in place.
         return "redraw";
       },
@@ -125,13 +127,13 @@ export async function openCronStatusOverlay(
         deps.removeTask(task.id);
       },
       selectable: true,
-      onXSelected: (rows) => {
+      onXSelected: (rows, notify) => {
         // Each removal is persisted on its own: a rejected id must be named, never counted, and a
         // throw on one row (store lock timeout) must not leave the rest of the selection behind.
         const { failed, errors } = bulkRemove(rows, (row) => deps.removeTask(row.id));
         const names = failed.map((row) => `#${row.taskId}`);
         log.info("cron_overlay_bulk_remove", { selected: rows.length, failed: names.length, errors });
-        ctx.ui.notify(
+        notify(
           bulkResultMessage("removed", "cron", rows.length, names),
           names.length === 0 ? "info" : "warning",
         );

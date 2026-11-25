@@ -21,7 +21,7 @@ Counts verified against source. Two names are registered in more than one place 
 Full-screen overlay listing running and queued async agents, with live output per agent.
 
 - **Arguments:** none
-- **Keys in the overlay:** `↑↓`/`jk` navigate, `Enter` view output, `Space` multi-select, `x` kill (focused row, or the whole selection), `X` kill all running/queued, `Esc` close
+- **Keys in the overlay:** `↑↓`/`jk` navigate, `Enter` view output (preserves multi-selection on `Esc` back), `Space` multi-select, `x` kill (focused row, or the whole selection — reports inline if no selected jobs are active), `X` kill all running/queued, `Esc` clears active selection first, then closes
 
 ```
 /async-status
@@ -206,15 +206,17 @@ Unified session status in one notification: async agents, cron tasks, git branch
 Task manager for the current session's task list.
 
 - **Arguments:** optional subcommand — none (list), `mine` (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
-- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` navigate, `Space` multi-selects, `Enter` opens a task,
-  `n` adds a task from one line, `e` edits the focused task's subject, `d` marks the focused task done, `f` toggles `mine`/`all`,
-  `x` deletes the focused task (or the `Space`-selected tasks), `Esc` closes
-- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store (`n`, `e`, and `d` refuse while rows are selected). An empty board opens
+- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` navigate, `Space` multi-selects (preserved across `Enter` → detail → `Esc`), `Enter` opens a task,
+  `n` adds a task from one line, `e` edits the focused task's subject, `d` marks the focused task (or all selected open tasks) done, `f` toggles `mine`/`all`,
+  `x` deletes the focused task (or the `Space`-selected tasks), `Esc` clears an active selection first and closes on the next press. Bulk outcomes and warnings display in an inline banner inside the overlay
+- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store (`n` and `e` refuse while rows are selected). An empty board opens
   the create dialog directly, since there is no row to press `n` on. `n` asks who the task is for (`you` or `llm`) once the line is accepted. The edit dialog starts
   pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
-- **`d`:** completes the focused task. On a task assigned to `you` it opens an optional one-line note dialog first — an empty line completes without a note, `Esc` cancels
-  and changes nothing. The outcome is kept on the record (`completionNote`, `completedBy`), and the session receives one message reading
-  `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns the result on its next turn
+- **`d`:** completes the focused task, or bulk-completes every selected open task when rows are ticked with `Space` (skipping already-completed tasks, completing selected
+  `you` tasks with `completedBy: "user"` without blocking on per-row note dialogs, and reporting counts inline). On a single focused task assigned to `you` it opens an
+  optional one-line note dialog first — an empty line completes without a note, `Esc` cancels and changes nothing. The outcome is kept on the record (`completionNote`,
+  `completedBy`), and the session receives one message reading `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns
+  the result on its next turn
 - **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] [you|llm] <subject>`; a task with currently open blockers is marked `⛔ blocked`.
   Tasks assigned to `you` sort above `[llm]` tasks within their status group
 - **Assignee:** a task is `llm` (the agent does it, the default for every existing task) or `user` (only the owner can — a merge, a live check in a real UI, an approval).
