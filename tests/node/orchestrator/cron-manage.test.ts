@@ -14,8 +14,7 @@ const NOW = 200_000;
 function makeCron(spawnAsyncAgent: (...args: any[]) => void = () => {}) {
   const handlers = new Map<string, Function[]>();
   let tool: any;
-  const intervals: any[] = [];
-  const timeouts: any[] = [];
+  const timers: Array<{ fn: Function; delay: number; scheduledAt: number; cleared?: boolean }> = [];
   const emitted: Array<{ event: string; data: any }> = [];
   const messages: Array<{ message: string; options: any }> = [];
   const childMarker = process.env.PI_SUBAGENT_CHILD;
@@ -29,14 +28,10 @@ function makeCron(spawnAsyncAgent: (...args: any[]) => void = () => {}) {
   };
   const clock = { now: NOW };
   Date.now = () => clock.now;
-  (global as any).setInterval = (fn: Function, delay: number) => {
-    const timer = { fn, delay, unref() {} };
-    intervals.push(timer);
-    return timer;
-  };
+  (global as any).setInterval = (fn: Function, delay: number) => ({ fn, delay, unref() {} });
   (global as any).setTimeout = (fn: Function, delay: number) => {
     const timer = { fn, delay, scheduledAt: Date.now(), unref() {} };
-    timeouts.push(timer);
+    timers.push(timer);
     return timer;
   };
   (global as any).clearInterval = (timer: any) => { if (timer) timer.cleared = true; };
@@ -54,11 +49,19 @@ function makeCron(spawnAsyncAgent: (...args: any[]) => void = () => {}) {
     cron,
     clock,
     handlers,
-    intervals,
-    timeouts,
+    timers,
     emitted,
     messages,
     tool: () => tool,
+    /** Fire the currently active (non-cleared) scheduled timer. */
+    async fireActive() {
+      const active = [...timers].reverse().find((t) => !t.cleared);
+      assert.ok(active, "expected an active scheduled timer");
+      await active.fn();
+    },
+    hasActiveTimer() {
+      return timers.some((t) => !t.cleared);
+    },
     restore() {
       handlers.get("session_shutdown")?.[0]?.({ reason: "quit" });
       global.setInterval = original.setInterval;
@@ -117,14 +120,12 @@ const projectTask = (cwd: string, overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("cron_manage edit (#1381)", () => {
-  it("edits task, description, and model in place on a session cron without resetting id/createdAt/timer", async () => {
+  it("edits session task metadata in place while preserving id, createdAt, and nextRun", async () => {
     const cwd = makeTempDir("pi-cron-edit-session-");
-    const spawned: any[] = [];
-    const { h } = start(cwd, [], "sess-edit", (...args: any[]) => spawned.push(args));
+    const { h } = start(cwd, [], "sess-edit-meta");
 
     await execTool(h, { action: "add", description: "check issues", task: "list issues", interval_seconds: 60, model: "gpt-5" });
     const created = h.cron.getCronTasks()[0];
-    const originalTimer = h.timeouts.at(-1);
     const originalCreatedAt = created.createdAt;
     const originalNextRun = created.nextRun;
 
@@ -144,13 +145,40 @@ describe("cron_manage edit (#1381)", () => {
     assert.equal(updated.description, "check PRs");
     assert.equal(updated.task, "list open PRs");
     assert.equal(updated.model, "anthropic/claude-sonnet-4");
-    assert.notEqual(originalTimer.cleared, true, "non-schedule edit keeps the armed timer intact");
+  });
 
-    // Next fire of the already-armed timer executes the edited prompt and model.
-    await originalTimer.fn();
+  it("dispatches the edited prompt and model on the next scheduled run", async () => {
+    const cwd = makeTempDir("pi-cron-edit-dispatch-");
+    const spawned: any[] = [];
+    const { h } = start(cwd, [], "sess-edit-dispatch", (...args: any[]) => spawned.push(args));
+
+    await execTool(h, { action: "add", description: "check issues", task: "list issues", interval_seconds: 60, model: "gpt-5" });
+    const id = `session:${h.cron.getCronTasks()[0].id}`;
+    await execTool(h, { action: "edit", id, description: "check PRs", task: "list open PRs", model: "anthropic/claude-sonnet-4" });
+
+    await h.fireActive();
     assert.equal(spawned.length, 1);
     assert.equal(spawned[0][1], "list open PRs");
     assert.deepEqual(spawned[0][4].explicit, { provider: "anthropic", model: "claude-sonnet-4" });
+  });
+
+  it("leaves a session cron unchanged in memory when the session store write fails", async () => {
+    const cwd = makeTempDir("pi-cron-edit-session-fail-");
+    const { h } = start(cwd, [], "sess-write-fail");
+    await execTool(h, { action: "add", description: "original", task: "/orig", interval_seconds: 60 });
+    const before = structuredClone(h.cron.getCronTasks()[0]);
+    // Replace session cron file with a directory so writeSessionTasks fails.
+    const tmpDir = path.join(cwd, ".pi", "tmp");
+    const sessionFile = fs.readdirSync(tmpDir).find((f) => f.startsWith("cron-") && f.endsWith(".json"));
+    assert.ok(sessionFile, "expected session cron file");
+    const fullPath = path.join(tmpDir, sessionFile);
+    fs.rmSync(fullPath);
+    fs.mkdirSync(fullPath);
+
+    const out = await execTool(h, { action: "edit", id: `session:${before.id}`, description: "broken", interval_seconds: 120 });
+
+    assert.match(out, /^Error:/);
+    assert.deepEqual(h.cron.getCronTasks()[0], before);
   });
 
   it("clears a pinned model back to inherited when model is empty string", async () => {
@@ -164,57 +192,65 @@ describe("cron_manage edit (#1381)", () => {
     assert.equal(readDurableCronStore(store).tasks[0].model, undefined);
   });
 
-  it("switches schedule between interval and daily and re-arms timer", async () => {
-    const cwd = makeTempDir("pi-cron-edit-schedule-");
+  it("switches an interval cron to a daily schedule", async () => {
+    const cwd = makeTempDir("pi-cron-edit-to-daily-");
     const { h, store } = start(cwd, [projectTask(cwd)]);
-    const firstTimer = h.timeouts.at(-1);
 
-    // interval -> daily
-    const dailyOut = await execTool(h, { action: "edit", id: "persist:job-1", at_hour: 9, at_minute: 30 });
-    assert.match(dailyOut, /daily at 09:30/);
-    assert.equal(firstTimer.cleared, true);
-    let stored = readDurableCronStore(store).tasks[0];
+    const out = await execTool(h, { action: "edit", id: "persist:job-1", at_hour: 9, at_minute: 30 });
+
+    assert.match(out, /daily at 09:30/);
+    const stored = readDurableCronStore(store).tasks[0];
     assert.equal(stored.intervalMs, undefined);
     assert.equal(stored.atHour, 9);
     assert.equal(stored.atMinute, 30);
     assert.equal(stored.createdAt, 1_000);
     assert.equal(stored.lastRun, 50_000);
+    assert.notEqual(h.cron.getCronTasks()[0].nextRun, NOW + 60_000);
+  });
 
-    // update only at_minute on existing daily cron
-    const minOut = await execTool(h, { action: "edit", id: "persist:job-1", at_minute: 45 });
-    assert.match(minOut, /daily at 09:45/);
-    stored = readDurableCronStore(store).tasks[0];
+  it("updates at_minute on an existing daily schedule without requiring at_hour", async () => {
+    const cwd = makeTempDir("pi-cron-edit-daily-min-");
+    const { h, store } = start(cwd, [projectTask(cwd, { intervalMs: undefined, atHour: 9, atMinute: 30 })]);
+
+    const out = await execTool(h, { action: "edit", id: "persist:job-1", at_minute: 45 });
+
+    assert.match(out, /daily at 09:45/);
+    const stored = readDurableCronStore(store).tasks[0];
     assert.equal(stored.atHour, 9);
     assert.equal(stored.atMinute, 45);
+  });
 
-    // daily -> interval
-    const intOut = await execTool(h, { action: "edit", id: "persist:job-1", interval_seconds: 120 });
-    assert.match(intOut, /every 2m/);
-    stored = readDurableCronStore(store).tasks[0];
+  it("switches a daily cron back to an interval schedule", async () => {
+    const cwd = makeTempDir("pi-cron-edit-to-interval-");
+    const { h, store } = start(cwd, [projectTask(cwd, { intervalMs: undefined, atHour: 9, atMinute: 30 })]);
+
+    const out = await execTool(h, { action: "edit", id: "persist:job-1", interval_seconds: 120 });
+
+    assert.match(out, /every 2m/);
+    const stored = readDurableCronStore(store).tasks[0];
     assert.equal(stored.intervalMs, 120_000);
     assert.equal(stored.atHour, undefined);
     assert.equal(stored.atMinute, undefined);
-    assert.equal(h.timeouts.at(-1).delay, 120_000);
+    assert.equal(h.cron.getCronTasks()[0].nextRun, NOW + 120_000);
   });
 
-  it("preserves paused state and does not arm a timer when editing a paused cron", async () => {
+  it("keeps a paused cron disarmed when edited", async () => {
     const cwd = makeTempDir("pi-cron-edit-paused-");
     const { h, store } = start(cwd, [projectTask(cwd, { paused: true })]);
-    assert.equal(h.timeouts.length, 0);
+    assert.equal(h.hasActiveTimer(), false);
 
     const out = await execTool(h, { action: "edit", id: "persist:job-1", interval_seconds: 30, description: "still paused" });
 
     assert.match(out, /still paused.*\(paused\)$/);
-    assert.equal(h.timeouts.length, 0, "editing a paused cron must not arm a timer");
+    assert.equal(h.hasActiveTimer(), false, "editing a paused cron must not arm a timer");
     assert.equal(h.cron.getCronTasks()[0].paused, true);
     assert.equal(readDurableCronStore(store).tasks[0].paused, true);
   });
 
-  it("rejects invalid edit payloads without modifying the task or timer", async () => {
+  it("rejects invalid edit payloads without modifying stored task state", async () => {
     const cwd = makeTempDir("pi-cron-edit-invalid-");
     const { h, store } = start(cwd, [projectTask(cwd)]);
     const before = structuredClone(readDurableCronStore(store).tasks[0]);
-    const armed = h.timeouts.at(-1);
 
     assert.match(await execTool(h, { action: "edit", id: "persist:job-1" }), /^Error: at least one field/);
     assert.match(await execTool(h, { action: "edit", id: "persist:job-1", interval_seconds: 5 }), /^Error: interval_seconds/);
@@ -227,14 +263,13 @@ describe("cron_manage edit (#1381)", () => {
     assert.equal(await execTool(h, { action: "edit", id: "bad-id", description: "x" }), "Task not found.");
 
     assert.deepEqual(readDurableCronStore(store).tasks[0], before);
-    assert.notEqual(armed.cleared, true);
+    assert.equal(h.hasActiveTimer(), true);
   });
 
-  it("propagates cleared optional fields across replicas via syncStore and preserves peer edits on persist", async () => {
+  it("clears removed optional fields when syncing a peer edit from disk", () => {
     const cwd = makeTempDir("pi-cron-edit-sync-");
     const { h, store } = start(cwd, [projectTask(cwd, { nextRun: 1 })]);
 
-    // Peer edits the durable store: clears model and switches interval -> daily.
     fs.writeFileSync(store, JSON.stringify({
       version: 1,
       tasks: [{
@@ -249,29 +284,27 @@ describe("cron_manage edit (#1381)", () => {
       }],
     }));
 
-    // Health tick triggers syncStore on leader.
-    h.intervals.find((t) => t.delay === 10_000)!.fn();
+    h.cron.syncProjectCrons();
 
     const synced = h.cron.getCronTasks()[0];
     assert.equal(synced.description, "peer edited");
     assert.equal(synced.task, "/peer-cmd");
-    assert.equal(synced.model, undefined, "syncStore must clear removed model");
-    assert.equal(synced.intervalMs, undefined, "syncStore must clear removed intervalMs");
+    assert.equal(synced.model, undefined, "syncProjectCrons must clear removed model");
+    assert.equal(synced.intervalMs, undefined, "syncProjectCrons must clear removed intervalMs");
     assert.equal(synced.atHour, 8);
     assert.equal(synced.atMinute, 15);
   });
 
-  it("does not clobber a peer edit when the leader persists lastRun", async () => {
+  it("preserves a peer edit on disk when the leader records lastRun", async () => {
     const cwd = makeTempDir("pi-cron-edit-peer-persist-");
     const { h, store } = start(cwd, [projectTask(cwd, { nextRun: 1 })]);
 
-    // Peer updates task text on disk before the leader's timer fires.
     fs.writeFileSync(store, JSON.stringify({
       version: 1,
       tasks: [projectTask(cwd, { nextRun: 1, task: "/peer-updated", description: "peer desc", model: undefined })],
     }));
 
-    await h.timeouts.find((t) => t.delay === 0)!.fn();
+    await h.fireActive();
 
     assert.deepEqual(h.messages.map((m) => m.message), ["/peer-updated"]);
     const after = readDurableCronStore(store).tasks[0];
@@ -280,65 +313,161 @@ describe("cron_manage edit (#1381)", () => {
     assert.equal(after.model, undefined);
     assert.equal(after.lastRun, NOW);
   });
+
+  it("uses peer-edited slash command after awaiting agent module discovery", async () => {
+    const cwd = makeTempDir("pi-cron-edit-mid-exec-");
+    const spawned: any[] = [];
+    const { h, store } = start(cwd, [projectTask(cwd, { task: "run audit", nextRun: 1 })], "sess-mid", (...args: any[]) => spawned.push(args));
+
+    // When execute() writes lastRun to disk, simulate a peer simultaneously editing the task into a slash command.
+    const emit = h.pi.events.emit;
+    let swapped = false;
+    h.pi.events.emit = (event: string, data: any) => {
+      if (!swapped && event === "pidash:cron-status" && data.tasks[0]?.lastRun === NOW) {
+        swapped = true;
+        fs.writeFileSync(store, JSON.stringify({
+          version: 1,
+          tasks: [projectTask(cwd, { task: "/peer-slash", description: "now slash", nextRun: 1 })],
+        }));
+      }
+      emit(event, data);
+    };
+
+    await h.fireActive();
+
+    assert.equal(spawned.length, 0, "edited slash command must not spawn an async worker");
+    assert.deepEqual(h.messages.map((m) => m.message), ["/peer-slash"]);
+  });
+
+  it("does not overwrite a peer-edited schedule's nextRun when re-arming", async () => {
+    const cwd = makeTempDir("pi-cron-edit-nextrun-");
+    const { h, store } = start(cwd, [projectTask(cwd, { intervalMs: 60_000, nextRun: 1 })]);
+
+    // Mid-run, a peer changes the schedule from 60s to 300s (clearing nextRun on disk).
+    const emit = h.pi.events.emit;
+    let edited = false;
+    h.pi.events.emit = (event: string, data: any) => {
+      if (!edited && event === "pidash:cron-status" && data.tasks[0]?.lastRun === NOW) {
+        edited = true;
+        fs.writeFileSync(store, JSON.stringify({
+          version: 1,
+          tasks: [projectTask(cwd, { intervalMs: 300_000, nextRun: undefined })],
+        }));
+      }
+      emit(event, data);
+    };
+
+    await h.fireActive();
+
+    const stored = readDurableCronStore(store).tasks[0];
+    assert.equal(stored.intervalMs, 300_000);
+    assert.equal(stored.nextRun, NOW + 300_000, "re-arm must use the peer's 300s schedule, not the stale 60s one");
+  });
 });
 
 describe("cron_manage pause & resume (#1381)", () => {
-  it("pauses and resumes a session cron idempotently with a fresh interval on resume", async () => {
-    const cwd = makeTempDir("pi-cron-pause-session-");
+  it("pauses a session cron and disarms its timer", async () => {
+    const cwd = makeTempDir("pi-cron-pause-one-");
     const { h } = start(cwd);
     await execTool(h, { action: "add", description: "ping", task: "/ping", interval_seconds: 30 });
     const id = `session:${h.cron.getCronTasks()[0].id}`;
-    const armed = h.timeouts.at(-1);
 
-    assert.equal(await execTool(h, { action: "pause", id }), `Cron ${id} paused.`);
-    assert.equal(armed.cleared, true);
+    const out = await execTool(h, { action: "pause", id });
+
+    assert.equal(out, `Cron ${id} paused.`);
     assert.equal(h.cron.getCronTasks()[0].paused, true);
-
-    // Idempotent second pause
-    assert.equal(await execTool(h, { action: "pause", id }), `Cron ${id} is already paused.`);
-
-    // Advance past old nextRun: resume must schedule a fresh full interval, never catch up.
-    h.clock.now = NOW + 10 * 60_000;
-    const before = h.timeouts.length;
-    assert.equal(await execTool(h, { action: "resume", id }), `Cron ${id} resumed.`);
-    assert.equal(h.cron.getCronTasks()[0].paused, false);
-    const rearmed = h.timeouts.slice(before);
-    assert.equal(rearmed.length, 1);
-    assert.equal(rearmed[0].delay, 30_000);
-
-    // Idempotent second resume
-    assert.equal(await execTool(h, { action: "resume", id }), `Cron ${id} is already active.`);
+    assert.equal(h.hasActiveTimer(), false);
   });
 
-  it("pauses and resumes a durable cron and respects peer-written pause state on disk", async () => {
+  it("treats a repeated pause on a session cron as a no-op", async () => {
+    const cwd = makeTempDir("pi-cron-pause-idem-");
+    const { h } = start(cwd);
+    await execTool(h, { action: "add", description: "ping", task: "/ping", interval_seconds: 30 });
+    const id = `session:${h.cron.getCronTasks()[0].id}`;
+    await execTool(h, { action: "pause", id });
+
+    const out = await execTool(h, { action: "pause", id });
+
+    assert.equal(out, `Cron ${id} is already paused.`);
+    assert.equal(h.hasActiveTimer(), false);
+  });
+
+  it("resumes a paused session cron on a fresh interval without catch-up", async () => {
+    const cwd = makeTempDir("pi-cron-resume-fresh-");
+    const { h } = start(cwd);
+    await execTool(h, { action: "add", description: "ping", task: "/ping", interval_seconds: 30 });
+    const id = `session:${h.cron.getCronTasks()[0].id}`;
+    await execTool(h, { action: "pause", id });
+
+    h.clock.now = NOW + 10 * 60_000;
+    const out = await execTool(h, { action: "resume", id });
+
+    assert.equal(out, `Cron ${id} resumed.`);
+    assert.equal(h.cron.getCronTasks()[0].paused, false);
+    assert.equal(h.cron.getCronTasks()[0].nextRun, NOW + 10 * 60_000 + 30_000);
+  });
+
+  it("treats a repeated resume on an active session cron as a no-op", async () => {
+    const cwd = makeTempDir("pi-cron-resume-idem-");
+    const { h } = start(cwd);
+    await execTool(h, { action: "add", description: "ping", task: "/ping", interval_seconds: 30 });
+    const id = `session:${h.cron.getCronTasks()[0].id}`;
+    const nextRunBefore = h.cron.getCronTasks()[0].nextRun;
+
+    const out = await execTool(h, { action: "resume", id });
+
+    assert.equal(out, `Cron ${id} is already active.`);
+    assert.equal(h.cron.getCronTasks()[0].nextRun, nextRunBefore);
+  });
+
+  it("resumes a durable cron paused by another replica using the peer's latest schedule", async () => {
+    const cwd = makeTempDir("pi-cron-resume-peer-schedule-");
+    const { h, store } = start(cwd, [projectTask(cwd, { intervalMs: 60_000 })]);
+
+    // Peer both pauses the cron and changes its interval from 60s to 180s on disk.
+    fs.writeFileSync(store, JSON.stringify({
+      version: 1,
+      tasks: [projectTask(cwd, { intervalMs: 180_000, paused: true, nextRun: undefined })],
+    }));
+
+    const out = await execTool(h, { action: "resume", id: "persist:job-1" });
+
+    assert.equal(out, "Cron persist:job-1 resumed.");
+    assert.equal(readDurableCronStore(store).tasks[0].paused, false);
+    assert.equal(h.cron.getCronTasks()[0].intervalMs, 180_000);
+    assert.equal(h.cron.getCronTasks()[0].nextRun, NOW + 180_000);
+  });
+
+  it("pauses an active durable cron on disk", async () => {
     const cwd = makeTempDir("pi-cron-pause-durable-");
     const { h, store } = start(cwd, [projectTask(cwd)]);
 
-    // Simulate another replica pausing the cron directly on disk without syncing this replica.
-    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [projectTask(cwd, { paused: true })] }));
+    const out = await execTool(h, { action: "pause", id: "persist:job-1" });
 
-    // Resume on this replica must read disk state first and unpause instead of saying "already active".
-    assert.equal(await execTool(h, { action: "resume", id: "persist:job-1" }), "Cron persist:job-1 resumed.");
-    assert.equal(readDurableCronStore(store).tasks[0].paused, false);
-
-    assert.equal(await execTool(h, { action: "pause", id: "persist:job-1" }), "Cron persist:job-1 paused.");
+    assert.equal(out, "Cron persist:job-1 paused.");
     assert.equal(readDurableCronStore(store).tasks[0].paused, true);
+    assert.equal(h.hasActiveTimer(), false);
   });
 
-  it("reports missing tasks and store errors cleanly on pause/resume", async () => {
-    const cwd = makeTempDir("pi-cron-pause-errors-");
-    const { h, store } = start(cwd, [projectTask(cwd)]);
+  it("returns Task not found for missing or malformed ids on pause or resume", async () => {
+    const cwd = makeTempDir("pi-cron-pause-missing-");
+    const { h } = start(cwd, [projectTask(cwd)]);
 
     assert.equal(await execTool(h, { action: "pause", id: "persist:nope" }), "Task not found.");
     assert.equal(await execTool(h, { action: "resume", id: "session:nope" }), "Task not found.");
     assert.equal(await execTool(h, { action: "pause", id: "bad-id" }), "Task not found.");
+  });
 
-    // Replace store file with a directory to force read/write failure.
-    const armed = h.timeouts.at(-1);
+  it("leaves durable state and timer unchanged when a pause write fails", async () => {
+    const cwd = makeTempDir("pi-cron-pause-write-fail-");
+    const { h, store } = start(cwd, [projectTask(cwd)]);
     fs.rmSync(store);
     fs.mkdirSync(store);
-    assert.equal(await execTool(h, { action: "pause", id: "persist:job-1" }), "Error: Failed to pause cron.");
+
+    const out = await execTool(h, { action: "pause", id: "persist:job-1" });
+
+    assert.equal(out, "Error: Failed to pause cron.");
     assert.equal(h.cron.getCronTasks()[0].paused, undefined);
-    assert.notEqual(armed.cleared, true);
+    assert.equal(h.hasActiveTimer(), true);
   });
 });

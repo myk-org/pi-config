@@ -76,6 +76,12 @@ function syncTaskFields(target: CronTask, source: CronTask): void {
   target.nextRun = source.nextRun;
   target.leader = source.leader;
 }
+function sameSchedule(
+  a: Pick<CronTask, "intervalMs" | "atHour" | "atMinute">,
+  b: Pick<CronTask, "intervalMs" | "atHour" | "atMinute">,
+): boolean {
+  return a.intervalMs === b.intervalMs && a.atHour === b.atHour && a.atMinute === b.atMinute;
+}
 function projectStore(cwd: string) { return path.join(cwd, ".pi", "cron", "crons.json"); }
 function validateSchedule(details: any) {
   const interval = details.interval_seconds;
@@ -153,8 +159,8 @@ export function decideCronArm(task: { paused?: boolean; scope: CronScope; leader
   return "arm";
 }
 
-export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronTasks: () => CronTask[]; togglePaused: (id: string) => CronPauseResult } {
-  if (process.env.PI_SUBAGENT_CHILD === "1") return { getCronTasks: () => [], togglePaused: () => ({ ok: false, paused: false }) };
+export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronTasks: () => CronTask[]; togglePaused: (id: string) => CronPauseResult; syncProjectCrons: () => void } {
+  if (process.env.PI_SUBAGENT_CHILD === "1") return { getCronTasks: () => [], togglePaused: () => ({ ok: false, paused: false }), syncProjectCrons: () => {} };
   const tasks = new Map<string, CronTask>(); const timers = new Map<string, Timer>();
   currentCronTasks = () => tasks.values();
   const owned = new Map<string, CronLockOwner>(); const instanceId = randomUUID(); let ctx: any; let watchers: fs.FSWatcher[] = []; let health: ReturnType<typeof setInterval> | undefined;
@@ -175,11 +181,28 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     try { if (ctx?.hasUI) setSlot("crons", formatCronStatusSlot([...tasks.values()], ctx.ui.theme), ctx); } catch {}
     pi.events.emit("pidash:cron-status", { count: tasks.size, tasks: [...tasks.values()].map(t => ({ id: qualifyCronId(t), scope: t.scope, description: t.description, schedule: formatCronSchedule(t), lastRun: t.lastRun, nextRun: t.nextRun, leader: t.leader, paused: t.paused === true })) });
   }
-  /** Persist run timestamps without clobbering stored definition fields or `paused` written by a peer (#1089, #1381). */
-  function persist(task: CronTask): boolean {
+  /** Persist run timestamps without clobbering peer edits, `paused`, or a changed schedule (#1089, #1381). */
+  function persist(task: CronTask, kind: "lastRun" | "nextRun"): boolean {
     try {
       if (task.scope === "session") { if (sessionStore) writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session")); return true; }
-      mutateDurableCronStore(projectStore(task.cwd), old => old.map(t => t.id === task.id ? { ...t, lastRun: task.lastRun, nextRun: task.nextRun } as DurableCronTask : t));
+      const file = projectStore(task.cwd);
+      const owner = owned.get(file);
+      if (!task.leader || !owner || !isLeaderLockCurrent(file, owner)) {
+        log.warn("cron_persist_fenced", { id: qualifyCronId(task), kind, reason: "leader_lease_lost" });
+        return false;
+      }
+      let scheduleMismatch = false;
+      mutateDurableCronStore(file, old => old.map(t => {
+        if (t.id !== task.id) return t;
+        if (kind === "lastRun") return { ...t, lastRun: task.lastRun } as DurableCronTask;
+        if (!sameSchedule(t, task)) { scheduleMismatch = true; return t; }
+        return { ...t, nextRun: task.nextRun } as DurableCronTask;
+      }));
+      if (scheduleMismatch) {
+        log.info("cron_persist_schedule_mismatch", { id: qualifyCronId(task) });
+        syncStore("project", file);
+        return false;
+      }
       return true;
     } catch (error: any) { log.error("cron_persist_failed", qualifyCronId(task), error?.message || error); return false; }
   }
@@ -192,7 +215,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     } catch (error: any) { log.error("cron_pause_write_failed", { id: qualifyCronId(task), paused, reason: error?.message || error }); return false; }
   }
   type StoredTaskState = "active" | "paused" | "removed" | "read_error";
-  /** Re-read a durable task's record so peer pauses, removals, and transient read errors stay distinct. */
+  /** Re-read and validate a durable task's record so peer edits, pauses, removals, and read errors stay accurate. */
   function storedTaskState(task: CronTask): StoredTaskState {
     if (!durable(task.scope)) return task.paused === true ? "paused" : "active";
     const file = projectStore(task.cwd);
@@ -206,11 +229,12 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       log.debug("cron_record_missing", { id: qualifyCronId(task), file, status: outcome.status });
       return "removed";
     }
-    if (typeof stored.task === "string") task.task = stored.task;
-    if (typeof stored.description === "string") task.description = stored.description;
-    task.model = typeof stored.model === "string" ? stored.model : undefined;
-    task.paused = stored.paused === true;
-    return task.paused ? "paused" : "active";
+    try { validateDurableCronTask(stored); } catch (error: any) {
+      log.warn("cron_store_invalid_record", { id: qualifyCronId(task), file, reason: error?.message || error });
+      return "read_error";
+    }
+    syncTaskFields(task, { ...stored, leader: task.leader });
+    return task.paused === true ? "paused" : "active";
   }
   async function execute(task: CronTask, isCurrent: () => boolean) {
     try {
@@ -221,7 +245,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
           election(); return;
         }
       }
-      task.lastRun = Date.now(); persist(task); updateStatus(); log.info("cron_execute", qualifyCronId(task));
+      task.lastRun = Date.now(); persist(task, "lastRun"); updateStatus(); log.info("cron_execute", qualifyCronId(task));
       const cmd = task.task.trim();
       if (cmd.startsWith("/")) {
         if (durable(task.scope) && !refreshLeaderLock(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) {
@@ -230,8 +254,6 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
         }
         pi.sendUserMessage(cmd, { deliverAs: "followUp" }); return;
       }
-      const explicit = parseModelOverride(task.model);
-      log.debug("cron_dispatch", { id: qualifyCronId(task), model: task.model || "inherit" });
       const { discoverAgents } = await import("./agents.js");
       if (!isCurrent()) { log.debug("cron_execution_fenced", { id: qualifyCronId(task), reason: "stale_timer" }); return; }
       const stateAfterDiscovery = storedTaskState(task);
@@ -240,12 +262,22 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
         (stateAfterDiscovery === "read_error" ? log.warn : log.debug)("cron_execution_fenced", { id: qualifyCronId(task), reason: stateAfterDiscovery });
         return;
       }
+      const liveCmd = task.task.trim();
+      if (liveCmd.startsWith("/")) {
+        if (durable(task.scope) && !refreshLeaderLock(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) {
+          log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
+          election(); return;
+        }
+        pi.sendUserMessage(liveCmd, { deliverAs: "followUp" }); return;
+      }
+      const liveExplicit = parseModelOverride(task.model);
+      log.debug("cron_dispatch", { id: qualifyCronId(task), model: task.model || "inherit" });
       const { agents } = discoverAgents(task.cwd, "user");
       if (durable(task.scope) && !refreshLeaderLock(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) {
         log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
         election(); return;
       }
-      spawnAsyncAgent("worker", cmd, task.cwd, agents, { name: `Cron: ${task.description.slice(0, 40)}`, ...(explicit ? { explicit } : {}) });
+      spawnAsyncAgent("worker", liveCmd, task.cwd, agents, { name: `Cron: ${task.description.slice(0, 40)}`, ...(liveExplicit ? { explicit: liveExplicit } : {}) });
     } catch (error: any) { log.error("cron_execute_failed", qualifyCronId(task), error?.message || error); }
   }
   function stop(id: string) { const timer = timers.get(id); if (timer) { clearTimeout(timer as any); clearInterval(timer as any); timers.delete(id); } }
@@ -280,7 +312,9 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
         finally { if (timers.get(task.id) === timer) timers.delete(task.id); }
       };
       const timer = setTimeout(fire, delay);
-      task.nextRun = runAt; if (persistRun) persist(task); updateStatus(); timer.unref?.(); timers.set(task.id, timer);
+      task.nextRun = runAt; timer.unref?.(); timers.set(task.id, timer);
+      if (persistRun) persist(task, "nextRun");
+      updateStatus();
     };
     schedule();
   }
@@ -333,7 +367,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     // We may already own the relevant lock; schedule synchronously rather than waiting for fs.watch.
     if (scope === "session" || (owned.has(projectStore(task.cwd)) && isLeaderLockCurrent(projectStore(task.cwd), owned.get(projectStore(task.cwd))!))) { task.leader = true; start(task); }
     else election();
-    if (scope === "session") persist(task);
+    if (scope === "session") persist(task, "nextRun");
     updateStatus(); log.info("cron_created", { scope, id: qualifyCronId(task) }); return task;
   }
   function edit(qualified: string, details: any): CronTask | null {
@@ -344,8 +378,14 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       if (!existing || existing.scope !== "session") return null;
       const { updated, scheduleChanged } = applyCronPatch(existing, details);
       validateSessionCronTask(updated);
+      // Persist the patched snapshot BEFORE mutating live memory so a failed write leaves state intact.
+      if (sessionStore) {
+        writeSessionTasks(
+          sessionStore,
+          [...tasks.values()].filter(t => t.scope === "session").map(t => t.id === existing.id ? updated : t),
+        );
+      }
       syncTaskFields(existing, updated);
-      if (sessionStore) writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session"));
       if (scheduleChanged) start(existing);
       updateStatus();
       log.info("cron_edited", { scope: "session", id: qualifyCronId(existing), scheduleChanged });
@@ -394,15 +434,18 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       task = tasks.get(parsed.id);
     }
     if (!task || task.scope !== parsed.scope) { log.warn("cron_pause_missing", { id: qualified }); return { ok: false, paused: false, notFound: true }; }
+    let scheduleChanged = false;
     if (durable(task.scope)) {
+      const prevSchedule = { intervalMs: task.intervalMs, atHour: task.atHour, atMinute: task.atMinute };
       const state = storedTaskState(task);
       if (state === "removed") { stop(task.id); tasks.delete(task.id); updateStatus(); log.warn("cron_pause_missing", { id: qualified }); return { ok: false, paused: false, notFound: true }; }
       if (state === "read_error") { log.error("cron_pause_unchanged", { id: qualifyCronId(task), paused }); return { ok: false, paused: task.paused === true }; }
+      scheduleChanged = !sameSchedule(prevSchedule, task);
     }
     const currentPaused = task.paused === true;
     if (currentPaused === paused) {
       if (paused && timers.has(task.id)) { stop(task.id); updateStatus(); }
-      else if (!paused && decideCronArm(task) === "arm" && !timers.has(task.id)) { task.nextRun = undefined; start(task); updateStatus(); }
+      else if (!paused && decideCronArm(task) === "arm" && (!timers.has(task.id) || scheduleChanged)) { task.nextRun = undefined; start(task); updateStatus(); }
       log.debug("cron_pause_noop", { id: qualifyCronId(task), paused });
       return { ok: true, paused, already: true };
     }
@@ -487,5 +530,5 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       try { fs.unlinkSync(sessionStore); } catch (error: any) { if (error?.code !== "ENOENT") log.warn("cron session cleanup failed", error?.message || error); }
     }
   });
-  return { getCronTasks: () => [...tasks.values()], togglePaused };
+  return { getCronTasks: () => [...tasks.values()], togglePaused, syncProjectCrons: () => { for (const s of stores()) syncStore(s.scope, s.file); } };
 }
