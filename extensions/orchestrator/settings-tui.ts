@@ -1,7 +1,7 @@
 /**
  * Settings TUI — interactive editor for pi-config settings.
  *
- * /pi-config-settings [scope] opens a fullscreen overlay with category tabs,
+ * /pi-config-settings opens a fullscreen overlay with category tabs,
  * themed header/footer, colored source glyphs, and fuzzy-searchable pickers.
  * Left/Right arrows switch categories. Tab switches project/global scope.
  */
@@ -620,7 +620,7 @@ class SettingsOverlay implements Component {
 
 // ── Main command handler ────────────────────────────────────────
 
-async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: string): Promise<void> {
+async function openSettingsTui(ctx: ExtensionCommandContext): Promise<void> {
   log.info("settings_opened");
   if (!ctx.hasUI) return;
   if (ctx.mode !== "tui") {
@@ -628,7 +628,7 @@ async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: stri
     return;
   }
 
-  const editScope: "project" | "global" = initialScope === "global" ? "global" : "project";
+  const editScope: "project" | "global" = "project";
   const cwd = ctx.cwd;
   const modelRegistry = ctx.modelRegistry;
 
@@ -651,8 +651,7 @@ async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: stri
 // ── Registration ────────────────────────────────────────────
 
 export function registerSettingsTui(pi: ExtensionAPI): void {
-  registerSettingsTuiCommand(pi, async (args, ctx) => {
-    const scope = args?.trim().toLowerCase();
-    await openSettingsTui(ctx, scope || undefined);
+  registerSettingsTuiCommand(pi, async (_args, ctx) => {
+    await openSettingsTui(ctx);
   });
 }

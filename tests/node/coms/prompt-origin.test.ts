@@ -22,13 +22,12 @@ import {
 	buildTellRequest,
 	formatComsInboundType,
 	isUserOrigin,
-	parseComsTell,
 	receivedPromptOrigin,
 	resolvePromptOrigin,
 	sanitizeComsName,
 } from "../../../extensions/coms/coms-shared.js";
 import { sanitizePeerText } from "../../../extensions/coms/peer-text.js";
-import { completeTellArgs, userTargetProblem, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { userTargetProblem } from "../../../extensions/coms/coms-peers.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 describe("resolvePromptOrigin (#1077)", () => {
@@ -155,64 +154,6 @@ describe("userTargetProblem (#1077): the user path refuses ambiguity", () => {
 	it("reports a missing peer, with and without a project scope", () => {
 		assert.equal(userTargetProblem([], "nobody"), 'no live peer "nobody"');
 		assert.equal(userTargetProblem([], "nobody", "repo"), 'no live peer "nobody" in project "repo"');
-	});
-});
-
-describe("completeTellArgs (#1077)", () => {
-	const row = (name: string, project: string): RegistryRow => ({
-		project, name, pid: 1, cwd: "/repo", purpose: "", endpoint: "/tmp/x.sock",
-		busy: false, queueDepth: 0, contextUsedPct: 0, startedAt: null, heartbeatAt: null,
-		origin: null, createdBy: null,
-	});
-	const rows = [row("worker", "repo"), row("worker", "other"), row("reviewer", "repo")];
-
-	it("offers live peer names and the scope flag for the first token", () => {
-		const out = completeTellArgs(rows, ["tell"]);
-		assert.deepEqual(out?.map((o) => o.v), ["worker", "reviewer", "--project "]);
-	});
-
-	it("offers project names once --project is typed", () => {
-		const out = completeTellArgs(rows, ["tell", "--project"]);
-		assert.deepEqual(out?.map((o) => o.v), ["repo", "other"]);
-	});
-
-	it("offers only the scoped project's peers after --project <p>", () => {
-		const out = completeTellArgs(rows, ["tell", "--project", "repo"]);
-		assert.deepEqual(out?.map((o) => o.v), ["worker", "reviewer"]);
-	});
-
-	it("offers nothing while the message is being typed", () => {
-		assert.equal(completeTellArgs(rows, ["tell", "worker", "rerun"]), null);
-	});
-});
-
-describe("parseComsTell (#1077)", () => {
-	it("reads peer and message", () => {
-		assert.deepEqual(parseComsTell(" worker rerun the failing suite"), {
-			peer: "worker",
-			message: "rerun the failing suite",
-		});
-	});
-
-	it("keeps the message text intact — spaces, dashes, quotes", () => {
-		assert.deepEqual(parseComsTell(" worker go ahead -- I approved it, don't wait"), {
-			peer: "worker",
-			message: "go ahead -- I approved it, don't wait",
-		});
-	});
-
-	it("scopes with --project", () => {
-		assert.deepEqual(parseComsTell(" --project other-repo worker ship it"), {
-			peer: "worker",
-			project: "other-repo",
-			message: "ship it",
-		});
-	});
-
-	it("rejects a missing peer or message", () => {
-		assert.equal(parseComsTell(""), null);
-		assert.equal(parseComsTell(" worker"), null);
-		assert.equal(parseComsTell(" worker    "), null);
 	});
 });
 

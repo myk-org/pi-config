@@ -92,30 +92,13 @@ describe("pitasks pidash bridge", () => {
     assert.equal(tasksPayload(env.captured).find(t => t.id === task.id)?.completedBy, "user");
   });
 
-  it("text completion sends one follow-up notice for an owner task", async () => {
-    const task = taskStore.create("owner step", "", { type: "local", origin: "user", session: "", project: "" }, undefined, undefined, "user");
-    const messages: any[] = [];
-    env.pi.sendMessage = (message: any, options: any) => messages.push({ message, options });
-    const handler = env.captured.commands.get("tasks").handler;
-    await handler(`done ${task.id}`, { ui: { notify() {} } });
-    await handler(`done ${task.id}`, { ui: { notify() {} } });
-    assert.equal(taskStore.get(task.id)?.completedBy, "user");
-    assert.equal(messages.length, 1);
-    assert.deepEqual(messages[0].options, { triggerTurn: true, deliverAs: "followUp" });
-  });
-
-  it("does not retry a failed completion notice", async () => {
-    const task = taskStore.create("owner step", "", { type: "local", origin: "user", session: "", project: "" }, undefined, undefined, "user");
-    let sends = 0;
-    env.pi.sendMessage = () => { sends++; throw new Error("submission failed"); };
+  it("zero-arg /tasks has no argument completions and renders plain text without UI", async () => {
+    const task = createTask("headless step", "");
     const notices: string[] = [];
-    const handler = env.captured.commands.get("tasks").handler;
-    const ctx = { ui: { notify: (message: string) => notices.push(message) } };
-    await handler(`done ${task.id}`, ctx);
-    await handler(`done ${task.id}`, ctx);
-    assert.equal(sends, 1);
-    assert.equal(taskStore.get(task.id)?.status, "completed");
-    assert.ok(notices.some(message => message.includes("notice could not be submitted")));
+    const cmd = env.captured.commands.get("tasks");
+    assert.equal(cmd.getArgumentCompletions, undefined);
+    await cmd.handler("", { hasUI: false, ui: { notify: (message: string) => notices.push(message) } });
+    assert.match(notices[0] ?? "", new RegExp(`#${task.id}.*headless step`));
   });
 
   for (const transition of [autoCompleteTask, autoMarkInProgress]) {

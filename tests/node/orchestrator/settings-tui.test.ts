@@ -1580,4 +1580,15 @@ describe("settings-tui snapshot & lazy metadata (#1267)", () => {
     buildSettingItems(tmpDir, "project", stubTheme, fakeRegistry);
     assert.equal(getAvailableCalls, 1);
   });
+
+  it("declares dream_auto_enable under Memory group with default true (#1392)", () => {
+    const def = SETTINGS_KEYS.dream_auto_enable;
+    assert.ok(def);
+    assert.equal(def.type, "bool");
+    assert.equal(def.default, true);
+    assert.equal(def.env, "PI_DREAM_AUTO_ENABLE");
+    assert.equal(def.group, "Memory");
+    const memCat = CATEGORIES.find((c) => c.label === "Memory");
+    assert.ok(memCat?.keys.includes("dream_auto_enable"));
+  });
 });

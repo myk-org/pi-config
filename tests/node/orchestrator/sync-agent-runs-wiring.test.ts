@@ -104,7 +104,7 @@ function harness() {
             onOpen?.(component, opened);
           },
         })) satisfies ExtensionUIContext["custom"];
-      await commands.get("async-status")!.handler("", { ...ctx, ui: ui(capturing) });
+      await commands.get("async")!.handler("", { ...ctx, ui: ui(capturing) });
       return frame;
     },
   };

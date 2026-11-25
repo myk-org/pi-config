@@ -318,26 +318,26 @@ describe("registerComs lifecycle, /coms-queue gating, and reload reactivation", 
 		return { pi, tools, events, commands, persisted, busListeners, emittedBus, getActive: () => [...activeTools] };
 	}
 
-	it("registers wrapper /coms without an upstream duplicate", () => {
+	it("registers zero-arg /coms without a separate /coms-queue command", () => {
 		const { pi, commands } = makeStatefulPi();
 		registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
 		assert.ok(commands.has("coms"));
-		assert.ok(commands.has("coms-queue"));
-		assert.match(commands.get("coms").description, /start \| stop \| status/);
+		assert.equal(commands.has("coms-queue"), false);
+		assert.equal(commands.get("coms").getArgumentCompletions, undefined);
 	});
 
-	it("gates /coms-queue when COMS runtime is inactive", async () => {
-		const { pi, commands } = makeStatefulPi();
-		registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
+	it("gates inbound queue overlay when COMS runtime is inactive", async () => {
+		const { pi } = makeStatefulPi();
+		const { runtime } = registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
 		const notifies: string[] = [];
-		await commands.get("coms-queue").handler("", {
+		await runtime.openQueueOverlay("", {
 			hasUI: false,
 			ui: { notify: (msg: string) => { notifies.push(msg); } },
 		});
 		assert.ok(notifies.some((m) => m.includes("coms not active")));
 	});
 
-	it("registers one pidash:request-commands listener covering coms commands", async () => {
+	it("registers one pidash:request-commands listener covering /coms", async () => {
 		const { pi, events, busListeners, emittedBus } = makeStatefulPi();
 		registerComs(pi as any, { allowSubagentChild: true, registerSignalHandlers: false });
 
@@ -349,7 +349,7 @@ describe("registerComs lifecycle, /coms-queue gating, and reload reactivation", 
 		const registered = emittedBus
 			.filter((e) => e.channel === "pidash:register-command")
 			.map((e) => (e.data as any)?.name);
-		assert.deepEqual(registered, ["coms", "coms-queue"]);
+		assert.deepEqual(registered, ["coms"]);
 
 		for (const handler of events.get("session_shutdown") ?? []) await handler();
 		assert.equal((busListeners.get("pidash:request-commands") ?? []).length, 0);
@@ -668,17 +668,13 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		});
 	});
 
-	it("toggles gated tools via /coms slash lifecycle", async () => {
-		await withComsTempSession(async ({ commands, getActive, sessionCtx }) => {
+	it("renders plain-text peer list when /coms runs without UI", async () => {
+		await withComsTempSession(async ({ commands, sessionCtx }) => {
+			const notices: string[] = [];
 			const comsCmd = commands.get("coms");
-			await comsCmd.handler("start --cname gate-peer2 --project gate-proj", sessionCtx);
-			for (const name of gatedNames) {
-				assert.equal(getActive().includes(name), true, `${name} should be active after /coms start`);
-			}
-			await comsCmd.handler("stop", sessionCtx);
-			for (const name of gatedNames) {
-				assert.equal(getActive().includes(name), false, `${name} should be inactive after /coms stop`);
-			}
+			await comsCmd.handler("", { ...sessionCtx, hasUI: false, ui: { notify: (msg: string) => notices.push(msg) } });
+			assert.equal(notices.length, 1);
+			assert.match(notices[0], /No peers in project/);
 		});
 	});
 });

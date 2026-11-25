@@ -33,14 +33,12 @@ writing a brand-new `SKILL.md` under `<project>/.pi/skills/<name>/SKILL.md` (in 
 a linked worktree) without it automatically stamps `skill-maintenance: auto` and the maintainer instruction
 on write.
 
-## `/adopt-skill <name>`
+## `/adopt-skill`
 
-Marks any non-package skill loaded into the session (project, user-global, `.agents/skills/`, or symlinked
-shared skill). Idempotent, and autocomplete lists unmarked adoptable skills with their scope
-(`project — mark for maintenance`, `user — mark for maintenance`).
+Opens a zero-arg fullscreen TUI overlay listing all adoptable non-package skills loaded into the session (project, user-global, `.agents/skills/`, or symlinked shared skills), showing each skill's `maintained` vs `unmarked` status. Press `Space` to multi-select and `a` or `Enter` to adopt one or more selected skills at once (or use the `skill_adopt` tool programmatically).
 
 ```text
-/adopt-skill searxng
+/adopt-skill
 ```
 
 It inserts `skill-maintenance: auto` into the frontmatter (creating frontmatter when the file has none) and

@@ -389,45 +389,6 @@ export function resolveKillScope(
   return { name, project: project || undefined };
 }
 
-/** The `--all` / `--project` / default scope of `/coms list`. */
-export function resolveListScope(parts: string[], ownProject: string): string | undefined {
-  if (parts.includes("--all")) return undefined;
-  const index = parts.indexOf("--project");
-  const explicit = index >= 0 ? (parts[index + 1] ?? "").trim() : "";
-  // `--project *` is the same request as `--all`; treating it as a literal project name showed an
-  // empty view while kill-all in that view covered every project.
-  if (explicit === "*") return undefined;
-  return explicit || ownProject || undefined;
-}
-
-/** `/coms tell` argument completions (#1077). `completed` is the token list WITHOUT the token being
- *  typed, exactly as `getArgumentCompletions` splits it. Same live rows `kill` completes from, so a
- *  gone peer never completes; `null` means "nothing to offer here" (the message body). */
-export function completeTellArgs(
-  liveRows: RegistryRow[],
-  completed: string[],
-): Array<{ v: string; l: string; d: string }> | null {
-  const projectIndex = completed.indexOf("--project");
-  const scope = projectIndex >= 0 ? (completed[projectIndex + 1] ?? "").trim() : "";
-  if (completed.length === 1) {
-    const names = [...new Set(liveRows.map((row) => row.name))];
-    return [
-      ...names.map((n) => ({ v: n, l: n, d: "Message this peer as the user" })),
-      { v: "--project ", l: "--project", d: "Scope the peer name to one project" },
-    ];
-  }
-  const scoped = scope && scope !== "*" ? liveRows.filter((row) => row.project === scope) : liveRows;
-  if (projectIndex >= 0 && !scope) {
-    return [...new Set(liveRows.map((row) => row.project))]
-      .map((p) => ({ v: p, l: p, d: "Restrict to this project" }));
-  }
-  if (projectIndex >= 0 && completed.length === projectIndex + 2) {
-    return [...new Set(scoped.map((row) => row.name))]
-      .map((n) => ({ v: n, l: n, d: `Message this peer in ${scope}` }));
-  }
-  return null;
-}
-
 /** Why the user path may not send to `found` (#1077): null means exactly one candidate, so send
  *  it. A human aiming at one peer must never hit another, so two candidates is a refusal naming
  *  them — not the agent tools' "pick the freshest" shortcut. */

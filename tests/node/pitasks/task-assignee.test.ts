@@ -15,7 +15,6 @@ import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
 import {
 	COMPLETION_NOTE_MAX,
 	formatTaskRowLine,
-	parseTasksCommand,
 	planTaskCompletion,
 	selectTaskRows,
 	sortTaskRows,
@@ -273,11 +272,6 @@ describe("the owner's tasks never nag (#1090)", () => {
 });
 
 describe("the mine filter (#1090)", () => {
-	it("parses /tasks mine", () => {
-		assert.deepEqual(parseTasksCommand("mine"), { kind: "list", mine: true });
-		assert.deepEqual(parseTasksCommand("mine extra"), { kind: "usage" });
-	});
-
 	it("keeps only the owner's rows", () => {
 		const tasks = [
 			task({ id: "1" }),

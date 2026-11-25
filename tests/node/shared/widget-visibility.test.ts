@@ -34,7 +34,6 @@ import {
 } from "../../../extensions/orchestrator/project-settings.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
-import { parseTasksCommand, TASKS_HINT, TASKS_USAGE } from "../../../extensions/pitasks/tasks-view.js";
 import pitasks from "../../../extensions/pitasks/index.js";
 import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
 import orchestrator from "../../../extensions/orchestrator/index.js";
@@ -571,20 +570,7 @@ describe("extension widget command wiring", () => {
     rmSync(globalDir, { recursive: true, force: true });
   });
 
-  it("parses /tasks widget subcommands with usage strings", () => {
-    assert.deepEqual(parseTasksCommand("widget"), { kind: "widget", action: "toggle" });
-    assert.deepEqual(parseTasksCommand("widget collapse"), { kind: "widget", action: "collapsed" });
-    assert.deepEqual(parseTasksCommand("widget hide"), { kind: "widget", action: "collapsed" });
-    assert.deepEqual(parseTasksCommand("widget expand"), { kind: "widget", action: "expanded" });
-    assert.deepEqual(parseTasksCommand("widget show"), { kind: "widget", action: "expanded" });
-    assert.deepEqual(parseTasksCommand("widget toggle"), { kind: "widget", action: "toggle" });
-    assert.deepEqual(parseTasksCommand("widget bogus"), { kind: "usage" });
-    assert.deepEqual(parseTasksCommand("widget collapse extra"), { kind: "usage" });
-    assert.match(TASKS_USAGE, /widget \[expand\|collapse\|toggle\]/);
-    assert.match(TASKS_HINT, /widget \[expand\|collapse\|toggle\]/);
-  });
-
-  it("wires pitasks shortcut with /tasks widget command autocomplete", async () => {
+  it("wires pitasks shortcut and zero-arg /tasks command", async () => {
     const harness = createFakePi();
     withSubagentChildEnv(undefined, () => {
       pitasks(harness.pi);
@@ -594,17 +580,10 @@ describe("extension widget command wiring", () => {
     const tasksCmd = harness.commands.get("tasks");
     assert.ok(shortcut);
     assert.ok(tasksCmd);
+    assert.equal(tasksCmd.getArgumentCompletions, undefined);
 
     try {
-      const topCompletions = tasksCmd.getArgumentCompletions("");
-      assert.ok(topCompletions?.some((item: any) => item.label === "widget"));
-      const widgetCompletions = tasksCmd.getArgumentCompletions("widget ");
-      assert.deepEqual(
-        widgetCompletions?.map((item: any) => item.label),
-        ["expand", "collapse", "toggle"],
-      );
-
-      const { ctx, notifications } = makeFakeCtx(tempDir);
+      const { ctx } = makeFakeCtx(tempDir);
       for (const fn of harness.lifecycleHandlers.get("session_start") ?? []) {
         await fn({ reason: "startup" }, ctx);
       }
@@ -613,14 +592,6 @@ describe("extension widget command wiring", () => {
       assert.equal(getWidgetMode("tasks", tempDir), "collapsed");
       await shortcut.handler(ctx);
       assert.equal(getWidgetMode("tasks", tempDir), "expanded");
-
-      await tasksCmd.handler("widget collapse", ctx);
-      assert.equal(getWidgetMode("tasks", tempDir), "collapsed");
-      assert.match(notifications.at(-1)?.text ?? "", /Tasks widget: collapsed/);
-
-      await tasksCmd.handler("widget expand", ctx);
-      assert.equal(getWidgetMode("tasks", tempDir), "expanded");
-      assert.match(notifications.at(-1)?.text ?? "", /Tasks widget: expanded/);
     } finally {
       for (const fn of harness.lifecycleHandlers.get("session_shutdown") ?? []) {
         await fn({}, {});
@@ -679,7 +650,7 @@ describe("extension widget command wiring", () => {
     assert.equal(harness.shortcuts.size, 0);
   });
 
-  it("wires coms shortcut with /coms widget command autocomplete", async () => {
+  it("wires coms shortcut and zero-arg /coms command", async () => {
     const harness = createFakePi();
     const emitted: Array<{ widget: string; mode: string; cwd?: string }> = [];
     harness.pi.events.on(WIDGET_MODE_CHANGED_EVENT, (data: unknown) => {
@@ -694,30 +665,12 @@ describe("extension widget command wiring", () => {
     const comsCmd = harness.commands.get("coms");
     assert.ok(shortcut);
     assert.ok(comsCmd);
+    assert.equal(comsCmd.getArgumentCompletions, undefined);
 
-    const topCompletions = comsCmd.getArgumentCompletions("");
-    assert.ok(topCompletions?.some((item: any) => item.label === "widget"));
-    const widgetCompletions = comsCmd.getArgumentCompletions("widget ");
-    assert.deepEqual(
-      widgetCompletions?.map((item: any) => item.label),
-      ["expand", "collapse", "toggle"],
-    );
-
-    const { ctx, notifications } = makeFakeCtx(tempDir);
+    const { ctx } = makeFakeCtx(tempDir);
     await shortcut.handler(ctx);
     assert.equal(getWidgetMode("coms", tempDir), "collapsed");
     assert.deepEqual(emitted.at(-1), { widget: "coms", mode: "collapsed", cwd: tempDir });
-
-    await comsCmd.handler("widget expand", ctx);
-    assert.equal(getWidgetMode("coms", tempDir), "expanded");
-    assert.match(notifications.at(-1)?.text ?? "", /coms widget: expanded/);
-
-    await comsCmd.handler("widget hide", ctx);
-    assert.equal(getWidgetMode("coms", tempDir), "collapsed");
-    assert.match(notifications.at(-1)?.text ?? "", /coms widget: collapsed/);
-
-    await comsCmd.handler("widget bogus", ctx);
-    assert.equal(notifications.at(-1)?.level, "warning");
   });
 
   it("skips orchestrator widget_all_shortcut when PI_SUBAGENT_CHILD=1", () => {

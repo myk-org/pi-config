@@ -8,11 +8,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { fuzzyFilter } from "@earendil-works/pi-tui";
 import * as path from "node:path";
 import * as os from "node:os";
-import { parseFlags, tokenizeArgs, persistState, parseComsTell, syncComsActiveTools } from "./coms-shared.js";
+import { parseFlags, persistState, syncComsActiveTools } from "./coms-shared.js";
 import {
     createComsPeerRuntime,
     type ComsActivationOrigin,
@@ -22,12 +20,10 @@ import {
 import { ComsRegistry, isRegistryRowAlive, resolveComsDir } from "./coms-registry.js";
 import { resolveBridgeSessionKey, setComsActive } from "../shared/session-bridge.js";
 import { createLogger } from "../shared/logger.js";
-import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { emitIfLive, isBrowserDispatch, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
     WIDGET_MODE_CHANGED_EVENT,
-    applyWidgetAction,
     cycleWidgetMode,
-    parseWidgetCommandAction,
     registerWidgetShortcut,
 } from "../shared/widget-visibility.js";
 import { Type } from "typebox";
@@ -36,7 +32,6 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
     activationVerified,
-    completeTellArgs,
     filterRegistry,
     formatPeerTable,
     pickSupervisionRecord,
@@ -44,7 +39,6 @@ import {
     planActiveClaim,
     planPeerKills,
     resolveKillScope,
-    resolveListScope,
     resolvePeerScope,
     supervisedPeerKeys,
     type RegistryRow,
@@ -53,12 +47,6 @@ import { openComsPeersOverlay } from "./coms-peers-ui.js";
 import { requestDescribe } from "./coms-describe.js";
 
 const log = createLogger("coms");
-
-function fuzzy(items: AutocompleteItem[], query: string): AutocompleteItem[] | null {
-    if (!query.trim()) return items.length > 0 ? items : null;
-    const result = fuzzyFilter(items, query, i => `${i.label} ${i.description || ""}`);
-    return result.length > 0 ? result : null;
-}
 
 function mapToFlagOverrides(values: Map<string, any>): ComsPeerFlagOverrides {
     const out: ComsPeerFlagOverrides = {};
@@ -110,7 +98,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
 
     const runtime = createComsPeerRuntime(pi, {
         deferred: true,
-        inactiveMessage: "⚠️ coms not active. Run `/coms start` first.",
+        inactiveMessage: "⚠️ coms not active. Call `coms_start` first.",
         getFlag: (name) => flagValues.get(name),
         comsDir: options.comsDir,
         sessionId: options.sessionId,
@@ -153,10 +141,6 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         try {
             const registerWithPidash = () => {
                 pi.events.emit("pidash:register-command", { name: "coms", handler: comsCmdHandler });
-                pi.events.emit("pidash:register-command", {
-                    name: "coms-queue",
-                    handler: (args: string, ctx: any) => runtime.openQueueOverlay(args, ctx),
-                });
             };
             const unsub = pi.events.on("pidash:request-commands", registerWithPidash);
             if (typeof unsub === "function") pidashUnsubscribe = unsub;
@@ -231,14 +215,15 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
 
         // `pi --coms …`: a headless peer boots itself, no slash command and no terminal.
         if (pi.getFlag("coms") === true) {
-            const parts = ["start"];
+            const flagParts: string[] = [];
             for (const flagName of ["cname", "purpose", "project", "color"] as const) {
                 const value = pi.getFlag(flagName);
-                if (typeof value === "string" && value) parts.push(`--${flagName}`, value);
+                if (typeof value === "string" && value) flagParts.push(`--${flagName}`, value);
             }
-            if (pi.getFlag("explicit") === true) parts.push("--explicit");
-            log.info("coms autostart from --coms", { args: parts.join(" ") });
-            await comsCmdHandler(parts.join(" "), ctx, "cli");
+            if (pi.getFlag("explicit") === true) flagParts.push("--explicit");
+            log.info("coms autostart from --coms", { args: flagParts.join(" ") });
+            const result = await activateComs(flagParts, ctx, "cli");
+            if (!result.ok) log.warn("coms_autostart_failed", { message: result.message });
         }
     });
 
@@ -368,7 +353,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     ): Promise<{ ok: true } | { ok: false; reason: string; code: string }> => {
         if (!runtime.isActive()) {
             log.warn("coms_tell_unavailable", { target });
-            return { ok: false, code: "coms-inactive", reason: "coms is not active — run /coms start first." };
+            return { ok: false, code: "coms-inactive", reason: "coms is not active — activate with coms_start first." };
         }
         try {
             const result = await runtime.sendAsUser({
@@ -387,155 +372,37 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         }
     };
 
-    const comsCmdHandler = async (args: string, ctx: any, entry: ComsActivationOrigin = "slash") => {
-        const trimmed = (args || "").trim();
-        const parts = tokenizeArgs(trimmed);
-        const subcommand = parts[0] || "status";
-
-        if (subcommand === "tell") {
-            const tell = parseComsTell(trimmed.slice("tell".length));
-            if (!tell) {
-                try { ctx.ui.notify("Usage: /coms tell [--project <p>] <peer> <message>", "warning"); } catch {}
-                return;
-            }
-            if (!active) {
-                try { ctx.ui.notify("📡 coms not active — run /coms start first.", "warning"); } catch {}
-                return;
-            }
-            const result = await tellPeer(tell.peer, tell.message, tell.project);
-            const text = result.ok ? `📡 sent to ${tell.peer}` : `⚠️ ${result.reason}`;
-            try { ctx.ui.notify(text, result.ok ? "info" : "error"); } catch {}
+    const comsCmdHandler = async (_args: string, ctx: any) => {
+        log.debug("coms_command_open", { hasUI: !!ctx?.hasUI, browser: isBrowserDispatch(ctx), active });
+        if (!ctx?.hasUI || isBrowserDispatch(ctx)) {
+            try { ctx?.ui?.notify?.(listPeers({ project: ownProject() }), "info"); } catch {}
             return;
         }
-        if (subcommand === "start") {
-            const result = await activateComs(parts.slice(1), ctx, entry);
-            try { ctx.ui.notify(result.message, result.ok ? "info" : "error"); } catch {}
-            return;
-        }
-        if (subcommand === "stop") {
-            if (!active) {
-                try { ctx.ui.notify("📡 coms not active", "info"); } catch {}
-                return;
-            }
-            try {
-                await runtime.stop();
-            } catch (err: unknown) {
-                const msg = err instanceof Error ? err.message : String(err);
-                const error = err instanceof Error ? err : new Error(msg);
-                log.warn("/coms stop: session shutdown threw", msg, error);
-            }
-            active = false;
-            syncComsActive(false, ctx);
-            syncComsActiveTools(pi, gatedTools, false);
-            persistCurrentState();
-            try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
-        } else if (subcommand === "list" || subcommand === "peers") {
-            const projectScope = resolveListScope(parts, ownProject());
-            log.debug("coms_list_scope", { project: projectScope ?? "*" });
-            if (ctx?.hasUI) {
-                await openComsPeersOverlay(ctx, {
-                    listPeers: () => filterRegistry(attachCreatedBy(getRegistry().readLiveRows()), { project: projectScope }),
-                    // #1083: the drilldown asks the PEER for its own state. No reply inside the
-                    // timeout is `unknown` — never a filesystem scan of another process.
-                    describePeer: (row) => requestDescribe(row.endpoint),
-                    killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
-                    killAll: () => {
-                        const scope = resolveKillScope({ all: true, project: projectScope }, ownProject(), log);
-                        if (scope.refused) return scope.refused;
-                        return killPeers(scope).text;
-                    },
-                    tellPeer: (request) => tellPeer(request.target, request.prompt, request.project, request.expectedEndpoint),
-                });
-                return;
-            }
-            try { ctx.ui.notify(listPeers({ project: projectScope }), "info"); } catch {}
-        } else if (subcommand === "kill") {
-            const what = (parts[1] ?? "").trim();
-            const projectIdx = parts.indexOf("--project");
-            if (!what) {
-                try { ctx.ui.notify("Usage: /coms kill <peer-name|all> [--project <p>]", "warning"); } catch {}
-                return;
-            }
-            const scope = resolveKillScope({ name: what === "all" ? undefined : what, project: projectIdx >= 0 ? parts[projectIdx + 1] : undefined, all: what === "all" }, ownProject(), log);
-            if (scope.refused) {
-                try { ctx.ui.notify(scope.refused, "warning"); } catch {}
-                return;
-            }
-            const result = killPeers(scope);
-            try { ctx.ui.notify(result.text, result.killed > 0 ? "info" : "warning"); } catch {}
-        } else if (subcommand === "widget") {
-            if (parts.length > 2) {
-                try { ctx.ui.notify("Usage: /coms widget [expand|collapse|toggle]", "warning"); } catch {}
-                return;
-            }
-            const action = parseWidgetCommandAction(parts[1]);
-            if (!action) {
-                try { ctx.ui.notify("Usage: /coms widget [expand|collapse|toggle]", "warning"); } catch {}
-                return;
-            }
-            const cwd = ctx?.cwd || process.cwd();
-            const next = applyWidgetAction("coms", action, cwd);
-            emitIfLive(pi, WIDGET_MODE_CHANGED_EVENT, { widget: "coms", mode: next, cwd });
-            log.info("coms_widget_mode_updated", { mode: next, action });
-            try { ctx.ui.notify(`📡 coms widget: ${next}`, "info"); } catch {}
-        } else if (subcommand === "status") {
-            try {
-                ctx.ui.notify(active ? "📡 coms: active (P2P)" : "📡 coms: inactive — run /coms start", "info");
-            } catch {}
-        } else {
-            try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status | tell | list | kill | widget`, "warning"); } catch {}
-        }
+        await openComsPeersOverlay(ctx, {
+            listPeers: (scope) =>
+                filterRegistry(attachCreatedBy(getRegistry().readLiveRows()), {
+                    project: scope === "all" ? undefined : ownProject(),
+                }),
+            // #1083: the drilldown asks the PEER for its own state. No reply inside the
+            // timeout is `unknown` — never a filesystem scan of another process.
+            describePeer: (row) => requestDescribe(row.endpoint),
+            killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
+            killAll: (scope) => {
+                const resolved = resolveKillScope(
+                    { all: true, project: scope === "all" ? undefined : ownProject() },
+                    ownProject(),
+                    log,
+                );
+                if (resolved.refused) return resolved.refused;
+                return killPeers(resolved).text;
+            },
+            tellPeer: (request) => tellPeer(request.target, request.prompt, request.project, request.expectedEndpoint),
+            openQueue: () => runtime.openQueueOverlay("", ctx),
+        });
     };
 
     pi.registerCommand("coms", {
-        description: "P2P agent communication: /coms start | stop | status | tell <peer> <message> | list [--all] | kill <name|all> | widget [expand|collapse|toggle]",
-        getArgumentCompletions: (prefix: string) => {
-            const tokens = prefix.trim().split(/\s+/).filter(Boolean);
-            const atNextToken = prefix.endsWith(" ") || tokens.length === 0;
-            const lastPart = atNextToken ? "" : tokens[tokens.length - 1];
-            const completed = atNextToken ? tokens : tokens.slice(0, -1);
-            const base = atNextToken ? prefix : prefix.slice(0, prefix.length - lastPart.length);
-            const mk = (items: { v: string; l: string; d: string }[]) =>
-                fuzzy(items.map(i => ({ value: base + i.v, label: i.l, description: i.d })), lastPart);
-
-            if (completed.length === 0) {
-                return mk([
-                    { v: "start", l: "start", d: "Start P2P agent communication" },
-                    { v: "stop", l: "stop", d: "Stop coms" },
-                    { v: "status", l: "status", d: "Show coms status" },
-                    { v: "tell ", l: "tell", d: "Send a peer a message from YOU (the peer sees it is from the user)" },
-                    { v: "list", l: "list", d: "List spawned peers (name, pids, state)" },
-                    { v: "kill ", l: "kill", d: "Stop a peer: kill <name> | kill all" },
-                    { v: "widget ", l: "widget", d: "Collapse or expand coms widget: expand | collapse | toggle" },
-                ]);
-            }
-            if (completed[0] === "widget" && completed.length === 1) {
-                return mk([
-                    { v: "expand", l: "expand", d: "Show full peer pool widget" },
-                    { v: "collapse", l: "collapse", d: "Collapse to 1-line header with peer counts" },
-                    { v: "toggle", l: "toggle", d: "Toggle between expanded and collapsed" },
-                ]);
-            }
-            if (completed[0] === "kill") {
-                const names = getRegistry().readLiveRows().map((row) => row.name);
-                return mk([...names.map((n) => ({ v: n, l: n, d: "Stop this peer" })), { v: "all", l: "all", d: "Stop every running peer" }]);
-            }
-            if (completed[0] === "tell") {
-                const optionsList = completeTellArgs(getRegistry().readLiveRows(), completed);
-                return optionsList ? mk(optionsList) : null;
-            }
-            if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
-                const used = new Set(completed.filter(p => p.startsWith("--")));
-                return mk([
-                    { v: "--cname ", l: "--cname", d: "Agent name" },
-                    { v: "--purpose ", l: "--purpose", d: "Agent purpose" },
-                    { v: "--project ", l: "--project", d: "Project namespace" },
-                    { v: "--color ", l: "--color", d: "Hex color #RRGGBB" },
-                    { v: "--explicit", l: "--explicit", d: "Hide from auto-discovery" },
-                ].filter(f => !used.has(f.v.trim())));
-            }
-            return null;
-        },
+        description: "Open the coms peers TUI overlay (f scope, q inbound queue, m message, x kill)",
         handler: comsCmdHandler,
     });
 
@@ -740,7 +607,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         log.warn("registering coms_peers/coms_peer_kill failed", e instanceof Error ? e.message : String(e));
     }
 
-    // Single pidash command registration covering both /coms and /coms-queue.
+    // Single pidash command registration for /coms.
     ensurePidashRegistration();
 
     return { runtime, getRegistry };

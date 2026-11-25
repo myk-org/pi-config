@@ -313,17 +313,45 @@ describe("skill_adopt tool (#1384)", () => {
 describe("memory_dream tool (#1384)", () => {
   it("reports initial enabled idle dreaming status", async () => {
     const cwd = makeTempDir("dream-status-");
-    const { pi, tools } = createFakePi();
+    const { pi, tools, commands } = createFakePi();
 
     withSubagentChildEnv(undefined, () => {
       registerDreaming(pi, () => ({ id: "dream-1" }));
     });
+
+    assert.equal(commands.has("dream"), false, "/dream slash command is removed");
+    assert.equal(commands.has("dream-auto"), false, "/dream-auto slash command is removed");
 
     const res = await tools.get("memory_dream").execute("call-1", { action: "status" }, undefined, undefined, { cwd });
     assert.equal(res.details.enabled, true);
     assert.equal(res.details.inFlight, false);
     assert.match(textOf(res), /Auto-dreaming: enabled/);
     assert.match(textOf(res), /Dream in flight: no/);
+  });
+
+  it("honors dream_auto_enable=false from PI_DREAM_AUTO_ENABLE env var", async () => {
+    const cwd = makeTempDir("dream-env-off-");
+    const { pi, tools, emit } = createFakePi();
+    let spawns = 0;
+    const prev = process.env.PI_DREAM_AUTO_ENABLE;
+    process.env.PI_DREAM_AUTO_ENABLE = "false";
+    try {
+      withSubagentChildEnv(undefined, () => {
+        registerDreaming(pi, () => {
+          spawns++;
+          return { id: "dream-x" };
+        });
+      });
+      emit("session_start", { reason: "startup" }, { cwd, mode: "interactive" });
+      const status = await tools.get("memory_dream").execute("call-1", { action: "status" }, undefined, undefined, { cwd });
+      assert.equal(status.details.enabled, false);
+      assert.match(textOf(status), /Auto-dreaming: disabled/);
+      emit("session_shutdown", { reason: "quit" });
+      assert.equal(spawns, 0, "shutdown dream is skipped when dream_auto_enable is false");
+    } finally {
+      if (prev === undefined) delete process.env.PI_DREAM_AUTO_ENABLE;
+      else process.env.PI_DREAM_AUTO_ENABLE = prev;
+    }
   });
 
   it("triggers background consolidation reporting the job id", async () => {

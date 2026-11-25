@@ -650,7 +650,7 @@ export async function runSingleAgent(
     if (stoppedByRegistry) {
       // One row was stopped: return a failed result so the batch's other agents survive and
       // still render, instead of rejecting the whole parallel call.
-      const note = "stopped from /async-status";
+      const note = "stopped from /async";
       cur.exitCode = 1;
       cur.stoppedByRegistry = true;
       cur.stderr = cur.stderr.trim() ? `${cur.stderr.trim()}\n${note}` : note;
@@ -886,7 +886,7 @@ export function registerSubagentTool(
     return {
       content: [{
         type: "text" as const,
-        text: `Async chain started: ${stepName(0)} [${first.id}]${modelInfo}\n${total} step(s) run in sequence — each step receives the previous step's output as {previous}.\nA failed step stops the chain and is named in its result.\nUse /async-status to check progress.`,
+        text: `Async chain started: ${stepName(0)} [${first.id}]${modelInfo}\n${total} step(s) run in sequence — each step receives the previous step's output as {previous}.\nA failed step stops the chain and is named in its result.\nUse /async to check progress.`,
       }],
       details: mkd("chain")([]),
     };
@@ -978,7 +978,7 @@ export function registerSubagentTool(
       const lines: string[] = [];
       if (results.length > 0) lines.push(`Spawned ${results.length} async agents:\n${results.map(r => `- ${r}`).join("\n")}`);
       if (errors.length > 0) lines.push(`Failed:\n${errors.map(e => `- ${e}`).join("\n")}`);
-      lines.push("\nUse /async-status to check progress.");
+      lines.push("\nUse /async to check progress.");
       return {
         content: [{ type: "text" as const, text: lines.join("\n") }],
         details: mkd("single")([]),
@@ -1062,7 +1062,7 @@ export function registerSubagentTool(
     const label = params.name || params.agent;
     const modelInfo = result.model ? ` (${result.model})` : "";
     return {
-      content: [{ type: "text" as const, text: `Async agent spawned: ${label} [${result.id}]${modelInfo}\nUse /async-status to check progress. Results will appear when complete.` }],
+      content: [{ type: "text" as const, text: `Async agent spawned: ${label} [${result.id}]${modelInfo}\nUse /async to check progress. Results will appear when complete.` }],
       details: mkd("single")([]),
     };
   }

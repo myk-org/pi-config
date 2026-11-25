@@ -140,6 +140,104 @@ export type CronPauseResult =
   | { ok: true; paused: boolean }
   | { ok: false; paused: boolean };
 
+/** Outcome of moving a cron between session and durable project scope. */
+export type CronScopeResult =
+  | { ok: true; scope: "session" | "project"; id: string }
+  | { ok: false; scope: "session" | "project"; error?: string };
+
+/** Filter cycle for `/cron` overlay (`f` key). */
+export type CronScopeFilter = "all" | "session" | "persist";
+
+export function nextCronScopeFilter(current: CronScopeFilter): CronScopeFilter {
+  if (current === "all") return "session";
+  if (current === "session") return "persist";
+  return "all";
+}
+
+export function isPersistedCronView(task: Pick<CronStatusTaskView, "id" | "isLocal">): boolean {
+  if (typeof task.isLocal === "boolean") return !task.isLocal;
+  return task.id.startsWith("persist:");
+}
+
+export function filterCronTasksByScope(
+  tasks: readonly CronStatusTaskView[],
+  filter: CronScopeFilter,
+): CronStatusTaskView[] {
+  if (filter === "all") return [...tasks];
+  if (filter === "persist") return tasks.filter((t) => isPersistedCronView(t));
+  return tasks.filter((t) => !isPersistedCronView(t));
+}
+
+export interface CronScheduleInputSpec {
+  interval_seconds?: number;
+  at_hour?: number;
+  at_minute?: number;
+}
+
+/** Parse a concise human schedule string (`30s`, `5m`, `2h`, `1h30m`, `09:30`) for `/cron` TUI add/edit. */
+export function parseCronScheduleInput(
+  raw: string,
+): { ok: true; schedule: CronScheduleInputSpec } | { ok: false; error: string } {
+  const cleaned = raw
+    .trim()
+    .replace(/^(?:daily\s+at|every|at)\s+/i, "")
+    .trim();
+  if (!cleaned) {
+    return { ok: false, error: 'Schedule is required (e.g. "5m", "2h", "30s", or "09:30").' };
+  }
+  const timeMatch = /^(\d{1,2}):(\d{2})$/.exec(cleaned);
+  if (timeMatch) {
+    const hour = Number(timeMatch[1]);
+    const minute = Number(timeMatch[2]);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+      return { ok: false, error: "Time must be between 00:00 and 23:59." };
+    }
+    return { ok: true, schedule: { at_hour: hour, at_minute: minute } };
+  }
+  if (/^\d+$/.test(cleaned)) {
+    const secs = Number(cleaned);
+    if (!Number.isFinite(secs) || secs < 10) {
+      return { ok: false, error: "Interval must be at least 10 seconds." };
+    }
+    return { ok: true, schedule: { interval_seconds: secs } };
+  }
+  const durMatch = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/i.exec(cleaned.replace(/\s+/g, ""));
+  if (durMatch && (durMatch[1] || durMatch[2] || durMatch[3])) {
+    const h = Number(durMatch[1] || 0);
+    const m = Number(durMatch[2] || 0);
+    const s = Number(durMatch[3] || 0);
+    const total = h * 3600 + m * 60 + s;
+    if (!Number.isFinite(total) || total < 10) {
+      return { ok: false, error: "Interval must be at least 10 seconds." };
+    }
+    return { ok: true, schedule: { interval_seconds: total } };
+  }
+  return { ok: false, error: 'Use an interval like "30s", "5m", "2h", or a daily time like "09:30".' };
+}
+
+/** Format an existing cron's schedule for prefilling the `/cron` edit dialog. */
+export function formatCronScheduleInput(task: {
+  intervalMs?: number;
+  atHour?: number;
+  atMinute?: number;
+}): string {
+  if (task.atHour !== undefined) {
+    return `${String(task.atHour).padStart(2, "0")}:${String(task.atMinute ?? 0).padStart(2, "0")}`;
+  }
+  if (task.intervalMs !== undefined) {
+    const total = Math.max(1, Math.round(task.intervalMs / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const parts: string[] = [];
+    if (h > 0) parts.push(`${h}h`);
+    if (m > 0) parts.push(`${m}m`);
+    if (s > 0 || parts.length === 0) parts.push(`${s}s`);
+    return parts.join("");
+  }
+  return "";
+}
+
 /** Detail rows rendered by the cron task overlay, uncolored (label, value). */
 export function cronDetailRows(
   task: CronStatusTaskView,

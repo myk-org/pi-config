@@ -9,13 +9,14 @@ P2P communication system for talking to other pi sessions on the same machine.
 
 | System | Activation | Tool prefix | Transport |
 | --- | --- | --- | --- |
-| **P2P** (coms) | `coms_start` tool (or `/coms start`, or `pi --coms`) | `coms_` | Direct peer-to-peer |
+| **P2P** (coms) | `coms_start` tool (or `pi --coms`) | `coms_` | Direct peer-to-peer |
 
 ## Activation
 
 Call `coms_start` yourself when a task needs another agent — an already-open session enables coms
-with no slash command and no new process. `coms_stop` ends it. `/coms start` and `pi --coms
---cname <name> --project <p>` do the same for humans and for spawned sessions.
+with no slash command and no new process. `coms_stop` ends it. `pi --coms --cname <name>
+--project <p>` starts spawned sessions automatically. Humans inspect peers and the local inbound
+queue via the zero-arg `/coms` TUI (`f` scope, `q` queue, `m` message, `x` kill, `X` kill all).
 
 ## Two different things — do not confuse them
 
@@ -40,8 +41,8 @@ You can grow the pool instead of doing everything yourself:
 | --- | --- |
 | Start a peer as its own real pi, with its own session | `pi --mode rpc --coms --cname <name> --project <p>` under `scripts/coms-peer-supervisor.mjs` (`~/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/`, falling back to this checkout): it holds the peer's stdin, records pids in `~/.pi/coms/peers/<name>.json`, and has no lifetime of its own |
 | Spawn a peer | `coms_peer_spawn` with `cname` (+ optional `purpose`, `project`, `cwd`) — starts a supervised `pi --coms` process with its own session. It registers in ~20-30s; `coms_peers` then lists it. No human needed and no shell command to remember |
-| See spawned peers | `coms_peers` (human: `/coms list`) scoped to THIS project by default; pass `project: "*"` (tool) or `/coms list --all` for every project. `/coms list` overlays like `/async-status`: ↑↓ navigate, x kill, X kill all, plain text when there is no UI |
-| Stop one peer / all peers | `coms_peer_kill` with `name` (add `project` when the name exists in several) or `all:true` (human: `/coms kill <name>` / `/coms kill all`). Only peers a supervisor started are killable — never your own session. |
+| See spawned peers | `coms_peers` (human: `/coms`) scoped to THIS project by default; pass `project: "*"` (tool) or press `f` in `/coms` for every project. `/coms` overlays like `/async`: ↑↓ navigate, Space multi-select, `m` message, `x` kill, `X` kill all, `q` inbound queue, plain text when there is no UI |
+| Stop one peer / all peers | `coms_peer_kill` with `name` (add `project` when the name exists in several) or `all:true` (human: `/coms` → `x` / `X`). Only peers a supervisor started are killable — never your own session. |
 
 Rules for spawning: a peer is an independent process that outlives this session, so **always**
 report what you spawned (`coms_peers` output) and stop peers you no longer need. Never spawn more
@@ -57,7 +58,7 @@ fails. Use `coms_list` for connected peers.
 | Send message / structured tasks | `coms_send` |
 | Poll for response | `coms_get` |
 | Clear / delete / edit / prioritize your queued msgs | `coms_queue_clear` / `coms_queue_delete` / `coms_queue_edit` / `coms_queue_prioritize` |
-| View / kill local inbound queue | `coms_local_queue` (human: `/coms-queue`) |
+| View / kill local inbound queue | `coms_local_queue` (human: `/coms` → `q`) |
 | Create / update / delete / list / get peer tasks | `coms_tasks_create` / `coms_task_update` / `coms_task_delete` / `coms_task_list` / `coms_task_get` |
 
 ## Inbound Messages — How to Reply

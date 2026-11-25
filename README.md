@@ -30,9 +30,9 @@ Single extension that provides:
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async, and async-chain modes); optional `model` param for model override. Chains also run async: every step needs its own `taskId` and `cwd`, each step receives the previous step's output as `{previous}`, and a failed step stops the chain |
 | **`list_models`** | List available models and providers for subagent model override |
 | **Runtime & session tools** | LLM tool parity for user commands: `async_status` (list/inspect jobs & output tail), `session_status` (unified `/status` snapshot), `worktree_status` (`list`/`prune`), `daemon_manage` (`pidash`/`pidiff` status/start/stop/restart), `skill_adopt` (`list`/`adopt`), `memory_dream` (`status`/`run`/`auto_on`/`auto_off`), and `coms_local_queue` (`list`/`kill` own inbound queue) |
-| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`: `x` kills, `Space` multi-selects, `a` kills all). Async applies to chains too: step 1 spawns immediately and each step starts when the previous one ends. |
+| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async`: `x` kills, `Space` multi-selects, `X` kills all). Async applies to chains too: step 1 spawns immediately and each step starts when the previous one ends. |
 | **Default model & thinking restore** | Unified startup session restore (`extensions/providers/session-restore.ts`): cold-start default model restore (`restore-default-model.ts`, gating `startup`\|`resume`, empty-selection `new`, empty `enabledModels`, and trusted project merge) followed by per-model thinking-level persistence (`last-thinking-level.ts`). |
-| **`/async-status` command** | Show status of background agents — select one for live output streaming, multi-select and kill (`x`), or kill everything (`a`) |
+| **`/async` command** | Show status of background agents — select one for live output streaming, multi-select and kill (`x`), or kill everything (`X`) |
 | **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
 | **Python/pip enforcement** | Auto-fixes `python`/`python3` → `uv run python`; blocks `pip`/`pip3` — requires `uv` |
 | **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
@@ -45,15 +45,15 @@ Single extension that provides:
 | **Trail-code integration** | On by default when the `trail` binary is installed. Main agents and subagents query the local code map before raw project navigation: the first project navigation per turn is gated behind a `trail_*` call, guidance is map-first (`trail_find_code` first, `trail_repo_map` once per session), and injected hits carry source. Worktrees resolve the map under `graft/` or `.trail/cache/`, inherit enablement from the main checkout, and seed from it instead of cold-building. Stale maps stay usable and failures fall open. |
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching, live session name updates, reasoning token display |
 | **Pidiff viewer** | Per-project diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules |
-| **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
-| **Skill self-improvement** | Non-blocking skill maintenance across project, user-global, and symlinked shared skills loaded by Pi: `/adopt-skill <name>` marks any non-package skill with `skill-maintenance: auto` (brand-new `.pi/skills/<name>/SKILL.md` writes auto-adopt), a failed adopted skill steers the turn to fix it, and skill edits log to `.pi/data/skill-review.jsonl` with a one-line turn summary (see `docs/skill-self-improvement.md`) |
+| **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory (configured via `dream_auto_enable` and `dream_interval_hours` in `/pi-config-settings`; LLM invokes `memory_dream`) |
+| **Skill self-improvement** | Non-blocking skill maintenance across project, user-global, and symlinked shared skills loaded by Pi: `/adopt-skill` opens a TUI overlay with `Space` multi-select + `a`/`Enter` to mark one or more non-package skills with `skill-maintenance: auto` (brand-new `.pi/skills/<name>/SKILL.md` writes auto-adopt), a failed adopted skill steers the turn to fix it, and skill edits log to `.pi/data/skill-review.jsonl` with a one-line turn summary (see `docs/skill-self-improvement.md`) |
 | **Post-merge PR retrospective** | Opt-in (`pr_retro_on_merge`, default `false`, 0 tokens when off) post-merge retrospective: `$0` collector (`scripts/pr-retro-collect.mjs`) builds a ~3–5 KB PR/CI/session digest with trivial-PR pre-filtering and `.pi/data/pr-retro-state.json` deduplication, triggering a read-only background report to `.pi/data/retros/pr-<N>.md` (never auto-edits tracked files or files issues). Manual `/retro [pr-number]` works anytime |
 | **Memory enforcement** | Code-enforced memory entries — triggers on bash/tool/file events, actions: block, run_after, warn. LLM cannot ignore enforced rules. Dreaming-safe via _(enforced)_ marker |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
-| **Task tracking** | Structured task lists for multi-step workflows — live widget (`expanded` ↔ `collapsed` 1-line header via `alt+t` or `/tasks widget`), `[you]`/`[llm]` assignee tags, live `[⏳ ...]` badges for bound async subagents, `/tasks` (`/tasks mine`, `f` all/mine, `d` done), progress tracking, reminder nudges (owned, based on [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) MIT). `PI_TASK_SCOPE` selects `.pi/tasks/tasks-<sessionId>.json` (`session`, default) or `.pi/tasks/tasks.json` (`project`); `PI_TASKS` sets an explicit store file, a bare list id under `~/.pi/tasks/<id>.json`, or `off` for in-memory only |
+| **Task tracking** | Structured task lists for multi-step workflows — live widget (`expanded` ↔ `collapsed` 1-line header via `alt+t`), `[you]`/`[llm]` assignee tags, live `[⏳ ...]` badges for bound async subagents, zero-arg `/tasks` TUI (`Space` multi-select for `s` start, `d` done, `x` delete, plus `n` add, `e` edit, `f` mine/all), progress tracking, reminder nudges (owned, based on [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) MIT). `PI_TASK_SCOPE` selects `.pi/tasks/tasks-<sessionId>.json` (`session`, default) or `.pi/tasks/tasks.json` (`project`); `PI_TASKS` sets an explicit store file, a bare list id under `~/.pi/tasks/<id>.json`, or `off` for in-memory only |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
-| **Inter-agent communication** | P2P (`/coms`) agent communication — on-demand activation via slash command |
-| **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/async-status`, `/status`, `/dream`, `/remember`, `/coms`, `/pi-config-settings` — with autocomplete argument hints |
+| **Inter-agent communication** | P2P (`/coms`) agent communication — zero-arg TUI overlay (`f` scope, `q` inbound queue, `Space` multi-select `m`/`x`, `X` kill all, `Enter` drilldown) and LLM tools (`coms_start`/`coms_stop`/`coms_*`) |
+| **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/async`, `/cron`, `/tasks`, `/worktree`, `/adopt-skill`, `/status`, `/remember`, `/coms`, `/pi-config-settings` |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
@@ -95,29 +95,21 @@ for `git-expert` to commit.
 | `/create-coms-feature-manager` | Generate a coms feature-manager prompt customized for the current project (source template: `templates/coms-feature-manager-prompt.md`) |
 | `/create-commit <message>` | Commit and push the current change set via git-expert (source template: `templates/commit-prompt.md` — stage exact files, commit, push, report sha) |
 | `/query-db <command>` | Query the review comments database |
-| `/dream` | Run memory consolidation — extract, deduplicate, maintain topic-based memory |
 | `/remember <what>` | Save a memory for future sessions |
-| `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
-| `/cron add\|list\|list-all\|remove [--persist]` | Schedule recurring tasks. A scheduling message is required: bare `/cron`, `--persist` alone, and `add` without a request are rejected locally without calling the LLM or changing schedules. Session jobs end with the session; `--persist` keeps a job across Pi sessions in this project. Add/remove mutations still work when leader election fails closed on an unsupported platform. For example: `/cron add every 2h check for new issues --persist` or `/cron remove persist:<uuid>`. Pin one job's model by naming it in the request: `/cron add every 2h check for new issues using openrouter/anthropic/claude-opus-5`. A bare `model-id` (e.g. `claude-opus-5`) keeps the normal provider resolution. An unpinned job uses the worker's normal resolution chain (`agent_overrides[worker]`, worker frontmatter, then `agent_provider`/`agent_model`) — cron does not pass the session model down, so a worker-level setting wins over the session model. `/cron list` opens an overlay for the selected jobs (or both when omitted). Persistent delivery is local at-least-once: a crash or leader recovery can repeat a run. Project cron writes use a stable OS `flock` (included in Docker via `util-linux`) across the entire transaction; native installations need `flock` and a shared filesystem that supports advisory locks. A busy or unavailable lock fails closed after two seconds. **Upgrade gate (enforced):** stop and drain every old Pi process writing crons on the shared mount before starting a version with this kernel lock; old directory-lock writers do not honor `flock` and must not resume. If a legacy `crons.json.mutation.lock` directory exists, new writes fail closed even if its PID is invisible or its heartbeat expired. Only after verifying every old writer cannot resume may an operator remove that stale directory (not `crons.json` or cron tasks). Never remove it merely because a write timed out. |
-| `/async-status` | Async agent dashboard — live output, multi-select + `x` kill, `X` kill all |
-| `/pi-config-settings [project\|global]` | Interactive TUI settings editor — browse all pi-config settings with scope indicators, smart pickers for providers/models, and immediate save |
+| `/cron` | Zero-arg fullscreen cron TUI overlay (`n` add, `e` edit, `x` delete, `p` pause/resume, `t` toggle persist/session, `f` scope `all`/`session`/`persist`, `Space` multi-select, `Enter` detail; plain-text fallback when headless). Persistent delivery is local at-least-once with OS `flock` locking on `.pi/cron/crons.json`. LLMs manage crons via `cron_manage` |
+| `/async` | Zero-arg async agent dashboard — live output, `Space` multi-select + `x` kill, `X` kill all, `Enter` output |
+| `/tasks` | Zero-arg fullscreen tasks TUI overlay — `Space` multi-select for `s` start, `d` done, `x` delete, plus `n` add, `e` edit, `f` mine/all, `Enter` detail (plain-text fallback when headless/browser) |
+| `/adopt-skill` | Zero-arg TUI overlay listing all adoptable skills (`maintained` vs `unmarked`) with `Space` multi-select + `a`/`Enter` batch adopt |
+| `/pi-config-settings` | Zero-arg interactive TUI settings editor — browse all pi-config settings with scope indicators (`Tab` switches Project/Global), smart pickers for providers/models, and immediate save |
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, worktree summary, context usage |
-| `/worktree [list\|prune]` | Interactive worktree overlay (list + detail with HEAD, `git status --short`, active COMS peer, `c` copy path, guarded `d` remove, `p` prune, `r` refresh), plus `list` table and `prune` subcommands. Status bar shows `[wt]` when in a linked worktree and `⊞ N wt` count badge when linked worktrees exist |
+| `/worktree` | Zero-arg interactive worktree TUI overlay (list + detail with HEAD, `git status --short`, active COMS peer, `c` copy path, `Space` multi-select guarded `d`/`x` remove, `p` prune, `r` refresh; plain-text fallback when headless). Status bar shows `[wt]` when in a linked worktree and `⊞ N wt` count badge when linked worktrees exist |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
 | `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer server (per-project) |
-| `/coms start\|stop\|status\|tell\|widget` | P2P local agent communication (Unix socket); `tell <peer> <message>` writes a peer as the user; `widget [expand\|collapse\|toggle]` collapses/expands the pool widget (`alt+c`, or `alt+w` for both tasks & coms widgets) |
+| `/coms` | Zero-arg P2P coms peers TUI overlay (`f` toggle this project/all projects, `q` local inbound queue with `Space` multi-select `x` kill, `Space` multi-select `m` message/`x` kill, `X` kill all, `Enter` drilldown; plain-text fallback when headless). Toggle pool widget with `alt+c` (or `alt+w` for both tasks & coms widgets) |
 
 ### Inter-Agent Communication (coms)
 
-Two systems for Pi agents to communicate with each other, activated on-demand via slash commands:
-
-**P2P Local (`/coms`)** — Direct Unix socket communication between agents on the same machine. No server needed.
-
-```text
-/coms start --name planner --purpose "Plans the work"
-/coms stop
-/coms status
-```
+P2P local agent communication (direct Unix sockets, no server needed). Activate via `coms_start` tool or `pi --coms`; inspect and manage peers and the inbound queue via zero-arg `/coms`:
 
 **Tools available once activated:**
 
@@ -131,20 +123,20 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 | `*_await` | Block until response arrives |
 | `coms_queue_inspect` | Preview owned queued P2P messages before recovery |
 | `coms_queue_clear` | Irreversibly clear only an inspect preview |
-| `coms_local_queue` | List or kill messages in THIS session's own inbound coms queue (equivalent to `/coms-queue`) |
+| `coms_local_queue` | List or kill messages in THIS session's own inbound coms queue (TUI: `/coms` → `q`) |
 | `coms_start` / `coms_stop` | Start or stop coms for THIS session from a tool call — no slash command, no new process |
 | `coms_peer_spawn` | Start a peer: a supervised `pi --coms` process with its own session, addressable by name |
 | `coms_peers` | List peers with live state — this session's project by default, `project: "*"` for the machine |
 | `coms_peer_kill` | Stop a peer by `name` (+`project` when ambiguous) or `all: true` — supervised peers only |
 
-Peers as processes (`/coms list`, `/coms kill`):
+Peers as processes (`/coms`, `coms_peers`, `coms_peer_kill`):
 
 - `scripts/coms-peer-supervisor.mjs` starts a peer as its own `pi` process with its own session,
   holds its stdin, records pids in `~/.pi/coms/peers/<name>@<project>.json` and lives as long as the
   peer. A peer has **no lifetime of its own** — kill it, or it stays.
-- `/coms list` shows THIS project's peers (a peer elsewhere cannot be addressed from here); `--all`
-  widens it to the machine. With a UI it is a fullscreen overlay like `/async-status` (`x` kill,
-  `X` kill all), otherwise plain text.
+- `/coms` opens the fullscreen overlay (like `/async`) scoped to THIS project by default (`f` toggles
+  all projects, `q` opens the local inbound queue, `Space` multi-selects for `m` message / `x` kill,
+  `X` kills all, `Enter` drills into peer workload), or plain text when headless.
 - Only peers a supervisor started are killable; your own session and other human sessions never are.
 
 Messaging semantics (#924):
@@ -161,7 +153,7 @@ Messaging semantics (#924):
   in `~/.pi/coms/history.jsonl` (fail-soft, size-rotated) and queryable via
   `coms_history`; defaults to this session's traffic, `all_sessions: true`
   shows the whole machine's trail.
-- **User messages** — `/coms tell <peer> <message>` (or `m` on the focused peer
+- **User messages** — `m` on the focused or Space-selected peers in `/coms`
   in `/coms list`) delivers with `origin: "user"`, so the receiver reads it as a
   human's words. Only the command layer can set that: `coms_send`/`coms_broadcast`
   always send `origin: "peer"` and their schemas have no `origin` field, so
@@ -708,24 +700,23 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Live conversation streaming (user, assistant, tool, thinking)
 - Send messages from browser to pi
 - Model and thinking level switching from browser
-- Extension commands (`/release`, `/dream`, `/remember`, etc.) work from browser
+- Extension commands (`/release`, `/remember`, `/status`, etc.) work from browser
 - Info bar: model, tokens, context %, git status (with PR `#N` when present)
 - TUI status line: clickable `pi-diff` / `pi-dash` labels and open-PR `#N` hyperlink
 - Per-project diff viewer (pidiff) — opens in browser via clickable `pi-diff` status-line link, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
 - Collapsible thinking and tool blocks with copy buttons
 - ask_user tool bridging (answer from browser or TUI)
 - **Full TUI parity (#968)** — every interactive prompt and surface is answerable/operable from either TUI or browser, first answer wins:
-  - Dangerous-command approvals, commit-trailer selection, project-agent confirmations, and `/tasks create` prompts render in both surfaces
-  - `/tasks` itself is a terminal-only overlay: list/view with `[you]`/`[llm]` assignee tags,
-    `n` add, `e` edit the focused subject, `x` delete, `d` done, `f` all/mine,
-    with `/tasks mine`, `create`, `start <id>`, `done <id>`, and `clear completed|all` as subcommands.
+  - Dangerous-command approvals, commit-trailer selection, and project-agent confirmations render in both surfaces
+  - `/tasks` itself is a zero-arg terminal-only overlay: list/view with `[you]`/`[llm]` assignee tags,
+    `Space` multi-select (`s` start, `d` done, `x` delete), `n` add, `e` edit the focused subject, and `f` all/mine.
     `n` asks for `you` or `llm` after the subject. Manual completion records the actual user;
     completing a user-assigned task sends one follow-up notice after the agent finishes its run.
     TaskGet and task details show completion attribution and notes; reopening clears both.
-    `/tasks done <id>` completes without a note. Use terminal `d` on a user task to add a note
-  - A browser-sent `/tasks` answers with the same rows as plain text (plus that subcommand list); the overlay is never opened in a browser
+    Single-row `d` on a user task prompts for an optional note; bulk `d` completes without a note prompt
+  - A browser-sent `/tasks` answers with the same rows as plain text; the overlay is never opened in a browser
   - Tasks panel (view/create/start/complete/delete/clear) driven through the live TaskStore with live updates.
-    Manual completion uses the same actor attribution and user-task follow-up notice as `/tasks done`, without a note prompt;
+    Manual completion uses the same actor attribution and user-task follow-up notice without a note prompt;
     use the terminal overlay to attach a note. Repeated completion does not resend the notice, even if submission failed
   - Coms peer list (busy state, queue depth, context %, own-workload counts) + send message to a peer (same delivery path as `coms_send`)
   - New-session creation (name + initial model) and `/compact` from the browser
