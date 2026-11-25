@@ -33,7 +33,6 @@ import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-ops.js";
 import {
-  appendEventBuffer,
   clearPendingUiRequests,
   dismissPendingUiRequest,
   modelInfoPayload,
@@ -165,7 +164,6 @@ export function registerPidash(
   let lastCmdCtx: any = null;  // Command context with switchSession — updated by /pidash handler
   let statusInterval: ReturnType<typeof setInterval> | null = null;
   const sessionId = `${process.pid}:${process.cwd()}`;
-  const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
   const pendingUiStore = { pendingUiRequests: new Map<string, string>() };
   let activitySequence = 0;
   let activity: "working" | "waiting_for_input" | "idle" = "idle";
@@ -669,12 +667,9 @@ export function registerPidash(
       wsClient.send(reg);
 
       // Always load history from session file (source of truth)
-      eventBuffer.length = 0;
-      const pushBuffered = (ev: string) => {
+      replaySessionHistory(wsClient, ctx, (ev: string) => {
         wsClient.send(ev);
-        appendEventBuffer(eventBuffer, ev);
-      };
-      replaySessionHistory(wsClient, ctx, pushBuffered);
+      });
 
       // Re-send still-open interactive prompts after replay_complete so the daemon
       // records them as live (not replaying) and restores active browser dialogs.
@@ -801,10 +796,6 @@ export function registerPidash(
       }
 
       const msg = JSON.stringify(payload);
-      if (type !== "extension_ui_request") {
-        // Cap incremental buffer — session file is the source of truth for full history
-        appendEventBuffer(eventBuffer, msg);
-      }
       if (!client.send(msg) && !client.connected) {
         log.debug(`forward ${type}: ws not connected`);
       }
@@ -996,7 +987,6 @@ export function registerPidash(
       }
       // Already connected — session switched (e.g., /resume, /new)
       sessionEpoch++;
-      eventBuffer.length = 0; // Clear stale events to prevent cross-session replay on reconnect
       const cleared = clearPendingUiRequests(pendingUiStore);
       if (cleared > 0) log.debug("cleared pending UI requests on session_switch", { count: cleared });
       activitySequence = 0;

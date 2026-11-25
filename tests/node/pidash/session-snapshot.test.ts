@@ -12,11 +12,15 @@ import {
   applyEventToViewState,
   buildSessionSnapshot,
   createPidashSessionState,
+  finalizeAsyncAgentDisconnect,
   processPiPendingUiEvent,
+  reconcileActiveAsyncAgents,
   recordPendingUiRequest,
   resetSessionViewState,
   sendSessionSnapshot,
+  type ActiveAsyncAgentInfo,
 } from "../../../scripts/pidash-session-state.ts";
+import { appendAsyncAgentEventText } from "../../../extensions/shared/pidash-transcript-reducer.ts";
 import { installReactDomShim } from "./react-dom-shim.mjs";
 
 const mounted: Root[] = [];
@@ -73,6 +77,7 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 async function mountHandler(session: SessionInfo = makeSession()) {
   const { container } = installReactDomShim();
   let emit: (ev: any) => void = () => {};
+  let resetHandlerState: (nextSessionId?: string | null) => void = () => {};
   let latest: {
     messages: ChatMessage[];
     model: string;
@@ -100,6 +105,7 @@ async function mountHandler(session: SessionInfo = makeSession()) {
       notifications,
       () => {},
     );
+    resetHandlerState = state.resetHandlerState;
     latest = {
       messages: state.messages,
       model: state.model,
@@ -117,6 +123,7 @@ async function mountHandler(session: SessionInfo = makeSession()) {
   await act(async () => root.render(createElement(Probe)));
   return {
     emit: (ev: any) => emit(ev),
+    resetHandlerState: (nextSessionId?: string | null) => resetHandlerState(nextSessionId),
     state: () => latest,
     renders: () => renderCount,
   };
@@ -277,6 +284,161 @@ describe("SessionViewState server snapshot (#1398)", () => {
     applyEventToViewState(client, { type: "agent_settled", activitySequence: 6 });
     assert.equal(buildSessionSnapshot(client).streaming, false);
   });
+
+  it("evicts tool-call and newly appended tool-result atomically at exact message-limit boundary", () => {
+    const { client } = makeClient();
+    // Fill maxMessages=2 with [tool-call(c1), user1]
+    applyEventToViewState(client, { type: "tool_execution_start", toolName: "bash", toolCallId: "c1", args: { command: "ls" } }, 2);
+    applyEventToViewState(client, { type: "message_start", message: { role: "user", content: "follow up" } }, 2);
+    assert.equal(client.viewState.messages.length, 2);
+
+    // Appending tool-result(c1) pushes past max=2; evicting tool-call(c1) must also evict its new result
+    applyEventToViewState(
+      client,
+      { type: "tool_execution_end", toolName: "bash", toolCallId: "c1", result: { content: [{ type: "text", text: "ok" }] }, isError: false },
+      2,
+    );
+
+    const snap = buildSessionSnapshot(client);
+    assert.equal(snap.messages.some((m) => m.className === "tool-result" && m.meta?.callId === "c1"), false);
+    assert.equal(snap.messages.some((m) => m.className === "tool-call" && m.meta?.callId === "c1"), false);
+    assert.deepEqual(snap.messages.map((m) => m.text), ["follow up"]);
+  });
+
+  it("keeps identical repeated user prompts separated by an assistant reply during replay without agent_end", () => {
+    const { client } = makeClient();
+    applyEventToViewState(client, { type: "replay_start" });
+    applyEventToViewState(client, { type: "message_start", message: { role: "user", content: [{ type: "text", text: "continue" }] } });
+    applyEventToViewState(client, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "first reply" } });
+    applyEventToViewState(client, { type: "message_end", message: { role: "assistant" } });
+    applyEventToViewState(client, { type: "message_start", message: { role: "user", content: [{ type: "text", text: "continue" }] } });
+    applyEventToViewState(client, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "second reply" } });
+    applyEventToViewState(client, { type: "message_end", message: { role: "assistant" } });
+    applyEventToViewState(client, { type: "replay_end" });
+
+    const snap = buildSessionSnapshot(client);
+    assert.deepEqual(
+      snap.messages.map((m) => [m.role, m.text]),
+      [
+        ["user", "continue"],
+        ["assistant", "first reply"],
+        ["user", "continue"],
+        ["assistant", "second reply"],
+      ],
+    );
+  });
+
+  it("reconciles active async agents across Pi reconnect while keeping session_switch isolated", () => {
+    const { state, client } = makeClient();
+    const activeAgents = new Map<string, ActiveAsyncAgentInfo>();
+    const info: ActiveAsyncAgentInfo = {
+      id: "job-reconnect",
+      agent: "worker",
+      task: "build",
+      cwd: "/repo",
+      sessionId: client.session.sessionId,
+      text: "",
+    };
+    activeAgents.set(info.id, info);
+
+    // Agent starts and emits progress before Pi disconnects
+    applyEventToViewState(client, { type: "async_agent_start", id: info.id, agent: info.agent, cwd: info.cwd, sessionId: info.sessionId });
+    const ev1 = { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "before reconnect" } };
+    appendAsyncAgentEventText(info, ev1);
+    applyEventToViewState(client, { type: "async_agent_event", id: info.id, sessionId: info.sessionId, event: ev1 });
+
+    // Pi reconnects (registerPidashSession resets viewState) and replays history
+    const reconnected = state.register({ send: () => {} }, {
+      type: "register",
+      pid: 101,
+      sessionId: "101:/repo",
+      cwd: "/repo",
+      model: "claude-opus-4-6",
+      activity: "working",
+      activitySequence: 2,
+      streaming: true,
+    });
+    applyEventToViewState(reconnected, { type: "replay_start" });
+    applyEventToViewState(reconnected, { type: "replay_end" });
+    reconnected.replaying = false;
+
+    // Reconcile on replay_complete restores tracking + prior output
+    assert.equal(reconcileActiveAsyncAgents(reconnected, activeAgents.values()), 1);
+
+    // Subsequent progress and completion apply to the reconciled card
+    const ev2 = { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " + after reconnect" } };
+    appendAsyncAgentEventText(info, ev2);
+    applyEventToViewState(reconnected, { type: "async_agent_event", id: info.id, sessionId: info.sessionId, event: ev2 });
+    applyEventToViewState(reconnected, { type: "async_agent_complete", id: info.id, sessionId: info.sessionId, success: true });
+
+    const snap = buildSessionSnapshot(reconnected);
+    const card = snap.messages.find((m) => m.className === "async-agent-done");
+    assert.ok(card);
+    assert.ok(card.text.includes("before reconnect + after reconnect"));
+    assert.ok(card.text.startsWith("✅"));
+
+    // Session switch clears viewState without pulling back stale async cards
+    resetSessionViewState(reconnected);
+    assert.deepEqual(buildSessionSnapshot(reconnected).messages, []);
+  });
+
+  it("finalizes running async agent cards as failed on unexpected socket disconnect", () => {
+    const { client } = makeClient();
+    const info: ActiveAsyncAgentInfo = {
+      id: "job-crash",
+      agent: "worker",
+      task: "lint",
+      cwd: "/repo",
+      sessionId: client.session.sessionId,
+      text: "halfway",
+    };
+    applyEventToViewState(client, { type: "async_agent_start", id: info.id, agent: info.agent, cwd: info.cwd, sessionId: info.sessionId });
+    applyEventToViewState(client, {
+      type: "async_agent_event",
+      id: info.id,
+      sessionId: info.sessionId,
+      event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "halfway" } },
+    });
+
+    const broadcasted: any[] = [];
+    finalizeAsyncAgentDisconnect(client, info, (ev) => broadcasted.push(ev));
+
+    assert.deepEqual(broadcasted, [{
+      type: "async_agent_complete",
+      id: "job-crash",
+      success: false,
+      sessionId: client.session.sessionId,
+    }]);
+    const snap = buildSessionSnapshot(client);
+    assert.deepEqual(snap.live.asyncMsgs, {});
+    const card = snap.messages.find((m) => m.className === "async-agent-done");
+    assert.ok(card);
+    assert.ok(card.text.startsWith("❌"));
+    assert.ok(card.text.includes("halfway"));
+  });
+
+  it("preserves availableCommands across same-session re-register and clears on session_switch", () => {
+    const { state, client } = makeClient();
+    applyEventToViewState(client, {
+      type: "commands-list",
+      commands: [{ name: "status", description: "Show status" }],
+    });
+    assert.deepEqual(buildSessionSnapshot(client).availableCommands, [{ name: "status", description: "Show status" }]);
+
+    // Same-session Pi reconnect preserves commands
+    const reregistered = state.register({ send: () => {} }, {
+      type: "register",
+      pid: 101,
+      sessionId: "101:/repo",
+      cwd: "/repo",
+      model: "claude-opus-4-6",
+    });
+    assert.deepEqual(buildSessionSnapshot(reregistered).availableCommands, [{ name: "status", description: "Show status" }]);
+
+    // Session switch clears commands so they cannot leak across sessions
+    resetSessionViewState(reregistered);
+    assert.deepEqual(buildSessionSnapshot(reregistered).availableCommands, []);
+  });
 });
 
 describe("useMessageHandler session_snapshot hydration (#1398)", () => {
@@ -396,5 +558,39 @@ describe("useMessageHandler session_snapshot hydration (#1398)", () => {
     assert.deepEqual(h.state().messages, []);
     assert.equal(h.state().streaming, false);
     assert.equal(h.state().queuedCount, 0);
+  });
+
+  it("accepts a snapshot for a newly watched session immediately after resetHandlerState(nextSessionId)", async () => {
+    const h = await mountHandler(makeSession({ sessionId: "session-old", model: "old-model" }));
+
+    // Simulate watchSession calling resetHandlerState("session-new") and sending watch
+    // BEFORE React commits the updated `session` prop into sessionRef.
+    await act(async () => {
+      h.resetHandlerState("session-new");
+      h.emit({
+        type: "session_snapshot",
+        sessionId: "session-new",
+        messages: [{ id: "s-1", role: "user", text: "new session msg" }],
+        live: {
+          think: { id: "", text: "", startTs: 0 },
+          assist: { id: "", text: "" },
+          tool: { id: "", name: "", startTs: 0, callId: "" },
+          asyncMsgs: {},
+          lastUserText: "new session msg",
+        },
+        model: "new-model",
+        tokens: null,
+        streaming: true,
+        queuedCount: 0,
+        streamingBehavior: null,
+        availableCommands: [],
+        pendingUiRequests: [],
+      });
+    });
+
+    assert.equal(h.state().messages.length, 1);
+    assert.equal(h.state().messages[0].text, "new session msg");
+    assert.equal(h.state().model, "new-model");
+    assert.equal(h.state().streaming, true);
   });
 });

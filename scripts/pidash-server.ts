@@ -18,15 +18,19 @@ import {
   clearPendingUiRequests,
   disconnectPidashSession,
   dismissAllViewAsks,
+  finalizeAsyncAgentDisconnect,
   forwardBrowserUiResponse,
   isInteractiveUiRequest,
   processPiPendingUiEvent,
+  reconcileActiveAsyncAgents,
   registerPidashSession,
   resetSessionViewState,
   sendSessionSnapshot,
   updatePidashSession,
+  type ActiveAsyncAgentInfo,
   type PiClient,
 } from "./pidash-session-state.ts";
+import { appendAsyncAgentEventText } from "../extensions/shared/pidash-transcript-reducer.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
 import { applyActivityEvent, initialActivityState, shouldAcceptActivityEvent } from "../extensions/pidash/activity-state.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
@@ -59,7 +63,7 @@ const piEventHooks: Array<(sessionId: string, event: any) => void> = [];
 const _require = createRequire(import.meta.url);
 const WebSocket = _require("ws");
 const asyncWss = new WebSocket.Server({ noServer: true });
-const asyncAgents = new Map<string, { id: string; agent: string; task: string; cwd: string; sessionId?: string }>();
+const asyncAgents = new Map<string, ActiveAsyncAgentInfo>();
 
 function getActiveSessions(): SessionInfo[] {
   return Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
@@ -150,6 +154,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
 
   if (parsed.type === "replay_complete" && piClient) {
     piClient.replaying = false;
+    reconcileActiveAsyncAgents(piClient, asyncAgents.values());
     log(`replay complete for ${piClient.session.sessionId}`);
     return;
   }
@@ -362,6 +367,7 @@ function handleAsyncConnection(ws: any) {
           task: parsed.task,
           cwd: parsed.cwd,
           sessionId: parsed.sessionId,
+          text: "",
         });
         const asyncStartEvent = {
           type: "async_agent_start",
@@ -379,7 +385,9 @@ function handleAsyncConnection(ws: any) {
 
       if (parsed.type === "async_event" && parsed.id) {
         log(`async event from ${parsed.id}: ${parsed.event?.type}`);
-        const sessionId = asyncAgents.get(parsed.id)?.sessionId;
+        const info = asyncAgents.get(parsed.id);
+        if (info) appendAsyncAgentEventText(info, parsed.event);
+        const sessionId = info?.sessionId;
         const asyncProgressEvent = {
           type: "async_agent_event",
           id: parsed.id,
@@ -394,6 +402,7 @@ function handleAsyncConnection(ws: any) {
 
       if (parsed.type === "async_complete" && parsed.id) {
         const sessionId = asyncAgents.get(parsed.id)?.sessionId;
+        asyncAgents.delete(parsed.id);
         const asyncCompleteEvent = {
           type: "async_agent_complete",
           id: parsed.id,
@@ -403,7 +412,6 @@ function handleAsyncConnection(ws: any) {
         const target = sessionId ? piClients.get(sessionId) : undefined;
         if (target) applyEventToViewState(target, asyncCompleteEvent);
         broadcastToBrowsers(asyncCompleteEvent);
-        asyncAgents.delete(parsed.id);
         return;
       }
     } catch (e: any) { log(`async message error: ${e.message}`); }
@@ -412,11 +420,10 @@ function handleAsyncConnection(ws: any) {
   const cleanupAsyncAgent = () => {
     if (!agentId) return;
     const info = asyncAgents.get(agentId);
-    if (info?.sessionId) {
-      const target = piClients.get(info.sessionId);
-      if (target) target.viewState.asyncMsgs.delete(agentId);
-    }
+    if (!info) return;
     asyncAgents.delete(agentId);
+    const target = info.sessionId ? piClients.get(info.sessionId) : undefined;
+    finalizeAsyncAgentDisconnect(target, info, broadcastToBrowsers);
   };
 
   ws.on("close", cleanupAsyncAgent);

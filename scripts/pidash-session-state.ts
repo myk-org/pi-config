@@ -7,52 +7,44 @@ import type {
   SessionSnapshotPayload,
   TokenUsage,
 } from "../extensions/shared/types.ts";
+import {
+  applyTranscriptEvent,
+  type TranscriptAddOptions,
+  type TranscriptRefs,
+  type TranscriptSink,
+} from "../extensions/shared/pidash-transcript-reducer.ts";
 import { initialActivityState } from "../extensions/pidash/activity-state.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
 
 const log = createLogger("pidash");
 
-export const EVENT_BUFFER_MAX = 10000;
-export const EVENT_BUFFER_TRIM_AT = 12000;
 export const PENDING_UI_REQUESTS_MAX = 50;
 export const VIEW_STATE_MESSAGES_MAX = 1000;
-
-/**
- * Append a serialized event to a bounded buffer using amortized trimming
- * (O(1) amortized instead of O(N) Array.shift() on every delta once full).
- */
-export function appendEventBuffer(
-  buffer: string[],
-  raw: string,
-  max = EVENT_BUFFER_MAX,
-  trimAt = EVENT_BUFFER_TRIM_AT,
-): void {
-  buffer.push(raw);
-  if (buffer.length >= trimAt) {
-    buffer.splice(0, buffer.length - max);
-  }
-}
 
 export interface PendingUiRequestStore {
   pendingUiRequests: Map<string, string>;
   replaying?: boolean;
 }
 
-export interface SessionViewState {
+export interface SessionViewState extends TranscriptRefs {
   messages: ChatMessage[];
   indexById: Map<string, number>;
   nextSeq: number;
-  think: { id: string; text: string; startTs: number };
-  assist: { id: string; text: string };
-  tool: { id: string; name: string; startTs: number; callId: string };
-  asyncMsgs: Map<string, { msgId: string; text: string }>;
-  lastUserText: string;
   model: string;
   tokens: TokenUsage | null;
   streaming: boolean;
   queuedCount: number;
   streamingBehavior: string | null;
   availableCommands: SessionCommandInfo[];
+}
+
+export interface ActiveAsyncAgentInfo {
+  id: string;
+  agent: string;
+  task: string;
+  cwd: string;
+  sessionId?: string;
+  text: string;
 }
 
 export interface PiClient extends PendingUiRequestStore {
@@ -63,7 +55,10 @@ export interface PiClient extends PendingUiRequestStore {
   connectionGeneration: number;
 }
 
-export function createSessionViewState(session?: Partial<SessionInfo>): SessionViewState {
+export function createSessionViewState(
+  session?: Partial<SessionInfo>,
+  availableCommands: SessionCommandInfo[] = [],
+): SessionViewState {
   return {
     messages: [],
     indexById: new Map(),
@@ -78,7 +73,7 @@ export function createSessionViewState(session?: Partial<SessionInfo>): SessionV
     streaming: session?.streaming === true,
     queuedCount: 0,
     streamingBehavior: null,
-    availableCommands: [],
+    availableCommands: availableCommands.map((c) => ({ ...c })),
   };
 }
 
@@ -89,15 +84,6 @@ export function resetSessionViewState(client: PiClient): void {
 
 function nextViewMessageId(state: SessionViewState): string {
   return `s-${++state.nextSeq}`;
-}
-
-function textFromMessage(msg: any): string {
-  if (typeof msg?.content === "string") return msg.content;
-  if (!Array.isArray(msg?.content)) return "";
-  return msg.content
-    .filter((c: any) => c?.type === "text")
-    .map((c: any) => c.text ?? "")
-    .join("\n");
 }
 
 function patchViewMessage(
@@ -144,7 +130,8 @@ export function dismissAllViewAsks(state: SessionViewState): void {
 
 /**
  * Trim oldest committed messages at message boundaries so bounded snapshots
- * never contain orphaned deltas and never evict active in-flight messages.
+ * never contain orphaned deltas, never evict active in-flight messages, and
+ * always evict paired tool-call + tool-result entries atomically.
  */
 export function trimViewStateMessages(
   state: SessionViewState,
@@ -162,33 +149,42 @@ export function trimViewStateMessages(
     if (entry.msgId) protectedIds.add(entry.msgId);
   }
 
-  let toDrop = state.messages.length - maxMessages;
-  const droppedIndices = new Set<number>();
-  const droppedCallIds = new Set<string>();
-
-  for (let i = 0; i < state.messages.length && toDrop > 0; i++) {
+  // Index tool-call <-> tool-result pairs by callId so eviction handles pairs atomically.
+  const callIndexByCallId = new Map<string, number>();
+  const resultIndexByCallId = new Map<string, number>();
+  for (let i = 0; i < state.messages.length; i++) {
     const msg = state.messages[i];
-    if (protectedIds.has(msg.id)) continue;
-    droppedIndices.add(i);
-    if (msg.className === "tool-call" && msg.meta?.callId) {
-      droppedCallIds.add(msg.meta.callId);
-    }
-    toDrop--;
+    const callId = msg.meta?.callId;
+    if (!callId) continue;
+    if (msg.className === "tool-call") callIndexByCallId.set(callId, i);
+    else if (msg.className === "tool-result") resultIndexByCallId.set(callId, i);
   }
 
-  // Drop orphaned tool-result paired with a just-dropped tool-call so the
-  // boundary does not leave a half-trimmed tool pair.
-  if (droppedCallIds.size > 0) {
-    for (let i = 0; i < state.messages.length; i++) {
-      if (droppedIndices.has(i)) continue;
-      const msg = state.messages[i];
-      if (
-        msg.className === "tool-result" &&
-        msg.meta?.callId &&
-        droppedCallIds.has(msg.meta.callId) &&
-        !protectedIds.has(msg.id)
-      ) {
-        droppedIndices.add(i);
+  // Protect a tool-call whenever its paired tool-result is protected (e.g. active async card).
+  for (const [callId, resIdx] of resultIndexByCallId.entries()) {
+    if (protectedIds.has(state.messages[resIdx].id)) {
+      const callIdx = callIndexByCallId.get(callId);
+      if (callIdx !== undefined) protectedIds.add(state.messages[callIdx].id);
+    }
+  }
+
+  let remaining = state.messages.length;
+  const droppedIndices = new Set<number>();
+
+  for (let i = 0; i < state.messages.length && remaining > maxMessages; i++) {
+    if (droppedIndices.has(i)) continue;
+    const msg = state.messages[i];
+    if (protectedIds.has(msg.id)) continue;
+
+    droppedIndices.add(i);
+    remaining--;
+
+    // Evict paired tool-result atomically alongside its tool-call (even if just appended).
+    if (msg.className === "tool-call" && msg.meta?.callId) {
+      const resIdx = resultIndexByCallId.get(msg.meta.callId);
+      if (resIdx !== undefined && !droppedIndices.has(resIdx) && !protectedIds.has(state.messages[resIdx].id)) {
+        droppedIndices.add(resIdx);
+        remaining--;
       }
     }
   }
@@ -219,21 +215,23 @@ function addViewMessage(
   text: string,
   className?: string,
   meta?: ChatMessage["meta"],
-  timestamp?: number,
+  options?: TranscriptAddOptions,
   maxMessages = VIEW_STATE_MESSAGES_MAX,
 ): string {
-  const id = nextViewMessageId(state);
+  const id = options?.explicitId ?? nextViewMessageId(state);
   const msg: ChatMessage = {
     id,
     role,
     text,
     ...(className !== undefined ? { className } : {}),
     ...(meta !== undefined ? { meta } : {}),
-    timestamp: timestamp ?? Date.now(),
+    timestamp: options?.timestamp ?? Date.now(),
   };
   state.indexById.set(id, state.messages.length);
   state.messages.push(msg);
-  trimViewStateMessages(state, maxMessages, id);
+  // Only protect active in-flight messages from eviction; committed messages
+  // (including newly appended tool-results) participate in atomic pair trimming.
+  trimViewStateMessages(state, maxMessages, options?.protect ? id : undefined);
   return id;
 }
 
@@ -252,375 +250,119 @@ export function applyEventToViewState(
   if (!parsed || typeof parsed.type !== "string") return;
   const state = client.viewState;
 
-  switch (parsed.type) {
-    case "replay_start": {
-      state.messages = [];
-      state.indexById.clear();
-      state.think = { id: "", text: "", startTs: 0 };
-      state.assist = { id: "", text: "" };
-      state.tool = { id: "", name: "", startTs: 0, callId: "" };
-      state.asyncMsgs.clear();
-      state.lastUserText = "";
-      state.tokens = null;
-      state.queuedCount = 0;
-      state.streamingBehavior = null;
-      state.model = client.session.model || "";
-      state.streaming = client.session.streaming === true;
-      break;
-    }
-    case "replay_end":
-      break;
+  if (parsed.type === "replay_start") {
+    state.messages = [];
+    state.indexById.clear();
+    state.think = { id: "", text: "", startTs: 0 };
+    state.assist = { id: "", text: "" };
+    state.tool = { id: "", name: "", startTs: 0, callId: "" };
+    state.asyncMsgs.clear();
+    state.lastUserText = "";
+    state.tokens = null;
+    state.queuedCount = 0;
+    state.streamingBehavior = null;
+    state.model = client.session.model || "";
+    state.streaming = client.session.streaming === true;
+    return;
+  }
+  if (parsed.type === "replay_end") return;
 
-    case "prompt-queued":
-      state.queuedCount += 1;
-      break;
+  const sink: TranscriptSink = {
+    add: (role, text, className, meta, options) =>
+      addViewMessage(state, role, text, className, meta, options, maxMessages),
+    patch: (id, fn) => patchViewMessage(state, id, fn),
+    findLast: (pred) => findLastViewMessage(state, pred),
+    dismissAsk: (askId) => dismissViewAsk(state, askId),
+    nextId: () => nextViewMessageId(state),
+  };
 
-    case "streaming-behavior":
-      state.streamingBehavior = typeof parsed.behavior === "string" && parsed.behavior ? parsed.behavior : null;
-      break;
+  applyTranscriptEvent(parsed, state, sink, {
+    onStreamingChange: (streaming, ev) => {
+      if (shouldApplyStreamingTransition(client, ev)) {
+        state.streaming = streaming;
+      }
+    },
+    onQueuedIncrement: () => { state.queuedCount += 1; },
+    onQueuedReset: () => { state.queuedCount = 0; },
+    onStreamingBehavior: (behavior) => { state.streamingBehavior = behavior; },
+    onModel: (model) => { state.model = model; },
+    onTokens: (tokens) => { state.tokens = tokens; },
+    onCommandsList: (commands) => { state.availableCommands = commands; },
+    shouldSkipUiRequest: (ev) => client.replaying || !isInteractiveUiRequest(ev),
+    sessionId: () => client.session.sessionId,
+  });
+}
 
-    case "agent_start":
-      if (shouldApplyStreamingTransition(client, parsed)) {
-        state.streaming = true;
-      }
-      state.queuedCount = 0;
-      break;
+/**
+ * Re-link active async agents into a session's rebuilt `viewState` after Pi
+ * finishes replaying history on reconnect so subsequent progress and completion
+ * events continue updating the same card.
+ */
+export function reconcileActiveAsyncAgents(
+  client: PiClient,
+  activeAgents: Iterable<ActiveAsyncAgentInfo>,
+): number {
+  const state = client.viewState;
+  const sid = client.session.sessionId;
+  let reconciled = 0;
 
-    case "agent_end": {
-      if (state.think.id) {
-        const endMeta = state.think.startTs
-          ? { startTs: state.think.startTs, endTs: parsed.timestamp || Date.now() }
-          : undefined;
-        patchViewMessage(state, state.think.id, (m) => ({
-          ...m,
-          className: undefined,
-          ...(endMeta ? { meta: { ...m.meta, ...endMeta } } : {}),
-        }));
-      }
-      if (state.assist.id) {
-        patchViewMessage(state, state.assist.id, (m) => ({ ...m, className: undefined }));
-      }
-      state.queuedCount = 0;
-      state.streamingBehavior = null;
-      state.think = { id: "", text: "", startTs: 0 };
-      state.assist = { id: "", text: "" };
-      state.lastUserText = "";
-      break;
-    }
+  for (const agent of activeAgents) {
+    if (!agent.id || agent.sessionId !== sid) continue;
+    if (state.asyncMsgs.has(agent.id)) continue;
 
-    case "agent_settled":
-      if (shouldApplyStreamingTransition(client, parsed)) {
-        state.streaming = false;
-      }
-      break;
+    applyEventToViewState(client, {
+      type: "async_agent_start",
+      id: agent.id,
+      agent: agent.agent,
+      task: agent.task,
+      cwd: agent.cwd,
+      sessionId: sid,
+    });
 
-    case "message_start": {
-      const msg = parsed.message;
-      if (!msg) break;
-      const ts = typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now();
-      if (msg.role === "user") {
-        const t = textFromMessage(msg);
-        if (t && t !== state.lastUserText) {
-          state.lastUserText = t;
-          addViewMessage(state, "user", t, undefined, undefined, ts, maxMessages);
-        }
-      } else if (msg.role === "assistant") {
-        state.think = { id: "", text: "", startTs: 0 };
-        state.assist = { id: "", text: "" };
-      } else if (msg.role === "custom" && msg.display) {
-        const content = msg.content || "";
-        addViewMessage(
-          state,
-          "system",
-          typeof content === "string" ? content : JSON.stringify(content),
-          undefined,
-          undefined,
-          ts,
-          maxMessages,
-        );
-      }
-      break;
-    }
-
-    case "message_update": {
-      const ae = parsed.assistantMessageEvent;
-      if (!ae) break;
-      const ts = typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now();
-      if (ae.type === "thinking_delta" && ae.delta) {
-        state.think.text += ae.delta;
-        if (!state.think.id) {
-          state.think.startTs = ts;
-          state.think.id = addViewMessage(state, "thinking", state.think.text, undefined, undefined, ts, maxMessages);
-        } else {
-          const text = state.think.text;
-          patchViewMessage(state, state.think.id, (m) => ({ ...m, text }));
-        }
-      }
-      if ((ae.type === "text_start" || ae.type === "text_delta") && state.think.id && !state.assist.id) {
-        const endMeta = state.think.startTs ? { startTs: state.think.startTs, endTs: ts } : undefined;
-        patchViewMessage(state, state.think.id, (m) => ({
-          ...m,
-          className: undefined,
-          ...(endMeta ? { meta: { ...m.meta, ...endMeta } } : {}),
-        }));
-      }
-      if (ae.type === "text_delta" && ae.delta) {
-        state.assist.text += ae.delta;
-        if (!state.assist.id) {
-          state.assist.id = addViewMessage(state, "assistant", state.assist.text, "streaming", undefined, ts, maxMessages);
-        } else {
-          const text = state.assist.text;
-          patchViewMessage(state, state.assist.id, (m) => ({ ...m, text }));
-        }
-      }
-      if (ae.type === "text_end" && state.assist.id) {
-        patchViewMessage(state, state.assist.id, (m) => ({ ...m, className: undefined }));
-      }
-      break;
-    }
-
-    case "message_end": {
-      const ts = typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now();
-      if (state.think.id) {
-        const endMeta = state.think.startTs ? { startTs: state.think.startTs, endTs: ts } : undefined;
-        patchViewMessage(state, state.think.id, (m) => ({
-          ...m,
-          className: undefined,
-          ...(endMeta ? { meta: { ...m.meta, ...endMeta } } : {}),
-        }));
-      }
-      if (state.assist.id) {
-        patchViewMessage(state, state.assist.id, (m) => ({ ...m, className: undefined }));
-      }
-      state.think = { id: "", text: "", startTs: 0 };
-      state.assist = { id: "", text: "" };
-      if (parsed.message?.model) state.model = parsed.message.model;
-      if (parsed.message?.usage) state.tokens = { ...parsed.message.usage };
-      break;
-    }
-
-    case "turn_end":
-      if (parsed.message?.model) state.model = parsed.message.model;
-      if (parsed.message?.usage) state.tokens = { ...parsed.message.usage };
-      break;
-
-    case "tool_execution_start": {
-      let name = parsed.toolName || "tool";
-      let detail = typeof parsed.args?.command === "string" ? parsed.args.command : "";
-      if (name === "subagent" && parsed.args) {
-        const label = parsed.args.name || parsed.args.agent;
-        if (label) name = `subagent (${label})`;
-        if (parsed.args.asyncKill) detail = `kill: ${parsed.args.asyncKill}`;
-        else if (parsed.args.task) detail = String(parsed.args.task).slice(0, 150);
-        else if (Array.isArray(parsed.args.tasks)) detail = `${parsed.args.tasks.length} parallel tasks`;
-        else if (Array.isArray(parsed.args.chain)) detail = `${parsed.args.chain.length} chain steps`;
-      }
-      const cid = parsed.toolCallId || nextViewMessageId(state);
-      const ts = typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now();
-      const id = addViewMessage(state, name as MessageRole, detail, "tool-call", { callId: cid }, ts, maxMessages);
-      state.tool = { id, name, startTs: ts, callId: cid };
-      break;
-    }
-
-    case "tool_execution_update":
-      if (state.tool.id && parsed.partialResult?.content?.[0]?.text) {
-        const text = `${state.tool.name}: ${parsed.partialResult.content[0].text}`;
-        patchViewMessage(state, state.tool.id, (m) => ({ ...m, text }));
-      }
-      break;
-
-    case "tool_execution_end": {
-      const toolName = state.tool.name || parsed.toolName || "tool";
-      const startTs = state.tool.startTs;
-      const callId = state.tool.callId || parsed.toolCallId || "";
-      state.tool = { id: "", name: "", startTs: 0, callId: "" };
-      if (parsed.result?.content?.[0]?.text) {
-        const t = parsed.result.content[0].text;
-        const endTs = typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now();
-        let meta: ChatMessage["meta"] = startTs ? { startTs, endTs, callId } : { callId };
-        const results = parsed.result?.details?.results;
-        if (Array.isArray(results) && results.length > 0) {
-          let totalInput = 0;
-          let totalOutput = 0;
-          let totalTurns = 0;
-          let totalCache = 0;
-          let totalCtx = 0;
-          let totalCost = 0;
-          for (const res of results) {
-            if (res.usage) {
-              totalInput += res.usage.input || 0;
-              totalOutput += res.usage.output || 0;
-              totalTurns += res.usage.turns || 0;
-              totalCache += res.usage.cacheRead || 0;
-              totalCtx += res.usage.contextTokens || 0;
-              totalCost += res.usage.cost || 0;
-            }
-          }
-          meta = {
-            ...meta,
-            turns: totalTurns,
-            input: totalInput,
-            output: totalOutput,
-            cacheRead: totalCache,
-            contextTokens: totalCtx,
-            cost: totalCost,
-            model: results[0]?.model,
-          };
-        }
-        addViewMessage(
-          state,
-          toolName as MessageRole,
-          `${parsed.isError ? "✗ " : "✓ "}${t}`,
-          "tool-result",
-          meta,
-          endTs,
-          maxMessages,
-        );
-      }
-      break;
-    }
-
-    case "async_agent_start": {
-      const asyncId = parsed.id as string;
-      if (!asyncId) break;
-      if (parsed.sessionId && parsed.sessionId !== client.session.sessionId) break;
-      const match = findLastViewMessage(state, (m) => m.className === "tool-result" && m.text.includes(asyncId));
-      let targetMsgId = match?.id ?? "";
-      if (!targetMsgId) {
-        const agent = parsed.agent || "agent";
-        const repo = String(parsed.cwd || "").split("/").pop() || "";
-        targetMsgId = addViewMessage(
-          state,
-          "system",
-          `⏳ ${agent} — ${repo}`,
-          "async-agent-running",
-          undefined,
-          undefined,
-          maxMessages,
-        );
-      }
-      state.asyncMsgs.set(asyncId, { msgId: targetMsgId, text: "" });
-      break;
-    }
-
-    case "async_agent_event": {
-      const asyncId = parsed.id as string;
-      const inner = parsed.event;
-      if (!asyncId || !inner) break;
-      if (parsed.sessionId && parsed.sessionId !== client.session.sessionId) break;
-      const tracked = state.asyncMsgs.get(asyncId);
-      if (!tracked) break;
-
-      let changed = false;
-      if (inner.type === "message_update" && inner.assistantMessageEvent) {
-        const ae = inner.assistantMessageEvent;
-        if (ae.type === "text_delta" && ae.delta) {
-          tracked.text += ae.delta;
-          changed = true;
-        }
-      }
-      if (inner.type === "tool_execution_start") {
-        const name = inner.toolName || "tool";
-        const detail = inner.args?.command ? ` ${String(inner.args.command).slice(0, 100)}` : "";
-        tracked.text += `\n🔧 ${name}${detail}`;
-        changed = true;
-      }
-      if (inner.type === "tool_execution_end" && inner.result?.content?.[0]?.text) {
-        const result = String(inner.result.content[0].text).slice(0, 200);
-        tracked.text += `\n${inner.isError ? "✗" : "✓"} ${result}`;
-        changed = true;
-      }
-      if (changed) {
-        const body = tracked.text.trim();
+    const tracked = state.asyncMsgs.get(agent.id);
+    if (tracked && agent.text) {
+      tracked.text = agent.text;
+      const body = tracked.text.trim();
+      if (body) {
         patchViewMessage(state, tracked.msgId, (m) => {
           const header = m.text.split("\n")[0];
           return { ...m, text: `${header}\n${body}` };
         });
       }
-      break;
     }
-
-    case "async_agent_complete": {
-      const asyncId = parsed.id as string;
-      if (!asyncId) break;
-      if (parsed.sessionId && parsed.sessionId !== client.session.sessionId) break;
-      const tracked = state.asyncMsgs.get(asyncId);
-      if (!tracked) break;
-      const body = tracked.text.trim();
-      const success = parsed.success;
-      patchViewMessage(state, tracked.msgId, (m) => {
-        if (m.className === "async-agent-running") {
-          const header = m.text.split("\n")[0].replace("⏳", success === false ? "❌" : "✅");
-          return { ...m, text: `${header}\n${body}`, className: "async-agent-done" };
-        }
-        const status = success === false ? "\n❌ Agent failed" : "\n✅ Agent complete";
-        const header = m.text.split("\n")[0];
-        return { ...m, text: `${header}\n${body}${status}` };
-      });
-      state.asyncMsgs.delete(asyncId);
-      break;
-    }
-
-    case "extension_ui_request": {
-      if (client.replaying || !isInteractiveUiRequest(parsed)) break;
-      const askId = parsed.id as string;
-      const prefix = `ask|${askId}|`;
-      if (findLastViewMessage(state, (m) => Boolean(m.className?.startsWith(prefix)))) break;
-      const title = parsed.title || "Input needed";
-      const opts = parsed.method === "confirm" ? ["Yes", "No"] : parsed.options || [];
-      const ts = typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now();
-      addViewMessage(
-        state,
-        "ask_user" as MessageRole,
-        `${title}${parsed.message ? "\n" + parsed.message : ""}`,
-        `${prefix}${parsed.method}|${opts.join("|||")}`,
-        undefined,
-        ts,
-        maxMessages,
-      );
-      break;
-    }
-
-    case "ui-dismiss":
-      if (typeof parsed.id === "string" && parsed.id.length > 0) {
-        dismissViewAsk(state, parsed.id);
-      }
-      break;
-
-    case "coms_peer_event": {
-      const content = parsed.content || "";
-      addViewMessage(
-        state,
-        "system",
-        typeof content === "string" ? content : JSON.stringify(content),
-        undefined,
-        undefined,
-        typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now(),
-        maxMessages,
-      );
-      break;
-    }
-
-    case "notification":
-      addViewMessage(
-        state,
-        "system",
-        `⚠️ ${parsed.message || "notification"}`,
-        undefined,
-        undefined,
-        typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now(),
-        maxMessages,
-      );
-      break;
-
-    case "commands-list":
-      if (Array.isArray(parsed.commands)) {
-        state.availableCommands = parsed.commands
-          .filter((cmd: any) => cmd && typeof cmd.name === "string")
-          .map((cmd: any) => ({ name: cmd.name, description: typeof cmd.description === "string" ? cmd.description : "" }));
-      }
-      break;
+    reconciled++;
   }
+
+  if (reconciled > 0) {
+    log.debug("reconciled active async agents into viewState", { sessionId: sid, count: reconciled });
+  }
+  return reconciled;
+}
+
+/**
+ * Finalize a running async agent card when its `/ws/async` socket drops before
+ * sending `async_complete`, transitioning the snapshot card to failed and
+ * notifying connected browsers.
+ */
+export function finalizeAsyncAgentDisconnect(
+  client: PiClient | undefined,
+  info: ActiveAsyncAgentInfo,
+  broadcast: (event: object) => void,
+): void {
+  const completeEvent = {
+    type: "async_agent_complete",
+    id: info.id,
+    success: false,
+    sessionId: info.sessionId,
+  };
+  if (client) {
+    applyEventToViewState(client, completeEvent);
+  }
+  broadcast(completeEvent);
+  log.info("async agent disconnected before completion; finalized card as failed", {
+    id: info.id,
+    sessionId: info.sessionId,
+  });
 }
 
 export function buildSessionSnapshot(client: PiClient): SessionSnapshotPayload {
@@ -840,9 +582,10 @@ export function registerPidashSession(
     if (!session.comsName && existing.session.comsName) session.comsName = existing.session.comsName;
     if (!session.comsPurpose && existing.session.comsPurpose) session.comsPurpose = existing.session.comsPurpose;
     if (!session.comsProject && existing.session.comsProject) session.comsProject = existing.session.comsProject;
+    const preservedCommands = existing.viewState.availableCommands;
     existing.ws = ws;
     existing.session = session;
-    existing.viewState = createSessionViewState(session);
+    existing.viewState = createSessionViewState(session, preservedCommands);
     existing.pendingUiRequests.clear();
     existing.replaying = true;
     existing.connectionGeneration++;

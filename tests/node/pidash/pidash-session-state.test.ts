@@ -1,7 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  appendEventBuffer,
   applyEventToViewState,
   clearPendingUiRequests,
   createPidashSessionState,
@@ -123,23 +122,6 @@ describe("pidash session registration", () => {
     assert.equal(client.session.active, false);
     assert.equal(client.session.streaming, false);
     assert.deepEqual(updates.at(-1), { type: "session_updated", session: client.session });
-  });
-});
-
-describe("appendEventBuffer (#1265)", () => {
-  it("trims amortized once trimAt is reached while preserving newest entries in order", () => {
-    const buf: string[] = [];
-    for (let i = 0; i < 11; i++) {
-      appendEventBuffer(buf, `e-${i}`, 10, 12);
-    }
-    assert.equal(buf.length, 11);
-    assert.equal(buf[0], "e-0");
-
-    // 12th push triggers amortized splice down to max=10
-    appendEventBuffer(buf, "e-11", 10, 12);
-    assert.equal(buf.length, 10);
-    assert.equal(buf[0], "e-2");
-    assert.equal(buf.at(-1), "e-11");
   });
 });
 
