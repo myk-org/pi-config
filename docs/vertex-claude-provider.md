@@ -172,7 +172,6 @@ Lifecycle when you start `pi`:
 3. Both present → `google-vertex-claude` registers with the current model catalog (including `-1m` if enabled).
 4. Each turn re-checks project, region, and ADC, then streams from Vertex.
 
-For invoking external AI CLIs as slash-command helpers, see [External AI Agents & CLI](external-ai-agents.html).
 
 ## Troubleshooting
 
@@ -188,7 +187,6 @@ For invoking external AI CLIs as slash-command helpers, see [External AI Agents 
 
 ## Related Pages
 
-- [External AI Agents & CLI](external-ai-agents.html)
 - [Pi Sidecar HTTP API](pi-sidecar.html)
 - [Configuration & Settings](configuration.html)
 - [Installation & Quickstart](quickstart.html)

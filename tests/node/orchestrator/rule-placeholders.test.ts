@@ -288,18 +288,18 @@ describe("evaluateConditionalBlocks", () => {
 	});
 
 	it("featurePredicates consulted for truthy IF when key is a feature", () => {
-		const text = "{{IF:external_ai_agents}}ROW{{/IF}}keep";
+		const text = "{{IF:custom_feature}}ROW{{/IF}}keep";
 		assert.equal(
 			evaluateConditionalBlocks(text, () => false, {
 				knownKeys,
-				featurePredicates: { external_ai_agents: () => true },
+				featurePredicates: { custom_feature: () => true },
 			}),
 			"ROWkeep",
 		);
 		assert.equal(
 			evaluateConditionalBlocks(text, () => true, {
 				knownKeys,
-				featurePredicates: { external_ai_agents: () => false },
+				featurePredicates: { custom_feature: () => false },
 			}),
 			"keep",
 		);

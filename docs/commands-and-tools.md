@@ -99,15 +99,6 @@ Toggle automatic memory dreaming, which otherwise runs every 3 hours and at sess
 /dream-auto off
 ```
 
-### /external-ai-models-refresh
-
-Clear the cached model lists and re-fetch models for the AI CLI providers (cursor, claude, gemini).
-
-- **Arguments:** none
-
-```
-/external-ai-models-refresh
-```
 
 ### /nvim-changed-files
 
