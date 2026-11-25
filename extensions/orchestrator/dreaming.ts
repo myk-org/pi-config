@@ -15,6 +15,7 @@ import { createLogger } from "../shared/logger.js";
 const log = createLogger("dreaming");
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { getInternalOpsProvider } from "./async-capability.js";
 import { getSetting } from "./project-settings.js";
 import { discoverAgents } from "./agents.js";
@@ -152,8 +153,13 @@ export function registerDreaming(
     } catch { /* stale UI context — ignore */ }
   }
 
-  function runDreamAsync(cwd: string, lastSessionFile?: string) {
-    if (dreamInFlight) return; // Prevent concurrent dreams
+  function getEffectiveIntervalHours(cwd: string): number {
+    const projectHours = getSetting(cwd, "dream_interval_hours");
+    return Math.max(0.5, Math.min(24, projectHours));
+  }
+
+  function runDreamAsync(cwd: string, lastSessionFile?: string): { started: boolean; id: string; error?: string } {
+    if (dreamInFlight) return { started: false, id: "", error: "Dream already running" }; // Prevent concurrent dreams
 
     const internalOps = getInternalOpsProvider(cwd);
     const dreamProvider = internalOps?.provider;
@@ -169,7 +175,7 @@ export function registerDreaming(
     // knowledge rather than re-derivable history is put back below (issue #1010).
     const topicsBeforeDream = snapshotTopicLines(topicsDir);
     const dreamStartedAt = Date.now();
-    const { id } = spawnAsyncAgent(
+    const { id, error } = spawnAsyncAgent(
       "worker",
       buildDreamPrompt(lastSessionFile, topicsDir),
       cwd,
@@ -237,6 +243,7 @@ export function registerDreaming(
     if (!id) {
       dreamInFlight = false;
       updateDreamStatus();
+      return { started: false, id: "", error: error || "Failed to start dream worker" };
     } else {
       // Safety fallback: if onComplete never fires (runner crash/hang),
       // reset dreamInFlight after 30 min so future dreams aren't blocked.
@@ -255,6 +262,7 @@ export function registerDreaming(
         }
       }, 30 * 60 * 1000);
       if (fallbackTimer.unref) fallbackTimer.unref();
+      return { started: true, id };
     }
   }
 
@@ -266,8 +274,7 @@ export function registerDreaming(
     lastCwd = cwd;
 
     // Resolve dream interval from project settings
-    const projectHours = getSetting(cwd, "dream_interval_hours");
-    const clampedHours = Math.max(0.5, Math.min(24, projectHours));
+    const clampedHours = getEffectiveIntervalHours(cwd);
     const effectiveMs = clampedHours * 60 * 60 * 1000;
 
     // Restart timer if interval changed (or first start)
@@ -307,6 +314,20 @@ export function registerDreaming(
     }
   }
 
+  function setAutoDream(on: boolean, cwd: string, ctx?: any): string {
+    if (on) {
+      enabled = true;
+      lastCwd = cwd;
+      if (ctx) lastCtx = ctx;
+      startTimer(cwd);
+      const hrs = getEffectiveIntervalHours(cwd);
+      return `Auto-dreaming enabled (every ${hrs}h + session end)`;
+    }
+    enabled = false;
+    stopTimer();
+    return "Auto-dreaming disabled";
+  }
+
   // /dream-auto command — toggle auto-dreaming
   pi.registerCommand("dream-auto", {
     description: "Toggle automatic memory dreaming (every 3h + session end)",
@@ -314,15 +335,11 @@ export function registerDreaming(
       const arg = (args || "").trim().toLowerCase();
 
       if (arg === "on") {
-        enabled = true;
-        lastCwd = ctx.cwd;
-        lastCtx = ctx;
-        startTimer(ctx.cwd);
-        ctx.ui.notify("🌙 Auto-dreaming enabled (every 3h + session end)", "info");
+        const msg = setAutoDream(true, ctx.cwd, ctx);
+        ctx.ui.notify(`🌙 ${msg}`, "info");
       } else if (arg === "off") {
-        enabled = false;
-        stopTimer();
-        ctx.ui.notify("Auto-dreaming disabled", "info");
+        const msg = setAutoDream(false, ctx.cwd, ctx);
+        ctx.ui.notify(msg, "info");
       } else {
         const status = enabled ? "enabled" : "disabled";
         ctx.ui.notify(`Auto-dreaming is ${status}. Use: /dream-auto on|off`, "info");
@@ -343,6 +360,83 @@ export function registerDreaming(
       runDreamAsync(ctx.cwd);
     },
   });
+
+  if (typeof pi.registerTool === "function") {
+    pi.registerTool({
+      name: "memory_dream",
+      label: "Memory Dream",
+      description:
+        "Inspect background memory dreaming status, trigger consolidation now, or toggle automatic dreaming (equivalent to /dream and /dream-auto).",
+      parameters: Type.Object({
+        action: Type.Union(
+          [Type.Literal("status"), Type.Literal("run"), Type.Literal("auto_on"), Type.Literal("auto_off")],
+          {
+            description:
+              "'status' to inspect dreaming state, 'run' to trigger background consolidation now, 'auto_on' / 'auto_off' to enable or disable automatic dreaming.",
+          },
+        ),
+      }),
+      async execute(_callId, params, _signal, _onUpdate, ctx) {
+        const cwd = ctx?.cwd || lastCwd || process.cwd();
+        if (params.action === "status") {
+          const intervalHours = getEffectiveIntervalHours(cwd);
+          const text = [
+            `Auto-dreaming: ${enabled ? "enabled" : "disabled"} (interval: ${intervalHours}h + session end)`,
+            `Dream in flight: ${dreamInFlight ? `yes (${currentDreamId || "starting"})` : "no"}`,
+          ].join("\n");
+          log.debug("memory_dream_tool_status", { enabled, inFlight: dreamInFlight, intervalHours });
+          return {
+            content: [{ type: "text" as const, text }],
+            details: { action: "status", enabled, inFlight: dreamInFlight, currentDreamId: currentDreamId || null, intervalHours },
+          };
+        }
+        if (params.action === "run") {
+          if (dreamInFlight) {
+            log.info("memory_dream_tool_already_running", { currentDreamId });
+            return {
+              content: [{ type: "text" as const, text: "Dream already running — wait for it to finish." }],
+              details: { action: "run", ok: false, inFlight: true, id: currentDreamId || null },
+            };
+          }
+          lastCwd = cwd;
+          if (ctx) lastCtx = ctx;
+          const res = runDreamAsync(cwd);
+          if (res.started) {
+            log.info("memory_dream_tool_started", { id: res.id });
+            return {
+              content: [{ type: "text" as const, text: `Started background memory consolidation (job ${res.id}).` }],
+              details: { action: "run", ok: true, id: res.id },
+            };
+          }
+          log.warn("memory_dream_tool_start_failed", { error: res.error });
+          return {
+            content: [{ type: "text" as const, text: `Failed to start memory dreaming: ${res.error || "unknown error"}.` }],
+            details: { action: "run", ok: false, error: res.error },
+          };
+        }
+        if (params.action === "auto_on") {
+          const msg = setAutoDream(true, cwd, ctx);
+          log.info("memory_dream_tool_auto", { enabled: true });
+          return {
+            content: [{ type: "text" as const, text: msg }],
+            details: { action: "auto_on", enabled: true },
+          };
+        }
+        if (params.action === "auto_off") {
+          const msg = setAutoDream(false, cwd, ctx);
+          log.info("memory_dream_tool_auto", { enabled: false });
+          return {
+            content: [{ type: "text" as const, text: msg }],
+            details: { action: "auto_off", enabled: false },
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: `Unknown action "${String(params.action)}". Use "status", "run", "auto_on", or "auto_off".` }],
+          details: { ok: false },
+        };
+      },
+    });
+  }
 
   // Set initial dream status on first agent start (fires on /reload too, unlike session_start)
   let initialized = false;

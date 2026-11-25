@@ -53,6 +53,21 @@ Always pass `cwd` when delegating to subagents in all modes — omitting it caus
 
 ---
 
+## Runtime & Session Tools
+
+Prefer the built-in runtime tools over ad-hoc shell commands when inspecting or managing session state:
+
+| Tool | Purpose |
+| --- | --- |
+| `async_status` | List running and recent async/sync subagent jobs (`id` inspects a job's metadata and recent output tail) |
+| `session_status` | Return the unified `/status` snapshot (async agents, crons, git branch/dirty state, worktrees, context %, loaded resources) |
+| `worktree_status` | List git worktrees (`action="list"`) with dirty counts, PRs, and active COMS peers, or prune stale worktrees (`action="prune"`) |
+| `daemon_manage` | Check or control local `pidash`/`pidiff` daemons (`action="status"\|"start"\|"stop"\|"restart"`) |
+| `skill_adopt` | List unmarked adoptable skills (`action="list"`) or adopt one (`action="adopt"`, `name`) |
+| `memory_dream` | Inspect dreaming state (`status`), run consolidation now (`run`), or toggle auto-dreaming (`auto_on`/`auto_off`) |
+
+---
+
 {{IF:use_worktrees}}
 
 ## Multi-PR / Multi-Branch Work

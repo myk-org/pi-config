@@ -3352,6 +3352,129 @@ Do not respond to this message.`;
 		},
 	});
 
+	interface LocalQueueItem {
+		id: string;
+		msg_id: string;
+		sender_name: string;
+		prompt: string;
+		status: "processing" | "pending";
+		receivedAt: number;
+	}
+
+	function listLocalInboundQueue(): LocalQueueItem[] {
+		const items: LocalQueueItem[] = [];
+		const now = Date.now();
+		if (currentInbound && !currentInbound.fulfilled) {
+			items.push({
+				id: currentInbound.msg_id,
+				msg_id: currentInbound.msg_id,
+				sender_name: currentInbound.sender_name,
+				prompt: currentInbound.prompt,
+				status: "processing",
+				receivedAt: now,
+			});
+		}
+		for (const ib of inboundQueue.values()) {
+			if (ib.fulfilled) continue;
+			if (currentInbound && ib.msg_id === currentInbound.msg_id) continue;
+			items.push({
+				id: ib.msg_id,
+				msg_id: ib.msg_id,
+				sender_name: ib.sender_name,
+				prompt: ib.prompt,
+				status: "pending",
+				receivedAt: now,
+			});
+		}
+		return items;
+	}
+
+	async function killLocalInboundQueueItem(
+		msgId: string,
+	): Promise<{ killed: true; msg_id: string; sender_name: string } | { killed: false }> {
+		const ib = inboundQueue.get(msgId) ?? (currentInbound?.msg_id === msgId ? currentInbound : undefined);
+		if (!ib || ib.fulfilled) return { killed: false };
+		ib.fulfilled = true;
+		inboundQueue.delete(msgId);
+		if (currentInbound?.msg_id === msgId) {
+			currentInbound = null;
+			inboundDelivered = false;
+		}
+		maybeRefreshWidget();
+		// Send error response to sender
+		if (identity) {
+			try {
+				await sendEnvelope(ib.sender_endpoint, {
+					type: "response", msg_id: ib.msg_id,
+					sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+					hops: 0, timestamp: nowIso(),
+					response: null, error: "killed_by_user",
+					queued_msg_ids: [],
+				});
+			} catch { /* best-effort */ }
+		}
+		log.info("queue_kill", msgId, "sender", ib.sender_name);
+		return { killed: true, msg_id: ib.msg_id, sender_name: ib.sender_name };
+	}
+
+	registerPeerTool({
+		name: "coms_local_queue",
+		label: "Coms Local Queue",
+		description:
+			"Inspect or kill messages in THIS session's own inbound coms queue (equivalent to /coms-queue). Use action='list' to view processing and pending inbound messages, or action='kill' with msg_id to cancel one and notify the sender.",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("list"), Type.Literal("kill")], {
+				description: "'list' to view this session's inbound coms queue; 'kill' to cancel a queued message by msg_id.",
+			}),
+			msg_id: Type.Optional(Type.String({ description: "Inbound msg_id to cancel (required when action='kill')." })),
+		}),
+		async execute(_callId, params): Promise<{ content: { type: "text"; text: string }[]; details: Record<string, unknown> }> {
+			if (params.action === "list") {
+				const items = listLocalInboundQueue();
+				log.debug("coms_local_queue_list", { count: items.length });
+				if (items.length === 0) {
+					return {
+						content: [{ type: "text" as const, text: "No queued inbound coms messages." }],
+						details: { action: "list", items: [] },
+					};
+				}
+				const lines = items.map((item) => {
+					const compact = item.prompt.replace(/\s+/g, " ").trim();
+					const preview = compact.length > 160 ? `${compact.slice(0, 160)}…` : compact;
+					return `- ${item.msg_id} | ${item.status} | from: ${item.sender_name} | ${preview}`;
+				});
+				return {
+					content: [{ type: "text" as const, text: `Local inbound coms queue (${items.length}):\n${lines.join("\n")}` }],
+					details: { action: "list", items },
+				};
+			}
+			if (params.action === "kill") {
+				const msgId = (params.msg_id ?? "").trim();
+				if (!msgId) {
+					return {
+						content: [{ type: "text" as const, text: "Error: 'msg_id' is required when action is 'kill'." }],
+						details: { action: "kill", killed: false },
+					};
+				}
+				const res = await killLocalInboundQueueItem(msgId);
+				if (!res.killed) {
+					return {
+						content: [{ type: "text" as const, text: `No queued inbound message found with msg_id "${msgId}".` }],
+						details: { action: "kill", killed: false, msg_id: msgId },
+					};
+				}
+				return {
+					content: [{ type: "text" as const, text: `Killed inbound message ${res.msg_id} (from ${res.sender_name}).` }],
+					details: { action: "kill", ...res },
+				};
+			}
+			return {
+				content: [{ type: "text" as const, text: `Unknown action "${String(params.action)}". Use "list" or "kill".` }],
+				details: { ok: false },
+			};
+		},
+	});
+
 	async function loadMutablePeerTask(
 		storePath: string,
 		targetName: string,
@@ -4233,68 +4356,6 @@ Do not respond to this message.`;
 			try { ctx?.ui?.notify?.("📡 coms not active — no queue. Run /coms start first.", "info"); } catch { /* ignore */ }
 			return;
 		}
-		interface QueueItem {
-				id: string;
-				msg_id: string;
-				sender_name: string;
-				prompt: string;
-				status: string;
-				receivedAt: number;
-			}
-
-			const getItems = (): QueueItem[] => {
-				const items: QueueItem[] = [];
-				const now = Date.now();
-				if (currentInbound && !currentInbound.fulfilled) {
-					items.push({
-						id: currentInbound.msg_id,
-						msg_id: currentInbound.msg_id,
-						sender_name: currentInbound.sender_name,
-						prompt: currentInbound.prompt,
-						status: "processing",
-						receivedAt: now,
-					});
-				}
-				for (const ib of inboundQueue.values()) {
-					if (ib.fulfilled) continue;
-					if (currentInbound && ib.msg_id === currentInbound.msg_id) continue;
-					items.push({
-						id: ib.msg_id,
-						msg_id: ib.msg_id,
-						sender_name: ib.sender_name,
-						prompt: ib.prompt,
-						status: "pending",
-						receivedAt: now,
-					});
-				}
-				return items;
-			};
-
-			const killItem = async (msgId: string) => {
-				const ib = inboundQueue.get(msgId);
-				if (!ib || ib.fulfilled) return;
-				ib.fulfilled = true;
-				inboundQueue.delete(msgId);
-				if (currentInbound?.msg_id === msgId) {
-					currentInbound = null;
-					inboundDelivered = false;
-				}
-				maybeRefreshWidget();
-				// Send error response to sender
-				if (identity) {
-					try {
-						await sendEnvelope(ib.sender_endpoint, {
-							type: "response", msg_id: ib.msg_id,
-							sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
-							hops: 0, timestamp: nowIso(),
-							response: null, error: "killed_by_user",
-							queued_msg_ids: [],
-						});
-					} catch { /* best-effort */ }
-				}
-				log.info("queue_kill", msgId, "sender", ib.sender_name);
-			};
-
 			await openListDetailOverlay(ctx, {
 				emptyMessage: "No queued coms messages.",
 				listSpec: {
@@ -4305,7 +4366,7 @@ Do not respond to this message.`;
 						return `queue · ${processing} processing / ${items.length}`;
 					},
 					footerHints: "↑↓/jk select · Enter view · x kill · Esc close",
-					listItems: getItems,
+					listItems: listLocalInboundQueue,
 					rowParts: (item, theme) => {
 						const shortId = item.msg_id.length > 8 ? item.msg_id.slice(-8) : item.msg_id;
 						const preview = item.prompt.length > 40 ? `${item.prompt.slice(0, 40)}…` : item.prompt;
@@ -4320,7 +4381,7 @@ Do not respond to this message.`;
 							],
 						};
 					},
-					onX: (item) => { void killItem(item.id); },
+					onX: (item) => { void killLocalInboundQueueItem(item.id); },
 				},
 				createDetail: (item, tui, theme, done) => {
 					return new OverlayScrollDetail(tui, theme, {
@@ -4328,7 +4389,7 @@ Do not respond to this message.`;
 						emptyBody: "(no prompt)",
 						footerHints: "↑↓/jk scroll · x kill · Esc back",
 						onX: () => {
-							void killItem(item.id);
+							void killLocalInboundQueueItem(item.id);
 							return true;
 						},
 						getHeader: (t) => {

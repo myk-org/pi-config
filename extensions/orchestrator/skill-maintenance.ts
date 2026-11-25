@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
 import { fileLog } from "../shared/file-logger.js";
 import { truncateJsonlFile, withFileLock } from "./state-jsonl.js";
@@ -944,4 +945,58 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
       ctx.ui.notify(result.message, result.ok ? "info" : "warning");
     },
   });
+
+  if (typeof pi.registerTool === "function") {
+    pi.registerTool({
+      name: "skill_adopt",
+      label: "Skill Adopt",
+      description:
+        "List adoptable skills not yet marked with skill-maintenance: auto, or adopt a named skill so agents keep it accurate (equivalent to /adopt-skill).",
+      parameters: Type.Object({
+        action: Type.Union([Type.Literal("list"), Type.Literal("adopt")], {
+          description: "'list' to list unmarked adoptable skills; 'adopt' to mark a named skill as maintained.",
+        }),
+        name: Type.Optional(Type.String({ description: "Skill name to adopt (required when action='adopt')." })),
+      }),
+      async execute(_callId, params, _signal, _onUpdate, ctx) {
+        const cwd = ctx?.cwd || currentCwd || process.cwd();
+        currentCwd = cwd;
+        const liveSkills = getLiveSkills();
+        if (params.action === "list") {
+          const available = listUnmarkedSkills(cwd, liveSkills);
+          log.debug("skill_adopt_tool_list", { count: available.length });
+          const text =
+            available.length > 0
+              ? `Unmarked adoptable skills (${available.length}):\n${available.map((s) => `- ${s}`).join("\n")}`
+              : "Every adoptable skill is already maintained.";
+          return {
+            content: [{ type: "text" as const, text }],
+            details: { action: "list", unmarked: available },
+          };
+        }
+        if (params.action === "adopt") {
+          const name = (params.name ?? "").trim();
+          if (!name) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: "Error: 'name' is required when action is 'adopt'. Call skill_adopt(action='list') to see unmarked adoptable skills.",
+              }],
+              details: { action: "adopt", ok: false },
+            };
+          }
+          const result = adoptSkill(cwd, name, liveSkills);
+          log.info("skill_adopt_tool_adopt", { name, ok: result.ok });
+          return {
+            content: [{ type: "text" as const, text: result.message }],
+            details: { action: "adopt", name, ...result },
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: `Unknown action "${String(params.action)}". Use "list" or "adopt".` }],
+          details: { ok: false },
+        };
+      },
+    });
+  }
 }

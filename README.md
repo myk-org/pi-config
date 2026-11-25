@@ -29,6 +29,7 @@ Single extension that provides:
 | --- | --- |
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async, and async-chain modes); optional `model` param for model override. Chains also run async: every step needs its own `taskId` and `cwd`, each step receives the previous step's output as `{previous}`, and a failed step stops the chain |
 | **`list_models`** | List available models and providers for subagent model override |
+| **Runtime & session tools** | LLM tool parity for user commands: `async_status` (list/inspect jobs & output tail), `session_status` (unified `/status` snapshot), `worktree_status` (`list`/`prune`), `daemon_manage` (`pidash`/`pidiff` status/start/stop/restart), `skill_adopt` (`list`/`adopt`), `memory_dream` (`status`/`run`/`auto_on`/`auto_off`), and `coms_local_queue` (`list`/`kill` own inbound queue) |
 | **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`: `x` kills, `Space` multi-selects, `a` kills all). Async applies to chains too: step 1 spawns immediately and each step starts when the previous one ends. |
 | **Default model & thinking restore** | Unified startup session restore (`extensions/providers/session-restore.ts`): cold-start default model restore (`restore-default-model.ts`, gating `startup`\|`resume`, empty-selection `new`, empty `enabledModels`, and trusted project merge) followed by per-model thinking-level persistence (`last-thinking-level.ts`). |
 | **`/async-status` command** | Show status of background agents — select one for live output streaming, multi-select and kill (`x`), or kill everything (`a`) |
@@ -132,6 +133,7 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 | `*_await` | Block until response arrives |
 | `coms_queue_inspect` | Preview owned queued P2P messages before recovery |
 | `coms_queue_clear` | Irreversibly clear only an inspect preview |
+| `coms_local_queue` | List or kill messages in THIS session's own inbound coms queue (equivalent to `/coms-queue`) |
 | `coms_start` / `coms_stop` | Start or stop coms for THIS session from a tool call — no slash command, no new process |
 | `coms_peer_spawn` | Start a peer: a supervised `pi --coms` process with its own session, addressable by name |
 | `coms_peers` | List peers with live state — this session's project by default, `project: "*"` for the machine |

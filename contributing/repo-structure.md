@@ -36,7 +36,7 @@ pi-config/
 │   │   ├── index.ts                 # Main entry — imports and wires all modules
 │   │   ├── agents.ts                # Agent discovery
 │   │   ├── ask-user.ts              # ask_user tool
-│   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery, onComplete callbacks)
+│   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery, onComplete callbacks, async_status tool)
 │   │   ├── overlay-dashboard.ts     # Shared fullscreen list→detail overlay (async/cron)
 │   │   ├── overlay-dashboard-utils.ts # Pure selection reconcile helpers
 │   │   ├── async-status-ui.ts       # /async-status overlay (uses overlay-dashboard)
@@ -51,8 +51,8 @@ pi-config/
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files
 │   │   ├── cron.ts                   # /cron scheduled tasks and session/project scope handling
-│   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
-│   │   ├── skill-maintenance.ts     # /adopt-skill, marked-skill write guard, in-turn nudge, provenance + one-line notice
+│   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw) + memory_dream tool
+│   │   ├── skill-maintenance.ts     # /adopt-skill + skill_adopt tool, marked-skill write guard, in-turn nudge, provenance + one-line notice
 │   │   ├── bash-policy.ts           # Deep bash enforcement policy — unified shell lexing/scanning, DANGEROUS_RULES, git/conflict/trailer/dangerous evaluation
 │   │   ├── enforcement.ts           # Thin enforcement hook adapter over bash-policy.ts, enforcement-rules.ts, and pi-config-review-state.ts
 │   │   ├── enforcement-rules.ts     # Enforcement rules engine — trigger matching + action execution for memory-based enforcement
@@ -75,10 +75,10 @@ pi-config/
 │   │   ├── state-jsonl.ts               # JSONL state persistence (JsonlStateStore + JsonlAppendLog)
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
-│   │   ├── status.ts                # /status command — unified session status snapshot (incl. worktree summary)
+│   │   ├── status.ts                # /status command + session_status tool — unified session status snapshot (incl. worktree summary)
 │   │   ├── status-bar.ts            # Ordered status bar slot registry (time, async, crons, dream, git, worktrees, trail, review)
 │   │   ├── status-line.ts           # Git status ([wt] tag, 4a-worktrees badge), notifications, container indicator, last-activity timestamp
-│   │   ├── worktree.ts              # /worktree command — interactive overlay + list/prune subcommands
+│   │   ├── worktree.ts              # /worktree command + worktree_status tool — interactive overlay + list/prune subcommands
 │   │   ├── worktree-helpers.ts      # Pure worktree helpers (COMS peer matching, remove guards, table/status/prune formatting, clipboard)
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
 │   │   ├── memory-store.ts            # Deep memory store — owns all topic writes, cache invalidation, score/tombstone updates, and embedding upkeep/pruning
@@ -97,7 +97,7 @@ pi-config/
 │   │   ├── index.ts                 # Entry point — registers coms
 │   │   ├── coms-wrapper.ts          # On-demand `/coms` controller — drives `ComsPeerRuntime` and `ComsRegistry` directly (lifecycle, reload, inventory, pidash)
 │   │   ├── coms-registry.ts         # Unified peer registry, supervision inventory, socket probes (`probeStaleSocket`, `probeAlive`), and stale/orphan pruning
-│   │   ├── coms-p2p.ts              # Instantiable P2P peer runtime (`createComsPeerRuntime`, sockets, queue drain, tools, `/coms-queue`)
+│   │   ├── coms-p2p.ts              # Instantiable P2P peer runtime (`createComsPeerRuntime`, sockets, queue drain, tools incl. `coms_local_queue`, `/coms-queue`)
 │   │   ├── coms-shared.ts           # Shared utilities: flag parser, state persistence, active-tool sync, response formatting, inbound bundling
 │   │   ├── coms-peers.ts            # Peer inventory filtering, table/detail formatting, spawn/kill planning, `/coms tell` completions
 │   │   ├── coms-peers-ui.ts         # `/coms list` interactive overlay and multi-select composer
@@ -138,7 +138,7 @@ pi-config/
 │   │   ├── provider-stream-log.ts   # Shared provider_stream_event hook (#848; gated on log_providers=debug)
 │   │   ├── resolve-binary.ts        # In-process PATH binary resolution
 │   │   ├── openai-compatible-discovery.ts # Discovery config, requests, header resolution, cache, diagnostics
-│   │   ├── daemon-manager.ts        # Deep shared daemon client & lifecycle manager (spawn, health, WebSocket, heartbeat, reconnect, shutdown, /start|stop|restart|status) — shared by pidash and pidiff
+│   │   ├── daemon-manager.ts        # Deep shared daemon client & lifecycle manager (spawn, health, WebSocket, heartbeat, reconnect, shutdown, /start|stop|restart|status, daemon_manage tool) — shared by pidash and pidiff
 │   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive, streamLoopAborted) with auto-pruning (#1364, #1374)

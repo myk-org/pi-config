@@ -9,7 +9,7 @@ Commands and tools are different things: a **command** is something you type (`/
 | Kind | Count | Where they come from |
 |---|---|---|
 | Slash commands | 17 | `registerCommand(...)` across `extensions/` |
-| Always-registered tools | 38 | `registerTool(...)` across `extensions/` |
+| Always-registered tools | 45 | `registerTool(...)` across `extensions/` |
 | Code-map tools | 7 | `trail.ts`, on by default when the `trail` binary exists (`trail_enable`) |
 
 Counts verified against source. Two names are registered in more than one place — see [Duplicate registrations](#duplicate-registrations).
@@ -253,7 +253,7 @@ More detail: [Daemon and WebSockets](daemon-and-websockets.html) for how task st
 
 ## Tools
 
-### coms_* (14 tools)
+### coms_* (15 tools)
 
 All require active coms (`/coms start`); while inactive every one of them returns the same "coms not active" text. See [Inter-Agent Communication](inter-agent-communication.html) for the protocol, peer discovery, and queue semantics.
 
@@ -267,6 +267,7 @@ All require active coms (`/coms start`); while inactive every one of them return
 | `coms_queue_delete` | Irreversibly delete one specific queued message of yours | `target`, `msg_id`, `preview_id` |
 | `coms_queue_edit` | Replace the content of one of your pending queued messages | `target`, `msg_id`, `new_content` |
 | `coms_queue_prioritize` | Move one of your pending messages to the front of the peer's queue | `target`, `msg_id` |
+| `coms_local_queue` | Inspect or cancel messages in THIS session's own inbound coms queue (equivalent to `/coms-queue`) | `action` (`list`, `kill`), `msg_id` (required for `kill`) |
 | `coms_tasks_create` | Create several tasks on a peer's task list, auto-add a "Report completion to sender" task blocked by all of them, and message the peer to start work | `target`, `tasks[]` (`subject`, `description`, at least one) |
 | `coms_task_list` | List a peer's tasks without sending it a message | `target` |
 | `coms_task_get` | Fetch one peer task with status, owner, description, and blocker state | `target`, `task_id` |
@@ -275,7 +276,7 @@ All require active coms (`/coms start`); while inactive every one of them return
 
 `coms_send`'s description carries an explicit anti-loop warning: do not call it to reply to an inbound `[from <peer>]` message — the extension auto-captures your final assistant text as the reply.
 
-### memory_* (8 tools)
+### memory_* (9 tools)
 
 Project memory, backed by topic files under `.pi/memory/topics/`. See [Memory Architecture](memory-architecture.html) for the layering and scoring, [Curating Project Memory](curating-project-memory.html) for hands-on curation, and [Safety Enforcements](safety-enforcements.html) for the enforcement fields.
 
@@ -289,6 +290,7 @@ Project memory, backed by topic files under `.pi/memory/topics/`. See [Memory Ar
 | `memory_remove` | Delete an entry that is wrong, outdated, or superseded | `text`, `category` |
 | `memory_reinforce` | Bump evidence and last-reinforced time on an existing entry, raising its stability score; may trigger promotion | `entryText` (exact text without category prefix), `category` |
 | `memory_consolidate` | Produce a consolidation report: patterns, contradictions, merge candidates, and skills derived from recurring workflows | none |
+| `memory_dream` | Inspect background memory dreaming status, trigger consolidation now, or toggle auto-dreaming (equivalent to `/dream` and `/dream-auto`) | `action` (`status`, `run`, `auto_on`, `auto_off`) |
 
 ### Task* (7 tools)
 
@@ -316,10 +318,15 @@ Watching depends on the platform's `fs.watch` support and event delivery. Replac
 reliable notifications are not covered; there is no polling fallback or replay of changes made while the watcher is closed. Watcher errors close and clear the handles so a later
 `reopen()` can try again. There is no automatic retry timer during an active session.
 
-### Core tools (9 tools)
+### Core tools (12 tools)
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
+| `async_status` | List running and recent async/sync subagent jobs (ID, name, agent, status, elapsed, current tool) or inspect one job's output tail | `id` (optional exact ID or unique prefix), `max_chars` (200–20000, default 4000) |
+| `session_status` | Return the unified `/status` snapshot (async agents, crons, git branch/dirty state, worktrees, context %, loaded resources) | none |
+| `worktree_status` | List git worktrees (branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata | `action` (`list`, `prune`) |
+| `daemon_manage` | Check status or start/stop/restart local `pidash` and `pidiff` daemons (handles disabled daemons cleanly) | `name` (`pidash`, `pidiff`), `action` (`status`, `start`, `stop`, `restart`) |
+| `skill_adopt` | List unmarked adoptable skills or adopt a named skill with `skill-maintenance: auto` | `action` (`list`, `adopt`), `name` (required for `adopt`) |
 | `cron_manage` | Manage scheduled tasks; `persist=true` keeps a task across Pi sessions in the project | `action` (`add`, `list`, `remove`), `persist`, `description`, `task`, `interval_seconds` (min 10), `at_hour` (0–23), `at_minute` (0–59, requires `at_hour`), `id` |
 | `subagent` | Delegate to a subagent with isolated context; modes are single (`agent`+`task`), parallel (`tasks[]`), and chain (`chain[]` with a `{previous}` placeholder). A chain also runs async with `async: true`: each step needs its own `taskId` and `cwd`, each step gets the previous step's output as `{previous}`, and a failed step stops the chain | `agent`, `task`, `tasks[]`, `chain[]`, `agentScope`, `confirmProjectAgents`, `cwd`, `estimatedSeconds` (required for sync; `>= 30` forces async), `async`, `fireAndForget`, `name`, `taskId` (`-1` if unlinked), `asyncKill`, `persistSession`, `model` (`provider/model-id`) |
 | `session_search` | Search past conversation summaries by keyword — zero LLM cost | `query`, `limit` (default 10) |

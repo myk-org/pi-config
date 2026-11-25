@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import type { AgentConfig, AgentDiscoveryResult } from "./agents.js";
 import { buildSubagentChildSpec } from "./subagent-child-spec.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
@@ -1671,48 +1672,67 @@ export function registerAsyncAgents(
     log.info("shutdown: sync runs stopped", { stoppedSyncRuns });
   });
 
+  function listAllJobs(): AsyncStatusJobView[] {
+    // Async first, then sync; newest first inside each group.
+    const newestFirst = (a: { startedAt: number }, b: { startedAt: number }) => b.startedAt - a.startedAt;
+    const asyncJobs: AsyncStatusJobView[] = Array.from(asyncState.jobs.values())
+      .sort(newestFirst)
+      .map(j => {
+        const live = j.workerDir ? readAsyncStatus(j.workerDir) : null;
+        const currentTool = typeof live?.tool === "string"
+          ? live.tool
+          : typeof live?.currentTool === "string"
+            ? live.currentTool
+            : undefined;
+        return {
+          id: j.id,
+          agent: j.agent,
+          name: j.name,
+          task: j.task,
+          status: j.status,
+          workerDir: j.workerDir,
+          startedAt: j.startedAt,
+          durationMs: j.durationMs,
+          model: j.model,
+          currentTool,
+          mode: "async" as const,
+        };
+      });
+    const syncJobs: AsyncStatusJobView[] = listSyncAgentRunsWithFinished()
+      .sort(newestFirst)
+      .map(r => ({
+        id: r.id,
+        agent: r.agent,
+        name: r.agent,
+        task: r.task,
+        // The real status: a finished run is retained briefly so this row (and the detail
+        // header that reads it) cannot claim "running" for a child that already exited.
+        status: r.status,
+        // The run's own status.json, same layout as an async job's: the detail header
+        // reads the live state and killOrigin from it.
+        workerDir: r.workerDir,
+        startedAt: r.startedAt,
+        durationMs: r.endedAt != null ? r.endedAt - r.startedAt : undefined,
+        currentTool: r.currentTool,
+        mode: "sync" as const,
+      }));
+    return [...asyncJobs, ...syncJobs];
+  }
+
+  function formatJobElapsed(job: Pick<AsyncStatusJobView, "status" | "startedAt" | "durationMs">): string {
+    const isActive = job.status === "running" || job.status === "queued";
+    const ms = job.durationMs != null && !isActive
+      ? job.durationMs
+      : Math.max(0, Date.now() - job.startedAt);
+    return formatDuration(ms);
+  }
+
   // /async-status — fullscreen overlay list → live output detail
   async function handleAsyncStatus(ctx: any): Promise<void> {
     if (!ctx.hasUI) return;
     log.debug("opening_async_status_overlay", { jobs: asyncState.jobs.size, syncRuns: syncAgentRunCount() });
     await openAsyncStatusOverlay(ctx, {
-      listJobs: () => {
-        // Async first, then sync; newest first inside each group.
-        const newestFirst = (a: { startedAt: number }, b: { startedAt: number }) => b.startedAt - a.startedAt;
-        const asyncJobs: AsyncStatusJobView[] = Array.from(asyncState.jobs.values())
-          .sort(newestFirst)
-          .map(j => ({
-            id: j.id,
-            agent: j.agent,
-            name: j.name,
-            task: j.task,
-            status: j.status,
-            workerDir: j.workerDir,
-            startedAt: j.startedAt,
-            durationMs: j.durationMs,
-            model: j.model,
-            mode: "async" as const,
-          }));
-        const syncJobs: AsyncStatusJobView[] = listSyncAgentRunsWithFinished()
-          .sort(newestFirst)
-          .map(r => ({
-            id: r.id,
-            agent: r.agent,
-            name: r.agent,
-            task: r.task,
-            // The real status: a finished run is retained briefly so this row (and the detail
-            // header that reads it) cannot claim "running" for a child that already exited.
-            status: r.status,
-            // The run's own status.json, same layout as an async job's: the detail header
-            // reads the live state and killOrigin from it.
-            workerDir: r.workerDir,
-            startedAt: r.startedAt,
-            durationMs: r.endedAt != null ? r.endedAt - r.startedAt : undefined,
-            currentTool: r.currentTool,
-            mode: "sync" as const,
-          }));
-        return [...asyncJobs, ...syncJobs];
-      },
+      listJobs: listAllJobs,
       killJob: (id) => killSyncAgent(id) ?? killAsyncAgent(id, "user"),
       formatDuration,
       readLiveStatus: (workerDir) => readAsyncStatus(workerDir),
@@ -1724,6 +1744,104 @@ export function registerAsyncAgents(
     description: "Fullscreen overlay: list async agents, view live output, kill with x",
     handler: async (_args, ctx) => handleAsyncStatus(ctx),
   });
+
+  if (typeof pi.registerTool === "function") {
+    pi.registerTool({
+      name: "async_status",
+      label: "Async Status",
+      description:
+        "List running and recent async/sync subagent jobs (ID, name, agent, status, elapsed time, current tool), or pass id to inspect a specific job's metadata and recent output tail (equivalent to /async-status).",
+      parameters: Type.Object({
+        id: Type.Optional(Type.String({
+          description: "Optional job ID (exact or unique prefix) to inspect a single job's details and output tail.",
+        })),
+        max_chars: Type.Optional(Type.Integer({
+          minimum: 200,
+          maximum: 20000,
+          description: "Max characters of output tail to return when id is provided (default: 4000).",
+        })),
+      }),
+      async execute(_callId, params): Promise<{ content: { type: "text"; text: string }[]; details: Record<string, unknown> }> {
+        const jobs = listAllJobs();
+        const needle = typeof params.id === "string" ? params.id.trim() : "";
+
+        if (needle) {
+          const exact = jobs.find((j) => j.id === needle);
+          const matches = exact ? [exact] : jobs.filter((j) => j.id.startsWith(needle));
+          if (matches.length === 0) {
+            log.debug("async_status_tool_not_found", { id: needle });
+            return {
+              content: [{ type: "text" as const, text: `No async or sync job found matching id "${needle}".` }],
+              details: { found: false, id: needle },
+            };
+          }
+          if (matches.length > 1) {
+            log.debug("async_status_tool_ambiguous", { id: needle, count: matches.length });
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Ambiguous job id prefix "${needle}" matches ${matches.length} jobs: ${matches.map((m) => m.id).join(", ")}.`,
+              }],
+              details: { found: false, ambiguous: true, ids: matches.map((m) => m.id) },
+            };
+          }
+          const job = matches[0];
+          const budget = Math.max(200, Math.min(20000, params.max_chars ?? 4000));
+          let tail = job.workerDir
+            ? readPartialWorkerOutput({ id: job.id, workerDir: job.workerDir }, budget)
+            : "";
+          if (!tail) {
+            const memOutput = asyncState.jobs.get(job.id)?.output?.trim() ?? "";
+            if (memOutput) {
+              tail = memOutput.length > budget
+                ? `${TRUNCATION_MARKER}${memOutput.slice(-budget)}`
+                : memOutput;
+            }
+          }
+          const headerLines = [
+            `ID: ${job.id}`,
+            `Mode: ${job.mode ?? "async"}`,
+            `Name: ${job.name || job.agent}${job.name && job.name !== job.agent ? ` (agent: ${job.agent})` : ""}`,
+            `Status: ${job.status}`,
+            `Elapsed: ${formatJobElapsed(job)}`,
+          ];
+          if (job.model) headerLines.push(`Model: ${job.model}`);
+          if (job.currentTool) headerLines.push(`Current tool: ${job.currentTool}`);
+          headerLines.push(`Task: ${job.task}`);
+          headerLines.push("", "--- Output tail ---", tail || "(no output yet)");
+          log.debug("async_status_tool_detail", { id: job.id, status: job.status, outputChars: tail.length });
+          return {
+            content: [{ type: "text" as const, text: headerLines.join("\n") }],
+            details: { found: true, job, outputChars: tail.length },
+          };
+        }
+
+        if (jobs.length === 0) {
+          log.debug("async_status_tool_list", { total: 0, active: 0 });
+          return {
+            content: [{ type: "text" as const, text: "No async or sync subagent jobs recorded in this session." }],
+            details: { active: 0, total: 0, jobs: [] },
+          };
+        }
+
+        const active = jobs.filter((j) => j.status === "running" || j.status === "queued").length;
+        const lines = [`Subagent jobs: ${active} active, ${jobs.length} total`];
+        for (const j of jobs) {
+          const label = j.name && j.name !== j.agent ? `${j.name} (${j.agent})` : j.agent;
+          const elapsed = formatJobElapsed(j);
+          const toolPart = j.currentTool ? ` | tool: ${j.currentTool}` : "";
+          const taskClean = j.task.replace(/\s+/g, " ").trim();
+          const taskPreview = taskClean.length > 80 ? `${taskClean.slice(0, 80)}…` : taskClean;
+          lines.push(`- ${j.id} [${j.mode ?? "async"}] ${label} | ${j.status} | ${elapsed}${toolPart} | ${taskPreview}`);
+        }
+        log.debug("async_status_tool_list", { total: jobs.length, active });
+        return {
+          content: [{ type: "text" as const, text: lines.join("\n") }],
+          details: { active, total: jobs.length, jobs },
+        };
+      },
+    });
+  }
 
   /** Sync runs live in this process, so a kill is just the spawn's abort handle. Null when
    *  no running sync run has this id — the caller then falls through to the async jobs.

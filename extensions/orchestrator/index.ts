@@ -62,6 +62,7 @@ import {
 import { registerProviderStreamLog } from "../shared/provider-stream-log.js";
 import { migrateMcpConfig } from "../shared/mcp-config-migration.js";
 import { setGlobalSessionId } from "../shared/file-logger.js";
+import { registerDaemonManageTool } from "../shared/daemon-manager.js";
 
 const IN_CONTAINER = isRunningInContainer();
 ensureGitSshTimeout();
@@ -199,6 +200,7 @@ export default function (pi: ExtensionAPI) {
   registerGithubAutocomplete(pi);
   registerStatus(pi, IN_CONTAINER, getAsyncJobs, getCronTasks);
   registerWorktree(pi);
+  registerDaemonManageTool(pi);
   registerNvim(pi);
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
