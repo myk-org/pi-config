@@ -23,7 +23,7 @@ export { parseLastValidLine, SKIP_MUTATE };
 const log = createLogger("state-db");
 
 export const STATE_DB_FILENAME = "state.db";
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 export const STATE_DB_BUSY_TIMEOUT_MS = 5000;
 
 interface CachedStateDb {
@@ -72,9 +72,14 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
   // once the database is already at CURRENT_SCHEMA_VERSION.
   if (readSchemaVersion(db) >= CURRENT_SCHEMA_VERSION) return;
 
+  let schemaAction: "none" | "initialized" | "upgraded" = "none";
+  let prevVersion = 0;
+  const addedColumns: string[] = [];
+
   db.exec("BEGIN IMMEDIATE");
   try {
-    if (readSchemaVersion(db) < CURRENT_SCHEMA_VERSION) {
+    prevVersion = readSchemaVersion(db);
+    if (prevVersion < CURRENT_SCHEMA_VERSION) {
       db.exec(`
         CREATE TABLE IF NOT EXISTS schema_version (
           version INTEGER PRIMARY KEY,
@@ -110,13 +115,26 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
           updated_at TEXT NOT NULL
         );
       `);
+
+      // v1 -> v2: backfill reconciliation columns on pre-existing migrated_stores tables.
+      const migratedCols = new Set(
+        (
+          db.prepare("PRAGMA table_info(migrated_stores)").all() as Array<{ name?: string }>
+        ).map((col) => col.name),
+      );
+      if (!migratedCols.has("source_mtime_ms")) {
+        db.exec("ALTER TABLE migrated_stores ADD COLUMN source_mtime_ms REAL NOT NULL DEFAULT 0");
+        addedColumns.push("source_mtime_ms");
+      }
+      if (!migratedCols.has("source_size")) {
+        db.exec("ALTER TABLE migrated_stores ADD COLUMN source_size INTEGER NOT NULL DEFAULT 0");
+        addedColumns.push("source_size");
+      }
+
       db.prepare(
         "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)",
       ).run(CURRENT_SCHEMA_VERSION, new Date().toISOString());
-      log.info("state_db_schema_initialized", {
-        path: dbPath,
-        version: CURRENT_SCHEMA_VERSION,
-      });
+      schemaAction = prevVersion > 0 || addedColumns.length > 0 ? "upgraded" : "initialized";
     }
     db.exec("COMMIT");
   } catch (err) {
@@ -127,6 +145,20 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
     }
     log.error("state_db_schema_init_failed", { path: dbPath }, err);
     throw err;
+  }
+
+  if (schemaAction === "upgraded") {
+    log.info("state_db_schema_upgraded", {
+      path: dbPath,
+      fromVersion: prevVersion,
+      toVersion: CURRENT_SCHEMA_VERSION,
+      addedColumns,
+    });
+  } else if (schemaAction === "initialized") {
+    log.info("state_db_schema_initialized", {
+      path: dbPath,
+      version: CURRENT_SCHEMA_VERSION,
+    });
   }
 }
 
