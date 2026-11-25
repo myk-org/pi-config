@@ -258,6 +258,9 @@ class AIResult:
     # prompt response): None when no final assistant message ended a turn that
     # did not fail. Independent of `error` — see the prompt-response docs.
     stop_reason: str | None = None
+    # True when the sidecar served this result from its completed request_id
+    # replay cache rather than running (or coalescing onto) an active turn.
+    replayed: bool = False
 
     async def record_usage(
         self,
@@ -372,6 +375,19 @@ async def _iter_sse_events(response: httpx.Response) -> AsyncIterator[dict[str, 
             elif line.startswith("data:"):
                 value = line[len("data:") :]
                 data.append(value[1:] if value.startswith(" ") else value)
+
+
+def _replay_terminal_frame(result: AIResult) -> dict[str, Any]:
+    """Synthesize a terminal SSE frame for a completed request_id cache replay."""
+    if result.error:
+        return {"type": "error", "turnId": None, "message": result.error, "replayed": True}
+    return {
+        "type": "turn_end",
+        "turnId": None,
+        "text": result.text,
+        "aborted": result.stop_reason == "aborted",
+        "replayed": True,
+    }
 
 
 class SidecarClient:
@@ -665,12 +681,14 @@ class SidecarClient:
         # Surface error from sidecar even on HTTP 200
         raw_stop_reason = data.get("stop_reason")
         stop_reason = raw_stop_reason if isinstance(raw_stop_reason, str) and raw_stop_reason else None
+        replayed = bool(data.get("replayed")) or resp.headers.get("x-request-id-replayed", "").lower() == "true"
         error = data.get("error")
         if error:
             logger.error(
-                "Prompt returned error from AI: session=%s, text_length=%d",
+                "Prompt returned error from AI: session=%s, text_length=%d, replayed=%s",
                 session_id,
                 len(data.get("text", "")),
+                replayed,
             )
             return AIResult(
                 success=False,
@@ -679,6 +697,7 @@ class SidecarClient:
                 error=error,
                 status_code=resp.status_code,
                 stop_reason=stop_reason,
+                replayed=replayed,
             )
 
         text = data.get("text", "")
@@ -686,12 +705,13 @@ class SidecarClient:
             logger.warning("Prompt returned empty text: session=%s, usage=%s", session_id, usage_data)
 
         logger.debug(
-            "Prompt completed: session=%s, text_length=%d, input_tokens=%d, output_tokens=%d, duration_ms=%s",
+            "Prompt completed: session=%s, text_length=%d, input_tokens=%d, output_tokens=%d, duration_ms=%s, replayed=%s",
             session_id,
             len(text),
             usage.input_tokens,
             usage.output_tokens,
             usage.duration_ms,
+            replayed,
         )
         return AIResult(
             success=True,
@@ -699,6 +719,7 @@ class SidecarClient:
             usage=usage,
             status_code=resp.status_code,
             stop_reason=stop_reason,
+            replayed=replayed,
         )
 
     async def stream_prompt(
@@ -717,9 +738,11 @@ class SidecarClient:
         text — deltas are pre-boundary and must not be concatenated.
 
         `request_id` is forwarded to `prompt()`. In-flight retries with the same
-        `request_id` coalesce onto the active turn's SSE feed; replaying an
-        already-completed `request_id` returns the cached HTTP response without
-        emitting new SSE frames, so use `prompt()` for post-completion replay.
+        `request_id` coalesce onto the active turn's SSE feed. When `request_id`
+        hits a completed cached response (`replayed=True`), `stream_prompt()`
+        immediately closes the SSE feed and yields a synthesized terminal frame
+        (`turn_end` with the cached `text`, or `error` if the cached turn
+        failed) with `replayed=True` instead of waiting on SSE frames.
 
         The feed is **per session, not per caller**, so the turn is correlated
         through the prompt call: the server allows one in-flight turn per
@@ -787,6 +810,11 @@ class SidecarClient:
                     # Check it before every yield, not after the frames.
                     if prompt_task in done:
                         check_prompt()
+                        prompt_result = prompt_task.result()
+                        if prompt_result.replayed:
+                            logger.debug("Stream prompt completed via cached replay: session=%s", session_id)
+                            yield _replay_terminal_frame(prompt_result)
+                            return
                         prompt_ok = True
                     if next_event in done:
                         try:
@@ -804,6 +832,11 @@ class SidecarClient:
                             # bounded by the prompt request's own timeout.
                             await asyncio.wait({prompt_task})
                             check_prompt()
+                            prompt_result = prompt_task.result()
+                            if prompt_result.replayed:
+                                logger.debug("Stream prompt completed via cached replay: session=%s", session_id)
+                                yield _replay_terminal_frame(prompt_result)
+                                return
                             prompt_ok = True
                         yield payload
                         if terminal:

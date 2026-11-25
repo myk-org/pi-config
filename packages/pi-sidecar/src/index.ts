@@ -20,6 +20,7 @@ export {
   isValidRequestId,
   MAX_REQUEST_ID_LENGTH,
   MAX_REQUEST_CACHE_ENTRIES,
+  MAX_REQUEST_CACHE_BYTES,
   resolveInternalAgentDir,
   INTERNAL_AGENT_DIR,
 } from "./sessions.js";

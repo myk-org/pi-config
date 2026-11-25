@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  MAX_REQUEST_CACHE_BYTES,
   MAX_REQUEST_CACHE_ENTRIES,
   MAX_REQUEST_ID_LENGTH,
   SessionStore,
@@ -15,6 +16,7 @@ import {
   type PromptResult,
 } from "../../src/sessions.js";
 import { createRequestHandler } from "../../src/request-handler.js";
+import { logger } from "../../src/logger.js";
 import { InMemoryProviderRuntime } from "./helpers/in-memory-runtime.js";
 import { invoke } from "./helpers/invoke-handler.js";
 
@@ -43,6 +45,8 @@ type PromptHandler = (
   sessionId: string,
 ) => Promise<void> | void;
 
+type AbortHandler = (sessionId: string) => Promise<void> | void;
+
 function emitStandardReply(emit: Emit, text: string, inputTokens = 10, outputTokens = 5): void {
   emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
   emit({
@@ -64,7 +68,7 @@ function emitStandardReply(emit: Emit, text: string, inputTokens = 10, outputTok
   });
 }
 
-function createTestFixture(onPrompt?: PromptHandler) {
+function createTestFixture(onPrompt?: PromptHandler, onAbort?: AbortHandler) {
   let promptCalls = 0;
 
   const runtime = new InMemoryProviderRuntime({
@@ -89,7 +93,11 @@ function createTestFixture(onPrompt?: PromptHandler) {
           }
         },
         dispose: () => {},
-        abort: async () => {},
+        abort: async () => {
+          if (onAbort) {
+            await onAbort(sessionId);
+          }
+        },
       };
     },
   });
@@ -121,6 +129,54 @@ function createTestFixture(onPrompt?: PromptHandler) {
     createSession,
     getPromptCalls: () => promptCalls,
   };
+}
+
+function stubLogger(): {
+  calls: { level: string; args: unknown[] }[];
+  restore: () => void;
+} {
+  const orig = {
+    debug: logger.debug,
+    info: logger.info,
+    warn: logger.warn,
+    error: logger.error,
+  };
+  const calls: { level: string; args: unknown[] }[] = [];
+  logger.debug = (...args: unknown[]) => {
+    calls.push({ level: "debug", args });
+  };
+  logger.info = (...args: unknown[]) => {
+    calls.push({ level: "info", args });
+  };
+  logger.warn = (...args: unknown[]) => {
+    calls.push({ level: "warn", args });
+  };
+  logger.error = (...args: unknown[]) => {
+    calls.push({ level: "error", args });
+  };
+  return {
+    calls,
+    restore: () => {
+      logger.debug = orig.debug;
+      logger.info = orig.info;
+      logger.warn = orig.warn;
+      logger.error = orig.error;
+    },
+  };
+}
+
+function findPromptDedupLog(
+  calls: { level: string; args: unknown[] }[],
+  level: string,
+  pattern: RegExp,
+): { level: string; args: unknown[] } | undefined {
+  return calls.find(
+    (c) =>
+      c.level === level
+      && c.args[0] === "[prompt-dedup]"
+      && typeof c.args[1] === "string"
+      && pattern.test(c.args[1]),
+  );
 }
 
 describe("isValidRequestId (#1397)", () => {
@@ -176,6 +232,8 @@ describe("SessionStore prompt deduplication (#1397)", () => {
     assert.equal(fixture.getPromptCalls(), 2);
     assert.equal(first.text, "reply-1:hello");
     assert.equal(second.text, "reply-2:hello");
+    assert.equal(first.replayed, undefined);
+    assert.equal(second.replayed, undefined);
 
     blockThird = true;
     const thirdPromise = fixture.store.prompt(id, "hello");
@@ -189,10 +247,11 @@ describe("SessionStore prompt deduplication (#1397)", () => {
     gate.resolve();
     const third = await thirdPromise;
     assert.equal(third.text, "reply-3:hello");
+    assert.equal(third.replayed, undefined);
     assert.equal(fixture.getPromptCalls(), 3);
   });
 
-  it("coalesces concurrent in-flight prompts with the same request_id and isolates returned results", async () => {
+  it("coalesces concurrent in-flight requests with the same request_id and message", async () => {
     const entered = createDeferred();
     const gate = createDeferred();
 
@@ -218,17 +277,48 @@ describe("SessionStore prompt deduplication (#1397)", () => {
     assert.equal(r1.text, "reply-1:hello");
     assert.equal(r1.usage.input_tokens, 42);
     assert.equal(r1.usage.output_tokens, 17);
+    assert.equal(r1.replayed, undefined);
+    assert.equal(r2.replayed, undefined);
+    assert.equal(r3.replayed, undefined);
+  });
 
-    // Mutating one caller's result.usage must not mutate other callers' copies or cached replays.
-    r1.usage.input_tokens = 999_999;
-    r1.usage.cost_usd = 123.45;
-    assert.equal(r2.usage.input_tokens, 42);
-    assert.equal(r2.usage.cost_usd, 0.01);
+  it("returns cloned PromptResult copies so caller mutations do not affect cached replays", async () => {
+    const fixture = createTestFixture(async (message, emit, callIndex) => {
+      emitStandardReply(emit, `reply-${callIndex}:${message}`, 42, 17);
+    });
 
-    const replay = await fixture.store.prompt(id, "hello", "req-1");
+    const id = await fixture.createSession();
+
+    const initial = await fixture.store.prompt(id, "hello", "req-clone");
+    initial.usage.input_tokens = 999_999;
+    initial.usage.cost_usd = 123.45;
+
+    const firstReplay = await fixture.store.prompt(id, "hello", "req-clone");
     assert.equal(fixture.getPromptCalls(), 1);
-    assert.equal(replay.usage.input_tokens, 42);
-    assert.equal(replay.usage.cost_usd, 0.01);
+    assert.equal(firstReplay.usage.input_tokens, 42);
+    assert.equal(firstReplay.usage.cost_usd, 0.01);
+
+    firstReplay.usage.input_tokens = 888_888;
+    firstReplay.usage.cost_usd = 99.99;
+
+    const secondReplay = await fixture.store.prompt(id, "hello", "req-clone");
+    assert.equal(fixture.getPromptCalls(), 1);
+    assert.equal(secondReplay.usage.input_tokens, 42);
+    assert.equal(secondReplay.usage.cost_usd, 0.01);
+  });
+
+  it("omits replayed on initial execution and sets replayed=true on completed cache replay", async () => {
+    const fixture = createTestFixture();
+    const id = await fixture.createSession();
+
+    const first = await fixture.store.prompt(id, "hello", "req-replay-flag");
+    assert.equal(first.replayed, undefined);
+    assert.equal("replayed" in first, false);
+
+    const replay = await fixture.store.prompt(id, "hello", "req-replay-flag");
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay, { ...first, replayed: true });
+    assert.equal(fixture.getPromptCalls(), 1);
   });
 
   it("replays completed request_id immediately with 0 extra model calls, even while another turn is in-flight", async () => {
@@ -247,9 +337,10 @@ describe("SessionStore prompt deduplication (#1397)", () => {
 
     const first = await fixture.store.prompt(id, "hello", "req-1");
     assert.equal(fixture.getPromptCalls(), 1);
+    assert.equal(first.replayed, undefined);
 
     const replayIdle = await fixture.store.prompt(id, "hello", "req-1");
-    assert.deepEqual(replayIdle, first);
+    assert.deepEqual(replayIdle, { ...first, replayed: true });
     assert.equal(fixture.getPromptCalls(), 1);
 
     // Start req-2 and keep it in-flight.
@@ -258,7 +349,7 @@ describe("SessionStore prompt deduplication (#1397)", () => {
 
     // Replaying req-1 must resolve immediately without waiting for req-2.
     const replayWhileBusy = await fixture.store.prompt(id, "hello", "req-1");
-    assert.deepEqual(replayWhileBusy, first);
+    assert.deepEqual(replayWhileBusy, { ...first, replayed: true });
     assert.equal(fixture.getPromptCalls(), 2);
 
     releaseSecond.resolve();
@@ -302,7 +393,7 @@ describe("SessionStore prompt deduplication (#1397)", () => {
     );
 
     const replay = await fixture.store.prompt(id, "msg-0", "req-0");
-    assert.deepEqual(replay, first);
+    assert.deepEqual(replay, { ...first, replayed: true });
     assert.equal(fixture.getPromptCalls(), 1);
 
     // 3. Conflict after completion does NOT promote LRU:
@@ -407,45 +498,167 @@ describe("SessionStore prompt deduplication (#1397)", () => {
     // Retry with same request_id + message runs again, succeeds, and gets cached.
     const retried = await fixture.store.prompt(id, "retry-me", "req-fail");
     assert.equal(retried.text, "reply-2:retry-me");
+    assert.equal(retried.replayed, undefined);
     assert.equal(fixture.getPromptCalls(), 2);
 
     const cached = await fixture.store.prompt(id, "retry-me", "req-fail");
-    assert.deepEqual(cached, retried);
+    assert.deepEqual(cached, { ...retried, replayed: true });
     assert.equal(fixture.getPromptCalls(), 2);
   });
 
-  it("caches HTTP 200 results that contain partial text or SDK errors (including error and stop_reason)", async () => {
-    const fixture = createTestFixture(async (_message, emit) => {
-      emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "partial output" } });
-      emit({ type: "error", error: { message: "provider stream interrupted" } });
-      emit({
-        type: "agent_end",
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "partial output" }],
-            usage: { input: 8, output: 3, cost: { total: 0.002 } },
-            stopReason: "error",
-            errorMessage: "rate limit hit",
-          },
-        ],
-      });
+  it("evicts HTTP 200 turn returning SDK error so retry executes again and caches the clean result", async () => {
+    const fixture = createTestFixture(async (message, emit, callIndex) => {
+      if (callIndex === 1) {
+        emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "partial output" } });
+        emit({ type: "error", error: { message: "provider stream interrupted" } });
+        emit({
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "partial output" }],
+              usage: { input: 8, output: 3, cost: { total: 0.002 } },
+              stopReason: "error",
+              errorMessage: "rate limit hit",
+            },
+          ],
+        });
+        return;
+      }
+      emitStandardReply(emit, `clean-${callIndex}:${message}`);
     });
 
     const id = await fixture.createSession();
 
-    const first = await fixture.store.prompt(id, "go", "req-partial");
+    const first = await fixture.store.prompt(id, "go", "req-sdk-err");
     assert.equal(fixture.getPromptCalls(), 1);
     assert.equal(first.text, "partial output");
     assert.equal(first.stop_reason, "error");
     assert.ok(first.error && first.error.includes("provider stream interrupted"));
     assert.ok(first.error && first.error.includes("rate limit hit"));
 
-    const replayed = await fixture.store.prompt(id, "go", "req-partial");
+    const retried = await fixture.store.prompt(id, "go", "req-sdk-err");
+    assert.equal(fixture.getPromptCalls(), 2);
+    assert.equal(retried.text, "clean-2:go");
+    assert.equal(retried.error, undefined);
+    assert.equal(retried.stop_reason, "end_turn");
+    assert.equal(retried.replayed, undefined);
+
+    const cached = await fixture.store.prompt(id, "go", "req-sdk-err");
+    assert.equal(fixture.getPromptCalls(), 2);
+    assert.deepEqual(cached, { ...retried, replayed: true });
+  });
+
+  it("evicts turn returning stop_reason error without error text so retry executes again", async () => {
+    const fixture = createTestFixture(async (message, emit, callIndex) => {
+      if (callIndex === 1) {
+        emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "stopped" } });
+        emit({
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "stopped" }],
+              usage: { input: 5, output: 2, cost: { total: 0.001 } },
+              stopReason: "error",
+            },
+          ],
+        });
+        return;
+      }
+      emitStandardReply(emit, `recovered-${callIndex}:${message}`);
+    });
+
+    const id = await fixture.createSession();
+
+    const first = await fixture.store.prompt(id, "retry-stop-error", "req-stop-err");
     assert.equal(fixture.getPromptCalls(), 1);
-    assert.deepEqual(replayed, first);
-    assert.equal(replayed.error, first.error);
-    assert.equal(replayed.stop_reason, "error");
+    assert.equal(first.stop_reason, "error");
+    assert.equal(first.error, undefined);
+
+    const retried = await fixture.store.prompt(id, "retry-stop-error", "req-stop-err");
+    assert.equal(fixture.getPromptCalls(), 2);
+    assert.equal(retried.text, "recovered-2:retry-stop-error");
+    assert.equal(retried.stop_reason, "end_turn");
+    assert.equal(retried.replayed, undefined);
+  });
+
+  it("evicts turn returning stop_reason aborted so retry executes again", async () => {
+    const fixture = createTestFixture(async (message, emit, callIndex) => {
+      if (callIndex === 1) {
+        emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "cut short" } });
+        emit({
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "cut short" }],
+              usage: { input: 5, output: 2, cost: { total: 0.001 } },
+              stopReason: "aborted",
+            },
+          ],
+        });
+        return;
+      }
+      emitStandardReply(emit, `recovered-${callIndex}:${message}`);
+    });
+
+    const id = await fixture.createSession();
+
+    const first = await fixture.store.prompt(id, "retry-aborted", "req-stop-abort");
+    assert.equal(fixture.getPromptCalls(), 1);
+    assert.equal(first.stop_reason, "aborted");
+
+    const retried = await fixture.store.prompt(id, "retry-aborted", "req-stop-abort");
+    assert.equal(fixture.getPromptCalls(), 2);
+    assert.equal(retried.text, "recovered-2:retry-aborted");
+    assert.equal(retried.stop_reason, "end_turn");
+    assert.equal(retried.replayed, undefined);
+  });
+
+  it("evicts turn cancelled via store.abort() so retry executes again", async () => {
+    const entered = createDeferred();
+    const abortedGate = createDeferred();
+
+    const fixture = createTestFixture(
+      async (message, emit, callIndex) => {
+        if (callIndex === 1) {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "partial" } });
+          entered.resolve();
+          await abortedGate.promise;
+          emit({
+            type: "agent_end",
+            messages: [
+              {
+                role: "assistant",
+                content: [{ type: "text", text: "partial" }],
+                usage: { input: 5, output: 2, cost: { total: 0.001 } },
+                stopReason: "end_turn",
+              },
+            ],
+          });
+          return;
+        }
+        emitStandardReply(emit, `recovered-${callIndex}:${message}`);
+      },
+      async () => {
+        abortedGate.resolve();
+      },
+    );
+
+    const id = await fixture.createSession();
+
+    const firstPromise = fixture.store.prompt(id, "cancel-me", "req-abort-call");
+    await entered.promise;
+    await fixture.store.abort(id);
+    const first = await firstPromise;
+    assert.equal(fixture.getPromptCalls(), 1);
+    assert.equal(first.text, "partial");
+
+    const retried = await fixture.store.prompt(id, "cancel-me", "req-abort-call");
+    assert.equal(fixture.getPromptCalls(), 2);
+    assert.equal(retried.text, "recovered-2:cancel-me");
+    assert.equal(retried.replayed, undefined);
   });
 
   it("enforces bounded LRU eviction at MAX_REQUEST_CACHE_ENTRIES (64)", async () => {
@@ -463,7 +676,7 @@ describe("SessionStore prompt deduplication (#1397)", () => {
 
     // Hit req-0 to promote it to most-recently-used; req-1 becomes the LRU entry.
     const promoted = await fixture.store.prompt(id, "msg-0", "req-0");
-    assert.deepEqual(promoted, results[0]);
+    assert.deepEqual(promoted, { ...results[0], replayed: true });
     assert.equal(fixture.getPromptCalls(), 64);
 
     // Insert req-64 -> evicts req-1 (not req-0).
@@ -473,103 +686,210 @@ describe("SessionStore prompt deduplication (#1397)", () => {
 
     // req-0 must still hit cache (0 new model calls).
     const hit0 = await fixture.store.prompt(id, "msg-0", "req-0");
-    assert.deepEqual(hit0, results[0]);
+    assert.deepEqual(hit0, { ...results[0], replayed: true });
     assert.equal(fixture.getPromptCalls(), 65);
 
     // req-1 must miss cache (1 new model call).
     const miss1 = await fixture.store.prompt(id, "msg-1", "req-1");
     assert.equal(fixture.getPromptCalls(), 66);
     assert.equal(miss1.text, "reply-66:msg-1");
+    assert.equal(miss1.replayed, undefined);
   });
 
-  it("isolates request_id caches across sessions and cleans up on delete, disposeAll, and cleanupStale", async () => {
-    // 1. Per-session isolation.
-    const isoFixture = createTestFixture();
-    const sessionA = await isoFixture.createSession();
-    const sessionB = await isoFixture.createSession();
+  it("evicts oldest completed entry when combined UTF-8 bytes exceed MAX_REQUEST_CACHE_BYTES", async () => {
+    const chunkBytes = Math.floor(MAX_REQUEST_CACHE_BYTES * 0.4);
+    const largeReply = "a".repeat(chunkBytes);
 
-    const resA = await isoFixture.store.prompt(sessionA, "from-A", "shared-req");
-    const resB = await isoFixture.store.prompt(sessionB, "from-B", "shared-req");
-    assert.equal(isoFixture.getPromptCalls(), 2);
+    const fixture = createTestFixture(async (message, emit, callIndex) => {
+      emitStandardReply(emit, `${callIndex}:${message}:${largeReply}`);
+    });
+
+    const id = await fixture.createSession();
+
+    const r1 = await fixture.store.prompt(id, "m1", "req-bytes-1");
+    const r2 = await fixture.store.prompt(id, "m2", "req-bytes-2");
+    const r3 = await fixture.store.prompt(id, "m3", "req-bytes-3");
+    assert.equal(fixture.getPromptCalls(), 3);
+
+    // Newer entries (req-bytes-2 and req-bytes-3) stay cached.
+    const hit2 = await fixture.store.prompt(id, "m2", "req-bytes-2");
+    const hit3 = await fixture.store.prompt(id, "m3", "req-bytes-3");
+    assert.deepEqual(hit2, { ...r2, replayed: true });
+    assert.deepEqual(hit3, { ...r3, replayed: true });
+    assert.equal(fixture.getPromptCalls(), 3);
+
+    // Oldest entry (req-bytes-1) was evicted to stay within MAX_REQUEST_CACHE_BYTES.
+    const miss1 = await fixture.store.prompt(id, "m1", "req-bytes-1");
+    assert.equal(fixture.getPromptCalls(), 4);
+    assert.equal(miss1.replayed, undefined);
+    assert.notEqual(miss1.text, r1.text);
+  });
+
+  it("coalesces in-flight retry of an oversized single entry but does not retain it after completion", async () => {
+    const entered = createDeferred();
+    const gate = createDeferred();
+    const oversizedReply = "x".repeat(MAX_REQUEST_CACHE_BYTES + 1);
+
+    const fixture = createTestFixture(async (_message, emit, callIndex) => {
+      if (callIndex === 1) {
+        entered.resolve();
+        await gate.promise;
+      }
+      emitStandardReply(emit, `${callIndex}:${oversizedReply}`);
+    });
+
+    const id = await fixture.createSession();
+
+    const p1 = fixture.store.prompt(id, "big", "req-oversized");
+    await entered.promise;
+    const p2 = fixture.store.prompt(id, "big", "req-oversized");
+
+    gate.resolve();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert.equal(fixture.getPromptCalls(), 1);
+    assert.equal(r1.text, `1:${oversizedReply}`);
+    assert.deepEqual(r1, r2);
+    assert.equal(r1.replayed, undefined);
+    assert.equal(r2.replayed, undefined);
+
+    // Completed oversized entry must NOT be retained; next call runs fresh.
+    const fresh = await fixture.store.prompt(id, "big", "req-oversized");
+    assert.equal(fixture.getPromptCalls(), 2);
+    assert.equal(fresh.text, `2:${oversizedReply}`);
+    assert.equal(fresh.replayed, undefined);
+  });
+
+  it("isolates request_id caches across distinct sessions", async () => {
+    const fixture = createTestFixture();
+    const sessionA = await fixture.createSession();
+    const sessionB = await fixture.createSession();
+
+    const resA = await fixture.store.prompt(sessionA, "from-A", "shared-req");
+    const resB = await fixture.store.prompt(sessionB, "from-B", "shared-req");
+    assert.equal(fixture.getPromptCalls(), 2);
     assert.equal(resA.text, "reply-1:from-A");
     assert.equal(resB.text, "reply-2:from-B");
 
-    assert.deepEqual(await isoFixture.store.prompt(sessionA, "from-A", "shared-req"), resA);
-    assert.deepEqual(await isoFixture.store.prompt(sessionB, "from-B", "shared-req"), resB);
-    assert.equal(isoFixture.getPromptCalls(), 2);
+    assert.deepEqual(await fixture.store.prompt(sessionA, "from-A", "shared-req"), { ...resA, replayed: true });
+    assert.deepEqual(await fixture.store.prompt(sessionB, "from-B", "shared-req"), { ...resB, replayed: true });
+    assert.equal(fixture.getPromptCalls(), 2);
+  });
 
-    // 2. delete() on idle session with cached entries.
-    assert.equal(isoFixture.store.delete(sessionA), true);
-    await assert.rejects(() => isoFixture.store.prompt(sessionA, "from-A", "shared-req"), /not found/);
+  it("clears cached entries when delete() removes an idle session", async () => {
+    const fixture = createTestFixture();
+    const sessionId = await fixture.createSession();
 
-    // 3. cleanupStale() removes idle session with cached entries.
-    assert.equal(isoFixture.store.cleanupStale(-1), 1);
-    assert.equal(isoFixture.store.count(), 0);
-    await assert.rejects(() => isoFixture.store.prompt(sessionB, "from-B", "shared-req"), /not found/);
+    const res = await fixture.store.prompt(sessionId, "hello", "req-idle-del");
+    assert.equal(res.text, "reply-1:hello");
 
-    // 4. delete() while a request_id prompt is in-flight settles cleanly (resolve & reject).
-    const enteredResolve = createDeferred();
-    const releaseResolve = createDeferred();
-    const enteredReject = createDeferred();
-    const releaseReject = createDeferred();
+    assert.equal(fixture.store.delete(sessionId), true);
+    assert.equal(fixture.store.count(), 0);
+    await assert.rejects(() => fixture.store.prompt(sessionId, "hello", "req-idle-del"), /not found/);
+  });
 
-    const delFixture = createTestFixture(async (message, emit, callIndex) => {
-      if (callIndex === 1) {
-        enteredResolve.resolve();
-        await releaseResolve.promise;
-        emitStandardReply(emit, `done:${message}`);
-      } else {
-        enteredReject.resolve();
-        await releaseReject.promise;
-        throw new Error("deleted mid-flight failure");
-      }
-    });
+  it("removes idle sessions with cached entries on cleanupStale() while sparing in-flight sessions", async () => {
+    const entered = createDeferred();
+    const gate = createDeferred();
 
-    const delSession1 = await delFixture.createSession();
-    const inFlight1 = delFixture.store.prompt(delSession1, "hi", "req-del-ok");
-    await enteredResolve.promise;
-    // cleanupStale must skip in-flight sessions.
-    assert.equal(delFixture.store.cleanupStale(-1), 0);
-    assert.equal(delFixture.store.count(), 1);
-    assert.equal(delFixture.store.delete(delSession1), true);
-    releaseResolve.resolve();
-    const settled1 = await inFlight1;
-    assert.equal(settled1.text, "done:hi");
-    await assert.rejects(() => delFixture.store.prompt(delSession1, "hi", "req-del-ok"), /not found/);
-
-    const delSession2 = await delFixture.createSession();
-    const inFlight2 = delFixture.store.prompt(delSession2, "hi", "req-del-err");
-    await enteredReject.promise;
-    assert.equal(delFixture.store.delete(delSession2), true);
-    releaseReject.resolve();
-    await assert.rejects(() => inFlight2, /deleted mid-flight failure/);
-
-    // 5. disposeAll() cleans up cached and in-flight sessions cleanly.
-    const enteredDispose = createDeferred();
-    const releaseDispose = createDeferred();
-    const dispFixture = createTestFixture(async (message, emit, callIndex) => {
+    const fixture = createTestFixture(async (message, emit, callIndex) => {
       if (callIndex === 2) {
-        enteredDispose.resolve();
-        await releaseDispose.promise;
+        entered.resolve();
+        await gate.promise;
       }
       emitStandardReply(emit, `reply-${callIndex}:${message}`);
     });
-    const dispSession1 = await dispFixture.createSession();
-    const dispSession2 = await dispFixture.createSession();
-    await dispFixture.store.prompt(dispSession1, "cached", "req-cached");
 
-    const inFlightDispose = dispFixture.store.prompt(dispSession2, "running", "req-running");
-    await enteredDispose.promise;
+    const idleSession = await fixture.createSession();
+    const activeSession = await fixture.createSession();
 
-    await dispFixture.store.disposeAll();
-    assert.equal(dispFixture.store.count(), 0);
+    await fixture.store.prompt(idleSession, "cached-idle", "req-idle");
+
+    const inFlight = fixture.store.prompt(activeSession, "running", "req-active");
+    await entered.promise;
+
+    assert.equal(fixture.store.cleanupStale(-1), 1);
+    assert.equal(fixture.store.count(), 1);
+    await assert.rejects(() => fixture.store.prompt(idleSession, "cached-idle", "req-idle"), /not found/);
+
+    gate.resolve();
+    const activeResult = await inFlight;
+    assert.equal(activeResult.text, "reply-2:running");
+
+    const replayed = await fixture.store.prompt(activeSession, "running", "req-active");
+    assert.deepEqual(replayed, { ...activeResult, replayed: true });
+  });
+
+  it("settles cleanly when delete() removes a session during an in-flight request_id turn that resolves", async () => {
+    const entered = createDeferred();
+    const gate = createDeferred();
+
+    const fixture = createTestFixture(async (message, emit) => {
+      entered.resolve();
+      await gate.promise;
+      emitStandardReply(emit, `done:${message}`);
+    });
+
+    const sessionId = await fixture.createSession();
+    const inFlight = fixture.store.prompt(sessionId, "hi", "req-del-ok");
+    await entered.promise;
+
+    assert.equal(fixture.store.delete(sessionId), true);
+    gate.resolve();
+
+    const settled = await inFlight;
+    assert.equal(settled.text, "done:hi");
+    await assert.rejects(() => fixture.store.prompt(sessionId, "hi", "req-del-ok"), /not found/);
+  });
+
+  it("settles cleanly when delete() removes a session during an in-flight request_id turn that rejects", async () => {
+    const entered = createDeferred();
+    const gate = createDeferred();
+
+    const fixture = createTestFixture(async () => {
+      entered.resolve();
+      await gate.promise;
+      throw new Error("deleted mid-flight failure");
+    });
+
+    const sessionId = await fixture.createSession();
+    const inFlight = fixture.store.prompt(sessionId, "hi", "req-del-err");
+    await entered.promise;
+
+    assert.equal(fixture.store.delete(sessionId), true);
+    gate.resolve();
+
+    await assert.rejects(() => inFlight, /deleted mid-flight failure/);
+    await assert.rejects(() => fixture.store.prompt(sessionId, "hi", "req-del-err"), /not found/);
+  });
+
+  it("clears cached and in-flight sessions cleanly on disposeAll()", async () => {
+    const entered = createDeferred();
+    const gate = createDeferred();
+
+    const fixture = createTestFixture(async (message, emit, callIndex) => {
+      if (callIndex === 2) {
+        entered.resolve();
+        await gate.promise;
+      }
+      emitStandardReply(emit, `reply-${callIndex}:${message}`);
+    });
+
+    const cachedSession = await fixture.createSession();
+    const runningSession = await fixture.createSession();
+    await fixture.store.prompt(cachedSession, "cached", "req-cached");
+
+    const inFlight = fixture.store.prompt(runningSession, "running", "req-running");
+    await entered.promise;
+
+    await fixture.store.disposeAll();
+    assert.equal(fixture.store.count(), 0);
     await assert.rejects(
-      () => dispFixture.store.prompt(dispSession1, "cached", "req-cached"),
+      () => fixture.store.prompt(cachedSession, "cached", "req-cached"),
       (err: any) => err?.statusCode === 503 && /shutting down/i.test(String(err?.message)),
     );
 
-    releaseDispose.resolve();
-    const disposedResult = await inFlightDispose;
+    gate.resolve();
+    const disposedResult = await inFlight;
     assert.equal(disposedResult.text, "reply-2:running");
   });
 
@@ -599,7 +919,7 @@ describe("SessionStore prompt deduplication (#1397)", () => {
 });
 
 describe("HTTP POST /sessions/:id/prompt deduplication (#1397)", () => {
-  it("handles omitted request_id with 200", async () => {
+  it("handles omitted request_id with 200 and omits replay signals", async () => {
     const fixture = createTestFixture();
     const id = await fixture.createSession();
 
@@ -612,6 +932,8 @@ describe("HTTP POST /sessions/:id/prompt deduplication (#1397)", () => {
 
     assert.equal(res.status, 200);
     assert.equal(res.json.text, "reply-1:hello");
+    assert.equal(res.headers["x-request-id-replayed"], undefined);
+    assert.equal(res.json.replayed, undefined);
     assert.equal(fixture.getPromptCalls(), 1);
   });
 
@@ -659,26 +981,23 @@ describe("HTTP POST /sessions/:id/prompt deduplication (#1397)", () => {
     assert.equal(fixture.getPromptCalls(), 0);
   });
 
-  it("coalesces in-flight HTTP requests, replays completed requests, and returns 409 on mismatched message", async () => {
+  it("coalesces concurrent in-flight HTTP requests and omits replay signals", async () => {
     const entered = createDeferred();
     const gate = createDeferred();
 
     const fixture = createTestFixture(async (message, emit, callIndex) => {
-      if (callIndex === 1) {
-        entered.resolve();
-        await gate.promise;
-      }
+      entered.resolve();
+      await gate.promise;
       emitStandardReply(emit, `reply-${callIndex}:${message}`);
     });
 
     const id = await fixture.createSession();
 
-    // In-flight coalescing.
     const p1 = invoke(fixture.handler, {
       method: "POST",
       url: `/sessions/${id}/prompt`,
       headers: { "content-type": "application/json" },
-      body: { message: "hello", request_id: "http-req-1" },
+      body: { message: "hello", request_id: "http-coalesce-1" },
     });
     await entered.promise;
 
@@ -687,7 +1006,7 @@ describe("HTTP POST /sessions/:id/prompt deduplication (#1397)", () => {
       method: "POST",
       url: `/sessions/${id}/prompt`,
       headers: { "content-type": "application/json" },
-      body: { message: "hello", request_id: "http-req-1" },
+      body: { message: "hello", request_id: "http-coalesce-1" },
     }).then((result) => {
       p2Settled = true;
       return result;
@@ -703,25 +1022,57 @@ describe("HTTP POST /sessions/:id/prompt deduplication (#1397)", () => {
     assert.equal(r2.status, 200);
     assert.deepEqual(r1.json, r2.json);
     assert.equal(r1.json.text, "reply-1:hello");
+    assert.equal(r1.headers["x-request-id-replayed"], undefined);
+    assert.equal(r2.headers["x-request-id-replayed"], undefined);
+    assert.equal(r1.json.replayed, undefined);
+    assert.equal(r2.json.replayed, undefined);
     assert.equal(fixture.getPromptCalls(), 1);
+  });
 
-    // Completed replay.
-    const r3 = await invoke(fixture.handler, {
+  it("sets x-request-id-replayed header and replayed=true JSON field on completed cache replay", async () => {
+    const fixture = createTestFixture();
+    const id = await fixture.createSession();
+
+    const initial = await invoke(fixture.handler, {
       method: "POST",
       url: `/sessions/${id}/prompt`,
       headers: { "content-type": "application/json" },
-      body: { message: "hello", request_id: "http-req-1" },
+      body: { message: "hello", request_id: "http-replay-1" },
     });
-    assert.equal(r3.status, 200);
-    assert.deepEqual(r3.json, r1.json);
-    assert.equal(fixture.getPromptCalls(), 1);
+    assert.equal(initial.status, 200);
+    assert.equal(initial.headers["x-request-id-replayed"], undefined);
+    assert.equal(initial.json.replayed, undefined);
 
-    // Mismatched message -> 409.
+    const replay = await invoke(fixture.handler, {
+      method: "POST",
+      url: `/sessions/${id}/prompt`,
+      headers: { "content-type": "application/json" },
+      body: { message: "hello", request_id: "http-replay-1" },
+    });
+    assert.equal(replay.status, 200);
+    assert.equal(replay.headers["x-request-id-replayed"], "true");
+    assert.equal(replay.json.replayed, true);
+    assert.deepEqual(replay.json, { ...initial.json, replayed: true });
+    assert.equal(fixture.getPromptCalls(), 1);
+  });
+
+  it("returns 409 when an existing request_id is reused with a different message", async () => {
+    const fixture = createTestFixture();
+    const id = await fixture.createSession();
+
+    const initial = await invoke(fixture.handler, {
+      method: "POST",
+      url: `/sessions/${id}/prompt`,
+      headers: { "content-type": "application/json" },
+      body: { message: "hello", request_id: "http-conflict-1" },
+    });
+    assert.equal(initial.status, 200);
+
     const conflict = await invoke(fixture.handler, {
       method: "POST",
       url: `/sessions/${id}/prompt`,
       headers: { "content-type": "application/json" },
-      body: { message: "different", request_id: "http-req-1" },
+      body: { message: "different", request_id: "http-conflict-1" },
     });
     assert.equal(conflict.status, 409);
     assert.equal(typeof conflict.json?.error, "string");
@@ -757,6 +1108,8 @@ describe("HTTP POST /sessions/:id/prompt deduplication (#1397)", () => {
     });
     assert.equal(retried.status, 200);
     assert.equal(retried.json.text, "reply-2:please retry");
+    assert.equal(retried.headers["x-request-id-replayed"], undefined);
+    assert.equal(retried.json.replayed, undefined);
     assert.equal(fixture.getPromptCalls(), 2);
 
     const replayed = await invoke(fixture.handler, {
@@ -766,7 +1119,249 @@ describe("HTTP POST /sessions/:id/prompt deduplication (#1397)", () => {
       body: { message: "please retry", request_id: "http-retry-1" },
     });
     assert.equal(replayed.status, 200);
-    assert.deepEqual(replayed.json, retried.json);
+    assert.equal(replayed.headers["x-request-id-replayed"], "true");
+    assert.deepEqual(replayed.json, { ...retried.json, replayed: true });
     assert.equal(fixture.getPromptCalls(), 2);
+  });
+});
+
+describe("prompt-dedup structured logging (#1397)", () => {
+  it("logs PROMPT_DEDUP_HIT with mode=in_flight on in-flight coalesce", async () => {
+    const stub = stubLogger();
+    try {
+      const entered = createDeferred();
+      const gate = createDeferred();
+      const fixture = createTestFixture(async (message, emit) => {
+        entered.resolve();
+        await gate.promise;
+        emitStandardReply(emit, `reply:${message}`);
+      });
+      const id = await fixture.createSession();
+
+      const p1 = fixture.store.prompt(id, "hello", "log-hit-inflight");
+      await entered.promise;
+      const p2 = fixture.store.prompt(id, "hello", "log-hit-inflight");
+      gate.resolve();
+      await Promise.all([p1, p2]);
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "info",
+        new RegExp(`PROMPT_DEDUP_HIT: session=${id}, request_id=log-hit-inflight, mode=in_flight`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_HIT info log with mode=in_flight");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("logs PROMPT_DEDUP_HIT with mode=cached on completed replay", async () => {
+    const stub = stubLogger();
+    try {
+      const fixture = createTestFixture();
+      const id = await fixture.createSession();
+
+      await fixture.store.prompt(id, "hello", "log-hit-cached");
+      await fixture.store.prompt(id, "hello", "log-hit-cached");
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "info",
+        new RegExp(`PROMPT_DEDUP_HIT: session=${id}, request_id=log-hit-cached, mode=cached`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_HIT info log with mode=cached");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("logs PROMPT_DEDUP_CONFLICT on mismatched message", async () => {
+    const stub = stubLogger();
+    try {
+      const fixture = createTestFixture();
+      const id = await fixture.createSession();
+
+      await fixture.store.prompt(id, "first", "log-conflict");
+      await assert.rejects(() => fixture.store.prompt(id, "second", "log-conflict"));
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "warn",
+        new RegExp(`PROMPT_DEDUP_CONFLICT: session=${id}, request_id=log-conflict, status=completed`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_CONFLICT warn log");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("logs PROMPT_DEDUP_EVICTED with reason=lru_capacity on capacity eviction", async () => {
+    const stub = stubLogger();
+    try {
+      const fixture = createTestFixture();
+      const id = await fixture.createSession();
+
+      for (let i = 0; i <= MAX_REQUEST_CACHE_ENTRIES; i++) {
+        await fixture.store.prompt(id, `m-${i}`, `log-lru-${i}`);
+      }
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "debug",
+        new RegExp(`PROMPT_DEDUP_EVICTED: session=${id}, request_id=log-lru-0, reason=lru_capacity`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_EVICTED debug log with reason=lru_capacity");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("logs PROMPT_DEDUP_EVICTED with reason=byte_budget on byte-budget eviction", async () => {
+    const stub = stubLogger();
+    try {
+      const largeReply = "b".repeat(Math.floor(MAX_REQUEST_CACHE_BYTES * 0.4));
+      const fixture = createTestFixture(async (_message, emit) => {
+        emitStandardReply(emit, largeReply);
+      });
+      const id = await fixture.createSession();
+
+      await fixture.store.prompt(id, "m1", "log-bytes-1");
+      await fixture.store.prompt(id, "m2", "log-bytes-2");
+      await fixture.store.prompt(id, "m3", "log-bytes-3");
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "debug",
+        new RegExp(`PROMPT_DEDUP_EVICTED: session=${id}, request_id=log-bytes-1, reason=byte_budget`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_EVICTED debug log with reason=byte_budget");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("logs PROMPT_DEDUP_EVICTED with reason=prompt_rejected on rejected prompt", async () => {
+    const stub = stubLogger();
+    try {
+      const fixture = createTestFixture(async () => {
+        throw new Error("boom");
+      });
+      const id = await fixture.createSession();
+
+      await assert.rejects(() => fixture.store.prompt(id, "fail", "log-rejected"));
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "debug",
+        new RegExp(`PROMPT_DEDUP_EVICTED: session=${id}, request_id=log-rejected, reason=prompt_rejected`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_EVICTED debug log with reason=prompt_rejected");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("logs PROMPT_DEDUP_EVICTED with reason=turn_failed on failed turn", async () => {
+    const stub = stubLogger();
+    try {
+      const fixture = createTestFixture(async (_message, emit) => {
+        emit({ type: "error", error: { message: "provider failure" } });
+        emit({
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "partial" }],
+              usage: { input: 1, output: 1, cost: { total: 0 } },
+              stopReason: "error",
+            },
+          ],
+        });
+      });
+      const id = await fixture.createSession();
+
+      await fixture.store.prompt(id, "err", "log-turn-failed");
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "debug",
+        new RegExp(`PROMPT_DEDUP_EVICTED: session=${id}, request_id=log-turn-failed, reason=turn_failed`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_EVICTED debug log with reason=turn_failed");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("logs PROMPT_DEDUP_EVICTED with reason=turn_aborted on aborted turn", async () => {
+    const stub = stubLogger();
+    try {
+      const fixture = createTestFixture(async (_message, emit) => {
+        emit({
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "partial" }],
+              usage: { input: 1, output: 1, cost: { total: 0 } },
+              stopReason: "aborted",
+            },
+          ],
+        });
+      });
+      const id = await fixture.createSession();
+
+      await fixture.store.prompt(id, "abort", "log-turn-aborted");
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "debug",
+        new RegExp(`PROMPT_DEDUP_EVICTED: session=${id}, request_id=log-turn-aborted, reason=turn_aborted`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_EVICTED debug log with reason=turn_aborted");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("logs PROMPT_DEDUP_OVERSIZED on oversized single entry", async () => {
+    const stub = stubLogger();
+    try {
+      const oversizedReply = "z".repeat(MAX_REQUEST_CACHE_BYTES + 1);
+      const fixture = createTestFixture(async (_message, emit) => {
+        emitStandardReply(emit, oversizedReply);
+      });
+      const id = await fixture.createSession();
+
+      await fixture.store.prompt(id, "big", "log-oversized");
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "warn",
+        new RegExp(`PROMPT_DEDUP_OVERSIZED: session=${id}, request_id=log-oversized, bytes=\\d+, max_bytes=${MAX_REQUEST_CACHE_BYTES}`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_OVERSIZED warn log");
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("logs PROMPT_DEDUP_INVALID_ID on invalid request_id", async () => {
+    const stub = stubLogger();
+    try {
+      const fixture = createTestFixture();
+      const id = await fixture.createSession();
+
+      await assert.rejects(() => fixture.store.prompt(id, "hello", "   "));
+
+      const match = findPromptDedupLog(
+        stub.calls,
+        "warn",
+        new RegExp(`PROMPT_DEDUP_INVALID_ID: session=${id}`),
+      );
+      assert.ok(match, "expected PROMPT_DEDUP_INVALID_ID warn log");
+    } finally {
+      stub.restore();
+    }
   });
 });

@@ -343,7 +343,7 @@ export function createRequestHandler(
         logger.debug(`[sidecar] POST /sessions/${idLog}/prompt: message_length=${body.message.length}, has_request_id=${requestId !== undefined}`);
         const result = await store.prompt(params.id, body.message, requestId);
         logger.info(`[sidecar] POST /sessions/${idLog}/prompt 200 ${Date.now() - requestStart}ms text_length=${result.text.length}${result.error ? " with_errors=true" : ""}`);
-        sendJson(res, 200, result);
+        sendJson(res, 200, result, result.replayed ? { "X-Request-Id-Replayed": "true" } : undefined);
         return;
       }
 

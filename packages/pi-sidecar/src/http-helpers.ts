@@ -136,8 +136,13 @@ export function sanitizeUrlForLog(
   }
 }
 
-export function sendJson(res: ServerResponse, status: number, data: any): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
+export function sendJson(
+  res: ServerResponse,
+  status: number,
+  data: any,
+  extraHeaders?: Record<string, string>,
+): void {
+  res.writeHead(status, { "Content-Type": "application/json", ...extraHeaders });
   res.end(JSON.stringify(data));
 }
 
