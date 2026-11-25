@@ -18,7 +18,6 @@ from myk_pi_tools.reviews.status import extract_summary
 from myk_pi_tools.settings.commands import ENV_BY_KEY
 
 EXPECTED_COMMANDS = [
-    "ai-cli",
     "coderabbit",
     "db",
     "memory",
@@ -55,7 +54,7 @@ def test_importing_cli_skips_heavy_optional_modules() -> None:
     assert proc.stdout.strip() == ""
 
 
-def test_cli_list_commands_returns_all_eight_commands() -> None:
+def test_cli_list_commands_returns_all_seven_commands() -> None:
     with click.Context(cli) as ctx:
         assert cli.list_commands(ctx) == EXPECTED_COMMANDS
 
@@ -139,25 +138,3 @@ def test_release_detect_versions_outputs_compact_json(tmp_path: Path, monkeypatc
     assert result.exit_code == 0, result.output
     parsed = _assert_compact_json(result.stdout)
     assert parsed["count"] == 2
-
-
-def _invoke_ai_cli_save_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-    monkeypatch.chdir(tmp_path)
-    return CliRunner().invoke(
-        cli,
-        ["ai-cli", "save-config", "--agents", "cursor", "--peers", "claude,gemini"],
-    )
-
-
-def test_ai_cli_save_config_outputs_compact_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    result = _invoke_ai_cli_save_config(tmp_path, monkeypatch)
-    assert result.exit_code == 0, result.output
-    parsed = _assert_compact_json(result.stdout)
-    assert parsed == {"lastAgents": "cursor", "lastPeers": "claude,gemini"}
-
-
-def test_ai_cli_save_config_writes_indented_json_to_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    result = _invoke_ai_cli_save_config(tmp_path, monkeypatch)
-    assert result.exit_code == 0, result.output
-    on_disk = (tmp_path / ".pi" / "external-ai-config.json").read_text(encoding="utf-8")
-    assert on_disk == json.dumps({"lastAgents": "cursor", "lastPeers": "claude,gemini"}, indent=2) + "\n"

@@ -1,6 +1,6 @@
 ---
 name: test-driven-development
-description: "TDD: enforce RED-GREEN-REFACTOR, tests before code."
+description: "TDD: enforce RED-GREEN-REFACTOR, tests before code. Use when implementing features, bug fixes, or refactors by writing failing tests before production code."
 ---
 
 # Test-Driven Development (TDD)

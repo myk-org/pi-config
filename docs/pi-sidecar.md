@@ -406,6 +406,5 @@ results = await run_parallel_with_limit(tasks, max_concurrency=5)
 ## Related Pages
 
 - [Google Vertex Claude Provider](vertex-claude-provider.html)
-- [External AI Agents & CLI](external-ai-agents.html)
 - [Configuration & Settings](configuration.html)
 - [Daemon & Websocket Networking](daemon-and-websockets.html)
