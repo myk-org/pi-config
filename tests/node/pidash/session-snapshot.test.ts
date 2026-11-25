@@ -316,6 +316,24 @@ describe("SessionViewState server snapshot (#1398)", () => {
     assert.deepEqual(snap.messages.map((m) => m.text), ["follow up"]);
   });
 
+  it("protects a tool-call paired with a running async agent card during bounded trimming", () => {
+    const { client } = makeClient();
+    applyEventToViewState(client, { type: "tool_execution_start", toolName: "subagent", toolCallId: "tc-async", args: { agent: "worker", task: "build" } }, 3);
+    applyEventToViewState(
+      client,
+      { type: "tool_execution_end", toolName: "subagent", toolCallId: "tc-async", result: { content: [{ type: "text", text: "Spawned job-prot" }] }, isError: false },
+      3,
+    );
+    applyEventToViewState(client, { type: "async_agent_start", id: "job-prot", agent: "worker", cwd: "/repo", sessionId: client.session.sessionId }, 3);
+    applyEventToViewState(client, { type: "notification", message: "n1" }, 3);
+    applyEventToViewState(client, { type: "notification", message: "n2" }, 3);
+
+    const snap = buildSessionSnapshot(client);
+    assert.equal(snap.messages.length, 3);
+    assert.equal(snap.messages.some((m) => m.className === "tool-call" && m.meta?.callId === "tc-async"), true);
+    assert.equal(snap.messages.some((m) => m.className === "tool-result" && m.meta?.callId === "tc-async"), true);
+  });
+
   it("keeps identical repeated user prompts separated by an assistant reply during replay without agent_end", () => {
     const { client } = makeClient();
     applyEventToViewState(client, { type: "replay_start" });
@@ -700,5 +718,28 @@ describe("useMessageHandler session_snapshot hydration (#1398)", () => {
     const userMsgs = h.state().messages.filter((m) => m.role === "user");
     assert.equal(userMsgs.length, 1);
     assert.equal(userMsgs[0].text, "steer now");
+  });
+
+  it("suppresses back-to-back identical mid-stream local echoes while preserving a later non-local prompt", async () => {
+    const h = await mountHandler(makeSession());
+
+    await act(async () => {
+      h.emit({ type: "agent_start" });
+      h.setLastUserText("ping");
+      h.addMsg("user", "ping");
+      h.setLastUserText("ping");
+      h.addMsg("user", "ping");
+      h.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "working" } });
+      // Echoes for both local prompts are suppressed
+      h.emit({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "ping" }] } });
+      h.emit({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "ping" }] } });
+      // Assistant reply finishes, then a third prompt arrives from TUI (non-local)
+      h.emit({ type: "message_end", message: { role: "assistant" } });
+      h.emit({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "ping" }] } });
+    });
+
+    const userMsgs = h.state().messages.filter((m) => m.role === "user");
+    assert.equal(userMsgs.length, 3);
+    assert.deepEqual(userMsgs.map((m) => m.text), ["ping", "ping", "ping"]);
   });
 });
