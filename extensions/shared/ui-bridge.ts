@@ -254,9 +254,7 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
       // boolean here was always rejected — every prompt without ui.custom cancelled, and an
       // approval could never succeed. Translate the answer to the sentinel the caller expects.
       if (method === "confirm") {
-        const confirmed = dialogOpts
-          ? await ctx.ui.confirm(title, message, dialogOpts)
-          : await ctx.ui.confirm(title, message);
+        const confirmed = await ctx.ui.confirm(title, message, { blockedKind });
         return (confirmed ? "__confirmed__" : "__denied__") as T | undefined;
       }
       return (

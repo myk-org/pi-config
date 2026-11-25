@@ -803,4 +803,38 @@ describe("useMessageHandler session_snapshot hydration (#1398)", () => {
     assert.equal(results.length, 1);
     assert.equal(results[0].text, "✓ ok");
   });
+
+  it("appends fullOutputError notice after non-empty tool_execution_end output in appendAsyncAgentEventText", () => {
+    const tracked = { text: "" };
+    const changed = appendAsyncAgentEventText(tracked, {
+      type: "tool_execution_end",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "truncated output" }],
+        details: { fullOutputError: "ENOSPC: no space left on device" },
+      },
+    });
+    assert.equal(changed, true);
+    assert.equal(
+      tracked.text,
+      "\n✓ truncated output\n⚠️ Full output not saved: ENOSPC: no space left on device",
+    );
+  });
+
+  it("appends fullOutputError notice when tool_execution_end output is empty in appendAsyncAgentEventText", () => {
+    const tracked = { text: "" };
+    const changed = appendAsyncAgentEventText(tracked, {
+      type: "tool_execution_end",
+      isError: true,
+      result: {
+        content: [],
+        details: { fullOutputError: "EACCES: permission denied" },
+      },
+    });
+    assert.equal(changed, true);
+    assert.equal(
+      tracked.text,
+      "\n✗ ⚠️ Full output not saved: EACCES: permission denied",
+    );
+  });
 });

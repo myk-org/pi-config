@@ -67,6 +67,13 @@ export function textFromMessage(msg: any): string {
     .join("\n");
 }
 
+function appendFullOutputErrorNotice(text: string, details: any): string {
+  const fullOutputError =
+    typeof details?.fullOutputError === "string" ? details.fullOutputError.trim() : "";
+  if (!fullOutputError) return text;
+  return `${text}${text ? "\n" : ""}⚠️ Full output not saved: ${fullOutputError}`;
+}
+
 /**
  * Append one inner `async_agent_event` payload onto an accumulated text buffer.
  * Shared by both the transcript reducer and the daemon's `asyncAgents` registry
@@ -97,10 +104,15 @@ export function appendAsyncAgentEventText(
     changed = true;
   }
 
-  if (inner.type === "tool_execution_end" && inner.result?.content?.[0]?.text) {
-    const result = String(inner.result.content[0].text).slice(0, 200);
-    tracked.text += `\n${inner.isError ? "✗" : "✓"} ${result}`;
-    changed = true;
+  if (inner.type === "tool_execution_end") {
+    const rawResult = inner.result?.content?.[0]?.text
+      ? String(inner.result.content[0].text).slice(0, 200)
+      : "";
+    const result = appendFullOutputErrorNotice(rawResult, inner.result?.details);
+    if (result) {
+      tracked.text += `\n${inner.isError ? "✗" : "✓"} ${result}`;
+      changed = true;
+    }
   }
 
   if (changed && maxChars > 0 && tracked.text.length > maxChars) {
@@ -305,12 +317,8 @@ export function applyTranscriptEvent(
       const callId = refs.tool.callId || ev.toolCallId || "";
       refs.tool = { id: "", name: "", startTs: 0, callId: "" };
       const rawText = typeof ev.result?.content?.[0]?.text === "string" ? ev.result.content[0].text : "";
-      const fullOutputError =
-        typeof ev.result?.details?.fullOutputError === "string" ? ev.result.details.fullOutputError.trim() : "";
-      if (rawText || fullOutputError) {
-        const t = fullOutputError
-          ? `${rawText}${rawText ? "\n" : ""}⚠️ Full output not saved: ${fullOutputError}`
-          : rawText;
+      const t = appendFullOutputErrorNotice(rawText, ev.result?.details);
+      if (t) {
         let meta: ChatMessage["meta"] = startTs ? { startTs, endTs: ts, callId } : { callId };
         const results = ev.result?.details?.results;
         if (Array.isArray(results) && results.length > 0) {

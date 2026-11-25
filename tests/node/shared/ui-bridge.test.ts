@@ -654,35 +654,66 @@ describe("ui-bridge blockedKind (OSC 7501)", () => {
     }
   });
 
-  it("forwards blockedKind on fallback ctx.ui calls only when specified", async () => {
-    const selectArgs: any[] = [];
+  it("defaults fallback ctx.ui.confirm blockedKind to permission without explicit opts", async () => {
     const confirmArgs: any[] = [];
-    const inputArgs: any[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        confirm: async (...args: any[]) => { confirmArgs.push(args); return true; },
+      },
+    };
+    const bridged = createBridgedUi(fakePi() as any);
+
+    assert.equal(await bridged.confirm(ctx as any, "Sure?", "Body"), true);
+    assert.deepEqual(confirmArgs, [["Sure?", "Body", { blockedKind: "permission" }]]);
+  });
+
+  it("preserves explicit blockedKind overrides on fallback ctx.ui.confirm", async () => {
+    const confirmArgs: any[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        confirm: async (...args: any[]) => { confirmArgs.push(args); return true; },
+      },
+    };
+    const bridged = createBridgedUi(fakePi() as any);
+
+    assert.equal(await bridged.confirm(ctx as any, "Auth?", "Body", { blockedKind: "auth" }), true);
+    assert.deepEqual(confirmArgs, [["Auth?", "Body", { blockedKind: "auth" }]]);
+  });
+
+  it("forwards blockedKind on fallback ctx.ui.select only when specified", async () => {
+    const selectArgs: any[] = [];
     const ctx = {
       hasUI: true,
       ui: {
         select: async (...args: any[]) => { selectArgs.push(args); return args[1][0]; },
-        confirm: async (...args: any[]) => { confirmArgs.push(args); return true; },
-        input: async (...args: any[]) => { inputArgs.push(args); return "ok"; },
       },
     };
     const bridged = createBridgedUi(fakePi() as any);
 
     await bridged.select(ctx as any, "Pick", ["a"]);
     await bridged.select(ctx as any, "Allow?", ["Yes"], { blockedKind: "permission" });
-    await bridged.confirm(ctx as any, "Sure?", "Body");
-    await bridged.confirm(ctx as any, "Auth?", "Body", { blockedKind: "auth" });
-    await bridged.input(ctx as any, "Name");
-    await bridged.input(ctx as any, "Token", { blockedKind: "auth" });
 
     assert.deepEqual(selectArgs, [
       ["Pick", ["a"]],
       ["Allow?", ["Yes"], { blockedKind: "permission" }],
     ]);
-    assert.deepEqual(confirmArgs, [
-      ["Sure?", "Body"],
-      ["Auth?", "Body", { blockedKind: "auth" }],
-    ]);
+  });
+
+  it("forwards blockedKind on fallback ctx.ui.input only when specified", async () => {
+    const inputArgs: any[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        input: async (...args: any[]) => { inputArgs.push(args); return "ok"; },
+      },
+    };
+    const bridged = createBridgedUi(fakePi() as any);
+
+    await bridged.input(ctx as any, "Name");
+    await bridged.input(ctx as any, "Token", { blockedKind: "auth" });
+
     assert.deepEqual(inputArgs, [
       ["Name"],
       ["Token", undefined, { blockedKind: "auth" }],
