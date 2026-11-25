@@ -31,6 +31,7 @@ interface Harness {
   coms: string;
   marker: string;
   ready: string;
+  envFile: string;
 }
 
 /** A throw-away HOME + coms dir + a stub `pi` whose SIGTERM behaviour the test controls. */
@@ -42,14 +43,18 @@ function harness({ ignoreSigterm = false, exitAfterMs = 200 }: { ignoreSigterm?:
   const coms = join(root, "coms");
   const marker = join(root, "saw-sigterm");
   const ready = join(root, "ready");
+  const envFile = join(root, "child-env.txt");
   mkdirSync(home, { recursive: true });
   mkdirSync(bin, { recursive: true });
   mkdirSync(coms, { recursive: true });
 
   const trap = ignoreSigterm ? "trap '' TERM" : `trap 'touch ${marker}; sleep ${exitAfterMs / 1000}; exit 0' TERM`;
-  writeFileSync(join(bin, "pi"), `#!/bin/sh\n${trap}\ntouch ${ready}\nwhile :; do sleep 0.05; done\n`);
+  writeFileSync(
+    join(bin, "pi"),
+    `#!/bin/sh\n${trap}\nprintf '%s' "$PI_COMS_SUPERVISED_PEER" > "${envFile}"\ntouch ${ready}\nwhile :; do sleep 0.05; done\n`,
+  );
   chmodSync(join(bin, "pi"), 0o755);
-  return { root, home, bin, coms, marker, ready };
+  return { root, home, bin, coms, marker, ready, envFile };
 }
 
 /** `timeoutMs` reaches the supervisor as the string env var, so a test may pass garbage there. */
@@ -154,5 +159,20 @@ describe("coms-peer-supervisor shutdown", () => {
 
     assert.equal(await stopAndWait(child), 0);
     assert.equal(readRecord(h).pid, 999999, "the newer supervisor's live record survives");
+  });
+
+  it("#1403: sets PI_COMS_SUPERVISED_PEER=1 on spawned child env without mutating spawner env", async () => {
+    const previous = process.env.PI_COMS_SUPERVISED_PEER;
+    delete process.env.PI_COMS_SUPERVISED_PEER;
+    try {
+      const h = harness({ exitAfterMs: 100 });
+      const child = await startedPeer(h);
+      assert.equal(readFileSync(h.envFile, "utf8"), "1", "child pi process receives PI_COMS_SUPERVISED_PEER=1");
+      assert.equal(process.env.PI_COMS_SUPERVISED_PEER, undefined, "spawner env remains untouched");
+      assert.equal(await stopAndWait(child), 0);
+    } finally {
+      if (previous === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+      else process.env.PI_COMS_SUPERVISED_PEER = previous;
+    }
   });
 });

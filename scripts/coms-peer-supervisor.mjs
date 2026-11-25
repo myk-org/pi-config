@@ -58,6 +58,9 @@ delete env.__PI_CONFIG_SESSION_ID;
 delete env.__PI_PARENT_SESSION_ID;
 delete env.PI_SUBAGENT_CHILD;
 delete env.PI_SUBAGENT_NAME;
+// Mark only the spawned child process as a supervised headless COMS peer so interactive-only
+// tools like ask_user stay disabled on the peer without touching the spawner's environment.
+env.PI_COMS_SUPERVISED_PEER = "1";
 
 const args = ["--mode", "rpc", "--coms", "--cname", cname, "--project", project];
 if (purpose) args.push("--purpose", purpose);

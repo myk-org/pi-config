@@ -29,6 +29,18 @@ describe("isLiveExtensionCtx", () => {
 		};
 		assert.equal(isLiveExtensionCtx(stale), false);
 	});
+
+	it("returns false when hasUI getter throws (stale ctx after reload)", () => {
+		const stale = {
+			mode: "tui",
+			get hasUI() {
+				throw new Error(
+					"This extension ctx is stale after session replacement or reload",
+				);
+			},
+		};
+		assert.equal(isLiveExtensionCtx(stale), false);
+	});
 });
 
 describe("emitIfLive", () => {

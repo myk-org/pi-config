@@ -30,6 +30,7 @@ export function isLiveExtensionCtx(ctx: unknown): boolean {
   if (ctx == null || typeof ctx !== "object") return false;
   try {
     void (ctx as { mode?: unknown }).mode;
+    void (ctx as { hasUI?: unknown }).hasUI;
     return true;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);

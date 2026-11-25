@@ -163,7 +163,16 @@ export function registerAskUser(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
 ): void {
-  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+  if (
+    process.env.PI_SUBAGENT_CHILD === "1" ||
+    process.env.PI_COMS_SUPERVISED_PEER === "1"
+  ) {
+    log.debug("ask_user_registration_skipped", {
+      subagentChild: process.env.PI_SUBAGENT_CHILD === "1",
+      supervisedComsPeer: process.env.PI_COMS_SUPERVISED_PEER === "1",
+    });
+    return;
+  }
 
   pi.registerTool({
     name: "ask_user",
@@ -188,19 +197,32 @@ export function registerAskUser(
     }),
 
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      if (!ctx.hasUI) {
-        // A headless session (a spawned coms peer, a print/rpc run) has no human attached. A bare
-        // "no UI" left it guessing — so name the route that does exist: its manager, over coms.
-        log.info("ask_user_unattended", { reason: "no_ui" });
+      const isSupervisedPeer = process.env.PI_COMS_SUPERVISED_PEER === "1";
+      const isNonTuiMode = ctx.mode !== undefined && ctx.mode !== "tui";
+      if (!ctx.hasUI || isNonTuiMode || isSupervisedPeer) {
+        // A headless or non-TUI session (a spawned coms peer, or --mode rpc/print/json where
+        // ctx.hasUI can still be true) has no interactive TUI attached. Block before notifying or
+        // emitting pidash UI events, and route the question back to the main LLM over coms.
+        const reason = isSupervisedPeer
+          ? "supervised_coms_peer"
+          : isNonTuiMode
+            ? `non_tui_mode:${ctx.mode}`
+            : "no_ui";
+        log.info("ask_user_unattended", {
+          reason,
+          hasUI: Boolean(ctx.hasUI),
+          mode: ctx.mode ?? null,
+          supervisedComsPeer: isSupervisedPeer,
+        });
         return {
           content: [
             {
               type: "text",
               text:
-                "No UI is attached to this session, so no human can answer here. " +
-                "You are running unattended: send the question to your manager over coms " +
-                "(coms_send if coms is active) and continue with what does not depend on the answer, " +
-                "or stop and report the blocker. Never invent an approval.",
+                "ask_user is blocked in this non-TUI/headless session because no interactive TUI is attached. " +
+                "Never call ask_user here: if COMS is active, send questions, clarifications, decisions, or approvals to the main LLM / requesting peer " +
+                "via coms_send (or in your reply to an inbound coms message) and continue with what does not depend on the answer; " +
+                "otherwise, stop and report that user input is required. Never invent an approval.",
             },
           ],
           details: undefined,
