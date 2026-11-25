@@ -48,7 +48,7 @@ Sync subagents run in the foreground of your turn, but they are real child proce
 
 Use the same `/async` overlay:
 
-- `Space` toggles rows into a selection, `x` kills the whole selection at once.
+- `Space` toggles rows into a selection (`Enter` inspects a row without losing ticks, `Esc` clears the selection first), and `x` kills every active job in the selection (reporting inline if none are active).
 - `X` immediately kills every running and queued job. There is no confirmation prompt.
 
 > **Tip:** If you only need to stop one job, `x` on the focused row is safer because it shows the exact running entries before you kill them.

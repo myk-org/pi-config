@@ -6,6 +6,7 @@
  */
 import type { Task, TaskCompletedBy, TaskStatus } from "./types.js";
 import { createLogger } from "../shared/logger.js";
+import { matchesOverlayKey } from "../orchestrator/overlay-dashboard.js";
 
 const log = createLogger("pitasks");
 
@@ -127,12 +128,13 @@ export function formatTasksPlainText(
 	return rows.join("\n");
 }
 
-/** List keys beyond the shared ones (j/k, Enter, x, Esc) — issues #1087, #1090, #1392. */
-export function tasksOverlayIntent(key: string): "add" | "edit" | "done" | "start" | undefined {
-	if (key === "n") return "add";
-	if (key === "e") return "edit";
-	if (key === "d") return "done";
-	if (key === "s") return "start";
+/** List keys beyond the shared ones (j/k, Enter, x, Esc) — issues #1087, #1090, #1391, #1392. */
+export function tasksOverlayIntent(key: string): "add" | "edit" | "done" | "start" | "reopen" | undefined {
+	if (matchesOverlayKey(key, "n")) return "add";
+	if (matchesOverlayKey(key, "e")) return "edit";
+	if (matchesOverlayKey(key, "d")) return "done";
+	if (matchesOverlayKey(key, "s")) return "start";
+	if (matchesOverlayKey(key, "u")) return "reopen";
 	return undefined;
 }
 
@@ -184,6 +186,17 @@ export function taskCompletionPrompt(task: { id: string; subject: string }): {
 	};
 }
 
+/** One shared optional-note dialog when bulk `d` includes 1+ open owner-assigned tasks (#1391). */
+export function bulkTaskCompletionPrompt(count: number): {
+	title: string;
+	placeholder: string;
+} {
+	return {
+		title: `Complete ${count} task${count === 1 ? "" : "s"}`,
+		placeholder: "optional note — Enter with nothing completes, Esc cancels",
+	};
+}
+
 export type TaskCompletionPlan =
 	| { kind: "skip"; reason: "cancelled" }
 	/** Empty line: completed with no note. */
@@ -191,7 +204,7 @@ export type TaskCompletionPlan =
 
 /** Esc cancels without writing; an empty line completes without a note. */
 export function planTaskCompletion(input: string | undefined): TaskCompletionPlan {
-	if (input === undefined) {
+	if (input == null) {
 		log.debug("task_completion_planned", { kind: "skip", reason: "cancelled" });
 		return { kind: "skip", reason: "cancelled" };
 	}
@@ -220,20 +233,46 @@ export function taskCompletionNotice(task: {
 	};
 }
 
-export type TaskAction = "start" | "done";
+/** One combined follow-up message when the owner bulk-completes user-assigned tasks (#1391). */
+export function bulkTaskCompletionNotice(
+	tasks: ReadonlyArray<{ id: string; subject: string }>,
+	note?: string,
+): {
+	customType: string;
+	content: string;
+	display: boolean;
+	details: { taskId?: string; taskIds: string[]; note?: string };
+} {
+	if (tasks.length === 1) {
+		const single = taskCompletionNotice({ ...tasks[0], ...(note ? { completionNote: note } : {}) });
+		return {
+			...single,
+			details: { ...single.details, taskIds: [tasks[0].id] },
+		};
+	}
+	const lines = tasks.map((t) => `- #${t.id} "${t.subject}"`).join("\n");
+	return {
+		customType: "task-completed-by-user",
+		content: `${tasks.length} tasks marked done by you:\n${lines}${note ? `\n${note}` : ""}`,
+		display: true,
+		details: { taskIds: tasks.map((t) => t.id), ...(note ? { note } : {}) },
+	};
+}
+
+export type TaskAction = "start" | "done" | "reopen";
 export type TaskActionOutcome = "applied" | "missing" | "unchanged" | "refused" | "blocked";
 
-/** What `/tasks start|done <id>` would do to a task in this status. */
+/** What `/tasks` status transitions do to a task in this status. */
 export type TaskTransition =
 	| { kind: "set"; status: TaskStatus }
 	/** Already in the target status — idempotent, no write. */
 	| { kind: "none" }
-	/** Completed work is not reopened by `start`; `done` on it stays idempotent. */
+	/** Completed work is not reopened by `start`; `done` and `reopen` stay idempotent on their target status. */
 	| { kind: "refused" };
 
 export function nextTaskStatus(current: string, action: TaskAction): TaskTransition {
 	if (action === "start" && current === "completed") return { kind: "refused" };
-	const target: TaskStatus = action === "start" ? "in_progress" : "completed";
+	const target: TaskStatus = action === "start" ? "in_progress" : action === "reopen" ? "pending" : "completed";
 	return current === target ? { kind: "none" } : { kind: "set", status: target };
 }
 
@@ -278,6 +317,7 @@ export function applyTaskAction(
 export type TaskOverlayUpdate =
 	| { status: "deleted" }
 	| { status: "in_progress" }
+	| { status: "pending" }
 	| { subject: string }
 	| { status: TaskStatus; completedBy: TaskCompletedBy; completionNote?: string };
 
@@ -291,7 +331,9 @@ export function tasksOverlayDeps(
 	},
 	onDeleted?: (id: string) => void,
 	/** Called only when the OWNER completed their own task, so the session learns about it. */
-	onUserCompleted?: (task: { id: string; subject: string; completionNote?: string }) => void,
+	onUserCompleted?: (task: { id: string; subject: string; completionNote?: string }) => unknown,
+	/** Called once after bulk completion with every persisted user-assigned task; returns false if submission failed. */
+	onUserBulkCompleted?: (tasks: ReadonlyArray<{ id: string; subject: string }>, note?: string) => boolean,
 	/** Called when a task transitions to `in_progress` via `s`. */
 	onStarted?: (id: string) => void,
 ): TasksUiDeps {
@@ -328,6 +370,29 @@ export function tasksOverlayDeps(
 				update: (taskId) => store.update(taskId, { status: "in_progress" }),
 				onChanged: (taskId) => onStarted?.(taskId),
 			}),
+		reopenTask: (id) => {
+			const task = store.get(id);
+			if (!task) {
+				log.warn("task_reopen_missing", { id });
+				return "missing";
+			}
+			const transition = nextTaskStatus(task.status, "reopen");
+			if (transition.kind === "none") {
+				log.debug("task_reopen_unchanged", { id, status: task.status });
+				return "unchanged";
+			}
+			const result = store.update(id, { status: "pending" });
+			if (result !== undefined && typeof result === "object" && result !== null && "task" in result) {
+				const updated = (result as { task?: Task }).task;
+				if (!updated || updated.status !== "pending") {
+					log.warn("task_reopen_not_persisted", { id });
+					return "missing";
+				}
+			}
+			onDeleted?.(id);
+			log.info("task_reopened", { id, from: task.status });
+			return "applied";
+		},
 		completeTask: (id, opts) => {
 			const task = store.get(id);
 			if (!task) {
@@ -338,17 +403,48 @@ export function tasksOverlayDeps(
 				log.debug("task_complete_unchanged", { id });
 				return false;
 			}
-			store.update(id, {
+			const result = store.update(id, {
 				status: "completed",
 				completedBy: opts.by,
 				...(opts.note ? { completionNote: opts.note } : {}),
 			});
+			// Real TaskStore.update returns { task, changedFields }; if another writer deleted
+			// the task between store.get() and the locked update, result.task is undefined.
+			if (result !== undefined && typeof result === "object" && result !== null && "task" in result) {
+				const updated = (result as { task?: Task }).task;
+				if (!updated || updated.status !== "completed") {
+					log.warn("task_complete_not_persisted", { id });
+					return false;
+				}
+			}
 			onDeleted?.(id);
 			// The note is the owner's free text: the log names the id, never the note.
 			log.info("task_completed", { id });
-			if (opts.by === "user" && task.assignee === "user") onUserCompleted?.({ id: task.id, subject: task.subject, ...(opts.note ? { completionNote: opts.note } : {}) });
+			if (!opts.silent && opts.by === "user" && task.assignee === "user") {
+				onUserCompleted?.({ id: task.id, subject: task.subject, ...(opts.note ? { completionNote: opts.note } : {}) });
+			}
 			return true;
 		},
+		...(onUserBulkCompleted
+			? {
+					notifyUserCompleted: (tasks: ReadonlyArray<{ id: string; subject: string }>, note?: string) =>
+						onUserBulkCompleted(tasks, note),
+				}
+			: onUserCompleted
+				? {
+						notifyUserCompleted: (tasks: ReadonlyArray<{ id: string; subject: string }>, note?: string) => {
+							let ok = true;
+							for (const task of tasks) {
+								try {
+									if (onUserCompleted({ ...task, ...(note ? { completionNote: note } : {}) }) === false) ok = false;
+								} catch {
+									ok = false;
+								}
+							}
+							return ok;
+						},
+					}
+				: {}),
 	};
 }
 
@@ -359,8 +455,13 @@ export interface TasksUiDeps {
 	deleteTask: (id: string) => boolean;
 	/** Start a task (`in_progress`); returns transition outcome. */
 	startTask?: (id: string) => TaskActionOutcome;
-	/** Close a task; `by: "user"` is the owner pressing `d`, with their optional note. */
-	completeTask: (id: string, opts: { by: TaskCompletedBy; note?: string }) => boolean;
+	/** Reopen a completed or in-progress task back to `pending`; returns transition outcome. */
+	reopenTask?: (id: string) => TaskActionOutcome;
+	/** Close a task; `by: "user"` is the owner pressing `d`, with their optional note.
+	 *  `silent: true` suppresses the per-task owner notice so bulk `d` can send one combined report. */
+	completeTask: (id: string, opts: { by: TaskCompletedBy; note?: string; silent?: boolean }) => boolean;
+	/** Send one combined follow-up notice for bulk-completed user-assigned tasks; returns false on failure. */
+	notifyUserCompleted?: (tasks: ReadonlyArray<{ id: string; subject: string }>, note?: string) => boolean;
 	/** Create a task from one line of input; returns the new task id. */
 	createTask: (subject: string, assignee?: Task["assignee"]) => string;
 	/** Rename a task's subject. Returns false when the task is gone. */

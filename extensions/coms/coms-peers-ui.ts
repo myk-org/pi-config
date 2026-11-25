@@ -17,7 +17,7 @@ import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
-import { OVERLAY_OPTS, openListDetailOverlay } from "../orchestrator/overlay-dashboard.js";
+import { OVERLAY_OPTS, matchesOverlayKey, openListDetailOverlay } from "../orchestrator/overlay-dashboard.js";
 import { buildTellRequest } from "./coms-shared.js";
 import type { RegistryRow } from "./coms-peers.js";
 
@@ -123,12 +123,12 @@ export async function openComsPeersOverlay(
           };
         },
         onKey: (key, row) => {
-          if (key === "f") {
+          if (matchesOverlayKey(key, "f")) {
             projectScope = projectScope === "project" ? "all" : "project";
             log.debug("overlay_scope_toggled", { scope: projectScope });
             return "redraw";
           }
-          if (key === "q" && deps.openQueue) {
+          if (matchesOverlayKey(key, "q") && deps.openQueue) {
             if (row) reselectPeer = row.id;
             queueRequested = true;
             log.debug("overlay_open_queue_requested");
@@ -136,22 +136,22 @@ export async function openComsPeersOverlay(
           }
           return false;
         },
-        onX: (row) => {
+        onX: (row, notify) => {
           // No detail pane holds a result any more, so the outcome is notified where the user looks.
           const killed = deps.killPeer(row);
           log.info("overlay_kill_peer", { name: row.name, project: row.project });
-          try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
+          notify(sanitizePeerText(killed, 120), "info");
         },
         selectable: true,
-        onXSelected: (rows) => {
+        onXSelected: (rows, notify) => {
           const results = rows.map((row) => deps.killPeer(row)).join(" · ");
           log.info("overlay_kill_selection", { count: rows.length });
-          try { ctx.ui.notify(sanitizePeerText(results, 120), "info"); } catch {}
+          notify(sanitizePeerText(results, 120), "info");
         },
-        onKillAll: () => {
+        onKillAll: (notify) => {
           const killed = deps.killAll(projectScope);
           log.info("overlay_kill_all", { scope: projectScope });
-          try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
+          notify(sanitizePeerText(killed, 120), "info");
         },
         // The overlay keeps no state across re-opens: it reports the ticks and takes them back.
         onSelectionChange: (ids) => {
