@@ -128,6 +128,7 @@ Two keys are not settings but act like them, and are only available in the **tru
 | Key | True when |
 | --- | --- |
 | `coms_active` | A coms session is active (`/coms start` has been run). |
+| `interactive_tui` | An interactive TUI is attached (`ctx.mode === "tui"`, `ctx.hasUI !== false`, and `PI_COMS_SUPERVISED_PEER` unset). |
 
 Feature predicates are consulted only for a bare `{{IF:key}}`. Writing `{{IF:coms_active==true}}` falls through to the settings lookup, where `coms_active` is not a known key, and therefore fails closed with a warning — the block is dropped. Use the bare form.
 

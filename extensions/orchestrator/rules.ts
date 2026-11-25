@@ -38,6 +38,7 @@ interface CachedRawRuleFile {
 interface AssembledRulesCacheEntry {
   accessedSettings: Array<[string, unknown]>;
   comsActive: boolean;
+  interactiveTui: boolean;
   reviewLoopMaxCycles: number;
   joined: string;
   fileCount: number;
@@ -102,7 +103,12 @@ function sameSettingValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR, sessionKey?: string): string {
+function loadOrAssembleRules(
+  cwd: string,
+  packageRulesDir = PACKAGE_RULES_DIR,
+  sessionKey?: string,
+  interactiveTui = process.env.PI_COMS_SUPERVISED_PEER !== "1",
+): string {
   const userRulesDir = path.join(os.homedir(), ".pi", "agent", "rules");
   const projectRulesDir = path.join(cwd, ".pi", "rules");
 
@@ -154,11 +160,12 @@ function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR, s
 
   const comsActive = isComsActive(sessionKey);
   const reviewLoopMaxCycles = Number(getSetting(cwd, "review_loop_max_cycles"));
-  const cacheKey = `${path.resolve(cwd)}\0${comsActive ? "1" : "0"}\0${sigParts.join("|")}`;
+  const cacheKey = `${path.resolve(cwd)}\0${comsActive ? "1" : "0"}\0${interactiveTui ? "1" : "0"}\0${sigParts.join("|")}`;
   const cached = assembledRulesCache.get(cacheKey);
   if (
     cached &&
     cached.comsActive === comsActive &&
+    cached.interactiveTui === interactiveTui &&
     cached.reviewLoopMaxCycles === reviewLoopMaxCycles &&
     cached.accessedSettings.every(([k, v]) => sameSettingValue(getSettingDynamic(cwd, k), v))
   ) {
@@ -175,7 +182,7 @@ function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR, s
     return "\n\n" + cached.joined;
   }
 
-  log.debug("assembling rules", { count: ruleContents.length, reviewLoopMaxCycles });
+  log.debug("assembling rules", { count: ruleContents.length, reviewLoopMaxCycles, interactiveTui });
   let includedCount = 0;
   let skippedCount = 0;
   const accessed = new Map<string, unknown>();
@@ -189,6 +196,7 @@ function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR, s
     knownKeys: KNOWN_SETTING_KEYS,
     featurePredicates: {
       coms_active: () => comsActive,
+      interactive_tui: () => interactiveTui,
     },
     reviewLoopMaxCycles,
     onWarn: (msg) => log.warn("rule assembly:", msg),
@@ -207,6 +215,7 @@ function loadOrAssembleRules(cwd: string, packageRulesDir = PACKAGE_RULES_DIR, s
     {
       accessedSettings: [...accessed.entries()],
       comsActive,
+      interactiveTui,
       reviewLoopMaxCycles,
       joined,
       fileCount: ruleContents.length,
@@ -334,7 +343,11 @@ export function registerRules(
     // Load from: package rules/ → user ~/.pi/agent/rules/ → project .pi/rules/
     // Same-filename override: project > user > package
     if (!isSubagent) {
-      extra += loadOrAssembleRules(ctx.cwd, options?.packageRulesDir, resolveBridgeSessionKey(ctx));
+      const interactiveTui =
+        process.env.PI_COMS_SUPERVISED_PEER !== "1" &&
+        ctx.hasUI !== false &&
+        (ctx.mode === undefined || ctx.mode === "tui");
+      extra += loadOrAssembleRules(ctx.cwd, options?.packageRulesDir, resolveBridgeSessionKey(ctx), interactiveTui);
     }
 
     // Async agent status — always show so the AI knows what's running.

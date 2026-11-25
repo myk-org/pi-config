@@ -655,17 +655,15 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 	});
 
 	// ── #1403 ────────────────────────────────────────────────────────────────
-	it("#1403: headless/rpc/supervised peers receive ask_user-blocked + coms_send routing guidance while TUI sessions do not", async () => {
+	it("#1403: RPC peers receive ask_user-blocked guidance in welcome and system prompt", async () => {
 		const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
 		delete process.env.PI_COMS_SUPERVISED_PEER;
 		try {
 			const { workspace } = makeWorkspace();
-
-			// 1. Non-TUI RPC peer (even with hasUI: true) gets welcome + before_agent_start guidance
 			const rpcPeer = await startP2pPeer({
 				name: "rpc-peer",
 				sessionId: "rpc-1403",
-				project: "p-1403",
+				project: "p-1403-rpc",
 				cwd: workspace,
 				hasUI: true,
 				mode: "rpc",
@@ -691,12 +689,21 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 			assert.match(fallbackRes?.systemPrompt ?? "", /^BASE\n\n/);
 			assert.match(fallbackRes?.systemPrompt ?? "", /ask_user/);
 			assert.match(fallbackRes?.systemPrompt ?? "", /coms_send/);
+		} finally {
+			if (prevSupervised === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+			else process.env.PI_COMS_SUPERVISED_PEER = prevSupervised;
+		}
+	});
 
-			// 2. Interactive TUI peer (main LLM spawning peers) does NOT get ask_user-blocked guidance
+	it("#1403: interactive TUI peers receive no headless guidance", async () => {
+		const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+		delete process.env.PI_COMS_SUPERVISED_PEER;
+		try {
+			const { workspace } = makeWorkspace();
 			const tuiPeer = await startP2pPeer({
 				name: "tui-main",
 				sessionId: "tui-1403",
-				project: "p-1403",
+				project: "p-1403-tui",
 				cwd: workspace,
 				hasUI: true,
 				mode: "tui",
@@ -712,13 +719,34 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 			);
 			assert.equal(tuiBeforeRes, undefined);
 			assert.equal(tuiSections.coms_headless_peer, undefined);
+		} finally {
+			if (prevSupervised === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+			else process.env.PI_COMS_SUPERVISED_PEER = prevSupervised;
+		}
+	});
 
-			// 3. Supervised peer (PI_COMS_SUPERVISED_PEER=1) gets guidance even if ctx claims TUI
-			process.env.PI_COMS_SUPERVISED_PEER = "1";
+	it("#1403: supervised peers receive headless guidance even when ctx reports TUI", async () => {
+		const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+		process.env.PI_COMS_SUPERVISED_PEER = "1";
+		try {
+			const { workspace } = makeWorkspace();
+			const supPeer = await startP2pPeer({
+				name: "sup-peer",
+				sessionId: "sup-1403",
+				project: "p-1403-sup",
+				cwd: workspace,
+				hasUI: true,
+				mode: "tui",
+			});
+			const supWelcome = supPeer.messages.find((m) => m.customType === "coms-welcome");
+			assert.ok(supWelcome, "supervised peer emits coms-welcome");
+			assert.match(supWelcome.content, /ask_user/);
+			assert.match(supWelcome.content, /coms_send/);
+
 			const supSections: Record<string, string> = {};
-			await tuiPeer.handlers.get("before_agent_start")!(
+			await supPeer.handlers.get("before_agent_start")!(
 				{ systemPrompt: "BASE", systemPromptOptions: { sections: supSections } },
-				makeCtx(workspace, "tui-1403", undefined, { hasUI: true, mode: "tui" }),
+				makeCtx(workspace, "sup-1403", undefined, { hasUI: true, mode: "tui" }),
 			);
 			assert.match(supSections.coms_headless_peer ?? "", /ask_user/);
 			assert.match(supSections.coms_headless_peer ?? "", /coms_send/);

@@ -137,7 +137,7 @@ describe("ask_user result", () => {
     assert.equal(registered, undefined);
   });
 
-  it("skips registration in PI_COMS_SUPERVISED_PEER=1 processes and registers when unset (#1403)", () => {
+  it("does not register ask_user for supervised COMS peers (#1403)", () => {
     let supervisedRegistered: any;
     const supervisedPi = {
       registerTool: (t: any) => {
@@ -150,7 +150,9 @@ describe("ask_user result", () => {
       });
     });
     assert.equal(supervisedRegistered, undefined);
+  });
 
+  it("registers ask_user when PI_COMS_SUPERVISED_PEER is unset (#1403)", () => {
     let tuiRegistered: any;
     const tuiPi = {
       registerTool: (t: any) => {
@@ -174,7 +176,9 @@ describe("ask_user result", () => {
         { mode, hasUI: true },
       );
       assert.equal(result.isError, true, `mode=${mode} must return isError: true`);
-      assert.match(result.content[0].text, /coms_send/, `mode=${mode} must direct peer to coms_send`);
+      assert.match(result.content[0].text, /if COMS is active/i, `mode=${mode} must qualify COMS routing advice`);
+      assert.match(result.content[0].text, /coms_send/, `mode=${mode} must direct active COMS peers to coms_send`);
+      assert.match(result.content[0].text, /otherwise, stop and report/i, `mode=${mode} must guide standalone sessions to stop and report`);
       assert.equal(events.filter((e) => e.name === "pidash:ui-request").length, 0, `mode=${mode} must not emit pidash:ui-request`);
       assert.equal(notifyCalls, 0, `mode=${mode} must not call terminalNotify`);
       assert.equal(customCalls, 0, `mode=${mode} must not invoke ctx.ui.custom`);

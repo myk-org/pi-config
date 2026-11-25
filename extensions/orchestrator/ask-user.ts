@@ -220,9 +220,9 @@ export function registerAskUser(
               type: "text",
               text:
                 "ask_user is blocked in this non-TUI/headless session because no interactive TUI is attached. " +
-                "Never call ask_user here: send questions, clarifications, decisions, or approvals to the main LLM / requesting peer " +
-                "via coms_send (or in your reply to an inbound coms message) and continue with what does not depend on the answer, " +
-                "or stop and report the blocker. Never invent an approval.",
+                "Never call ask_user here: if COMS is active, send questions, clarifications, decisions, or approvals to the main LLM / requesting peer " +
+                "via coms_send (or in your reply to an inbound coms message) and continue with what does not depend on the answer; " +
+                "otherwise, stop and report that user input is required. Never invent an approval.",
             },
           ],
           details: undefined,
