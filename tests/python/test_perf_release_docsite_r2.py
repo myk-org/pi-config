@@ -1,9 +1,8 @@
-"""Tests for WT-20 Python release, ai-cli, and shared plumbing optimizations.
+"""Tests for WT-20 Python release and shared plumbing optimizations.
 
 Covers:
 - #1275: Parallel registry lookups, cached repo window, and batched git cat-file in ReleasePlanner
 - #1281: Combined gh repo/branch query and single git rev-list --left-right --count in release info
-- #1286: Concurrent pricing_cache.load() with call_ai_cli in ai_cli.run
 - #1291: Quiet stderr suppression in detect_version_files and silent None members in uv workspace scan
 - #1297: Deduplicated TOML section bumping, PY_VERSION_RE, and single root manifest parse
 - #1299: Shared release/_common.py plumbing and find_git_root(cwd) across settings/memory
@@ -11,22 +10,18 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import logging
 import subprocess
 import sys
 import threading
-import types
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from test_release_plan import build_fixture_repo, bump_poc, commit, git, make_planner, widen_poc_peers
 
-from myk_pi_tools.ai_cli import run as ai_cli_run
 from myk_pi_tools.release import _common, bump_scoped, bump_version, create, detect_versions, info, plan
 from myk_pi_tools.release.release_map import load_release_map
 from myk_pi_tools.settings import commands as settings_commands
@@ -301,111 +296,6 @@ class TestReleaseInfoPerf1281:
         assert validations.unpushed_commits == 3
         assert validations.synced_with_remote is False
         assert validations.all_passed is False
-
-
-class TestAiCliConcurrentPricing1286:
-    """#1286: pricing_cache.load() runs concurrently with call_ai_cli."""
-
-    def test_pricing_loads_concurrently_for_missing_cost(self, tmp_path: Path) -> None:
-        cli_started = asyncio.Event()
-        allow_pricing_finish = asyncio.Event()
-        calculate_calls: list[dict[str, object]] = []
-
-        class FakePricingCache:
-            async def load(self) -> None:
-                await allow_pricing_finish.wait()
-
-            def calculate_cost(self, **kwargs: object) -> float:
-                calculate_calls.append(kwargs)
-                return 0.042
-
-        async def fake_call_ai_cli(**_kwargs: object) -> types.SimpleNamespace:
-            # Reaching here proves call_ai_cli was NOT blocked waiting for pricing_cache.load().
-            cli_started.set()
-            allow_pricing_finish.set()
-            usage = types.SimpleNamespace(
-                provider="gemini",
-                model="gemini-2.5-flash",
-                input_tokens=100,
-                output_tokens=50,
-                cache_read_tokens=0,
-                cache_write_tokens=0,
-                cost_usd=None,
-                duration_ms=10,
-            )
-            return types.SimpleNamespace(success=True, text="ok", session_id=None, usage=usage)
-
-        fake_mod = types.SimpleNamespace(call_ai_cli=fake_call_ai_cli, pricing_cache=FakePricingCache())
-        with patch.dict("sys.modules", {"ai_cli_runner": fake_mod}):
-            result = asyncio.run(ai_cli_run._run_async("hi", "gemini", "gemini-2.5-flash", tmp_path, []))
-
-        assert cli_started.is_set()
-        assert result.usage.cost_usd == 0.042
-        assert len(calculate_calls) == 1
-
-    def test_pricing_task_cancelled_when_cost_already_present(self, tmp_path: Path) -> None:
-        cancelled = False
-
-        class SlowPricingCache:
-            async def load(self) -> None:
-                nonlocal cancelled
-                try:
-                    await asyncio.sleep(30)
-                except asyncio.CancelledError:
-                    cancelled = True
-                    raise
-
-            def calculate_cost(self, **_kwargs: object) -> float:
-                pytest.fail("calculate_cost must not run when cost_usd is already populated")
-
-        async def fake_call_ai_cli(**_kwargs: object) -> types.SimpleNamespace:
-            await asyncio.sleep(0)  # allow pricing_task to enter load()
-            usage = types.SimpleNamespace(
-                provider="claude",
-                model="claude-sonnet-4-6",
-                input_tokens=10,
-                output_tokens=5,
-                cache_read_tokens=0,
-                cache_write_tokens=0,
-                cost_usd=0.01,
-                duration_ms=5,
-            )
-            return types.SimpleNamespace(success=True, text="ok", session_id=None, usage=usage)
-
-        fake_mod = types.SimpleNamespace(call_ai_cli=fake_call_ai_cli, pricing_cache=SlowPricingCache())
-        with patch.dict("sys.modules", {"ai_cli_runner": fake_mod}):
-            result = asyncio.run(ai_cli_run._run_async("hi", "claude", "claude-sonnet-4-6", tmp_path, []))
-
-        assert cancelled is True
-        assert result.usage.cost_usd == 0.01
-
-    def test_pricing_load_failure_is_best_effort(self, tmp_path: Path) -> None:
-        class BrokenPricingCache:
-            async def load(self) -> None:
-                raise RuntimeError("network down")
-
-            def calculate_cost(self, **_kwargs: object) -> float:
-                return 1.0
-
-        async def fake_call_ai_cli(**_kwargs: object) -> types.SimpleNamespace:
-            usage = types.SimpleNamespace(
-                provider="gemini",
-                model="gemini-2.5-flash",
-                input_tokens=10,
-                output_tokens=5,
-                cache_read_tokens=0,
-                cache_write_tokens=0,
-                cost_usd=None,
-                duration_ms=5,
-            )
-            return types.SimpleNamespace(success=True, text="ok", session_id=None, usage=usage)
-
-        fake_mod = types.SimpleNamespace(call_ai_cli=fake_call_ai_cli, pricing_cache=BrokenPricingCache())
-        with patch.dict("sys.modules", {"ai_cli_runner": fake_mod}):
-            result = asyncio.run(ai_cli_run._run_async("hi", "gemini", "gemini-2.5-flash", tmp_path, []))
-
-        assert result.success is True
-        assert result.usage.cost_usd is None
 
 
 class TestDetectVersionsQuietAndSingleParse1291And1297:

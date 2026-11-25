@@ -8,7 +8,6 @@ from typing import Any
 import click
 
 _LAZY_SUBCOMMANDS: dict[str, str] = {
-    "ai-cli": "myk_pi_tools.ai_cli.commands:ai_cli",
     "coderabbit": "myk_pi_tools.coderabbit.commands:coderabbit",
     "db": "myk_pi_tools.db.commands:db",
     "memory": "myk_pi_tools.memory.commands:memory",

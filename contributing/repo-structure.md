@@ -158,7 +158,6 @@ pi-config/
 │   └── coms-feature-manager-prompt.md  # Coms feature manager template
 ├── prompts/                         # Prompt templates (slash commands)
 │   ├── create-coms-feature-manager.md
-│   ├── external-ai.md
 │   ├── coderabbit-rate-limit.md
 │   ├── domain-model.md
 │   ├── implement-and-review.md
@@ -189,7 +188,6 @@ pi-config/
 ├── contributing/                   # Contributor docs (repo structure, testing/packaging, enforcement honesty map, disposition audits)
 ├── myk_pi_tools/                    # Python CLI tooling package
 │   ├── __init__.py
-│   ├── ai_cli/
 │   ├── cli.py
 │   ├── coderabbit/
 │   ├── db/

@@ -259,7 +259,6 @@ These are also shipped as prompt templates in `prompts/`, and are registered by 
 | `/review-handler [--autorabbit] [--autoqodo]` | Processes every outstanding review source (human, Qodo, CodeRabbit) for the current PR. |
 | `/review-handler-status` | Shows live status of the `/review-handler` agents. |
 | `/coderabbit-rate-limit [PR number]` | Waits out a CodeRabbit rate limit and re-triggers the review. |
-| `/external-ai <agent> [--model <model>] [--fix\|--peer\|--resume] <prompt>` | Runs a prompt against a raw AI CLI (cursor, claude, gemini) with full model access. |
 | `/create-coms-feature-manager` | Generates a coms feature-manager prompt customized for the current project. |
 
 ## Shared Command Behavior

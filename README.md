@@ -54,7 +54,7 @@ Single extension that provides:
 | **Inter-agent communication** | P2P (`/coms`) agent communication — on-demand activation via slash command |
 | **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/async-status`, `/status`, `/dream`, `/remember`, `/coms`, `/pi-config-settings` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
-| **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
+| **Command arg completions** | Tab-complete arguments for slash commands — branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
 
 ### Agents (26)
@@ -94,8 +94,6 @@ for `git-expert` to commit.
 | `/create-coms-feature-manager` | Generate a coms feature-manager prompt customized for the current project (source template: `templates/coms-feature-manager-prompt.md`) |
 | `/create-commit <message>` | Commit and push the current change set via git-expert (source template: `templates/commit-prompt.md` — stage exact files, commit, push, report sha) |
 | `/query-db <command>` | Query the review comments database |
-| `/external-ai <agent> [--model <model>] [--session-id <id>] [--fix\|--peer\|--resume] <prompt>` | Run prompts via AI CLIs directly (cursor, claude, gemini) — full model access |
-| `/external-ai-models-refresh` | Refresh cached AI CLI models for autocomplete |
 | `/dream` | Run memory consolidation — extract, deduplicate, maintain topic-based memory |
 | `/remember <what>` | Save a memory for future sessions |
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
@@ -825,8 +823,6 @@ PI_PIDIFF_ENABLE=false pi
 | --- | --- |
 | `-v "$HOME/.agents":"$HOME/.agents":rw` | User-level skills (install/uninstall from container) |
 | `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC (for Claude via Vertex AI) |
-| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth (for `/external-ai`) |
-| `-v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro` | Claude CLI auth (for `/external-ai`) |
 | `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro` | GitLab CLI config (auth tokens, host settings) |
 | `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw` | CodeRabbit CLI auth and review data |
 | `-v "$HOME/.qodo":"$HOME/.qodo":rw` | Qodo CLI auth directory (mount at the container user's `$HOME/.qodo`; with `PI_HOST_USER`, that is `/home/$PI_HOST_USER/.qodo`). Create it on the host first with `mkdir -p "$HOME/.qodo"`; inside the container run `qodo read whoami` and, if signed out, `qodo login`. Host OS-keychain credentials may not work inside the container. |
@@ -883,7 +879,6 @@ PI_PIDIFF_ENABLE=false pi
 | `myk-pi-tools reviews address` | Apply replies/statuses to a fetched reviews JSON, then post and store it (see below) |
 | `myk-pi-tools reviews store-session` | Store Qodo pr-review-session findings JSON into the reviews DB (idempotent; run at loop convergence) |
 | `myk-pi-tools memory` | Project memory commands — persistent per-repo learning |
-| `myk-pi-tools ai-cli` | AI CLI commands (cursor, claude, gemini) |
 | `myk-pi-tools coderabbit` | CodeRabbit commands (check, trigger, retry) |
 | `myk-pi-tools settings get [key ...]` | Resolve settings (project → global → env → default). No args = all keys |
 
@@ -1014,8 +1009,6 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
   -v "$HOME/.agents":"$HOME/.agents":rw \
   -v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro \
-  -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro \
-  -v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro \
   -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
   -v "$HOME/screenshots":"$HOME/screenshots":ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \

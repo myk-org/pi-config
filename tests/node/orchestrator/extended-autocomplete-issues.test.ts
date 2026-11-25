@@ -304,4 +304,29 @@ describe("/review-status async worktree autocomplete (#1270)", () => {
     });
     assert.equal(wrapped, false);
   });
+
+  it("does not register legacy model refresh command or prefetch CLI models on session_start (#1385)", async () => {
+    const registered: string[] = [];
+    const execCalls: Array<{ cmd: string; args: string[] }> = [];
+    let sessionStartHandler: ((ev: any, ctx: any) => void) | undefined;
+    const mockPi: any = {
+      registerCommand(name: string) { registered.push(name); },
+      on(event: string, handler: any) {
+        if (event === "session_start") sessionStartHandler = handler;
+      },
+      async exec(cmd: string, args: string[]) {
+        execCalls.push({ cmd, args });
+        return { code: 0, stdout: "" };
+      },
+    };
+    withSubagentChildEnv(undefined, () => {
+      registerExtendedAutocomplete(mockPi);
+      return undefined;
+    });
+    assert.equal(registered.length, 0);
+    assert.ok(sessionStartHandler);
+    sessionStartHandler!({}, { cwd: "/repo", mode: "print", ui: { addAutocompleteProvider: () => {} } });
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(execCalls.length, 0);
+  });
 });

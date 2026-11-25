@@ -35,7 +35,6 @@
       "name": "Agents & Integrations",
       "pages": [
         "inter-agent-communication",
-        "external-ai-agents",
         "image-generation",
         "neovim-integration",
         "discord-bot"
