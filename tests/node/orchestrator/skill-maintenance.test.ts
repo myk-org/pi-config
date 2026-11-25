@@ -1016,3 +1016,56 @@ describe("snapshotSkillTree, diffSkillTree, formatSkillReviewNotice & appendProv
     assert.ok(fs.existsSync(provenancePath(cwd)));
   });
 });
+
+describe("openAdoptSkillOverlay Kitty key support (#1391)", () => {
+  it("adopts selected skills on Kitty CSI-u 'a' in openAdoptSkillOverlay", async () => {
+    const adopted: string[] = [];
+    const notifications: Array<{ msg: string; level?: string }> = [];
+    const frames: string[] = [];
+    const rows = [
+      { id: "alpha", name: "alpha", scope: "project" as const, filePath: "/repo/.pi/skills/alpha/SKILL.md", maintained: false },
+      { id: "beta", name: "beta", scope: "project" as const, filePath: "/repo/.pi/skills/beta/SKILL.md", maintained: false },
+    ];
+    let opens = 0;
+    const ctx = {
+      hasUI: true,
+      cwd: "/repo",
+      ui: {
+        notify: (msg: string, level?: string) => notifications.push({ msg, level }),
+        custom: async (factory: any) => {
+          const idx = opens++;
+          const keys = idx === 0
+            ? ["\x1b[32;129u", "\x1b[106;129u", "\x1b[32;129u", "\x1b[97;129u"] // Space, j, Space, Kitty a + NumLock
+            : ["\x1b"];
+          let resolveDone!: (v: any) => void;
+          const closed = new Promise((r) => { resolveDone = r; });
+          const tui = { terminal: { rows: 24 }, requestRender: () => {} };
+          const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+          const kb = { matches: () => false };
+          const comp = await factory(tui, theme, kb, resolveDone);
+          try {
+            frames.push((comp.render?.(100) ?? []).join("\n"));
+            for (const k of keys) comp.handleInput?.(k);
+            return await closed;
+          } finally {
+            comp.dispose?.();
+          }
+        },
+      },
+    } as any;
+
+    await openAdoptSkillOverlay(ctx, {
+      listSkills: () => rows,
+      adoptSkill: (name) => {
+        adopted.push(name);
+        const target = rows.find((r) => r.name === name);
+        if (target) target.maintained = true;
+        return { ok: true, message: `Adopted ${name}` };
+      },
+    });
+
+    assert.deepEqual(adopted, ["alpha", "beta"]);
+    assert.deepEqual(notifications, [{ msg: "adopted 2 skills", level: "info" }]);
+    assert.match(frames[1] ?? "", /ℹ adopted 2 skills/, "reopened overlay renders inline adoption notice");
+  });
+});
