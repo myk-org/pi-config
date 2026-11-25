@@ -18,6 +18,7 @@ import {
   createSqliteStateStore,
   getWorktreeStateDbPath,
   SKIP_MUTATE,
+  withTransaction,
   type SqliteStateStore,
 } from "./state-db.js";
 import { getHeadSha } from "./git-helpers.js";
@@ -198,9 +199,13 @@ function normalizeRawState(raw: any): ReviewState {
 
 /** Worktree DB paths known to have active review tracking in this process.
  *  Paired with a durable marker under `<worktree-root>/.pi/run/review-tracked`
- *  so wiping `state.db` (even across process restarts) cannot silently reset
- *  review tracking to `status: "none"`. Cleared only by `resetReviewState`. */
+ *  (written/removed inside SQLite's `BEGIN IMMEDIATE` write lock so concurrent
+ *  resets and transitions cannot race) so wiping `state.db` — even across process
+ *  restarts — cannot silently reset review tracking to `status: "none"`. */
 const trackedReviewWorktrees = new Set<string>();
+/** Worktrees where writing the durable wipe-detection marker failed; fail closed
+ *  even if a caller catches the transition error. */
+const markerWriteFailedWorktrees = new Set<string>();
 
 function reviewTrackedMarkerPath(cwd: string): string {
   return join(resolveWorktreeRoot(cwd), ".pi", "run", "review-tracked");
@@ -214,27 +219,23 @@ function hasDurableReviewMarker(cwd: string): boolean {
   }
 }
 
-function setDurableReviewMarker(cwd: string, active: boolean): void {
+/** Write durable marker strictly — throws on failure so active review state is
+ *  never committed without wipe evidence. Must be called inside SQLite's write lock. */
+function writeDurableReviewMarkerStrict(cwd: string): void {
   const worktreeRoot = resolveWorktreeRoot(cwd);
-  const markerPath = join(worktreeRoot, ".pi", "run", "review-tracked");
-  if (active) {
-    try {
-      const runDir = getProjectRunDir(worktreeRoot);
-      writeFileSync(join(runDir, "review-tracked"), "1\n", { encoding: "utf-8", mode: 0o600 });
-    } catch (err) {
-      log.warn("review_tracked_marker_write_failed", { markerPath }, err);
-    }
-  } else {
-    try {
-      if (existsSync(markerPath)) unlinkSync(markerPath);
-    } catch (err) {
-      log.warn("review_tracked_marker_remove_failed", { markerPath }, err);
-    }
-  }
+  const runDir = getProjectRunDir(worktreeRoot);
+  writeFileSync(join(runDir, "review-tracked"), "1\n", { encoding: "utf-8", mode: 0o600 });
+}
+
+/** Remove durable marker while holding SQLite's write lock (called only on explicit reset). */
+function removeDurableReviewMarker(cwd: string): void {
+  const markerPath = reviewTrackedMarkerPath(cwd);
+  if (existsSync(markerPath)) unlinkSync(markerPath);
 }
 
 /** Strict read that distinguishes a missing row from corrupt JSON or DB errors.
- *  Throws on malformed payload or SQLite errors so commit gates fail closed. */
+ *  Throws on malformed payload, SQLite errors, or missing/unwritable durable marker
+ *  for an active review state so commit gates fail closed. */
 function readReviewStateStrict(cwd: string): { state: ReviewState; rowPresent: boolean } {
   const raw = getStore(cwd).readStrict();
   if (raw === null) return { state: defaultState(), rowPresent: false };
@@ -242,9 +243,19 @@ function readReviewStateStrict(cwd: string): { state: ReviewState; rowPresent: b
     throw new Error("Corrupt review state payload: expected JSON object");
   }
   const state = normalizeRawState(raw);
+  const dbKey = resolve(statePath(cwd));
   if (state.status !== "none") {
-    trackedReviewWorktrees.add(resolve(statePath(cwd)));
-    if (!hasDurableReviewMarker(cwd)) setDurableReviewMarker(cwd, true);
+    trackedReviewWorktrees.add(dbKey);
+    if (!hasDurableReviewMarker(cwd)) {
+      // Backfill marker for pre-marker active rows inside the SQLite write lock so
+      // a concurrent reset cannot race it, and throw if the marker cannot be persisted.
+      withTransaction(statePath(cwd), () => {
+        const latest = getStore(cwd).readStrict();
+        if (latest && normalizeRawState(latest).status !== "none") {
+          writeDurableReviewMarkerStrict(cwd);
+        }
+      });
+    }
   }
   return { state, rowPresent: true };
 }
@@ -260,6 +271,9 @@ export function readReviewState(cwd: string): ReviewState {
 }
 
 /** Execute an atomic read-modify-write inside SQLite `BEGIN IMMEDIATE`.
+ *  Durable marker writes/removals execute INSIDE the same SQLite write lock so:
+ *  - marker write failures roll back and fail closed (never commit unguarded active state),
+ *  - concurrent resets and renewed tracking cannot interleave marker deletion after activation.
  *  Transition notifications fire after `COMMIT` succeeds. */
 function mutateReviewState<T>(
   cwd: string,
@@ -267,23 +281,40 @@ function mutateReviewState<T>(
 ): T {
   let outcome!: { result: T; persist: boolean; notify: boolean };
   let committedState: ReviewState | null = null;
+  const dbKey = resolve(statePath(cwd));
 
   getStore(cwd).mutate((raw) => {
     const state = normalizeRawState(raw);
     outcome = fn(state);
     if (!outcome.persist) return SKIP_MUTATE;
+
+    if (state.status !== "none") {
+      try {
+        writeDurableReviewMarkerStrict(cwd);
+        markerWriteFailedWorktrees.delete(dbKey);
+      } catch (err) {
+        markerWriteFailedWorktrees.add(dbKey);
+        log.error("review_tracked_marker_write_failed", { cwd }, err);
+        throw err;
+      }
+    } else {
+      try {
+        removeDurableReviewMarker(cwd);
+        markerWriteFailedWorktrees.delete(dbKey);
+      } catch (err) {
+        log.warn("review_tracked_marker_remove_failed", { cwd }, err);
+      }
+    }
+
     committedState = state;
     return state;
   }, defaultState());
 
   if (committedState !== null) {
-    const dbKey = resolve(statePath(cwd));
     if ((committedState as ReviewState).status !== "none") {
       trackedReviewWorktrees.add(dbKey);
-      setDurableReviewMarker(cwd, true);
     } else {
       trackedReviewWorktrees.delete(dbKey);
-      setDurableReviewMarker(cwd, false);
     }
   }
   if (outcome.notify && committedState !== null) {
@@ -415,7 +446,12 @@ export function isReviewClean(cwd: string): boolean {
     log.error("review_clean_check_read_failed", { cwd }, err);
     return false;
   }
-  if (!rowPresent && (trackedReviewWorktrees.has(resolve(statePath(cwd))) || hasDurableReviewMarker(cwd))) {
+  const dbKey = resolve(statePath(cwd));
+  if (markerWriteFailedWorktrees.has(dbKey)) {
+    log.error("review_clean_check_marker_unavailable", { cwd });
+    return false;
+  }
+  if (!rowPresent && (trackedReviewWorktrees.has(dbKey) || hasDurableReviewMarker(cwd))) {
     log.error("review_clean_check_state_wiped", { cwd });
     return false;
   }
@@ -450,7 +486,12 @@ export function isCommitAllowed(cwd: string): boolean {
     log.error("commit_gate_review_state_read_failed", { cwd }, err);
     return false;
   }
-  if (!rowPresent && (trackedReviewWorktrees.has(resolve(statePath(cwd))) || hasDurableReviewMarker(cwd))) {
+  const dbKey = resolve(statePath(cwd));
+  if (markerWriteFailedWorktrees.has(dbKey)) {
+    log.error("commit_gate_marker_unavailable", { cwd });
+    return false;
+  }
+  if (!rowPresent && (trackedReviewWorktrees.has(dbKey) || hasDurableReviewMarker(cwd))) {
     log.error("commit_gate_review_state_wiped", { cwd });
     return false;
   }

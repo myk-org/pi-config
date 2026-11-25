@@ -359,6 +359,59 @@ describe("state-db: SqliteStateStore mutate, SKIP_MUTATE, and revision semantics
     utimesSync(legacyJsonl, t2, t2);
     assert.deepEqual(store.read(), { step: 3 });
   });
+
+  it("keeps reconciling valid JSON updates when a newly appearing JSONL successor is malformed", () => {
+    const dir = trackTempDir("state-db-corrupt-successor-");
+    const dbPath = join(dir, ".pi", "data", "state.db");
+    const legacyJsonl = join(dir, "legacy.jsonl");
+    const legacyJson = join(dir, "legacy.json");
+
+    writeFileSync(legacyJson, JSON.stringify({ step: 1 }), "utf-8");
+    const t0 = new Date(Date.now() - 5000);
+    utimesSync(legacyJson, t0, t0);
+
+    const store = createSqliteStateStore<{ step: number }>(dbPath, "corrupt-succ", {
+      legacyFiles: [legacyJsonl, legacyJson],
+    });
+    assert.deepEqual(store.read(), { step: 1 });
+
+    // Malformed .jsonl appears while .json advances to step 2
+    writeFileSync(legacyJsonl, "{truncated-corrupt\n", "utf-8");
+    writeFileSync(legacyJson, JSON.stringify({ step: 2 }), "utf-8");
+    const t1 = new Date(Date.now() + 5000);
+    utimesSync(legacyJson, t1, t1);
+    assert.deepEqual(store.read(), { step: 2 }, "malformed successor must not hide valid .json updates");
+
+    // Once .jsonl becomes valid with step 3, it reconciles cleanly
+    writeFileSync(legacyJsonl, JSON.stringify({ step: 3 }) + "\n", "utf-8");
+    const t2 = new Date(Date.now() + 8000);
+    utimesSync(legacyJsonl, t2, t2);
+    assert.deepEqual(store.read(), { step: 3 });
+  });
+
+  it("reconciles a valid JSONL successor whose mtime equals the SQLite row timestamp", () => {
+    const dir = trackTempDir("state-db-equal-mtime-");
+    const dbPath = join(dir, ".pi", "data", "state.db");
+    const legacyJsonl = join(dir, "legacy.jsonl");
+    const legacyJson = join(dir, "legacy.json");
+
+    writeFileSync(legacyJson, JSON.stringify({ step: 1 }), "utf-8");
+    const store = createSqliteStateStore<{ step: number }>(dbPath, "equal-ts", {
+      legacyFiles: [legacyJsonl, legacyJson],
+    });
+    assert.deepEqual(store.read(), { step: 1 });
+
+    // Read the exact SQLite row timestamp and set the new .jsonl successor to that exact mtime
+    const db = openStateDb(dbPath);
+    const row = db
+      .prepare("SELECT updated_at FROM kv_state WHERE store_key = 'equal-ts'")
+      .get() as { updated_at: string };
+    const exactMs = Date.parse(row.updated_at);
+
+    writeFileSync(legacyJsonl, JSON.stringify({ step: 2 }) + "\n", "utf-8");
+    utimesSync(legacyJsonl, exactMs / 1000, exactMs / 1000);
+    assert.deepEqual(store.read(), { step: 2 }, "equal-timestamp valid successor must be imported");
+  });
 });
 
 // ── Float32Array BLOB Encoding & Embeddings Migration ──────────────────────
@@ -845,6 +898,118 @@ describe("state-db: review-state resilience and bash commit-gate enforcement", (
     });
     assert.equal(decision.action, "block");
     assert.match(decision.reason ?? "", /review state storage/i);
+  });
+
+  it("unconditionally blocks eval deletion of both state.db and review-tracked marker before approval", async () => {
+    const cwd = trackTempDir("state-db-bash-eval-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true }),
+      "utf-8",
+    );
+    clearSettingsCache();
+
+    const approvingUi = {
+      async select() {
+        return "Yes, run it";
+      },
+      notify() {},
+    };
+    const decision = await evaluateBashPolicy({
+      command: "eval 'rm .pi/data/state.db .pi/run/review-tracked'",
+      cwd,
+      hasTimeout: false,
+      inContainer: false,
+      isSubagentChild: false,
+      ui: approvingUi,
+    });
+    assert.equal(decision.action, "block");
+    assert.match(decision.reason ?? "", /review state storage/i);
+  });
+
+  it("blocks deletion of state.db and review-tracked marker via shell variable indirection", async () => {
+    const cwd = trackTempDir("state-db-bash-vars-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true }),
+      "utf-8",
+    );
+    clearSettingsCache();
+
+    const cmd = 'db=.pi/data/state.db; marker=.pi/run/review-tracked; rm "$db" "$marker"';
+    const decision = await evaluateBashPolicy({
+      command: cmd,
+      cwd,
+      hasTimeout: false,
+      inContainer: false,
+      isSubagentChild: false,
+      ui: null,
+    });
+    assert.equal(decision.action, "block");
+    assert.match(decision.reason ?? "", /review state storage/i);
+  });
+
+  it("fails closed when .pi/data is writable but .pi/run marker cannot be created", () => {
+    if (process.getuid?.() === 0) return; // root ignores chmod 0o500
+    const cwd = trackTempDir("state-db-marker-unwritable-");
+    const runDir = join(cwd, ".pi", "run");
+    mkdirSync(runDir, { recursive: true });
+    chmodSync(runDir, 0o500);
+
+    try {
+      assert.throws(() => markNeedsReview(cwd));
+      assert.equal(isCommitAllowed(cwd), false, "commit gate must fail closed when marker write failed");
+      assert.equal(isReviewClean(cwd), false, "review clean check must fail closed when marker write failed");
+    } finally {
+      try {
+        chmodSync(runDir, 0o700);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it("keeps durable review-tracked marker consistent with final persisted state under overlapping reset and markNeedsReview processes", async () => {
+    const cwd = trackTempDir("state-db-marker-race-");
+    markNeedsReview(cwd);
+    const modulePath = join(import.meta.dirname, "../../../extensions/orchestrator/pi-config-review-state.ts");
+
+    const runChild = (fnName: "resetReviewState" | "markNeedsReview") =>
+      new Promise<void>((res, rej) => {
+        const child = spawn(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            "--input-type=module",
+            "-e",
+            `import { ${fnName} } from ${JSON.stringify(modulePath)}; for (let i = 0; i < 8; i++) ${fnName}(process.argv[1]);`,
+            cwd,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        );
+        let stderr = "";
+        child.stderr.on("data", (chunk) => {
+          stderr += String(chunk);
+        });
+        child.on("exit", (code) => {
+          if (code === 0) res();
+          else rej(new Error(`${fnName} child exited ${code}: ${stderr}`));
+        });
+        child.on("error", rej);
+      });
+
+    await Promise.all([runChild("resetReviewState"), runChild("markNeedsReview")]);
+
+    const finalState = readReviewState(cwd);
+    const markerExists = existsSync(join(cwd, ".pi", "run", "review-tracked"));
+    assert.equal(
+      markerExists,
+      finalState.status !== "none",
+      `marker presence (${markerExists}) must match final persisted status (${finalState.status})`,
+    );
   });
 
   it("allows ordinary file removals with trailing whitespace when not targeting protected review paths", async () => {

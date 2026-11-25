@@ -11,7 +11,7 @@
  * Issue #1399. Zero external dependencies.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, type Stats } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createLogger } from "../shared/logger.js";
@@ -376,128 +376,163 @@ export class SqliteStateStore<T> {
     }
     if (!this.legacySourcePath) return;
 
-    // Resolve the active legacy file to watch: if an older pre-upgrade process
-    // converted a `.json` fallback into `.jsonl` (deleting `.json` or creating
-    // a higher-priority candidate), switch tracking to that successor file.
-    let activePath = this.legacySourcePath;
-    let st: ReturnType<typeof statSync> | null = null;
+    // Build ordered list of candidate legacy files to inspect:
+    // - Higher-priority successors (e.g. `.jsonl` created after `.json` import)
+    // - Current tracked source (if still present)
+    // - Remaining fallback candidates if the current tracked source disappeared
+    const currentPath = this.legacySourcePath;
+    const currentIdx = this.legacyFiles.indexOf(currentPath);
+    let currentStat: Stats | null = null;
     try {
-      st = statSync(activePath);
+      currentStat = statSync(currentPath);
     } catch {
-      st = null;
+      currentStat = null;
     }
 
-    const currentIdx = this.legacyFiles.indexOf(activePath);
+    const candidates: Array<{ path: string; stat: Stats; isSuccessor: boolean }> = [];
     for (let i = 0; i < this.legacyFiles.length; i++) {
-      const candidate = this.legacyFiles[i]!;
-      if (candidate === activePath) continue;
-      // Prefer a higher-priority legacy file (e.g. `.jsonl` appearing after `.json` import)
-      // or any existing successor if the originally imported source was deleted.
-      if (st !== null && (currentIdx === -1 || i >= currentIdx)) continue;
+      const candPath = this.legacyFiles[i]!;
+      if (candPath === currentPath) continue;
+      const isHigherPriority = currentIdx !== -1 && i < currentIdx;
+      if (!isHigherPriority && currentStat !== null) continue;
       try {
-        const candStat = statSync(candidate);
-        activePath = candidate;
-        st = candStat;
-        break;
+        candidates.push({ path: candPath, stat: statSync(candPath), isSuccessor: true });
       } catch {
         continue;
       }
     }
-
-    if (st === null) return;
-
-    const pathChanged = activePath !== this.legacySourcePath;
     if (
-      !pathChanged &&
-      st.mtimeMs === this.legacySourceMtimeMs &&
-      st.size === this.legacySourceSize
+      currentStat !== null &&
+      (currentStat.mtimeMs !== this.legacySourceMtimeMs || currentStat.size !== this.legacySourceSize)
     ) {
-      return;
+      candidates.push({ path: currentPath, stat: currentStat, isSuccessor: false });
     }
 
-    const sourcePath = activePath;
-    const sourceStat = st;
-    let reconciled = false;
-    let superseded = false;
-    withTransaction(this.dbPath, (txDb) => {
-      const migRow = txDb
-        .prepare(
-          "SELECT source_path, source_mtime_ms, source_size FROM migrated_stores WHERE store_key = ?",
-        )
-        .get(this.storeKey) as
-        | { source_path?: string; source_mtime_ms?: number; source_size?: number }
-        | undefined;
-      if (
-        migRow &&
-        migRow.source_path === sourcePath &&
-        Number(migRow.source_mtime_ms ?? 0) === sourceStat.mtimeMs &&
-        Number(migRow.source_size ?? 0) === sourceStat.size
-      ) {
+    if (candidates.length === 0) return;
+
+    for (const cand of candidates) {
+      // Validate candidate content BEFORE switching tracked source or updating DB metadata.
+      let parsed: T | null = null;
+      try {
+        const raw = readFileSync(cand.path, "utf-8");
+        if (raw.trim()) parsed = parseLastValidLine<T>(raw);
+      } catch (err) {
+        log.warn("state_db_legacy_reconcile_read_failed", {
+          storeKey: this.storeKey,
+          sourcePath: cand.path,
+        }, err);
+        continue;
+      }
+      if (parsed === null) {
+        log.warn("state_db_legacy_reconcile_parse_failed", {
+          storeKey: this.storeKey,
+          sourcePath: cand.path,
+        });
+        continue;
+      }
+
+      const sourcePath = cand.path;
+      const sourceStat = cand.stat;
+      const parsedSnapshot = parsed;
+      let reconciled = false;
+      let superseded = false;
+      let promotedSource = false;
+
+      withTransaction(this.dbPath, (txDb) => {
+        const migRow = txDb
+          .prepare(
+            "SELECT source_path, source_mtime_ms, source_size FROM migrated_stores WHERE store_key = ?",
+          )
+          .get(this.storeKey) as
+          | { source_path?: string; source_mtime_ms?: number; source_size?: number }
+          | undefined;
+        if (
+          migRow &&
+          migRow.source_path === sourcePath &&
+          Number(migRow.source_mtime_ms ?? 0) === sourceStat.mtimeMs &&
+          Number(migRow.source_size ?? 0) === sourceStat.size
+        ) {
+          return;
+        }
+
+        const kvRow = txDb
+          .prepare("SELECT payload, revision, updated_at FROM kv_state WHERE store_key = ?")
+          .get(this.storeKey) as
+          | { payload?: string; revision?: number; updated_at?: string }
+          | undefined;
+        const sqliteUpdatedMs = kvRow?.updated_at ? Date.parse(kvRow.updated_at) : 0;
+        const sqliteRev = typeof kvRow?.revision === "number" ? kvRow.revision : 0;
+
+        // Import if:
+        // - no SQLite row exists, OR
+        // - legacy mtime is strictly newer than SQLite updated_at, OR
+        // - legacy mtime equals SQLite updated_at (coarse FS clock / same-ms cutover)
+        //   AND either no SQLite write has occurred since initial import (rev <= 1) or
+        //   this is a newly created successor file with distinct valid content.
+        const serializedNext = JSON.stringify(parsedSnapshot);
+        const equalTimestampImport =
+          !Number.isNaN(sqliteUpdatedMs) &&
+          sourceStat.mtimeMs === sqliteUpdatedMs &&
+          (sqliteRev <= 1 || (cand.isSuccessor && kvRow?.payload !== serializedNext));
+
+        if (!kvRow || Number.isNaN(sqliteUpdatedMs) || sourceStat.mtimeMs > sqliteUpdatedMs || equalTimestampImport) {
+          const nextUpdatedAt = new Date(Math.max(Date.now(), Math.ceil(sourceStat.mtimeMs))).toISOString();
+          txDb
+            .prepare(
+              `INSERT INTO kv_state (store_key, payload, revision, updated_at)
+               VALUES (?, ?, 1, ?)
+               ON CONFLICT(store_key) DO UPDATE SET
+                 payload = excluded.payload,
+                 revision = kv_state.revision + 1,
+                 updated_at = excluded.updated_at`,
+            )
+            .run(this.storeKey, serializedNext, nextUpdatedAt);
+          txDb
+            .prepare(
+              "UPDATE migrated_stores SET source_path = ?, source_mtime_ms = ?, source_size = ? WHERE store_key = ?",
+            )
+            .run(sourcePath, sourceStat.mtimeMs, sourceStat.size, this.storeKey);
+          reconciled = true;
+          promotedSource = true;
+        } else if (!cand.isSuccessor) {
+          // Strictly older write on the currently tracked source — mark superseded without overwriting SQLite.
+          txDb
+            .prepare(
+              "UPDATE migrated_stores SET source_mtime_ms = ?, source_size = ? WHERE store_key = ?",
+            )
+            .run(sourceStat.mtimeMs, sourceStat.size, this.storeKey);
+          superseded = true;
+          promotedSource = true;
+        } else {
+          // Do not promote an unimported successor with an older timestamp as handled unless
+          // the original tracked source is gone.
+          superseded = true;
+        }
+      });
+
+      if (promotedSource) {
+        this.legacySourcePath = sourcePath;
+        this.legacySourceMtimeMs = sourceStat.mtimeMs;
+        this.legacySourceSize = sourceStat.size;
+      }
+      if (reconciled) {
+        this.cachedValue = null;
+        this.cachedRevision = -1;
+        this.cachedUpdatedAt = "";
+        log.info("state_db_reconciled_legacy_update", {
+          storeKey: this.storeKey,
+          sourcePath,
+          dbPath: this.dbPath,
+        });
         return;
       }
-
-      const kvRow = txDb
-        .prepare("SELECT updated_at FROM kv_state WHERE store_key = ?")
-        .get(this.storeKey) as { updated_at?: string } | undefined;
-      const sqliteUpdatedMs = kvRow?.updated_at ? Date.parse(kvRow.updated_at) : 0;
-
-      if (!kvRow || Number.isNaN(sqliteUpdatedMs) || sourceStat.mtimeMs > sqliteUpdatedMs) {
-        let raw: string;
-        try {
-          raw = readFileSync(sourcePath, "utf-8");
-        } catch (err) {
-          log.warn("state_db_legacy_reconcile_read_failed", { storeKey: this.storeKey, sourcePath }, err);
-          return;
-        }
-        const parsed = parseLastValidLine<T>(raw);
-        if (parsed === null) {
-          log.warn("state_db_legacy_reconcile_parse_failed", { storeKey: this.storeKey, sourcePath });
-          return;
-        }
-        const nextUpdatedAt = new Date(Math.max(Date.now(), Math.ceil(sourceStat.mtimeMs))).toISOString();
-        txDb
-          .prepare(
-            `INSERT INTO kv_state (store_key, payload, revision, updated_at)
-             VALUES (?, ?, 1, ?)
-             ON CONFLICT(store_key) DO UPDATE SET
-               payload = excluded.payload,
-               revision = kv_state.revision + 1,
-               updated_at = excluded.updated_at`,
-          )
-          .run(this.storeKey, JSON.stringify(parsed), nextUpdatedAt);
-        txDb
-          .prepare(
-            "UPDATE migrated_stores SET source_path = ?, source_mtime_ms = ?, source_size = ? WHERE store_key = ?",
-          )
-          .run(sourcePath, sourceStat.mtimeMs, sourceStat.size, this.storeKey);
-        reconciled = true;
-      } else {
-        txDb
-          .prepare(
-            "UPDATE migrated_stores SET source_path = ?, source_mtime_ms = ?, source_size = ? WHERE store_key = ?",
-          )
-          .run(sourcePath, sourceStat.mtimeMs, sourceStat.size, this.storeKey);
-        superseded = true;
+      if (superseded && !cand.isSuccessor) {
+        log.debug("state_db_legacy_update_superseded", {
+          storeKey: this.storeKey,
+          sourcePath,
+        });
+        return;
       }
-    });
-
-    this.legacySourcePath = sourcePath;
-    this.legacySourceMtimeMs = sourceStat.mtimeMs;
-    this.legacySourceSize = sourceStat.size;
-    if (reconciled) {
-      this.cachedValue = null;
-      this.cachedRevision = -1;
-      this.cachedUpdatedAt = "";
-      log.info("state_db_reconciled_legacy_update", {
-        storeKey: this.storeKey,
-        sourcePath,
-        dbPath: this.dbPath,
-      });
-    } else if (superseded) {
-      log.debug("state_db_legacy_update_superseded", {
-        storeKey: this.storeKey,
-        sourcePath,
-      });
     }
   }
 

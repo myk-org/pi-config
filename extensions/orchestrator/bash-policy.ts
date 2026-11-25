@@ -6194,9 +6194,9 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
 
   // Block bash commands tampering with review state storage (legacy pi-config-review-state
   // files, SQLite .pi/data/state.db / WAL / SHM / kv_state, or .pi/run/review-tracked —
-  // including globs, brace expansions, nested `-c` shell scripts, and adjacent redirects
-  // like `>.pi/data/state.db`) while allowing inert mentions and ordinary file commands
-  // (e.g. `grep kv_state src/`, `ls state.db`, `rm harmless `, or commit messages).
+  // including globs, brace expansions, shell variable indirection, nested `-c`/`eval`
+  // scripts, and adjacent redirects like `>.pi/data/state.db`) while allowing inert mentions
+  // and ordinary file commands (e.g. `grep kv_state src/`, `ls state.db`, `rm harmless `).
   if (getSetting(input.cwd, "review_loop_enforcement")) {
     const stateDbPathRe =
       /(?:^|[\s"'`=:(/<>|;&])\.pi\/data\/state\.d(?:b(?:-wal|-shm)?|[?*[{][^\s"'`;|&)]*)(?=$|[\s"'`;|&){*?[\]\\])/i;
@@ -6207,23 +6207,56 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     const adjacentRedirectRe = /(?:>>?|>\|)\s*["']?[^\s"'`;|&)]*\.pi\/(?:data\/state\.d|run\/review-tracked)/i;
     const sqliteInvokeRe = /\b(?:node:sqlite|databasesync|sqlite3|better-sqlite3)\b/i;
     const fileMutateCmds = new Set(["rm", "unlink", "mv", "cp", "truncate", "dd", "shred", "install", "ln"]);
-    const maskedCmd = maskQuotedRegions(command);
 
     const targetsProtectedPath = (text: string): boolean =>
       stateDbPathRe.test(text) || piDirTargetRe.test(text) || piProtectedFileRe.test(text);
 
-    const extractNestedShellScripts = (tokens: string[]): string[] => {
+    const stripOuterQuotes = (s: string): string =>
+      (s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\""))
+        ? s.slice(1, -1)
+        : s;
+
+    const expandVars = (text: string, vars: Map<string, string>): string => {
+      if (vars.size === 0 || !text.includes("$")) return text;
+      return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)\b/g, (m, a, b) => {
+        const name = (a ?? b) as string;
+        return vars.has(name) ? vars.get(name)! : m;
+      });
+    };
+
+    const recordAssignments = (tokens: string[], vars: Map<string, string>): boolean => {
+      let sawProtected = false;
+      for (const tok of tokens) {
+        if (tok === "export" || tok === "local" || tok === "readonly" || tok === "declare" || tok === "typeset") {
+          continue;
+        }
+        const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(tok);
+        if (!m) break;
+        const val = expandVars(stripOuterQuotes(m[2]!), vars);
+        vars.set(m[1]!, val);
+        if (targetsProtectedPath(val) || /\.pi(?:\/(?:data|run))?\b/i.test(val)) {
+          sawProtected = true;
+        }
+      }
+      return sawProtected;
+    };
+
+    const extractNestedShellScripts = (tokens: string[], cmdIdx: number, cmdWord: string): string[] => {
       const scripts: string[] = [];
-      for (let i = 0; i < tokens.length - 1; i++) {
+      if (cmdWord === "eval") {
+        const evalArgs: string[] = [];
+        for (let i = cmdIdx + 1; i < tokens.length; i++) {
+          const tok = tokens[i]!;
+          if (evalArgs.length === 0 && tok === "--") continue;
+          evalArgs.push(stripOuterQuotes(tok));
+        }
+        if (evalArgs.length > 0) scripts.push(evalArgs.join(" "));
+        return scripts;
+      }
+      for (let i = cmdIdx + 1; i < tokens.length - 1; i++) {
         const tok = tokens[i]!;
         if (/^-[a-zA-Z]*c$/.test(tok)) {
-          let arg = tokens[i + 1]!;
-          if (
-            (arg.startsWith("'") && arg.endsWith("'")) ||
-            (arg.startsWith("\"") && arg.endsWith("\""))
-          ) {
-            arg = arg.slice(1, -1);
-          }
+          const arg = stripOuterQuotes(tokens[i + 1]!);
           if (arg) scripts.push(arg);
         }
       }
@@ -6236,54 +6269,58 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         stateDbPathRe.test(text) ||
         (/\.pi\/data\b/i.test(text) && !/\b(?:pr-)?reviews\.db\b/i.test(text)));
 
-    const mutatesProtectedSegment = (segText: string, depth = 0): boolean => {
+    const inspectScriptForTamper = (script: string, parentVars: Map<string, string>, depth = 0): boolean => {
       if (depth > 3) return false;
-      const tokens = tokenize(segText);
-      if (tokens.length === 0) return false;
-      const cmdIdx = skipToCommandWord(tokens);
-      const cmdWord = basename(tokens[cmdIdx] ?? "").toLowerCase();
-      if (fileMutateCmds.has(cmdWord) && targetsProtectedPath(segText)) {
-        return true;
-      }
-      if (hasSqliteTamperInText(segText)) {
-        return true;
-      }
-      if (runsNestedShell(tokens)) {
-        for (const script of extractNestedShellScripts(tokens)) {
-          const maskedScript = maskQuotedRegions(script);
-          if (
-            script.toLowerCase().includes("pi-config-review-state") ||
-            adjacentRedirectRe.test(maskedScript) ||
-            (targetsProtectedPath(script) &&
-              bashWritesToPath(
-                script,
-                maskedScript,
-                "\\.pi/(?:data/state\\.d(?:b(?:-wal|-shm)?|[?*[{][^\\s\"'`;|&)]*)|run/review-tracked)",
-              )) ||
-            unquotedSegments(script).some((innerSeg) => mutatesProtectedSegment(innerSeg.text, depth + 1))
-          ) {
+      if (script.toLowerCase().includes("pi-config-review-state")) return true;
+      const vars = new Map(parentVars);
+      let sawProtectedAssignment = false;
+
+      for (const seg of unquotedSegments(script)) {
+        const rawTokens = tokenize(seg.text);
+        if (rawTokens.length === 0) continue;
+        if (recordAssignments(rawTokens, vars)) {
+          sawProtectedAssignment = true;
+        }
+
+        const expandedSeg = expandVars(seg.text, vars);
+        const maskedSeg = maskQuotedRegions(expandedSeg);
+        if (
+          adjacentRedirectRe.test(maskedSeg) ||
+          (targetsProtectedPath(expandedSeg) &&
+            bashWritesToPath(
+              expandedSeg,
+              maskedSeg,
+              "\\.pi/(?:data/state\\.d(?:b(?:-wal|-shm)?|[?*[{][^\\s\"'`;|&)]*)|run/review-tracked)",
+            )) ||
+          hasSqliteTamperInText(expandedSeg)
+        ) {
+          return true;
+        }
+
+        const expandedTokens = tokenize(expandedSeg);
+        if (expandedTokens.length === 0) continue;
+        const cmdIdx = skipToCommandWord(expandedTokens);
+        const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
+
+        if (fileMutateCmds.has(cmdWord)) {
+          if (targetsProtectedPath(expandedSeg)) return true;
+          // Fail closed if an earlier segment assigned a protected path to a variable and
+          // this mutating command still has an unresolved variable operand (`$foo`/`${foo}`).
+          if (sawProtectedAssignment && /\$(?:\{[A-Za-z_]|[A-Za-z_])/.test(expandedSeg)) {
             return true;
+          }
+        }
+
+        if (cmdWord === "eval" || runsNestedShell(expandedTokens)) {
+          for (const innerScript of extractNestedShellScripts(expandedTokens, cmdIdx, cmdWord)) {
+            if (inspectScriptForTamper(innerScript, vars, depth + 1)) return true;
           }
         }
       }
       return false;
     };
 
-    const hasLegacyName = cmdLower.includes("pi-config-review-state");
-    const hasSqliteTamper = hasSqliteTamperInText(command);
-    const hasRedirectWrite =
-      adjacentRedirectRe.test(maskedCmd) ||
-      (targetsProtectedPath(command) &&
-        bashWritesToPath(
-          command,
-          maskedCmd,
-          "\\.pi/(?:data/state\\.d(?:b(?:-wal|-shm)?|[?*[{][^\\s\"'`;|&)]*)|run/review-tracked)",
-        ));
-    const hasFileMutate =
-      targetsProtectedPath(command) &&
-      unquotedSegments(command).some((seg) => mutatesProtectedSegment(seg.text));
-
-    if (hasLegacyName || hasSqliteTamper || hasRedirectWrite || hasFileMutate) {
+    if (inspectScriptForTamper(command, new Map())) {
       enfLog.warn("review_state_bash_blocked");
       return {
         action: "block",
