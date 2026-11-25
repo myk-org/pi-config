@@ -6193,10 +6193,15 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
   const sessionId = input.sessionId ?? null;
 
   // Block bash commands tampering with review state storage (legacy pi-config-review-state
-  // files or SQLite .pi/data/state.db / WAL / SHM / kv_state) while allowing inert mentions
+  // files or SQLite .pi/data/state.db / WAL / SHM / kv_state — including globs, brace
+  // expansions, and adjacent redirects like `>.pi/data/state.db`) while allowing inert mentions
   // (e.g. `grep kv_state src/`, `ls state.db`, or commit messages mentioning `state.db`).
   if (getSetting(input.cwd, "review_loop_enforcement")) {
-    const stateDbPathRe = /(?:^|[\s"'`=:(/])\.pi\/data\/state\.db(?:-wal|-shm)?(?=$|[\s"'`;|&)])/i;
+    const stateDbPathRe =
+      /(?:^|[\s"'`=:(/<>|;&])\.pi\/data\/state\.d(?:b(?:-wal|-shm)?|[?*[{][^\s"'`;|&)]*)(?=$|[\s"'`;|&){*?[\]\\])/i;
+    const piDataGlobOrDirRe =
+      /(?:^|[\s"'`=:(/<>|;&])\.pi(?:\/data(?:\/(?:[^\s"'`;|&)]*[*?[{][^\s"'`;|&)]*|state\.[^\s"'`;|&)]*))?)?(?=$|[\s"'`;|&)])/i;
+    const adjacentRedirectRe = /(?:>>?|>\|)\s*["']?[^\s"'`;|&)]*\.pi\/data\/state\.d/i;
     const sqliteInvokeRe = /\b(?:node:sqlite|databasesync|sqlite3|better-sqlite3)\b/i;
     const fileMutateCmds = new Set(["rm", "unlink", "mv", "cp", "truncate", "dd", "shred", "install", "ln"]);
     const maskedCmd = maskQuotedRegions(command);
@@ -6208,23 +6213,32 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         stateDbPathRe.test(command) ||
         (/\.pi\/data\b/i.test(command) && !/\b(?:pr-)?reviews\.db\b/i.test(command)));
     const hasRedirectWrite =
-      stateDbPathRe.test(command) &&
-      bashWritesToPath(command, maskedCmd, "\\.pi/data/state\\.db(?:-wal|-shm)?");
+      adjacentRedirectRe.test(maskedCmd) ||
+      (stateDbPathRe.test(command) &&
+        bashWritesToPath(command, maskedCmd, "\\.pi/data/state\\.d(?:b(?:-wal|-shm)?|[?*[{][^\\s\"'`;|&)]*)"));
+    const mutatesPiDataSegment = (segText: string): boolean => {
+      const tokens = tokenize(segText);
+      if (tokens.length === 0) return false;
+      const cmdIdx = skipToCommandWord(tokens);
+      const cmdWord = basename(tokens[cmdIdx] ?? "").toLowerCase();
+      if (fileMutateCmds.has(cmdWord) && (stateDbPathRe.test(segText) || piDataGlobOrDirRe.test(segText))) {
+        return true;
+      }
+      if (runsNestedShell(tokens)) {
+        const inner = executableText(segText);
+        if (adjacentRedirectRe.test(inner)) return true;
+        const innerTokens = tokenize(inner);
+        const innerCmd = basename(innerTokens[skipToCommandWord(innerTokens)] ?? "").toLowerCase();
+        return (
+          fileMutateCmds.has(innerCmd) &&
+          (stateDbPathRe.test(inner) || piDataGlobOrDirRe.test(inner))
+        );
+      }
+      return false;
+    };
     const hasFileMutate =
-      stateDbPathRe.test(command) &&
-      unquotedSegments(command).some((seg) => {
-        const tokens = tokenize(seg.text);
-        if (tokens.length === 0) return false;
-        const cmdWord = basename(tokens[skipToCommandWord(tokens)] ?? "").toLowerCase();
-        if (fileMutateCmds.has(cmdWord) && stateDbPathRe.test(seg.text)) return true;
-        if (runsNestedShell(tokens)) {
-          const inner = executableText(seg.text);
-          const innerTokens = tokenize(inner);
-          const innerCmd = basename(innerTokens[skipToCommandWord(innerTokens)] ?? "").toLowerCase();
-          return fileMutateCmds.has(innerCmd) && stateDbPathRe.test(inner);
-        }
-        return false;
-      });
+      (stateDbPathRe.test(command) || piDataGlobOrDirRe.test(command)) &&
+      unquotedSegments(command).some((seg) => mutatesPiDataSegment(seg.text));
 
     if (hasLegacyName || hasSqliteTamper || hasRedirectWrite || hasFileMutate) {
       enfLog.warn("review_state_bash_blocked");

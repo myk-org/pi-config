@@ -517,7 +517,8 @@ export async function vectorSearch(
 /**
  * Embed all entries that don't have embeddings yet.
  * Used for initial migration when vector search is first enabled.
- * Returns count of newly embedded entries.
+ * Returns count of newly embedded entries (`>= 0`), or `-1` on a database error
+ * so callers can retry later without breaking keyword-search fallback.
  */
 export async function embedMissing(
   cwd: string,
@@ -562,7 +563,7 @@ export async function embedMissing(
     return stored;
   } catch (err) {
     log.warn("embed_missing_failed", { entryCount: entries.length }, err);
-    return 0;
+    return -1;
   }
 }
 

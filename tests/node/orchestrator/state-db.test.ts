@@ -16,6 +16,7 @@ import {
   readFileSync,
   rmSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -71,6 +72,7 @@ import {
 import { evaluateBashPolicy } from "../../../extensions/orchestrator/bash-policy.js";
 import { discoverAgents } from "../../../extensions/orchestrator/agents.js";
 import { buildSubagentChildSpec } from "../../../extensions/orchestrator/subagent-child-spec.js";
+import { registerMemoryTools } from "../../../extensions/orchestrator/memory-tools.js";
 import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -280,6 +282,43 @@ describe("state-db: SqliteStateStore mutate, SKIP_MUTATE, and revision semantics
       }
     }
   });
+
+  it("reconciles newer post-migration legacy JSONL updates from pre-upgrade processes without clobbering newer SQLite writes", () => {
+    const dir = trackTempDir("state-db-mixed-version-");
+    const dbPath = join(dir, ".pi", "data", "state.db");
+    const legacyPath = join(dir, "legacy.jsonl");
+
+    // Initial legacy state imported into SQLite
+    writeFileSync(legacyPath, JSON.stringify({ step: 1 }) + "\n", "utf-8");
+    const t0 = new Date(Date.now() - 5000);
+    utimesSync(legacyPath, t0, t0);
+
+    const store = createSqliteStateStore<{ step: number }>(dbPath, "mixed-ver", {
+      legacyFiles: [legacyPath],
+    });
+    assert.deepEqual(store.read(), { step: 1 });
+
+    // Simulate an older still-running process appending to legacy.jsonl AFTER migration
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({ step: 1 }) + "\n" + JSON.stringify({ step: 2 }) + "\n",
+      "utf-8",
+    );
+    const tFuture = new Date(Date.now() + 5000);
+    utimesSync(legacyPath, tFuture, tFuture);
+    assert.deepEqual(store.read(), { step: 2 }, "newer legacy write must be reconciled");
+
+    // Now write a newer value in SQLite, then write an older-timestamped update to legacy
+    store.write({ step: 3 });
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({ step: 1 }) + "\n" + JSON.stringify({ step: 2 }) + "\n" + JSON.stringify({ step: 99 }) + "\n",
+      "utf-8",
+    );
+    const tOlder = new Date(Date.now() - 2000);
+    utimesSync(legacyPath, tOlder, tOlder);
+    assert.deepEqual(store.read(), { step: 3 }, "older legacy write must not overwrite newer SQLite state");
+  });
 });
 
 // ── Float32Array BLOB Encoding & Embeddings Migration ──────────────────────
@@ -358,7 +397,7 @@ describe("state-db: Float32Array BLOB round-trip and memory-embeddings resilienc
     assert.equal(remaining.cnt, 0);
   });
 
-  it("returns empty results from vectorSearch and 0 from embedMissing when state.db cannot be opened", async () => {
+  it("returns empty results from vectorSearch and -1 from embedMissing when state.db cannot be opened", async () => {
     const cwd = trackTempDir("state-db-emb-failsoft-");
     // Place a directory at state.db so DatabaseSync fails to open it
     mkdirSync(join(cwd, ".pi", "data", "state.db"), { recursive: true });
@@ -369,7 +408,45 @@ describe("state-db: Float32Array BLOB round-trip and memory-embeddings resilienc
     assert.deepEqual(searchResult, []);
 
     const embedded = await embedMissing(cwd, [{ text: "Rule A", category: "lesson" }]);
-    assert.equal(embedded, 0);
+    assert.equal(embedded, -1);
+  });
+
+  it("retries embedding migration in memory_search after a transient DB failure while keeping keyword fallback", async () => {
+    const cwd = trackTempDir("state-db-emb-retry-");
+    const topicsDir = join(cwd, ".pi", "memory", "topics");
+    mkdirSync(topicsDir, { recursive: true });
+    writeFileSync(join(topicsDir, "lessons.md"), "# Lessons\n\n- [lesson] Always keep WAL enabled\n", "utf-8");
+
+    // Initialize state.db then drop `embeddings` table so embedMissing fails while loadScores succeeds
+    const dbPath = getProjectStateDbPath(cwd);
+    const db = openStateDb(dbPath);
+    db.exec("DROP TABLE embeddings");
+
+    const tools = new Map<string, any>();
+    const fakePi = {
+      registerTool(def: any) {
+        tools.set(def.name, def);
+      },
+    } as any;
+    registerMemoryTools(fakePi);
+    const searchTool = tools.get("memory_search");
+    assert.ok(searchTool);
+
+    // First search: embedMissing fails (returns -1) -> embeddingsMigrated stays false, keyword fallback still works
+    const first = await searchTool.execute("id-1", { query: "WAL enabled" }, undefined, undefined, { cwd });
+    assert.match(first.content?.[0]?.text ?? "", /Always keep WAL enabled/);
+    assert.equal(await embedMissing(cwd, [{ text: "Always keep WAL enabled", category: "lesson" }]), -1);
+
+    // Restore embeddings table and run second search -> retry succeeds cleanly
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS embeddings (
+        entry_key TEXT PRIMARY KEY,
+        vector BLOB NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    const second = await searchTool.execute("id-2", { query: "WAL enabled" }, undefined, undefined, { cwd });
+    assert.match(second.content?.[0]?.text ?? "", /Always keep WAL enabled/);
   });
 });
 
@@ -624,6 +701,66 @@ describe("state-db: review-state resilience and bash commit-gate enforcement", (
       ui: null,
     });
     assert.equal(decision4.action, "block");
+  });
+
+  it("fails closed in isCommitAllowed/isReviewClean when kv_state review payload is malformed JSON while readReviewState stays fail-soft", () => {
+    const cwd = trackTempDir("state-db-rev-badjson-");
+    const dbPath = statePath(cwd);
+    const db = openStateDb(dbPath);
+    db.prepare(
+      "INSERT OR REPLACE INTO kv_state (store_key, payload, revision, updated_at) VALUES (?, ?, 1, ?)",
+    ).run("pi-config-review-state", "{invalid-json", new Date().toISOString());
+
+    assert.equal(readReviewState(cwd).status, "none");
+    assert.equal(isReviewClean(cwd), false, "isReviewClean must fail closed on malformed JSON payload");
+    assert.equal(isCommitAllowed(cwd), false, "isCommitAllowed must fail closed on malformed JSON payload");
+  });
+
+  it("fails closed in isCommitAllowed if a tracked worktree's state.db is wiped mid-session", () => {
+    const cwd = trackTempDir("state-db-rev-wiped-");
+    markNeedsReview(cwd);
+    assert.equal(isCommitAllowed(cwd), false);
+
+    // Simulate external deletion of state.db while review was active
+    const dbPath = statePath(cwd);
+    closeStateDbs();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      const p = `${dbPath}${suffix}`;
+      if (existsSync(p)) unlinkSync(p);
+    }
+
+    assert.equal(isReviewClean(cwd), false, "isReviewClean must fail closed when tracked DB is wiped");
+    assert.equal(isCommitAllowed(cwd), false, "isCommitAllowed must fail closed when tracked DB is wiped");
+  });
+
+  it("blocks glob, brace-expansion, directory wipe, and adjacent-redirect attempts targeting .pi/data/state.db", async () => {
+    const cwd = trackTempDir("state-db-bash-evasion-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true }),
+      "utf-8",
+    );
+    clearSettingsCache();
+
+    const evasionCommands = [
+      "rm .pi/data/state.d?",
+      "rm .pi/data/state.*",
+      "mv .pi/data/state.db{,.bak}",
+      ":>.pi/data/state.db",
+      "rm -rf .pi/data",
+    ];
+    for (const command of evasionCommands) {
+      const decision = await evaluateBashPolicy({
+        command,
+        cwd,
+        hasTimeout: false,
+        inContainer: false,
+        isSubagentChild: false,
+        ui: null,
+      });
+      assert.equal(decision.action, "block", `expected evasion command to be blocked: ${command}`);
+    }
   });
 
   it("allows inert mentions, read-only commands, unrelated state.db, and commit messages mentioning state.db", async () => {

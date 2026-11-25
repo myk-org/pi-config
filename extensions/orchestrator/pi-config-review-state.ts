@@ -11,7 +11,7 @@
  */
 
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { getSetting } from "./project-settings.js";
 import { createLogger } from "../shared/logger.js";
 import {
@@ -196,17 +196,30 @@ function normalizeRawState(raw: any): ReviewState {
   };
 }
 
-/** Strict read that surfaces SQLite/store failures (used by commit gate to fail closed). */
-function readReviewStateStrict(cwd: string): ReviewState {
-  const raw = getStore(cwd).read();
-  if (raw === null) return defaultState();
-  return normalizeRawState(raw);
+/** Worktree DB paths known to have active review tracking in this process.
+ *  Used by commit-gate fail-closed checks so wiping state.db mid-session cannot
+ *  silently reset review tracking to `status: "none"`. Cleared by `resetReviewState`. */
+const trackedReviewWorktrees = new Set<string>();
+
+/** Strict read that distinguishes a missing row from corrupt JSON or DB errors.
+ *  Throws on malformed payload or SQLite errors so commit gates fail closed. */
+function readReviewStateStrict(cwd: string): { state: ReviewState; rowPresent: boolean } {
+  const raw = getStore(cwd).readStrict();
+  if (raw === null) return { state: defaultState(), rowPresent: false };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Corrupt review state payload: expected JSON object");
+  }
+  const state = normalizeRawState(raw);
+  if (state.status !== "none") {
+    trackedReviewWorktrees.add(resolve(statePath(cwd)));
+  }
+  return { state, rowPresent: true };
 }
 
 /** Fail-soft read for UI/status hooks — logs and returns defaults if state.db is locked or corrupt. */
 export function readReviewState(cwd: string): ReviewState {
   try {
-    return readReviewStateStrict(cwd);
+    return readReviewStateStrict(cwd).state;
   } catch (err) {
     log.warn("review_state_read_failed", { cwd }, err);
     return defaultState();
@@ -230,6 +243,14 @@ function mutateReviewState<T>(
     return state;
   }, defaultState());
 
+  if (committedState !== null) {
+    const dbKey = resolve(statePath(cwd));
+    if ((committedState as ReviewState).status !== "none") {
+      trackedReviewWorktrees.add(dbKey);
+    } else {
+      trackedReviewWorktrees.delete(dbKey);
+    }
+  }
   if (outcome.notify && committedState !== null) {
     notifyTransition(committedState);
   }
@@ -348,13 +369,19 @@ export function recordReviewerResult(cwd: string, reviewerName: string, findings
 }
 
 /** Check if the review state is clean (all reviewers approved, no edits since).
- *  Fails closed (returns false) if reading state.db throws (locked/corrupt DB). */
+ *  Fails closed (returns false) if reading state.db throws, payload is malformed,
+ *  or a previously tracked worktree's DB row was wiped mid-session. */
 export function isReviewClean(cwd: string): boolean {
   let state: ReviewState;
+  let rowPresent: boolean;
   try {
-    state = readReviewStateStrict(cwd);
+    ({ state, rowPresent } = readReviewStateStrict(cwd));
   } catch (err) {
     log.error("review_clean_check_read_failed", { cwd }, err);
+    return false;
+  }
+  if (!rowPresent && trackedReviewWorktrees.has(resolve(statePath(cwd)))) {
+    log.error("review_clean_check_state_wiped", { cwd });
     return false;
   }
   if (state.status === "none") return true; // No tracking active — nothing to enforce
@@ -377,13 +404,19 @@ function subjectIsCurrent(cwd: string, subject: ReviewSubject | null): boolean {
 }
 
 /** Check if commit is allowed — clean review, no tracking, or max cycles exhausted FOR THIS
- *  SUBJECT. Fails closed (returns false) when reading state.db fails. */
+ *  SUBJECT. Fails closed (returns false) when reading state.db fails, payload is corrupt,
+ *  or a previously tracked worktree's DB row was wiped mid-session. */
 export function isCommitAllowed(cwd: string): boolean {
   let state: ReviewState;
+  let rowPresent: boolean;
   try {
-    state = readReviewStateStrict(cwd);
+    ({ state, rowPresent } = readReviewStateStrict(cwd));
   } catch (err) {
     log.error("commit_gate_review_state_read_failed", { cwd }, err);
+    return false;
+  }
+  if (!rowPresent && trackedReviewWorktrees.has(resolve(statePath(cwd)))) {
+    log.error("commit_gate_review_state_wiped", { cwd });
     return false;
   }
   if (state.status === "none") return true;

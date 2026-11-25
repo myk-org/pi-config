@@ -91,7 +91,9 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
         CREATE TABLE IF NOT EXISTS migrated_stores (
           store_key TEXT PRIMARY KEY,
           source_path TEXT NOT NULL,
-          migrated_at TEXT NOT NULL
+          migrated_at TEXT NOT NULL,
+          source_mtime_ms REAL NOT NULL DEFAULT 0,
+          source_size INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS embedding_meta (
@@ -331,6 +333,9 @@ export class SqliteStateStore<T> {
   private cachedValue: T | null = null;
   private cachedRevision = -1;
   private cachedUpdatedAt = "";
+  private legacySourcePath: string | null = null;
+  private legacySourceMtimeMs = -1;
+  private legacySourceSize = -1;
 
   constructor(dbPath: string, storeKey: string, options?: SqliteStateStoreOptions) {
     this.dbPath = resolve(dbPath);
@@ -346,11 +351,132 @@ export class SqliteStateStore<T> {
     return this.storeKey;
   }
 
-  /** One-time idempotent lossless migration from legacy `.jsonl` / `.json` files. */
+  /**
+   * Reconcile post-migration legacy writes from an older pre-upgrade process
+   * still running alongside upgraded processes (mixed-version cutover).
+   * Only imports a newer legacy snapshot when its mtime is strictly newer than
+   * SQLite's `kv_state.updated_at` so newer SQLite updates are never clobbered.
+   */
+  private reconcilePostMigrationLegacy(entry: CachedStateDb): void {
+    if (this.legacySourcePath === null) {
+      const migRow = entry.db
+        .prepare(
+          "SELECT source_path, source_mtime_ms, source_size FROM migrated_stores WHERE store_key = ?",
+        )
+        .get(this.storeKey) as
+        | { source_path?: string; source_mtime_ms?: number; source_size?: number }
+        | undefined;
+      if (!migRow?.source_path) {
+        this.legacySourcePath = "";
+        return;
+      }
+      this.legacySourcePath = migRow.source_path;
+      this.legacySourceMtimeMs = Number(migRow.source_mtime_ms ?? 0);
+      this.legacySourceSize = Number(migRow.source_size ?? 0);
+    }
+    if (!this.legacySourcePath) return;
+
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(this.legacySourcePath);
+    } catch {
+      return;
+    }
+    if (st.mtimeMs === this.legacySourceMtimeMs && st.size === this.legacySourceSize) {
+      return;
+    }
+
+    const sourcePath = this.legacySourcePath;
+    let reconciled = false;
+    let superseded = false;
+    withTransaction(this.dbPath, (txDb) => {
+      const migRow = txDb
+        .prepare(
+          "SELECT source_mtime_ms, source_size FROM migrated_stores WHERE store_key = ?",
+        )
+        .get(this.storeKey) as { source_mtime_ms?: number; source_size?: number } | undefined;
+      if (
+        migRow &&
+        Number(migRow.source_mtime_ms ?? 0) === st.mtimeMs &&
+        Number(migRow.source_size ?? 0) === st.size
+      ) {
+        return;
+      }
+
+      const kvRow = txDb
+        .prepare("SELECT updated_at FROM kv_state WHERE store_key = ?")
+        .get(this.storeKey) as { updated_at?: string } | undefined;
+      const sqliteUpdatedMs = kvRow?.updated_at ? Date.parse(kvRow.updated_at) : 0;
+
+      if (!kvRow || Number.isNaN(sqliteUpdatedMs) || st.mtimeMs > sqliteUpdatedMs) {
+        let raw: string;
+        try {
+          raw = readFileSync(sourcePath, "utf-8");
+        } catch (err) {
+          log.warn("state_db_legacy_reconcile_read_failed", { storeKey: this.storeKey, sourcePath }, err);
+          return;
+        }
+        const parsed = parseLastValidLine<T>(raw);
+        if (parsed === null) {
+          log.warn("state_db_legacy_reconcile_parse_failed", { storeKey: this.storeKey, sourcePath });
+          return;
+        }
+        const nextUpdatedAt = new Date(Math.max(Date.now(), Math.ceil(st.mtimeMs))).toISOString();
+        txDb
+          .prepare(
+            `INSERT INTO kv_state (store_key, payload, revision, updated_at)
+             VALUES (?, ?, 1, ?)
+             ON CONFLICT(store_key) DO UPDATE SET
+               payload = excluded.payload,
+               revision = kv_state.revision + 1,
+               updated_at = excluded.updated_at`,
+          )
+          .run(this.storeKey, JSON.stringify(parsed), nextUpdatedAt);
+        txDb
+          .prepare(
+            "UPDATE migrated_stores SET source_mtime_ms = ?, source_size = ? WHERE store_key = ?",
+          )
+          .run(st.mtimeMs, st.size, this.storeKey);
+        reconciled = true;
+      } else {
+        txDb
+          .prepare(
+            "UPDATE migrated_stores SET source_mtime_ms = ?, source_size = ? WHERE store_key = ?",
+          )
+          .run(st.mtimeMs, st.size, this.storeKey);
+        superseded = true;
+      }
+    });
+
+    this.legacySourceMtimeMs = st.mtimeMs;
+    this.legacySourceSize = st.size;
+    if (reconciled) {
+      this.cachedValue = null;
+      this.cachedRevision = -1;
+      this.cachedUpdatedAt = "";
+      log.info("state_db_reconciled_legacy_update", {
+        storeKey: this.storeKey,
+        sourcePath,
+        dbPath: this.dbPath,
+      });
+    } else if (superseded) {
+      log.debug("state_db_legacy_update_superseded", {
+        storeKey: this.storeKey,
+        sourcePath,
+      });
+    }
+  }
+
+  /** One-time idempotent lossless migration from legacy `.jsonl` / `.json` files,
+   *  plus mixed-version post-migration reconciliation if an older process appends later. */
   private ensureMigrated(): void {
     if (this.legacyFiles.length === 0) return;
     const entry = getOrOpenStateDb(this.dbPath);
-    if (entry.migratedKeys.has(this.storeKey) || entry.migrationFailedKeys.has(this.storeKey)) {
+    if (entry.migratedKeys.has(this.storeKey)) {
+      this.reconcilePostMigrationLegacy(entry);
+      return;
+    }
+    if (entry.migrationFailedKeys.has(this.storeKey)) {
       return;
     }
 
@@ -360,6 +486,7 @@ export class SqliteStateStore<T> {
       .get(this.storeKey);
     if (hasState) {
       entry.migratedKeys.add(this.storeKey);
+      this.reconcilePostMigrationLegacy(entry);
       return;
     }
     const alreadyMigrated = db
@@ -367,6 +494,7 @@ export class SqliteStateStore<T> {
       .get(this.storeKey);
     if (alreadyMigrated) {
       entry.migratedKeys.add(this.storeKey);
+      this.reconcilePostMigrationLegacy(entry);
       return;
     }
 
@@ -374,6 +502,8 @@ export class SqliteStateStore<T> {
     if (existingLegacy.length === 0) return;
 
     let migratedSource: string | null = null;
+    let migratedMtimeMs = 0;
+    let migratedSize = 0;
     let sawCorrupt = false;
     let sawReadError = false;
     withTransaction(this.dbPath, (txDb) => {
@@ -387,7 +517,9 @@ export class SqliteStateStore<T> {
 
       for (const legacyPath of existingLegacy) {
         let raw: string;
+        let st: ReturnType<typeof statSync>;
         try {
+          st = statSync(legacyPath);
           raw = readFileSync(legacyPath, "utf-8");
         } catch (err) {
           sawReadError = true;
@@ -407,7 +539,7 @@ export class SqliteStateStore<T> {
           });
           continue;
         }
-        const now = new Date().toISOString();
+        const now = new Date(Math.max(Date.now(), Math.ceil(st.mtimeMs))).toISOString();
         txDb
           .prepare(
             "INSERT INTO kv_state (store_key, payload, revision, updated_at) VALUES (?, ?, 1, ?)",
@@ -415,16 +547,21 @@ export class SqliteStateStore<T> {
           .run(this.storeKey, JSON.stringify(parsed), now);
         txDb
           .prepare(
-            "INSERT INTO migrated_stores (store_key, source_path, migrated_at) VALUES (?, ?, ?)",
+            "INSERT INTO migrated_stores (store_key, source_path, migrated_at, source_mtime_ms, source_size) VALUES (?, ?, ?, ?, ?)",
           )
-          .run(this.storeKey, legacyPath, now);
+          .run(this.storeKey, legacyPath, now, st.mtimeMs, st.size);
         migratedSource = legacyPath;
+        migratedMtimeMs = st.mtimeMs;
+        migratedSize = st.size;
         break;
       }
     });
 
     if (migratedSource) {
       entry.migratedKeys.add(this.storeKey);
+      this.legacySourcePath = migratedSource;
+      this.legacySourceMtimeMs = migratedMtimeMs;
+      this.legacySourceSize = migratedSize;
       log.info("state_db_migrated_legacy", {
         storeKey: this.storeKey,
         sourcePath: migratedSource,
@@ -442,6 +579,7 @@ export class SqliteStateStore<T> {
         db.prepare("SELECT 1 FROM migrated_stores WHERE store_key = ?").get(this.storeKey)
       ) {
         entry.migratedKeys.add(this.storeKey);
+        this.reconcilePostMigrationLegacy(entry);
       }
     }
   }
@@ -467,8 +605,7 @@ export class SqliteStateStore<T> {
     return row !== undefined;
   }
 
-  /** Read the latest state, cached in memory by `(revision, updated_at)`. */
-  read(): T | null {
+  private readInternal(throwOnCorrupt: boolean): T | null {
     this.ensureMigrated();
     const db = openStateDb(this.dbPath);
     const meta = db
@@ -495,10 +632,19 @@ export class SqliteStateStore<T> {
       .get(this.storeKey) as
       | { payload?: string; revision?: number; updated_at?: string }
       | undefined;
-    if (!row || typeof row.payload !== "string" || typeof row.revision !== "number") {
+    if (!row) {
       this.cachedValue = null;
       this.cachedRevision = -1;
       this.cachedUpdatedAt = "";
+      return null;
+    }
+    if (typeof row.payload !== "string" || typeof row.revision !== "number") {
+      this.cachedValue = null;
+      this.cachedRevision = -1;
+      this.cachedUpdatedAt = "";
+      const err = new Error(`Corrupt kv_state row for ${this.storeKey}: non-string payload`);
+      log.error("state_db_corrupt_payload", { storeKey: this.storeKey, dbPath: this.dbPath }, err);
+      if (throwOnCorrupt) throw err;
       return null;
     }
 
@@ -513,8 +659,21 @@ export class SqliteStateStore<T> {
       this.cachedValue = null;
       this.cachedRevision = -1;
       this.cachedUpdatedAt = "";
+      if (throwOnCorrupt) throw err;
       return null;
     }
+  }
+
+  /** Read the latest state, cached in memory by `(revision, updated_at)`.
+   *  Returns `null` when no row exists or the stored payload is corrupt JSON. */
+  read(): T | null {
+    return this.readInternal(false);
+  }
+
+  /** Strict read: returns `null` ONLY when no row exists; throws if an existing
+   *  row contains malformed JSON (so security gates can fail closed). */
+  readStrict(): T | null {
+    return this.readInternal(true);
   }
 
   /** Atomically write a full state snapshot and bump the DB revision. */
