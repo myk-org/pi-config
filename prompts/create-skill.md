@@ -79,7 +79,7 @@ The SKILL.md must follow this exact format:
 ```markdown
 ---
 name: <name>
-description: "<one-line description of what this skill does and when to use it — max 1024 chars>"
+description: "<what this skill does>. Use when <concrete user trigger phrases, keywords, or situations> — max 1024 chars"
 skill-maintenance: auto
 ---
 
@@ -114,7 +114,10 @@ like `<API_KEY>` or `$ENV_VAR`. Skills are stored in plain text.
 - **No fluff** — skip background, motivation, history — just the procedure
 - **Include pitfalls** — what went wrong during this session and how it was resolved
 - **Include verification** — how to confirm each step worked
-- **One line description** — the description field is what pi uses to match skills to tasks
+- **Keyword-rich one-line `description`** — Pi ONLY injects `name` and `description` at startup (the body is invisible
+  until `description` matches). Write it as routing keywords: state what the skill does, include concrete `Use when ...`
+  trigger phrases/keywords the user actually types, and lead with `MANDATORY` when the workflow must always run. Never
+  embed double quotes (`"`) inside the double-quoted YAML value — use single quotes (`'...'`) or plain text instead
 
 ### Step 4: Confirm
 

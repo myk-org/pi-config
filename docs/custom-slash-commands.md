@@ -166,7 +166,7 @@ Summarize issue #$ARGUMENTS in 5 bullets:
 
 // 2) Add the command name to `promptTemplateCommands`
 const promptTemplateCommands = new Set([
-  "external-ai", "pr-review", "issue-review", "coderabbit-rate-limit",
+  "pr-review", "issue-review", "coderabbit-rate-limit",
   "review-local", "release", "review-handler", "qodo-review", "create-skill",
   "create-coms-feature-manager", "pi-config-settings",
   "pick-issue",
@@ -179,7 +179,6 @@ Prompt templates are registered by Pi itself, so they do not go through the `reg
 
 - For PR numbers, mirror the existing `/pr-review` pattern.
 - For branch names, mirror the existing `/review-local` pattern.
-- For model/provider completions, see [External AI Agents & CLI](external-ai-agents.html) for details.
 - For generator prompts that emit another prompt (`prompts/create-X.md`), place the source template at `templates/X-prompt.md` using `{{PLACEHOLDER}}` tokens and no frontmatter.
 
 ## Related Pages

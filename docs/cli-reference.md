@@ -1,8 +1,7 @@
 # myk_pi_tools CLI Reference
 
-`myk-pi-tools` is installed with `uv tool install myk-pi-tools`. It exposes eight command groups: `ai-cli`, `coderabbit`, `db`, `memory`, `pr`, `release`, `reviews`, and `settings`. This page documents `db`, `reviews`, and `memory`; the rest are covered on their own pages.
+`myk-pi-tools` is installed with `uv tool install myk-pi-tools`. It exposes seven command groups: `coderabbit`, `db`, `memory`, `pr`, `release`, `reviews`, and `settings`. This page documents `db`, `reviews`, and `memory`; the rest are covered on their own pages.
 
-- `ai-cli` — run prompts through external agent CLIs. See [External AI Agents & CLI](external-ai-agents.html).
 - `coderabbit`, `pr`, `reviews` — PR review automation. See [Automating Code Reviews](automating-code-reviews.html).
 - `memory` — project memory topic files. See [Curating Project Memory](curating-project-memory.html).
 
@@ -469,5 +468,4 @@ myk-pi-tools memory status
 - [Built-in Workflow Commands](built-in-workflows.html)
 - [Automating Code Reviews](automating-code-reviews.html)
 - [Curating Project Memory](curating-project-memory.html)
-- [External AI Agents & CLI](external-ai-agents.html)
 - [Configuration & Settings](configuration.html)

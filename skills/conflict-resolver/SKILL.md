@@ -1,6 +1,6 @@
 ---
 name: conflict-resolver
-description: "Resolve git merge/rebase conflicts by analyzing git history, commit intent, and code context. Use when merge or rebase produces conflicts."
+description: "Resolve git merge/rebase/cherry-pick conflicts by analyzing git history, commit intent, and code context. Use when merge, rebase, or cherry-pick conflicts."
 ---
 
 # Git Conflict Resolver
