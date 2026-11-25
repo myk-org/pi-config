@@ -168,11 +168,35 @@ Default built-in tools when you omit `tools`: `read`, `grep`, `find`, `ls`, `bas
 | `POST` | `/models/for-api-key` | Discover models for a caller-supplied `api_key` |
 | `GET` | `/models/:provider/status` | Registration, model count, auth (redacted off-loopback) |
 | `POST` | `/sessions` | Create session → `{ session_id }` |
-| `POST` | `/sessions/:id/prompt` | Send `{ "message": "..." }` |
+| `POST` | `/sessions/:id/prompt` | Send `{ "message": "...", "request_id"?: "..." }` |
 | `POST` | `/sessions/:id/abort` | Cancel in-flight prompt |
 | `DELETE` | `/sessions/:id` | Destroy session |
 
-Body size limit: 1 MiB. Concurrent prompts on the same session return conflict (busy).
+Body size limit: 1 MiB. Concurrent prompts on the same session return `409` unless they share the active `request_id` and `message`.
+
+### Idempotent prompts (`request_id`)
+
+Pass an optional `request_id` in the `POST /sessions/:id/prompt` body to make retries safe across network drops or timeouts. Omitting `request_id` leaves prompt behavior unchanged.
+
+When present, `request_id` must be a non-empty, non-whitespace string of at most 256 characters. Any other value returns HTTP `400`.
+
+Each session keeps a bounded LRU cache capped at 64 `request_id` entries and a 2 MiB per-session byte budget (`message` + cached response text). The cache evicts older completed entries in LRU order as needed to stay within both limits. A single entry whose combined `message` and response text exceed 2 MiB still coalesces while in-flight, is not retained after completion, and logs `PROMPT_DEDUP_OVERSIZED`. Deleting the session, stale-session cleanup, or shutting down the sidecar clears the cache.
+
+- **In-flight match.** Same `request_id` and same `message` coalesces onto the active turn and returns its response instead of `409 Session is busy`.
+- **Completed match.** Same `request_id` and same `message` returns the cached response immediately without calling the model again. Completed replays include `"replayed": true` in the JSON body and the `X-Request-Id-Replayed: true` HTTP header; both are omitted on initial turns and in-flight coalescing.
+- **Mismatched `message`.** Reusing an in-flight or completed `request_id` with a different `message` returns `409 Conflict` instead of returning a response for the wrong prompt.
+- **Failed or aborted turn.** Failed turns (non-200 HTTP errors, or HTTP 200 responses with `error` or `stop_reason: "error"`) and aborted turns (`POST /sessions/:id/abort` or `stop_reason: "aborted"`) evict the entry from the cache so callers can retry with the same `request_id`.
+
+In Python, pass `request_id` to `client.prompt()` or `client.stream_prompt()`. Both omit `request_id` from the request JSON when it is `None`. Completed cache replays are exposed as `result.replayed` on `client.prompt()`.
+
+```python
+result = await client.prompt(session_id, "Summarize the diff.", request_id="req-123")
+
+async for event in client.stream_prompt(session_id, "Summarize the diff.", request_id="req-123"):
+    ...
+```
+
+`stream_prompt()` forwards `request_id`. In-flight retries coalesce onto the live SSE stream. For completed replays (`replayed=True`), `stream_prompt()` closes the SSE feed immediately and yields a synthesized `turn_end` event (`{"type": "turn_end", "turnId": None, "text": ..., "aborted": False, "replayed": True}`) instead of hanging on keepalives or reading another turn's frames.
 
 ### Custom HTTP-backed tools
 
@@ -397,7 +421,7 @@ results = await run_parallel_with_limit(tasks, max_concurrency=5)
 | `/health` stuck on `starting` / 503 | Wait for discovery; check logs (`PI_SIDECAR_LOG_LEVEL=debug`). |
 | Empty model list | Auth providers; `POST /models/refresh`; check `GET /models/:provider/status`. |
 | Session create rejects model | Use an id from `GET /models`; interactive OAuth-only providers are blocked in this headless service. |
-| `409` / session busy | Wait for the current prompt or `POST .../abort`. |
+| `409` / session busy or `request_id` mismatch | Wait for the current prompt, `POST .../abort`, or retry the same `message` with the same `request_id`. Use a new `request_id` for a different `message`. |
 | `agent_dir` rejected | Bind on loopback, or use `DEV_MODE=true` (value discarded). |
 | Pi version error at startup | Upgrade `@earendil-works/pi-coding-agent` (and `pi-ai`) to ≥ 1.6.0. |
 
