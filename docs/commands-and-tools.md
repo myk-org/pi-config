@@ -320,7 +320,7 @@ reliable notifications are not covered; there is no polling fallback or replay o
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
-| `cron_manage` | Manage scheduled tasks; `persist=true` keeps a task across Pi sessions in the project | `action` (`add`, `list`, `remove`), `persist`, `description`, `task`, `interval_seconds` (min 10), `at_hour` (0–23), `at_minute` (0–59, requires `at_hour`), `id` |
+| `cron_manage` | Manage scheduled tasks (`add`, `list`, `edit`, `pause`, `resume`, `remove`); `persist=true` keeps a task across Pi sessions in the project | `action` (`add`, `list`, `edit`, `pause`, `resume`, `remove`), `persist`, `description`, `task`, `model` (`""` on `edit` clears pinned model), `interval_seconds` (min 10), `at_hour` (0–23), `at_minute` (0–59, requires `at_hour` unless editing a daily cron), `id` |
 | `subagent` | Delegate to a subagent with isolated context; modes are single (`agent`+`task`), parallel (`tasks[]`), and chain (`chain[]` with a `{previous}` placeholder). A chain also runs async with `async: true`: each step needs its own `taskId` and `cwd`, each step gets the previous step's output as `{previous}`, and a failed step stops the chain | `agent`, `task`, `tasks[]`, `chain[]`, `agentScope`, `confirmProjectAgents`, `cwd`, `estimatedSeconds` (required for sync; `>= 30` forces async), `async`, `fireAndForget`, `name`, `taskId` (`-1` if unlinked), `asyncKill`, `persistSession`, `model` (`provider/model-id`) |
 | `session_search` | Search past conversation summaries by keyword — zero LLM cost | `query`, `limit` (default 10) |
 | `review_status` | Read the review-loop enforcement state before committing | `worktree_path` (optional) |
