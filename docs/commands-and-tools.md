@@ -286,7 +286,9 @@ Project memory, backed by topic files under `.pi/memory/topics/`. See [Memory Ar
 ### Task* (7 tools)
 
 The session task list behind `/tasks` and the task widget. Statuses are `pending`, `in_progress`, `completed`, `deleted` (deleted is a status, not a hard delete, except
-through `TaskBulkDelete`). Every task is assigned to `llm` (the agent, the default) or `user` (the owner), shown as `[llm]` / `[you]`.
+through `TaskBulkDelete`). Every task is assigned to `llm` (the agent, the default) or `user` (the owner), shown as `[llm]` / `[you]`. When live async subagents are bound to
+an open (`pending` or `in_progress`) task via `subagent(..., async: true, taskId: "<id>")`, the task widget displays a `[⏳ ...]` badge on that task row and clears it once the
+agent finishes.
 
 | Tool | Purpose | Key parameters |
 |---|---|---|

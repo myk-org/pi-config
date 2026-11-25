@@ -72,6 +72,15 @@ export {
 
 const log = createLogger("pitasks");
 
+const ASYNC_STATUS_UNSUB_SYMBOL = Symbol.for("pi-config.pitasksAsyncStatusUnsub");
+function getAsyncStatusUnsubMap(): WeakMap<object, () => void> {
+	const g = globalThis as Record<symbol, unknown>;
+	if (!(g[ASYNC_STATUS_UNSUB_SYMBOL] instanceof WeakMap)) {
+		g[ASYNC_STATUS_UNSUB_SYMBOL] = new WeakMap<object, () => void>();
+	}
+	return g[ASYNC_STATUS_UNSUB_SYMBOL] as WeakMap<object, () => void>;
+}
+
 // Module-level refs — survive closure replacement on /reload
 let currentUiCtx: any = null;
 let currentStore: TaskStore | null = null;
@@ -310,9 +319,18 @@ export default function (pi: ExtensionAPI) {
 	let store = new TaskStore(resolveStorePath(undefined, { cwd: process.cwd(), piTasks, taskScope }));
 	taskStore = store;
 	currentStore = store;
-	const widget = new TaskWidget(store);
-	widget.setMode(getWidgetMode("tasks", process.cwd()));
 	let currentCtx: any = null;
+	let bridgeSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
+	const getBoundAgents = () => {
+		const resolvedKey = currentCtx ? resolveBridgeSessionKey(currentCtx) : bridgeSessionKey;
+		const key =
+			resolvedKey === DEFAULT_BRIDGE_SESSION_KEY && bridgeSessionKey !== DEFAULT_BRIDGE_SESSION_KEY
+				? bridgeSessionKey
+				: resolvedKey;
+		return publishedWorkloadSources(key)?.agents() ?? [];
+	};
+	const widget = new TaskWidget(store, {}, getBoundAgents);
+	widget.setMode(getWidgetMode("tasks", process.cwd()));
 	const tasksShortcut = registerWidgetShortcut(
 		pi,
 		"widget_tasks_shortcut",
@@ -353,12 +371,38 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 	subscribeToggleAll();
+	let unsubAsyncStatus: (() => void) | undefined;
+	function subscribeAsyncStatus(): void {
+		const unsubMap = getAsyncStatusUnsubMap();
+		try { unsubAsyncStatus?.(); } catch {}
+		const bus = pi.events as object | undefined;
+		if (bus) {
+			try { unsubMap.get(bus)?.(); } catch {}
+			unsubMap.delete(bus);
+		}
+		unsubAsyncStatus = undefined;
+		try {
+			const unsub = pi.events.on("pidash:async-status", () => {
+				if (shuttingDown) return;
+				if (currentCtx && isLiveExtensionCtx(currentCtx)) {
+					currentUiCtx = currentCtx.ui;
+					widget.setUICtx(currentCtx.ui);
+				}
+				widget.update();
+				log.debug("tasks_widget_async_status_refreshed");
+			});
+			unsubAsyncStatus = unsub;
+			if (bus && typeof unsub === "function") unsubMap.set(bus, unsub);
+		} catch (e: any) {
+			log.warn("tasks_widget_async_status_subscribe_failed", { error: e?.message });
+		}
+	}
+	subscribeAsyncStatus();
 	store.setOnChange(() => { widget.update(); broadcastTasks(); });
 	for (const taskId of resumedActiveTaskIds) widget.setActiveTask(taskId);
 	currentWidget = widget;
 	// Registration and session transitions publish closure-local bindings keyed by sessionId so
 	// concurrent sessions in pi-sidecar never clobber each other's store or telemetry callback.
-	let bridgeSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
 	let unregisterTaskStore: (() => void) | null = null;
 	let unregisterTaskTelemetry: (() => void) | null = null;
 	const getLiveStore = () => (shuttingDown ? null : store);
@@ -622,6 +666,13 @@ export default function (pi: ExtensionAPI) {
 		if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
 		try { unsubToggleAll?.(); } catch {}
 		unsubToggleAll = undefined;
+		try { unsubAsyncStatus?.(); } catch {}
+		const bus = pi.events as object | undefined;
+		if (bus) {
+			const unsubMap = getAsyncStatusUnsubMap();
+			if (unsubMap.get(bus) === unsubAsyncStatus) unsubMap.delete(bus);
+		}
+		unsubAsyncStatus = undefined;
 		currentCtx = null;
 		widget.deactivate();
 		store.setOnChange(() => {});
@@ -699,8 +750,9 @@ export default function (pi: ExtensionAPI) {
 		upgradeStoreIfNeeded(ctx);
 		if (forkSeed?.tasks.length) store.seed(forkSeed);
 		const sessionCwd = ctx?.cwd || process.cwd();
-		// Re-subscribe after session_shutdown so /new, /resume, and /fork still receive toggle-all.
+		// Re-subscribe after session_shutdown so /new, /resume, and /fork still receive toggle-all and async status updates.
 		subscribeToggleAll();
+		subscribeAsyncStatus();
 		// Always advertise the shortcut binding accepted at registration (never an unbound edit).
 		widget.setShortcutHint(getRegisteredWidgetShortcut("widget_tasks_shortcut"));
 		widget.setMode(getWidgetMode("tasks", sessionCwd));
