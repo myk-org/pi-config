@@ -544,6 +544,7 @@ export async function runSingleAgent(
         env: spec.env,
       });
       let buf = "";
+      let sawTextDelta = false;
       if (proc.pid != null) syncRun.setPid(proc.pid);
 
       const processLine = (line: string) => {
@@ -553,6 +554,14 @@ export async function runSingleAgent(
           ev = JSON.parse(line);
         } catch {
           return;
+        }
+        if (
+          ev.type === "message_update" &&
+          ev.assistantMessageEvent?.type === "text_delta" &&
+          typeof ev.assistantMessageEvent.delta === "string"
+        ) {
+          sawTextDelta = true;
+          syncRun.appendOutput(ev.assistantMessageEvent.delta);
         }
         if (ev.type === "message_end" && ev.message) {
           const msg = ev.message as Message;
@@ -564,6 +573,13 @@ export async function runSingleAgent(
             : undefined;
           syncRun.setTool(toolCall && toolCall.type === "toolCall" ? toolCall.name : undefined);
           if (msg.role === "assistant") {
+            if (!sawTextDelta) {
+              const textParts = msg.content
+                .filter((p): p is { type: "text"; text: string } => p.type === "text" && typeof p.text === "string")
+                .map((p) => p.text)
+                .join("");
+              if (textParts) syncRun.appendOutput(textParts);
+            }
             cur.usage.turns++;
             const u = msg.usage;
             if (u) {

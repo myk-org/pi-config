@@ -31,6 +31,8 @@ export interface SyncAgentRun {
   /** Where this run's status.json lives, in the async layout the overlay already reads. */
   workerDir: string;
   pid?: number;
+  /** Bounded recent assistant text output captured while the sync child runs. */
+  outputTail?: string;
 }
 
 interface SyncAgentRunEntry extends SyncAgentRun {
@@ -52,6 +54,7 @@ const finished = new Map<string, SyncAgentRunEntry>();
 const FINISHED_GRACE_MS = 60_000;
 /** Bound on retained finished runs so a long session cannot grow the map. */
 const FINISHED_LIMIT = 20;
+const MAX_OUTPUT_TAIL_CHARS = 24_000;
 const listeners = new Set<() => void>();
 let counter = 0;
 
@@ -160,6 +163,8 @@ export function beginSyncAgentRun(args: {
   setPid: (pid: number) => void;
   /** Returns true when a stop was requested before the child existed — kill it right away. */
   setAbort: (fn: () => void) => boolean;
+  /** Append streamed assistant text to the bounded in-memory tail for `async_status`. */
+  appendOutput: (chunk: string) => void;
   end: (ok: boolean) => void;
 } {
   const id = `sync-${sessionScope()}-${++counter}`;
@@ -207,6 +212,15 @@ export function beginSyncAgentRun(args: {
       run.abort = fn;
       log.debug("abort_registered", { id, pendingStop: Boolean(run.pendingStop) });
       return Boolean(run.pendingStop);
+    },
+    appendOutput: (chunk: string) => {
+      if (!chunk) return;
+      const run = runs.get(id);
+      if (!run) return;
+      const combined = (run.outputTail ?? "") + chunk;
+      run.outputTail = combined.length > MAX_OUTPUT_TAIL_CHARS
+        ? combined.slice(-MAX_OUTPUT_TAIL_CHARS)
+        : combined;
     },
     end: (ok: boolean) => {
       const run = runs.get(id);

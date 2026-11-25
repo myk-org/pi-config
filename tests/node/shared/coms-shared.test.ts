@@ -572,7 +572,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		assert.match(tools.get("coms_send")?.description ?? "", /DO NOT call this to REPLY/);
 	});
 
-	it("registerComs gates 16 tools while keeping discovery tools active", async () => {
+	it("registerComs gates 17 tools while keeping discovery tools active", async () => {
 		const { pi, tools, getActive } = makeStatefulPi();
 		withSubagentChildEnv(undefined, () => {
 			registerComs(pi as any);
@@ -582,6 +582,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 		const gatedNames = [
 			"coms_list", "coms_send", "coms_broadcast", "coms_history", "coms_get",
 			"coms_queue_inspect", "coms_queue_delete", "coms_queue_edit", "coms_queue_clear", "coms_queue_prioritize",
+			"coms_local_queue",
 			"coms_tasks_create", "coms_task_delete", "coms_task_list", "coms_task_get", "coms_task_update",
 			"coms_stop",
 		];
@@ -639,6 +640,7 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 	const gatedNames = [
 		"coms_list", "coms_send", "coms_broadcast", "coms_history", "coms_get",
 		"coms_queue_inspect", "coms_queue_delete", "coms_queue_edit", "coms_queue_clear", "coms_queue_prioritize",
+		"coms_local_queue",
 		"coms_tasks_create", "coms_task_delete", "coms_task_list", "coms_task_get", "coms_task_update",
 		"coms_stop",
 	];

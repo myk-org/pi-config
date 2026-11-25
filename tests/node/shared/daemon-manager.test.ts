@@ -17,11 +17,13 @@ import {
   getGitBranch,
   parseHealth,
   registerDaemonCommand,
+  registerDaemonManageTool,
   spawnDaemon,
   waitForDaemon,
   type DaemonClient,
   type DaemonClientAdapter,
 } from "../../../extensions/shared/daemon-manager.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -793,5 +795,187 @@ describe("createDaemonClient lifecycle (#1358)", () => {
     await h.commands.get("testd").handler("stop", ctx);
     assert.equal(h.getStops(), 0);
     assert.deepEqual(notifications, []);
+  });
+});
+
+// ── daemon_manage tool (#1384) ──────────────────────────────────────
+
+describe("daemon_manage tool (#1384)", () => {
+  const daemonClients: DaemonClient[] = [];
+
+  afterEach(() => {
+    while (daemonClients.length > 0) {
+      daemonClients.pop()!.shutdown();
+    }
+  });
+
+  function createSharedBus() {
+    const emitter = new EventEmitter();
+    return () => ({
+      emit: (channel: string, data: unknown) => { emitter.emit(channel, data); },
+      on: (channel: string, fn: (data: unknown) => void) => {
+        emitter.on(channel, fn);
+        return () => { emitter.off(channel, fn); };
+      },
+    });
+  }
+
+  function makeToolPi(events?: { emit: (ch: string, d: unknown) => void; on: (ch: string, fn: (d: unknown) => void) => () => void }) {
+    const tools = new Map<string, any>();
+    const commands = new Map<string, any>();
+    const listeners = new Map<string, Array<(event: unknown, ctx: unknown) => void>>();
+    const pi = {
+      on: (name: string, fn: (event: unknown, ctx: unknown) => void) => {
+        const list = listeners.get(name) ?? [];
+        list.push(fn);
+        listeners.set(name, list);
+      },
+      registerCommand: (name: string, opts: any) => { commands.set(name, opts); },
+      registerTool: (tool: any) => { tools.set(tool.name, tool); },
+      ...(events ? { events } : {}),
+    } as unknown as ExtensionAPI;
+    return { pi, tools, commands };
+  }
+
+  function makeDaemonHarness(
+    name: "pidash" | "pidiff",
+    pi: ExtensionAPI,
+    overrides: Partial<DaemonClientAdapter> = {},
+  ) {
+    let stops = 0;
+    const spawns: Array<{ mode: string; preferredPort?: number | null }> = [];
+    const client = createDaemonClient(pi, {
+      name,
+      settingKey: `${name}_enable`,
+      statusKey: `9-${name}`,
+      log: testLog,
+      port: 19600,
+      spawn: (_ctx, opts) => {
+        spawns.push({ mode: opts.mode, preferredPort: opts.preferredPort });
+        return opts.preferredPort ?? 19601;
+      },
+      getStartupTimeoutSeconds: () => 5,
+      onOpen: () => {},
+      onMessage: () => {},
+      stopDaemon: () => { stops++; },
+      createWebSocket: (url) => new FakeWebSocket(url),
+      probeHealth: async () => false,
+      waitReady: async () => true,
+      sleep: async () => {},
+      reconnectDelayMs: 5_000,
+      reconnectPollIntervalMs: 60_000,
+      ...overrides,
+    });
+    daemonClients.push(client);
+    return { client, spawns, getStops: () => stops };
+  }
+
+  it("reports server status for a registered daemon", async () => {
+    const { pi, tools } = makeToolPi();
+    makeDaemonHarness("pidash", pi, { port: 19610, probeHealth: async () => true });
+    withSubagentChildEnv(undefined, () => { registerDaemonManageTool(pi); });
+
+    const { ctx } = createFakeCtx();
+    const res = await tools.get("daemon_manage").execute("c1", { name: "pidash", action: "status" }, undefined, undefined, ctx);
+    assert.equal(res.details.ok, true);
+    assert.equal(res.details.running, true);
+    assert.match(res.content[0].text, /Server: running/);
+    assert.match(res.content[0].text, /Port: 19610/);
+  });
+
+  it("starts a stopped daemon via daemon_manage", async () => {
+    const { pi, tools } = makeToolPi();
+    const d = makeDaemonHarness("pidash", pi, { probeHealth: async () => false });
+    withSubagentChildEnv(undefined, () => { registerDaemonManageTool(pi); });
+
+    const { ctx } = createFakeCtx();
+    const res = await tools.get("daemon_manage").execute("c2", { name: "pidash", action: "start" }, undefined, undefined, ctx);
+    assert.equal(res.details.ok, true);
+    assert.equal(d.spawns.length, 1);
+    assert.match(res.content[0].text, /pidash started at http:\/\/localhost:19601/);
+  });
+
+  it("stops a daemon via daemon_manage", async () => {
+    const { pi, tools } = makeToolPi();
+    const d = makeDaemonHarness("pidiff", pi);
+    withSubagentChildEnv(undefined, () => { registerDaemonManageTool(pi); });
+
+    const { ctx } = createFakeCtx();
+    const res = await tools.get("daemon_manage").execute("c3", { name: "pidiff", action: "stop" }, undefined, undefined, ctx);
+    assert.equal(res.details.ok, true);
+    assert.equal(d.getStops(), 1);
+    assert.match(res.content[0].text, /pidiff server stopped/);
+  });
+
+  it("restarts a daemon preserving prepareRestart port", async () => {
+    const { pi, tools } = makeToolPi();
+    const d = makeDaemonHarness("pidiff", pi, { prepareRestart: () => 19655 });
+    withSubagentChildEnv(undefined, () => { registerDaemonManageTool(pi); });
+
+    const { ctx } = createFakeCtx();
+    const res = await tools.get("daemon_manage").execute("c4", { name: "pidiff", action: "restart" }, undefined, undefined, ctx);
+    assert.equal(res.details.ok, true);
+    assert.equal(d.getStops(), 1);
+    assert.deepEqual(d.spawns, [{ mode: "restart", preferredPort: 19655 }]);
+    assert.match(res.content[0].text, /pidiff restarted at http:\/\/localhost:19655/);
+  });
+
+  it("handles disabled daemons cleanly without throwing", async () => {
+    const { pi, tools } = makeToolPi();
+    registerDaemonCommand(pi, "pidash", false, "pidash_enable");
+    withSubagentChildEnv(undefined, () => { registerDaemonManageTool(pi); });
+
+    const { ctx } = createFakeCtx();
+    const res = await tools.get("daemon_manage").execute("c5", { name: "pidash", action: "status" }, undefined, undefined, ctx);
+    assert.equal(res.details.ok, false);
+    assert.equal(res.details.disabled, true);
+    assert.match(res.content[0].text, /pidash is disabled/);
+  });
+
+  it("discovers daemons registered on a separate extension api via shared events bus", async () => {
+    const makeEvents = createSharedBus();
+    const orch = makeToolPi(makeEvents());
+    const pidashExt = makeToolPi(makeEvents());
+    const pidiffExt = makeToolPi(makeEvents());
+
+    // Load order: pidash before orchestrator, pidiff after orchestrator
+    makeDaemonHarness("pidash", pidashExt.pi, { port: 19700, probeHealth: async () => true });
+    withSubagentChildEnv(undefined, () => { registerDaemonManageTool(orch.pi); });
+    makeDaemonHarness("pidiff", pidiffExt.pi, { port: 19701, probeHealth: async () => false });
+
+    const { ctx } = createFakeCtx();
+    const dashRes = await orch.tools.get("daemon_manage").execute("c6", { name: "pidash", action: "status" }, undefined, undefined, ctx);
+    const diffRes = await orch.tools.get("daemon_manage").execute("c7", { name: "pidiff", action: "status" }, undefined, undefined, ctx);
+
+    assert.match(dashRes.content[0].text, /Server: running[\s\S]*Port: 19700/);
+    assert.match(diffRes.content[0].text, /Server: stopped[\s\S]*Port: 19701/);
+  });
+
+  it("reports clearly when a requested daemon extension is not loaded", async () => {
+    const { pi, tools } = makeToolPi();
+    withSubagentChildEnv(undefined, () => { registerDaemonManageTool(pi); });
+
+    const { ctx } = createFakeCtx();
+    const res = await tools.get("daemon_manage").execute("c8", { name: "pidiff", action: "status" }, undefined, undefined, ctx);
+    assert.equal(res.details.ok, false);
+    assert.match(res.content[0].text, /not loaded in this session/i);
+  });
+
+  it("returns an unavailable error when beforeCommand guard rejects the action", async () => {
+    const { pi, tools } = makeToolPi();
+    const d = makeDaemonHarness("pidash", pi, { beforeCommand: () => false });
+    withSubagentChildEnv(undefined, () => { registerDaemonManageTool(pi); });
+
+    const { ctx } = createFakeCtx();
+    const res = await tools.get("daemon_manage").execute("c9", { name: "pidash", action: "stop" }, undefined, undefined, ctx);
+    assert.equal(res.details.ok, false);
+    assert.equal(d.getStops(), 0);
+    assert.match(res.content[0].text, /unavailable/i);
+  });
+
+  it("skips daemon_manage tool registration in subagent children", () => {
+    const { pi, tools } = makeToolPi();
+    withSubagentChildEnv("1", () => { registerDaemonManageTool(pi); });
+    assert.equal(tools.has("daemon_manage"), false);
   });
 });

@@ -16,6 +16,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { createLogger, type Logger } from "./logger.js";
 import { findJitiPath } from "./find-jiti.js";
 import { isLiveExtensionCtx } from "./live-ctx.js";
@@ -186,15 +187,70 @@ export function getGitBranch(cwd: string): string {
   } catch { return ""; }
 }
 
-/** Register `/<name> start|stop|restart|status` for a daemon extension (enabled or disabled). */
+export type DaemonAction = "status" | "start" | "stop" | "restart";
+
+export interface DaemonActionResult {
+  ok: boolean;
+  text: string;
+  port?: number | null;
+  running?: boolean;
+  connected?: boolean;
+  disabled?: boolean;
+  abortedByGuard?: boolean;
+}
+
+export type DaemonActionExecutor = (
+  action: DaemonAction,
+  ctx: any,
+  opts?: { notifyProgress?: boolean },
+) => Promise<DaemonActionResult>;
+
+const DAEMON_REGISTER_EVENT = "daemon:register-handler";
+const DAEMON_REQUEST_EVENT = "daemon:request-handlers";
+
+const localDaemonHandlers = new WeakMap<ExtensionAPI, Map<string, DaemonActionExecutor>>();
+
+function recordLocalDaemonHandler(pi: ExtensionAPI, name: string, executor: DaemonActionExecutor): void {
+  let map = localDaemonHandlers.get(pi);
+  if (!map) {
+    map = new Map<string, DaemonActionExecutor>();
+    localDaemonHandlers.set(pi, map);
+  }
+  map.set(name, executor);
+}
+
+/** Register `/<name> start|stop|restart|status` for a daemon extension (enabled or disabled)
+ *  and publish its action executor for the `daemon_manage` LLM tool. */
 export function registerDaemonCommand(
   pi: ExtensionAPI,
   name: string,
   enabled: boolean,
   settingKey: string,
   handler?: (args: string, ctx: any) => Promise<void> | void,
+  actionExecutor?: DaemonActionExecutor,
 ): void {
   const envKey = `PI_${settingKey.toUpperCase()}`;
+  const disabledMessage = `${name} is disabled (${settingKey}=false in pi-config-settings.json or ${envKey}=false).`;
+
+  const resolvedExecutor: DaemonActionExecutor = enabled && actionExecutor
+    ? actionExecutor
+    : async () => ({ ok: false, disabled: true, text: disabledMessage });
+
+  recordLocalDaemonHandler(pi, name, resolvedExecutor);
+  const publishHandler = () => {
+    try {
+      pi.events?.emit?.(DAEMON_REGISTER_EVENT, { name, execute: resolvedExecutor });
+    } catch (e: any) {
+      log.debug("daemon_handler_emit_failed", { name, error: e?.message ?? String(e) });
+    }
+  };
+  publishHandler();
+  try {
+    pi.events?.on?.(DAEMON_REQUEST_EVENT, publishHandler);
+  } catch (e: any) {
+    log.debug("daemon_handler_subscribe_failed", { name, error: e?.message ?? String(e) });
+  }
+
   pi.registerCommand(name, {
     description: `Manage ${name} server — /${name} start|stop|restart|status`,
     getArgumentCompletions: (prefix: string) => {
@@ -210,12 +266,70 @@ export function registerDaemonCommand(
       ? async (args, ctx) => { await handler(args, ctx); }
       : async (_args, ctx) => {
           if (ctx.hasUI) {
-            ctx.ui.notify(
-              `${name} is disabled (${settingKey}=false in pi-config-settings.json or ${envKey}=false).`,
-              "info",
-            );
+            ctx.ui.notify(disabledMessage, "info");
           }
         },
+  });
+}
+
+/** Register the `daemon_manage` LLM tool wired to all registered daemon extensions (pidash, pidiff). */
+export function registerDaemonManageTool(pi: ExtensionAPI): void {
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+  if (typeof pi.registerTool !== "function") return;
+
+  const busHandlers = new Map<string, DaemonActionExecutor>();
+  try {
+    pi.events?.on?.(DAEMON_REGISTER_EVENT, (data: unknown) => {
+      const payload = data as { name?: unknown; execute?: unknown } | null;
+      if (typeof payload?.name === "string" && typeof payload?.execute === "function") {
+        busHandlers.set(payload.name, payload.execute as DaemonActionExecutor);
+        log.debug("daemon_manage_handler_registered", { name: payload.name });
+      }
+    });
+    pi.events?.emit?.(DAEMON_REQUEST_EVENT, undefined);
+  } catch (e: any) {
+    log.debug("daemon_manage_bus_init_failed", { error: e?.message ?? String(e) });
+  }
+
+  pi.registerTool({
+    name: "daemon_manage",
+    label: "Daemon Manage",
+    description:
+      "Inspect or control local pi-config background daemons (pidash web dashboard or pidiff diff viewer): status, start, stop, or restart (equivalent to /pidash and /pidiff).",
+    parameters: Type.Object({
+      name: Type.Union([Type.Literal("pidash"), Type.Literal("pidiff")], {
+        description: "Daemon name: 'pidash' (web dashboard) or 'pidiff' (diff viewer).",
+      }),
+      action: Type.Union(
+        [Type.Literal("status"), Type.Literal("start"), Type.Literal("stop"), Type.Literal("restart")],
+        { description: "Operation to perform on the daemon." },
+      ),
+    }),
+    async execute(_callId, params, _signal, _onUpdate, ctx) {
+      let executor = busHandlers.get(params.name) ?? localDaemonHandlers.get(pi)?.get(params.name);
+      if (!executor) {
+        try { pi.events?.emit?.(DAEMON_REQUEST_EVENT, undefined); } catch {}
+        executor = busHandlers.get(params.name) ?? localDaemonHandlers.get(pi)?.get(params.name);
+      }
+      if (!executor) {
+        log.warn("daemon_manage_unregistered", { name: params.name, action: params.action });
+        return {
+          content: [{ type: "text" as const, text: `Daemon "${params.name}" is not loaded in this session.` }],
+          details: { ok: false, name: params.name, action: params.action },
+        };
+      }
+      const res = await executor(params.action, ctx, { notifyProgress: false });
+      log.info("daemon_manage_executed", {
+        name: params.name,
+        action: params.action,
+        ok: res.ok,
+        disabled: Boolean(res.disabled),
+      });
+      return {
+        content: [{ type: "text" as const, text: res.text }],
+        details: { name: params.name, action: params.action, ...res },
+      };
+    },
   });
 }
 
@@ -363,6 +477,8 @@ export interface DaemonClient {
   connect: (ctx: any) => Promise<void>;
   /** Handle `/<name> start|stop|restart|status` (already registered on `pi`). */
   handleCommand: (args: string, ctx: any) => Promise<void>;
+  /** Programmatically execute a daemon action (shared by `/<name>` and `daemon_manage`). */
+  executeAction: DaemonActionExecutor;
   /** Permanently tear down timers, heartbeat, reconnect poller, and WebSocket. */
   shutdown: (event?: any) => void;
 }
@@ -679,73 +795,125 @@ export function createDaemonClient<TConnectData = void>(
     }
   }
 
-  async function handleCommand(args: string, ctx: any): Promise<void> {
-    if (adapter.beforeCommand?.(args, ctx) === false) return;
+  async function executeAction(
+    action: DaemonAction,
+    ctx: any,
+    opts?: { notifyProgress?: boolean },
+  ): Promise<DaemonActionResult> {
+    if (adapter.beforeCommand?.(action, ctx) === false) {
+      return {
+        ok: false,
+        abortedByGuard: true,
+        text: `${adapter.name} is unavailable in the current mode.`,
+      };
+    }
 
-    const cmd = (args || "").trim().toLowerCase();
     const hint = adapter.startFailureHint ?? "";
+    const notifyProgress = opts?.notifyProgress === true;
 
-    if (cmd === "stop") {
+    if (action === "stop") {
       disconnect();
       await adapter.stopDaemon(ctx);
       if (ctx?.hasUI) {
         ctx.ui.setStatus(adapter.statusKey, undefined);
-        ctx.ui.notify(`${adapter.name} server stopped`, "info");
       }
-      return;
+      return { ok: true, running: false, connected: false, text: `${adapter.name} server stopped` };
     }
 
-    if (cmd === "start") {
+    if (action === "start") {
       const livePort = await findRunningPort(ctx);
       if (livePort !== null) {
         adapter.onPortResolved?.(livePort);
-        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} already running at http://localhost:${livePort}`, "info");
         if (!connected) void connect(ctx, livePort);
-        return;
+        return {
+          ok: true,
+          port: livePort,
+          running: true,
+          connected,
+          text: `${adapter.name} already running at http://localhost:${livePort}`,
+        };
       }
       const port = await adapter.spawn(ctx, { mode: "start", preferredPort: null });
-      if (ctx?.hasUI) ctx.ui.notify(`Starting ${adapter.name} server...`, "info");
+      if (notifyProgress && ctx?.hasUI) ctx.ui.notify(`Starting ${adapter.name} server...`, "info");
       if (await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
         adapter.onPortResolved?.(port);
         void connect(ctx, port);
-        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} started at http://localhost:${port}`, "info");
-      } else {
-        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} failed to start${hint}`, "warning");
+        return {
+          ok: true,
+          port,
+          running: true,
+          connected,
+          text: `${adapter.name} started at http://localhost:${port}`,
+        };
       }
-      return;
+      return {
+        ok: false,
+        port,
+        running: false,
+        connected,
+        text: `${adapter.name} failed to start${hint}`,
+      };
     }
 
-    if (cmd === "restart") {
+    if (action === "restart") {
       disconnect();
       const preferredPort = adapter.prepareRestart?.(ctx) ?? null;
       await adapter.stopDaemon(ctx);
       await sleep(restartWaitMs);
       const port = await adapter.spawn(ctx, { mode: "restart", preferredPort });
-      if (ctx?.hasUI) ctx.ui.notify(`Restarting ${adapter.name} server...`, "info");
+      if (notifyProgress && ctx?.hasUI) ctx.ui.notify(`Restarting ${adapter.name} server...`, "info");
       if (await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
         adapter.onPortResolved?.(port);
         void connect(ctx, port);
-        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} restarted at http://localhost:${port}`, "info");
-      } else {
-        if (ctx?.hasUI) ctx.ui.notify(`${adapter.name} failed to restart${hint}`, "warning");
+        return {
+          ok: true,
+          port,
+          running: true,
+          connected,
+          text: `${adapter.name} restarted at http://localhost:${port}`,
+        };
       }
-      return;
+      return {
+        ok: false,
+        port,
+        running: false,
+        connected,
+        text: `${adapter.name} failed to restart${hint}`,
+      };
     }
 
-    if (cmd === "status" || cmd === "" || !adapter.strictCommandUsage) {
-      const statusPort = getStatusPort(ctx);
-      const running = statusPort ? await probeHealth(statusPort) : false;
-      let msg = `Server: ${running ? "running" : "stopped"}\nPort: ${statusPort || "(none)"}\n`;
-      msg += `Extension: ${connected ? "connected" : "disconnected"}`;
-      if (statusPort) msg += `\nURL: http://localhost:${statusPort}`;
-      if (ctx?.hasUI) ctx.ui.notify(msg, "info");
-      return;
-    }
-
-    if (ctx?.hasUI) ctx.ui.notify(`Usage: /${adapter.name} start|stop|restart|status`, "info");
+    const statusPort = getStatusPort(ctx);
+    const running = statusPort ? await probeHealth(statusPort) : false;
+    let msg = `Server: ${running ? "running" : "stopped"}\nPort: ${statusPort || "(none)"}\n`;
+    msg += `Extension: ${connected ? "connected" : "disconnected"}`;
+    if (statusPort) msg += `\nURL: http://localhost:${statusPort}`;
+    return { ok: true, port: statusPort, running, connected, text: msg };
   }
 
-  registerDaemonCommand(pi, adapter.name, true, adapter.settingKey, handleCommand);
+  async function handleCommand(args: string, ctx: any): Promise<void> {
+    const cmd = (args || "").trim().toLowerCase();
+    const validActions: DaemonAction[] = ["stop", "start", "restart", "status"];
+    let action: DaemonAction | null = null;
+    if (validActions.includes(cmd as DaemonAction)) {
+      action = cmd as DaemonAction;
+    } else if (cmd === "" || !adapter.strictCommandUsage) {
+      action = "status";
+    }
+
+    if (!action) {
+      if (adapter.beforeCommand?.(args, ctx) === false) return;
+      if (ctx?.hasUI) ctx.ui.notify(`Usage: /${adapter.name} start|stop|restart|status`, "info");
+      return;
+    }
+
+    const res = await executeAction(action, ctx, { notifyProgress: true });
+    if (res.abortedByGuard) return;
+    if (ctx?.hasUI) {
+      ctx.ui.notify(res.text, res.ok ? "info" : "warning");
+    }
+  }
+
+  registerDaemonCommand(pi, adapter.name, true, adapter.settingKey, handleCommand, executeAction);
 
   // Reconnect fallback on tool_result (/reload recovery)
   pi.on("tool_result", (_event, ctx) => {
@@ -793,6 +961,7 @@ export function createDaemonClient<TConnectData = void>(
     send,
     connect,
     handleCommand,
+    executeAction,
     shutdown,
   };
 }
