@@ -1,5 +1,19 @@
 # Changelog
 
+## [6.1.0] - 2026-11-26
+
+- Adopted Pi 1.6.1 `blockedKind` (OSC 7501 Program Status Kind) in `ui-bridge.ts` and
+  `enforcement.ts` (`confirm()` defaults to `"permission"`, dangerous-bash approval selects pass
+  `{ blockedKind: "permission" }`, forwarded on both custom and fallback dialogs) (#1411).
+- Passed `--type text/plain` to `wl-copy` in `worktree-helpers.ts` for Wayland/Klipper clipboard
+  compatibility (#1411).
+- Registered `after_provider_response` in `provider-stream-log.ts` to log HTTP 4xx/5xx provider
+  responses at `warn` with allowlisted truncated retry headers (`retry-after`, `x-request-id`,
+  `request-id`, `cf-ray`) while keeping chunk-level stream logging gated on debug (#1411).
+- Surfaced `details.fullOutputError` warnings inline on both direct and async-agent PiDash tool
+  cards (`pidash-transcript-reducer.ts`) and documented `compat.supportsStrictMode` for custom and
+  gateway-prefixed Gemini 3+/4 models in `docs/pi-sidecar.md` (#1411).
+
 ## [6.0.0] - 2026-11-25
 
 - **BREAKING CHANGE:** Simplified `/tasks`, `/cron`, `/coms`, `/worktree`, `/pi-config-settings`,
