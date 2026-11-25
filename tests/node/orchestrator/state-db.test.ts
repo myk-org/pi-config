@@ -197,7 +197,7 @@ describe("state-db: schema init, WAL pragmas, and handle lifecycle", () => {
     assert.equal(db.prepare("SELECT 1 FROM kv_state WHERE store_key = 'inner-fail'").get(), undefined);
   });
 
-  it("upgrades a legacy v1 state.db lacking source_mtime_ms and source_size on migrated_stores without losing rows", () => {
+  it("upgrades a legacy v1 state.db to schema v2 without losing migrated_stores rows", () => {
     const cwd = trackTempDir("state-db-v1-upgrade-");
     const dbPath = getProjectStateDbPath(cwd);
     const legacyPath = join(cwd, ".pi", "memory", "memory-scores.jsonl");
