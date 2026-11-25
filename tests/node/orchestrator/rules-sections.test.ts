@@ -20,11 +20,17 @@ import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
 const originalChild = process.env.PI_SUBAGENT_CHILD;
+const originalSupervised = process.env.PI_COMS_SUPERVISED_PEER;
 
-before(() => delete process.env.PI_SUBAGENT_CHILD);
+before(() => {
+  delete process.env.PI_SUBAGENT_CHILD;
+  delete process.env.PI_COMS_SUPERVISED_PEER;
+});
 after(() => {
   if (originalChild === undefined) delete process.env.PI_SUBAGENT_CHILD;
   else process.env.PI_SUBAGENT_CHILD = originalChild;
+  if (originalSupervised === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+  else process.env.PI_COMS_SUPERVISED_PEER = originalSupervised;
 });
 
 interface CapturedHandler {
@@ -511,6 +517,71 @@ describe("before_agent_start section injection", () => {
       clearSettingsCache();
       fs.rmSync(cwd, { recursive: true, force: true });
       fs.rmSync(pkgRulesDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes ask_user User Interaction rule for interactive TUI sessions (#1403)", async () => {
+    const cwd = makeTempDir("rules-tui-ask-");
+    try {
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+      const event = makeEvent(cwd);
+      await h.fn(event, { cwd, hasUI: true, mode: "tui", sessionManager: { getSessionId: () => "sess-tui-1403" } });
+      const rules = event.systemPromptOptions.sections.orchestrator_rules;
+      assert.match(rules, /always use the `ask_user` tool/);
+      assert.doesNotMatch(rules, /No interactive TUI is attached to this session/);
+    } finally {
+      resetSessionBridge({ all: true });
+      clearRulesCache();
+      clearSettingsCache();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces ask_user rule with coms_send routing for supervised COMS peers (#1403)", async () => {
+    const cwd = makeTempDir("rules-sup-coms-");
+    const prev = process.env.PI_COMS_SUPERVISED_PEER;
+    process.env.PI_COMS_SUPERVISED_PEER = "1";
+    try {
+      setComsActive(true, "sess-sup-1403");
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+      const event = makeEvent(cwd);
+      await h.fn(event, { cwd, hasUI: true, mode: "rpc", sessionManager: { getSessionId: () => "sess-sup-1403" } });
+      const rules = event.systemPromptOptions.sections.orchestrator_rules;
+      assert.doesNotMatch(rules, /always use the `ask_user` tool/);
+      assert.match(rules, /No interactive TUI is attached to this session/);
+      assert.match(rules, /via `coms_send`/);
+    } finally {
+      if (prev === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+      else process.env.PI_COMS_SUPERVISED_PEER = prev;
+      resetSessionBridge({ all: true });
+      clearRulesCache();
+      clearSettingsCache();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces ask_user rule with stop-and-report guidance for standalone non-TUI sessions (#1403)", async () => {
+    const cwd = makeTempDir("rules-standalone-nontui-");
+    try {
+      setComsActive(false, "sess-print-1403");
+      const { pi, handlers } = makeMockPi();
+      registerRules(pi);
+      const h = getBeforeAgentStart(handlers);
+      const event = makeEvent(cwd);
+      await h.fn(event, { cwd, hasUI: false, mode: "print", sessionManager: { getSessionId: () => "sess-print-1403" } });
+      const rules = event.systemPromptOptions.sections.orchestrator_rules;
+      assert.doesNotMatch(rules, /always use the `ask_user` tool/);
+      assert.match(rules, /No interactive TUI is attached to this session/);
+      assert.match(rules, /stop and report the blocker/);
+    } finally {
+      resetSessionBridge({ all: true });
+      clearRulesCache();
+      clearSettingsCache();
+      fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
 });

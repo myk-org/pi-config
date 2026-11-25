@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { registerAskUser } from "../../../extensions/orchestrator/ask-user.js";
 import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import { checkSyncLimit, registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
-import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+import { withSubagentChildEnv, withSupervisedComsPeerEnv } from "../helpers/subagent-env.js";
 
 function registerTools() {
 	let subagentTool: any;
@@ -17,12 +17,14 @@ function registerTools() {
 	};
 
 	withSubagentChildEnv(undefined, () => {
-		registerSubagentTool(
-			pi as any,
-			() => ({ id: "1" }),
-			() => ({ killed: [], errors: [] }),
-		);
-		registerAskUser(pi as any, () => {});
+		withSupervisedComsPeerEnv(undefined, () => {
+			registerSubagentTool(
+				pi as any,
+				() => ({ id: "1" }),
+				() => ({ killed: [], errors: [] }),
+			);
+			registerAskUser(pi as any, () => {});
+		});
 	});
 
 	return { subagentTool, askUserTool };
