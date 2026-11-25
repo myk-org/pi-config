@@ -493,6 +493,8 @@ function sendEnvelope(endpoint: string, envelope: Envelope | Pong | { type: stri
 	});
 }
 
+export const PENDING_REPLY_CLEANUP_DELAY_MS = 60_000;
+
 const HEADLESS_PEER_ASK_USER_GUIDANCE =
 	"Headless COMS peer: `ask_user` is blocked/unavailable because no interactive TUI is attached. " +
 	"Never call `ask_user` — whenever you need user input, decisions, clarifications, or approvals, " +
@@ -1110,7 +1112,7 @@ export function createComsPeerRuntime(
 			pendingReplyCleanupTimers.delete(timer);
 			pendingReplies.delete(msgId);
 			maybeRefreshWidget();
-		}, 60_000);
+		}, PENDING_REPLY_CLEANUP_DELAY_MS);
 		timer.unref?.();
 		pendingReplyCleanupTimers.add(timer);
 	}

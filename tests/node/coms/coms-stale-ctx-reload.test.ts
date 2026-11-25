@@ -1,16 +1,15 @@
 /**
- * Regression tests for coms-p2p stale-ctx reload crash & untracked 60s cleanup timers (#1404).
+ * Regression tests for coms-p2p stale-ctx reload safety and cleanup timers (#1404).
  *
  * In Pi 1.6+, reading `.mode` or `.hasUI` on an extension `ctx` captured before `/reload`
  * or session replacement throws `This extension ctx is stale after session replacement or reload`.
- * These tests verify that widget refreshes, 60s pendingReplies cleanup timers, `installPoolWidget`,
- * and `cleanShutdown` all guard against stale contexts and cancel pending cleanup timers on shutdown.
+ * These tests verify observable behavior under stale contexts and shutdown using fake timers.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import comsP2p from "../../../extensions/coms/coms-p2p.js";
+import comsP2p, { PENDING_REPLY_CLEANUP_DELAY_MS } from "../../../extensions/coms/coms-p2p.js";
 import { resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -81,8 +80,6 @@ function makeWorkspace(): string {
 interface SwitchableCtx {
 	ctx: any;
 	makeStale: () => void;
-	getHasUIReads: () => number;
-	getModeReads: () => number;
 }
 
 function makeSwitchableCtx(
@@ -91,19 +88,15 @@ function makeSwitchableCtx(
 	assistantText?: () => string,
 ): SwitchableCtx {
 	let stale = false;
-	let hasUIReads = 0;
-	let modeReads = 0;
 
 	const ctx: any = {
 		cwd,
 		model: { id: "test-model" },
 		get mode() {
-			modeReads++;
 			if (stale) throw new Error(STALE_CTX_ERROR);
 			return "tui";
 		},
 		get hasUI() {
-			hasUIReads++;
 			if (stale) throw new Error(STALE_CTX_ERROR);
 			return true;
 		},
@@ -127,16 +120,15 @@ function makeSwitchableCtx(
 	return {
 		ctx,
 		makeStale: () => { stale = true; },
-		getHasUIReads: () => hasUIReads,
-		getModeReads: () => modeReads,
 	};
 }
 
+/** Poll using setImmediate so fake setTimeout timers do not block socket I/O completion. */
 async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (await predicate()) return;
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 	throw new Error(`Timed out after ${timeoutMs}ms waiting for condition`);
 }
@@ -168,8 +160,8 @@ async function startPeer(opts: {
 	return pi;
 }
 
-describe("coms-p2p stale-ctx reload safety and 60s cleanup timers", { concurrency: false }, () => {
-	it("clears tracked 60s pendingReplies cleanup timers on cleanShutdown", async () => {
+describe("coms-p2p stale-ctx reload safety and cleanup timers", { concurrency: false }, () => {
+	it("cancels pending reply cleanup timers on cleanShutdown so no post-shutdown refresh fires", async (t) => {
 		const workspace = makeWorkspace();
 		const senderCtx = makeSwitchableCtx(workspace, "sender-timer-clear");
 		const receiverCtx = makeSwitchableCtx(workspace, "receiver-timer-clear", () => "done");
@@ -189,21 +181,7 @@ describe("coms-p2p stale-ctx reload safety and 60s cleanup timers", { concurrenc
 			ctx: receiverCtx.ctx,
 		});
 
-		const origSetTimeout = globalThis.setTimeout;
-		const origClearTimeout = globalThis.clearTimeout;
-		const cleanupTimers = new Set<NodeJS.Timeout>();
-		const clearedTimers = new Set<NodeJS.Timeout>();
-
-		(globalThis as any).setTimeout = ((fn: (...args: any[]) => void, delay?: number, ...args: any[]) => {
-			const handle = origSetTimeout(fn, delay, ...args);
-			if (delay === 60_000) cleanupTimers.add(handle);
-			return handle;
-		}) as typeof setTimeout;
-		(globalThis as any).clearTimeout = ((handle?: NodeJS.Timeout) => {
-			if (handle) clearedTimers.add(handle);
-			return origClearTimeout(handle);
-		}) as typeof clearTimeout;
-
+		t.mock.timers.enable({ apis: ["setTimeout"] });
 		try {
 			const sendRes = await sender.tools.get("coms_send").execute("s1", {
 				target: "receiver",
@@ -216,21 +194,26 @@ describe("coms-p2p stale-ctx reload safety and 60s cleanup timers", { concurrenc
 				message: { role: "custom", details: { msg_id: msgId } },
 			});
 			await receiver.handlers.get("agent_end")!({}, receiverCtx.ctx);
-
-			await waitUntil(() => cleanupTimers.size > 0);
-			assert.equal(cleanupTimers.size, 1, "expected one 60s pendingReplies cleanup timer");
+			await waitUntil(() => sender.messages.some((m) => m.details?.msg_id === msgId));
 
 			await sender.shutdown();
-			for (const timer of cleanupTimers) {
-				assert.ok(clearedTimers.has(timer), "cleanShutdown must clear every tracked 60s cleanup timer");
-			}
+
+			let postShutdownWidgetCalls = 0;
+			let postShutdownPeerEmits = 0;
+			senderCtx.ctx.ui.setWidget = () => { postShutdownWidgetCalls++; };
+			sender.events.on("pidash:coms-peers", () => { postShutdownPeerEmits++; });
+
+			assert.doesNotThrow(() => {
+				t.mock.timers.tick(PENDING_REPLY_CLEANUP_DELAY_MS + 1_000);
+			});
+			assert.equal(postShutdownWidgetCalls, 0, "no post-shutdown widget refresh may fire");
+			assert.equal(postShutdownPeerEmits, 0, "no post-shutdown peer refresh may emit");
 		} finally {
-			globalThis.setTimeout = origSetTimeout;
-			globalThis.clearTimeout = origClearTimeout;
+			t.mock.timers.reset();
 		}
 	});
 
-	it("does not throw when a 60s pendingReplies cleanup timer triggers maybeRefreshWidget on a stale ctx", async () => {
+	it("does not throw when pending reply cleanup fires after ctx becomes stale", async (t) => {
 		const workspace = makeWorkspace();
 		const senderCtx = makeSwitchableCtx(workspace, "sender-stale-refresh");
 		const receiverCtx = makeSwitchableCtx(workspace, "receiver-stale-refresh", () => "reply");
@@ -250,19 +233,7 @@ describe("coms-p2p stale-ctx reload safety and 60s cleanup timers", { concurrenc
 			ctx: receiverCtx.ctx,
 		});
 
-		const origSetTimeout = globalThis.setTimeout;
-		const capturedCallbacks: Array<() => void> = [];
-		const capturedHandles: NodeJS.Timeout[] = [];
-
-		(globalThis as any).setTimeout = ((fn: (...args: any[]) => void, delay?: number, ...args: any[]) => {
-			const handle = origSetTimeout(fn, delay, ...args);
-			if (delay === 60_000) {
-				capturedCallbacks.push(() => fn(...args));
-				capturedHandles.push(handle);
-			}
-			return handle;
-		}) as typeof setTimeout;
-
+		t.mock.timers.enable({ apis: ["setTimeout"] });
 		try {
 			const sendRes = await sender.tools.get("coms_send").execute("s2", {
 				target: "receiver",
@@ -275,52 +246,42 @@ describe("coms-p2p stale-ctx reload safety and 60s cleanup timers", { concurrenc
 				message: { role: "custom", details: { msg_id: msgId } },
 			});
 			await receiver.handlers.get("agent_end")!({}, receiverCtx.ctx);
+			await waitUntil(() => sender.messages.some((m) => m.details?.msg_id === msgId));
 
-			await waitUntil(() => capturedCallbacks.length > 0);
-
-			// Simulate /reload marking the captured ctx stale before the 60s cleanup fires.
+			// Simulate /reload marking the captured ctx stale before the delayed cleanup fires.
 			senderCtx.makeStale();
 			assert.doesNotThrow(() => {
-				for (const cb of capturedCallbacks) cb();
+				t.mock.timers.tick(PENDING_REPLY_CLEANUP_DELAY_MS + 1_000);
 			});
 		} finally {
-			globalThis.setTimeout = origSetTimeout;
-			for (const h of capturedHandles) clearTimeout(h);
+			t.mock.timers.reset();
 		}
 	});
 
-	it("installPoolWidget checks isLiveExtensionCtx before reading ctx.hasUI", async () => {
+	it("installPoolWidget skips widget setup without throwing on a stale ctx", async () => {
 		const workspace = makeWorkspace();
 		const staleProbe = makeSwitchableCtx(workspace, "stale-install-probe");
-		let hasUIReadsAtInstall = 0;
-		let modeReadsAtInstall = 0;
 		let setWidgetCalls = 0;
 
-		// Flip ctx stale inside setStatus — the exact line immediately before installPoolWidget(ctx)
-		// in startPeer — so installPoolWidget receives a stale ctx directly.
+		// Flip ctx stale inside setStatus — right before installPoolWidget(ctx) in startPeer —
+		// so installPoolWidget receives a stale ctx directly.
 		staleProbe.ctx.ui.setStatus = () => {
 			staleProbe.makeStale();
-			hasUIReadsAtInstall = staleProbe.getHasUIReads();
-			modeReadsAtInstall = staleProbe.getModeReads();
 		};
 		staleProbe.ctx.ui.setWidget = () => {
 			setWidgetCalls++;
 		};
 
-		await startPeer({
-			name: "probe-peer",
-			sessionId: "stale-install-probe",
-			project: "p-stale-install",
-			cwd: workspace,
-			ctx: staleProbe.ctx,
-		});
-
-		assert.ok(staleProbe.getModeReads() > modeReadsAtInstall, "isLiveExtensionCtx must probe ctx.mode first");
-		assert.equal(
-			staleProbe.getHasUIReads(),
-			hasUIReadsAtInstall,
-			"ctx.hasUI must not be read once isLiveExtensionCtx detects a stale ctx",
+		await assert.doesNotReject(() =>
+			startPeer({
+				name: "probe-peer",
+				sessionId: "stale-install-probe",
+				project: "p-stale-install",
+				cwd: workspace,
+				ctx: staleProbe.ctx,
+			}),
 		);
+
 		assert.equal(setWidgetCalls, 0, "stale ctx must never install the coms-pool widget");
 	});
 
