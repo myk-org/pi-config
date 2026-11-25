@@ -196,6 +196,112 @@ describe("state-db: schema init, WAL pragmas, and handle lifecycle", () => {
     assert.ok(db.prepare("SELECT 1 FROM kv_state WHERE store_key = 'outer'").get());
     assert.equal(db.prepare("SELECT 1 FROM kv_state WHERE store_key = 'inner-fail'").get(), undefined);
   });
+
+  it("upgrades a legacy v1 state.db to schema v2 without losing migrated_stores rows", () => {
+    const cwd = trackTempDir("state-db-v1-upgrade-");
+    const dbPath = getProjectStateDbPath(cwd);
+    const legacyPath = join(cwd, ".pi", "memory", "memory-scores.jsonl");
+    mkdirSync(dirname(dbPath), { recursive: true });
+
+    const hash = entryHash("- [lesson] Preserve v1 rows on schema v2 upgrade");
+    const existingEntry: ScoredEntry = {
+      class: "lesson",
+      score: 2.5,
+      evidenceCount: 3,
+      cue: "explicit",
+      firstSeen: "2026-01-01T00:00:00.000Z",
+      lastReinforced: "2026-01-02T00:00:00.000Z",
+      userState: "pinned",
+      lifecycle: "active",
+    };
+    const existingPayload = {
+      entries: { [hash]: existingEntry },
+      lastRebuild: "2026-01-02T00:00:00.000Z",
+      hashAlgo: "sha256-16",
+    };
+
+    // Build a real legacy v1 state.db whose migrated_stores has only (store_key, source_path, migrated_at)
+    const v1Db = new DatabaseSync(dbPath);
+    try {
+      v1Db.exec(`
+        CREATE TABLE schema_version (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        );
+        CREATE TABLE kv_state (
+          store_key TEXT PRIMARY KEY,
+          payload TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE migrated_stores (
+          store_key TEXT PRIMARY KEY,
+          source_path TEXT NOT NULL,
+          migrated_at TEXT NOT NULL
+        );
+        CREATE TABLE embedding_meta (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          model TEXT NOT NULL,
+          dim INTEGER NOT NULL,
+          pooling TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE embeddings (
+          entry_key TEXT PRIMARY KEY,
+          vector BLOB NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      v1Db
+        .prepare("INSERT INTO schema_version (version, applied_at) VALUES (?, ?)")
+        .run(1, "2026-01-01T00:00:00.000Z");
+      v1Db
+        .prepare("INSERT INTO kv_state (store_key, payload, revision, updated_at) VALUES (?, ?, ?, ?)")
+        .run("memory-scoring", JSON.stringify(existingPayload), 2, "2026-01-02T00:00:00.000Z");
+      v1Db
+        .prepare("INSERT INTO migrated_stores (store_key, source_path, migrated_at) VALUES (?, ?, ?)")
+        .run("memory-scoring", legacyPath, "2026-01-01T00:00:00.000Z");
+    } finally {
+      v1Db.close();
+    }
+
+    // Opening and mutating via SqliteStateStore / loadScores / mutateScores must upgrade to v2 cleanly
+    const loaded = loadScores(cwd);
+    assert.equal(loaded.entries[hash]?.evidenceCount, 3);
+    assert.equal(loaded.entries[hash]?.userState, "pinned");
+
+    mutateScores(cwd, (s) => {
+      s.entries[hash]!.evidenceCount = 4;
+    });
+
+    const db = openStateDb(dbPath);
+    const version = db.prepare("SELECT MAX(version) AS v FROM schema_version").get() as { v: number };
+    assert.equal(version.v, CURRENT_SCHEMA_VERSION);
+    assert.equal(version.v, 2);
+
+    const migRow = db
+      .prepare(
+        "SELECT store_key, source_path, migrated_at, source_mtime_ms, source_size FROM migrated_stores WHERE store_key = ?",
+      )
+      .get("memory-scoring") as {
+      store_key: string;
+      source_path: string;
+      migrated_at: string;
+      source_mtime_ms: number;
+      source_size: number;
+    };
+    assert.deepEqual(
+      { ...migRow },
+      {
+        store_key: "memory-scoring",
+        source_path: legacyPath,
+        migrated_at: "2026-01-01T00:00:00.000Z",
+        source_mtime_ms: 0,
+        source_size: 0,
+      },
+    );
+    assert.equal(loadScores(cwd).entries[hash]?.evidenceCount, 4);
+  });
 });
 
 // ── Atomic mutate / SKIP_MUTATE & Revision Caching ─────────────────────────
