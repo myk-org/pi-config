@@ -1,6 +1,6 @@
 ---
 name: systematic-debugging
-description: "4-phase root cause debugging: understand bugs before fixing."
+description: "4-phase root cause debugging: understand bugs before fixing. Use when debugging bugs, test failures, crashes, or regressions before proposing a fix."
 ---
 
 # Systematic Debugging
