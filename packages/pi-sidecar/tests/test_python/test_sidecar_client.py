@@ -214,6 +214,20 @@ class TestDataclasses:
         assert result.text == "hello"
         assert result.usage is None
         assert result.session_id is None
+        assert result.replayed is False
+
+    def test_ai_result_positional_order_unchanged(self) -> None:
+        """replayed was appended, so existing positional calls keep their meaning."""
+        usage = AITokenUsage(input_tokens=10)
+        result = AIResult(True, "hello", usage, "sess-1", None, 200, "stop")
+        assert result.success is True
+        assert result.text == "hello"
+        assert result.usage is usage
+        assert result.session_id == "sess-1"
+        assert result.error is None
+        assert result.status_code == 200
+        assert result.stop_reason == "stop"
+        assert result.replayed is False
 
     def test_ai_token_usage_defaults(self) -> None:
         usage = AITokenUsage()
@@ -248,11 +262,16 @@ class TestDataclasses:
 # ---------------------------------------------------------------------------
 
 
-def _mock_response(status_code: int = 200, json_data: dict | list | None = None) -> httpx.Response:
+def _mock_response(
+    status_code: int = 200,
+    json_data: dict | list | None = None,
+    headers: dict[str, str] | None = None,
+) -> httpx.Response:
     """Build a fake httpx.Response."""
     return httpx.Response(
         status_code=status_code,
         json=json_data if json_data is not None else {},
+        headers=headers,
         request=httpx.Request("GET", "http://test"),
     )
 
@@ -831,6 +850,92 @@ class TestSidecarClient:
         assert result.success is True
         assert result.text == ""
         assert result.usage is not None
+
+    # -- prompt request_id (#1397) --
+    @pytest.mark.parametrize("kwargs", [{}, {"request_id": None}], ids=["omitted", "none"])
+    async def test_client_prompt_omits_request_id_when_unset(
+        self, client: SidecarClient, kwargs: dict[str, Any]
+    ) -> None:
+        """Backward compatibility: omit request_id from JSON payload when omitted or None."""
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"text": "Hello!"}))
+
+        result = await client.prompt("sess-1", "hi", **kwargs)
+
+        assert result.success is True
+        body = client._client.post.call_args.kwargs["json"]
+        assert body == {"message": "hi"}
+        assert "request_id" not in body
+
+    async def test_client_prompt_includes_request_id(self, client: SidecarClient) -> None:
+        """Supplying request_id includes it in the posted JSON payload."""
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"text": "Hello!"}))
+
+        result = await client.prompt("sess-1", "hi", request_id="req-123")
+
+        assert result.success is True
+        body = client._client.post.call_args.kwargs["json"]
+        assert body == {"message": "hi", "request_id": "req-123"}
+
+    async def test_client_prompt_forwards_empty_request_id(self, client: SidecarClient) -> None:
+        """Empty request_id is forwarded unchanged so the server's HTTP 400 surfaces on AIResult."""
+        error_msg = "request_id must be a non-empty string"
+        client._client.post = AsyncMock(return_value=_mock_response(400, {"error": error_msg}))
+
+        result = await client.prompt("sess-1", "hi", request_id="")
+
+        body = client._client.post.call_args.kwargs["json"]
+        assert body == {"message": "hi", "request_id": ""}
+        assert result.success is False
+        assert result.status_code == 400
+        assert result.error == error_msg
+        assert result.text == error_msg
+
+    async def test_client_prompt_surfaces_request_id_conflict_409(self, client: SidecarClient) -> None:
+        """Reusing a request_id with a different message surfaces HTTP 409 on AIResult."""
+        error_msg = "request_id 'req-123' was already used with a different message"
+        client._client.post = AsyncMock(return_value=_mock_response(409, {"error": error_msg}))
+
+        result = await client.prompt("sess-1", "different message", request_id="req-123")
+
+        body = client._client.post.call_args.kwargs["json"]
+        assert body == {"message": "different message", "request_id": "req-123"}
+        assert result.success is False
+        assert result.status_code == 409
+        assert result.error == error_msg
+        assert result.text == error_msg
+
+    async def test_client_prompt_replayed_false_on_normal_response(self, client: SidecarClient) -> None:
+        """Normal non-replayed 200 responses set AIResult.replayed to False."""
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"text": "Hello!"}))
+
+        result = await client.prompt("sess-1", "hi", request_id="req-1")
+
+        assert result.success is True
+        assert result.text == "Hello!"
+        assert result.replayed is False
+
+    @pytest.mark.parametrize(
+        ("payload", "headers"),
+        [
+            ({"text": "cached", "replayed": True}, None),
+            ({"text": "cached"}, {"X-Request-Id-Replayed": "true"}),
+        ],
+        ids=["json_flag", "header"],
+    )
+    async def test_client_prompt_sets_replayed_on_replay_response(
+        self,
+        client: SidecarClient,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None,
+    ) -> None:
+        """prompt() sets AIResult.replayed=True from either JSON flag or X-Request-Id-Replayed header."""
+        client._client.post = AsyncMock(return_value=_mock_response(200, payload, headers=headers))
+
+        result = await client.prompt("sess-1", "hi", request_id="req-1")
+
+        assert result.success is True
+        assert result.text == "cached"
+        assert result.replayed is True
 
     # -- delete_session --
     async def test_client_delete_session(self, client: SidecarClient) -> None:
@@ -1565,26 +1670,41 @@ class _SseTransport(httpx.AsyncBaseTransport):
         prompt_error: str | None = None,
         prompt_gate: asyncio.Event | None = None,
         frame_delay: float = 0.0,
+        prompt_replayed: bool | None = None,
+        prompt_replayed_header: bool = False,
+        prompt_text: str = "hi",
     ) -> None:
         self.stream = _SseBody(chunks, hang=hang, delay=frame_delay)
         self._prompt_hangs = prompt_hangs
         self._prompt_status = prompt_status
         self._prompt_error = prompt_error
         self._prompt_gate = prompt_gate
+        self._prompt_replayed = prompt_replayed
+        self._prompt_replayed_header = prompt_replayed_header
+        self._prompt_text = prompt_text
         self.prompt_cancelled = False
+        self.prompt_bodies: list[dict[str, Any]] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
             return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=self.stream)
+        self.prompt_bodies.append(json.loads(await request.aread()))
         if self._prompt_gate is not None:
             await self._prompt_gate.wait()  # the test decides when the prompt answers
         if self._prompt_status != 200:
             return httpx.Response(self._prompt_status, json={"error": "session busy: a turn is running"})
+        headers = {"X-Request-Id-Replayed": "true"} if self._prompt_replayed_header else None
         if self._prompt_error is not None:
             # A turn that ran and failed: 200 with `error`, as the server answers.
-            return httpx.Response(200, json={"text": "", "error": self._prompt_error})
+            payload: dict[str, Any] = {"text": "", "error": self._prompt_error}
+            if self._prompt_replayed is not None:
+                payload["replayed"] = self._prompt_replayed
+            return httpx.Response(200, json=payload, headers=headers)
         if not self._prompt_hangs:
-            return httpx.Response(200, json={"text": "hi"})
+            payload = {"text": self._prompt_text}
+            if self._prompt_replayed is not None:
+                payload["replayed"] = self._prompt_replayed
+            return httpx.Response(200, json=payload, headers=headers)
         try:
             while True:
                 await asyncio.Event().wait()  # the turn never answers: close must cancel it
@@ -1790,6 +1910,182 @@ async def test_stream_prompt_raises_when_feed_ends_after_prompt_accepted_without
     )
     with pytest.raises(RuntimeError, match="ended before turn_end/error: upstream dropped"):
         [event async for event in _stream_client(transport).stream_prompt("s1", "hello")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{}, {"request_id": None}], ids=["omitted", "none"])
+async def test_stream_prompt_omits_request_id_when_unset(kwargs: dict[str, Any]) -> None:
+    """stream_prompt omits request_id from POST /prompt when omitted or None (#1397)."""
+    transport = _SseTransport(STREAM_FRAMES, hang=False, prompt_hangs=False)
+    events = [event async for event in _stream_client(transport).stream_prompt("s1", "hello", **kwargs)]
+    assert events[-1]["type"] == "turn_end"
+    assert transport.prompt_bodies == [{"message": "hello"}]
+    assert "request_id" not in transport.prompt_bodies[0]
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_forwards_request_id() -> None:
+    """stream_prompt forwards request_id in POST /prompt when provided (#1397)."""
+    transport = _SseTransport(STREAM_FRAMES, hang=False, prompt_hangs=False)
+    events = [
+        event async for event in _stream_client(transport).stream_prompt("s1", "hello", request_id="req-stream-1")
+    ]
+    assert events[-1]["type"] == "turn_end"
+    assert transport.prompt_bodies == [{"message": "hello", "request_id": "req-stream-1"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replay_kwargs",
+    [
+        {"prompt_replayed": True},
+        {"prompt_replayed_header": True},
+    ],
+    ids=["json_flag", "header"],
+)
+async def test_stream_prompt_synthesizes_turn_end_on_completed_replay(replay_kwargs: dict[str, Any]) -> None:
+    """Completed replay over an idle hanging SSE feed yields synthesized turn_end and closes feed."""
+    transport = _SseTransport(
+        [STREAM_FRAMES[0], b": keepalive\n\n"],
+        hang=True,
+        prompt_hangs=False,
+        prompt_text="cached reply",
+        **replay_kwargs,
+    )
+
+    async def _collect() -> list[dict[str, Any]]:
+        return [event async for event in _stream_client(transport).stream_prompt("s1", "hello", request_id="req-1")]
+
+    events = await asyncio.wait_for(_collect(), timeout=1.0)
+    assert events[-1] == {
+        "type": "turn_end",
+        "turnId": None,
+        "text": "cached reply",
+        "aborted": False,
+        "replayed": True,
+    }
+    assert transport.stream.closed
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_completed_replay_ignores_foreign_turn_end() -> None:
+    """When another turn ends while our replayed prompt is gated, yield our cached turn_end, not theirs."""
+    gate = asyncio.Event()
+    transport = _SseTransport(
+        STREAM_FRAMES,
+        hang=False,
+        prompt_hangs=False,
+        prompt_gate=gate,
+        prompt_replayed=True,
+        prompt_text="cached replay text",
+    )
+    stream = _stream_client(transport).stream_prompt("s1", "hello", request_id="req-1")
+    assert (await anext(stream))["type"] == "session"
+    assert (await anext(stream))["type"] == "text_delta"
+    assert (await anext(stream))["type"] == "turn_start"
+    pending = asyncio.ensure_future(anext(stream))  # foreign turn_end arrived before prompt verdict
+    await asyncio.sleep(0.05)
+    assert not pending.done()  # blocked on prompt verdict, never returning foreign turn_end
+    gate.set()
+    terminal = await asyncio.wait_for(pending, timeout=1.0)
+    assert terminal == {
+        "type": "turn_end",
+        "turnId": None,
+        "text": "cached replay text",
+        "aborted": False,
+        "replayed": True,
+    }
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+    assert transport.stream.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt_replayed", [None, False], ids=["replayed_absent", "replayed_false"])
+async def test_stream_prompt_preserves_live_streaming_for_non_replayed_turn(prompt_replayed: bool | None) -> None:
+    """Normal or in-flight coalesced turn (replayed absent/False) streams live SSE frames unchanged."""
+    transport = _SseTransport(
+        STREAM_FRAMES,
+        hang=False,
+        prompt_hangs=False,
+        prompt_replayed=prompt_replayed,
+    )
+    events = [event async for event in _stream_client(transport).stream_prompt("s1", "hello", request_id="req-1")]
+    assert [event["type"] for event in events] == ["session", "text_delta", "turn_start", "turn_end"]
+    assert events[1]["delta"] == "hé"
+    assert events[3]["text"] == "hi"
+    assert "replayed" not in events[3]
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_yields_delayed_replay_after_feed_eof() -> None:
+    """When SSE feed hits EOF while a replayed prompt is still pending, yield the delayed replay."""
+    gate = asyncio.Event()
+    transport = _SseTransport(
+        [STREAM_FRAMES[0]],
+        hang=False,
+        prompt_hangs=False,
+        prompt_gate=gate,
+        prompt_replayed=True,
+        prompt_text="cached after eof",
+    )
+    stream = _stream_client(transport).stream_prompt("s1", "hello", request_id="req-eof")
+    assert (await anext(stream))["type"] == "session"
+    pending = asyncio.ensure_future(anext(stream))
+    await asyncio.sleep(0.05)
+    assert not pending.done()
+    gate.set()
+    terminal = await asyncio.wait_for(pending, timeout=1.0)
+    assert terminal == {
+        "type": "turn_end",
+        "turnId": None,
+        "text": "cached after eof",
+        "aborted": False,
+        "replayed": True,
+    }
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+    assert transport.stream.closed
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_raises_on_feed_eof_when_delayed_prompt_is_not_replayed() -> None:
+    """When SSE feed hits EOF and a pending non-replayed prompt finishes, raise RuntimeError."""
+    gate = asyncio.Event()
+    transport = _SseTransport(
+        [STREAM_FRAMES[0]],
+        hang=False,
+        prompt_hangs=False,
+        prompt_gate=gate,
+        prompt_replayed=False,
+    )
+    stream = _stream_client(transport).stream_prompt("s1", "hello", request_id="req-eof-miss")
+    assert (await anext(stream))["type"] == "session"
+    pending = asyncio.ensure_future(anext(stream))
+    await asyncio.sleep(0.05)
+    assert not pending.done()
+    gate.set()
+    with pytest.raises(RuntimeError, match="ended before turn_end/error"):
+        await asyncio.wait_for(pending, timeout=1.0)
+    assert transport.stream.closed
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_does_not_stall_on_feed_eof_during_live_request_id_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When SSE feed hits EOF during a live request_id turn, bound the wait and cancel the prompt."""
+    monkeypatch.setattr(pi_sidecar_client, "_EOF_REPLAY_GRACE_SECONDS", 0.05)
+    transport = _SseTransport(STREAM_FRAMES[:1], hang=False, prompt_hangs=True)
+
+    async def _consume() -> None:
+        async for _ in _stream_client(transport).stream_prompt("s1", "hello", request_id="req-live-eof"):
+            pass
+
+    with pytest.raises(RuntimeError, match="ended before turn_end/error"):
+        await asyncio.wait_for(_consume(), timeout=1.0)
+    assert transport.prompt_cancelled is True
+    assert transport.stream.closed is True
 
 
 class TestLogLevelFromEnv:

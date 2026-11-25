@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { createLogger, logger } from "./logger.js";
+import { sanitizeForLog } from "./http-helpers.js";
 import {
   DEFAULT_TOOLS,
   type CreateSessionOptions,
@@ -74,6 +75,63 @@ const sessionStoreLog = createLogger("session-store");
 const sessionStoreInitLog = createLogger("session-store-init");
 const sessionCreateLog = createLogger("session-create");
 const streamLog = createLogger("session-streams");
+const promptDedupLog = createLogger("prompt-dedup");
+
+export const MAX_REQUEST_ID_LENGTH = 256;
+export const MAX_REQUEST_CACHE_ENTRIES = 64;
+export const MAX_REQUEST_CACHE_BYTES = 2 * 1024 * 1024;
+
+export function isValidRequestId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= MAX_REQUEST_ID_LENGTH;
+}
+
+export interface PromptUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cost_usd: number | null;
+  cost_partial: boolean;
+  duration_ms: number;
+}
+
+export interface PromptResult {
+  text: string;
+  usage: PromptUsage;
+  error?: string;
+  stop_reason: string | null;
+  replayed?: boolean;
+}
+
+type RequestCacheEntry =
+  | { status: "in_flight"; message: string; promise: Promise<PromptResult>; bytes: number }
+  | { status: "completed"; message: string; result: PromptResult; bytes: number };
+
+function clonePromptResult(result: PromptResult, replayed?: boolean): PromptResult {
+  const cloned: PromptResult = {
+    text: result.text,
+    usage: { ...result.usage },
+    stop_reason: result.stop_reason,
+  };
+  if (result.error !== undefined) {
+    cloned.error = result.error;
+  }
+  if (replayed === true) {
+    cloned.replayed = true;
+  }
+  return cloned;
+}
+
+function estimateRequestCacheBytes(message: string, result?: PromptResult): number {
+  let bytes = Buffer.byteLength(message, "utf8");
+  if (result) {
+    bytes += Buffer.byteLength(result.text, "utf8");
+    if (result.error) {
+      bytes += Buffer.byteLength(result.error, "utf8");
+    }
+  }
+  return bytes;
+}
 
 /** Max bytes one subscriber may leave buffered before it is dropped (#1019). */
 const MAX_PENDING_BYTES = 1_048_576;
@@ -365,7 +423,10 @@ interface SessionEntry {
    * cancelled the turn, so a concurrent abort's rejection cannot clear
    * `requested` while another abort is still in flight.
    */
-  abortState: { requested: boolean; pending: number; succeeded: boolean };
+  abortState: { requested: boolean; pending: number; succeeded: boolean; onSucceeded?: () => void };
+  /** Bounded per-session LRU cache for optional `request_id` deduplication (#1397). */
+  requestCache: Map<string, RequestCacheEntry>;
+  requestCacheBytes: number;
 }
 
 export interface SessionStoreOptions {
@@ -597,6 +658,8 @@ export class SessionStore {
         headerPending: false,
         streams: new SessionEventStreams(),
         abortState: { requested: false, pending: 0, succeeded: false },
+        requestCache: new Map(),
+        requestCacheBytes: 0,
       };
       this.sessions.set(id, newEntry);
       sessionCreateLog.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${created.customToolNames.length})`);
@@ -625,15 +688,159 @@ export class SessionStore {
     }
   }
 
-  async prompt(id: string, message: string): Promise<{ text: string; usage: any; error?: string; stop_reason: string | null }> {
+  private clearRequestCache(entry: SessionEntry): void {
+    entry.requestCache.clear();
+    entry.requestCacheBytes = 0;
+  }
+
+  private deleteRequestCacheEntry(entry: SessionEntry, key: string): boolean {
+    const existing = entry.requestCache.get(key);
+    if (!existing) return false;
+    entry.requestCache.delete(key);
+    entry.requestCacheBytes = Math.max(0, entry.requestCacheBytes - existing.bytes);
+    return true;
+  }
+
+  private evictCompletedEntries(
+    sessionId: string,
+    entry: SessionEntry,
+    reservedBytes: number,
+    protectedKey?: string,
+  ): void {
+    for (const [key, cached] of entry.requestCache) {
+      const overCount = entry.requestCache.size + (protectedKey === undefined ? 1 : 0) > MAX_REQUEST_CACHE_ENTRIES;
+      const overBytes = entry.requestCacheBytes + reservedBytes > MAX_REQUEST_CACHE_BYTES;
+      if (!overCount && !overBytes) break;
+      if (cached.status === "in_flight" || key === protectedKey) continue;
+      this.deleteRequestCacheEntry(entry, key);
+      const safeEvictedId = redactDiagnostic(sanitizeForLog(key), entry.redact);
+      promptDedupLog.debug(
+        `[sidecar] PROMPT_DEDUP_EVICTED: session=${sessionId}, request_id=${safeEvictedId}, reason=${overCount ? "lru_capacity" : "byte_budget"}`,
+      );
+    }
+  }
+
+  private touchRequestCache(entry: SessionEntry, requestId: string, cacheEntry: RequestCacheEntry): void {
+    entry.requestCache.delete(requestId);
+    entry.requestCache.set(requestId, cacheEntry);
+  }
+
+  private putRequestCache(sessionId: string, entry: SessionEntry, requestId: string, cacheEntry: RequestCacheEntry): void {
+    if (entry.requestCache.has(requestId)) {
+      this.deleteRequestCacheEntry(entry, requestId);
+    }
+    this.evictCompletedEntries(sessionId, entry, cacheEntry.bytes);
+    entry.requestCache.set(requestId, cacheEntry);
+    entry.requestCacheBytes += cacheEntry.bytes;
+  }
+
+  async prompt(id: string, message: string, requestId?: string): Promise<PromptResult> {
+    if (requestId !== undefined && !isValidRequestId(requestId)) {
+      promptDedupLog.warn(`[sidecar] PROMPT_DEDUP_INVALID_ID: session=${sanitizeForLog(id)}`);
+      throw httpError(
+        `request_id must be a non-empty string of at most ${MAX_REQUEST_ID_LENGTH} characters`,
+        400,
+      );
+    }
     this.assertNotDisposed("prompt");
     const entry = this.sessions.get(id);
     if (!entry) throw new Error(`Session ${id} not found`);
 
-    if (entry.inFlight) {
-      throw new Error(`Session ${id} is busy — concurrent prompts are not supported`);
+    let safeReqId: string | undefined;
+    if (requestId !== undefined) {
+      safeReqId = redactDiagnostic(sanitizeForLog(requestId), entry.redact);
+      const existing = entry.requestCache.get(requestId);
+      if (existing) {
+        if (existing.message !== message) {
+          promptDedupLog.warn(`[sidecar] PROMPT_DEDUP_CONFLICT: session=${id}, request_id=${safeReqId}, status=${existing.status}`);
+          throw httpError("request_id was already used with a different message", 409);
+        }
+        this.touchRequestCache(entry, requestId, existing);
+        entry.lastActivity = Date.now();
+        if (existing.status === "in_flight") {
+          promptDedupLog.info(`[sidecar] PROMPT_DEDUP_HIT: session=${id}, request_id=${safeReqId}, mode=in_flight`);
+          return clonePromptResult(await existing.promise);
+        }
+        promptDedupLog.info(`[sidecar] PROMPT_DEDUP_HIT: session=${id}, request_id=${safeReqId}, mode=cached`);
+        return clonePromptResult(existing.result, true);
+      }
     }
 
+    if (entry.inFlight) {
+      throw httpError(`Session ${id} is busy — concurrent prompts are not supported`, 409);
+    }
+
+    if (requestId === undefined) {
+      return (await this.executePrompt(id, entry, message)).result;
+    }
+
+    const cacheEntry: Extract<RequestCacheEntry, { status: "in_flight" }> = {
+      status: "in_flight",
+      message,
+      promise: undefined as unknown as Promise<PromptResult>,
+      bytes: estimateRequestCacheBytes(message),
+    };
+    const inflightPromise = this.executePrompt(id, entry, message).then(
+      ({ result, abortState }) => {
+        if (this.sessions.get(id) === entry && entry.requestCache.get(requestId) === cacheEntry) {
+          const confirmedAborted = abortState.succeeded || result.stop_reason === "aborted";
+          const failed = result.error !== undefined || result.stop_reason === "error";
+          if (confirmedAborted || failed) {
+            this.deleteRequestCacheEntry(entry, requestId);
+            const reason = confirmedAborted ? "turn_aborted" : "turn_failed";
+            promptDedupLog.debug(`[sidecar] PROMPT_DEDUP_EVICTED: session=${id}, request_id=${safeReqId}, reason=${reason}`);
+          } else {
+            const completedBytes = estimateRequestCacheBytes(message, result);
+            if (completedBytes > MAX_REQUEST_CACHE_BYTES) {
+              this.deleteRequestCacheEntry(entry, requestId);
+              promptDedupLog.warn(
+                `[sidecar] PROMPT_DEDUP_OVERSIZED: session=${id}, request_id=${safeReqId}, bytes=${completedBytes}, max_bytes=${MAX_REQUEST_CACHE_BYTES}`,
+              );
+            } else {
+              const delta = Math.max(0, completedBytes - cacheEntry.bytes);
+              this.evictCompletedEntries(id, entry, delta, requestId);
+              entry.requestCacheBytes = Math.max(0, entry.requestCacheBytes - cacheEntry.bytes) + completedBytes;
+              const completedEntry: Extract<RequestCacheEntry, { status: "completed" }> = {
+                status: "completed",
+                message,
+                result,
+                bytes: completedBytes,
+              };
+              entry.requestCache.set(requestId, completedEntry);
+              if (abortState.pending > 0) {
+                // Pending abort may still settle; evict only if it actually cancels the turn.
+                abortState.onSucceeded = () => {
+                  if (this.sessions.get(id) === entry && entry.requestCache.get(requestId) === completedEntry) {
+                    this.deleteRequestCacheEntry(entry, requestId);
+                    promptDedupLog.debug(
+                      `[sidecar] PROMPT_DEDUP_EVICTED: session=${id}, request_id=${safeReqId}, reason=turn_aborted`,
+                    );
+                  }
+                };
+              }
+            }
+          }
+        }
+        return result;
+      },
+      (err) => {
+        if (entry.requestCache.get(requestId) === cacheEntry) {
+          this.deleteRequestCacheEntry(entry, requestId);
+          promptDedupLog.debug(`[sidecar] PROMPT_DEDUP_EVICTED: session=${id}, request_id=${safeReqId}, reason=prompt_rejected`);
+        }
+        throw err;
+      },
+    );
+    cacheEntry.promise = inflightPromise;
+    this.putRequestCache(id, entry, requestId, cacheEntry);
+    return clonePromptResult(await inflightPromise);
+  }
+
+  private async executePrompt(
+    id: string,
+    entry: SessionEntry,
+    message: string,
+  ): Promise<{ result: PromptResult; abortState: SessionEntry["abortState"] }> {
     entry.lastActivity = Date.now();
     entry.inFlight = true;
     // #1019: one monotonic turn id per prompt. The single terminal event for
@@ -641,7 +848,8 @@ export class SessionStore {
     // post-redaction tail below — never from the recordTurn-gated sites.
     // Reset here, not at turn end, so an abort still settling from the previous
     // turn cannot clear a request made for this one.
-    entry.abortState = { requested: false, pending: 0, succeeded: false };
+    const abortState: SessionEntry["abortState"] = { requested: false, pending: 0, succeeded: false };
+    entry.abortState = abortState;
     const turnId = entry.streams.nextTurnId();
     entry.streams.emit({ type: "turn_start", turnId });
     // Transcript turn state is mutated only when recording is enabled — the
@@ -713,7 +921,7 @@ export class SessionStore {
     const messageBoundaries: number[] = [];
     // cost_partial marks a total that is a floor, not a sum: at least one turn's
     // cost was withheld as unknown while another turn contributed a real amount.
-    const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null as number | null, cost_partial: false, duration_ms: 0 };
+    const usage: PromptUsage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null, cost_partial: false, duration_ms: 0 };
     const startTime = Date.now();
 
     // #1019: terminal-event state. `turnAborted` is captured outside the
@@ -1010,9 +1218,10 @@ export class SessionStore {
     }
 
     responseText = entry.redact(responseText);
+    const aborted = turnAborted || turnStopReason === "aborted";
     // #1019: turn_end carries the final text — read after the boundary splice
     // and redaction, so it is authoritative and not concat(deltas).
-    emitTurnEnd(turnAborted || turnStopReason === "aborted");
+    emitTurnEnd(aborted);
     usage.duration_ms = Date.now() - startTime;
     logger.log(`[sidecar] PROMPT_COMPLETED: session=${id}, text_length=${responseText.length}, deltas=${textDeltaCount}, tokens_in=${usage.input_tokens}, tokens_out=${usage.output_tokens}, duration_ms=${usage.duration_ms}`);
 
@@ -1045,7 +1254,7 @@ export class SessionStore {
     if (errors.length > 0) {
       const errorText = formatErrors();
       logger.error(`[sidecar] Prompt completed with errors: session=${id}, errors=${errorText}`);
-      return { text: responseText, usage, error: errorText, stop_reason: stopReason };
+      return { result: { text: responseText, usage, error: errorText, stop_reason: stopReason }, abortState };
     }
 
     // Empty text is valid for tool-only responses — warn but don't error
@@ -1053,7 +1262,7 @@ export class SessionStore {
       logger.warn(`[sidecar] AI returned empty text: session=${id}, tokens_in=${usage.input_tokens}, tokens_out=${usage.output_tokens}`);
     }
 
-    return { text: responseText, usage, stop_reason: stopReason };
+    return { result: { text: responseText, usage, stop_reason: stopReason }, abortState };
   }
 
   async abort(id: string): Promise<void> {
@@ -1085,10 +1294,16 @@ export class SessionStore {
       // none already cancelled it: clearing the flag here is what let a
       // concurrent rejection hide a real cancellation.
       state.pending = Math.max(0, state.pending - 1);
-      if (state.pending === 0 && !state.succeeded) state.requested = false;
+      if (state.pending === 0 && !state.succeeded) {
+        state.requested = false;
+        state.onSucceeded = undefined;
+      }
       throw err;
     }
     state.pending = Math.max(0, state.pending - 1);
+    const onSucceeded = state.onSucceeded;
+    state.onSucceeded = undefined;
+    onSucceeded?.();
     logger.info(`[sidecar] Session aborted: ${id}`);
   }
 
@@ -1099,6 +1314,7 @@ export class SessionStore {
       logger.debug(`[sidecar] SESSION_DELETE: result=no-op, session=${id}, reason=not_found`);
       return false;
     }
+    this.clearRequestCache(entry);
     entry.streams.close("session_deleted");
     entry.session.dispose();
     this.sessions.delete(id);
@@ -1124,6 +1340,7 @@ export class SessionStore {
     for (const [id, entry] of this.sessions) {
       logger.log(`[sidecar] SESSION_DISPOSE: session=${id}`);
       try {
+        this.clearRequestCache(entry);
         entry.streams.close("disposed");
         entry.session.dispose();
       } catch (err) {
@@ -1156,6 +1373,7 @@ export class SessionStore {
       if (entry.inFlight) continue;
       if (now - entry.lastActivity > maxAge) {
         logger.log(`[sidecar] Cleaning up stale session: ${id}`);
+        this.clearRequestCache(entry);
         entry.streams.close("session_stale");
         entry.session.dispose();
         this.sessions.delete(id);
