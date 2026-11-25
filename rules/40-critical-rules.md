@@ -94,8 +94,20 @@ git worktree remove .worktrees/pr-42  # when done
 
 ## User Interaction
 
+{{IF:interactive_tui}}
 When you need user input (approvals, selections, confirmations), always use the `ask_user` tool — never ask via plain text in your response.
 Provide clear options; include 'no'/'cancel' when appropriate.
+{{/IF}}
+{{IFNOT:interactive_tui}}
+No interactive TUI is attached to this session — `ask_user` is unavailable/blocked.
+{{IF:coms_active}}
+When you need user input, decisions, clarifications, or approvals, ask the main LLM / requesting peer via `coms_send` (or in your reply to an inbound message).
+Never invent an approval.
+{{/IF}}
+{{IFNOT:coms_active}}
+If user input or approval is required, stop and report the blocker — never invent an approval.
+{{/IFNOT}}
+{{/IFNOT}}
 
 ---
 
