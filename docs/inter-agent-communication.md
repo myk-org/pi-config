@@ -98,6 +98,14 @@ If a user message lands in the same turn as an inbound peer message, the reply c
 
 This behavior matters because it keeps the experience conversational. To the user, cross-session messaging feels like asking a peer for help and getting a normal reply back in the same session.
 
+### Headless Supervised Peers and `ask_user`
+
+Supervised peers spawned via `coms-peer-supervisor.mjs` run headlessly (`pi --mode rpc`) with `PI_COMS_SUPERVISED_PEER=1` set only on the child process environment. Because no interactive TUI is attached:
+
+- `ask_user` is not registered on supervised peers (so neither the tool nor its prompt guidelines appear), and `ask_user` execution is also blocked as defense in depth for any non-TUI session (`ctx.mode !== "tui"`, `!ctx.hasUI`, or `PI_COMS_SUPERVISED_PEER=1`) without calling `terminalNotify` or emitting `pidash:ui-request`.
+- Headless and supervised peers receive explicit guidance in their coms welcome message and `before_agent_start` system prompt section to route questions, decisions, clarifications, and approvals to the main LLM or requesting peer via `coms_send` (or in their reply to an inbound message).
+- Interactive TUI sessions (`ctx.mode === "tui"`, `PI_COMS_SUPERVISED_PEER` unset) — including the main LLM session that spawns COMS peers — keep `ask_user` fully enabled.
+
 ### Structured Task Delegation
 
 `coms_send` supports a `tasks` array alongside the prompt. Each task object has a `subject` and a `description`, and is shown to the receiving peer as structured work items instead of a loose prose blob.

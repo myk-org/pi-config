@@ -11,7 +11,7 @@
  * - Container reuse across repeated render(w) calls (#1313)
  * - Preserved pidash events, blocked status, and headless COMS fallback
  */
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Container } from "@earendil-works/pi-tui";
 import {
@@ -23,6 +23,17 @@ import {
 } from "../../../extensions/orchestrator/ask-user.js";
 import { fakeKeybindings, fakeTheme, fakeTui } from "../helpers/fake-tui.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+
+const ambientSupervisedComsPeer = process.env.PI_COMS_SUPERVISED_PEER;
+
+beforeEach(() => {
+  delete process.env.PI_COMS_SUPERVISED_PEER;
+});
+
+afterEach(() => {
+  if (ambientSupervisedComsPeer === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+  else process.env.PI_COMS_SUPERVISED_PEER = ambientSupervisedComsPeer;
+});
 
 interface AskHarness {
   tool: any;

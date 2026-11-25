@@ -493,6 +493,19 @@ function sendEnvelope(endpoint: string, envelope: Envelope | Pong | { type: stri
 	});
 }
 
+const HEADLESS_PEER_ASK_USER_GUIDANCE =
+	"Headless COMS peer: `ask_user` is blocked/unavailable because no interactive TUI is attached. " +
+	"Never call `ask_user` — whenever you need user input, decisions, clarifications, or approvals, " +
+	"ask the main LLM / requesting peer via `coms_send` (or in your reply to an inbound coms message).";
+
+function isHeadlessOrSupervisedPeer(peerCtx?: ExtensionContext | null): boolean {
+	if (process.env.PI_COMS_SUPERVISED_PEER === "1") return true;
+	if (!peerCtx) return false;
+	if (!peerCtx.hasUI) return true;
+	if (peerCtx.mode !== undefined && peerCtx.mode !== "tui") return true;
+	return false;
+}
+
 // ━━ Instantiable Peer Runtime & Default Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export function createComsPeerRuntime(
@@ -2065,11 +2078,13 @@ export function createComsPeerRuntime(
 					.map(card => `● ${card.name} (${card.model})${card.purpose ? ` — ${card.purpose}` : ""}`)
 					.join("\n")
 				: "(none yet — you are the first peer)";
+			const headless = isHeadlessOrSupervisedPeer(currentCtx ?? ctx);
+			const headlessLine = headless ? `\n- ${HEADLESS_PEER_ASK_USER_GUIDANCE}` : "";
 			const welcomeMsg = `📡 Connected to coms · You are "${identity.name}" on project "${identity.project}"
 
 ## How to reply
 - Your assistant text IS your reply — auto-captured when your turn ends (do not call coms_send to reply).
-- When prompted with tasks, check TaskList, work in order with TaskUpdate, and report completion when done.
+- When prompted with tasks, check TaskList, work in order with TaskUpdate, and report completion when done.${headlessLine}
 
 ## Connected peers
 ${peerList}
@@ -2079,7 +2094,7 @@ Do not respond to this message.`;
 			// welcome does not also trigger duplicate "peer joined" cards.
 			for (const [sid, card] of peerCards) knownPeerSessions.set(sid, card.name);
 
-			log.info("welcome_shown", "peers", peerCards.size);
+			log.info("welcome_shown", { peers: peerCards.size, headless });
 			try {
 				pi.sendMessage({
 					customType: "coms-welcome",
@@ -3911,8 +3926,31 @@ Do not respond to this message.`;
 	// with orchestrator and pitasks re-keying on watched-session switches (#1337).
 	// Defer writeLiveRegistry() to agent_start so orchestrator and pitasks finish
 	// republishing their bridges before the registry snapshot and pi_session_id update.
-	pi.on("before_agent_start" as any, (_event: any, ctx?: ExtensionContext) => {
+	pi.on("before_agent_start" as any, (event: any, ctx?: ExtensionContext) => {
 		if (ctx) currentCtx = ctx;
+		const activeCtx = ctx ?? currentCtx;
+		if (!identity || !isHeadlessOrSupervisedPeer(activeCtx)) return;
+		const opts = event?.systemPromptOptions;
+		const sections = opts?.sections;
+		if (opts?.forceSystemPrompt === undefined && sections && typeof sections === "object") {
+			sections.coms_headless_peer = HEADLESS_PEER_ASK_USER_GUIDANCE;
+			log.debug("headless_peer_guidance_injected", {
+				target: "section",
+				mode: activeCtx?.mode ?? null,
+				hasUI: activeCtx?.hasUI ?? null,
+				supervised: process.env.PI_COMS_SUPERVISED_PEER === "1",
+			});
+			return;
+		}
+		if (typeof event?.systemPrompt === "string") {
+			log.debug("headless_peer_guidance_injected", {
+				target: "systemPrompt",
+				mode: activeCtx?.mode ?? null,
+				hasUI: activeCtx?.hasUI ?? null,
+				supervised: process.env.PI_COMS_SUPERVISED_PEER === "1",
+			});
+			return { systemPrompt: `${event.systemPrompt}\n\n${HEADLESS_PEER_ASK_USER_GUIDANCE}` };
+		}
 	});
 
 	// ━━ Track agent running state for mixed-turn detection (#731) ━━━━━━━━━

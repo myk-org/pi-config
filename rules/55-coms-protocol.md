@@ -50,6 +50,15 @@ than the task justifies — each peer is a real model burning real tokens. Scrub
 `__PI_CONFIG_SESSION_ID` from the peer's env or coms adopts your session id and its socket bind
 fails. Use `coms_list` for connected peers.
 
+## Headless Peers and `ask_user`
+
+Supervised COMS peers run headlessly (`pi --mode rpc`, `PI_COMS_SUPERVISED_PEER=1`) with no TUI attached.
+The runtime skips registering `ask_user` on supervised peers and blocks non-TUI `ask_user` calls.
+
+- **Headless / supervised peers:** never call `ask_user`. Route all user questions, decisions,
+  clarifications, or approvals to the main LLM / requesting peer via `coms_send` (or in your reply to an inbound message).
+- **Interactive TUI sessions** (including the main LLM session that spawns COMS peers): retain `ask_user` unchanged.
+
 ## Tool Reference
 
 | Action | Tool |

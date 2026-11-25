@@ -24,3 +24,15 @@ export function withSubagentChildEnv(value: string | undefined, fn: () => undefi
 		else process.env.PI_SUBAGENT_CHILD = previous;
 	}
 }
+
+export function withSupervisedComsPeerEnv(value: string | undefined, fn: () => undefined): void {
+	const previous = process.env.PI_COMS_SUPERVISED_PEER;
+	if (value === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+	else process.env.PI_COMS_SUPERVISED_PEER = value;
+	try {
+		fn();
+	} finally {
+		if (previous === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+		else process.env.PI_COMS_SUPERVISED_PEER = previous;
+	}
+}
