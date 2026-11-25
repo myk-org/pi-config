@@ -55,29 +55,70 @@ describe("dream prompt", () => {
     }
   });
 
-  it("instructs dreaming to write trigger-keyword-rich skill descriptions (#1383)", () => {
-    assert.ok(prompt.includes("concrete trigger keywords/phrases"));
-    assert.ok(prompt.includes("only loads name+description at startup"));
+  it("guides dreaming to write startup-routed, YAML-safe skill descriptions (#1383)", () => {
+    assert.match(prompt, /\bUse when\b/i);
+    assert.match(prompt, /name\s*\+\s*description|name and description/i);
+    assert.match(prompt, /\bMANDATORY\b/);
+    assert.match(prompt, /single quotes|double quotes/i);
   });
 });
 
-describe("shipped skills frontmatter (#1383)", () => {
-  it("gives every shipped skill a matching name and a trigger-bearing description within 1024 chars", () => {
-    const skillsDir = path.join(REPO_ROOT, "skills");
-    const dirs = fs.readdirSync(skillsDir, { withFileTypes: true }).filter((d) => d.isDirectory());
-    assert.ok(dirs.length > 0, "expected shipped skills under skills/");
+interface ParsedShippedSkill {
+  dirName: string;
+  frontmatterName: string | undefined;
+  rawDescription: string;
+  description: string;
+}
 
-    for (const dir of dirs) {
-      const skillPath = path.join(skillsDir, dir.name, "SKILL.md");
-      const content = fs.readFileSync(skillPath, "utf8");
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      assert.ok(fmMatch, `${dir.name}/SKILL.md must start with YAML frontmatter`);
-      const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m);
-      const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
-      assert.equal(nameMatch?.[1]?.trim(), dir.name, `${dir.name}/SKILL.md name must match directory`);
-      const desc = (descMatch?.[1] ?? "").trim().replace(/^["']|["']$/g, "");
-      assert.ok(desc.length > 0 && desc.length <= 1024, `${dir.name}/SKILL.md description must be 1..1024 chars`);
-      assert.match(desc, /\bUse when\b/i, `${dir.name}/SKILL.md description must include an explicit "Use when" trigger clause`);
+function loadShippedSkills(): ParsedShippedSkill[] {
+  const skillsDir = path.join(REPO_ROOT, "skills");
+  const dirs = fs.readdirSync(skillsDir, { withFileTypes: true }).filter((d) => d.isDirectory());
+  return dirs.map((dir) => {
+    const content = fs.readFileSync(path.join(skillsDir, dir.name, "SKILL.md"), "utf8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    assert.ok(fmMatch, `${dir.name}/SKILL.md must start with YAML frontmatter`);
+    const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m);
+    const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
+    const rawDescription = (descMatch?.[1] ?? "").trim();
+    const description = rawDescription.replace(/^["']|["']$/g, "");
+    return {
+      dirName: dir.name,
+      frontmatterName: nameMatch?.[1]?.trim(),
+      rawDescription,
+      description,
+    };
+  });
+}
+
+describe("shipped skills frontmatter (#1383)", () => {
+  const shipped = loadShippedSkills();
+
+  it("matches every shipped skill frontmatter name to its directory", () => {
+    assert.ok(shipped.length > 0, "expected shipped skills under skills/");
+    for (const skill of shipped) {
+      assert.equal(skill.frontmatterName, skill.dirName, `${skill.dirName}/SKILL.md name must match directory`);
+    }
+  });
+
+  it("keeps every shipped skill description within 1 to 1024 chars without unescaped interior double quotes", () => {
+    for (const skill of shipped) {
+      assert.ok(
+        skill.description.length > 0 && skill.description.length <= 1024,
+        `${skill.dirName}/SKILL.md description must be 1..1024 chars`,
+      );
+      if (skill.rawDescription.startsWith('"') && skill.rawDescription.endsWith('"')) {
+        const inner = skill.rawDescription.slice(1, -1);
+        assert.ok(
+          !/(^|[^\\])"/.test(inner),
+          `${skill.dirName}/SKILL.md description must not contain unescaped interior double quotes`,
+        );
+      }
+    }
+  });
+
+  it("includes a Use when trigger clause in every shipped skill description", () => {
+    for (const skill of shipped) {
+      assert.match(skill.description, /\bUse when\b/i, `${skill.dirName}/SKILL.md must include a Use when clause`);
     }
   });
 });

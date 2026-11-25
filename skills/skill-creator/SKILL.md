@@ -52,7 +52,8 @@ skill-maintenance: auto
 - **name**: lowercase, hyphenated, max 64 chars
 - **description**: one line, max 1024 chars — Pi ONLY injects `name` and `description` at startup (the body stays
   unloaded until `description` matches), so treat it as routing keywords: state what it does, include concrete
-  `Use when ...` trigger phrases/keywords the user actually types, and lead with `MANDATORY` for always-apply workflows
+  `Use when ...` trigger phrases/keywords the user actually types, and lead with `MANDATORY` for always-apply workflows.
+  Never put double quotes (`"`) inside the double-quoted YAML value — use single quotes (`'...'`) or plain text instead
 - **skill-maintenance**: always `auto` — opts the skill into maintenance so agents keep it true when it drifts
   (omitting it on a brand-new `.pi/skills/<name>/SKILL.md` auto-adopts on write; existing unmarked loaded skills
   — project, user-global, or symlinked shared — can be opted in with `/adopt-skill <name>`)

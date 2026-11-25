@@ -116,7 +116,8 @@ like `<API_KEY>` or `$ENV_VAR`. Skills are stored in plain text.
 - **Include verification** — how to confirm each step worked
 - **Keyword-rich one-line `description`** — Pi ONLY injects `name` and `description` at startup (the body is invisible
   until `description` matches). Write it as routing keywords: state what the skill does, include concrete `Use when ...`
-  trigger phrases/keywords the user actually types, and lead with `MANDATORY` when the workflow must always run
+  trigger phrases/keywords the user actually types, and lead with `MANDATORY` when the workflow must always run. Never
+  embed double quotes (`"`) inside the double-quoted YAML value — use single quotes (`'...'`) or plain text instead
 
 ### Step 4: Confirm
 

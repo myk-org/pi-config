@@ -98,6 +98,7 @@ export function buildDreamPrompt(
     `   ---\n` +
     `   Pi only loads name+description at startup (body stays hidden until matched), so pack description\n` +
     `   with concrete trigger keywords/phrases users actually type (lead with MANDATORY if always-apply).\n` +
+    `   Never put double quotes inside the double-quoted YAML description — use single quotes or drop quotes.\n` +
     `8. Write current ISO timestamp to ${topicsDir}/../.dream-watermark.\n` +
     `9. Promotions: append candidates to ${topicsDir}/../promotions.md:\n` +
     `   ### <12-char-id>\n` +

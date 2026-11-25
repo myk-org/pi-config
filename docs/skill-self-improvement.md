@@ -47,8 +47,10 @@ It inserts `skill-maintenance: auto` into the frontmatter (creating frontmatter 
 prepends the instruction that tells an agent what adoption asks of it:
 
 > **IMPORTANT — keep this skill true:** this skill is adopted and it is your responsibility to fix or improve
-> it whenever it is wrong, incomplete, or misleading while you use it (and add missing trigger keywords to its
-> description if routing missed), then say one line: `Skill updated: <name> — <why>`.
+> it whenever it is wrong, incomplete, or misleading while you use it. Pi only loads `name` and `description`
+> at startup, so if routing missed, add concrete user trigger phrases/keywords to its `description` (lead with
+> `MANDATORY` for always-apply workflows; use single quotes or plain text inside double-quoted YAML), then say
+> one line: `Skill updated: <name> — <why>`.
 
 Shipped package skills (`origin === "package"`, paths under `node_modules/.../skills/`, or symlinks pointing
 to a registered package skill) are excluded from `/adopt-skill`. Re-running on a maintained skill answers
