@@ -1029,4 +1029,33 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 		});
 		expect(doneEvent?.message.usage.cost.total).toBeGreaterThan(0);
 	});
+
+	it("forwards unbranded TranscriptContext through the registered streamSimple bridge (#1394)", async () => {
+		process.env.GOOGLE_CLOUD_PROJECT = "stream-test-project";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+
+		const registerProvider = vi.fn();
+		const mod = await import("../index.js");
+		mod.default({ registerProvider } as any);
+
+		expect(registerProvider).toHaveBeenCalledTimes(1);
+		const [providerName, providerConfig] = registerProvider.mock.calls[0];
+		expect(providerName).toBe("google-vertex-claude");
+		expect(typeof providerConfig.streamSimple).toBe("function");
+
+		vertexMock.events = [
+			{ type: "message_start", message: { usage: { input_tokens: 5, output_tokens: 0 } } },
+			{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
+		];
+
+		const unbrandedContext = {
+			messages: [{ role: "user" as const, content: "hi", timestamp: 1 }],
+		};
+		let doneEvent: any;
+		for await (const ev of providerConfig.streamSimple(model as any, unbrandedContext as any, { maxTokens: 128 })) {
+			if (ev.type === "done") doneEvent = ev;
+		}
+		expect(doneEvent?.type).toBe("done");
+		expect(vertexMock.request?.max_tokens).toBe(128);
+	});
 });
