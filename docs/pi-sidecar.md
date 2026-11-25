@@ -168,11 +168,35 @@ Default built-in tools when you omit `tools`: `read`, `grep`, `find`, `ls`, `bas
 | `POST` | `/models/for-api-key` | Discover models for a caller-supplied `api_key` |
 | `GET` | `/models/:provider/status` | Registration, model count, auth (redacted off-loopback) |
 | `POST` | `/sessions` | Create session → `{ session_id }` |
-| `POST` | `/sessions/:id/prompt` | Send `{ "message": "..." }` |
+| `POST` | `/sessions/:id/prompt` | Send `{ "message": "...", "request_id"?: "..." }` |
 | `POST` | `/sessions/:id/abort` | Cancel in-flight prompt |
 | `DELETE` | `/sessions/:id` | Destroy session |
 
-Body size limit: 1 MiB. Concurrent prompts on the same session return conflict (busy).
+Body size limit: 1 MiB. Concurrent prompts on the same session return `409` unless they share the active `request_id` and `message`.
+
+### Idempotent prompts (`request_id`)
+
+Pass an optional `request_id` in the `POST /sessions/:id/prompt` body to make retries safe across network drops or timeouts. Omitting `request_id` leaves prompt behavior unchanged.
+
+When present, `request_id` must be a non-empty, non-whitespace string of at most 256 characters. Any other value returns HTTP `400`.
+
+Each session keeps a bounded LRU cache of up to 64 `request_id` entries. Deleting the session, stale-session cleanup, or shutting down the sidecar clears the cache.
+
+- **In-flight match.** Same `request_id` and same `message` coalesces onto the active turn and returns its response instead of `409 Session is busy`.
+- **Completed match.** Same `request_id` and same `message` returns the cached response immediately without calling the model again.
+- **Mismatched `message`.** Reusing an in-flight or completed `request_id` with a different `message` returns `409 Conflict` instead of returning a response for the wrong prompt.
+- **Failed or rejected turn.** Any non-200 response evicts the entry so callers can retry with the same `request_id`.
+
+In Python, pass `request_id` to `client.prompt()` or `client.stream_prompt()`. Both omit `request_id` from the request JSON when it is `None`.
+
+```python
+result = await client.prompt(session_id, "Summarize the diff.", request_id="req-123")
+
+async for event in client.stream_prompt(session_id, "Summarize the diff.", request_id="req-123"):
+    ...
+```
+
+`stream_prompt()` forwards `request_id` so in-flight retries coalesce onto the live stream. Post-completion replay returns the cached HTTP response without emitting new SSE frames, so use `prompt()` when replaying a completed request.
 
 ### Custom HTTP-backed tools
 
@@ -397,7 +421,7 @@ results = await run_parallel_with_limit(tasks, max_concurrency=5)
 | `/health` stuck on `starting` / 503 | Wait for discovery; check logs (`PI_SIDECAR_LOG_LEVEL=debug`). |
 | Empty model list | Auth providers; `POST /models/refresh`; check `GET /models/:provider/status`. |
 | Session create rejects model | Use an id from `GET /models`; interactive OAuth-only providers are blocked in this headless service. |
-| `409` / session busy | Wait for the current prompt or `POST .../abort`. |
+| `409` / session busy or `request_id` mismatch | Wait for the current prompt, `POST .../abort`, or retry the same `message` with the same `request_id`. Use a new `request_id` for a different `message`. |
 | `agent_dir` rejected | Bind on loopback, or use `DEV_MODE=true` (value discarded). |
 | Pi version error at startup | Upgrade `@earendil-works/pi-coding-agent` (and `pi-ai`) to ≥ 1.6.0. |
 

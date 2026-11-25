@@ -12,6 +12,8 @@ import { isAbsolute } from "node:path";
 import {
   createApiKeyRedactor,
   isValidApiKey,
+  isValidRequestId,
+  MAX_REQUEST_ID_LENGTH,
   redactDiagnostic,
   type SessionStore,
 } from "./sessions.js";
@@ -324,13 +326,22 @@ export function createRequestHandler(
       if (method === "POST" && params) {
         const idLog = sanitizeForLog(params.id);
         const body = await parseBody(req);
-        if (!body.message) {
+        if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.message !== "string" || !body.message) {
           logger.warn(`[sidecar] POST /sessions/${idLog}/prompt 400: message is required`);
           sendJson(res, 400, { error: "message is required" });
           return;
         }
-        logger.debug(`[sidecar] POST /sessions/${idLog}/prompt: message_length=${body.message.length}`);
-        const result = await store.prompt(params.id, body.message);
+        let requestId: string | undefined;
+        if (body.request_id !== undefined) {
+          if (!isValidRequestId(body.request_id)) {
+            logger.warn(`[sidecar] POST /sessions/${idLog}/prompt 400: validation=failed, field=request_id`);
+            sendJson(res, 400, { error: `request_id must be a non-empty string of at most ${MAX_REQUEST_ID_LENGTH} characters` });
+            return;
+          }
+          requestId = body.request_id;
+        }
+        logger.debug(`[sidecar] POST /sessions/${idLog}/prompt: message_length=${body.message.length}, has_request_id=${requestId !== undefined}`);
+        const result = await store.prompt(params.id, body.message, requestId);
         logger.info(`[sidecar] POST /sessions/${idLog}/prompt 200 ${Date.now() - requestStart}ms text_length=${result.text.length}${result.error ? " with_errors=true" : ""}`);
         sendJson(res, 200, result);
         return;

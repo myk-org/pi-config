@@ -832,6 +832,59 @@ class TestSidecarClient:
         assert result.text == ""
         assert result.usage is not None
 
+    # -- prompt request_id (#1397) --
+    @pytest.mark.parametrize("kwargs", [{}, {"request_id": None}], ids=["omitted", "none"])
+    async def test_client_prompt_omits_request_id_when_unset(
+        self, client: SidecarClient, kwargs: dict[str, Any]
+    ) -> None:
+        """Backward compatibility: omit request_id from JSON payload when omitted or None."""
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"text": "Hello!"}))
+
+        result = await client.prompt("sess-1", "hi", **kwargs)
+
+        assert result.success is True
+        body = client._client.post.call_args.kwargs["json"]
+        assert body == {"message": "hi"}
+        assert "request_id" not in body
+
+    async def test_client_prompt_includes_request_id(self, client: SidecarClient) -> None:
+        """Supplying request_id includes it in the posted JSON payload."""
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"text": "Hello!"}))
+
+        result = await client.prompt("sess-1", "hi", request_id="req-123")
+
+        assert result.success is True
+        body = client._client.post.call_args.kwargs["json"]
+        assert body == {"message": "hi", "request_id": "req-123"}
+
+    async def test_client_prompt_forwards_empty_request_id(self, client: SidecarClient) -> None:
+        """Empty request_id is forwarded unchanged so the server's HTTP 400 surfaces on AIResult."""
+        error_msg = "request_id must be a non-empty string"
+        client._client.post = AsyncMock(return_value=_mock_response(400, {"error": error_msg}))
+
+        result = await client.prompt("sess-1", "hi", request_id="")
+
+        body = client._client.post.call_args.kwargs["json"]
+        assert body == {"message": "hi", "request_id": ""}
+        assert result.success is False
+        assert result.status_code == 400
+        assert result.error == error_msg
+        assert result.text == error_msg
+
+    async def test_client_prompt_surfaces_request_id_conflict_409(self, client: SidecarClient) -> None:
+        """Reusing a request_id with a different message surfaces HTTP 409 on AIResult."""
+        error_msg = "request_id 'req-123' was already used with a different message"
+        client._client.post = AsyncMock(return_value=_mock_response(409, {"error": error_msg}))
+
+        result = await client.prompt("sess-1", "different message", request_id="req-123")
+
+        body = client._client.post.call_args.kwargs["json"]
+        assert body == {"message": "different message", "request_id": "req-123"}
+        assert result.success is False
+        assert result.status_code == 409
+        assert result.error == error_msg
+        assert result.text == error_msg
+
     # -- delete_session --
     async def test_client_delete_session(self, client: SidecarClient) -> None:
         mock_resp = _mock_response(200)
@@ -1572,10 +1625,12 @@ class _SseTransport(httpx.AsyncBaseTransport):
         self._prompt_error = prompt_error
         self._prompt_gate = prompt_gate
         self.prompt_cancelled = False
+        self.prompt_bodies: list[dict[str, Any]] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
             return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=self.stream)
+        self.prompt_bodies.append(json.loads(await request.aread()))
         if self._prompt_gate is not None:
             await self._prompt_gate.wait()  # the test decides when the prompt answers
         if self._prompt_status != 200:
@@ -1790,6 +1845,28 @@ async def test_stream_prompt_raises_when_feed_ends_after_prompt_accepted_without
     )
     with pytest.raises(RuntimeError, match="ended before turn_end/error: upstream dropped"):
         [event async for event in _stream_client(transport).stream_prompt("s1", "hello")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{}, {"request_id": None}], ids=["omitted", "none"])
+async def test_stream_prompt_omits_request_id_when_unset(kwargs: dict[str, Any]) -> None:
+    """stream_prompt omits request_id from POST /prompt when omitted or None (#1397)."""
+    transport = _SseTransport(STREAM_FRAMES, hang=False, prompt_hangs=False)
+    events = [event async for event in _stream_client(transport).stream_prompt("s1", "hello", **kwargs)]
+    assert events[-1]["type"] == "turn_end"
+    assert transport.prompt_bodies == [{"message": "hello"}]
+    assert "request_id" not in transport.prompt_bodies[0]
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_forwards_request_id() -> None:
+    """stream_prompt forwards request_id in POST /prompt when provided (#1397)."""
+    transport = _SseTransport(STREAM_FRAMES, hang=False, prompt_hangs=False)
+    events = [
+        event async for event in _stream_client(transport).stream_prompt("s1", "hello", request_id="req-stream-1")
+    ]
+    assert events[-1]["type"] == "turn_end"
+    assert transport.prompt_bodies == [{"message": "hello", "request_id": "req-stream-1"}]
 
 
 class TestLogLevelFromEnv:

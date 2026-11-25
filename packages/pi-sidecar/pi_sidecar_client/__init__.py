@@ -611,13 +611,38 @@ class SidecarClient:
         )
         return session_id
 
-    async def prompt(self, session_id: str, message: str, timeout: float | None = None) -> AIResult:
-        """Send a message to a session. Returns AIResult."""
-        logger.debug("Sending prompt: session=%s, message_length=%d", session_id, len(message))
+    async def prompt(
+        self,
+        session_id: str,
+        message: str,
+        timeout: float | None = None,
+        request_id: str | None = None,
+    ) -> AIResult:
+        """Send a message to a session. Returns AIResult.
+
+        Args:
+            session_id: Target session identifier.
+            message: Prompt text to send.
+            timeout: Optional per-request timeout in seconds.
+            request_id: Optional idempotency key for safe retries. Retrying with
+                the same ``request_id`` and ``message`` coalesces onto an
+                in-flight turn or replays the cached completed response; reusing
+                a ``request_id`` with a different ``message`` returns HTTP 409.
+                Omitted from the request payload when ``None``.
+        """
+        logger.debug(
+            "Sending prompt: session=%s, message_length=%d, has_request_id=%s",
+            session_id,
+            len(message),
+            request_id is not None,
+        )
         request_timeout = timeout or self._client.timeout
+        payload: dict[str, Any] = {"message": message}
+        if request_id is not None:
+            payload["request_id"] = request_id
         resp = await self._client.post(
             f"/sessions/{session_id}/prompt",
-            json={"message": message},
+            json=payload,
             timeout=request_timeout,
         )
         if resp.status_code != 200:
@@ -677,7 +702,11 @@ class SidecarClient:
         )
 
     async def stream_prompt(
-        self, session_id: str, message: str, timeout: float | None = None
+        self,
+        session_id: str,
+        message: str,
+        timeout: float | None = None,
+        request_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream one prompt turn from `GET /sessions/:id/events` (#1019).
 
@@ -686,6 +715,11 @@ class SidecarClient:
         `turn_start`, `text_delta`, then exactly one of `turn_end` / `error`,
         which ends the generator. `turn_end["text"]` is the authoritative final
         text — deltas are pre-boundary and must not be concatenated.
+
+        `request_id` is forwarded to `prompt()`. In-flight retries with the same
+        `request_id` coalesce onto the active turn's SSE feed; replaying an
+        already-completed `request_id` returns the cached HTTP response without
+        emitting new SSE frames, so use `prompt()` for post-completion replay.
 
         The feed is **per session, not per caller**, so the turn is correlated
         through the prompt call: the server allows one in-flight turn per
@@ -708,7 +742,12 @@ class SidecarClient:
                 authoritative even for a failed turn: an `error` prompt verdict
                 with the server's terminal `error` frame still yields that frame.
         """
-        logger.debug("Streaming prompt: session=%s, message_length=%d", session_id, len(message))
+        logger.debug(
+            "Streaming prompt: session=%s, message_length=%d, has_request_id=%s",
+            session_id,
+            len(message),
+            request_id is not None,
+        )
         request_timeout = timeout or self._client.timeout
         async with self._client.stream("GET", f"/sessions/{session_id}/events", timeout=request_timeout) as resp:
             resp.raise_for_status()
@@ -716,7 +755,9 @@ class SidecarClient:
             # Both run concurrently: a rejected prompt (e.g. a second turn on the
             # same session) starts no turn, so no terminal frame ever arrives,
             # and the 15s keepalives would defeat the read timeout.
-            prompt_task = asyncio.ensure_future(self.prompt(session_id, message, timeout=timeout))
+            prompt_task = asyncio.ensure_future(
+                self.prompt(session_id, message, timeout=timeout, request_id=request_id)
+            )
             next_event: asyncio.Future[Any] | None = asyncio.ensure_future(anext(events))
             prompt_ok = False
             feed_ended = False

@@ -14,7 +14,12 @@ export {
   type CreatedRuntimeSession,
   type CreateSessionOptions,
   type CustomToolConfig,
+  type PromptResult,
+  type PromptUsage,
   DEFAULT_TOOLS,
+  isValidRequestId,
+  MAX_REQUEST_ID_LENGTH,
+  MAX_REQUEST_CACHE_ENTRIES,
   resolveInternalAgentDir,
   INTERNAL_AGENT_DIR,
 } from "./sessions.js";
