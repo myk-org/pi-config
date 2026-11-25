@@ -354,7 +354,7 @@ export function isReviewClean(cwd: string): boolean {
   try {
     state = readReviewStateStrict(cwd);
   } catch (err) {
-    log.warn("review_clean_check_read_failed", { cwd }, err);
+    log.error("review_clean_check_read_failed", { cwd }, err);
     return false;
   }
   if (state.status === "none") return true; // No tracking active — nothing to enforce
@@ -383,7 +383,7 @@ export function isCommitAllowed(cwd: string): boolean {
   try {
     state = readReviewStateStrict(cwd);
   } catch (err) {
-    log.warn("commit_gate_review_state_read_failed", { cwd }, err);
+    log.error("commit_gate_review_state_read_failed", { cwd }, err);
     return false;
   }
   if (state.status === "none") return true;

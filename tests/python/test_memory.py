@@ -439,6 +439,34 @@ class TestMemoryStatus:
         assert "bash_contains git push --force" in result.output
         assert "legacy-stale-cmd" not in result.output
 
+    def test_status_fails_instead_of_falling_back_to_legacy_when_state_db_corrupt(self, tmp_path: Path) -> None:
+        topics_dir = tmp_path / "memory" / "topics"
+        topics_dir.mkdir(parents=True)
+        (topics_dir / "lessons.md").write_text("# Lessons\n", encoding="utf-8")
+        # Stale legacy file on disk
+        (tmp_path / "memory" / "memory-scores.json").write_text(
+            json.dumps({
+                "entries": {
+                    "stale": {
+                        "class": "lesson",
+                        "trigger": "bash_contains legacy-stale-cmd",
+                        "action": "block",
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        # Corrupt state.db must fail loudly rather than presenting stale legacy entries
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "state.db").write_text("NOT A SQLITE DATABASE", encoding="utf-8")
+
+        runner = CliRunner()
+        result = runner.invoke(memory, ["--file-path", str(topics_dir), "status"])
+        assert result.exit_code != 0
+        assert "Failed to read memory-scoring" in result.output
+        assert "legacy-stale-cmd" not in result.output
+
 
 class TestEntryHashParity:
     """Issue #915: the Python CLI must agree with the TypeScript hash (SHA-256, 16 hex)."""

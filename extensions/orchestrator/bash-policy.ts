@@ -12,7 +12,7 @@ import { lstatSync, readFileSync, realpathSync, mkdirSync, rmdirSync } from "nod
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { acquireDirLock } from "../shared/file-lock.js";
 import { escapeRegExp, getProjectDataDir, realpathNearestExisting, sanitizeModelId } from "./utils.js";
 import {
@@ -6192,17 +6192,41 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
   const agentName = input.agentName !== undefined ? input.agentName : process.env.PI_AGENT_NAME;
   const sessionId = input.sessionId ?? null;
 
-  // Block ALL bash commands targeting review state storage (legacy pi-config-review-state
-  // files or SQLite state.db / WAL / SHM / kv_state) — no exceptions when enforcement is on.
+  // Block bash commands tampering with review state storage (legacy pi-config-review-state
+  // files or SQLite .pi/data/state.db / WAL / SHM / kv_state) while allowing inert mentions
+  // (e.g. `grep kv_state src/`, `ls state.db`, or commit messages mentioning `state.db`).
   if (getSetting(input.cwd, "review_loop_enforcement")) {
-    const targetsReviewState =
-      cmdLower.includes("pi-config-review-state") ||
-      /(?:^|[^\w-])state\.db(?:-wal|-shm)?(?=$|[^\w-])/i.test(command) ||
-      /\bkv_state\b/i.test(command) ||
-      (/\b(?:node:sqlite|databasesync|sqlite3)\b/i.test(command) &&
-        /\.pi\/data\b/i.test(command) &&
-        !/\b(?:pr-)?reviews\.db\b/i.test(command));
-    if (targetsReviewState) {
+    const stateDbPathRe = /(?:^|[\s"'`=:(/])\.pi\/data\/state\.db(?:-wal|-shm)?(?=$|[\s"'`;|&)])/i;
+    const sqliteInvokeRe = /\b(?:node:sqlite|databasesync|sqlite3|better-sqlite3)\b/i;
+    const fileMutateCmds = new Set(["rm", "unlink", "mv", "cp", "truncate", "dd", "shred", "install", "ln"]);
+    const maskedCmd = maskQuotedRegions(command);
+
+    const hasLegacyName = cmdLower.includes("pi-config-review-state");
+    const hasSqliteTamper =
+      sqliteInvokeRe.test(command) &&
+      (/\bkv_state\b/i.test(command) ||
+        stateDbPathRe.test(command) ||
+        (/\.pi\/data\b/i.test(command) && !/\b(?:pr-)?reviews\.db\b/i.test(command)));
+    const hasRedirectWrite =
+      stateDbPathRe.test(command) &&
+      bashWritesToPath(command, maskedCmd, "\\.pi/data/state\\.db(?:-wal|-shm)?");
+    const hasFileMutate =
+      stateDbPathRe.test(command) &&
+      unquotedSegments(command).some((seg) => {
+        const tokens = tokenize(seg.text);
+        if (tokens.length === 0) return false;
+        const cmdWord = basename(tokens[skipToCommandWord(tokens)] ?? "").toLowerCase();
+        if (fileMutateCmds.has(cmdWord) && stateDbPathRe.test(seg.text)) return true;
+        if (runsNestedShell(tokens)) {
+          const inner = executableText(seg.text);
+          const innerTokens = tokenize(inner);
+          const innerCmd = basename(innerTokens[skipToCommandWord(innerTokens)] ?? "").toLowerCase();
+          return fileMutateCmds.has(innerCmd) && stateDbPathRe.test(inner);
+        }
+        return false;
+      });
+
+    if (hasLegacyName || hasSqliteTamper || hasRedirectWrite || hasFileMutate) {
       enfLog.warn("review_state_bash_blocked");
       return {
         action: "block",

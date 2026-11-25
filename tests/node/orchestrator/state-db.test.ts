@@ -69,6 +69,8 @@ import {
   statePath,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { evaluateBashPolicy } from "../../../extensions/orchestrator/bash-policy.js";
+import { discoverAgents } from "../../../extensions/orchestrator/agents.js";
+import { buildSubagentChildSpec } from "../../../extensions/orchestrator/subagent-child-spec.js";
 import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -610,6 +612,88 @@ describe("state-db: review-state resilience and bash commit-gate enforcement", (
       ui: null,
     });
     assert.equal(decision3.action, "block");
+
+    // Also blocks redirect writes into .pi/data/state.db
+    const redirectCmd = "echo corrupt > .pi/data/state.db";
+    const decision4 = await evaluateBashPolicy({
+      command: redirectCmd,
+      cwd,
+      hasTimeout: false,
+      inContainer: false,
+      isSubagentChild: false,
+      ui: null,
+    });
+    assert.equal(decision4.action, "block");
+  });
+
+  it("allows inert mentions, read-only commands, unrelated state.db, and commit messages mentioning state.db", async () => {
+    const cwd = trackTempDir("state-db-bash-allow-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true }),
+      "utf-8",
+    );
+    clearSettingsCache();
+
+    const allowedCommands = [
+      "grep kv_state src/",
+      "ls state.db",
+      "ls .pi/data/state.db",
+      'sqlite3 .pi/data/reviews.db "SELECT 1"',
+    ];
+    for (const command of allowedCommands) {
+      const decision = await evaluateBashPolicy({
+        command,
+        cwd,
+        hasTimeout: false,
+        inContainer: false,
+        isSubagentChild: false,
+        ui: null,
+      });
+      assert.notEqual(decision.action, "block", `expected ${command} not to be blocked`);
+    }
+
+    // Commit message mentioning state.db must NOT be blocked by the review-state storage guard
+    const commitDecision = await evaluateBashPolicy({
+      command: 'git commit -m "feat: consolidate stores into state.db"',
+      cwd,
+      hasTimeout: false,
+      inContainer: false,
+      isSubagentChild: true,
+      agentName: "git-expert",
+      ui: null,
+    });
+    if (commitDecision.action === "block") {
+      assert.doesNotMatch(commitDecision.reason ?? "", /review state storage/i);
+    }
+  });
+
+  it("includes review_status in the spawned git-expert tool allowlist", () => {
+    const repoRoot = join(import.meta.dirname, "../../..");
+    const { agents } = discoverAgents(repoRoot, "both");
+    const gitExpert = agents.find((a) => a.name === "git-expert");
+    assert.ok(gitExpert, "git-expert agent definition must be discovered");
+    assert.ok(
+      gitExpert.tools?.includes("review_status"),
+      "git-expert frontmatter tools must include review_status",
+    );
+
+    const spec = buildSubagentChildSpec({
+      mode: "sync",
+      agentName: "git-expert",
+      agent: gitExpert,
+      task: "Commit changes",
+      cwd: repoRoot,
+      persistSession: false,
+    });
+    const toolsIdx = spec.args.indexOf("--tools");
+    assert.notEqual(toolsIdx, -1);
+    const spawnedTools = (spec.args[toolsIdx + 1] ?? "").split(",");
+    assert.ok(
+      spawnedTools.includes("review_status"),
+      `expected --tools to include review_status, got: ${spec.args[toolsIdx + 1]}`,
+    );
   });
 });
 

@@ -212,7 +212,7 @@ export function registerReviewUI(pi: ExtensionAPI, options: ReviewUIOptions = {}
   });
   pi.on("agent_end", (_event, ctx) => { lastCtx = ctx; });
 
-  // Poll pi-config-review-state.jsonl for cross-process updates (subagents write state too)
+  // Poll review state in state.db for cross-process updates (subagents write state too)
   const reviewPoller = setInterval(() => {
     if (!lastCtx) return;
     if (!isLiveExtensionCtx(lastCtx)) { lastCtx = null; return; }
