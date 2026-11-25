@@ -610,7 +610,9 @@ function updateUsage(
 
 export function streamVertexClaude(
 	model: Model<Api>,
-	context: TranscriptContext,
+	// Structural Pick avoids nominal unique-symbol mismatch when pi-coding-agent and
+	// pi-vertex-claude resolve separate @earendil-works/pi-ai copies (#1394).
+	context: Pick<TranscriptContext, "messages">,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
 	log.debug("streamVertexClaude: preparing transcript", { modelId: model.id, messageCount: context.messages.length });
@@ -843,6 +845,8 @@ export function streamVertexClaude(
 // Extension Entry Point
 // =============================================================================
 
+type ProviderStreamSimple = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]["streamSimple"]>;
+
 export default function (pi: ExtensionAPI) {
 	const projectInfo = resolveProjectId();
 	if (!projectInfo || !hasAdcCredentials()) {
@@ -852,6 +856,15 @@ export default function (pi: ExtensionAPI) {
 	// Get region from environment for baseUrl (used for display, SDK handles actual endpoint)
 	const region = process.env.GOOGLE_CLOUD_LOCATION || process.env.CLOUD_ML_REGION || "us-east5";
 
+	// Bridge across duplicate @earendil-works/pi-ai installs (e.g. 1.6.0 root + 1.6.1 nested under
+	// pi-coding-agent) whose nominal #private / unique-symbol fields differ despite identical runtime shape (#1394).
+	const streamSimple: ProviderStreamSimple = (model, context, options) =>
+		streamVertexClaude(
+			model as unknown as Model<Api>,
+			context as unknown as Pick<TranscriptContext, "messages">,
+			options as unknown as SimpleStreamOptions | undefined,
+		) as unknown as ReturnType<ProviderStreamSimple>;
+
 	pi.registerProvider("google-vertex-claude", {
 		baseUrl: `https://${region}-aiplatform.googleapis.com`, // Display URL, SDK handles actual endpoint
 		apiKey: "$" + projectInfo.envVar, // Env var requires $ prefix for pi 0.77.0+
@@ -859,6 +872,6 @@ export default function (pi: ExtensionAPI) {
 
 		models: buildModels(),
 
-		streamSimple: streamVertexClaude,
+		streamSimple,
 	});
 }
