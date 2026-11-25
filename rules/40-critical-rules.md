@@ -53,6 +53,15 @@ Always pass `cwd` when delegating to subagents in all modes — omitting it caus
 
 ---
 
+## Scheduled Tasks (`cron_manage`)
+
+- To modify an existing cron (schedule, prompt, description, or model), call `cron_manage(action="edit", id=...)` with only the
+  changed fields (`model=""` clears a pinned model) — never `remove` + `add`, which loses the ID, run history, and paused state.
+- To temporarily stop or restart a cron without deleting it, call `cron_manage(action="pause", id=...)` or
+  `cron_manage(action="resume", id=...)` (resuming starts a fresh interval without catching up missed runs).
+
+---
+
 ## Runtime & Session Tools
 
 Prefer the built-in runtime tools over ad-hoc shell commands when inspecting or managing session state:

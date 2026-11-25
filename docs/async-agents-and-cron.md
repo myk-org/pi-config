@@ -160,7 +160,7 @@ Session-scoped tasks survive `/reload` inside the running process but are delete
 
 > **Note:** If you need to confirm what is still scheduled, run `/cron list` or `/cron list-all` after reconnecting instead of assuming an older schedule is still active.
 
-> **Tip:** `/cron` with free text does not schedule anything by itself. It re-enters the conversation with a request to call the `cron_manage` tool, and `persist` is set to `true` only when you passed `--persist`. Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour`. `model` accepts `provider/model-id` or a bare `model-id`; leaving it out uses the worker's normal model resolution.
+> **Tip:** `/cron` with free text does not schedule anything by itself. It re-enters the conversation with a request to call the `cron_manage` tool (`add`, `list`, `edit`, `pause`, `resume`, `remove`), and `persist` is set to `true` only when you passed `--persist`. Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour` (or alone when editing an existing daily schedule). `model` accepts `provider/model-id` or a bare `model-id`; leaving it out uses the worker's normal model resolution, and passing `model: ""` on `edit` clears a pinned model back to inherited. Use `edit` to update a cron in place (preserving its ID, run history, and paused state) and `pause`/`resume` to toggle execution without deleting it.
 
 ## Troubleshooting
 
@@ -168,7 +168,7 @@ Session-scoped tasks survive `/reload` inside the running process but are delete
 - **You want the result to update a task automatically:** Pass a numeric `taskId` from the task tools. It is optional; when set, the finished job marks that task `completed` for you.
 - **You want live output but nothing appears:** Use `/async-status` from a TUI session. The fullscreen overlay is the supported live-view interface. A sync row has no output pane — everything it printed is already in your transcript.
 - **The footer counts an agent you cannot find in `/async-status`:** A sync agent registers for exactly as long as its child process lives. A count that does not fall back to `0` means a child is still alive — open `/async-status`, find the `sync` row and press `x` to abort it.
-- **A cron task seems stuck or outdated:** Run `/cron list` or `/cron list-all`, then remove the old task and create a fresh one.
+- **A cron task seems stuck or outdated:** Run `/cron list` or `/cron list-all` to inspect or pause/remove it, or ask Pi to update it in place with `cron_manage` (`edit`, `pause`, `resume`).
 - **You want browser-based monitoring instead of terminal overlays:** See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
 
 ## Related Pages
