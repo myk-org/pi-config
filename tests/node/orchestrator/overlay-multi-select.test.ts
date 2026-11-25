@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  KeybindingsManager,
+  TUI_KEYBINDINGS,
+  TuiMainScreen,
+  isKittyProtocolActive,
+  setKittyProtocolActive,
+  stripTerminalSequences,
+  type Terminal,
+} from "@earendil-works/pi-tui";
+import {
+  OVERLAY_OPTS,
   OverlayListDashboard,
   OverlayScrollDetail,
   matchesOverlayKey,
@@ -10,6 +20,8 @@ import {
   type OverlayNotify,
   type OverlaySelection,
 } from "../../../extensions/orchestrator/overlay-dashboard.ts";
+import { openTasksOverlay } from "../../../extensions/pitasks/tasks-ui.ts";
+import type { Task } from "../../../extensions/pitasks/types.ts";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { fakeCommandCtx, fakeCustom, type FakeCustomFactory } from "../helpers/fake-extension-ctx.js";
@@ -770,5 +782,140 @@ describe("OverlayListDashboard multi-select UX & openListDetailOverlay persisten
 
     assert.match(frames[2], /1 selected/, "deleting #2 inside detail prunes #2 and keeps #1");
     assert.deepEqual(killedSelected, [["1"]]);
+  });
+});
+
+describe("real TuiMainScreen + Kitty protocol integration (#1391)", () => {
+  function runWithRealTui<T>(
+    factory: FakeCustomFactory<T>,
+    keys: readonly string[],
+    opts?: { overlay?: boolean; overlayOptions?: unknown },
+  ): Promise<{ result: T; frames: string[] }> {
+    let onInput: ((data: string) => void) | undefined;
+    const term: Terminal = {
+      columns: 110,
+      rows: 24,
+      kittyProtocolActive: true,
+      start(inputCb) { onInput = inputCb; },
+      stop() {},
+      async drainInput() {},
+      write() {},
+      moveBy() {},
+      hideCursor() {},
+      showCursor() {},
+      clearLine() {},
+      clearFromCursor() {},
+      clearScreen() {},
+      setTitle() {},
+      setProgress() {},
+      setProgramStatus() {},
+    };
+    const tui = new TuiMainScreen(term);
+    const kb = new KeybindingsManager(TUI_KEYBINDINGS);
+    const frames: string[] = [];
+    let resolveDone!: (value: T) => void;
+    const closed = new Promise<T>((resolve) => { resolveDone = resolve; });
+    return Promise.resolve(factory(tui as never, fakeTheme(), kb as never, resolveDone)).then(async (comp) => {
+      tui.start();
+      const handle = opts?.overlay ? tui.showOverlay(comp, opts.overlayOptions as never) : undefined;
+      try {
+        for (const key of keys) {
+          onInput?.(key);
+          frames.push(stripTerminalSequences((comp.render?.(110) ?? []).join("\n")));
+        }
+        return { result: await closed, frames };
+      } finally {
+        handle?.hide();
+        comp.dispose?.();
+        tui.stop();
+      }
+    });
+  }
+
+  it("clears active selection on first Kitty Esc before closing on second Esc via real TuiMainScreen", async () => {
+    const prevKitty = isKittyProtocolActive();
+    setKittyProtocolActive(true);
+    try {
+      const closedValues: Array<string | null> = [];
+      const rows = [{ id: "1" }, { id: "2" }];
+      const { frames } = await runWithRealTui<string | null>(
+        (tui, theme, kb, done) =>
+          new OverlayListDashboard<string, { id: string }>(
+            tui,
+            theme,
+            kb,
+            {
+              title: "Jobs",
+              countLabel: (items) => `${items.length}`,
+              borderTitle: (items) => `jobs · ${items.length}`,
+              listItems: () => rows,
+              rowParts: (item) => ({ glyph: "■", title: item.id, idLabel: "", rightParts: [] }),
+              selectable: true,
+            },
+            { index: 0, id: "1" },
+            (v) => { closedValues.push(v); done(v); },
+          ),
+        ["\x1b[32;129u", "\x1b[27;129u", "\x1b[27u"],
+        OVERLAY_OPTS,
+      );
+      assert.match(frames[0], /1 selected/, "Space+NumLock ticks row 1");
+      assert.match(frames[0], /Esc clear/, "footer switches to Esc clear while selected");
+      assert.doesNotMatch(frames[1], /1 selected/, "first Kitty Esc clears selection without closing");
+      assert.deepEqual(closedValues, [null], "second Kitty Esc closes overlay");
+    } finally {
+      setKittyProtocolActive(prevKitty);
+    }
+  });
+
+  it("preserves selection across detail view and renders bulk-d inline banner in /tasks via real TuiMainScreen", async () => {
+    const prevKitty = isKittyProtocolActive();
+    setKittyProtocolActive(true);
+    try {
+      const tasks: Task[] = [
+        {
+          id: "1", subject: "owner item", description: "", status: "pending", assignee: "user",
+          metadata: {}, blocks: [], blockedBy: [],
+          createdBy: { type: "local", origin: "user", session: "", project: "" },
+          createdAt: 1, updatedAt: 1,
+          statusHistory: { pending_at: "", in_progress_at: null, completed_at: null, deleted_at: null },
+        },
+        {
+          id: "2", subject: "agent item", description: "", status: "pending", assignee: "llm",
+          metadata: {}, blocks: [], blockedBy: [],
+          createdBy: { type: "local", origin: "user", session: "", project: "" },
+          createdAt: 1, updatedAt: 1,
+          statusHistory: { pending_at: "", in_progress_at: null, completed_at: null, deleted_at: null },
+        },
+      ];
+      const scripts = [
+        ["\x1b[32;129u", "\x1b[106;65u", "\x1b[32;129u", "\r"], // select both with NumLock/CapsLock, Enter detail
+        ["\x1b[27;129u"],                                        // Esc back from detail
+        ["\x1b[1490::100u", "\x1b[27u"],                         // non-Latin d bulk done, Esc close
+      ];
+      const allFrames: string[] = [];
+      let openIdx = 0;
+      const custom = (<T,>(factory: FakeCustomFactory<T>, opts?: unknown) =>
+        runWithRealTui(factory, scripts[openIdx++] ?? ["\x1b"], opts as { overlay?: boolean; overlayOptions?: unknown })
+          .then(({ result, frames }) => {
+            allFrames.push(...frames);
+            return result;
+          })) satisfies ExtensionUIContext["custom"];
+      const ctx = fakeCommandCtx({ notify: () => {}, custom });
+      await openTasksOverlay(ctx, {
+        listTasks: () => tasks,
+        deleteTask: () => true,
+        completeTask: (id) => {
+          const target = tasks.find((t) => t.id === id);
+          if (target) target.status = "completed";
+          return true;
+        },
+        createTask: () => "3",
+        updateTaskSubject: () => true,
+      });
+      assert.ok(allFrames.some((f) => f.includes("ℹ completed 2 tasks")), "inline bulk-done banner rendered");
+      assert.deepEqual(tasks.map((t) => t.status), ["completed", "completed"]);
+    } finally {
+      setKittyProtocolActive(prevKitty);
+    }
   });
 });
