@@ -978,17 +978,21 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
     });
 
     it("prefers wl-copy on Wayland Linux before falling back to xclip and xsel", async () => {
-      const tried: string[] = [];
+      const tried: Array<{ cmd: string; args: string[] }> = [];
       const res = await copyTextToClipboard("/tmp/wt", {
         platform: "linux",
         waylandDisplay: "wayland-0",
         isTTY: false,
-        runCommand: async (cmd) => {
-          tried.push(cmd);
+        runCommand: async (cmd, args) => {
+          tried.push({ cmd, args });
           return cmd === "xsel";
         },
       });
-      assert.deepEqual(tried, ["wl-copy", "xclip", "xsel"]);
+      assert.deepEqual(tried, [
+        { cmd: "wl-copy", args: ["--type", "text/plain"] },
+        { cmd: "xclip", args: ["-selection", "clipboard"] },
+        { cmd: "xsel", args: ["--clipboard", "--input"] },
+      ]);
       assert.deepEqual(res, { ok: true, method: "xsel" });
     });
 

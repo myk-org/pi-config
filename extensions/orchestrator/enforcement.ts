@@ -179,7 +179,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     const ui: BashPolicyUi | null = ctx.hasUI
       ? {
-          select: (title, options) => bridgedUi.select(ctx, title, options),
+          select: (title, options) => bridgedUi.select(ctx, title, options, { blockedKind: "permission" }),
           notify: (message, level) => ctx.ui.notify(message, level),
         }
       : null;

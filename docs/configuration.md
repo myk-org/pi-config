@@ -568,13 +568,13 @@ See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) 
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `log_providers` | string | `info` | `PI_LOG_PROVIDERS` | Log level for the provider diagnostics namespace. | Set to `debug` to capture every parsed provider stream event, which is how a misbehaving provider is diagnosed from the stream rather than reconstructed from rendered output. |
+| `log_providers` | string | `info` | `PI_LOG_PROVIDERS` | Log level for the provider diagnostics namespace. | Logs provider HTTP 4xx/5xx responses at `warn` by default. Set to `debug` to also capture every parsed `provider_stream_event` chunk for stream-level diagnosis. |
 
 ```bash
 export PI_LOG_PROVIDERS=debug
 ```
 
-The stream is written to `~/.pi/logs/providers/<session-id>/main.log` under a `[provider-stream]` prefix, with one line per event and credential-shaped fields redacted. Capturing every event has a real cost, so the hook only registers at `debug` and costs nothing at the default level.
+`registerProviderStreamLog` writes to `~/.pi/logs/providers/<session-id>/main.log` under a `[provider-stream]` prefix and redacts credential-shaped fields. Via `after_provider_response`, it logs provider HTTP 4xx/5xx error responses and safe retry headers (`retry-after`, `x-request-id`, `cf-ray`) at `warn` level, which is active at the default `info` setting. Chunk-level `provider_stream_event` logging runs on every parsed chunk, so that hook stays gated behind `log_providers: "debug"` and adds no overhead at the default level.
 
 Every other `log_<module>` key follows the same shape — `log_pidash`, `log_pidiff`, `log_coms`, `log_subagent`, `log_dreaming`, `log_enforcement`, `log_trail`, and others — with env vars `PI_LOG_<MODULE>` and default `info`. The remaining module log levels are listed in [Module File Logging](#module-file-logging) below.
 

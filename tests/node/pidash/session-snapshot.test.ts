@@ -742,4 +742,65 @@ describe("useMessageHandler session_snapshot hydration (#1398)", () => {
     assert.equal(userMsgs.length, 3);
     assert.deepEqual(userMsgs.map((m) => m.text), ["ping", "ping", "ping"]);
   });
+
+  it("appends fullOutputError warning after non-empty tool_execution_end output", () => {
+    const { client } = makeClient();
+    applyEventToViewState(client, {
+      type: "tool_execution_end",
+      toolName: "bash",
+      toolCallId: "t1",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "truncated output" }],
+        details: { fullOutputError: "ENOSPC: no space left on device" },
+      },
+    });
+    const results = client.viewState.messages.filter((m) => m.className === "tool-result");
+    assert.equal(results.length, 1);
+    assert.equal(results[0].text, "✓ truncated output\n⚠️ Full output not saved: ENOSPC: no space left on device");
+  });
+
+  it("shows fullOutputError warning when tool_execution_end output is empty", () => {
+    const { client } = makeClient();
+    applyEventToViewState(client, {
+      type: "tool_execution_end",
+      toolName: "bash",
+      toolCallId: "t2",
+      isError: true,
+      result: {
+        content: [],
+        details: { fullOutputError: "EACCES: permission denied" },
+      },
+    });
+    const results = client.viewState.messages.filter((m) => m.className === "tool-result");
+    assert.equal(results.length, 1);
+    assert.equal(results[0].text, "✗ ⚠️ Full output not saved: EACCES: permission denied");
+  });
+
+  it("ignores whitespace-only fullOutputError on tool_execution_end", () => {
+    const { client } = makeClient();
+    applyEventToViewState(client, {
+      type: "tool_execution_end",
+      toolName: "bash",
+      toolCallId: "t3",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "ok" }],
+        details: { fullOutputError: "   \t\n  " },
+      },
+    });
+    applyEventToViewState(client, {
+      type: "tool_execution_end",
+      toolName: "bash",
+      toolCallId: "t4",
+      isError: false,
+      result: {
+        content: [],
+        details: { fullOutputError: "   " },
+      },
+    });
+    const results = client.viewState.messages.filter((m) => m.className === "tool-result");
+    assert.equal(results.length, 1);
+    assert.equal(results[0].text, "✓ ok");
+  });
 });

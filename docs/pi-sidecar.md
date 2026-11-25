@@ -306,6 +306,11 @@ Notes:
   runtime is seeded with at startup.
 - Settings seeded from `settings.json` never re-enable compaction — sidecar
   sessions are short-lived and always run with compaction disabled.
+- Starting in Pi 1.6.1, `models.json` model entries using `google-generative-ai`
+  or `google-vertex` support `compat.supportsStrictMode` (`true` or `false`).
+  Set `"compat": { "supportsStrictMode": true }` on custom or non-versioned
+  Gemini 3+ and Gemini 4 model IDs behind gateways so strict tool calling stays
+  enabled when built-in ID matching does not recognize the model name.
 
 ### Key-scoped listing for custom providers (`trustKeyScopedListing`)
 

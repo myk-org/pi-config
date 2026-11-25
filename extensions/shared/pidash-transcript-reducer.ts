@@ -304,8 +304,13 @@ export function applyTranscriptEvent(
       const startTs = refs.tool.startTs;
       const callId = refs.tool.callId || ev.toolCallId || "";
       refs.tool = { id: "", name: "", startTs: 0, callId: "" };
-      if (ev.result?.content?.[0]?.text) {
-        const t = ev.result.content[0].text;
+      const rawText = typeof ev.result?.content?.[0]?.text === "string" ? ev.result.content[0].text : "";
+      const fullOutputError =
+        typeof ev.result?.details?.fullOutputError === "string" ? ev.result.details.fullOutputError.trim() : "";
+      if (rawText || fullOutputError) {
+        const t = fullOutputError
+          ? `${rawText}${rawText ? "\n" : ""}⚠️ Full output not saved: ${fullOutputError}`
+          : rawText;
         let meta: ChatMessage["meta"] = startTs ? { startTs, endTs: ts, callId } : { callId };
         const results = ev.result?.details?.results;
         if (Array.isArray(results) && results.length > 0) {
