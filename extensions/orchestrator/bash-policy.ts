@@ -6208,13 +6208,30 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     const sqliteInvokeRe = /\b(?:node:sqlite|databasesync|sqlite3|better-sqlite3)\b/i;
     const fileMutateCmds = new Set(["rm", "unlink", "mv", "cp", "truncate", "dd", "shred", "install", "ln"]);
 
-    const targetsProtectedPath = (text: string): boolean =>
-      stateDbPathRe.test(text) || piDirTargetRe.test(text) || piProtectedFileRe.test(text);
-
     const stripOuterQuotes = (s: string): string =>
       (s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\""))
         ? s.slice(1, -1)
         : s;
+
+    // Normalize repeated `/` and `.` / `..` segments so paths like `.pi/data//state.db`
+    // or `./.pi/./data/../data/state.db` match protected-path checks reliably.
+    const normalizePathOperand = (raw: string): string => {
+      const unquoted = stripOuterQuotes(raw);
+      if (!unquoted.includes("/")) return unquoted;
+      return path.posix.normalize(unquoted.replace(/\/+/g, "/"));
+    };
+
+    const normalizeSlashesInText = (text: string): string =>
+      text.replace(/\/{2,}/g, "/").replace(/\/\.(?=\/)/g, "");
+
+    const targetsProtectedPath = (text: string): boolean => {
+      const normalized = normalizeSlashesInText(text);
+      return (
+        stateDbPathRe.test(normalized) ||
+        piDirTargetRe.test(normalized) ||
+        piProtectedFileRe.test(normalized)
+      );
+    };
 
     const expandVars = (text: string, vars: Map<string, string>): string => {
       if (vars.size === 0 || !text.includes("$")) return text;
@@ -6283,16 +6300,17 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         }
 
         const expandedSeg = expandVars(seg.text, vars);
-        const maskedSeg = maskQuotedRegions(expandedSeg);
+        const normalizedSeg = normalizeSlashesInText(expandedSeg);
+        const maskedSeg = maskQuotedRegions(normalizedSeg);
         if (
           adjacentRedirectRe.test(maskedSeg) ||
-          (targetsProtectedPath(expandedSeg) &&
+          (targetsProtectedPath(normalizedSeg) &&
             bashWritesToPath(
-              expandedSeg,
+              normalizedSeg,
               maskedSeg,
               "\\.pi/(?:data/state\\.d(?:b(?:-wal|-shm)?|[?*[{][^\\s\"'`;|&)]*)|run/review-tracked)",
             )) ||
-          hasSqliteTamperInText(expandedSeg)
+          hasSqliteTamperInText(normalizedSeg)
         ) {
           return true;
         }
@@ -6303,7 +6321,14 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
 
         if (fileMutateCmds.has(cmdWord)) {
-          if (targetsProtectedPath(expandedSeg)) return true;
+          if (
+            targetsProtectedPath(normalizedSeg) ||
+            expandedTokens
+              .slice(cmdIdx + 1)
+              .some((tok) => !tok.startsWith("-") && targetsProtectedPath(normalizePathOperand(tok)))
+          ) {
+            return true;
+          }
           // Fail closed if an earlier segment assigned a protected path to a variable and
           // this mutating command still has an unresolved variable operand (`$foo`/`${foo}`).
           if (sawProtectedAssignment && /\$(?:\{[A-Za-z_]|[A-Za-z_])/.test(expandedSeg)) {

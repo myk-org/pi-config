@@ -467,13 +467,13 @@ export class SqliteStateStore<T> {
         // - no SQLite row exists, OR
         // - legacy mtime is strictly newer than SQLite updated_at, OR
         // - legacy mtime equals SQLite updated_at (coarse FS clock / same-ms cutover)
-        //   AND either no SQLite write has occurred since initial import (rev <= 1) or
-        //   this is a newly created successor file with distinct valid content.
+        //   AND no SQLite write has occurred since initial import (sqliteRev <= 1).
+        // Never let an equal-timestamp legacy successor overwrite a post-import SQLite write.
         const serializedNext = JSON.stringify(parsedSnapshot);
         const equalTimestampImport =
           !Number.isNaN(sqliteUpdatedMs) &&
           sourceStat.mtimeMs === sqliteUpdatedMs &&
-          (sqliteRev <= 1 || (cand.isSuccessor && kvRow?.payload !== serializedNext));
+          sqliteRev <= 1;
 
         if (!kvRow || Number.isNaN(sqliteUpdatedMs) || sourceStat.mtimeMs > sqliteUpdatedMs || equalTimestampImport) {
           const nextUpdatedAt = new Date(Math.max(Date.now(), Math.ceil(sourceStat.mtimeMs))).toISOString();

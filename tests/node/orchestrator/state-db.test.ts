@@ -412,6 +412,34 @@ describe("state-db: SqliteStateStore mutate, SKIP_MUTATE, and revision semantics
     utimesSync(legacyJsonl, exactMs / 1000, exactMs / 1000);
     assert.deepEqual(store.read(), { step: 2 }, "equal-timestamp valid successor must be imported");
   });
+
+  it("does not overwrite a post-import SQLite mutation with an equal-timestamp differing legacy successor", () => {
+    const dir = trackTempDir("state-db-equal-mtime-rev2-");
+    const dbPath = join(dir, ".pi", "data", "state.db");
+    const legacyJsonl = join(dir, "legacy.jsonl");
+    const legacyJson = join(dir, "legacy.json");
+
+    writeFileSync(legacyJson, JSON.stringify({ step: 1 }), "utf-8");
+    const store = createSqliteStateStore<{ step: number }>(dbPath, "equal-ts-rev2", {
+      legacyFiles: [legacyJsonl, legacyJson],
+    });
+    assert.deepEqual(store.read(), { step: 1 });
+
+    // Advance SQLite beyond initial import (revision becomes 2)
+    store.write({ step: 10 });
+    assert.equal(store.getRevision(), 2);
+
+    const db = openStateDb(dbPath);
+    const row = db
+      .prepare("SELECT updated_at FROM kv_state WHERE store_key = 'equal-ts-rev2'")
+      .get() as { updated_at: string };
+    const exactMs = Date.parse(row.updated_at);
+
+    // Supply a differing legacy successor with the exact same mtime as the SQLite mutation
+    writeFileSync(legacyJsonl, JSON.stringify({ step: 99 }) + "\n", "utf-8");
+    utimesSync(legacyJsonl, exactMs / 1000, exactMs / 1000);
+    assert.deepEqual(store.read(), { step: 10 }, "post-import SQLite revision must survive equal-mtime legacy successor");
+  });
 });
 
 // ── Float32Array BLOB Encoding & Embeddings Migration ──────────────────────
@@ -949,6 +977,40 @@ describe("state-db: review-state resilience and bash commit-gate enforcement", (
     });
     assert.equal(decision.action, "block");
     assert.match(decision.reason ?? "", /review state storage/i);
+  });
+
+  it("unconditionally blocks mutating commands using doubled separators or dot-segments targeting state.db and marker", async () => {
+    const cwd = trackTempDir("state-db-bash-norm-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true }),
+      "utf-8",
+    );
+    clearSettingsCache();
+
+    const approvingUi = {
+      async select() {
+        return "Yes, run it";
+      },
+      notify() {},
+    };
+    const commands = [
+      "rm -f .pi/data//state.db .pi/data//state.db-wal .pi/data//state.db-shm .pi/run//review-tracked",
+      "rm -f ./.pi/./data/../data/state.db ./.pi/./run/../run/review-tracked",
+    ];
+    for (const command of commands) {
+      const decision = await evaluateBashPolicy({
+        command,
+        cwd,
+        hasTimeout: false,
+        inContainer: false,
+        isSubagentChild: false,
+        ui: approvingUi,
+      });
+      assert.equal(decision.action, "block", `expected normalized path command to be blocked: ${command}`);
+      assert.match(decision.reason ?? "", /review state storage/i);
+    }
   });
 
   it("fails closed when .pi/data is writable but .pi/run marker cannot be created", () => {
