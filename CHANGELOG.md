@@ -1,5 +1,33 @@
 # Changelog
 
+## [6.0.0] - 2026-11-25
+
+- **BREAKING CHANGE:** Simplified `/tasks`, `/cron`, `/coms`, `/worktree`, `/pi-config-settings`,
+  and `/adopt-skill` to zero-arg TUI overlays with `Space` multi-select; renamed `/async-status`
+  to `/async`; removed `/coms-queue`, `/dream`, and `/dream-auto`; and added `dream_auto_enable`
+  setting (#1396).
+- **BREAKING CHANGE:** Removed `/external-ai`, `/external-ai-models-refresh`, `myk_pi_tools/ai_cli`,
+  and external AI CLI installs (#1389).
+- Consolidated 5 project JSONL state stores (`memory-scoring`, `memory-embeddings` as Float32 BLOBs,
+  `memory-provenance`, `session-search`, and worktree-scoped `pi-config-review-state`) into a
+  `node:sqlite` WAL database (`.pi/data/state.db`) with lossless migration (#1401) and added v1 → v2
+  `migrated_stores` schema upgrade for `source_mtime_ms`/`source_size` (#1407).
+- Replaced `pidash` raw WS delta `eventBuffer` replay with a single canonical `session_snapshot`
+  frame and shared transcript reducer on browser watch/reconnect (#1400).
+- Blocked `ask_user` in non-TUI supervised COMS peers (`PI_COMS_SUPERVISED_PEER=1`, `mode !== "tui"`
+  guard, `interactive_tui` rules predicate, `coms_send` routing) and fixed `coms-p2p.ts` /
+  `live-ctx.ts` stale-ctx reload crash and untracked 60s cleanup timers (#1404).
+- Added 7 LLM parity tools (`async_status`, `session_status`, `worktree_status`, `daemon_manage`,
+  `skill_adopt`, `memory_dream`, `coms_local_queue`) (#1390) and `cron_manage` `edit`/`pause`/`resume`
+  actions (#1382).
+- Added live bound async agent badge (`[⏳ ...]`) on tasks widget rows (#1388) and trigger-keyword
+  descriptions across shipped skills and skill-creation rules (#1387).
+- Fixed TUI overlay multi-select Kitty CSI-u / non-Latin key handling, inline feedback banner,
+  `N selected` badge, Esc-clears-selection, detail-view selection persistence, shared optional-note
+  dialog on bulk `d`, and single/bulk `u` (reopen/undone) in `/tasks` (#1393).
+- Clarified in `rules/60-task-tracking.md` and task tool descriptions that agents must delete
+  still-pending obsolete `[you]` tasks once verified done externally (#1408).
+
 ## [5.1.0] - 2026-11-23
 
 - Added opt-in post-merge PR retrospective (`/retro` prompt, collector script, and `pr_retro`
