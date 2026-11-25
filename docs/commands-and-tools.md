@@ -203,11 +203,12 @@ Task manager for the current session's task list.
 - **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store (`n` and `e` refuse while rows are selected). An empty board opens
   the create dialog directly, since there is no row to press `n` on. `n` asks who the task is for (`you` or `llm`) once the line is accepted. The edit dialog starts
   pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
-- **`d`:** completes the focused task, or bulk-completes every selected open task when rows are ticked with `Space` (skipping already-completed tasks, completing selected
-  `you` tasks with `completedBy: "user"` without blocking on per-row note dialogs, and reporting counts inline). On a single focused task assigned to `you` it opens an
-  optional one-line note dialog first — an empty line completes without a note, `Esc` cancels and changes nothing. The outcome is kept on the record (`completionNote`,
-  `completedBy`), and the session receives one message reading `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns
-  the result on its next turn
+- **`d`:** completes the focused task, or bulk-completes every selected open task when rows are ticked with `Space` (skipping already-completed tasks and reporting
+  counts inline). When a multi-selection contains only `llm` open tasks, they complete immediately in place with no prompt. When it includes one or more open `you`
+  tasks, it opens one shared optional one-line note dialog for the batch — an empty line completes without a note, `Esc` cancels without modifying tasks or losing
+  the selection, and a non-empty note is saved as `completionNote` on the completed `you` tasks and included in one combined `task-completed-by-user` notice. On a
+  single focused task assigned to `you` it opens the same optional note dialog first, recording `completionNote` and `completedBy`, and sends
+  `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns the result on its next turn
 - **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] [you|llm] <subject>`; a task with currently open blockers is marked `⛔ blocked`.
   Tasks assigned to `you` sort above `[llm]` tasks within their status group
 - **Assignee:** a task is `llm` (the agent does it, the default for every existing task) or `user` (only the owner can — a merge, a live check in a real UI, an approval).

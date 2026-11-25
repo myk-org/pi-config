@@ -232,6 +232,17 @@ export function taskCompletionPrompt(task: { id: string; subject: string }): {
 	};
 }
 
+/** One shared optional-note dialog when bulk `d` includes 1+ open owner-assigned tasks (#1391). */
+export function bulkTaskCompletionPrompt(count: number): {
+	title: string;
+	placeholder: string;
+} {
+	return {
+		title: `Complete ${count} task${count === 1 ? "" : "s"}`,
+		placeholder: "optional note — Enter with nothing completes, Esc cancels",
+	};
+}
+
 export type TaskCompletionPlan =
 	| { kind: "skip"; reason: "cancelled" }
 	/** Empty line: completed with no note. */
@@ -271,14 +282,15 @@ export function taskCompletionNotice(task: {
 /** One combined follow-up message when the owner bulk-completes user-assigned tasks (#1391). */
 export function bulkTaskCompletionNotice(
 	tasks: ReadonlyArray<{ id: string; subject: string }>,
+	note?: string,
 ): {
 	customType: string;
 	content: string;
 	display: boolean;
-	details: { taskId?: string; taskIds: string[] };
+	details: { taskId?: string; taskIds: string[]; note?: string };
 } {
 	if (tasks.length === 1) {
-		const single = taskCompletionNotice(tasks[0]);
+		const single = taskCompletionNotice({ ...tasks[0], ...(note ? { completionNote: note } : {}) });
 		return {
 			...single,
 			details: { ...single.details, taskIds: [tasks[0].id] },
@@ -287,9 +299,9 @@ export function bulkTaskCompletionNotice(
 	const lines = tasks.map((t) => `- #${t.id} "${t.subject}"`).join("\n");
 	return {
 		customType: "task-completed-by-user",
-		content: `${tasks.length} tasks marked done by you:\n${lines}`,
+		content: `${tasks.length} tasks marked done by you:\n${lines}${note ? `\n${note}` : ""}`,
 		display: true,
-		details: { taskIds: tasks.map((t) => t.id) },
+		details: { taskIds: tasks.map((t) => t.id), ...(note ? { note } : {}) },
 	};
 }
 
@@ -365,7 +377,7 @@ export function tasksOverlayDeps(
 	/** Called only when the OWNER completed their own task, so the session learns about it. */
 	onUserCompleted?: (task: { id: string; subject: string; completionNote?: string }) => unknown,
 	/** Called once after bulk completion with every persisted user-assigned task; returns false if submission failed. */
-	onUserBulkCompleted?: (tasks: ReadonlyArray<{ id: string; subject: string }>) => boolean,
+	onUserBulkCompleted?: (tasks: ReadonlyArray<{ id: string; subject: string }>, note?: string) => boolean,
 ): TasksUiDeps {
 	return {
 		listTasks: () => store.list(),
@@ -427,14 +439,17 @@ export function tasksOverlayDeps(
 			return true;
 		},
 		...(onUserBulkCompleted
-			? { notifyUserCompleted: (tasks: ReadonlyArray<{ id: string; subject: string }>) => onUserBulkCompleted(tasks) }
+			? {
+					notifyUserCompleted: (tasks: ReadonlyArray<{ id: string; subject: string }>, note?: string) =>
+						onUserBulkCompleted(tasks, note),
+				}
 			: onUserCompleted
 				? {
-						notifyUserCompleted: (tasks: ReadonlyArray<{ id: string; subject: string }>) => {
+						notifyUserCompleted: (tasks: ReadonlyArray<{ id: string; subject: string }>, note?: string) => {
 							let ok = true;
 							for (const task of tasks) {
 								try {
-									if (onUserCompleted(task) === false) ok = false;
+									if (onUserCompleted({ ...task, ...(note ? { completionNote: note } : {}) }) === false) ok = false;
 								} catch {
 									ok = false;
 								}
@@ -455,7 +470,7 @@ export interface TasksUiDeps {
 	 *  `silent: true` suppresses the per-task owner notice so bulk `d` can send one combined report. */
 	completeTask: (id: string, opts: { by: TaskCompletedBy; note?: string; silent?: boolean }) => boolean;
 	/** Send one combined follow-up notice for bulk-completed user-assigned tasks; returns false on failure. */
-	notifyUserCompleted?: (tasks: ReadonlyArray<{ id: string; subject: string }>) => boolean;
+	notifyUserCompleted?: (tasks: ReadonlyArray<{ id: string; subject: string }>, note?: string) => boolean;
 	/** Create a task from one line of input; returns the new task id. */
 	createTask: (subject: string, assignee?: Task["assignee"]) => string;
 	/** Rename a task's subject. Returns false when the task is gone. */

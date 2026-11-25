@@ -846,6 +846,9 @@ export async function openListDetailOverlay<
      *  (`listSpec.onSelectionChange` gives it the new set); ids that no longer exist are simply
      *  never matched. */
     initialSelectionIds?: readonly TId[];
+    /** Optional inline banner shown immediately when the list first opens (e.g. outcome of a
+     *  dialog-backed bulk action). Cleared after the first open so detail round-trips do not replay it. */
+    initialNotice?: OverlayNotice;
     /** Omitted by a list whose Enter navigates deeper (`listSpec.onSelect`). */
     createDetail?: (
       item: TItem,
@@ -877,6 +880,7 @@ export async function openListDetailOverlay<
       ctx.ui?.notify?.(msg, level);
     } catch {}
   };
+  let pendingNotice = options.initialNotice;
 
   while (true) {
     const items = options.listSpec.listItems();
@@ -887,8 +891,8 @@ export async function openListDetailOverlay<
 
     log.debug("overlay_list_open", { count: items.length, allowEmpty: !!options.allowEmpty, multi: multiIds.length });
     const picked = await ctx.ui.custom<TId | null>(
-      (tui, theme, keybindings, done) =>
-        new OverlayListDashboard(
+      (tui, theme, keybindings, done) => {
+        const dash = new OverlayListDashboard(
           tui,
           theme,
           keybindings,
@@ -898,7 +902,13 @@ export async function openListDetailOverlay<
           multiIds,
           options.allowEmpty === true,
           forwardNotify,
-        ),
+        );
+        if (pendingNotice) {
+          dash.setNotice(pendingNotice.message, pendingNotice.level);
+          pendingNotice = undefined;
+        }
+        return dash;
+      },
       OVERLAY_OPTS,
     );
 

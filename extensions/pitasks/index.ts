@@ -494,10 +494,10 @@ export default function (pi: ExtensionAPI) {
 				ui?.notify(`Task #${task.id} completed, but its notice could not be submitted. Read it with TaskGet.`, "warning");
 				return false;
 			}
-		}, (tasks) => {
+		}, (tasks, note) => {
 			if (tasks.length === 0) return true;
 			try {
-				pi.sendMessage(bulkTaskCompletionNotice(tasks), { triggerTurn: true, deliverAs: "followUp" });
+				pi.sendMessage(bulkTaskCompletionNotice(tasks, note), { triggerTurn: true, deliverAs: "followUp" });
 				log.info("task_completed_bulk_notice_sent", { taskIds: tasks.map((t) => t.id) });
 				return true;
 			} catch (error) {

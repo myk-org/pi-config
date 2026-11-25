@@ -13,10 +13,12 @@ import {
 	matchesOverlayKey,
 	openListDetailOverlay,
 	OverlayScrollDetail,
+	type OverlayNotice,
 } from "../orchestrator/overlay-dashboard.js";
 import type { Task } from "./types.js";
 import {
 	TASKS_EMPTY_MESSAGE,
+	bulkTaskCompletionPrompt,
 	planTaskCompose,
 	planTaskCompletion,
 	selectTaskRows,
@@ -80,6 +82,71 @@ async function promptLine(
 const TASKS_LIST_HINTS = "Space select · x delete · n add · e edit · d done · f mine/all · Enter view · Esc close";
 const TASKS_SELECTED_HINTS = "Space toggle · d done · x delete · Enter view · Esc clear";
 
+/** Complete a multi-selected batch of tasks (shared by immediate LLM-only and post-note user flows). */
+function applyBulkTaskCompletion(
+	deps: TasksUiDeps,
+	selected: readonly Task[],
+	note?: string,
+): { notice: OverlayNotice; clearSelection: boolean } {
+	const open = selected.filter((t) => t.status !== "completed");
+	const skipped = selected.length - open.length;
+	if (open.length === 0) {
+		log.debug("tasks_overlay_bulk_complete_unchanged", { selected: selected.length });
+		return {
+			notice: {
+				message:
+					selected.length === 1
+						? `Task #${selected[0].id} is already completed.`
+						: `All ${selected.length} selected tasks are already completed.`,
+				level: "info",
+			},
+			clearSelection: false,
+		};
+	}
+	const batchNotice = typeof deps.notifyUserCompleted === "function";
+	const { failed, errors } = bulkRemove(open, (t) =>
+		deps.completeTask(t.id, {
+			by: "user",
+			...(t.assignee === "user" && note ? { note } : {}),
+			...(batchNotice ? { silent: true } : {}),
+		}),
+	);
+	const failedIds = new Set(failed.map((t) => t.id));
+	const completedUserTasks = open
+		.filter((t) => t.assignee === "user" && !failedIds.has(t.id))
+		.map((t) => ({ id: t.id, subject: t.subject }));
+	let noticeFailed = false;
+	if (batchNotice && completedUserTasks.length > 0) {
+		try {
+			noticeFailed = !deps.notifyUserCompleted!(completedUserTasks, note);
+		} catch (err) {
+			noticeFailed = true;
+			log.error("tasks_overlay_bulk_notice_threw", {
+				count: completedUserTasks.length,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+	const names = failed.map((t) => `#${t.id}`);
+	log.info("tasks_overlay_bulk_complete", {
+		selected: selected.length,
+		open: open.length,
+		skipped,
+		failed: names.length,
+		noticeFailed,
+		errors,
+	});
+	const base = bulkResultMessage("completed", "task", open.length, names);
+	const withSkipped = skipped > 0 ? `${base} (${skipped} already completed)` : base;
+	const message = noticeFailed
+		? `${withSkipped} — owner notice failed to submit; read via TaskGet`
+		: withSkipped;
+	return {
+		notice: { message, level: names.length === 0 && !noticeFailed ? "info" : "warning" },
+		clearSelection: true,
+	};
+}
+
 /** Open the task list overlay; loops list → detail until the list is closed. `mine` starts the
  *  overlay on the owner's rows only; `f` toggles the same filter in place (#1090). */
 export async function openTasksOverlay(
@@ -90,9 +157,17 @@ export async function openTasksOverlay(
 	let initialTasks: Task[] | null = deps.listTasks();
 	if (log.isDebugEnabled()) log.debug("tasks_overlay_open", { tasks: initialTasks.length, mine: !!opts.mine });
 	let mineOnly = opts.mine ?? false;
-	// `n`/`e` need the whole terminal for the input dialog, so the list closes and the loop below
-	// re-opens it — which also re-reads the store, so the new/edited row is never a stale snapshot.
-	const queue: Array<{ kind: "add" } | { kind: "edit"; task: Task } | { kind: "complete"; task: Task }> = [];
+	// `n`/`e`/user-`d` need the whole terminal for the input dialog, so the list closes and the loop
+	// below re-opens it — which also re-reads the store, so the new/edited row is never a stale snapshot.
+	const queue: Array<
+		| { kind: "add" }
+		| { kind: "edit"; task: Task }
+		| { kind: "complete"; task: Task }
+		| { kind: "bulk-complete"; tasks: readonly Task[] }
+	> = [];
+	// Preserved across dialog cancel (e.g. Esc in bulk-complete note prompt); cleared once consumed.
+	let reselectIds: string[] = [];
+	let pendingNotice: OverlayNotice | undefined;
 	// An empty board has no row to press `n` on, so the create dialog opens directly — once, so a
 	// cancelled dialog returns the terminal instead of reopening forever (issue #1089).
 	let offeredFirstTask = false;
@@ -107,9 +182,13 @@ export async function openTasksOverlay(
 			offeredFirstTask = true;
 			queue.push({ kind: "add" });
 		} else {
+			const noticeForOpen = pendingNotice;
+			pendingNotice = undefined;
 			await openListDetailOverlay(ctx, {
 				emptyMessage: mineOnly ? "No tasks assigned to you." : TASKS_EMPTY_MESSAGE,
 				allowEmpty: true,
+				initialSelectionIds: reselectIds,
+				initialNotice: noticeForOpen,
 				listSpec: {
 					emptyBody: () =>
 						mineOnly
@@ -123,6 +202,9 @@ export async function openTasksOverlay(
 					},
 					footerHints: TASKS_LIST_HINTS,
 					selectedFooterHints: TASKS_SELECTED_HINTS,
+					onSelectionChange: (ids) => {
+						reselectIds = ids.map(String);
+					},
 					listItems: () => {
 						const allTasks = deps.listTasks();
 						taskById = new Map(allTasks.map((t) => [t.id, t]));
@@ -148,56 +230,16 @@ export async function openTasksOverlay(
 						if (selected.length > 0) {
 							if (intent === "done") {
 								const open = selected.filter((t) => t.status !== "completed");
-								const skipped = selected.length - open.length;
-								if (open.length === 0) {
-									log.debug("tasks_overlay_bulk_complete_unchanged", { selected: selected.length });
-									notify(
-										selected.length === 1
-											? `Task #${selected[0].id} is already completed.`
-											: `All ${selected.length} selected tasks are already completed.`,
-										"info",
-									);
-									return "redraw";
+								if (open.some((t) => t.assignee === "user")) {
+									// Open ONE shared optional-note dialog for the whole batch (Esc cancels
+									// without modifying tasks or losing selection).
+									queue.push({ kind: "bulk-complete", tasks: [...selected] });
+									log.debug("tasks_overlay_bulk_complete_prompt", { selected: selected.length, open: open.length });
+									return "close";
 								}
-								// Complete all selected open tasks (including user-assigned tasks via { by: "user" }
-								// without blocking on N sequential note dialogs); isolate failures per task and
-								// send at most ONE combined owner notice after the loop.
-								const batchNotice = typeof deps.notifyUserCompleted === "function";
-								const { failed, errors } = bulkRemove(open, (t) =>
-									deps.completeTask(t.id, { by: "user", ...(batchNotice ? { silent: true } : {}) }),
-								);
-								const failedIds = new Set(failed.map((t) => t.id));
-								const completedUserTasks = open
-									.filter((t) => t.assignee === "user" && !failedIds.has(t.id))
-									.map((t) => ({ id: t.id, subject: t.subject }));
-								let noticeFailed = false;
-								if (batchNotice && completedUserTasks.length > 0) {
-									try {
-										noticeFailed = !deps.notifyUserCompleted!(completedUserTasks);
-									} catch (err) {
-										noticeFailed = true;
-										log.error("tasks_overlay_bulk_notice_threw", {
-											count: completedUserTasks.length,
-											error: err instanceof Error ? err.message : String(err),
-										});
-									}
-								}
-								const names = failed.map((t) => `#${t.id}`);
-								log.info("tasks_overlay_bulk_complete", {
-									selected: selected.length,
-									open: open.length,
-									skipped,
-									failed: names.length,
-									noticeFailed,
-									errors,
-								});
-								const base = bulkResultMessage("completed", "task", open.length, names);
-								const withSkipped = skipped > 0 ? `${base} (${skipped} already completed)` : base;
-								const msg = noticeFailed
-									? `${withSkipped} — owner notice failed to submit; read via TaskGet`
-									: withSkipped;
-								notify(msg, names.length === 0 && !noticeFailed ? "info" : "warning");
-								return "redraw-clear";
+								const { notice, clearSelection } = applyBulkTaskCompletion(deps, selected);
+								notify(notice.message, notice.level);
+								return clearSelection ? "redraw-clear" : "redraw";
 							}
 							// Add/edit are single-row by nature: acting on the focused row while rows are picked
 							// would silently ignore the selection, so refuse and leave the rows selected.
@@ -285,6 +327,23 @@ export async function openTasksOverlay(
 
 		const request = queue.pop();
 		if (!request) return;
+		if (request.kind === "bulk-complete") {
+			const openCount = request.tasks.filter((t) => t.status !== "completed").length;
+			const note = await promptLine(ctx, bulkTaskCompletionPrompt(openCount));
+			const plan = planTaskCompletion(note);
+			if (plan.kind === "skip") {
+				log.debug("tasks_overlay_bulk_completion_skipped", { reason: plan.reason, selected: request.tasks.length });
+				continue;
+			}
+			// Re-read live task snapshots so concurrent completions/deletions during the prompt are accounted for accurately.
+			const liveById = new Map(deps.listTasks().map((t) => [t.id, t]));
+			const liveSelected = request.tasks.map((t) => liveById.get(t.id) ?? t);
+			const { notice, clearSelection } = applyBulkTaskCompletion(deps, liveSelected, plan.note);
+			if (clearSelection) reselectIds = [];
+			pendingNotice = notice;
+			try { ctx.ui?.notify?.(notice.message, notice.level); } catch {}
+			continue;
+		}
 		if (request.kind === "complete") {
 			const note = await promptLine(ctx, taskCompletionPrompt(request.task));
 			const plan = planTaskCompletion(note);

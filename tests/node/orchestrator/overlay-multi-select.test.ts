@@ -934,7 +934,7 @@ describe("real TuiMainScreen + Kitty protocol integration (#1391)", () => {
     const prevKitty = isKittyProtocolActive();
     setKittyProtocolActive(true);
     try {
-      const tasks = makeRealTuiTasks();
+      const tasks = makeRealTuiTasks().map((t) => ({ ...t, assignee: "llm" as const }));
       const allFrames: string[] = [];
       const custom = (<T,>(factory: FakeCustomFactory<T>, opts?: unknown) =>
         runWithRealTui(

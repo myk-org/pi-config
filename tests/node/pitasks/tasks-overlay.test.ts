@@ -481,33 +481,157 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		});
 	}
 
-	it("d bulk-completes selected open tasks in place without note dialogs", async () => {
-		// Row order from sortTaskRows: #1 (pending, user), #3 (pending, llm), #2 (in_progress, llm).
-		const { ctx, openedCount } = makeTasksCtx([[" ", "j", "j", " ", "d", "close"]]);
+	it("d bulk-completes LLM-only selection in place without opening a note dialog", async () => {
+		const { ctx, openedCount } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
 		const tasks = [
-			task({ id: "1", status: "pending", assignee: "user", subject: "owner work" }),
-			task({ id: "2", status: "in_progress", assignee: "llm", subject: "agent work" }),
+			task({ id: "1", status: "pending", assignee: "llm", subject: "agent work 1" }),
+			task({ id: "2", status: "pending", assignee: "llm", subject: "agent work 2" }),
 			task({ id: "3", status: "pending", assignee: "llm", subject: "unselected" }),
 		];
-		const completed: Array<{ id: string; by: string }> = [];
+		const completed: Array<{ id: string; by: string; note?: string }> = [];
 		const deps = tasksOverlayDeps({
 			list: () => tasks,
 			get: (id) => tasks.find((t) => t.id === id),
 			create: () => ({ id: "99" }),
 			update: (id, fields) => {
 				if ("status" in fields && fields.status === "completed") {
-					completed.push({ id, by: fields.completedBy });
+					completed.push({ id, by: fields.completedBy, note: fields.completionNote });
 					const target = tasks.find((t) => t.id === id);
 					if (target) target.status = "completed";
 				}
 			},
 		});
 		await openTasksOverlay(ctx, deps);
-		assert.equal(openedCount(), 1, "bulk d completes in place without note dialogs");
-		assert.deepEqual(completed, [{ id: "1", by: "user" }, { id: "2", by: "user" }]);
+		assert.equal(openedCount(), 1, "LLM-only bulk d completes in place without any prompt dialog");
+		assert.deepEqual(completed, [
+			{ id: "1", by: "user", note: undefined },
+			{ id: "2", by: "user", note: undefined },
+		]);
 	});
 
-	it("d renders the bulk completion count inline and clears multi-selection", async () => {
+	it("d opens one shared note dialog applying the note to selected user tasks only", async () => {
+		// Row order from sortTaskRows: #1 (pending, user), #2 (pending, llm), #3 (pending, llm).
+		const { ctx, openedCount, notifications, frames } = makeTasksCtx([
+			[" ", "j", " ", "d"],
+			["verified live in Kitty", "\n"],
+			["close"],
+		]);
+		const tasks = [
+			task({ id: "1", status: "pending", assignee: "user", subject: "owner work" }),
+			task({ id: "2", status: "pending", assignee: "llm", subject: "agent work" }),
+			task({ id: "3", status: "pending", assignee: "llm", subject: "unselected" }),
+		];
+		const completed: Array<{ id: string; by: string; note?: string }> = [];
+		const bulkNotices: Array<{ tasks: ReadonlyArray<{ id: string; subject: string }>; note?: string }> = [];
+		const deps = tasksOverlayDeps(
+			{
+				list: () => tasks,
+				get: (id) => tasks.find((t) => t.id === id),
+				create: () => ({ id: "99" }),
+				update: (id, fields) => {
+					if ("status" in fields && fields.status === "completed") {
+						completed.push({ id, by: fields.completedBy, note: fields.completionNote });
+						const target = tasks.find((t) => t.id === id);
+						if (target) target.status = "completed";
+						return { task: target, changedFields: ["status"], warnings: [] };
+					}
+					return undefined;
+				},
+			},
+			undefined,
+			undefined,
+			(batch, note) => { bulkNotices.push({ tasks: batch, note }); return true; },
+		);
+		await openTasksOverlay(ctx, deps);
+		assert.equal(openedCount(), 3, "list -> single shared note dialog -> reopened list");
+		assert.deepEqual(completed, [
+			{ id: "1", by: "user", note: "verified live in Kitty" },
+			{ id: "2", by: "user", note: undefined },
+		]);
+		assert.deepEqual(bulkNotices, [{ tasks: [{ id: "1", subject: "owner work" }], note: "verified live in Kitty" }]);
+		assert.deepEqual(notifications, [{ message: "completed 2 tasks", level: "info" }]);
+		assert.match(frames[2].join("\n"), /ℹ completed 2 tasks/, "reopened list shows inline completion banner");
+		assert.doesNotMatch(frames[2].join("\n"), /2 selected/, "reopened list clears selection after completion");
+	});
+
+	it("d completes selected user tasks without a note on blank Enter", async () => {
+		const { ctx, openedCount } = makeTasksCtx([
+			[" ", "j", " ", "d"],
+			["\n"],
+			["close"],
+		]);
+		const tasks = [
+			task({ id: "1", status: "pending", assignee: "user", subject: "owner 1" }),
+			task({ id: "2", status: "pending", assignee: "user", subject: "owner 2" }),
+		];
+		const completed: Array<{ id: string; note?: string }> = [];
+		const bulkNotices: Array<{ ids: string[]; note?: string }> = [];
+		const deps = tasksOverlayDeps(
+			{
+				list: () => tasks,
+				get: (id) => tasks.find((t) => t.id === id),
+				create: () => ({ id: "99" }),
+				update: (id, fields) => {
+					if ("status" in fields && fields.status === "completed") {
+						completed.push({ id, note: fields.completionNote });
+						const target = tasks.find((t) => t.id === id);
+						if (target) target.status = "completed";
+						return { task: target, changedFields: ["status"], warnings: [] };
+					}
+					return undefined;
+				},
+			},
+			undefined,
+			undefined,
+			(batch, note) => { bulkNotices.push({ ids: batch.map((t) => t.id), note }); return true; },
+		);
+		await openTasksOverlay(ctx, deps);
+		assert.equal(openedCount(), 3);
+		assert.deepEqual(completed, [{ id: "1", note: undefined }, { id: "2", note: undefined }]);
+		assert.deepEqual(bulkNotices, [{ ids: ["1", "2"], note: undefined }]);
+	});
+
+	it("d cancels bulk user-task completion on Esc while preserving multi-selection", async () => {
+		const { ctx, openedCount, frames, notifications } = makeTasksCtx([
+			[" ", "j", " ", "d"],
+			["\x1b"],
+			["close"],
+		]);
+		const tasks = [
+			task({ id: "1", status: "pending", assignee: "user", subject: "owner 1" }),
+			task({ id: "2", status: "pending", assignee: "llm", subject: "agent 2" }),
+		];
+		let writes = 0;
+		const deps = tasksOverlayDeps({
+			list: () => tasks,
+			get: (id) => tasks.find((t) => t.id === id),
+			create: () => ({ id: "99" }),
+			update: () => { writes++; return undefined; },
+		});
+		await openTasksOverlay(ctx, deps);
+		assert.equal(openedCount(), 3);
+		assert.equal(writes, 0, "Esc cancels without modifying any task");
+		assert.deepEqual(notifications, []);
+		assert.match(frames[2].join("\n"), /2 selected/, "multi-selection survives Esc cancel");
+	});
+
+	it("bulkTaskCompletionNotice appends a shared note to the combined owner report", () => {
+		const combined = bulkTaskCompletionNotice(
+			[
+				{ id: "1", subject: "first owner step" },
+				{ id: "2", subject: "second owner step" },
+			],
+			"all verified",
+		);
+		assert.equal(combined.customType, "task-completed-by-user");
+		assert.equal(
+			combined.content,
+			'2 tasks marked done by you:\n- #1 "first owner step"\n- #2 "second owner step"\nall verified',
+		);
+		assert.deepEqual(combined.details, { taskIds: ["1", "2"], note: "all verified" });
+	});
+
+	it("d renders the bulk completion count inline for LLM-only selection", async () => {
 		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
 		const tasks = [
 			task({ id: "1", status: "pending" }),
@@ -530,7 +654,7 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 	});
 
 	it("d sends one combined owner notice for multiple selected user tasks (#1391)", async () => {
-		const { ctx } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const { ctx } = makeTasksCtx([[" ", "j", " ", "d"], ["\n"], ["close"]]);
 		const tasks = [
 			task({ id: "1", status: "pending", assignee: "user", subject: "first owner step" }),
 			task({ id: "2", status: "pending", assignee: "user", subject: "second owner step" }),
@@ -565,8 +689,8 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		assert.match(combined.content, /#2 "second owner step"/);
 	});
 
-	it("d surfaces owner-notice submission failure in the inline banner without losing completion count (#1391)", async () => {
-		const { ctx, notifications, lastFrames } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+	it("d surfaces owner-notice submission failure in the reopened inline banner (#1391)", async () => {
+		const { ctx, notifications, frames } = makeTasksCtx([[" ", "j", " ", "d"], ["\n"], ["close"]]);
 		const tasks = [
 			task({ id: "1", status: "pending", assignee: "user", subject: "owner step" }),
 			task({ id: "2", status: "pending", assignee: "llm", subject: "agent step" }),
@@ -590,11 +714,11 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		assert.equal(notifications.length, 1);
 		assert.equal(notifications[0].level, "warning");
 		assert.match(notifications[0].message, /completed 2 tasks — owner notice failed to submit/);
-		assert.match(lastFrames[0], /⚠ completed 2 tasks — owner notice failed to submit/);
+		assert.match(frames[2].join("\n"), /⚠ completed 2 tasks — owner notice failed to submit/);
 	});
 
 	it("d reports a concurrently deleted task as failed instead of completed (#1391)", async () => {
-		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "d", "close"]]);
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "d"], ["\n"], ["close"]]);
 		const tasks = [
 			task({ id: "1", status: "pending", assignee: "user", subject: "vanished before lock" }),
 			task({ id: "2", status: "pending", assignee: "llm", subject: "still present" }),
