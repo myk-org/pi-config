@@ -10,7 +10,7 @@
  * files are auto-migrated once on first access.
  */
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getSetting } from "./project-settings.js";
 import { createLogger } from "../shared/logger.js";
@@ -21,7 +21,7 @@ import {
   type SqliteStateStore,
 } from "./state-db.js";
 import { getHeadSha } from "./git-helpers.js";
-import { resolveWorktreeRoot } from "./utils.js";
+import { getProjectRunDir, resolveWorktreeRoot } from "./utils.js";
 
 const log = createLogger("pi-config-review-state");
 
@@ -197,9 +197,41 @@ function normalizeRawState(raw: any): ReviewState {
 }
 
 /** Worktree DB paths known to have active review tracking in this process.
- *  Used by commit-gate fail-closed checks so wiping state.db mid-session cannot
- *  silently reset review tracking to `status: "none"`. Cleared by `resetReviewState`. */
+ *  Paired with a durable marker under `<worktree-root>/.pi/run/review-tracked`
+ *  so wiping `state.db` (even across process restarts) cannot silently reset
+ *  review tracking to `status: "none"`. Cleared only by `resetReviewState`. */
 const trackedReviewWorktrees = new Set<string>();
+
+function reviewTrackedMarkerPath(cwd: string): string {
+  return join(resolveWorktreeRoot(cwd), ".pi", "run", "review-tracked");
+}
+
+function hasDurableReviewMarker(cwd: string): boolean {
+  try {
+    return existsSync(reviewTrackedMarkerPath(cwd));
+  } catch {
+    return false;
+  }
+}
+
+function setDurableReviewMarker(cwd: string, active: boolean): void {
+  const worktreeRoot = resolveWorktreeRoot(cwd);
+  const markerPath = join(worktreeRoot, ".pi", "run", "review-tracked");
+  if (active) {
+    try {
+      const runDir = getProjectRunDir(worktreeRoot);
+      writeFileSync(join(runDir, "review-tracked"), "1\n", { encoding: "utf-8", mode: 0o600 });
+    } catch (err) {
+      log.warn("review_tracked_marker_write_failed", { markerPath }, err);
+    }
+  } else {
+    try {
+      if (existsSync(markerPath)) unlinkSync(markerPath);
+    } catch (err) {
+      log.warn("review_tracked_marker_remove_failed", { markerPath }, err);
+    }
+  }
+}
 
 /** Strict read that distinguishes a missing row from corrupt JSON or DB errors.
  *  Throws on malformed payload or SQLite errors so commit gates fail closed. */
@@ -212,6 +244,7 @@ function readReviewStateStrict(cwd: string): { state: ReviewState; rowPresent: b
   const state = normalizeRawState(raw);
   if (state.status !== "none") {
     trackedReviewWorktrees.add(resolve(statePath(cwd)));
+    if (!hasDurableReviewMarker(cwd)) setDurableReviewMarker(cwd, true);
   }
   return { state, rowPresent: true };
 }
@@ -247,8 +280,10 @@ function mutateReviewState<T>(
     const dbKey = resolve(statePath(cwd));
     if ((committedState as ReviewState).status !== "none") {
       trackedReviewWorktrees.add(dbKey);
+      setDurableReviewMarker(cwd, true);
     } else {
       trackedReviewWorktrees.delete(dbKey);
+      setDurableReviewMarker(cwd, false);
     }
   }
   if (outcome.notify && committedState !== null) {
@@ -380,7 +415,7 @@ export function isReviewClean(cwd: string): boolean {
     log.error("review_clean_check_read_failed", { cwd }, err);
     return false;
   }
-  if (!rowPresent && trackedReviewWorktrees.has(resolve(statePath(cwd)))) {
+  if (!rowPresent && (trackedReviewWorktrees.has(resolve(statePath(cwd))) || hasDurableReviewMarker(cwd))) {
     log.error("review_clean_check_state_wiped", { cwd });
     return false;
   }
@@ -415,7 +450,7 @@ export function isCommitAllowed(cwd: string): boolean {
     log.error("commit_gate_review_state_read_failed", { cwd }, err);
     return false;
   }
-  if (!rowPresent && trackedReviewWorktrees.has(resolve(statePath(cwd)))) {
+  if (!rowPresent && (trackedReviewWorktrees.has(resolve(statePath(cwd))) || hasDurableReviewMarker(cwd))) {
     log.error("commit_gate_review_state_wiped", { cwd });
     return false;
   }

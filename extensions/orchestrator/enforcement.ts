@@ -161,6 +161,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           `${reviewDbPath}-shm`,
           join(reviewDataDir, "pi-config-review-state.jsonl"),
           join(reviewDataDir, "pi-config-review-state.json"),
+          join(resolveWorktreeRoot(ctx.cwd), ".pi", "run", "review-tracked"),
         ]);
         if (protectedReviewPaths.has(resolvedPath)) {
           return {

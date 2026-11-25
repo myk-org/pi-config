@@ -66,7 +66,9 @@ import {
   isCommitAllowed,
   isReviewClean,
   markNeedsReview,
+  markTestsPassed,
   readReviewState,
+  recordReviewerResult,
   statePath,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { evaluateBashPolicy } from "../../../extensions/orchestrator/bash-policy.js";
@@ -318,6 +320,44 @@ describe("state-db: SqliteStateStore mutate, SKIP_MUTATE, and revision semantics
     const tOlder = new Date(Date.now() - 2000);
     utimesSync(legacyPath, tOlder, tOlder);
     assert.deepEqual(store.read(), { step: 3 }, "older legacy write must not overwrite newer SQLite state");
+  });
+
+  it("reconciles successor JSONL updates after initial migration from legacy JSON fallback", () => {
+    const dir = trackTempDir("state-db-json-to-jsonl-");
+    const dbPath = join(dir, ".pi", "data", "state.db");
+    const legacyJsonl = join(dir, "legacy.jsonl");
+    const legacyJson = join(dir, "legacy.json");
+
+    // Initial migration imports from .json fallback
+    writeFileSync(legacyJson, JSON.stringify({ step: 1 }), "utf-8");
+    const t0 = new Date(Date.now() - 5000);
+    utimesSync(legacyJson, t0, t0);
+
+    const store = createSqliteStateStore<{ step: number }>(dbPath, "json-successor", {
+      legacyFiles: [legacyJsonl, legacyJson],
+    });
+    assert.deepEqual(store.read(), { step: 1 });
+
+    // Pre-upgrade process converts .json -> .jsonl, deletes .json, and appends newer state
+    unlinkSync(legacyJson);
+    writeFileSync(
+      legacyJsonl,
+      JSON.stringify({ step: 1 }) + "\n" + JSON.stringify({ step: 2 }) + "\n",
+      "utf-8",
+    );
+    const t1 = new Date(Date.now() + 5000);
+    utimesSync(legacyJsonl, t1, t1);
+    assert.deepEqual(store.read(), { step: 2 });
+
+    // Subsequent append to the successor .jsonl is also reconciled
+    writeFileSync(
+      legacyJsonl,
+      JSON.stringify({ step: 1 }) + "\n" + JSON.stringify({ step: 2 }) + "\n" + JSON.stringify({ step: 3 }) + "\n",
+      "utf-8",
+    );
+    const t2 = new Date(Date.now() + 8000);
+    utimesSync(legacyJsonl, t2, t2);
+    assert.deepEqual(store.read(), { step: 3 });
   });
 });
 
@@ -731,6 +771,103 @@ describe("state-db: review-state resilience and bash commit-gate enforcement", (
 
     assert.equal(isReviewClean(cwd), false, "isReviewClean must fail closed when tracked DB is wiped");
     assert.equal(isCommitAllowed(cwd), false, "isCommitAllowed must fail closed when tracked DB is wiped");
+  });
+
+  it("fails closed in a fresh process after a tracked review row is deleted from state.db", () => {
+    const cwd = trackTempDir("state-db-rev-wiped-fresh-proc-");
+    markNeedsReview(cwd);
+    assert.equal(isCommitAllowed(cwd), false);
+
+    // Delete the review row directly from state.db
+    const db = openStateDb(statePath(cwd));
+    db.prepare("DELETE FROM kv_state WHERE store_key = 'pi-config-review-state'").run();
+    closeStateDbs();
+
+    // Check isCommitAllowed in a brand-new Node process with empty in-memory state
+    const modulePath = join(import.meta.dirname, "../../../extensions/orchestrator/pi-config-review-state.ts");
+    const out = execFileSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "-e",
+        `import { isCommitAllowed, isReviewClean } from ${JSON.stringify(modulePath)}; console.log(JSON.stringify({ commit: isCommitAllowed(process.argv[1]), clean: isReviewClean(process.argv[1]) }));`,
+        cwd,
+      ],
+      { encoding: "utf-8" },
+    ).trim();
+    assert.deepEqual(JSON.parse(out), { commit: false, clean: false });
+  });
+
+  it("rejects commits when a cached clean review payload is corrupted without changing revision or updated_at", () => {
+    const cwd = trackTempDir("state-db-rev-cached-corrupt-");
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "code-reviewer-quality", { kind: "local", head_sha: "abc1234" });
+    recordReviewerResult(cwd, "code-reviewer-quality", 0);
+    markTestsPassed(cwd);
+
+    // Prime the in-memory read cache with the clean state
+    assert.equal(readReviewState(cwd).status, "clean");
+    assert.equal(isCommitAllowed(cwd), true);
+
+    // Corrupt ONLY payload without touching revision or updated_at
+    const db = openStateDb(statePath(cwd));
+    db.prepare("UPDATE kv_state SET payload = '{corrupt' WHERE store_key = 'pi-config-review-state'").run();
+
+    assert.equal(isReviewClean(cwd), false, "isReviewClean must not trust cached clean state when payload is corrupt");
+    assert.equal(isCommitAllowed(cwd), false, "isCommitAllowed must not trust cached clean state when payload is corrupt");
+  });
+
+  it("unconditionally blocks nested shell deletion bash -c 'rm .pi/data/state.db' even when UI approves", async () => {
+    const cwd = trackTempDir("state-db-bash-nested-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true }),
+      "utf-8",
+    );
+    clearSettingsCache();
+
+    const approvingUi = {
+      async select() {
+        return "Yes, run it";
+      },
+      notify() {},
+    };
+    const decision = await evaluateBashPolicy({
+      command: "bash -c 'rm .pi/data/state.db'",
+      cwd,
+      hasTimeout: false,
+      inContainer: false,
+      isSubagentChild: false,
+      ui: approvingUi,
+    });
+    assert.equal(decision.action, "block");
+    assert.match(decision.reason ?? "", /review state storage/i);
+  });
+
+  it("allows ordinary file removals with trailing whitespace when not targeting protected review paths", async () => {
+    const cwd = trackTempDir("state-db-bash-ordinary-rm-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true }),
+      "utf-8",
+    );
+    clearSettingsCache();
+
+    for (const command of ["rm harmless ", "rm -f .pi/tmp/scratch.txt ", "rm -f .pi/data/reviews.db "]) {
+      const decision = await evaluateBashPolicy({
+        command,
+        cwd,
+        hasTimeout: false,
+        inContainer: false,
+        isSubagentChild: false,
+        ui: null,
+      });
+      assert.notEqual(decision.action, "block", `expected ordinary command not to be blocked: ${command}`);
+    }
   });
 
   it("blocks glob, brace-expansion, directory wipe, and adjacent-redirect attempts targeting .pi/data/state.db", async () => {
