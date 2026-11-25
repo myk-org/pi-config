@@ -818,18 +818,46 @@ describe("real TuiMainScreen + Kitty protocol integration (#1391)", () => {
     return Promise.resolve(factory(tui as never, fakeTheme(), kb as never, resolveDone)).then(async (comp) => {
       tui.start();
       const handle = opts?.overlay ? tui.showOverlay(comp, opts.overlayOptions as never) : undefined;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {
         for (const key of keys) {
           onInput?.(key);
           frames.push(stripTerminalSequences((comp.render?.(110) ?? []).join("\n")));
         }
-        return { result: await closed, frames };
+        const timeout = new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error(`runWithRealTui timed out waiting for close (${frames.length} frames captured)`)),
+            2000,
+          );
+          timeoutId.unref?.();
+        });
+        return { result: await Promise.race([closed, timeout]), frames };
       } finally {
+        if (timeoutId) clearTimeout(timeoutId);
         handle?.hide();
         comp.dispose?.();
         tui.stop();
       }
     });
+  }
+
+  function makeRealTuiTasks(): Task[] {
+    return [
+      {
+        id: "1", subject: "owner item", description: "", status: "pending", assignee: "user",
+        metadata: {}, blocks: [], blockedBy: [],
+        createdBy: { type: "local", origin: "user", session: "", project: "" },
+        createdAt: 1, updatedAt: 1,
+        statusHistory: { pending_at: "", in_progress_at: null, completed_at: null, deleted_at: null },
+      },
+      {
+        id: "2", subject: "agent item", description: "", status: "pending", assignee: "llm",
+        metadata: {}, blocks: [], blockedBy: [],
+        createdBy: { type: "local", origin: "user", session: "", project: "" },
+        createdAt: 1, updatedAt: 1,
+        statusHistory: { pending_at: "", in_progress_at: null, completed_at: null, deleted_at: null },
+      },
+    ];
   }
 
   it("clears active selection on first Kitty Esc before closing on second Esc via real TuiMainScreen", async () => {
@@ -867,39 +895,56 @@ describe("real TuiMainScreen + Kitty protocol integration (#1391)", () => {
     }
   });
 
-  it("preserves selection across detail view and renders bulk-d inline banner in /tasks via real TuiMainScreen", async () => {
+  it("preserves /tasks multi-selection across detail view via real TuiMainScreen", async () => {
     const prevKitty = isKittyProtocolActive();
     setKittyProtocolActive(true);
     try {
-      const tasks: Task[] = [
-        {
-          id: "1", subject: "owner item", description: "", status: "pending", assignee: "user",
-          metadata: {}, blocks: [], blockedBy: [],
-          createdBy: { type: "local", origin: "user", session: "", project: "" },
-          createdAt: 1, updatedAt: 1,
-          statusHistory: { pending_at: "", in_progress_at: null, completed_at: null, deleted_at: null },
-        },
-        {
-          id: "2", subject: "agent item", description: "", status: "pending", assignee: "llm",
-          metadata: {}, blocks: [], blockedBy: [],
-          createdBy: { type: "local", origin: "user", session: "", project: "" },
-          createdAt: 1, updatedAt: 1,
-          statusHistory: { pending_at: "", in_progress_at: null, completed_at: null, deleted_at: null },
-        },
-      ];
+      const tasks = makeRealTuiTasks();
       const scripts = [
         ["\x1b[32;129u", "\x1b[106;65u", "\x1b[32;129u", "\r"], // select both with NumLock/CapsLock, Enter detail
         ["\x1b[27;129u"],                                        // Esc back from detail
-        ["\x1b[1490::100u", "\x1b[27u"],                         // non-Latin d bulk done, Esc close
+        ["\x1b[27;129u", "\x1b[27u"],                            // first Esc clears selection, second Esc closes
       ];
-      const allFrames: string[] = [];
+      const framesByOpen: string[][] = [];
       let openIdx = 0;
-      const custom = (<T,>(factory: FakeCustomFactory<T>, opts?: unknown) =>
-        runWithRealTui(factory, scripts[openIdx++] ?? ["\x1b"], opts as { overlay?: boolean; overlayOptions?: unknown })
+      const custom = (<T,>(factory: FakeCustomFactory<T>, opts?: unknown) => {
+        const idx = openIdx++;
+        return runWithRealTui(factory, scripts[idx] ?? ["\x1b"], opts as { overlay?: boolean; overlayOptions?: unknown })
           .then(({ result, frames }) => {
-            allFrames.push(...frames);
+            framesByOpen[idx] = frames;
             return result;
-          })) satisfies ExtensionUIContext["custom"];
+          });
+      }) satisfies ExtensionUIContext["custom"];
+      const ctx = fakeCommandCtx({ notify: () => {}, custom });
+      await openTasksOverlay(ctx, {
+        listTasks: () => tasks,
+        deleteTask: () => true,
+        completeTask: () => true,
+        createTask: () => "3",
+        updateTaskSubject: () => true,
+      });
+      assert.match(framesByOpen[0][2], /2 selected/, "both rows selected before entering detail");
+      assert.doesNotMatch(framesByOpen[2][0], /2 selected/, "first Kitty Esc after returning from detail cleared the preserved selection");
+    } finally {
+      setKittyProtocolActive(prevKitty);
+    }
+  });
+
+  it("renders /tasks bulk-d inline banner under non-Latin Kitty input via real TuiMainScreen", async () => {
+    const prevKitty = isKittyProtocolActive();
+    setKittyProtocolActive(true);
+    try {
+      const tasks = makeRealTuiTasks();
+      const allFrames: string[] = [];
+      const custom = (<T,>(factory: FakeCustomFactory<T>, opts?: unknown) =>
+        runWithRealTui(
+          factory,
+          ["\x1b[32;129u", "\x1b[106;65u", "\x1b[32;129u", "\x1b[1490::100u", "\x1b[27u"],
+          opts as { overlay?: boolean; overlayOptions?: unknown },
+        ).then(({ result, frames }) => {
+          allFrames.push(...frames);
+          return result;
+        })) satisfies ExtensionUIContext["custom"];
       const ctx = fakeCommandCtx({ notify: () => {}, custom });
       await openTasksOverlay(ctx, {
         listTasks: () => tasks,
