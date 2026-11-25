@@ -10,11 +10,14 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
+  isKeyRelease,
   Key,
   matchesKey,
+  parseKey,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
+  type KeyId,
 } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import {
@@ -44,6 +47,46 @@ export {
 export const DEFAULT_LIST_HINTS = "↑↓/jk select · Enter view · x kill · Esc close";
 /** Appended to the default hints only for `selectable` specs. */
 export const SELECT_HINT = "Space multi-select";
+/** Default auto-clear duration for inline overlay feedback banners. */
+export const DEFAULT_NOTICE_MS = 4000;
+
+export type OverlayNoticeLevel = "info" | "warning" | "error";
+
+export interface OverlayNotice {
+  message: string;
+  level: OverlayNoticeLevel;
+}
+
+export type OverlayNotify = (message: string, level?: OverlayNoticeLevel) => void;
+
+/**
+ * Normalize a raw terminal input sequence into a single-key string when possible.
+ * Handles plain characters, Kitty CSI-u (including NumLock/CapsLock lock bits and
+ * non-Latin base layout keys), and xterm modifyOtherKeys. Shift+letter normalizes
+ * to uppercase ("X"); unrecognized sequences pass through unchanged.
+ */
+export function normalizeOverlayKey(data: string): string {
+  if (!data || isKeyRelease(data)) return "";
+  const parsed = parseKey(data);
+  if (!parsed) return data;
+  const shiftedLetter = /^shift\+([a-z])$/.exec(parsed);
+  if (shiftedLetter) return shiftedLetter[1].toUpperCase();
+  return parsed;
+}
+
+/**
+ * Match a raw terminal input sequence against a single-key overlay binding.
+ * Lowercase "x" matches unshifted x; uppercase "X" matches Shift+x.
+ * Supports legacy input, Kitty CSI-u (including NumLock/CapsLock and non-Latin
+ * base layout keys), and modifyOtherKeys. Ignores key release events.
+ */
+export function matchesOverlayKey(data: string, key: string): boolean {
+  if (!data || !key || isKeyRelease(data)) return false;
+  if (key.length === 1 && key >= "A" && key <= "Z") {
+    return matchesKey(data, `shift+${key.toLowerCase()}` as KeyId);
+  }
+  return matchesKey(data, key as KeyId);
+}
 
 export const OVERLAY_OPTS = {
   overlay: true as const,
@@ -74,11 +117,13 @@ export interface OverlayListSpec<
   borderTitle: (items: readonly TItem[]) => string;
   /** Defaults to DEFAULT_LIST_HINTS (+ "Space multi-select" when selectable). */
   footerHints?: string;
+  /** Optional footer hints shown while multi-select has 1+ ticked rows. */
+  selectedFooterHints?: string;
   listItems: () => TItem[];
   emptyBody?: string | (() => string);
   rowParts: (item: TItem, theme: Theme) => OverlayRowParts;
   /** Optional destructive/action key (x). */
-  onX?: (item: TItem) => void;
+  onX?: (item: TItem, notify: OverlayNotify) => void;
   /** Opt-in multi-select: Space toggles the focused row; `x` then acts on the whole selection. */
   selectable?: boolean;
   /** The dashboard owns no selection a caller can keep: a re-opened list would start empty and
@@ -87,9 +132,9 @@ export interface OverlayListSpec<
    *  `initialSelectionIds`; nothing here knows what the rows mean. */
   onSelectionChange?: (ids: TId[]) => void;
   /** Called instead of onX while the multi-select set is non-empty. */
-  onXSelected?: (items: TItem[]) => void;
+  onXSelected?: (items: TItem[], notify: OverlayNotify) => void;
   /** Optional bulk-action key (a) — destructive, so callers should confirm first. */
-  onKillAll?: () => void;
+  onKillAll?: (notify: OverlayNotify) => void;
   /** Optional compose key (m): the caller needs the whole terminal for a text dialog, so the
    *  list closes and can be re-opened once the composed text is handled. Compose acts on the
    *  SELECTION, like `x`: every multi-selected row, or just the focused one when nothing is
@@ -100,15 +145,17 @@ export interface OverlayListSpec<
    *  the whole selection must say so. */
   onCompose?: (items: TItem[], missingIds: readonly TId[]) => void;
   /** Optional extra single-key actions (e.g. `n` add, `e` edit, `p` pause). "close" hands the
-   *  terminal to the caller (a dialog), "redraw" refreshes the rows in place, false means the
-   *  key was not handled and the built-in keys below still see it. `selected` is the Space-picked
-   *  set (empty when nothing is selected), so an action that only makes sense on one row can
-   *  refuse instead of silently acting on the focused one. */
+   *  terminal to the caller (a dialog), "redraw" refreshes the rows in place, "redraw-clear"
+   *  refreshes and clears the multi-selection, false means the key was not handled and the
+   *  built-in keys below still see it. `selected` is the Space-picked set (empty when nothing
+   *  is selected), so an action that only makes sense on one row can refuse instead of silently
+   *  acting on the focused one. */
   onKey?: (
     key: string,
     item: TItem | undefined,
     selected: readonly TItem[],
-  ) => "close" | "redraw" | false;
+    notify: OverlayNotify,
+  ) => "close" | "redraw" | "redraw-clear" | false;
   /** Enter hands the item back to the caller instead of opening a detail pane: a caller that
    *  navigates a level deeper opens its own overlay and re-opens this list when that one closes,
    *  which is what makes Esc walk back one level at a time. */
@@ -169,6 +216,9 @@ export class OverlayListDashboard<
   private cachedLines: string[] | undefined;
   /** Multi-selected ids — seeded by the caller, reported back on every change. */
   private readonly multi: Set<TId>;
+  /** Inline feedback banner visible inside fullscreen overlays. */
+  private notice: OverlayNotice | undefined;
+  private noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private tui: TUI,
@@ -181,25 +231,70 @@ export class OverlayListDashboard<
     /** The caller deliberately allows an empty list (a filter that can match nothing), so an
      *  action that empties the rows keeps the filter/create keys reachable instead of closing. */
     private readonly keepOpenWhenEmpty = false,
+    private readonly onNotify?: OverlayNotify,
+    private readonly noticeTimeoutMs: number = DEFAULT_NOTICE_MS,
   ) {
     this.multi = new Set(initialMulti);
     this.ticker = setInterval(() => { this.invalidate(); this.tui.requestRender(); }, 1000);
   }
+
+  /** Show an inline status/warning banner inside the fullscreen overlay. */
+  setNotice(message: string, level: OverlayNoticeLevel = "info"): void {
+    if (this.closed) return;
+    if (this.noticeTimer) {
+      clearTimeout(this.noticeTimer);
+      this.noticeTimer = undefined;
+    }
+    this.notice = { message, level };
+    log.debug("list_notice_set", { level, chars: message.length });
+    if (this.noticeTimeoutMs > 0) {
+      this.noticeTimer = setTimeout(() => {
+        this.noticeTimer = undefined;
+        if (this.closed || !this.notice) return;
+        this.notice = undefined;
+        this.invalidate();
+        this.tui.requestRender(true);
+      }, this.noticeTimeoutMs);
+      this.noticeTimer.unref?.();
+    }
+    this.invalidate();
+    this.tui.requestRender(true);
+  }
+
+  clearNotice(): void {
+    if (this.noticeTimer) {
+      clearTimeout(this.noticeTimer);
+      this.noticeTimer = undefined;
+    }
+    if (this.notice) {
+      this.notice = undefined;
+      this.invalidate();
+    }
+  }
+
+  private readonly emitNotice: OverlayNotify = (message, level = "info") => {
+    this.setNotice(message, level);
+    this.onNotify?.(message, level);
+  };
 
   private items(): TItem[] {
     return this.spec.listItems();
   }
 
   /** The rows Space picked, in list order; ids whose row is gone are dropped. */
-  private selectedItems(): TItem[] {
+  private selectedItems(items: readonly TItem[] = this.items()): TItem[] {
     if (this.multi.size === 0) return [];
-    return this.items().filter((item) => this.multi.has(item.id));
+    return items.filter((item) => this.multi.has(item.id));
   }
 
   private cleanup(): boolean {
     if (this.closed) return false;
     this.closed = true;
     clearInterval(this.ticker);
+    if (this.noticeTimer) {
+      clearTimeout(this.noticeTimer);
+      this.noticeTimer = undefined;
+    }
     return true;
   }
 
@@ -212,9 +307,20 @@ export class OverlayListDashboard<
   }
 
   handleInput(data: string): void {
+    if (isKeyRelease(data)) return;
     const items = this.items();
     reconcileSelection(this.selection, items);
+    const selected = this.selectedItems(items);
 
+    if (matchesKey(data, Key.escape) && selected.length > 0) {
+      this.multi.clear();
+      this.spec.onSelectionChange?.([]);
+      this.clearNotice();
+      log.debug("list_multi_select_clear", { reason: "escape", count: selected.length });
+      this.invalidate();
+      this.tui.requestRender(true);
+      return;
+    }
     if (
       this.keybindings.matches(data, "tui.select.cancel") ||
       matchesKey(data, Key.escape) ||
@@ -234,13 +340,17 @@ export class OverlayListDashboard<
     if (
       this.keybindings.matches(data, "tui.select.up") ||
       matchesKey(data, Key.up) ||
-      data === "k"
+      matchesOverlayKey(data, "k")
     ) {
+      const hadNotice = !!this.notice;
+      this.clearNotice();
       if (items.length > 0) {
         this.selection.index =
           (this.selection.index - 1 + items.length) % items.length;
         this.selection.id = items[this.selection.index]?.id;
         this.invalidate();
+        this.tui.requestRender(true);
+      } else if (hadNotice) {
         this.tui.requestRender(true);
       }
       return;
@@ -248,24 +358,41 @@ export class OverlayListDashboard<
     if (
       this.keybindings.matches(data, "tui.select.down") ||
       matchesKey(data, Key.down) ||
-      data === "j"
+      matchesOverlayKey(data, "j")
     ) {
+      const hadNotice = !!this.notice;
+      this.clearNotice();
       if (items.length > 0) {
         this.selection.index = (this.selection.index + 1) % items.length;
         this.selection.id = items[this.selection.index]?.id;
         this.invalidate();
         this.tui.requestRender(true);
+      } else if (hadNotice) {
+        this.tui.requestRender(true);
       }
       return;
     }
-    const action = this.spec.onKey?.(data, items[this.selection.index], this.selectedItems());
+    const normalizedKey = normalizeOverlayKey(data);
+    const prevNotice = this.notice;
+    const action = this.spec.onKey?.(
+      normalizedKey,
+      items[this.selection.index],
+      selected,
+      this.emitNotice,
+    );
     if (action === "close") {
-      log.debug("list_key_action", { key: data, outcome: "close" });
+      log.debug("list_key_action", { key: normalizedKey, outcome: "close" });
       this.close(null);
       return;
     }
-    if (action === "redraw") {
-      if (this.multi.size > 0) {
+    if (action === "redraw" || action === "redraw-clear") {
+      if (this.notice === prevNotice) this.clearNotice();
+      if (action === "redraw-clear") {
+        if (this.multi.size > 0) {
+          this.multi.clear();
+          this.spec.onSelectionChange?.([]);
+        }
+      } else if (this.multi.size > 0) {
         const visible = new Set(this.items().map((item) => item.id));
         let pruned = false;
         for (const id of [...this.multi]) {
@@ -276,12 +403,13 @@ export class OverlayListDashboard<
         }
         if (pruned) this.spec.onSelectionChange?.([...this.multi]);
       }
-      log.debug("list_key_action", { key: data, outcome: "redraw" });
+      log.debug("list_key_action", { key: normalizedKey, outcome: action });
       this.invalidate();
       this.tui.requestRender(true);
       return;
     }
-    if (this.spec.selectable && (matchesKey(data, Key.space) || data === " ")) {
+    if (this.spec.selectable && matchesOverlayKey(data, Key.space)) {
+      this.clearNotice();
       const focused = items[this.selection.index];
       if (focused) {
         if (this.multi.has(focused.id)) this.multi.delete(focused.id);
@@ -293,19 +421,23 @@ export class OverlayListDashboard<
       }
       return;
     }
-    if ((data === "a" || data === "A" || data === "X") && this.spec.onKillAll) {
-      log.debug("list_kill_all_key", { key: data, selected: this.multi.size });
+    if (
+      (matchesOverlayKey(data, "a") || matchesOverlayKey(data, "A") || matchesOverlayKey(data, "X")) &&
+      this.spec.onKillAll
+    ) {
+      log.debug("list_kill_all_key", { key: normalizedKey, selected: this.multi.size });
+      this.clearNotice();
       // Cleared for the same reason the x path clears it: killing marks jobs failed, so the
       // stale ids would survive and a following `x` would act on them (or on nothing) instead
       // of on the newly focused running row.
       this.multi.clear();
       this.spec.onSelectionChange?.([]);
-      this.spec.onKillAll();
+      this.spec.onKillAll(this.emitNotice);
       this.invalidate();
       this.tui.requestRender(true);
       return;
     }
-    if (data === "m" && this.spec.onCompose) {
+    if (matchesOverlayKey(data, "m") && this.spec.onCompose) {
       // Same target set `x` uses: the multi-selection when there is one, else the focused row.
       const wanted = this.multi.size > 0
         ? [...this.multi]
@@ -319,14 +451,16 @@ export class OverlayListDashboard<
       this.close(null);
       return;
     }
-    if (data === "x") {
+    if (matchesOverlayKey(data, "x")) {
+      this.clearNotice();
       if (this.multi.size > 0) {
-        const selected = this.selectedItems();
         // Cleared unconditionally: killed jobs disappear, and stale ids would leak.
         this.multi.clear();
         this.spec.onSelectionChange?.([]);
+      }
+      if (selected.length > 0) {
         log.debug("list_multi_x", { count: selected.length });
-        if (selected.length > 0) this.spec.onXSelected?.(selected);
+        this.spec.onXSelected?.(selected, this.emitNotice);
         if (this.items().length === 0 && !this.keepOpenWhenEmpty) {
           this.close(null);
           return;
@@ -337,7 +471,7 @@ export class OverlayListDashboard<
       }
       const item = items[this.selection.index];
       if (item) {
-        this.spec.onX?.(item);
+        this.spec.onX?.(item, this.emitNotice);
         if (this.items().length === 0 && !this.keepOpenWhenEmpty) {
           this.close(null);
           return;
@@ -354,10 +488,11 @@ export class OverlayListDashboard<
     const theme = this.theme;
     const items = this.items();
     reconcileSelection(this.selection, items);
-    log.debug("list_render", { items: items.length, focused: this.selection.index, multi: this.multi.size });
+    const selectedCount = this.selectedItems(items).length;
+    log.debug("list_render", { items: items.length, focused: this.selection.index, multi: selectedCount });
 
     const rows = this.tui.terminal.rows || 30;
-    const bodyHeight = Math.max(6, rows - 5);
+    const bodyHeight = Math.max(5, rows - (this.notice ? 6 : 5));
     const innerWidth = Math.max(0, width - 2);
     const lines: string[] = [];
 
@@ -374,9 +509,13 @@ export class OverlayListDashboard<
       ),
     );
 
+    const baseBorderTitle = this.spec.borderTitle(items);
+    const borderTitle = selectedCount > 0
+      ? (baseBorderTitle ? `${baseBorderTitle} · ${selectedCount} selected` : `${selectedCount} selected`)
+      : baseBorderTitle;
     lines.push(
       theme.fg("border", "╭") +
-        borderSegment(theme, innerWidth, this.spec.borderTitle(items)) +
+        borderSegment(theme, innerWidth, borderTitle) +
         theme.fg("border", "╮"),
     );
 
@@ -392,7 +531,21 @@ export class OverlayListDashboard<
         theme.fg("border", "╯"),
     );
 
-    lines.push(truncateToWidth(theme.fg("dim", `  ${this.footerText()}`), width));
+    if (this.notice) {
+      const color = this.notice.level === "error"
+        ? "error"
+        : this.notice.level === "warning"
+          ? "warning"
+          : "accent";
+      const prefix = this.notice.level === "error"
+        ? "✖"
+        : this.notice.level === "warning"
+          ? "⚠"
+          : "ℹ";
+      lines.push(truncateToWidth(theme.fg(color, `  ${prefix} ${this.notice.message}`), width));
+    }
+
+    lines.push(truncateToWidth(theme.fg("dim", `  ${this.footerText(selectedCount)}`), width));
 
     this.cachedLines = lines;
     this.cachedWidth = width;
@@ -402,7 +555,19 @@ export class OverlayListDashboard<
   /** Spec hints, falling back to the shared defaults (+ toggle hint when selectable). The bulk
    *  keys named are only the ones this spec really wires, so a list that has `x` but no `X` does
    *  not advertise a selection action that goes nowhere. */
-  private footerText(): string {
+  private footerText(selectedCount: number): string {
+    const base = this.baseFooterText(selectedCount);
+    if (selectedCount === 0) return base;
+    const withEscClear = /\bEsc close\b/.test(base)
+      ? base.replace(/\bEsc close\b/, "Esc clear")
+      : /\bEsc clear\b/.test(base)
+        ? base
+        : `${base} · Esc clear`;
+    return `${selectedCount} selected · ${withEscClear}`;
+  }
+
+  private baseFooterText(selectedCount: number): string {
+    if (selectedCount > 0 && this.spec.selectedFooterHints) return this.spec.selectedFooterHints;
     if (this.spec.footerHints) return this.spec.footerHints;
     if (!this.spec.selectable) return DEFAULT_LIST_HINTS;
     const bulk = [...(this.spec.onXSelected ? ["x"] : []), ...(this.spec.onKillAll ? ["X"] : [])];
@@ -528,11 +693,12 @@ export class OverlayScrollDetail implements Component {
   }
 
   handleInput(data: string): void {
+    if (isKeyRelease(data)) return;
     if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
       this.close();
       return;
     }
-    if (data === "x" && this.spec.onX) {
+    if (matchesOverlayKey(data, "x") && this.spec.onX) {
       if (this.spec.onX()) this.close();
       else {
         this.invalidate();
@@ -540,7 +706,7 @@ export class OverlayScrollDetail implements Component {
       }
       return;
     }
-    if (matchesKey(data, Key.up) || data === "k") {
+    if (matchesKey(data, Key.up) || matchesOverlayKey(data, "k")) {
       if (this.scrollOffset > 0) {
         this.scrollOffset--;
         this.following = false;
@@ -549,7 +715,7 @@ export class OverlayScrollDetail implements Component {
       }
       return;
     }
-    if (matchesKey(data, Key.down) || data === "j") {
+    if (matchesKey(data, Key.down) || matchesOverlayKey(data, "j")) {
       if (this.scrollOffset < this.maxScroll) {
         this.scrollOffset++;
         this.invalidate();
@@ -587,7 +753,7 @@ export class OverlayScrollDetail implements Component {
       return;
     }
     if (this.spec.onKey) {
-      const res = this.spec.onKey(data);
+      const res = this.spec.onKey(normalizeOverlayKey(data));
       if (res === "close") {
         this.close();
       } else if (res === "redraw") {
@@ -680,6 +846,9 @@ export async function openListDetailOverlay<
      *  (`listSpec.onSelectionChange` gives it the new set); ids that no longer exist are simply
      *  never matched. */
     initialSelectionIds?: readonly TId[];
+    /** Optional inline banner shown immediately when the list first opens (e.g. outcome of a
+     *  dialog-backed bulk action). Cleared after the first open so detail round-trips do not replay it. */
+    initialNotice?: OverlayNotice;
     /** Omitted by a list whose Enter navigates deeper (`listSpec.onSelect`). */
     createDetail?: (
       item: TItem,
@@ -697,6 +866,22 @@ export async function openListDetailOverlay<
     ...(options.initialSelectionId !== undefined ? { id: options.initialSelectionId } : {}),
   };
 
+  // Preserve multi-selection across Enter → detail → Esc by default for all selectable lists.
+  let multiIds: TId[] = [...(options.initialSelectionIds ?? [])];
+  const listSpec: OverlayListSpec<TId, TItem> = {
+    ...options.listSpec,
+    onSelectionChange: (ids) => {
+      multiIds = [...ids];
+      options.listSpec.onSelectionChange?.(ids);
+    },
+  };
+  const forwardNotify: OverlayNotify = (msg, level = "info") => {
+    try {
+      ctx.ui?.notify?.(msg, level);
+    } catch {}
+  };
+  let pendingNotice = options.initialNotice;
+
   while (true) {
     const items = options.listSpec.listItems();
     if (items.length === 0 && !options.allowEmpty) {
@@ -704,19 +889,26 @@ export async function openListDetailOverlay<
       return;
     }
 
-    log.debug("overlay_list_open", { count: items.length, allowEmpty: !!options.allowEmpty });
+    log.debug("overlay_list_open", { count: items.length, allowEmpty: !!options.allowEmpty, multi: multiIds.length });
     const picked = await ctx.ui.custom<TId | null>(
-      (tui, theme, keybindings, done) =>
-        new OverlayListDashboard(
+      (tui, theme, keybindings, done) => {
+        const dash = new OverlayListDashboard(
           tui,
           theme,
           keybindings,
-          options.listSpec,
+          listSpec,
           selection,
           done,
-          options.initialSelectionIds ?? [],
+          multiIds,
           options.allowEmpty === true,
-        ),
+          forwardNotify,
+        );
+        if (pendingNotice) {
+          dash.setNotice(pendingNotice.message, pendingNotice.level);
+          pendingNotice = undefined;
+        }
+        return dash;
+      },
       OVERLAY_OPTS,
     );
 
@@ -740,5 +932,14 @@ export async function openListDetailOverlay<
         createDetail(item, tui, theme, done),
       OVERLAY_OPTS,
     );
+
+    if (multiIds.length > 0) {
+      const remaining = new Set(options.listSpec.listItems().map((i) => i.id));
+      const pruned = multiIds.filter((id) => remaining.has(id));
+      if (pruned.length !== multiIds.length) {
+        multiIds = pruned;
+        options.listSpec.onSelectionChange?.([...multiIds]);
+      }
+    }
   }
 }

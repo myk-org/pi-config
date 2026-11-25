@@ -10,12 +10,16 @@ import { Container, Input, Text } from "@earendil-works/pi-tui";
 import {
 	bulkRemove,
 	bulkResultMessage,
+	matchesOverlayKey,
 	openListDetailOverlay,
 	OverlayScrollDetail,
+	type OverlayNotice,
+	type OverlayNotify,
 } from "../orchestrator/overlay-dashboard.js";
 import type { Task } from "./types.js";
 import {
 	TASKS_EMPTY_MESSAGE,
+	bulkTaskCompletionPrompt,
 	planTaskCompose,
 	planTaskCompletion,
 	selectTaskRows,
@@ -76,30 +80,80 @@ async function promptLine(
 	});
 }
 
-const TASKS_LIST_HINTS = "Space select · x delete · n add · e edit · s start · d done · f mine/all · Enter view · Esc close";
+const TASKS_LIST_HINTS = "Space select · x del · n add · e edit · s start · d done · u undo · f mine/all · Enter · Esc close";
+const TASKS_SELECTED_HINTS = "Space toggle · s start · d done · u undo · x del · Enter · Esc clear";
 
-function bulkCompleteTasks(ctx: ExtensionCommandContext, deps: TasksUiDeps, selected: readonly Task[]): void {
-	const targets = selected.filter((t) => t.status !== "completed");
-	if (targets.length === 0) {
+/** Complete a multi-selected batch of tasks (shared by immediate LLM-only and post-note user flows). */
+function applyBulkTaskCompletion(
+	deps: TasksUiDeps,
+	selected: readonly Task[],
+	note?: string,
+): { notice: OverlayNotice; clearSelection: boolean } {
+	const open = selected.filter((t) => t.status !== "completed");
+	const skipped = selected.length - open.length;
+	if (open.length === 0) {
 		log.debug("tasks_overlay_bulk_complete_unchanged", { selected: selected.length });
-		ctx.ui.notify("Selected tasks are already completed.", "info");
-		return;
+		return {
+			notice: {
+				message:
+					selected.length === 1
+						? `Task #${selected[0].id} is already completed.`
+						: `All ${selected.length} selected tasks are already completed.`,
+				level: "info",
+			},
+			clearSelection: false,
+		};
 	}
-	const { failed, errors } = bulkRemove(targets, (t) => deps.completeTask(t.id, { by: "user" }));
-	const names = failed.map((t) => `#${t.id}`);
-	log.info("tasks_overlay_bulk_complete", { selected: selected.length, targets: targets.length, failed: names.length, errors });
-	ctx.ui.notify(
-		bulkResultMessage("completed", "task", targets.length, names),
-		names.length === 0 ? "info" : "warning",
+	const batchNotice = typeof deps.notifyUserCompleted === "function";
+	const { failed, errors } = bulkRemove(open, (t) =>
+		deps.completeTask(t.id, {
+			by: "user",
+			...(t.assignee === "user" && note ? { note } : {}),
+			...(batchNotice ? { silent: true } : {}),
+		}),
 	);
+	const failedIds = new Set(failed.map((t) => t.id));
+	const completedUserTasks = open
+		.filter((t) => t.assignee === "user" && !failedIds.has(t.id))
+		.map((t) => ({ id: t.id, subject: t.subject }));
+	let noticeFailed = false;
+	if (batchNotice && completedUserTasks.length > 0) {
+		try {
+			noticeFailed = !deps.notifyUserCompleted!(completedUserTasks, note);
+		} catch (err) {
+			noticeFailed = true;
+			log.error("tasks_overlay_bulk_notice_threw", {
+				count: completedUserTasks.length,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+	const names = failed.map((t) => `#${t.id}`);
+	log.info("tasks_overlay_bulk_complete", {
+		selected: selected.length,
+		open: open.length,
+		skipped,
+		failed: names.length,
+		noticeFailed,
+		errors,
+	});
+	const base = bulkResultMessage("completed", "task", open.length, names);
+	const withSkipped = skipped > 0 ? `${base} (${skipped} already completed)` : base;
+	const message = noticeFailed
+		? `${withSkipped} — owner notice failed to submit; read via TaskGet`
+		: withSkipped;
+	return {
+		notice: { message, level: names.length === 0 && !noticeFailed ? "info" : "warning" },
+		clearSelection: true,
+	};
 }
 
-function bulkStartTasks(ctx: ExtensionCommandContext, deps: TasksUiDeps, selected: readonly Task[]): void {
+function bulkStartTasks(deps: TasksUiDeps, selected: readonly Task[], notify: OverlayNotify): void {
 	if (!deps.startTask) return;
 	const targets = selected.filter((t) => t.status !== "in_progress");
 	if (targets.length === 0) {
 		log.debug("tasks_overlay_bulk_start_unchanged", { selected: selected.length });
-		ctx.ui.notify("Selected tasks are already in progress.", "info");
+		notify("Selected tasks are already in progress.", "info");
 		return;
 	}
 	const failed: string[] = [];
@@ -113,10 +167,78 @@ function bulkStartTasks(ctx: ExtensionCommandContext, deps: TasksUiDeps, selecte
 		}
 	}
 	log.info("tasks_overlay_bulk_start", { selected: selected.length, targets: targets.length, failed: failed.length });
-	ctx.ui.notify(
+	notify(
 		bulkResultMessage("started", "task", targets.length, failed),
 		failed.length === 0 ? "info" : "warning",
 	);
+}
+
+/** Reopen selected non-pending tasks back to `pending` in place; isolates per-task errors. */
+function applyBulkTaskReopen(
+	deps: TasksUiDeps,
+	selected: readonly Task[],
+): { notice: OverlayNotice; clearSelection: boolean } {
+	if (!deps.reopenTask) {
+		return { notice: { message: "Reopen is not available.", level: "warning" }, clearSelection: false };
+	}
+	const targets = selected.filter((t) => t.status !== "pending");
+	const skipped = selected.length - targets.length;
+	if (targets.length === 0) {
+		log.debug("tasks_overlay_bulk_reopen_unchanged", { selected: selected.length });
+		return {
+			notice: {
+				message:
+					selected.length === 1
+						? `Task #${selected[0].id} is already pending.`
+						: `All ${selected.length} selected tasks are already pending.`,
+				level: "info",
+			},
+			clearSelection: false,
+		};
+	}
+	const failed: string[] = [];
+	let reopened = 0;
+	let runtimeSkipped = skipped;
+	for (const t of targets) {
+		try {
+			const outcome = deps.reopenTask(t.id);
+			if (outcome === "applied") reopened++;
+			else if (outcome === "unchanged") runtimeSkipped++;
+			else failed.push(`#${t.id}`);
+		} catch (err) {
+			log.error("tasks_overlay_bulk_reopen_threw", {
+				taskId: t.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			failed.push(`#${t.id}`);
+		}
+	}
+	log.info("tasks_overlay_bulk_reopen", {
+		selected: selected.length,
+		targets: targets.length,
+		reopened,
+		skipped: runtimeSkipped,
+		failed: failed.length,
+	});
+	if (reopened === 0 && failed.length === 0) {
+		return {
+			notice: {
+				message:
+					selected.length === 1
+						? `Task #${selected[0].id} is already pending.`
+						: `All ${selected.length} selected tasks are already pending.`,
+				level: "info",
+			},
+			clearSelection: false,
+		};
+	}
+	const attempted = reopened + failed.length;
+	const base = bulkResultMessage("reopened", "task", attempted, failed);
+	const message = runtimeSkipped > 0 ? `${base} (${runtimeSkipped} already pending)` : base;
+	return {
+		notice: { message, level: failed.length === 0 ? "info" : "warning" },
+		clearSelection: reopened > 0,
+	};
 }
 
 /** Open the task list overlay; loops list → detail until the list is closed. `mine` starts the
@@ -129,9 +251,17 @@ export async function openTasksOverlay(
 	let initialTasks: Task[] | null = deps.listTasks();
 	if (log.isDebugEnabled()) log.debug("tasks_overlay_open", { tasks: initialTasks.length, mine: !!opts.mine });
 	let mineOnly = opts.mine ?? false;
-	// `n`/`e` need the whole terminal for the input dialog, so the list closes and the loop below
-	// re-opens it — which also re-reads the store, so the new/edited row is never a stale snapshot.
-	const queue: Array<{ kind: "add" } | { kind: "edit"; task: Task } | { kind: "complete"; task: Task }> = [];
+	// `n`/`e`/user-`d` need the whole terminal for the input dialog, so the list closes and the loop
+	// below re-opens it — which also re-reads the store, so the new/edited row is never a stale snapshot.
+	const queue: Array<
+		| { kind: "add" }
+		| { kind: "edit"; task: Task }
+		| { kind: "complete"; task: Task }
+		| { kind: "bulk-complete"; tasks: readonly Task[] }
+	> = [];
+	// Preserved across dialog cancel (e.g. Esc in bulk-complete note prompt); cleared once consumed.
+	let reselectIds: string[] = [];
+	let pendingNotice: OverlayNotice | undefined;
 	// An empty board has no row to press `n` on, so the create dialog opens directly — once, so a
 	// cancelled dialog returns the terminal instead of reopening forever (issue #1089).
 	let offeredFirstTask = false;
@@ -146,9 +276,13 @@ export async function openTasksOverlay(
 			offeredFirstTask = true;
 			queue.push({ kind: "add" });
 		} else {
+			const noticeForOpen = pendingNotice;
+			pendingNotice = undefined;
 			await openListDetailOverlay(ctx, {
 				emptyMessage: mineOnly ? "No tasks assigned to you." : TASKS_EMPTY_MESSAGE,
 				allowEmpty: true,
+				initialSelectionIds: reselectIds,
+				initialNotice: noticeForOpen,
 				listSpec: {
 					emptyBody: () =>
 						mineOnly
@@ -161,6 +295,10 @@ export async function openTasksOverlay(
 						return `tasks · ${done} done / ${tasks.length}${mineOnly ? " · mine" : ""}`;
 					},
 					footerHints: TASKS_LIST_HINTS,
+					selectedFooterHints: TASKS_SELECTED_HINTS,
+					onSelectionChange: (ids) => {
+						reselectIds = ids.map(String);
+					},
 					listItems: () => {
 						const allTasks = deps.listTasks();
 						taskById = new Map(allTasks.map((t) => [t.id, t]));
@@ -175,40 +313,64 @@ export async function openTasksOverlay(
 							rightParts: row.blocked ? [theme.fg("warning", "⛔ blocked")] : [],
 						};
 					},
-					onKey: (key, task, selected) => {
-						if (key === "f") {
+					onKey: (key, task, selected, notify) => {
+						if (matchesOverlayKey(key, "f")) {
 							mineOnly = !mineOnly;
 							log.debug("tasks_overlay_filter", { mine: mineOnly });
 							return "redraw";
 						}
 						const intent = tasksOverlayIntent(key);
 						if (!intent) return false;
-						if (intent === "done" && selected.length > 0) {
-							bulkCompleteTasks(ctx, deps, selected);
-							return "redraw";
-						}
 						if (intent === "start") {
 							if (!deps.startTask) return false;
 							if (selected.length > 0) {
-								bulkStartTasks(ctx, deps, selected);
+								bulkStartTasks(deps, selected, notify);
 								return "redraw";
 							}
 							if (!task) return false;
 							const outcome = deps.startTask(task.id);
 							log.info("tasks_overlay_start", { taskId: task.id, outcome });
-							if (outcome === "blocked") ctx.ui.notify(`Task #${task.id} has open blockers.`, "warning");
-							else if (outcome === "refused") ctx.ui.notify(`Task #${task.id} is completed and cannot be restarted.`, "warning");
-							else if (outcome === "unchanged") ctx.ui.notify(`Task #${task.id} is already in progress.`, "info");
-							else if (outcome === "missing") ctx.ui.notify(`No task #${task.id}.`, "warning");
+							if (outcome === "blocked") notify(`Task #${task.id} has open blockers.`, "warning");
+							else if (outcome === "refused") notify(`Task #${task.id} is completed and cannot be restarted.`, "warning");
+							else if (outcome === "unchanged") notify(`Task #${task.id} is already in progress.`, "info");
+							else if (outcome === "missing") notify(`No task #${task.id}.`, "warning");
 							return "redraw";
 						}
-						// Add/edit are single-row by nature: acting on the focused row while rows are picked
-						// would silently ignore the selection, so refuse and leave the rows selected.
+						if (intent === "reopen") {
+							if (!deps.reopenTask) return false;
+							if (selected.length > 0) {
+								const { notice, clearSelection } = applyBulkTaskReopen(deps, selected);
+								notify(notice.message, notice.level);
+								return clearSelection ? "redraw-clear" : "redraw";
+							}
+							if (!task) return false;
+							const outcome = deps.reopenTask(task.id);
+							log.info("tasks_overlay_reopen", { taskId: task.id, outcome });
+							if (outcome === "unchanged") notify(`Task #${task.id} is already pending.`, "info");
+							else if (outcome === "missing") notify(`No task #${task.id}.`, "warning");
+							else if (outcome === "applied") notify(`Reopened #${task.id}.`, "info");
+							return "redraw";
+						}
 						if (selected.length > 0) {
+							if (intent === "done") {
+								const open = selected.filter((t) => t.status !== "completed");
+								if (open.some((t) => t.assignee === "user")) {
+									// Open ONE shared optional-note dialog for the whole batch (Esc cancels
+									// without modifying tasks or losing selection).
+									queue.push({ kind: "bulk-complete", tasks: [...selected] });
+									log.debug("tasks_overlay_bulk_complete_prompt", { selected: selected.length, open: open.length });
+									return "close";
+								}
+								const { notice, clearSelection } = applyBulkTaskCompletion(deps, selected);
+								notify(notice.message, notice.level);
+								return clearSelection ? "redraw-clear" : "redraw";
+							}
+							// Add/edit are single-row by nature: acting on the focused row while rows are picked
+							// would silently ignore the selection, so refuse and leave the rows selected.
 							log.debug("tasks_overlay_key_refused", { intent, selected: selected.length });
 							const label = intent === "add" ? "Add" : "Edit";
-							ctx.ui.notify(
-								`${label} works on one task — clear the selection (Space) first.`,
+							notify(
+								`${label} works on one task — clear the selection (Esc) first.`,
 								"warning",
 							);
 							return "redraw";
@@ -222,7 +384,7 @@ export async function openTasksOverlay(
 							// `completeTask` drops a note for a task it finds already done, so never prompt for one.
 							if (task.status === "completed") {
 								log.debug("tasks_overlay_complete_unchanged", { taskId: task.id });
-								ctx.ui.notify(`Task #${task.id} is already completed.`, "info");
+								notify(`Task #${task.id} is already completed.`, "info");
 								return "redraw";
 							}
 							// The owner closes their own task with an optional note; the agent's task just closes.
@@ -241,14 +403,14 @@ export async function openTasksOverlay(
 						deps.deleteTask(task.id);
 					},
 					selectable: true,
-					onXSelected: (tasks) => {
+					onXSelected: (tasks, notify) => {
 						// Same destructive action `x` does per row, so no confirmation — but the row store can
 						// reject a delete, and those ids must be named rather than counted as deleted. Each delete
 						// is isolated: a throw on one task must not abort the rest of the selection.
 						const { failed, errors } = bulkRemove(tasks, (task) => deps.deleteTask(task.id));
 						const names = failed.map((task) => `#${task.id}`);
 						log.info("tasks_overlay_bulk_delete", { selected: tasks.length, failed: names.length, errors });
-						ctx.ui.notify(
+						notify(
 							bulkResultMessage("deleted", "task", tasks.length, names),
 							names.length === 0 ? "info" : "warning",
 						);
@@ -289,6 +451,23 @@ export async function openTasksOverlay(
 
 		const request = queue.pop();
 		if (!request) return;
+		if (request.kind === "bulk-complete") {
+			const openCount = request.tasks.filter((t) => t.status !== "completed").length;
+			const note = await promptLine(ctx, bulkTaskCompletionPrompt(openCount));
+			const plan = planTaskCompletion(note);
+			if (plan.kind === "skip") {
+				log.debug("tasks_overlay_bulk_completion_skipped", { reason: plan.reason, selected: request.tasks.length });
+				continue;
+			}
+			// Re-read live task snapshots so concurrent completions/deletions during the prompt are accounted for accurately.
+			const liveById = new Map(deps.listTasks().map((t) => [t.id, t]));
+			const liveSelected = request.tasks.map((t) => liveById.get(t.id) ?? t);
+			const { notice, clearSelection } = applyBulkTaskCompletion(deps, liveSelected, plan.note);
+			if (clearSelection) reselectIds = [];
+			pendingNotice = notice;
+			try { ctx.ui?.notify?.(notice.message, notice.level); } catch {}
+			continue;
+		}
 		if (request.kind === "complete") {
 			const note = await promptLine(ctx, taskCompletionPrompt(request.task));
 			const plan = planTaskCompletion(note);

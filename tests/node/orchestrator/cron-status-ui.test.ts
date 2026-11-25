@@ -367,6 +367,37 @@ describe("openCronStatusOverlay multi-select (#1087)", () => {
     const callsFor10 = await measureCalls(10);
     assert.equal(callsFor10, callsFor1);
   });
+
+  it("supports Kitty CSI-u p/x keys and preserves selection across detail view (#1391)", async () => {
+    const notifications: Array<{ message: string; level: string | undefined }> = [];
+    const scripts = [
+      ["\x1b[32;129u", "\x1b[106;129u", "\x1b[32;129u", "\r"],
+      ["\x1b"],
+      ["\x1b[1508::112u", "close"], // non-Latin base layout 'p'
+    ];
+    const lastFrames: string[] = [];
+    let opened = 0;
+    const custom = (<T,>(factory: FakeCustomFactory<T>) => {
+      const idx = opened++;
+      return fakeCustom(factory, scripts[idx] ?? ["close"], {
+        onOpen: (comp) => { lastFrames[idx] = (comp.render?.(100) ?? []).join("\n"); },
+        onKey: (_k, _d, comp) => { lastFrames[idx] = (comp.render?.(100) ?? []).join("\n"); },
+      });
+    }) satisfies ExtensionUIContext["custom"];
+    const ctx = fakeCommandCtx({
+      notify: (message: string, level?: "info" | "warning" | "error") => notifications.push({ message, level }),
+      custom,
+    });
+    const toggled: string[] = [];
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => [row(), row({ id: "2" }), row({ id: "3" })],
+      removeTask: () => true,
+      togglePaused: (id) => { toggled.push(id); return { ok: true, paused: true }; },
+    });
+    assert.deepEqual(toggled, ["session:1", "session:2"]);
+    assert.deepEqual(notifications, [{ message: "paused 2 crons", level: "info" }]);
+    assert.match(lastFrames[2], /ℹ paused 2 crons/);
+  });
 });
 
 describe("openCronStatusOverlay scope filter, persist toggle, add and edit (#1392)", () => {

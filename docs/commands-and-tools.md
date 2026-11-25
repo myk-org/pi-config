@@ -33,7 +33,7 @@ Full-screen overlay listing all adoptable skills (showing `maintained` vs `unmar
 Full-screen overlay listing running and queued async agents, with live output per agent.
 
 - **Arguments:** none
-- **Keys in the overlay:** `↑↓`/`jk` navigate, `Enter` view output, `Space` multi-select, `x` kill (focused row, or the whole selection), `X` kill all running/queued, `Esc` close
+- **Keys in the overlay:** `↑↓`/`jk` navigate, `Enter` view output (preserves multi-selection on `Esc` back), `Space` multi-select, `x` kill (focused row, or the whole selection — reports inline if no selected jobs are active), `X` kill all running/queued, `Esc` clears active selection first, then closes
 
 ```text
 /async
@@ -164,16 +164,20 @@ Unified session status in one notification: async agents, cron tasks, git branch
 Zero-arg fullscreen task manager overlay for the current session's task list.
 
 - **Arguments:** none
-- **List view:** the same fullscreen list → detail overlay as `/cron` and `/async`: `↑↓`/`j`/`k` navigate, `Space` multi-selects, `Enter` opens a task,
-  `n` adds a task from one line, `e` edits the focused task's subject, `s` starts the focused or selected tasks (`in_progress`), `d` marks the focused or selected tasks done,
-  `f` toggles `mine`/`all`, `x` deletes the focused or selected tasks, `Esc` closes
+- **List view:** the same fullscreen list → detail overlay as `/cron` and `/async`: `↑↓`/`j`/`k` navigate, `Space` multi-selects (preserved across `Enter` → detail → `Esc`), `Enter` opens a task,
+  `n` adds a task from one line, `e` edits the focused task's subject, `s` starts the focused or selected tasks (`in_progress`), `d` marks the focused task (or all selected open tasks) done,
+  `u` reopens the focused or selected completed/in-progress tasks back to `pending`, `f` toggles `mine`/`all`, `x` deletes the focused task (or the `Space`-selected tasks), `Esc` clears an active selection first and closes on the next press. Bulk outcomes and warnings display in an inline banner inside the overlay
 - **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store (`n` and `e` refuse while rows are selected). An empty board opens
   the create dialog directly, since there is no row to press `n` on. `n` asks who the task is for (`you` or `llm`) once the line is accepted. The edit dialog starts
   pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
-- **`d`:** completes the focused task or every `Space`-selected task. On a single task assigned to `you` it opens an optional one-line note dialog first — an empty line
-  completes without a note, `Esc` cancels and changes nothing. Multi-select `d` completes all selected non-completed tasks in place. The outcome is kept on the record
-  (`completionNote`, `completedBy`), and the session receives one message reading `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one
+- **`d`:** completes the focused task, or bulk-completes every selected open task when rows are ticked with `Space` (skipping already-completed tasks and reporting
+  counts inline). When a multi-selection contains only `llm` open tasks, they complete immediately in place with no prompt. When it includes one or more open `you`
+  tasks, it opens one shared optional one-line note dialog for the batch — an empty line completes without a note, `Esc` cancels without modifying tasks or losing
+  the selection, and a non-empty note is saved as `completionNote` on the completed `you` tasks and included in one combined `task-completed-by-user` notice. On a
+  single focused task assigned to `you` it opens the same optional note dialog first, recording `completionNote` and `completedBy`, and sends
+  `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns the result on its next turn
 - **`s`:** moves a focused pending task or all `Space`-selected pending tasks to `in_progress`, refusing open blockers or completed work
+- **`u`:** reopens a focused completed or `in_progress` task (or all `Space`-selected non-pending tasks, both `you` and `llm`) back to `pending`, clearing stale `completedBy`, `completionNote`, and `completed_at`, skipping already-pending tasks, and reporting counts inline
 - **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] [you|llm] <subject>`; a task with currently open blockers is marked `⛔ blocked`.
   Tasks assigned to `you` sort above `[llm]` tasks within their status group
 - **Assignee:** a task is `llm` (the agent does it, the default for every existing task) or `user` (only the owner can — a merge, a live check in a real UI, an approval).

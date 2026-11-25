@@ -32,12 +32,24 @@ function ctx() {
 
 describe("selection kill (x on Space-picked rows)", () => {
   /** The real overlay with a mocked `ctx.ui.custom`, so `x` reaches the real onXSelected. */
-  function ui(keys: string[]) {
+  function ui(opens: string[] | string[][]) {
+    const scripts = Array.isArray(opens[0])
+      ? (opens as string[][])
+      : [[...(opens as string[]), "close"]];
     const notifications: Array<{ message: string; level: string | undefined }> = [];
-    // `close` is fed last so a test that presses a key the overlay ignores still closes.
-    const custom = (<T,>(factory: FakeCustomFactory<T>) => fakeCustom(factory, [...keys, "close"])) satisfies ExtensionUIContext["custom"];
+    const lastFrames: string[] = [];
+    let opened = 0;
+    const custom = (<T,>(factory: FakeCustomFactory<T>) => {
+      const idx = opened++;
+      const keys = scripts[idx] ?? ["close"];
+      return fakeCustom(factory, keys, {
+        onOpen: (comp) => { lastFrames[idx] = (comp.render?.(100) ?? []).join("\n"); },
+        onKey: (_k, _d, comp) => { lastFrames[idx] = (comp.render?.(100) ?? []).join("\n"); },
+      });
+    }) satisfies ExtensionUIContext["custom"];
     return {
       notifications,
+      lastFrames,
       ctx: fakeCommandCtx({
         notify: (message: string, level?: "info" | "warning" | "error") => notifications.push({ message, level }),
         custom,
@@ -69,6 +81,35 @@ describe("selection kill (x on Space-picked rows)", () => {
         level: "warning",
       },
     ]);
+  });
+
+  it("shows an inline notice when x is pressed on a selection of only finished jobs (#1391)", async () => {
+    const h = ui([" ", "j", " ", "x"]);
+    let killCalls = 0;
+    await openAsyncStatusOverlay(
+      h.ctx,
+      deps([job("a", "complete"), job("b", "failed")], () => {
+        killCalls++;
+        return { killed: [], errors: [] };
+      }),
+    );
+    assert.equal(killCalls, 0);
+    assert.deepEqual(h.notifications, [{ message: "No active jobs in selection.", level: "info" }]);
+    assert.match(h.lastFrames[0], /ℹ No active jobs in selection\./);
+  });
+
+  it("preserves multi-selection across Enter -> detail -> Esc (#1391)", async () => {
+    const h = ui([
+      [" ", "j", " ", "\r"],
+      ["\x1b"],
+      ["x", "close"],
+    ]);
+    const killed: string[] = [];
+    await openAsyncStatusOverlay(h.ctx, deps([job("a"), job("b")], (id) => {
+      killed.push(id);
+      return { killed: [`agent-${id}`], errors: [] };
+    }));
+    assert.deepEqual(killed, ["a", "b"]);
   });
 });
 

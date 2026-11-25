@@ -497,7 +497,10 @@ export class TaskStore {
 				if (!task.telemetry) task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
 				if (!task.telemetry.endedAt) task.telemetry.endedAt = now;
 			}
-			if (fields.status === "pending") task.statusHistory.pending_at = isoNow;
+			if (fields.status === "pending") {
+				task.statusHistory.pending_at = isoNow;
+				task.statusHistory.completed_at = null;
+			}
 		}
 		if (fields.subject !== undefined) { task.subject = fields.subject; changedFields.push("subject"); }
 		if (fields.description !== undefined) { task.description = fields.description; changedFields.push("description"); }

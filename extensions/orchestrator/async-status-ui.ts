@@ -11,6 +11,7 @@ import {
   openListDetailOverlay,
   OverlayScrollDetail,
   bulkResultMessage,
+  type OverlayNotify,
 } from "./overlay-dashboard.js";
 import { createLogger } from "../shared/logger.js";
 import { KILL_ORIGIN_LABELS, type AsyncKillOrigin } from "./async-agents.js";
@@ -131,24 +132,26 @@ function elapsedMs(job: AsyncStatusJobView): number {
 export function killAllJobs(
   ctx: ExtensionCommandContext,
   deps: AsyncStatusUiDeps,
+  notify?: OverlayNotify,
 ): void {
+  const emit: OverlayNotify = notify ?? ((msg, level) => { ctx.ui?.notify?.(msg, level); });
   const targets = deps.listJobs().filter((j) => isActive(j.status));
   if (targets.length === 0) {
     log.debug("kill_all: nothing active");
-    ctx.ui?.notify?.("No running async agents to kill.", "info");
+    emit("No running async agents to kill.", "info");
     return;
   }
   const { killed, failed } = killTargets(deps, targets);
   if (failed.length === 0) {
     log.info("kill_all: killed", { count: killed });
-    ctx.ui?.notify?.(
+    emit(
       `Killed ${killed} async agent${killed === 1 ? "" : "s"}.`,
       "info",
     );
     return;
   }
   log.error("kill_all: partially failed", { killed, failed: failed.length });
-  ctx.ui?.notify?.(
+  emit(
     `Killed ${killed} of ${targets.length} async agents — ${failed.length} failed. See logs.`,
     "warning",
   );
@@ -304,21 +307,26 @@ export async function openAsyncStatusOverlay(
         if (isActive(job.status)) deps.killJob(job.id);
       },
       selectable: true,
-      onXSelected: (jobs) => {
+      onXSelected: (jobs, notify) => {
         const targets = jobs.filter((j) => isActive(j.status));
+        if (targets.length === 0) {
+          log.debug("kill_selection: nothing active", { selected: jobs.length });
+          notify("No active jobs in selection.", "info");
+          return;
+        }
         const { killed, failed } = killTargets(deps, targets);
         log.debug("kill_selection", { selected: jobs.length, killed, failed: failed.length });
         // Same honesty as `X`: a selection kill that hid a still-running agent would look like a
         // clean sweep of the rows the user picked.
         if (killed === 0 && failed.length === 0) return;
         log.info("kill_selection: done", { killed, failed: failed.length });
-        ctx.ui?.notify?.(
+        notify(
           bulkResultMessage("killed", "async agent", targets.length, failed),
           failed.length === 0 ? "info" : "warning",
         );
       },
-      onKillAll: () => {
-        void killAllJobs(ctx, deps);
+      onKillAll: (notify) => {
+        void killAllJobs(ctx, deps, notify);
       },
     },
     createDetail: (job, tui, theme, done) => {
