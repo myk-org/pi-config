@@ -287,6 +287,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     const canRearm = () => !durable(task.scope) || (Boolean(task.leader) && owned.has(projectStore(task.cwd)));
     const schedule = (runAt = task.nextRun ?? Date.now() + nextDelay(task), persistRun = true) => {
       const delay = Math.max(0, runAt - Date.now());
+      const armedSchedule = { intervalMs: task.intervalMs, atHour: task.atHour, atMinute: task.atMinute };
       // A pause stored by a peer reaches this replica only through the store, so the CURRENT
       // stored flag is read BEFORE dispatch: a post-run check cannot undo a run (#1087).
       // The tracked handle also fences continuations invalidated while execute() awaits discovery.
@@ -300,6 +301,12 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
           if (beforeRun === "read_error") {
             log.warn("cron_skipped_read_error", { id: qualifyCronId(task), willRearm: canRearm() });
             if (canRearm()) schedule(Date.now() + nextDelay(task), false);
+            return;
+          }
+          if (!sameSchedule(armedSchedule, task)) {
+            log.info("cron_rescheduled_before_fire", { id: qualifyCronId(task) });
+            if (canRearm()) schedule(task.nextRun ?? Date.now() + nextDelay(task), task.nextRun === undefined);
+            else { stop(task.id); updateStatus(); }
             return;
           }
           await execute(task, isCurrent);

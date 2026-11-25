@@ -363,6 +363,24 @@ describe("cron_manage edit (#1381)", () => {
     assert.equal(stored.intervalMs, 300_000);
     assert.equal(stored.nextRun, NOW + 300_000, "re-arm must use the peer's 300s schedule, not the stale 60s one");
   });
+
+  it("re-arms without dispatching when a peer edits the durable schedule before the old timer fires", async () => {
+    const cwd = makeTempDir("pi-cron-edit-pre-fire-");
+    const { h, store } = start(cwd, [projectTask(cwd, { intervalMs: 60_000, nextRun: 1 })]);
+
+    // Peer edits the schedule on disk without triggering watcher reconciliation on this leader.
+    fs.writeFileSync(store, JSON.stringify({
+      version: 1,
+      tasks: [projectTask(cwd, { intervalMs: 300_000, task: "/peer-rescheduled", nextRun: undefined })],
+    }));
+
+    await h.fireActive();
+
+    assert.deepEqual(h.messages, [], "the old occurrence must not dispatch after a schedule edit");
+    assert.equal(h.cron.getCronTasks()[0].intervalMs, 300_000);
+    assert.equal(h.cron.getCronTasks()[0].nextRun, NOW + 300_000);
+    assert.equal(readDurableCronStore(store).tasks[0].nextRun, NOW + 300_000);
+  });
 });
 
 describe("cron_manage pause & resume (#1381)", () => {
