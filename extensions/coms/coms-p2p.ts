@@ -500,7 +500,7 @@ const HEADLESS_PEER_ASK_USER_GUIDANCE =
 
 function isHeadlessOrSupervisedPeer(peerCtx?: ExtensionContext | null): boolean {
 	if (process.env.PI_COMS_SUPERVISED_PEER === "1") return true;
-	if (!peerCtx) return false;
+	if (!peerCtx || !isLiveExtensionCtx(peerCtx)) return false;
 	if (!peerCtx.hasUI) return true;
 	if (peerCtx.mode !== undefined && peerCtx.mode !== "tui") return true;
 	return false;
@@ -667,6 +667,7 @@ export function createComsPeerRuntime(
 	let pingWorkerReady = false;
 	let keepaliveTimer: NodeJS.Timeout | null = null;
 	let staleCheckTimer: NodeJS.Timeout | null = null;
+	const pendingReplyCleanupTimers = new Set<NodeJS.Timeout>();
 	let currentCtx: ExtensionContext | null = null;
 	let currentInbound: InboundContext | null = null;
 	/** Inbound msg_id deferred on agent_end while malformed-response recovery runs (#1333). */
@@ -888,7 +889,8 @@ export function createComsPeerRuntime(
 
 	function isPiStreaming(ctx?: ExtensionContext | null): boolean {
 		const activeCtx = ctx ?? currentCtx;
-		if (typeof activeCtx?.isIdle === "function") {
+		if (!activeCtx || !isLiveExtensionCtx(activeCtx)) return agentRunning;
+		if (typeof activeCtx.isIdle === "function") {
 			return !activeCtx.isIdle();
 		}
 		return agentRunning;
@@ -1086,7 +1088,7 @@ export function createComsPeerRuntime(
 
 	let lastPoolSnapshot = "";
 	function maybeRefreshWidget(): void {
-		if (!currentCtx?.hasUI) return;
+		if (!currentCtx || !isLiveExtensionCtx(currentCtx) || !currentCtx.hasUI) return;
 		const pc = getPendingInboundCount();
 		// Include busy state and pending-reply progress notes in the refresh key
 		// so a progress envelope or busy transition re-renders the pool (#924).
@@ -1101,6 +1103,16 @@ export function createComsPeerRuntime(
 		lastPoolSnapshot = key;
 		emitComsPeers();
 		try { installPoolWidget(currentCtx); } catch {}
+	}
+
+	function schedulePendingReplyCleanup(msgId: string): void {
+		const timer = setTimeout(() => {
+			pendingReplyCleanupTimers.delete(timer);
+			pendingReplies.delete(msgId);
+			maybeRefreshWidget();
+		}, 60_000);
+		timer.unref?.();
+		pendingReplyCleanupTimers.add(timer);
 	}
 
 	// Phase A stub handlers — each just acks valid envelopes. Phase B replaces these.
@@ -1357,7 +1369,7 @@ export function createComsPeerRuntime(
 			// open until its probe timeout.
 			if (env.error === "bundled" || env.error === "queue_cleared" || env.error === "steered") {
 				ackOk(socket, env.msg_id);
-				setTimeout(() => { pendingReplies.delete(env.msg_id); maybeRefreshWidget(); }, 60_000).unref();
+				schedulePendingReplyCleanup(env.msg_id);
 				return;
 			}
 
@@ -1389,7 +1401,7 @@ export function createComsPeerRuntime(
 			} catch { /* best-effort */ }
 
 			// Clean up immediately since response was delivered
-			setTimeout(() => { pendingReplies.delete(env.msg_id); maybeRefreshWidget(); }, 60_000).unref();
+			schedulePendingReplyCleanup(env.msg_id);
 		} else {
 			log.warn("orphan_response", env.msg_id);
 		}
@@ -1397,7 +1409,7 @@ export function createComsPeerRuntime(
 	}
 
 	async function buildAgentCard(snapshot?: { workloadCounts?: PeerWorkloadCounts | null; tasksSummary?: TasksSummary | null }): Promise<AgentCard> {
-		const ctx = currentCtx;
+		const ctx = isLiveExtensionCtx(currentCtx) ? currentCtx : null;
 		const ident = identity;
 		const pct = ctx ? Math.round(ctx.getContextUsage?.()?.percent ?? 0) : 0;
 		log.debug("build_agent_card", { hasIdentity: !!ident });
@@ -2041,7 +2053,7 @@ export function createComsPeerRuntime(
 		}
 
 		// 7. Start timers (skip in one-shot modes).
-		if (ctx.mode !== "print" && ctx.mode !== "json") {
+		if (isLiveExtensionCtx(ctx) && ctx.mode !== "print" && ctx.mode !== "json") {
 
 		// Seed peerCards from existing registry entries
 		const existingPeers = registry.readEntries(project);
@@ -2502,7 +2514,7 @@ Do not respond to this message.`;
 	}
 
 	function installPoolWidget(ctx: ExtensionContext): void {
-		if (!ctx.hasUI || !isLiveExtensionCtx(ctx)) return;
+		if (!isLiveExtensionCtx(ctx) || !ctx.hasUI) return;
 		try {
 			ctx.ui.setWidget("coms-pool", (_tui, theme) => ({
 				invalidate() {},
@@ -2755,7 +2767,7 @@ Do not respond to this message.`;
 			// Clean up timed-out entry from both maps
 			const pSet = pendingOutbound.get(target.name);
 			if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
-			setTimeout(() => { pendingReplies.delete(msg_id); maybeRefreshWidget(); }, 60_000).unref();
+			schedulePendingReplyCleanup(msg_id);
 		}, timeoutMs);
 		// Don't keep the event loop alive solely for this timer.
 		try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
@@ -3930,14 +3942,15 @@ Do not respond to this message.`;
 		if (ctx) currentCtx = ctx;
 		const activeCtx = ctx ?? currentCtx;
 		if (!identity || !isHeadlessOrSupervisedPeer(activeCtx)) return;
+		const liveActiveCtx = isLiveExtensionCtx(activeCtx) ? activeCtx : null;
 		const opts = event?.systemPromptOptions;
 		const sections = opts?.sections;
 		if (opts?.forceSystemPrompt === undefined && sections && typeof sections === "object") {
 			sections.coms_headless_peer = HEADLESS_PEER_ASK_USER_GUIDANCE;
 			log.debug("headless_peer_guidance_injected", {
 				target: "section",
-				mode: activeCtx?.mode ?? null,
-				hasUI: activeCtx?.hasUI ?? null,
+				mode: liveActiveCtx?.mode ?? null,
+				hasUI: liveActiveCtx?.hasUI ?? null,
 				supervised: process.env.PI_COMS_SUPERVISED_PEER === "1",
 			});
 			return;
@@ -3945,8 +3958,8 @@ Do not respond to this message.`;
 		if (typeof event?.systemPrompt === "string") {
 			log.debug("headless_peer_guidance_injected", {
 				target: "systemPrompt",
-				mode: activeCtx?.mode ?? null,
-				hasUI: activeCtx?.hasUI ?? null,
+				mode: liveActiveCtx?.mode ?? null,
+				hasUI: liveActiveCtx?.hasUI ?? null,
 				supervised: process.env.PI_COMS_SUPERVISED_PEER === "1",
 			});
 			return { systemPrompt: `${event.systemPrompt}\n\n${HEADLESS_PEER_ASK_USER_GUIDANCE}` };
@@ -4509,12 +4522,20 @@ Do not respond to this message.`;
 		try { pi.events.emit("pidash:coms-identity", { name: null, purpose: null }); } catch {}
 		const ident = identity; // snapshot before nulling
 		const shutdownCtx = currentCtx;
+		currentCtx = null;
 		identity = null; // null identity so old handlers from previous reload cycles exit via !identity check
 		if (fsWatcher) { try { fsWatcher.close(); } catch { /* ignore */ } fsWatcher = null; }
 		if (keepaliveTimer) { try { clearInterval(keepaliveTimer); } catch { /* ignore */ } keepaliveTimer = null; }
 		if (staleCheckTimer) { try { clearInterval(staleCheckTimer); } catch { /* ignore */ } staleCheckTimer = null; }
 		if (taskHeartbeatTimer) { try { clearInterval(taskHeartbeatTimer); } catch { /* ignore */ } taskHeartbeatTimer = null; }
 		if (progressSignalTimer) { try { clearInterval(progressSignalTimer); } catch { /* ignore */ } progressSignalTimer = null; }
+		if (pendingReplyCleanupTimers.size > 0) {
+			log.debug("pending_reply_cleanup_timers_cleared", { count: pendingReplyCleanupTimers.size });
+		}
+		for (const timer of pendingReplyCleanupTimers) {
+			try { clearTimeout(timer); } catch { /* ignore */ }
+		}
+		pendingReplyCleanupTimers.clear();
 		// Broadcast "leaving" presence to all known peers (fire-and-forget)
 		if (ident) {
 			let fallbackEntries: RegistryEntry[] | null = null;
@@ -4656,7 +4677,7 @@ Do not respond to this message.`;
 		recoverySessionKey = DEFAULT_BRIDGE_SESSION_KEY;
 		deferredRecoveryInboundId = null;
 		deferredRecoveryCtx = null;
-		if (shutdownCtx?.hasUI) {
+		if (shutdownCtx && isLiveExtensionCtx(shutdownCtx) && shutdownCtx.hasUI) {
 			try { shutdownCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
 			try { shutdownCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }
 		}
