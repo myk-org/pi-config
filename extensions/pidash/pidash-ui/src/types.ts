@@ -1,5 +1,23 @@
-import type { SessionInfo } from "../../../shared/types.ts";
-export type { SessionInfo };
+import type {
+  ChatMessage,
+  MessageRole,
+  PendingUiRequestPayload,
+  SessionCommandInfo,
+  SessionInfo,
+  SessionLiveState,
+  SessionSnapshotPayload,
+  TokenUsage,
+} from "../../../shared/types.ts";
+export type {
+  ChatMessage,
+  MessageRole,
+  PendingUiRequestPayload,
+  SessionCommandInfo,
+  SessionInfo,
+  SessionLiveState,
+  SessionSnapshotPayload,
+  TokenUsage,
+};
 
 export interface PiEvent {
   type: string;
@@ -40,15 +58,16 @@ export interface PiEvent {
   agentName?: string;
   resultText?: string;
   partialResult?: { content?: Array<{ type: string; text: string }> };
-}
-
-export interface TokenUsage {
-  input: number;
-  output: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-  totalTokens?: number;
-  reasoning?: number;
+  // session_snapshot fields
+  messages?: ChatMessage[];
+  live?: SessionLiveState;
+  model?: string;
+  tokens?: TokenUsage | null;
+  streaming?: boolean;
+  queuedCount?: number;
+  streamingBehavior?: string | null;
+  availableCommands?: SessionCommandInfo[];
+  pendingUiRequests?: PendingUiRequestPayload[];
 }
 
 export interface NotificationPreferences {
@@ -58,28 +77,6 @@ export interface NotificationPreferences {
   sessionError: boolean;
   toolComplete: boolean;
   inputNeeded: boolean;
-}
-
-export type MessageRole = "user" | "assistant" | "tool" | "thinking" | "system";
-
-export interface ChatMessage {
-  id: string;
-  role: MessageRole;
-  text: string;
-  className?: string;
-  timestamp?: number;
-  meta?: {
-    turns?: number;
-    input?: number;
-    output?: number;
-    cacheRead?: number;
-    contextTokens?: number;
-    model?: string;
-    startTs?: number;
-    endTs?: number;
-    cost?: number;
-    callId?: string;
-  };
 }
 
 // ── #968 parity surfaces ──────────────────────────────────────────

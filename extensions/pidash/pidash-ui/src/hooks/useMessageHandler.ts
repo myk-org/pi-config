@@ -595,6 +595,71 @@ export function useMessageHandler(
       for (const item of batch) handleEvent(item);
     };
     const handleEvent = (ev: PiEvent) => {
+      if (ev.type === "session_snapshot") {
+        if (ev.sessionId && sessionRef.current?.sessionId && ev.sessionId !== sessionRef.current.sessionId) {
+          log.debug("stale session_snapshot ignored", {
+            snapshotSessionId: ev.sessionId,
+            watchedSessionId: sessionRef.current.sessionId,
+          });
+          return;
+        }
+        if (deltaRafRef.current !== null) {
+          cancelFrame(deltaRafRef.current);
+          deltaRafRef.current = null;
+        }
+        dirtyDeltaRef.current = { think: false, assist: false };
+        replaying = false;
+        replayBuffer.length = 0;
+
+        const hydrated: ChatMessage[] = Array.isArray(ev.messages)
+          ? ev.messages.map((m) => (m.meta ? { ...m, meta: { ...m.meta } } : { ...m }))
+          : [];
+        if (Array.isArray(ev.pendingUiRequests)) {
+          for (const req of ev.pendingUiRequests) {
+            if (!req?.id || (req.method !== "select" && req.method !== "confirm" && req.method !== "input")) {
+              continue;
+            }
+            const prefix = `ask|${req.id}|`;
+            if (hydrated.some((m) => Boolean(m.className?.startsWith(prefix)))) continue;
+            const title = req.title || "Input needed";
+            const opts = req.method === "confirm" ? ["Yes", "No"] : req.options || [];
+            hydrated.push({
+              id: nextId(),
+              role: "ask_user" as any,
+              text: `${title}${req.message ? "\n" + req.message : ""}`,
+              className: `${prefix}${req.method}|${opts.join("|||")}`,
+              timestamp: req.timestamp ?? Date.now(),
+            });
+          }
+        }
+
+        messagesRef.current = hydrated;
+        setMessages(hydrated);
+
+        thinkRef.current = ev.live?.think ? { ...ev.live.think } : { id: "", text: "", startTs: 0 };
+        assistRef.current = ev.live?.assist ? { ...ev.live.assist } : { id: "", text: "" };
+        toolRef.current = ev.live?.tool ? { ...ev.live.tool } : { id: "", name: "", startTs: 0, callId: "" };
+        lastUserRef.current = ev.live?.lastUserText || "";
+        asyncMsgRef.current = new Map(
+          Object.entries(ev.live?.asyncMsgs ?? {}).map(([id, entry]) => [id, { ...entry }]),
+        );
+
+        setModel(ev.model || sessionRef.current?.model || "");
+        setTokens(ev.tokens ? { ...ev.tokens } : null);
+        setStreaming(Boolean(ev.streaming));
+        setQueuedCount(typeof ev.queuedCount === "number" ? ev.queuedCount : 0);
+        setStreamingBehavior(ev.streamingBehavior ?? null);
+        if (Array.isArray(ev.availableCommands)) {
+          setAvailableCommands(ev.availableCommands);
+        }
+        log.debug("session_snapshot applied", {
+          sessionId: ev.sessionId,
+          messages: hydrated.length,
+          pendingUi: ev.pendingUiRequests?.length ?? 0,
+          streaming: Boolean(ev.streaming),
+        });
+        return;
+      }
       if (ev.type === "replay_start") {
         flushLiveDeltas();
         replaying = true;

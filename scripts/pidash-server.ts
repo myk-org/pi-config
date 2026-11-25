@@ -14,13 +14,16 @@ import { createRequire } from "node:module";
 import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import {
+  applyEventToViewState,
   clearPendingUiRequests,
   disconnectPidashSession,
+  dismissAllViewAsks,
   forwardBrowserUiResponse,
   isInteractiveUiRequest,
   processPiPendingUiEvent,
   registerPidashSession,
-  replayClientToWatcher,
+  resetSessionViewState,
+  sendSessionSnapshot,
   updatePidashSession,
   type PiClient,
 } from "./pidash-session-state.ts";
@@ -90,7 +93,10 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
   }
 
   if (parsed.type === "update_info" && piClient) {
-    if (parsed.model !== undefined) piClient.session.model = parsed.model;
+    if (parsed.model !== undefined) {
+      piClient.session.model = parsed.model;
+      piClient.viewState.model = parsed.model;
+    }
     if (typeof parsed.reasoning === "boolean") piClient.session.reasoning = parsed.reasoning;
     if (typeof parsed.supportsImages === "boolean") piClient.session.supportsImages = parsed.supportsImages;
     if (parsed.branch !== undefined) piClient.session.branch = parsed.branch;
@@ -121,7 +127,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     piClient.session.activityBeforePrompt = undefined;
     piClient.session.streaming = false;
     piClient.session.working = false;
-    piClient.eventBuffer.length = 0; // Clear buffer to prevent cross-session replay
+    resetSessionViewState(piClient); // Clear viewState to prevent cross-session leakage
     clearPendingUiRequests(piClient);
     broadcastToBrowsers({ type: "session_updated", session: piClient.session });
     log(`session switched: ${piClient.session.sessionId}, cwd: ${parsed.cwd}`);
@@ -130,6 +136,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
 
   if (parsed.type === "session_shutdown" && piClient) {
     const reason = parsed.reason || "unknown";
+    dismissAllViewAsks(piClient.viewState);
     clearPendingUiRequests(piClient);
     log(`session shutdown: ${piClient.session.sessionId}, reason: ${reason}`);
     sendToWatchers(piClient.session.sessionId, {
@@ -183,6 +190,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
         piClient.session.activityBeforePrompt = next.activityBeforePrompt;
         piClient.session.streaming = next.streaming;
         piClient.session.working = next.activity === "working";
+        piClient.viewState.streaming = next.streaming;
         activityLog.info(`activity transition: session=${piClient.session.sessionId} ${previous.activity}->${next.activity} sequence=${next.sequence}`);
         broadcastToBrowsers({ type: "session_updated", session: piClient.session });
       }
@@ -307,13 +315,13 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
   },
 
   onBrowserWatch: (ws, watchId, client) => {
-    // Replay buffered events
+    // Emit single canonical session_snapshot frame instead of replaying raw deltas
     if (client) {
-      const { bufferedCount, pendingCount } = replayClientToWatcher(ws, client);
+      const { messageCount, pendingCount } = sendSessionSnapshot(ws, client);
       if (pendingCount > 0) {
-        log(`replayed ${bufferedCount} events + ${pendingCount} pending UI request(s) for ${watchId}`);
+        log(`sent session_snapshot (${messageCount} messages + ${pendingCount} pending UI request(s)) for ${watchId}`);
       } else {
-        log(`replayed ${bufferedCount} events for ${watchId}`);
+        log(`sent session_snapshot (${messageCount} messages) for ${watchId}`);
       }
     }
     return watchId;  // pidash stores just the sessionId string
@@ -355,48 +363,64 @@ function handleAsyncConnection(ws: any) {
           cwd: parsed.cwd,
           sessionId: parsed.sessionId,
         });
-        broadcastToBrowsers({
+        const asyncStartEvent = {
           type: "async_agent_start",
           id: parsed.id,
           agent: parsed.agent,
           task: parsed.task,
           cwd: parsed.cwd,
           sessionId: parsed.sessionId,
-        });
+        };
+        const target = parsed.sessionId ? piClients.get(parsed.sessionId) : undefined;
+        if (target) applyEventToViewState(target, asyncStartEvent);
+        broadcastToBrowsers(asyncStartEvent);
         return;
       }
 
       if (parsed.type === "async_event" && parsed.id) {
         log(`async event from ${parsed.id}: ${parsed.event?.type}`);
-        broadcastToBrowsers({
+        const sessionId = asyncAgents.get(parsed.id)?.sessionId;
+        const asyncProgressEvent = {
           type: "async_agent_event",
           id: parsed.id,
           event: parsed.event,
-          sessionId: asyncAgents.get(parsed.id)?.sessionId,
-        });
+          sessionId,
+        };
+        const target = sessionId ? piClients.get(sessionId) : undefined;
+        if (target) applyEventToViewState(target, asyncProgressEvent);
+        broadcastToBrowsers(asyncProgressEvent);
         return;
       }
 
       if (parsed.type === "async_complete" && parsed.id) {
-        broadcastToBrowsers({
+        const sessionId = asyncAgents.get(parsed.id)?.sessionId;
+        const asyncCompleteEvent = {
           type: "async_agent_complete",
           id: parsed.id,
           success: parsed.success,
-          sessionId: asyncAgents.get(parsed.id)?.sessionId,
-        });
+          sessionId,
+        };
+        const target = sessionId ? piClients.get(sessionId) : undefined;
+        if (target) applyEventToViewState(target, asyncCompleteEvent);
+        broadcastToBrowsers(asyncCompleteEvent);
         asyncAgents.delete(parsed.id);
         return;
       }
     } catch (e: any) { log(`async message error: ${e.message}`); }
   });
 
-  ws.on("close", () => {
-    if (agentId) asyncAgents.delete(agentId);
-  });
+  const cleanupAsyncAgent = () => {
+    if (!agentId) return;
+    const info = asyncAgents.get(agentId);
+    if (info?.sessionId) {
+      const target = piClients.get(info.sessionId);
+      if (target) target.viewState.asyncMsgs.delete(agentId);
+    }
+    asyncAgents.delete(agentId);
+  };
 
-  ws.on("error", () => {
-    if (agentId) asyncAgents.delete(agentId);
-  });
+  ws.on("close", cleanupAsyncAgent);
+  ws.on("error", cleanupAsyncAgent);
 }
 asyncWss.on("connection", handleAsyncConnection);
 
