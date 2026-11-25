@@ -1029,4 +1029,37 @@ describe("streaming tool-call incremental JSON assembly (#1191)", () => {
 		});
 		expect(doneEvent?.message.usage.cost.total).toBeGreaterThan(0);
 	});
+
+	it("accepts a TranscriptContext branded by a separate @earendil-works/pi-ai copy (#1394)", async () => {
+		process.env.GOOGLE_CLOUD_PROJECT = "stream-test-project";
+		process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+
+		const foreignBrand = Symbol("foreignTranscriptContextBrand");
+		type ForeignTranscriptContext = {
+			messages: TranscriptContext["messages"];
+			readonly [foreignBrand]: true;
+		};
+		// Compile-time guard: streamVertexClaude must stay assignable to a ProviderConfig.streamSimple
+		// expecting a TranscriptContext branded by a different module copy of @earendil-works/pi-ai.
+		const asForeignProviderStream: (
+			m: Parameters<typeof streamVertexClaude>[0],
+			c: ForeignTranscriptContext,
+			o?: Parameters<typeof streamVertexClaude>[2],
+		) => ReturnType<typeof streamVertexClaude> = streamVertexClaude;
+
+		vertexMock.events = [
+			{ type: "message_start", message: { usage: { input_tokens: 5, output_tokens: 0 } } },
+			{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
+		];
+
+		const foreignContext: ForeignTranscriptContext = {
+			messages: [{ role: "user", content: "hi", timestamp: 1 }],
+			[foreignBrand]: true,
+		};
+		let doneEvent: any;
+		for await (const ev of asForeignProviderStream(model as any, foreignContext)) {
+			if (ev.type === "done") doneEvent = ev;
+		}
+		expect(doneEvent?.type).toBe("done");
+	});
 });
