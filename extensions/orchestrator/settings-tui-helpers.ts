@@ -216,7 +216,7 @@ export function resolveModelPickerItems(
       });
     }
     qualified.sort((a, b) => a.value.localeCompare(b.value));
-    if (qualified.length > 0 && normalizedCurrent === "") {
+    if (qualified.length > 0) {
       qualified.unshift({
         value: "",
         label: "(inherit session model)",

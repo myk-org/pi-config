@@ -267,6 +267,39 @@ describe("advisor / watchdog (#1419)", () => {
       assert.equal(submitted, "google/gemini-2.5-flash");
     });
 
+    it("allows clearing a configured advisor_model back to session inheritance via the picker", () => {
+      writeProjectSettings({ advisor_model: "google/gemini-2.5-flash" });
+      const reviewIdx = CATEGORIES.findIndex((c) => c.keys.includes("advisor_model"));
+      assert.ok(reviewIdx >= 0);
+
+      const items = buildCategoryItems(reviewIdx, tmpRoot, "project", stubTheme, undefined, {
+        getProviderModelInfo: () => ({
+          providers: [
+            { value: "anthropic", label: "anthropic" },
+            { value: "google", label: "google" },
+          ],
+          models: [
+            { value: "claude-sonnet-4-5", label: "claude-sonnet-4-5", description: "anthropic" },
+            { value: "gemini-2.5-flash", label: "gemini-2.5-flash", description: "google" },
+          ],
+        }),
+      });
+
+      const advisorItem = items.find((i) => i.id === "advisor_model");
+      assert.ok(advisorItem?.submenu);
+
+      let submitted: string | undefined = "sentinel";
+      const submenu = advisorItem.submenu!("google/gemini-2.5-flash", (val) => {
+        submitted = val;
+      });
+      // List order: [0]="", [1]="anthropic/claude-sonnet-4-5", [2]="google/gemini-2.5-flash"
+      // Navigate up twice from index 2 to index 0 ("(inherit session model)") and press Enter.
+      submenu.handleInput?.("\x1b[A");
+      submenu.handleInput?.("\x1b[A");
+      submenu.handleInput?.("\r");
+      assert.equal(submitted, "");
+    });
+
     it("emits zero advisor rule text in rules/20-code-review-loop.md when advisor_enabled is false", () => {
       const ruleText = readFileSync("rules/20-code-review-loop.md", "utf8");
       const rendered = evaluateConditionalBlocks(ruleText, () => false, {
@@ -422,6 +455,12 @@ describe("advisor / watchdog (#1419)", () => {
       assert.deepEqual(
         parseAdvisorResponse('Assessment: {"status":"advise","category":"drift","note":"Wrong target file."}'),
         { status: "advise", category: "drift", note: "Wrong target file." },
+      );
+      assert.deepEqual(
+        parseAdvisorResponse(
+          '{"meta":{"turns":3}} {"status":"advise","category":"bug","note":"Off-by-one loop bound."}',
+        ),
+        { status: "advise", category: "bug", note: "Off-by-one loop bound." },
       );
     });
   });

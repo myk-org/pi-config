@@ -364,9 +364,12 @@ export function registerMagicKeywords(pi: ExtensionAPI): void {
     return fresh;
   };
 
-  const emitTransientBoundary = (eventName: "providers:transient-thinking-start" | "providers:transient-thinking-end"): void => {
+  const emitTransientBoundary = (
+    eventName: "providers:transient-thinking-start" | "providers:transient-thinking-end",
+    modelKey: string | undefined,
+  ): void => {
     try {
-      pi.events?.emit?.(eventName, {});
+      pi.events?.emit?.(eventName, { model: modelKey });
     } catch {
       // Event bus is optional in minimal harnesses.
     }
@@ -399,7 +402,7 @@ export function registerMagicKeywords(pi: ExtensionAPI): void {
     const active = state.activeOverride;
     if (!active) return;
     state.activeOverride = null;
-    emitTransientBoundary("providers:transient-thinking-end");
+    emitTransientBoundary("providers:transient-thinking-end", active.modelKey);
 
     const currentModelKey = modelThinkingKey(ctx?.model);
     if (active.modelKey !== undefined && currentModelKey !== undefined && currentModelKey !== active.modelKey) {
@@ -496,7 +499,7 @@ export function registerMagicKeywords(pi: ExtensionAPI): void {
             appliedLevel: targetLevel,
             modelKey,
           };
-          emitTransientBoundary("providers:transient-thinking-start");
+          emitTransientBoundary("providers:transient-thinking-start", modelKey);
           log.info("magic_keyword_applied", {
             keyword: match.keyword,
             from: currentLevel,

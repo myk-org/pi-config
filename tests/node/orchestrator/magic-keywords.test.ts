@@ -578,5 +578,41 @@ describe("magic-keywords (#1418)", () => {
         else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
       }
     });
+
+    it("applies the newly selected model's saved thinking level when switching models during a keyword turn", async () => {
+      const statePath = join(tmpRoot, "last-thinking-level.json");
+      const otherModel = {
+        id: "claude-sonnet",
+        provider: "anthropic",
+        reasoning: true,
+        thinkingLevelMap: { max: "max" },
+      };
+      saveModelThinkingLevel(modelThinkingKey(reasoningModel)!, "medium", statePath);
+      saveModelThinkingLevel(modelThinkingKey(otherModel)!, "low", statePath);
+
+      const { pi, fire, getLevel } = createMockPi("medium");
+      registerSessionRestore(pi, { thinkingStatePath: statePath, argv: [] });
+      registerMagicKeywords(pi);
+
+      const ctx: any = {
+        cwd: tmpRoot,
+        model: reasoningModel,
+        sessionManager: { getSessionId: () => "s-model-switch", getEntries: () => [{ type: "message" }] },
+      };
+      await fire("session_start", { reason: "startup" }, ctx);
+
+      // Start an ultrathink turn on reasoningModel -> rises to max
+      await fire("before_agent_start", { messageType: "user", prompt: "ultrathink on model A" }, ctx);
+      assert.equal(getLevel(), "max");
+
+      // User switches to otherModel mid-turn -> otherModel's saved "low" preference MUST apply immediately
+      ctx.model = otherModel;
+      await fire("model_select", { model: otherModel, source: "cycle" }, ctx);
+      assert.equal(getLevel(), "low");
+
+      // Ending the original turn must not overwrite otherModel's restored preference
+      await fire("turn_end", { outcome: "completed", continue: false }, ctx);
+      assert.equal(getLevel(), "low");
+    });
   });
 });

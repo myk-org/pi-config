@@ -359,13 +359,14 @@ function parseAdvisorVerdictObject(parsed: unknown): AdvisorVerdict | null {
   return null;
 }
 
-/** Extract the first balanced `{ ... }` JSON object from mixed text (string/escape aware). */
-function extractEmbeddedJsonObject(text: string): unknown | null {
+/** Scan all balanced `{ ... }` JSON objects in mixed text until a valid advisor verdict is found. */
+function extractEmbeddedAdvisorVerdict(text: string): AdvisorVerdict | null {
   let start = text.indexOf("{");
   while (start !== -1) {
     let depth = 0;
     let inString = false;
     let escaped = false;
+    let nextSearchFrom = start + 1;
     for (let i = start; i < text.length; i += 1) {
       const ch = text[i]!;
       if (inString) {
@@ -387,14 +388,18 @@ function extractEmbeddedJsonObject(text: string): unknown | null {
         if (depth === 0) {
           const candidate = text.slice(start, i + 1);
           try {
-            return JSON.parse(candidate);
+            const parsed = JSON.parse(candidate) as unknown;
+            const verdict = parseAdvisorVerdictObject(parsed);
+            if (verdict) return verdict;
+            nextSearchFrom = i + 1;
           } catch {
-            break;
+            // Malformed slice — advance past the opening brace to try inner objects.
           }
+          break;
         }
       }
     }
-    start = text.indexOf("{", start + 1);
+    start = text.indexOf("{", nextSearchFrom);
   }
   return null;
 }
@@ -426,10 +431,9 @@ export function parseAdvisorResponse(rawText: string): AdvisorVerdict {
     // Fall through to embedded JSON extraction.
   }
 
-  const embedded = extractEmbeddedJsonObject(unfenced);
-  if (embedded !== null) {
-    const verdict = parseAdvisorVerdictObject(embedded);
-    if (verdict) return verdict;
+  const embeddedVerdict = extractEmbeddedAdvisorVerdict(unfenced);
+  if (embeddedVerdict !== null) {
+    return embeddedVerdict;
   }
 
   log.debug("advisor_response_unparseable", { chars: trimmed.length });
