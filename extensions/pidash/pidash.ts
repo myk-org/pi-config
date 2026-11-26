@@ -666,8 +666,8 @@ export function registerPidash(
           const result = await pruneWorktreesOp(cwd, {
             onWorktreesChanged: () => { pi.events.emit("orchestrator:worktrees-changed", { source: "pidash" }); },
           });
-          client.send({ type: "worktrees-op-result", requestId: parsed.requestId, ...result });
           if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
+          client.send({ type: "worktrees-op-result", requestId: parsed.requestId, ...result });
           const payload = await loadWorktreesPayload(cwd, { forceRefresh: true });
           if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
           if (!payload.error) {
@@ -694,8 +694,8 @@ export function registerPidash(
           const result = await removeWorktreesOp(cwd, targetPaths, {
             onWorktreesChanged: () => { pi.events.emit("orchestrator:worktrees-changed", { source: "pidash" }); },
           });
-          client.send({ type: "worktrees-op-result", requestId: parsed.requestId, ...result });
           if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
+          client.send({ type: "worktrees-op-result", requestId: parsed.requestId, ...result });
           const payload = await loadWorktreesPayload(cwd, { forceRefresh: true });
           if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
           if (!payload.error) {
@@ -722,7 +722,7 @@ export function registerPidash(
 
   // ── Shared daemon client adapter ───────────────────────────────────
 
-  const client = createDaemonClient<{ git: GitStatus; worktrees: WorktreeSummary }>(pi, {
+  const client = createDaemonClient<{ git: GitStatus; worktrees: WorktreeSummary | null }>(pi, {
     name: "pidash",
     settingKey: "pidash_enable",
     statusKey: "9-pidash",
@@ -748,16 +748,19 @@ export function registerPidash(
         getWorktreeSummary(ctx.cwd, { includeDirty: true }),
       ]);
       if (startEpoch !== sessionEpoch) return { abort: true };
-      lastWorktreeDirtyScanAt = Date.now();
+      if (worktrees !== null) {
+        lastWorktreeDirtyScanAt = Date.now();
+      }
       return { data: { git, worktrees } };
     },
 
     onOpen(wsClient, ctx, _port, initial) {
       const thisConnectionGeneration = ++connectionGeneration;
       const resolvedGit = initial?.git ?? { branch: "", dirty: false, changes: 0 };
-      const resolvedWorktrees = initial?.worktrees ?? { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
+      const initialWorktrees = initial?.worktrees ?? null;
       lastGitStatus = resolvedGit;
-      lastWorktreeSummary = resolvedWorktrees;
+      lastWorktreeSummary = initialWorktrees;
+      const regWorktrees = initialWorktrees ?? { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
       const m = ctx.model;
       let thinking = "medium";
       try {
@@ -772,9 +775,9 @@ export function registerPidash(
         branch: resolvedGit.branch,
         gitDirty: resolvedGit.dirty,
         gitChanges: resolvedGit.changes,
-        worktreeCount: resolvedWorktrees.worktreeCount,
-        worktreeDirtyCount: resolvedWorktrees.worktreeDirtyCount,
-        inLinkedWorktree: resolvedWorktrees.inLinkedWorktree,
+        worktreeCount: regWorktrees.worktreeCount,
+        worktreeDirtyCount: regWorktrees.worktreeDirtyCount,
+        inLinkedWorktree: regWorktrees.inLinkedWorktree,
         container: isContainer(),
         model: m?.name || m?.id || "",
         reasoning: m?.reasoning === true,
@@ -1120,17 +1123,17 @@ export function registerPidash(
           nextGitStatus: git,
         });
         const stillValid = !client.shuttingDown && client.connected && client.ws === activeWs && startEpoch === sessionEpoch;
-        if (stillValid && shouldScanDirty) {
+        if (stillValid && shouldScanDirty && wtSummary !== null) {
           lastWorktreeDirtyScanAt = now;
         }
-        const wtChanged = stillValid && !worktreeSummaryEqual(lastWorktreeSummary, wtSummary);
+        const wtChanged = stillValid && wtSummary !== null && !worktreeSummaryEqual(lastWorktreeSummary, wtSummary);
         if (!gitChanged && !wtChanged) return;
         if (gitChanged) lastGitStatus = git;
-        if (wtChanged) lastWorktreeSummary = wtSummary;
+        if (wtChanged && wtSummary !== null) lastWorktreeSummary = wtSummary;
         activeWs.send(JSON.stringify({
           type: "update_info",
           ...(gitChanged ? { branch: git.branch, gitDirty: git.dirty, gitChanges: git.changes } : {}),
-          ...(wtChanged ? {
+          ...(wtChanged && wtSummary !== null ? {
             worktreeCount: wtSummary.worktreeCount,
             worktreeDirtyCount: wtSummary.worktreeDirtyCount,
             inLinkedWorktree: wtSummary.inLinkedWorktree,
@@ -1198,7 +1201,7 @@ export function registerPidash(
       void (async () => {
         try {
           const wtSummary = await getWorktreeSummary(switchCtx.cwd, { includeDirty: true });
-          if (client.shuttingDown || !client.connected || switchEpoch !== sessionEpoch) return;
+          if (client.shuttingDown || !client.connected || switchEpoch !== sessionEpoch || wtSummary === null) return;
           lastWorktreeDirtyScanAt = Date.now();
           publishWorktreeSummary(wtSummary, switchEpoch);
         } catch (e: any) {

@@ -215,6 +215,8 @@ export function worktreeSummaryEqual(a: WorktreeSummary | null, b: WorktreeSumma
  * to avoid spawning git in single-checkout repositories. When `includeDirty` is false
  * (the 10s periodic tick), avoids spawning `git status` across every worktree and
  * preserves `fallbackDirtyCount` (clamped when no linked worktrees exist).
+ * Returns `null` on a failed git listing so callers retain the last valid summary
+ * instead of overwriting the badge with zeros.
  */
 export async function getWorktreeSummary(
   cwd: string,
@@ -223,7 +225,7 @@ export async function getWorktreeSummary(
     includeDirty?: boolean;
     fallbackDirtyCount?: number;
   } = {},
-): Promise<WorktreeSummary> {
+): Promise<WorktreeSummary | null> {
   const checkPresence = deps.hasLinkedWorktreesHint ?? detectWorktreePresence;
   const includeDirty = deps.includeDirty ?? false;
   try {
@@ -236,7 +238,8 @@ export async function getWorktreeSummary(
       runGitAsync: deps.runGitAsync,
     });
     if (!listed.ok) {
-      return { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
+      log.debug("worktree_summary_git_failed", { cwd, error: listed.error });
+      return null;
     }
     const entries = listed.entries;
     const worktreeCount = countLinkedWorktrees(entries);
@@ -252,7 +255,7 @@ export async function getWorktreeSummary(
     };
   } catch (e: any) {
     log.debug("worktree_summary_failed", { cwd, error: e?.message || String(e) });
-    return { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
+    return null;
   }
 }
 

@@ -238,6 +238,33 @@ describe("browser-ops worktrees (#1427)", () => {
     });
     assert.equal(emptyOk.error, undefined);
     assert.equal(emptyOk.worktrees.length, 0);
+
+    // Real git subprocess under a non-English locale must force LC_ALL=C / LANGUAGE=C
+    // so a non-git directory returns empty list rather than a localized fatal error.
+    const nonGitDir = makeTempDir("pidash-non-git-locale-");
+    const prevLang = process.env.LANG;
+    const prevLcMessages = process.env.LC_MESSAGES;
+    const prevLcAll = process.env.LC_ALL;
+    const prevLanguage = process.env.LANGUAGE;
+    try {
+      process.env.LANG = "de_DE.UTF-8";
+      process.env.LC_MESSAGES = "de_DE.UTF-8";
+      process.env.LC_ALL = "de_DE.UTF-8";
+      process.env.LANGUAGE = "de";
+      const realNonGit = await loadWorktreesPayload(nonGitDir, {
+        forceRefresh: true,
+        includePrs: false,
+        deps: { readLivePeers: () => [] },
+      });
+      assert.equal(realNonGit.error, undefined, "non-git directory should not report error under non-English locale");
+      assert.equal(realNonGit.worktrees.length, 0);
+    } finally {
+      if (prevLang === undefined) delete process.env.LANG; else process.env.LANG = prevLang;
+      if (prevLcMessages === undefined) delete process.env.LC_MESSAGES; else process.env.LC_MESSAGES = prevLcMessages;
+      if (prevLcAll === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = prevLcAll;
+      if (prevLanguage === undefined) delete process.env.LANGUAGE; else process.env.LANGUAGE = prevLanguage;
+      rmSync(nonGitDir, { recursive: true, force: true });
+    }
   });
 
   it("pruneWorktreesOp runs git worktree prune -v and fires onWorktreesChanged", async () => {
@@ -361,9 +388,17 @@ describe("browser-ops worktrees (#1427)", () => {
     });
     assert.ok(statusCalls.length > 0);
     assert.deepEqual(sFull, { worktreeCount: 4, worktreeDirtyCount: 1, inLinkedWorktree: true });
-    assert.equal(worktreeSummaryEqual(null, sFull), false);
+    assert.equal(worktreeSummaryEqual(null, sFull!), false);
     assert.equal(worktreeSummaryEqual(sFull, { worktreeCount: 4, worktreeDirtyCount: 1, inLinkedWorktree: true }), true);
     assert.equal(worktreeSummaryEqual(sFull, { worktreeCount: 4, worktreeDirtyCount: 2, inLinkedWorktree: true }), false);
+
+    // Failed git listing returns null so callers retain the last valid badge instead of erasing it
+    const sFailed = await getWorktreeSummary(WT_CLEAN, {
+      hasLinkedWorktreesHint: () => true,
+      includeDirty: true,
+      runGitAsync: async () => ({ stdout: "", stderr: "fatal: transient lock error", code: 128 }),
+    });
+    assert.equal(sFailed, null, "failed git listing must return null rather than zero counts");
   });
 
   it("end-to-end against a real temporary git repo: list, detail, reject dirty, remove clean, prune", async () => {

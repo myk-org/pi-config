@@ -23,6 +23,8 @@ export function runGit(
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
+        LC_ALL: "C",
+        LANGUAGE: "C",
         GIT_TERMINAL_PROMPT: "0",
         GCM_INTERACTIVE: "Never",
       },
@@ -41,7 +43,7 @@ export function runGit(
 export type GitAsyncResult = { stdout: string; stderr?: string; code: number };
 export type GitAsyncRunner = (args: string[], cwd?: string) => Promise<GitAsyncResult>;
 
-/** Async `git --no-optional-locks` runner (non-interactive, 5s timeout). */
+/** Async `git --no-optional-locks` runner (non-interactive, 5s timeout, C locale). */
 export function runGitAsync(args: string[], cwd?: string): Promise<GitAsyncResult> {
   return new Promise((resolvePromise) => {
     execFile(
@@ -54,6 +56,8 @@ export function runGitAsync(args: string[], cwd?: string): Promise<GitAsyncResul
         maxBuffer: 1024 * 1024,
         env: {
           ...process.env,
+          LC_ALL: "C",
+          LANGUAGE: "C",
           GIT_TERMINAL_PROMPT: "0",
           GCM_INTERACTIVE: "Never",
         },
