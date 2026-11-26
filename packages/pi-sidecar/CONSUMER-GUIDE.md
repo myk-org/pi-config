@@ -69,11 +69,24 @@ lockfile that overrode it was not.
 Verify the resolved tree rather than trusting the version you asked for:
 
 ```bash
+# 1. Confirm current sidecar dependencies resolved to the expected versions:
 npm ls @myk-org/pi-sidecar @myk-org/pi-vertex-claude @earendil-works/pi-coding-agent protobufjs --all
+
+# 2. Confirm removed orchestrator / ML packages are absent (must print `(empty)`):
+npm ls pi-orchestrator-config @huggingface/transformers onnxruntime-node onnxruntime-web --all
+
+# 3. Audit the full unfiltered tree for any `invalid` or `extraneous` entries:
+npm ls --all
 ```
 
-`npm ls` must report no `invalid` or `extraneous` entries — a leftover package flagged
-`extraneous` comes from a previous resolution, not a harmless extra.
+- Check 1 confirms `@myk-org/pi-sidecar`, `@myk-org/pi-vertex-claude`,
+  `@earendil-works/pi-coding-agent`, and `protobufjs` resolved to the expected versions.
+- Check 2 prints `(empty)` (and exits non-zero) when none of the removed orchestrator or ML
+  runtime packages remain installed. Any matched package means a stale lockfile or leftover
+  `node_modules` directory still carries the old tree.
+- Check 3 walks the full unfiltered dependency tree and must exit 0 with no `invalid` or
+  `extraneous` entries — a leftover package flagged `extraneous` comes from a previous
+  resolution, not a harmless extra.
 
 ### Python client
 
@@ -607,7 +620,10 @@ Sidecar packages published from the pi-config monorepo:
 - `pi-sidecar-client` (PyPI)
 
 Sidecar depends on `@myk-org/pi-vertex-claude` at `>=4.3.4 <5` (not `*`,
-which can resolve to an older published tag).
+which can resolve to an older published tag). It does not install
+`pi-orchestrator-config` — consumers whose component inventories or diagnostics
+previously inspected `node_modules/pi-orchestrator-config` should remove that
+entry when upgrading.
 
 `@myk-org/pi-vertex-claude` is standalone. Its
 `@earendil-works/pi-coding-agent` / `pi-ai` peer deps are `"*"` —
