@@ -277,7 +277,15 @@ describe("state-db: schema init, WAL pragmas, and handle lifecycle", () => {
     const db = openStateDb(dbPath);
     const version = db.prepare("SELECT MAX(version) AS v FROM schema_version").get() as { v: number };
     assert.equal(version.v, CURRENT_SCHEMA_VERSION);
-    assert.equal(version.v, 2);
+    assert.equal(version.v, 4);
+    const approvalsTable = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'restricted_folder_approvals'")
+      .get() as { name?: string } | undefined;
+    assert.equal(approvalsTable?.name, "restricted_folder_approvals");
+    const approvalCols = (
+      db.prepare("PRAGMA table_info(restricted_folder_approvals)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    assert.ok(approvalCols.includes("signature"), "upgraded table must include signature column");
 
     const migRow = db
       .prepare(

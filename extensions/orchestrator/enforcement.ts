@@ -34,7 +34,16 @@ import {
   statePath,
   subjectLabel,
 } from "./pi-config-review-state.js";
-import { getSetting } from "./project-settings.js";
+import { getSetting, nearestRealPath } from "./project-settings.js";
+import {
+  clearSessionApprovals as clearRestrictedFolderSessionApprovals,
+  evaluateRestrictedFolderAccess,
+  forgetApprovals,
+  isProtectedApprovalKeyPath,
+  loadRestrictedFolders,
+  normalizeToolPath,
+} from "./restricted-folders.js";
+import { getProjectStateDbPath } from "./state-db.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 
 const log = createLogger("enforcement");
@@ -94,6 +103,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
   pi.on("session_start", (_event, ctx) => {
     cachedTrailerSelection = null;
+    // Prime the monotonic restricted_folders floor at session start before any tool runs.
+    loadRestrictedFolders(ctx.cwd);
     if (getSetting(ctx.cwd, "comment_signature")) {
       const modelId = resolveCommentSignatureModelId((ctx as any).model?.id);
       process.env.PI_COMMENT_SIGNATURE = `Assisted-by: PI (${modelId})`;
@@ -110,7 +121,14 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     if (event?.reason === "reload") return;
     const sessionId = sessionIdOf(ctx);
     clearDangerousSessionApprovals(sessionId);
+    const clearedRestricted = clearRestrictedFolderSessionApprovals(sessionId);
     log.debug("dangerous_session_approvals_cleared", { reason: event?.reason, hasSessionId: sessionId !== null });
+    if (clearedRestricted > 0) {
+      log.debug("restricted_folder_session_approvals_cleared", {
+        reason: event?.reason,
+        cleared: clearedRestricted,
+      });
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -140,10 +158,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       /* enforcement should never break normal flow */
     }
 
+    const ui: BashPolicyUi | null = ctx.hasUI
+      ? {
+          select: (title, options) => bridgedUi.select(ctx, title, options, { blockedKind: "permission" }),
+          notify: (message, level) => ctx.ui.notify(message, level),
+        }
+      : null;
+
     // Direct edit/write guards.
     if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
+      const toolUsed = isToolCallEventType("edit", event) ? "edit" : "write";
       if (process.env.PI_SUBAGENT_CHILD !== "1" && getSetting(ctx.cwd, "orchestrator_edit_write_block")) {
-        const toolUsed = isToolCallEventType("edit", event) ? "edit" : "write";
         return {
           block: true,
           reason: `⛔ Orchestrator cannot use ${toolUsed} directly. Delegate to the appropriate specialist subagent via the subagent tool.`,
@@ -152,37 +177,78 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
       const filePath: string | undefined = (event as any).input?.path;
       if (filePath) {
-        const resolvedPath = resolve(ctx.cwd, filePath);
+        const cleanFilePath = normalizeToolPath(filePath);
+        if (isProtectedApprovalKeyPath(cleanFilePath, ctx.cwd)) {
+          return {
+            block: true,
+            reason: "⛔ Direct access to .approval-hmac-key is blocked. Approval integrity keys are managed exclusively by the enforcement system.",
+          };
+        }
+        const resolvedPath = resolve(ctx.cwd, cleanFilePath);
+        const realResolvedPath = nearestRealPath(resolvedPath);
         const reviewDbPath = statePath(ctx.cwd);
         const reviewDataDir = dirname(reviewDbPath);
-        const protectedReviewPaths = new Set([
+        const projectDbPath = getProjectStateDbPath(ctx.cwd);
+        const protectedStatePaths = new Set([
           reviewDbPath,
           `${reviewDbPath}-wal`,
           `${reviewDbPath}-shm`,
+          projectDbPath,
+          `${projectDbPath}-wal`,
+          `${projectDbPath}-shm`,
+          nearestRealPath(reviewDbPath),
+          nearestRealPath(projectDbPath),
           join(reviewDataDir, "pi-config-review-state.jsonl"),
           join(reviewDataDir, "pi-config-review-state.json"),
           join(resolveWorktreeRoot(ctx.cwd), ".pi", "run", "review-tracked"),
         ]);
-        if (protectedReviewPaths.has(resolvedPath)) {
+        if (protectedStatePaths.has(resolvedPath) || protectedStatePaths.has(realResolvedPath)) {
           return {
             block: true,
-            reason: "⛔ Direct modification of review state storage (state.db / pi-config-review-state) blocked. The review state is managed by the enforcement system.",
+            reason: "⛔ Direct modification of enforcement/review state storage (state.db / pi-config-review-state) blocked. State storage is managed by the enforcement system.",
           };
         }
-        const writeDecision = evaluateFileWritePolicy(filePath, ctx.cwd);
+        const writeDecision = evaluateFileWritePolicy(cleanFilePath, ctx.cwd);
         if (writeDecision) return writeDecision;
       }
+
+      const restrictedWrite = await evaluateRestrictedFolderAccess({
+        toolName: toolUsed,
+        input: (event as any).input || {},
+        cwd: ctx.cwd,
+        sessionId: sessionIdOf(ctx),
+        ui,
+      });
+      if (restrictedWrite) return restrictedWrite;
+      return undefined;
+    }
+
+    // Restricted folder & HMAC key checks for read and search tools (read/grep/find/ls).
+    if (
+      isToolCallEventType("read", event) ||
+      isToolCallEventType("grep", event) ||
+      isToolCallEventType("find", event) ||
+      isToolCallEventType("ls", event)
+    ) {
+      const targetPath: string | undefined = (event as any).input?.path;
+      if (targetPath && isProtectedApprovalKeyPath(targetPath, ctx.cwd)) {
+        return {
+          block: true,
+          reason: "⛔ Direct access to .approval-hmac-key is blocked. Approval integrity keys are managed exclusively by the enforcement system.",
+        };
+      }
+      const restrictedRead = await evaluateRestrictedFolderAccess({
+        toolName: event.toolName,
+        input: (event as any).input || {},
+        cwd: ctx.cwd,
+        sessionId: sessionIdOf(ctx),
+        ui,
+      });
+      if (restrictedRead) return restrictedRead;
       return undefined;
     }
 
     if (!isToolCallEventType("bash", event)) return undefined;
-
-    const ui: BashPolicyUi | null = ctx.hasUI
-      ? {
-          select: (title, options) => bridgedUi.select(ctx, title, options, { blockedKind: "permission" }),
-          notify: (message, level) => ctx.ui.notify(message, level),
-        }
-      : null;
 
     const decision = await evaluateBashPolicy({
       command: event.input.command,
@@ -232,6 +298,15 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     if (decision.action === "block") {
       return { block: true, reason: decision.reason };
     }
+    const effectiveCommand = decision.modifiedCommand ?? event.input.command;
+    const restrictedBash = await evaluateRestrictedFolderAccess({
+      toolName: "bash",
+      input: { ...event.input, command: effectiveCommand },
+      cwd: ctx.cwd,
+      sessionId: sessionIdOf(ctx),
+      ui,
+    });
+    if (restrictedBash) return restrictedBash;
     if (decision.stripTimeout) {
       delete event.input.timeout;
     }
@@ -454,6 +529,28 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         }
       }
     }
+  });
+
+  // ── /forget-approvals command (issue #1416) ─────────────────────────
+  pi.registerCommand("forget-approvals", {
+    description:
+      "Clear cached restricted-folder approvals (session and persistent SQLite grants). Optional arg: session | persistent",
+    handler: async (args, ctx) => {
+      const raw = (args ?? "").trim().toLowerCase();
+      const mode: "all" | "session" | "persistent" =
+        raw === "session" || raw === "persistent" ? raw : "all";
+      const { sessionCleared, persistentCleared } = forgetApprovals(
+        ctx.cwd,
+        sessionIdOf(ctx),
+        mode,
+      );
+      const summary = `Cleared ${sessionCleared} session approval(s) and ${persistentCleared} persistent approval(s).`;
+      if (ctx.hasUI) {
+        ctx.ui.notify(summary, "info");
+      } else {
+        log.info("forget_approvals_completed", { mode, sessionCleared, persistentCleared });
+      }
+    },
   });
 
   // ── /review-status command ──────────────────────────────────────────

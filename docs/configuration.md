@@ -678,6 +678,57 @@ export PI_ENFORCEMENT_ALLOWED_COMMANDS="sleep 5,ls -la"
 
 > **Warning:** this is an exemption list for the enforcement guards. Anything added here runs past them, so keep it as narrow as the task allows.
 
+### `restricted_folders`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `restricted_folders` | string list | `[]` | none (settings file only) | Folder paths that always require explicit user approval before access. | Any `read`, `write`, `edit`, `grep`, `find`, `ls` targeting inside a listed folder — or `bash` running with its working directory (`cwd` / `cd` / `pushd`) inside one — prompts via `ui-bridge` (`blockedKind: "permission"`). Paths expand `~`, resolve relative segments against `cwd`, resolve symlinks (including symlinked parents and dangling symlinks), and match on strict path boundaries (`/a/foo` never matches `/a/foobar`). Global and project lists are unioned so a project settings file cannot weaken global restrictions. Agent tools and browser settings writes are blocked from modifying `restricted_folders`. Headless/non-TUI sessions fail closed (deny). |
+
+Approval choices:
+
+- **Deny** — block the tool call (also the default on cancel/Esc or headless sessions).
+- **Approve Once** — allow this single call without caching.
+- **Approve File (this session / persistent)** — allow exact canonical path for the current session (survives `/reload`, cleared on shutdown) or persistently in `.pi/data/state.db` (`restricted_folder_approvals`).
+- **Approve Directory — direct children only (this session / persistent)** — allow the directory and its direct children only (never recursive grandchildren), stored in session memory or `.pi/data/state.db`.
+
+Run `/forget-approvals` (or `/forget-approvals session` / `/forget-approvals persistent`) to clear cached grants.
+
+```json
+{
+  "restricted_folders": ["~/.ssh", "~/.aws", "secrets/prod"]
+}
+```
+
+### `secret_obfuscation`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `secret_obfuscation` | boolean | `false` | `PI_SECRET_OBFUSCATION` | Enable reversible secret obfuscation for provider-bound LLM context and tool calls. | When `true`, collects secrets at session startup from secret-like env vars (`KEY\|SECRET\|TOKEN\|PASSWORD\|PASS\|AUTH\|CREDENTIAL\|PRIVATE\|OAUTH`, length >= 8), passwords embedded in `scheme://user:password@host` URLs, built-in credential patterns (Anthropic, OpenAI, GitHub, GitLab, AWS, Google, Slack, npm, Stripe, JWT, Bearer, PEM private keys), and optional `.pi/secrets.jsonc` / `~/.pi/agent/secrets.jsonc`. Replaces matches with deterministic `$$<LABEL>_<HASH>$$` placeholders in `tool_result` and `context` without mutating static system prompts (preserving prompt caches), and restores reversible placeholders in `tool_call` arguments right before execution. |
+
+Optional `.pi/secrets.jsonc` or `~/.pi/agent/secrets.jsonc`:
+
+```jsonc
+{
+  "entries": [
+    // Reversible placeholder (min length 8)
+    { "value": "my-internal-token-1234", "label": "INTERNAL", "mode": "obfuscate" },
+    { "pattern": "MYAPP_[A-Z0-9]{16}", "label": "MYAPP", "mode": "obfuscate" },
+    // One-way redaction (never restored in tool_call)
+    { "value": "never-echo-back", "mode": "replace", "replacement": "[REDACTED]" }
+  ]
+}
+```
+
+```json
+{
+  "secret_obfuscation": true
+}
+```
+
+```bash
+export PI_SECRET_OBFUSCATION=true
+```
+
 See [Safety Enforcements](safety-enforcements.html) for details.
 
 ## Inter-Agent Communication Keys

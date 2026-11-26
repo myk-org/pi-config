@@ -632,6 +632,19 @@
     "default": [],
     "group": "Enforcement"
   },
+  "restricted_folders": {
+    "description": "Folder paths requiring explicit user approval before read, write, edit, search, or bash cwd access (symlink-resolved, boundary-safe; agent-edit protected)",
+    "type": "string_list",
+    "default": [],
+    "group": "Enforcement"
+  },
+  "secret_obfuscation": {
+    "description": "Reversibly obfuscate secrets (env vars, URL passwords, credential patterns, secrets.jsonc) in provider-bound context/tool results and restore placeholders in tool_call arguments",
+    "type": "bool",
+    "env": "PI_SECRET_OBFUSCATION",
+    "default": false,
+    "group": "Security"
+  },
   "project_tmp_max_size": {
     "description": "Sweep .pi/tmp at session start when it grows above this size. Accepts 2G, 2GB, 2GiB, 2048M, 100M, 1.5G; a bare number is MB (2048 = 2G). '0' disables the sweep. An unparsable value logs a warning and deletes nothing.",
     "type": "string",
