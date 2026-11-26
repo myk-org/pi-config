@@ -876,6 +876,24 @@ export PI_TASK_STALE_IN_PROGRESS_ENABLED=false
 }
 ```
 
+### `task_headless_idle_reminder_minutes`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `task_headless_idle_reminder_minutes` | integer `1`-`30` | `2` | `PI_TASK_HEADLESS_IDLE_REMINDER_MINUTES` | Base idle delay before a headless supervised COMS peer is nudged about open unblocked tasks. | Active only when `PI_COMS_SUPERVISED_PEER=1` and either `task_reminder_enabled` or `task_stale_in_progress_enabled` is on. Fires only while idle (`agentBusy === false`), with `0` running/queued async agents, and at least one unblocked non-user `in_progress` or `pending` task. Uses bounded backoff (`1x`, `2.5x`, `5x`, max 3 consecutive nudges) and resets on any real non-reminder turn or task state change. Interactive TUI sessions keep their 10m/30m thresholds unchanged. |
+
+> **Warning:** Only integer values in the range `1`-`30` are accepted. Invalid values fall back to the next resolution layer or the default.
+
+```json
+{
+  "task_headless_idle_reminder_minutes": 5
+}
+```
+
+```bash
+export PI_TASK_HEADLESS_IDLE_REMINDER_MINUTES=5
+```
+
 ### Task storage environment variables
 
 Task store location is selected once at extension registration through environment variables rather than `pi-config-settings.json`,

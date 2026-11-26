@@ -172,3 +172,196 @@ export function decidePendingReminder(params: {
 	}
 	return decision;
 }
+
+/** Backoff multipliers applied to `task_headless_idle_reminder_minutes` on consecutive headless idle nudges. */
+export const HEADLESS_IDLE_BACKOFF_MULTIPLIERS = [1, 2.5, 5] as const;
+
+/** Maximum consecutive headless idle nudges without a real non-reminder turn or task state change. */
+export const HEADLESS_IDLE_MAX_NUDGES = HEADLESS_IDLE_BACKOFF_MULTIPLIERS.length;
+
+/** Minimal task shape for the headless-peer idle auto-nudge. */
+export interface HeadlessReminderTask {
+	id?: string | number;
+	status: string;
+	assignee?: string;
+	blockedBy?: readonly (string | number)[];
+}
+
+/** Count running or queued non-fireAndForget async agents; any in-flight agent suppresses headless idle nudges. */
+export function countActiveAsyncAgents(
+	agents: ReadonlyArray<{ status?: string; fireAndForget?: boolean }> | null | undefined,
+): number {
+	let count = 0;
+	if (agents) {
+		for (const job of agents) {
+			if (job.fireAndForget) continue;
+			if (job.status === "running" || job.status === "queued") count++;
+		}
+	}
+	log.debug("countActiveAsyncAgents", { agentCount: agents?.length ?? 0, activeCount: count });
+	return count;
+}
+
+/**
+ * Select open (`in_progress` or `pending`) agent-assigned tasks with no open blockers,
+ * ordered `in_progress` first, then `pending`, then numeric ID ascending.
+ */
+export function selectUnblockedOpenTasks<T extends HeadlessReminderTask>(tasks: readonly T[]): T[] {
+	const byId = new Map<string, T>();
+	for (const task of tasks) {
+		if (task.id != null) byId.set(String(task.id), task);
+	}
+	const unblocked = tasks.filter((task) => {
+		if (task.status !== "in_progress" && task.status !== "pending") return false;
+		if (task.assignee === "user") return false;
+		const blockers = task.blockedBy;
+		if (Array.isArray(blockers) && blockers.length > 0) {
+			const hasOpenBlocker = blockers.some((rawId) => {
+				const blocker = byId.get(String(rawId));
+				return blocker != null && blocker.status !== "completed" && blocker.status !== "deleted";
+			});
+			if (hasOpenBlocker) return false;
+		}
+		return true;
+	});
+	unblocked.sort((a, b) => {
+		const rank = (s: string) => (s === "in_progress" ? 0 : 1);
+		const statusOrder = rank(a.status) - rank(b.status);
+		if (statusOrder !== 0) return statusOrder;
+		const numA = Number(a.id);
+		const numB = Number(b.id);
+		if (Number.isFinite(numA) && Number.isFinite(numB)) return numA - numB;
+		return String(a.id ?? "").localeCompare(String(b.id ?? ""));
+	});
+	log.debug("selectUnblockedOpenTasks", { total: tasks.length, unblocked: unblocked.length });
+	return unblocked;
+}
+
+export interface HeadlessIdleReminderDecision<T extends HeadlessReminderTask = HeadlessReminderTask> {
+	fire: boolean;
+	reason:
+		| "fire"
+		| "not-supervised"
+		| "disabled"
+		| "busy"
+		| "active-async"
+		| "not-idle"
+		| "backoff-capped"
+		| "cooldown"
+		| "no-unblocked-tasks";
+	tasks: T[];
+	idleMs: number;
+	effectiveDelayMs: number;
+	nextNudgeCount: number;
+}
+
+/**
+ * Pure decision helper for the headless supervised COMS peer idle auto-nudge (#1434).
+ * Fires only when running as a supervised peer, enabled, idle (`!agentBusy`, `idleSince !== null`),
+ * zero running/queued async agents, within the bounded backoff cap, past the current backoff delay,
+ * and at least one unblocked non-user `in_progress` or `pending` task exists.
+ */
+export function decideHeadlessIdleReminder<T extends HeadlessReminderTask>(params: {
+	supervisedPeer: boolean;
+	enabled: boolean;
+	agentBusy: boolean;
+	activeAsyncCount: number;
+	idleSince: number | null;
+	lastNudgeAt: number;
+	nudgeCount: number;
+	now: number;
+	baseDelayMs: number;
+	tasks: readonly T[];
+}): HeadlessIdleReminderDecision<T> {
+	const {
+		supervisedPeer,
+		enabled,
+		agentBusy,
+		activeAsyncCount,
+		idleSince,
+		lastNudgeAt,
+		nudgeCount,
+		now,
+		baseDelayMs,
+		tasks,
+	} = params;
+	const cappedCount = Number.isFinite(nudgeCount)
+		? Math.max(0, Math.floor(nudgeCount))
+		: HEADLESS_IDLE_MAX_NUDGES;
+	const multiplier = HEADLESS_IDLE_BACKOFF_MULTIPLIERS[cappedCount];
+	const effectiveDelayMs =
+		multiplier !== undefined && Number.isFinite(baseDelayMs) && baseDelayMs > 0
+			? Math.round(baseDelayMs * multiplier)
+			: 0;
+
+	const skip = (
+		reason: HeadlessIdleReminderDecision<T>["reason"],
+		idleMs = 0,
+	): HeadlessIdleReminderDecision<T> => {
+		log.debug("headless_idle_reminder_skipped", {
+			reason,
+			nudgeCount: cappedCount,
+			activeAsyncCount,
+		});
+		return { fire: false, reason, tasks: [], idleMs, effectiveDelayMs, nextNudgeCount: cappedCount };
+	};
+
+	if (!supervisedPeer) return skip("not-supervised");
+	if (!enabled || !Number.isFinite(baseDelayMs) || baseDelayMs <= 0) return skip("disabled");
+	if (agentBusy) return skip("busy");
+	if (activeAsyncCount > 0) return skip("active-async");
+	if (idleSince === null || !Number.isFinite(idleSince)) return skip("not-idle");
+	if (cappedCount >= HEADLESS_IDLE_MAX_NUDGES || multiplier === undefined) return skip("backoff-capped");
+
+	const anchor = Math.max(idleSince, Number.isFinite(lastNudgeAt) ? lastNudgeAt : 0);
+	const idleMs = Math.max(0, now - anchor);
+	if (idleMs < effectiveDelayMs) return skip("cooldown", idleMs);
+
+	const open = selectUnblockedOpenTasks(tasks);
+	if (open.length === 0) return skip("no-unblocked-tasks", idleMs);
+
+	log.debug("headless_idle_reminder_ready", {
+		openCount: open.length,
+		nudgeCount: cappedCount + 1,
+		effectiveDelayMs,
+		idleMs,
+	});
+	return {
+		fire: true,
+		reason: "fire",
+		tasks: open,
+		idleMs,
+		effectiveDelayMs,
+		nextNudgeCount: cappedCount + 1,
+	};
+}
+
+/** Content for the headless-peer idle auto-nudge (names open task IDs, notes 0 active async agents, never leaks subjects). */
+export function headlessIdleReminderContent(
+	openTasks: ReadonlyArray<{ id?: string | number }>,
+	idleMinutes: number,
+	nudgeNumber?: number,
+	maxNudges?: number,
+): string {
+	const ids = openTasks
+		.map((t) => (t.id != null ? String(t.id).trim() : ""))
+		.filter(Boolean)
+		.map((id) => `#${id}`);
+	const idPart = ids.length > 0 ? `: ${ids.join(", ")}` : "";
+	const detailParts: string[] = [];
+	if (Number.isFinite(idleMinutes)) {
+		detailParts.push(`idle ${Math.max(1, Math.round(idleMinutes))}m`);
+	}
+	detailParts.push("0 active async agents");
+	if (typeof nudgeNumber === "number" && typeof maxNudges === "number") {
+		detailParts.push(`nudge ${nudgeNumber}/${maxNudges}`);
+	}
+	log.debug("headlessIdleReminderContent", {
+		count: openTasks.length,
+		idleMinutes,
+		taskIds: ids,
+		nudgeNumber,
+		maxNudges,
+	});
+	return `⚠️ Headless peer idle with ${openTasks.length} open unblocked task(s)${idPart} (${detailParts.join(", ")}). Resume your TaskList work or report any blocker to your coordinator via coms_send.`;
+}

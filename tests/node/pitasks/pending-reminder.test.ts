@@ -157,12 +157,14 @@ function boot(tasks: any[], settingsOverrides: Record<string, unknown> = {}) {
 	const prevCwd = process.cwd();
 	const prevTasks = process.env.PI_TASKS;
 	const prevSubagent = process.env.PI_SUBAGENT_CHILD;
+	const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
 	global.setInterval = ((fn: () => void) => {
 		ticks.push(fn);
 		return { unref() {} } as any;
 	}) as typeof setInterval;
 	process.env.PI_TASKS = storePath;
 	delete process.env.PI_SUBAGENT_CHILD; // the extension skips register inside subagents
+	delete process.env.PI_COMS_SUPERVISED_PEER; // interactive TUI suite must not inherit supervised peer env
 	process.chdir(cwd);
 
 	const sent: any[] = [];
@@ -197,6 +199,8 @@ function boot(tasks: any[], settingsOverrides: Record<string, unknown> = {}) {
 			if (prevTasks === undefined) delete process.env.PI_TASKS;
 			else process.env.PI_TASKS = prevTasks;
 			if (prevSubagent !== undefined) process.env.PI_SUBAGENT_CHILD = prevSubagent;
+			if (prevSupervised === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+			else process.env.PI_COMS_SUPERVISED_PEER = prevSupervised;
 			rmSync(cwd, { recursive: true, force: true });
 		},
 	};
