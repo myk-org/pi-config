@@ -57,6 +57,29 @@
     "default": false,
     "group": "Review"
   },
+  "advisor_enabled": {
+    "description": "Enable opt-in background read-only advisor/watchdog model to catch bugs, spec drift, or stuck retry loops (uses extra LLM tokens)",
+    "type": "bool",
+    "env": "PI_ADVISOR_ENABLED",
+    "default": false,
+    "group": "Review"
+  },
+  "advisor_model": {
+    "description": "Explicit provider/model-id for the background advisor LLM (e.g. google/gemini-2.5-flash; empty = use session model)",
+    "type": "string",
+    "env": "PI_ADVISOR_MODEL",
+    "default": "",
+    "group": "Review"
+  },
+  "advisor_interval_turns": {
+    "description": "Completed turns between background advisor checkpoints (1-50)",
+    "type": "int",
+    "env": "PI_ADVISOR_INTERVAL_TURNS",
+    "default": 5,
+    "min": 1,
+    "max": 50,
+    "group": "Review"
+  },
   "dream_auto_enable": {
     "description": "Enable automatic background memory dreaming (periodic + session end)",
     "type": "bool",
@@ -712,6 +735,13 @@
     "default": 2000,
     "min": 200,
     "max": 500000,
+    "group": "Session"
+  },
+  "magic_keywords": {
+    "description": "Enable per-turn magic keywords (ultrathink / chillax) in user prose to temporarily raise or lower thinking effort for one turn",
+    "type": "bool",
+    "env": "PI_MAGIC_KEYWORDS",
+    "default": true,
     "group": "Session"
   }
 }

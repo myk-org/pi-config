@@ -921,6 +921,8 @@ describe("buildSettingItems integration", () => {
         if (testVal === undefined || def.type === "agent_overrides" || SECRET_PATTERNS.test(key)) continue;
         if (def.type === "string" && def.enum && def.enum.length > 0) {
           testVal = def.enum[0];
+        } else if (key === "advisor_model") {
+          testVal = "google/gemini-2.5-flash";
         } else if (def.type === "int") {
           const min = def.min ?? 1;
           const max = def.max ?? min + 10;
@@ -1518,7 +1520,7 @@ describe("settings-tui snapshot & lazy metadata (#1267)", () => {
     const unrelatedIdx = CATEGORIES.findIndex((c) => !c.keys.some((k) =>
       k === "agent_provider" || k === "internal_operations_provider" ||
       k === "agent_model" || k === "internal_operations_model" ||
-      k === "image_model" || SETTINGS_KEYS[k]?.type === "agent_overrides"
+      k === "image_model" || k === "advisor_model" || SETTINGS_KEYS[k]?.type === "agent_overrides"
     ));
     assert.ok(unrelatedIdx >= 0, "expected a category without provider/model/agent_overrides keys");
 
