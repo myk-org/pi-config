@@ -24,12 +24,12 @@ import {
   countLinkedWorktrees,
   detectWorktreePresence,
   isInLinkedWorktree,
-  listWorktreesAsync,
+  listWorktreesCheckedAsync,
 } from "../orchestrator/git-helpers.js";
 import {
   executeGuardedWorktreeRemove,
   loadWorktreeDetail,
-  loadWorktreeViews,
+  loadWorktreeViewsChecked,
   runWorktreePrune,
   type WorktreeDeps,
 } from "../orchestrator/worktree.js";
@@ -193,6 +193,8 @@ export async function mcpList(cwd: string): Promise<{ servers?: unknown[]; raw?:
 
 export const MAX_WORKTREE_STATUS_LINES = 60;
 
+export const WORKTREE_DIRTY_POLL_INTERVAL_MS = 60_000;
+
 export interface WorktreeSummary {
   worktreeCount: number;
   worktreeDirtyCount: number;
@@ -210,25 +212,42 @@ export function worktreeSummaryEqual(a: WorktreeSummary | null, b: WorktreeSumma
 
 /**
  * Fast worktree summary for the InfoBar badge. Uses `detectWorktreePresence` first
- * to avoid spawning git in single-checkout repositories.
+ * to avoid spawning git in single-checkout repositories. When `includeDirty` is false
+ * (the 10s periodic tick), avoids spawning `git status` across every worktree and
+ * preserves `fallbackDirtyCount` (clamped when no linked worktrees exist).
  */
 export async function getWorktreeSummary(
   cwd: string,
-  deps: Pick<WorktreeDeps, "runGitAsync"> & { hasLinkedWorktreesHint?: (dir: string) => boolean | null } = {},
+  deps: Pick<WorktreeDeps, "runGitAsync"> & {
+    hasLinkedWorktreesHint?: (dir: string) => boolean | null;
+    includeDirty?: boolean;
+    fallbackDirtyCount?: number;
+  } = {},
 ): Promise<WorktreeSummary> {
   const checkPresence = deps.hasLinkedWorktreesHint ?? detectWorktreePresence;
+  const includeDirty = deps.includeDirty ?? false;
   try {
     if (checkPresence(cwd) === false) {
       return { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
     }
-    const entries = await listWorktreesAsync(cwd, {
-      includeDirty: true,
+    const listed = await listWorktreesCheckedAsync(cwd, {
+      includeDirty,
       forceRefresh: false,
       runGitAsync: deps.runGitAsync,
     });
+    if (!listed.ok) {
+      return { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
+    }
+    const entries = listed.entries;
+    const worktreeCount = countLinkedWorktrees(entries);
+    const worktreeDirtyCount = includeDirty
+      ? entries.filter((w) => (w.dirty?.total ?? 0) > 0).length
+      : worktreeCount > 0
+        ? Math.max(0, deps.fallbackDirtyCount ?? 0)
+        : 0;
     return {
-      worktreeCount: countLinkedWorktrees(entries),
-      worktreeDirtyCount: entries.filter((w) => (w.dirty?.total ?? 0) > 0).length,
+      worktreeCount,
+      worktreeDirtyCount,
       inLinkedWorktree: isInLinkedWorktree(entries),
     };
   } catch (e: any) {
@@ -266,7 +285,7 @@ export function buildWorktreeItem(wt: WorktreeView, cwd: string): WorktreeItem {
   };
 }
 
-/** Load the full worktree list payload for PiDash using `loadWorktreeViews`. */
+/** Load the full worktree list payload for PiDash using `loadWorktreeViewsChecked`. */
 export async function loadWorktreesPayload(
   cwd: string,
   opts: {
@@ -277,10 +296,23 @@ export async function loadWorktreesPayload(
   } = {},
 ): Promise<WorktreeListPayload> {
   try {
-    const views = await loadWorktreeViews(cwd, opts.deps ?? {}, opts.forceRefresh ?? true, {
+    const res = await loadWorktreeViewsChecked(cwd, opts.deps ?? {}, opts.forceRefresh ?? true, {
       includePrs: opts.includePrs ?? true,
       forceRefreshPrs: opts.forceRefreshPrs ?? false,
     });
+    if (!res.ok) {
+      const error = res.error || "Failed to list git worktrees.";
+      log.warn("worktrees_payload_git_failed", { cwd, error });
+      return {
+        cwd,
+        linkedCount: 0,
+        dirtyCount: 0,
+        inLinkedWorktree: false,
+        worktrees: [],
+        error,
+      };
+    }
+    const views = res.views;
     const linkedCount = countLinkedWorktrees(views);
     const dirtyCount = views.filter((w) => (w.dirty?.total ?? 0) > 0).length;
     const inLinked = isInLinkedWorktree(views);
@@ -311,7 +343,8 @@ export async function loadWorktreesPayload(
 
 /**
  * Load HEAD subject and `git status --short` (capped at 60 lines) for one registered worktree.
- * Rejects arbitrary paths that do not belong to `cwd`'s git worktree list.
+ * Validates the exact registered path via `listWorktreesCheckedAsync` with `includeDirty: false`
+ * (avoiding per-worktree status scans) and rejects unregistered paths or git listing failures.
  */
 export async function loadWorktreeDetailPayload(
   cwd: string,
@@ -330,9 +363,25 @@ export async function loadWorktreeDetailPayload(
     };
   }
   try {
-    const views = await loadWorktreeViews(cwd, deps, false, { includePrs: false });
-    const wt = views.find((w) => w.path === pathStr);
-    if (!wt) {
+    const listed = await listWorktreesCheckedAsync(cwd, {
+      includeDirty: false,
+      forceRefresh: false,
+      runGitAsync: deps.runGitAsync,
+    });
+    if (!listed.ok) {
+      const error = listed.error || "Failed to list git worktrees.";
+      log.warn("worktree_detail_list_failed", { cwd, path: pathStr, error });
+      return {
+        path: pathStr,
+        headSubject: "",
+        statusLines: [],
+        truncatedCount: 0,
+        statusOk: false,
+        error,
+      };
+    }
+    const entry = listed.entries.find((w) => w.path === pathStr);
+    if (!entry) {
       log.warn("worktree_detail_not_found", { cwd, path: pathStr });
       return {
         path: pathStr,
@@ -343,13 +392,13 @@ export async function loadWorktreeDetailPayload(
         error: "Worktree not found in this repository.",
       };
     }
-    const detail = await loadWorktreeDetail(wt, deps.runGitAsync);
+    const detail = await loadWorktreeDetail({ ...entry, id: entry.path, peers: [] }, deps.runGitAsync);
     const total = detail.statusLines.length;
     const statusLines = detail.statusLines.slice(0, MAX_WORKTREE_STATUS_LINES);
     const truncatedCount = Math.max(0, total - MAX_WORKTREE_STATUS_LINES);
-    log.debug("worktree_detail_loaded", { path: wt.path, lines: statusLines.length, truncatedCount });
+    log.debug("worktree_detail_loaded", { path: entry.path, lines: statusLines.length, truncatedCount });
     return {
-      path: wt.path,
+      path: entry.path,
       headSubject: detail.headSubject,
       statusLines,
       truncatedCount,

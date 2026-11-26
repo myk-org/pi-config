@@ -7,35 +7,43 @@ export function isSafePrUrl(url: string | undefined | null): boolean {
   return typeof url === "string" && SAFE_PR_URL.test(url);
 }
 
-export type WorktreeBroadcastAction = "apply" | "refetch" | "ignore";
+/** Normalize a cwd string for equality checks (strips trailing slashes). */
+function normalizeCwd(cwd: string | undefined | null): string {
+  if (typeof cwd !== "string") return "";
+  const trimmed = cwd.trim();
+  return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
+}
 
 /**
- * Decide how a browser watching `currentSessionId` (in `currentRepoRoot`) should handle
- * an incoming `worktrees-list` message:
- * - Direct replies for this session -> `"apply"`.
- * - Broadcasts from the SAME session -> `"apply"` immediately (all tabs watching the same session stay in sync).
- * - Broadcasts from ANOTHER session in the SAME repo -> `"refetch"` so this session computes its own
- *   `isCurrent`, `relativePath`, and `canRemove` guard accurately.
- * - Broadcasts from a different repo (or before own repo identity is known) -> `"ignore"`.
+ * Decide whether an incoming `worktrees-list` reply belongs to the active session, cwd,
+ * and latest in-flight list request. Discards stale/out-of-order replies and foreign-cwd payloads.
  */
-export function reconcileWorktreeBroadcast(
-  ev: { broadcast?: boolean; sourceSessionId?: string; repoRoot?: string },
+export function shouldAcceptWorktreesList(
+  ev: { sourceSessionId?: string; cwd?: string; requestId?: string },
   currentSessionId: string,
-  currentRepoRoot: string | null,
-): WorktreeBroadcastAction {
-  if (ev.broadcast) {
-    if (ev.sourceSessionId && ev.sourceSessionId === currentSessionId) {
-      return "apply";
-    }
-    if (ev.repoRoot && currentRepoRoot && ev.repoRoot === currentRepoRoot) {
-      return "refetch";
-    }
-    return "ignore";
-  }
+  currentCwd: string,
+  latestRequestId: string | null,
+): boolean {
   if (ev.sourceSessionId && ev.sourceSessionId !== currentSessionId) {
-    return "ignore";
+    return false;
   }
-  return "apply";
+  const evCwd = normalizeCwd(ev.cwd);
+  const mineCwd = normalizeCwd(currentCwd);
+  if (evCwd && mineCwd && evCwd !== mineCwd) {
+    return false;
+  }
+  if (latestRequestId && ev.requestId && ev.requestId !== latestRequestId) {
+    return false;
+  }
+  return true;
+}
+
+/** Compute operation timeout in ms — scales with target count for bulk guarded removes. */
+export function computeOpTimeoutMs(op: "prune" | "remove", targetCount = 1): number {
+  if (op === "remove") {
+    return 30_000 + 15_000 * Math.max(1, targetCount);
+  }
+  return 30_000;
 }
 
 /** Drop selected paths that no longer exist or are no longer eligible for guarded removal. */

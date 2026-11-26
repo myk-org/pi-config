@@ -11,10 +11,11 @@ import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_mo
 import { createRoot, type Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
 import type { SessionInfo, WorktreeItem } from "../../../extensions/shared/types.ts";
 import {
+  computeOpTimeoutMs,
   getRemovableWorktrees,
   isSafePrUrl,
   pruneSelectedWorktreePaths,
-  reconcileWorktreeBroadcast,
+  shouldAcceptWorktreesList,
 } from "../../../extensions/pidash/pidash-ui/src/lib/worktrees-panel-helpers.ts";
 import { elements, installReactDomShim, type FakeElement } from "./react-dom-shim.mjs";
 
@@ -133,13 +134,21 @@ function sampleWorktrees(): WorktreeItem[] {
 }
 
 describe("worktrees-panel-helpers", () => {
-  it("reconcileWorktreeBroadcast handles direct replies, same-session broadcasts, sibling-session same-repo broadcasts, and foreign repos", () => {
-    assert.equal(reconcileWorktreeBroadcast({ sourceSessionId: "s1" }, "s1", "/repo"), "apply");
-    assert.equal(reconcileWorktreeBroadcast({ sourceSessionId: "s2" }, "s1", "/repo"), "ignore");
-    assert.equal(reconcileWorktreeBroadcast({ broadcast: true, sourceSessionId: "s1", repoRoot: "/repo" }, "s1", "/repo"), "apply");
-    assert.equal(reconcileWorktreeBroadcast({ broadcast: true, sourceSessionId: "s2", repoRoot: "/repo" }, "s1", "/repo"), "refetch");
-    assert.equal(reconcileWorktreeBroadcast({ broadcast: true, sourceSessionId: "s2", repoRoot: "/other" }, "s1", "/repo"), "ignore");
-    assert.equal(reconcileWorktreeBroadcast({ broadcast: true, sourceSessionId: "s2", repoRoot: "/repo" }, "s1", null), "ignore");
+  it("shouldAcceptWorktreesList enforces session, cwd, and latest requestId correlation", () => {
+    assert.equal(shouldAcceptWorktreesList({ sourceSessionId: "s1", cwd: "/repo", requestId: "r2" }, "s1", "/repo", "r2"), true);
+    assert.equal(shouldAcceptWorktreesList({ sourceSessionId: "s1", cwd: "/repo/", requestId: "r2" }, "s1", "/repo", "r2"), true);
+    // Out-of-order stale requestId rejected
+    assert.equal(shouldAcceptWorktreesList({ sourceSessionId: "s1", cwd: "/repo", requestId: "r1" }, "s1", "/repo", "r2"), false);
+    // Foreign cwd rejected (e.g. previous project before switch)
+    assert.equal(shouldAcceptWorktreesList({ sourceSessionId: "s1", cwd: "/old-repo", requestId: "r2" }, "s1", "/repo", "r2"), false);
+    // Foreign session rejected
+    assert.equal(shouldAcceptWorktreesList({ sourceSessionId: "s2", cwd: "/repo", requestId: "r2" }, "s1", "/repo", "r2"), false);
+  });
+
+  it("computeOpTimeoutMs scales remove timeout by target count", () => {
+    assert.equal(computeOpTimeoutMs("prune", 1), 30_000);
+    assert.equal(computeOpTimeoutMs("remove", 1), 45_000);
+    assert.equal(computeOpTimeoutMs("remove", 5), 105_000);
   });
 
   it("pruneSelectedWorktreePaths keeps only still-removable paths", () => {
@@ -199,6 +208,7 @@ describe("WorktreesPanel component (#1427)", () => {
     const items = sampleWorktrees();
     await view.emit({
       type: "worktrees-list",
+      requestId: view.sent[0].extra?.requestId,
       sourceSessionId: "s1",
       cwd: "/repo",
       repoRoot: "/repo",
@@ -232,6 +242,7 @@ describe("WorktreesPanel component (#1427)", () => {
 
     await view.emit({
       type: "worktrees-detail",
+      requestId: view.sent.at(-1)?.extra?.requestId,
       path: "/repo/.worktrees/feat-peer",
       headSubject: "feat: panel parity",
       statusLines: [" M src/index.ts", "?? tmp.ts"],
@@ -268,10 +279,11 @@ describe("WorktreesPanel component (#1427)", () => {
     assert.ok(view.notices.some((n) => n.msg.includes("Removed worktree")));
   });
 
-  it("supports bulk select-removable removal, prune, refresh, and sibling-session same-repo broadcast refetch", async () => {
+  it("supports bulk select-removable removal, prune, worktrees-changed refetch, stale-cwd rejection, and Retry on error", async () => {
     const view = await mountPanel();
     await view.emit({
       type: "worktrees-list",
+      requestId: view.sent[0].extra?.requestId,
       sourceSessionId: "s1",
       cwd: "/repo",
       repoRoot: "/repo",
@@ -305,7 +317,7 @@ describe("WorktreesPanel component (#1427)", () => {
       "/repo/.worktrees/feat-clean-2",
     ]);
 
-    // Settle remove op, then test Prune and Refresh
+    // Settle remove op, then test Prune
     await view.emit({
       type: "worktrees-op-result",
       op: "remove",
@@ -329,27 +341,45 @@ describe("WorktreesPanel component (#1427)", () => {
       requestId: view.sent.at(-1)?.extra?.requestId,
     });
 
-    // Sibling session in the same repo broadcasts -> triggers refetch for s1
+    // Server-scoped minimal worktrees-changed notice triggers a refetch for this session
     const countBefore = view.sent.length;
-    await view.emit({
-      type: "worktrees-list",
-      broadcast: true,
-      sourceSessionId: "s2",
-      repoRoot: "/repo",
-      worktrees: [],
-    });
+    await view.emit({ type: "worktrees-changed", sourceSessionId: "s2" });
     assert.equal(view.sent.length, countBefore + 1);
     assert.equal(view.sent.at(-1)?.command, "worktrees-list");
+    const refetchReqId = view.sent.at(-1)?.extra?.requestId;
 
-    // Foreign repo broadcast -> ignored
+    // Stale worktrees-list from another cwd must be ignored
     await view.emit({
       type: "worktrees-list",
-      broadcast: true,
-      sourceSessionId: "s3",
-      repoRoot: "/other-repo",
+      requestId: refetchReqId,
+      sourceSessionId: "s1",
+      cwd: "/other-repo",
+      linkedCount: 0,
+      dirtyCount: 0,
+      inLinkedWorktree: false,
       worktrees: [],
     });
-    assert.equal(view.sent.length, countBefore + 1);
+    assert.ok(view.container.textContent.includes("feat/clean"), "foreign-cwd list must not overwrite current repo");
+
+    // Error reply clears loading state and renders Retry button
+    await view.emit({
+      type: "worktrees-list",
+      requestId: refetchReqId,
+      sourceSessionId: "s1",
+      cwd: "/repo",
+      linkedCount: 0,
+      dirtyCount: 0,
+      inLinkedWorktree: false,
+      worktrees: [],
+      error: "Watched Pi session is disconnected.",
+    });
+    assert.ok(view.container.textContent.includes("Watched Pi session is disconnected."));
+    const retryBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "Retry");
+    assert.ok(retryBtn, "Retry button should be rendered on error");
+    await act(async () => {
+      retryBtn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    assert.equal(view.sent.at(-1)?.command, "worktrees-list");
   });
 });
 

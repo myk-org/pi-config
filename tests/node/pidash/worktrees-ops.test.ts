@@ -19,7 +19,10 @@ import {
   worktreeSummaryEqual,
 } from "../../../extensions/pidash/browser-ops.ts";
 import {
+  authorizeWorktreeBrowserCommand,
+  buildWorktreeCommandErrorFrame,
   createPidashSessionState,
+  shouldNotifyWorktreeChange,
   updatePidashSession,
 } from "../../../scripts/pidash-session-state.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -154,12 +157,17 @@ describe("browser-ops worktrees (#1427)", () => {
     assert.match(lockedWt.removeBlockedReason!, /locked/i);
   });
 
-  it("loadWorktreeDetailPayload caps git status --short at 60 lines and rejects unregistered paths", async () => {
+  it("loadWorktreeDetailPayload caps git status --short at 60 lines, scans ONLY the target worktree, and rejects unregistered paths", async () => {
     const manyLines = Array.from({ length: 75 }, (_, i) => ` M file-${i}.ts`).join("\n");
-    const runGitAsync = makeMockGit({
+    const calls: Array<{ args: string[]; cwd?: string }> = [];
+    const baseGit = makeMockGit({
       statusShortByPath: { [WT_DIRTY]: manyLines },
       logByPath: { [WT_DIRTY]: "wip: lots of changes" },
     });
+    const runGitAsync: GitAsyncRunner = async (args, cwd) => {
+      calls.push({ args, cwd });
+      return baseGit(args, cwd);
+    };
 
     const detail = await loadWorktreeDetailPayload(REPO_MAIN, WT_DIRTY, {
       runGitAsync,
@@ -170,6 +178,17 @@ describe("browser-ops worktrees (#1427)", () => {
     assert.equal(detail.headSubject, "wip: lots of changes");
     assert.equal(detail.statusLines.length, MAX_WORKTREE_STATUS_LINES);
     assert.equal(detail.truncatedCount, 15);
+    // Must never scan dirty status of sibling worktrees during a single-row detail request
+    assert.equal(
+      calls.some((c) => c.args[0] === "status" && c.args[1] === "--porcelain"),
+      false,
+      "detail request must not run git status --porcelain across all worktrees",
+    );
+    assert.equal(
+      calls.filter((c) => c.args[0] === "status" && c.args[1] === "--short").length,
+      1,
+      "detail request should run git status --short only for the selected worktree",
+    );
 
     const rejected = await loadWorktreeDetailPayload(REPO_MAIN, "/etc/passwd", {
       runGitAsync,
@@ -184,6 +203,41 @@ describe("browser-ops worktrees (#1427)", () => {
     });
     assert.equal(empty.statusOk, false);
     assert.match(empty.error!, /required/i);
+  });
+
+  it("loadWorktreesPayload and loadWorktreeDetailPayload surface git listing errors distinctly from non-git directories", async () => {
+    const failingGit: GitAsyncRunner = async () => ({
+      stdout: "",
+      stderr: "fatal: unable to access worktree metadata: permission denied",
+      code: 128,
+    });
+    const listErr = await loadWorktreesPayload(REPO_MAIN, {
+      forceRefresh: true,
+      includePrs: false,
+      deps: { runGitAsync: failingGit, readLivePeers: () => [] },
+    });
+    assert.match(listErr.error!, /permission denied/i);
+    assert.equal(listErr.worktrees.length, 0);
+
+    const detailErr = await loadWorktreeDetailPayload(REPO_MAIN, WT_CLEAN, {
+      runGitAsync: failingGit,
+      readLivePeers: () => [],
+    });
+    assert.equal(detailErr.statusOk, false);
+    assert.match(detailErr.error!, /permission denied/i);
+
+    const nonGit: GitAsyncRunner = async () => ({
+      stdout: "",
+      stderr: "fatal: not a git repository (or any of the parent directories): .git",
+      code: 128,
+    });
+    const emptyOk = await loadWorktreesPayload("/tmp/not-a-repo", {
+      forceRefresh: true,
+      includePrs: false,
+      deps: { runGitAsync: nonGit, readLivePeers: () => [] },
+    });
+    assert.equal(emptyOk.error, undefined);
+    assert.equal(emptyOk.worktrees.length, 0);
   });
 
   it("pruneWorktreesOp runs git worktree prune -v and fires onWorktreesChanged", async () => {
@@ -272,7 +326,7 @@ describe("browser-ops worktrees (#1427)", () => {
     assert.match(empty.message, /No worktree paths/i);
   });
 
-  it("getWorktreeSummary short-circuits when single-checkout hint is false and compares summaries accurately", async () => {
+  it("getWorktreeSummary short-circuits single-checkout repos, skips dirty scans by default, and computes dirty count when requested", async () => {
     let gitCalled = false;
     const s0 = await getWorktreeSummary(REPO_MAIN, {
       hasLinkedWorktreesHint: () => false,
@@ -284,14 +338,32 @@ describe("browser-ops worktrees (#1427)", () => {
     assert.equal(gitCalled, false);
     assert.deepEqual(s0, { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false });
 
-    const s1 = await getWorktreeSummary(WT_CLEAN, {
+    // Default lightweight periodic poll (includeDirty: false) must NOT spawn git status per worktree
+    const statusCalls: string[] = [];
+    const baseGit = makeMockGit();
+    const trackedGit: GitAsyncRunner = async (args, cwd) => {
+      if (args[0] === "status") statusCalls.push(cwd ?? "");
+      return baseGit(args, cwd);
+    };
+    const sLight = await getWorktreeSummary(WT_CLEAN, {
       hasLinkedWorktreesHint: () => true,
-      runGitAsync: makeMockGit(),
+      runGitAsync: trackedGit,
+      fallbackDirtyCount: 2,
     });
-    assert.deepEqual(s1, { worktreeCount: 4, worktreeDirtyCount: 1, inLinkedWorktree: true });
-    assert.equal(worktreeSummaryEqual(null, s1), false);
-    assert.equal(worktreeSummaryEqual(s1, { worktreeCount: 4, worktreeDirtyCount: 1, inLinkedWorktree: true }), true);
-    assert.equal(worktreeSummaryEqual(s1, { worktreeCount: 4, worktreeDirtyCount: 2, inLinkedWorktree: true }), false);
+    assert.equal(statusCalls.length, 0, "lightweight poll must not invoke git status in worktrees");
+    assert.deepEqual(sLight, { worktreeCount: 4, worktreeDirtyCount: 2, inLinkedWorktree: true });
+
+    // Explicit includeDirty: true refreshes dirty count
+    const sFull = await getWorktreeSummary(WT_CLEAN, {
+      hasLinkedWorktreesHint: () => true,
+      includeDirty: true,
+      runGitAsync: trackedGit,
+    });
+    assert.ok(statusCalls.length > 0);
+    assert.deepEqual(sFull, { worktreeCount: 4, worktreeDirtyCount: 1, inLinkedWorktree: true });
+    assert.equal(worktreeSummaryEqual(null, sFull), false);
+    assert.equal(worktreeSummaryEqual(sFull, { worktreeCount: 4, worktreeDirtyCount: 1, inLinkedWorktree: true }), true);
+    assert.equal(worktreeSummaryEqual(sFull, { worktreeCount: 4, worktreeDirtyCount: 2, inLinkedWorktree: true }), false);
   });
 
   it("end-to-end against a real temporary git repo: list, detail, reject dirty, remove clean, prune", async () => {
@@ -372,5 +444,124 @@ describe("pidash-session-state worktree fields (#1427)", () => {
     updatePidashSession(client.session, { worktreeCount: -1, worktreeDirtyCount: -2 });
     assert.equal(client.session.worktreeCount, 2);
     assert.equal(client.session.worktreeDirtyCount, 0);
+  });
+
+  it("authorizeWorktreeBrowserCommand restricts mutations to localhost and enforces watched-session matching", () => {
+    // Localhost watching target session: allowed for read & mutation
+    assert.deepEqual(
+      authorizeWorktreeBrowserCommand({
+        command: "worktrees-remove",
+        targetSessionId: "s1",
+        watchedSessionId: "s1",
+        remoteAddress: "127.0.0.1",
+      }),
+      { allowed: true },
+    );
+    assert.deepEqual(
+      authorizeWorktreeBrowserCommand({
+        command: "worktrees-prune",
+        targetSessionId: "s1",
+        watchedSessionId: "s1",
+        remoteAddress: "::ffff:127.0.0.1",
+      }),
+      { allowed: true },
+    );
+
+    // Non-loopback LAN client: mutations blocked, read-only list on watched session allowed
+    const lanRemove = authorizeWorktreeBrowserCommand({
+      command: "worktrees-remove",
+      targetSessionId: "s1",
+      watchedSessionId: "s1",
+      remoteAddress: "192.168.1.50",
+    });
+    assert.equal(lanRemove.allowed, false);
+    assert.match((lanRemove as any).reason, /localhost/i);
+
+    const lanPrune = authorizeWorktreeBrowserCommand({
+      command: "worktrees-prune",
+      targetSessionId: "s1",
+      watchedSessionId: "s1",
+      remoteAddress: "10.0.0.12",
+    });
+    assert.equal(lanPrune.allowed, false);
+
+    assert.deepEqual(
+      authorizeWorktreeBrowserCommand({
+        command: "worktrees-list",
+        targetSessionId: "s1",
+        watchedSessionId: "s1",
+        remoteAddress: "192.168.1.50",
+      }),
+      { allowed: true },
+    );
+
+    // Cross-session targeting (not watching targetSessionId) rejected even on localhost
+    const crossSession = authorizeWorktreeBrowserCommand({
+      command: "worktrees-list",
+      targetSessionId: "s2",
+      watchedSessionId: "s1",
+      remoteAddress: "127.0.0.1",
+    });
+    assert.equal(crossSession.allowed, false);
+    assert.match((crossSession as any).reason, /not watching/i);
+  });
+
+  it("buildWorktreeCommandErrorFrame and shouldNotifyWorktreeChange scope responses and invalidations cleanly", () => {
+    const listErr = buildWorktreeCommandErrorFrame({ command: "worktrees-list", sessionId: "s1", requestId: "r1" }, "Disconnected", "/repo");
+    assert.equal(listErr.type, "worktrees-list");
+    assert.equal(listErr.requestId, "r1");
+    assert.equal(listErr.error, "Disconnected");
+
+    const detailErr = buildWorktreeCommandErrorFrame({ command: "worktrees-detail", path: "/repo/wt", requestId: "r2" }, "Disconnected");
+    assert.equal(detailErr.type, "worktrees-detail");
+    assert.equal(detailErr.statusOk, false);
+    assert.equal(detailErr.error, "Disconnected");
+
+    const opErr = buildWorktreeCommandErrorFrame({ command: "worktrees-remove", requestId: "r3" }, "Restricted");
+    assert.equal(opErr.type, "worktrees-op-result");
+    assert.equal(opErr.op, "remove");
+    assert.equal(opErr.ok, false);
+
+    // Same-session and same-repo watchers notified; foreign repo watchers NOT notified
+    assert.equal(
+      shouldNotifyWorktreeChange({
+        watchId: "s1",
+        sourceSessionId: "s1",
+        repoRoot: "/repo",
+        watchedSessionRepoRoot: "/repo",
+        watchedSessionCwd: "/repo",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldNotifyWorktreeChange({
+        watchId: "s2",
+        sourceSessionId: "s1",
+        repoRoot: "/repo",
+        watchedSessionRepoRoot: "/repo",
+        watchedSessionCwd: "/repo/.worktrees/wt2",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldNotifyWorktreeChange({
+        watchId: "s3",
+        sourceSessionId: "s1",
+        repoRoot: "/repo",
+        watchedSessionRepoRoot: "/other",
+        watchedSessionCwd: "/other",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldNotifyWorktreeChange({
+        watchId: null,
+        sourceSessionId: "s1",
+        repoRoot: "/repo",
+        watchedSessionRepoRoot: undefined,
+        watchedSessionCwd: undefined,
+      }),
+      false,
+    );
   });
 });

@@ -16,15 +16,24 @@ import {
 import { cn } from "@/lib/utils";
 import { createLogger } from "@/lib/create-logger";
 import {
+  computeOpTimeoutMs,
   copyTextInBrowser,
   getRemovableWorktrees,
   isSafePrUrl,
   pruneSelectedWorktreePaths,
-  reconcileWorktreeBroadcast,
+  shouldAcceptWorktreesList,
 } from "@/lib/worktrees-panel-helpers";
 import type { WorktreeDetailPayload, WorktreeItem, WorktreeOpResult } from "@/types";
 
 const log = createLogger("WorktreesPanel");
+
+const LIST_REQUEST_TIMEOUT_MS = 15_000;
+const DETAIL_REQUEST_TIMEOUT_MS = 15_000;
+
+let requestSeq = 0;
+function nextRequestId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${++requestSeq}`;
+}
 
 interface Props {
   sessionId: string;
@@ -37,7 +46,7 @@ interface Props {
 /**
  * #1427 — PiDash Worktrees panel with full feature parity to TUI `/worktree`.
  * Reuses backend worktree helpers (single source of truth) and synchronizes across
- * browsers via `worktrees-list` broadcasts.
+ * same-repository sessions via minimal `worktrees-changed` notices.
  */
 export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: Props) {
   const [worktrees, setWorktrees] = useState<WorktreeItem[] | null>(null);
@@ -53,14 +62,29 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const [confirmTargets, setConfirmTargets] = useState<WorktreeItem[] | null>(null);
 
-  const repoRootRef = useRef<string | null>(null);
   const expandedPathRef = useRef<string | null>(null);
+  const latestListReqRef = useRef<{ requestId: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const latestDetailReqRef = useRef<{ requestId: string; path: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   const pendingOpRef = useRef<{ requestId: string; op: "prune" | "remove"; timer: ReturnType<typeof setTimeout> } | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     expandedPathRef.current = expandedPath;
   }, [expandedPath]);
+
+  const clearListTimer = useCallback(() => {
+    if (latestListReqRef.current) {
+      clearTimeout(latestListReqRef.current.timer);
+      latestListReqRef.current = null;
+    }
+  }, []);
+
+  const clearDetailTimer = useCallback(() => {
+    if (latestDetailReqRef.current) {
+      clearTimeout(latestDetailReqRef.current.timer);
+      latestDetailReqRef.current = null;
+    }
+  }, []);
 
   const clearPendingOp = useCallback(() => {
     if (pendingOpRef.current) {
@@ -72,31 +96,63 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
 
   const requestDetail = useCallback(
     (wtPath: string) => {
+      clearDetailTimer();
+      const requestId = nextRequestId("wt-detail");
+      const timer = setTimeout(() => {
+        if (latestDetailReqRef.current?.requestId !== requestId) return;
+        latestDetailReqRef.current = null;
+        setLoadingDetailPath((prev) => (prev === wtPath ? null : prev));
+        setDetailsByPath((prev) => ({
+          ...prev,
+          [wtPath]: {
+            path: wtPath,
+            headSubject: "",
+            statusLines: [],
+            truncatedCount: 0,
+            statusOk: false,
+            error: "Timed out loading worktree status — no response from session.",
+          },
+        }));
+        log.warn("worktree detail request timed out", { path: wtPath, requestId });
+      }, DETAIL_REQUEST_TIMEOUT_MS);
+      latestDetailReqRef.current = { requestId, path: wtPath, timer };
       setLoadingDetailPath(wtPath);
-      sendCmd("worktrees-detail", { path: wtPath, requestId: `wt-detail-${Date.now()}` });
+      sendCmd("worktrees-detail", { path: wtPath, requestId });
     },
-    [sendCmd],
+    [sendCmd, clearDetailTimer],
   );
 
-  const requestRefresh = useCallback(
-    (forceRefreshPrs = true) => {
+  const requestList = useCallback(
+    (opts: { forceRefreshPrs?: boolean; refreshExpanded?: boolean } = {}) => {
+      clearListTimer();
+      const requestId = nextRequestId("wt-list");
+      const timer = setTimeout(() => {
+        if (latestListReqRef.current?.requestId !== requestId) return;
+        latestListReqRef.current = null;
+        setRefreshing(false);
+        setError("Timed out loading worktrees — no response from session.");
+        log.warn("worktrees list request timed out", { sessionId, requestId });
+      }, LIST_REQUEST_TIMEOUT_MS);
+      latestListReqRef.current = { requestId, timer };
       setRefreshing(true);
-      log.debug("requesting worktrees refresh", { sessionId, forceRefreshPrs });
+      log.debug("requesting worktrees list", { sessionId, requestId, forceRefreshPrs: !!opts.forceRefreshPrs });
       sendCmd("worktrees-list", {
         forceRefresh: true,
-        forceRefreshPrs,
-        requestId: `wt-list-${Date.now()}`,
+        forceRefreshPrs: opts.forceRefreshPrs === true,
+        requestId,
       });
-      if (expandedPathRef.current) {
+      if (opts.refreshExpanded && expandedPathRef.current) {
         requestDetail(expandedPathRef.current);
       }
     },
-    [sendCmd, sessionId, requestDetail],
+    [sendCmd, sessionId, clearListTimer, requestDetail],
   );
 
   useEffect(() => {
     // Reset state on session / cwd switch so stale repo data never leaks across projects.
-    repoRootRef.current = null;
+    clearListTimer();
+    clearDetailTimer();
+    clearPendingOp();
     setWorktrees(null);
     setLinkedCount(0);
     setDirtyCount(0);
@@ -106,35 +162,41 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
     setDetailsByPath({});
     setLoadingDetailPath(null);
     setConfirmTargets(null);
-    clearPendingOp();
 
-    setRefreshing(true);
-    sendCmd("worktrees-list", { forceRefresh: true, requestId: `wt-init-${Date.now()}` });
+    requestList({ forceRefreshPrs: false });
 
     const unsub = onMessage((ev: any) => {
+      if (ev.type === "worktrees-changed") {
+        log.debug("same-repo worktrees-changed notice received; refetching", {
+          sessionId,
+          sourceSessionId: ev.sourceSessionId,
+        });
+        requestList({ forceRefreshPrs: false, refreshExpanded: true });
+        return;
+      }
+
       if (ev.type === "worktrees-list") {
-        const action = reconcileWorktreeBroadcast(ev, sessionId, repoRootRef.current);
-        if (action === "ignore") return;
-        if (action === "refetch") {
-          log.debug("same-repo worktrees broadcast received; refetching for current session", {
-            sessionId,
-            repoRoot: ev.repoRoot,
+        if (!shouldAcceptWorktreesList(ev, sessionId, cwd, latestListReqRef.current?.requestId ?? null)) {
+          log.debug("ignoring stale or mismatched worktrees-list", {
+            evCwd: ev.cwd,
+            cwd,
+            evRequestId: ev.requestId,
+            expectedRequestId: latestListReqRef.current?.requestId ?? null,
           });
-          sendCmd("worktrees-list", { forceRefresh: true, requestId: `wt-sync-${Date.now()}` });
-          if (expandedPathRef.current) {
-            requestDetail(expandedPathRef.current);
-          }
+          return;
+        }
+        clearListTimer();
+        setRefreshing(false);
+        if (typeof ev.error === "string" && ev.error) {
+          setError(ev.error);
+          log.warn("worktrees list error received", { error: ev.error });
           return;
         }
         const items: WorktreeItem[] = Array.isArray(ev.worktrees) ? ev.worktrees : [];
-        if (typeof ev.repoRoot === "string" && ev.repoRoot) {
-          repoRootRef.current = ev.repoRoot;
-        }
         setWorktrees(items);
         setLinkedCount(typeof ev.linkedCount === "number" ? ev.linkedCount : 0);
         setDirtyCount(typeof ev.dirtyCount === "number" ? ev.dirtyCount : 0);
-        setError(typeof ev.error === "string" ? ev.error : null);
-        setRefreshing(false);
+        setError(null);
         setSelectedPaths((prev) => pruneSelectedWorktreePaths(prev, items));
         if (expandedPathRef.current && !items.some((w) => w.path === expandedPathRef.current)) {
           setExpandedPath(null);
@@ -143,17 +205,28 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
       }
 
       if (ev.type === "worktrees-detail" && typeof ev.path === "string") {
+        const pendingDetail = latestDetailReqRef.current;
+        if (pendingDetail && ev.requestId && ev.requestId !== pendingDetail.requestId) {
+          log.debug("ignoring stale worktrees-detail reply", { evRequestId: ev.requestId, expected: pendingDetail.requestId });
+          return;
+        }
+        if (expandedPathRef.current && ev.path !== expandedPathRef.current && pendingDetail?.path !== ev.path) {
+          return;
+        }
+        if (pendingDetail && (!ev.requestId || pendingDetail.requestId === ev.requestId)) {
+          clearDetailTimer();
+        }
         setDetailsByPath((prev) => ({ ...prev, [ev.path]: ev as WorktreeDetailPayload }));
         setLoadingDetailPath((prev) => (prev === ev.path ? null : prev));
       }
 
       if (ev.type === "worktrees-op-result") {
         const res = ev as WorktreeOpResult;
-        if (pendingOpRef.current && (!res.requestId || pendingOpRef.current.requestId === res.requestId)) {
-          clearPendingOp();
-        } else if (!pendingOpRef.current) {
-          setBusyOp(null);
-        }
+        const pending = pendingOpRef.current;
+        // Retain mutation notifications only for the operation initiated by this panel instance.
+        if (!pending) return;
+        if (res.requestId && pending.requestId !== res.requestId) return;
+        clearPendingOp();
         notify(res.message || `${res.op} ${res.ok ? "succeeded" : "failed"}`, res.ok ? "info" : "error");
         if (res.op === "remove" && Array.isArray(res.removed) && res.removed.length > 0) {
           const removedSet = new Set(res.removed);
@@ -171,9 +244,11 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
 
     return () => {
       unsub();
+      clearListTimer();
+      clearDetailTimer();
       clearPendingOp();
     };
-  }, [sessionId, cwd, sendCmd, onMessage, notify, clearPendingOp, requestDetail]);
+  }, [sessionId, cwd, onMessage, notify, requestList, clearListTimer, clearDetailTimer, clearPendingOp]);
 
   useEffect(() => {
     return () => {
@@ -194,14 +269,16 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [confirmTargets]);
 
-  const armPendingOp = (op: "prune" | "remove"): string => {
+  const armPendingOp = (op: "prune" | "remove", targetCount = 1): string => {
     clearPendingOp();
-    const requestId = `wt-${op}-${Date.now()}`;
+    const requestId = nextRequestId(`wt-${op}`);
+    const timeoutMs = computeOpTimeoutMs(op, targetCount);
     const timer = setTimeout(() => {
-      log.warn("worktree operation timed out", { op, requestId });
+      if (pendingOpRef.current?.requestId !== requestId) return;
+      log.warn("worktree operation timed out", { op, requestId, timeoutMs });
       clearPendingOp();
       notify(`Worktree ${op} timed out — no response from session`, "error");
-    }, 30000);
+    }, timeoutMs);
     pendingOpRef.current = { requestId, op, timer };
     setBusyOp(op);
     return requestId;
@@ -209,7 +286,7 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
 
   const handlePrune = () => {
     if (busyOp) return;
-    const requestId = armPendingOp("prune");
+    const requestId = armPendingOp("prune", 1);
     log.info("triggering worktree prune", { sessionId, requestId });
     sendCmd("worktrees-prune", { requestId });
   };
@@ -218,13 +295,15 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
     if (!confirmTargets || confirmTargets.length === 0 || busyOp) return;
     const paths = confirmTargets.map((w) => w.path);
     setConfirmTargets(null);
-    const requestId = armPendingOp("remove");
+    const requestId = armPendingOp("remove", paths.length);
     log.info("triggering guarded worktree remove", { sessionId, count: paths.length, requestId });
     sendCmd("worktrees-remove", { paths, requestId });
   };
 
   const handleToggleExpand = (wt: WorktreeItem) => {
     if (expandedPath === wt.path) {
+      clearDetailTimer();
+      setLoadingDetailPath(null);
       setExpandedPath(null);
       return;
     }
@@ -301,7 +380,7 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
           <button
             type="button"
             className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-accent/50 hover:bg-accent text-foreground disabled:opacity-50"
-            onClick={() => requestRefresh(true)}
+            onClick={() => requestList({ forceRefreshPrs: true, refreshExpanded: true })}
             disabled={refreshing || busyOp !== null}
             title="Refresh worktrees, dirty counts, peers, and open PRs"
           >
@@ -354,8 +433,15 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
       )}
 
       {error && (
-        <div className="text-xs text-red-400 p-2 rounded-md bg-red-500/10 border border-red-500/30 break-words">
-          {error}
+        <div className="flex items-center justify-between gap-2 text-xs text-red-400 p-2 rounded-md bg-red-500/10 border border-red-500/30 break-words">
+          <span className="flex-1 min-w-0">{error}</span>
+          <button
+            type="button"
+            className="px-2 py-0.5 text-[10px] rounded bg-red-500/20 hover:bg-red-500/35 text-red-300 shrink-0"
+            onClick={() => requestList({ forceRefreshPrs: true, refreshExpanded: true })}
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -593,7 +679,16 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
                     ) : wt.bare ? (
                       <div className="text-[10px] text-muted-foreground">Bare repository worktree.</div>
                     ) : detail?.error ? (
-                      <div className="text-[10px] text-red-400">{detail.error}</div>
+                      <div className="flex items-center justify-between gap-2 text-[10px] text-red-400">
+                        <span className="flex-1 min-w-0">{detail.error}</span>
+                        <button
+                          type="button"
+                          className="px-1.5 py-0.5 rounded bg-red-500/20 hover:bg-red-500/35 text-red-300 shrink-0"
+                          onClick={() => requestDetail(wt.path)}
+                        >
+                          Retry
+                        </button>
+                      </div>
                     ) : detail && !detail.statusOk ? (
                       <div className="text-[10px] text-amber-500">
                         Working tree status unavailable{detail.statusError ? ` (${detail.statusError})` : ""}.

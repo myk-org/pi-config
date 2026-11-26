@@ -14,6 +14,8 @@ import { createRequire } from "node:module";
 import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import {
+  authorizeWorktreeBrowserCommand,
+  buildWorktreeCommandErrorFrame,
   clearPendingUiRequests,
   createAsyncAgentRegistry,
   disconnectPidashSession,
@@ -21,11 +23,13 @@ import {
   forwardBrowserUiResponse,
   isInteractiveUiRequest,
   isLoopbackAddress,
+  isWorktreeCommand,
   processPiPendingUiEvent,
   reconcileActiveAsyncAgents,
   registerPidashSession,
   resetSessionViewState,
   sendSessionSnapshot,
+  shouldNotifyWorktreeChange,
   updatePidashSession,
   type PiClient,
 } from "./pidash-session-state.ts";
@@ -62,6 +66,10 @@ const _require = createRequire(import.meta.url);
 const WebSocket = _require("ws");
 const asyncWss = new WebSocket.Server({ noServer: true });
 let asyncRegistry: ReturnType<typeof createAsyncAgentRegistry>;
+// Per-browser remote address (used to gate destructive worktree mutations to localhost)
+const browserRemoteAddrMap = new WeakMap<any, string>();
+// Per-session learned git repository root (used to scope minimal worktrees-changed notices)
+const sessionRepoRootMap = new Map<string, string>();
 
 function getActiveSessions(): SessionInfo[] {
   return Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
@@ -129,6 +137,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     piClient.session.activityBeforePrompt = undefined;
     piClient.session.streaming = false;
     piClient.session.working = false;
+    sessionRepoRootMap.delete(piClient.session.sessionId);
     resetSessionViewState(piClient); // Clear viewState to prevent cross-session leakage
     clearPendingUiRequests(piClient);
     broadcastToBrowsers({ type: "session_updated", session: piClient.session });
@@ -166,15 +175,41 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
       parsed.type === "worktrees-op-result") &&
     piClient
   ) {
+    if (parsed.type === "worktrees-list" && typeof parsed.repoRoot === "string" && parsed.repoRoot) {
+      sessionRepoRootMap.set(piClient.session.sessionId, parsed.repoRoot);
+    }
     sendToWatchers(piClient.session.sessionId, rawMsg ?? parsed);
     return;
   }
 
-  // #968 / #1427: settings files and git worktrees are shared across sessions —
-  // mutations fan out to EVERY connected browser so multiple tabs/sessions in
-  // the same repo converge on fresh state.
-  if ((parsed.type === "settings-broadcast" || parsed.type === "worktrees-broadcast") && parsed.payload) {
+  // #968: settings files are shared across sessions — a settings write must
+  // fan out to EVERY connected browser, not just watchers of the writing
+  // session (Qodo R3: shared settings stayed stale across sessions).
+  if (parsed.type === "settings-broadcast" && parsed.payload) {
     broadcastToBrowsers(parsed.payload);
+    return;
+  }
+
+  // #1427: worktree mutations send a minimal invalidation notice ONLY to browsers
+  // watching sessions in the same repository (never broadcasting paths/metadata globally).
+  if (parsed.type === "worktrees-broadcast" && piClient) {
+    const sourceSessionId = piClient.session.sessionId;
+    const repoRoot = typeof parsed.repoRoot === "string" && parsed.repoRoot
+      ? parsed.repoRoot
+      : sessionRepoRootMap.get(sourceSessionId);
+    if (repoRoot) {
+      sessionRepoRootMap.set(sourceSessionId, repoRoot);
+    }
+    sendToMatchingBrowsers((_browser, watchId) => {
+      const watchedClient = typeof watchId === "string" ? piClients.get(watchId) : undefined;
+      return shouldNotifyWorktreeChange({
+        watchId: typeof watchId === "string" ? watchId : null,
+        sourceSessionId,
+        repoRoot,
+        watchedSessionRepoRoot: typeof watchId === "string" ? sessionRepoRootMap.get(watchId) : undefined,
+        watchedSessionCwd: watchedClient?.session.cwd,
+      });
+    }, { type: "worktrees-changed", sourceSessionId });
     return;
   }
 
@@ -291,6 +326,32 @@ function handleBrowserMessage(ws: any, parsed: any): void {
   if (parsed.type === "pidash-command") {
     if (!parsed.sessionId) return;
     const piClient = piClients.get(parsed.sessionId);
+    if (isWorktreeCommand(parsed.command)) {
+      const auth = authorizeWorktreeBrowserCommand({
+        command: parsed.command,
+        targetSessionId: parsed.sessionId,
+        watchedSessionId: browserWatchMap.get(ws),
+        remoteAddress: browserRemoteAddrMap.get(ws),
+      });
+      if (!auth.allowed) {
+        serverLog.warn("worktree_command_rejected", {
+          command: parsed.command,
+          sessionId: parsed.sessionId,
+          remoteAddress: browserRemoteAddrMap.get(ws) ?? "unknown",
+          reason: auth.reason,
+        });
+        try {
+          ws.send(JSON.stringify(buildWorktreeCommandErrorFrame(parsed, auth.reason, piClient?.session.cwd ?? "")));
+        } catch {}
+        return;
+      }
+      if (!piClient || !piClient.ws || !piClient.session.active) {
+        try {
+          ws.send(JSON.stringify(buildWorktreeCommandErrorFrame(parsed, "Watched Pi session is disconnected.", piClient?.session.cwd ?? "")));
+        } catch {}
+        return;
+      }
+    }
     if (piClient && piClient.ws) {
       piClient.ws.send(JSON.stringify(parsed));
       log(`command forwarded to ${parsed.sessionId}: ${parsed.command}`);
@@ -337,8 +398,11 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
     return watchId;  // pidash stores just the sessionId string
   },
 
-  onBrowserConnect: (ws) => {
+  onBrowserConnect: (ws, req) => {
     browserWatchMap.set(ws, null);
+    if (req?.socket?.remoteAddress) {
+      browserRemoteAddrMap.set(ws, req.socket.remoteAddress);
+    }
   },
 
   onBrowserMessage: handleBrowserMessage,
@@ -413,6 +477,7 @@ const cleanupInterval = setInterval(() => {
   for (const [sessionId, client] of piClients.entries()) {
     if (!client.session.active && now - client.session.lastActivity > 5 * 60 * 1000) {
       piClients.delete(sessionId);
+      sessionRepoRootMap.delete(sessionId);
       log(`cleaned up stale session: ${sessionId}`);
       broadcastToBrowsers({ type: "session_removed", sessionId });
     }

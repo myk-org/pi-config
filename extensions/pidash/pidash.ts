@@ -32,6 +32,7 @@ import { createLogger } from "../shared/logger.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import {
+  WORKTREE_DIRTY_POLL_INTERVAL_MS,
   applySetting,
   buildSettingsPayload,
   getWorktreeSummary,
@@ -188,6 +189,7 @@ export function registerPidash(
   let trailTokenSavings: number | undefined;
   let lastGitStatus: GitStatus | null = null;
   let lastWorktreeSummary: WorktreeSummary | null = null;
+  let lastWorktreeDirtyScanAt = 0;
   let sessionEpoch = 0;
   const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
 
@@ -628,24 +630,30 @@ export function registerPidash(
             forceRefresh: parsed.forceRefresh !== false,
             forceRefreshPrs: parsed.forceRefreshPrs === true,
           });
+          if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
           client.send({
             type: "worktrees-list",
             requestId: parsed.requestId,
             sourceSessionId: sessionId,
             ...payload,
           });
-          publishWorktreeSummary(
-            {
-              worktreeCount: payload.linkedCount,
-              worktreeDirtyCount: payload.dirtyCount,
-              inLinkedWorktree: payload.inLinkedWorktree,
-            },
-            startEpoch,
-          );
+          if (!payload.error) {
+            lastWorktreeDirtyScanAt = Date.now();
+            publishWorktreeSummary(
+              {
+                worktreeCount: payload.linkedCount,
+                worktreeDirtyCount: payload.dirtyCount,
+                inLinkedWorktree: payload.inLinkedWorktree,
+              },
+              startEpoch,
+            );
+          }
         }
         if (parsed.command === "worktrees-detail") {
+          const startEpoch = sessionEpoch;
           const cwd = client.lastCtx?.cwd || process.cwd();
           const detail = await loadWorktreeDetailPayload(cwd, parsed.path);
+          if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
           client.send({
             type: "worktrees-detail",
             requestId: parsed.requestId,
@@ -659,23 +667,24 @@ export function registerPidash(
             onWorktreesChanged: () => { pi.events.emit("orchestrator:worktrees-changed", { source: "pidash" }); },
           });
           client.send({ type: "worktrees-op-result", requestId: parsed.requestId, ...result });
+          if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
           const payload = await loadWorktreesPayload(cwd, { forceRefresh: true });
-          publishWorktreeSummary(
-            {
-              worktreeCount: payload.linkedCount,
-              worktreeDirtyCount: payload.dirtyCount,
-              inLinkedWorktree: payload.inLinkedWorktree,
-            },
-            startEpoch,
-          );
+          if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
+          if (!payload.error) {
+            lastWorktreeDirtyScanAt = Date.now();
+            publishWorktreeSummary(
+              {
+                worktreeCount: payload.linkedCount,
+                worktreeDirtyCount: payload.dirtyCount,
+                inLinkedWorktree: payload.inLinkedWorktree,
+              },
+              startEpoch,
+            );
+          }
           client.send({
             type: "worktrees-broadcast",
-            payload: {
-              type: "worktrees-list",
-              broadcast: true,
-              sourceSessionId: sessionId,
-              ...payload,
-            },
+            repoRoot: payload.repoRoot,
+            sourceSessionId: sessionId,
           });
         }
         if (parsed.command === "worktrees-remove") {
@@ -686,23 +695,24 @@ export function registerPidash(
             onWorktreesChanged: () => { pi.events.emit("orchestrator:worktrees-changed", { source: "pidash" }); },
           });
           client.send({ type: "worktrees-op-result", requestId: parsed.requestId, ...result });
+          if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
           const payload = await loadWorktreesPayload(cwd, { forceRefresh: true });
-          publishWorktreeSummary(
-            {
-              worktreeCount: payload.linkedCount,
-              worktreeDirtyCount: payload.dirtyCount,
-              inLinkedWorktree: payload.inLinkedWorktree,
-            },
-            startEpoch,
-          );
+          if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
+          if (!payload.error) {
+            lastWorktreeDirtyScanAt = Date.now();
+            publishWorktreeSummary(
+              {
+                worktreeCount: payload.linkedCount,
+                worktreeDirtyCount: payload.dirtyCount,
+                inLinkedWorktree: payload.inLinkedWorktree,
+              },
+              startEpoch,
+            );
+          }
           client.send({
             type: "worktrees-broadcast",
-            payload: {
-              type: "worktrees-list",
-              broadcast: true,
-              sourceSessionId: sessionId,
-              ...payload,
-            },
+            repoRoot: payload.repoRoot,
+            sourceSessionId: sessionId,
           });
         }
 
@@ -735,9 +745,10 @@ export function registerPidash(
       const startEpoch = sessionEpoch;
       const [git, worktrees] = await Promise.all([
         getGitStatus(ctx.cwd),
-        getWorktreeSummary(ctx.cwd),
+        getWorktreeSummary(ctx.cwd, { includeDirty: true }),
       ]);
       if (startEpoch !== sessionEpoch) return { abort: true };
+      lastWorktreeDirtyScanAt = Date.now();
       return { data: { git, worktrees } };
     },
 
@@ -814,6 +825,7 @@ export function registerPidash(
     onDisconnect() {
       lastGitStatus = null;
       lastWorktreeSummary = null;
+      lastWorktreeDirtyScanAt = 0;
     },
 
     onBeforeShutdown(event, activeWs, isConnected) {
@@ -1049,22 +1061,21 @@ export function registerPidash(
         try {
           const payload = await loadWorktreesPayload(cwd, { forceRefresh: true });
           if (client.shuttingDown || !client.connected || startEpoch !== sessionEpoch) return;
-          publishWorktreeSummary(
-            {
-              worktreeCount: payload.linkedCount,
-              worktreeDirtyCount: payload.dirtyCount,
-              inLinkedWorktree: payload.inLinkedWorktree,
-            },
-            startEpoch,
-          );
+          if (!payload.error) {
+            lastWorktreeDirtyScanAt = Date.now();
+            publishWorktreeSummary(
+              {
+                worktreeCount: payload.linkedCount,
+                worktreeDirtyCount: payload.dirtyCount,
+                inLinkedWorktree: payload.inLinkedWorktree,
+              },
+              startEpoch,
+            );
+          }
           client.send({
             type: "worktrees-broadcast",
-            payload: {
-              type: "worktrees-list",
-              broadcast: true,
-              sourceSessionId: sessionId,
-              ...payload,
-            },
+            repoRoot: payload.repoRoot,
+            sourceSessionId: sessionId,
           });
         } catch (e: any) {
           log.debug("worktrees_changed_broadcast_failed", { error: e?.message || String(e) });
@@ -1090,9 +1101,14 @@ export function registerPidash(
       if (ctx.mode !== "tui") return;
       inFlight = true;
       try {
+        const now = Date.now();
+        const shouldScanDirty = now - lastWorktreeDirtyScanAt >= WORKTREE_DIRTY_POLL_INTERVAL_MS;
         const [git, wtSummary] = await Promise.all([
           getGitStatus(ctx.cwd),
-          getWorktreeSummary(ctx.cwd),
+          getWorktreeSummary(ctx.cwd, {
+            includeDirty: shouldScanDirty,
+            fallbackDirtyCount: lastWorktreeSummary?.worktreeDirtyCount ?? 0,
+          }),
         ]);
         const gitChanged = shouldPublishPeriodicGitStatus({
           shuttingDown: client.shuttingDown,
@@ -1104,6 +1120,9 @@ export function registerPidash(
           nextGitStatus: git,
         });
         const stillValid = !client.shuttingDown && client.connected && client.ws === activeWs && startEpoch === sessionEpoch;
+        if (stillValid && shouldScanDirty) {
+          lastWorktreeDirtyScanAt = now;
+        }
         const wtChanged = stillValid && !worktreeSummaryEqual(lastWorktreeSummary, wtSummary);
         if (!gitChanged && !wtChanged) return;
         if (gitChanged) lastGitStatus = git;
@@ -1157,12 +1176,17 @@ export function registerPidash(
       activity = "idle";
       activityBeforePrompt = null;
       lastGitStatus = null;
-      lastWorktreeSummary = null;
+      lastWorktreeSummary = { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
+      lastWorktreeDirtyScanAt = 0;
+      const switchEpoch = sessionEpoch;
       client.send({
         type: "session_switch",
         sessionId,
         cwd: switchCtx.cwd,
         branch: getGitBranch(switchCtx.cwd),
+        worktreeCount: 0,
+        worktreeDirtyCount: 0,
+        inLinkedWorktree: false,
         sessionFile: switchCtx.sessionManager?.getSessionFile?.() || switchCtx.sessionFile || "",
         // One producer for every model field, so a switch cannot omit the
         // capability the daemon relies on (Qodo 3e547c6d / 24f50129).
@@ -1171,6 +1195,16 @@ export function registerPidash(
         trailTokenSavings,
       });
       log.debug(`session_switch sent: cwd=${switchCtx.cwd}`);
+      void (async () => {
+        try {
+          const wtSummary = await getWorktreeSummary(switchCtx.cwd, { includeDirty: true });
+          if (client.shuttingDown || !client.connected || switchEpoch !== sessionEpoch) return;
+          lastWorktreeDirtyScanAt = Date.now();
+          publishWorktreeSummary(wtSummary, switchEpoch);
+        } catch (e: any) {
+          log.debug("session_switch_worktree_summary_failed", { error: e?.message || String(e) });
+        }
+      })();
     }
   }
 

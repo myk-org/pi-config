@@ -184,7 +184,7 @@ export interface DaemonServerOptions {
   /** Called when a pi session WebSocket errors */
   onPiError?: (piClient: any, ws: any) => void;
   /** Called when a browser WebSocket connects (after adding to set) */
-  onBrowserConnect?: (ws: any) => void;
+  onBrowserConnect?: (ws: any, req?: IncomingMessage) => void;
   /** Called when a browser WebSocket sends a message */
   onBrowserMessage?: (ws: any, parsed: any) => void;
   /** Called when a browser sends a "watch" message. Receives the ws, sessionId, and the piClient (if found). Return value is stored in browserWatchMap. */
@@ -295,10 +295,10 @@ export function createDaemonServer(opts: DaemonServerOptions) {
   // ── Browser WebSocket ───────────────────────────────────────────
 
   const browserWss = new WebSocket.Server({ noServer: true });
-  browserWss.on("connection", (ws: any) => {
+  browserWss.on("connection", (ws: any, req?: IncomingMessage) => {
     browserClients.add(ws);
     log(`browser connected (total: ${browserClients.size})`);
-    if (onBrowserConnect) onBrowserConnect(ws);
+    if (onBrowserConnect) onBrowserConnect(ws, req);
 
     ws.on("message", (data: Buffer) => {
       try {
