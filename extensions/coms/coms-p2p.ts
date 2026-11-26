@@ -1137,9 +1137,17 @@ export function createComsPeerRuntime(
 		try { socket.end(); } catch { /* ignore */ }
 	}
 
+	/** Return the peer's verified project when it belongs to this session's discovered project peers. */
+	function resolveVerifiedPeerProject(sessionId: string | undefined): string | undefined {
+		if (!sessionId || !identity) return undefined;
+		if (peerCards.has(sessionId)) return identity.project;
+		return undefined;
+	}
+
 	/** #924 §5: append to the local coms history trail. Fail-soft — delivery
 	 *  never waits on history. Every record is stamped with this session's id
-	 *  and project so queries and project-scoped activity views stay isolated on the shared file. */
+	 *  and owner project so project-scoped activity views stay isolated on the shared file;
+	 *  `peer_project` is set separately only when the remote peer's project is verified. */
 	function appendComsHistory(record: Omit<HistoryRecord, "ts" | "owner"> & { ts?: string }): void {
 		appendHistoryRecord(registry.historyPath(), {
 			ts: record.ts ?? nowIso(),
@@ -1212,6 +1220,7 @@ export function createComsPeerRuntime(
 						direction: "steer",
 						msg_id: env.msg_id,
 						peer: env.sender_name,
+						...(resolveVerifiedPeerProject(env.sender_session) ? { peer_project: resolveVerifiedPeerProject(env.sender_session) } : {}),
 						session: env.sender_session,
 						preview: truncatePreview(env.prompt),
 						status: `injected into ${currentInbound.msg_id}`,
@@ -1235,6 +1244,7 @@ export function createComsPeerRuntime(
 					direction: "steer",
 					msg_id: env.msg_id,
 						peer: env.sender_name,
+						...(resolveVerifiedPeerProject(env.sender_session) ? { peer_project: resolveVerifiedPeerProject(env.sender_session) } : {}),
 						session: env.sender_session,
 						preview: truncatePreview(env.prompt),
 						status: "steer_failed — queued normally",
@@ -1279,6 +1289,7 @@ export function createComsPeerRuntime(
 			direction: "in",
 			msg_id: env.msg_id,
 			peer: env.sender_name,
+			...(resolveVerifiedPeerProject(env.sender_session) ? { peer_project: resolveVerifiedPeerProject(env.sender_session) } : {}),
 			session: env.sender_session,
 			preview: truncatePreview(env.prompt),
 			status: env.priority ? "queued (priority)" : "queued",
@@ -1362,7 +1373,7 @@ export function createComsPeerRuntime(
 				direction: "response_in",
 				msg_id: env.msg_id,
 				peer: pending.target_name ?? env.sender_session,
-				...(pending.target_project ? { project: pending.target_project } : {}),
+				...(pending.target_project ? { peer_project: pending.target_project } : {}),
 				preview: truncatePreview(typeof env.response === "string" ? env.response : JSON.stringify(env.response ?? "")),
 				status: env.error ? `error: ${env.error}` : "replied",
 				error: env.error ?? null,
@@ -2750,13 +2761,14 @@ Do not respond to this message.`;
 			resolveFn = res;
 			rejectFn = rej;
 		});
+		const verifiedTargetProject = params.targetProject ?? resolveVerifiedPeerProject(target.coms_session_id);
 		const entry: PendingReply = {
 			resolve: resolveFn,
 			reject: rejectFn,
 			timer: null,
 			promise,
 			target_name: target.name,
-			target_project: params.targetProject ?? identity.project,
+			target_project: verifiedTargetProject,
 			created_at: nowIso(),
 		};
 		// Steers use the FULL timeout, same as normal sends (Qodo ccd126a8):
@@ -2823,7 +2835,7 @@ Do not respond to this message.`;
 			direction: "out",
 			msg_id,
 			peer: target.name,
-			...(entry.target_project ? { project: entry.target_project } : {}),
+			...(entry.target_project ? { peer_project: entry.target_project } : {}),
 			session: target.coms_session_id,
 			preview: truncatePreview(promptText),
 			status: [params.steer ? "steer" : null, params.priority ? "priority" : null].filter(Boolean).join("+") || "sent",
@@ -2836,7 +2848,7 @@ Do not respond to this message.`;
 	/** #1077: the user path refuses ambiguity — a human aiming at one peer must never land on
 	 *  another, so unlike the agent tools (which pick the freshest match) this returns a message
 	 *  that names the candidates and points at `--project`. */
-	async function resolveUserTarget(name: string, project?: string): Promise<{ target?: RegistryEntry; error?: string }> {
+	async function resolveUserTarget(name: string, project?: string): Promise<{ target?: RegistryEntry; project?: string; error?: string }> {
 		if (!identity) return { error: "coms is not active — run /coms start first." };
 		if (project) {
 			// The value is joined under the coms root by pruneDeadEntries, so it is validated exactly
@@ -2870,7 +2882,7 @@ Do not respond to this message.`;
 			log.warn("user_send_refused", { target: name, matches: found.length, reason: problem });
 			return { error: problem };
 		}
-		return { target: found[0].entry };
+		return { target: found[0].entry, project: found[0].project };
 	}
 
 	/** #1077 command-layer send: `/coms tell` and the peers overlay composer deliver through the
@@ -2898,7 +2910,7 @@ Do not respond to this message.`;
 			const { msg_id } = await deliverPrompt(target, {
 				prompt: params.prompt,
 				userAuthored: true,
-				targetProject: params.project,
+				targetProject: resolved.project ?? params.project,
 			});
 			log.info("user_send", msg_id, "to", target.name, "chars", params.prompt.length);
 			tellLog.debug("tell_completion", { count: 1 });
@@ -4230,6 +4242,7 @@ Do not respond to this message.`;
 					direction: "response_out",
 					msg_id: inbound.msg_id,
 					peer: inbound.sender_name,
+					...(resolveVerifiedPeerProject(inbound.sender_session) ? { peer_project: resolveVerifiedPeerProject(inbound.sender_session) } : {}),
 					preview: truncatePreview(typeof payload === "string" ? payload : JSON.stringify(payload ?? "")),
 					status: error ? `error: ${error}` : "replied",
 					error: error,

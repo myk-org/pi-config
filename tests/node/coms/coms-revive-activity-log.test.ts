@@ -17,12 +17,15 @@ import {
   type RegistryRow,
   type SupervisionRecord,
 } from "../../../extensions/coms/coms-peers.js";
-import { openComsPeersOverlay } from "../../../extensions/coms/coms-peers-ui.js";
+import { openComsPeersOverlay, REVIVE_PENDING_TTL_MS } from "../../../extensions/coms/coms-peers-ui.js";
+import { createComsPeerRuntime } from "../../../extensions/coms/coms-p2p.js";
+import { ComsRegistry } from "../../../extensions/coms/coms-registry.js";
 import {
   createTailHistoryReader,
   readRecentHistoryRecords,
   type HistoryRecord,
 } from "../../../extensions/coms/coms-history.js";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { fakeCommandCtx, fakeCustom, type FakeCustomFactory } from "../helpers/fake-extension-ctx.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -361,12 +364,50 @@ describe("/coms revive (`r`) and Unified Activity Log (`1`/`2`) (#1417)", () => 
     assert.match(notifications[0].message, /skipped 1 stopped peer \(beta/);
   });
 
-  it("isolates project-scoped history and disambiguates namesake peers across projects (Qodo #2 & #7)", async () => {
+  it("expires stalled pending revives after TTL so a failed startup becomes retryable (Qodo C2 #5)", async () => {
+    let clock = Date.parse(stoppedPeer.stoppedAt!) + 60_000;
+    let reviveCalls = 0;
+    const h = makeUi([
+      ["r", "r", "\r"], // 1st r claims, 2nd r skipped while within TTL, Enter opens detail
+      ["\x1b"],         // Esc from detail -> triggers toRows after clock advances past TTL
+      ["r", "close"],   // 3rd r succeeds after TTL expiry
+    ]);
+
+    const origCustom = h.ctx.ui.custom;
+    let opens = 0;
+    h.ctx.ui.custom = (<T,>(factory: FakeCustomFactory<T>) => {
+      opens++;
+      if (opens === 3) clock += REVIVE_PENDING_TTL_MS + 1000;
+      return origCustom(factory as any);
+    }) satisfies ExtensionUIContext["custom"];
+
+    await openComsPeersOverlay(h.ctx, {
+      listPeers: () => [],
+      listStoppedPeers: () => [stoppedPeer],
+      now: () => clock,
+      revivePeer: () => {
+        reviveCalls++;
+        return { ok: true, pid: 8888 + reviveCalls, message: `Reviving "beta" (#${reviveCalls})` };
+      },
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+    });
+
+    assert.equal(reviveCalls, 2, "revive is blocked within TTL and allowed again once TTL expires");
+  });
+
+  it("isolates project-scoped history, separates owner vs peer_project routing, and disambiguates namesakes (Qodo #2, #7, C2 #7)", async () => {
     const repoAPeer: RegistryRow = { ...livePeer, project: "repo-a", name: "worker", endpoint: "/tmp/a.sock" };
     const repoBPeer: RegistryRow = { ...livePeer, project: "repo-b", name: "worker", endpoint: "/tmp/b.sock" };
     const history: HistoryRecord[] = [
-      { ts: "2026-11-26T10:01:00.000Z", msg_id: "m-a", direction: "out", peer: "worker", project: "repo-a", preview: "Secret A" },
-      { ts: "2026-11-26T10:02:00.000Z", msg_id: "m-b", direction: "out", peer: "worker", project: "repo-b", preview: "Secret B" },
+      { ts: "2026-11-26T10:01:00.000Z", msg_id: "m-a", direction: "out", peer: "worker", project: "repo-a", peer_project: "repo-a", preview: "Secret A" },
+      { ts: "2026-11-26T10:02:00.000Z", msg_id: "m-b", direction: "out", peer: "worker", project: "repo-b", peer_project: "repo-b", preview: "Secret B" },
+      // Cross-project inbound recorded by repo-a without a verified remote peer_project:
+      // visible in repo-a Activity, but MUST NOT link to local repo-a:worker namesake!
+      { ts: "2026-11-26T10:02:30.000Z", msg_id: "m-in-remote", direction: "in", peer: "worker", project: "repo-a", preview: "From remote namesake" },
+      // Cross-project outbound sent by repo-a to verified repo-b:worker:
+      // visible in repo-a Activity, and Enter routes to repo-b:worker!
+      { ts: "2026-11-26T10:02:45.000Z", msg_id: "m-xproj", direction: "out", peer: "worker", project: "repo-a", peer_project: "repo-b", preview: "Cross-project send" },
       { ts: "2026-11-26T10:03:00.000Z", msg_id: "m-legacy", direction: "out", peer: "worker", preview: "Legacy untagged" },
     ];
 
@@ -380,7 +421,12 @@ describe("/coms revive (`r`) and Unified Activity Log (`1`/`2`) (#1417)", () => 
     assert.equal(scoped.some((e) => /Secret B/.test(e.summary)), false);
     assert.equal(scoped.some((e) => /Legacy untagged/.test(e.summary)), false);
 
-    // All-projects view maps repo-b record to repo-b's exact row ID and marks ambiguous legacy record non-ambiguous-safe
+    // Unverified inbound from a namesake must NOT link to local repo-a:worker
+    const remoteIn = scoped.find((e) => /From remote namesake/.test(e.summary));
+    assert.ok(remoteIn);
+    assert.equal(remoteIn.sourceId, "peer:unverified:worker");
+
+    // All-projects view maps repo-b and cross-project records to repo-b's exact row ID and refuses ambiguous legacy
     const allEvents = collectComsActivityEvents({
       historyRecords: history,
       livePeers: [repoAPeer, repoBPeer],
@@ -388,49 +434,125 @@ describe("/coms revive (`r`) and Unified Activity Log (`1`/`2`) (#1417)", () => 
     });
     const evA = allEvents.find((e) => /Secret A/.test(e.summary));
     const evB = allEvents.find((e) => /Secret B/.test(e.summary));
+    const evXproj = allEvents.find((e) => /Cross-project send/.test(e.summary));
     const evLegacy = allEvents.find((e) => /Legacy untagged/.test(e.summary));
     assert.equal(evA?.sourceId, "repo-a:worker\0/tmp/a.sock");
     assert.equal(evB?.sourceId, "repo-b:worker\0/tmp/b.sock");
+    assert.equal(evXproj?.sourceId, "repo-b:worker\0/tmp/b.sock");
     assert.equal(evLegacy?.sourceId, "peer:ambiguous:worker");
   });
 
-  it("reads bounded history tails and invalidates cache on rotation/append (Qodo #4)", () => {
+  it("reads bounded history tails, applies project filter before limit, and invalidates on rotation (Qodo #4 & C2 #6)", () => {
     const dir = makeTempDir("coms-hist-tail-");
     tempDirs.push(dir);
     const histPath = join(dir, "history.jsonl");
     const lines: string[] = [];
-    for (let i = 0; i < 60; i++) {
+    // One record for repo-a followed by 210 newer records for repo-b
+    lines.push(JSON.stringify({
+      ts: "2026-11-26T09:59:00.000Z",
+      msg_id: "m-repo-a",
+      direction: "out",
+      peer: "alpha",
+      project: "repo-a",
+      peer_project: "repo-a",
+      preview: "Important repo-a message",
+    }));
+    for (let i = 0; i < 210; i++) {
       lines.push(JSON.stringify({
-        ts: `2026-11-26T10:00:${String(i).padStart(2, "0")}.000Z`,
-        msg_id: `m-${i}`,
+        ts: `2026-11-26T10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`,
+        msg_id: `m-b-${i}`,
         direction: "out",
-        peer: "alpha",
-        project: "repo",
-        preview: `msg-${i}-${"x".repeat(80)}`,
+        peer: "beta",
+        project: "repo-b",
+        peer_project: "repo-b",
+        preview: `msg-${i}-${"x".repeat(40)}`,
       }));
     }
     writeFileSync(histPath, `${lines.join("\n")}\n`, "utf-8");
 
+    // Project-filtered tail read MUST still find repo-a even behind 210 newer repo-b records (Qodo C2 #6)
+    const reader = createTailHistoryReader(histPath);
+    const repoARecords = reader.readRecent(200, "repo-a");
+    assert.equal(repoARecords.length, 1);
+    assert.equal(repoARecords[0].msg_id, "m-repo-a");
+
+    // Cached snapshot is keyed by project as well
+    const repoBRecords = reader.readRecent(10, "repo-b");
+    assert.equal(repoBRecords.length, 10);
+    assert.equal(repoBRecords[repoBRecords.length - 1].msg_id, "m-b-209");
+
     // Tail budget smaller than full file drops oldest records cleanly without corrupting lines
-    const tail = readRecentHistoryRecords(histPath, { limit: 10 }, 2048);
-    assert.ok(tail.length > 0 && tail.length <= 10);
-    assert.equal(tail[tail.length - 1].msg_id, "m-59");
+    const smallTail = readRecentHistoryRecords(histPath, { limit: 10 }, 2048);
+    assert.ok(smallTail.length > 0 && smallTail.length <= 10);
+    assert.equal(smallTail[smallTail.length - 1].msg_id, "m-b-209");
 
     // Stat-cached tail reader returns identical array when unchanged and refreshes on rotation/truncation
-    const reader = createTailHistoryReader(histPath, 2048);
-    const first = reader.readRecent(10);
-    const second = reader.readRecent(10);
+    const first = reader.readRecent(10, "repo-b");
+    const second = reader.readRecent(10, "repo-b");
     assert.equal(first, second, "unchanged stat returns cached snapshot");
 
     // Simulate rotation (file shrinks with a brand new record)
     writeFileSync(
       histPath,
-      `${JSON.stringify({ ts: "2026-11-26T11:00:00.000Z", msg_id: "m-rotated", direction: "in", peer: "alpha", project: "repo", preview: "fresh" })}\n`,
+      `${JSON.stringify({ ts: "2026-11-26T11:00:00.000Z", msg_id: "m-rotated", direction: "in", peer: "alpha", project: "repo-a", preview: "fresh" })}\n`,
       "utf-8",
     );
-    const afterRotate = reader.readRecent(10);
+    const afterRotate = reader.readRecent(10, "repo-a");
     assert.equal(afterRotate.length, 1);
     assert.equal(afterRotate[0].msg_id, "m-rotated");
+  });
+
+  it("attributes cross-project sendAsUser without --project to sender project and verified recipient peer_project (Qodo C2 #9)", async () => {
+    const dir = makeTempDir("coms-xproj-send-");
+    tempDirs.push(dir);
+    const makeStubPi = () => ({
+      on: () => {},
+      registerTool: () => {},
+      registerCommand: () => {},
+      registerFlag: () => {},
+      getFlag: () => undefined,
+      events: { on: () => () => {}, emit: () => {} },
+      sendMessage: () => {},
+      sendUserMessage: () => {},
+      appendEntry: () => {},
+    }) as unknown as ExtensionAPI;
+
+    const rtA = createComsPeerRuntime(makeStubPi(), {
+      deferred: true,
+      comsDir: dir,
+      sessionId: "sess-a-xproj",
+      allowSubagentChild: true,
+      registerSignalHandlers: false,
+    });
+    const rtB = createComsPeerRuntime(makeStubPi(), {
+      deferred: true,
+      comsDir: dir,
+      sessionId: "sess-b-xproj",
+      allowSubagentChild: true,
+      registerSignalHandlers: false,
+    });
+
+    try {
+      await rtA.start({ cwd: dir, hasUI: false, sessionManager: { getSessionId: () => "pi-a" } } as any, {
+        flags: { cname: "alice", project: "proj-a" },
+      });
+      await rtB.start({ cwd: dir, hasUI: false, sessionManager: { getSessionId: () => "pi-b" } } as any, {
+        flags: { cname: "bob-unique", project: "proj-b" },
+      });
+
+      // Cross-project send WITHOUT --project: resolveUserTarget finds bob-unique in proj-b
+      const res = await rtA.sendAsUser({ target: "bob-unique", prompt: "cross project ping" });
+      assert.equal(res.ok, true);
+
+      const histPath = new ComsRegistry(dir).historyPath();
+      const outRecs = readRecentHistoryRecords(histPath, { direction: "out", peer: "bob-unique" });
+      assert.equal(outRecs.length, 1);
+      assert.equal(outRecs[0].project, "proj-a", "owner project is sender's project for Activity visibility");
+      assert.equal(outRecs[0].peer_project, "proj-b", "verified peer_project is recipient's project for Enter routing");
+    } finally {
+      await rtA.stop();
+      await rtB.stop();
+    }
   });
 
   it("switches Roster (`1`) <-> Activity (`2`), filters messages/errors, jumps to peer on Enter, and fits narrow widths", async () => {

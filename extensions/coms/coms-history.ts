@@ -29,8 +29,10 @@ export interface HistoryRecord {
 	 *  response_out = reply we sent; response_in = reply we received. */
 	direction: HistoryDirection;
 	peer: string;
-	/** COMS project namespace owning this traffic — disambiguates namesake peers across projects. */
+	/** COMS project namespace of the session that recorded this entry (drives project-scoped visibility). */
 	project?: string;
+	/** Verified COMS project namespace of the remote `peer` (drives project-qualified Enter routing). */
+	peer_project?: string;
 	/** Appending session's coms session id — scopes queries on the shared file. */
 	owner?: string;
 	session?: string;
@@ -280,30 +282,33 @@ export function readRecentHistoryRecords(
 export function createTailHistoryReader(
 	filePath: string,
 	maxTailBytes = HISTORY_TAIL_BYTES,
-): { readRecent: (limit?: number) => HistoryRecord[] } {
+): { readRecent: (limit?: number, project?: string) => HistoryRecord[] } {
 	let lastSize = -1;
 	let lastMtimeMs = -1;
 	let lastIno = -1;
 	let lastLimit = -1;
+	let lastProject: string | undefined;
 	let cached: HistoryRecord[] = [];
 
 	return {
-		readRecent: (limit = 200): HistoryRecord[] => {
+		readRecent: (limit = 200, project?: string): HistoryRecord[] => {
 			try {
 				const st = statSync(filePath);
 				if (
 					st.size === lastSize &&
 					st.mtimeMs === lastMtimeMs &&
 					st.ino === lastIno &&
-					limit === lastLimit
+					limit === lastLimit &&
+					project === lastProject
 				) {
 					return cached;
 				}
-				const records = readRecentHistoryRecords(filePath, { limit }, maxTailBytes);
+				const records = readRecentHistoryRecords(filePath, { limit, project }, maxTailBytes);
 				lastSize = st.size;
 				lastMtimeMs = st.mtimeMs;
 				lastIno = st.ino;
 				lastLimit = limit;
+				lastProject = project;
 				cached = records;
 				return records;
 			} catch {
@@ -311,6 +316,7 @@ export function createTailHistoryReader(
 				lastMtimeMs = -1;
 				lastIno = -1;
 				lastLimit = -1;
+				lastProject = undefined;
 				cached = [];
 				return [];
 			}

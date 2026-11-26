@@ -254,6 +254,18 @@ describe("registerAsyncAgents.reviveAsyncJob integration (#1417)", () => {
     assert.equal(dup.ok, false);
     if (!dup.ok) assert.match(dup.error, /Already revived as/);
     assert.equal(spawnedConfigs.length, 2);
+
+    // Even after the replacement finishes and session_shutdown/session_start runs, the retained
+    // source job keeps its replacement claim and cannot be revived a second time (Qodo C2 #8).
+    if (revived.ok) reg.killAsyncAgent(revived.id, "user");
+    for (const fn of handlers.get("session_shutdown") ?? []) fn({});
+    for (const fn of handlers.get("session_start") ?? []) {
+      fn({}, { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => "sess-1", getCwd: () => tmp } });
+    }
+    const afterRestart = await reg.reviveAsyncJob(first.id);
+    assert.equal(afterRestart.ok, false);
+    if (!afterRestart.ok) assert.match(afterRestart.error, /Already revived as/);
+    assert.equal(spawnedConfigs.length, 2);
   });
 
   it("resumes persisted session ID even after live parent session changes and guards concurrent session revives", async () => {

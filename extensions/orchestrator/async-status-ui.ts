@@ -262,7 +262,7 @@ function reportSingleRevive(
     notify(msg, "info");
   } else {
     const msg = `Could not revive ${label}: ${result.error}`;
-    log.warn("overlay_revive_failed", { from: job.id, agent: job.agent, error: result.error });
+    log.error("overlay_revive_failed", { from: job.id, agent: job.agent, error: result.error });
     notify(msg, "error");
   }
 }

@@ -454,7 +454,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 const project = scope === "all" ? undefined : ownProject();
                 const livePeers = filterRegistry(allLive, { project });
                 const stoppedPeers = listStoppedSupervisedPeers(readSupervisionRecords(), allLive, { project });
-                const historyRecords = getTailHistoryReader().readRecent(200);
+                const historyRecords = getTailHistoryReader().readRecent(200, project);
                 return collectComsActivityEvents({
                     historyRecords,
                     livePeers,
@@ -627,6 +627,9 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             child.on("error", (error: unknown) => {
                 params.onSpawnFailure?.();
                 log.error("coms_peer_spawn_async_error", { cname: params.cname, error: error instanceof Error ? error.message : String(error) });
+            });
+            child.on("exit", () => {
+                params.onSpawnFailure?.();
             });
             child.unref();
             log.info("coms_peer_spawned", { cname: params.cname, pid: child.pid ?? null, args: plan.command.slice(2).join(" ") });

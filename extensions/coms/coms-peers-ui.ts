@@ -74,10 +74,15 @@ export interface ComsPeersOverlayDeps {
    *  with nothing active); `reason` = it never did — rendered as `unknown`, never as zeros. */
   describePeer?: (row: RegistryRow) => Promise<DescribeResult>;
   heartbeatAgeSeconds?: (row: RegistryRow) => number | null;
+  /** Optional clock override (primarily for tests verifying pending-revive TTL expiry). */
+  now?: () => number;
   emptyMessage?: string;
 }
 
 type Row = RegistryRow & { id: string };
+
+/** Matches coms-wrapper's REVIVE_CLAIM_TTL_MS so stalled supervisor launches return to retryable stopped state. */
+export const REVIVE_PENDING_TTL_MS = 45_000;
 
 function isThenable<T>(value: unknown): value is Promise<T> {
   return typeof value === "object" && value !== null && typeof (value as Promise<T>).then === "function";
@@ -93,7 +98,7 @@ function reportSinglePeerRevive(
     log.info("overlay_revive_peer_ok", { name: row.name, project: row.project, pid: outcome.pid ?? null });
     notify(sanitizePeerText(outcome.message || `Revived peer "${safeName}".`, 160), "info");
   } else {
-    log.warn("overlay_revive_peer_failed", { name: row.name, project: row.project, reason: outcome.reason });
+    log.error("overlay_revive_peer_failed", { name: row.name, project: row.project, reason: outcome.reason });
     notify(sanitizePeerText(`Could not revive "${safeName}": ${outcome.reason}`, 160), "error");
   }
 }
@@ -102,11 +107,22 @@ function peerKey(row: Pick<RegistryRow, "project" | "name">): string {
   return `${row.project}::${row.name}`;
 }
 
+function isRevivePending(pendingRevives: Map<string, number>, key: string, now: number): boolean {
+  const claimedAt = pendingRevives.get(key);
+  if (claimedAt === undefined) return false;
+  if (now - claimedAt >= REVIVE_PENDING_TTL_MS) {
+    pendingRevives.delete(key);
+    return false;
+  }
+  return true;
+}
+
 function triggerSinglePeerRevive(
   row: Row,
   revivePeer: NonNullable<ComsPeersOverlayDeps["revivePeer"]>,
   notify: OverlayNotify,
-  pendingRevives: Set<string>,
+  pendingRevives: Map<string, number>,
+  now: () => number,
 ): void {
   const safeName = sanitizePeerText(row.name, 40);
   if (!row.stopped) {
@@ -115,12 +131,13 @@ function triggerSinglePeerRevive(
     return;
   }
   const key = peerKey(row);
-  if (pendingRevives.has(key)) {
+  const ts = now();
+  if (isRevivePending(pendingRevives, key, ts)) {
     log.debug("overlay_revive_peer_skipped_pending", { name: row.name, project: row.project });
     notify(`Peer "${safeName}" is already reviving…`, "info");
     return;
   }
-  pendingRevives.add(key);
+  pendingRevives.set(key, ts);
   try {
     const outcome = revivePeer(row);
     if (isThenable<RevivePeerOutcome>(outcome)) {
@@ -147,7 +164,8 @@ function triggerBulkPeerRevive(
   selected: readonly Row[],
   revivePeer: NonNullable<ComsPeersOverlayDeps["revivePeer"]>,
   notify: OverlayNotify,
-  pendingRevives: Set<string>,
+  pendingRevives: Map<string, number>,
+  now: () => number,
 ): void {
   const stoppedSelected = selected.filter((r) => r.stopped === true);
   if (stoppedSelected.length === 0) {
@@ -155,7 +173,8 @@ function triggerBulkPeerRevive(
     notify("No stopped peers in selection to revive.", "warning");
     return;
   }
-  const eligible = stoppedSelected.filter((r) => !pendingRevives.has(peerKey(r)));
+  const ts = now();
+  const eligible = stoppedSelected.filter((r) => !isRevivePending(pendingRevives, peerKey(r), ts));
   if (eligible.length === 0) {
     log.debug("overlay_revive_selection_all_pending", { selected: stoppedSelected.length });
     notify("Selected stopped peer(s) are already reviving…", "info");
@@ -169,7 +188,7 @@ function triggerBulkPeerRevive(
   for (const row of eligible) {
     const safeName = sanitizePeerText(row.name, 40);
     const key = peerKey(row);
-    pendingRevives.add(key);
+    pendingRevives.set(key, ts);
     try {
       const outcome = revivePeer(row);
       if (isThenable<RevivePeerOutcome>(outcome)) {
@@ -255,18 +274,34 @@ export async function openComsPeersOverlay(
     return;
   }
 
-  // Peers currently being revived (`project::name`), preventing duplicate supervisor launches on rapid `r` presses.
-  const pendingRevives = new Set<string>();
+  // Peers currently being revived (`project::name` -> claim epoch ms), preventing duplicate
+  // supervisor launches while expiring cleanly if a spawned supervisor stalls or exits early.
+  const now = deps.now ?? (() => Date.now());
+  const pendingRevives = new Map<string, number>();
 
   // Names can be reused; ticks and focus belong to this session's endpoint (or stopped key).
   const toRows = (): Row[] => {
+    const currentNow = now();
     const live = deps.listPeers(projectScope);
     const liveKeys = new Set(live.map((row) => peerKey(row)));
-    for (const key of liveKeys) pendingRevives.delete(key);
+    for (const [key, claimedAt] of pendingRevives.entries()) {
+      if (liveKeys.has(key) || currentNow - claimedAt >= REVIVE_PENDING_TTL_MS) {
+        pendingRevives.delete(key);
+      }
+    }
     const liveRows: Row[] = live.map((row) => ({ ...row, id: peerOverlayRowId(row) }));
     const stopped = (deps.listStoppedPeers?.(projectScope) ?? [])
       .filter((row) => !liveKeys.has(peerKey(row)))
-      .map((row) => ({ ...row, stopped: true, id: peerOverlayRowId({ ...row, stopped: true }) }));
+      .map((row) => {
+        const key = peerKey(row);
+        const claimedAt = pendingRevives.get(key);
+        const stoppedTs = row.stoppedAt ? Date.parse(row.stoppedAt) : Number.NaN;
+        if (claimedAt !== undefined && !Number.isNaN(stoppedTs) && stoppedTs > claimedAt) {
+          // A newer stop/failure record landed after we claimed revive — clear so user can retry.
+          pendingRevives.delete(key);
+        }
+        return { ...row, stopped: true, id: peerOverlayRowId({ ...row, stopped: true }) };
+      });
     return [...liveRows, ...stopped];
   };
 
@@ -356,7 +391,7 @@ export async function openComsPeersOverlay(
           };
           continue;
         }
-        await openPeerDrilldown(ctx, deps, target, pendingRevives);
+        await openPeerDrilldown(ctx, deps, target, pendingRevives, now);
         continue;
       }
       continue;
@@ -397,7 +432,7 @@ export async function openComsPeersOverlay(
         listItems: toRows,
         rowParts: (row, theme: Theme) => {
           if (row.stopped) {
-            const isReviving = pendingRevives.has(peerKey(row));
+            const isReviving = isRevivePending(pendingRevives, peerKey(row), now());
             return {
               glyph: isReviving ? theme.fg("warning", "◐") : theme.fg("muted", "○"),
               title: sanitizePeerText(row.name, 100),
@@ -440,14 +475,14 @@ export async function openComsPeersOverlay(
           }
           if (matchesOverlayKey(key, "r") && deps.revivePeer) {
             if (selected.length > 0) {
-              triggerBulkPeerRevive(selected, deps.revivePeer, notify, pendingRevives);
+              triggerBulkPeerRevive(selected, deps.revivePeer, notify, pendingRevives, now);
               return "redraw-clear";
             }
             if (!row) {
               notify("No peer selected to revive.", "info");
               return "redraw";
             }
-            triggerSinglePeerRevive(row, deps.revivePeer, notify, pendingRevives);
+            triggerSinglePeerRevive(row, deps.revivePeer, notify, pendingRevives, now);
             return "redraw";
           }
           if (matchesOverlayKey(key, "f")) {
@@ -516,7 +551,7 @@ export async function openComsPeersOverlay(
     const inspected = peerQueue.pop();
     if (inspected) {
       reselectPeer = inspected.id;
-      await openPeerDrilldown(ctx, deps, inspected, pendingRevives);
+      await openPeerDrilldown(ctx, deps, inspected, pendingRevives, now);
       continue;
     }
 
@@ -637,11 +672,12 @@ async function openPeerDrilldown(
   ctx: any,
   deps: ComsPeersOverlayDeps,
   row: Row,
-  pendingRevives: Set<string>,
+  pendingRevives: Map<string, number>,
+  now: () => number,
 ): Promise<void> {
   if (row.stopped) {
     const dash = (value: string | null | undefined): string => (value && value.trim() ? value : "—");
-    const isReviving = pendingRevives.has(peerKey(row));
+    const isReviving = isRevivePending(pendingRevives, peerKey(row), now());
     const detail: Array<[string, string]> = [
       ["Name", dash(sanitizePeerText(row.name, 40))],
       ["Project", dash(sanitizePeerText(row.project, 40))],
@@ -670,7 +706,7 @@ async function openPeerDrilldown(
             onKey: deps.revivePeer
               ? (key) => {
                   if (!matchesOverlayKey(key, "r")) return false;
-                  triggerSinglePeerRevive(row, deps.revivePeer!, detailNotify, pendingRevives);
+                  triggerSinglePeerRevive(row, deps.revivePeer!, detailNotify, pendingRevives, now);
                   return "close";
                 }
               : undefined,

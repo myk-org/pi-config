@@ -605,10 +605,10 @@ export function collectComsActivityEvents(args: {
 
   for (let i = 0; i < args.historyRecords.length; i++) {
     const rec = args.historyRecords[i];
-    const recProject = typeof rec.project === "string" && rec.project.trim() ? rec.project.trim() : null;
-    // In project-scoped views, require a proven matching project identity — never leak
+    const ownerProject = typeof rec.project === "string" && rec.project.trim() ? rec.project.trim() : null;
+    // In project-scoped views, require a proven matching owner project — never leak
     // other-project records or legacy untagged records merely because a peer name matches.
-    if (args.projectFilter && recProject !== args.projectFilter) continue;
+    if (args.projectFilter && ownerProject !== args.projectFilter) continue;
 
     const ts = Date.parse(rec.ts) || now;
     const hasErr = Boolean(rec.error) || /fail|error|reject|timeout|refus/i.test(rec.status ?? "");
@@ -618,15 +618,26 @@ export function collectComsActivityEvents(args: {
     const errPart = rec.error ? ` — ${sanitizePeerText(rec.error, 60)}` : "";
     const statusPart = !rec.error && rec.status ? ` [${sanitizePeerText(rec.status, 24)}]` : "";
 
+    // Route Enter ONLY using the verified remote `peer_project` — never assume the record
+    // owner's project equals a remote sender's project (a cross-project sender can share a
+    // name with a local namesake).
+    const verifiedPeerProject = typeof rec.peer_project === "string" && rec.peer_project.trim()
+      ? rec.peer_project.trim()
+      : null;
     let sourceId: string;
-    if (recProject) {
-      sourceId = rowIdByQualified.get(`${recProject}::${rec.peer}`) ?? `peer:${recProject}:${rec.peer}`;
+    if (verifiedPeerProject) {
+      sourceId = rowIdByQualified.get(`${verifiedPeerProject}::${rec.peer}`) ?? `peer:${verifiedPeerProject}:${rec.peer}`;
     } else {
-      // Legacy untagged record (only visible in all-projects scope): only map when unique.
       const candidates = rowIdsByName.get(rec.peer) ?? [];
-      if (candidates.length === 1) sourceId = candidates[0];
-      else if (candidates.length > 1) sourceId = `peer:ambiguous:${rec.peer}`;
-      else sourceId = `peer:${rec.peer}`;
+      if (candidates.length > 1) {
+        sourceId = `peer:ambiguous:${rec.peer}`;
+      } else if (!ownerProject && candidates.length === 1) {
+        // Legacy record (predating project/peer_project) in all-projects view with a unique match.
+        sourceId = candidates[0];
+      } else {
+        // Unverified remote sender project: leave unlinked so Enter never opens a local namesake.
+        sourceId = `peer:unverified:${rec.peer}`;
+      }
     }
 
     events.push({

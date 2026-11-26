@@ -1511,7 +1511,13 @@ export function registerAsyncAgents(
     asyncState.lastCtx = ctx;
     deliveredResultIds.clear();
     recentFinishedJobs.clear();
-    revivedFromSource.clear();
+    // Retain spawned replacement claims for any source jobs still held in asyncState.jobs
+    // across lifecycle transitions so retained finished jobs cannot be revived twice.
+    for (const [sourceId, claim] of revivedFromSource.entries()) {
+      if (claim.state === "in-flight" || !asyncState.jobs.has(sourceId)) {
+        revivedFromSource.delete(sourceId);
+      }
+    }
 
     // Set project-scoped dir first (getProjectTmpDir creates it if missing)
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
@@ -1646,6 +1652,9 @@ export function registerAsyncAgents(
             restoredPid: typeof status.pid === "number" ? status.pid : undefined,
           };
           asyncState.jobs.set(id, job);
+          if (typeof status.revivedBy === "string" && status.revivedBy) {
+            revivedFromSource.set(id, { state: "spawned", replacementId: status.revivedBy });
+          }
           log.info(`restored job: ${id} state=${job.status}`);
 
           // A chain's continuation lived in the onComplete closure this reload destroyed.
@@ -1703,7 +1712,12 @@ export function registerAsyncAgents(
     log.info(`shutdown: jobs=${asyncState.jobs.size}`);
     asyncState.lastCtx = null;
     recentFinishedJobs.clear();
-    revivedFromSource.clear();
+    // Drop only in-flight claims; keep spawned claims for terminal jobs still in asyncState.jobs.
+    for (const [sourceId, claim] of revivedFromSource.entries()) {
+      if (claim.state === "in-flight" || !asyncState.jobs.has(sourceId)) {
+        revivedFromSource.delete(sourceId);
+      }
+    }
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
     unsubscribeSyncRuns();
@@ -1863,11 +1877,24 @@ export function registerAsyncAgents(
 
       if (spawned.error) {
         revivedFromSource.delete(id);
-        log.warn("async_revive_spawn_failed", { from: id, agent: agentName, error: spawned.error });
+        log.error("async_revive_spawn_failed", { from: id, agent: agentName, error: spawned.error });
         return { ok: false, error: spawned.error };
       }
 
       revivedFromSource.set(id, { state: "spawned", replacementId: spawned.id });
+      // Persist replacement linkage onto the source job's status.json so reload/restore preserves the claim.
+      if (workerDir) {
+        try {
+          const sp = path.join(workerDir, "status.json");
+          if (fs.existsSync(sp)) {
+            const existing = JSON.parse(fs.readFileSync(sp, "utf-8"));
+            if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+              existing.revivedBy = spawned.id;
+              fs.writeFileSync(sp, JSON.stringify(existing), { mode: 0o600 });
+            }
+          }
+        } catch { /* best-effort */ }
+      }
       const label = stored?.name ?? view?.name ?? agentName;
       const shortId = spawned.id.length > 8 ? spawned.id.slice(-8) : spawned.id;
       log.info("async_job_revived", { from: id, to: spawned.id, agent: agentName, cwd, resumedSession: hadSession });
