@@ -39,26 +39,40 @@ import {
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import {
+	HEADLESS_IDLE_BACKOFF_MULTIPLIERS,
+	HEADLESS_IDLE_MAX_NUDGES,
 	collectActiveAsyncTaskIds,
+	countActiveAsyncAgents,
+	decideHeadlessIdleReminder,
 	decidePendingReminder,
+	headlessIdleReminderContent,
 	oldestPendingAt,
+	openTasksFingerprint,
 	pendingReminderContent,
 	staleReminderContent,
 	selectActiveTasks,
 	selectStaleTasks,
+	selectUnblockedOpenTasks,
 	shouldFireReminder,
 } from "./reminders.js";
 
 // Re-export reminder pure helpers so consumers (and tests) can import from index.
 export {
+	HEADLESS_IDLE_BACKOFF_MULTIPLIERS,
+	HEADLESS_IDLE_MAX_NUDGES,
 	collectActiveAsyncTaskIds,
+	countActiveAsyncAgents,
+	decideHeadlessIdleReminder,
 	decidePendingReminder,
+	headlessIdleReminderContent,
 	oldestPendingAt,
+	openTasksFingerprint,
 	pendingReminderContent,
 	resolveStorePath,
 	staleReminderContent,
 	selectActiveTasks,
 	selectStaleTasks,
+	selectUnblockedOpenTasks,
 	shouldFireReminder,
 	type ResolveStorePathOptions,
 };
@@ -314,14 +328,13 @@ export default function (pi: ExtensionAPI) {
 	currentStore = store;
 	let currentCtx: any = null;
 	let bridgeSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
-	const getBoundAgents = () => {
+	const resolveWorkloadSessionKey = (): string => {
 		const resolvedKey = currentCtx ? resolveBridgeSessionKey(currentCtx) : bridgeSessionKey;
-		const key =
-			resolvedKey === DEFAULT_BRIDGE_SESSION_KEY && bridgeSessionKey !== DEFAULT_BRIDGE_SESSION_KEY
-				? bridgeSessionKey
-				: resolvedKey;
-		return publishedWorkloadSources(key)?.agents() ?? [];
+		return resolvedKey === DEFAULT_BRIDGE_SESSION_KEY && bridgeSessionKey !== DEFAULT_BRIDGE_SESSION_KEY
+			? bridgeSessionKey
+			: resolvedKey;
 	};
+	const getBoundAgents = () => publishedWorkloadSources(resolveWorkloadSessionKey())?.agents() ?? [];
 	const widget = new TaskWidget(store, {}, getBoundAgents);
 	widget.setMode(getWidgetMode("tasks", process.cwd()));
 	const tasksShortcut = registerWidgetShortcut(
@@ -391,7 +404,38 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 	subscribeAsyncStatus();
-	store.setOnChange(() => { widget.update(); broadcastTasks(); });
+	let agentBusy = false;       // true while the agent is actively running a turn
+	let idleSince: number | null = Date.now();
+	let headlessNudgeCount = 0;
+	let lastHeadlessNudgeAt = 0;
+	let pendingReminderTurn = false;
+	let currentRunIsReminder = false;
+	let inAgentRun = false;
+	let startedViaBeforeAgentStart = false;
+	let lastOpenTasksFingerprint = openTasksFingerprint(store.list());
+
+	function resetHeadlessBackoff(reason: string, resetIdle: boolean): void {
+		const hadNudges = headlessNudgeCount > 0 || lastHeadlessNudgeAt > 0;
+		headlessNudgeCount = 0;
+		lastHeadlessNudgeAt = 0;
+		if (resetIdle && !agentBusy && !inAgentRun) {
+			idleSince = Date.now();
+		}
+		if (hadNudges) {
+			log.debug("headless_idle_backoff_reset", { reason, idleSince });
+		}
+	}
+
+	const onStoreChange = () => {
+		widget.update();
+		broadcastTasks();
+		const nextFp = openTasksFingerprint(store.list());
+		if (nextFp !== lastOpenTasksFingerprint) {
+			lastOpenTasksFingerprint = nextFp;
+			resetHeadlessBackoff("task_state_change", true);
+		}
+	};
+	store.setOnChange(onStoreChange);
 	for (const taskId of resumedActiveTaskIds) widget.setActiveTask(taskId);
 	currentWidget = widget;
 	// Registration and session transitions publish closure-local bindings keyed by sessionId so
@@ -441,7 +485,8 @@ export default function (pi: ExtensionAPI) {
 			taskStore = store;
 			currentStore = store;
 			widget.setStore(store);
-			store.setOnChange(() => { widget.update(); broadcastTasks(); });
+			lastOpenTasksFingerprint = openTasksFingerprint(store.list());
+			store.setOnChange(onStoreChange);
 			log.debug("store upgraded", path);
 		}
 		storeUpgraded = true;
@@ -552,8 +597,9 @@ export default function (pi: ExtensionAPI) {
 		if (gcTimer) clearInterval(gcTimer);
 		gcTimer = setInterval(() => {
 			try {
-				if (!getSetting(process.cwd(), "task_auto_clear_enabled")) return;
-				const minutes = getSetting(process.cwd(), "task_auto_clear_minutes");
+				const gcCwd = currentCtx?.cwd || process.cwd();
+				if (!getSetting(gcCwd, "task_auto_clear_enabled")) return;
+				const minutes = getSetting(gcCwd, "task_auto_clear_minutes");
 				const threshold = minutes * 60000;
 				const now = Date.now();
 				const tasks = store.list();
@@ -579,14 +625,87 @@ export default function (pi: ExtensionAPI) {
 	let reminderTimer: ReturnType<typeof setInterval> | null = null;
 	let lastReminderAt = 0;
 	let lastStaleReminderAt = 0;
-	let agentBusy = false;       // true while the agent is actively running a turn
+
 	const startReminderTimer = () => {
 		if (reminderTimer) clearInterval(reminderTimer);
 		reminderTimer = setInterval(() => {
+			const cwd = currentCtx?.cwd || process.cwd();
+			const supervisedPeer = process.env.PI_COMS_SUPERVISED_PEER === "1";
+
+			// Headless supervised COMS peer: fast, bounded idle auto-nudge (#1434)
+			if (supervisedPeer) {
+				let headlessHandled = false;
+				try {
+					const enabled =
+						Boolean(getSetting(cwd, "task_reminder_enabled")) ||
+						Boolean(getSetting(cwd, "task_stale_in_progress_enabled"));
+					const baseMinutes = getSetting(cwd, "task_headless_idle_reminder_minutes");
+					const baseDelayMs = baseMinutes * 60000;
+					const now = Date.now();
+					const workloadKey = resolveWorkloadSessionKey();
+					const workload = publishedWorkloadSources(workloadKey);
+					const currentSessionId = workloadKey === DEFAULT_BRIDGE_SESSION_KEY ? null : workloadKey;
+					const activeAsyncCount = workload
+						? countActiveAsyncAgents(workload.agents(), currentSessionId)
+						: null;
+					const decision = decideHeadlessIdleReminder({
+						supervisedPeer,
+						enabled,
+						agentBusy: agentBusy || inAgentRun,
+						activeAsyncCount,
+						idleSince,
+						lastNudgeAt: lastHeadlessNudgeAt,
+						nudgeCount: headlessNudgeCount,
+						now,
+						baseDelayMs,
+						tasks: store.list(),
+					});
+					headlessHandled = true;
+					if (decision.fire) {
+						const prevNudgeCount = headlessNudgeCount;
+						const prevLastNudgeAt = lastHeadlessNudgeAt;
+						pendingReminderTurn = true;
+						headlessNudgeCount = decision.nextNudgeCount;
+						lastHeadlessNudgeAt = now;
+						try {
+							pi.sendMessage({
+								customType: "task-focus-reminder",
+								content: headlessIdleReminderContent(
+									decision.tasks,
+									decision.idleMs / 60000,
+									decision.nextNudgeCount,
+									HEADLESS_IDLE_MAX_NUDGES,
+								),
+								display: true,
+							}, { triggerTurn: true, deliverAs: "followUp" });
+							log.info("headless_idle_reminder_fired", {
+								openCount: decision.tasks.length,
+								nudgeCount: decision.nextNudgeCount,
+								maxNudges: HEADLESS_IDLE_MAX_NUDGES,
+								effectiveDelayMs: decision.effectiveDelayMs,
+								idleMs: decision.idleMs,
+								taskIds: decision.tasks.map((t: any) => t.id),
+							});
+						} catch (err: any) {
+							pendingReminderTurn = false;
+							headlessNudgeCount = prevNudgeCount;
+							lastHeadlessNudgeAt = prevLastNudgeAt;
+							log.warn("headless_idle_reminder_send_failed", { error: err?.message ?? String(err) });
+						}
+					}
+				} catch (err: any) {
+					log.warn("headless_idle_reminder_error", { error: err?.message ?? String(err) });
+				}
+				// Supervised peers intentionally replace the unbounded 10m/30m timers once
+				// handled cleanly so backoff-capped peers stop burning tokens (#1434).
+				// On unexpected error (headlessHandled === false), fall through to legacy reminders.
+				if (headlessHandled) return;
+			}
+
 			// Pending-only reminder: nudge when tasks exist but none in_progress
 			try {
-				if (getSetting(process.cwd(), "task_reminder_enabled")) {
-					const minutes = getSetting(process.cwd(), "task_reminder_interval_minutes");
+				if (getSetting(cwd, "task_reminder_enabled")) {
+					const minutes = getSetting(cwd, "task_reminder_interval_minutes");
 					const threshold = minutes * 60000;
 					const now = Date.now();
 					// Interval gate first: never reload the task list while cooling down.
@@ -616,8 +735,8 @@ export default function (pi: ExtensionAPI) {
 
 			// Stale in_progress reminder
 			try {
-				if (!getSetting(process.cwd(), "task_stale_in_progress_enabled")) return;
-				const staleMinutes = getSetting(process.cwd(), "task_stale_in_progress_minutes");
+				if (!getSetting(cwd, "task_stale_in_progress_enabled")) return;
+				const staleMinutes = getSetting(cwd, "task_stale_in_progress_minutes");
 				const staleThreshold = staleMinutes * 60000;
 				const now2 = Date.now();
 				if (now2 - lastStaleReminderAt < staleThreshold) return;
@@ -653,6 +772,11 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		shuttingDown = true;
+		idleSince = null;
+		inAgentRun = false;
+		startedViaBeforeAgentStart = false;
+		currentRunIsReminder = false;
+		pendingReminderTurn = false;
 		unregisterTaskStore?.();
 		unregisterTaskStore = null;
 		unregisterTaskTelemetry?.();
@@ -683,7 +807,17 @@ export default function (pi: ExtensionAPI) {
 		if (shuttingDown) return;
 		turnTaskRefs.clear();
 		agentBusy = true;
-		log.debug("agentBusy", "turn_start");
+		idleSince = null;
+		if (!inAgentRun) {
+			inAgentRun = true;
+			startedViaBeforeAgentStart = false;
+			currentRunIsReminder = pendingReminderTurn;
+			pendingReminderTurn = false;
+			if (!currentRunIsReminder) {
+				resetHeadlessBackoff("turn_start", false);
+			}
+		}
+		log.debug("agentBusy", "turn_start", { reminderTurn: currentRunIsReminder });
 		currentCtx = ctx;
 		syncTaskBridge(ctx, true);
 		widget.setUICtx(ctx.ui);
@@ -696,8 +830,22 @@ export default function (pi: ExtensionAPI) {
 		const refsSnapshot = new Set(turnTaskRefs);
 		turnTaskRefs.clear();
 		if (shuttingDown) return;
+		const wasReminder = currentRunIsReminder;
 		agentBusy = false;
-		log.debug("agentBusy", "turn_end", { turnRefCount: refsSnapshot.size });
+		if (!wasReminder) {
+			resetHeadlessBackoff("turn_end", false);
+		}
+		if (!startedViaBeforeAgentStart) {
+			inAgentRun = false;
+			currentRunIsReminder = false;
+			idleSince = Date.now();
+		}
+		log.debug("agentBusy", "turn_end", {
+			turnRefCount: refsSnapshot.size,
+			reminderTurn: wasReminder,
+			inAgentRun,
+			idleSince,
+		});
 		const msg = (event as any).message;
 		if (msg?.role === "assistant" && msg.usage) {
 			widget.addTokenUsage(msg.usage.input ?? 0, msg.usage.output ?? 0, refsSnapshot);
@@ -711,21 +859,38 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_settled", async () => {
 		turnTaskRefs.clear();
 		if (shuttingDown) return;
+		const wasInRun = inAgentRun;
+		const wasReminder = currentRunIsReminder;
+		inAgentRun = false;
+		startedViaBeforeAgentStart = false;
+		currentRunIsReminder = false;
 		agentBusy = false;
+		if (wasInRun || idleSince === null) idleSince = Date.now();
+		if (wasInRun && !wasReminder) {
+			resetHeadlessBackoff("agent_settled", false);
+		}
 		widget.beginTurn();
-		log.debug("agentBusy", "agent_settled reset");
+		log.debug("agentBusy", "agent_settled reset", { reminderTurn: wasReminder, idleSince });
 	});
 
 	pi.on("session_start", async (event: any, ctx: any) => {
 		shuttingDown = false;
 		turnTaskRefs.clear();
 		agentBusy = false;
-		log.debug("agentBusy", "session_start reset");
+		inAgentRun = false;
+		startedViaBeforeAgentStart = false;
+		currentRunIsReminder = false;
+		pendingReminderTurn = false;
+		idleSince = Date.now();
+		headlessNudgeCount = 0;
+		lastHeadlessNudgeAt = 0;
+		log.debug("agentBusy", "session_start reset", { idleSince });
 		currentCtx = ctx;
 		syncTaskBridge(ctx);
 		widget.reactivate(ctx.ui);
 		store.reopen();
-		store.setOnChange(() => { widget.update(); broadcastTasks(); });
+		lastOpenTasksFingerprint = openTasksFingerprint(store.list());
+		store.setOnChange(onStoreChange);
 		currentWidget = widget;
 		currentStore = store;
 		currentUiCtx = ctx.ui;
@@ -756,11 +921,34 @@ export default function (pi: ExtensionAPI) {
 		showPersistedTasks(reason === "reload" || reason === "resume" || reason === "fork");
 	});
 
-	pi.on("before_agent_start", async (_event: any, ctx: any) => {
+	pi.on("before_agent_start", async (event: any, ctx: any) => {
 		if (shuttingDown) return;
 		turnTaskRefs.clear();
 		agentBusy = true;
-		log.debug("agentBusy", "before_agent_start");
+		idleSince = null;
+		inAgentRun = true;
+		startedViaBeforeAgentStart = true;
+		const isExplicitReminder =
+			event?.messageType === "custom" &&
+			event?.message?.customType === "task-focus-reminder";
+		const isExplicitNonReminder =
+			event?.messageType === "user" ||
+			(event?.messageType === "custom" && event?.message?.customType !== "task-focus-reminder");
+		if (isExplicitReminder) {
+			currentRunIsReminder = true;
+			pendingReminderTurn = false;
+		} else if (isExplicitNonReminder) {
+			currentRunIsReminder = false;
+			pendingReminderTurn = false;
+			resetHeadlessBackoff("before_agent_start", false);
+		} else {
+			currentRunIsReminder = pendingReminderTurn;
+			pendingReminderTurn = false;
+			if (!currentRunIsReminder) {
+				resetHeadlessBackoff("before_agent_start", false);
+			}
+		}
+		log.debug("agentBusy", "before_agent_start", { reminderTurn: currentRunIsReminder });
 		currentCtx = ctx;
 		syncTaskBridge(ctx, true);
 		widget.setUICtx(ctx.ui);

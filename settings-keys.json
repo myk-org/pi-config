@@ -617,6 +617,15 @@
     "max": 1440,
     "group": "Tasks"
   },
+  "task_headless_idle_reminder_minutes": {
+    "description": "Base idle minutes before a headless supervised COMS peer is nudged about open unblocked tasks (with bounded backoff)",
+    "type": "int",
+    "env": "PI_TASK_HEADLESS_IDLE_REMINDER_MINUTES",
+    "default": 2,
+    "min": 1,
+    "max": 30,
+    "group": "Tasks"
+  },
   "dangerous_command_allowlist": {
     "description": "Glob patterns of pre-approved dangerous commands (* = any run, ? = one char, matched against the full command text; entries added via the 'always allow' prompt option are stored exact/escaped)",
     "type": "string_list",
