@@ -36,6 +36,7 @@ import {
   listSessionApprovals,
   loadRestrictedFolders,
   matchRestrictedFolder,
+  setApprovalHmacKeyPathForTests,
 } from "../../../extensions/orchestrator/restricted-folders.js";
 import {
   closeStateDbs,
@@ -110,6 +111,7 @@ function createEnforcementHarness(cwd: string) {
 afterEach(() => {
   clearSessionApprovals();
   clearRestrictedFoldersFloor();
+  setApprovalHmacKeyPathForTests(null);
   clearSettingsCache();
   setGlobalSettingsPath(null);
   closeStateDbs();
@@ -177,6 +179,7 @@ describe("restricted_folders schema + agent-edit protection (#1416)", () => {
 
   it("allows authorized updateSetting() to remove a project restricted folder", () => {
     const cwd = trackTempDir("rf-floor-human-");
+    setApprovalHmacKeyPathForTests(path.join(cwd, ".test-hmac-key"));
     const projSettings = path.join(cwd, ".pi", "pi-config-settings.json");
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
     fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: ["secrets/prod"] }));
@@ -189,8 +192,61 @@ describe("restricted_folders schema + agent-edit protection (#1416)", () => {
     assert.deepEqual(loadRestrictedFolders(cwd), []);
   });
 
+  it("clears root floor when restricted_folders is saved from a subdirectory", () => {
+    const repo = trackTempDir("rf-floor-subdir-");
+    setApprovalHmacKeyPathForTests(path.join(repo, ".test-hmac-key"));
+    const subdir = path.join(repo, "packages", "sub");
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
+    fs.mkdirSync(path.join(repo, ".pi"), { recursive: true });
+    fs.mkdirSync(subdir, { recursive: true });
+    const projSettings = path.join(repo, ".pi", "pi-config-settings.json");
+    fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: ["secrets/prod"] }));
+    setGlobalSettingsPath(path.join(repo, "nonexistent-global.json"));
+    clearSettingsCache();
+
+    // Load at repository root -> pins floor under canonical repo root
+    assert.deepEqual(loadRestrictedFolders(repo), ["secrets/prod"]);
+
+    // Save removal from a nested subdirectory -> must clear the shared repo root floor
+    assert.equal(updateSetting(subdir, "project", "restricted_folders", []).ok, true);
+    assert.deepEqual(loadRestrictedFolders(repo), []);
+  });
+
+  it("honors an authorized cross-process restricted_folders removal via HMAC attestation", () => {
+    const repo = trackTempDir("rf-floor-xproc-");
+    const hmacKey = path.join(repo, ".test-hmac-key");
+    setApprovalHmacKeyPathForTests(hmacKey);
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
+    fs.mkdirSync(path.join(repo, ".pi"), { recursive: true });
+    const projSettings = path.join(repo, ".pi", "pi-config-settings.json");
+    fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: ["secrets/prod"] }));
+    setGlobalSettingsPath(path.join(repo, "nonexistent-global.json"));
+    clearSettingsCache();
+
+    // Simulate Process B pinning ["secrets/prod"]
+    assert.deepEqual(loadRestrictedFolders(repo), ["secrets/prod"]);
+    const floorMap = (globalThis as Record<symbol, Map<string, Set<string>>>)[
+      Symbol.for("pi-config.restrictedFoldersFloor.v1")
+    ];
+    const savedProcessBFloor = new Map(
+      [...floorMap.entries()].map(([k, v]) => [k, new Set(v)]),
+    );
+
+    // Process A authorizes removal via updateSetting (writes HMAC attestation in shared state.db)
+    assert.equal(updateSetting(repo, "project", "restricted_folders", []).ok, true);
+
+    // Restore Process B's pre-save local globalThis floor (as if Process B never received Process A's in-process callback)
+    floorMap.clear();
+    for (const [k, v] of savedProcessBFloor) floorMap.set(k, v);
+    clearSettingsCache();
+
+    // Process B verifies the HMAC attestation in shared state.db and accepts the removal
+    assert.deepEqual(loadRestrictedFolders(repo), []);
+  });
+
   it("keeps restricted_folders floor intact when saving an unrelated setting", () => {
     const cwd = trackTempDir("rf-floor-unrelated-");
+    setApprovalHmacKeyPathForTests(path.join(cwd, ".test-hmac-key"));
     const projSettings = path.join(cwd, ".pi", "pi-config-settings.json");
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
     fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: ["secrets/prod"] }));
@@ -211,6 +267,7 @@ describe("restricted_folders schema + agent-edit protection (#1416)", () => {
   it("keeps project B floor intact when project A updates restricted_folders", () => {
     const projA = trackTempDir("rf-floor-a-");
     const projB = trackTempDir("rf-floor-b-");
+    setApprovalHmacKeyPathForTests(path.join(projA, ".test-hmac-key"));
     setGlobalSettingsPath(path.join(projA, "nonexistent-global.json"));
     fs.mkdirSync(path.join(projA, ".pi"), { recursive: true });
     fs.mkdirSync(path.join(projB, ".pi"), { recursive: true });
@@ -496,6 +553,8 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
       `printf '%s\\n' "$(cat "${tokenFile}")"`,
       `echo \`cat ${tokenFile}\``,
       `bash -c 'cat "${tokenFile}"'`,
+      `bash -c'cat "${tokenFile}"'`,
+      `bash -c"cat ${tokenFile}"`,
       `eval "cat '${tokenFile}'"`,
     ]) {
       const decision = await evaluateRestrictedFolderAccess({
@@ -535,6 +594,17 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
     assert.ok(directRead?.block);
   });
 
+  it("blocks indirect parameter expansion overwriting state.db", async () => {
+    const root = trackTempDir("rf-indirect-param-");
+    for (const cmd of [
+      `p=.pi/data/state.db; x=p; cp /dev/null "\${!x}"`,
+      `p=.pi/data/state.db; x=p; rm "\${!x}"`,
+    ]) {
+      const res = await evaluateBashPolicy({ command: cmd, cwd: root, ui: null });
+      assert.equal(res.action, "block", `indirect expansion tamper must be blocked: ${cmd}`);
+    }
+  });
+
   it("blocks positional-parameter state.db deletion when review_loop_enforcement is disabled", async () => {
     const root = trackTempDir("rf-pos-param-");
     for (const cmd of [
@@ -559,6 +629,7 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
     for (const cmd of [
       `d=".pi/data"; f="state.db"; sqlite3 "$d/$f" "INSERT INTO restricted_folder_approvals VALUES (1,'file','/a','/a','','now')"`,
       `sqlite3 .pi/data/state.db "SELECT 1; DELETE FROM restricted_folder_approvals"`,
+      `sqlite3 .pi/data/state.db "SELECT writefile('.pi/data/state.db-wal',X'00')"`,
       `echo "DELETE FROM restricted_folder_approvals" | sqlite3 .pi/data/state.db`,
       `python3 -c 'import sqlite3; sqlite3.connect(".pi/data/" + "state.db").execute("DELETE FROM restricted_folder_approvals")'`,
     ]) {

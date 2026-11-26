@@ -6402,15 +6402,20 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     const expandShellVars = (text: string, vars: Map<string, string>): string => {
       if (vars.size === 0 || !text.includes("$")) return text;
       return text.replace(
-        /\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])\}|\$([A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*])/g,
-        (m, a, b) => {
+        /\$\{!([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])\}|\$([A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*])/g,
+        (m, indirect, a, b) => {
+          if (indirect) {
+            const targetName = vars.get(indirect as string);
+            if (targetName && vars.has(targetName)) return vars.get(targetName)!;
+            return m;
+          }
           const name = (a ?? b) as string;
           return vars.has(name) ? vars.get(name)! : m;
         },
       );
     };
 
-    const unresolvedVarOrPositionalRe = /\$(?:\{(?:[A-Za-z_]|[0-9]+|[@*])|[A-Za-z_0-9@*])/;
+    const unresolvedVarOrPositionalRe = /\$(?:\{[^}]+\}|[A-Za-z_0-9@*!])/;
     const hmacKeyRe = /(?:\.|\b)approval[-_]?hmac[-_]?key\b/i;
     const dynamicPiAgentAccessRe =
       /(?:~|\$HOME|\$\{HOME\}|\/[^\s"'`;|&)]*)\/\.pi\/agent\/[^\s"'`;|&)]*(?:\$|[*?{`])/i;
@@ -6444,7 +6449,7 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     ]);
     const SQLITE_SAFE_FLAGS_WITH_ARG = new Set(["-separator", "-newline", "-nullvalue", "-timeout"]);
     const SQLITE_MUTATING_SQL_RE =
-      /\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|ATTACH|DETACH|VACUUM|REINDEX|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|ANALYZE)\b|\bPRAGMA\b[^;]*=/i;
+      /\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|ATTACH|DETACH|VACUUM|REINDEX|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|ANALYZE)\b|\bPRAGMA\b[^;]*=|\b(?:writefile|edit|load_extension|fts3_tokenizer)\s*\(/i;
     const SQLITE_READONLY_SQL_START_RE = /^\s*(?:SELECT\b|EXPLAIN\s+(?:QUERY\s+PLAN\s+)?SELECT\b|\.tables\b|\.schema\b)/i;
 
     /**
@@ -6635,10 +6640,19 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
             }
             if (evalArgs.length > 0) nested.push(evalArgs.join(" "));
           } else {
-            for (let i = cmdIdx + 1; i < expandedTokens.length - 1; i++) {
-              if (/^-[a-zA-Z]*c$/.test(expandedTokens[i]!)) {
+            for (let i = cmdIdx + 1; i < expandedTokens.length; i++) {
+              const tok = expandedTokens[i]!;
+              if (tok === "--") break;
+              if (/^-[a-zA-Z]*c$/.test(tok) && i + 1 < expandedTokens.length) {
                 const body = stripOuterQuotesSimple(expandedTokens[i + 1]!);
                 if (body) nested.push(body);
+                i++;
+              } else {
+                const attached = /^-[a-zA-Z]*c(.+)$/.exec(tok);
+                if (attached) {
+                  const body = stripOuterQuotesSimple(attached[1]!);
+                  if (body) nested.push(body);
+                }
               }
             }
           }

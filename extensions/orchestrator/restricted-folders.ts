@@ -32,8 +32,14 @@ import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { createLogger, type Logger } from "../shared/logger.js";
 import { resolveEffectiveCwd, tokenize, unquotedSegments } from "./bash-policy.js";
-import { loadGlobalSettings, loadProjectSettings, onSettingsWritten } from "./project-settings.js";
-import { getProjectStateDbPath, openStateDb, withTransaction } from "./state-db.js";
+import {
+  getGlobalSettingsPath,
+  getSettingsPath,
+  loadGlobalSettings,
+  loadProjectSettings,
+  onSettingsWritten,
+} from "./project-settings.js";
+import { createSqliteStateStore, getProjectStateDbPath, openStateDb, withTransaction } from "./state-db.js";
 
 const defaultLog = createLogger("restricted-folders");
 
@@ -100,8 +106,15 @@ export const CHOICE_APPROVE_DIR_PERSISTENT = "Approve Directory — direct child
 // ── HMAC Authentication for Persistent SQLite Approvals ────────────────────
 
 export const APPROVAL_HMAC_KEY_FILENAME = ".approval-hmac-key";
+let approvalHmacKeyPathOverride: string | null = null;
+
+/** Test hook: redirect HMAC key storage inside a temp directory. */
+export function setApprovalHmacKeyPathForTests(filePath: string | null): void {
+  approvalHmacKeyPathOverride = filePath;
+}
 
 export function getApprovalHmacKeyPath(homeDir = homedir()): string {
+  if (approvalHmacKeyPathOverride) return approvalHmacKeyPathOverride;
   return join(homeDir, ".pi", "agent", APPROVAL_HMAC_KEY_FILENAME);
 }
 
@@ -471,9 +484,17 @@ export function isPathInsideFolder(canonicalTarget: string, canonicalFolder: str
   return target.startsWith(folder + sep);
 }
 
-// ── Monotonic Restricted-Folders Floor (fail-closed against external shell tampering) ──
+// ── Monotonic Restricted-Folders Floor (fail-closed + cross-process HMAC attestation) ──
 
 const RESTRICTED_FLOOR_SYMBOL = Symbol.for("pi-config.restrictedFoldersFloor.v1");
+const GLOBAL_FLOOR_KEY = "__global__";
+const FLOOR_ATTEST_VERSION = "rf-attest-v1";
+const FLOOR_ATTEST_STORE_KEY = "restricted-folders-attestation";
+
+interface RestrictedFoldersAttestation {
+  sig: string;
+  updatedAt: string;
+}
 
 function getRestrictedFoldersFloor(): Map<string, Set<string>> {
   const g = globalThis as Record<symbol, Map<string, Set<string>> | undefined>;
@@ -485,6 +506,129 @@ function getRestrictedFoldersFloor(): Map<string, Set<string>> {
   return map;
 }
 
+/** Resolve the canonical project root key matching `project-settings.ts` (`getSettingsPath`). */
+function resolveProjectFloorKey(cwd: string): string {
+  const settingsFile = getSettingsPath(cwd);
+  return resolveCanonicalPath(dirname(dirname(settingsFile)), cwd);
+}
+
+function canonicalFolderListPayload(folders: readonly string[]): string {
+  const normalized = [
+    ...new Set(
+      folders
+        .filter((e): e is string => typeof e === "string")
+        .map((e) => e.trim())
+        .filter(Boolean),
+    ),
+  ].sort();
+  return JSON.stringify(normalized);
+}
+
+function computeFloorAttestationSig(
+  key: Buffer,
+  scope: "project" | "global",
+  settingsPath: string,
+  folders: readonly string[],
+): string {
+  return createHmac("sha256", key)
+    .update(`${FLOOR_ATTEST_VERSION}\0${scope}\0${settingsPath}\0${canonicalFolderListPayload(folders)}`)
+    .digest("hex");
+}
+
+function verifyFloorAttestationSig(
+  key: Buffer,
+  scope: "project" | "global",
+  settingsPath: string,
+  folders: readonly string[],
+  sig: string,
+): boolean {
+  if (!sig || !/^[a-f0-9]{64}$/i.test(sig)) return false;
+  const expected = computeFloorAttestationSig(key, scope, settingsPath, folders);
+  try {
+    const a = Buffer.from(expected, "hex");
+    const b = Buffer.from(sig, "hex");
+    return a.length === b.length && timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+function globalAttestationPath(keyPath: string): string {
+  return join(dirname(keyPath), ".restricted-folders-global.sig");
+}
+
+function recordAuthorizedRestrictedFoldersSave(
+  scope: "project" | "global",
+  settingsFilePath: string,
+  projectCwd?: string,
+): void {
+  try {
+    const keyPath = getApprovalHmacKeyPath();
+    const key = loadOrCreateApprovalHmacKey(keyPath);
+    const canonSettingsPath = resolveCanonicalPath(settingsFilePath, projectCwd ?? dirname(settingsFilePath));
+    const currentFolders =
+      scope === "global"
+        ? (loadGlobalSettings().restricted_folders ?? [])
+        : (loadProjectSettings(projectCwd ?? dirname(dirname(settingsFilePath))).restricted_folders ?? []);
+    const sig = computeFloorAttestationSig(key, scope, canonSettingsPath, currentFolders);
+    const payload: RestrictedFoldersAttestation = { sig, updatedAt: new Date().toISOString() };
+
+    if (scope === "global") {
+      const p = globalAttestationPath(keyPath);
+      mkdirSync(dirname(p), { recursive: true, mode: 0o700 });
+      writeFileSync(p, JSON.stringify(payload), { mode: 0o600 });
+    } else {
+      const rootDir = projectCwd ?? dirname(dirname(settingsFilePath));
+      const store = createSqliteStateStore<Record<string, RestrictedFoldersAttestation>>(
+        getProjectStateDbPath(rootDir),
+        FLOOR_ATTEST_STORE_KEY,
+      );
+      store.mutate((s) => {
+        s[canonSettingsPath] = payload;
+      }, {});
+    }
+  } catch (err) {
+    defaultLog.warn("restricted_folders_attestation_write_failed", { scope }, err);
+  }
+}
+
+function hasValidProjectAttestation(cwd: string, projectFolders: readonly string[]): boolean {
+  try {
+    const keyPath = getApprovalHmacKeyPath();
+    const key = readApprovalHmacKey(keyPath);
+    if (!key) return false;
+    const projSettingsPath = resolveCanonicalPath(getSettingsPath(cwd), cwd);
+    const store = createSqliteStateStore<Record<string, RestrictedFoldersAttestation>>(
+      getProjectStateDbPath(cwd),
+      FLOOR_ATTEST_STORE_KEY,
+    );
+    const map = store.read();
+    const projAttest = map?.[projSettingsPath];
+    return Boolean(
+      projAttest && verifyFloorAttestationSig(key, "project", projSettingsPath, projectFolders, projAttest.sig),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasValidGlobalAttestation(cwd: string, globalFolders: readonly string[]): boolean {
+  try {
+    const keyPath = getApprovalHmacKeyPath();
+    const key = readApprovalHmacKey(keyPath);
+    if (!key) return false;
+    const globPath = globalAttestationPath(keyPath);
+    if (!existsSync(globPath)) return false;
+    const parsed = JSON.parse(readFileSync(globPath, "utf-8")) as RestrictedFoldersAttestation | null;
+    const globSettingsPath = resolveCanonicalPath(getGlobalSettingsPath(), cwd);
+    return Boolean(
+      parsed?.sig && verifyFloorAttestationSig(key, "global", globSettingsPath, globalFolders, parsed.sig),
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Clear the monotonic restricted-folders floor (called on authorized human settings saves and test teardown). */
 export function clearRestrictedFoldersFloor(cwd?: string): void {
   const floor = getRestrictedFoldersFloor();
@@ -492,45 +636,38 @@ export function clearRestrictedFoldersFloor(cwd?: string): void {
     floor.clear();
     return;
   }
-  floor.delete(resolveCanonicalPath(cwd, cwd));
+  floor.delete(resolveProjectFloorKey(cwd));
 }
 
 onSettingsWritten((event) => {
   // Only reset a floor when `restricted_folders` itself was updated via an authorized save.
   // Unrelated setting saves (e.g. `dco`, `image_model`) must never unpin restricted folders.
   if (event.changedKey !== "restricted_folders") return;
-  if (event.scope === "global") {
-    clearRestrictedFoldersFloor();
+  const scope = event.scope ?? "project";
+  const projectCwd = event.cwd ?? dirname(dirname(event.filePath));
+  recordAuthorizedRestrictedFoldersSave(scope, event.filePath, projectCwd);
+  if (scope === "global") {
+    getRestrictedFoldersFloor().delete(GLOBAL_FLOOR_KEY);
     return;
   }
-  const projectCwd = event.cwd ?? dirname(dirname(event.filePath));
   clearRestrictedFoldersFloor(projectCwd);
 });
 
-/**
- * Union global and project `restricted_folders` AND enforce a monotonic per-project
- * floor captured across loads (only reset when settings are saved via the authorized
- * in-process settings API `writeSettingsFile`). Even if an external shell script
- * overwrites `.pi/pi-config-settings.json` to clear `restricted_folders`, previously
- * enforced folders remain active (fail closed).
- */
-export function loadRestrictedFolders(cwd: string): string[] {
+function reconcileScopeFloor(
+  floorKey: string,
+  diskEntries: readonly string[],
+  isAttested: () => boolean,
+): string[] {
   const seen = new Set<string>();
-  const combined: string[] = [];
-  for (const list of [
-    loadGlobalSettings().restricted_folders ?? [],
-    loadProjectSettings(cwd).restricted_folders ?? [],
-  ]) {
-    for (const entry of list) {
-      if (typeof entry !== "string") continue;
-      const trimmed = entry.trim();
-      if (!trimmed || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      combined.push(trimmed);
-    }
+  const normalized: string[] = [];
+  for (const entry of diskEntries) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
   }
 
-  const floorKey = resolveCanonicalPath(cwd, cwd);
   const floorMap = getRestrictedFoldersFloor();
   let pinned = floorMap.get(floorKey);
   if (!pinned) {
@@ -538,25 +675,68 @@ export function loadRestrictedFolders(cwd: string): string[] {
     floorMap.set(floorKey, pinned);
   }
 
-  // Detect any external removal of a previously configured restricted folder.
-  let restoredFromFloor = 0;
+  let missingFromDisk = false;
   for (const prev of pinned) {
     if (!seen.has(prev)) {
-      seen.add(prev);
-      combined.push(prev);
-      restoredFromFloor++;
+      missingFromDisk = true;
+      break;
     }
   }
-  if (restoredFromFloor > 0) {
-    defaultLog.warn("restricted_folders_external_shrink_ignored", {
-      cwd: floorKey,
-      restoredCount: restoredFromFloor,
-    });
-  }
-  for (const entry of combined) {
-    pinned.add(entry);
+
+  if (missingFromDisk) {
+    if (isAttested()) {
+      pinned.clear();
+      for (const entry of normalized) pinned.add(entry);
+      return normalized;
+    }
+
+    let restoredFromFloor = 0;
+    for (const prev of pinned) {
+      if (!seen.has(prev)) {
+        seen.add(prev);
+        normalized.push(prev);
+        restoredFromFloor++;
+      }
+    }
+    if (restoredFromFloor > 0) {
+      defaultLog.warn("restricted_folders_external_shrink_ignored", {
+        floorKey,
+        restoredCount: restoredFromFloor,
+      });
+    }
   }
 
+  for (const entry of normalized) {
+    pinned.add(entry);
+  }
+  return normalized;
+}
+
+/**
+ * Union global and project `restricted_folders` AND enforce separate monotonic floors
+ * per scope (project keyed by canonical repository root; global keyed independently).
+ * Authorized saves via `writeSettingsFile` record an HMAC-signed attestation so both the
+ * saving process (from any subdirectory) and other running Pi processes honor legitimate
+ * removals while external shell writes fail closed.
+ */
+export function loadRestrictedFolders(cwd: string): string[] {
+  const globalFolders = loadGlobalSettings().restricted_folders ?? [];
+  const projectFolders = loadProjectSettings(cwd).restricted_folders ?? [];
+
+  const effectiveGlobal = reconcileScopeFloor(GLOBAL_FLOOR_KEY, globalFolders, () =>
+    hasValidGlobalAttestation(cwd, globalFolders),
+  );
+  const effectiveProject = reconcileScopeFloor(resolveProjectFloorKey(cwd), projectFolders, () =>
+    hasValidProjectAttestation(cwd, projectFolders),
+  );
+
+  const seen = new Set<string>();
+  const combined: string[] = [];
+  for (const entry of [...effectiveGlobal, ...effectiveProject]) {
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    combined.push(entry);
+  }
   return combined;
 }
 
@@ -816,10 +996,20 @@ function extractNestedShellBodies(tokens: string[]): string[] {
   }
 
   if (NESTED_SHELL_NAMES.has(cmdWord)) {
-    for (let i = cmdIdx + 1; i < tokens.length - 1; i++) {
-      if (/^-[a-zA-Z]*c$/.test(tokens[i]!)) {
+    for (let i = cmdIdx + 1; i < tokens.length; i++) {
+      const tok = tokens[i]!;
+      if (tok === "--") break;
+      if (/^-[a-zA-Z]*c$/.test(tok) && i + 1 < tokens.length) {
         const body = stripOuterQuotes(tokens[i + 1]!);
         if (body) bodies.push(body);
+        i++;
+      } else {
+        // Attached option form such as `bash -c'cat /restricted/file'` or `bash -xc"..."`
+        const attached = /^-[a-zA-Z]*c(.+)$/.exec(tok);
+        if (attached) {
+          const body = stripOuterQuotes(attached[1]!);
+          if (body) bodies.push(body);
+        }
       }
     }
   }
