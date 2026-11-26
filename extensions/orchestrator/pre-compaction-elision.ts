@@ -1,34 +1,39 @@
 /**
  * Mechanical pre-compaction elision of old bulky tool results (issue #1421).
  *
- * Deterministic, zero-LLM-cost `context` hook that activates only once estimated
- * context usage crosses `pre_compaction_elision_threshold_pct` (never mutating
- * ordinary turns below threshold so prompt caches stay intact).
+ * Deterministic, zero-LLM-cost elision integrated into BOTH:
+ * 1. `turn_end` boundary drafts (`context_edit` entries) — commits elisions into Pi's
+ *    canonical session projection BEFORE Pi's automatic compaction checks
+ *    (`_compactBeforeNextAssistantResponse` and `_checkCompaction`), so Pi recalculates
+ *    projected context tokens from the reduced messages and avoids expensive LLM compaction.
+ * 2. `context` hook — safety-net transform for pre-existing un-edited transcripts or
+ *    non-boundary callers, remaining a zero-mutation no-op on ordinary turns below
+ *    `pre_compaction_elision_threshold_pct` so prompt caches stay intact.
  *
  * Conservative invariants:
- * - Only elides `toolResult` text blocks outside the protected recent-turn window
- *   and at least `pre_compaction_elision_min_chars` characters long.
- * - Never touches user messages, assistant prose, thinking/reasoning blocks,
- *   images, small tool results, or message ordering/toolCall-toolResult pairing.
- * - Always backs every elided payload with a durable spill file (reusing an
- *   existing #1420 spill path when already spilled) — skips elision if spill write fails.
- * - Replays already-elided placeholders deterministically on subsequent turns so
- *   the prompt prefix stays bit-for-bit stable for provider prompt caching.
+ * - Protects complete recent user turns (`pre_compaction_elision_keep_turns`), so
+ *   multi-step assistant/tool exchanges inside the current user request are never elided.
+ * - Only elides `toolResult` text blocks outside the protected window and at least
+ *   `pre_compaction_elision_min_chars` characters long.
+ * - Never touches user messages, assistant prose, thinking/reasoning blocks, images,
+ *   small tool results, or message ordering / toolCall-toolResult pairing.
+ * - Always backs every elided payload with a durable spill file (reusing a verified
+ *   in-process spill record created by `session-spill.ts` for that session/block, never
+ *   trusting forged paths embedded in tool output or details) — skips elision if spill
+ *   persistence fails.
  */
 
-import * as fs from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 import { createLogger, type Logger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
 import {
   countLines,
-  extractSpillCountsFromText,
-  extractSpillPathFromDetails,
-  extractSpillPathFromText,
+  lookupTrustedSpill,
   resolveSessionSpillDir,
   writeSessionSpill,
+  type VerifiedSpillReference,
 } from "./session-spill.js";
 
 const defaultLog = createLogger("orchestrator");
@@ -38,6 +43,7 @@ const CHARS_PER_TOKEN = 4;
 const ESTIMATED_TOKENS_PER_IMAGE = 1000;
 
 export interface ElisionOptions {
+  sessionKey?: string;
   keepTurns: number;
   minChars: number;
   spillDir: string;
@@ -49,6 +55,7 @@ export interface ElisionOptions {
 export interface ElisionResult {
   messages: AgentMessage[];
   changed: boolean;
+  modifiedIndices: number[];
   newlyElided: number;
   replayedElided: number;
   charsReclaimed: number;
@@ -62,6 +69,20 @@ function isToolResultMessage(msg: AgentMessage | undefined): msg is ToolResultMe
   return Boolean(msg && typeof msg === "object" && (msg as any).role === "toolResult");
 }
 
+function isUserTurnStartMessage(msg: AgentMessage | undefined): boolean {
+  if (!msg || typeof msg !== "object") return false;
+  switch ((msg as any).role) {
+    case "user":
+    case "bashExecution":
+    case "custom":
+    case "branchSummary":
+    case "compactionSummary":
+      return true;
+    default:
+      return false;
+  }
+}
+
 function isAlreadyElidedText(text: string): boolean {
   return text.startsWith(ELIDED_PREFIX);
 }
@@ -73,16 +94,17 @@ function makeBlockKey(msg: ToolResultMessage, msgIndex: number, blockIndex: numb
 
 /**
  * Find the starting index of the protected recent-turn window by walking backwards
- * and counting `assistant` turns. Everything at index >= return value is protected.
+ * across user-turn boundaries (matching Pi's `isTurnStartMessage`). Everything at
+ * index >= return value is protected, including every assistant/tool exchange inside
+ * those recent user turns.
  */
 export function findProtectedTurnStartIndex(messages: readonly AgentMessage[], keepTurns: number): number {
   if (keepTurns <= 0) return messages.length;
-  let assistantTurns = 0;
+  let userTurns = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg && typeof msg === "object" && (msg as any).role === "assistant") {
-      assistantTurns++;
-      if (assistantTurns >= keepTurns) return i;
+    if (isUserTurnStartMessage(messages[i])) {
+      userTurns++;
+      if (userTurns >= keepTurns) return i;
     }
   }
   return 0;
@@ -135,14 +157,20 @@ export function estimateMessagesTokens(
   return Math.ceil(chars / CHARS_PER_TOKEN) + imageCount * ESTIMATED_TOKENS_PER_IMAGE;
 }
 
-function findReusableSpillPath(msg: ToolResultMessage, blockIndex: number, text: string): string | null {
-  const fromDetails = extractSpillPathFromDetails(msg.details, blockIndex);
-  if (fromDetails && fs.existsSync(fromDetails)) return fromDetails;
-
-  const fromText = extractSpillPathFromText(text);
-  if (fromText && fs.existsSync(fromText)) return fromText;
-
-  return null;
+/**
+ * Reuse an existing spill file ONLY when it is verified in our authoritative session
+ * spill registry (matching session, toolCallId, blockIndex, preview SHA-256, and
+ * non-symlink path containment inside `spillDir`). Forged markers in tool output or
+ * tool-controlled details are never trusted.
+ */
+function findVerifiedReusableSpill(
+  sessionKey: string,
+  msg: ToolResultMessage,
+  blockIndex: number,
+  text: string,
+  spillDir: string,
+): VerifiedSpillReference | null {
+  return lookupTrustedSpill(sessionKey, msg.toolCallId, blockIndex, text, spillDir);
 }
 
 function formatElidedPlaceholder(
@@ -155,21 +183,23 @@ function formatElidedPlaceholder(
 }
 
 /**
- * Pure-ish mechanical elision pass over `event.messages`.
+ * Pure-ish mechanical elision pass over a message list.
  * Never mutates the input array or its elements in place; preserves all non-toolResult
- * messages, images, recent turns, and toolCall/toolResult pairing invariants.
+ * messages, images, recent user turns, and toolCall/toolResult pairing invariants.
  */
 export function elideStaleToolResults(
   messages: readonly AgentMessage[],
   opts: ElisionOptions,
 ): ElisionResult {
   const log = opts.log ?? defaultLog;
+  const sessionKey = opts.sessionKey ?? "__default__";
   const protectedStartIndex = findProtectedTurnStartIndex(messages, opts.keepTurns);
 
   let changed = false;
   let newlyElided = 0;
   let replayedElided = 0;
   let charsReclaimed = 0;
+  const modifiedIndices: number[] = [];
 
   const nextMessages: AgentMessage[] = new Array(messages.length);
 
@@ -208,18 +238,15 @@ export function elideStaleToolResults(
         continue;
       }
 
-      const existingSpillPath = findReusableSpillPath(msg, j, block.text);
+      const verifiedSpill = findVerifiedReusableSpill(sessionKey, msg, j, block.text, opts.spillDir);
       let spillPath: string;
       let originalChars = block.text.length;
       let originalLines = countLines(block.text);
 
-      if (existingSpillPath) {
-        spillPath = existingSpillPath;
-        const parsedCounts = extractSpillCountsFromText(block.text);
-        if (parsedCounts) {
-          originalChars = parsedCounts.chars;
-          originalLines = parsedCounts.lines;
-        }
+      if (verifiedSpill) {
+        spillPath = verifiedSpill.path;
+        originalChars = verifiedSpill.originalChars;
+        originalLines = verifiedSpill.originalLines;
       } else {
         try {
           const written = writeSessionSpill(block.text, opts.spillDir);
@@ -255,6 +282,7 @@ export function elideStaleToolResults(
 
     if (msgChanged && nextContent) {
       nextMessages[i] = { ...msg, content: nextContent };
+      modifiedIndices.push(i);
       changed = true;
     } else {
       nextMessages[i] = msg;
@@ -264,6 +292,7 @@ export function elideStaleToolResults(
   return {
     messages: changed ? nextMessages : (messages as AgentMessage[]),
     changed,
+    modifiedIndices,
     newlyElided,
     replayedElided,
     charsReclaimed,
@@ -296,7 +325,7 @@ function resolveContextUsagePercent(
   return null;
 }
 
-/** Register the mechanical pre-compaction elision `context` hook on the Pi extension API. */
+/** Register mechanical pre-compaction elision (`turn_end` `context_edit` + `context` fallback). */
 export function registerPreCompactionElision(
   pi: ExtensionAPI,
   options: RegisterPreCompactionElisionOptions = {},
@@ -332,6 +361,85 @@ export function registerPreCompactionElision(
     elidedBySession.delete(sessionKey(ctx));
   });
 
+  // Primary pre-compaction integration: runs at turn_end BEFORE Pi's automatic
+  // compaction checks (_compactBeforeNextAssistantResponse and _checkCompaction).
+  // Emitting `context_edit` drafts updates the canonical session projection so Pi
+  // recalculates projected tokens from the elided messages and avoids LLM compaction.
+  pi.on("turn_end", (event, ctx) => {
+    const cwd = ctx?.cwd || process.cwd();
+    if (!getSetting(cwd, "pre_compaction_elision")) return undefined;
+
+    const projectedEntries = event?.context?.contextEntries;
+    if (!Array.isArray(projectedEntries) || projectedEntries.length === 0) return undefined;
+
+    const messages: AgentMessage[] = [];
+    const entryIds: (string | null)[] = [];
+    for (const proj of projectedEntries) {
+      if (!proj || !Array.isArray(proj.messages)) continue;
+      const src = proj.sourceEntry;
+      const editableId =
+        src && src.type === "message" && typeof src.id === "string" && src.id ? src.id : null;
+      for (const msg of proj.messages) {
+        if (!msg || (msg as any).role === "system") continue;
+        messages.push(msg);
+        entryIds.push(editableId);
+      }
+    }
+    if (messages.length === 0) return undefined;
+
+    const key = sessionKey(ctx);
+    const elidedBlocks = getElidedBlocks(key);
+    const thresholdPct = getSetting(cwd, "pre_compaction_elision_threshold_pct");
+    const usagePct = resolveContextUsagePercent(messages, ctx, elidedBlocks);
+    if (usagePct === null || usagePct < thresholdPct) return undefined;
+
+    const keepTurns = getSetting(cwd, "pre_compaction_elision_keep_turns");
+    const minChars = getSetting(cwd, "pre_compaction_elision_min_chars");
+    const spillLoc = resolveSessionSpillDir({
+      sessionFile: ctx?.sessionManager?.getSessionFile?.(),
+      sessionId: ctx?.sessionManager?.getSessionId?.(),
+      cwd,
+    });
+
+    const result = elideStaleToolResults(messages, {
+      sessionKey: key,
+      keepTurns,
+      minChars,
+      spillDir: spillLoc.dir,
+      elidedBlocks,
+      allowNewElisions: true,
+      log,
+    });
+
+    if (!result.changed || result.modifiedIndices.length === 0) return undefined;
+
+    const existingEntries: SessionBoundaryDraft[] = Array.isArray(event.entries) ? event.entries : [];
+    const drafts: SessionBoundaryDraft[] = [];
+    for (const idx of result.modifiedIndices) {
+      const targetId = entryIds[idx];
+      const updated = result.messages[idx];
+      if (!targetId || !updated || !isToolResultMessage(updated)) continue;
+      drafts.push({
+        type: "context_edit",
+        targetId,
+        replacement: { content: updated.content },
+      });
+    }
+    if (drafts.length === 0) return undefined;
+
+    log.info("pre_compaction_elision_turn_end_committed", {
+      usagePct: Math.round(usagePct * 10) / 10,
+      thresholdPct,
+      edits: drafts.length,
+      newlyElided: result.newlyElided,
+      charsReclaimed: result.charsReclaimed,
+    });
+
+    return { entries: [...existingEntries, ...drafts] };
+  });
+
+  // Complementary request-time guard for pre-existing un-edited transcripts or
+  // non-boundary hosts. Never mutates history on ordinary turns below threshold.
   pi.on("context", (event, ctx) => {
     const cwd = ctx?.cwd || process.cwd();
     if (!getSetting(cwd, "pre_compaction_elision")) return undefined;
@@ -357,6 +465,7 @@ export function registerPreCompactionElision(
     });
 
     const result = elideStaleToolResults(messages, {
+      sessionKey: key,
       keepTurns,
       minChars,
       spillDir: spillLoc.dir,

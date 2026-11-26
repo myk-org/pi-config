@@ -1007,7 +1007,7 @@ Elision never rewrites user messages, assistant prose, thinking/reasoning blocks
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `pre_compaction_elision` | boolean | `true` | `PI_PRE_COMPACTION_ELISION` | Enable deterministic zero-LLM-cost elision of old bulky tool results before compaction. | Activates the `context` hook once usage crosses `pre_compaction_elision_threshold_pct`, reclaiming context headroom without an LLM compaction call. |
+| `pre_compaction_elision` | boolean | `true` | `PI_PRE_COMPACTION_ELISION` | Enable deterministic zero-LLM-cost elision of old bulky tool results before compaction. | Commits `context_edit` drafts at `turn_end` (before Pi's automatic compaction threshold checks) and guards `context` once usage crosses `pre_compaction_elision_threshold_pct`, reclaiming headroom without an LLM compaction call. |
 
 ### `pre_compaction_elision_threshold_pct`
 
@@ -1019,7 +1019,7 @@ Elision never rewrites user messages, assistant prose, thinking/reasoning blocks
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `pre_compaction_elision_keep_turns` | integer `1`-`50` | `6` | `PI_PRE_COMPACTION_ELISION_KEEP_TURNS` | Number of most recent assistant turns kept completely intact. | Tool results belonging to the last N assistant turns are never elided. |
+| `pre_compaction_elision_keep_turns` | integer `1`-`50` | `6` | `PI_PRE_COMPACTION_ELISION_KEEP_TURNS` | Number of most recent user turns kept completely intact. | Every assistant/tool exchange inside the last N user turns is never elided. |
 
 ### `pre_compaction_elision_min_chars`
 

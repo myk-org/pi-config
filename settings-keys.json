@@ -697,7 +697,7 @@
     "group": "Session"
   },
   "pre_compaction_elision_keep_turns": {
-    "description": "Number of most recent assistant turns kept completely intact during mechanical pre-compaction elision",
+    "description": "Number of most recent user turns kept completely intact during mechanical pre-compaction elision",
     "type": "int",
     "env": "PI_PRE_COMPACTION_ELISION_KEEP_TURNS",
     "default": 6,

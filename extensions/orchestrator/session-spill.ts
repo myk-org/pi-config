@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ToolResultEvent, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import { acquireDirLock } from "../shared/file-lock.js";
 import { createLogger, type Logger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir } from "./utils.js";
@@ -29,6 +30,12 @@ const DEFAULT_PREVIEW_HEAD_CHARS = 4000;
 const DEFAULT_PREVIEW_TAIL_CHARS = 2000;
 const MAX_SPILL_ALLOC_ATTEMPTS = 10_000;
 const MAX_TRACKED_SPILL_DIRS = 128;
+const FALLBACK_LOCK_STALE_MS = 10_000;
+const FALLBACK_LOCK_ATTEMPTS = 25;
+const FALLBACK_LOCK_SLEEP_MS = 20;
+
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 
 const SPILL_MARKER_RE = /\[output truncated: (\d+) chars \((\d+) lines\) — full output saved to: ([^\n\]]+?) — use read\(path, offset, limit\) to inspect\]/;
 
@@ -55,6 +62,19 @@ export interface SpillWriteResult {
   bytes: number;
   chars: number;
   lines: number;
+}
+
+export interface SpillFsOps {
+  mkdirSync: typeof fs.mkdirSync;
+  chmodSync: typeof fs.chmodSync;
+  readdirSync: typeof fs.readdirSync;
+  writeFileSync: typeof fs.writeFileSync;
+  linkSync: typeof fs.linkSync;
+  renameSync: typeof fs.renameSync;
+  unlinkSync: typeof fs.unlinkSync;
+  existsSync: typeof fs.existsSync;
+  statSync: typeof fs.statSync;
+  rmSync: typeof fs.rmSync;
 }
 
 export interface BlobWriteResult {
@@ -84,7 +104,22 @@ export interface ExternalizedBlobEntry {
   reason: "oversized" | "duplicate";
 }
 
+export interface TrustedSpillRecord {
+  path: string;
+  spillDir: string;
+  previewSha256: string;
+  originalChars: number;
+  originalLines: number;
+}
+
+export interface VerifiedSpillReference {
+  path: string;
+  originalChars: number;
+  originalLines: number;
+}
+
 export interface ProcessToolResultSpillOptions {
+  sessionKey?: string;
   spillEnabled: boolean;
   thresholdChars: number;
   blobExternalize: boolean;
@@ -102,6 +137,89 @@ export interface RegisterSessionSpillOptions {
 }
 
 const nextSeqByDir = new Map<string, number>();
+const trustedSpillsBySession = new Map<string, Map<string, TrustedSpillRecord>>();
+
+const defaultFsOps: SpillFsOps = {
+  mkdirSync: fs.mkdirSync,
+  chmodSync: fs.chmodSync,
+  readdirSync: fs.readdirSync,
+  writeFileSync: fs.writeFileSync,
+  linkSync: fs.linkSync,
+  renameSync: fs.renameSync,
+  unlinkSync: fs.unlinkSync,
+  existsSync: fs.existsSync,
+  statSync: fs.statSync,
+  rmSync: fs.rmSync,
+};
+
+function sha256Text(text: string): string {
+  return createHash("sha256").update(text, "utf-8").digest("hex");
+}
+
+function makeTrustedSpillKey(toolCallId: string, blockIndex: number): string {
+  return `${toolCallId}:${blockIndex}`;
+}
+
+/** Record a spill file legitimately created by this session for `(toolCallId, blockIndex)`. */
+export function recordTrustedSpill(
+  sessionKey: string,
+  toolCallId: string,
+  blockIndex: number,
+  record: TrustedSpillRecord,
+): void {
+  if (!toolCallId) return;
+  let sessionMap = trustedSpillsBySession.get(sessionKey);
+  if (!sessionMap) {
+    sessionMap = new Map<string, TrustedSpillRecord>();
+    trustedSpillsBySession.set(sessionKey, sessionMap);
+  }
+  sessionMap.set(makeTrustedSpillKey(toolCallId, blockIndex), record);
+}
+
+/**
+ * Verify and return a reusable spill reference ONLY when:
+ * 1. A spill record was registered in-process for this exact `(sessionKey, toolCallId, blockIndex)`,
+ * 2. The current block text matches the exact SHA-256 of the generated preview (content identity),
+ * 3. The target path is a regular non-symlink file residing strictly inside `expectedSpillDir`.
+ */
+export function lookupTrustedSpill(
+  sessionKey: string,
+  toolCallId: string | undefined,
+  blockIndex: number,
+  currentText: string,
+  expectedSpillDir: string,
+): VerifiedSpillReference | null {
+  if (!toolCallId) return null;
+  const record = trustedSpillsBySession.get(sessionKey)?.get(makeTrustedSpillKey(toolCallId, blockIndex));
+  if (!record) return null;
+  if (sha256Text(currentText) !== record.previewSha256) return null;
+
+  try {
+    const stat = fs.lstatSync(record.path);
+    if (stat.isSymbolicLink() || !stat.isFile()) return null;
+    const realDir = fs.realpathSync(expectedSpillDir);
+    const realFile = fs.realpathSync(record.path);
+    const prefix = realDir.endsWith(path.sep) ? realDir : `${realDir}${path.sep}`;
+    if (!realFile.startsWith(prefix)) return null;
+  } catch {
+    return null;
+  }
+
+  return {
+    path: record.path,
+    originalChars: record.originalChars,
+    originalLines: record.originalLines,
+  };
+}
+
+/** Clear tracked trusted spills for one session (or all sessions when omitted). */
+export function clearTrustedSpills(sessionKey?: string): void {
+  if (sessionKey === undefined) {
+    trustedSpillsBySession.clear();
+  } else {
+    trustedSpillsBySession.delete(sessionKey);
+  }
+}
 
 /** Count newline-delimited lines (at least 1 for non-empty text, 0 for empty). */
 export function countLines(text: string): number {
@@ -152,11 +270,26 @@ export function mimeToExt(mimeType?: string | null): string | null {
   return MIME_TO_EXT[normalized] ?? null;
 }
 
-function scanNextSpillId(dir: string): number {
+function ensurePrivateDir(dir: string, ops: SpillFsOps): void {
+  ops.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  // Explicitly chmod so permissive umasks or pre-existing directories are tightened to owner-only.
+  ops.chmodSync(dir, PRIVATE_DIR_MODE);
+  const parentDir = path.dirname(dir);
+  if (path.basename(parentDir) === "session-local") {
+    try {
+      ops.chmodSync(parentDir, PRIVATE_DIR_MODE);
+    } catch {
+      // Best-effort on parent container.
+    }
+  }
+}
+
+function scanNextSpillId(dir: string, ops: SpillFsOps): number {
   let maxId = 0;
   try {
-    for (const entry of fs.readdirSync(dir)) {
-      const match = /^(\d+)\.log$/.exec(entry);
+    for (const entry of ops.readdirSync(dir)) {
+      const name = String(entry);
+      const match = /^(\d+)\.log$/.exec(name);
       if (!match) continue;
       const num = Number(match[1]);
       if (Number.isSafeInteger(num) && num > maxId) maxId = num;
@@ -175,9 +308,9 @@ function rememberNextSeq(dir: string, nextSeq: number): void {
   nextSeqByDir.set(dir, nextSeq);
 }
 
-function unlinkBestEffort(filePath: string): void {
+function unlinkBestEffort(filePath: string, ops: SpillFsOps = defaultFsOps): void {
   try {
-    fs.unlinkSync(filePath);
+    ops.unlinkSync(filePath);
   } catch {
     // Ignore ENOENT or already-cleaned temp files.
   }
@@ -188,72 +321,114 @@ function isHardlinkUnsupported(err: unknown): boolean {
   return code === "EXDEV" || code === "EPERM" || code === "ENOSYS" || code === "EOPNOTSUPP";
 }
 
+function acquireFallbackLock(dir: string, ops: SpillFsOps): string {
+  const lockDir = path.join(dir, ".spill.lock");
+  if (acquireDirLock(lockDir, FALLBACK_LOCK_ATTEMPTS, FALLBACK_LOCK_SLEEP_MS)) {
+    return lockDir;
+  }
+  // Reclaim stale lock if its owner crashed without releasing.
+  try {
+    const stat = ops.statSync(lockDir);
+    if (Date.now() - stat.mtimeMs > FALLBACK_LOCK_STALE_MS) {
+      ops.rmSync(lockDir, { recursive: true, force: true });
+      if (acquireDirLock(lockDir, 3, FALLBACK_LOCK_SLEEP_MS)) {
+        return lockDir;
+      }
+    }
+  } catch {
+    // Lock disappeared concurrently; retry once.
+    if (acquireDirLock(lockDir, 3, FALLBACK_LOCK_SLEEP_MS)) {
+      return lockDir;
+    }
+  }
+  throw new Error(`Timed out acquiring spill fallback lock in ${dir}`);
+}
+
+function publishWithAtomicRenameFallback(
+  dir: string,
+  tmpPath: string,
+  startSeq: number,
+  ops: SpillFsOps,
+): { path: string; seq: number } {
+  const lockDir = acquireFallbackLock(dir, ops);
+  try {
+    let seq = Math.max(startSeq, scanNextSpillId(dir, ops));
+    for (let attempt = 0; attempt < MAX_SPILL_ALLOC_ATTEMPTS; attempt++) {
+      const candidate = path.join(dir, `${seq}.log`);
+      if (ops.existsSync(candidate)) {
+        seq++;
+        continue;
+      }
+      // tmpPath is already completely written, chmodded 0o600, and closed,
+      // so same-directory renameSync publishes atomically with zero partial reads.
+      ops.renameSync(tmpPath, candidate);
+      return { path: candidate, seq };
+    }
+    throw new Error(`Exhausted ${MAX_SPILL_ALLOC_ATTEMPTS} numeric spill IDs in ${dir}`);
+  } finally {
+    try {
+      ops.rmSync(lockDir, { recursive: true, force: true });
+    } catch {
+      // Lock already removed.
+    }
+  }
+}
+
 /**
- * Atomically persist full text to `<dir>/<N>.log` using a unique temp file + `linkSync`
- * so readers never see partial writes and concurrent tool completions never collide.
+ * Atomically persist full text to `<dir>/<N>.log` with owner-only permissions (`0o700` dir,
+ * `0o600` files) using a private temp file + `linkSync` (or lock-serialized atomic `renameSync`
+ * fallback when hardlinks are unsupported) so readers never see partial writes and concurrent
+ * tool completions never collide.
  */
-export function writeSessionSpill(content: string, dir: string): SpillWriteResult {
-  fs.mkdirSync(dir, { recursive: true });
-  let seq = nextSeqByDir.get(dir) ?? scanNextSpillId(dir);
+export function writeSessionSpill(
+  content: string,
+  dir: string,
+  fsOverrides?: Partial<SpillFsOps>,
+): SpillWriteResult {
+  const ops: SpillFsOps = fsOverrides ? { ...defaultFsOps, ...fsOverrides } : defaultFsOps;
+  ensurePrivateDir(dir, ops);
+  let seq = nextSeqByDir.get(dir) ?? scanNextSpillId(dir, ops);
 
   const bytes = Buffer.byteLength(content, "utf-8");
   const chars = content.length;
   const lines = countLines(content);
 
   const tmpPath = path.join(dir, `.spill-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-  fs.writeFileSync(tmpPath, content, "utf-8");
 
-  let useWxFallback = false;
   try {
+    ops.writeFileSync(tmpPath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+    ops.chmodSync(tmpPath, PRIVATE_FILE_MODE);
+
     for (let attempt = 0; attempt < MAX_SPILL_ALLOC_ATTEMPTS; attempt++) {
       const candidate = path.join(dir, `${seq}.log`);
-      if (!useWxFallback) {
-        try {
-          fs.linkSync(tmpPath, candidate);
-          rememberNextSeq(dir, seq + 1);
-          return { path: candidate, bytes, chars, lines };
-        } catch (err) {
-          const code = (err as NodeJS.ErrnoException)?.code;
-          if (code === "EEXIST") {
-            seq++;
-            continue;
-          }
-          if (isHardlinkUnsupported(err)) {
-            useWxFallback = true;
-            // Retry same seq with exclusive-create fallback.
-            attempt--;
-            continue;
-          }
-          throw err;
+      try {
+        ops.linkSync(tmpPath, candidate);
+        rememberNextSeq(dir, seq + 1);
+        return { path: candidate, bytes, chars, lines };
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === "EEXIST") {
+          seq++;
+          continue;
         }
-      } else {
-        try {
-          const fd = fs.openSync(candidate, "wx");
-          try {
-            fs.writeFileSync(fd, content, "utf-8");
-          } finally {
-            fs.closeSync(fd);
-          }
-          rememberNextSeq(dir, seq + 1);
-          return { path: candidate, bytes, chars, lines };
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
-            seq++;
-            continue;
-          }
-          throw err;
+        if (isHardlinkUnsupported(err)) {
+          const published = publishWithAtomicRenameFallback(dir, tmpPath, seq, ops);
+          rememberNextSeq(dir, published.seq + 1);
+          return { path: published.path, bytes, chars, lines };
         }
+        throw err;
       }
     }
     throw new Error(`Exhausted ${MAX_SPILL_ALLOC_ATTEMPTS} numeric spill IDs in ${dir}`);
   } finally {
-    unlinkBestEffort(tmpPath);
+    unlinkBestEffort(tmpPath, ops);
   }
 }
 
 /**
  * Atomically write raw binary bytes to `<blobDir>/<sha256>` (deduplicating if already present)
- * and create a typed `<blobDir>/<sha256>.<ext>` sidecar when `mimeType` is recognized.
+ * with owner-only permissions and create a typed `<blobDir>/<sha256>.<ext>` sidecar when
+ * `mimeType` is recognized.
  */
 export function writeContentBlob(
   bytes: Buffer,
@@ -261,7 +436,7 @@ export function writeContentBlob(
   blobDir?: string,
 ): BlobWriteResult {
   const dir = resolveBlobStoreDir(blobDir);
-  fs.mkdirSync(dir, { recursive: true });
+  ensurePrivateDir(dir, defaultFsOps);
 
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const blobPath = path.join(dir, sha256);
@@ -272,11 +447,11 @@ export function writeContentBlob(
   } else {
     const tmpPath = path.join(dir, `.blob-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
     try {
-      fs.writeFileSync(tmpPath, bytes);
+      fs.writeFileSync(tmpPath, bytes, { mode: PRIVATE_FILE_MODE });
+      fs.chmodSync(tmpPath, PRIVATE_FILE_MODE);
       fs.renameSync(tmpPath, blobPath);
-    } catch (err) {
+    } finally {
       unlinkBestEffort(tmpPath);
-      throw err;
     }
   }
 
@@ -292,11 +467,11 @@ export function writeContentBlob(
         if (code !== "EEXIST") {
           const tmpSidecar = path.join(dir, `.sidecar-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
           try {
-            fs.writeFileSync(tmpSidecar, bytes);
+            fs.writeFileSync(tmpSidecar, bytes, { mode: PRIVATE_FILE_MODE });
+            fs.chmodSync(tmpSidecar, PRIVATE_FILE_MODE);
             fs.renameSync(tmpSidecar, sidecarPath);
-          } catch (copyErr) {
+          } finally {
             unlinkBestEffort(tmpSidecar);
-            throw copyErr;
           }
         }
       }
@@ -356,13 +531,13 @@ export function formatSpillPreview(text: string, spillPath: string, thresholdCha
   return `${head}${divider}${tail}`;
 }
 
-/** Extract a previously written spill file path from a spill preview text. */
+/** Parse a spill file path from a formatted spill preview string (display/testing helper; never trusted as authority). */
 export function extractSpillPathFromText(text: string): string | null {
   const match = SPILL_MARKER_RE.exec(text);
   return match?.[3]?.trim() || null;
 }
 
-/** Extract original char/line counts from a spill preview text, if present. */
+/** Parse original char/line counts from a formatted spill preview string. */
 export function extractSpillCountsFromText(text: string): { chars: number; lines: number } | null {
   const match = SPILL_MARKER_RE.exec(text);
   if (!match) return null;
@@ -418,6 +593,7 @@ export function processToolResultSpill(
   if (!opts.spillEnabled && !opts.blobExternalize) return undefined;
 
   const log = opts.log ?? defaultLog;
+  const sessionKey = opts.sessionKey ?? "__default__";
   const imageThresholdBytes = opts.imageThresholdBytes ?? DEFAULT_IMAGE_BLOB_THRESHOLD_BYTES;
 
   let modified = false;
@@ -434,12 +610,19 @@ export function processToolResultSpill(
       block.type === "text" &&
       typeof block.text === "string" &&
       block.text.length > opts.thresholdChars &&
-      !extractSpillPathFromText(block.text)
+      !lookupTrustedSpill(sessionKey, event.toolCallId, i, block.text, opts.spillDir)
     ) {
       try {
         const written = writeSessionSpill(block.text, opts.spillDir);
         const preview = formatSpillPreview(block.text, written.path, opts.thresholdChars);
         if (preview.length < block.text.length) {
+          recordTrustedSpill(sessionKey, event.toolCallId, i, {
+            path: written.path,
+            spillDir: opts.spillDir,
+            previewSha256: sha256Text(preview),
+            originalChars: written.chars,
+            originalLines: written.lines,
+          });
           nextContent.push({ type: "text", text: preview });
           spills.push({
             blockIndex: i,
@@ -552,11 +735,14 @@ export function registerSessionSpill(pi: ExtensionAPI, options: RegisterSessionS
   pi.on("session_start", (_event, ctx) => {
     const key = sessionKey(ctx);
     seenImagesBySession.set(key, new Set<string>());
+    clearTrustedSpills(key);
     log.debug("session_spill_session_reset", { sessionKey: key });
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
-    seenImagesBySession.delete(sessionKey(ctx));
+    const key = sessionKey(ctx);
+    seenImagesBySession.delete(key);
+    clearTrustedSpills(key);
   });
 
   pi.on("tool_result", (event, ctx) => {
@@ -565,6 +751,7 @@ export function registerSessionSpill(pi: ExtensionAPI, options: RegisterSessionS
     const blobExternalize = getSetting(cwd, "session_blob_externalize");
     if (!spillEnabled && !blobExternalize) return undefined;
 
+    const key = sessionKey(ctx);
     const thresholdChars = getSetting(cwd, "session_spill_threshold_chars");
     const spillLoc = resolveSessionSpillDir({
       sessionFile: ctx?.sessionManager?.getSessionFile?.(),
@@ -573,13 +760,14 @@ export function registerSessionSpill(pi: ExtensionAPI, options: RegisterSessionS
     });
 
     return processToolResultSpill(event, {
+      sessionKey: key,
       spillEnabled,
       thresholdChars,
       blobExternalize,
       spillDir: spillLoc.dir,
       blobDir: options.blobDir,
       imageThresholdBytes: options.imageThresholdBytes,
-      seenImageHashes: getSeenImages(sessionKey(ctx)),
+      seenImageHashes: getSeenImages(key),
       log,
     });
   });
