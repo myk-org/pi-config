@@ -179,8 +179,11 @@ describe("formatComsResponseBody empty/whitespace normalization (#1442)", () => 
 		assert.equal(formatComsResponseBody("   \n\t ", null), "(no response)");
 	});
 
-	it("returns (no response) for null and undefined", () => {
+	it("returns (no response) for null response", () => {
 		assert.equal(formatComsResponseBody(null, null), "(no response)");
+	});
+
+	it("returns (no response) for undefined response", () => {
 		assert.equal(formatComsResponseBody(undefined, null), "(no response)");
 	});
 
@@ -200,6 +203,22 @@ describe("formatComsResponseBody empty/whitespace normalization (#1442)", () => 
 		assert.equal(formatComsResponseBody(blankSerializable, null), "(no response)");
 	});
 
+	it("falls back to String(response) when JSON.stringify throws on a circular object", () => {
+		const circular: Record<string, unknown> = {
+			toString: () => "[circular-reply]",
+		};
+		circular.self = circular;
+		assert.equal(formatComsResponseBody(circular, null), "[circular-reply]");
+	});
+
+	it("returns (no response) when JSON.stringify throws with a blank String(response)", () => {
+		const throwingBlank = {
+			toJSON: () => { throw new Error("unserializable"); },
+			toString: () => "   \n\t ",
+		};
+		assert.equal(formatComsResponseBody(throwingBlank, null), "(no response)");
+	});
+
 	it("preserves falsy non-nullish primitives", () => {
 		assert.equal(formatComsResponseBody(0, null), "0");
 		assert.equal(formatComsResponseBody(false, null), "false");
@@ -207,10 +226,19 @@ describe("formatComsResponseBody empty/whitespace normalization (#1442)", () => 
 });
 
 describe("formatComsResponseText empty/whitespace normalization (#1442)", () => {
-	it("normalizes empty, whitespace, null, and undefined responses to (no response)", () => {
+	it("returns (no response) for empty string in formatComsResponseText", () => {
 		assert.equal(formatComsResponseText("worker", "", null, []), "[coms response from worker] (no response)");
+	});
+
+	it("returns (no response) for whitespace-only text in formatComsResponseText", () => {
 		assert.equal(formatComsResponseText("worker", "   \n\t ", null, []), "[coms response from worker] (no response)");
+	});
+
+	it("returns (no response) for null response in formatComsResponseText", () => {
 		assert.equal(formatComsResponseText("worker", null, null, []), "[coms response from worker] (no response)");
+	});
+
+	it("returns (no response) for undefined response in formatComsResponseText", () => {
 		assert.equal(formatComsResponseText("worker", undefined, null, []), "[coms response from worker] (no response)");
 	});
 
