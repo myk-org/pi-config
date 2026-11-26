@@ -212,22 +212,18 @@ export function queryHistoryRecords(filePath: string, filter: HistoryFilter = {}
 /** Default bounded tail size for live activity views — avoids reading the full 5MB history file per poll. */
 export const HISTORY_TAIL_BYTES = 256 * 1024;
 
-/**
- * Bounded-tail reader for live activity views: reads at most `maxTailBytes` from the end
- * of `filePath` so refreshing a live overlay never reads and splits a multi-MB history file.
- */
-export function readRecentHistoryRecords(
+function readRecentHistoryRecordsChecked(
 	filePath: string,
 	filter: HistoryFilter = {},
 	maxTailBytes = HISTORY_TAIL_BYTES,
-): HistoryRecord[] {
+): { ok: true; records: HistoryRecord[] } | { ok: false; records: HistoryRecord[] } {
 	const rawLimit = Number(filter.limit ?? 200);
 	const limit = Math.max(1, Math.min(Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 200, HISTORY_LIMIT_MAX));
 	let content: string;
 	try {
-		if (!existsSync(filePath)) return [];
+		if (!existsSync(filePath)) return { ok: true, records: [] };
 		const size = statSync(filePath).size;
-		if (size <= 0) return [];
+		if (size <= 0) return { ok: true, records: [] };
 		if (size <= maxTailBytes) {
 			content = readFileSync(filePath, "utf-8");
 		} else {
@@ -244,7 +240,7 @@ export function readRecentHistoryRecords(
 		}
 	} catch (error) {
 		log.warn(`history tail read failed (swallowed): ${error instanceof Error ? error.message : String(error)}`);
-		return [];
+		return { ok: false, records: [] };
 	}
 
 	const lines = content.split("\n").filter(Boolean);
@@ -271,13 +267,25 @@ export function readRecentHistoryRecords(
 			if (matched.length >= limit) break;
 		}
 	}
-	return matched.reverse();
+	return { ok: true, records: matched.reverse() };
+}
+
+/**
+ * Bounded-tail reader for live activity views: reads at most `maxTailBytes` from the end
+ * of `filePath` so refreshing a live overlay never reads and splits a multi-MB history file.
+ */
+export function readRecentHistoryRecords(
+	filePath: string,
+	filter: HistoryFilter = {},
+	maxTailBytes = HISTORY_TAIL_BYTES,
+): HistoryRecord[] {
+	return readRecentHistoryRecordsChecked(filePath, filter, maxTailBytes).records;
 }
 
 /**
  * Stat-cached bounded-tail reader for live activity polling: avoids re-reading disk when the
  * history file's size, mtime, and inode are unchanged, and re-reads the bounded tail automatically
- * on appends or size-rotation/replacement.
+ * on appends or size-rotation/replacement. Never caches a failed read so recovery succeeds on retry.
  */
 export function createTailHistoryReader(
 	filePath: string,
@@ -289,6 +297,15 @@ export function createTailHistoryReader(
 	let lastLimit = -1;
 	let lastProject: string | undefined;
 	let cached: HistoryRecord[] = [];
+
+	const resetCache = (): void => {
+		lastSize = -1;
+		lastMtimeMs = -1;
+		lastIno = -1;
+		lastLimit = -1;
+		lastProject = undefined;
+		cached = [];
+	};
 
 	return {
 		readRecent: (limit = 200, project?: string): HistoryRecord[] => {
@@ -303,21 +320,20 @@ export function createTailHistoryReader(
 				) {
 					return cached;
 				}
-				const records = readRecentHistoryRecords(filePath, { limit, project }, maxTailBytes);
+				const result = readRecentHistoryRecordsChecked(filePath, { limit, project }, maxTailBytes);
+				if (!result.ok) {
+					resetCache();
+					return [];
+				}
 				lastSize = st.size;
 				lastMtimeMs = st.mtimeMs;
 				lastIno = st.ino;
 				lastLimit = limit;
 				lastProject = project;
-				cached = records;
-				return records;
+				cached = result.records;
+				return result.records;
 			} catch {
-				lastSize = -1;
-				lastMtimeMs = -1;
-				lastIno = -1;
-				lastLimit = -1;
-				lastProject = undefined;
-				cached = [];
+				resetCache();
 				return [];
 			}
 		},

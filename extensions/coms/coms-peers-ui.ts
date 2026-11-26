@@ -280,9 +280,9 @@ export async function openComsPeersOverlay(
   const pendingRevives = new Map<string, number>();
 
   // Names can be reused; ticks and focus belong to this session's endpoint (or stopped key).
-  const toRows = (): Row[] => {
+  const toRowsForScope = (scope: ComsPeerScope): Row[] => {
     const currentNow = now();
-    const live = deps.listPeers(projectScope);
+    const live = deps.listPeers(scope);
     const liveKeys = new Set(live.map((row) => peerKey(row)));
     for (const [key, claimedAt] of pendingRevives.entries()) {
       if (liveKeys.has(key) || currentNow - claimedAt >= REVIVE_PENDING_TTL_MS) {
@@ -290,7 +290,7 @@ export async function openComsPeersOverlay(
       }
     }
     const liveRows: Row[] = live.map((row) => ({ ...row, id: peerOverlayRowId(row) }));
-    const stopped = (deps.listStoppedPeers?.(projectScope) ?? [])
+    const stopped = (deps.listStoppedPeers?.(scope) ?? [])
       .filter((row) => !liveKeys.has(peerKey(row)))
       .map((row) => {
         const key = peerKey(row);
@@ -304,6 +304,7 @@ export async function openComsPeersOverlay(
       });
     return [...liveRows, ...stopped];
   };
+  const toRows = (): Row[] => toRowsForScope(projectScope);
 
   // `m` needs the whole terminal for a text dialog, `q` opens the inbound queue overlay, `2` opens
   // the Activity Log tab, and Enter navigates a level deeper, so the list closes and re-opens.
@@ -377,10 +378,14 @@ export async function openComsPeersOverlay(
         continue;
       }
       if (activityResult.type === "inspect") {
-        const currentRows = toRows();
         // Match ONLY by exact project-qualified sourceId — never fall back to bare display name,
-        // which would open a different namesake peer in another project.
-        const target = currentRows.find((r) => r.id === activityResult.event.sourceId);
+        // which would open a different namesake peer in another project. If a verified cross-project
+        // peer is outside the current project scope, look it up in the all-projects inventory.
+        const target =
+          toRows().find((r) => r.id === activityResult.event.sourceId) ??
+          (projectScope === "project"
+            ? toRowsForScope("all").find((r) => r.id === activityResult.event.sourceId)
+            : undefined);
         if (!target) {
           const safeLabel = sanitizePeerText(activityResult.event.sourceLabel, 40);
           pendingNotice = {

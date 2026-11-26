@@ -548,7 +548,7 @@ export function collectComsActivityEvents(args: {
   historyRecords: readonly HistoryRecord[];
   livePeers: readonly RegistryRow[];
   stoppedPeers?: readonly RegistryRow[];
-  allKnownPeers?: readonly Pick<RegistryRow, "project" | "name">[];
+  allKnownPeers?: readonly Pick<RegistryRow, "project" | "name" | "endpoint" | "stopped">[];
   projectFilter?: string | null;
   maxTotal?: number;
   now?: number;
@@ -562,7 +562,10 @@ export function collectComsActivityEvents(args: {
   const rowIdByQualified = new Map<string, string>();
   const rowIdsByName = new Map<string, string[]>();
 
-  const registerRosterLookup = (row: RegistryRow, id: string): void => {
+  const registerRosterLookup = (
+    row: Pick<RegistryRow, "project" | "name" | "endpoint" | "stopped">,
+    id: string,
+  ): void => {
     const qKey = `${row.project}::${row.name}`;
     if (!rowIdByQualified.has(qKey)) rowIdByQualified.set(qKey, id);
     const list = rowIdsByName.get(row.name) ?? [];
@@ -601,6 +604,17 @@ export function collectComsActivityEvents(args: {
       category: isErr ? "error" : "lifecycle",
       summary: `peer stopped${codePart} · ${sanitizePeerText(row.project, 32)}`,
     });
+  }
+
+  // Also index any additional known peers across all projects by verified project::name so
+  // project-scoped Activity messages to verified remote recipients resolve cleanly on Enter.
+  if (args.allKnownPeers) {
+    for (const row of args.allKnownPeers) {
+      const qKey = `${row.project}::${row.name}`;
+      if (!rowIdByQualified.has(qKey)) {
+        rowIdByQualified.set(qKey, peerOverlayRowId(row));
+      }
+    }
   }
 
   for (let i = 0; i < args.historyRecords.length; i++) {

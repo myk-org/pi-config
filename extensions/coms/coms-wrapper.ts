@@ -91,8 +91,8 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     let cachedRegistry: ComsRegistry | null = null;
     let cachedHistoryReader: { path: string; reader: ReturnType<typeof createTailHistoryReader> } | null = null;
     let pidashUnsubscribe: (() => void) | null = null;
-    /** In-flight peer revives keyed by `project::name` (epoch ms), preventing duplicate supervisor launches. */
-    const revivingPeers = new Map<string, number>();
+    /** In-flight peer revives keyed by `project::name`, tagged per launch token so an older exit never clears a newer claim. */
+    const revivingPeers = new Map<string, { claimedAt: number; token: symbol }>();
     const REVIVE_CLAIM_TTL_MS = 45_000;
 
     const getTailHistoryReader = () => {
@@ -415,8 +415,8 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                     revivingPeers.delete(key);
                     return { ok: false, reason: `Peer "${row.name}" is already running.` };
                 }
-                const claimedAt = revivingPeers.get(key);
-                if (claimedAt !== undefined && now - claimedAt < REVIVE_CLAIM_TTL_MS) {
+                const claim = revivingPeers.get(key);
+                if (claim !== undefined && now - claim.claimedAt < REVIVE_CLAIM_TTL_MS) {
                     log.debug("coms_peer_revive_already_claimed", { name: row.name, project: row.project });
                     return { ok: false, reason: `Peer "${row.name}" is already reviving.` };
                 }
@@ -430,17 +430,23 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 if (existingLiveRec) {
                     return { ok: false, reason: `Supervisor for "${row.name}" is already starting (pid ${existingLiveRec.pid}).` };
                 }
-                revivingPeers.set(key, now);
+                const launchToken = Symbol(`revive:${key}`);
+                revivingPeers.set(key, { claimedAt: now, token: launchToken });
+                const releaseOwnClaim = () => {
+                    if (revivingPeers.get(key)?.token === launchToken) {
+                        revivingPeers.delete(key);
+                    }
+                };
                 const res = spawnSupervisedPeer({
                     cname: row.name,
                     purpose: row.purpose,
                     project: row.project,
                     cwd: row.cwd || liveCtx?.cwd || process.cwd(),
                     session: row.piSessionId ?? undefined,
-                    onSpawnFailure: () => { revivingPeers.delete(key); },
+                    onSpawnFailure: releaseOwnClaim,
                 });
                 if (!res.ok) {
-                    revivingPeers.delete(key);
+                    releaseOwnClaim();
                     return { ok: false, reason: res.message };
                 }
                 return {
@@ -451,15 +457,17 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             },
             listActivityEvents: (scope) => {
                 const allLive = attachCreatedBy(getRegistry().readLiveRows());
+                const allRecords = readSupervisionRecords();
+                const allStopped = listStoppedSupervisedPeers(allRecords, allLive);
                 const project = scope === "all" ? undefined : ownProject();
                 const livePeers = filterRegistry(allLive, { project });
-                const stoppedPeers = listStoppedSupervisedPeers(readSupervisionRecords(), allLive, { project });
+                const stoppedPeers = listStoppedSupervisedPeers(allRecords, allLive, { project });
                 const historyRecords = getTailHistoryReader().readRecent(200, project);
                 return collectComsActivityEvents({
                     historyRecords,
                     livePeers,
                     stoppedPeers,
-                    allKnownPeers: allLive,
+                    allKnownPeers: [...allLive, ...allStopped],
                     projectFilter: project ?? null,
                 });
             },

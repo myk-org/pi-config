@@ -2544,16 +2544,16 @@ Do not respond to this message.`;
 	}
 
 	// ━━ Ping cycle ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
+	async function resolveTargetWithProject(target: string): Promise<{ entry: RegistryEntry; project: string } | null> {
 		// Prefer exact session_id match first (unambiguous).
 		if (identity) {
 			const localEntries = await registry.pruneDeadEntries(identity.project, runtimeCwd);
 			// Try session_id match first (always unambiguous)
 			const bySession = localEntries.find((e) => e.coms_session_id === target);
-			if (bySession) { log.debug("resolveTarget", target, "→", bySession.name, "by_session"); return bySession; }
+			if (bySession) { log.debug("resolveTarget", target, "→", bySession.name, "by_session"); return { entry: bySession, project: identity.project }; }
 			// Name match — warn if ambiguous
 			const byName = localEntries.filter((e) => e.name === target);
-			if (byName.length === 1) { log.debug("resolveTarget", target, "→", byName[0].name, "by_name"); return byName[0]; }
+			if (byName.length === 1) { log.debug("resolveTarget", target, "→", byName[0].name, "by_name"); return { entry: byName[0], project: identity.project }; }
 			if (byName.length > 1) {
 				// Ambiguous — sort deterministically: freshest heartbeat first, session_id tiebreaker
 				byName.sort((a, b) => {
@@ -2565,33 +2565,44 @@ Do not respond to this message.`;
 					return a.coms_session_id.localeCompare(b.coms_session_id); // stable tiebreak
 				});
 				log.warn("ambiguous_target", target, "matches", byName.length, "selected", byName[0].coms_session_id);
-				return byName[0];
+				return { entry: byName[0], project: identity.project };
 			}
 		}
 		const otherProjects = identity
 			? registry.listProjects().filter((p) => p !== identity!.project)
 			: registry.listProjects();
-		const cachedEntries: RegistryEntry[][] = [];
+		const cachedEntries: Array<{ project: string; entries: RegistryEntry[] }> = [];
 		// Fall back to scanning other projects by session_id.
 		for (const proj of otherProjects) {
 			const entries = await registry.pruneDeadEntries(proj, runtimeCwd);
-			cachedEntries.push(entries);
+			cachedEntries.push({ project: proj, entries });
 			const bySession = entries.find((e) => e.coms_session_id === target);
-			if (bySession) return bySession;
+			if (bySession) return { entry: bySession, project: proj };
 		}
 		// Fall back to name match across those cached project entries.
-		for (const entries of cachedEntries) {
+		for (const { project: proj, entries } of cachedEntries) {
 			const byName = entries.find((e) => e.name === target);
-			if (byName) return byName;
+			if (byName) return { entry: byName, project: proj };
 		}
 		log.debug("resolveTarget", target, "→ not_found");
 		return null;
+	}
+
+	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
+		const hit = await resolveTargetWithProject(target);
+		return hit?.entry ?? null;
 	}
 
 	async function resolveLiveTarget(ref: string): Promise<RegistryEntry> {
 		const target = await resolveTarget(ref);
 		if (!target) throw new Error(`coms: no live agent matching "${ref}"`);
 		return target;
+	}
+
+	async function resolveLiveTargetWithProject(ref: string): Promise<{ entry: RegistryEntry; project: string }> {
+		const hit = await resolveTargetWithProject(ref);
+		if (!hit) throw new Error(`coms: no live agent matching "${ref}"`);
+		return hit;
 	}
 
 	/** #1080: resolve a peer's TaskStore file path or fail explicitly — never fall back to coms_session_id. */
@@ -3027,7 +3038,7 @@ Do not respond to this message.`;
 			if (!identity) {
 				throw new Error("coms not initialised");
 			}
-			const target = await resolveLiveTarget(params.target);
+			const { entry: target, project: targetProject } = await resolveLiveTargetWithProject(params.target);
 			// Block coms_send to the sender when processing their delivered, non-interrupted inbound — auto-capture handles the reply (#1226)
 			if (isAutoCaptureReplyBlocked(target.coms_session_id)) {
 				log.info("coms_send_blocked", "to", target.name, "auto-capture will reply");
@@ -3047,6 +3058,7 @@ Do not respond to this message.`;
 				tasks: params.tasks,
 				steer: params.steer === true,
 				priority: params.priority === true,
+				targetProject,
 			});
 			const targetKey = target.name;
 
@@ -3117,13 +3129,13 @@ Do not respond to this message.`;
 			// Resolve target list. "*" expands to every registry peer in the
 			// project — those entries are reused directly (no per-id
 			// re-resolve, which would re-probe every socket N times).
-			const resolved = new Map<string, RegistryEntry>();
+			const resolved = new Map<string, { entry: RegistryEntry; project: string }>();
 			if (params.targets.includes("*")) {
 				const localEntries = await registry.pruneDeadEntries(identity.project, runtimeCwd);
 				for (const e of localEntries) {
 					if (e.coms_session_id === identity.coms_session_id) continue;
 					if (e.explicit) continue;
-					resolved.set(e.coms_session_id, e);
+					resolved.set(e.coms_session_id, { entry: e, project: identity.project });
 				}
 			}
 			// Named targets resolve individually; an unresolvable name is
@@ -3131,20 +3143,20 @@ Do not respond to this message.`;
 			const sendResults: BroadcastTargetResult[] = [];
 			for (const t of params.targets) {
 				if (t === "*") continue;
-				const target = await resolveTarget(t);
-				if (!target) {
+				const hit = await resolveTargetWithProject(t);
+				if (!hit) {
 					log.warn("broadcast_target_unresolved", t);
 					sendResults.push({ target: t, status: "error", error: `no live agent matching "${t}"` });
 					continue;
 				}
-				resolved.set(target.coms_session_id, target);
+				resolved.set(hit.entry.coms_session_id, hit);
 			}
 			if (resolved.size === 0) {
 				const detail = sendResults.map((r) => r.error).join("; ");
 				throw new Error(`coms_broadcast: no live agent matching [${params.targets.join(", ")}]${detail ? ` — ${detail}` : ""}`);
 			}
 			// Same-sender inbound block applies per target: auto-capture replies.
-			await Promise.allSettled([...resolved.values()].map(async (target) => {
+			await Promise.allSettled([...resolved.values()].map(async ({ entry: target, project: targetProject }) => {
 				if (isAutoCaptureReplyBlocked(target.coms_session_id)) {
 					sendResults.push({ target: target.name, status: "error", error: "blocked: auto-capture will reply to this peer" });
 					return;
@@ -3155,6 +3167,7 @@ Do not respond to this message.`;
 						response_schema: params.response_schema as object | undefined,
 						tasks: params.tasks,
 						priority: params.priority === true,
+						targetProject,
 					});
 					sendResults.push({ target: target.name, msg_id, hops, status: "sent" });
 				} catch (error) {
