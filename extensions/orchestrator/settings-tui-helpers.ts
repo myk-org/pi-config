@@ -192,8 +192,11 @@ export function resolveModelPickerItems(
   key: string,
   allModels: ModelSelectItem[],
   provider?: string,
+  currentValue?: string,
 ): ModelSelectItem[] {
   if (key === "advisor_model") {
+    const normalizedCurrent =
+      currentValue === undefined || currentValue === EMPTY_VALUE_SENTINEL ? "" : currentValue.trim();
     const qualified: ModelSelectItem[] = [];
     const seen = new Set<string>();
     for (const m of allModels) {
@@ -205,8 +208,15 @@ export function resolveModelPickerItems(
       seen.add(ref);
       qualified.push({ value: ref, label: ref, description: prov });
     }
+    if (normalizedCurrent !== "" && !seen.has(normalizedCurrent)) {
+      qualified.push({
+        value: normalizedCurrent,
+        label: normalizedCurrent,
+        description: "configured",
+      });
+    }
     qualified.sort((a, b) => a.value.localeCompare(b.value));
-    if (qualified.length > 0) {
+    if (qualified.length > 0 && normalizedCurrent === "") {
       qualified.unshift({
         value: "",
         label: "(inherit session model)",
@@ -239,9 +249,10 @@ export function resolveModelKeySubmenu(
   key: string,
   allModels: ModelSelectItem[],
   paired: ModelPickerPairedSettings = {},
+  currentValue?: string,
 ): ModelKeySubmenu {
   const provider = resolveModelPickerProvider(key, paired);
-  const models = resolveModelPickerItems(key, allModels, provider);
+  const models = resolveModelPickerItems(key, allModels, provider, currentValue);
   if ((key === "image_model" || key === "advisor_model") && models.length === 0) {
     log.debug("resolveModelKeySubmenu", { key, mode: "input", provider });
     return { mode: "input", provider };

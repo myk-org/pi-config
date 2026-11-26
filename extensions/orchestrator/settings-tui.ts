@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
+  EMPTY_VALUE_SENTINEL,
   SETTINGS_KEYS,
   type SettingSource,
   type SettingsSourceSnapshot,
@@ -214,10 +215,16 @@ export function buildCategoryItems(
       // Resolve provider/models inside the callback so refreshItem after
       // agent_provider / internal_operations_provider changes does not leave a stale list.
       item.submenu = (current: string, done: (val?: string) => void): Component => {
-        const submenu = resolveModelKeySubmenu(key, pmInfo.models, {
-          agent_provider: getSetting(cwd, "agent_provider"),
-          internal_operations_provider: getSetting(cwd, "internal_operations_provider"),
-        });
+        const normalizedCurrent = current === EMPTY_VALUE_SENTINEL ? "" : current.trim();
+        const submenu = resolveModelKeySubmenu(
+          key,
+          pmInfo.models,
+          {
+            agent_provider: getSetting(cwd, "agent_provider"),
+            internal_operations_provider: getSetting(cwd, "internal_operations_provider"),
+          },
+          normalizedCurrent,
+        );
         // image_model / advisor_model: if picker list is empty, fall back to free-text input
         if (submenu.mode === "input") {
           log.debug("model picker empty — free-text fallback", { key, provider: submenu.provider });
@@ -236,7 +243,7 @@ export function buildCategoryItems(
         const title = key === "advisor_model"
           ? "Select advisor model (provider/model-id)"
           : `Select model for ${key}`;
-        return new PickerSubmenu(title, submenu.models, theme, done);
+        return new PickerSubmenu(title, submenu.models, theme, done, normalizedCurrent);
       };
     } else {
       switch (def.type) {

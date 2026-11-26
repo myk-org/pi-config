@@ -252,7 +252,8 @@ export function getModelSupportedThinkingLevels(
 /**
  * Resolve the target thinking level for a magic keyword, or `null` when no change should be applied.
  * - `highest` (`ultrathink`): raises to the model's highest supported level (never lowers).
- * - `lowest` (`chillax`): lowers to the model's lowest supported level (never raises or enables when off).
+ * - `lowest` (`chillax`): lowers to the model's lowest active reasoning level (e.g. `minimal` or `low`,
+ *   never turning reasoning completely off and never raising or enabling thinking when off).
  */
 export function resolveMagicThinkingLevel(
   model: RuntimeModel | undefined,
@@ -271,9 +272,11 @@ export function resolveMagicThinkingLevel(
     return targetIdx > currentIdx ? target : null;
   }
 
-  // direction === "lowest": never raise or enable thinking when already off.
+  // direction === "lowest": never raise or enable thinking when already off,
+  // and target the lowest active reasoning level (excluding "off").
   if (currentLevel === "off") return null;
-  const target = supported[0]!;
+  const target = supported.find((level) => level !== "off");
+  if (!target) return null;
   const targetIdx = THINKING_LEVELS.indexOf(target);
   return targetIdx < currentIdx ? target : null;
 }
@@ -309,9 +312,11 @@ function setTransientThinkingLevel(
   level: SavedThinkingLevel,
   modelKey: string | undefined,
 ): boolean {
+  let suppressionQueued = false;
   try {
     // Notify session-restore so temporary per-turn overrides never overwrite last-thinking-level.json.
     pi.events?.emit?.("providers:suppress-thinking-save", { model: modelKey, level });
+    suppressionQueued = true;
   } catch {
     // Event bus is optional in minimal test harnesses.
   }
@@ -319,6 +324,13 @@ function setTransientThinkingLevel(
     pi.setThinkingLevel(level as ThinkingLevel);
     return true;
   } catch (err) {
+    if (suppressionQueued) {
+      try {
+        pi.events?.emit?.("providers:unsuppress-thinking-save", { model: modelKey, level });
+      } catch {
+        // Ignore secondary cleanup error.
+      }
+    }
     log.warn("setThinkingLevel failed", {
       level,
       model: modelKey,
@@ -352,11 +364,42 @@ export function registerMagicKeywords(pi: ExtensionAPI): void {
     return fresh;
   };
 
+  const emitTransientBoundary = (eventName: "providers:transient-thinking-start" | "providers:transient-thinking-end"): void => {
+    try {
+      pi.events?.emit?.(eventName, {});
+    } catch {
+      // Event bus is optional in minimal harnesses.
+    }
+  };
+
+  // Receive deferred startup thinking-preference restores that settled while a
+  // keyword override was active, so restoration returns to the restored preference.
+  pi.events?.on?.("providers:deferred-thinking-restore", (payload: unknown) => {
+    if (!payload || typeof payload !== "object") return;
+    const p = payload as { model?: unknown; level?: unknown };
+    if (!isThinkingLevel(p.level)) return;
+    const targetModel = typeof p.model === "string" ? p.model : undefined;
+    for (const state of sessions.values()) {
+      const active = state.activeOverride;
+      if (!active) continue;
+      if (targetModel !== undefined && active.modelKey !== undefined && active.modelKey !== targetModel) {
+        continue;
+      }
+      active.previousLevel = p.level;
+      log.debug("magic_keyword_deferred_restore_adopted", {
+        keyword: active.keyword,
+        model: active.modelKey,
+        restoredTarget: p.level,
+      });
+    }
+  });
+
   const restoreOverride = (ctx: any, reason: string): void => {
     const state = getState(ctx);
     const active = state.activeOverride;
     if (!active) return;
     state.activeOverride = null;
+    emitTransientBoundary("providers:transient-thinking-end");
 
     const currentModelKey = modelThinkingKey(ctx?.model);
     if (active.modelKey !== undefined && currentModelKey !== undefined && currentModelKey !== active.modelKey) {
@@ -376,6 +419,15 @@ export function registerMagicKeywords(pi: ExtensionAPI): void {
         keyword: active.keyword,
         applied: active.appliedLevel,
         current: currentLevel,
+      });
+      return;
+    }
+
+    if (active.previousLevel === active.appliedLevel) {
+      log.debug("magic_keyword_restore_already_at_target", {
+        reason,
+        keyword: active.keyword,
+        level: active.previousLevel,
       });
       return;
     }
@@ -444,6 +496,7 @@ export function registerMagicKeywords(pi: ExtensionAPI): void {
             appliedLevel: targetLevel,
             modelKey,
           };
+          emitTransientBoundary("providers:transient-thinking-start");
           log.info("magic_keyword_applied", {
             keyword: match.keyword,
             from: currentLevel,

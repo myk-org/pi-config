@@ -16,7 +16,11 @@ import {
   setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.ts";
 import { registerSessionRestore } from "../../../extensions/providers/session-restore.ts";
-import { readThinkingLevelState, saveModelThinkingLevel, modelThinkingKey } from "../../../extensions/providers/last-thinking-level.ts";
+import {
+  modelThinkingKey,
+  readThinkingLevelState,
+  saveModelThinkingLevel,
+} from "../../../extensions/providers/last-thinking-level.ts";
 
 type Handler = (event: any, ctx: any) => any;
 
@@ -26,6 +30,8 @@ function createMockPi(initialLevel = "medium") {
   let currentLevel = initialLevel;
   const setLevelCalls: string[] = [];
   const emittedEvents: Array<{ name: string; payload: unknown }> = [];
+  let failNextSetLevel = false;
+  let lastCtx: any = undefined;
 
   const pi: any = {
     on(name: string, fn: Handler) {
@@ -56,6 +62,10 @@ function createMockPi(initialLevel = "medium") {
       return currentLevel;
     },
     setThinkingLevel(level: string) {
+      if (failNextSetLevel) {
+        failNextSetLevel = false;
+        throw new Error("setThinkingLevel boom");
+      }
       const previousLevel = currentLevel;
       currentLevel = level;
       setLevelCalls.push(level);
@@ -63,9 +73,14 @@ function createMockPi(initialLevel = "medium") {
         fn({ type: "thinking_level_select", level, previousLevel }, lastCtx);
       }
     },
+    async setModel(model: any) {
+      if (lastCtx) lastCtx.model = model;
+      for (const fn of handlers.get("model_select") ?? []) {
+        fn({ type: "model_select", model, source: "set" }, lastCtx);
+      }
+      return true;
+    },
   };
-
-  let lastCtx: any = undefined;
 
   async function fire(name: string, event: any, ctx: any) {
     lastCtx = ctx;
@@ -81,7 +96,12 @@ function createMockPi(initialLevel = "medium") {
     pi,
     fire,
     getLevel: () => currentLevel,
-    setRawLevel: (l: string) => { currentLevel = l; },
+    setRawLevel: (l: string) => {
+      currentLevel = l;
+    },
+    setFailNextSetLevel: (flag: boolean) => {
+      failNextSetLevel = flag;
+    },
     setLevelCalls,
     emittedEvents,
   };
@@ -92,6 +112,21 @@ describe("magic-keywords (#1418)", () => {
   let globalSettingsFile: string;
   let savedSubagentChild: string | undefined;
   let savedEnvMagic: string | undefined;
+
+  const reasoningModel = {
+    id: "gemini-pro",
+    provider: "google",
+    reasoning: true,
+    thinkingLevelMap: { max: "max" },
+  };
+
+  function makeCtx(sessionId: string, model: any = reasoningModel) {
+    return {
+      cwd: tmpRoot,
+      model,
+      sessionManager: { getSessionId: () => sessionId, getEntries: () => [] as any[] },
+    };
+  }
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), "pi-magic-kw-test-"));
@@ -163,7 +198,6 @@ describe("magic-keywords (#1418)", () => {
       assert.equal(detectMagicKeyword("Look at this:\n```ts\nultrathink\n```\nDone."), null);
       assert.equal(detectMagicKeyword("Example:\n~~~~\nchillax\n~~~~\nThanks."), null);
       assert.equal(detectMagicKeyword("   ```bash\necho ultrathink\n   ```"), null);
-      // Unclosed fence runs to EOF
       assert.equal(detectMagicKeyword("Code:\n```\nultrathink\nchillax"), null);
     });
 
@@ -229,84 +263,121 @@ describe("magic-keywords (#1418)", () => {
       assert.equal(resolveMagicThinkingLevel(nonReasoning, "off", "lowest"), null);
     });
 
-    it("lowers chillax to lowest supported level and NEVER raises or enables when off", () => {
+    it("lowers chillax to lowest active reasoning level (minimal/low) rather than off", () => {
       const stdModel = { id: "m1", provider: "p", reasoning: true };
-      const alwaysOnModel = { id: "m2", provider: "p", reasoning: true, thinkingLevelMap: { off: null } };
       const minLowModel = {
-        id: "m3",
+        id: "m2",
         provider: "p",
         reasoning: true,
         thinkingLevelMap: { off: null, minimal: null },
       };
 
-      assert.equal(resolveMagicThinkingLevel(stdModel, "high", "lowest"), "off");
-      assert.equal(resolveMagicThinkingLevel(stdModel, "off", "lowest"), null);
-
-      assert.equal(resolveMagicThinkingLevel(alwaysOnModel, "high", "lowest"), "minimal");
-      assert.equal(resolveMagicThinkingLevel(alwaysOnModel, "minimal", "lowest"), null);
-      // Critical invariant: chillax MUST NEVER raise or enable thinking when currently off
-      assert.equal(resolveMagicThinkingLevel(alwaysOnModel, "off", "lowest"), null);
-
+      assert.equal(resolveMagicThinkingLevel(stdModel, "high", "lowest"), "minimal");
+      assert.equal(resolveMagicThinkingLevel(stdModel, "minimal", "lowest"), null);
       assert.equal(resolveMagicThinkingLevel(minLowModel, "high", "lowest"), "low");
-      assert.equal(resolveMagicThinkingLevel(minLowModel, "off", "lowest"), null);
+      assert.equal(resolveMagicThinkingLevel(minLowModel, "low", "lowest"), null);
+    });
+
+    it("never raises or enables thinking for chillax when current level is off", () => {
+      const stdModel = { id: "m1", provider: "p", reasoning: true };
+      const alwaysOnModel = { id: "m2", provider: "p", reasoning: true, thinkingLevelMap: { off: null } };
+
+      assert.equal(resolveMagicThinkingLevel(stdModel, "off", "lowest"), null);
+      assert.equal(resolveMagicThinkingLevel(alwaysOnModel, "off", "lowest"), null);
     });
   });
 
   describe("registerMagicKeywords lifecycle", () => {
-    const reasoningModel = { id: "gemini-pro", provider: "google", reasoning: true, thinkingLevelMap: { max: "max" } };
-
-    it("raises thinking for ultrathink, injects hidden notice without touching systemPrompt, and restores on turn_end", async () => {
+    it("raises thinking for ultrathink and restores after final turn_end", async () => {
       const { pi, fire, getLevel, setLevelCalls } = createMockPi("medium");
       registerMagicKeywords(pi);
+      const ctx = makeCtx("s-ultra-restore");
 
-      const ctx = { cwd: tmpRoot, model: reasoningModel, sessionManager: { getSessionId: () => "s1" } };
-      const sysOpts = { sections: { base: "stable" } };
-      const res = await fire(
-        "before_agent_start",
-        { messageType: "user", prompt: "Please ultrathink about this bug", systemPrompt: "SYS", systemPromptOptions: sysOpts },
-        ctx,
-      );
-
-      assert.equal(getLevel(), "max");
-      assert.deepEqual(setLevelCalls, ["max"]);
-      assert.equal(res?.systemPrompt, undefined);
-      assert.deepEqual(sysOpts.sections, { base: "stable" });
-      assert.equal(res?.message?.customType, "magic-keyword-notice");
-      assert.equal(res?.message?.display, false);
-      assert.ok(typeof res?.message?.content === "string" && res.message.content.length > 0);
-
-      // Multi-tool intermediate turn (continue: true) preserves override
-      await fire("turn_end", { outcome: "completed", continue: true }, ctx);
+      await fire("before_agent_start", { messageType: "user", prompt: "Please ultrathink about this bug" }, ctx);
       assert.equal(getLevel(), "max");
 
-      // Final turn restores previous level
       await fire("turn_end", { outcome: "completed", continue: false }, ctx);
       assert.equal(getLevel(), "medium");
       assert.deepEqual(setLevelCalls, ["max", "medium"]);
     });
 
-    it("restores previous thinking level on error, abort, and agent_end", async () => {
-      for (const endCase of ["error", "aborted", "agent_end"] as const) {
-        const { pi, fire, getLevel } = createMockPi("high");
-        registerMagicKeywords(pi);
-        const ctx = { cwd: tmpRoot, model: reasoningModel, sessionManager: { getSessionId: () => `s-${endCase}` } };
+    it("delivers ultrathink notice via hidden custom message without mutating systemPrompt", async () => {
+      const { pi, fire } = createMockPi("medium");
+      registerMagicKeywords(pi);
+      const ctx = makeCtx("s-ultra-notice");
+      const sysOpts = { sections: { base: "stable" } };
 
-        await fire("before_agent_start", { messageType: "user", prompt: "chillax and fix typo" }, ctx);
-        assert.equal(getLevel(), "off");
+      const res = await fire(
+        "before_agent_start",
+        {
+          messageType: "user",
+          prompt: "Please ultrathink about this bug",
+          systemPrompt: "SYS",
+          systemPromptOptions: sysOpts,
+        },
+        ctx,
+      );
 
-        if (endCase === "agent_end") {
-          await fire("agent_end", { messages: [] }, ctx);
-        } else {
-          await fire("turn_end", { outcome: endCase, continue: true }, ctx);
-        }
-        assert.equal(getLevel(), "high", `should restore on ${endCase}`);
-      }
+      assert.equal(res?.systemPrompt, undefined);
+      assert.deepEqual(sysOpts.sections, { base: "stable" });
+      assert.equal(res?.message?.customType, "magic-keyword-notice");
+      assert.equal(res?.message?.display, false);
+      assert.ok(typeof res?.message?.content === "string" && res.message.content.length > 0);
+    });
+
+    it("holds thinking override across intermediate continue=true turns", async () => {
+      const { pi, fire, getLevel } = createMockPi("medium");
+      registerMagicKeywords(pi);
+      const ctx = makeCtx("s-multi-turn");
+
+      await fire("before_agent_start", { messageType: "user", prompt: "ultrathink this through" }, ctx);
+      await fire("turn_end", { outcome: "completed", continue: true }, ctx);
+      assert.equal(getLevel(), "max");
+
+      await fire("turn_end", { outcome: "completed", continue: false }, ctx);
+      assert.equal(getLevel(), "medium");
+    });
+
+    it("restores previous thinking level on turn_end error", async () => {
+      const { pi, fire, getLevel } = createMockPi("high");
+      registerMagicKeywords(pi);
+      const ctx = makeCtx("s-error");
+
+      await fire("before_agent_start", { messageType: "user", prompt: "chillax and fix typo" }, ctx);
+      assert.equal(getLevel(), "minimal");
+
+      await fire("turn_end", { outcome: "error", continue: true }, ctx);
+      assert.equal(getLevel(), "high");
+    });
+
+    it("restores previous thinking level on turn_end abort", async () => {
+      const { pi, fire, getLevel } = createMockPi("high");
+      registerMagicKeywords(pi);
+      const ctx = makeCtx("s-abort");
+
+      await fire("before_agent_start", { messageType: "user", prompt: "chillax and fix typo" }, ctx);
+      assert.equal(getLevel(), "minimal");
+
+      await fire("turn_end", { outcome: "aborted", continue: true }, ctx);
+      assert.equal(getLevel(), "high");
+    });
+
+    it("restores previous thinking level on agent_end", async () => {
+      const { pi, fire, getLevel } = createMockPi("high");
+      registerMagicKeywords(pi);
+      const ctx = makeCtx("s-agent-end");
+
+      await fire("before_agent_start", { messageType: "user", prompt: "chillax and fix typo" }, ctx);
+      assert.equal(getLevel(), "minimal");
+
+      await fire("agent_end", { messages: [] }, ctx);
+      assert.equal(getLevel(), "high");
     });
 
     it("has zero prompt-cache or thinking-level impact when no keyword matches", async () => {
       const { pi, fire, getLevel, setLevelCalls } = createMockPi("medium");
       registerMagicKeywords(pi);
-      const ctx = { cwd: tmpRoot, model: reasoningModel, sessionManager: { getSessionId: () => "s-noop" } };
+      const ctx = makeCtx("s-noop");
 
       const res = await fire(
         "before_agent_start",
@@ -321,9 +392,8 @@ describe("magic-keywords (#1418)", () => {
     it("ignores synthetic extension prompts and custom messages", async () => {
       const { pi, fire, getLevel, setLevelCalls } = createMockPi("medium");
       registerMagicKeywords(pi);
-      const ctx = { cwd: tmpRoot, model: reasoningModel, sessionManager: { getSessionId: () => "s-synth" } };
+      const ctx = makeCtx("s-synth");
 
-      // Custom triggerTurn message
       const customRes = await fire(
         "before_agent_start",
         { messageType: "custom", message: { content: "ultrathink" } },
@@ -332,7 +402,6 @@ describe("magic-keywords (#1418)", () => {
       assert.equal(customRes, undefined);
       assert.equal(getLevel(), "medium");
 
-      // Extension-initiated sendUserMessage (fires input with source: "extension")
       await fire("input", { text: "Please ultrathink this", source: "extension" }, ctx);
       const synthRes = await fire(
         "before_agent_start",
@@ -343,7 +412,6 @@ describe("magic-keywords (#1418)", () => {
       assert.equal(getLevel(), "medium");
       assert.deepEqual(setLevelCalls, []);
 
-      // Subsequent real interactive user prompt still works
       await fire("input", { text: "Please ultrathink now", source: "interactive" }, ctx);
       const realRes = await fire(
         "before_agent_start",
@@ -361,7 +429,7 @@ describe("magic-keywords (#1418)", () => {
 
       const { pi, fire, getLevel, setLevelCalls } = createMockPi("medium");
       registerMagicKeywords(pi);
-      const ctx = { cwd: tmpRoot, model: reasoningModel, sessionManager: { getSessionId: () => "s-off" } };
+      const ctx = makeCtx("s-off");
 
       const res = await fire("before_agent_start", { messageType: "user", prompt: "ultrathink please" }, ctx);
       assert.equal(res, undefined);
@@ -373,7 +441,7 @@ describe("magic-keywords (#1418)", () => {
       process.env.PI_SUBAGENT_CHILD = "1";
       const { pi, fire, getLevel } = createMockPi("medium");
       registerMagicKeywords(pi);
-      const ctx = { cwd: tmpRoot, model: reasoningModel, sessionManager: { getSessionId: () => "s-sub" } };
+      const ctx = makeCtx("s-sub");
 
       const res = await fire("before_agent_start", { messageType: "user", prompt: "ultrathink" }, ctx);
       assert.equal(res, undefined);
@@ -383,12 +451,11 @@ describe("magic-keywords (#1418)", () => {
     it("does not clobber an explicit user thinking-level change made mid-turn", async () => {
       const { pi, fire, getLevel, setRawLevel } = createMockPi("medium");
       registerMagicKeywords(pi);
-      const ctx = { cwd: tmpRoot, model: reasoningModel, sessionManager: { getSessionId: () => "s-user" } };
+      const ctx = makeCtx("s-user");
 
       await fire("before_agent_start", { messageType: "user", prompt: "ultrathink" }, ctx);
       assert.equal(getLevel(), "max");
 
-      // User manually switches to "low" mid-turn
       setRawLevel("low");
       await fire("turn_end", { outcome: "completed", continue: false }, ctx);
       assert.equal(getLevel(), "low");
@@ -417,6 +484,99 @@ describe("magic-keywords (#1418)", () => {
       await fire("turn_end", { outcome: "completed", continue: false }, ctx);
       assert.equal(getLevel(), "medium");
       assert.equal(readThinkingLevelState(statePath).models[key], "medium");
+    });
+
+    it("cancels suppression when setThinkingLevel throws so a later explicit user selection is still saved", async () => {
+      const statePath = join(tmpRoot, "last-thinking-level.json");
+      const key = modelThinkingKey(reasoningModel)!;
+      saveModelThinkingLevel(key, "medium", statePath);
+
+      const { pi, fire, setFailNextSetLevel } = createMockPi("medium");
+      registerSessionRestore(pi, { thinkingStatePath: statePath, argv: [] });
+      registerMagicKeywords(pi);
+
+      const ctx = {
+        cwd: tmpRoot,
+        model: reasoningModel,
+        sessionManager: { getSessionId: () => "s-throw", getEntries: () => [{ type: "message" }] },
+      };
+      await fire("session_start", { reason: "startup" }, ctx);
+
+      // Transient override fails inside setThinkingLevel -> suppression must be removed
+      setFailNextSetLevel(true);
+      await fire("before_agent_start", { messageType: "user", prompt: "ultrathink now" }, ctx);
+      assert.equal(readThinkingLevelState(statePath).models[key], "medium");
+
+      // User explicitly selects "max" later -> must be persisted!
+      pi.setThinkingLevel("max");
+      assert.equal(readThinkingLevelState(statePath).models[key], "max");
+    });
+
+    it("defers delayed startup thinking restore during an active keyword turn and restores to it on turn_end", async () => {
+      const statePath = join(tmpRoot, "last-thinking-level.json");
+      const key = modelThinkingKey(reasoningModel)!;
+      // Persisted user preference is "high"
+      saveModelThinkingLevel(key, "high", statePath);
+
+      const agentDir = join(tmpRoot, "pi-agent");
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify({ defaultProvider: "google", defaultModel: "gemini-pro" }),
+      );
+      const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+
+      try {
+        const { pi, fire, getLevel } = createMockPi("low");
+        const deferred: { release?: () => void } = {};
+        const origSetModel = pi.setModel.bind(pi);
+        pi.setModel = async (model: any) => {
+          await new Promise<void>((resolve) => {
+            deferred.release = resolve;
+          });
+          return origSetModel(model);
+        };
+
+        const restoreHandle = registerSessionRestore(pi, { thinkingStatePath: statePath, argv: [] });
+        registerMagicKeywords(pi);
+
+        const initialModel = { id: "temp", provider: "other", reasoning: false };
+        const ctx: any = {
+          cwd: tmpRoot,
+          model: initialModel,
+          isProjectTrusted: () => false,
+          modelRegistry: {
+            find: (provider: string, id: string) =>
+              provider === "google" && id === "gemini-pro" ? reasoningModel : undefined,
+            getAvailable: () => [reasoningModel],
+          },
+          sessionManager: { getSessionId: () => "s-delayed-restore", getEntries: () => [] },
+        };
+
+        // session_start finishes while default-model restore is still waiting on pi.setModel
+        await fire("session_start", { reason: "startup" }, ctx);
+        await new Promise((r) => setTimeout(r, 15));
+
+        // User submits an ultrathink prompt on reasoningModel before startup restore settles
+        ctx.model = reasoningModel;
+        await fire("before_agent_start", { messageType: "user", prompt: "ultrathink on startup" }, ctx);
+        assert.equal(getLevel(), "max");
+
+        // Now startup model + thinking restore completes mid-turn
+        deferred.release?.();
+        await restoreHandle.waitForPendingRestore();
+
+        // Active keyword turn MUST remain at "max" (not stomped to "high")
+        assert.equal(getLevel(), "max");
+
+        // When the turn completes, magic-keywords restores to the startup-restored preference ("high")
+        await fire("turn_end", { outcome: "completed", continue: false }, ctx);
+        assert.equal(getLevel(), "high");
+      } finally {
+        if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+      }
     });
   });
 });
