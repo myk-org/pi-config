@@ -236,6 +236,21 @@ export function registerSessionRestore(
 
   log.debug("session-restore: registering lifecycle handlers");
 
+  // Allow transient per-turn thinking overrides (e.g. magic keywords) to suppress
+  // writing their temporary level to last-thinking-level.json (#1418).
+  pi.events?.on?.("providers:suppress-thinking-save", (payload: unknown) => {
+    if (!payload || typeof payload !== "object") return;
+    const p = payload as { model?: unknown; level?: unknown };
+    if (!isThinkingLevel(p.level)) return;
+    const model = typeof p.model === "string" ? p.model : activeModelKey;
+    suppressedEvents.push({ model, level: p.level });
+    // Bound queue against unbalanced external suppressions.
+    if (suppressedEvents.length > 32) {
+      suppressedEvents.splice(0, suppressedEvents.length - 32);
+    }
+    log.debug("thinking preference external suppression queued", { model, level: p.level });
+  });
+
   pi.on("session_start", (event, ctx) => {
     const reason = typeof event?.reason === "string" ? event.reason.trim() : "";
     cancelPendingRestore("session_start");

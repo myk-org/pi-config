@@ -184,6 +184,8 @@ export function resolveModelPickerProvider(
 /**
  * Models shown in the settings TUI picker for a key.
  * image_model: IMAGE_MODEL_PROVIDER + image-capable only — never falls back to all providers.
+ * advisor_model: formats items as explicit `provider/model-id` pairs across all providers,
+ *   with a leading empty option to inherit the session model.
  * agent_model / internal_operations_model: fall back to all models when filter is empty.
  */
 export function resolveModelPickerItems(
@@ -191,6 +193,29 @@ export function resolveModelPickerItems(
   allModels: ModelSelectItem[],
   provider?: string,
 ): ModelSelectItem[] {
+  if (key === "advisor_model") {
+    const qualified: ModelSelectItem[] = [];
+    const seen = new Set<string>();
+    for (const m of allModels) {
+      const prov = m.description?.trim();
+      const id = m.value?.trim();
+      if (!prov || !id) continue;
+      const ref = `${prov}/${id}`;
+      if (seen.has(ref)) continue;
+      seen.add(ref);
+      qualified.push({ value: ref, label: ref, description: prov });
+    }
+    qualified.sort((a, b) => a.value.localeCompare(b.value));
+    if (qualified.length > 0) {
+      qualified.unshift({
+        value: "",
+        label: "(inherit session model)",
+        description: "Use the active session model",
+      });
+    }
+    log.debug("resolveModelPickerItems advisor_model", { count: qualified.length });
+    return qualified;
+  }
   const effectiveProvider = key === "image_model" ? IMAGE_MODEL_PROVIDER : provider;
   const filtered = filterModelsByProvider(allModels, effectiveProvider);
   if (key === "image_model") {
@@ -217,7 +242,7 @@ export function resolveModelKeySubmenu(
 ): ModelKeySubmenu {
   const provider = resolveModelPickerProvider(key, paired);
   const models = resolveModelPickerItems(key, allModels, provider);
-  if (key === "image_model" && models.length === 0) {
+  if ((key === "image_model" || key === "advisor_model") && models.length === 0) {
     log.debug("resolveModelKeySubmenu", { key, mode: "input", provider });
     return { mode: "input", provider };
   }
