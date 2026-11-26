@@ -54,8 +54,10 @@ pi-config/
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw) + memory_dream tool
 │   │   ├── skill-maintenance.ts     # /adopt-skill + skill_adopt tool, marked-skill write guard, in-turn nudge, provenance + one-line notice
 │   │   ├── bash-policy.ts           # Deep bash enforcement policy — unified shell lexing/scanning, DANGEROUS_RULES, git/conflict/trailer/dangerous evaluation
-│   │   ├── enforcement.ts           # Thin enforcement hook adapter over bash-policy.ts, enforcement-rules.ts, and pi-config-review-state.ts
+│   │   ├── enforcement.ts           # Thin enforcement hook adapter over bash-policy.ts, restricted-folders.ts, enforcement-rules.ts, and pi-config-review-state.ts
 │   │   ├── enforcement-rules.ts     # Enforcement rules engine — trigger matching + action execution for memory-based enforcement
+│   │   ├── restricted-folders.ts    # Symlink-safe, boundary-safe restricted_folders gate, tiered session/SQLite approval grants, and /forget-approvals (#1416)
+│   │   ├── secret-obfuscation.ts    # Opt-in reversible secret obfuscation for context/tool_result and tool_call placeholder restoration (#1413)
 │   │   ├── extended-autocomplete.ts  # Slash command argument completions (agents, branches, PRs, tags)
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git, PR, and worktree query utilities

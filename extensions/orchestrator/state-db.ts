@@ -23,7 +23,7 @@ export { parseLastValidLine, SKIP_MUTATE };
 const log = createLogger("state-db");
 
 export const STATE_DB_FILENAME = "state.db";
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 export const STATE_DB_BUSY_TIMEOUT_MS = 5000;
 
 interface CachedStateDb {
@@ -113,6 +113,15 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
           entry_key TEXT PRIMARY KEY,
           vector BLOB NOT NULL,
           updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS restricted_folder_approvals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          scope TEXT NOT NULL CHECK (scope IN ('file', 'directory')),
+          target_path TEXT NOT NULL,
+          restricted_root TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(scope, target_path)
         );
       `);
 

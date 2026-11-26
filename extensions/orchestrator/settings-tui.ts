@@ -293,7 +293,7 @@ export function buildCategoryItems(
             const scopeList = raw && Array.isArray(raw[key]) ? (raw[key] as string[]).filter((e): e is string => typeof e === "string") : [];
             log.debug("settings_string_list_open", key, editScope, scopeList.length);
             return new StringListSubmenu(
-              `${key} — patterns`,
+              key === "restricted_folders" ? `${key} — folders` : `${key} — patterns`,
               scopeList,
               theme,
               done,

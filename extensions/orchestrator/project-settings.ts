@@ -73,6 +73,7 @@ export type AgentOverrides = Record<string, AgentOverrideEntry>;
 type SpecialSettingValueMap = {
   commit_trailer: boolean | string;
   dangerous_command_allowlist: string[];
+  restricted_folders: string[];
   agent_overrides: AgentOverrides;
 };
 

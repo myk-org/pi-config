@@ -5564,7 +5564,7 @@ export function evaluateFileWritePolicy(
     return {
       block: true,
       reason:
-        "\u26d4 Direct modification of pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor, never agent tools.",
+        "\u26d4 Direct modification of pi-config-settings blocked — it carries the dangerous-command allowlist and restricted folders. Change settings via the /pi-config-settings command or your own editor, never agent tools.",
     };
   }
   if (isGitIdentityConfigPath(resolved) || isGitIdentityConfigPath(realResolved)) {
@@ -6368,7 +6368,7 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
       return {
         action: "block",
         reason:
-          "\u26d4 Bash command writing pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor.",
+          "\u26d4 Bash command writing pi-config-settings blocked — it carries the dangerous-command allowlist and restricted folders. Change settings via the /pi-config-settings command or your own editor.",
       };
     }
     if (maybeIdentityWrite && bashWritesToPath(command, maskedCmd, gitIdentityConfigSrc())) {
