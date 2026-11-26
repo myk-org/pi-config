@@ -962,9 +962,12 @@ See [Managing Custom Agents](managing-custom-agents.html) for details.
 ## Reload handshake
 
 The interactive session watches `.pi/run/reload.flag`, with `.pi/tmp/reload.flag` as a
-legacy fallback. It claims one pathname by rename into `.pi/run` before reading its nonce, parks an
-owner- and `startToken`-stamped `reload.pending`, waits for idle, then reloads through the public command
-API. The replacement runtime publishes that pending nonce to `reload.done`, mirrored
+legacy fallback. While a turn or compaction is active (`ctx.isIdle() === false`), the watcher defers
+dispatch without parking `reload.pending` or blocking follow-up turns, and triggers once idle
+(`agent_settled`, `agent_end`, `turn_end`, or the next watcher tick). When dispatched, `/reload-flag`
+claims one pathname by rename into `.pi/run` before reading its nonce, parks an owner- and
+`startToken`-stamped `reload.pending`, performs a bounded idle wait (`15s`), and reloads through the
+public command API. The replacement runtime publishes that pending nonce to `reload.done`, mirrored
 best-effort to the legacy directory (mirror write errors log `reload_legacy_mirror_failed` —
 at `debug` when `.pi/tmp` is absent and `warn` otherwise —
 without retaining `reload.pending`). A newer flag remains for another reload. Consuming
@@ -975,9 +978,11 @@ state it leaves any sitting flag untouched for a conservative extra reload. It d
 not publish an unproven confirmation. Fresh-start inspection removes only corrupt
 `reload.pending` records (empty or missing a valid `pid:session` owner), preserving
 both unconfirmed requests and `reload.done` completion markers regardless of age so a
-requester polling after a long turn never loses completion proof. Reload failures
-re-enable the owner's watcher with exponential backoff (`1s` doubling up to `30s`,
-reset immediately when a new flag nonce appears). Non-reload shutdown atomically
+requester polling after a long turn never loses completion proof. Reload failures — including thrown
+errors, `false` returns, `waitForIdle()` timeouts, silent non-shutdown returns from `ctx.reload()`,
+and unacknowledged dispatches (`10s`) — always release the owner's dispatch latch and re-enable the
+watcher with exponential backoff (`1s` doubling up to `30s`, reset immediately when a new flag nonce
+appears). Non-reload shutdown atomically
 releases the departing owner's pending into a claim whose filename records that
 owner's release intent. It never overwrites a newer pending publication. Live foreign
 pending owners are never taken over based on age.
