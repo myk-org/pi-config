@@ -400,10 +400,26 @@ export function formatComsResponseType(targetName: string, selfName?: string, qu
 
 /** Format the coms response content body (without the header — header is in customType). */
 export function formatComsResponseBody(response: any, error: string | null): string {
-	if (error) return `Error: ${error}`;
-	if (typeof response === "string") return response;
+	if (error !== null && error !== undefined) {
+		const errorText = String(error);
+		if (errorText.trim().length > 0) return `Error: ${errorText}`;
+		log.debug("empty_response_error_ignored", { type: typeof error });
+	}
+	if (typeof response === "string") {
+		if (response.trim().length > 0) return response;
+		log.debug("empty_response_body_normalized", { type: "string" });
+		return "(no response)";
+	}
 	if (response === undefined || response === null) return "(no response)";
-	return JSON.stringify(response, null, 2) ?? String(response);
+	let serialized: string;
+	try {
+		serialized = JSON.stringify(response, null, 2) ?? String(response);
+	} catch {
+		serialized = String(response);
+	}
+	if (serialized.trim().length > 0) return serialized;
+	log.debug("empty_response_body_normalized", { type: typeof response });
+	return "(no response)";
 }
 
 /**
@@ -414,10 +430,7 @@ export function formatComsResponseText(targetName: string, response: any, error:
 	const ids = queuedMsgIds.length <= 5 ? queuedMsgIds.join(", ") : `${queuedMsgIds.slice(0, 5).join(", ")} and ${queuedMsgIds.length - 5} more`;
 	const queueNote = queuedMsgIds.length > 0 ? ` (${queuedMsgIds.length} more queued: ${ids})` : "";
 	const arrow = selfName ? ` → ${selfName}` : "";
-	if (error) return `[coms response from ${targetName}${arrow}${queueNote}] Error: ${error}`;
-	return typeof response === "string"
-		? `[coms response from ${targetName}${arrow}${queueNote}] ${response}`
-		: `[coms response from ${targetName}${arrow}${queueNote}] ${JSON.stringify(response, null, 2)}`;
+	return `[coms response from ${targetName}${arrow}${queueNote}] ${formatComsResponseBody(response, error)}`;
 }
 
 /** #968 C: pidash browser peer-list payload — pure projection of live cards. */
