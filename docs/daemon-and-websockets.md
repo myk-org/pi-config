@@ -53,6 +53,8 @@ Each job keeps status, prompts, and output under a unique directory in the proje
 
 Token streams and tool activity originate inside the `pi` session. Extensions forward those events over the daemon WebSocket so the React UI can update live. The daemon also exposes session lists and other small HTTP APIs for the UI — the hot path for streaming remains WebSockets, not REST polling.
 
+Side-panel parity commands (`tasks-list`, `worktrees-list`, `worktrees-detail`, `worktrees-prune`, `worktrees-remove`, `coms-peers`, `memory-status`, `mcp-list`, `settings-get`/`settings-set`) route through `pidash-command` frames to the watched session. Worktree operations in `extensions/pidash/browser-ops.ts` reuse `extensions/orchestrator/worktree.ts` and `worktree-helpers.ts` directly (single source of truth for dirty counts, active COMS peer detection, open GitHub PR links, `git status --short` details, `git worktree prune -v`, and server-side guarded removal). Mutations fan out via `worktrees-broadcast` (and `orchestrator:worktrees-changed` when mutated from TUI `/worktree`) so multiple browser tabs and sibling sessions in the same repository stay synchronized.
+
 ## How it Affects the User
 
 - **Refresh without losing context:** Closing the laptop or reloading the dashboard reconnects to the pidash daemon and restores the session from a single `session_snapshot` frame, including in-flight streams and open interactive prompts.

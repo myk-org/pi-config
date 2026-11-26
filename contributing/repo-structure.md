@@ -116,7 +116,7 @@ pi-config/
 │   ├── pidash/                      # Live web dashboard extension (standalone)
 │   │   ├── index.ts                 # Entry point
 │   │   ├── pidash.ts                # Dashboard logic (connects to pidash daemon, forwards provider response info)
-│   │   ├── browser-ops.ts           # #968 browser operations — settings read/write (project-settings modules) + pi mcp CLI
+│   │   ├── browser-ops.ts           # #968/#1427 browser operations — settings read/write (project-settings), pi mcp CLI, and worktrees list/detail/prune/guarded-remove (reusing orchestrator/worktree.ts)
 │   │   ├── discord-bot.ts           # Thin Discord.js transport adapter wired to discord-session-routing + shared chat bridge
 │   │   ├── discord-session-routing.ts # Deep Discord session-routing module (inbound/interaction routing, prompt targets, watch switching, reactions, state hydration, unified session RPC)
 │   │   ├── discord-config.ts        # Discord bot env/config resolution and allowlist parsing

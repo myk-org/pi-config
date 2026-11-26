@@ -1,10 +1,12 @@
 /**
- * browser-ops — pidash browser operations that need config/CLI access (#968 D/F/G).
+ * browser-ops — pidash browser operations that need config/CLI/git access (#968 D/F/G, #1427).
  *
  * Settings: read/write through the SAME project-settings modules the TUI uses
  * (settings-keys.json is the single source of truth; writeSettingsFile is the
  * atomic writer). Never a direct ad-hoc file write from the daemon.
  * MCP: `pi mcp` CLI (list --json / login / logout).
+ * Worktrees: reuse the SAME orchestrator worktree modules (`worktree.ts`,
+ * `worktree-helpers.ts`, `git-helpers.ts`) the TUI `/worktree` overlay uses.
  */
 
 import { execFile } from "node:child_process";
@@ -12,6 +14,33 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 import { createLogger } from "../shared/logger.js";
+import type {
+  WorktreeDetailPayload,
+  WorktreeItem,
+  WorktreeListPayload,
+  WorktreeOpResult,
+} from "../shared/types.js";
+import {
+  countLinkedWorktrees,
+  detectWorktreePresence,
+  isInLinkedWorktree,
+  listWorktreesAsync,
+} from "../orchestrator/git-helpers.js";
+import {
+  executeGuardedWorktreeRemove,
+  loadWorktreeDetail,
+  loadWorktreeViews,
+  runWorktreePrune,
+  type WorktreeDeps,
+} from "../orchestrator/worktree.js";
+import {
+  canRemoveWorktree,
+  displayWorktreePath,
+  formatDirtyText,
+  formatWorktreeLabel,
+  formatWorktreeTags,
+  type WorktreeView,
+} from "../orchestrator/worktree-helpers.js";
 import {
   SETTINGS_KEYS,
   clearSettingsCache,
@@ -158,4 +187,296 @@ export async function mcpList(cwd: string): Promise<{ servers?: unknown[]; raw?:
     log.warn("mcp_list_failed", { error: e?.message });
     return { error: (e?.stderr || e?.message || String(e)).slice(0, 2000) };
   }
+}
+
+// ── #1427: Worktrees panel operations (single source of truth with TUI /worktree) ──
+
+export const MAX_WORKTREE_STATUS_LINES = 60;
+
+export interface WorktreeSummary {
+  worktreeCount: number;
+  worktreeDirtyCount: number;
+  inLinkedWorktree: boolean;
+}
+
+export function worktreeSummaryEqual(a: WorktreeSummary | null, b: WorktreeSummary): boolean {
+  return (
+    a !== null &&
+    a.worktreeCount === b.worktreeCount &&
+    a.worktreeDirtyCount === b.worktreeDirtyCount &&
+    a.inLinkedWorktree === b.inLinkedWorktree
+  );
+}
+
+/**
+ * Fast worktree summary for the InfoBar badge. Uses `detectWorktreePresence` first
+ * to avoid spawning git in single-checkout repositories.
+ */
+export async function getWorktreeSummary(
+  cwd: string,
+  deps: Pick<WorktreeDeps, "runGitAsync"> & { hasLinkedWorktreesHint?: (dir: string) => boolean | null } = {},
+): Promise<WorktreeSummary> {
+  const checkPresence = deps.hasLinkedWorktreesHint ?? detectWorktreePresence;
+  try {
+    if (checkPresence(cwd) === false) {
+      return { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
+    }
+    const entries = await listWorktreesAsync(cwd, {
+      includeDirty: true,
+      forceRefresh: false,
+      runGitAsync: deps.runGitAsync,
+    });
+    return {
+      worktreeCount: countLinkedWorktrees(entries),
+      worktreeDirtyCount: entries.filter((w) => (w.dirty?.total ?? 0) > 0).length,
+      inLinkedWorktree: isInLinkedWorktree(entries),
+    };
+  } catch (e: any) {
+    log.debug("worktree_summary_failed", { cwd, error: e?.message || String(e) });
+    return { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
+  }
+}
+
+/** Project a `WorktreeView` into the browser wire representation using shared TUI helpers. */
+export function buildWorktreeItem(wt: WorktreeView, cwd: string): WorktreeItem {
+  const guard = canRemoveWorktree(wt);
+  return {
+    id: wt.id,
+    path: wt.path,
+    relativePath: displayWorktreePath(wt.path, cwd),
+    label: formatWorktreeLabel(wt),
+    head: wt.head,
+    branch: wt.branch,
+    detached: wt.detached,
+    bare: wt.bare,
+    isMain: wt.isMain,
+    isCurrent: wt.isCurrent,
+    locked: wt.locked,
+    ...(wt.lockedReason ? { lockedReason: wt.lockedReason } : {}),
+    prunable: wt.prunable,
+    ...(wt.prunableReason ? { prunableReason: wt.prunableReason } : {}),
+    ...(wt.dirty ? { dirty: wt.dirty } : {}),
+    dirtyText: formatDirtyText(wt),
+    tags: formatWorktreeTags(wt),
+    peers: wt.peers.map((p) => ({ ...p })),
+    ...(wt.peersUnverifiedReason ? { peersUnverifiedReason: wt.peersUnverifiedReason } : {}),
+    ...(wt.pr ? { pr: { number: wt.pr.number, url: wt.pr.url } } : {}),
+    canRemove: guard.allowed,
+    ...(guard.allowed ? {} : { removeBlockedReason: guard.reason }),
+  };
+}
+
+/** Load the full worktree list payload for PiDash using `loadWorktreeViews`. */
+export async function loadWorktreesPayload(
+  cwd: string,
+  opts: {
+    forceRefresh?: boolean;
+    forceRefreshPrs?: boolean;
+    includePrs?: boolean;
+    deps?: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "fetchOpenPrs">;
+  } = {},
+): Promise<WorktreeListPayload> {
+  try {
+    const views = await loadWorktreeViews(cwd, opts.deps ?? {}, opts.forceRefresh ?? true, {
+      includePrs: opts.includePrs ?? true,
+      forceRefreshPrs: opts.forceRefreshPrs ?? false,
+    });
+    const linkedCount = countLinkedWorktrees(views);
+    const dirtyCount = views.filter((w) => (w.dirty?.total ?? 0) > 0).length;
+    const inLinked = isInLinkedWorktree(views);
+    const repoRoot = views.find((w) => w.isMain)?.path;
+    const worktrees = views.map((w) => buildWorktreeItem(w, cwd));
+    log.debug("worktrees_payload_built", { cwd, count: worktrees.length, linkedCount, dirtyCount });
+    return {
+      cwd,
+      ...(repoRoot ? { repoRoot } : {}),
+      linkedCount,
+      dirtyCount,
+      inLinkedWorktree: inLinked,
+      worktrees,
+    };
+  } catch (e: any) {
+    const error = e?.message || String(e);
+    log.warn("worktrees_payload_failed", { cwd, error });
+    return {
+      cwd,
+      linkedCount: 0,
+      dirtyCount: 0,
+      inLinkedWorktree: false,
+      worktrees: [],
+      error,
+    };
+  }
+}
+
+/**
+ * Load HEAD subject and `git status --short` (capped at 60 lines) for one registered worktree.
+ * Rejects arbitrary paths that do not belong to `cwd`'s git worktree list.
+ */
+export async function loadWorktreeDetailPayload(
+  cwd: string,
+  targetPath: unknown,
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers"> = {},
+): Promise<WorktreeDetailPayload> {
+  const pathStr = typeof targetPath === "string" ? targetPath.trim() : "";
+  if (!pathStr) {
+    return {
+      path: "",
+      headSubject: "",
+      statusLines: [],
+      truncatedCount: 0,
+      statusOk: false,
+      error: "Worktree path is required.",
+    };
+  }
+  try {
+    const views = await loadWorktreeViews(cwd, deps, false, { includePrs: false });
+    const wt = views.find((w) => w.path === pathStr);
+    if (!wt) {
+      log.warn("worktree_detail_not_found", { cwd, path: pathStr });
+      return {
+        path: pathStr,
+        headSubject: "",
+        statusLines: [],
+        truncatedCount: 0,
+        statusOk: false,
+        error: "Worktree not found in this repository.",
+      };
+    }
+    const detail = await loadWorktreeDetail(wt, deps.runGitAsync);
+    const total = detail.statusLines.length;
+    const statusLines = detail.statusLines.slice(0, MAX_WORKTREE_STATUS_LINES);
+    const truncatedCount = Math.max(0, total - MAX_WORKTREE_STATUS_LINES);
+    log.debug("worktree_detail_loaded", { path: wt.path, lines: statusLines.length, truncatedCount });
+    return {
+      path: wt.path,
+      headSubject: detail.headSubject,
+      statusLines,
+      truncatedCount,
+      statusOk: detail.statusOk !== false,
+      ...(detail.statusError ? { statusError: detail.statusError } : {}),
+    };
+  } catch (e: any) {
+    const error = e?.message || String(e);
+    log.warn("worktree_detail_failed", { cwd, path: pathStr, error });
+    return {
+      path: pathStr,
+      headSubject: "",
+      statusLines: [],
+      truncatedCount: 0,
+      statusOk: false,
+      error,
+    };
+  }
+}
+
+/** Run `git worktree prune -v` via the shared `runWorktreePrune` helper. */
+export async function pruneWorktreesOp(
+  cwd: string,
+  deps: Pick<WorktreeDeps, "runGitAsync" | "onWorktreesChanged"> = {},
+): Promise<WorktreeOpResult> {
+  try {
+    const res = await runWorktreePrune(cwd, deps);
+    log.info("browser_worktree_prune", { cwd, ok: res.ok, pruned: res.pruned.length });
+    return {
+      op: "prune",
+      ok: res.ok,
+      message: res.message,
+      pruned: res.pruned,
+    };
+  } catch (e: any) {
+    const error = e?.message || String(e);
+    log.warn("browser_worktree_prune_failed", { cwd, error });
+    return {
+      op: "prune",
+      ok: false,
+      message: `Worktree prune failed: ${error}`,
+      pruned: [],
+    };
+  }
+}
+
+/**
+ * Guarded single or bulk `git worktree remove` via `executeGuardedWorktreeRemove`.
+ * Server-side enforces main, current, locked, dirty, unknown dirty, active COMS peer,
+ * and unverifiable COMS registry protections for every target path.
+ */
+export async function removeWorktreesOp(
+  cwd: string,
+  rawPaths: unknown,
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "onWorktreesChanged"> = {},
+): Promise<WorktreeOpResult> {
+  const inputList = Array.isArray(rawPaths)
+    ? rawPaths
+    : typeof rawPaths === "string"
+      ? [rawPaths]
+      : [];
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const item of inputList) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    paths.push(trimmed);
+  }
+
+  if (paths.length === 0) {
+    return {
+      op: "remove",
+      ok: false,
+      message: "No worktree paths specified.",
+      removed: [],
+      failed: [],
+    };
+  }
+
+  const removed: string[] = [];
+  const failed: Array<{ path: string; relativePath: string; reason: string }> = [];
+  let singleMessage = "";
+
+  for (const targetPath of paths) {
+    try {
+      const res = await executeGuardedWorktreeRemove(cwd, targetPath, deps);
+      if (paths.length === 1) singleMessage = res.message;
+      if (res.ok) {
+        removed.push(targetPath);
+      } else {
+        failed.push({
+          path: targetPath,
+          relativePath: displayWorktreePath(targetPath, cwd),
+          reason: res.message,
+        });
+      }
+    } catch (e: any) {
+      const reason = e?.message || String(e);
+      if (paths.length === 1) singleMessage = reason;
+      failed.push({
+        path: targetPath,
+        relativePath: displayWorktreePath(targetPath, cwd),
+        reason,
+      });
+    }
+  }
+
+  const ok = failed.length === 0 && removed.length > 0;
+  let message: string;
+  if (paths.length === 1) {
+    message = singleMessage || (ok ? `Removed worktree: ${displayWorktreePath(paths[0], cwd)}` : "Failed to remove worktree.");
+  } else if (ok) {
+    message = `Removed ${removed.length} worktrees.`;
+  } else if (removed.length > 0) {
+    message = `Removed ${removed.length}/${paths.length} worktrees (${failed.length} skipped/failed: ${failed.map((f) => f.relativePath).join(", ")}).`;
+  } else {
+    message = `Cannot remove ${failed.length} worktree${failed.length === 1 ? "" : "s"}: ${failed.map((f) => `${f.relativePath} (${f.reason})`).join("; ")}`;
+  }
+
+  log.info("browser_worktree_remove", {
+    cwd,
+    requested: paths.length,
+    removed: removed.length,
+    failed: failed.length,
+  });
+
+  return { op: "remove", ok, message, removed, failed };
 }

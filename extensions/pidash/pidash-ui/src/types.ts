@@ -7,6 +7,13 @@ import type {
   SessionLiveState,
   SessionSnapshotPayload,
   TokenUsage,
+  WorktreeDetailPayload,
+  WorktreeDirtyCounts,
+  WorktreeItem,
+  WorktreeListPayload,
+  WorktreeOpResult,
+  WorktreePeerSummary,
+  WorktreePrInfo,
 } from "../../../shared/types.ts";
 export type {
   ChatMessage,
@@ -17,6 +24,13 @@ export type {
   SessionLiveState,
   SessionSnapshotPayload,
   TokenUsage,
+  WorktreeDetailPayload,
+  WorktreeDirtyCounts,
+  WorktreeItem,
+  WorktreeListPayload,
+  WorktreeOpResult,
+  WorktreePeerSummary,
+  WorktreePrInfo,
 };
 
 export interface PiEvent {

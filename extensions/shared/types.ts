@@ -36,6 +36,89 @@ export interface SessionInfo {
   comsProject?: string;
   /** Exact authoritative Trail savings for this parent Pi session. */
   trailTokenSavings?: number;
+  /** Linked (non-main) worktree count for this session's repository. */
+  worktreeCount?: number;
+  /** Number of worktrees in this session's repository with uncommitted changes. */
+  worktreeDirtyCount?: number;
+  /** True when this session's cwd is inside a linked (non-main) worktree. */
+  inLinkedWorktree?: boolean;
+}
+
+export interface WorktreeDirtyCounts {
+  modified: number;
+  added: number;
+  deleted: number;
+  untracked: number;
+  total: number;
+}
+
+export interface WorktreePeerSummary {
+  name: string;
+  project: string;
+  cwd: string;
+  busy: boolean;
+  pid: number | null;
+  purpose: string;
+}
+
+export interface WorktreePrInfo {
+  number: number;
+  url: string;
+}
+
+export interface WorktreeItem {
+  id: string;
+  path: string;
+  relativePath: string;
+  label: string;
+  head: string;
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+  isMain: boolean;
+  isCurrent: boolean;
+  locked: boolean;
+  lockedReason?: string;
+  prunable: boolean;
+  prunableReason?: string;
+  dirty?: WorktreeDirtyCounts;
+  dirtyText: string;
+  tags: string[];
+  peers: WorktreePeerSummary[];
+  peersUnverifiedReason?: string;
+  pr?: WorktreePrInfo;
+  canRemove: boolean;
+  removeBlockedReason?: string;
+}
+
+export interface WorktreeListPayload {
+  cwd: string;
+  repoRoot?: string;
+  linkedCount: number;
+  dirtyCount: number;
+  inLinkedWorktree: boolean;
+  worktrees: WorktreeItem[];
+  error?: string;
+}
+
+export interface WorktreeDetailPayload {
+  path: string;
+  headSubject: string;
+  statusLines: string[];
+  truncatedCount: number;
+  statusOk: boolean;
+  statusError?: string;
+  error?: string;
+}
+
+export interface WorktreeOpResult {
+  op: "prune" | "remove";
+  ok: boolean;
+  message: string;
+  pruned?: string[];
+  removed?: string[];
+  failed?: Array<{ path: string; relativePath: string; reason: string }>;
+  requestId?: string;
 }
 
 export interface TokenUsage {

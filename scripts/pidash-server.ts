@@ -157,16 +157,23 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     return;
   }
 
-  // Forward list responses directly to watchers (not buffered)
-  if ((parsed.type === "sessions-list" || parsed.type === "models-list") && piClient) {
+  // Forward list/panel responses directly to watchers (not buffered into viewState)
+  if (
+    (parsed.type === "sessions-list" ||
+      parsed.type === "models-list" ||
+      parsed.type === "worktrees-list" ||
+      parsed.type === "worktrees-detail" ||
+      parsed.type === "worktrees-op-result") &&
+    piClient
+  ) {
     sendToWatchers(piClient.session.sessionId, rawMsg ?? parsed);
     return;
   }
 
-  // #968: settings files are shared across sessions — a settings write must
-  // fan out to EVERY connected browser, not just watchers of the writing
-  // session (Qodo R3: shared settings stayed stale across sessions).
-  if (parsed.type === "settings-broadcast" && parsed.payload) {
+  // #968 / #1427: settings files and git worktrees are shared across sessions —
+  // mutations fan out to EVERY connected browser so multiple tabs/sessions in
+  // the same repo converge on fresh state.
+  if ((parsed.type === "settings-broadcast" || parsed.type === "worktrees-broadcast") && parsed.payload) {
     broadcastToBrowsers(parsed.payload);
     return;
   }

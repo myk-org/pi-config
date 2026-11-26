@@ -647,6 +647,9 @@ function registeredSession(parsed: any): SessionInfo {
     comsPurpose: parsed.comsPurpose || undefined,
     comsProject: parsed.comsProject || undefined,
     trailTokenSavings: Number.isSafeInteger(parsed.trailTokenSavings) && parsed.trailTokenSavings >= 0 ? parsed.trailTokenSavings : undefined,
+    worktreeCount: Number.isSafeInteger(parsed.worktreeCount) && parsed.worktreeCount >= 0 ? parsed.worktreeCount : undefined,
+    worktreeDirtyCount: Number.isSafeInteger(parsed.worktreeDirtyCount) && parsed.worktreeDirtyCount >= 0 ? parsed.worktreeDirtyCount : undefined,
+    inLinkedWorktree: typeof parsed.inLinkedWorktree === "boolean" ? parsed.inLinkedWorktree : undefined,
     ...initialActivityState(),
     activity,
     activitySequence: Number.isSafeInteger(parsed.activitySequence) ? parsed.activitySequence : 0,
@@ -730,6 +733,15 @@ export function updatePidashSession(session: SessionInfo, parsed: any): void {
   if (typeof parsed.supportsImages === "boolean") session.supportsImages = parsed.supportsImages;
   if (parsed.trailTokenSavings !== undefined && Number.isSafeInteger(parsed.trailTokenSavings) && parsed.trailTokenSavings >= 0) {
     session.trailTokenSavings = parsed.trailTokenSavings;
+  }
+  if (parsed.worktreeCount !== undefined && Number.isSafeInteger(parsed.worktreeCount) && parsed.worktreeCount >= 0) {
+    session.worktreeCount = parsed.worktreeCount;
+  }
+  if (parsed.worktreeDirtyCount !== undefined && Number.isSafeInteger(parsed.worktreeDirtyCount) && parsed.worktreeDirtyCount >= 0) {
+    session.worktreeDirtyCount = parsed.worktreeDirtyCount;
+  }
+  if (typeof parsed.inLinkedWorktree === "boolean") {
+    session.inLinkedWorktree = parsed.inLinkedWorktree;
   }
   session.lastActivity = Date.now();
 }
