@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, GitBranch, Brain, Bot, Check, ChevronDown, Folder, ListTodo, Radio, Database, Plug, Settings2, Archive } from "lucide-react";
+import { ExternalLink, GitBranch, GitFork, Brain, Bot, Check, ChevronDown, Folder, ListTodo, Radio, Database, Plug, Settings2, Archive } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@ui/popover";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, TokenUsage } from "@/types";
@@ -353,6 +353,32 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         </>
       )}
 
+      {/* Worktrees indicator (shown whenever linked worktrees exist or session is in a linked worktree) */}
+      {((session.worktreeCount ?? 0) > 0 || session.inLinkedWorktree) && (
+        <>
+          {!session.branch && <span className="text-border shrink-0">|</span>}
+          <button
+            type="button"
+            className={cn(
+              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] shrink-0 transition-colors",
+              activePanel === "worktrees"
+                ? "border-primary text-primary bg-accent/50"
+                : (session.worktreeDirtyCount ?? 0) > 0
+                  ? "border-amber-500/30 text-amber-500 hover:bg-amber-500/10"
+                  : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/30",
+            )}
+            onClick={() => onOpenPanel("worktrees")}
+            title={`Worktrees: ${session.worktreeCount ?? 0} linked${(session.worktreeDirtyCount ?? 0) > 0 ? `, ${session.worktreeDirtyCount} dirty` : ""}${session.inLinkedWorktree ? " (in linked worktree)" : ""} — click to open Worktrees panel`}
+          >
+            <GitFork className="h-3 w-3 shrink-0" />
+            <span>
+              {session.worktreeCount ?? 0} wt
+              {(session.worktreeDirtyCount ?? 0) > 0 ? ` · ${session.worktreeDirtyCount} dirty` : ""}
+            </span>
+          </button>
+        </>
+      )}
+
       {/* Diff viewer */}
       <span className="text-border shrink-0">|</span>
       {session.diffPort
@@ -550,6 +576,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         </button>
         {([
           ["tasks", ListTodo, "Tasks panel"],
+          ["worktrees", GitFork, "Worktrees panel"],
           ["coms", Radio, "Coms peers"],
           ["memory", Database, "Memory status"],
           ["mcp", Plug, "MCP servers"],

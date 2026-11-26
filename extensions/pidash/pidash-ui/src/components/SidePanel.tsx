@@ -6,15 +6,17 @@ import type { SessionInfo } from "@/types";
 
 const log = createLogger("SidePanel");
 import { TasksPanel } from "./TasksPanel";
+import { WorktreesPanel } from "./WorktreesPanel";
 import { ComsPanel } from "./ComsPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import { McpPanel } from "./McpPanel";
 import { SettingsPanel } from "./SettingsPanel";
 
-export type PanelTab = "tasks" | "coms" | "memory" | "mcp" | "settings";
+export type PanelTab = "tasks" | "worktrees" | "coms" | "memory" | "mcp" | "settings";
 
 const TABS: Array<{ id: PanelTab; label: string }> = [
   { id: "tasks", label: "Tasks" },
+  { id: "worktrees", label: "Worktrees" },
   { id: "coms", label: "Coms" },
   { id: "memory", label: "Memory" },
   { id: "mcp", label: "MCP" },
@@ -127,12 +129,12 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
         onMouseDown={startResize}
         title="Drag to resize panel"
       />
-      <div className="flex items-center border-b border-border">
+      <div className="flex items-center border-b border-border overflow-x-auto scrollbar-none">
         {TABS.map((t) => (
           <button
             key={t.id}
             className={cn(
-              "flex-1 px-2 py-2 text-xs font-medium transition-colors",
+              "flex-1 px-1.5 py-2 text-xs font-medium whitespace-nowrap transition-colors",
               activeTab === t.id ? "text-foreground border-b-2 border-primary bg-accent/30" : "text-muted-foreground hover:text-foreground hover:bg-accent/20",
             )}
             onClick={() => onTabChange(t.id)}
@@ -140,12 +142,21 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
             {t.label}
           </button>
         ))}
-        <button className="px-2 py-2 text-muted-foreground hover:text-foreground" onClick={onClose} title="Close panel">
+        <button className="px-2 py-2 text-muted-foreground hover:text-foreground shrink-0" onClick={onClose} title="Close panel">
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
       <div className="flex-1 overflow-y-auto">
         {activeTab === "tasks" && <TasksPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
+        {activeTab === "worktrees" && (
+          <WorktreesPanel
+            sessionId={session.sessionId}
+            cwd={session.cwd}
+            sendCmd={sendCmd}
+            onMessage={onMessage}
+            notify={notify}
+          />
+        )}
         {activeTab === "coms" && <ComsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} sessions={sessions} onWatch={onWatch} />}
         {activeTab === "memory" && <MemoryPanel sendCmd={sendCmd} onMessage={onMessage} />}
         {activeTab === "mcp" && <McpPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}

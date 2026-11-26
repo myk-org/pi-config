@@ -23,6 +23,8 @@ export function runGit(
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
+        LC_ALL: "C",
+        LANGUAGE: "C",
         GIT_TERMINAL_PROMPT: "0",
         GCM_INTERACTIVE: "Never",
       },
@@ -41,7 +43,7 @@ export function runGit(
 export type GitAsyncResult = { stdout: string; stderr?: string; code: number };
 export type GitAsyncRunner = (args: string[], cwd?: string) => Promise<GitAsyncResult>;
 
-/** Async `git --no-optional-locks` runner (non-interactive, 5s timeout). */
+/** Async `git --no-optional-locks` runner (non-interactive, 5s timeout, C locale). */
 export function runGitAsync(args: string[], cwd?: string): Promise<GitAsyncResult> {
   return new Promise((resolvePromise) => {
     execFile(
@@ -54,6 +56,8 @@ export function runGitAsync(args: string[], cwd?: string): Promise<GitAsyncResul
         maxBuffer: 1024 * 1024,
         env: {
           ...process.env,
+          LC_ALL: "C",
+          LANGUAGE: "C",
           GIT_TERMINAL_PROMPT: "0",
           GCM_INTERACTIVE: "Never",
         },
@@ -228,17 +232,23 @@ export function parseWorktreePorcelain(raw: string, cwd?: string): WorktreeEntry
 const WORKTREE_TTL_MS = 5_000;
 const WORKTREE_CACHE_MAX = 50;
 
+export interface CheckedWorktreeListResult {
+  ok: boolean;
+  entries: WorktreeEntry[];
+  error?: string;
+}
+
 type WorktreeCacheEntry = { at: number; entries: WorktreeEntry[] };
 const worktreeCache = new Map<string, WorktreeCacheEntry>();
-const worktreeInFlight = new Map<string, Promise<WorktreeEntry[]>>();
+const worktreeInFlight = new Map<string, Promise<CheckedWorktreeListResult>>();
 const worktreeGen = new Map<string, number>();
 const runnerWorktreeCaches = new WeakMap<GitAsyncRunner, Map<string, WorktreeCacheEntry>>();
-const runnerWorktreeInFlight = new WeakMap<GitAsyncRunner, Map<string, Promise<WorktreeEntry[]>>>();
+const runnerWorktreeInFlight = new WeakMap<GitAsyncRunner, Map<string, Promise<CheckedWorktreeListResult>>>();
 const runnerWorktreeGen = new WeakMap<GitAsyncRunner, Map<string, number>>();
 
 function getWorktreeCacheStore(runner?: GitAsyncRunner): {
   cache: Map<string, WorktreeCacheEntry>;
-  inFlight: Map<string, Promise<WorktreeEntry[]>>;
+  inFlight: Map<string, Promise<CheckedWorktreeListResult>>;
   gen: Map<string, number>;
 } {
   if (!runner || runner === runGitAsync) {
@@ -340,41 +350,50 @@ export function countLinkedWorktrees(worktrees: readonly WorktreeEntry[]): numbe
 }
 
 /**
- * List git worktrees via `git worktree list --porcelain` with a short TTL cache.
- * Shared by status-line, `/worktree`, `/status`, and `/review-status` autocomplete.
+ * List git worktrees via `git worktree list --porcelain`, distinguishing a non-git
+ * directory (`ok: true, entries: []`) from a git subprocess or runner failure
+ * (`ok: false, error: ...`). Shared by PiDash and `listWorktreesAsync`.
  */
-export async function listWorktreesAsync(
+export async function listWorktreesCheckedAsync(
   cwd?: string,
   opts: ListWorktreesOptions = {},
-): Promise<WorktreeEntry[]> {
+): Promise<CheckedWorktreeListResult> {
   const runner = opts.runGitAsync ?? runGitAsync;
   const ttlMs = opts.ttlMs ?? WORKTREE_TTL_MS;
   const effectiveCwd = cwd || process.cwd();
   const key = worktreeCacheKey(effectiveCwd);
   const { cache, inFlight, gen } = getWorktreeCacheStore(runner);
 
-  const loadBase = async (): Promise<WorktreeEntry[]> => {
+  const loadBase = async (): Promise<CheckedWorktreeListResult> => {
     const now = Date.now();
     if (!opts.forceRefresh) {
       const cached = cache.get(key);
       if (cached && now - cached.at < ttlMs) {
-        return cached.entries.map((e) => ({ ...e }));
+        return { ok: true, entries: cached.entries.map((e) => ({ ...e })) };
       }
       const pending = inFlight.get(key);
       if (pending) {
         const res = await pending;
-        return res.map((e) => ({ ...e }));
+        return { ...res, entries: res.entries.map((e) => ({ ...e })) };
       }
     }
 
     const myGen = (gen.get(key) ?? 0) + 1;
     gen.set(key, myGen);
 
-    let promise!: Promise<WorktreeEntry[]>;
-    promise = (async (): Promise<WorktreeEntry[]> => {
+    let promise!: Promise<CheckedWorktreeListResult>;
+    promise = (async (): Promise<CheckedWorktreeListResult> => {
       try {
         const r = await runner(["worktree", "list", "--porcelain"], effectiveCwd);
-        if (r.code !== 0) return [];
+        if (r.code !== 0) {
+          const detail = (r.stderr || r.stdout || "").trim();
+          if (/not a git repository/i.test(detail)) {
+            return { ok: true, entries: [] };
+          }
+          const error = detail || `git worktree list failed (exit ${r.code})`;
+          gitLog.debug("worktree_list_nonzero", { cwd: effectiveCwd, code: r.code, error });
+          return { ok: false, entries: [], error };
+        }
         const parsed = r.stdout ? parseWorktreePorcelain(r.stdout, effectiveCwd) : [];
         if (gen.get(key) === myGen) {
           cache.delete(key);
@@ -385,10 +404,11 @@ export async function listWorktreesAsync(
             cache.delete(oldest);
           }
         }
-        return parsed;
+        return { ok: true, entries: parsed };
       } catch (e: any) {
-        gitLog.debug("worktree_list_failed", { cwd: effectiveCwd, error: e?.message || String(e) });
-        return [];
+        const error = e?.message || String(e);
+        gitLog.debug("worktree_list_failed", { cwd: effectiveCwd, error });
+        return { ok: false, entries: [], error };
       }
     })().finally(() => {
       if (inFlight.get(key) === promise) {
@@ -397,17 +417,17 @@ export async function listWorktreesAsync(
     });
 
     inFlight.set(key, promise);
-    const entries = await promise;
-    return entries.map((e) => ({ ...e }));
+    const res = await promise;
+    return { ...res, entries: res.entries.map((e) => ({ ...e })) };
   };
 
-  const entries = await loadBase();
-  if (!opts.includeDirty || entries.length === 0) {
-    return entries;
+  const base = await loadBase();
+  if (!base.ok || !opts.includeDirty || base.entries.length === 0) {
+    return base;
   }
 
   await Promise.all(
-    entries.map(async (wt) => {
+    base.entries.map(async (wt) => {
       if (wt.bare || wt.prunable) return;
       try {
         const st = await runner(["status", "--porcelain"], wt.path);
@@ -420,7 +440,19 @@ export async function listWorktreesAsync(
     }),
   );
 
-  return entries;
+  return base;
+}
+
+/**
+ * List git worktrees via `git worktree list --porcelain` with a short TTL cache.
+ * Shared by status-line, `/worktree`, `/status`, and `/review-status` autocomplete.
+ */
+export async function listWorktreesAsync(
+  cwd?: string,
+  opts: ListWorktreesOptions = {},
+): Promise<WorktreeEntry[]> {
+  const res = await listWorktreesCheckedAsync(cwd, opts);
+  return res.entries;
 }
 
 export function getCurrentBranch(cwd?: string): string | null {

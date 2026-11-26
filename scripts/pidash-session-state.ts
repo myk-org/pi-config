@@ -28,6 +28,100 @@ export function isLoopbackAddress(addr: string | undefined | null): boolean {
   return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
+export function isWorktreeCommand(command: unknown): boolean {
+  return (
+    command === "worktrees-list" ||
+    command === "worktrees-detail" ||
+    command === "worktrees-prune" ||
+    command === "worktrees-remove"
+  );
+}
+
+export function isWorktreeMutationCommand(command: unknown): boolean {
+  return command === "worktrees-prune" || command === "worktrees-remove";
+}
+
+/**
+ * Authorize a browser worktree command before forwarding it to a Pi session:
+ * - Browser must currently be watching the target `sessionId` (prevents arbitrary cross-session targeting).
+ * - Destructive mutations (`worktrees-prune`, `worktrees-remove`) are restricted to loopback clients
+ *   because PiDash binds to 0.0.0.0 without browser authentication.
+ */
+export function authorizeWorktreeBrowserCommand(opts: {
+  command: unknown;
+  targetSessionId: unknown;
+  watchedSessionId: unknown;
+  remoteAddress: string | undefined | null;
+}): { allowed: true } | { allowed: false; reason: string } {
+  const target = typeof opts.targetSessionId === "string" ? opts.targetSessionId : "";
+  if (!target || opts.watchedSessionId !== target) {
+    return { allowed: false, reason: "Worktree command rejected: browser is not watching this session." };
+  }
+  if (isWorktreeMutationCommand(opts.command) && !isLoopbackAddress(opts.remoteAddress)) {
+    return { allowed: false, reason: "Worktree mutations are restricted to localhost clients." };
+  }
+  return { allowed: true };
+}
+
+/** Build an explicit error reply for a rejected or undeliverable browser worktree command. */
+export function buildWorktreeCommandErrorFrame(parsed: any, reason: string, sessionCwd = ""): Record<string, unknown> {
+  const requestId = parsed?.requestId;
+  if (parsed?.command === "worktrees-list") {
+    return {
+      type: "worktrees-list",
+      requestId,
+      sourceSessionId: parsed?.sessionId,
+      cwd: sessionCwd,
+      linkedCount: 0,
+      dirtyCount: 0,
+      inLinkedWorktree: false,
+      worktrees: [],
+      error: reason,
+    };
+  }
+  if (parsed?.command === "worktrees-detail") {
+    return {
+      type: "worktrees-detail",
+      requestId,
+      path: typeof parsed?.path === "string" ? parsed.path : "",
+      headSubject: "",
+      statusLines: [],
+      truncatedCount: 0,
+      statusOk: false,
+      error: reason,
+    };
+  }
+  return {
+    type: "worktrees-op-result",
+    requestId,
+    op: parsed?.command === "worktrees-prune" ? "prune" : "remove",
+    ok: false,
+    message: reason,
+  };
+}
+
+/**
+ * Determine whether a browser watching `watchId` should receive a minimal
+ * repository-scoped `worktrees-changed` invalidation notice.
+ */
+export function shouldNotifyWorktreeChange(opts: {
+  watchId: string | null | undefined;
+  sourceSessionId: string;
+  repoRoot: string | undefined;
+  watchedSessionRepoRoot: string | undefined;
+  watchedSessionCwd: string | undefined;
+}): boolean {
+  if (!opts.watchId) return false;
+  if (opts.watchId === opts.sourceSessionId) return true;
+  if (!opts.repoRoot) return false;
+  if (opts.watchedSessionRepoRoot) {
+    return opts.watchedSessionRepoRoot === opts.repoRoot;
+  }
+  if (!opts.watchedSessionCwd) return false;
+  const normRepo = opts.repoRoot.endsWith("/") ? opts.repoRoot : `${opts.repoRoot}/`;
+  return opts.watchedSessionCwd === opts.repoRoot || opts.watchedSessionCwd.startsWith(normRepo);
+}
+
 export interface PendingUiRequestStore {
   pendingUiRequests: Map<string, string>;
   replaying?: boolean;
@@ -647,6 +741,9 @@ function registeredSession(parsed: any): SessionInfo {
     comsPurpose: parsed.comsPurpose || undefined,
     comsProject: parsed.comsProject || undefined,
     trailTokenSavings: Number.isSafeInteger(parsed.trailTokenSavings) && parsed.trailTokenSavings >= 0 ? parsed.trailTokenSavings : undefined,
+    worktreeCount: Number.isSafeInteger(parsed.worktreeCount) && parsed.worktreeCount >= 0 ? parsed.worktreeCount : undefined,
+    worktreeDirtyCount: Number.isSafeInteger(parsed.worktreeDirtyCount) && parsed.worktreeDirtyCount >= 0 ? parsed.worktreeDirtyCount : undefined,
+    inLinkedWorktree: typeof parsed.inLinkedWorktree === "boolean" ? parsed.inLinkedWorktree : undefined,
     ...initialActivityState(),
     activity,
     activitySequence: Number.isSafeInteger(parsed.activitySequence) ? parsed.activitySequence : 0,
@@ -730,6 +827,15 @@ export function updatePidashSession(session: SessionInfo, parsed: any): void {
   if (typeof parsed.supportsImages === "boolean") session.supportsImages = parsed.supportsImages;
   if (parsed.trailTokenSavings !== undefined && Number.isSafeInteger(parsed.trailTokenSavings) && parsed.trailTokenSavings >= 0) {
     session.trailTokenSavings = parsed.trailTokenSavings;
+  }
+  if (parsed.worktreeCount !== undefined && Number.isSafeInteger(parsed.worktreeCount) && parsed.worktreeCount >= 0) {
+    session.worktreeCount = parsed.worktreeCount;
+  }
+  if (parsed.worktreeDirtyCount !== undefined && Number.isSafeInteger(parsed.worktreeDirtyCount) && parsed.worktreeDirtyCount >= 0) {
+    session.worktreeDirtyCount = parsed.worktreeDirtyCount;
+  }
+  if (typeof parsed.inLinkedWorktree === "boolean") {
+    session.inLinkedWorktree = parsed.inLinkedWorktree;
   }
   session.lastActivity = Date.now();
 }

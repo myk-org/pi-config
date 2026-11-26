@@ -53,7 +53,7 @@ export function App() {
   const [activePanel, setActivePanel] = useState<PanelTab | null>(() => {
     if (typeof window !== "undefined" && window.innerWidth <= 768) return null;
     const savedPanel = saved.current.activePanel;
-    return savedPanel === "tasks" || savedPanel === "coms" || savedPanel === "memory" || savedPanel === "mcp" || savedPanel === "settings" ? savedPanel : null;
+    return savedPanel === "tasks" || savedPanel === "worktrees" || savedPanel === "coms" || savedPanel === "memory" || savedPanel === "mcp" || savedPanel === "settings" ? savedPanel : null;
   });
   const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile ? true : saved.current.sidebarCollapsed);

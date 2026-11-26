@@ -11,7 +11,7 @@ import { createLogger } from "../shared/logger.js";
 import {
   countLinkedWorktrees,
   invalidateWorktreeCache,
-  listWorktreesAsync,
+  listWorktreesCheckedAsync,
   runGitAsync,
   type GitAsyncRunner,
   type OpenPr,
@@ -85,20 +85,29 @@ function emitOutput(
   }
 }
 
-/** Load worktrees with dirty counts, matched live COMS peers, and open GitHub PRs. */
-export async function loadWorktreeViews(
+export interface CheckedWorktreeViewsResult {
+  ok: boolean;
+  views: WorktreeView[];
+  error?: string;
+}
+
+/**
+ * Load worktrees with dirty counts, matched live COMS peers, and open GitHub PRs,
+ * preserving git listing errors (`ok: false`) distinctly from non-git directories (`ok: true, views: []`).
+ */
+export async function loadWorktreeViewsChecked(
   cwd: string,
   deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "fetchOpenPrs"> = {},
   forceRefresh = true,
   opts: { includePrs?: boolean; forceRefreshPrs?: boolean; strictPeers?: boolean } = {},
-): Promise<WorktreeView[]> {
+): Promise<CheckedWorktreeViewsResult> {
   const includePrs = opts.includePrs ?? true;
   const prFetcher =
     deps.fetchOpenPrs ??
     ((dir, o) => fetchOpenPrsByBranchAsync(dir, { forceRefresh: o?.forceRefresh }));
 
-  const [entries, prsByBranch] = await Promise.all([
-    listWorktreesAsync(cwd, {
+  const [listed, prsByBranch] = await Promise.all([
+    listWorktreesCheckedAsync(cwd, {
       includeDirty: true,
       forceRefresh,
       runGitAsync: deps.runGitAsync,
@@ -110,6 +119,9 @@ export async function loadWorktreeViews(
         })
       : Promise.resolve(new Map<string, OpenPr>()),
   ]);
+  if (!listed.ok) {
+    return { ok: false, views: [], error: listed.error };
+  }
   const peerInspection: PeerInspectionResult = deps.inspectLivePeers
     ? deps.inspectLivePeers(cwd, { strict: opts.strictPeers })
     : deps.readLivePeers
@@ -118,7 +130,21 @@ export async function loadWorktreeViews(
   const unverifiedReason = peerInspection.verified
     ? undefined
     : (peerInspection.error || "COMS registry unreadable");
-  return attachPeersToWorktrees(entries, peerInspection.peers, prsByBranch, unverifiedReason);
+  return {
+    ok: true,
+    views: attachPeersToWorktrees(listed.entries, peerInspection.peers, prsByBranch, unverifiedReason),
+  };
+}
+
+/** Load worktrees with dirty counts, matched live COMS peers, and open GitHub PRs. */
+export async function loadWorktreeViews(
+  cwd: string,
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "fetchOpenPrs"> = {},
+  forceRefresh = true,
+  opts: { includePrs?: boolean; forceRefreshPrs?: boolean; strictPeers?: boolean } = {},
+): Promise<WorktreeView[]> {
+  const res = await loadWorktreeViewsChecked(cwd, deps, forceRefresh, opts);
+  return res.views;
 }
 
 export interface WorktreeDetailInfo {
