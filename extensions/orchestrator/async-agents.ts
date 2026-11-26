@@ -32,7 +32,7 @@ const log = createLogger("async_agents");
 export { autoCompleteTask, autoMarkInProgress, resolveTaskStorePath } from "./task-lifecycle.js";
 import { autoCompleteTask, autoMarkInProgress, resolveTaskStorePath } from "./task-lifecycle.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
-import type { AsyncStatusJobView } from "./async-status-ui.js";
+import type { AsyncStatusJobView, ReviveJobResult } from "./async-status-ui.js";
 import {
   abortAllSyncAgentRuns,
   abortSyncAgentRun,
@@ -60,6 +60,8 @@ export interface AsyncJob {
   agent: string;
   name?: string;
   task: string;
+  /** Full un-truncated task prompt (preserved for `r` revive). */
+  fullTask?: string;
   status: "queued" | "running" | "complete" | "failed";
   workerDir: string;
   startedAt: number;
@@ -89,6 +91,8 @@ export interface AsyncJob {
   cwd?: string;
   projectCwd?: string;
   sessionId?: string;
+  /** Whether the child was spawned with a persisted Pi session (omitting `--no-session`). */
+  persistSession?: boolean;
   model?: string;
   restoredPid?: number;
   /** Who killed this job, if it was killed. Drives the attribution suffix in delivery headers. */
@@ -427,6 +431,7 @@ export function registerAsyncAgents(
 ): {
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
+  reviveAsyncJob: (jobRef: AsyncStatusJobView | string) => Promise<ReviveJobResult>;
   /** The full job record: callers read `taskStorePath` and the delivery flags off it. */
   getAsyncJobs: () => AsyncJob[];
 } {
@@ -434,6 +439,7 @@ export function registerAsyncAgents(
     return {
       spawnAsyncAgent: () => ({ id: "", error: "Async subagents disabled in child process" }),
       killAsyncAgent: () => ({ killed: [], errors: [] }),
+      reviveAsyncJob: async () => ({ ok: false, error: "Async subagents disabled in child process" }),
       getAsyncJobs: () => [],
     };
   }
@@ -632,6 +638,19 @@ export function registerAsyncAgents(
     watcher: null,
     lastCtx: null,
   };
+
+  /** Bounded recent finished/killed jobs retained for `/async` inspection, Activity Log, and `r` revive. */
+  const RECENT_FINISHED_MAX = 20;
+  const recentFinishedJobs = new Map<string, AsyncJob>();
+  function archiveFinishedJob(job: AsyncJob): void {
+    recentFinishedJobs.delete(job.id);
+    recentFinishedJobs.set(job.id, { ...job, onComplete: undefined });
+    while (recentFinishedJobs.size > RECENT_FINISHED_MAX) {
+      const oldest = recentFinishedJobs.keys().next();
+      if (oldest.done) break;
+      recentFinishedJobs.delete(oldest.value);
+    }
+  }
 
   // Track job IDs that have already been delivered in this session (including previous lifecycles).
   // Populated from status.json delivered flags on session_start to prevent re-delivery after reload.
@@ -892,6 +911,7 @@ export function registerAsyncAgents(
             && Date.now() - job.updatedAt > 30000
             && job.delivered
             && !(job.deliveredWithoutResult && !job.lateResultSent)) {
+          archiveFinishedJob(job);
           asyncState.jobs.delete(id);
         }
       }
@@ -1249,6 +1269,9 @@ export function registerAsyncAgents(
       fireAndForget: options?.fireAndForget || false,
       parentPid: process.pid,
       parentStartTime,
+      name: options?.name || null,
+      fullTask: task,
+      persistSession: options?.persistSession === true,
       taskId: options?.taskId || null,
       taskStorePath: taskStorePath || null,
       cwd,
@@ -1362,6 +1385,7 @@ export function registerAsyncAgents(
       agent: agentName,
       name: options?.name,
       task: task.slice(0, 200),
+      fullTask: task,
       status: "queued",
       workerDir,
       startedAt: Date.now(),
@@ -1374,6 +1398,7 @@ export function registerAsyncAgents(
       cwd,
       projectCwd: resolvedProjectCwd || undefined,
       sessionId: resolvedSessionId || undefined,
+      persistSession,
       model: effectiveModel,
     };
     asyncState.jobs.set(id, job);
@@ -1477,6 +1502,7 @@ export function registerAsyncAgents(
     }
     asyncState.lastCtx = ctx;
     deliveredResultIds.clear();
+    recentFinishedJobs.clear();
 
     // Set project-scoped dir first (getProjectTmpDir creates it if missing)
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
@@ -1584,7 +1610,9 @@ export function registerAsyncAgents(
           const job: AsyncJob = {
             id,
             agent: status.agent || "unknown",
+            name: typeof marker.name === "string" && marker.name ? marker.name : undefined,
             task: (status.task || "").slice(0, 200),
+            fullTask: typeof marker.fullTask === "string" ? marker.fullTask : undefined,
             status: isComplete ? status.state : "running",
             workerDir: jobDir,
             startedAt: status.startedAt || Date.now(),
@@ -1604,6 +1632,7 @@ export function registerAsyncAgents(
             cwd: marker.cwd || undefined,
             projectCwd: marker.projectCwd || ctx.cwd || undefined,
             sessionId: marker.sessionId || undefined,
+            persistSession: marker.persistSession === true || undefined,
             model: status.model || marker.model || undefined,
             restoredPid: typeof status.pid === "number" ? status.pid : undefined,
           };
@@ -1664,6 +1693,7 @@ export function registerAsyncAgents(
   pi.on("session_shutdown", () => {
     log.info(`shutdown: jobs=${asyncState.jobs.size}`);
     asyncState.lastCtx = null;
+    recentFinishedJobs.clear();
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
     unsubscribeSyncRuns();
@@ -1673,9 +1703,13 @@ export function registerAsyncAgents(
   });
 
   function listAllJobs(): AsyncStatusJobView[] {
-    // Async first, then sync; newest first inside each group.
+    // Async first (active + recently archived finished jobs), then sync; newest first inside each group.
     const newestFirst = (a: { startedAt: number }, b: { startedAt: number }) => b.startedAt - a.startedAt;
-    const asyncJobs: AsyncStatusJobView[] = Array.from(asyncState.jobs.values())
+    const mergedAsync = new Map<string, AsyncJob>();
+    for (const [id, job] of recentFinishedJobs.entries()) mergedAsync.set(id, job);
+    for (const [id, job] of asyncState.jobs.entries()) mergedAsync.set(id, job);
+
+    const asyncJobs: AsyncStatusJobView[] = Array.from(mergedAsync.values())
       .sort(newestFirst)
       .map(j => {
         const isActive = j.status === "running" || j.status === "queued";
@@ -1690,11 +1724,16 @@ export function registerAsyncAgents(
           agent: j.agent,
           name: j.name,
           task: j.task,
+          fullTask: j.fullTask,
           status: j.status,
           workerDir: j.workerDir,
           startedAt: j.startedAt,
           durationMs: j.durationMs,
           model: j.model,
+          cwd: j.cwd || j.projectCwd,
+          taskId: j.taskId,
+          persistSession: j.persistSession,
+          output: j.output,
           currentTool,
           mode: "async" as const,
         };
@@ -1714,10 +1753,81 @@ export function registerAsyncAgents(
         workerDir: r.workerDir,
         startedAt: r.startedAt,
         durationMs: r.endedAt != null ? r.endedAt - r.startedAt : undefined,
+        cwd: r.cwd,
+        output: r.outputTail,
         currentTool: r.currentTool,
         mode: "sync" as const,
       }));
     return [...asyncJobs, ...syncJobs];
+  }
+
+  /**
+   * Revive a killed, completed, or failed subagent job (#1417):
+   * - If the prior job used `persistSession`, respawns with `persistSession: true` so Pi resumes
+   *   the same deterministic session id (`--session-id async-<agent>-<hash>`).
+   * - Otherwise recovers prior output from `output.log` / `job.output` and embeds it as context
+   *   with the original task, `agent`, `cwd`, `name`, and `taskId`.
+   */
+  async function reviveAsyncJob(jobRef: AsyncStatusJobView | string): Promise<ReviveJobResult> {
+    const id = typeof jobRef === "string" ? jobRef : jobRef.id;
+    const stored = asyncState.jobs.get(id) ?? recentFinishedJobs.get(id);
+    const syncMatch = listSyncAgentRunsWithFinished().find((r) => r.id === id);
+    const view = typeof jobRef === "string" ? undefined : jobRef;
+
+    const status = stored?.status ?? syncMatch?.status ?? view?.status;
+    if (!status) {
+      log.warn("async_revive_not_found", { id });
+      return { ok: false, error: `Job "${id}" not found.` };
+    }
+    if (status === "running" || status === "queued") {
+      log.debug("async_revive_refused_active", { id, status });
+      return { ok: false, error: "Job is still running — kill it first." };
+    }
+
+    const agentName = stored?.agent ?? syncMatch?.agent ?? view?.agent ?? "";
+    const cwd = stored?.cwd ?? stored?.projectCwd ?? syncMatch?.cwd ?? view?.cwd ?? getLiveAsyncCtx()?.cwd ?? process.cwd();
+    const originalTask = stored?.fullTask ?? view?.fullTask ?? stored?.task ?? syncMatch?.task ?? view?.task ?? "";
+    const workerDir = stored?.workerDir ?? syncMatch?.workerDir ?? view?.workerDir;
+    const hadSession = stored?.persistSession === true || view?.persistSession === true;
+
+    const discover = runtime.discoverAgents ?? (await import("./agents.js")).discoverAgents;
+    const discovery = discover(cwd, "both");
+    const agents = discovery.agents;
+
+    let reviveTask: string;
+    if (hadSession) {
+      reviveTask = `Continue your previous task (revived from job ${id}):\n\n${originalTask}`;
+    } else {
+      const logContext = workerDir ? readPartialWorkerOutput({ id, workerDir }, 6000) : "";
+      const fallbackOutput = stored?.output ?? syncMatch?.outputTail ?? view?.output ?? "";
+      const recovered = (logContext || fallbackOutput).trim().slice(-6000);
+      reviveTask = recovered
+        ? `Continue the following previously stopped/finished task (revived from job ${id}).\n\nOriginal task:\n${originalTask}\n\nPrior output / context before stop:\n${recovered}`
+        : originalTask;
+    }
+
+    const spawned = spawnAsyncAgent(agentName, reviveTask, cwd, agents, {
+      name: stored?.name ?? view?.name ?? agentName,
+      taskId: stored?.taskId ?? view?.taskId,
+      projectCwd: stored?.projectCwd ?? getLiveAsyncCtx()?.cwd ?? cwd,
+      sessionId: stored?.sessionId ?? getLiveAsyncCtx()?.sessionManager?.getSessionId?.(),
+      persistSession: true,
+      explicit: (stored?.model ?? view?.model) ? { model: stored?.model ?? view?.model } : undefined,
+    });
+
+    if (spawned.error) {
+      log.warn("async_revive_spawn_failed", { from: id, agent: agentName, error: spawned.error });
+      return { ok: false, error: spawned.error };
+    }
+
+    const label = stored?.name ?? view?.name ?? agentName;
+    const shortId = spawned.id.length > 8 ? spawned.id.slice(-8) : spawned.id;
+    log.info("async_job_revived", { from: id, to: spawned.id, agent: agentName, cwd, resumedSession: hadSession });
+    return {
+      ok: true,
+      id: spawned.id,
+      message: `Revived ${label} (${shortId})${hadSession ? " · session resumed" : " · context recovered"}.`,
+    };
   }
 
   function formatJobElapsed(job: Pick<AsyncStatusJobView, "status" | "startedAt" | "durationMs">): string {
@@ -1728,13 +1838,13 @@ export function registerAsyncAgents(
     return formatDuration(ms);
   }
 
-  // /async — fullscreen overlay list → live output detail
+  // /async — fullscreen overlay list → live output detail + revive + activity log
   async function handleAsyncStatus(ctx: any): Promise<void> {
-    if (!ctx.hasUI) return;
-    log.debug("opening_async_overlay", { jobs: asyncState.jobs.size, syncRuns: syncAgentRunCount() });
+    log.debug("opening_async_overlay", { hasUI: Boolean(ctx?.hasUI), jobs: asyncState.jobs.size, syncRuns: syncAgentRunCount() });
     await openAsyncStatusOverlay(ctx, {
       listJobs: listAllJobs,
       killJob: (id) => killSyncAgent(id) ?? killAsyncAgent(id, "user"),
+      reviveJob: (job) => reviveAsyncJob(job),
       formatDuration,
       readLiveStatus: (workerDir) => readAsyncStatus(workerDir),
     });
@@ -1742,7 +1852,7 @@ export function registerAsyncAgents(
 
   // /async command
   pi.registerCommand("async", {
-    description: "Fullscreen overlay: list async agents, view live output, kill with x",
+    description: "Fullscreen overlay: list async agents, live output, revive (r), activity log (1/2), kill (x/X)",
     handler: async (_args, ctx) => handleAsyncStatus(ctx),
   });
 
@@ -1989,7 +2099,7 @@ export function registerAsyncAgents(
       void deliverJobResult(job, { fireHook: false });
       // Delay cleanup — only for delivered jobs
       if (job.delivered) {
-        setTimeout(() => { asyncState.jobs.delete(job.id); updateAsyncWidget(); }, 5000);
+        setTimeout(() => { archiveFinishedJob(job); asyncState.jobs.delete(job.id); updateAsyncWidget(); }, 5000);
       }
     }
 
@@ -2080,6 +2190,7 @@ export function registerAsyncAgents(
   return {
     spawnAsyncAgent,
     killAsyncAgent,
+    reviveAsyncJob,
     getAsyncJobs: () => Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued"),
   };
 }

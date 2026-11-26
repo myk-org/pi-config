@@ -39,7 +39,8 @@ pi-config/
 │   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery, onComplete callbacks, async_status tool)
 │   │   ├── overlay-dashboard.ts     # Shared fullscreen list→detail overlay (async/cron/tasks/coms/worktree/adopt-skill)
 │   │   ├── overlay-dashboard-utils.ts # Pure selection reconcile helpers
-│   │   ├── async-status-ui.ts       # /async overlay (uses overlay-dashboard)
+│   │   ├── overlay-activity-log.ts  # Shared `[1] Roster / [2] Activity` live activity log component and async event aggregator (#1417)
+│   │   ├── async-status-ui.ts       # /async overlay (`r` revive, `1`/`2` Roster & Activity Log, live output detail, plain-text fallback)
 │   │   ├── async-status-parse.ts    # Pure output.log JSONL → display line parser
 │   │   ├── cron-status-ui.ts        # /cron overlay (uses overlay-dashboard)
 │   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
@@ -100,8 +101,8 @@ pi-config/
 │   │   ├── coms-registry.ts         # Unified peer registry, supervision inventory, socket probes (`probeStaleSocket`, `probeAlive`), and stale/orphan pruning
 │   │   ├── coms-p2p.ts              # Instantiable P2P peer runtime (`createComsPeerRuntime`, sockets, queue drain, tools incl. `coms_local_queue`, inbound queue overlay)
 │   │   ├── coms-shared.ts           # Shared utilities: flag parser, state persistence, active-tool sync, response formatting, inbound bundling
-│   │   ├── coms-peers.ts            # Peer inventory filtering, table/detail formatting, spawn/kill planning
-│   │   ├── coms-peers-ui.ts         # `/coms` interactive overlay (`f` scope, `q` queue, multi-select composer/kill, drilldown)
+│   │   ├── coms-peers.ts            # Peer inventory filtering, stopped supervised peer listing, activity log aggregation, table/detail formatting, spawn/kill planning
+│   │   ├── coms-peers-ui.ts         # `/coms` interactive overlay (`r` revive, `1`/`2` Roster & Activity Log, `f` scope, `q` queue, multi-select composer/kill, drilldown)
 │   │   ├── coms-describe.ts         # Socket-based peer workload describe RPC client and validator
 │   │   ├── coms-drilldown.ts        # Peer workload drilldown row builders
 │   │   ├── coms-workload.ts         # Active-only peer workload counts and formatting
