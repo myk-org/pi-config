@@ -174,15 +174,23 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
   const activeCronCount = Math.max(0, cronTasks.count - pausedCronCount);
 
   return (
-    <div className={cn("flex items-center gap-3 max-md:gap-1.5 h-10 px-4 max-md:px-2 border-t border-border text-sm text-muted-foreground relative whitespace-nowrap shrink-0", inactive && "opacity-50 pointer-events-none")}>
-      {/* Stats zone — shrinks with ellipsis on narrow screens. Fixed bar
-          height means changing token counts / appearing cache+reasoning segments can
-          never resize the chat frame above. */}
-      <div className="flex items-center gap-3 min-w-0 flex-1">
+    <div
+      data-testid="pidash-infobar"
+      className={cn(
+        "flex flex-col border-t border-border text-xs text-muted-foreground relative whitespace-nowrap shrink-0",
+        inactive && "opacity-50 pointer-events-none",
+      )}
+    >
+      {/* Row 1 — Primary controls & pinned actions. Keeping controls in their
+          own fixed-height row prevents dropdowns from being clipped by scroll
+          containers and keeps actions reachable at all desktop and mobile widths. */}
+      <div className="flex items-center gap-2 max-md:gap-1.5 h-7 max-md:h-10 px-3 max-md:px-2 min-w-0">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
       {/* Model */}
-      <div className="relative min-w-[9rem] max-w-[22rem] shrink max-md:min-w-0 max-md:max-w-[90px]">
+      <div className="relative min-w-[4.5rem] max-w-[16rem] shrink max-md:min-w-0 max-md:max-w-[90px]">
         <button
           className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors min-w-0 w-full"
+          title={displayModel}
           aria-haspopup="dialog"
           aria-expanded={openMenu === "models"}
           aria-controls="model-menu"
@@ -232,14 +240,12 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         )}
       </div>
 
-      <span className="text-border max-md:hidden">|</span>
-
       {/* Thinking — compact on phones (icon + short level text) instead of
           hidden: it is the only browser control for set-thinking (Qodo R3). */}
-      {supportsReasoning(session) && <div className="relative shrink-0">
+      {supportsReasoning(session) && <div className="relative shrink-0 border-l border-border pl-2 max-md:border-l-0 max-md:pl-0">
         <button
           ref={thinkingButtonRef}
-          className="flex items-center gap-1 hover:text-primary transition-colors min-w-[4.75rem]"
+          className="flex items-center gap-1 hover:text-primary transition-colors min-w-[3.75rem]"
           aria-haspopup="menu"
           aria-expanded={openMenu === "thinking"}
           aria-controls="thinking-level-menu"
@@ -296,117 +302,14 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         )}
       </div>}
 
-      {supportsReasoning(session) && <span className="text-border max-md:hidden">|</span>}
-
-      {/* Scrollable stats zone: on narrow viewports these are hidden (the
-          controls — model, thinking, sessions, action icons — must fit a
-          phone-width column; Qodo R3). Model/thinking dropdowns stay OUTSIDE
-          it so their absolute menus are never clipped by a scroll container. */}
-      {/* Context gauge — OUTSIDE the scrolling strip below: compaction
-          proximity must stay visible even when the token counters are
-          scrolled out of view in a narrow bar. */}
+      {/* Context gauge — stays in Row 1 so compaction proximity is always visible. */}
       {/* Same shape as the TUI footer: one decimal plus the window, e.g.
           "ctx 32.0%/1.0M". The percentage is the SESSION's context — the prompt
           the model actually received last turn (fresh + cache), not the running
           turn's fresh-token count. */}
-      <span className={cn("tabular-nums inline-block min-w-[9.5em] text-right shrink-0", pctColor)} title={`Context window usage: ${promptTokens.toLocaleString()} / ${ctxWin.toLocaleString()} tokens (${input.toLocaleString()} fresh + ${cache.toLocaleString()} cache-read${cacheWrite ? ` + ${cacheWrite.toLocaleString()} cache-write` : ""})`}>ctx {pct.toFixed(1)}%/{fk(ctxWin)}</span>
-
-      <span className="text-border shrink-0">|</span>
-
-      <div className="flex items-center gap-3 min-w-0 shrink overflow-x-auto scrollbar-none max-md:hidden">
-      {/* Tokens — fixed min-widths + titles: values change digit counts and
-          conditional segments (cache / reasoning) appear per message, but a fixed-height
-          single-row bar means width churn can no longer resize the frame. */}
-      <span className="tabular-nums shrink-0">
-        <span className="inline-block min-w-[3.5em] text-right" title={`Input tokens: ${input.toLocaleString()}`}>↑{fk(input)}</span>
-        {" "}
-        <span className="inline-block min-w-[3.5em] text-right" title={`Output tokens: ${output.toLocaleString()}`}>↓{fk(output)}</span>
-        {/* Always mounted, hidden when empty: appearing/disappearing segments
-            changed the row's width mid-turn and made the bar dance. */}
-        <span className={cn("inline-block min-w-[3.5em] text-right", cache > 0 ? "" : "invisible")} title={`Cache-read tokens: ${cache.toLocaleString()}`}> {fk(cache)}</span>
-        <span className={cn("inline-block min-w-[3.5em] text-right", (tokens?.reasoning ?? 0) > 0 ? "" : "invisible")} title={`Reasoning tokens: ${(tokens?.reasoning ?? 0).toLocaleString()}`}> {fk(tokens?.reasoning ?? 0)}</span>
-      </span>
-
-
-      <span className="text-border shrink-0">|</span>
-      <span
-        className={cn("tabular-nums text-green-500 shrink-0 w-[6.5rem] text-right", session.trailTokenSavings === undefined && "invisible")}
-        title={session.trailTokenSavings === undefined ? "" : `${formatExactTotal(session.trailTokenSavings)} Trail tokens saved (retrieval instead of full-file reads)`}
-      >
-        ◤ {formatCompactTotal(session.trailTokenSavings ?? 0)} saved
-      </span>
-
-      {/* Git */}
-      {session.branch && (
-        <>
-          <span className="text-border shrink-0">|</span>
-          <span
-            className="flex items-center gap-1 min-w-0 shrink"
-            title={`Git branch: ${session.branch}${session.gitDirty ? " — dirty (uncommitted changes)" : " — clean"}${session.gitChanges ? ` — ${session.gitChanges} changed files` : ""}`}
-          >
-            <GitBranch className="h-3.5 w-3.5 shrink-0" />
-            <span className={cn("shrink-0", session.gitDirty ? "text-red-500" : "text-green-500")}>
-              {session.gitDirty ? "●" : "✓"}
-            </span>
-            <span className="truncate">{session.branch}{session.gitChanges ? ` ~${session.gitChanges}` : ""}</span>
-          </span>
-        </>
-      )}
-
-      {/* Worktrees indicator (shown whenever linked worktrees exist or session is in a linked worktree) */}
-      {((session.worktreeCount ?? 0) > 0 || session.inLinkedWorktree) && (
-        <>
-          {!session.branch && <span className="text-border shrink-0">|</span>}
-          <button
-            type="button"
-            className={cn(
-              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] shrink-0 transition-colors",
-              activePanel === "worktrees"
-                ? "border-primary text-primary bg-accent/50"
-                : (session.worktreeDirtyCount ?? 0) > 0
-                  ? "border-amber-500/30 text-amber-500 hover:bg-amber-500/10"
-                  : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/30",
-            )}
-            onClick={() => onOpenPanel("worktrees")}
-            title={`Worktrees: ${session.worktreeCount ?? 0} linked${(session.worktreeDirtyCount ?? 0) > 0 ? `, ${session.worktreeDirtyCount} dirty` : ""}${session.inLinkedWorktree ? " (in linked worktree)" : ""} — click to open Worktrees panel`}
-          >
-            <GitFork className="h-3 w-3 shrink-0" />
-            <span>
-              {session.worktreeCount ?? 0} wt
-              {(session.worktreeDirtyCount ?? 0) > 0 ? ` · ${session.worktreeDirtyCount} dirty` : ""}
-            </span>
-          </button>
-        </>
-      )}
-
-      {/* Diff viewer */}
-      <span className="text-border shrink-0">|</span>
-      {session.diffPort
-        ? (
-          <a href={`http://localhost:${session.diffPort}`} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-primary hover:underline shrink-0" title="Open the pidiff diff viewer for this session's working tree">
-             diff <ExternalLink className="h-3 w-3" />
-          </a>
-        )
-        : <span className="invisible flex items-center gap-0.5 shrink-0" aria-hidden="true"> diff <ExternalLink className="h-3 w-3" /></span>}
-
-      {/* Container */}
-      <span className={cn("text-[10px] px-1.5 py-0.5 border border-border rounded shrink-0", session.container ? "" : "invisible")} title="Session runs inside a container" aria-hidden={!session.container}>🧊</span>
-
-      {/* Coms identity */}
-      <span className="text-border shrink-0">|</span>
-      {(
-          <span
-            className={cn("flex items-center gap-1 min-w-0 shrink cursor-default w-[8.5rem]", !session.comsName && "invisible")}
-            title={[session.comsProject ? `Project: ${session.comsProject}` : '', session.comsPurpose ? `Purpose: ${session.comsPurpose}` : ''].filter(Boolean).join(' · ') || 'Coms peer identity'}
-          >
-            <span className="shrink-0">📡 Coms:</span> <span className="truncate">{session.comsName || "—"}</span>
-          </span>
-      )}
-
-
-      {/* Cron tasks */}
+      <span className={cn("inline-flex items-center tabular-nums shrink-0 border-l border-border pl-2", pctColor)} title={`Context window usage: ${promptTokens.toLocaleString()} / ${ctxWin.toLocaleString()} tokens (${input.toLocaleString()} fresh + ${cache.toLocaleString()} cache-read${cacheWrite ? ` + ${cacheWrite.toLocaleString()} cache-write` : ""})`}>ctx {pct.toFixed(1)}%/{fk(ctxWin)}</span>
       </div>
-      </div>
+
       {/* Actions zone — pinned right, never shrinks: compact and the panel
           toggles can't be pushed off-screen by growing stats. */}
       <div className="flex items-center gap-2 ml-auto shrink-0">
@@ -566,7 +469,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
 
       {/* #968 D + parity panels — action icons. Compact is an icon here (not
           a text button at the far end) so it stays compact and always visible. */}
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex items-center gap-0.5 shrink-0">
         <button
           className={cn("p-1 rounded transition-colors", "text-muted-foreground hover:text-foreground hover:bg-accent/30")}
           onClick={onCompact}
@@ -639,6 +542,110 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
           )}
         </div>
       </>
+      </div>
+      </div>
+
+      {/* Row 2 — Desktop telemetry & workspace strip (tokens, Trail, git branch,
+          compact worktree count, diff, container, coms). Dedicated fixed-height row
+          eliminates horizontal clipping at 1280×800 / 1440×900 / 110% zoom while
+          preventing mid-turn height jumps. */}
+      <div
+        data-testid="pidash-infobar-stats"
+        className="flex items-center gap-2.5 h-7 px-3 border-t border-border/50 min-w-0 overflow-x-auto scrollbar-none max-md:hidden"
+      >
+        {/* Tokens — render optional cache/reasoning segments only when non-zero. */}
+        <span className="tabular-nums shrink-0 inline-flex items-center gap-1.5">
+          <span title={`Input tokens: ${input.toLocaleString()}`}>↑{fk(input)}</span>
+          <span title={`Output tokens: ${output.toLocaleString()}`}>↓{fk(output)}</span>
+          {cache > 0 && (
+            <span title={`Cache-read tokens: ${cache.toLocaleString()}`}>{fk(cache)}</span>
+          )}
+          {(tokens?.reasoning ?? 0) > 0 && (
+            <span title={`Reasoning tokens: ${(tokens?.reasoning ?? 0).toLocaleString()}`}>{fk(tokens?.reasoning ?? 0)}</span>
+          )}
+        </span>
+
+        {/* Trail savings — mount only when reported (no dead invisible spacer). */}
+        {session.trailTokenSavings !== undefined && (
+          <span
+            className="tabular-nums text-green-500 shrink-0 border-l border-border pl-2.5"
+            title={`${formatExactTotal(session.trailTokenSavings)} Trail tokens saved (retrieval instead of full-file reads)`}
+          >
+            ◤ {formatCompactTotal(session.trailTokenSavings)} saved
+          </span>
+        )}
+
+        {/* Git branch — min-w ensures short branch names never crush to 0px. */}
+        {session.branch && (
+          <span
+            className="flex items-center gap-1 min-w-[4.5rem] max-w-[14rem] shrink border-l border-border pl-2.5"
+            title={`Git branch: ${session.branch}${session.gitDirty ? " — dirty (uncommitted changes)" : " — clean"}${session.gitChanges ? ` — ${session.gitChanges} changed files` : ""}`}
+          >
+            <GitBranch className="h-3.5 w-3.5 shrink-0" />
+            <span className={cn("shrink-0", session.gitDirty ? "text-red-500" : "text-green-500")}>
+              {session.gitDirty ? "●" : "✓"}
+            </span>
+            <span className="truncate">{session.branch}{session.gitChanges ? ` ~${session.gitChanges}` : ""}</span>
+          </span>
+        )}
+
+        {/* Worktrees indicator — compact count only; click opens Worktrees panel for full details. */}
+        {((session.worktreeCount ?? 0) > 0 || session.inLinkedWorktree) && (
+          <button
+            type="button"
+            className={cn(
+              "inline-flex items-center gap-1 shrink-0 tabular-nums transition-colors cursor-pointer",
+              !session.branch && "border-l border-border pl-2.5",
+              activePanel === "worktrees"
+                ? "text-primary"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => onOpenPanel("worktrees")}
+            aria-label={`Worktrees: ${session.worktreeCount ?? 0} linked — click to open Worktrees panel`}
+            title={`Worktrees: ${session.worktreeCount ?? 0} linked — click to open Worktrees panel`}
+          >
+            <GitFork className="h-3.5 w-3.5 shrink-0" />
+            <span>{session.worktreeCount ?? 0}</span>
+          </button>
+        )}
+
+        {/* Diff viewer — mount only when diffPort is active. */}
+        {session.diffPort && (
+          <a
+            href={`http://localhost:${session.diffPort}`}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-0.5 text-primary hover:underline shrink-0 border-l border-border pl-2.5"
+            title="Open the pidiff diff viewer for this session's working tree"
+          >
+            diff <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+
+        {/* Container — mount only when running inside a container. */}
+        {session.container && (
+          <span
+            className="text-[10px] px-1 py-0.5 border border-border rounded shrink-0"
+            title="Session runs inside a container"
+          >
+            🧊
+          </span>
+        )}
+
+        {/* Coms identity — mount only when connected to Coms. */}
+        {session.comsName && (
+          <span
+            className="flex items-center gap-1 min-w-[5rem] max-w-[14rem] shrink cursor-default border-l border-border pl-2.5"
+            title={[
+              `Coms: ${session.comsName}`,
+              session.comsProject ? `Project: ${session.comsProject}` : "",
+              session.comsPurpose ? `Purpose: ${session.comsPurpose}` : "",
+            ].filter(Boolean).join(" · ")}
+          >
+            <span className="shrink-0">📡 Coms:</span>
+            <span className="truncate">{session.comsName}</span>
+          </span>
+        )}
       </div>
     </div>
   );

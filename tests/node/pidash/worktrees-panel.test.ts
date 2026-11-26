@@ -419,10 +419,13 @@ describe("InfoBar worktrees badge (#1427)", () => {
     return container;
   }
 
-  it("hides badge when there are no linked worktrees and opens worktrees panel when badge or icon is clicked", async () => {
+  it("hides indicator when no linked worktrees exist, renders worktree count only (no dirty/status text), and opens worktrees panel on click", async () => {
     const opened: string[] = [];
     const c0 = await renderBar(makeSession({ worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false }), opened);
-    assert.equal(elements(c0, "button").some((b) => b.textContent.includes(" wt")), false);
+    assert.equal(
+      elements(c0, "button").some((b) => (b.getAttribute("title") || "").startsWith("Worktrees:")),
+      false,
+    );
 
     // Panel icon button still opens worktrees panel
     const panelIcon = elements(c0, "button").find((b) => b.getAttribute("title") === "Worktrees panel");
@@ -432,17 +435,26 @@ describe("InfoBar worktrees badge (#1427)", () => {
     });
     assert.deepEqual(opened, ["worktrees"]);
 
-    // Linked + dirty badge shows counts and opens worktrees panel
+    // Linked + dirty session shows ONLY the worktree count (no "dirty" or "wt" text) and opens worktrees panel
     const c1 = await renderBar(makeSession({ worktreeCount: 2, worktreeDirtyCount: 1, inLinkedWorktree: true }), opened);
-    const badge = elements(c1, "button").find((b) => b.textContent.includes("2 wt") && b.textContent.includes("1 dirty"));
-    assert.ok(badge, "InfoBar should display linked and dirty worktree counts");
+    const badge = elements(c1, "button").find((b) =>
+      b.getAttribute("title") === "Worktrees: 2 linked — click to open Worktrees panel",
+    );
+    assert.ok(badge, "InfoBar should display compact worktree count button");
+    assert.equal(badge!.textContent.trim(), "2", "worktree indicator must show only the number of worktrees");
+    assert.doesNotMatch(c1.textContent, /dirty/i, "InfoBar must not display dirty/status text");
+    assert.doesNotMatch(String(badge!.getAttribute("class") || ""), /amber/, "worktree indicator must not render dirty amber status styling");
     await act(async () => {
       badge!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     assert.deepEqual(opened, ["worktrees", "worktrees"]);
 
-    // Detached HEAD (empty branch) still renders worktree badge when in linked worktree
+    // Detached HEAD (empty branch) still renders compact worktree count when in linked worktree
     const c2 = await renderBar(makeSession({ branch: "", worktreeCount: 1, worktreeDirtyCount: 0, inLinkedWorktree: true }), opened);
-    assert.ok(elements(c2, "button").some((b) => b.textContent.includes("1 wt")));
+    const detachedBadge = elements(c2, "button").find((b) =>
+      b.getAttribute("title") === "Worktrees: 1 linked — click to open Worktrees panel",
+    );
+    assert.ok(detachedBadge, "detached HEAD should still render compact worktree count");
+    assert.equal(detachedBadge!.textContent.trim(), "1");
   });
 });

@@ -226,20 +226,38 @@ describe("InfoBar thinking selector", () => {
     assert.equal(gauge!.textContent.trim(), "ctx 52.4%/1.0M");
   });
 
-  it("reserves the Trail slot when savings are unknown", async () => {
-    // The bar must not reflow when this value appears mid-turn: the slot is
-    // always mounted and hidden instead of being conditionally created.
+  it("omits optional Trail, diff, container, and Coms slots when absent so no invisible placeholders steal width", async () => {
     const view = await renderInfoBar(session());
-    assert.match(view.container.textContent, /◤\s*0 saved/);
-    const slot = elements(view.container, "span").find(
-      (item) => /saved/.test(item.textContent || "") && /invisible/.test(String(item.getAttribute("class") || "")),
+    assert.doesNotMatch(view.container.textContent, /saved/);
+    assert.doesNotMatch(view.container.textContent, /\bdiff\b/);
+    assert.doesNotMatch(view.container.textContent, /🧊/);
+    assert.doesNotMatch(view.container.textContent, /Coms:/);
+    const invisibleSpans = elements(view.container, "span").filter((item) =>
+      /\binvisible\b/.test(String(item.getAttribute("class") || "")),
     );
-    assert.ok(slot, "trail slot is reserved (invisible) when unknown");
+    assert.equal(invisibleSpans.length, 0, "no invisible placeholder spans should consume horizontal width");
   });
 
-  it("shows Trail savings when reported", async () => {
-    const view = await renderInfoBar(session({ trailTokenSavings: 1250 }));
+  it("shows Trail savings, diff, container, Coms, and non-crushing branch when reported", async () => {
+    const view = await renderInfoBar(session({
+      branch: "stage",
+      gitDirty: true,
+      gitChanges: 1,
+      trailTokenSavings: 1250,
+      diffPort: 4312,
+      container: true,
+      comsName: "feature-manager",
+      comsProject: "pi-config",
+    }));
     assert.match(view.container.textContent, /1\.3k saved/);
+    assert.match(view.container.textContent, /diff/);
+    assert.match(view.container.textContent, /🧊/);
+    assert.match(view.container.textContent, /Coms:\s*feature-manager/);
+    const branchSpan = elements(view.container, "span").find((item) =>
+      (item.getAttribute("title") || "").startsWith("Git branch: stage"),
+    );
+    assert.ok(branchSpan, "git branch indicator rendered");
+    assert.match(String(branchSpan!.getAttribute("class") || ""), /min-w-\[4\.5rem\]/, "git branch keeps a min-width so it cannot crush to 0px");
   });
 
   it("preserves its component instance across capability updates", async () => {
