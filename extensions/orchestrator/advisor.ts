@@ -359,8 +359,13 @@ function parseAdvisorVerdictObject(parsed: unknown): AdvisorVerdict | null {
   return null;
 }
 
-/** Scan all balanced `{ ... }` JSON objects in mixed text until a valid advisor verdict is found. */
+/**
+ * Scan all balanced `{ ... }` JSON objects in mixed text (including objects nested
+ * inside non-verdict wrappers) and return the final explicit advisor verdict so
+ * trailing conclusions take precedence over earlier quoted examples.
+ */
 function extractEmbeddedAdvisorVerdict(text: string): AdvisorVerdict | null {
+  let lastVerdict: AdvisorVerdict | null = null;
   let start = text.indexOf("{");
   while (start !== -1) {
     let depth = 0;
@@ -390,8 +395,12 @@ function extractEmbeddedAdvisorVerdict(text: string): AdvisorVerdict | null {
           try {
             const parsed = JSON.parse(candidate) as unknown;
             const verdict = parseAdvisorVerdictObject(parsed);
-            if (verdict) return verdict;
-            nextSearchFrom = i + 1;
+            if (verdict) {
+              lastVerdict = verdict;
+              nextSearchFrom = i + 1;
+            }
+            // Non-verdict JSON wrappers (e.g. {"result":{...}}) keep nextSearchFrom = start + 1
+            // so nested verdict objects inside them are still scanned.
           } catch {
             // Malformed slice — advance past the opening brace to try inner objects.
           }
@@ -401,7 +410,7 @@ function extractEmbeddedAdvisorVerdict(text: string): AdvisorVerdict | null {
     }
     start = text.indexOf("{", nextSearchFrom);
   }
-  return null;
+  return lastVerdict;
 }
 
 /**

@@ -462,6 +462,19 @@ describe("advisor / watchdog (#1419)", () => {
         ),
         { status: "advise", category: "bug", note: "Off-by-one loop bound." },
       );
+      assert.deepEqual(
+        parseAdvisorResponse('{"result":{"status":"advise","category":"bug","note":"Off-by-one."}}'),
+        { status: "advise", category: "bug", note: "Off-by-one." },
+      );
+    });
+
+    it("honors the final explicit verdict when an advice example precedes a clean conclusion", () => {
+      assert.deepEqual(
+        parseAdvisorResponse(
+          'Example format: {"status":"advise","category":"bug","note":"Example only."}\nFinal verdict: {"status":"clean"}',
+        ),
+        { status: "clean" },
+      );
     });
   });
 
