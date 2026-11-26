@@ -30,10 +30,13 @@ Full-screen overlay listing all adoptable skills (showing `maintained` vs `unmar
 
 ### /async
 
-Full-screen overlay listing running and queued async agents, with live output per agent.
+Full-screen overlay listing running, queued, and recently finished async/sync agents with live output, agent revive, and a unified cross-agent live activity log.
 
 - **Arguments:** none
-- **Keys in the overlay:** `↑↓`/`jk` navigate, `Enter` view output (preserves multi-selection on `Esc` back), `Space` multi-select, `x` kill (focused row, or the whole selection — reports inline if no selected jobs are active), `X` kill all running/queued, `Esc` clears active selection first, then closes
+- **Tabs:** `1` Roster, `2` Activity (chronological lifecycle, tool, error, and response events across all jobs)
+- **Roster keys:** `↑↓`/`jk` navigate, `Enter` view live output (preserves multi-selection on `Esc` back), `Space` multi-select, `r` revive a killed/completed/failed job using its persisted session or recovered output context (single or multi-select), `x` kill (focused row or selection — reports inline if no selected jobs are active), `X` kill all running/queued, `Esc` clears active selection first, then closes
+- **Activity keys:** `↑↓`/`jk`/`PgUp`/`PgDn`/`Home`/`End` scroll (manual scroll pauses follow), `f` cycle filter (`All | Errors | Tools | Messages`), `/` inline search, `Space` toggle auto-follow, `Enter` jump to the agent's live output view, `1` return to Roster, `Esc` close
+- **No terminal / browser:** prints the plain-text job summary and recent activity
 
 ```text
 /async
@@ -41,10 +44,12 @@ Full-screen overlay listing running and queued async agents, with live output pe
 
 ### /coms
 
-Full-screen P2P peers overlay with scope switching and local inbound queue management. Activate coms programmatically via `coms_start` or at launch via `pi --coms`.
+Full-screen P2P peers overlay with scope switching, stopped-peer revive, local inbound queue management, and a unified live COMS activity log. Activate coms programmatically via `coms_start` or at launch via `pi --coms`.
 
 - **Arguments:** none
-- **Keys in the overlay:** `↑↓`/`jk` navigate, `Space` multi-select, `f` toggle scope (`this project` / `all projects`), `q` open local inbound queue (`Space` multi-select `x` kill), `m` message focused or selected peers as the user (`origin: "user"`), `x` kill focused or selected supervised peers, `X` kill all supervised peers in scope, `Enter` drilldown into peer workload, `Esc` close
+- **Tabs:** `1` Roster (live + recently stopped supervised peers), `2` Activity (chronological peer lifecycle, COMS message traffic, and errors)
+- **Roster keys:** `↑↓`/`jk` navigate, `Space` multi-select, `r` revive a recently stopped supervised peer via the supervisor (resuming its saved session when available), `f` toggle scope (`this project` / `all projects`), `q` open local inbound queue (`Space` multi-select `x` kill), `m` message focused or selected live peers as the user (`origin: "user"`), `x` kill focused or selected supervised peers, `X` kill all supervised peers in scope, `Enter` drilldown into peer workload or stopped-peer metadata, `Esc` close
+- **Activity keys:** `↑↓`/`jk`/`PgUp`/`PgDn`/`Home`/`End` scroll (manual scroll pauses follow), `f` cycle filter (`All | Errors | Tools | Messages`), `/` inline search, `Space` toggle auto-follow, `Enter` jump to the peer's drilldown/detail view, `1` return to Roster, `Esc` close
 - **No terminal / browser:** prints the plain-text peer table for this project
 
 ```text

@@ -27,13 +27,15 @@ import {
     registerWidgetShortcut,
 } from "../shared/widget-visibility.js";
 import { Type } from "typebox";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
     activationVerified,
+    collectComsActivityEvents,
     filterRegistry,
     formatPeerTable,
+    listStoppedSupervisedPeers,
     pickSupervisionRecord,
     buildPeerSpawn,
     planActiveClaim,
@@ -44,6 +46,7 @@ import {
     type RegistryRow,
 } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
+import { createTailHistoryReader } from "./coms-history.js";
 import { requestDescribe } from "./coms-describe.js";
 
 const log = createLogger("coms");
@@ -86,7 +89,19 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     let activation: Promise<{ ok: boolean; message: string }> | null = null;
     let liveCtx: any = null;
     let cachedRegistry: ComsRegistry | null = null;
+    let cachedHistoryReader: { path: string; reader: ReturnType<typeof createTailHistoryReader> } | null = null;
     let pidashUnsubscribe: (() => void) | null = null;
+    /** In-flight peer revives keyed by `project::name`, tagged per launch token so an older exit never clears a newer claim. */
+    const revivingPeers = new Map<string, { claimedAt: number; token: symbol }>();
+    const REVIVE_CLAIM_TTL_MS = 45_000;
+
+    const getTailHistoryReader = () => {
+        const histPath = getRegistry().historyPath();
+        if (!cachedHistoryReader || cachedHistoryReader.path !== histPath) {
+            cachedHistoryReader = { path: histPath, reader: createTailHistoryReader(histPath) };
+        }
+        return cachedHistoryReader.reader;
+    };
 
     const getRegistry = (cwdOverride?: string): ComsRegistry => {
         const dir = options.comsDir || resolveComsDir(cwdOverride ?? liveCtx?.cwd ?? process.cwd());
@@ -244,6 +259,8 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         }
         // Keep persisted session state intact so `/reload` sees `active: true` and reactivates.
         active = false;
+        revivingPeers.clear();
+        cachedHistoryReader = null;
     });
 
     // Activation flag: `pi --coms --cname x --project y` starts the peer at session start, so a
@@ -383,6 +400,77 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 filterRegistry(attachCreatedBy(getRegistry().readLiveRows()), {
                     project: scope === "all" ? undefined : ownProject(),
                 }),
+            listStoppedPeers: (scope) => {
+                const liveAll = getRegistry().readLiveRows();
+                const records = readSupervisionRecords();
+                return listStoppedSupervisedPeers(records, liveAll, {
+                    project: scope === "all" ? undefined : ownProject(),
+                });
+            },
+            revivePeer: (row) => {
+                const key = `${row.project}::${row.name}`;
+                const now = Date.now();
+                const liveAll = getRegistry().readLiveRows(now);
+                if (liveAll.some((live) => live.project === row.project && live.name === row.name)) {
+                    revivingPeers.delete(key);
+                    return { ok: false, reason: `Peer "${row.name}" is already running.` };
+                }
+                const claim = revivingPeers.get(key);
+                if (claim !== undefined && now - claim.claimedAt < REVIVE_CLAIM_TTL_MS) {
+                    log.debug("coms_peer_revive_already_claimed", { name: row.name, project: row.project });
+                    return { ok: false, reason: `Peer "${row.name}" is already reviving.` };
+                }
+                // Check whether a live supervisor record without exit already owns this project::name.
+                const existingLiveRec = readSupervisionRecords().find((rec) => {
+                    if (rec?.cname !== row.name || (rec?.project ?? "default") !== row.project) return false;
+                    if (rec.stoppedAt || rec.exitedAt || rec.failedAt) return false;
+                    if (!Number.isInteger(rec.pid) || (rec.pid ?? 0) <= 0) return false;
+                    try { process.kill(rec.pid, 0); return true; } catch { return false; }
+                });
+                if (existingLiveRec) {
+                    return { ok: false, reason: `Supervisor for "${row.name}" is already starting (pid ${existingLiveRec.pid}).` };
+                }
+                const launchToken = Symbol(`revive:${key}`);
+                revivingPeers.set(key, { claimedAt: now, token: launchToken });
+                const releaseOwnClaim = () => {
+                    if (revivingPeers.get(key)?.token === launchToken) {
+                        revivingPeers.delete(key);
+                    }
+                };
+                const res = spawnSupervisedPeer({
+                    cname: row.name,
+                    purpose: row.purpose,
+                    project: row.project,
+                    cwd: row.cwd || liveCtx?.cwd || process.cwd(),
+                    session: row.piSessionId ?? undefined,
+                    onSpawnFailure: releaseOwnClaim,
+                });
+                if (!res.ok) {
+                    releaseOwnClaim();
+                    return { ok: false, reason: res.message };
+                }
+                return {
+                    ok: true,
+                    pid: res.pid,
+                    message: `Reviving "${row.name}" (pid ${res.pid ?? "?"})${row.piSessionId ? " · session resumed" : ""} — registers in ~20-30s`,
+                };
+            },
+            listActivityEvents: (scope) => {
+                const allLive = attachCreatedBy(getRegistry().readLiveRows());
+                const allRecords = readSupervisionRecords();
+                const allStopped = listStoppedSupervisedPeers(allRecords, allLive);
+                const project = scope === "all" ? undefined : ownProject();
+                const livePeers = filterRegistry(allLive, { project });
+                const stoppedPeers = listStoppedSupervisedPeers(allRecords, allLive, { project });
+                const historyRecords = getTailHistoryReader().readRecent(200, project);
+                return collectComsActivityEvents({
+                    historyRecords,
+                    livePeers,
+                    stoppedPeers,
+                    allKnownPeers: [...allLive, ...allStopped],
+                    projectFilter: project ?? null,
+                });
+            },
             // #1083: the drilldown asks the PEER for its own state. No reply inside the
             // timeout is `unknown` — never a filesystem scan of another process.
             describePeer: (row) => requestDescribe(row.endpoint),
@@ -402,7 +490,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     };
 
     pi.registerCommand("coms", {
-        description: "Open the coms peers TUI overlay (f scope, q inbound queue, m message, x kill)",
+        description: "Open the coms peers TUI overlay (r revive, 1/2 activity log, f scope, q queue, m message, x/X kill)",
         handler: comsCmdHandler,
     });
 
@@ -488,6 +576,83 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         return `No ${sought} in ${scope}.${hint}`;
     };
 
+    /** Record a peer's piSessionId into its supervisor state JSON before shutdown so `r` revive can resume it. */
+    const persistPeerSessionForRevive = (row: RegistryRow): void => {
+        if (!row.piSessionId) return;
+        const envDir = (process.env.PI_COMS_DIR || "").trim();
+        const dirs = [getRegistry().peersDir(), ...(envDir ? [path.join(envDir, "peers")] : [])];
+        for (const dir of dirs) {
+            const statePath = path.join(dir, `${row.name}@${row.project}.json`);
+            if (!existsSync(statePath)) continue;
+            try {
+                const parsed = JSON.parse(readFileSync(statePath, "utf-8"));
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                    parsed.piSessionId = row.piSessionId;
+                    writeFileSync(statePath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
+                    log.debug("coms_peer_session_persisted_for_revive", { name: row.name, project: row.project });
+                    return;
+                }
+            } catch (err: unknown) {
+                log.debug("coms_peer_session_persist_failed", {
+                    statePath,
+                    error: err instanceof Error ? err.message : String(err),
+                });
+            }
+        }
+    };
+
+    const spawnSupervisedPeer = (params: {
+        cname?: string | null;
+        purpose?: string | null;
+        project?: string | null;
+        cwd?: string | null;
+        session?: string | null;
+        onSpawnFailure?: () => void;
+    }): { ok: true; pid: number | null; message: string } | { ok: false; pid: null; message: string } => {
+        const here = path.dirname(fileURLToPath(import.meta.url));
+        const supervisor = [
+            path.join(here, "..", "..", "scripts", "coms-peer-supervisor.mjs"),
+            path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-orchestrator-config", "scripts", "coms-peer-supervisor.mjs"),
+            path.join(liveCtx?.cwd || process.cwd(), "scripts", "coms-peer-supervisor.mjs"),
+        ].map(candidate => path.resolve(candidate)).find(candidate => existsSync(candidate)) ?? "";
+        const resolvedProject = params.project ?? ownProject();
+        const plan = buildPeerSpawn(supervisor, {
+            cname: params.cname,
+            purpose: params.purpose,
+            project: resolvedProject,
+            cwd: params.cwd ?? (liveCtx?.cwd || process.cwd()),
+            session: params.session,
+        }, log);
+        if (!plan.ok) {
+            log.warn("coms_peer_spawn_rejected", { message: plan.message });
+            return { ok: false, pid: null, message: plan.message };
+        }
+        try {
+            const env = { ...process.env };
+            const configuredComsDir = getRegistry().comsDir;
+            if (configuredComsDir) env.PI_COMS_DIR = configuredComsDir;
+            const child = spawn(plan.command[0]!, plan.command.slice(1), { detached: true, stdio: "ignore", env });
+            child.on("error", (error: unknown) => {
+                params.onSpawnFailure?.();
+                log.error("coms_peer_spawn_async_error", { cname: params.cname, error: error instanceof Error ? error.message : String(error) });
+            });
+            child.on("exit", () => {
+                params.onSpawnFailure?.();
+            });
+            child.unref();
+            log.info("coms_peer_spawned", { cname: params.cname, pid: child.pid ?? null, args: plan.command.slice(2).join(" ") });
+            return {
+                ok: true,
+                pid: child.pid ?? null,
+                message: `Started supervisor for peer "${params.cname}" (pid ${child.pid ?? "?"}). The peer registers in ~20-30s — check coms_peers; if it never appears, read ~/.pi/logs/coms-peers/${params.cname}@${resolvedProject}.log`,
+            };
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            log.error("coms_peer_spawn_failed", { cname: params.cname, error: message });
+            return { ok: false, pid: null, message: `coms peer spawn failed: ${message}` };
+        }
+    };
+
     const killPeers = (params: { name?: string; project?: string; all?: boolean }): { text: string; killed: number } => {
         const records = readSupervisionRecords();
         const rows = attachCreatedBy(getRegistry().readRows(), records);
@@ -512,6 +677,8 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         const killed: string[] = [];
         for (const entry of plan) {
             if (entry.signalPid === null) continue;
+            const liveRow = rows.find((r) => r.name === entry.name && r.project === entry.project);
+            if (liveRow) persistPeerSessionForRevive(liveRow);
             try {
                 process.kill(entry.signalPid, "SIGTERM");
                 killed.push(`${entry.name}·${entry.project}`);
@@ -550,41 +717,16 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 cwd: Type.Optional(Type.String({ description: "Working directory (default: this cwd)" })),
             }),
             async execute(_id: string, params: any) {
-                const here = path.dirname(fileURLToPath(import.meta.url));
-                const supervisor = [
-                    path.join(here, "..", "..", "scripts", "coms-peer-supervisor.mjs"),
-                    path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-orchestrator-config", "scripts", "coms-peer-supervisor.mjs"),
-                    path.join(liveCtx?.cwd || process.cwd(), "scripts", "coms-peer-supervisor.mjs"),
-                ].map(candidate => path.resolve(candidate)).find(candidate => existsSync(candidate)) ?? "";
-                const plan = buildPeerSpawn(supervisor, {
+                const res = spawnSupervisedPeer({
                     cname: params?.cname,
                     purpose: params?.purpose,
                     project: params?.project ?? ownProject(),
                     cwd: params?.cwd ?? (liveCtx?.cwd || process.cwd()),
-                }, log);
-                if (!plan.ok) {
-                    log.warn("coms_peer_spawn_rejected", { message: plan.message });
-                    return { content: [{ type: "text" as const, text: plan.message }], details: { ok: false, pid: null } };
-                }
-                try {
-                    const env = { ...process.env };
-                    const configuredComsDir = getRegistry().comsDir;
-                    if (configuredComsDir) env.PI_COMS_DIR = configuredComsDir;
-                    const child = spawn(plan.command[0]!, plan.command.slice(1), { detached: true, stdio: "ignore", env });
-                    child.on("error", (error: unknown) => {
-                        log.error("coms_peer_spawn_async_error", { cname: params?.cname, error: error instanceof Error ? error.message : String(error) });
-                    });
-                    child.unref();
-                    log.info("coms_peer_spawned", { cname: params?.cname, pid: child.pid ?? null, args: plan.command.slice(2).join(" ") });
-                    return {
-                        content: [{ type: "text" as const, text: `Started supervisor for peer "${params?.cname}" (pid ${child.pid ?? "?"}). The peer registers in ~20-30s — check coms_peers; if it never appears, read ~/.pi/logs/coms-peers/${params?.cname}@${params?.project ?? ownProject()}.log` }],
-                        details: { ok: true, pid: child.pid ?? null },
-                    };
-                } catch (error: unknown) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    log.error("coms_peer_spawn_failed", { cname: params?.cname, error: message });
-                    return { content: [{ type: "text" as const, text: `coms peer spawn failed: ${message}` }], details: { ok: false, pid: null } };
-                }
+                });
+                return {
+                    content: [{ type: "text" as const, text: res.message }],
+                    details: { ok: res.ok, pid: res.pid },
+                };
             },
         });
         pi.registerTool({
