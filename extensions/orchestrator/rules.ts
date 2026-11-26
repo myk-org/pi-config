@@ -338,22 +338,56 @@ function logMemoryUsage(cwd: string, injected: { text: string; category: string;
   } catch (e: any) { log.debug("telemetry usage write failed:", e?.message?.slice(0, 100)); }
 }
 
+interface TrackedSnapshotEntry {
+  category: string;
+  text: string;
+  id?: string;
+}
+
 interface PinnedMemorySnapshot {
   report: string;
-  emittedKeys: Set<string>;
+  /** Immutable set of canonical lines actually rendered in `report` (used for recall dedup). */
+  pinnedEmittedKeys: ReadonlySet<string>;
+  /** Live identities of entries originating from `report` (used for mid-session/cross-process notices). */
+  trackedEntries: Map<string, TrackedSnapshotEntry>;
   mutationSeq: number;
+  /** Topic directory mtime/size fingerprint so cross-process edits are detected cheaply. */
+  topicsStamp: string;
 }
 
 interface RulesSessionState {
   cwd: string;
   memorySnapshot: PinnedMemorySnapshot | null;
   hadAsyncJobs: boolean;
-  injectedLazyRules: Set<string>;
-  pendingLazyRules: LazyRule[];
+  /** Lazy rules that have actually been delivered to the model in this session. */
+  deliveredLazyRules: Set<string>;
+  /** Undelivered lazy rules matched on tool_call, keyed by fileName for fallback delivery. */
+  pendingLazyRules: Map<string, LazyRule>;
+  /** Undelivered lazy rules matched on specific tool_call IDs. */
   pendingLazyRulesByCallId: Map<string, LazyRule[]>;
 }
 
 const SESSION_STATES_MAX = 32;
+
+function topicsDirStamp(cwd: string): string {
+  const topicsDir = path.join(getProjectMemoryDir(cwd), "topics");
+  try {
+    const files = fs.readdirSync(topicsDir).filter((f) => f.endsWith(".md")).sort();
+    const parts: string[] = [];
+    for (const file of files) {
+      try {
+        const st = fs.statSync(path.join(topicsDir, file), { bigint: true });
+        parts.push(`${file}:${st.mtimeNs}:${st.size}`);
+      } catch {
+        // File vanished mid-scan — include marker so next check reconciles.
+        parts.push(`${file}:missing`);
+      }
+    }
+    return parts.join("|");
+  } catch {
+    return "";
+  }
+}
 
 function resolveInteractiveTui(ctx: any): boolean {
   return (
@@ -367,6 +401,20 @@ function formatLazyRulesMarkdown(rules: LazyRule[]): string {
   return rules
     .map((r) => `<!-- scoped-rule: ${r.fileName} -->\n${r.body}`)
     .join("\n\n");
+}
+
+function markLazyRulesDelivered(state: RulesSessionState, rules: LazyRule[]): void {
+  const names = new Set<string>();
+  for (const r of rules) {
+    state.deliveredLazyRules.add(r.fileName);
+    state.pendingLazyRules.delete(r.fileName);
+    names.add(r.fileName);
+  }
+  for (const [cid, list] of state.pendingLazyRulesByCallId.entries()) {
+    const remaining = list.filter((r) => !names.has(r.fileName));
+    if (remaining.length === 0) state.pendingLazyRulesByCallId.delete(cid);
+    else state.pendingLazyRulesByCallId.set(cid, remaining);
+  }
 }
 
 export function registerRules(
@@ -389,8 +437,8 @@ export function registerRules(
       cwd,
       memorySnapshot: null,
       hadAsyncJobs: false,
-      injectedLazyRules: new Set<string>(),
-      pendingLazyRules: [],
+      deliveredLazyRules: new Set<string>(),
+      pendingLazyRules: new Map<string, LazyRule>(),
       pendingLazyRulesByCallId: new Map<string, LazyRule[]>(),
     };
     setBounded(sessionStates, key, fresh, SESSION_STATES_MAX);
@@ -427,8 +475,12 @@ export function registerRules(
     }
   });
 
-  // Pre-compaction standing memory context (#1422): fail-soft, skips subagents,
-  // injects bounded standing project memories so compaction preserves rules/decisions.
+  // Pre-compaction standing memory context (#1422): fail-soft, skips subagents.
+  // Verified against Pi 1.6.1 `AgentSession.compact()` / `_runAutoCompaction()`:
+  // the same `preparation` object (and its `messagesToSummarize`/`turnPrefixMessages`
+  // array) emitted here is passed directly to `compact(preparation, ...)` ->
+  // `convertToLlm` -> `serializeConversation`, preserving Pi's built-in compaction
+  // model routing, retry settings, and custom instructions.
   pi.on("session_before_compact", async (event, ctx) => {
     if (isSubagent) return;
     try {
@@ -467,7 +519,7 @@ export function registerRules(
         display: false,
         timestamp: Date.now(),
       });
-      log.info("session_before_compact_memory_injected", {
+      log.info("session_before_compact_memory_prepended", {
         reason: (event as any)?.reason,
         chars: memContext.length,
         target: targetName,
@@ -500,8 +552,9 @@ export function registerRules(
   });
 
   // Scoped lazy rule matching on tool_call (#1415): queues matched rules for
-  // immediate delivery on tool_result (or next before_agent_start fallback),
-  // deduplicated once per session until compaction/reset.
+  // immediate delivery on tool_result (or next before_agent_start fallback).
+  // Rules are only marked delivered when a tool_result or before_agent_start
+  // actually emits them so a blocked call never delays delivery to a later tool.
   pi.on("tool_call", async (event, ctx) => {
     if (isSubagent) return;
     try {
@@ -514,9 +567,8 @@ export function registerRules(
       const paths = extractPathsFromToolInput(toolName, (event as any)?.input, ctx.cwd);
       const matched: LazyRule[] = [];
       for (const rule of bundle.lazyRules) {
-        if (state.injectedLazyRules.has(rule.fileName)) continue;
+        if (state.deliveredLazyRules.has(rule.fileName)) continue;
         if (matchLazyRule(rule, { toolName, paths })) {
-          state.injectedLazyRules.add(rule.fileName);
           matched.push(rule);
         }
       }
@@ -525,9 +577,13 @@ export function registerRules(
       const callId = typeof (event as any)?.toolCallId === "string" ? (event as any).toolCallId : "";
       if (callId) {
         const existing = state.pendingLazyRulesByCallId.get(callId) ?? [];
-        state.pendingLazyRulesByCallId.set(callId, [...existing, ...matched]);
+        const existingNames = new Set(existing.map((r) => r.fileName));
+        const merged = [...existing, ...matched.filter((r) => !existingNames.has(r.fileName))];
+        state.pendingLazyRulesByCallId.set(callId, merged);
       }
-      state.pendingLazyRules.push(...matched);
+      for (const rule of matched) {
+        state.pendingLazyRules.set(rule.fileName, rule);
+      }
       log.debug("lazy_rules_matched_tool_call", {
         toolName,
         callId: callId || undefined,
@@ -547,31 +603,37 @@ export function registerRules(
       const state = getSessionState(ctx);
       const callId = typeof (event as any)?.toolCallId === "string" ? (event as any).toolCallId : "";
       const delivered: LazyRule[] = [];
+      const deliveredNames = new Set<string>();
 
       if (callId && state.pendingLazyRulesByCallId.has(callId)) {
         const queued = state.pendingLazyRulesByCallId.get(callId) ?? [];
         state.pendingLazyRulesByCallId.delete(callId);
-        const queuedNames = new Set(queued.map((r) => r.fileName));
-        state.pendingLazyRules = state.pendingLazyRules.filter((r) => !queuedNames.has(r.fileName));
-        delivered.push(...queued);
+        for (const rule of queued) {
+          if (state.deliveredLazyRules.has(rule.fileName) || deliveredNames.has(rule.fileName)) continue;
+          deliveredNames.add(rule.fileName);
+          delivered.push(rule);
+        }
       }
 
-      // Also match directly if tool_result ran without a preceding tool_call
+      // Also match directly if tool_result ran without a preceding tool_call,
+      // or if an earlier call was blocked before delivering a pending rule.
       const sessionKey = resolveBridgeSessionKey(ctx);
       const bundle = loadRuleBundle(ctx.cwd, options?.packageRulesDir, sessionKey, resolveInteractiveTui(ctx));
       if (bundle.lazyRules.length > 0) {
         const toolName = typeof (event as any)?.toolName === "string" ? (event as any).toolName : "";
         const paths = extractPathsFromToolInput(toolName, (event as any)?.input, ctx.cwd);
         for (const rule of bundle.lazyRules) {
-          if (state.injectedLazyRules.has(rule.fileName)) continue;
+          if (state.deliveredLazyRules.has(rule.fileName) || deliveredNames.has(rule.fileName)) continue;
           if (matchLazyRule(rule, { toolName, paths })) {
-            state.injectedLazyRules.add(rule.fileName);
+            deliveredNames.add(rule.fileName);
             delivered.push(rule);
           }
         }
       }
 
       if (delivered.length === 0) return;
+
+      markLazyRulesDelivered(state, delivered);
 
       const blockText = `\n\n<scoped_rules>\n${formatLazyRulesMarkdown(delivered)}\n</scoped_rules>`;
       const existingContent = Array.isArray((event as any).content) ? (event as any).content : [];
@@ -623,6 +685,7 @@ export function registerRules(
     // Fail-soft: a store lock/migration error must never abort the agent turn.
     let preloaded: SituationReportOptions["preloaded"];
     let preloadAttempted = false;
+    let preloadFailed = false;
     const ensurePreloaded = async (): Promise<SituationReportOptions["preloaded"]> => {
       if (preloadAttempted) return preloaded;
       preloadAttempted = true;
@@ -637,6 +700,7 @@ export function registerRules(
           };
         }
       } catch (e: any) {
+        preloadFailed = true;
         log.debug("memory preload failed:", e?.message?.slice(0, 100));
       }
       return preloaded;
@@ -647,55 +711,133 @@ export function registerRules(
     // `queryClass: "general"` so mid-session memory writes and per-prompt query-class
     // shifts never invalidate the cached system-prompt prefix (#1414).
     const dynamicBlocks: string[] = [];
+    let memories = "";
+    let emittedMemoryKeys: ReadonlySet<string> = new Set<string>();
+
     if (state.memorySnapshot === null) {
       const budget = estimateMemoryBudget(event.systemPrompt?.length ?? 0, undefined, ctx.cwd);
       const data = budget > 0 ? await ensurePreloaded() : undefined;
       const emittedKeys = new Set<string>();
-      const report = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget, "general", data, emittedKeys);
-      state.memorySnapshot = {
-        report,
-        emittedKeys,
-        mutationSeq: getMemoryMutationSeq(ctx.cwd),
-      };
-      log.debug("memory_snapshot_pinned", {
-        sessionKey,
-        chars: report.length,
-        emitted: emittedKeys.size,
-      });
-    } else {
-      // Check if any entry already emitted in the pinned snapshot was edited,
-      // invalidated, or removed mid-session — deliver a one-time notice outside
-      // the cached system-prompt prefix (#1414).
-      const mutations = getMemoryMutationsSince(ctx.cwd, state.memorySnapshot.mutationSeq);
-      if (mutations.length > 0) {
-        state.memorySnapshot.mutationSeq = getMemoryMutationSeq(ctx.cwd);
-        const notices: string[] = [];
-        for (const m of mutations) {
-          const oldCanon = `- [${m.category}] ${m.oldText}`;
-          if (!state.memorySnapshot.emittedKeys.has(oldCanon)) continue;
-          state.memorySnapshot.emittedKeys.delete(oldCanon);
-          if (m.op === "edit" && m.newText) {
-            state.memorySnapshot.emittedKeys.add(`- [${m.category}] ${m.newText}`);
-            notices.push(
-              `- [updated] [${m.category}] "${m.oldText}" → "${m.newText}" (supersedes entry in pinned # Project Memory snapshot)`,
-            );
-          } else {
-            notices.push(
-              `- [removed] [${m.category}] "${m.oldText}" (no longer active; ignore entry in pinned # Project Memory snapshot)`,
-            );
+      const loaded = preloadFailed
+        ? { report: "", failed: true }
+        : loadMemoriesWithScoring(ctx.cwd, isSubagent, budget, "general", data, emittedKeys);
+      memories = loaded.report;
+      emittedMemoryKeys = emittedKeys;
+
+      // Pin ONLY when memory loading succeeded — a transient lock/read error on
+      // turn 1 must retry on the next turn instead of blanking memory all session.
+      if (!preloadFailed && !loaded.failed) {
+        const trackedEntries = new Map<string, TrackedSnapshotEntry>();
+        if (data && emittedKeys.size > 0) {
+          const { canonicalTopicLine } = await import("./memory-tree.js");
+          const { entryHash } = await import("./memory-scoring.js");
+          for (const te of data.topicEntries) {
+            const canon = canonicalTopicLine(te);
+            if (!emittedKeys.has(canon)) continue;
+            const scored = data.scores.entries[entryHash(canon)];
+            trackedEntries.set(canon, {
+              category: te.category,
+              text: te.text,
+              id: te.id ?? scored?.id,
+            });
           }
         }
-        if (notices.length > 0) {
-          log.info("pinned_memory_invalidation_notice", { count: notices.length });
-          dynamicBlocks.push(
-            `# Project Memory Updates\n\nThe following entries from the pinned session memory snapshot changed mid-session:\n\n${notices.join("\n")}`,
+        state.memorySnapshot = {
+          report: loaded.report,
+          pinnedEmittedKeys: emittedKeys,
+          trackedEntries,
+          mutationSeq: getMemoryMutationSeq(ctx.cwd),
+          topicsStamp: topicsDirStamp(ctx.cwd),
+        };
+        log.debug("memory_snapshot_pinned", {
+          sessionKey,
+          chars: loaded.report.length,
+          emitted: emittedKeys.size,
+        });
+      }
+    } else {
+      memories = state.memorySnapshot.report;
+      emittedMemoryKeys = state.memorySnapshot.pinnedEmittedKeys;
+
+      // Check if any entry from the pinned snapshot was edited, invalidated,
+      // expired, or removed — both via the in-process mutation journal AND
+      // via cross-process/gap reconciliation against topic files on disk.
+      const snapshot = state.memorySnapshot;
+      const { records: mutations, truncated } = getMemoryMutationsSince(ctx.cwd, snapshot.mutationSeq);
+      snapshot.mutationSeq = getMemoryMutationSeq(ctx.cwd);
+      const notices: string[] = [];
+
+      for (const m of mutations) {
+        const oldCanon = `- [${m.category}] ${m.oldText}`;
+        const tracked = snapshot.trackedEntries.get(oldCanon);
+        if (!tracked) continue;
+        snapshot.trackedEntries.delete(oldCanon);
+        if (m.op === "edit" && m.newText) {
+          snapshot.trackedEntries.set(`- [${m.category}] ${m.newText}`, {
+            category: m.category,
+            text: m.newText,
+            id: tracked.id,
+          });
+          notices.push(
+            `- [updated] [${m.category}] "${m.oldText}" → "${m.newText}" (supersedes entry in pinned # Project Memory snapshot)`,
+          );
+        } else {
+          notices.push(
+            `- [removed] [${m.category}] "${m.oldText}" (no longer active; ignore entry in pinned # Project Memory snapshot)`,
           );
         }
       }
-    }
 
-    const memories = state.memorySnapshot.report;
-    const emittedMemoryKeys = state.memorySnapshot.emittedKeys;
+      const currentTopicsStamp = topicsDirStamp(ctx.cwd);
+      if ((truncated || currentTopicsStamp !== snapshot.topicsStamp) && snapshot.trackedEntries.size > 0) {
+        const data = await ensurePreloaded();
+        if (!preloadFailed) {
+          snapshot.topicsStamp = currentTopicsStamp;
+          const activeCanonical = new Set<string>();
+          const activeById = new Map<string, { category: string; text: string }>();
+          if (data) {
+            const { canonicalTopicLine } = await import("./memory-tree.js");
+            const { entryHash, isEntryActiveForSession } = await import("./memory-scoring.js");
+            for (const te of data.topicEntries) {
+              const canon = canonicalTopicLine(te);
+              const scored = data.scores.entries[entryHash(canon)];
+              if (scored && !isEntryActiveForSession(scored, undefined)) continue;
+              activeCanonical.add(canon);
+              const id = te.id ?? scored?.id;
+              if (id) activeById.set(id, { category: te.category, text: te.text });
+            }
+          }
+          for (const [canon, tracked] of [...snapshot.trackedEntries.entries()]) {
+            if (activeCanonical.has(canon)) continue;
+            snapshot.trackedEntries.delete(canon);
+            const replacement = tracked.id ? activeById.get(tracked.id) : undefined;
+            if (replacement && replacement.category === tracked.category) {
+              snapshot.trackedEntries.set(`- [${replacement.category}] ${replacement.text}`, {
+                category: replacement.category,
+                text: replacement.text,
+                id: tracked.id,
+              });
+              notices.push(
+                `- [updated] [${tracked.category}] "${tracked.text}" → "${replacement.text}" (supersedes entry in pinned # Project Memory snapshot)`,
+              );
+            } else {
+              notices.push(
+                `- [removed] [${tracked.category}] "${tracked.text}" (no longer active; ignore entry in pinned # Project Memory snapshot)`,
+              );
+            }
+          }
+        }
+      } else if (currentTopicsStamp !== snapshot.topicsStamp) {
+        snapshot.topicsStamp = currentTopicsStamp;
+      }
+
+      if (notices.length > 0) {
+        log.info("pinned_memory_invalidation_notice", { count: notices.length, truncated });
+        dynamicBlocks.push(
+          `# Project Memory Updates\n\nThe following entries from the pinned session memory snapshot changed mid-session:\n\n${notices.join("\n")}`,
+        );
+      }
+    }
 
     // 3. Per-turn dynamic context (delivered outside the cached system-prompt prefix):
 
@@ -796,24 +938,30 @@ export function registerRules(
     // 3d. Scoped lazy rules matched by prompt paths or queued from a prior tool_call (#1415)
     if (!isSubagent) {
       const turnLazyRules: LazyRule[] = [];
-      if (state.pendingLazyRules.length > 0) {
-        turnLazyRules.push(...state.pendingLazyRules);
-        state.pendingLazyRules = [];
+      const turnLazyNames = new Set<string>();
+      if (state.pendingLazyRules.size > 0) {
+        for (const rule of state.pendingLazyRules.values()) {
+          if (state.deliveredLazyRules.has(rule.fileName) || turnLazyNames.has(rule.fileName)) continue;
+          turnLazyNames.add(rule.fileName);
+          turnLazyRules.push(rule);
+        }
+        state.pendingLazyRules.clear();
         state.pendingLazyRulesByCallId.clear();
       }
       if (prompt && lazyRules.length > 0) {
         const promptPaths = extractPathsFromText(prompt);
         if (promptPaths.length > 0) {
           for (const rule of lazyRules) {
-            if (state.injectedLazyRules.has(rule.fileName)) continue;
+            if (state.deliveredLazyRules.has(rule.fileName) || turnLazyNames.has(rule.fileName)) continue;
             if (matchLazyRule(rule, { paths: promptPaths })) {
-              state.injectedLazyRules.add(rule.fileName);
+              turnLazyNames.add(rule.fileName);
               turnLazyRules.push(rule);
             }
           }
         }
       }
       if (turnLazyRules.length > 0) {
+        markLazyRulesDelivered(state, turnLazyRules);
         log.info("lazy_rules_injected", {
           hook: "before_agent_start",
           files: turnLazyRules.map((r) => r.fileName),
@@ -971,8 +1119,8 @@ function loadMemoriesWithScoring(
   queryClass: import("./memory-query-class.js").QueryClass = "general",
   preloaded?: SituationReportOptions["preloaded"],
   emittedKeys?: Set<string>,
-): string {
-  if (!tokenBudget || tokenBudget <= 0) return "";
+): { report: string; failed: boolean } {
+  if (!tokenBudget || tokenBudget <= 0) return { report: "", failed: false };
   try {
     const report = buildSituationReport(cwd, tokenBudget, { queryClass, preloaded, emittedKeys });
     if (report) {
@@ -980,8 +1128,11 @@ function loadMemoriesWithScoring(
       if (isSubagent) {
         result += "\n**Do NOT write to memory** \u2014 only the orchestrator writes memories.\n";
       }
-      return result + "\n";
+      return { report: result + "\n", failed: false };
     }
-  } catch (e: any) { log.debug("situation report failed:", e?.message || e); }
-  return "";
+    return { report: "", failed: false };
+  } catch (e: any) {
+    log.debug("situation report failed:", e?.message || e);
+    return { report: "", failed: true };
+  }
 }

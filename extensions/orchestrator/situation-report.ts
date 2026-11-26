@@ -19,6 +19,7 @@ import {
   type ScoresFile,
   type MemoryCategory,
   hasEnforcementFields,
+  isEntryActiveForSession,
   loadScores,
   entryHash,
 } from "./memory-scoring.js";
@@ -392,6 +393,7 @@ export function buildCompactionMemoryContext(
     if (!scored) continue;
     if (scored.lifecycle !== "active" && scored.lifecycle !== "provisional") continue;
     if (scored.scope === "session") continue;
+    if (!isEntryActiveForSession(scored, undefined)) continue;
 
     const isPinned = te.pinned || scored.userState === "pinned";
     const isEnforced = hasEnforcementFields(scored);
@@ -423,7 +425,7 @@ export function buildCompactionMemoryContext(
   const lines: string[] = [];
   for (const candidate of candidates) {
     const cost = candidate.line.length + 1;
-    if (cost > remaining) break;
+    if (cost > remaining) continue;
     lines.push(candidate.line);
     remaining -= cost;
   }

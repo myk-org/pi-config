@@ -365,10 +365,29 @@ describe("parseRuleFrontmatter", () => {
 		assert.deepEqual(JSON.parse(attrs.tools), ["bash", "edit"]);
 		assert.equal(body, "# Python & Docker Rule");
 	});
+
+	it("preserves blank scalar frontmatter keys as empty strings (#1415)", () => {
+		const raw = "---\nrequires:\nrequires_setting:\n---\n# Keep Rule\n";
+		const { attrs, body } = parseRuleFrontmatter(raw);
+		assert.equal(attrs.requires, "");
+		assert.equal(attrs.requires_setting, "");
+		assert.equal(body, "# Keep Rule\n");
+		const warnings: string[] = [];
+		assert.equal(
+			rulePassesFrontmatterGate(attrs, {
+				resolveSetting: () => false,
+				featurePredicates: {},
+				knownKeys: ["review_loop_enforcement"],
+				onWarn: (m) => warnings.push(m),
+			}),
+			true,
+		);
+		assert.equal(warnings.length, 0);
+	});
 });
 
-describe("parseRuleScope, matchRuleGlob, matchLazyRule, and assembleRulesSplit (#1415)", () => {
-	it("defaults to enabled=true, alwaysApply=true when frontmatter is absent", () => {
+describe("scoped lazy rule parsing (#1415)", () => {
+	it("defaults to alwaysApply=true when frontmatter is absent", () => {
 		assert.deepEqual(parseRuleScope({}), {
 			enabled: true,
 			alwaysApply: true,
@@ -377,20 +396,26 @@ describe("parseRuleScope, matchRuleGlob, matchLazyRule, and assembleRulesSplit (
 		});
 	});
 
-	it("defaults alwaysApply=false when globs or tools are set unless explicitly true", () => {
+	it("defaults alwaysApply=false when globs are declared", () => {
 		const globOnly = parseRuleScope({ globs: '["**/*.py", "Dockerfile*"]' });
 		assert.equal(globOnly.alwaysApply, false);
 		assert.deepEqual(globOnly.globs, ["**/*.py", "Dockerfile*"]);
-
-		const explicitTrue = parseRuleScope({ alwaysApply: "true", globs: '["**/*.py"]' });
-		assert.equal(explicitTrue.alwaysApply, true);
-
-		const inlineUnquoted = parseRuleScope({ tools: "[bash, 'edit', \"write\"]" });
-		assert.equal(inlineUnquoted.alwaysApply, false);
-		assert.deepEqual(inlineUnquoted.tools, ["bash", "edit", "write"]);
 	});
 
-	it("matches POSIX globs and basename patterns", () => {
+	it("honors explicit alwaysApply=true even when globs are declared", () => {
+		const explicitTrue = parseRuleScope({ alwaysApply: "true", globs: '["**/*.py"]' });
+		assert.equal(explicitTrue.alwaysApply, true);
+	});
+
+	it("preserves brace-expansion globs in unquoted inline lists", () => {
+		const scope = parseRuleScope({ globs: "[**/*.{ts,tsx}, 'Dockerfile*']" });
+		assert.deepEqual(scope.globs, ["**/*.{ts,tsx}", "Dockerfile*"]);
+		assert.equal(matchRuleGlob("src/App.tsx", scope.globs[0]), true);
+		assert.equal(matchRuleGlob("src/App.ts", scope.globs[0]), true);
+		assert.equal(matchRuleGlob("src/App.py", scope.globs[0]), false);
+	});
+
+	it("matches POSIX globs against nested paths or basenames", () => {
 		assert.equal(matchRuleGlob("app.py", "**/*.py"), true);
 		assert.equal(matchRuleGlob("src/pkg/app.py", "**/*.py"), true);
 		assert.equal(matchRuleGlob("src/pkg/app.ts", "**/*.py"), false);
@@ -399,15 +424,19 @@ describe("parseRuleScope, matchRuleGlob, matchLazyRule, and assembleRulesSplit (
 		assert.equal(matchRuleGlob("./src/a/b.ts", "src/**/*.ts"), true);
 	});
 
-	it("applies tools-only, globs-only, and AND semantics when both are specified", () => {
+	it("matches tools-only lazy rules by tool name", () => {
 		const toolsOnly = { globs: [], tools: ["bash"] };
 		assert.equal(matchLazyRule(toolsOnly, { toolName: "bash" }), true);
 		assert.equal(matchLazyRule(toolsOnly, { toolName: "read" }), false);
+	});
 
+	it("matches globs-only lazy rules by file path", () => {
 		const globsOnly = { globs: ["**/*.py"], tools: [] };
 		assert.equal(matchLazyRule(globsOnly, { paths: ["src/main.py"] }), true);
 		assert.equal(matchLazyRule(globsOnly, { paths: ["README.md"] }), false);
+	});
 
+	it("requires both tool name plus file path when tools plus globs are set", () => {
 		const both = { globs: ["**/*.py"], tools: ["edit", "write"] };
 		assert.equal(matchLazyRule(both, { toolName: "edit", paths: ["src/main.py"] }), true);
 		assert.equal(matchLazyRule(both, { toolName: "read", paths: ["src/main.py"] }), false);
@@ -415,12 +444,14 @@ describe("parseRuleScope, matchRuleGlob, matchLazyRule, and assembleRulesSplit (
 		assert.equal(matchLazyRule(both, { paths: ["src/main.py"] }), false);
 	});
 
-	it("extracts paths from prompt text and tool inputs", () => {
-		const fromPrompt = extractPathsFromText("Please update `src/app.py` and Dockerfile.dev, ignore https://example.com/a.py");
+	it("extracts file paths from prompt text while skipping URLs", () => {
+		const fromPrompt = extractPathsFromText("Please update `src/app.py` plus Dockerfile.dev, ignore https://example.com/a.py");
 		assert.ok(fromPrompt.includes("src/app.py"));
 		assert.ok(fromPrompt.includes("Dockerfile.dev"));
 		assert.ok(!fromPrompt.some((p) => p.includes("example.com")));
+	});
 
+	it("extracts normalized paths from tool inputs", () => {
 		const fromEdit = extractPathsFromToolInput("edit", { path: "/repo/src/mod.py" }, "/repo");
 		assert.ok(fromEdit.includes("src/mod.py"));
 
@@ -428,7 +459,7 @@ describe("parseRuleScope, matchRuleGlob, matchLazyRule, and assembleRulesSplit (
 		assert.ok(fromBash.includes("tests/test_core.py"));
 	});
 
-	it("splits base alwaysApply rules from lazy rules and respects enabled: false", () => {
+	it("splits base alwaysApply rules from lazy rules while skipping disabled files", () => {
 		const { baseText, lazyRules } = assembleRulesSplit(
 			[
 				{ fileName: "10-base.md", raw: "# Base Rule\nAlways here." },
@@ -453,6 +484,26 @@ describe("parseRuleScope, matchRuleGlob, matchLazyRule, and assembleRulesSplit (
 		assert.equal(lazyRules[0].body, "# Python Rule\nCycles: 4");
 		assert.equal(lazyRules[1].fileName, "40-bash.md");
 		assert.deepEqual(lazyRules[1].tools, ["bash"]);
+	});
+
+	it("warns when alwaysApply=false declares neither globs nor tools", () => {
+		const warnings: string[] = [];
+		const skipped: number[] = [];
+		const { baseText, lazyRules } = assembleRulesSplit(
+			[{ fileName: "50-scopeless.md", raw: "---\nalwaysApply: false\n---\n# Never Matches" }],
+			{
+				resolve: () => true,
+				knownKeys: [],
+				featurePredicates: {},
+				reviewLoopMaxCycles: 3,
+				onWarn: (msg) => warnings.push(msg),
+				onSkip: ({ index }) => skipped.push(index),
+			},
+		);
+		assert.equal(baseText, "");
+		assert.equal(lazyRules.length, 0);
+		assert.deepEqual(skipped, [0]);
+		assert.ok(warnings.some((w) => w.includes("50-scopeless.md") && w.includes("alwaysApply: false")));
 	});
 });
 

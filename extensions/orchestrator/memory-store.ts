@@ -230,6 +230,12 @@ export interface MemoryMutationRecord {
   newText?: string;
 }
 
+export interface MemoryMutationsResult {
+  records: MemoryMutationRecord[];
+  /** True when `sinceSeq` predates the earliest retained record in the bounded journal. */
+  truncated: boolean;
+}
+
 const MAX_MUTATION_JOURNAL = 200;
 const mutationJournals = new Map<string, { nextSeq: number; records: MemoryMutationRecord[] }>();
 
@@ -261,11 +267,21 @@ export function getMemoryMutationSeq(cwd: string): number {
   return journal ? journal.nextSeq : 0;
 }
 
-/** Return memory mutations recorded strictly after `sinceSeq` for a project. */
-export function getMemoryMutationsSince(cwd: string, sinceSeq: number): MemoryMutationRecord[] {
+/**
+ * Return memory mutations recorded strictly after `sinceSeq` for a project, plus
+ * whether `sinceSeq` fell behind the bounded retention window.
+ */
+export function getMemoryMutationsSince(cwd: string, sinceSeq: number): MemoryMutationsResult {
   const journal = mutationJournals.get(getProjectMemoryDir(cwd));
-  if (!journal || journal.nextSeq <= sinceSeq) return [];
-  return journal.records.filter((r) => r.seq > sinceSeq);
+  if (!journal || journal.nextSeq <= sinceSeq) {
+    return { records: [], truncated: false };
+  }
+  const earliestRetained = journal.records.length > 0 ? journal.records[0].seq : journal.nextSeq + 1;
+  const truncated = sinceSeq + 1 < earliestRetained;
+  return {
+    records: journal.records.filter((r) => r.seq > sinceSeq),
+    truncated,
+  };
 }
 
 /** Clear in-memory mutation journals (tests). */
@@ -298,9 +314,9 @@ function findClippedPrefixMatches(content: string, category: string, query: stri
   return matches;
 }
 
-function formatNotFoundWithCandidates(category: string, text: string, candidates: string[]): string {
+export function formatNotFoundWithCandidates(category: string, text: string, candidates?: string[]): string {
   const base = `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.`;
-  if (candidates.length === 0) return base;
+  if (!candidates || candidates.length === 0) return base;
   const label = candidates.length === 1 ? "entry" : "entries";
   const lines = candidates.map((c) => `- [${category}] ${c}`).join("\n");
   return `${base}\nMatching full ${label} (use exact unclipped text):\n${lines}`;
@@ -1440,18 +1456,27 @@ export function pruneExpiredEntries(cwd: string): number {
   for (const file of readdirSync(topicsDir).filter((f) => f.endsWith(".md"))) {
     const topicPath = join(topicsDir, file);
     const lines = readFileSync(topicPath, "utf-8").split("\n");
+    const fileExpired: { text: string; category: string }[] = [];
     const kept = lines.filter((l) => {
       const parsed = parseTopicLine(l);
       if (!parsed) return true;
       const hash = entryHash(canonicalTopicLine(parsed));
       if (!expiredHashes.has(hash)) return true;
       pruned++;
+      fileExpired.push({ text: parsed.text, category: parsed.category });
       expiredEntries.push({ text: parsed.text, category: parsed.category });
       return false;
     });
     if (kept.length !== lines.length) {
       const cleaned = kept.join("\n").replace(/\n{3,}/g, "\n\n");
       writeTopicFile(topicPath, cleaned);
+      for (const entry of fileExpired) {
+        recordMemoryMutation(cwd, {
+          op: "remove",
+          category: entry.category,
+          oldText: entry.text,
+        });
+      }
     }
   }
 

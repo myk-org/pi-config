@@ -322,7 +322,9 @@ export function parseRuleFrontmatter(raw: string): { attrs: Record<string, strin
 
   const flushList = (): void => {
     if (currentListKey !== null) {
-      attrs[currentListKey] = JSON.stringify(currentListItems);
+      // Preserve blank scalar values (`requires:` with no items) as "" so
+      // frontmatter gates keep treating them as absent rather than `"[]"`.
+      attrs[currentListKey] = currentListItems.length > 0 ? JSON.stringify(currentListItems) : "";
       currentListKey = null;
       currentListItems = [];
     }
@@ -365,6 +367,49 @@ function stripYamlQuotes(value: string): string {
   return value;
 }
 
+function splitTopLevelCommas(input: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote !== null) {
+      current += ch;
+      if (ch === "\\" && i + 1 < input.length) {
+        current += input[++i];
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+    } else if (ch === "{") {
+      braceDepth += 1;
+      current += ch;
+    } else if (ch === "}") {
+      if (braceDepth > 0) braceDepth -= 1;
+      current += ch;
+    } else if (ch === "[") {
+      bracketDepth += 1;
+      current += ch;
+    } else if (ch === "]") {
+      if (bracketDepth > 0) bracketDepth -= 1;
+      current += ch;
+    } else if (ch === "," && braceDepth === 0 && bracketDepth === 0) {
+      parts.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.length > 0) parts.push(current);
+  return parts;
+}
+
 function parseYamlStringList(raw: string | undefined): string[] {
   if (!raw) return [];
   const trimmed = raw.trim();
@@ -378,12 +423,11 @@ function parseYamlStringList(raw: string | undefined): string[] {
           .filter((s) => s.length > 0);
       }
     } catch {
-      // Fallback for YAML-style unquoted or single-quoted inline lists like [*.py, 'Dockerfile*']
+      // Fallback for YAML-style unquoted or single-quoted inline lists like [**/*.{ts,tsx}, 'Dockerfile*']
     }
     const inner = trimmed.slice(1, -1).trim();
     if (!inner) return [];
-    return inner
-      .split(",")
+    return splitTopLevelCommas(inner)
       .map((part) => stripYamlQuotes(part.trim()).trim())
       .filter((s) => s.length > 0);
   }
@@ -663,6 +707,9 @@ export function assembleRulesSplit(
         body: evaluated.trim(),
       });
     } else {
+      opts.onWarn?.(
+        `rule "${fileName}" sets alwaysApply: false with no globs or tools; skipping because it can never match`,
+      );
       opts.onSkip?.({ attrs, index });
     }
   }
