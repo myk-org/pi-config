@@ -116,3 +116,27 @@ describe("npm pack excludes Python artifacts from dist/", () => {
     });
   });
 });
+
+describe("package.json dependency hygiene (#1426)", () => {
+  const FORBIDDEN_DEPS = [
+    "pi-orchestrator-config",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+    "onnxruntime-web",
+  ] as const;
+
+  it("does not declare orchestrator or ML runtime dependencies", () => {
+    const pkg = JSON.parse(readFileSync(join(PKG_DIR, "package.json"), "utf8")) as Record<string, unknown>;
+    for (const section of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
+      const deps = pkg[section] as Record<string, string> | undefined;
+      if (!deps) continue;
+      for (const forbidden of FORBIDDEN_DEPS) {
+        assert.equal(
+          Object.prototype.hasOwnProperty.call(deps, forbidden),
+          false,
+          `packages/pi-sidecar/package.json ${section} must not depend on ${forbidden}`,
+        );
+      }
+    }
+  });
+});
