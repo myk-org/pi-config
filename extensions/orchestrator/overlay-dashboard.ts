@@ -113,6 +113,8 @@ export interface OverlayListSpec<
   TItem extends { id: TId },
 > {
   title: string;
+  /** Optional inline suffix rendered beside the title (e.g. `[1] Roster  [2] Activity` tab bar). */
+  headerSuffix?: (theme: Theme) => string;
   countLabel: (items: readonly TItem[]) => string;
   borderTitle: (items: readonly TItem[]) => string;
   /** Defaults to DEFAULT_LIST_HINTS (+ "Space multi-select" when selectable). */
@@ -496,7 +498,9 @@ export class OverlayListDashboard<
     const innerWidth = Math.max(0, width - 2);
     const lines: string[] = [];
 
-    const headerLeft = theme.fg("accent", theme.bold(this.spec.title));
+    const baseHeaderLeft = theme.fg("accent", theme.bold(this.spec.title));
+    const suffix = this.spec.headerSuffix ? this.spec.headerSuffix(theme) : "";
+    const headerLeft = suffix ? `${baseHeaderLeft}  ${suffix}` : baseHeaderLeft;
     const headerRight = theme.fg("muted", this.spec.countLabel(items));
     const headerPad = Math.max(
       1,

@@ -2,17 +2,14 @@ import { describe, it, mock, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { dirname, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { accessSync, statSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import { DEFAULT_TOOLS } from "../../src/sessions.js";
 import { resolveExtensionPath, resolveExtensionPathDetailed } from "../../src/provider-runtime.js";
 import { parseBody } from "../../src/index.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig, type HttpToolConfig } from "../../src/http-tool-executor.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";
-
-const MONOREPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 // ---------------------------------------------------------------------------
 // 1. DEFAULT_TOOLS constant
@@ -412,9 +409,10 @@ describe("resolveExtensionPath", () => {
     }
   });
 
-  it("resolves the providers extension from monorepo root", () => {
-    const result = join(MONOREPO_ROOT, "extensions/providers/index.ts");
-    assert.ok(result.replaceAll("\\", "/").endsWith("extensions/providers/index.ts"), `path should end with entry file, got: ${result}`);
+  it("resolves the standalone @myk-org/pi-vertex-claude extension", () => {
+    const result = resolveExtensionPath("UNUSED_ENV_" + Date.now(), "@myk-org/pi-vertex-claude", "index.ts");
+    assert.ok(result.length > 0, "should resolve to a non-empty path");
+    assert.ok(result.replaceAll("\\", "/").endsWith("index.ts"), `path should end with entry file, got: ${result}`);
     assert.doesNotThrow(() => accessSync(result), `extension file should exist at: ${result}`);
   });
 

@@ -7,9 +7,9 @@
  *
  * There is deliberately no lifetime: a peer lives until someone kills it.
  *
- *   node coms-peer-supervisor.mjs <cname> [--project <p>] [--cwd <dir>] [--purpose <text>]
+ *   node coms-peer-supervisor.mjs <cname> [--project <p>] [--cwd <dir>] [--purpose <text>] [--session <id|path>]
  *
- * State: ~/.pi/coms/peers/<cname>.json — { cname, pid, childPid, session, project, cwd, startedAt }
+ * State: ~/.pi/coms/peers/<cname>@<project>.json — { cname, pid, childPid, session, project, cwd, startedAt }
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -33,6 +33,7 @@ const flag = (name, fallback = undefined) => {
 const project = flag("project", "default");
 const cwd = flag("cwd", process.cwd());
 const purpose = flag("purpose", "");
+const session = flag("session", "");
 
 const comsBase = process.env.PI_COMS_DIR && process.env.PI_COMS_DIR.trim()
   ? process.env.PI_COMS_DIR.trim()
@@ -64,6 +65,7 @@ env.PI_COMS_SUPERVISED_PEER = "1";
 
 const args = ["--mode", "rpc", "--coms", "--cname", cname, "--project", project];
 if (purpose) args.push("--purpose", purpose);
+if (session) args.push("--session", session);
 
 let child;
 try {
@@ -87,6 +89,7 @@ const record = (extra = {}) => {
     project,
     cwd,
     purpose,
+    ...(session ? { session } : {}),
     startedAt,
     ...extra,
   };
@@ -166,8 +169,13 @@ child.on("exit", (code, signal) => {
     process.exit(0);
   }
   // One record shape either way, but a stop records WHEN it was asked and WHEN it finished, and a
-  // peer that had to be killed says so.
+  // peer that had to be killed says so. Preserve any piSessionId persisted before shutdown so `r`
+  // revive can resume the peer's session cleanly.
+  const preservedSessionId = owner && typeof owner.piSessionId === "string" && owner.piSessionId
+    ? { piSessionId: owner.piSessionId }
+    : {};
   record({
+    ...preservedSessionId,
     ...(stopping ? { stoppedAt, stopSignal } : {}),
     exitedAt: new Date().toISOString(),
     exitCode: code,

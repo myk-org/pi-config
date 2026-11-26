@@ -201,11 +201,18 @@ A few practical implications are worth remembering:
 - The pool is project-scoped, so open every coordinating session in the same repository.
 - `--explicit` keeps a helper session out of the default discovery list without making it unreachable.
 
+### Reviving Stopped Supervised Peers & Live Activity Log
+
+Supervised peers write launch and shutdown metadata (including `cname`, `project`, `cwd`, `purpose`, and `piSessionId` when available) to `~/.pi/coms/peers/<name>@<project>.json`. Recently stopped supervised peers remain visible in the `/coms` Roster (`○ stopped`):
+
+- Press `r` on a stopped peer (or a multi-selection containing stopped peers) to respawn it through `scripts/coms-peer-supervisor.mjs` with its prior identity, working directory, purpose, and `--session` resume when recorded. Pressing `r` on a live peer displays an inline notice without spawning a duplicate.
+- Press `2` to switch from `[1] Roster` to `[2] Activity` for a unified chronological stream of peer lifecycle events, COMS message traffic (`history.jsonl`), and delivery errors. Inside Activity view, `f` cycles filters (`All | Errors | Tools | Messages`), `/` searches text inline, `Space` toggles auto-follow (manual scrolling pauses follow), `Enter` jumps straight to that peer's drilldown/detail view, and `1` returns to the Roster.
+
 ## Commands
 
 | Command | What it does |
 | :--- | :--- |
-| `/coms` | Zero-arg fullscreen P2P peers overlay: `f` toggles scope (`this project` / `all projects`), `q` opens the local inbound queue (`Space` multi-select `x` kill), `Space` multi-selects for `m` message or `x` kill, `X` kills all supervised peers in scope, `Enter` drills into peer workload. Plain text when headless. |
+| `/coms` | Zero-arg fullscreen P2P peers overlay: `[1] Roster` / `[2] Activity` (`f` filter, `/` search, `Space` follow, `Enter` jump-to-peer), `r` revives stopped supervised peers (resuming saved session), `f` toggles scope (`this project` / `all projects`), `q` opens the local inbound queue (`Space` multi-select `x` kill), `Space` multi-selects for `m` message / `r` revive / `x` kill, `X` kills all supervised peers in scope, `Enter` drills into peer workload. Plain text when headless. |
 
 ## Related Pages
 
