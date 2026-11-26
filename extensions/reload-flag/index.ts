@@ -590,8 +590,9 @@ async function waitForIdleWithTimeout(
     return await Promise.race<"idle" | "timeout">([
       idlePromise.then(() => "idle" as const),
       new Promise<"timeout">((resolve) => {
+        // Keep the timeout handle ref'd while awaited (always cleared in finally)
+        // so Node's event loop cannot exit early on an unresolved waitForIdle().
         timer = setTimeout(() => resolve("timeout"), effectiveTimeoutMs);
-        (timer as unknown as { unref?: () => void }).unref?.();
       }),
     ]);
   } finally {
