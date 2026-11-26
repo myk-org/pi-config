@@ -1364,6 +1364,23 @@ export function createComsPeerRuntime(
 		}
 	}
 
+	/**
+	 * #1442: Guard every `triggerTurn: true` sendMessage call so empty/whitespace
+	 * content can never reach the LLM API (Gemini rejects requests ending on a
+	 * `role: "model"` turn when empty custom_message content is omitted).
+	 */
+	function sendTurnMessage(
+		msg: { customType: string; content: string; display: boolean; details?: Record<string, unknown> },
+		fallback: "(no response)" | "(empty message)",
+	): void {
+		let content = msg.content;
+		if (typeof content !== "string" || content.trim().length === 0) {
+			log.warn("empty_turn_message_fallback", { customType: msg.customType, fallback });
+			content = fallback;
+		}
+		pi.sendMessage({ ...msg, content }, { deliverAs: "followUp", triggerTurn: true });
+	}
+
 	function injectInbound(
 		ib: InboundContext,
 		opts: {
@@ -1380,7 +1397,7 @@ export function createComsPeerRuntime(
 			: buildInboundContent(opts.header ?? "", ib.prompt, ib.tasks ?? null, ib.sender_name, ib.sender_cwd, ib.origin, ib.sender_session);
 		const attempt = opts.bundled?.attempt ?? (ib.injectAttempt ?? 0);
 		const queuedAsFollowUp = opts.streaming === true || (opts.streaming !== false && isPiStreaming(opts.ctx));
-		pi.sendMessage(
+		sendTurnMessage(
 			{
 				customType,
 				content,
@@ -1393,7 +1410,7 @@ export function createComsPeerRuntime(
 					...(opts.bundled ? { bundled_msg_ids: opts.bundled.ids } : {}),
 				},
 			},
-			{ deliverAs: "followUp", triggerTurn: true },
+			"(empty message)",
 		);
 		ib.followUpQueued = queuedAsFollowUp;
 	}
@@ -1646,7 +1663,7 @@ export function createComsPeerRuntime(
 				// to inject must not be recorded as delivered.
 				let injected = false;
 				try {
-					pi.sendMessage(
+					sendTurnMessage(
 						{
 							customType: `steer from ${sanitizeComsName(env.sender_name)} → ${sanitizeComsName(identity.name)} @ ${sanitizeComsName(env.sender_cwd || "?")}${inboundOrigin(env) === "user" ? " (from the USER)" : ""}`,
 							content: buildInboundContent(
@@ -1661,7 +1678,7 @@ export function createComsPeerRuntime(
 							display: true,
 							details: { msg_id: env.msg_id, steer: true, target_msg_id: currentInbound.msg_id },
 						},
-						{ deliverAs: "followUp", triggerTurn: true },
+						"(empty message)",
 					);
 					injected = true;
 				} catch (err) {
@@ -1856,7 +1873,7 @@ export function createComsPeerRuntime(
 					yourPending.filter((p: any) => p && typeof p === "object").map((p: any, i: number) => `  ${i + 1}. [${p.msg_id ?? "?"}] "${p.preview ?? ""}…"`).join("\n");
 			}
 			try {
-				pi.sendMessage(
+				sendTurnMessage(
 					{
 						customType: responseType,
 						content: responseBody,
@@ -1868,7 +1885,7 @@ export function createComsPeerRuntime(
 							queued_msg_ids: queuedMsgIds,
 						},
 					},
-					{ deliverAs: "followUp", triggerTurn: true },
+					"(no response)",
 				);
 			} catch { /* best-effort */ }
 
