@@ -125,9 +125,10 @@ This is useful when a helper session should not clutter the shared pool. Users s
 
 ### On-Disk Layout and Cleanup
 
-Sessions write two kinds of files under `~/.pi/coms/`, overridable with the `coms_dir` setting (`PI_COMS_DIR`):
+Sessions write files under `~/.pi/coms/`, overridable with the `coms_dir` setting (`PI_COMS_DIR`):
 
 - `projects/<project>/agents/<name>.json` — the registry, one file per live session
+- `projects/<project>/reload-queue-<session-id>.json` — transient `0600` handoff file written only during `/reload` to preserve queued and undelivered inbound messages across the reload boundary (atomically consumed on reload startup; cleaned up with a `session_closed` error on TTL expiry, explicit `coms_stop`, or process exit)
 - `sockets/<session-id>.sock` — the per-session endpoint
 
 Directory creation is restricted to the owner (`0o700`). Because each peer owns its own socket, a peer that is pruned from the registry does not have its socket deleted by anyone else; the owning process is responsible for that.
@@ -140,6 +141,8 @@ Queueing prevents dropped messages when a peer is busy, while hop limits stop ag
 
 For users, that shows up as more predictable behavior:
 - busy peers do not lose messages
+- queued and undelivered inbound messages survive `/reload` (manual or via `.pi/run/reload.flag`) in FIFO and priority order so waiting senders still receive their final replies; explicit `coms_stop` and real process shutdown still reply `session_closed`
+- if an active turn aborts before Pi delivers a queued `followUp` inbound, the receiver re-injects once (or fails with `aborted` and drains the next FIFO item) instead of leaving `processingInbound` wedged at idle
 - runaway agent-to-agent loops stop instead of spiraling forever
 - queue depth is visible in pool output and peer listings, and can be managed from `/coms` (`q` opens the local inbound queue with `Space` multi-select `x` kill) or via `coms_local_queue`
 

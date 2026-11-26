@@ -6,8 +6,8 @@
  *   - Multi-tool-call inbound turns capture only the final zero-tool-call reply
  *   - User-interrupted turns: coms_send unblock + hasMixedTurn precedence over comsSendCalledThisTurn
  *   - Mid-user-turn inbound arrival: no premature block, spurious interrupt, or mixed_turn_reinject
- *   - Abort before delivery: Pi-queued followUp retained (no double-inject / premature aborted);
- *     genuinely lost direct-run retries once, then replies aborted and drains FIFO
+ *   - Abort before delivery: followUpQueued & direct-run inbounds re-inject once (bounded)
+ *     and then reply aborted + drain FIFO so processingInbound never wedges at idle (#1226, #1429)
  *   - Abort after delivery defers from turn_end to agent_end safety net
  *   - Mid-turn followUp steer defers turn_end finalization until post-steer reply
  *   - Bundled senders receive "bundled" response envelopes in sentDirectlyToSender path
@@ -481,13 +481,13 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 		);
 	});
 
-	it("retains Pi-queued followUp on abort before delivery without duplicate injection or premature aborted reply", async () => {
+	it("recovers an aborted followUpQueued inbound via bounded single re-injection (#1429)", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const peerA = await startPeer({ name: "peer-a", sessionId: "sfq-a", project: "pfq-1226", cwd: workspace, comsDir });
 		const peerB = await startPeer({ name: "peer-b", sessionId: "sfq-b", project: "pfq-1226", cwd: workspace, comsDir });
 		const receiver = await startPeer({ name: "receiver", sessionId: "rfq-1226", project: "pfq-1226", cwd: workspace, comsDir });
 
-		// Active user turn means Pi queues m1 in its followUp queue (retained across aborts).
+		// Active user turn means Pi queues m1 in its followUp queue.
 		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
 		const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "prompt A" });
 		const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "prompt B" });
@@ -495,23 +495,20 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 		const m2 = r2.details.msg_id as string;
 		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
 
-		// User turn aborts twice before Pi delivers the queued follow-up m1.
+		// User turn aborts and Pi drops the queued followUp m1 -> bounded single re-injection.
 		await emitTurnEnd(receiver, { text: "partial user text", stopReason: "aborted", toolResults: [] });
 		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "rfq-1226", "partial user text"));
-		await receiver.handlers.get("agent_end")!({}, makeCtx(workspace, "rfq-1226", "second abort"));
 
-		assert.equal(
-			receiver.messages.filter((m) => m?.details?.msg_id === m1).length,
-			1,
-			"must not enqueue a duplicate follow-up copy while Pi still holds m1",
-		);
+		const copiesAfterFirstAbort = receiver.messages.filter((m) => m?.details?.msg_id === m1);
+		assert.equal(copiesAfterFirstAbort.length, 2, "aborted followUpQueued inbound should re-inject once");
+		assert.equal(copiesAfterFirstAbort[1]?.details?.inject_attempt, 1);
 		assert.equal(
 			(await peerA.tools.get("coms_get").execute("g1-still-pending", { msg_id: m1 })).details.status,
 			"pending",
-			"must not reply aborted while Pi still holds a deliverable follow-up copy of m1",
+			"re-injected inbound stays pending until delivered or retry-exhausted",
 		);
 
-		// Next run delivers the single retained copy of m1, completes cleanly, and drains m2.
+		// Next run delivers the re-injected copy of m1, completes cleanly, and drains m2.
 		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
 		await deliverInbound(receiver, m1);
 		await emitTurnEnd(receiver, { text: "single reply A", stopReason: "stop", toolResults: [] });
