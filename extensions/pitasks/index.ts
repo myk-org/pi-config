@@ -47,6 +47,7 @@ import {
 	decidePendingReminder,
 	headlessIdleReminderContent,
 	oldestPendingAt,
+	openTasksFingerprint,
 	pendingReminderContent,
 	staleReminderContent,
 	selectActiveTasks,
@@ -65,6 +66,7 @@ export {
 	decidePendingReminder,
 	headlessIdleReminderContent,
 	oldestPendingAt,
+	openTasksFingerprint,
 	pendingReminderContent,
 	resolveStorePath,
 	staleReminderContent,
@@ -411,13 +413,13 @@ export default function (pi: ExtensionAPI) {
 	let currentRunIsReminder = false;
 	let inAgentRun = false;
 	let startedViaBeforeAgentStart = false;
-	let suppressBackoffResetForGc = false;
+	let lastOpenTasksFingerprint = openTasksFingerprint(store.list());
 
 	function resetHeadlessBackoff(reason: string, resetIdle: boolean): void {
 		const hadNudges = headlessNudgeCount > 0 || lastHeadlessNudgeAt > 0;
 		headlessNudgeCount = 0;
 		lastHeadlessNudgeAt = 0;
-		if (resetIdle && !agentBusy) {
+		if (resetIdle && !agentBusy && !inAgentRun) {
 			idleSince = Date.now();
 		}
 		if (hadNudges) {
@@ -428,8 +430,10 @@ export default function (pi: ExtensionAPI) {
 	const onStoreChange = () => {
 		widget.update();
 		broadcastTasks();
-		if (!suppressBackoffResetForGc) {
-			resetHeadlessBackoff("task_change", true);
+		const nextFp = openTasksFingerprint(store.list());
+		if (nextFp !== lastOpenTasksFingerprint) {
+			lastOpenTasksFingerprint = nextFp;
+			resetHeadlessBackoff("task_state_change", true);
 		}
 	};
 	store.setOnChange(onStoreChange);
@@ -482,6 +486,7 @@ export default function (pi: ExtensionAPI) {
 			taskStore = store;
 			currentStore = store;
 			widget.setStore(store);
+			lastOpenTasksFingerprint = openTasksFingerprint(store.list());
 			store.setOnChange(onStoreChange);
 			log.debug("store upgraded", path);
 		}
@@ -607,18 +612,9 @@ export default function (pi: ExtensionAPI) {
 						}
 					}
 				}
-				if (expiredIds.length > 0) {
-					let deleted = 0;
-					suppressBackoffResetForGc = true;
-					try {
-						deleted = store.deleteTasks(expiredIds);
-					} finally {
-						suppressBackoffResetForGc = false;
-					}
-					if (deleted > 0) {
-						log.debug("task_gc_cleared", { count: expiredIds.length });
-						widget.update();
-					}
+				if (expiredIds.length > 0 && store.deleteTasks(expiredIds) > 0) {
+					log.debug("task_gc_cleared", { count: expiredIds.length });
+					widget.update();
 				}
 			} catch {}
 		}, 60000);
@@ -639,6 +635,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Headless supervised COMS peer: fast, bounded idle auto-nudge (#1434)
 			if (supervisedPeer) {
+				let headlessHandled = false;
 				try {
 					const enabled =
 						Boolean(getSetting(cwd, "task_reminder_enabled")) ||
@@ -649,11 +646,12 @@ export default function (pi: ExtensionAPI) {
 					const sessionId = currentCtx?.sessionManager?.getSessionId?.();
 					const activeAsyncCount = countActiveAsyncAgents(
 						publishedWorkloadSources(sessionId)?.agents(),
+						sessionId,
 					);
 					const decision = decideHeadlessIdleReminder({
 						supervisedPeer,
 						enabled,
-						agentBusy,
+						agentBusy: agentBusy || inAgentRun,
 						activeAsyncCount,
 						idleSince,
 						lastNudgeAt: lastHeadlessNudgeAt,
@@ -662,6 +660,7 @@ export default function (pi: ExtensionAPI) {
 						baseDelayMs,
 						tasks: store.list(),
 					});
+					headlessHandled = true;
 					if (decision.fire) {
 						const prevNudgeCount = headlessNudgeCount;
 						const prevLastNudgeAt = lastHeadlessNudgeAt;
@@ -678,7 +677,7 @@ export default function (pi: ExtensionAPI) {
 									HEADLESS_IDLE_MAX_NUDGES,
 								),
 								display: true,
-							}, { triggerTurn: true });
+							}, { triggerTurn: true, deliverAs: "followUp" });
 							log.info("headless_idle_reminder_fired", {
 								openCount: decision.tasks.length,
 								nudgeCount: decision.nextNudgeCount,
@@ -697,7 +696,10 @@ export default function (pi: ExtensionAPI) {
 				} catch (err: any) {
 					log.warn("headless_idle_reminder_error", { error: err?.message ?? String(err) });
 				}
-				return;
+				// Supervised peers intentionally replace the unbounded 10m/30m timers once
+				// handled cleanly so backoff-capped peers stop burning tokens (#1434).
+				// On unexpected error (headlessHandled === false), fall through to legacy reminders.
+				if (headlessHandled) return;
 			}
 
 			// Pending-only reminder: nudge when tasks exist but none in_progress
@@ -830,17 +832,18 @@ export default function (pi: ExtensionAPI) {
 		if (shuttingDown) return;
 		const wasReminder = currentRunIsReminder;
 		agentBusy = false;
-		idleSince = Date.now();
 		if (!wasReminder) {
 			resetHeadlessBackoff("turn_end", false);
 		}
 		if (!startedViaBeforeAgentStart) {
 			inAgentRun = false;
 			currentRunIsReminder = false;
+			idleSince = Date.now();
 		}
 		log.debug("agentBusy", "turn_end", {
 			turnRefCount: refsSnapshot.size,
 			reminderTurn: wasReminder,
+			inAgentRun,
 			idleSince,
 		});
 		const msg = (event as any).message;
@@ -862,7 +865,7 @@ export default function (pi: ExtensionAPI) {
 		startedViaBeforeAgentStart = false;
 		currentRunIsReminder = false;
 		agentBusy = false;
-		if (idleSince === null) idleSince = Date.now();
+		if (wasInRun || idleSince === null) idleSince = Date.now();
 		if (wasInRun && !wasReminder) {
 			resetHeadlessBackoff("agent_settled", false);
 		}
@@ -886,6 +889,7 @@ export default function (pi: ExtensionAPI) {
 		syncTaskBridge(ctx);
 		widget.reactivate(ctx.ui);
 		store.reopen();
+		lastOpenTasksFingerprint = openTasksFingerprint(store.list());
 		store.setOnChange(onStoreChange);
 		currentWidget = widget;
 		currentStore = store;

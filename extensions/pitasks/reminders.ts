@@ -187,19 +187,60 @@ export interface HeadlessReminderTask {
 	blockedBy?: readonly (string | number)[];
 }
 
-/** Count running or queued non-fireAndForget async agents; any in-flight agent suppresses headless idle nudges. */
+/** Count running or queued non-fireAndForget async agents for the current session; any in-flight agent suppresses headless idle nudges. */
 export function countActiveAsyncAgents(
-	agents: ReadonlyArray<{ status?: string; fireAndForget?: boolean }> | null | undefined,
+	agents: ReadonlyArray<{ status?: string; fireAndForget?: boolean; sessionId?: string | null }> | null | undefined,
+	currentSessionId?: string | null,
 ): number {
+	const normalizedSession =
+		typeof currentSessionId === "string" && currentSessionId.trim()
+			? currentSessionId.trim()
+			: null;
 	let count = 0;
+	let otherSessionExcluded = 0;
 	if (agents) {
 		for (const job of agents) {
 			if (job.fireAndForget) continue;
-			if (job.status === "running" || job.status === "queued") count++;
+			if (job.status !== "running" && job.status !== "queued") continue;
+			const jobSession =
+				typeof job.sessionId === "string" && job.sessionId.trim()
+					? job.sessionId.trim()
+					: null;
+			if (normalizedSession && jobSession && jobSession !== normalizedSession) {
+				otherSessionExcluded++;
+				continue;
+			}
+			count++;
 		}
 	}
-	log.debug("countActiveAsyncAgents", { agentCount: agents?.length ?? 0, activeCount: count });
+	log.debug("countActiveAsyncAgents", {
+		agentCount: agents?.length ?? 0,
+		activeCount: count,
+		otherSessionExcluded,
+	});
 	return count;
+}
+
+/**
+ * Deterministic structural fingerprint of open (`pending` or `in_progress`) tasks.
+ * Tracks only fields that affect reminder eligibility (`id`, `status`, `assignee`, `blockedBy`),
+ * ignoring token telemetry updates, completed-task GC deletions, and fs.watch echoes.
+ */
+export function openTasksFingerprint(tasks: readonly HeadlessReminderTask[]): string {
+	const entries = tasks
+		.filter((t) => t.status === "pending" || t.status === "in_progress")
+		.map((t) => {
+			const id = t.id != null ? String(t.id) : "";
+			const assignee = t.assignee === "user" ? "user" : "llm";
+			const blockers = Array.isArray(t.blockedBy)
+				? [...t.blockedBy].map((b) => String(b)).sort().join(",")
+				: "";
+			return `${id}:${t.status}:${assignee}:[${blockers}]`;
+		})
+		.sort();
+	const fp = entries.join("|");
+	if (log.isDebugEnabled()) log.debug("openTasksFingerprint", { openCount: entries.length });
+	return fp;
 }
 
 /**
