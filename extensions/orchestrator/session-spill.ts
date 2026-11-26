@@ -16,7 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ToolResultEvent, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import { acquireDirLock } from "../shared/file-lock.js";
+import { acquireTokenFileLock } from "../shared/file-lock.js";
 import { createLogger, type Logger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir } from "./utils.js";
@@ -30,7 +30,6 @@ const DEFAULT_PREVIEW_HEAD_CHARS = 4000;
 const DEFAULT_PREVIEW_TAIL_CHARS = 2000;
 const MAX_SPILL_ALLOC_ATTEMPTS = 10_000;
 const MAX_TRACKED_SPILL_DIRS = 128;
-const FALLBACK_LOCK_STALE_MS = 10_000;
 const FALLBACK_LOCK_ATTEMPTS = 25;
 const FALLBACK_LOCK_SLEEP_MS = 20;
 
@@ -73,8 +72,6 @@ export interface SpillFsOps {
   renameSync: typeof fs.renameSync;
   unlinkSync: typeof fs.unlinkSync;
   existsSync: typeof fs.existsSync;
-  statSync: typeof fs.statSync;
-  rmSync: typeof fs.rmSync;
 }
 
 export interface BlobWriteResult {
@@ -148,8 +145,6 @@ const defaultFsOps: SpillFsOps = {
   renameSync: fs.renameSync,
   unlinkSync: fs.unlinkSync,
   existsSync: fs.existsSync,
-  statSync: fs.statSync,
-  rmSync: fs.rmSync,
 };
 
 function sha256Text(text: string): string {
@@ -321,36 +316,23 @@ function isHardlinkUnsupported(err: unknown): boolean {
   return code === "EXDEV" || code === "EPERM" || code === "ENOSYS" || code === "EOPNOTSUPP";
 }
 
-function acquireFallbackLock(dir: string, ops: SpillFsOps): string {
-  const lockDir = path.join(dir, ".spill.lock");
-  if (acquireDirLock(lockDir, FALLBACK_LOCK_ATTEMPTS, FALLBACK_LOCK_SLEEP_MS)) {
-    return lockDir;
-  }
-  // Reclaim stale lock if its owner crashed without releasing.
-  try {
-    const stat = ops.statSync(lockDir);
-    if (Date.now() - stat.mtimeMs > FALLBACK_LOCK_STALE_MS) {
-      ops.rmSync(lockDir, { recursive: true, force: true });
-      if (acquireDirLock(lockDir, 3, FALLBACK_LOCK_SLEEP_MS)) {
-        return lockDir;
-      }
-    }
-  } catch {
-    // Lock disappeared concurrently; retry once.
-    if (acquireDirLock(lockDir, 3, FALLBACK_LOCK_SLEEP_MS)) {
-      return lockDir;
-    }
-  }
-  throw new Error(`Timed out acquiring spill fallback lock in ${dir}`);
-}
-
 function publishWithAtomicRenameFallback(
   dir: string,
   tmpPath: string,
   startSeq: number,
   ops: SpillFsOps,
 ): { path: string; seq: number } {
-  const lockDir = acquireFallbackLock(dir, ops);
+  const lockPath = path.join(dir, ".spill.lock");
+  // Token-verified O_EXCL file lock: records { pid, token }, reclaims only dead owners,
+  // and releases only when the lock file still carries this writer's token.
+  const release = acquireTokenFileLock(lockPath, {
+    attempts: FALLBACK_LOCK_ATTEMPTS,
+    sleepMs: FALLBACK_LOCK_SLEEP_MS,
+    uniqueClaim: true,
+  });
+  if (!release) {
+    throw new Error(`Timed out acquiring owner-verified spill fallback lock in ${dir}`);
+  }
   try {
     let seq = Math.max(startSeq, scanNextSpillId(dir, ops));
     for (let attempt = 0; attempt < MAX_SPILL_ALLOC_ATTEMPTS; attempt++) {
@@ -366,11 +348,7 @@ function publishWithAtomicRenameFallback(
     }
     throw new Error(`Exhausted ${MAX_SPILL_ALLOC_ATTEMPTS} numeric spill IDs in ${dir}`);
   } finally {
-    try {
-      ops.rmSync(lockDir, { recursive: true, force: true });
-    } catch {
-      // Lock already removed.
-    }
+    release();
   }
 }
 

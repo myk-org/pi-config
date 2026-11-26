@@ -268,6 +268,54 @@ describe("session-spill (#1420)", () => {
     assert.deepEqual(fs.readdirSync(dir), []);
   });
 
+  it("refuses to steal fallback lock held by a live owner", () => {
+    const dir = path.join(makeTempDir("spill-live-lock-"), "local");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const lockPath = path.join(dir, ".spill.lock");
+    const liveOwner = JSON.stringify({ pid: process.pid, token: "live-owner-token" });
+    fs.writeFileSync(lockPath, liveOwner, { mode: 0o600 });
+    // Backdate mtime by 60 seconds to prove live owners are never evicted by age.
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, past, past);
+
+    assert.throws(
+      () =>
+        writeSessionSpill("must-not-overwrite", dir, {
+          linkSync() {
+            const err = new Error("ENOSYS") as NodeJS.ErrnoException;
+            err.code = "ENOSYS";
+            throw err;
+          },
+        }),
+      /Timed out acquiring owner-verified spill fallback lock/,
+    );
+
+    assert.equal(fs.readFileSync(lockPath, "utf-8"), liveOwner);
+    assert.deepEqual(
+      fs.readdirSync(dir).filter((name) => name.endsWith(".log") || name.endsWith(".tmp")),
+      [],
+    );
+  });
+
+  it("reclaims fallback lock held by a dead owner", () => {
+    const dir = path.join(makeTempDir("spill-dead-lock-"), "local");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const lockPath = path.join(dir, ".spill.lock");
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999_999_999, token: "dead-owner-token" }), { mode: 0o600 });
+
+    const written = writeSessionSpill("recovered-payload", dir, {
+      linkSync() {
+        const err = new Error("ENOSYS") as NodeJS.ErrnoException;
+        err.code = "ENOSYS";
+        throw err;
+      },
+    });
+
+    assert.equal(path.basename(written.path), "1.log");
+    assert.equal(fs.readFileSync(written.path, "utf-8"), "recovered-payload");
+    assert.equal(fs.existsSync(lockPath), false);
+  });
+
   it("formats bounded head/tail preview strictly shorter than original payload", () => {
     const lines = Array.from({ length: 200 }, (_, i) => `line-${i}: ${"x".repeat(30)}`);
     const payload = lines.join("\n");
