@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
+  EMPTY_VALUE_SENTINEL,
   SETTINGS_KEYS,
   type SettingSource,
   type SettingsSourceSnapshot,
@@ -199,7 +200,10 @@ export function buildCategoryItems(
     // Configure interaction based on type and key
     const isProviderKey = key === "agent_provider" || key === "internal_operations_provider";
     const isModelKey =
-      key === "agent_model" || key === "internal_operations_model" || key === "image_model";
+      key === "agent_model" ||
+      key === "internal_operations_model" ||
+      key === "image_model" ||
+      key === "advisor_model";
 
     if (isProviderKey && resolvePmInfo().providers.length > 0) {
       const pmInfo = resolvePmInfo();
@@ -211,22 +215,35 @@ export function buildCategoryItems(
       // Resolve provider/models inside the callback so refreshItem after
       // agent_provider / internal_operations_provider changes does not leave a stale list.
       item.submenu = (current: string, done: (val?: string) => void): Component => {
-        const submenu = resolveModelKeySubmenu(key, pmInfo.models, {
-          agent_provider: getSetting(cwd, "agent_provider"),
-          internal_operations_provider: getSetting(cwd, "internal_operations_provider"),
-        });
-        // image_model: provider-filtered list; if empty, free-text (do not show all models)
+        const normalizedCurrent = current === EMPTY_VALUE_SENTINEL ? "" : current.trim();
+        const submenu = resolveModelKeySubmenu(
+          key,
+          pmInfo.models,
+          {
+            agent_provider: getSetting(cwd, "agent_provider"),
+            internal_operations_provider: getSetting(cwd, "internal_operations_provider"),
+          },
+          normalizedCurrent,
+        );
+        // image_model / advisor_model: if picker list is empty, fall back to free-text input
         if (submenu.mode === "input") {
-          log.debug("image_model picker empty — free-text fallback", { provider: submenu.provider });
-          return new InputSubmenu(key, current, "Enter new value (empty to clear)", theme, done);
+          log.debug("model picker empty — free-text fallback", { key, provider: submenu.provider });
+          const hint = key === "advisor_model"
+            ? "Enter provider/model-id (e.g. google/gemini-2.5-flash; empty = session model)"
+            : "Enter new value (empty to clear)";
+          return new InputSubmenu(key, current, hint, theme, done);
         }
-        if (key === "image_model") {
-          log.debug("image_model picker open", {
+        if (key === "image_model" || key === "advisor_model") {
+          log.debug("model picker open", {
+            key,
             provider: submenu.provider,
             count: submenu.models.length,
           });
         }
-        return new PickerSubmenu(`Select model for ${key}`, submenu.models, theme, done);
+        const title = key === "advisor_model"
+          ? "Select advisor model (provider/model-id)"
+          : `Select model for ${key}`;
+        return new PickerSubmenu(title, submenu.models, theme, done, normalizedCurrent);
       };
     } else {
       switch (def.type) {
@@ -262,7 +279,11 @@ export function buildCategoryItems(
           const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd, scopeRaw) : null;
           item.submenu = (current: string, done: (val?: string) => void): Component => {
             const prefill = secretInfo ? secretInfo.prefill : current;
-            const hint = secretInfo ? secretInfo.hint : "Enter new value (empty to clear)";
+            const hint = secretInfo
+            ? secretInfo.hint
+            : key === "advisor_model"
+              ? "Enter provider/model-id (e.g. google/gemini-2.5-flash; empty = session model)"
+              : "Enter new value (empty to clear)";
             return new InputSubmenu(key, prefill, hint, theme, (val?: string) => {
               if (isSecret && secretInfo && isSecretNoChange(val, secretInfo.scopeValue !== null)) {
                 done(undefined);

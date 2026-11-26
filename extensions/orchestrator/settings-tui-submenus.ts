@@ -164,7 +164,13 @@ export class PickerSubmenu implements Component {
   private done: (value?: string) => void;
   private theme: Theme;
 
-  constructor(label: string, items: SelectItem[], theme: Theme, done: (value?: string) => void) {
+  constructor(
+    label: string,
+    items: SelectItem[],
+    theme: Theme,
+    done: (value?: string) => void,
+    initialValue?: string,
+  ) {
     this.label = label;
     this.allItems = items;
     this.done = done;
@@ -172,6 +178,10 @@ export class PickerSubmenu implements Component {
 
     this.searchInput = new Input();
     this.selectList = new SelectList(items, Math.max(1, Math.min(items.length, 15)), getSelectListTheme());
+    if (initialValue !== undefined) {
+      const idx = items.findIndex((item) => item.value === initialValue);
+      if (idx >= 0) this.selectList.setSelectedIndex(idx);
+    }
     this.selectList.onSelect = (item) => this.done(item.value);
     this.selectList.onCancel = () => this.done(undefined);
 
