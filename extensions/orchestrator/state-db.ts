@@ -23,7 +23,7 @@ export { parseLastValidLine, SKIP_MUTATE };
 const log = createLogger("state-db");
 
 export const STATE_DB_FILENAME = "state.db";
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 4;
 export const STATE_DB_BUSY_TIMEOUT_MS = 5000;
 
 interface CachedStateDb {
@@ -114,6 +114,16 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
           vector BLOB NOT NULL,
           updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS restricted_folder_approvals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          scope TEXT NOT NULL CHECK (scope IN ('file', 'directory')),
+          target_path TEXT NOT NULL,
+          restricted_root TEXT NOT NULL,
+          signature TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          UNIQUE(scope, target_path)
+        );
       `);
 
       // v1 -> v2: backfill reconciliation columns on pre-existing migrated_stores tables.
@@ -129,6 +139,17 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
       if (!migratedCols.has("source_size")) {
         db.exec("ALTER TABLE migrated_stores ADD COLUMN source_size INTEGER NOT NULL DEFAULT 0");
         addedColumns.push("source_size");
+      }
+
+      // v3 -> v4: backfill `signature` column on pre-existing restricted_folder_approvals tables.
+      const approvalCols = new Set(
+        (
+          db.prepare("PRAGMA table_info(restricted_folder_approvals)").all() as Array<{ name?: string }>
+        ).map((col) => col.name),
+      );
+      if (!approvalCols.has("signature")) {
+        db.exec("ALTER TABLE restricted_folder_approvals ADD COLUMN signature TEXT NOT NULL DEFAULT ''");
+        addedColumns.push("signature");
       }
 
       db.prepare(

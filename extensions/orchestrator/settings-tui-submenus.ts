@@ -617,8 +617,13 @@ export class StringListSubmenu implements Component {
   render(width: number): string[] {
     const t = this.theme;
     const lines: string[] = [];
+    const isFolderList = this.key === "restricted_folders";
+    const hintText = isFolderList
+      ? "Folder paths (~ supported; symlink-resolved, boundary-safe)"
+      : "Glob patterns: * any run, ? one char, \\ escapes a literal";
+    const itemNoun = isFolderList ? "folder" : "pattern";
     lines.push(truncateToWidth(`  ${t.fg("accent", t.bold(this.label))}`, width));
-    lines.push(truncateToWidth(`  ${t.fg("dim", "Glob patterns: * any run, ? one char, \\ escapes a literal")}`, width));
+    lines.push(truncateToWidth(`  ${t.fg("dim", hintText)}`, width));
     lines.push("");
 
     if (this.mode === "list") {
@@ -628,12 +633,13 @@ export class StringListSubmenu implements Component {
         lines.push(truncateToWidth(`  ${cursor} ${text}`, width));
       }
       const addCursor = this.selectedIndex === this.entries.length ? t.fg("accent", "❯") : " ";
-      const addText = this.selectedIndex === this.entries.length ? t.fg("accent", "＋ add pattern") : t.fg("dim", "＋ add pattern");
+      const addLabel = `＋ add ${itemNoun}`;
+      const addText = this.selectedIndex === this.entries.length ? t.fg("accent", addLabel) : t.fg("dim", addLabel);
       lines.push(truncateToWidth(`  ${addCursor} ${addText}`, width));
       lines.push("");
       lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ navigate · Enter edit/add · d delete · Esc save & close")}`, width));
     } else {
-      const verb = this.editIndex === -1 ? "Add pattern" : "Edit pattern";
+      const verb = this.editIndex === -1 ? `Add ${itemNoun}` : `Edit ${itemNoun}`;
       lines.push(truncateToWidth(`  ${t.fg("text", verb)}`, width));
       lines.push("");
       const inputLines = this.editInput.render(Math.max(10, width - 4));

@@ -52,6 +52,7 @@ import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { registerTrail } from "./trail.js";
 import { registerReviewLearning } from "./review-learning.js";
 import { registerPrRetro } from "./pr-retro.js";
+import { registerSecretObfuscation } from "./secret-obfuscation.js";
 import { registerSessionSpill } from "./session-spill.js";
 import { registerPreCompactionElision } from "./pre-compaction-elision.js";
 import { registerMagicKeywords } from "./magic-keywords.js";
@@ -152,6 +153,10 @@ export default function (pi: ExtensionAPI) {
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerProjectSettings(pi);
   registerTrail(pi);
+  // Reversible secret obfuscation (#1413): restore tool_call placeholders BEFORE
+  // enforcement sees arguments, obfuscate tool_result BEFORE spill/LLM, and
+  // obfuscate provider-bound context without mutating static system prompts.
+  registerSecretObfuscation(pi);
   registerEnforcement(pi, IN_CONTAINER);
   // A rejected-before-run tool call must force a retry, not end the turn silently.
   registerToolArgGuard(pi);
