@@ -32,7 +32,13 @@ import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { acquireTokenFileLock } from "../shared/file-lock.js";
 import { createLogger, type Logger } from "../shared/logger.js";
-import { preprocessAnsiCQuotes, resolveEffectiveCwd, tokenize, unquotedSegments } from "./bash-policy.js";
+import {
+  decodeAnsiCEscapes,
+  preprocessAnsiCQuotes,
+  resolveEffectiveCwd,
+  tokenize,
+  unquotedSegments,
+} from "./bash-policy.js";
 import {
   getGlobalSettingsPath,
   getSettingsPath,
@@ -1052,7 +1058,11 @@ const SHELL_OPERATORS = new Set(["|", "||", "&&", ";", "&", "(", ")", "{", "}", 
 
 function stripOuterQuotes(s: string): string {
   if (s.startsWith("$'") && s.endsWith("'") && s.length >= 3) {
-    return stripOuterQuotes(preprocessAnsiCQuotes(s));
+    const preprocessed = preprocessAnsiCQuotes(s);
+    if (preprocessed !== s && preprocessed.startsWith("'") && preprocessed.endsWith("'")) {
+      return preprocessed.slice(1, -1);
+    }
+    return decodeAnsiCEscapes(s.slice(2, -1));
   }
   if (s.startsWith("$\"") && s.endsWith("\"") && s.length >= 3) {
     return s.slice(2, -1);

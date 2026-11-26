@@ -48,7 +48,7 @@ enfLog.debug("bash-policy module loaded");
  * Split a shell segment into words, honouring quotes and backslash escapes, so
  * `conflicted\ repo` is one word and `-c core.editor="vim -f"` is one option.
  */
-function decodeAnsiCEscapes(inner: string): string {
+export function decodeAnsiCEscapes(inner: string): string {
   return inner.replace(
     /\\(?:U([0-9a-fA-F]{1,8})|u([0-9a-fA-F]{1,4})|x([0-9a-fA-F]{1,2})|([0-7]{1,3})|c(.)|([abeEfnrtv?'"\\]))/g,
     (m, uni8?: string, uni4?: string, hex?: string, oct?: string, ctrl?: string, esc?: string) => {

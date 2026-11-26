@@ -694,6 +694,29 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
     }
   });
 
+  it("handles escaped-quote ANSI-C assignments without stack overflow", async () => {
+    const root = trackTempDir("rf-ansic-esc-quote-");
+    for (const cmd of [`t=$'\\'`, `t=$'\\\\\\'`, `echo $'\\'`]) {
+      const resEmpty = await evaluateRestrictedFolderAccess({
+        toolName: "bash",
+        input: { command: cmd },
+        cwd: root,
+        ui: null,
+        restrictedFolders: [],
+      });
+      assert.equal(resEmpty, undefined);
+
+      const resWithFolder = await evaluateRestrictedFolderAccess({
+        toolName: "bash",
+        input: { command: cmd },
+        cwd: root,
+        ui: null,
+        restrictedFolders: [path.join(root, "restricted")],
+      });
+      assert.equal(resWithFolder, undefined);
+    }
+  });
+
   it("blocks ANSI-C quoted attached bash -c deletion of state.db", async () => {
     const root = trackTempDir("rf-ansic-bash-");
     for (const cmd of [
