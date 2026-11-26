@@ -438,8 +438,10 @@ Rules support settings/feature conditionals at prompt assembly (`assembleRuleTex
 **[docs/rules-and-layers.md](docs/rules-and-layers.md)** (Rules assembly).
 
 Markers: `{{IF:key}}…{{/IF}}`, `{{IFNOT:key}}…{{/IFNOT}}`, comparisons
-`{{IF:key==value}}` / `{{IF:key!=value}}`. Whole-file frontmatter: `requires_setting` /
-`requires`. Conditionals run **per file** (no cross-file matching), then bodies are
+`{{IF:key==value}}` / `{{IF:key!=value}}`. Whole-file frontmatter: `requires_setting`,
+`requires`, `enabled`, `alwaysApply`, `globs`, and `tools` (path/tool-scoped lazy rules
+injected once per session without mutating the cached base system prompt prefix).
+Conditionals run **per file** (no cross-file matching), then always-apply bodies are
 joined, then placeholders like `{{REVIEW_LOOP_MAX_CYCLES}}` are substituted.
 
 ### Add project agents
