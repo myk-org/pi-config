@@ -387,6 +387,7 @@ interface ReloadQueueGuardRegistry {
 	entries: Map<string, ReloadQueueGuardEntry>;
 	exitListenersBound: boolean;
 	signalListenersBound: boolean;
+	signalCleanupInFlight: boolean;
 	onBeforeExit: () => void;
 	onExit: () => void;
 	onSigint: () => void;
@@ -402,9 +403,21 @@ const EXIT_NOTIFY_RELOAD_CLOSED_SCRIPT = [
 	'const items = Array.isArray(data.items) ? data.items : [];',
 	'const tasks = items.map((ib) => new Promise((resolve) => {',
 	'  let done = false;',
-	'  const finish = (ok) => { if (!done) { done = true; try { sock.destroy(); } catch {} resolve(ok); } };',
+	'  let buf = "";',
+	'  const finish = (ok) => { if (!done) { done = true; clearTimeout(t); try { sock.destroy(); } catch {} resolve(ok); } };',
 	'  const sock = net.createConnection({ path: ib.sender_endpoint });',
 	'  const t = setTimeout(() => finish(false), 450);',
+	'  sock.on("data", (chunk) => {',
+	'    if (done) return;',
+	'    buf += chunk.toString("utf8");',
+	'    if (buf.length > 65536) { finish(false); return; }',
+	'    const nl = buf.indexOf("\\n");',
+	'    if (nl < 0) return;',
+	'    try {',
+	'      const parsed = JSON.parse(buf.slice(0, nl));',
+	'      finish(Boolean(parsed && parsed.type === "ack" && parsed.msg_id === ib.msg_id));',
+	'    } catch { finish(false); }',
+	'  });',
 	'  sock.once("connect", () => {',
 	'    const line = JSON.stringify({',
 	'      type: "response",',
@@ -417,12 +430,11 @@ const EXIT_NOTIFY_RELOAD_CLOSED_SCRIPT = [
 	'      error: "session_closed",',
 	'      queued_msg_ids: [],',
 	'    }) + "\\n";',
-	'    sock.write(line, () => {',
-	'      sock.once("data", () => { clearTimeout(t); finish(true); });',
-	'      sock.once("end", () => { clearTimeout(t); finish(true); });',
-	'    });',
+	'    sock.write(line);',
 	'  });',
-	'  sock.once("error", () => { clearTimeout(t); finish(false); });',
+	'  sock.once("end", () => finish(false));',
+	'  sock.once("close", () => finish(false));',
+	'  sock.once("error", () => finish(false));',
 	'}));',
 	'Promise.all(tasks).then((results) => { process.exit(results.every(Boolean) ? 0 : 1); });',
 ].join("\n");
@@ -458,21 +470,14 @@ function getReloadQueueGuardRegistry(): ReloadQueueGuardRegistry {
 			entries: new Map(),
 			exitListenersBound: false,
 			signalListenersBound: false,
+			signalCleanupInFlight: false,
 			onBeforeExit: () => {
 				for (const key of [...created.entries.keys()]) {
 					void expireReloadQueueGuard(key, "process_before_exit");
 				}
 			},
-			onSigint: () => {
-				for (const key of [...created.entries.keys()]) {
-					void expireReloadQueueGuard(key, "signal_SIGINT");
-				}
-			},
-			onSigterm: () => {
-				for (const key of [...created.entries.keys()]) {
-					void expireReloadQueueGuard(key, "signal_SIGTERM");
-				}
-			},
+			onSigint: () => { handleReloadGuardSignal("SIGINT"); },
+			onSigterm: () => { handleReloadGuardSignal("SIGTERM"); },
 			onExit: () => {
 				const pending = [...created.entries.values()];
 				created.entries.clear();
@@ -495,6 +500,28 @@ function getReloadQueueGuardRegistry(): ReloadQueueGuardRegistry {
 					}
 				}
 			},
+		};
+		const handleReloadGuardSignal = (signal: "SIGINT" | "SIGTERM") => {
+			if (created.signalCleanupInFlight) return;
+			created.signalCleanupInFlight = true;
+			if (created.signalListenersBound) {
+				process.off("SIGINT", created.onSigint);
+				process.off("SIGTERM", created.onSigterm);
+				created.signalListenersBound = false;
+			}
+			const keys = [...created.entries.keys()];
+			void Promise.allSettled(
+				keys.map((key) => expireReloadQueueGuard(key, `signal_${signal}`)),
+			).finally(() => {
+				created.signalCleanupInFlight = false;
+				if (process.listenerCount(signal) === 0) {
+					try {
+						process.kill(process.pid, signal);
+					} catch {
+						process.exit(signal === "SIGINT" ? 130 : 143);
+					}
+				}
+			});
 		};
 		g[RELOAD_QUEUE_GUARDS_SYMBOL] = created;
 		reg = created;
@@ -2386,6 +2413,8 @@ export function createComsPeerRuntime(
 		deferredRecoveryCtx = null;
 		recoverySessionKey = DEFAULT_BRIDGE_SESSION_KEY;
 		if (reloadDrainTimer) { try { clearTimeout(reloadDrainTimer); } catch { /* ignore */ } reloadDrainTimer = null; }
+		lastReloadHandoff = null;
+		nonReloadStopReason = null;
 		pendingSettledAction = null;
 		lastTurnStopReason = null;
 		currentCtx = ctx;
@@ -5154,6 +5183,8 @@ Do not respond to this message.`;
 
 	// ━━ Clean shutdown ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let shuttingDown = false;
+	let shutdownPromise: Promise<void> | null = null;
+	let nonReloadStopReason: string | null = null;
 	async function stopPingWorker(worker: Worker): Promise<void> {
 		let timeout: NodeJS.Timeout | undefined;
 		const exited = new Promise<boolean>((resolve) => worker.once("exit", () => resolve(true)));
@@ -5168,16 +5199,22 @@ Do not respond to this message.`;
 		const isReloadShutdown = stopOptions?.reason === "reload";
 		if (shuttingDown) {
 			if (!isReloadShutdown) {
+				nonReloadStopReason = stopOptions?.reason ?? "stop";
+				if (shutdownPromise) {
+					await shutdownPromise;
+				}
 				const discardProject = stopOptions?.project ?? lastReloadHandoff?.project;
 				const discardSessionId = stopOptions?.sessionId ?? lastReloadHandoff?.sessionId;
 				lastReloadHandoff = null;
 				if (discardProject && discardSessionId) {
-					await discardReloadQueue(registry, discardProject, discardSessionId, stopOptions?.reason ?? "stop");
+					await discardReloadQueue(registry, discardProject, discardSessionId, nonReloadStopReason ?? "stop");
 				}
 			}
 			return;
 		}
 		shuttingDown = true;
+		nonReloadStopReason = isReloadShutdown ? null : (stopOptions?.reason ?? "stop");
+		const runShutdown = async (): Promise<void> => {
 		sessionGeneration++;
 		if (reloadDrainTimer) { try { clearTimeout(reloadDrainTimer); } catch { /* ignore */ } reloadDrainTimer = null; }
 		pendingSettledAction = null;
@@ -5296,7 +5333,8 @@ Do not respond to this message.`;
 			...(injectedBeforeReload.has(ib.msg_id) ? { wasInjected: true } : {}),
 		});
 
-		if (isReloadShutdown && ident) {
+		const effectiveReloadShutdown = isReloadShutdown && nonReloadStopReason === null;
+		if (effectiveReloadShutdown && ident) {
 			const deliveredBundleIds = new Set<string>();
 			const persistCandidate = (ib: InboundContext | null | undefined) => {
 				if (!ib || ib.fulfilled || finalizingMsgIds.has(ib.msg_id) || persistedIds.has(ib.msg_id)) return;
@@ -5440,6 +5478,12 @@ Do not respond to this message.`;
 			try { shutdownCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
 			try { shutdownCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }
 		}
+		};
+		const activePromise = runShutdown().finally(() => {
+			if (shutdownPromise === activePromise) shutdownPromise = null;
+		});
+		shutdownPromise = activePromise;
+		await activePromise;
 	}
 
 	const handleSigint = () => { log.info("signal_received", { signal: "SIGINT" }); void cleanShutdown({ reason: "signal" }); };

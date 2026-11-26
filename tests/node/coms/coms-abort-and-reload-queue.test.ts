@@ -12,8 +12,9 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { join } from "node:path";
 
 import {
@@ -467,9 +468,9 @@ describe("COMS reload queue persistence (#1430)", () => {
 		assert.equal(abortCalls, 1);
 	});
 
-	it("drains restored reload items in priority-before-FIFO order delivering all final replies", async () => {
-		const { workspace, comsDir, project, receiverSessionId, peerA, peerB, peerC, m1, m2, m3 } =
-			await setupThreeSenderReloadQueue("p-1430-drain", "r-drain-1430");
+	it("delivers the restored head reply with bumped inject_attempt", async () => {
+		const { workspace, comsDir, project, receiverSessionId, peerA, m1 } =
+			await setupThreeSenderReloadQueue("p-1430-head", "r-head-1430");
 
 		const receiver2 = await startPeer({
 			name: "receiver",
@@ -485,6 +486,23 @@ describe("COMS reload queue persistence (#1430)", () => {
 		await emitTurnEnd(receiver2, "reply-m1-after-reload", "stop");
 		await waitUntil(async () => (await peerA.tools.get("coms_get").execute("ga-done", { msg_id: m1 })).details.status === "complete");
 		assert.equal((await peerA.tools.get("coms_get").execute("ga-check", { msg_id: m1 })).details.response, "reply-m1-after-reload");
+	});
+
+	it("drains restored priority messages before normal FIFO messages", async () => {
+		const { workspace, comsDir, project, receiverSessionId, peerB, peerC, m1, m2, m3 } =
+			await setupThreeSenderReloadQueue("p-1430-prio", "r-prio-1430");
+
+		const receiver2 = await startPeer({
+			name: "receiver",
+			sessionId: receiverSessionId,
+			project,
+			cwd: workspace,
+			comsDir,
+			reload: true,
+		});
+
+		await deliverLatestInbound(receiver2, m1);
+		await emitTurnEnd(receiver2, "reply-m1", "stop");
 
 		await deliverLatestInbound(receiver2, m3);
 		assert.equal(receiver2.messages.some((m) => m?.details?.msg_id === m2), false);
@@ -496,6 +514,26 @@ describe("COMS reload queue persistence (#1430)", () => {
 		await emitTurnEnd(receiver2, "reply-m2-normal", "stop");
 		await waitUntil(async () => (await peerB.tools.get("coms_get").execute("gb-done", { msg_id: m2 })).details.status === "complete");
 		assert.equal((await peerB.tools.get("coms_get").execute("gb-check", { msg_id: m2 })).details.response, "reply-m2-normal");
+	});
+
+	it("resets busy to false with zero queue_depth once all restored items complete", async () => {
+		const { workspace, comsDir, project, receiverSessionId, m1, m2, m3 } =
+			await setupThreeSenderReloadQueue("p-1430-idle", "r-idle-1430");
+
+		const receiver2 = await startPeer({
+			name: "receiver",
+			sessionId: receiverSessionId,
+			project,
+			cwd: workspace,
+			comsDir,
+			reload: true,
+		});
+
+		for (const id of [m1, m3, m2]) {
+			await deliverLatestInbound(receiver2, id);
+			await emitTurnEnd(receiver2, `reply-${id}`, "stop");
+		}
+		await waitUntil(() => readRegistry(receiver2).busy === false);
 		assert.equal(readRegistry(receiver2).busy, false);
 		assert.equal(readRegistry(receiver2).queue_depth, 0);
 	});
@@ -752,12 +790,12 @@ describe("COMS reload queue persistence (#1430)", () => {
 			execFile(
 				process.execPath,
 				["--import", "tsx", "--input-type=module", "-e", childScript],
-				{ cwd: process.cwd(), timeout: 15_000 },
+				{ cwd: process.cwd(), timeout: 30_000 },
 				(err) => (err ? reject(err) : resolve()),
 			);
 		});
 
-		await waitUntil(() => existsSync(readyMarker));
+		await waitUntil(() => existsSync(readyMarker), 20_000);
 		const sent = await sender.tools.get("coms_send").execute("s1", { target: "exit-recv", prompt: "interrupted by process.exit" });
 		const m1 = sent.details.msg_id as string;
 		writeFileSync(exitMarker, "go");
@@ -910,5 +948,182 @@ describe("COMS reload queue persistence (#1430)", () => {
 		await emitTurnEnd(receiver2, "reply to c1", "stop");
 		await waitUntil(async () => (await peerC.tools.get("coms_get").execute("gc1-done", { msg_id: c1 })).details.status === "complete");
 		assert.equal((await peerC.tools.get("coms_get").execute("gc1-c", { msg_id: c1 })).details.response, "reply to c1");
+	});
+
+	it("retains the reload handoff file when the sender closes without acknowledging on process.exit", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const project = "p-1430-noack";
+		const receiverSessionId = "r-noack-1430";
+		const silentSock = join(workspace, "silent-sender.sock");
+		const server = net.createServer((sock) => {
+			sock.once("data", () => { sock.end(); });
+		});
+		await new Promise<void>((resolve) => server.listen(silentSock, resolve));
+		activePeers.push({ shutdown: () => new Promise<void>((resolve) => server.close(() => resolve())) });
+
+		const readyMarker = join(workspace, "noack-ready");
+		const exitMarker = join(workspace, "noack-exit");
+		const childScript = `
+			import { existsSync, writeFileSync } from "node:fs";
+			import { createComsPeerRuntime } from "./extensions/coms/coms-p2p.js";
+			const pi = {
+				registerFlag() {},
+				getFlag() { return undefined; },
+				registerTool() {},
+				registerCommand() {},
+				registerShortcut() {},
+				on() {},
+				sendMessage() {},
+				events: { emit() {}, on() { return () => {}; } },
+			};
+			const runtime = createComsPeerRuntime(pi, {
+				deferred: true,
+				comsDir: ${JSON.stringify(comsDir)},
+				sessionId: ${JSON.stringify(receiverSessionId)},
+				allowSubagentChild: true,
+				registerSignalHandlers: false,
+			});
+			const ctx = {
+				cwd: ${JSON.stringify(workspace)},
+				mode: "tui",
+				hasUI: false,
+				model: { id: "test-model" },
+				ui: { notify() {}, setStatus() {}, setWidget() {}, setTheme() { return { success: true }; }, setTitle() {} },
+				sessionManager: { getSessionId: () => ${JSON.stringify(receiverSessionId)}, getEntries: () => [], getBranch: () => [] },
+			};
+			await runtime.start(ctx, { flags: { cname: "noack-recv", project: ${JSON.stringify(project)} } });
+			writeFileSync(${JSON.stringify(readyMarker)}, "ready");
+			while (!existsSync(${JSON.stringify(exitMarker)})) {
+				await new Promise((r) => setTimeout(r, 15));
+			}
+			await runtime.stop({ reason: "reload" });
+			process.exit(0);
+		`;
+		const childPromise = new Promise<void>((resolve, reject) => {
+			execFile(
+				process.execPath,
+				["--import", "tsx", "--input-type=module", "-e", childScript],
+				{ cwd: process.cwd(), timeout: 30_000 },
+				(err) => (err ? reject(err) : resolve()),
+			);
+		});
+
+		await waitUntil(() => existsSync(readyMarker), 20_000);
+		const recvSock = new ComsRegistry(comsDir).makeEndpoint(receiverSessionId);
+		await new Promise<void>((resolve, reject) => {
+			const s = net.createConnection({ path: recvSock }, () => {
+				s.write(JSON.stringify({
+					type: "prompt",
+					msg_id: "msg-noack-1",
+					sender_session: "silent-session",
+					sender_endpoint: silentSock,
+					sender_name: "silent-sender",
+					sender_cwd: workspace,
+					hops: 0,
+					timestamp: new Date().toISOString(),
+					prompt: "needs ack",
+				}) + "\n");
+			});
+			s.once("data", () => { s.destroy(); resolve(); });
+			s.once("error", reject);
+		});
+		writeFileSync(exitMarker, "go");
+		await childPromise;
+
+		const handoffPath = new ComsRegistry(comsDir).reloadQueuePath(project, receiverSessionId);
+		assert.equal(existsSync(handoffPath), true);
+	});
+
+	it("replies session_closed without persisting when an explicit stop overlaps reload shutdown", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const project = "p-1430-overlap";
+		const receiverSessionId = "r-overlap-1430";
+		const sender = await startPeer({ name: "sender", sessionId: "s-overlap-1430", project, cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: receiverSessionId, project, cwd: workspace, comsDir });
+
+		const sent = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "overlapped stop" });
+		const m1 = sent.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
+
+		// Fire reload shutdown and immediately overlap an explicit non-reload stop before reload finishes awaiting worker exit.
+		const reloadPromise = receiver.shutdown({ reason: "reload" });
+		const explicitStopPromise = receiver.shutdown({ reason: "stop" });
+		await Promise.all([reloadPromise, explicitStopPromise]);
+
+		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-ov", { msg_id: m1 })).details.status === "complete");
+		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.error, "session_closed");
+		assert.equal(existsSync(new ComsRegistry(comsDir).reloadQueuePath(project, receiverSessionId)), false);
+	});
+
+	it("terminates on SIGTERM during reload handoff after notifying waiting senders", async () => {
+		if (process.platform === "win32") return;
+		const { workspace, comsDir } = makeWorkspace();
+		const project = "p-1430-sigterm";
+		const receiverSessionId = "r-sigterm-1430";
+		const sender = await startPeer({ name: "sender", sessionId: "s-sigterm-1430", project, cwd: workspace, comsDir });
+		const readyMarker = join(workspace, "sigterm-ready");
+		const persistedMarker = join(workspace, "sigterm-persisted");
+		const goReloadMarker = join(workspace, "sigterm-reload");
+
+		const childScript = `
+			import { existsSync, writeFileSync } from "node:fs";
+			import { createComsPeerRuntime } from "./extensions/coms/coms-p2p.js";
+			const pi = {
+				registerFlag() {},
+				getFlag() { return undefined; },
+				registerTool() {},
+				registerCommand() {},
+				registerShortcut() {},
+				on() {},
+				sendMessage() {},
+				events: { emit() {}, on() { return () => {}; } },
+			};
+			const runtime = createComsPeerRuntime(pi, {
+				deferred: true,
+				comsDir: ${JSON.stringify(comsDir)},
+				sessionId: ${JSON.stringify(receiverSessionId)},
+				allowSubagentChild: true,
+				registerSignalHandlers: true,
+			});
+			const ctx = {
+				cwd: ${JSON.stringify(workspace)},
+				mode: "tui",
+				hasUI: false,
+				model: { id: "test-model" },
+				ui: { notify() {}, setStatus() {}, setWidget() {}, setTheme() { return { success: true }; }, setTitle() {} },
+				sessionManager: { getSessionId: () => ${JSON.stringify(receiverSessionId)}, getEntries: () => [], getBranch: () => [] },
+			};
+			await runtime.start(ctx, { flags: { cname: "sigterm-recv", project: ${JSON.stringify(project)} } });
+			writeFileSync(${JSON.stringify(readyMarker)}, "ready");
+			while (!existsSync(${JSON.stringify(goReloadMarker)})) {
+				await new Promise((r) => setTimeout(r, 15));
+			}
+			await runtime.stop({ reason: "reload" });
+			writeFileSync(${JSON.stringify(persistedMarker)}, "persisted");
+			setInterval(() => {}, 1_000);
+		`;
+		const child = spawn(
+			process.execPath,
+			["--import", "tsx", "--input-type=module", "-e", childScript],
+			{ cwd: process.cwd(), stdio: "ignore" },
+		);
+		const exitInfo = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+			child.once("exit", (code, signal) => resolve({ code, signal }));
+		});
+		activePeers.push({ shutdown: async () => { try { child.kill("SIGKILL"); } catch { /* ignore */ } } });
+
+		await waitUntil(() => existsSync(readyMarker), 20_000);
+		const sent = await sender.tools.get("coms_send").execute("s1", { target: "sigterm-recv", prompt: "sigterm mid reload" });
+		const m1 = sent.details.msg_id as string;
+		writeFileSync(goReloadMarker, "go");
+		await waitUntil(() => existsSync(persistedMarker), 10_000);
+
+		child.kill("SIGTERM");
+		const exited = await exitInfo;
+		assert.equal(exited.signal, "SIGTERM");
+
+		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-sig", { msg_id: m1 })).details.status === "complete");
+		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.error, "session_closed");
+		assert.equal(existsSync(new ComsRegistry(comsDir).reloadQueuePath(project, receiverSessionId)), false);
 	});
 });
