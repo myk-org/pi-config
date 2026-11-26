@@ -11,15 +11,19 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { createLogger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectMemoryDir } from "./utils.js";
 import {
   type ScoredEntry,
   type ScoresFile,
   type MemoryCategory,
+  hasEnforcementFields,
   loadScores,
   entryHash,
 } from "./memory-scoring.js";
+
+const log = createLogger("situation-report");
 import {
   CATEGORY_TO_TOPIC,
   type TopicEntry,
@@ -42,6 +46,17 @@ const CHARS_PER_TOKEN = 4;
 
 /** Default total token budget for the situation report */
 const DEFAULT_TOKEN_BUDGET = 1700;
+
+/** Default token cap for standing memory injected before compaction (issue #1422) */
+const DEFAULT_COMPACTION_MEMORY_BUDGET = 600;
+
+const STANDING_COMPACTION_CATEGORIES = new Set<MemoryCategory>([
+  "preference",
+  "decision",
+  "lesson",
+  "mistake",
+  "pattern",
+]);
 
 /** Section definitions with priority and token budgets */
 interface SectionDef {
@@ -341,6 +356,87 @@ export function estimateMemoryBudget(
   // Clamp to the configured memory budget maximum
   const max = cwd ? getMemoryTokenBudget(cwd) : DEFAULT_TOKEN_BUDGET;
   return Math.min(max, remaining);
+}
+
+/**
+ * Build a compact, bounded block of standing project memories (pinned, enforced,
+ * and highest-priority rules/decisions/lessons) for pre-compaction summarization
+ * context (issue #1422). Respects `memory_token_budget` (0 disables).
+ */
+export function buildCompactionMemoryContext(
+  cwd: string,
+  maxTokens: number = DEFAULT_COMPACTION_MEMORY_BUDGET,
+): string {
+  const configuredBudget = getMemoryTokenBudget(cwd);
+  const tokenBudget = Math.min(configuredBudget, maxTokens);
+  if (tokenBudget <= 0) return "";
+
+  const topicsDir = join(getProjectMemoryDir(cwd), "topics");
+  if (!existsSync(topicsDir)) return "";
+
+  const scores = loadScores(cwd);
+  const topicEntries = readAllTopicEntries(cwd);
+  if (topicEntries.length === 0) return "";
+
+  interface Candidate {
+    line: string;
+    isPinned: boolean;
+    isEnforced: boolean;
+    score: number;
+  }
+
+  const candidates: Candidate[] = [];
+  for (const te of topicEntries) {
+    const line = canonicalTopicLine(te);
+    const scored = scores.entries[entryHash(line)];
+    if (!scored) continue;
+    if (scored.lifecycle !== "active" && scored.lifecycle !== "provisional") continue;
+    if (scored.scope === "session") continue;
+
+    const isPinned = te.pinned || scored.userState === "pinned";
+    const isEnforced = hasEnforcementFields(scored);
+    if (!isPinned && !isEnforced && !STANDING_COMPACTION_CATEGORIES.has(te.category)) continue;
+
+    candidates.push({
+      line,
+      isPinned,
+      isEnforced,
+      score: scored.score,
+    });
+  }
+
+  if (candidates.length === 0) return "";
+
+  candidates.sort((a, b) => {
+    if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+    if (a.isEnforced !== b.isEnforced) return a.isEnforced ? -1 : 1;
+    return b.score - a.score;
+  });
+
+  const header =
+    "# Standing Project Memory (Preserve Across Compaction)\n\n" +
+    "Keep the compaction summary consistent with these authoritative project rules and decisions; do not drop or contradict them:\n\n";
+  const maxChars = tokenBudget * CHARS_PER_TOKEN;
+  let remaining = maxChars - header.length;
+  if (remaining <= 0) return "";
+
+  const lines: string[] = [];
+  for (const candidate of candidates) {
+    const cost = candidate.line.length + 1;
+    if (cost > remaining) break;
+    lines.push(candidate.line);
+    remaining -= cost;
+  }
+
+  if (lines.length === 0) return "";
+
+  const output = `${header}${lines.join("\n")}\n`;
+  log.debug("compaction_memory_context_built", {
+    entries: lines.length,
+    chars: output.length,
+    budgetTokens: tokenBudget,
+  });
+  return output;
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────

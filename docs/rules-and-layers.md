@@ -132,23 +132,45 @@ Two keys are not settings but act like them, and are only available in the **tru
 
 Feature predicates are consulted only for a bare `{{IF:key}}`. Writing `{{IF:coms_active==true}}` falls through to the settings lookup, where `coms_active` is not a known key, and therefore fails closed with a warning — the block is dropped. Use the bare form.
 
-### Frontmatter gate
+### Frontmatter gate and scoped lazy rules
 
-A rule file can be excluded entirely with a frontmatter block:
+A rule file can start with a YAML frontmatter block between `---` fences to gate loading or defer injection until a matching file or tool is used (#1415):
 
 ```markdown
 ---
+enabled: true
 requires_setting: pidash_enable
+requires: coms_active
+alwaysApply: false
+globs:
+  - "**/*.py"
+  - "Dockerfile*"
+tools: ["bash", "edit", "write"]
 ---
 ```
 
-`requires_setting` names a settings key; the file loads only when that setting is truthy. `requires` names a feature predicate; the file loads only when that predicate is true. If both are present, both must pass (AND). If neither is present, the file always loads.
+| Field | Type | Default | Behaviour |
+| --- | --- | --- | --- |
+| `enabled` | boolean | `true` | Set to `false` to skip the rule completely (useful for disabling a lower-layer rule by filename override). |
+| `requires_setting` | string | — | Names a settings key; the file loads only when that setting is truthy. Unknown keys warn and exclude the file. |
+| `requires` | string | — | Names a feature predicate (`coms_active`, `interactive_tui`); the file loads only when true. Unknown names warn and exclude the file. |
+| `alwaysApply` | boolean | `true` when neither `globs` nor `tools` is set; `false` otherwise | When `true`, the rule is assembled into the base `orchestrator_rules` system prompt section. When `false`, the rule is held back as a lazy rule. |
+| `globs` | string or list | `[]` | POSIX glob patterns (inline `[...]` or YAML `- ` block list). Patterns without `/` match both the path and its basename (so `Dockerfile*` matches `docker/Dockerfile.prod`). |
+| `tools` | string or list | `[]` | Exact tool names (e.g. `bash`, `edit`, `write`). |
 
-An unknown key in `requires_setting`, or an unknown name in `requires`, warns and excludes the file.
+Matching and delivery rules for lazy rules:
+
+- **Backwards compatibility:** rules with no frontmatter (or only `requires` / `requires_setting`) remain `enabled: true` and `alwaysApply: true`.
+- **Override precedence:** project > user > package override by filename runs before frontmatter parsing, so a project rule can change a package rule's scope or disable it with `enabled: false`.
+- **Combining `globs` and `tools`:**
+  - `globs` only → matches when a user prompt mentions a matching file path (`before_agent_start`) or a tool call operates on a matching path (`tool_call` / `tool_result`).
+  - `tools` only → matches when any listed tool is called (`tool_call` / `tool_result`).
+  - Both `globs` and `tools` → requires **both** a listed tool and a matching path (AND).
+- **Cache-safe delivery & deduplication:** lazy rules never mutate the cached base `orchestrator_rules` system prompt section. Rules matched on `tool_call` / `tool_result` are appended to the tool result (`<scoped_rules>`) in the same turn; rules matched from prompt paths (or undelivered from a blocked `tool_call`) are delivered in the hidden `orchestrator-turn-context` message on `before_agent_start`. Each lazy rule is injected **once per session** and resets on `session_start` or `session_compact`.
 
 `rules/55-coms-protocol.md` uses `requires: coms_active`, which is why the coms protocol only appears in the prompt once coms is running.
 
-Note the frontmatter parser is deliberately simple: `key: value` lines between `---` fences, blank lines and `#` comments ignored. It is not YAML.
+Blank lines and `#` comments inside frontmatter are ignored; lists support both inline `[a, b]` syntax and indented `- item` block lists.
 
 ## Placeholders in rules
 

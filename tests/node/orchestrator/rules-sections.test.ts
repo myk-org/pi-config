@@ -136,7 +136,7 @@ describe("before_agent_start section injection", () => {
     }
   });
 
-  it("splits ticking async agent status into async_agents_status so orchestrator_rules stays byte-identical (#1178)", async () => {
+  it("delivers ticking async agent status outside systemPromptOptions.sections so prefix stays byte-identical (#1178, #1414)", async () => {
     const cwd = makeTempDir("rules-async-section-");
     try {
       let jobs: Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }> = [];
@@ -144,31 +144,46 @@ describe("before_agent_start section injection", () => {
       registerRules(pi, () => jobs);
       const h = getBeforeAgentStart(handlers);
 
-      // Turn 1: 0 async jobs
+      // Turn 1: 0 async jobs — no async section and no per-turn message
       const e1 = makeEvent(cwd);
-      await h.fn(e1, { cwd });
+      const res1 = await h.fn(e1, { cwd });
       const s1 = e1.systemPromptOptions.sections;
       assert.ok(s1.orchestrator_rules && !s1.orchestrator_rules.includes("# Async Agents Status"));
-      assert.equal(s1.async_agents_status, "# Async Agents Status\n\nNo async agents running.");
+      assert.equal(s1.async_agents_status, undefined);
+      assert.equal(res1, undefined);
 
-      // Turn 2: 1 running job (5s elapsed)
+      // Turn 2: 1 running job (5s elapsed) — delivered via turn-context message, sections unchanged
       jobs = [{ id: "j1", agent: "worker", name: "Watcher", task: "watch", status: "running", startedAt: Date.now() - 5_000 }];
       const e2 = makeEvent(cwd);
-      await h.fn(e2, { cwd });
+      const res2 = await h.fn(e2, { cwd });
       const s2 = e2.systemPromptOptions.sections;
       assert.equal(s2.orchestrator_rules, s1.orchestrator_rules, "orchestrator_rules stays byte-identical on 0 -> 1 transition");
-      assert.ok(s2.async_agents_status.includes("1 async agent(s) running"));
-      assert.ok(s2.async_agents_status.includes("Watcher (worker)"));
+      assert.equal(s2.async_agents_status, undefined, "async status never mutates cached systemPromptOptions.sections");
+      assert.equal(res2?.message?.customType, "orchestrator-turn-context");
+      assert.equal(res2?.message?.display, false);
+      assert.ok(res2?.message?.content.includes("1 async agent(s) running"));
+      assert.ok(res2?.message?.content.includes("Watcher (worker)"));
 
       // Turn 3: same job, elapsed ticked to 65s
       jobs = [{ id: "j1", agent: "worker", name: "Watcher", task: "watch", status: "running", startedAt: Date.now() - 65_000 }];
       const e3 = makeEvent(cwd);
-      await h.fn(e3, { cwd });
+      const res3 = await h.fn(e3, { cwd });
       const s3 = e3.systemPromptOptions.sections;
       assert.equal(s3.orchestrator_rules, s1.orchestrator_rules, "orchestrator_rules stays byte-identical as elapsed ticks");
-      assert.notEqual(s3.async_agents_status, s2.async_agents_status, "async_agents_status reflects updated elapsed time");
+      assert.equal(s3.async_agents_status, undefined);
+      assert.notEqual(res3?.message?.content, res2?.message?.content, "per-turn message reflects updated elapsed time");
+
+      // Turn 4: transition back to 0 jobs — emits one-time transition notice, then silent on Turn 5
+      jobs = [];
+      const e4Idle = makeEvent(cwd);
+      const res4Idle = await h.fn(e4Idle, { cwd });
+      assert.ok(res4Idle?.message?.content.includes("No async agents running."));
+      const e5Idle = makeEvent(cwd);
+      const res5Idle = await h.fn(e5Idle, { cwd });
+      assert.equal(res5Idle, undefined);
 
       // Fallback forced prompt still concatenates both sections in order
+      jobs = [{ id: "j1", agent: "worker", name: "Watcher", task: "watch", status: "running", startedAt: Date.now() - 65_000 }];
       const forced = "FORCED";
       const e4 = makeEvent(cwd, forced);
       const res4 = await h.fn(e4, { cwd });
@@ -216,14 +231,18 @@ describe("before_agent_start section injection", () => {
       const h = getBeforeAgentStart(handlers);
 
       const event = { ...makeEvent(cwd), messageType: "user" as const, prompt: "Always run tox before pushing changes to the branch" };
-      await h.fn(event, { cwd });
+      const res = await h.fn(event, { cwd });
 
       const sections = event.systemPromptOptions.sections;
       assert.ok(sections.project_memory?.includes(pinnedRule), "pinned rule is in project_memory");
       assert.equal(
         sections.contextual_memories,
         undefined,
-        "pinned rule already in project_memory must not be duplicated in contextual_memories",
+        "contextual memories must not mutate systemPromptOptions.sections",
+      );
+      assert.ok(
+        !res?.message?.content?.includes(pinnedRule),
+        "pinned rule already in project_memory must not be duplicated in contextual turn message",
       );
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -262,7 +281,7 @@ describe("before_agent_start section injection", () => {
       const h = getBeforeAgentStart(handlers);
 
       const event = { ...makeEvent(cwd), messageType: "user" as const, prompt: "Use tox" };
-      await h.fn(event, { cwd });
+      const res = await h.fn(event, { cwd });
 
       const sections = event.systemPromptOptions.sections;
       assert.ok(sections.project_memory?.includes(longerEmitted), "pinned longer rule is in project_memory");
@@ -270,8 +289,9 @@ describe("before_agent_start section injection", () => {
         !sections.project_memory?.includes(`\n- [lesson] ${shorterPrefix}\n`),
         "shorter prefix entry was omitted from project_memory",
       );
+      assert.equal(sections.contextual_memories, undefined, "contextual memories delivered outside systemPromptOptions.sections");
       assert.ok(
-        sections.contextual_memories?.includes(`- [lesson] ${shorterPrefix}`),
+        res?.message?.content?.includes(`- [lesson] ${shorterPrefix}`),
         "distinct prefix memory must not be dropped by substring match",
       );
     } finally {
@@ -470,11 +490,12 @@ describe("before_agent_start section injection", () => {
         messageType: "user",
         prompt: "Tell me more about unique-autosession-topic",
       };
-      await h.fn(event, { cwd, sessionManager: { getSessionId: () => activeSid } });
+      const res = await h.fn(event, { cwd, sessionManager: { getSessionId: () => activeSid } });
 
-      const pastSection = event.systemPromptOptions.sections.past_sessions ?? "";
-      assert.ok(pastSection.includes(pastSid.slice(0, 8)));
-      assert.ok(!pastSection.includes(activeSid.slice(0, 8)));
+      assert.equal(event.systemPromptOptions.sections.past_sessions, undefined);
+      const pastContent = res?.message?.content ?? "";
+      assert.ok(pastContent.includes(pastSid.slice(0, 8)));
+      assert.ok(!pastContent.includes(activeSid.slice(0, 8)));
     } finally {
       if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = prevAgentDir;

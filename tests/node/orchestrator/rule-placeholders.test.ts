@@ -10,9 +10,15 @@ import {
 	parseConditionExpr,
 	evaluateConditionalBlocks,
 	parseRuleFrontmatter,
+	parseRuleScope,
+	matchRuleGlob,
+	matchLazyRule,
+	extractPathsFromText,
+	extractPathsFromToolInput,
 	resolveAgentSystemPrompt,
 	rulePassesFrontmatterGate,
 	assembleRuleText,
+	assembleRulesSplit,
 } from "../../../extensions/orchestrator/rule-placeholders.js";
 
 describe("substituteRulePlaceholders", () => {
@@ -338,6 +344,115 @@ describe("parseRuleFrontmatter", () => {
 			requires: "coms_active",
 		});
 		assert.equal(body, "# Body\n");
+	});
+
+	it("parses YAML block lists alongside scalar keys (#1415)", () => {
+		const raw = [
+			"---",
+			"alwaysApply: false",
+			"globs:",
+			'  - "**/*.py"',
+			'  - "Dockerfile*"',
+			"tools:",
+			"  - bash",
+			"  - edit",
+			"---",
+			"# Python & Docker Rule",
+		].join("\n");
+		const { attrs, body } = parseRuleFrontmatter(raw);
+		assert.equal(attrs.alwaysApply, "false");
+		assert.deepEqual(JSON.parse(attrs.globs), ["**/*.py", "Dockerfile*"]);
+		assert.deepEqual(JSON.parse(attrs.tools), ["bash", "edit"]);
+		assert.equal(body, "# Python & Docker Rule");
+	});
+});
+
+describe("parseRuleScope, matchRuleGlob, matchLazyRule, and assembleRulesSplit (#1415)", () => {
+	it("defaults to enabled=true, alwaysApply=true when frontmatter is absent", () => {
+		assert.deepEqual(parseRuleScope({}), {
+			enabled: true,
+			alwaysApply: true,
+			globs: [],
+			tools: [],
+		});
+	});
+
+	it("defaults alwaysApply=false when globs or tools are set unless explicitly true", () => {
+		const globOnly = parseRuleScope({ globs: '["**/*.py", "Dockerfile*"]' });
+		assert.equal(globOnly.alwaysApply, false);
+		assert.deepEqual(globOnly.globs, ["**/*.py", "Dockerfile*"]);
+
+		const explicitTrue = parseRuleScope({ alwaysApply: "true", globs: '["**/*.py"]' });
+		assert.equal(explicitTrue.alwaysApply, true);
+
+		const inlineUnquoted = parseRuleScope({ tools: "[bash, 'edit', \"write\"]" });
+		assert.equal(inlineUnquoted.alwaysApply, false);
+		assert.deepEqual(inlineUnquoted.tools, ["bash", "edit", "write"]);
+	});
+
+	it("matches POSIX globs and basename patterns", () => {
+		assert.equal(matchRuleGlob("app.py", "**/*.py"), true);
+		assert.equal(matchRuleGlob("src/pkg/app.py", "**/*.py"), true);
+		assert.equal(matchRuleGlob("src/pkg/app.ts", "**/*.py"), false);
+		assert.equal(matchRuleGlob("Dockerfile", "Dockerfile*"), true);
+		assert.equal(matchRuleGlob("docker/Dockerfile.prod", "Dockerfile*"), true);
+		assert.equal(matchRuleGlob("./src/a/b.ts", "src/**/*.ts"), true);
+	});
+
+	it("applies tools-only, globs-only, and AND semantics when both are specified", () => {
+		const toolsOnly = { globs: [], tools: ["bash"] };
+		assert.equal(matchLazyRule(toolsOnly, { toolName: "bash" }), true);
+		assert.equal(matchLazyRule(toolsOnly, { toolName: "read" }), false);
+
+		const globsOnly = { globs: ["**/*.py"], tools: [] };
+		assert.equal(matchLazyRule(globsOnly, { paths: ["src/main.py"] }), true);
+		assert.equal(matchLazyRule(globsOnly, { paths: ["README.md"] }), false);
+
+		const both = { globs: ["**/*.py"], tools: ["edit", "write"] };
+		assert.equal(matchLazyRule(both, { toolName: "edit", paths: ["src/main.py"] }), true);
+		assert.equal(matchLazyRule(both, { toolName: "read", paths: ["src/main.py"] }), false);
+		assert.equal(matchLazyRule(both, { toolName: "edit", paths: ["README.md"] }), false);
+		assert.equal(matchLazyRule(both, { paths: ["src/main.py"] }), false);
+	});
+
+	it("extracts paths from prompt text and tool inputs", () => {
+		const fromPrompt = extractPathsFromText("Please update `src/app.py` and Dockerfile.dev, ignore https://example.com/a.py");
+		assert.ok(fromPrompt.includes("src/app.py"));
+		assert.ok(fromPrompt.includes("Dockerfile.dev"));
+		assert.ok(!fromPrompt.some((p) => p.includes("example.com")));
+
+		const fromEdit = extractPathsFromToolInput("edit", { path: "/repo/src/mod.py" }, "/repo");
+		assert.ok(fromEdit.includes("src/mod.py"));
+
+		const fromBash = extractPathsFromToolInput("bash", { command: "uv run pytest tests/test_core.py" }, "/repo");
+		assert.ok(fromBash.includes("tests/test_core.py"));
+	});
+
+	it("splits base alwaysApply rules from lazy rules and respects enabled: false", () => {
+		const { baseText, lazyRules } = assembleRulesSplit(
+			[
+				{ fileName: "10-base.md", raw: "# Base Rule\nAlways here." },
+				{ fileName: "20-disabled.md", raw: "---\nenabled: false\n---\n# Disabled Rule" },
+				{ fileName: "30-python.md", raw: '---\nalwaysApply: false\nglobs: ["**/*.py"]\n---\n# Python Rule\nCycles: {{REVIEW_LOOP_MAX_CYCLES}}' },
+				{ fileName: "40-bash.md", raw: "---\ntools: [bash]\n---\n# Bash Rule" },
+			],
+			{
+				resolve: () => true,
+				knownKeys: ["review_loop_enforcement"],
+				featurePredicates: {},
+				reviewLoopMaxCycles: 4,
+			},
+		);
+
+		assert.match(baseText, /# Base Rule/);
+		assert.doesNotMatch(baseText, /# Disabled Rule/);
+		assert.doesNotMatch(baseText, /# Python Rule/);
+		assert.doesNotMatch(baseText, /# Bash Rule/);
+		assert.equal(lazyRules.length, 2);
+		assert.equal(lazyRules[0].fileName, "30-python.md");
+		assert.equal(lazyRules[0].body, "# Python Rule\nCycles: 4");
+		assert.equal(lazyRules[1].fileName, "40-bash.md");
+		assert.deepEqual(lazyRules[1].tools, ["bash"]);
 	});
 });
 

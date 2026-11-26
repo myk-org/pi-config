@@ -8,6 +8,7 @@
  * the test install). Callers pass a resolve function for settings lookups.
  */
 
+import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("rules");
@@ -306,7 +307,7 @@ function processRegion(
 }
 
 /**
- * Parse a simple YAML-ish frontmatter block (`---` / `key: value` / `---`).
+ * Parse a simple YAML-ish frontmatter block (`---` / `key: value` or block lists / `---`).
  * No attrs → body = raw.
  */
 export function parseRuleFrontmatter(raw: string): { attrs: Record<string, string>; body: string } {
@@ -315,16 +316,241 @@ export function parseRuleFrontmatter(raw: string): { attrs: Record<string, strin
     return { attrs: {}, body: raw };
   }
   const attrs: Record<string, string> = {};
-  for (const line of match[1].split(/\r?\n/)) {
+  const lines = match[1].split(/\r?\n/);
+  let currentListKey: string | null = null;
+  let currentListItems: string[] = [];
+
+  const flushList = (): void => {
+    if (currentListKey !== null) {
+      attrs[currentListKey] = JSON.stringify(currentListItems);
+      currentListKey = null;
+      currentListItems = [];
+    }
+  };
+
+  for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
+
+    if (currentListKey !== null && /^-\s+/.test(trimmed)) {
+      const item = stripYamlQuotes(trimmed.replace(/^-\s+/, "").trim());
+      if (item) currentListItems.push(item);
+      continue;
+    }
+
+    flushList();
     const colon = trimmed.indexOf(":");
     if (colon <= 0) continue;
     const key = trimmed.slice(0, colon).trim();
     const value = trimmed.slice(colon + 1).trim();
-    if (key) attrs[key] = value;
+    if (!key) continue;
+    if (value === "") {
+      currentListKey = key;
+      currentListItems = [];
+    } else {
+      attrs[key] = value;
+    }
   }
+  flushList();
   return { attrs, body: match[2] };
+}
+
+function stripYamlQuotes(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+    (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function parseYamlStringList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item) => (typeof item === "string" ? item.trim() : String(item).trim()))
+          .filter((s) => s.length > 0);
+      }
+    } catch {
+      // Fallback for YAML-style unquoted or single-quoted inline lists like [*.py, 'Dockerfile*']
+    }
+    const inner = trimmed.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner
+      .split(",")
+      .map((part) => stripYamlQuotes(part.trim()).trim())
+      .filter((s) => s.length > 0);
+  }
+  const scalar = stripYamlQuotes(trimmed).trim();
+  return scalar ? [scalar] : [];
+}
+
+function parseYamlBool(raw: string | undefined, key: string, onWarn?: (msg: string) => void): boolean | undefined {
+  if (raw === undefined) return undefined;
+  const norm = stripYamlQuotes(raw.trim()).trim().toLowerCase();
+  if (norm === "true") return true;
+  if (norm === "false") return false;
+  onWarn?.(`invalid boolean frontmatter ${key}: ${raw}`);
+  return undefined;
+}
+
+export interface RuleScope {
+  enabled: boolean;
+  alwaysApply: boolean;
+  globs: string[];
+  tools: string[];
+}
+
+/**
+ * Parse lazy-rule scoping metadata (`enabled`, `alwaysApply`, `globs`, `tools`)
+ * from frontmatter attributes (issue #1415).
+ *
+ * Defaults:
+ * - `enabled`: `true`
+ * - `alwaysApply`: `true` when neither `globs` nor `tools` is specified (100%
+ *   backwards-compatible); `false` when `globs` or `tools` is non-empty unless
+ *   explicitly set to `true`.
+ */
+export function parseRuleScope(
+  attrs: Record<string, string>,
+  onWarn?: (msg: string) => void,
+): RuleScope {
+  const enabled = parseYamlBool(attrs.enabled, "enabled", onWarn) ?? true;
+  const globs = parseYamlStringList(attrs.globs);
+  const tools = parseYamlStringList(attrs.tools);
+  const explicitAlways = parseYamlBool(attrs.alwaysApply, "alwaysApply", onWarn);
+  const alwaysApply = explicitAlways ?? (globs.length === 0 && tools.length === 0);
+  return { enabled, alwaysApply, globs, tools };
+}
+
+export interface LazyRule {
+  fileName: string;
+  globs: string[];
+  tools: string[];
+  body: string;
+}
+
+/**
+ * Match a file path against a rule glob pattern (POSIX-normalized).
+ * Patterns without `/` match against both the normalized path and its basename
+ * so `Dockerfile*` matches both `Dockerfile` and `docker/Dockerfile.prod`.
+ */
+export function matchRuleGlob(filePath: string, pattern: string): boolean {
+  const normPath = filePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  const normPattern = pattern.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!normPath || !normPattern) return false;
+  try {
+    if (path.posix.matchesGlob(normPath, normPattern)) return true;
+    if (!normPattern.includes("/")) {
+      return path.posix.matchesGlob(path.posix.basename(normPath), normPattern);
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Check whether a lazy scoped rule matches the current invocation context.
+ * - `tools`-only: matches when `toolName` is in `rule.tools`.
+ * - `globs`-only: matches when any candidate path matches `rule.globs`.
+ * - Both `tools` and `globs`: requires BOTH to match (AND).
+ */
+export function matchLazyRule(
+  rule: Pick<LazyRule, "globs" | "tools">,
+  ctx: { toolName?: string; paths?: string[] },
+): boolean {
+  const hasTools = rule.tools.length > 0;
+  const hasGlobs = rule.globs.length > 0;
+  if (!hasTools && !hasGlobs) return false;
+  if (hasTools && (!ctx.toolName || !rule.tools.includes(ctx.toolName))) return false;
+  if (hasGlobs) {
+    const paths = ctx.paths ?? [];
+    if (paths.length === 0) return false;
+    const hit = paths.some((p) => rule.globs.some((g) => matchRuleGlob(p, g)));
+    if (!hit) return false;
+  }
+  return true;
+}
+
+const KNOWN_EXTENSIONLESS_FILENAMES = /^(?:Dockerfile|Containerfile|Makefile|Jenkinsfile|Procfile|Vagrantfile|Gemfile|Rakefile)(?:[._-][A-Za-z0-9._-]+)?$/;
+
+/**
+ * Extract candidate file paths/names from free-form text (user prompt or bash command).
+ */
+export function extractPathsFromText(text: string): string[] {
+  if (!text) return [];
+  const found = new Set<string>();
+  const tokens = text.split(/\s+/);
+  for (const rawToken of tokens) {
+    const cleaned = rawToken
+      .replace(/^[`"'([{<]+/, "")
+      .replace(/[`"'\])}>,:;!?]+$/, "")
+      .trim();
+    if (!cleaned || cleaned.includes("://")) continue;
+    // Skip flags like --foo.bar or -x
+    if (cleaned.startsWith("-")) continue;
+    const looksLikePath =
+      cleaned.includes("/") ||
+      /^[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]{1,12}$/.test(cleaned) ||
+      KNOWN_EXTENSIONLESS_FILENAMES.test(cleaned);
+    if (looksLikePath) {
+      found.add(cleaned.replace(/\\/g, "/").replace(/^\.\//, ""));
+    }
+  }
+  return [...found];
+}
+
+function normalizeCandidatePath(rawPath: string, cwd: string): string[] {
+  const trimmed = rawPath.trim();
+  if (!trimmed) return [];
+  const results = new Set<string>();
+  const posixRaw = trimmed.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (posixRaw) results.add(posixRaw);
+  if (path.isAbsolute(trimmed)) {
+    const rel = path.relative(cwd, trimmed).replace(/\\/g, "/");
+    if (rel && !rel.startsWith("../") && rel !== "..") {
+      results.add(rel);
+    }
+  }
+  return [...results];
+}
+
+/**
+ * Extract normalized candidate file paths from a tool invocation's input arguments.
+ */
+export function extractPathsFromToolInput(
+  toolName: string,
+  input: Record<string, unknown> | undefined,
+  cwd: string,
+): string[] {
+  if (!input || typeof input !== "object") return [];
+  const found = new Set<string>();
+  for (const key of ["path", "file", "filePath", "target"]) {
+    const val = input[key];
+    if (typeof val === "string") {
+      for (const p of normalizeCandidatePath(val, cwd)) found.add(p);
+    }
+  }
+  if (Array.isArray(input.paths)) {
+    for (const item of input.paths) {
+      if (typeof item === "string") {
+        for (const p of normalizeCandidatePath(item, cwd)) found.add(p);
+      }
+    }
+  }
+  if (toolName === "bash" && typeof input.command === "string") {
+    for (const token of extractPathsFromText(input.command)) {
+      for (const p of normalizeCandidatePath(token, cwd)) found.add(p);
+    }
+  }
+  return [...found];
 }
 
 export type FrontmatterGateOpts = {
@@ -335,12 +561,15 @@ export type FrontmatterGateOpts = {
 };
 
 /**
- * Whole-file gate from frontmatter `requires_setting` / `requires` (AND if both present).
+ * Whole-file gate from frontmatter `enabled`, `requires_setting`, and `requires` (AND).
  */
 export function rulePassesFrontmatterGate(
   attrs: Record<string, string>,
   opts: FrontmatterGateOpts,
 ): boolean {
+  const enabled = parseYamlBool(attrs.enabled, "enabled", opts.onWarn);
+  if (enabled === false) return false;
+
   const requiresSetting = attrs.requires_setting?.trim();
   const requires = attrs.requires?.trim();
   if (!requiresSetting && !requires) return true;
@@ -383,25 +612,30 @@ export type AssembleRuleTextOpts = {
   onWarn?: (msg: string) => void;
   onSkip?: (info: { attrs: Record<string, string>; index: number }) => void;
   onInclude?: (info: { attrs: Record<string, string>; index: number }) => void;
+  onLazy?: (info: { attrs: Record<string, string>; index: number; scope: RuleScope }) => void;
 };
 
 /**
- * Pure rule assembly: per-file frontmatter gate → per-file conditionals →
- * join → placeholder substitution.
- *
- * Conditionals run per body so an open `{{IF}}` in one file cannot close in
- * another and strip intervening package rules.
+ * Pure split rule assembly (issue #1415): evaluates frontmatter gates,
+ * scoping (`alwaysApply`, `globs`, `tools`, `enabled`), conditionals, and
+ * placeholders per file, returning:
+ * - `baseText`: joined always-apply rules for the stable system prompt prefix
+ * - `lazyRules`: scoped rules injected on-demand per session
  */
-export function assembleRuleText(contents: string[], opts: AssembleRuleTextOpts): string {
-  const bodies: string[] = [];
+export function assembleRulesSplit(
+  files: ReadonlyArray<{ fileName: string; raw: string }>,
+  opts: AssembleRuleTextOpts,
+): { baseText: string; lazyRules: LazyRule[] } {
+  const baseBodies: string[] = [];
+  const lazyRules: LazyRule[] = [];
   const knownKeySet = toKnownKeySet(opts.knownKeys);
   const condOpts: ConditionalEvalOpts = {
     knownKeys: knownKeySet,
     featurePredicates: opts.featurePredicates,
     onWarn: opts.onWarn,
   };
-  for (let index = 0; index < contents.length; index++) {
-    const raw = contents[index];
+  for (let index = 0; index < files.length; index++) {
+    const { fileName, raw } = files[index];
     const { attrs, body } = parseRuleFrontmatter(raw);
     if (!rulePassesFrontmatterGate(attrs, {
       resolveSetting: opts.resolve,
@@ -412,12 +646,42 @@ export function assembleRuleText(contents: string[], opts: AssembleRuleTextOpts)
       opts.onSkip?.({ attrs, index });
       continue;
     }
-    opts.onInclude?.({ attrs, index });
-    // Evaluate conditionals per file before join (no cross-file IF matching).
-    bodies.push(evaluateConditionalBlocks(body, opts.resolve, condOpts));
+    const scope = parseRuleScope(attrs, opts.onWarn);
+    const evaluated = substituteRulePlaceholders(
+      collapseBlankLinesBetweenTableRows(evaluateConditionalBlocks(body, opts.resolve, condOpts)),
+      { reviewLoopMaxCycles: opts.reviewLoopMaxCycles },
+    );
+    if (scope.alwaysApply) {
+      opts.onInclude?.({ attrs, index });
+      baseBodies.push(evaluated);
+    } else if (scope.globs.length > 0 || scope.tools.length > 0) {
+      opts.onLazy?.({ attrs, index, scope });
+      lazyRules.push({
+        fileName,
+        globs: scope.globs,
+        tools: scope.tools,
+        body: evaluated.trim(),
+      });
+    } else {
+      opts.onSkip?.({ attrs, index });
+    }
   }
-  const joined = bodies.join("\n\n");
-  // Safety net: collapse table-row blank lines across join boundaries too.
+  const joined = baseBodies.join("\n\n");
   const collapsed = collapseBlankLinesBetweenTableRows(joined);
-  return substituteRulePlaceholders(collapsed, { reviewLoopMaxCycles: opts.reviewLoopMaxCycles });
+  return {
+    baseText: substituteRulePlaceholders(collapsed, { reviewLoopMaxCycles: opts.reviewLoopMaxCycles }),
+    lazyRules,
+  };
+}
+
+/**
+ * Pure rule assembly: per-file frontmatter gate → per-file conditionals →
+ * join → placeholder substitution.
+ *
+ * Conditionals run per body so an open `{{IF}}` in one file cannot close in
+ * another and strip intervening package rules.
+ */
+export function assembleRuleText(contents: string[], opts: AssembleRuleTextOpts): string {
+  const files = contents.map((raw, index) => ({ fileName: `rule-${index}.md`, raw }));
+  return assembleRulesSplit(files, opts).baseText;
 }

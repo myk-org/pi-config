@@ -323,6 +323,14 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
 
 // ── memory_remove ────────────────────────────────────────────────────
 
+function formatNotFoundText(category: string, text: string, candidates?: string[]): string {
+  const base = `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.`;
+  if (!candidates || candidates.length === 0) return base;
+  const label = candidates.length === 1 ? "entry" : "entries";
+  const lines = candidates.map((c) => `- [${category}] ${c}`).join("\n");
+  return `${base}\nMatching full ${label} (use exact unclipped text):\n${lines}`;
+}
+
 function registerMemoryRemove(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_remove",
@@ -345,7 +353,7 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }], details: undefined };
       }
       if (res.status === "not_found") {
-        return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }], details: undefined };
+        return { content: [{ type: "text", text: formatNotFoundText(category, text, res.candidates) }], details: undefined };
       }
 
       log.info("memory_remove", category, text.slice(0, 60));
@@ -451,7 +459,7 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
           return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }], details: undefined };
         }
         if (res.status === "not_found") {
-          return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }], details: undefined };
+          return { content: [{ type: "text", text: formatNotFoundText(category, text, res.candidates) }], details: undefined };
         }
 
         let result = `Invalidated: [${category}] ${text}`;

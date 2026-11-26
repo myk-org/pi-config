@@ -69,8 +69,8 @@ pi-config/
 │   │   ├── review-ui.ts             # Review loop TUI — status bar indicator + transcript status cards
 │   │   ├── review-learning.ts      # Distill addressed review findings into memory lessons after `reviews address` (issue #918)
 │   │   ├── pr-retro.ts             # Opt-in post-merge PR retrospective trigger (gated on `pr_retro_on_merge`, issue #1343)
-│   │   ├── rule-placeholders.ts     # Rule assembly: frontmatter gates, {{IF}}/{{IFNOT}} conditionals, {{REVIEW_LOOP_MAX_CYCLES}}
-│   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
+│   │   ├── rule-placeholders.ts     # Rule assembly: frontmatter gates/scoping (alwaysApply/globs/tools/enabled), {{IF}}/{{IFNOT}} conditionals, {{REVIEW_LOOP_MAX_CYCLES}}
+│   │   ├── rules.ts                 # Cache-stable rule + pinned memory injection (before_agent_start), scoped lazy rule delivery (tool_call/tool_result), pre/post-compaction hooks
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries (SQLite-backed via state-db.ts)
 │   │   ├── state-db.ts                  # Shared node:sqlite WAL state store (.pi/data/state.db, Float32 BLOB embeddings, legacy JSONL migration)
 │   │   ├── state-jsonl.ts               # JSONL append log + legacy JSONL helpers (JsonlAppendLog, truncateJsonlFile, parseLastValidLine)
@@ -90,7 +90,7 @@ pi-config/
 │   │   ├── memory-line.ts             # Pure topic-line parser, formatter, and canonicalization helpers
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
 │   │   ├── project-settings.ts        # Deep settings store — schema-driven validation/parsing (settings-keys.json), legacy .jsonc migration, single coordinated cache, source detection, and locked atomic persistence with backups
-│   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
+│   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts and pre-compaction standing memory context
 │   │   ├── subagent-child-spec.ts     # Shared sync/async subagent child CLI args, prompt, and env builder
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
 │   │   └── utils.ts                 # Shared utilities (getProjectTmpDir, tryGetSystemPromptOptions, etc.)

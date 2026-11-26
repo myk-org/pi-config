@@ -15,10 +15,23 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
-import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize, type SituationReportOptions } from "./situation-report.js";
+import {
+  buildCompactionMemoryContext,
+  buildSituationReport,
+  estimateMemoryBudget,
+  rebuildAndOrganize,
+  type SituationReportOptions,
+} from "./situation-report.js";
+import { getMemoryMutationsSince, getMemoryMutationSeq } from "./memory-store.js";
 import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
 import { getSetting, getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
-import { assembleRuleText } from "./rule-placeholders.js";
+import {
+  assembleRulesSplit,
+  extractPathsFromText,
+  extractPathsFromToolInput,
+  matchLazyRule,
+  type LazyRule,
+} from "./rule-placeholders.js";
 import { isComsActive, resolveBridgeSessionKey } from "../shared/session-bridge.js";
 import { JsonlAppendLog } from "./state-jsonl.js";
 import { getProjectDataDir, getProjectMemoryDir } from "./utils.js";
@@ -41,9 +54,16 @@ interface AssembledRulesCacheEntry {
   interactiveTui: boolean;
   reviewLoopMaxCycles: number;
   joined: string;
+  lazyRules: LazyRule[];
   fileCount: number;
   includedCount: number;
+  lazyCount: number;
   skippedCount: number;
+}
+
+interface RuleBundle {
+  baseRules: string;
+  lazyRules: LazyRule[];
 }
 
 const rawRuleFileCache = new Map<string, CachedRawRuleFile>();
@@ -103,12 +123,12 @@ function sameSettingValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function loadOrAssembleRules(
+function loadRuleBundle(
   cwd: string,
   packageRulesDir = PACKAGE_RULES_DIR,
   sessionKey?: string,
   interactiveTui = process.env.PI_COMS_SUPERVISED_PEER !== "1",
-): string {
+): RuleBundle {
   const userRulesDir = path.join(os.homedir(), ".pi", "agent", "rules");
   const projectRulesDir = path.join(cwd, ".pi", "rules");
 
@@ -129,11 +149,14 @@ function loadOrAssembleRules(
   }
 
   if (ruleCandidates.size === 0) {
-    return "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
+    return {
+      baseRules: "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n",
+      lazyRules: [],
+    };
   }
 
   const sorted = [...ruleCandidates.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  const ruleContents: string[] = [];
+  const ruleFiles: Array<{ fileName: string; raw: string }> = [];
   const sigParts: string[] = [];
 
   for (const [fileName, candidates] of sorted) {
@@ -144,7 +167,7 @@ function loadOrAssembleRules(
       if (!loadedEntry) continue;
       sigParts.push(`${fileName}:${filePath}:${loadedEntry.stamp}`);
       if (loadedEntry.content !== null) {
-        ruleContents.push(loadedEntry.content);
+        ruleFiles.push({ fileName, raw: loadedEntry.content });
       }
       loaded = true;
       break;
@@ -154,8 +177,11 @@ function loadOrAssembleRules(
     }
   }
 
-  if (ruleContents.length === 0) {
-    return "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
+  if (ruleFiles.length === 0) {
+    return {
+      baseRules: "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n",
+      lazyRules: [],
+    };
   }
 
   const comsActive = isComsActive(sessionKey);
@@ -176,14 +202,19 @@ function loadOrAssembleRules(
       chars: cached.joined.length,
       files: cached.fileCount,
       included: cached.includedCount,
+      lazy: cached.lazyCount,
       skipped: cached.skippedCount,
       cached: true,
     });
-    return "\n\n" + cached.joined;
+    return {
+      baseRules: cached.joined ? "\n\n" + cached.joined : "",
+      lazyRules: cached.lazyRules,
+    };
   }
 
-  log.debug("assembling rules", { count: ruleContents.length, reviewLoopMaxCycles, interactiveTui });
+  log.debug("assembling rules", { count: ruleFiles.length, reviewLoopMaxCycles, interactiveTui });
   let includedCount = 0;
+  let lazyCount = 0;
   let skippedCount = 0;
   const accessed = new Map<string, unknown>();
   const resolveTracked = (key: string): unknown => {
@@ -191,7 +222,7 @@ function loadOrAssembleRules(
     if (!accessed.has(key)) accessed.set(key, val);
     return val;
   };
-  const joined = assembleRuleText(ruleContents, {
+  const { baseText: joined, lazyRules } = assembleRulesSplit(ruleFiles, {
     resolve: resolveTracked,
     knownKeys: KNOWN_SETTING_KEYS,
     featurePredicates: {
@@ -208,6 +239,10 @@ function loadOrAssembleRules(
       includedCount += 1;
       log.debug("rule included", { index, attrs });
     },
+    onLazy: ({ attrs, index, scope }) => {
+      lazyCount += 1;
+      log.debug("rule registered as lazy", { index, globs: scope.globs, tools: scope.tools, attrs });
+    },
   });
   setBounded(
     assembledRulesCache,
@@ -218,19 +253,25 @@ function loadOrAssembleRules(
       interactiveTui,
       reviewLoopMaxCycles,
       joined,
-      fileCount: ruleContents.length,
+      lazyRules,
+      fileCount: ruleFiles.length,
       includedCount,
+      lazyCount,
       skippedCount,
     },
     ASSEMBLED_RULES_CACHE_MAX,
   );
   log.info("rules assembled", {
     chars: joined.length,
-    files: ruleContents.length,
+    files: ruleFiles.length,
     included: includedCount,
+    lazy: lazyCount,
     skipped: skippedCount,
   });
-  return "\n\n" + joined;
+  return {
+    baseRules: joined ? "\n\n" + joined : "",
+    lazyRules,
+  };
 }
 
 /** Per-cwd telemetry log cache — avoids re-creating on every call. */
@@ -297,6 +338,37 @@ function logMemoryUsage(cwd: string, injected: { text: string; category: string;
   } catch (e: any) { log.debug("telemetry usage write failed:", e?.message?.slice(0, 100)); }
 }
 
+interface PinnedMemorySnapshot {
+  report: string;
+  emittedKeys: Set<string>;
+  mutationSeq: number;
+}
+
+interface RulesSessionState {
+  cwd: string;
+  memorySnapshot: PinnedMemorySnapshot | null;
+  hadAsyncJobs: boolean;
+  injectedLazyRules: Set<string>;
+  pendingLazyRules: LazyRule[];
+  pendingLazyRulesByCallId: Map<string, LazyRule[]>;
+}
+
+const SESSION_STATES_MAX = 32;
+
+function resolveInteractiveTui(ctx: any): boolean {
+  return (
+    process.env.PI_COMS_SUPERVISED_PEER !== "1" &&
+    ctx?.hasUI !== false &&
+    (ctx?.mode === undefined || ctx?.mode === "tui")
+  );
+}
+
+function formatLazyRulesMarkdown(rules: LazyRule[]): string {
+  return rules
+    .map((r) => `<!-- scoped-rule: ${r.fileName} -->\n${r.body}`)
+    .join("\n\n");
+}
+
 export function registerRules(
   pi: ExtensionAPI,
   getAsyncJobs?: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>,
@@ -304,11 +376,37 @@ export function registerRules(
 ): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let rebuildDone = false;
+  const sessionStates = new Map<string, RulesSessionState>();
 
+  function getSessionState(ctx: any): RulesSessionState {
+    const key = resolveBridgeSessionKey(ctx);
+    const cwd = ctx?.cwd || process.cwd();
+    const existing = sessionStates.get(key);
+    if (existing && existing.cwd === cwd) {
+      return existing;
+    }
+    const fresh: RulesSessionState = {
+      cwd,
+      memorySnapshot: null,
+      hadAsyncJobs: false,
+      injectedLazyRules: new Set<string>(),
+      pendingLazyRules: [],
+      pendingLazyRulesByCallId: new Map<string, LazyRule[]>(),
+    };
+    setBounded(sessionStates, key, fresh, SESSION_STATES_MAX);
+    return fresh;
+  }
+
+  function resetSessionState(ctx: any): string {
+    const key = resolveBridgeSessionKey(ctx);
+    sessionStates.delete(key);
+    return key;
+  }
 
   // Run full rebuild on session start (once per session, not every turn)
   pi.on("session_start", async (_event, ctx) => {
     rebuildDone = false;
+    resetSessionState(ctx);
     try {
       rebuildAndOrganize(ctx.cwd);
       rebuildDone = true;
@@ -329,6 +427,170 @@ export function registerRules(
     }
   });
 
+  // Pre-compaction standing memory context (#1422): fail-soft, skips subagents,
+  // injects bounded standing project memories so compaction preserves rules/decisions.
+  pi.on("session_before_compact", async (event, ctx) => {
+    if (isSubagent) return;
+    try {
+      const preparation = (event as any)?.preparation;
+      if (!preparation) return;
+      const memContext = buildCompactionMemoryContext(ctx.cwd);
+      if (!memContext) return;
+
+      const messagesToSummarize = Array.isArray(preparation.messagesToSummarize)
+        ? preparation.messagesToSummarize
+        : null;
+      const turnPrefixMessages = Array.isArray(preparation.turnPrefixMessages)
+        ? preparation.turnPrefixMessages
+        : null;
+
+      let target: any[] | null = null;
+      let targetName = "";
+      if (messagesToSummarize && messagesToSummarize.length > 0) {
+        target = messagesToSummarize;
+        targetName = "messagesToSummarize";
+      } else if (preparation.isSplitTurn && turnPrefixMessages && turnPrefixMessages.length > 0) {
+        target = turnPrefixMessages;
+        targetName = "turnPrefixMessages";
+      }
+      if (!target) return;
+
+      const alreadyInjected = target.some(
+        (m: any) => m?.role === "custom" && m?.customType === "standing-project-memory",
+      );
+      if (alreadyInjected) return;
+
+      target.unshift({
+        role: "custom",
+        customType: "standing-project-memory",
+        content: memContext,
+        display: false,
+        timestamp: Date.now(),
+      });
+      log.info("session_before_compact_memory_injected", {
+        reason: (event as any)?.reason,
+        chars: memContext.length,
+        target: targetName,
+      });
+    } catch (e: any) {
+      // Fail-soft: never block or abort compaction on memory store errors.
+      log.warn("session_before_compact_memory_failed", {
+        error: e?.message?.slice(0, 160) ?? String(e),
+      });
+    }
+  });
+
+  // Post-compaction snapshot refresh (#1422 + #1414 + #1415):
+  // Compaction resets the provider prompt-cache prefix, so cleanly refresh
+  // the pinned startup memory snapshot, clear pending mid-session notices,
+  // and reset per-session lazy rule deduplication.
+  pi.on("session_compact", async (event, ctx) => {
+    const sessionKey = resetSessionState(ctx);
+    log.info("session_compact_state_refreshed", {
+      sessionKey,
+      reason: (event as any)?.reason,
+      fromExtension: (event as any)?.fromExtension,
+    });
+  });
+
+  pi.on("session_shutdown", async (event, ctx) => {
+    if ((event as any)?.reason === "reload") return;
+    const sessionKey = resetSessionState(ctx);
+    log.debug("session_shutdown_state_cleared", { sessionKey, reason: (event as any)?.reason });
+  });
+
+  // Scoped lazy rule matching on tool_call (#1415): queues matched rules for
+  // immediate delivery on tool_result (or next before_agent_start fallback),
+  // deduplicated once per session until compaction/reset.
+  pi.on("tool_call", async (event, ctx) => {
+    if (isSubagent) return;
+    try {
+      const sessionKey = resolveBridgeSessionKey(ctx);
+      const bundle = loadRuleBundle(ctx.cwd, options?.packageRulesDir, sessionKey, resolveInteractiveTui(ctx));
+      if (bundle.lazyRules.length === 0) return;
+
+      const state = getSessionState(ctx);
+      const toolName = typeof (event as any)?.toolName === "string" ? (event as any).toolName : "";
+      const paths = extractPathsFromToolInput(toolName, (event as any)?.input, ctx.cwd);
+      const matched: LazyRule[] = [];
+      for (const rule of bundle.lazyRules) {
+        if (state.injectedLazyRules.has(rule.fileName)) continue;
+        if (matchLazyRule(rule, { toolName, paths })) {
+          state.injectedLazyRules.add(rule.fileName);
+          matched.push(rule);
+        }
+      }
+      if (matched.length === 0) return;
+
+      const callId = typeof (event as any)?.toolCallId === "string" ? (event as any).toolCallId : "";
+      if (callId) {
+        const existing = state.pendingLazyRulesByCallId.get(callId) ?? [];
+        state.pendingLazyRulesByCallId.set(callId, [...existing, ...matched]);
+      }
+      state.pendingLazyRules.push(...matched);
+      log.debug("lazy_rules_matched_tool_call", {
+        toolName,
+        callId: callId || undefined,
+        files: matched.map((r) => r.fileName),
+      });
+    } catch (e: any) {
+      log.debug("lazy_rules_tool_call_failed", { error: e?.message?.slice(0, 120) });
+    }
+  });
+
+  // Deliver scoped lazy rules matched on tool_call/tool_result directly in the
+  // tool result content so the model sees them in the same turn without
+  // mutating the cached base system prompt prefix (#1415).
+  pi.on("tool_result", async (event, ctx) => {
+    if (isSubagent) return;
+    try {
+      const state = getSessionState(ctx);
+      const callId = typeof (event as any)?.toolCallId === "string" ? (event as any).toolCallId : "";
+      const delivered: LazyRule[] = [];
+
+      if (callId && state.pendingLazyRulesByCallId.has(callId)) {
+        const queued = state.pendingLazyRulesByCallId.get(callId) ?? [];
+        state.pendingLazyRulesByCallId.delete(callId);
+        const queuedNames = new Set(queued.map((r) => r.fileName));
+        state.pendingLazyRules = state.pendingLazyRules.filter((r) => !queuedNames.has(r.fileName));
+        delivered.push(...queued);
+      }
+
+      // Also match directly if tool_result ran without a preceding tool_call
+      const sessionKey = resolveBridgeSessionKey(ctx);
+      const bundle = loadRuleBundle(ctx.cwd, options?.packageRulesDir, sessionKey, resolveInteractiveTui(ctx));
+      if (bundle.lazyRules.length > 0) {
+        const toolName = typeof (event as any)?.toolName === "string" ? (event as any).toolName : "";
+        const paths = extractPathsFromToolInput(toolName, (event as any)?.input, ctx.cwd);
+        for (const rule of bundle.lazyRules) {
+          if (state.injectedLazyRules.has(rule.fileName)) continue;
+          if (matchLazyRule(rule, { toolName, paths })) {
+            state.injectedLazyRules.add(rule.fileName);
+            delivered.push(rule);
+          }
+        }
+      }
+
+      if (delivered.length === 0) return;
+
+      const blockText = `\n\n<scoped_rules>\n${formatLazyRulesMarkdown(delivered)}\n</scoped_rules>`;
+      const existingContent = Array.isArray((event as any).content) ? (event as any).content : [];
+      log.info("lazy_rules_injected", {
+        hook: "tool_result",
+        toolName: (event as any)?.toolName,
+        files: delivered.map((r) => r.fileName),
+      });
+      return {
+        content: [...existingContent, { type: "text" as const, text: blockText }],
+        ...((event as any).structuredContent !== undefined
+          ? { structuredContent: (event as any).structuredContent }
+          : {}),
+      };
+    } catch (e: any) {
+      log.debug("lazy_rules_tool_result_failed", { error: e?.message?.slice(0, 120) });
+    }
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
     // Run rebuild on first agent start if session_start didn't fire yet
     if (!rebuildDone) {
@@ -337,56 +599,33 @@ export function registerRules(
         rebuildDone = true;
       } catch (e: any) { log.debug("rebuildAndOrganize on agent_start failed:", e?.message || e); }
     }
-    let extra = "";
+    const state = getSessionState(ctx);
+    const sessionKey = resolveBridgeSessionKey(ctx);
 
-    // Orchestrator rules — skip for specialist agents
+    // 1. Stable prefix: always-apply orchestrator rules (skip for specialist agents).
     // Load from: package rules/ → user ~/.pi/agent/rules/ → project .pi/rules/
     // Same-filename override: project > user > package
+    let baseRules = "";
+    let lazyRules: LazyRule[] = [];
     if (!isSubagent) {
-      const interactiveTui =
-        process.env.PI_COMS_SUPERVISED_PEER !== "1" &&
-        ctx.hasUI !== false &&
-        (ctx.mode === undefined || ctx.mode === "tui");
-      extra += loadOrAssembleRules(ctx.cwd, options?.packageRulesDir, resolveBridgeSessionKey(ctx), interactiveTui);
-    }
-
-    // Async agent status — always show so the AI knows what's running.
-    // Built separately from `extra` so ticking durations don't invalidate
-    // `sections.orchestrator_rules` on every turn (#1178).
-    let asyncStatus = "";
-    if (!isSubagent && getAsyncJobs) {
-      const jobs = getAsyncJobs();
-      if (jobs.length === 0) {
-        asyncStatus = "\n\n# Async Agents Status\n\nNo async agents running.\n";
-      } else {
-        let status = `\n\n# Async Agents Status\n\n${jobs.length} async agent(s) running — kill any that are no longer needed:\n`;
-        for (const j of jobs) {
-          const elapsed = formatDuration(Date.now() - j.startedAt);
-          status += `- ${j.name || j.agent} (${j.agent}) — ${elapsed}\n`;
-        }
-        asyncStatus = status;
-      }
-      log.debug("async_agents_status_built", { jobCount: jobs.length, chars: asyncStatus.length });
+      const bundle = loadRuleBundle(ctx.cwd, options?.packageRulesDir, sessionKey, resolveInteractiveTui(ctx));
+      baseRules = bundle.baseRules;
+      lazyRules = bundle.lazyRules;
     }
 
     // 1.4.0's BeforeAgentStartEvent is a union: `prompt` exists only on the user
     // variant, so narrow once here and use this for every downstream lookup.
     const prompt = event.messageType === "user" ? event.prompt : undefined;
-
-    // Project memories — situation report (scored, token-budgeted) injected BEFORE rules
-    // systemPrompt.length is chars; estimateMemoryBudget converts internally
-    const budget = estimateMemoryBudget(event.systemPrompt?.length ?? 0, undefined, ctx.cwd);
-    const queryClass =
-      !isSubagent && prompt && !isSocialCloser(prompt)
-        ? classifyQueryClass(prompt)
-        : "general";
     const shouldSearch = !isSubagent && !!prompt && !isSocialCloser(prompt);
+    const queryClass = shouldSearch ? classifyQueryClass(prompt) : "general";
 
-    // Load scores + topic entries once per turn when either situation report or
-    // contextual recall needs them, avoiding duplicate disk reads and stat calls.
+    // Helper to lazily preload scores + topic entries once per turn when needed.
     // Fail-soft: a store lock/migration error must never abort the agent turn.
     let preloaded: SituationReportOptions["preloaded"];
-    if (budget > 0 || shouldSearch) {
+    let preloadAttempted = false;
+    const ensurePreloaded = async (): Promise<SituationReportOptions["preloaded"]> => {
+      if (preloadAttempted) return preloaded;
+      preloadAttempted = true;
       try {
         const topicsDir = path.join(getProjectMemoryDir(ctx.cwd), "topics");
         if (fs.existsSync(topicsDir)) {
@@ -400,59 +639,135 @@ export function registerRules(
       } catch (e: any) {
         log.debug("memory preload failed:", e?.message?.slice(0, 100));
       }
-    }
+      return preloaded;
+    };
 
-    const emittedMemoryKeys = new Set<string>();
-    const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget, queryClass, preloaded, emittedMemoryKeys);
-
-    // Auto-inject contextually relevant memories via vector search (~2.5ms, in-process)
-    // Session-scoped/expired entries AND entries already emitted verbatim in
-    // `# Project Memory` are excluded so pinned/high-score entries are not injected twice.
-    let contextMemories = "";
-    if (shouldSearch && preloaded && preloaded.topicEntries.length > 0) {
-      try {
-        const { vectorSearch } = await import("./memory-embeddings.js");
-        const { canonicalTopicLine } = await import("./memory-tree.js");
-        const { entryHash, isEntryActiveForSession } = await import("./memory-scoring.js");
-        const sessionId = (ctx as any).sessionManager?.getSessionId?.();
-        const entries = preloaded.topicEntries.filter((te) => {
-          const canon = canonicalTopicLine(te);
-          if (emittedMemoryKeys.has(canon)) return false;
-          return isEntryActiveForSession(preloaded.scores.entries[entryHash(canon)], sessionId);
-        });
-        if (entries.length > 0) {
-          const topK = getQueryClassBias(queryClass).vectorTopK;
-          const boostCats = new Set(getQueryClassBias(queryClass).boostCategories);
-          // Prefer boosted categories when present; fall back to full set
-          const searchPool =
-            boostCats.size > 0 && entries.some((e) => boostCats.has(e.category))
-              ? [
-                  ...entries.filter((e) => boostCats.has(e.category)),
-                  ...entries.filter((e) => !boostCats.has(e.category)),
-                ]
-              : entries;
-          const results = await vectorSearch(ctx.cwd, prompt, searchPool, topK);
-          const injectThreshold = Number(getSetting(ctx.cwd, "memory_inject_similarity")) || 0.65;
-          const relevant = results.filter((r) => {
-            if (r.similarity <= injectThreshold) return false;
-            return !emittedMemoryKeys.has(`- [${r.category}] ${r.text}`);
-          });
-          if (relevant.length > 0) {
-            log.info("context_injected", "contextual_memories");
-            contextMemories = "\n# Contextually Relevant Memories\n\n" +
-              relevant.map(r => `- [${r.category}] ${r.text} (similarity: ${r.similarity.toFixed(3)})`).join("\n") +
-              "\n\n";
-            // Retrieval telemetry — track what was injected
-            logMemoryInjection(ctx.cwd, prompt, relevant, queryClass);
-            lastInjectedMemories = relevant;
-            log.info("memory_injected", relevant.length);
+    // 2. Stable prefix: pin the startup `# Project Memory` Situation Report once per
+    // session (re-pinned only on session_start / session_compact) with deterministic
+    // `queryClass: "general"` so mid-session memory writes and per-prompt query-class
+    // shifts never invalidate the cached system-prompt prefix (#1414).
+    const dynamicBlocks: string[] = [];
+    if (state.memorySnapshot === null) {
+      const budget = estimateMemoryBudget(event.systemPrompt?.length ?? 0, undefined, ctx.cwd);
+      const data = budget > 0 ? await ensurePreloaded() : undefined;
+      const emittedKeys = new Set<string>();
+      const report = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget, "general", data, emittedKeys);
+      state.memorySnapshot = {
+        report,
+        emittedKeys,
+        mutationSeq: getMemoryMutationSeq(ctx.cwd),
+      };
+      log.debug("memory_snapshot_pinned", {
+        sessionKey,
+        chars: report.length,
+        emitted: emittedKeys.size,
+      });
+    } else {
+      // Check if any entry already emitted in the pinned snapshot was edited,
+      // invalidated, or removed mid-session — deliver a one-time notice outside
+      // the cached system-prompt prefix (#1414).
+      const mutations = getMemoryMutationsSince(ctx.cwd, state.memorySnapshot.mutationSeq);
+      if (mutations.length > 0) {
+        state.memorySnapshot.mutationSeq = getMemoryMutationSeq(ctx.cwd);
+        const notices: string[] = [];
+        for (const m of mutations) {
+          const oldCanon = `- [${m.category}] ${m.oldText}`;
+          if (!state.memorySnapshot.emittedKeys.has(oldCanon)) continue;
+          state.memorySnapshot.emittedKeys.delete(oldCanon);
+          if (m.op === "edit" && m.newText) {
+            state.memorySnapshot.emittedKeys.add(`- [${m.category}] ${m.newText}`);
+            notices.push(
+              `- [updated] [${m.category}] "${m.oldText}" → "${m.newText}" (supersedes entry in pinned # Project Memory snapshot)`,
+            );
+          } else {
+            notices.push(
+              `- [removed] [${m.category}] "${m.oldText}" (no longer active; ignore entry in pinned # Project Memory snapshot)`,
+            );
           }
         }
-      } catch (e: any) { log.debug("vector search auto-inject failed:", e?.message?.slice(0, 100)); }
+        if (notices.length > 0) {
+          log.info("pinned_memory_invalidation_notice", { count: notices.length });
+          dynamicBlocks.push(
+            `# Project Memory Updates\n\nThe following entries from the pinned session memory snapshot changed mid-session:\n\n${notices.join("\n")}`,
+          );
+        }
+      }
     }
 
-    // Auto-inject relevant session history (keyword search, zero LLM cost)
-    let sessionContext = "";
+    const memories = state.memorySnapshot.report;
+    const emittedMemoryKeys = state.memorySnapshot.emittedKeys;
+
+    // 3. Per-turn dynamic context (delivered outside the cached system-prompt prefix):
+
+    // 3a. Ticking async agent status — only emitted when jobs are running, or once
+    // on a running → 0 transition so idle turns carry zero dynamic overhead (#1414).
+    if (!isSubagent && getAsyncJobs) {
+      const jobs = getAsyncJobs();
+      if (jobs.length > 0) {
+        let status = `# Async Agents Status\n\n${jobs.length} async agent(s) running — kill any that are no longer needed:\n`;
+        for (const j of jobs) {
+          const elapsed = formatDuration(Date.now() - j.startedAt);
+          status += `- ${j.name || j.agent} (${j.agent}) — ${elapsed}\n`;
+        }
+        state.hadAsyncJobs = true;
+        dynamicBlocks.push(status.trim());
+        log.debug("async_agents_status_built", { jobCount: jobs.length, chars: status.length });
+      } else if (state.hadAsyncJobs) {
+        state.hadAsyncJobs = false;
+        dynamicBlocks.push("# Async Agents Status\n\nNo async agents running.");
+        log.debug("async_agents_status_built", { jobCount: 0, transition: true });
+      }
+    }
+
+    // 3b. Auto-inject contextually relevant memories via vector search (~2.5ms, in-process).
+    // Session-scoped/expired entries AND entries already emitted verbatim in
+    // `# Project Memory` are excluded so pinned/high-score entries are not injected twice.
+    if (shouldSearch) {
+      const data = await ensurePreloaded();
+      if (data && data.topicEntries.length > 0) {
+        try {
+          const { vectorSearch } = await import("./memory-embeddings.js");
+          const { canonicalTopicLine } = await import("./memory-tree.js");
+          const { entryHash, isEntryActiveForSession } = await import("./memory-scoring.js");
+          const sessionId = (ctx as any).sessionManager?.getSessionId?.();
+          const entries = data.topicEntries.filter((te) => {
+            const canon = canonicalTopicLine(te);
+            if (emittedMemoryKeys.has(canon)) return false;
+            return isEntryActiveForSession(data.scores.entries[entryHash(canon)], sessionId);
+          });
+          if (entries.length > 0) {
+            const topK = getQueryClassBias(queryClass).vectorTopK;
+            const boostCats = new Set(getQueryClassBias(queryClass).boostCategories);
+            // Prefer boosted categories when present; fall back to full set
+            const searchPool =
+              boostCats.size > 0 && entries.some((e) => boostCats.has(e.category))
+                ? [
+                    ...entries.filter((e) => boostCats.has(e.category)),
+                    ...entries.filter((e) => !boostCats.has(e.category)),
+                  ]
+                : entries;
+            const results = await vectorSearch(ctx.cwd, prompt, searchPool, topK);
+            const injectThreshold = Number(getSetting(ctx.cwd, "memory_inject_similarity")) || 0.65;
+            const relevant = results.filter((r) => {
+              if (r.similarity <= injectThreshold) return false;
+              return !emittedMemoryKeys.has(`- [${r.category}] ${r.text}`);
+            });
+            if (relevant.length > 0) {
+              log.info("context_injected", "contextual_memories");
+              const contextMemories = "# Contextually Relevant Memories\n\n" +
+                relevant.map(r => `- [${r.category}] ${r.text} (similarity: ${r.similarity.toFixed(3)})`).join("\n");
+              dynamicBlocks.push(contextMemories);
+              // Retrieval telemetry — track what was injected
+              logMemoryInjection(ctx.cwd, prompt, relevant, queryClass);
+              lastInjectedMemories = relevant;
+              log.info("memory_injected", relevant.length);
+            }
+          }
+        } catch (e: any) { log.debug("vector search auto-inject failed:", e?.message?.slice(0, 100)); }
+      }
+    }
+
+    // 3c. Auto-inject relevant session history (keyword search, zero LLM cost)
     if (shouldSearch) {
       try {
         const { searchSessions } = await import("./session-search.js");
@@ -460,12 +775,12 @@ export function registerRules(
         const sessionResults = searchSessions(ctx.cwd, prompt, 3, { excludeSessionId: currentSessionId });
         if (sessionResults.length > 0) {
           log.info("context_injected", "session_history");
-          sessionContext = "\n# Relevant Past Sessions\n\n" +
+          const sessionContext = "# Relevant Past Sessions\n\n" +
             "Automatically retrieved from past conversation summaries:\n\n" +
             sessionResults.map(r =>
               `- **${r.timestamp.split("T")[0]}** (${r.sessionId.slice(0, 8)}): ${r.snippet.replace(/[`$]/g, "")}`
-            ).join("\n") +
-            "\n\n";
+            ).join("\n");
+          dynamicBlocks.push(sessionContext);
           // Telemetry — log session injections via JsonlAppendLog
           try {
             getTelemetryLog(ctx.cwd).append({
@@ -478,30 +793,66 @@ export function registerRules(
       } catch (e: any) { log.debug("session history auto-inject failed:", e?.message?.slice(0, 100)); }
     }
 
-    if (!extra && !asyncStatus && !memories && !contextMemories && !sessionContext) return;
+    // 3d. Scoped lazy rules matched by prompt paths or queued from a prior tool_call (#1415)
+    if (!isSubagent) {
+      const turnLazyRules: LazyRule[] = [];
+      if (state.pendingLazyRules.length > 0) {
+        turnLazyRules.push(...state.pendingLazyRules);
+        state.pendingLazyRules = [];
+        state.pendingLazyRulesByCallId.clear();
+      }
+      if (prompt && lazyRules.length > 0) {
+        const promptPaths = extractPathsFromText(prompt);
+        if (promptPaths.length > 0) {
+          for (const rule of lazyRules) {
+            if (state.injectedLazyRules.has(rule.fileName)) continue;
+            if (matchLazyRule(rule, { paths: promptPaths })) {
+              state.injectedLazyRules.add(rule.fileName);
+              turnLazyRules.push(rule);
+            }
+          }
+        }
+      }
+      if (turnLazyRules.length > 0) {
+        log.info("lazy_rules_injected", {
+          hook: "before_agent_start",
+          files: turnLazyRules.map((r) => r.fileName),
+        });
+        dynamicBlocks.push(`# Scoped Rules\n\n${formatLazyRulesMarkdown(turnLazyRules)}`);
+      }
+    }
 
-    // Inject as structured system-prompt sections (issue #915): mutating
-    // systemPromptOptions.sections lets pi append a transcript delta that
-    // preserves cached prompt prefixes. Returning a full systemPrompt string
-    // would replace the whole prompt every run and defeat prefix caching.
-    // Custom sections render after cwd — still the tail position, where
-    // attention is highest (U-shaped attention curve).
+    const dynamicContent = dynamicBlocks.join("\n\n").trim();
+    if (!baseRules && !memories && !dynamicContent) return;
+
+    // Inject ONLY cache-stable sections (`orchestrator_rules` and pinned
+    // `project_memory`) into `systemPromptOptions.sections` so the provider
+    // prompt prefix remains byte-identical across turns (#1414). Deliver all
+    // per-turn dynamic context in a non-displayed custom message appended
+    // after the user prompt so prefix caches stay warm on every provider.
     const opts = (event as any).systemPromptOptions;
     const forced = opts?.forceSystemPrompt !== undefined;
     const sections = opts?.sections;
     if (!forced && sections && typeof sections === "object") {
-      if (extra) sections.orchestrator_rules = extra.trim();
-      if (asyncStatus) sections.async_agents_status = asyncStatus.trim();
+      if (baseRules) sections.orchestrator_rules = baseRules.trim();
       if (memories) sections.project_memory = memories.trim();
-      if (contextMemories) sections.contextual_memories = contextMemories.trim();
-      if (sessionContext) sections.past_sessions = sessionContext.trim();
+      if (dynamicContent) {
+        return {
+          message: {
+            customType: "orchestrator-turn-context",
+            content: dynamicContent,
+            display: false,
+          },
+        };
+      }
       return;
     }
 
     // Fallback: an earlier handler forced the whole prompt, or this pi
     // version does not expose systemPromptOptions — compose on top of the
     // current prompt text the legacy way so our context is not lost.
-    return { systemPrompt: event.systemPrompt + extra + asyncStatus + memories + contextMemories + sessionContext };
+    const dynamicSuffix = dynamicContent ? `\n\n${dynamicContent}\n` : "";
+    return { systemPrompt: event.systemPrompt + baseRules + memories + dynamicSuffix };
   });
 
   // Post-turn memory reminder: after a turn completes, check if any tool
