@@ -6385,18 +6385,90 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
         });
 
+    const decodeAnsiCEscapes = (inner: string): string =>
+      inner.replace(
+        /\\(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|0?([0-7]{1,3})|([ntr'"\\]))/g,
+        (m, hex?: string, uni?: string, oct?: string, esc?: string) => {
+          if (hex !== undefined) {
+            const code = Number.parseInt(hex, 16);
+            return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
+          }
+          if (uni !== undefined) {
+            const code = Number.parseInt(uni, 16);
+            return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
+          }
+          if (oct !== undefined) {
+            const code = Number.parseInt(oct, 8);
+            return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
+          }
+          switch (esc) {
+            case "n": return "\n";
+            case "t": return "\t";
+            case "r": return "\r";
+            case "'": return "'";
+            case "\"": return "\"";
+            case "\\": return "\\";
+            default: return m;
+          }
+        },
+      );
+
+    /**
+     * Decode Bash ANSI-C `$'...'` literals into equivalent single-quoted strings BEFORE
+     * `tokenize()` discards quote delimiters, so encoded `-c $'\x72\x6d ...'` and
+     * `-c$'\x72\x6d ...'` scripts are inspected with their actual executed text.
+     */
+    const preprocessAnsiCQuotes = (script: string): string => {
+      if (!script.includes("$'")) return script;
+      let out = "";
+      let inSingle = false;
+      let inDouble = false;
+      for (let i = 0; i < script.length; i++) {
+        const ch = script[i]!;
+        if (ch === "\\" && !inSingle && i + 1 < script.length) {
+          out += ch + script[i + 1]!;
+          i++;
+          continue;
+        }
+        if (ch === "'" && !inDouble) {
+          inSingle = !inSingle;
+          out += ch;
+          continue;
+        }
+        if (ch === "\"" && !inSingle) {
+          inDouble = !inDouble;
+          out += ch;
+          continue;
+        }
+        if (!inSingle && !inDouble && ch === "$" && script[i + 1] === "'") {
+          let j = i + 2;
+          let body = "";
+          while (j < script.length) {
+            const c = script[j]!;
+            if (c === "\\" && j + 1 < script.length) {
+              body += c + script[j + 1]!;
+              j += 2;
+              continue;
+            }
+            if (c === "'") break;
+            body += c;
+            j++;
+          }
+          if (j < script.length && script[j] === "'") {
+            const decoded = decodeAnsiCEscapes(body);
+            out += `'${decoded.replace(/'/g, "'\\''")}'`;
+            i = j;
+            continue;
+          }
+        }
+        out += ch;
+      }
+      return out;
+    };
+
     const unwrapShellArgQuotes = (s: string): string => {
       if (s.startsWith("$'") && s.endsWith("'") && s.length >= 3) {
-        return decodeSimpleEscapes(
-          s
-            .slice(2, -1)
-            .replace(/\\n/g, "\n")
-            .replace(/\\t/g, "\t")
-            .replace(/\\r/g, "\r")
-            .replace(/\\'/g, "'")
-            .replace(/\\"/g, "\"")
-            .replace(/\\\\/g, "\\"),
-        );
+        return decodeAnsiCEscapes(s.slice(2, -1));
       }
       if (s.startsWith("$\"") && s.endsWith("\"") && s.length >= 3) {
         return s.slice(2, -1);
@@ -6517,11 +6589,12 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     };
 
     const checkProtectedSecurityStorage = (
-      script: string,
+      rawScript: string,
       parentVars: Map<string, string>,
       depth = 0,
     ): "hmac" | "settings" | "state_db" | null => {
       if (depth > 3) return null;
+      const script = preprocessAnsiCQuotes(rawScript);
       const defragFull = collapseFragments(script);
       if (hmacKeyRe.test(defragFull) || dynamicPiAgentAccessRe.test(script)) return "hmac";
 

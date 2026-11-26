@@ -36,7 +36,9 @@ import {
   listSessionApprovals,
   loadRestrictedFolders,
   matchRestrictedFolder,
+  restoreRestrictedFoldersFloorForTests,
   setApprovalHmacKeyPathForTests,
+  snapshotRestrictedFoldersFloorForTests,
 } from "../../../extensions/orchestrator/restricted-folders.js";
 import {
   closeStateDbs,
@@ -225,19 +227,13 @@ describe("restricted_folders schema + agent-edit protection (#1416)", () => {
 
     // Simulate Process B pinning ["secrets/prod"]
     assert.deepEqual(loadRestrictedFolders(repo), ["secrets/prod"]);
-    const floorMap = (globalThis as Record<symbol, Map<string, { entries: Set<string>; generation: number }>>)[
-      Symbol.for("pi-config.restrictedFoldersFloor.v2")
-    ];
-    const savedProcessBFloor = new Map(
-      [...floorMap.entries()].map(([k, v]) => [k, { entries: new Set(v.entries), generation: v.generation }]),
-    );
+    const savedProcessBFloor = snapshotRestrictedFoldersFloorForTests();
 
     // Process A authorizes removal via updateSetting (writes HMAC attestation in shared state.db)
     assert.equal(updateSetting(repo, "project", "restricted_folders", []).ok, true);
 
-    // Restore Process B's pre-save local globalThis floor (as if Process B never received Process A's in-process callback)
-    floorMap.clear();
-    for (const [k, v] of savedProcessBFloor) floorMap.set(k, v);
+    // Restore Process B's pre-save local floor (as if Process B never received Process A's in-process callback)
+    restoreRestrictedFoldersFloorForTests(savedProcessBFloor);
     clearSettingsCache();
 
     // Process B verifies the HMAC attestation in shared state.db and accepts the removal
@@ -302,20 +298,14 @@ describe("restricted_folders schema + agent-edit protection (#1416)", () => {
 
     // Reader pins original two folders at gen 0
     assert.deepEqual(loadRestrictedFolders(repo), ["secrets/a", "secrets/b"]);
-    const floorMap = (globalThis as Record<symbol, Map<string, { entries: Set<string>; generation: number }>>)[
-      Symbol.for("pi-config.restrictedFoldersFloor.v2")
-    ];
-    const readerFloor = new Map(
-      [...floorMap.entries()].map(([k, v]) => [k, { entries: new Set(v.entries), generation: v.generation }]),
-    );
+    const readerFloor = snapshotRestrictedFoldersFloorForTests();
 
     // Two overlapping authorized updates: first narrows to ["secrets/a"], second clears to []
     assert.equal(updateSetting(repo, "project", "restricted_folders", ["secrets/a"]).ok, true);
     assert.equal(updateSetting(repo, "project", "restricted_folders", []).ok, true);
 
     // Reader retaining its original floor verifies the newer generation and accepts []
-    floorMap.clear();
-    for (const [k, v] of readerFloor) floorMap.set(k, v);
+    restoreRestrictedFoldersFloorForTests(readerFloor);
     clearSettingsCache();
     assert.deepEqual(loadRestrictedFolders(repo), []);
   });
@@ -671,14 +661,47 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
     assert.ok(directRead?.block);
   });
 
+  it("blocks hex-encoded ANSI-C quoted bash -c scripts entering restricted folders", async () => {
+    const root = trackTempDir("rf-ansic-encoded-");
+    const restricted = path.join(root, "restricted");
+    const work = path.join(root, "work");
+    fs.mkdirSync(restricted, { recursive: true });
+    fs.mkdirSync(work, { recursive: true });
+    const dbPath = path.join(root, "state.db");
+    const hmacKeyPath = path.join(root, ".approval-hmac-key");
+
+    // Encode `cd <restricted>; cat secret` completely in ANSI-C \xHH escapes so no literal slash or `cd` appears
+    const hexEncode = (s: string) =>
+      [...s].map((c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`).join("");
+    const encodedBody = hexEncode(`cd ${restricted}; cat secret`);
+
+    for (const cmd of [
+      `bash -c $'${encodedBody}'`,
+      `bash -c$'${encodedBody}'`,
+    ]) {
+      const decision = await evaluateRestrictedFolderAccess({
+        toolName: "bash",
+        input: { command: cmd },
+        cwd: work,
+        ui: null,
+        restrictedFolders: [restricted],
+        dbPath,
+        hmacKeyPath,
+      });
+      assert.ok(decision?.block, `encoded ANSI-C bash -c script must be blocked: ${cmd}`);
+    }
+  });
+
   it("blocks ANSI-C quoted attached bash -c deletion of state.db", async () => {
     const root = trackTempDir("rf-ansic-bash-");
-    const res = await evaluateBashPolicy({
-      command: `bash -c$'rm .pi/data/state.db'`,
-      cwd: root,
-      ui: null,
-    });
-    assert.equal(res.action, "block");
+    for (const cmd of [
+      `bash -c$'rm .pi/data/state.db'`,
+      `bash -c $'\\x72\\x6d \\x2epi/data/state.db'`,
+      `bash -c$'\\x72\\x6d \\x2epi/data/state.db'`,
+    ]) {
+      const res = await evaluateBashPolicy({ command: cmd, cwd: root, ui: null });
+      assert.equal(res.action, "block", `ANSI-C bash -c delete must be blocked: ${cmd}`);
+    }
   });
 
   it("blocks indirect parameter expansion overwriting state.db", async () => {

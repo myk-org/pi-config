@@ -758,6 +758,30 @@ function readCurrentGlobalAttestationGen(): number {
   }
 }
 
+/** Opaque snapshot of the in-process restricted-folders floor (for cross-process unit tests). */
+export interface RestrictedFoldersFloorSnapshot {
+  readonly __brand: "RestrictedFoldersFloorSnapshot";
+  readonly entries: ReadonlyArray<readonly [string, { readonly entries: readonly string[]; readonly generation: number }]>;
+}
+
+/** Test seam: capture the current in-process floor without accessing private globalThis internals. */
+export function snapshotRestrictedFoldersFloorForTests(): RestrictedFoldersFloorSnapshot {
+  const floor = getRestrictedFoldersFloor();
+  return {
+    __brand: "RestrictedFoldersFloorSnapshot",
+    entries: [...floor.entries()].map(([k, v]) => [k, { entries: [...v.entries], generation: v.generation }]),
+  };
+}
+
+/** Test seam: restore a previously captured in-process floor snapshot. */
+export function restoreRestrictedFoldersFloorForTests(snapshot: RestrictedFoldersFloorSnapshot): void {
+  const floor = getRestrictedFoldersFloor();
+  floor.clear();
+  for (const [k, v] of snapshot.entries) {
+    floor.set(k, { entries: new Set(v.entries), generation: v.generation });
+  }
+}
+
 /** Clear the monotonic restricted-folders floor (called on authorized human settings saves and test teardown). */
 export function clearRestrictedFoldersFloor(cwd?: string): void {
   const floor = getRestrictedFoldersFloor();
@@ -1026,24 +1050,91 @@ const DYNAMIC_EXPANSION_RE = /[$*?{`]/;
 const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 const SHELL_OPERATORS = new Set(["|", "||", "&&", ";", "&", "(", ")", "{", "}", "!", "then", "do", "done", "fi", "else", "elif"]);
 
+function decodeAnsiCEscapes(inner: string): string {
+  return inner.replace(
+    /\\(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|0?([0-7]{1,3})|([ntr'"\\]))/g,
+    (m, hex?: string, uni?: string, oct?: string, esc?: string) => {
+      if (hex !== undefined) {
+        const code = Number.parseInt(hex, 16);
+        return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
+      }
+      if (uni !== undefined) {
+        const code = Number.parseInt(uni, 16);
+        return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
+      }
+      if (oct !== undefined) {
+        const code = Number.parseInt(oct, 8);
+        return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
+      }
+      switch (esc) {
+        case "n": return "\n";
+        case "t": return "\t";
+        case "r": return "\r";
+        case "'": return "'";
+        case "\"": return "\"";
+        case "\\": return "\\";
+        default: return m;
+      }
+    },
+  );
+}
+
+/**
+ * Decode Bash ANSI-C `$'...'` literals into equivalent single-quoted strings BEFORE
+ * `tokenize()` strips quote delimiters, so encoded `-c $'\x63\x64 ...'` and
+ * `-c$'\x63\x64 ...'` scripts are inspected using the command Bash actually runs.
+ */
+function preprocessAnsiCQuotes(script: string): string {
+  if (!script.includes("$'")) return script;
+  let out = "";
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < script.length; i++) {
+    const ch = script[i]!;
+    if (ch === "\\" && !inSingle && i + 1 < script.length) {
+      out += ch + script[i + 1]!;
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      out += ch;
+      continue;
+    }
+    if (ch === "\"" && !inSingle) {
+      inDouble = !inDouble;
+      out += ch;
+      continue;
+    }
+    if (!inSingle && !inDouble && ch === "$" && script[i + 1] === "'") {
+      let j = i + 2;
+      let body = "";
+      while (j < script.length) {
+        const c = script[j]!;
+        if (c === "\\" && j + 1 < script.length) {
+          body += c + script[j + 1]!;
+          j += 2;
+          continue;
+        }
+        if (c === "'") break;
+        body += c;
+        j++;
+      }
+      if (j < script.length && script[j] === "'") {
+        const decoded = decodeAnsiCEscapes(body);
+        out += `'${decoded.replace(/'/g, "'\\''")}'`;
+        i = j;
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
 function stripOuterQuotes(s: string): string {
   if (s.startsWith("$'") && s.endsWith("'") && s.length >= 3) {
-    return s
-      .slice(2, -1)
-      .replace(/\\0([0-7]{2,3})/g, (_, oct: string) => {
-        const code = Number.parseInt(oct, 8);
-        return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
-      })
-      .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex: string) => {
-        const code = Number.parseInt(hex, 16);
-        return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
-      })
-      .replace(/\\n/g, "\n")
-      .replace(/\\t/g, "\t")
-      .replace(/\\r/g, "\r")
-      .replace(/\\'/g, "'")
-      .replace(/\\"/g, "\"")
-      .replace(/\\\\/g, "\\");
+    return decodeAnsiCEscapes(s.slice(2, -1));
   }
   if (s.startsWith("$\"") && s.endsWith("\"") && s.length >= 3) {
     return s.slice(2, -1);
@@ -1215,7 +1306,7 @@ function seedBashVars(
 }
 
 function collectBashTargets(
-  command: string,
+  rawCommand: string,
   sessionCwd: string,
   homeDir: string,
   restrictedFolders: readonly string[],
@@ -1230,12 +1321,13 @@ function collectBashTargets(
   if (depth > MAX_BASH_SCAN_DEPTH) {
     unresolved.push({
       kind: "operand",
-      raw: command.slice(0, 80),
+      raw: rawCommand.slice(0, 80),
       reason: "nested shell nesting depth exceeded static inspection limit",
     });
     return { targets: [], unresolved };
   }
 
+  const command = preprocessAnsiCQuotes(rawCommand);
   dirSet.add(sessionCwd);
   dirSet.add(resolveEffectiveCwd(command, sessionCwd));
 
