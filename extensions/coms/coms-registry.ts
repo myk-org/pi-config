@@ -346,6 +346,7 @@ export class ComsRegistry {
 						heartbeatAt: typeof entry.heartbeat_at === "string" ? entry.heartbeat_at : null,
 						origin: typeof entry.origin === "string" ? entry.origin : null,
 						createdBy: null,
+						piSessionId: typeof entry.pi_session_id === "string" ? entry.pi_session_id : null,
 						// #1083: a peer that reports nothing stays null — never 0.
 						workload: parseRegistryWorkload(entry.workload),
 					});

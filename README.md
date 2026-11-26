@@ -30,9 +30,9 @@ Single extension that provides:
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async, and async-chain modes); optional `model` param for model override. Chains also run async: every step needs its own `taskId` and `cwd`, each step receives the previous step's output as `{previous}`, and a failed step stops the chain |
 | **`list_models`** | List available models and providers for subagent model override |
 | **Runtime & session tools** | LLM tool parity for user commands: `async_status` (list/inspect jobs & output tail), `session_status` (unified `/status` snapshot), `worktree_status` (`list`/`prune`), `daemon_manage` (`pidash`/`pidiff` status/start/stop/restart), `skill_adopt` (`list`/`adopt`), `memory_dream` (`status`/`run`/`auto_on`/`auto_off`), and `coms_local_queue` (`list`/`kill` own inbound queue) |
-| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async`: `x` kills, `Space` multi-selects, `X` kills all). Async applies to chains too: step 1 spawns immediately and each step starts when the previous one ends. |
+| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, revive, activity log, and kill support (`/async`: `1`/`2` Roster & Activity Log, `r` revive, `x` kills, `Space` multi-selects, `X` kills all). Async applies to chains too: step 1 spawns immediately and each step starts when the previous one ends. |
 | **Default model & thinking restore** | Unified startup session restore (`extensions/providers/session-restore.ts`): cold-start default model restore (`restore-default-model.ts`, gating `startup`\|`resume`, empty-selection `new`, empty `enabledModels`, and trusted project merge) followed by per-model thinking-level persistence (`last-thinking-level.ts`). |
-| **`/async` command** | Show status of background agents — select one for live output streaming, multi-select and kill (`x`), or kill everything (`X`) |
+| **`/async` command** | Show status of background agents — `[1] Roster` / `[2] Activity` log (`f` filter, `/` search, `Space` follow, `Enter` jump to output), revive stopped/failed/completed jobs (`r`), multi-select and kill (`x`), or kill everything (`X`) |
 | **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
 | **Python/pip enforcement** | Auto-fixes `python`/`python3` → `uv run python`; blocks `pip`/`pip3` — requires `uv` |
 | **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
@@ -56,7 +56,7 @@ Single extension that provides:
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Task tracking** | Structured task lists for multi-step workflows — live widget (`expanded` ↔ `collapsed` 1-line header via `alt+t`), `[you]`/`[llm]` assignee tags, live `[⏳ ...]` badges for bound async subagents, zero-arg `/tasks` TUI (`Space` multi-select for `s` start, `d` done, `x` delete, plus `n` add, `e` edit, `f` mine/all), progress tracking, reminder nudges (owned, based on [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) MIT). `PI_TASK_SCOPE` selects `.pi/tasks/tasks-<sessionId>.json` (`session`, default) or `.pi/tasks/tasks.json` (`project`); `PI_TASKS` sets an explicit store file, a bare list id under `~/.pi/tasks/<id>.json`, or `off` for in-memory only |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
-| **Inter-agent communication** | P2P (`/coms`) agent communication — zero-arg TUI overlay (`f` scope, `q` inbound queue, `Space` multi-select `m`/`x`, `X` kill all, `Enter` drilldown) and LLM tools (`coms_start`/`coms_stop`/`coms_*`) |
+| **Inter-agent communication** | P2P (`/coms`) agent communication — zero-arg TUI overlay (`1`/`2` Roster & Activity Log, `r` revive stopped supervised peers, `f` scope, `q` inbound queue, `Space` multi-select `m`/`r`/`x`, `X` kill all, `Enter` drilldown) and LLM tools (`coms_start`/`coms_stop`/`coms_*`) |
 | **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/async`, `/cron`, `/tasks`, `/worktree`, `/adopt-skill`, `/status`, `/remember`, `/coms`, `/pi-config-settings` |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — branches for `/review-local`, PR numbers for `/pr-review`, and more |
@@ -101,7 +101,7 @@ for `git-expert` to commit.
 | `/query-db <command>` | Query the review comments database |
 | `/remember <what>` | Save a memory for future sessions |
 | `/cron` | Zero-arg fullscreen cron TUI overlay (`n` add, `e` edit, `x` delete, `p` pause/resume, `t` toggle persist/session, `f` scope `all`/`session`/`persist`, `Space` multi-select, `Enter` detail; plain-text fallback when headless). Persistent delivery is local at-least-once with OS `flock` locking on `.pi/cron/crons.json`. LLMs manage crons via `cron_manage` |
-| `/async` | Zero-arg async agent dashboard — live output, `Space` multi-select + `x` kill, `X` kill all, `Enter` output |
+| `/async` | Zero-arg async agent dashboard — `[1] Roster` / `[2] Activity` log (`f` filter, `/` search, `Space` follow), `r` revive stopped/completed/failed jobs, `Space` multi-select + `x` kill, `X` kill all, `Enter` live output; plain-text fallback when headless |
 | `/tasks` | Zero-arg fullscreen tasks TUI overlay — `Space` multi-select for `s` start, `d` done, `x` delete, plus `n` add, `e` edit, `f` mine/all, `Enter` detail (plain-text fallback when headless/browser) |
 | `/adopt-skill` | Zero-arg TUI overlay listing all adoptable skills (`maintained` vs `unmarked`) with `Space` multi-select + `a`/`Enter` batch adopt |
 | `/pi-config-settings` | Zero-arg interactive TUI settings editor — browse all pi-config settings with scope indicators (`Tab` switches Project/Global), smart pickers for providers/models, and immediate save |
@@ -109,7 +109,7 @@ for `git-expert` to commit.
 | `/worktree` | Zero-arg interactive worktree TUI overlay (list + detail with HEAD, `git status --short`, active COMS peer, `c` copy path, `Space` multi-select guarded `d`/`x` remove, `p` prune, `r` refresh; plain-text fallback when headless). Status bar shows `[wt]` when in a linked worktree and `⊞ N wt` count badge when linked worktrees exist |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
 | `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer server (per-project) |
-| `/coms` | Zero-arg P2P coms peers TUI overlay (`f` toggle this project/all projects, `q` local inbound queue with `Space` multi-select `x` kill, `Space` multi-select `m` message/`x` kill, `X` kill all, `Enter` drilldown; plain-text fallback when headless). Toggle pool widget with `alt+c` (or `alt+w` for both tasks & coms widgets) |
+| `/coms` | Zero-arg P2P coms peers TUI overlay (`1`/`2` Roster & Activity Log with `f` filter / `/` search / `Space` follow, `r` revive stopped supervised peers, `f` toggle this project/all projects, `q` local inbound queue with `Space` multi-select `x` kill, `Space` multi-select `m` message/`r` revive/`x` kill, `X` kill all, `Enter` drilldown; plain-text fallback when headless). Toggle pool widget with `alt+c` (or `alt+w` for both tasks & coms widgets) |
 
 ### Inter-Agent Communication (coms)
 
@@ -138,9 +138,10 @@ Peers as processes (`/coms`, `coms_peers`, `coms_peer_kill`):
 - `scripts/coms-peer-supervisor.mjs` starts a peer as its own `pi` process with its own session,
   holds its stdin, records pids in `~/.pi/coms/peers/<name>@<project>.json` and lives as long as the
   peer. A peer has **no lifetime of its own** — kill it, or it stays.
-- `/coms` opens the fullscreen overlay (like `/async`) scoped to THIS project by default (`f` toggles
-  all projects, `q` opens the local inbound queue, `Space` multi-selects for `m` message / `x` kill,
-  `X` kills all, `Enter` drills into peer workload), or plain text when headless.
+- `/coms` opens the fullscreen overlay (like `/async`) scoped to THIS project by default (`1`/`2` toggles
+  Roster and live Activity Log, `r` revives recently stopped supervised peers with saved session resume,
+  `f` toggles all projects, `q` opens the local inbound queue, `Space` multi-selects for `m` message /
+  `r` revive / `x` kill, `X` kills all, `Enter` drills into peer workload), or plain text when headless.
 - Only peers a supervisor started are killable; your own session and other human sessions never are.
 
 Messaging semantics (#924):

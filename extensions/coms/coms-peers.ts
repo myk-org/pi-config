@@ -9,6 +9,12 @@
 import { formatWorkloadSuffix, type PeerWorkloadCounts } from "./coms-workload.js";
 import { sanitizePeerText } from "./peer-text.js";
 import { createLogger } from "../shared/logger.js";
+import type { HistoryRecord } from "./coms-history.js";
+import {
+  formatActivityEventPlain,
+  type ActivityCategory,
+  type ActivityEvent,
+} from "../orchestrator/overlay-activity-log.js";
 
 const log = createLogger("coms-peers");
 
@@ -31,8 +37,36 @@ export interface RegistryRow {
   /** Who spawned this peer as a process, from the supervisor's record, which is the more
    *  authoritative answer when both exist. */
   createdBy?: string | null;
+  /** Pi session id recorded in the registry or supervisor metadata (used by `r` revive to resume session). */
+  piSessionId?: string | null;
+  /** True for recently stopped supervised peers shown in `/coms` for `r` revive. */
+  stopped?: boolean;
+  /** ISO timestamp when a stopped supervised peer exited/stopped. */
+  stoppedAt?: string | null;
+  /** Exit code of a stopped supervised peer when known. */
+  exitCode?: number | null;
   /** #1083: the peer's own active counts. `null`/absent = not reported = `unknown`, never 0. */
   workload?: PeerWorkloadCounts | null;
+}
+
+/** Shape of a supervisor state JSON written to `~/.pi/coms/peers/<cname>@<project>.json`. */
+export interface SupervisionRecord {
+  cname?: string;
+  project?: string;
+  cwd?: string;
+  purpose?: string;
+  pid?: number;
+  childPid?: number | null;
+  session?: string | null;
+  piSessionId?: string | null;
+  createdBy?: string | null;
+  startedAt?: string;
+  stoppedAt?: string;
+  exitedAt?: string;
+  failedAt?: string;
+  exitCode?: number | null;
+  exitSignal?: string | null;
+  failure?: string;
 }
 
 export interface PeerFilter {
@@ -327,7 +361,7 @@ export function projectProblem(project: string): string | null {
  *  keep a name from becoming a shell/argv surprise in the supervisor. */
 export function buildPeerSpawn(
   supervisorPath: string,
-  args: { cname?: string | null; project?: string | null; cwd?: string | null; purpose?: string | null },
+  args: { cname?: string | null; project?: string | null; cwd?: string | null; purpose?: string | null; session?: string | null },
   logger?: { warn: (msg: string, data?: unknown) => void },
 ): { ok: true; command: string[] } | { ok: false; message: string } {
   const refuse = (reason: string, message: string) => {
@@ -353,6 +387,13 @@ export function buildPeerSpawn(
   if (cwd) command.push("--cwd", cwd);
   const purpose = (args.purpose ?? "").trim();
   if (purpose) command.push("--purpose", purpose);
+  const session = (args.session ?? "").trim();
+  if (session) {
+    if (/[\x00-\x1f]/.test(session)) {
+      return refuse("invalid_session", "coms peer spawn: session must not contain control characters");
+    }
+    command.push("--session", session);
+  }
   return { ok: true, command };
 }
 
@@ -403,4 +444,261 @@ export function userTargetProblem(
   if (found.length === 1) return null;
   const where = found.map((row) => `${row.name}·${row.project}`).join(", ");
   return `"${asked}" is ambiguous (${where}) — pass --project to choose`;
+}
+
+/**
+ * Derive recently stopped supervised peers from `~/.pi/coms/peers/*.json` records (#1417).
+ * Excludes peers that currently have a matching live registry row (`project::name`),
+ * deduplicates per `project::name` keeping the newest stop/exit timestamp, and returns
+ * rows marked `stopped: true` so `/coms` can display them and revive them via `r`.
+ */
+export function listStoppedSupervisedPeers(
+  records: readonly SupervisionRecord[],
+  liveRows: readonly Pick<RegistryRow, "project" | "name">[],
+  filter: PeerFilter = {},
+  maxCount = 20,
+): RegistryRow[] {
+  const liveKeys = new Set(liveRows.map((row) => `${row.project}::${row.name}`));
+  const latestByKey = new Map<string, { ts: number; row: RegistryRow }>();
+
+  for (const record of records) {
+    const cname = typeof record?.cname === "string" ? record.cname.trim() : "";
+    if (!cname) continue;
+    const project = typeof record.project === "string" && record.project.trim()
+      ? record.project.trim()
+      : "default";
+    if (filter.project && project !== filter.project) continue;
+    if (filter.name && cname !== filter.name) continue;
+
+    const key = `${project}::${cname}`;
+    if (liveKeys.has(key)) continue;
+
+    const stoppedAt = record.exitedAt ?? record.stoppedAt ?? record.failedAt ?? null;
+    if (!stoppedAt) continue;
+
+    const ts = Date.parse(stoppedAt) || 0;
+    const prev = latestByKey.get(key);
+    if (prev && prev.ts >= ts) continue;
+
+    const sessionId = (typeof record.piSessionId === "string" && record.piSessionId.trim())
+      ? record.piSessionId.trim()
+      : (typeof record.session === "string" && record.session.trim() ? record.session.trim() : null);
+
+    latestByKey.set(key, {
+      ts,
+      row: {
+        project,
+        name: cname,
+        pid: null,
+        cwd: typeof record.cwd === "string" ? record.cwd : "",
+        purpose: typeof record.purpose === "string" ? record.purpose : "",
+        endpoint: "",
+        busy: false,
+        queueDepth: null,
+        contextUsedPct: null,
+        startedAt: typeof record.startedAt === "string" ? record.startedAt : null,
+        heartbeatAt: null,
+        origin: null,
+        createdBy: typeof record.createdBy === "string" ? record.createdBy : null,
+        piSessionId: sessionId,
+        stopped: true,
+        stoppedAt,
+        exitCode: typeof record.exitCode === "number" ? record.exitCode : null,
+        workload: null,
+      },
+    });
+  }
+
+  const sorted = [...latestByKey.values()]
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, Math.max(1, maxCount))
+    .map((entry) => entry.row);
+  log.debug("stopped_supervised_peers_listed", { total: records.length, stopped: sorted.length });
+  return sorted;
+}
+
+/** Deterministic overlay row ID for a live or stopped peer. */
+export function peerOverlayRowId(row: Pick<RegistryRow, "project" | "name" | "endpoint" | "stopped">): string {
+  if (row.stopped) return `stopped:${row.project}:${row.name}`;
+  return `${row.project}:${row.name}\0${row.endpoint}`;
+}
+
+function historyDirectionPrefix(direction: HistoryRecord["direction"]): string {
+  switch (direction) {
+    case "out":
+      return "→ sent";
+    case "in":
+      return "← recv";
+    case "steer":
+      return "⚡ steer";
+    case "response_out":
+      return "↩ reply sent";
+    case "response_in":
+      return "↩ reply recv";
+    default:
+      return "msg";
+  }
+}
+
+/**
+ * Aggregate chronological COMS lifecycle, message, and error events for the `/coms`
+ * `[2] Activity` tab (#1417). All peer-supplied strings are sanitized before display.
+ */
+export function collectComsActivityEvents(args: {
+  historyRecords: readonly HistoryRecord[];
+  livePeers: readonly RegistryRow[];
+  stoppedPeers?: readonly RegistryRow[];
+  allKnownPeers?: readonly Pick<RegistryRow, "project" | "name" | "endpoint" | "stopped">[];
+  projectFilter?: string | null;
+  maxTotal?: number;
+  now?: number;
+}): ActivityEvent[] {
+  const maxTotal = args.maxTotal ?? 400;
+  const now = args.now ?? Date.now();
+  const stoppedPeers = args.stoppedPeers ?? [];
+  const events: ActivityEvent[] = [];
+
+  // Project-qualified lookup prevents same-named peers in different projects from colliding.
+  const rowIdByQualified = new Map<string, string>();
+  const rowIdsByName = new Map<string, string[]>();
+
+  const registerRosterLookup = (
+    row: Pick<RegistryRow, "project" | "name" | "endpoint" | "stopped">,
+    id: string,
+  ): void => {
+    const qKey = `${row.project}::${row.name}`;
+    if (!rowIdByQualified.has(qKey)) rowIdByQualified.set(qKey, id);
+    const list = rowIdsByName.get(row.name) ?? [];
+    if (!list.includes(id)) list.push(id);
+    rowIdsByName.set(row.name, list);
+  };
+
+  for (const row of args.livePeers) {
+    const id = peerOverlayRowId(row);
+    registerRosterLookup(row, id);
+    const ts = row.startedAt ? (Date.parse(row.startedAt) || now) : now;
+    const stateDesc = row.busy
+      ? `peer busy${row.queueDepth ? ` (queue ${row.queueDepth})` : ""}`
+      : "peer online";
+    events.push({
+      id: `live:${id}`,
+      timestamp: ts,
+      sourceId: id,
+      sourceLabel: sanitizePeerText(row.name, 36) || "peer",
+      category: "lifecycle",
+      summary: `${stateDesc} · ${sanitizePeerText(row.project, 32)}`,
+    });
+  }
+
+  for (const row of stoppedPeers) {
+    const id = peerOverlayRowId(row);
+    registerRosterLookup(row, id);
+    const ts = row.stoppedAt ? (Date.parse(row.stoppedAt) || now) : now;
+    const isErr = typeof row.exitCode === "number" && row.exitCode !== 0;
+    const codePart = typeof row.exitCode === "number" ? ` (exit ${row.exitCode})` : "";
+    events.push({
+      id: `stopped:${id}`,
+      timestamp: ts,
+      sourceId: id,
+      sourceLabel: sanitizePeerText(row.name, 36) || "peer",
+      category: isErr ? "error" : "lifecycle",
+      summary: `peer stopped${codePart} · ${sanitizePeerText(row.project, 32)}`,
+    });
+  }
+
+  // Also index any additional known peers across all projects by verified project::name so
+  // project-scoped Activity messages to verified remote recipients resolve cleanly on Enter.
+  if (args.allKnownPeers) {
+    for (const row of args.allKnownPeers) {
+      const qKey = `${row.project}::${row.name}`;
+      if (!rowIdByQualified.has(qKey)) {
+        rowIdByQualified.set(qKey, peerOverlayRowId(row));
+      }
+    }
+  }
+
+  for (let i = 0; i < args.historyRecords.length; i++) {
+    const rec = args.historyRecords[i];
+    const ownerProject = typeof rec.project === "string" && rec.project.trim() ? rec.project.trim() : null;
+    // In project-scoped views, require a proven matching owner project — never leak
+    // other-project records or legacy untagged records merely because a peer name matches.
+    if (args.projectFilter && ownerProject !== args.projectFilter) continue;
+
+    const ts = Date.parse(rec.ts) || now;
+    const hasErr = Boolean(rec.error) || /fail|error|reject|timeout|refus/i.test(rec.status ?? "");
+    const category: ActivityCategory = hasErr ? "error" : "message";
+    const prefix = historyDirectionPrefix(rec.direction);
+    const preview = sanitizePeerText(rec.preview || "", 110);
+    const errPart = rec.error ? ` — ${sanitizePeerText(rec.error, 60)}` : "";
+    const statusPart = !rec.error && rec.status ? ` [${sanitizePeerText(rec.status, 24)}]` : "";
+
+    // Route Enter ONLY using the verified remote `peer_project` — never assume the record
+    // owner's project equals a remote sender's project (a cross-project sender can share a
+    // name with a local namesake).
+    const verifiedPeerProject = typeof rec.peer_project === "string" && rec.peer_project.trim()
+      ? rec.peer_project.trim()
+      : null;
+    let sourceId: string;
+    if (verifiedPeerProject) {
+      sourceId = rowIdByQualified.get(`${verifiedPeerProject}::${rec.peer}`) ?? `peer:${verifiedPeerProject}:${rec.peer}`;
+    } else {
+      const candidates = rowIdsByName.get(rec.peer) ?? [];
+      if (candidates.length > 1) {
+        sourceId = `peer:ambiguous:${rec.peer}`;
+      } else if (!ownerProject && candidates.length === 1) {
+        // Legacy record (predating project/peer_project) in all-projects view with a unique match.
+        sourceId = candidates[0];
+      } else {
+        // Unverified remote sender project: leave unlinked so Enter never opens a local namesake.
+        sourceId = `peer:unverified:${rec.peer}`;
+      }
+    }
+
+    events.push({
+      id: `hist:${rec.msg_id}:${rec.direction}:${i}`,
+      timestamp: ts,
+      sourceId,
+      sourceLabel: sanitizePeerText(rec.peer, 36) || "peer",
+      category,
+      summary: `${prefix}${statusPart}: ${preview}${errPart}`,
+    });
+  }
+
+  events.sort((a, b) => (a.timestamp !== b.timestamp ? a.timestamp - b.timestamp : a.id.localeCompare(b.id)));
+  if (events.length > maxTotal) return events.slice(-maxTotal);
+  return events;
+}
+
+/** Safe plain-text fallback for headless / non-UI `/coms` invocations. */
+export function formatComsPeersPlainText(
+  livePeers: readonly RegistryRow[],
+  stoppedPeers: readonly RegistryRow[] = [],
+  events: readonly ActivityEvent[] = [],
+  emptyMessage = "No peers in the coms registry.",
+): string {
+  if (livePeers.length === 0 && stoppedPeers.length === 0 && events.length === 0) {
+    return emptyMessage;
+  }
+  const lines: string[] = [];
+  if (livePeers.length > 0) {
+    lines.push(formatPeerTable([...livePeers]));
+  }
+  if (stoppedPeers.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`Recently stopped supervised peer(s) (${stoppedPeers.length}):`);
+    for (const row of stoppedPeers) {
+      const sessionHint = row.piSessionId ? " [session]" : "";
+      lines.push(
+        `○ ${sanitizePeerText(row.name, 40)} · ${sanitizePeerText(row.project, 40)} (stopped${sessionHint}) — ${sanitizePeerText(row.cwd, 120) || "?"}`,
+      );
+    }
+  }
+  if (events.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Recent COMS activity:");
+    for (const ev of events.slice(-10)) {
+      lines.push(`  ${formatActivityEventPlain(ev)}`);
+    }
+  }
+  return lines.join("\n");
 }

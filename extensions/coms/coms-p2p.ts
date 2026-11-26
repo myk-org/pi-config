@@ -269,6 +269,7 @@ interface PendingReply {
 	result?: { response?: any; error?: string | null; queued_msg_ids?: string[] };
 	target_session?: string;
 	target_name?: string;
+	target_project?: string;
 	sent_at?: number;
 	created_at?: string;
 	/** Creation time drives body-free recovery previews. */
@@ -1136,13 +1137,22 @@ export function createComsPeerRuntime(
 		try { socket.end(); } catch { /* ignore */ }
 	}
 
+	/** Return the peer's verified project when it belongs to this session's discovered project peers. */
+	function resolveVerifiedPeerProject(sessionId: string | undefined): string | undefined {
+		if (!sessionId || !identity) return undefined;
+		if (peerCards.has(sessionId)) return identity.project;
+		return undefined;
+	}
+
 	/** #924 §5: append to the local coms history trail. Fail-soft — delivery
 	 *  never waits on history. Every record is stamped with this session's id
-	 *  so queries can scope to one session's traffic on the shared file. */
+	 *  and owner project so project-scoped activity views stay isolated on the shared file;
+	 *  `peer_project` is set separately only when the remote peer's project is verified. */
 	function appendComsHistory(record: Omit<HistoryRecord, "ts" | "owner"> & { ts?: string }): void {
 		appendHistoryRecord(registry.historyPath(), {
 			ts: record.ts ?? nowIso(),
 			owner: identity?.coms_session_id,
+			project: identity?.project,
 			...record,
 		});
 	}
@@ -1210,6 +1220,7 @@ export function createComsPeerRuntime(
 						direction: "steer",
 						msg_id: env.msg_id,
 						peer: env.sender_name,
+						...(resolveVerifiedPeerProject(env.sender_session) ? { peer_project: resolveVerifiedPeerProject(env.sender_session) } : {}),
 						session: env.sender_session,
 						preview: truncatePreview(env.prompt),
 						status: `injected into ${currentInbound.msg_id}`,
@@ -1233,6 +1244,7 @@ export function createComsPeerRuntime(
 					direction: "steer",
 					msg_id: env.msg_id,
 						peer: env.sender_name,
+						...(resolveVerifiedPeerProject(env.sender_session) ? { peer_project: resolveVerifiedPeerProject(env.sender_session) } : {}),
 						session: env.sender_session,
 						preview: truncatePreview(env.prompt),
 						status: "steer_failed — queued normally",
@@ -1277,6 +1289,7 @@ export function createComsPeerRuntime(
 			direction: "in",
 			msg_id: env.msg_id,
 			peer: env.sender_name,
+			...(resolveVerifiedPeerProject(env.sender_session) ? { peer_project: resolveVerifiedPeerProject(env.sender_session) } : {}),
 			session: env.sender_session,
 			preview: truncatePreview(env.prompt),
 			status: env.priority ? "queued (priority)" : "queued",
@@ -1360,6 +1373,7 @@ export function createComsPeerRuntime(
 				direction: "response_in",
 				msg_id: env.msg_id,
 				peer: pending.target_name ?? env.sender_session,
+				...(pending.target_project ? { peer_project: pending.target_project } : {}),
 				preview: truncatePreview(typeof env.response === "string" ? env.response : JSON.stringify(env.response ?? "")),
 				status: env.error ? `error: ${env.error}` : "replied",
 				error: env.error ?? null,
@@ -2530,16 +2544,16 @@ Do not respond to this message.`;
 	}
 
 	// ━━ Ping cycle ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
+	async function resolveTargetWithProject(target: string): Promise<{ entry: RegistryEntry; project: string } | null> {
 		// Prefer exact session_id match first (unambiguous).
 		if (identity) {
 			const localEntries = await registry.pruneDeadEntries(identity.project, runtimeCwd);
 			// Try session_id match first (always unambiguous)
 			const bySession = localEntries.find((e) => e.coms_session_id === target);
-			if (bySession) { log.debug("resolveTarget", target, "→", bySession.name, "by_session"); return bySession; }
+			if (bySession) { log.debug("resolveTarget", target, "→", bySession.name, "by_session"); return { entry: bySession, project: identity.project }; }
 			// Name match — warn if ambiguous
 			const byName = localEntries.filter((e) => e.name === target);
-			if (byName.length === 1) { log.debug("resolveTarget", target, "→", byName[0].name, "by_name"); return byName[0]; }
+			if (byName.length === 1) { log.debug("resolveTarget", target, "→", byName[0].name, "by_name"); return { entry: byName[0], project: identity.project }; }
 			if (byName.length > 1) {
 				// Ambiguous — sort deterministically: freshest heartbeat first, session_id tiebreaker
 				byName.sort((a, b) => {
@@ -2551,33 +2565,44 @@ Do not respond to this message.`;
 					return a.coms_session_id.localeCompare(b.coms_session_id); // stable tiebreak
 				});
 				log.warn("ambiguous_target", target, "matches", byName.length, "selected", byName[0].coms_session_id);
-				return byName[0];
+				return { entry: byName[0], project: identity.project };
 			}
 		}
 		const otherProjects = identity
 			? registry.listProjects().filter((p) => p !== identity!.project)
 			: registry.listProjects();
-		const cachedEntries: RegistryEntry[][] = [];
+		const cachedEntries: Array<{ project: string; entries: RegistryEntry[] }> = [];
 		// Fall back to scanning other projects by session_id.
 		for (const proj of otherProjects) {
 			const entries = await registry.pruneDeadEntries(proj, runtimeCwd);
-			cachedEntries.push(entries);
+			cachedEntries.push({ project: proj, entries });
 			const bySession = entries.find((e) => e.coms_session_id === target);
-			if (bySession) return bySession;
+			if (bySession) return { entry: bySession, project: proj };
 		}
 		// Fall back to name match across those cached project entries.
-		for (const entries of cachedEntries) {
+		for (const { project: proj, entries } of cachedEntries) {
 			const byName = entries.find((e) => e.name === target);
-			if (byName) return byName;
+			if (byName) return { entry: byName, project: proj };
 		}
 		log.debug("resolveTarget", target, "→ not_found");
 		return null;
+	}
+
+	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
+		const hit = await resolveTargetWithProject(target);
+		return hit?.entry ?? null;
 	}
 
 	async function resolveLiveTarget(ref: string): Promise<RegistryEntry> {
 		const target = await resolveTarget(ref);
 		if (!target) throw new Error(`coms: no live agent matching "${ref}"`);
 		return target;
+	}
+
+	async function resolveLiveTargetWithProject(ref: string): Promise<{ entry: RegistryEntry; project: string }> {
+		const hit = await resolveTargetWithProject(ref);
+		if (!hit) throw new Error(`coms: no live agent matching "${ref}"`);
+		return hit;
 	}
 
 	/** #1080: resolve a peer's TaskStore file path or fail explicitly — never fall back to coms_session_id. */
@@ -2684,6 +2709,8 @@ Do not respond to this message.`;
 			/** #1077: set ONLY by the command layer (`/coms tell`, peers overlay). The coms_* tools
 			 *  never pass it, so tool input cannot claim human authority. */
 			userAuthored?: boolean;
+			/** Target peer's project when explicitly known (e.g. cross-project user send). */
+			targetProject?: string;
 		},
 	): Promise<{ msg_id: string; hops: number }> {
 		if (!identity) throw new Error("coms not initialised");
@@ -2745,12 +2772,14 @@ Do not respond to this message.`;
 			resolveFn = res;
 			rejectFn = rej;
 		});
+		const verifiedTargetProject = params.targetProject ?? resolveVerifiedPeerProject(target.coms_session_id);
 		const entry: PendingReply = {
 			resolve: resolveFn,
 			reject: rejectFn,
 			timer: null,
 			promise,
 			target_name: target.name,
+			target_project: verifiedTargetProject,
 			created_at: nowIso(),
 		};
 		// Steers use the FULL timeout, same as normal sends (Qodo ccd126a8):
@@ -2817,6 +2846,7 @@ Do not respond to this message.`;
 			direction: "out",
 			msg_id,
 			peer: target.name,
+			...(entry.target_project ? { peer_project: entry.target_project } : {}),
 			session: target.coms_session_id,
 			preview: truncatePreview(promptText),
 			status: [params.steer ? "steer" : null, params.priority ? "priority" : null].filter(Boolean).join("+") || "sent",
@@ -2829,7 +2859,7 @@ Do not respond to this message.`;
 	/** #1077: the user path refuses ambiguity — a human aiming at one peer must never land on
 	 *  another, so unlike the agent tools (which pick the freshest match) this returns a message
 	 *  that names the candidates and points at `--project`. */
-	async function resolveUserTarget(name: string, project?: string): Promise<{ target?: RegistryEntry; error?: string }> {
+	async function resolveUserTarget(name: string, project?: string): Promise<{ target?: RegistryEntry; project?: string; error?: string }> {
 		if (!identity) return { error: "coms is not active — run /coms start first." };
 		if (project) {
 			// The value is joined under the coms root by pruneDeadEntries, so it is validated exactly
@@ -2863,7 +2893,7 @@ Do not respond to this message.`;
 			log.warn("user_send_refused", { target: name, matches: found.length, reason: problem });
 			return { error: problem };
 		}
-		return { target: found[0].entry };
+		return { target: found[0].entry, project: found[0].project };
 	}
 
 	/** #1077 command-layer send: `/coms tell` and the peers overlay composer deliver through the
@@ -2888,7 +2918,11 @@ Do not respond to this message.`;
 		}
 		const safeTarget = sanitizePeerText(target.name, 40);
 		try {
-			const { msg_id } = await deliverPrompt(target, { prompt: params.prompt, userAuthored: true });
+			const { msg_id } = await deliverPrompt(target, {
+				prompt: params.prompt,
+				userAuthored: true,
+				targetProject: resolved.project ?? params.project,
+			});
 			log.info("user_send", msg_id, "to", target.name, "chars", params.prompt.length);
 			tellLog.debug("tell_completion", { count: 1 });
 			return { ok: true, message: `sent to ${safeTarget} (${msg_id})` };
@@ -3004,7 +3038,7 @@ Do not respond to this message.`;
 			if (!identity) {
 				throw new Error("coms not initialised");
 			}
-			const target = await resolveLiveTarget(params.target);
+			const { entry: target, project: targetProject } = await resolveLiveTargetWithProject(params.target);
 			// Block coms_send to the sender when processing their delivered, non-interrupted inbound — auto-capture handles the reply (#1226)
 			if (isAutoCaptureReplyBlocked(target.coms_session_id)) {
 				log.info("coms_send_blocked", "to", target.name, "auto-capture will reply");
@@ -3024,6 +3058,7 @@ Do not respond to this message.`;
 				tasks: params.tasks,
 				steer: params.steer === true,
 				priority: params.priority === true,
+				targetProject,
 			});
 			const targetKey = target.name;
 
@@ -3094,13 +3129,13 @@ Do not respond to this message.`;
 			// Resolve target list. "*" expands to every registry peer in the
 			// project — those entries are reused directly (no per-id
 			// re-resolve, which would re-probe every socket N times).
-			const resolved = new Map<string, RegistryEntry>();
+			const resolved = new Map<string, { entry: RegistryEntry; project: string }>();
 			if (params.targets.includes("*")) {
 				const localEntries = await registry.pruneDeadEntries(identity.project, runtimeCwd);
 				for (const e of localEntries) {
 					if (e.coms_session_id === identity.coms_session_id) continue;
 					if (e.explicit) continue;
-					resolved.set(e.coms_session_id, e);
+					resolved.set(e.coms_session_id, { entry: e, project: identity.project });
 				}
 			}
 			// Named targets resolve individually; an unresolvable name is
@@ -3108,20 +3143,20 @@ Do not respond to this message.`;
 			const sendResults: BroadcastTargetResult[] = [];
 			for (const t of params.targets) {
 				if (t === "*") continue;
-				const target = await resolveTarget(t);
-				if (!target) {
+				const hit = await resolveTargetWithProject(t);
+				if (!hit) {
 					log.warn("broadcast_target_unresolved", t);
 					sendResults.push({ target: t, status: "error", error: `no live agent matching "${t}"` });
 					continue;
 				}
-				resolved.set(target.coms_session_id, target);
+				resolved.set(hit.entry.coms_session_id, hit);
 			}
 			if (resolved.size === 0) {
 				const detail = sendResults.map((r) => r.error).join("; ");
 				throw new Error(`coms_broadcast: no live agent matching [${params.targets.join(", ")}]${detail ? ` — ${detail}` : ""}`);
 			}
 			// Same-sender inbound block applies per target: auto-capture replies.
-			await Promise.allSettled([...resolved.values()].map(async (target) => {
+			await Promise.allSettled([...resolved.values()].map(async ({ entry: target, project: targetProject }) => {
 				if (isAutoCaptureReplyBlocked(target.coms_session_id)) {
 					sendResults.push({ target: target.name, status: "error", error: "blocked: auto-capture will reply to this peer" });
 					return;
@@ -3132,6 +3167,7 @@ Do not respond to this message.`;
 						response_schema: params.response_schema as object | undefined,
 						tasks: params.tasks,
 						priority: params.priority === true,
+						targetProject,
 					});
 					sendResults.push({ target: target.name, msg_id, hops, status: "sent" });
 				} catch (error) {
@@ -4219,6 +4255,7 @@ Do not respond to this message.`;
 					direction: "response_out",
 					msg_id: inbound.msg_id,
 					peer: inbound.sender_name,
+					...(resolveVerifiedPeerProject(inbound.sender_session) ? { peer_project: resolveVerifiedPeerProject(inbound.sender_session) } : {}),
 					preview: truncatePreview(typeof payload === "string" ? payload : JSON.stringify(payload ?? "")),
 					status: error ? `error: ${error}` : "replied",
 					error: error,
