@@ -633,6 +633,16 @@ export function validateSetting(
     case "string": {
       if (typeof value !== "string") return { ok: false, error: `${key} must be a string` };
       const trimmed = value.trim();
+      if (key === "advisor_model" && trimmed !== "") {
+        const parsed = parseAdvisorModelSpec(trimmed);
+        if (!parsed) {
+          return {
+            ok: false,
+            error: `${key} must be empty or "provider/model-id" (e.g. "google/gemini-2.5-flash")`,
+          };
+        }
+        return { ok: true, value: `${parsed.provider}/${parsed.model}` };
+      }
       if (Array.isArray(def.enum) && def.enum.length > 0 && !def.enum.includes(trimmed)) {
         return { ok: false, error: `${key} must be one of: ${def.enum.join(", ")}` };
       }
@@ -795,6 +805,22 @@ function parseEnvSetting(key: string, def: SettingsKeyDef): unknown | undefined 
     default:
       return undefined;
   }
+}
+
+/**
+ * Parse and validate an explicit `provider/model-id` string for `advisor_model`.
+ * Requires a non-empty provider before the first `/`, a non-empty model id after it,
+ * and no whitespace characters. Returns `null` when malformed.
+ */
+export function parseAdvisorModelSpec(raw: string): { provider: string; model: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed || /\s/.test(trimmed)) return null;
+  const slashIdx = trimmed.indexOf("/");
+  if (slashIdx <= 0 || slashIdx === trimmed.length - 1) return null;
+  const provider = trimmed.slice(0, slashIdx);
+  const model = trimmed.slice(slashIdx + 1);
+  if (!provider || !model || model.startsWith("/") || model.endsWith("/")) return null;
+  return { provider, model };
 }
 
 /** True when a model id looks like a Google/Gemini image-generation model. */

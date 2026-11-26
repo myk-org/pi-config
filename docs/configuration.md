@@ -206,6 +206,54 @@ See [Automating Code Reviews](automating-code-reviews.html) for details.
 export PI_PR_RETRO_ON_MERGE=true
 ```
 
+### `advisor_enabled`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `advisor_enabled` | boolean | `false` | `PI_ADVISOR_ENABLED` | Enables the opt-in background read-only advisor/watchdog model. | Defaults to `false` so extra LLM tokens are never spent unless opted in. When `true`, periodically reviews recent transcript deltas in the background with zero tools (read-only) and injects a concise hidden course-correction note on the next turn only when it finds a concrete bug, spec drift, or stuck retry loop (silent when clean). Always skipped for subagent children (`PI_SUBAGENT_CHILD=1`) and skipped in headless/RPC hosts unless `PI_ADVISOR_ALLOW_HEADLESS=1` is set. Token usage and cost are logged via `createLogger("advisor")`. |
+
+```json
+{
+  "advisor_enabled": true
+}
+```
+
+```bash
+export PI_ADVISOR_ENABLED=true
+```
+
+### `advisor_model`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `advisor_model` | string (`provider/model-id` or `""`) | `""` | `PI_ADVISOR_MODEL` | Explicit `provider/model-id` for the background advisor LLM (for example `google/gemini-2.5-flash` or `anthropic/claude-sonnet-4-5`). | Empty string inherits the active session model. Non-empty values are validated as `provider/model-id` and editable via the fuzzy model picker in `/pi-config-settings`. Invalid or unavailable models fail soft (log warning, never block the session). |
+
+```json
+{
+  "advisor_model": "google/gemini-2.5-flash"
+}
+```
+
+```bash
+export PI_ADVISOR_MODEL="google/gemini-2.5-flash"
+```
+
+### `advisor_interval_turns`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `advisor_interval_turns` | integer `1`-`50` | `5` | `PI_ADVISOR_INTERVAL_TURNS` | Number of completed turns between scheduled background advisor checkpoints. | Controls watchdog cadence to bound extra token spend. Consecutive error/retry loops (3+ error turns in a row) can also trigger an early check. |
+
+```json
+{
+  "advisor_interval_turns": 5
+}
+```
+
+```bash
+export PI_ADVISOR_INTERVAL_TURNS=5
+```
+
 ## Provider Registration & Model Routing
 
 ### `agent_provider`
@@ -1037,6 +1085,24 @@ Elision never rewrites user messages, assistant prose, thinking/reasoning blocks
   "pre_compaction_elision_keep_turns": 6,
   "pre_compaction_elision_min_chars": 2000
 }
+```
+
+## Per-Turn Thinking Magic Keywords
+
+### `magic_keywords`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `magic_keywords` | boolean | `true` | `PI_MAGIC_KEYWORDS` | Enables per-turn magic keywords (`ultrathink` / `chillax`) in user prose. | When `true`, standalone lowercase `ultrathink` temporarily raises thinking effort to the current model's highest supported level for that turn (with a hidden careful-reasoning notice) and `chillax` lowers thinking effort to the model's lowest active reasoning level (such as `minimal` or `low`, never turning reasoning completely off and never enabling thinking when off). The previous thinking level is restored on `turn_end`, `agent_end`, error, or abort without overwriting persisted thinking preferences. Fenced code blocks, inline code spans, HTML/XML tags/comments, URLs, paths, identifiers (`ultrathink.ts`, `foo::chillax`, `ultrathink()`), and synthetic prompts are ignored, with zero prompt-cache impact when no keyword matches. |
+
+```json
+{
+  "magic_keywords": true
+}
+```
+
+```bash
+export PI_MAGIC_KEYWORDS=false
 ```
 
 ## Environment-only Process Flag

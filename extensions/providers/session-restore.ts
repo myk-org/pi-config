@@ -89,6 +89,7 @@ export function registerSessionRestore(
   let preserveCliLevel = false;
   let pendingRestore: PendingRestore | undefined;
   let lastRestoreDone: Promise<boolean> = Promise.resolve(false);
+  const activeTransientModels: string[] = [];
   const suppressedEvents: Array<{ model: string | undefined; level: SavedThinkingLevel }> = [];
 
   const cancelPendingRestore = (cause: string): void => {
@@ -131,6 +132,26 @@ export function registerSessionRestore(
     const requested = preferredThinkingLevel(model, readThinkingLevelState(opts.thinkingStatePath));
     if (!requested) return false;
     const effective = clampSavedThinkingLevel(model, requested);
+    if (activeTransientModels.includes(key)) {
+      // Only defer when an active per-turn keyword override targets THIS model;
+      // switching to a different model still applies its saved preference immediately.
+      try {
+        pi.events?.emit?.("providers:deferred-thinking-restore", {
+          model: key,
+          level: effective,
+          reason,
+        });
+      } catch {
+        // Event bus is optional in minimal harnesses.
+      }
+      log.info("thinking preference restore deferred during transient override", {
+        model: key,
+        requested,
+        effective,
+        reason,
+      });
+      return true;
+    }
     if (pi.getThinkingLevel() === effective) return false;
     if (!setInternalThinkingLevel(effective as ThinkingLevel)) return false;
     log.info("thinking preference restored", { model: key, requested, effective, reason });
@@ -236,10 +257,63 @@ export function registerSessionRestore(
 
   log.debug("session-restore: registering lifecycle handlers");
 
+  // Allow transient per-turn thinking overrides (e.g. magic keywords) to suppress
+  // writing their temporary level to last-thinking-level.json (#1418).
+  pi.events?.on?.("providers:suppress-thinking-save", (payload: unknown) => {
+    if (!payload || typeof payload !== "object") return;
+    const p = payload as { model?: unknown; level?: unknown };
+    if (!isThinkingLevel(p.level)) return;
+    const model = typeof p.model === "string" ? p.model : activeModelKey;
+    suppressedEvents.push({ model, level: p.level });
+    // Bound queue against unbalanced external suppressions.
+    if (suppressedEvents.length > 32) {
+      suppressedEvents.splice(0, suppressedEvents.length - 32);
+    }
+    log.debug("thinking preference external suppression queued", { model, level: p.level });
+  });
+
+  // Cancel a previously queued suppression when a transient setThinkingLevel call fails.
+  pi.events?.on?.("providers:unsuppress-thinking-save", (payload: unknown) => {
+    if (!payload || typeof payload !== "object") return;
+    const p = payload as { model?: unknown; level?: unknown };
+    if (!isThinkingLevel(p.level)) return;
+    const model = typeof p.model === "string" ? p.model : activeModelKey;
+    const idx = suppressedEvents.findIndex((item) => item.model === model && item.level === p.level);
+    if (idx >= 0) {
+      suppressedEvents.splice(idx, 1);
+      log.debug("thinking preference external suppression cancelled", { model, level: p.level });
+    }
+  });
+
+  // Track active transient overrides per model so delayed startup restore does
+  // not cancel the active keyword model, while switches to other models still restore.
+  pi.events?.on?.("providers:transient-thinking-start", (payload: unknown) => {
+    const model = payload && typeof payload === "object" && typeof (payload as { model?: unknown }).model === "string"
+      ? (payload as { model: string }).model
+      : activeModelKey;
+    if (!model) return;
+    activeTransientModels.push(model);
+    if (activeTransientModels.length > 32) {
+      activeTransientModels.splice(0, activeTransientModels.length - 32);
+    }
+    log.debug("thinking preference transient override started", { model, count: activeTransientModels.length });
+  });
+
+  pi.events?.on?.("providers:transient-thinking-end", (payload: unknown) => {
+    const model = payload && typeof payload === "object" && typeof (payload as { model?: unknown }).model === "string"
+      ? (payload as { model: string }).model
+      : activeModelKey;
+    if (!model) return;
+    const idx = activeTransientModels.indexOf(model);
+    if (idx >= 0) activeTransientModels.splice(idx, 1);
+    log.debug("thinking preference transient override ended", { model, count: activeTransientModels.length });
+  });
+
   pi.on("session_start", (event, ctx) => {
     const reason = typeof event?.reason === "string" ? event.reason.trim() : "";
     cancelPendingRestore("session_start");
     suppressedEvents.length = 0;
+    activeTransientModels.length = 0;
 
     activeModelKey = modelThinkingKey(ctx?.model);
     preserveCliLevel = hasExplicitThinkingArg(opts.argv ?? process.argv);
@@ -351,6 +425,7 @@ export function registerSessionRestore(
   pi.on("session_shutdown", () => {
     cancelPendingRestore("session_shutdown");
     suppressedEvents.length = 0;
+    activeTransientModels.length = 0;
     log.debug("session-restore shutdown cleanup completed");
   });
 

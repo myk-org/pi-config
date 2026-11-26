@@ -75,6 +75,8 @@ pi-config/
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries (SQLite-backed via state-db.ts)
 │   │   ├── session-spill.ts             # Session JSONL spill writer (<session-dir>/local/<N>.log) & content-addressed blob store (~/.pi/blobs/<sha256>) (#1420)
 │   │   ├── pre-compaction-elision.ts    # Deterministic zero-LLM-cost mechanical elision of old bulky tool results via context hook (#1421)
+│   │   ├── magic-keywords.ts            # Per-turn thinking magic keywords (`ultrathink` / `chillax`) with strict prose-only parser and single-turn restore (#1418)
+│   │   ├── advisor.ts                   # Opt-in background read-only advisor/watchdog model (`advisor_enabled`, `advisor_model` provider/model-id, `advisor_interval_turns`) (#1419)
 │   │   ├── state-db.ts                  # Shared node:sqlite WAL state store (.pi/data/state.db, Float32 BLOB embeddings, legacy JSONL migration)
 │   │   ├── state-jsonl.ts               # JSONL append log + legacy JSONL helpers (JsonlAppendLog, truncateJsonlFile, parseLastValidLine)
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
