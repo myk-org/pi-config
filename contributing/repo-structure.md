@@ -72,6 +72,8 @@ pi-config/
 │   │   ├── rule-placeholders.ts     # Rule assembly: frontmatter gates, {{IF}}/{{IFNOT}} conditionals, {{REVIEW_LOOP_MAX_CYCLES}}
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries (SQLite-backed via state-db.ts)
+│   │   ├── session-spill.ts             # Session JSONL spill writer (<session-dir>/local/<N>.log) & content-addressed blob store (~/.pi/blobs/<sha256>) (#1420)
+│   │   ├── pre-compaction-elision.ts    # Deterministic zero-LLM-cost mechanical elision of old bulky tool results via context hook (#1421)
 │   │   ├── state-db.ts                  # Shared node:sqlite WAL state store (.pi/data/state.db, Float32 BLOB embeddings, legacy JSONL migration)
 │   │   ├── state-jsonl.ts               # JSONL append log + legacy JSONL helpers (JsonlAppendLog, truncateJsonlFile, parseLastValidLine)
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification

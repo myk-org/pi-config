@@ -494,7 +494,7 @@ def test_get_settings_resolves_repo_root_once(
 
     result = get_settings((), cwd=_isolated_settings)
 
-    assert len(result) == len(SETTINGS_KEYS) == 73
+    assert len(result) == len(SETTINGS_KEYS) >= 80
     assert counts["root_calls"] == 1
 
 

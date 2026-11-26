@@ -979,6 +979,66 @@ export PI_PROJECT_TMP_MAX_SIZE=4G
 }
 ```
 
+## Session Spill, Blob Externalization, and Pre-Compaction Elision Keys
+
+Long-running sessions keep session `.jsonl` files lean by spilling oversized text `tool_result` outputs to `<sessionFile-without-.jsonl>/local/<N>.log` (falling back to `.pi/tmp/session-local/<sessionId>/` when running with `--no-session`), externalizing oversized or repeated image blocks into the content-addressed store `~/.pi/blobs/<sha256>` (plus a typed `.ext` sidecar when the MIME type is known), and mechanically eliding older bulky `toolResult` text blocks before full LLM compaction when context usage crosses a high-water threshold.
+
+Elision never rewrites user messages, assistant prose, thinking/reasoning blocks, images, small tool results, or turns inside the protected recent window; every elided block links to a recoverable spill file (reusing an existing spill file when already spilled) and preserves tool-call / tool-result pairing. Ordinary turns below the high-water threshold are never mutated so provider prompt caches stay intact.
+
+### `session_spill_enabled`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `session_spill_enabled` | boolean | `true` | `PI_SESSION_SPILL_ENABLED` | Enable spilling oversized text tool results to disk. | When `true`, text `tool_result` blocks exceeding `session_spill_threshold_chars` are written atomically to `<session-dir>/local/<N>.log` and replaced inline with a bounded head/tail preview + spill path. |
+
+### `session_spill_threshold_chars`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `session_spill_threshold_chars` | integer `1000`-`5000000` | `50000` | `PI_SESSION_SPILL_THRESHOLD_CHARS` | Character threshold for spilling text tool results. | Text blocks at or below this length remain inline untouched; longer blocks are spilled and previewed. |
+
+### `session_blob_externalize`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `session_blob_externalize` | boolean | `true` | `PI_SESSION_BLOB_EXTERNALIZE` | Enable content-addressed image externalization for tool results. | Oversized (>512 KiB decoded) or repeated image blocks in a session are deduplicated into `~/.pi/blobs/<sha256>` (with a typed `.ext` sidecar when MIME type is known) and replaced with a hash/path pointer; first-time normal-sized images remain inline so the model can view them. |
+
+### `pre_compaction_elision`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `pre_compaction_elision` | boolean | `true` | `PI_PRE_COMPACTION_ELISION` | Enable deterministic zero-LLM-cost elision of old bulky tool results before compaction. | Activates the `context` hook once usage crosses `pre_compaction_elision_threshold_pct`, reclaiming context headroom without an LLM compaction call. |
+
+### `pre_compaction_elision_threshold_pct`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `pre_compaction_elision_threshold_pct` | integer `30`-`95` | `70` | `PI_PRE_COMPACTION_ELISION_THRESHOLD_PCT` | High-water context usage percentage that triggers elision. | Below this threshold (with no prior elisions), the `context` hook returns without modifying messages. |
+
+### `pre_compaction_elision_keep_turns`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `pre_compaction_elision_keep_turns` | integer `1`-`50` | `6` | `PI_PRE_COMPACTION_ELISION_KEEP_TURNS` | Number of most recent assistant turns kept completely intact. | Tool results belonging to the last N assistant turns are never elided. |
+
+### `pre_compaction_elision_min_chars`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `pre_compaction_elision_min_chars` | integer `200`-`500000` | `2000` | `PI_PRE_COMPACTION_ELISION_MIN_CHARS` | Minimum character length for an older `toolResult` text block to be elided. | Smaller older tool results stay inline untouched. |
+
+```json
+{
+  "session_spill_enabled": true,
+  "session_spill_threshold_chars": 50000,
+  "session_blob_externalize": true,
+  "pre_compaction_elision": true,
+  "pre_compaction_elision_threshold_pct": 70,
+  "pre_compaction_elision_keep_turns": 6,
+  "pre_compaction_elision_min_chars": 2000
+}
+```
+
 ## Environment-only Process Flag
 
 ### `PI_SUBAGENT_CHILD`
