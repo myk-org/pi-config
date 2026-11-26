@@ -224,21 +224,27 @@ export function countActiveAsyncAgents(
 /**
  * Deterministic structural fingerprint of open (`pending` or `in_progress`) tasks.
  * Tracks only fields that affect reminder eligibility (`id`, `status`, `assignee`, `blockedBy`),
- * ignoring token telemetry updates, completed-task GC deletions, and fs.watch echoes.
+ * serialized unambiguously as JSON tuples so separator characters inside IDs cannot collide,
+ * while ignoring token telemetry updates, completed-task GC deletions, and fs.watch echoes.
  */
 export function openTasksFingerprint(tasks: readonly HeadlessReminderTask[]): string {
 	const entries = tasks
 		.filter((t) => t.status === "pending" || t.status === "in_progress")
-		.map((t) => {
+		.map((t): [string, string, string, string[]] => {
 			const id = t.id != null ? String(t.id) : "";
 			const assignee = t.assignee === "user" ? "user" : "llm";
 			const blockers = Array.isArray(t.blockedBy)
-				? [...t.blockedBy].map((b) => String(b)).sort().join(",")
-				: "";
-			return `${id}:${t.status}:${assignee}:[${blockers}]`;
+				? [...t.blockedBy].map((b) => String(b)).sort()
+				: [];
+			return [id, t.status, assignee, blockers];
 		})
-		.sort();
-	const fp = entries.join("|");
+		.sort(
+			(a, b) =>
+				a[0].localeCompare(b[0]) ||
+				a[1].localeCompare(b[1]) ||
+				a[2].localeCompare(b[2]),
+		);
+	const fp = JSON.stringify(entries);
 	if (log.isDebugEnabled()) log.debug("openTasksFingerprint", { openCount: entries.length });
 	return fp;
 }
@@ -285,6 +291,7 @@ export interface HeadlessIdleReminderDecision<T extends HeadlessReminderTask = H
 		| "not-supervised"
 		| "disabled"
 		| "busy"
+		| "workload-unknown"
 		| "active-async"
 		| "not-idle"
 		| "backoff-capped"
@@ -299,14 +306,15 @@ export interface HeadlessIdleReminderDecision<T extends HeadlessReminderTask = H
 /**
  * Pure decision helper for the headless supervised COMS peer idle auto-nudge (#1434).
  * Fires only when running as a supervised peer, enabled, idle (`!agentBusy`, `idleSince !== null`),
- * zero running/queued async agents, within the bounded backoff cap, past the current backoff delay,
- * and at least one unblocked non-user `in_progress` or `pending` task exists.
+ * workload source is available with zero running/queued async agents, within the bounded backoff
+ * cap, past the current backoff delay, and at least one unblocked non-user `in_progress` or
+ * `pending` task exists.
  */
 export function decideHeadlessIdleReminder<T extends HeadlessReminderTask>(params: {
 	supervisedPeer: boolean;
 	enabled: boolean;
 	agentBusy: boolean;
-	activeAsyncCount: number;
+	activeAsyncCount: number | null;
 	idleSince: number | null;
 	lastNudgeAt: number;
 	nudgeCount: number;
@@ -350,6 +358,7 @@ export function decideHeadlessIdleReminder<T extends HeadlessReminderTask>(param
 	if (!supervisedPeer) return skip("not-supervised");
 	if (!enabled || !Number.isFinite(baseDelayMs) || baseDelayMs <= 0) return skip("disabled");
 	if (agentBusy) return skip("busy");
+	if (activeAsyncCount === null || !Number.isFinite(activeAsyncCount)) return skip("workload-unknown");
 	if (activeAsyncCount > 0) return skip("active-async");
 	if (idleSince === null || !Number.isFinite(idleSince)) return skip("not-idle");
 	if (cappedCount >= HEADLESS_IDLE_MAX_NUDGES || multiplier === undefined) return skip("backoff-capped");

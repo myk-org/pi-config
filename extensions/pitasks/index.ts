@@ -328,14 +328,13 @@ export default function (pi: ExtensionAPI) {
 	currentStore = store;
 	let currentCtx: any = null;
 	let bridgeSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
-	const getBoundAgents = () => {
+	const resolveWorkloadSessionKey = (): string => {
 		const resolvedKey = currentCtx ? resolveBridgeSessionKey(currentCtx) : bridgeSessionKey;
-		const key =
-			resolvedKey === DEFAULT_BRIDGE_SESSION_KEY && bridgeSessionKey !== DEFAULT_BRIDGE_SESSION_KEY
-				? bridgeSessionKey
-				: resolvedKey;
-		return publishedWorkloadSources(key)?.agents() ?? [];
+		return resolvedKey === DEFAULT_BRIDGE_SESSION_KEY && bridgeSessionKey !== DEFAULT_BRIDGE_SESSION_KEY
+			? bridgeSessionKey
+			: resolvedKey;
 	};
+	const getBoundAgents = () => publishedWorkloadSources(resolveWorkloadSessionKey())?.agents() ?? [];
 	const widget = new TaskWidget(store, {}, getBoundAgents);
 	widget.setMode(getWidgetMode("tasks", process.cwd()));
 	const tasksShortcut = registerWidgetShortcut(
@@ -643,11 +642,12 @@ export default function (pi: ExtensionAPI) {
 					const baseMinutes = getSetting(cwd, "task_headless_idle_reminder_minutes");
 					const baseDelayMs = baseMinutes * 60000;
 					const now = Date.now();
-					const sessionId = currentCtx?.sessionManager?.getSessionId?.();
-					const activeAsyncCount = countActiveAsyncAgents(
-						publishedWorkloadSources(sessionId)?.agents(),
-						sessionId,
-					);
+					const workloadKey = resolveWorkloadSessionKey();
+					const workload = publishedWorkloadSources(workloadKey);
+					const currentSessionId = workloadKey === DEFAULT_BRIDGE_SESSION_KEY ? null : workloadKey;
+					const activeAsyncCount = workload
+						? countActiveAsyncAgents(workload.agents(), currentSessionId)
+						: null;
 					const decision = decideHeadlessIdleReminder({
 						supervisedPeer,
 						enabled,

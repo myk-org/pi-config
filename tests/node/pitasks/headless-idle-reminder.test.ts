@@ -64,6 +64,22 @@ function mkTask(overrides: Partial<{
 	};
 }
 
+function baseDecisionParams(overrides: Partial<Parameters<typeof decideHeadlessIdleReminder>[0]> = {}) {
+	return {
+		supervisedPeer: true,
+		enabled: true,
+		agentBusy: false,
+		activeAsyncCount: 0,
+		idleSince: T0,
+		lastNudgeAt: 0,
+		nudgeCount: 0,
+		now: T0 + BASE_MS,
+		baseDelayMs: BASE_MS,
+		tasks: [mkTask({ id: "4", status: "in_progress" })],
+		...overrides,
+	};
+}
+
 describe("#1434 settings schema", () => {
 	it("declares task_headless_idle_reminder_minutes with expected bounds", () => {
 		const def = SETTINGS_KEYS.task_headless_idle_reminder_minutes;
@@ -156,114 +172,131 @@ describe("#1434 pure helpers", () => {
 		);
 	});
 
-	it("openTasksFingerprint ignores telemetry or completed tasks while detecting structural edits", () => {
+	it("openTasksFingerprint ignores telemetry or completed tasks", () => {
 		const baseTasks = [
 			mkTask({ id: "1", status: "completed" }),
 			mkTask({ id: "4", status: "in_progress", subject: "Alpha" }),
 		];
 		const withTelemetry = [
-			{ ...mkTask({ id: "4", status: "in_progress", subject: "Beta" }), telemetry: { startedAt: T0, inputTokens: 999, outputTokens: 123 } },
-		];
-		const withStatusChange = [
-			mkTask({ id: "4", status: "pending" }),
+			{
+				...mkTask({ id: "4", status: "in_progress", subject: "Beta" }),
+				telemetry: { startedAt: T0, inputTokens: 999, outputTokens: 123 },
+			},
 		];
 		assert.equal(openTasksFingerprint(baseTasks), openTasksFingerprint(withTelemetry));
-		assert.notEqual(openTasksFingerprint(baseTasks), openTasksFingerprint(withStatusChange));
 	});
 
-	it("decideHeadlessIdleReminder skips when any suppression gate applies", () => {
-		const openTask = mkTask({ id: "4", status: "in_progress" });
-		const base = {
-			supervisedPeer: true,
-			enabled: true,
-			agentBusy: false,
-			activeAsyncCount: 0,
-			idleSince: T0,
-			lastNudgeAt: 0,
-			nudgeCount: 0,
-			now: T0 + BASE_MS,
-			baseDelayMs: BASE_MS,
-			tasks: [openTask],
-		};
+	it("openTasksFingerprint changes on structural task status edit", () => {
+		assert.notEqual(
+			openTasksFingerprint([mkTask({ id: "4", status: "in_progress" })]),
+			openTasksFingerprint([mkTask({ id: "4", status: "pending" })]),
+		);
+	});
 
-		assert.equal(decideHeadlessIdleReminder({ ...base, supervisedPeer: false }).reason, "not-supervised");
-		assert.equal(decideHeadlessIdleReminder({ ...base, enabled: false }).reason, "disabled");
-		assert.equal(decideHeadlessIdleReminder({ ...base, baseDelayMs: 0 }).reason, "disabled");
-		assert.equal(decideHeadlessIdleReminder({ ...base, agentBusy: true }).reason, "busy");
-		assert.equal(decideHeadlessIdleReminder({ ...base, activeAsyncCount: 1 }).reason, "active-async");
-		assert.equal(decideHeadlessIdleReminder({ ...base, idleSince: null }).reason, "not-idle");
-		assert.equal(decideHeadlessIdleReminder({ ...base, now: T0 + BASE_MS - 1 }).reason, "cooldown");
-		assert.equal(
-			decideHeadlessIdleReminder({
-				...base,
+	it("openTasksFingerprint distinguishes blocker lists containing separator commas", () => {
+		const splitBlockers = [mkTask({ id: "4", status: "pending", blockedBy: ["2", "3"] })];
+		const combinedBlocker = [mkTask({ id: "4", status: "pending", blockedBy: ["2,3"] })];
+		assert.notEqual(openTasksFingerprint(splitBlockers), openTasksFingerprint(combinedBlocker));
+	});
+
+	it("decideHeadlessIdleReminder skips non-supervised sessions", () => {
+		assert.equal(decideHeadlessIdleReminder(baseDecisionParams({ supervisedPeer: false })).reason, "not-supervised");
+	});
+
+	it("decideHeadlessIdleReminder skips when disabled", () => {
+		assert.equal(decideHeadlessIdleReminder(baseDecisionParams({ enabled: false })).reason, "disabled");
+	});
+
+	it("decideHeadlessIdleReminder skips when baseDelayMs is non-positive", () => {
+		assert.equal(decideHeadlessIdleReminder(baseDecisionParams({ baseDelayMs: 0 })).reason, "disabled");
+	});
+
+	it("decideHeadlessIdleReminder skips while agentBusy is true", () => {
+		assert.equal(decideHeadlessIdleReminder(baseDecisionParams({ agentBusy: true })).reason, "busy");
+	});
+
+	it("decideHeadlessIdleReminder skips when workload source is unknown", () => {
+		assert.equal(decideHeadlessIdleReminder(baseDecisionParams({ activeAsyncCount: null })).reason, "workload-unknown");
+	});
+
+	it("decideHeadlessIdleReminder skips when active async agents exist", () => {
+		assert.equal(decideHeadlessIdleReminder(baseDecisionParams({ activeAsyncCount: 1 })).reason, "active-async");
+	});
+
+	it("decideHeadlessIdleReminder skips when idleSince is null", () => {
+		assert.equal(decideHeadlessIdleReminder(baseDecisionParams({ idleSince: null })).reason, "not-idle");
+	});
+
+	it("decideHeadlessIdleReminder skips during cooldown before effectiveDelayMs", () => {
+		assert.equal(decideHeadlessIdleReminder(baseDecisionParams({ now: T0 + BASE_MS - 1 })).reason, "cooldown");
+	});
+
+	it("decideHeadlessIdleReminder skips when only user or blocked tasks exist", () => {
+		const decision = decideHeadlessIdleReminder(
+			baseDecisionParams({
 				tasks: [
 					mkTask({ id: "1", status: "pending", assignee: "user" }),
 					mkTask({ id: "2", status: "pending", blockedBy: ["1"] }),
 				],
-			}).reason,
-			"no-unblocked-tasks",
+			}),
 		);
+		assert.equal(decision.reason, "no-unblocked-tasks");
 	});
 
-	it("decideHeadlessIdleReminder escalates backoff multipliers through the cap", () => {
-		const openTask = mkTask({ id: "4", status: "in_progress" });
-		const base = {
-			supervisedPeer: true,
-			enabled: true,
-			agentBusy: false,
-			activeAsyncCount: 0,
-			idleSince: T0,
-			lastNudgeAt: 0,
-			nudgeCount: 0,
-			now: T0 + BASE_MS,
-			baseDelayMs: BASE_MS,
-			tasks: [openTask],
-		};
-
-		const n1 = decideHeadlessIdleReminder(base);
+	it("decideHeadlessIdleReminder fires nudge 1 at 1x base delay", () => {
+		const n1 = decideHeadlessIdleReminder(baseDecisionParams());
 		assert.equal(n1.fire, true);
 		assert.equal(n1.nextNudgeCount, 1);
 		assert.equal(n1.effectiveDelayMs, 2 * MIN);
+	});
 
-		assert.equal(
-			decideHeadlessIdleReminder({
-				...base,
+	it("decideHeadlessIdleReminder holds nudge 2 in cooldown before 2.5x base delay", () => {
+		const decision = decideHeadlessIdleReminder(
+			baseDecisionParams({
 				nudgeCount: 1,
 				lastNudgeAt: T0 + 2 * MIN,
 				now: T0 + 6 * MIN,
-			}).reason,
-			"cooldown",
+			}),
 		);
-		const n2 = decideHeadlessIdleReminder({
-			...base,
-			nudgeCount: 1,
-			lastNudgeAt: T0 + 2 * MIN,
-			now: T0 + 7 * MIN,
-		});
+		assert.equal(decision.reason, "cooldown");
+	});
+
+	it("decideHeadlessIdleReminder fires nudge 2 at 2.5x base delay", () => {
+		const n2 = decideHeadlessIdleReminder(
+			baseDecisionParams({
+				nudgeCount: 1,
+				lastNudgeAt: T0 + 2 * MIN,
+				now: T0 + 7 * MIN,
+			}),
+		);
 		assert.equal(n2.fire, true);
 		assert.equal(n2.nextNudgeCount, 2);
 		assert.equal(n2.effectiveDelayMs, 5 * MIN);
+	});
 
-		const n3 = decideHeadlessIdleReminder({
-			...base,
-			nudgeCount: 2,
-			lastNudgeAt: T0 + 7 * MIN,
-			now: T0 + 17 * MIN,
-		});
+	it("decideHeadlessIdleReminder fires nudge 3 at 5x base delay", () => {
+		const n3 = decideHeadlessIdleReminder(
+			baseDecisionParams({
+				nudgeCount: 2,
+				lastNudgeAt: T0 + 7 * MIN,
+				now: T0 + 17 * MIN,
+			}),
+		);
 		assert.equal(n3.fire, true);
 		assert.equal(n3.nextNudgeCount, 3);
 		assert.equal(n3.effectiveDelayMs, 10 * MIN);
+	});
 
+	it("decideHeadlessIdleReminder caps nudges at HEADLESS_IDLE_MAX_NUDGES", () => {
 		assert.equal(HEADLESS_IDLE_MAX_NUDGES, HEADLESS_IDLE_BACKOFF_MULTIPLIERS.length);
-		assert.equal(
-			decideHeadlessIdleReminder({
-				...base,
+		const capped = decideHeadlessIdleReminder(
+			baseDecisionParams({
 				nudgeCount: HEADLESS_IDLE_MAX_NUDGES,
 				lastNudgeAt: T0 + 17 * MIN,
 				now: T0 + 180 * MIN,
-			}).reason,
-			"backoff-capped",
+			}),
 		);
+		assert.equal(capped.reason, "backoff-capped");
 	});
 
 	it("headlessIdleReminderContent formats open IDs with zero-async detail", () => {
@@ -296,6 +329,7 @@ interface BootOptions {
 	ctxCwd?: string;
 	ctxSettings?: Record<string, unknown>;
 	sessionId?: string;
+	publishWorkload?: boolean;
 	initialNow?: number;
 	shouldThrowSend?: () => boolean;
 }
@@ -354,6 +388,10 @@ function bootPeer(tasks: any[], opts: BootOptions = {}) {
 		delete process.env.PI_COMS_SUPERVISED_PEER;
 	}
 	process.chdir(cwd);
+
+	if (opts.publishWorkload !== false) {
+		publishWorkloadSources({ agents: () => [], crons: () => [] }, opts.sessionId);
+	}
 
 	const sent: Array<{ message: any; options: any }> = [];
 	const handlers = new Map<string, Array<(event: any, ctx: any) => Promise<void>>>();
@@ -487,7 +525,6 @@ describe("#1434 headless supervised peer timer wiring", () => {
 			await h.emit("turn_start");
 			await h.emit("turn_end", { message: { role: "assistant" } });
 
-			// Still inside the same run (no agent_settled yet)
 			h.advance(5 * MIN);
 			h.tick();
 			assert.equal(h.reminders().length, 0, "continuing run must remain ineligible until agent_settled");
@@ -548,6 +585,49 @@ describe("#1434 headless supervised peer timer wiring", () => {
 			];
 			h.tick();
 			assert.equal(h.reminders().length, 1);
+		} finally {
+			await h.restore();
+		}
+	});
+
+	it("retains named workload session key when a later context omits sessionId", async () => {
+		const h = bootPeer([mkTask({ id: "4", status: "in_progress" })], { sessionId: "sess-named" });
+		try {
+			await h.emit("session_start", { reason: "startup" });
+			publishWorkloadSources(
+				{
+					agents: () => [
+						{ id: "a1", agent: "worker", task: "running", status: "running", startedAt: T0, taskId: "4", sessionId: "sess-named" } as any,
+					],
+					crons: () => [],
+				},
+				"sess-named",
+			);
+
+			// Later turn receives a context without sessionManager.getSessionId()
+			await h.emit("before_agent_start", { messageType: "user", prompt: "go" }, { cwd: h.cwd, ui: { setWidget() {} } });
+			await h.emit("turn_start", {}, { cwd: h.cwd, ui: { setWidget() {} } });
+			await h.emit("turn_end", { message: { role: "assistant" } }, { cwd: h.cwd, ui: { setWidget() {} } });
+			await h.emit("agent_settled", {}, { cwd: h.cwd, ui: { setWidget() {} } });
+
+			h.advance(5 * MIN);
+			h.tick();
+			assert.equal(h.reminders().length, 0, "named workload source must remain bound despite omitted sessionId");
+		} finally {
+			await h.restore();
+		}
+	});
+
+	it("suppresses nudges when no matching workload source is published", async () => {
+		const h = bootPeer([mkTask({ id: "4", status: "in_progress" })], {
+			sessionId: "sess-unpub",
+			publishWorkload: false,
+		});
+		try {
+			await h.emit("session_start", { reason: "startup" });
+			h.advance(10 * MIN);
+			h.tick();
+			assert.equal(h.reminders().length, 0, "absent workload source must not be treated as zero active async agents");
 		} finally {
 			await h.restore();
 		}
@@ -629,13 +709,11 @@ describe("#1434 headless supervised peer timer wiring", () => {
 			await h.emit("session_start", { reason: "startup" });
 			indexModule.setTaskTelemetryActive("4", true);
 
-			// Nudge 1 -> reminder turn records assistant token usage into TaskStore
 			h.advance(2 * MIN);
 			h.tick();
 			assert.equal(h.reminders().length, 1);
 			await runReminderTurn(h, h.reminders()[0].message.content, { input: 500, output: 120 });
 
-			// Must wait 5m (not reset to 2m by telemetry write)
 			h.advance(2 * MIN);
 			h.tick();
 			assert.equal(h.reminders().length, 1, "telemetry write must not reset backoff to 2m");
@@ -762,12 +840,10 @@ describe("#1434 headless supervised peer timer wiring", () => {
 			h.tick();
 			assert.equal(h.reminders().length, 3);
 
-			// Advance past 30m so GC deletes task #1
 			h.advance(20 * MIN);
 			h.tick();
 			assert.equal(indexModule.listTasks().map((t: any) => t.id).includes("1"), false);
 
-			// Simulate asynchronous fs.watch notification firing after GC completed
 			indexModule.taskStore.notifyChange();
 			h.advance(10 * MIN);
 			h.tick();
@@ -788,7 +864,6 @@ describe("#1434 headless supervised peer timer wiring", () => {
 			h.tick();
 			assert.equal(h.reminders().length, 0, "failed send records no reminder");
 
-			// Next tick immediately retries at nudge 1/3 (pre-failure backoff preserved)
 			shouldThrow = false;
 			h.tick();
 			assert.equal(h.reminders().length, 1);
