@@ -1,5 +1,31 @@
 # Changelog
 
+## [6.2.0] - 2026-11-26
+
+- Added opt-in reversible secret obfuscation (`secret_obfuscation`, `.pi/secrets.jsonc`) and
+  agent-edit-protected `restricted_folders` with symlink/ANSI-C-safe bash inspection,
+  HMAC-authenticated SQLite tiered approval grants, and `/forget-approvals` (#1432).
+- Added PiDash Worktrees side panel with full feature parity to TUI `/worktree` (worktree list,
+  detail drawer, dirty counts, PR links, COMS peer badges, guarded single/bulk remove, and prune)
+  (#1435) and a compact count-only InfoBar worktree indicator with a two-row layout preventing
+  horizontal clipping (#1441).
+- Added per-turn thinking magic keywords (`ultrathink` / `chillax`, gated by `magic_keywords`)
+  and an opt-in read-only background advisor/watchdog (`advisor_enabled`, default `false`,
+  configurable `advisor_model` in `/pi-config-settings`) (#1431).
+- Added agent revive (`r`) and a live Activity Log (`[1]`/`[2]`) across `/async` and `/coms`
+  TUI overlays (#1425).
+- Made `# Project Memory` prompt-cache-safe with pinned startup injection, preserved standing
+  memory across compaction, and added frontmatter-scoped lazy rule loading (#1424).
+- Added session JSONL spill externalization (`<session>/local/<N>.log`), content-addressed image
+  blob externalization (`~/.pi/blobs/<sha256>`), and mechanical pre-compaction elision (#1423).
+- Fixed COMS empty/whitespace peer responses triggering Gemini 400 model-ending turn errors
+  (`formatComsResponseBody` + `triggerTurn` guard) (#1443), wedged `followUp` inbounds on abort,
+  and atomic `0600` reload-queue persistence across `/reload` (#1436).
+- Fixed mid-turn `reload-flag` freeze by deferring reloads until idle, bounding `waitForIdle()` to
+  15s, and resetting the `triggered` latch with exponential backoff on incomplete reloads (#1440).
+- Added bounded fast idle task reminders (`task_headless_idle_reminder_minutes`, default `2`,
+  `[1x, 2.5x, 5x]` backoff capped at 3 nudges) for headless supervised COMS peers (#1437).
+
 ## [6.1.0] - 2026-11-26
 
 - Adopted Pi 1.6.1 `blockedKind` (OSC 7501 Program Status Kind) in `ui-bridge.ts` and
