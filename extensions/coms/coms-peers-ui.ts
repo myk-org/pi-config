@@ -98,10 +98,15 @@ function reportSinglePeerRevive(
   }
 }
 
+function peerKey(row: Pick<RegistryRow, "project" | "name">): string {
+  return `${row.project}::${row.name}`;
+}
+
 function triggerSinglePeerRevive(
   row: Row,
   revivePeer: NonNullable<ComsPeersOverlayDeps["revivePeer"]>,
   notify: OverlayNotify,
+  pendingRevives: Set<string>,
 ): void {
   const safeName = sanitizePeerText(row.name, 40);
   if (!row.stopped) {
@@ -109,18 +114,31 @@ function triggerSinglePeerRevive(
     notify(`Peer "${safeName}" is already running.`, "info");
     return;
   }
+  const key = peerKey(row);
+  if (pendingRevives.has(key)) {
+    log.debug("overlay_revive_peer_skipped_pending", { name: row.name, project: row.project });
+    notify(`Peer "${safeName}" is already reviving…`, "info");
+    return;
+  }
+  pendingRevives.add(key);
   try {
     const outcome = revivePeer(row);
     if (isThenable<RevivePeerOutcome>(outcome)) {
       outcome
-        .then((res) => reportSinglePeerRevive(row, res, notify))
+        .then((res) => {
+          if (!res.ok) pendingRevives.delete(key);
+          reportSinglePeerRevive(row, res, notify);
+        })
         .catch((err: unknown) => {
+          pendingRevives.delete(key);
           reportSinglePeerRevive(row, { ok: false, reason: err instanceof Error ? err.message : String(err) }, notify);
         });
     } else {
+      if (!outcome.ok) pendingRevives.delete(key);
       reportSinglePeerRevive(row, outcome, notify);
     }
   } catch (err: unknown) {
+    pendingRevives.delete(key);
     reportSinglePeerRevive(row, { ok: false, reason: err instanceof Error ? err.message : String(err) }, notify);
   }
 }
@@ -129,39 +147,59 @@ function triggerBulkPeerRevive(
   selected: readonly Row[],
   revivePeer: NonNullable<ComsPeersOverlayDeps["revivePeer"]>,
   notify: OverlayNotify,
+  pendingRevives: Set<string>,
 ): void {
-  const eligible = selected.filter((r) => r.stopped === true);
-  if (eligible.length === 0) {
+  const stoppedSelected = selected.filter((r) => r.stopped === true);
+  if (stoppedSelected.length === 0) {
     log.debug("overlay_revive_selection_none_eligible", { selected: selected.length });
     notify("No stopped peers in selection to revive.", "warning");
     return;
   }
+  const eligible = stoppedSelected.filter((r) => !pendingRevives.has(peerKey(r)));
+  if (eligible.length === 0) {
+    log.debug("overlay_revive_selection_all_pending", { selected: stoppedSelected.length });
+    notify("Selected stopped peer(s) are already reviving…", "info");
+    return;
+  }
 
   const syncFailed: string[] = [];
-  const asyncResults: Array<Promise<{ name: string; outcome: RevivePeerOutcome }>> = [];
+  const asyncResults: Array<Promise<{ name: string; key: string; outcome: RevivePeerOutcome }>> = [];
   let hasAsync = false;
 
   for (const row of eligible) {
     const safeName = sanitizePeerText(row.name, 40);
+    const key = peerKey(row);
+    pendingRevives.add(key);
     try {
       const outcome = revivePeer(row);
       if (isThenable<RevivePeerOutcome>(outcome)) {
         hasAsync = true;
         asyncResults.push(
           outcome
-            .then((res) => ({ name: safeName, outcome: res }))
-            .catch((err: unknown) => ({
-              name: safeName,
-              outcome: { ok: false as const, reason: err instanceof Error ? err.message : String(err) },
-            })),
+            .then((res) => {
+              if (!res.ok) pendingRevives.delete(key);
+              return { name: safeName, key, outcome: res };
+            })
+            .catch((err: unknown) => {
+              pendingRevives.delete(key);
+              return {
+                name: safeName,
+                key,
+                outcome: { ok: false as const, reason: err instanceof Error ? err.message : String(err) },
+              };
+            }),
         );
       } else {
-        asyncResults.push(Promise.resolve({ name: safeName, outcome }));
-        if (!outcome.ok) syncFailed.push(`${safeName}: ${outcome.reason}`);
+        if (!outcome.ok) {
+          pendingRevives.delete(key);
+          syncFailed.push(`${safeName}: ${outcome.reason}`);
+        }
+        asyncResults.push(Promise.resolve({ name: safeName, key, outcome }));
       }
     } catch (err: unknown) {
+      pendingRevives.delete(key);
       const reason = err instanceof Error ? err.message : String(err);
-      asyncResults.push(Promise.resolve({ name: safeName, outcome: { ok: false as const, reason } }));
+      asyncResults.push(Promise.resolve({ name: safeName, key, outcome: { ok: false as const, reason } }));
       syncFailed.push(`${safeName}: ${reason}`);
     }
   }
@@ -217,13 +255,17 @@ export async function openComsPeersOverlay(
     return;
   }
 
+  // Peers currently being revived (`project::name`), preventing duplicate supervisor launches on rapid `r` presses.
+  const pendingRevives = new Set<string>();
+
   // Names can be reused; ticks and focus belong to this session's endpoint (or stopped key).
   const toRows = (): Row[] => {
     const live = deps.listPeers(projectScope);
-    const liveKeys = new Set(live.map((row) => `${row.project}::${row.name}`));
+    const liveKeys = new Set(live.map((row) => peerKey(row)));
+    for (const key of liveKeys) pendingRevives.delete(key);
     const liveRows: Row[] = live.map((row) => ({ ...row, id: peerOverlayRowId(row) }));
     const stopped = (deps.listStoppedPeers?.(projectScope) ?? [])
-      .filter((row) => !liveKeys.has(`${row.project}::${row.name}`))
+      .filter((row) => !liveKeys.has(peerKey(row)))
       .map((row) => ({ ...row, stopped: true, id: peerOverlayRowId({ ...row, stopped: true }) }));
     return [...liveRows, ...stopped];
   };
@@ -301,17 +343,20 @@ export async function openComsPeersOverlay(
       }
       if (activityResult.type === "inspect") {
         const currentRows = toRows();
-        const target =
-          currentRows.find((r) => r.id === activityResult.event.sourceId) ??
-          currentRows.find((r) => sanitizePeerText(r.name, 36) === activityResult.event.sourceLabel);
+        // Match ONLY by exact project-qualified sourceId — never fall back to bare display name,
+        // which would open a different namesake peer in another project.
+        const target = currentRows.find((r) => r.id === activityResult.event.sourceId);
         if (!target) {
+          const safeLabel = sanitizePeerText(activityResult.event.sourceLabel, 40);
           pendingNotice = {
-            message: `Peer "${sanitizePeerText(activityResult.event.sourceLabel, 40)}" is not in the current roster.`,
+            message: activityResult.event.sourceId.startsWith("peer:ambiguous:")
+              ? `Peer "${safeLabel}" matches multiple projects (legacy history) — select it from Roster.`
+              : `Peer "${safeLabel}" is not in the current roster.`,
             level: "warning",
           };
           continue;
         }
-        await openPeerDrilldown(ctx, deps, target);
+        await openPeerDrilldown(ctx, deps, target, pendingRevives);
         continue;
       }
       continue;
@@ -352,18 +397,19 @@ export async function openComsPeersOverlay(
         listItems: toRows,
         rowParts: (row, theme: Theme) => {
           if (row.stopped) {
+            const isReviving = pendingRevives.has(peerKey(row));
             return {
-              glyph: theme.fg("muted", "○"),
+              glyph: isReviving ? theme.fg("warning", "◐") : theme.fg("muted", "○"),
               title: sanitizePeerText(row.name, 100),
               idLabel: theme.fg("dim", sanitizePeerText(row.project, 100)),
               rightParts: [
-                theme.fg("muted", "stopped"),
+                isReviving ? theme.fg("warning", "reviving…") : theme.fg("muted", "stopped"),
                 ...(row.piSessionId ? [theme.fg("dim", "session")] : []),
                 ...(typeof row.exitCode === "number" && row.exitCode !== 0
                   ? [theme.fg("error", `exit:${row.exitCode}`)]
                   : []),
                 ...(row.cwd ? [theme.fg("dim", sanitizePeerText(row.cwd, 40))] : []),
-                ...(deps.revivePeer ? [theme.fg("dim", "r revive")] : []),
+                ...(!isReviving && deps.revivePeer ? [theme.fg("dim", "r revive")] : []),
               ],
             };
           }
@@ -394,14 +440,14 @@ export async function openComsPeersOverlay(
           }
           if (matchesOverlayKey(key, "r") && deps.revivePeer) {
             if (selected.length > 0) {
-              triggerBulkPeerRevive(selected, deps.revivePeer, notify);
+              triggerBulkPeerRevive(selected, deps.revivePeer, notify, pendingRevives);
               return "redraw-clear";
             }
             if (!row) {
               notify("No peer selected to revive.", "info");
               return "redraw";
             }
-            triggerSinglePeerRevive(row, deps.revivePeer, notify);
+            triggerSinglePeerRevive(row, deps.revivePeer, notify, pendingRevives);
             return "redraw";
           }
           if (matchesOverlayKey(key, "f")) {
@@ -470,7 +516,7 @@ export async function openComsPeersOverlay(
     const inspected = peerQueue.pop();
     if (inspected) {
       reselectPeer = inspected.id;
-      await openPeerDrilldown(ctx, deps, inspected);
+      await openPeerDrilldown(ctx, deps, inspected, pendingRevives);
       continue;
     }
 
@@ -481,16 +527,19 @@ export async function openComsPeersOverlay(
     const stoppedPicked = uniqueRows.filter((row) => row.stopped);
     const targets = uniqueRows.filter((row) => !row.stopped);
     const missing = [...new Set(picked.missing)];
-    const total = targets.length + missing.length;
+    const total = targets.length + missing.length + stoppedPicked.length;
     const nameOf = (id: string): string => sanitizePeerText(id.split("\0")[0].slice(id.indexOf(":") + 1), 40) || "unknown peer";
     const goneNote = missing.length > 0
       ? ` · ${missing.length} peer${missing.length === 1 ? "" : "s"} left before sending: ${missing.map(nameOf).join(", ")}`
       : "";
+    const stoppedNames = stoppedPicked.map((r) => sanitizePeerText(r.name, 40)).join(", ");
+    const stoppedNote = stoppedPicked.length > 0
+      ? ` · skipped ${stoppedPicked.length} stopped peer${stoppedPicked.length === 1 ? "" : "s"} (${stoppedNames} — press r to revive)`
+      : "";
 
     if (targets.length === 0 && stoppedPicked.length > 0 && missing.length === 0) {
-      const names = stoppedPicked.map((r) => sanitizePeerText(r.name, 40)).join(", ");
       pendingNotice = {
-        message: `Cannot message stopped peer${stoppedPicked.length === 1 ? "" : "s"} (${names}) — press r to revive first.`,
+        message: `Cannot message stopped peer${stoppedPicked.length === 1 ? "" : "s"} (${stoppedNames}) — press r to revive first.`,
         level: "warning",
       };
       continue;
@@ -498,8 +547,8 @@ export async function openComsPeersOverlay(
 
     // Everyone left before the dialog opened: say nothing was sent, do not ask for text.
     if (targets.length === 0) {
-      log.warn("overlay_tell_nothing_sent", { selected: total, missing: missing.length });
-      try { ctx.ui.notify(sanitizePeerText(`⚠️ nothing sent · Esc closes; reopen /coms to reset selection${goneNote}`, 160), "error"); } catch {}
+      log.warn("overlay_tell_nothing_sent", { selected: total, missing: missing.length, stopped: stoppedPicked.length });
+      try { ctx.ui.notify(sanitizePeerText(`⚠️ nothing sent · Esc closes; reopen /coms to reset selection${goneNote}${stoppedNote}`, 160), "error"); } catch {}
       continue;
     }
 
@@ -544,17 +593,23 @@ export async function openComsPeersOverlay(
     log.info("overlay_tell_peer", { selected: picked.rows.length, unique: targets.length, sent, failed: failed.length, missing: missing.length, chars: first.prompt.length });
 
     // ONE line for the whole send: per-peer notifies would bury the failures. The count is stated
-    // ("sent 1 of 3") whenever the selection did not fully arrive, so a partial send cannot read
-    // as success.
-    const sentPart = missing.length > 0 || failed.length > 0 ? `sent ${sent} of ${total}` : `sent ${sent} peer${sent === 1 ? "" : "s"}`;
+    // ("sent 1 of 3") whenever the selection did not fully arrive, so a partial send (including
+    // mixed selections containing stopped peers) cannot read as full success.
+    const hasPartial = missing.length > 0 || failed.length > 0 || stoppedPicked.length > 0;
+    const sentPart = hasPartial ? `sent ${sent} of ${total}` : `sent ${sent} peer${sent === 1 ? "" : "s"}`;
     {
       // One failing peer keeps its reason (that is what the user acts on); several get names only.
       const reason = failed.length === 1 && failures[0] ? ` (${failures[0]})` : "";
       const failurePart = failed.length > 0 ? ` · failed ${failed.length}: ${failed.join(", ")}${reason}` : "";
-      const summary = failed.length === 0 && missing.length === 0
+      const summary = !hasPartial
         ? `📡 ${sentPart}`
-        : `⚠️ ${sentPart}${failurePart}${goneNote}`;
-      try { ctx.ui.notify(sanitizePeerText(summary, 200), failed.length === 0 && missing.length === 0 ? "info" : "error"); } catch {}
+        : `⚠️ ${sentPart}${failurePart}${goneNote}${stoppedNote}`;
+      const level = failed.length > 0 || missing.length > 0
+        ? "error"
+        : stoppedPicked.length > 0
+          ? "warning"
+          : "info";
+      try { ctx.ui.notify(sanitizePeerText(summary, 200), level); } catch {}
     }
   }
 }
@@ -578,19 +633,25 @@ function peerHeader(row: Row, deps: ComsPeersOverlayDeps): string {
  * READ-ONLY: acting on another session's tasks/crons would need a remote command protocol, and a
  * key that silently does nothing is worse than no key, so the footer says so instead.
  */
-async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row): Promise<void> {
+async function openPeerDrilldown(
+  ctx: any,
+  deps: ComsPeersOverlayDeps,
+  row: Row,
+  pendingRevives: Set<string>,
+): Promise<void> {
   if (row.stopped) {
     const dash = (value: string | null | undefined): string => (value && value.trim() ? value : "—");
+    const isReviving = pendingRevives.has(peerKey(row));
     const detail: Array<[string, string]> = [
       ["Name", dash(sanitizePeerText(row.name, 40))],
       ["Project", dash(sanitizePeerText(row.project, 40))],
-      ["State", "stopped (supervised peer)"],
+      ["State", isReviving ? "reviving… (starting supervisor)" : "stopped (supervised peer)"],
       ["cwd", dash(sanitizePeerText(row.cwd, 120))],
       ["Purpose", dash(sanitizePeerText(row.purpose, 120))],
       ["Session", dash(sanitizePeerText(row.piSessionId ?? "", 80))],
       ["Stopped at", dash(sanitizePeerText(row.stoppedAt ?? "", 40))],
       ["Exit code", typeof row.exitCode === "number" ? String(row.exitCode) : "—"],
-      ["Action", deps.revivePeer ? "Press r to revive this peer via supervisor" : "Supervised peer stopped"],
+      ["Action", isReviving ? "Revive already in progress" : (deps.revivePeer ? "Press r to revive this peer via supervisor" : "Supervised peer stopped")],
     ];
     const detailNotify: OverlayNotify = (msg, level = "info") => {
       try { ctx.ui?.notify?.(msg, level); } catch {}
@@ -601,15 +662,15 @@ async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row)
           tui,
           theme,
           {
-            footerHints: deps.revivePeer
+            footerHints: deps.revivePeer && !isReviving
               ? "↑↓/jk scroll · r revive · Esc back"
               : "↑↓/jk scroll · Esc back",
-            getHeader: (t) => t.fg("accent", t.bold(`${sanitizePeerText(row.name, 40)} · stopped`)),
+            getHeader: (t) => t.fg("accent", t.bold(`${sanitizePeerText(row.name, 40)} · ${isReviving ? "reviving…" : "stopped"}`)),
             getBodyLines: (t) => detail.map(([label, value]) => `${t.fg("muted", label.padEnd(11))}  ${value}`),
             onKey: deps.revivePeer
               ? (key) => {
                   if (!matchesOverlayKey(key, "r")) return false;
-                  triggerSinglePeerRevive(row, deps.revivePeer!, detailNotify);
+                  triggerSinglePeerRevive(row, deps.revivePeer!, detailNotify, pendingRevives);
                   return "close";
                 }
               : undefined,

@@ -18,7 +18,11 @@ import {
   type SupervisionRecord,
 } from "../../../extensions/coms/coms-peers.js";
 import { openComsPeersOverlay } from "../../../extensions/coms/coms-peers-ui.js";
-import type { HistoryRecord } from "../../../extensions/coms/coms-history.js";
+import {
+  createTailHistoryReader,
+  readRecentHistoryRecords,
+  type HistoryRecord,
+} from "../../../extensions/coms/coms-history.js";
 import { fakeCommandCtx, fakeCustom, type FakeCustomFactory } from "../helpers/fake-extension-ctx.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -294,6 +298,139 @@ describe("/coms revive (`r`) and Unified Activity Log (`1`/`2`) (#1417)", () => 
     // Stopped peer detail pane renders saved session & cwd
     assert.match(h.frames[1][0], /sess-beta-123/);
     assert.match(h.frames[1][0], /\/repo\/wt-beta/);
+  });
+
+  it("prevents duplicate supervisor launches on repeated `r` presses and shows reviving… (Qodo #9)", async () => {
+    // 1) Roster: Enter stoppedPeer detail
+    // 2) Detail: press `r` -> revives once & closes detail
+    // 3) Roster reopens: row renders `reviving…`; pressing `r` again does NOT call revivePeer a second time!
+    const h = makeUi([
+      ["\r"],
+      ["r"],
+      ["r", "close"],
+    ]);
+    let reviveCalls = 0;
+
+    await openComsPeersOverlay(h.ctx, {
+      listPeers: () => [],
+      listStoppedPeers: () => [stoppedPeer],
+      revivePeer: () => {
+        reviveCalls++;
+        return { ok: true, pid: 8888, message: 'Reviving "beta" (pid 8888)' };
+      },
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+    });
+
+    assert.equal(reviveCalls, 1, "repeated r across detail and roster must launch supervisor only once");
+    assert.match(h.frames[2][0], /reviving…/);
+    assert.ok(h.notifications.some((n) => /already reviving/.test(n.message)));
+  });
+
+  it("reports skipped stopped peers when messaging a mixed selection (Qodo #10)", async () => {
+    const notifications: Array<{ message: string; level?: string }> = [];
+    const sent: Array<{ target: string; prompt: string }> = [];
+    let opened = 0;
+    const custom = (<T,>(factory: FakeCustomFactory<T>) => {
+      opened++;
+      if (opened > 1) return Promise.resolve(null as never);
+      return fakeCustom(factory, [" ", "j", " ", "m"]);
+    }) satisfies ExtensionUIContext["custom"];
+
+    const ctx = fakeCommandCtx({
+      notify: (message: string, level?: "info" | "warning" | "error") => { notifications.push({ message, level }); },
+      input: async () => "hello team",
+      custom,
+    });
+
+    await openComsPeersOverlay(ctx, {
+      listPeers: () => [livePeer],
+      listStoppedPeers: () => [stoppedPeer],
+      tellPeer: async (req) => {
+        sent.push({ target: req.target, prompt: req.prompt });
+        return { ok: true };
+      },
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+    });
+
+    assert.deepEqual(sent, [{ target: "alpha", prompt: "hello team" }]);
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].level, "warning");
+    assert.match(notifications[0].message, /sent 1 of 2/);
+    assert.match(notifications[0].message, /skipped 1 stopped peer \(beta/);
+  });
+
+  it("isolates project-scoped history and disambiguates namesake peers across projects (Qodo #2 & #7)", async () => {
+    const repoAPeer: RegistryRow = { ...livePeer, project: "repo-a", name: "worker", endpoint: "/tmp/a.sock" };
+    const repoBPeer: RegistryRow = { ...livePeer, project: "repo-b", name: "worker", endpoint: "/tmp/b.sock" };
+    const history: HistoryRecord[] = [
+      { ts: "2026-11-26T10:01:00.000Z", msg_id: "m-a", direction: "out", peer: "worker", project: "repo-a", preview: "Secret A" },
+      { ts: "2026-11-26T10:02:00.000Z", msg_id: "m-b", direction: "out", peer: "worker", project: "repo-b", preview: "Secret B" },
+      { ts: "2026-11-26T10:03:00.000Z", msg_id: "m-legacy", direction: "out", peer: "worker", preview: "Legacy untagged" },
+    ];
+
+    // Project-scoped view ("repo-a") MUST exclude repo-b AND untagged legacy records
+    const scoped = collectComsActivityEvents({
+      historyRecords: history,
+      livePeers: [repoAPeer],
+      projectFilter: "repo-a",
+    });
+    assert.ok(scoped.some((e) => /Secret A/.test(e.summary)));
+    assert.equal(scoped.some((e) => /Secret B/.test(e.summary)), false);
+    assert.equal(scoped.some((e) => /Legacy untagged/.test(e.summary)), false);
+
+    // All-projects view maps repo-b record to repo-b's exact row ID and marks ambiguous legacy record non-ambiguous-safe
+    const allEvents = collectComsActivityEvents({
+      historyRecords: history,
+      livePeers: [repoAPeer, repoBPeer],
+      projectFilter: null,
+    });
+    const evA = allEvents.find((e) => /Secret A/.test(e.summary));
+    const evB = allEvents.find((e) => /Secret B/.test(e.summary));
+    const evLegacy = allEvents.find((e) => /Legacy untagged/.test(e.summary));
+    assert.equal(evA?.sourceId, "repo-a:worker\0/tmp/a.sock");
+    assert.equal(evB?.sourceId, "repo-b:worker\0/tmp/b.sock");
+    assert.equal(evLegacy?.sourceId, "peer:ambiguous:worker");
+  });
+
+  it("reads bounded history tails and invalidates cache on rotation/append (Qodo #4)", () => {
+    const dir = makeTempDir("coms-hist-tail-");
+    tempDirs.push(dir);
+    const histPath = join(dir, "history.jsonl");
+    const lines: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      lines.push(JSON.stringify({
+        ts: `2026-11-26T10:00:${String(i).padStart(2, "0")}.000Z`,
+        msg_id: `m-${i}`,
+        direction: "out",
+        peer: "alpha",
+        project: "repo",
+        preview: `msg-${i}-${"x".repeat(80)}`,
+      }));
+    }
+    writeFileSync(histPath, `${lines.join("\n")}\n`, "utf-8");
+
+    // Tail budget smaller than full file drops oldest records cleanly without corrupting lines
+    const tail = readRecentHistoryRecords(histPath, { limit: 10 }, 2048);
+    assert.ok(tail.length > 0 && tail.length <= 10);
+    assert.equal(tail[tail.length - 1].msg_id, "m-59");
+
+    // Stat-cached tail reader returns identical array when unchanged and refreshes on rotation/truncation
+    const reader = createTailHistoryReader(histPath, 2048);
+    const first = reader.readRecent(10);
+    const second = reader.readRecent(10);
+    assert.equal(first, second, "unchanged stat returns cached snapshot");
+
+    // Simulate rotation (file shrinks with a brand new record)
+    writeFileSync(
+      histPath,
+      `${JSON.stringify({ ts: "2026-11-26T11:00:00.000Z", msg_id: "m-rotated", direction: "in", peer: "alpha", project: "repo", preview: "fresh" })}\n`,
+      "utf-8",
+    );
+    const afterRotate = reader.readRecent(10);
+    assert.equal(afterRotate.length, 1);
+    assert.equal(afterRotate[0].msg_id, "m-rotated");
   });
 
   it("switches Roster (`1`) <-> Activity (`2`), filters messages/errors, jumps to peer on Enter, and fits narrow widths", async () => {

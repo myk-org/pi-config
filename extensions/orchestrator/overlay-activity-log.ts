@@ -187,11 +187,18 @@ export function formatActivityEventPlain(event: ActivityEvent): string {
 const MAX_LOG_TAIL_BYTES = 64 * 1024;
 const DEFAULT_MAX_EVENTS_PER_JOB = 40;
 const DEFAULT_MAX_TOTAL_EVENTS = 400;
+const LOG_PARSE_CACHE_MAX = 64;
 
-function readTailText(filePath: string, maxBytes = MAX_LOG_TAIL_BYTES): string | null {
+interface ParsedLogEntry {
+  category: ActivityCategory;
+  summary: string;
+  explicitTs?: number;
+}
+
+const logParseCache = new Map<string, { size: number; mtimeMs: number; entries: ParsedLogEntry[] }>();
+
+function readTailText(filePath: string, size: number, maxBytes = MAX_LOG_TAIL_BYTES): string | null {
   try {
-    if (!fs.existsSync(filePath)) return null;
-    const size = fs.statSync(filePath).size;
     if (size <= 0) return "";
     if (size <= maxBytes) return fs.readFileSync(filePath, "utf-8");
     const fd = fs.openSync(filePath, "r");
@@ -212,6 +219,132 @@ function readTailText(filePath: string, maxBytes = MAX_LOG_TAIL_BYTES): string |
     });
     return null;
   }
+}
+
+function parseJobOutputLogCached(logPath: string): ParsedLogEntry[] {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(logPath);
+  } catch {
+    return [];
+  }
+  const cached = logParseCache.get(logPath);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return cached.entries;
+  }
+
+  const rawTail = readTailText(logPath, stat.size);
+  const parsedLogEntries: ParsedLogEntry[] = [];
+  if (rawTail) {
+    let pendingDelta = "";
+    const flushDelta = () => {
+      const text = sanitizeActivityText(pendingDelta, 120);
+      pendingDelta = "";
+      if (text) parsedLogEntries.push({ category: "message", summary: text });
+    };
+
+    for (const line of rawTail.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let ev: Record<string, unknown> | null = null;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          ev = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // Plain-text line (e.g. stderr/crash output)
+        if (!trimmed.startsWith("{")) {
+          flushDelta();
+          const isErr = /error|exception|fatal|failed|traceback/i.test(trimmed);
+          parsedLogEntries.push({
+            category: isErr ? "error" : "message",
+            summary: sanitizeActivityText(trimmed, 120),
+          });
+        }
+        continue;
+      }
+      if (!ev) continue;
+
+      const explicitTs = parseEventTimestamp(ev, 0) || undefined;
+      if (ev.type === "tool_execution_start") {
+        flushDelta();
+        const toolName = typeof ev.toolName === "string" ? ev.toolName : "tool";
+        const args = ev.args as Record<string, unknown> | undefined;
+        const detail = typeof args?.command === "string"
+          ? args.command
+          : typeof args?.path === "string"
+            ? args.path
+            : typeof args?.query === "string"
+              ? args.query
+              : "";
+        parsedLogEntries.push({
+          category: "tool",
+          summary: sanitizeActivityText(`→ ${toolName}${detail ? ` ${detail}` : ""}`, 120),
+          explicitTs,
+        });
+      } else if (ev.type === "tool_execution_end") {
+        flushDelta();
+        const toolName = typeof ev.toolName === "string" ? ev.toolName : "tool";
+        const result = ev.result as { content?: Array<{ text?: string }> } | undefined;
+        const snippet = result?.content?.[0]?.text ?? "";
+        const isError = ev.isError === true;
+        parsedLogEntries.push({
+          category: isError ? "error" : "tool",
+          summary: sanitizeActivityText(
+            `${isError ? "✗" : "✓"} ${toolName}${snippet ? `: ${snippet}` : ""}`,
+            120,
+          ),
+          explicitTs,
+        });
+      } else if (ev.type === "message_update") {
+        const ae = ev.assistantMessageEvent as { type?: string; delta?: string } | undefined;
+        if (ae?.type === "text_delta" && typeof ae.delta === "string") {
+          pendingDelta += ae.delta;
+          if (pendingDelta.length >= 120 || pendingDelta.includes("\n")) {
+            flushDelta();
+          }
+        }
+      } else if (ev.type === "message_end") {
+        flushDelta();
+        const msg = ev.message as { role?: string; content?: Array<{ type?: string; text?: string }> } | undefined;
+        if (msg?.role === "assistant" && Array.isArray(msg.content)) {
+          const text = msg.content
+            .filter((p) => p?.type === "text" && typeof p.text === "string")
+            .map((p) => p.text)
+            .join(" ");
+          const clean = sanitizeActivityText(text, 120);
+          if (clean) {
+            parsedLogEntries.push({ category: "message", summary: clean, explicitTs });
+          }
+        }
+      } else if (ev.type === "agent_end") {
+        flushDelta();
+        parsedLogEntries.push({
+          category: "lifecycle",
+          summary: "agent finished",
+          explicitTs,
+        });
+      } else if (ev.type === "error" || typeof ev.error === "string") {
+        flushDelta();
+        parsedLogEntries.push({
+          category: "error",
+          summary: sanitizeActivityText(String(ev.error ?? ev.message ?? "error"), 120),
+          explicitTs,
+        });
+      }
+    }
+    flushDelta();
+  }
+
+  logParseCache.delete(logPath);
+  logParseCache.set(logPath, { size: stat.size, mtimeMs: stat.mtimeMs, entries: parsedLogEntries });
+  while (logParseCache.size > LOG_PARSE_CACHE_MAX) {
+    const oldest = logParseCache.keys().next();
+    if (oldest.done) break;
+    logParseCache.delete(oldest.value);
+  }
+  return parsedLogEntries;
 }
 
 function parseEventTimestamp(ev: Record<string, unknown>, fallback: number): number {
@@ -255,116 +388,9 @@ export function collectAsyncActivityEvents(
       summary: `started (${sanitizeActivityText(job.agent, 24)}) — ${sanitizeActivityText(job.task, 80)}`,
     });
 
-    const parsedLogEntries: Array<{
-      category: ActivityCategory;
-      summary: string;
-      explicitTs?: number;
-    }> = [];
-
-    if (job.workerDir) {
-      const rawTail = readTailText(path.join(job.workerDir, "output.log"));
-      if (rawTail) {
-        let pendingDelta = "";
-        const flushDelta = () => {
-          const text = sanitizeActivityText(pendingDelta, 120);
-          pendingDelta = "";
-          if (text) parsedLogEntries.push({ category: "message", summary: text });
-        };
-
-        for (const line of rawTail.split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          let ev: Record<string, unknown> | null = null;
-          try {
-            const parsed = JSON.parse(trimmed);
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-              ev = parsed as Record<string, unknown>;
-            }
-          } catch {
-            // Plain-text line (e.g. stderr/crash output)
-            if (!trimmed.startsWith("{")) {
-              flushDelta();
-              const isErr = /error|exception|fatal|failed|traceback/i.test(trimmed);
-              parsedLogEntries.push({
-                category: isErr ? "error" : "message",
-                summary: sanitizeActivityText(trimmed, 120),
-              });
-            }
-            continue;
-          }
-          if (!ev) continue;
-
-          const explicitTs = parseEventTimestamp(ev, 0) || undefined;
-          if (ev.type === "tool_execution_start") {
-            flushDelta();
-            const toolName = typeof ev.toolName === "string" ? ev.toolName : "tool";
-            const args = ev.args as Record<string, unknown> | undefined;
-            const detail = typeof args?.command === "string"
-              ? args.command
-              : typeof args?.path === "string"
-                ? args.path
-                : typeof args?.query === "string"
-                  ? args.query
-                  : "";
-            parsedLogEntries.push({
-              category: "tool",
-              summary: sanitizeActivityText(`→ ${toolName}${detail ? ` ${detail}` : ""}`, 120),
-              explicitTs,
-            });
-          } else if (ev.type === "tool_execution_end") {
-            flushDelta();
-            const toolName = typeof ev.toolName === "string" ? ev.toolName : "tool";
-            const result = ev.result as { content?: Array<{ text?: string }> } | undefined;
-            const snippet = result?.content?.[0]?.text ?? "";
-            const isError = ev.isError === true;
-            parsedLogEntries.push({
-              category: isError ? "error" : "tool",
-              summary: sanitizeActivityText(
-                `${isError ? "✗" : "✓"} ${toolName}${snippet ? `: ${snippet}` : ""}`,
-                120,
-              ),
-              explicitTs,
-            });
-          } else if (ev.type === "message_update") {
-            const ae = ev.assistantMessageEvent as { type?: string; delta?: string } | undefined;
-            if (ae?.type === "text_delta" && typeof ae.delta === "string") {
-              pendingDelta += ae.delta;
-              if (pendingDelta.length >= 120 || pendingDelta.includes("\n")) {
-                flushDelta();
-              }
-            }
-          } else if (ev.type === "message_end") {
-            flushDelta();
-            const msg = ev.message as { role?: string; content?: Array<{ type?: string; text?: string }> } | undefined;
-            if (msg?.role === "assistant" && Array.isArray(msg.content)) {
-              const text = msg.content
-                .filter((p) => p?.type === "text" && typeof p.text === "string")
-                .map((p) => p.text)
-                .join(" ");
-              const clean = sanitizeActivityText(text, 120);
-              if (clean) {
-                parsedLogEntries.push({ category: "message", summary: clean, explicitTs });
-              }
-            }
-          } else if (ev.type === "agent_end") {
-            flushDelta();
-            parsedLogEntries.push({
-              category: "lifecycle",
-              summary: "agent finished",
-              explicitTs,
-            });
-          } else if (ev.type === "error" || typeof ev.error === "string") {
-            flushDelta();
-            parsedLogEntries.push({
-              category: "error",
-              summary: sanitizeActivityText(String(ev.error ?? ev.message ?? "error"), 120),
-              explicitTs,
-            });
-          }
-        }
-        flushDelta();
-      }
-    }
+    const parsedLogEntries = job.workerDir
+      ? parseJobOutputLogCached(path.join(job.workerDir, "output.log"))
+      : [];
 
     const boundedLog = parsedLogEntries.slice(-Math.max(1, maxPerJob - 2));
     const span = Math.max(1, endTs - startTs);
@@ -459,6 +485,7 @@ export class OverlayActivityView implements Component {
   private following: boolean;
   private selectedIndex = 0;
   private closed = false;
+  private cachedEvents: ActivityEvent[] = [];
   private cachedWidth: number | undefined;
   private cachedLines: string[] | undefined;
   private notice: OverlayNotice | undefined;
@@ -477,6 +504,7 @@ export class OverlayActivityView implements Component {
     this.filter = spec.initialFilter ?? "all";
     this.search = spec.initialSearch ?? "";
     this.following = spec.initialFollowing ?? true;
+    this.cachedEvents = this.spec.listEvents();
 
     const initial = this.filteredEvents();
     if (this.following && initial.length > 0) {
@@ -485,6 +513,7 @@ export class OverlayActivityView implements Component {
 
     this.poller = setInterval(() => {
       if (this.closed) return;
+      this.cachedEvents = this.spec.listEvents();
       this.invalidate();
       this.tui.requestRender();
     }, spec.pollMs ?? 1000);
@@ -526,7 +555,7 @@ export class OverlayActivityView implements Component {
   }
 
   private filteredEvents(): ActivityEvent[] {
-    return filterActivityEvents(this.spec.listEvents(), this.filter, this.search);
+    return filterActivityEvents(this.cachedEvents, this.filter, this.search);
   }
 
   private cleanup(): boolean {
@@ -754,7 +783,7 @@ export class OverlayActivityView implements Component {
     if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 
     const theme = this.theme;
-    const allEvents = this.spec.listEvents();
+    const allEvents = this.cachedEvents;
     const events = filterActivityEvents(allEvents, this.filter, this.search);
     this.clampSelection(events.length);
     log.debug("activity_render", {

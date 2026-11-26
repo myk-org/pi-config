@@ -46,7 +46,7 @@ import {
     type RegistryRow,
 } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
-import { queryHistoryRecords } from "./coms-history.js";
+import { createTailHistoryReader } from "./coms-history.js";
 import { requestDescribe } from "./coms-describe.js";
 
 const log = createLogger("coms");
@@ -89,7 +89,19 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     let activation: Promise<{ ok: boolean; message: string }> | null = null;
     let liveCtx: any = null;
     let cachedRegistry: ComsRegistry | null = null;
+    let cachedHistoryReader: { path: string; reader: ReturnType<typeof createTailHistoryReader> } | null = null;
     let pidashUnsubscribe: (() => void) | null = null;
+    /** In-flight peer revives keyed by `project::name` (epoch ms), preventing duplicate supervisor launches. */
+    const revivingPeers = new Map<string, number>();
+    const REVIVE_CLAIM_TTL_MS = 45_000;
+
+    const getTailHistoryReader = () => {
+        const histPath = getRegistry().historyPath();
+        if (!cachedHistoryReader || cachedHistoryReader.path !== histPath) {
+            cachedHistoryReader = { path: histPath, reader: createTailHistoryReader(histPath) };
+        }
+        return cachedHistoryReader.reader;
+    };
 
     const getRegistry = (cwdOverride?: string): ComsRegistry => {
         const dir = options.comsDir || resolveComsDir(cwdOverride ?? liveCtx?.cwd ?? process.cwd());
@@ -247,6 +259,8 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         }
         // Keep persisted session state intact so `/reload` sees `active: true` and reactivates.
         active = false;
+        revivingPeers.clear();
+        cachedHistoryReader = null;
     });
 
     // Activation flag: `pi --coms --cname x --project y` starts the peer at session start, so a
@@ -394,14 +408,41 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 });
             },
             revivePeer: (row) => {
+                const key = `${row.project}::${row.name}`;
+                const now = Date.now();
+                const liveAll = getRegistry().readLiveRows(now);
+                if (liveAll.some((live) => live.project === row.project && live.name === row.name)) {
+                    revivingPeers.delete(key);
+                    return { ok: false, reason: `Peer "${row.name}" is already running.` };
+                }
+                const claimedAt = revivingPeers.get(key);
+                if (claimedAt !== undefined && now - claimedAt < REVIVE_CLAIM_TTL_MS) {
+                    log.debug("coms_peer_revive_already_claimed", { name: row.name, project: row.project });
+                    return { ok: false, reason: `Peer "${row.name}" is already reviving.` };
+                }
+                // Check whether a live supervisor record without exit already owns this project::name.
+                const existingLiveRec = readSupervisionRecords().find((rec) => {
+                    if (rec?.cname !== row.name || (rec?.project ?? "default") !== row.project) return false;
+                    if (rec.stoppedAt || rec.exitedAt || rec.failedAt) return false;
+                    if (!Number.isInteger(rec.pid) || (rec.pid ?? 0) <= 0) return false;
+                    try { process.kill(rec.pid, 0); return true; } catch { return false; }
+                });
+                if (existingLiveRec) {
+                    return { ok: false, reason: `Supervisor for "${row.name}" is already starting (pid ${existingLiveRec.pid}).` };
+                }
+                revivingPeers.set(key, now);
                 const res = spawnSupervisedPeer({
                     cname: row.name,
                     purpose: row.purpose,
                     project: row.project,
                     cwd: row.cwd || liveCtx?.cwd || process.cwd(),
                     session: row.piSessionId ?? undefined,
+                    onSpawnFailure: () => { revivingPeers.delete(key); },
                 });
-                if (!res.ok) return { ok: false, reason: res.message };
+                if (!res.ok) {
+                    revivingPeers.delete(key);
+                    return { ok: false, reason: res.message };
+                }
                 return {
                     ok: true,
                     pid: res.pid,
@@ -413,7 +454,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 const project = scope === "all" ? undefined : ownProject();
                 const livePeers = filterRegistry(allLive, { project });
                 const stoppedPeers = listStoppedSupervisedPeers(readSupervisionRecords(), allLive, { project });
-                const historyRecords = queryHistoryRecords(getRegistry().historyPath(), { limit: 200 });
+                const historyRecords = getTailHistoryReader().readRecent(200);
                 return collectComsActivityEvents({
                     historyRecords,
                     livePeers,
@@ -558,6 +599,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         project?: string | null;
         cwd?: string | null;
         session?: string | null;
+        onSpawnFailure?: () => void;
     }): { ok: true; pid: number | null; message: string } | { ok: false; pid: null; message: string } => {
         const here = path.dirname(fileURLToPath(import.meta.url));
         const supervisor = [
@@ -583,6 +625,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             if (configuredComsDir) env.PI_COMS_DIR = configuredComsDir;
             const child = spawn(plan.command[0]!, plan.command.slice(1), { detached: true, stdio: "ignore", env });
             child.on("error", (error: unknown) => {
+                params.onSpawnFailure?.();
                 log.error("coms_peer_spawn_async_error", { cname: params.cname, error: error instanceof Error ? error.message : String(error) });
             });
             child.unref();

@@ -23,6 +23,7 @@ import {
   type ActivityEvent,
 } from "../../../extensions/orchestrator/overlay-activity-log.js";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
+import { markNeedsReview, recordReviewerResult } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { fakeCommandCtx, fakeCustom, type FakeCustomFactory } from "../helpers/fake-extension-ctx.js";
 import { fakeKeybindings, fakeTheme, fakeTui } from "../helpers/fake-tui.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -244,25 +245,102 @@ describe("registerAsyncAgents.reviveAsyncJob integration (#1417)", () => {
     assert.equal(secondCfg.cwd, tmp);
     assert.match(secondCfg.task, /Fix the widget rendering/);
     assert.match(secondCfg.task, /Inspected overlay-dashboard\.ts/);
-    // Revived job persists its session so subsequent revives can resume directly
-    assert.equal(secondCfg.piArgs.includes("--no-session"), false);
+    // Context-recovered revive of a non-persisted job stays ephemeral (--no-session) so it cannot
+    // hijack another job's persisted session (Qodo #3).
+    assert.equal(secondCfg.piArgs.includes("--no-session"), true);
 
-    // Reviving the second job (which has persistSession: true) resumes its deterministic session ID
-    reg.killAsyncAgent(revived.ok ? revived.id : "", "user");
-    const third = await reg.reviveAsyncJob(revived.ok ? revived.id : "");
-    assert.equal(third.ok, true);
-    if (third.ok) {
-      assert.match(third.message ?? "", /session resumed/);
+    // Repeated revive on the same source job is refused without spawning duplicates (Qodo #6).
+    const dup = await reg.reviveAsyncJob(first.id);
+    assert.equal(dup.ok, false);
+    if (!dup.ok) assert.match(dup.error, /Already revived as/);
+    assert.equal(spawnedConfigs.length, 2);
+  });
+
+  it("resumes persisted session ID even after live parent session changes and guards concurrent session revives", async () => {
+    const tmp = makeTempDir("async-revive-sess-");
+    tempDirs.push(tmp);
+    const handlers = new Map<string, Array<(...args: any[]) => any>>();
+    const pi = {
+      on: (ev: string, fn: (...args: any[]) => any) => {
+        const list = handlers.get(ev) ?? [];
+        list.push(fn);
+        handlers.set(ev, list);
+      },
+      registerCommand: () => {},
+      registerTool: () => {},
+      events: { on: () => () => {}, emit: () => {} },
+      sendMessage: () => {},
+    } as unknown as ExtensionAPI;
+
+    const spawnedConfigs: any[] = [];
+    const fakeSpawn = ((_cmd: string, args: string[]) => {
+      const cfgPath = args[args.length - 1];
+      spawnedConfigs.push(JSON.parse(readFileSync(cfgPath, "utf-8")));
+      const proc = new EventEmitter() as any;
+      proc.pid = 99998;
+      proc.stderr = new EventEmitter();
+      proc.stderr.pipe = () => {};
+      return proc;
+    }) as any;
+
+    const workerAgent = {
+      name: "worker",
+      description: "general worker",
+      systemPrompt: "",
+      source: "package" as const,
+      filePath: "/fake/worker.md",
+    };
+    const reviewerAgent = {
+      name: "code-reviewer-quality",
+      description: "reviewer",
+      systemPrompt: "",
+      source: "package" as const,
+      filePath: "/fake/reviewer.md",
+    };
+
+    const reg = registerAsyncAgents(pi, () => {}, {
+      spawnProcess: fakeSpawn,
+      discoverAgents: () => ({ agents: [workerAgent, reviewerAgent] }),
+    });
+
+    let activeParentSessionId = "orig-parent-sess";
+    for (const fn of handlers.get("session_start") ?? []) {
+      fn({}, { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => activeParentSessionId, getCwd: () => tmp } });
     }
-    assert.equal(spawnedConfigs.length, 3);
-    const secondSessIdx = spawnedConfigs[1].piArgs.indexOf("--session-id");
-    const thirdSessIdx = spawnedConfigs[2].piArgs.indexOf("--session-id");
-    assert.ok(secondSessIdx >= 0 && thirdSessIdx >= 0);
+
+    // Spawn two persisted jobs under "orig-parent-sess"
+    const p1 = reg.spawnAsyncAgent("worker", "Persisted task 1", tmp, [workerAgent], { persistSession: true });
+    const p2 = reg.spawnAsyncAgent("worker", "Persisted task 2", tmp, [workerAgent], { persistSession: true });
+    reg.killAsyncAgent(p1.id, "user");
+    reg.killAsyncAgent(p2.id, "user");
+
+    // Change live parent session before reviving p1 (Qodo #1)
+    activeParentSessionId = "new-parent-sess";
+    const r1 = await reg.reviveAsyncJob(p1.id);
+    assert.equal(r1.ok, true);
+    if (r1.ok) assert.match(r1.message ?? "", /session resumed/);
+
+    const origIdx = spawnedConfigs[0].piArgs.indexOf("--session-id");
+    const revivedIdx = spawnedConfigs[2].piArgs.indexOf("--session-id");
+    assert.ok(origIdx >= 0 && revivedIdx >= 0);
     assert.equal(
-      spawnedConfigs[2].piArgs[thirdSessIdx + 1],
-      spawnedConfigs[1].piArgs[secondSessIdx + 1],
-      "reviving a persistSession job reuses its deterministic --session-id",
+      spawnedConfigs[2].piArgs[revivedIdx + 1],
+      spawnedConfigs[0].piArgs[origIdx + 1],
+      "revival must preserve original parent session ID even when live session changed",
     );
+    assert.equal(spawnedConfigs[2].piArgs.includes("--no-session"), false);
+
+    // Attempting to concurrently revive p2 (which maps to the same active persisted session) is refused (Qodo #3)
+    const r2 = await reg.reviveAsyncJob(p2.id);
+    assert.equal(r2.ok, false);
+    if (!r2.ok) assert.match(r2.error, /Persisted session is already active/);
+
+    // Reviewer with auto-enabled persistSession writes persistSession: true into session.json (Qodo #5)
+    markNeedsReview(tmp);
+    recordReviewerResult(tmp, "code-reviewer-quality", 2);
+    const revJob = reg.spawnAsyncAgent("code-reviewer-quality", "Review cycle 2", tmp, [reviewerAgent]);
+    const sessionMeta = JSON.parse(readFileSync(join(tmp, ".pi", "tmp", revJob.id, "session.json"), "utf-8"));
+    assert.equal(sessionMeta.persistSession, true, "session.json must record effective reviewer persistence");
   });
 });
 
@@ -346,6 +424,7 @@ describe("/async Unified Activity Log (`1`/`2`, `f`, `/`, `Space`, `Enter`) (#14
     const followStates: boolean[] = [];
     const filters: string[] = [];
     const searches: string[] = [];
+    let listEventCalls = 0;
     let result: any = null;
 
     const view = new OverlayActivityView(
@@ -354,10 +433,14 @@ describe("/async Unified Activity Log (`1`/`2`, `f`, `/`, `Space`, `Enter`) (#14
       fakeKeybindings(),
       {
         title: "Async agents",
-        listEvents: () => events,
+        listEvents: () => {
+          listEventCalls++;
+          return events;
+        },
         onFilterChange: (f) => filters.push(f),
         onSearchChange: (s) => searches.push(s),
         onFollowChange: (f) => followStates.push(f),
+        pollMs: 60_000,
       },
       (res) => { result = res; },
     );
@@ -398,6 +481,9 @@ describe("/async Unified Activity Log (`1`/`2`, `f`, `/`, `Space`, `Enter`) (#14
     const searchedFrame = view.render(100).join("\n");
     assert.match(searchedFrame, /1\/3 events/);
     assert.match(searchedFrame, /beta/);
+
+    // listEvents must only be called once at construction (not on every render/keypress) (Qodo #8)
+    assert.equal(listEventCalls, 1);
 
     // Filter cycle helper covers all 4 filters
     assert.equal(nextActivityFilter("all"), "errors");

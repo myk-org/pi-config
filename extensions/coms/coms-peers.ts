@@ -558,13 +558,21 @@ export function collectComsActivityEvents(args: {
   const stoppedPeers = args.stoppedPeers ?? [];
   const events: ActivityEvent[] = [];
 
-  const rowIdByName = new Map<string, string>();
-  const scopedNames = new Set<string>();
+  // Project-qualified lookup prevents same-named peers in different projects from colliding.
+  const rowIdByQualified = new Map<string, string>();
+  const rowIdsByName = new Map<string, string[]>();
+
+  const registerRosterLookup = (row: RegistryRow, id: string): void => {
+    const qKey = `${row.project}::${row.name}`;
+    if (!rowIdByQualified.has(qKey)) rowIdByQualified.set(qKey, id);
+    const list = rowIdsByName.get(row.name) ?? [];
+    if (!list.includes(id)) list.push(id);
+    rowIdsByName.set(row.name, list);
+  };
 
   for (const row of args.livePeers) {
     const id = peerOverlayRowId(row);
-    rowIdByName.set(row.name, id);
-    scopedNames.add(row.name);
+    registerRosterLookup(row, id);
     const ts = row.startedAt ? (Date.parse(row.startedAt) || now) : now;
     const stateDesc = row.busy
       ? `peer busy${row.queueDepth ? ` (queue ${row.queueDepth})` : ""}`
@@ -581,8 +589,7 @@ export function collectComsActivityEvents(args: {
 
   for (const row of stoppedPeers) {
     const id = peerOverlayRowId(row);
-    if (!rowIdByName.has(row.name)) rowIdByName.set(row.name, id);
-    scopedNames.add(row.name);
+    registerRosterLookup(row, id);
     const ts = row.stoppedAt ? (Date.parse(row.stoppedAt) || now) : now;
     const isErr = typeof row.exitCode === "number" && row.exitCode !== 0;
     const codePart = typeof row.exitCode === "number" ? ` (exit ${row.exitCode})` : "";
@@ -596,18 +603,13 @@ export function collectComsActivityEvents(args: {
     });
   }
 
-  const otherProjectNames = new Set<string>();
-  if (args.projectFilter && args.allKnownPeers) {
-    for (const p of args.allKnownPeers) {
-      if (p.project !== args.projectFilter && !scopedNames.has(p.name)) {
-        otherProjectNames.add(p.name);
-      }
-    }
-  }
-
   for (let i = 0; i < args.historyRecords.length; i++) {
     const rec = args.historyRecords[i];
-    if (args.projectFilter && otherProjectNames.has(rec.peer)) continue;
+    const recProject = typeof rec.project === "string" && rec.project.trim() ? rec.project.trim() : null;
+    // In project-scoped views, require a proven matching project identity — never leak
+    // other-project records or legacy untagged records merely because a peer name matches.
+    if (args.projectFilter && recProject !== args.projectFilter) continue;
+
     const ts = Date.parse(rec.ts) || now;
     const hasErr = Boolean(rec.error) || /fail|error|reject|timeout|refus/i.test(rec.status ?? "");
     const category: ActivityCategory = hasErr ? "error" : "message";
@@ -615,7 +617,18 @@ export function collectComsActivityEvents(args: {
     const preview = sanitizePeerText(rec.preview || "", 110);
     const errPart = rec.error ? ` — ${sanitizePeerText(rec.error, 60)}` : "";
     const statusPart = !rec.error && rec.status ? ` [${sanitizePeerText(rec.status, 24)}]` : "";
-    const sourceId = rowIdByName.get(rec.peer) ?? `peer:${rec.peer}`;
+
+    let sourceId: string;
+    if (recProject) {
+      sourceId = rowIdByQualified.get(`${recProject}::${rec.peer}`) ?? `peer:${recProject}:${rec.peer}`;
+    } else {
+      // Legacy untagged record (only visible in all-projects scope): only map when unique.
+      const candidates = rowIdsByName.get(rec.peer) ?? [];
+      if (candidates.length === 1) sourceId = candidates[0];
+      else if (candidates.length > 1) sourceId = `peer:ambiguous:${rec.peer}`;
+      else sourceId = `peer:${rec.peer}`;
+    }
+
     events.push({
       id: `hist:${rec.msg_id}:${rec.direction}:${i}`,
       timestamp: ts,

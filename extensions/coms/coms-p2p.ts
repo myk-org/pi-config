@@ -269,6 +269,7 @@ interface PendingReply {
 	result?: { response?: any; error?: string | null; queued_msg_ids?: string[] };
 	target_session?: string;
 	target_name?: string;
+	target_project?: string;
 	sent_at?: number;
 	created_at?: string;
 	/** Creation time drives body-free recovery previews. */
@@ -1138,11 +1139,12 @@ export function createComsPeerRuntime(
 
 	/** #924 §5: append to the local coms history trail. Fail-soft — delivery
 	 *  never waits on history. Every record is stamped with this session's id
-	 *  so queries can scope to one session's traffic on the shared file. */
+	 *  and project so queries and project-scoped activity views stay isolated on the shared file. */
 	function appendComsHistory(record: Omit<HistoryRecord, "ts" | "owner"> & { ts?: string }): void {
 		appendHistoryRecord(registry.historyPath(), {
 			ts: record.ts ?? nowIso(),
 			owner: identity?.coms_session_id,
+			project: identity?.project,
 			...record,
 		});
 	}
@@ -1360,6 +1362,7 @@ export function createComsPeerRuntime(
 				direction: "response_in",
 				msg_id: env.msg_id,
 				peer: pending.target_name ?? env.sender_session,
+				...(pending.target_project ? { project: pending.target_project } : {}),
 				preview: truncatePreview(typeof env.response === "string" ? env.response : JSON.stringify(env.response ?? "")),
 				status: env.error ? `error: ${env.error}` : "replied",
 				error: env.error ?? null,
@@ -2684,6 +2687,8 @@ Do not respond to this message.`;
 			/** #1077: set ONLY by the command layer (`/coms tell`, peers overlay). The coms_* tools
 			 *  never pass it, so tool input cannot claim human authority. */
 			userAuthored?: boolean;
+			/** Target peer's project when explicitly known (e.g. cross-project user send). */
+			targetProject?: string;
 		},
 	): Promise<{ msg_id: string; hops: number }> {
 		if (!identity) throw new Error("coms not initialised");
@@ -2751,6 +2756,7 @@ Do not respond to this message.`;
 			timer: null,
 			promise,
 			target_name: target.name,
+			target_project: params.targetProject ?? identity.project,
 			created_at: nowIso(),
 		};
 		// Steers use the FULL timeout, same as normal sends (Qodo ccd126a8):
@@ -2817,6 +2823,7 @@ Do not respond to this message.`;
 			direction: "out",
 			msg_id,
 			peer: target.name,
+			...(entry.target_project ? { project: entry.target_project } : {}),
 			session: target.coms_session_id,
 			preview: truncatePreview(promptText),
 			status: [params.steer ? "steer" : null, params.priority ? "priority" : null].filter(Boolean).join("+") || "sent",
@@ -2888,7 +2895,11 @@ Do not respond to this message.`;
 		}
 		const safeTarget = sanitizePeerText(target.name, 40);
 		try {
-			const { msg_id } = await deliverPrompt(target, { prompt: params.prompt, userAuthored: true });
+			const { msg_id } = await deliverPrompt(target, {
+				prompt: params.prompt,
+				userAuthored: true,
+				targetProject: params.project,
+			});
 			log.info("user_send", msg_id, "to", target.name, "chars", params.prompt.length);
 			tellLog.debug("tell_completion", { count: 1 });
 			return { ok: true, message: `sent to ${safeTarget} (${msg_id})` };

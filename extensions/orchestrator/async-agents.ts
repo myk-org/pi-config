@@ -639,6 +639,9 @@ export function registerAsyncAgents(
     lastCtx: null,
   };
 
+  /** Track finished source jobs already claimed/revived to prevent duplicate concurrent replacements. */
+  const revivedFromSource = new Map<string, { state: "in-flight" } | { state: "spawned"; replacementId: string }>();
+
   /** Bounded recent finished/killed jobs retained for `/async` inspection, Activity Log, and `r` revive. */
   const RECENT_FINISHED_MAX = 20;
   const recentFinishedJobs = new Map<string, AsyncJob>();
@@ -1257,27 +1260,13 @@ export function registerAsyncAgents(
       log.warn("async-spawn: could not read /proc/self/stat starttime after 3 attempts");
     }
     const liveCtx = getLiveAsyncCtx();
-    const resolvedProjectCwd = liveCtx?.sessionManager?.getCwd?.() || liveCtx?.cwd || options?.projectCwd;
-    const resolvedSessionId = liveCtx?.sessionManager?.getSessionId?.() || options?.sessionId;
+    const resolvedProjectCwd = options?.projectCwd || liveCtx?.sessionManager?.getCwd?.() || liveCtx?.cwd;
+    const resolvedSessionId = options?.sessionId || liveCtx?.sessionManager?.getSessionId?.();
     // Record the task's store file now — the only moment the live owner can say where this
     // job's task lives. A reload cannot re-derive it from an env that may have changed.
     // Resolve from the project dir — the same one the lifecycle call uses — or a worktree
     // agent records the worktree's store and never touches the parent task list.
     const taskStorePath = options?.taskId ? resolveTaskStorePath(resolvedProjectCwd || cwd, resolvedSessionId || undefined) : undefined;
-    fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
-      resultsDir: ASYNC_RESULTS_DIR,
-      fireAndForget: options?.fireAndForget || false,
-      parentPid: process.pid,
-      parentStartTime,
-      name: options?.name || null,
-      fullTask: task,
-      persistSession: options?.persistSession === true,
-      taskId: options?.taskId || null,
-      taskStorePath: taskStorePath || null,
-      cwd,
-      projectCwd: resolvedProjectCwd || null,
-      sessionId: resolvedSessionId || null,
-    }), { mode: 0o600 });
 
     // Chain position — a reload drops the onComplete continuation, so restore reads
     // this file to report the chain it can no longer resume instead of losing it.
@@ -1304,7 +1293,26 @@ export function registerAsyncAgents(
       const reviewState = readReviewState(cwd);
       persistSession = reviewState.status === "has_findings" || reviewState.status === "in_progress";
     }
-    const parentSessionId = getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || "";
+    // Prefer an explicitly supplied parent session ID (e.g. revival after a context switch)
+    // before falling back to the current live context so persisted transcripts resume cleanly.
+    const parentSessionId = resolvedSessionId || "";
+
+    // Persist effective session metadata AFTER reviewer persistence rules resolve so restored
+    // jobs retain accurate `persistSession` and `sessionId` for revival.
+    fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
+      resultsDir: ASYNC_RESULTS_DIR,
+      fireAndForget: options?.fireAndForget || false,
+      parentPid: process.pid,
+      parentStartTime,
+      name: options?.name || null,
+      fullTask: task,
+      persistSession,
+      taskId: options?.taskId || null,
+      taskStorePath: taskStorePath || null,
+      cwd,
+      projectCwd: resolvedProjectCwd || null,
+      sessionId: resolvedSessionId || null,
+    }), { mode: 0o600 });
     const extraEnv: Record<string, string | undefined> = {};
     if (agentName.startsWith("code-reviewer-") || agentName === "test-automator" || agentName === "test-runner") {
       const { baseBranch, hasPr } = resolvePrBaseInfo(cwd);
@@ -1503,6 +1511,7 @@ export function registerAsyncAgents(
     asyncState.lastCtx = ctx;
     deliveredResultIds.clear();
     recentFinishedJobs.clear();
+    revivedFromSource.clear();
 
     // Set project-scoped dir first (getProjectTmpDir creates it if missing)
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
@@ -1694,6 +1703,7 @@ export function registerAsyncAgents(
     log.info(`shutdown: jobs=${asyncState.jobs.size}`);
     asyncState.lastCtx = null;
     recentFinishedJobs.clear();
+    revivedFromSource.clear();
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
     unsubscribeSyncRuns();
@@ -1763,10 +1773,12 @@ export function registerAsyncAgents(
 
   /**
    * Revive a killed, completed, or failed subagent job (#1417):
-   * - If the prior job used `persistSession`, respawns with `persistSession: true` so Pi resumes
-   *   the same deterministic session id (`--session-id async-<agent>-<hash>`).
-   * - Otherwise recovers prior output from `output.log` / `job.output` and embeds it as context
-   *   with the original task, `agent`, `cwd`, `name`, and `taskId`.
+   * - Claims the source job ID synchronously so repeated `r` presses cannot start duplicates.
+   * - If the prior job used `persistSession`, respawns with `persistSession: true` and the
+   *   original parent `sessionId` so Pi resumes the same deterministic session id, while
+   *   refusing concurrent revives against an already-active persisted session.
+   * - Otherwise keeps the revived job ephemeral (`persistSession: false`) so it cannot hijack
+   *   another job's persisted session, recovering bounded prior output from `output.log` / `job.output`.
    */
   async function reviveAsyncJob(jobRef: AsyncStatusJobView | string): Promise<ReviveJobResult> {
     const id = typeof jobRef === "string" ? jobRef : jobRef.id;
@@ -1784,50 +1796,92 @@ export function registerAsyncAgents(
       return { ok: false, error: "Job is still running — kill it first." };
     }
 
+    const existingClaim = revivedFromSource.get(id);
+    if (existingClaim?.state === "in-flight") {
+      log.debug("async_revive_duplicate_in_flight", { id });
+      return { ok: false, error: `Revive for "${id.slice(-8)}" is already in progress.` };
+    }
+    if (existingClaim?.state === "spawned") {
+      const replShort = existingClaim.replacementId.slice(-8);
+      log.debug("async_revive_duplicate_already_spawned", { id, replacementId: existingClaim.replacementId });
+      return { ok: false, error: `Already revived as ${replShort} — revive that job instead if needed.` };
+    }
+
     const agentName = stored?.agent ?? syncMatch?.agent ?? view?.agent ?? "";
     const cwd = stored?.cwd ?? stored?.projectCwd ?? syncMatch?.cwd ?? view?.cwd ?? getLiveAsyncCtx()?.cwd ?? process.cwd();
     const originalTask = stored?.fullTask ?? view?.fullTask ?? stored?.task ?? syncMatch?.task ?? view?.task ?? "";
     const workerDir = stored?.workerDir ?? syncMatch?.workerDir ?? view?.workerDir;
     const hadSession = stored?.persistSession === true || view?.persistSession === true;
+    const targetSessionId = stored?.sessionId ?? getLiveAsyncCtx()?.sessionManager?.getSessionId?.();
 
-    const discover = runtime.discoverAgents ?? (await import("./agents.js")).discoverAgents;
-    const discovery = discover(cwd, "both");
-    const agents = discovery.agents;
-
-    let reviveTask: string;
+    // Prevent concurrent writers to the same deterministic persisted session ID.
     if (hadSession) {
-      reviveTask = `Continue your previous task (revived from job ${id}):\n\n${originalTask}`;
-    } else {
-      const logContext = workerDir ? readPartialWorkerOutput({ id, workerDir }, 6000) : "";
-      const fallbackOutput = stored?.output ?? syncMatch?.outputTail ?? view?.output ?? "";
-      const recovered = (logContext || fallbackOutput).trim().slice(-6000);
-      reviveTask = recovered
-        ? `Continue the following previously stopped/finished task (revived from job ${id}).\n\nOriginal task:\n${originalTask}\n\nPrior output / context before stop:\n${recovered}`
-        : originalTask;
+      const busySibling = Array.from(asyncState.jobs.values()).find(
+        (j) =>
+          (j.status === "running" || j.status === "queued") &&
+          j.persistSession === true &&
+          j.agent === agentName &&
+          jobCwd(j) === cwd &&
+          (j.sessionId || "") === (targetSessionId || ""),
+      );
+      if (busySibling) {
+        log.warn("async_revive_persisted_session_busy", { id, conflict: busySibling.id, agent: agentName });
+        return {
+          ok: false,
+          error: `Persisted session is already active in job ${busySibling.id.slice(-8)}.`,
+        };
+      }
     }
 
-    const spawned = spawnAsyncAgent(agentName, reviveTask, cwd, agents, {
-      name: stored?.name ?? view?.name ?? agentName,
-      taskId: stored?.taskId ?? view?.taskId,
-      projectCwd: stored?.projectCwd ?? getLiveAsyncCtx()?.cwd ?? cwd,
-      sessionId: stored?.sessionId ?? getLiveAsyncCtx()?.sessionManager?.getSessionId?.(),
-      persistSession: true,
-      explicit: (stored?.model ?? view?.model) ? { model: stored?.model ?? view?.model } : undefined,
-    });
+    // Claim synchronously BEFORE any await so rapid/concurrent presses cannot duplicate.
+    revivedFromSource.set(id, { state: "in-flight" });
+    try {
+      const discover = runtime.discoverAgents ?? (await import("./agents.js")).discoverAgents;
+      const discovery = discover(cwd, "both");
+      const agents = discovery.agents;
 
-    if (spawned.error) {
-      log.warn("async_revive_spawn_failed", { from: id, agent: agentName, error: spawned.error });
-      return { ok: false, error: spawned.error };
+      let reviveTask: string;
+      if (hadSession) {
+        reviveTask = `Continue your previous task (revived from job ${id}):\n\n${originalTask}`;
+      } else {
+        const logContext = workerDir ? readPartialWorkerOutput({ id, workerDir }, 6000) : "";
+        const fallbackOutput = stored?.output ?? syncMatch?.outputTail ?? view?.output ?? "";
+        const recovered = (logContext || fallbackOutput).trim().slice(-6000);
+        reviveTask = recovered
+          ? `Continue the following previously stopped/finished task (revived from job ${id}).\n\nOriginal task:\n${originalTask}\n\nPrior output / context before stop:\n${recovered}`
+          : originalTask;
+      }
+
+      const spawned = spawnAsyncAgent(agentName, reviveTask, cwd, agents, {
+        name: stored?.name ?? view?.name ?? agentName,
+        taskId: stored?.taskId ?? view?.taskId,
+        projectCwd: stored?.projectCwd ?? getLiveAsyncCtx()?.cwd ?? cwd,
+        sessionId: targetSessionId,
+        persistSession: hadSession,
+        explicit: (stored?.model ?? view?.model) ? { model: stored?.model ?? view?.model } : undefined,
+      });
+
+      if (spawned.error) {
+        revivedFromSource.delete(id);
+        log.warn("async_revive_spawn_failed", { from: id, agent: agentName, error: spawned.error });
+        return { ok: false, error: spawned.error };
+      }
+
+      revivedFromSource.set(id, { state: "spawned", replacementId: spawned.id });
+      const label = stored?.name ?? view?.name ?? agentName;
+      const shortId = spawned.id.length > 8 ? spawned.id.slice(-8) : spawned.id;
+      log.info("async_job_revived", { from: id, to: spawned.id, agent: agentName, cwd, resumedSession: hadSession });
+      return {
+        ok: true,
+        id: spawned.id,
+        message: `Revived ${label} (${shortId})${hadSession ? " · session resumed" : " · context recovered"}.`,
+      };
+    } catch (err: unknown) {
+      revivedFromSource.delete(id);
+      const error = err instanceof Error ? err.message : String(err);
+      log.error("async_revive_threw", { from: id, agent: agentName, error });
+      return { ok: false, error };
     }
-
-    const label = stored?.name ?? view?.name ?? agentName;
-    const shortId = spawned.id.length > 8 ? spawned.id.slice(-8) : spawned.id;
-    log.info("async_job_revived", { from: id, to: spawned.id, agent: agentName, cwd, resumedSession: hadSession });
-    return {
-      ok: true,
-      id: spawned.id,
-      message: `Revived ${label} (${shortId})${hadSession ? " · session resumed" : " · context recovered"}.`,
-    };
   }
 
   function formatJobElapsed(job: Pick<AsyncStatusJobView, "status" | "startedAt" | "durationMs">): string {
