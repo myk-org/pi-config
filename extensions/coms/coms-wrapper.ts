@@ -198,16 +198,25 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 extra = savedExtra;
                 const savedOrigin: ComsActivationOrigin =
                     savedExtra?.origin === "tool" || savedExtra?.origin === "cli" ? savedExtra.origin : "slash";
+                const savedSessionId =
+                    typeof savedExtra?.comsSessionId === "string" && savedExtra.comsSessionId
+                        ? savedExtra.comsSessionId
+                        : undefined;
                 try {
                     const self = await runtime.start(ctx, {
                         flags: mapToFlagOverrides(flagValues),
                         origin: savedOrigin,
+                        ...(savedSessionId ? { sessionId: savedSessionId } : {}),
                         reload: true,
                     });
                     if (!activationVerified(self, process.platform, existsSync)) {
                         throw new Error("no peer socket was created during reload reactivation");
                     }
                     active = true;
+                    if (self?.sessionId && extra.comsSessionId !== self.sessionId) {
+                        extra = { ...extra, comsSessionId: self.sessionId };
+                        persistCurrentState();
+                    }
                     syncComsActive(true, ctx);
                     syncComsActiveTools(pi, gatedTools, true);
                 } catch (err) {
@@ -216,7 +225,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                     syncComsActiveTools(pi, gatedTools, false);
                     persistCurrentState();
                     const reloadProject = typeof savedFlags.project === "string" && savedFlags.project ? savedFlags.project : ownProject();
-                    const reloadSessionId = options.sessionId ?? (globalThis as any).__piConfigSessionId;
+                    const reloadSessionId = savedSessionId ?? options.sessionId ?? (globalThis as any).__piConfigSessionId;
                     try {
                         await runtime.stop({
                             reason: "reload_failed",
@@ -356,7 +365,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 return { ok: false, message: "📡 coms start failed: no peer socket was created (see ~/.pi/logs/coms)." };
             }
             active = true;
-            extra = { ...extra, origin: entry };
+            extra = { ...extra, origin: entry, ...(self?.sessionId ? { comsSessionId: self.sessionId } : {}) };
             syncComsActive(true, ctx);
             syncComsActiveTools(pi, gatedTools, true);
             persistCurrentState();

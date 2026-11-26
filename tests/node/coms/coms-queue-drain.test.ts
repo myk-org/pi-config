@@ -481,7 +481,7 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 		);
 	});
 
-	it("recovers a followUpQueued inbound on abort via bounded single re-injection and drains FIFO (#1429)", async () => {
+	it("recovers an aborted followUpQueued inbound via bounded single re-injection (#1429)", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const peerA = await startPeer({ name: "peer-a", sessionId: "sfq-a", project: "pfq-1226", cwd: workspace, comsDir });
 		const peerB = await startPeer({ name: "peer-b", sessionId: "sfq-b", project: "pfq-1226", cwd: workspace, comsDir });

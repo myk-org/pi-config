@@ -1,17 +1,18 @@
 /**
  * Regression tests for:
  *   - #1429: followUpQueued undelivered inbound recovery on abort / subsequent turns
- *     (no permanent processingInbound wedge; zero-duplicate on normal followUp delivery;
- *     deferred agent_settled re-injection & superseded copy stripping).
+ *     (bounded re-injection, FIFO drain on retry exhaustion, agent_settled deferral,
+ *     superseded attempt-0 stripping, zero-duplicate normal delivery).
  *   - #1430: preserving queued & undelivered inbound COMS messages across `/reload`
- *     (FIFO + priority order, metadata preservation, 0600 atomic handoff file,
- *     explicit coms_stop & non-reload shutdown still emit session_closed,
- *     TTL expiry and reload failure cleanup).
+ *     (0600 atomic handoff file, FIFO/priority/metadata preservation, early-started
+ *     sessionId continuity, bundle fail_orphans, delivered bundle consistency,
+ *     TTL expiry, explicit coms_stop, quit, mid-reload process.exit notification).
  *
  * Run with: npx tsx --test tests/node/coms/coms-abort-and-reload-queue.test.ts
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -88,7 +89,10 @@ function makeCtx(
 	};
 }
 
-function createFakePi(flags: Record<string, any> = {}) {
+function createFakePi(
+	flags: Record<string, any> = {},
+	opts: { onSendMessage?: (msg: any) => void } = {},
+) {
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, Function>();
 	const messages: any[] = [];
@@ -111,7 +115,10 @@ function createFakePi(flags: Record<string, any> = {}) {
 		registerCommand() {},
 		registerShortcut() {},
 		on(name: string, fn: Function) { handlers.set(name, fn); },
-		sendMessage(msg: any) { messages.push(msg); },
+		sendMessage(msg: any) {
+			opts.onSendMessage?.(msg);
+			messages.push(msg);
+		},
 		appendEntry(customType: string, data: any) { customEntries.push({ type: "custom", customType, data }); },
 		getActiveTools() { return [...tools.keys()]; },
 		setActiveTools() {},
@@ -139,11 +146,12 @@ async function startPeer(opts: {
 	abort?: () => void;
 	reload?: boolean;
 	reloadQueueTtlMs?: number;
+	onSendMessage?: (msg: any) => void;
 }): Promise<TestPeer> {
-	const { pi, tools, handlers, messages } = createFakePi({
-		cname: opts.name,
-		project: opts.project,
-	});
+	const { pi, tools, handlers, messages } = createFakePi(
+		{ cname: opts.name, project: opts.project },
+		{ onSendMessage: opts.onSendMessage },
+	);
 	const runtime = createComsPeerRuntime(pi, {
 		deferred: true,
 		comsDir: opts.comsDir,
@@ -201,130 +209,184 @@ async function emitTurnEnd(peer: TestPeer, text: string, stopReason = "stop"): P
 	);
 }
 
+/** Shared setup for #1430 three-sender reload scenarios (undelivered m1, normal m2, priority m3). */
+async function setupThreeSenderReloadQueue(project: string, receiverSessionId: string) {
+	const { workspace, comsDir } = makeWorkspace();
+	const peerA = await startPeer({ name: "peer-a", sessionId: `${receiverSessionId}-a`, project, cwd: workspace, comsDir });
+	const peerB = await startPeer({ name: "peer-b", sessionId: `${receiverSessionId}-b`, project, cwd: workspace, comsDir });
+	const peerC = await startPeer({ name: "peer-c", sessionId: `${receiverSessionId}-c`, project, cwd: workspace, comsDir });
+	const receiver1 = await startPeer({ name: "receiver", sessionId: receiverSessionId, project, cwd: workspace, comsDir });
+
+	const r1 = await peerA.tools.get("coms_send").execute("s1", {
+		target: "receiver",
+		prompt: "first undelivered",
+		conversation_id: "conv-1",
+		tasks: [{ subject: "T1", description: "Do T1" }],
+	});
+	const m1 = r1.details.msg_id as string;
+	await waitUntil(() => receiver1.messages.some((m) => m?.details?.msg_id === m1));
+
+	const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "normal second" });
+	const m2 = r2.details.msg_id as string;
+	const r3 = await peerC.tools.get("coms_send").execute("s3", {
+		target: "receiver",
+		prompt: "urgent priority",
+		priority: true,
+	});
+	const m3 = r3.details.msg_id as string;
+
+	await receiver1.shutdown({ reason: "reload" });
+	const handoffPath = new ComsRegistry(comsDir).reloadQueuePath(project, receiverSessionId);
+	return { workspace, comsDir, project, receiverSessionId, peerA, peerB, peerC, receiver1, m1, m2, m3, handoffPath };
+}
+
 describe("COMS abort followUp wedge recovery (#1429)", () => {
 	it("delivers normal non-aborted followUp inbound with zero duplicate injections", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const sender = await startPeer({ name: "sender", sessionId: "s-ok", project: "p-1429-ok", cwd: workspace, comsDir });
 		const receiver = await startPeer({ name: "receiver", sessionId: "r-ok", project: "p-1429-ok", cwd: workspace, comsDir });
 
-		// User turn is active -> inbound m1 is queued as followUp.
 		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
 		const r1 = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "normal followup" });
 		const m1 = r1.details.msg_id as string;
 		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
 
-		// User turn finishes normally and Pi pulls m1 from followUpQueue BEFORE agent_end.
 		await emitTurnEnd(receiver, "user turn done", "stop");
 		await deliverLatestInbound(receiver, m1);
 		await emitTurnEnd(receiver, "clean followup reply", "stop");
 		await receiver.handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "stop" }] }, receiver.ctx);
 
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1", { msg_id: m1 })).details.status === "complete");
-		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 1, "no duplicate injection on normal followUp delivery");
+		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 1);
 		assert.equal((await sender.tools.get("coms_get").execute("g1-done", { msg_id: m1 })).details.response, "clean followup reply");
 		assert.equal(readRegistry(receiver).busy, false);
 	});
 
-	it("fails with aborted and drains FIFO instead of wedging across subsequent completed turns (#1429)", async () => {
+	it("replies aborted when a followUpQueued inbound exhausts retries across subsequent turns", async () => {
 		const { workspace, comsDir } = makeWorkspace();
-		const peerA = await startPeer({ name: "peer-a", sessionId: "s-wedge-a", project: "p-1429-wedge", cwd: workspace, comsDir });
-		const peerB = await startPeer({ name: "peer-b", sessionId: "s-wedge-b", project: "p-1429-wedge", cwd: workspace, comsDir });
-		const receiver = await startPeer({ name: "receiver", sessionId: "r-wedge", project: "p-1429-wedge", cwd: workspace, comsDir });
+		const peerA = await startPeer({ name: "peer-a", sessionId: "s-exh-a", project: "p-1429-exh", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "r-exh", project: "p-1429-exh", cwd: workspace, comsDir });
 
-		// User turn active -> m1 queued as followUp, m2 queued behind it.
 		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
 		const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "dropped on abort" });
-		const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "queued behind" });
 		const m1 = r1.details.msg_id as string;
-		const m2 = r2.details.msg_id as string;
 		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
 
-		// Turn 1 aborts and Pi drops m1 -> bounded single re-injection.
+		// Turn 1 aborts -> single bounded re-injection.
 		await emitTurnEnd(receiver, "Operation aborted", "aborted");
-		await receiver.handlers.get("agent_end")!(
-			{ messages: [{ role: "assistant", stopReason: "aborted" }] },
-			receiver.ctx,
-		);
-		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 2, "re-injected once after abort");
+		await receiver.handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "aborted" }] }, receiver.ctx);
+		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 2);
 
-		// Subsequent completed turn runs without ever emitting message_start for m1 -> retry exhausted -> aborted + drains m2!
+		// Turn 2 finishes without delivering m1 -> retry exhausted -> error: "aborted", idle busy=false.
 		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
 		await emitTurnEnd(receiver, "unrelated normal turn", "stop");
-		await receiver.handlers.get("agent_end")!(
-			{ messages: [{ role: "assistant", stopReason: "stop" }] },
-			receiver.ctx,
-		);
+		await receiver.handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "stop" }] }, receiver.ctx);
 
 		await waitUntil(async () => (await peerA.tools.get("coms_get").execute("g1", { msg_id: m1 })).details.status === "complete");
 		const g1 = await peerA.tools.get("coms_get").execute("g1-check", { msg_id: m1 });
 		assert.equal(g1.details.error, "aborted");
 		assert.equal(g1.details.response, null);
+		assert.equal(readRegistry(receiver).busy, false);
+	});
 
-		// m2 drained cleanly and idle resets busy to false!
+	it("drains the next FIFO message after followUpQueued retry exhaustion", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const peerA = await startPeer({ name: "peer-a", sessionId: "s-drn-a", project: "p-1429-drn", cwd: workspace, comsDir });
+		const peerB = await startPeer({ name: "peer-b", sessionId: "s-drn-b", project: "p-1429-drn", cwd: workspace, comsDir });
+		const receiver = await startPeer({ name: "receiver", sessionId: "r-drn", project: "p-1429-drn", cwd: workspace, comsDir });
+
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		const r1 = await peerA.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "dropped head" });
+		const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "queued behind" });
+		const m1 = r1.details.msg_id as string;
+		const m2 = r2.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
+
+		await emitTurnEnd(receiver, "aborted", "aborted");
+		await receiver.handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "aborted" }] }, receiver.ctx);
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		await emitTurnEnd(receiver, "normal turn", "stop");
+		await receiver.handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "stop" }] }, receiver.ctx);
+
 		await deliverLatestInbound(receiver, m2);
 		await emitTurnEnd(receiver, "reply to m2", "stop");
 		await waitUntil(async () => (await peerB.tools.get("coms_get").execute("g2", { msg_id: m2 })).details.status === "complete");
 		assert.equal((await peerB.tools.get("coms_get").execute("g2-check", { msg_id: m2 })).details.response, "reply to m2");
-		assert.equal(readRegistry(receiver).busy, false, "processingInbound must never stay stranded true at idle");
+		assert.equal(readRegistry(receiver).busy, false);
 		assert.equal(readRegistry(receiver).queue_depth, 0);
 	});
 
-	it("defers re-injection to agent_settled when Pi is still streaming at agent_end and strips superseded attempt-0 copies", async () => {
+	it("defers followUpQueued re-injection until agent_settled while Pi reports streaming", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		let idle = false;
+		const sender = await startPeer({ name: "sender", sessionId: "s-set", project: "p-1429-set", cwd: workspace, comsDir });
+		const receiver = await startPeer({
+			name: "receiver",
+			sessionId: "r-set",
+			project: "p-1429-set",
+			cwd: workspace,
+			comsDir,
+			isIdle: () => idle,
+		});
+
+		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
+		const r1 = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "wait for settled" });
+		const m1 = r1.details.msg_id as string;
+		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
+
+		await emitTurnEnd(receiver, "aborted", "aborted");
+		await receiver.handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "aborted" }] }, receiver.ctx);
+		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 1);
+
+		idle = true;
+		await receiver.handlers.get("agent_settled")!({ aborted: true }, receiver.ctx);
+		const copies = receiver.messages.filter((m) => m?.details?.msg_id === m1);
+		assert.equal(copies.length, 2);
+		assert.equal(copies[1]?.details?.inject_attempt, 1);
+	});
+
+	it("strips a superseded attempt-0 copy from context after attempt-1 re-injection", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		let idle = false;
 		let abortCalls = 0;
-		const sender = await startPeer({ name: "sender", sessionId: "s-settled", project: "p-1429-settled", cwd: workspace, comsDir });
+		const sender = await startPeer({ name: "sender", sessionId: "s-sup", project: "p-1429-sup", cwd: workspace, comsDir });
 		const receiver = await startPeer({
 			name: "receiver",
-			sessionId: "r-settled",
-			project: "p-1429-settled",
+			sessionId: "r-sup",
+			project: "p-1429-sup",
 			cwd: workspace,
 			comsDir,
 			isIdle: () => idle,
 			abort: () => { abortCalls++; },
 		});
 
-		// Active run (isIdle() === false): m1 queued as followUp (attempt 0).
 		await receiver.handlers.get("agent_start")!({}, receiver.ctx);
-		const r1 = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "need settled reinject" });
+		const r1 = await sender.tools.get("coms_send").execute("s1", { target: "receiver", prompt: "superseded check" });
 		const m1 = r1.details.msg_id as string;
 		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
 		const attempt0Msg = { role: "custom", ...receiver.messages.find((m) => m?.details?.msg_id === m1) };
 
-		// Run aborts: during agent_end, Pi still reports isIdle() === false -> defer re-inject to agent_settled.
 		await emitTurnEnd(receiver, "aborted", "aborted");
-		await receiver.handlers.get("agent_end")!(
-			{ messages: [{ role: "assistant", stopReason: "aborted" }] },
-			receiver.ctx,
-		);
-		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 1, "must wait for agent_settled while streaming");
-
-		// Pi finishes settling (isIdle() === true) and fires agent_settled -> re-injects attempt 1!
+		await receiver.handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "aborted" }] }, receiver.ctx);
 		idle = true;
 		await receiver.handlers.get("agent_settled")!({ aborted: true }, receiver.ctx);
-		const copies = receiver.messages.filter((m) => m?.details?.msg_id === m1);
-		assert.equal(copies.length, 2, "agent_settled triggers fresh re-injection");
-		assert.equal(copies[1]?.details?.inject_attempt, 1);
 
-		// If Pi still had ghost attempt-0 in its queue, message_start ignores it and context strips + aborts it.
 		await receiver.handlers.get("message_start")!({ message: attempt0Msg });
 		const priorAssistant = { role: "assistant", content: [{ type: "text", text: "earlier" }] };
 		const ctxResult = receiver.handlers.get("context")!(
 			{ type: "context", messages: [priorAssistant, attempt0Msg] },
 			receiver.ctx,
 		);
-		assert.deepEqual(ctxResult?.messages, [priorAssistant], "superseded attempt-0 copy must be stripped");
-		assert.equal(abortCalls, 1, "standalone superseded copy aborts before reaching LLM");
+		assert.deepEqual(ctxResult?.messages, [priorAssistant]);
+		assert.equal(abortCalls, 1);
 
-		// Attempt 1 delivers and completes cleanly.
 		await deliverLatestInbound(receiver, m1);
 		await emitTurnEnd(receiver, "attempt-1 reply", "stop");
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1", { msg_id: m1 })).details.status === "complete");
 		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.response, "attempt-1 reply");
-		assert.equal(readRegistry(receiver).busy, false);
 	});
 
-	it("cancels deferred agent_settled re-injection when auto-retry delivers attempt 0 before agent_settled", async () => {
+	it("cancels deferred agent_settled re-injection when auto-retry delivers attempt 0", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		let idle = false;
 		const sender = await startPeer({ name: "sender", sessionId: "s-retry", project: "p-1429-retry", cwd: workspace, comsDir });
@@ -342,77 +404,48 @@ describe("COMS abort followUp wedge recovery (#1429)", () => {
 		const m1 = r1.details.msg_id as string;
 		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
 
-		// Transient error ends agent_loop while isIdle() stays false (Pi auto-retry will continue).
-		await receiver.handlers.get("agent_end")!(
-			{ messages: [{ role: "assistant", stopReason: "error" }] },
-			receiver.ctx,
-		);
-		// Auto-retry succeeds and Pi delivers the original attempt-0 copy before agent_settled.
+		await receiver.handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "error" }] }, receiver.ctx);
 		await deliverLatestInbound(receiver, m1);
 		await emitTurnEnd(receiver, "delivered via auto-retry", "stop");
 		idle = true;
 		await receiver.handlers.get("agent_settled")!({ aborted: false }, receiver.ctx);
 
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1", { msg_id: m1 })).details.status === "complete");
-		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 1, "no duplicate when delivered before agent_settled");
+		assert.equal(receiver.messages.filter((m) => m?.details?.msg_id === m1).length, 1);
 		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.response, "delivered via auto-retry");
 	});
 });
 
 describe("COMS reload queue persistence (#1430)", () => {
-	it("persists undelivered currentInbound + FIFO + priority queue with 0600 perms across /reload and delivers all replies", async () => {
-		const { workspace, comsDir } = makeWorkspace();
-		const project = "p-1430-fifo";
-		const receiverSessionId = "r-reload-1430";
-		const peerA = await startPeer({ name: "peer-a", sessionId: "s-1430-a", project, cwd: workspace, comsDir });
-		const peerB = await startPeer({ name: "peer-b", sessionId: "s-1430-b", project, cwd: workspace, comsDir });
-		const peerC = await startPeer({ name: "peer-c", sessionId: "s-1430-c", project, cwd: workspace, comsDir });
-		const receiver1 = await startPeer({ name: "receiver", sessionId: receiverSessionId, project, cwd: workspace, comsDir });
+	it("writes a 0600 reload handoff file without sending premature session_closed", async () => {
+		const { peerA, peerB, peerC, m1, m2, m3, handoffPath } = await setupThreeSenderReloadQueue("p-1430-mode", "r-mode-1430");
 
-		// Send 3 messages: m1 (undelivered active), m2 (normal queued), m3 (priority queued -> jumps ahead of m2).
-		const r1 = await peerA.tools.get("coms_send").execute("s1", {
-			target: "receiver",
-			prompt: "first undelivered",
-			conversation_id: "conv-1",
-			tasks: [{ subject: "T1", description: "Do T1" }],
-		});
-		const m1 = r1.details.msg_id as string;
-		await waitUntil(() => receiver1.messages.some((m) => m?.details?.msg_id === m1));
-
-		const r2 = await peerB.tools.get("coms_send").execute("s2", { target: "receiver", prompt: "normal second" });
-		const m2 = r2.details.msg_id as string;
-		const r3 = await peerC.tools.get("coms_send").execute("s3", {
-			target: "receiver",
-			prompt: "urgent priority",
-			priority: true,
-		});
-		const m3 = r3.details.msg_id as string;
-
-		// Reload shutdown: persists queue atomically with 0600 perms and does NOT send session_closed!
-		await receiver1.shutdown({ reason: "reload" });
-
-		const reg = new ComsRegistry(comsDir);
-		const handoffPath = reg.reloadQueuePath(project, receiverSessionId);
-		assert.equal(existsSync(handoffPath), true, "reload handoff file must be created on reload shutdown");
+		assert.equal(existsSync(handoffPath), true);
 		if (process.platform !== "win32") {
-			assert.equal(statSync(handoffPath).mode & 0o777, 0o600, "reload handoff file must have 0600 permissions");
+			assert.equal(statSync(handoffPath).mode & 0o777, 0o600);
 		}
+		assert.equal((await peerA.tools.get("coms_get").execute("ga-pre", { msg_id: m1 })).details.status, "pending");
+		assert.equal((await peerB.tools.get("coms_get").execute("gb-pre", { msg_id: m2 })).details.status, "pending");
+		assert.equal((await peerC.tools.get("coms_get").execute("gc-pre", { msg_id: m3 })).details.status, "pending");
+	});
+
+	it("persists undelivered head followed by priority-before-FIFO order with full metadata", async () => {
+		const { m1, m2, m3, handoffPath } = await setupThreeSenderReloadQueue("p-1430-meta", "r-meta-1430");
+
 		const persisted = JSON.parse(readFileSync(handoffPath, "utf-8"));
 		assert.deepEqual(
 			persisted.items.map((i: any) => i.msg_id),
 			[m1, m3, m2],
-			"persisted order must preserve undelivered head + priority before normal FIFO",
 		);
 		assert.equal(persisted.items[0].conversation_id, "conv-1");
 		assert.deepEqual(persisted.items[0].tasks, [{ subject: "T1", description: "Do T1" }]);
 		assert.equal(persisted.items[1].priority, true);
+	});
 
-		// None of the waiting senders received premature session_closed.
-		assert.equal((await peerA.tools.get("coms_get").execute("ga-pre", { msg_id: m1 })).details.status, "pending");
-		assert.equal((await peerB.tools.get("coms_get").execute("gb-pre", { msg_id: m2 })).details.status, "pending");
-		assert.equal((await peerC.tools.get("coms_get").execute("gc-pre", { msg_id: m3 })).details.status, "pending");
+	it("strips a ghost pre-reload attempt-0 copy on the reloaded peer", async () => {
+		const { workspace, comsDir, project, receiverSessionId, receiver1, m1, handoffPath } =
+			await setupThreeSenderReloadQueue("p-1430-ghost", "r-ghost-1430");
 
-		// Reloaded runtime instance starts with the same sessionId and consumes the handoff file atomically.
 		let abortCalls = 0;
 		const receiver2 = await startPeer({
 			name: "receiver",
@@ -423,27 +456,38 @@ describe("COMS reload queue persistence (#1430)", () => {
 			reload: true,
 			abort: () => { abortCalls++; },
 		});
-		assert.equal(existsSync(handoffPath), false, "handoff file must be atomically removed on reload startup");
+		assert.equal(existsSync(handoffPath), false);
 
-		// Ghost pre-reload attempt-0 copy of m1 is stripped by context without affecting attempt-1.
 		const ghostM1 = { role: "custom", ...receiver1.messages.find((m) => m?.details?.msg_id === m1) };
 		const ctxRes = receiver2.handlers.get("context")!(
 			{ type: "context", messages: [{ role: "assistant", content: [{ type: "text", text: "old" }] }, ghostM1] },
 			receiver2.ctx,
 		);
-		assert.equal(ctxRes?.messages.length, 1, "ghost pre-reload attempt-0 copy must be stripped");
+		assert.equal(ctxRes?.messages.length, 1);
 		assert.equal(abortCalls, 1);
+	});
 
-		// Restored queue drains in exact order: m1 -> m3 (priority) -> m2 (normal).
+	it("drains restored reload items in priority-before-FIFO order delivering all final replies", async () => {
+		const { workspace, comsDir, project, receiverSessionId, peerA, peerB, peerC, m1, m2, m3 } =
+			await setupThreeSenderReloadQueue("p-1430-drain", "r-drain-1430");
+
+		const receiver2 = await startPeer({
+			name: "receiver",
+			sessionId: receiverSessionId,
+			project,
+			cwd: workspace,
+			comsDir,
+			reload: true,
+		});
+
 		const m1Restored = await deliverLatestInbound(receiver2, m1);
 		assert.equal(m1Restored.details.inject_attempt, 1);
 		await emitTurnEnd(receiver2, "reply-m1-after-reload", "stop");
 		await waitUntil(async () => (await peerA.tools.get("coms_get").execute("ga-done", { msg_id: m1 })).details.status === "complete");
 		assert.equal((await peerA.tools.get("coms_get").execute("ga-check", { msg_id: m1 })).details.response, "reply-m1-after-reload");
 
-		// Priority m3 drains BEFORE normal m2.
 		await deliverLatestInbound(receiver2, m3);
-		assert.equal(receiver2.messages.some((m) => m?.details?.msg_id === m2), false, "priority m3 must drain before normal m2");
+		assert.equal(receiver2.messages.some((m) => m?.details?.msg_id === m2), false);
 		await emitTurnEnd(receiver2, "reply-m3-priority", "stop");
 		await waitUntil(async () => (await peerC.tools.get("coms_get").execute("gc-done", { msg_id: m3 })).details.status === "complete");
 		assert.equal((await peerC.tools.get("coms_get").execute("gc-check", { msg_id: m3 })).details.response, "reply-m3-priority");
@@ -456,13 +500,12 @@ describe("COMS reload queue persistence (#1430)", () => {
 		assert.equal(readRegistry(receiver2).queue_depth, 0);
 	});
 
-	it("preserves queued inbounds across coms-wrapper reload and sends session_closed on explicit coms_stop", async () => {
+	it("preserves queued inbounds across coms-wrapper reload", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const project = "p-1430-wrap";
 		const receiverSessionId = "r-wrap-1430";
 		const sender = await startPeer({ name: "sender", sessionId: "s-wrap-1430", project, cwd: workspace, comsDir });
 
-		// First wrapper session starts via coms_start.
 		const w1 = createFakePi();
 		const reg1 = registerComs(w1.pi, {
 			comsDir,
@@ -480,7 +523,6 @@ describe("COMS reload queue persistence (#1430)", () => {
 		const m1 = sent.details.msg_id as string;
 		await waitUntil(() => w1.messages.some((m) => m?.details?.msg_id === m1));
 
-		// Simulate Pi /reload: session_shutdown(reason: "reload") -> new registerComs -> session_start(reason: "reload").
 		await w1.handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "reload" }, ctx1);
 		assert.equal((await sender.tools.get("coms_get").execute("g1-mid", { msg_id: m1 })).details.status, "pending");
 
@@ -504,19 +546,89 @@ describe("COMS reload queue persistence (#1430)", () => {
 		);
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-done", { msg_id: m1 })).details.status === "complete");
 		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.response, "wrapper reloaded reply");
+	});
 
-		// Now queue a second message and call explicit coms_stop -> must emit session_closed and leave no reload file!
-		const sent2 = await sender.tools.get("coms_send").execute("s2", { target: "wrap-recv", prompt: "will be stopped" });
-		const m2 = sent2.details.msg_id as string;
-		await waitUntil(() => w2.messages.some((m) => m?.details?.msg_id === m2));
+	it("preserves queued inbounds across reload when global session ID is set after initial start", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const project = "p-1430-early";
+		const sender = await startPeer({ name: "sender", sessionId: "s-early-1430", project, cwd: workspace, comsDir });
 
-		await w2.tools.get("coms_stop").execute("stop1", {}, undefined, undefined, ctx2);
-		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g2-done", { msg_id: m2 })).details.status === "complete");
-		assert.equal((await sender.tools.get("coms_get").execute("g2-check", { msg_id: m2 })).details.error, "session_closed");
+		// Simulate early startup before orchestrator publishes globalThis.__piConfigSessionId.
+		delete (globalThis as any).__piConfigSessionId;
+		const w1 = createFakePi();
+		const reg1 = registerComs(w1.pi, {
+			comsDir,
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
+		});
+		activePeers.push({ shutdown: () => reg1.runtime.stop({ reason: "test_cleanup" }) });
+		const ctx1 = makeCtx(workspace, "pi-sid-early", { entries: w1.customEntries });
+		await w1.handlers.get("session_start")!({ reason: "startup" }, ctx1);
+		const startRes = await w1.tools.get("coms_start").execute("cs1", { cname: "early-recv", project }, undefined, undefined, ctx1);
+		assert.equal(startRes.details.ok, true);
+		const initialComsId = reg1.runtime.getSelf()?.sessionId;
+		assert.ok(initialComsId, "early-started peer received a generated COMS session ID");
+
+		// Orchestrator later sets a different global session ID before /reload runs.
+		(globalThis as any).__piConfigSessionId = "later-orchestrator-sid";
+
+		const sent = await sender.tools.get("coms_send").execute("s1", { target: "early-recv", prompt: "early peer msg" });
+		const m1 = sent.details.msg_id as string;
+		await waitUntil(() => w1.messages.some((m) => m?.details?.msg_id === m1));
+
+		await w1.handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "reload" }, ctx1);
+
+		const w2 = createFakePi();
+		const reg2 = registerComs(w2.pi, {
+			comsDir,
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
+		});
+		activePeers.push({ shutdown: () => reg2.runtime.stop({ reason: "test_cleanup" }) });
+		const ctx2 = makeCtx(workspace, "pi-sid-early", { entries: w1.customEntries });
+		await w2.handlers.get("session_start")!({ type: "session_start", reason: "reload" }, ctx2);
+
+		assert.equal(reg2.runtime.getSelf()?.sessionId, initialComsId);
+		await waitUntil(() => w2.messages.some((m) => m?.details?.msg_id === m1));
+		const restoredMsg = [...w2.messages].reverse().find((m) => m?.details?.msg_id === m1);
+		await w2.handlers.get("message_start")!({ message: { role: "custom", ...restoredMsg } });
+		await w2.handlers.get("turn_end")!(
+			{ type: "turn_end", message: { role: "assistant", content: [{ type: "text", text: "early peer reply" }], stopReason: "stop" }, toolResults: [] },
+			ctx2,
+		);
+		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-done", { msg_id: m1 })).details.status === "complete");
+		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.response, "early peer reply");
+	});
+
+	it("replies session_closed without writing a handoff file on explicit coms_stop", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const project = "p-1430-stop";
+		const receiverSessionId = "r-stop-1430";
+		const sender = await startPeer({ name: "sender", sessionId: "s-stop-1430", project, cwd: workspace, comsDir });
+
+		const w = createFakePi();
+		const reg = registerComs(w.pi, {
+			comsDir,
+			sessionId: receiverSessionId,
+			allowSubagentChild: true,
+			registerSignalHandlers: false,
+		});
+		activePeers.push({ shutdown: () => reg.runtime.stop({ reason: "test_cleanup" }) });
+		const ctx = makeCtx(workspace, receiverSessionId, { entries: w.customEntries });
+		await w.handlers.get("session_start")!({ reason: "startup" }, ctx);
+		await w.tools.get("coms_start").execute("cs1", { cname: "stop-recv", project }, undefined, undefined, ctx);
+
+		const sent = await sender.tools.get("coms_send").execute("s1", { target: "stop-recv", prompt: "stopped" });
+		const m1 = sent.details.msg_id as string;
+		await waitUntil(() => w.messages.some((m) => m?.details?.msg_id === m1));
+
+		await w.tools.get("coms_stop").execute("stop1", {}, undefined, undefined, ctx);
+		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1", { msg_id: m1 })).details.status === "complete");
+		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.error, "session_closed");
 		assert.equal(existsSync(new ComsRegistry(comsDir).reloadQueuePath(project, receiverSessionId)), false);
 	});
 
-	it("notifies waiting senders with session_closed and removes handoff file when reload TTL expires", async () => {
+	it("replies session_closed removing the handoff file when reload TTL expires", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const project = "p-1430-ttl";
 		const receiverSessionId = "r-ttl-1430";
@@ -534,17 +646,16 @@ describe("COMS reload queue persistence (#1430)", () => {
 		const m1 = sent.details.msg_id as string;
 		await waitUntil(() => receiver.messages.some((m) => m?.details?.msg_id === m1));
 
-		// Reload shutdown persists file, but reloaded peer never comes back -> TTL safety timer fires.
 		await receiver.shutdown({ reason: "reload" });
 		const handoffPath = new ComsRegistry(comsDir).reloadQueuePath(project, receiverSessionId);
 		assert.equal(existsSync(handoffPath), true);
 
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-exp", { msg_id: m1 })).details.status === "complete");
 		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.error, "session_closed");
-		assert.equal(existsSync(handoffPath), false, "expired reload handoff file must be cleaned up");
+		assert.equal(existsSync(handoffPath), false);
 	});
 
-	it("discards a pre-existing expired handoff file on startup with session_closed instead of restoring stale work", async () => {
+	it("discards a pre-existing expired handoff file on startup with session_closed", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const project = "p-1430-stale";
 		const receiverSessionId = "r-stale-1430";
@@ -571,11 +682,11 @@ describe("COMS reload queue persistence (#1430)", () => {
 		});
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-stale", { msg_id: m1 })).details.status === "complete");
 		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.error, "session_closed");
-		assert.equal(receiver2.messages.some((m) => m?.details?.msg_id === m1), false, "expired message must not be injected");
-		assert.equal(existsSync(handoffPath), false, "expired file must be deleted on startup");
+		assert.equal(receiver2.messages.some((m) => m?.details?.msg_id === m1), false);
+		assert.equal(existsSync(handoffPath), false);
 	});
 
-	it("sends session_closed and leaves no reload file on non-reload shutdown (quit / signal)", async () => {
+	it("replies session_closed without a handoff file on quit shutdown", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const project = "p-1430-quit";
 		const receiverSessionId = "r-quit-1430";
@@ -592,7 +703,72 @@ describe("COMS reload queue persistence (#1430)", () => {
 		assert.equal(existsSync(new ComsRegistry(comsDir).reloadQueuePath(project, receiverSessionId)), false);
 	});
 
-	it("preserves bundled undelivered same-sender inbounds across /reload and delivers reply + bundled ack", async () => {
+	it("notifies waiting senders with session_closed when process.exit fires mid-reload", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const project = "p-1430-exit";
+		const receiverSessionId = "r-exit-1430";
+		const sender = await startPeer({ name: "sender", sessionId: "s-exit-1430", project, cwd: workspace, comsDir });
+		const readyMarker = join(workspace, "child-ready");
+		const exitMarker = join(workspace, "child-exit");
+
+		const childScript = `
+			import { existsSync, writeFileSync } from "node:fs";
+			import { createComsPeerRuntime } from "./extensions/coms/coms-p2p.js";
+			const messages = [];
+			const pi = {
+				registerFlag() {},
+				getFlag() { return undefined; },
+				registerTool() {},
+				registerCommand() {},
+				registerShortcut() {},
+				on() {},
+				sendMessage(m) { messages.push(m); },
+				events: { emit() {}, on() { return () => {}; } },
+			};
+			const runtime = createComsPeerRuntime(pi, {
+				deferred: true,
+				comsDir: ${JSON.stringify(comsDir)},
+				sessionId: ${JSON.stringify(receiverSessionId)},
+				allowSubagentChild: true,
+				registerSignalHandlers: false,
+			});
+			const ctx = {
+				cwd: ${JSON.stringify(workspace)},
+				mode: "tui",
+				hasUI: false,
+				model: { id: "test-model" },
+				ui: { notify() {}, setStatus() {}, setWidget() {}, setTheme() { return { success: true }; }, setTitle() {} },
+				sessionManager: { getSessionId: () => ${JSON.stringify(receiverSessionId)}, getEntries: () => [], getBranch: () => [] },
+			};
+			await runtime.start(ctx, { flags: { cname: "exit-recv", project: ${JSON.stringify(project)} } });
+			writeFileSync(${JSON.stringify(readyMarker)}, "ready");
+			while (!existsSync(${JSON.stringify(exitMarker)})) {
+				await new Promise((r) => setTimeout(r, 15));
+			}
+			await runtime.stop({ reason: "reload" });
+			process.exit(0);
+		`;
+		const childPromise = new Promise<void>((resolve, reject) => {
+			execFile(
+				process.execPath,
+				["--import", "tsx", "--input-type=module", "-e", childScript],
+				{ cwd: process.cwd(), timeout: 15_000 },
+				(err) => (err ? reject(err) : resolve()),
+			);
+		});
+
+		await waitUntil(() => existsSync(readyMarker));
+		const sent = await sender.tools.get("coms_send").execute("s1", { target: "exit-recv", prompt: "interrupted by process.exit" });
+		const m1 = sent.details.msg_id as string;
+		writeFileSync(exitMarker, "go");
+		await childPromise;
+
+		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g1-exit", { msg_id: m1 })).details.status === "complete");
+		assert.equal((await sender.tools.get("coms_get").execute("g1-check", { msg_id: m1 })).details.error, "session_closed");
+		assert.equal(existsSync(new ComsRegistry(comsDir).reloadQueuePath(project, receiverSessionId)), false);
+	});
+
+	it("preserves undelivered bundled same-sender inbounds across reload", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const project = "p-1430-bundle";
 		const receiverSessionId = "r-bundle-1430";
@@ -600,7 +776,6 @@ describe("COMS reload queue persistence (#1430)", () => {
 		const peerB = await startPeer({ name: "peer-b", sessionId: "s-bnd-b", project, cwd: workspace, comsDir });
 		const receiver1 = await startPeer({ name: "receiver", sessionId: receiverSessionId, project, cwd: workspace, comsDir });
 
-		// Occupy receiver with m0 (delivered), queue two messages from peer-b (b1, b2) so finishing m0 drains them as a bundle.
 		const r0 = await peerA.tools.get("coms_send").execute("s0", { target: "receiver", prompt: "blocker" });
 		const m0 = r0.details.msg_id as string;
 		await deliverLatestInbound(receiver1, m0);
@@ -610,11 +785,9 @@ describe("COMS reload queue persistence (#1430)", () => {
 		const b1 = rb1.details.msg_id as string;
 		const b2 = rb2.details.msg_id as string;
 
-		// Finalize m0 -> drains [b1, b2] as an undelivered bundle (`currentInbound = b1`, `bundledInbounds = [b2]`).
 		await emitTurnEnd(receiver1, "done blocker", "stop");
 		await waitUntil(() => receiver1.messages.some((m) => m?.details?.msg_id === b1));
 
-		// Reload while [b1, b2] are still undelivered.
 		await receiver1.shutdown({ reason: "reload" });
 		const receiver2 = await startPeer({
 			name: "receiver",
@@ -637,5 +810,105 @@ describe("COMS reload queue persistence (#1430)", () => {
 		});
 		assert.equal((await peerB.tools.get("coms_get").execute("gb1-check", { msg_id: b1 })).details.response, "reloaded bundle reply");
 		assert.equal((await peerB.tools.get("coms_get").execute("gb2-check", { msg_id: b2 })).details.error, "bundled");
+	});
+
+	it("settles all restored senders with injection_failed when reload bundle injection throws", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const project = "p-1430-fail";
+		const receiverSessionId = "r-fail-1430";
+		const peerA = await startPeer({ name: "peer-a", sessionId: "s-fl-a", project, cwd: workspace, comsDir });
+		const peerB = await startPeer({ name: "peer-b", sessionId: "s-fl-b", project, cwd: workspace, comsDir });
+		const receiver1 = await startPeer({ name: "receiver", sessionId: receiverSessionId, project, cwd: workspace, comsDir });
+
+		// Queue two messages from peer-a plus one from peer-b behind a delivered blocker so [a1, a2, b1] persist.
+		const r0 = await peerB.tools.get("coms_send").execute("s0", { target: "receiver", prompt: "blocker" });
+		const m0 = r0.details.msg_id as string;
+		await deliverLatestInbound(receiver1, m0);
+
+		const ra1 = await peerA.tools.get("coms_send").execute("sa1", { target: "receiver", prompt: "bundle 1" });
+		const ra2 = await peerA.tools.get("coms_send").execute("sa2", { target: "receiver", prompt: "bundle 2" });
+		const rb1 = await peerB.tools.get("coms_send").execute("sb1", { target: "receiver", prompt: "tail msg" });
+		const a1 = ra1.details.msg_id as string;
+		const a2 = ra2.details.msg_id as string;
+		const b1 = rb1.details.msg_id as string;
+
+		await receiver1.shutdown({ reason: "reload" });
+
+		// Reloaded peer throws on any inbound sendMessage injection (bundle fail_orphans path).
+		const receiver2 = await startPeer({
+			name: "receiver",
+			sessionId: receiverSessionId,
+			project,
+			cwd: workspace,
+			comsDir,
+			reload: true,
+			onSendMessage: (msg) => {
+				if (msg?.details?.msg_id) throw new Error("simulated sendMessage failure");
+			},
+		});
+
+		await waitUntil(async () => {
+			const ga1 = await peerA.tools.get("coms_get").execute("ga1", { msg_id: a1 });
+			const ga2 = await peerA.tools.get("coms_get").execute("ga2", { msg_id: a2 });
+			const gb1 = await peerB.tools.get("coms_get").execute("gb1", { msg_id: b1 });
+			return ga1.details.status === "complete" && ga2.details.status === "complete" && gb1.details.status === "complete";
+		});
+		assert.equal((await peerA.tools.get("coms_get").execute("ga1-c", { msg_id: a1 })).details.error, "injection_failed");
+		assert.equal((await peerA.tools.get("coms_get").execute("ga2-c", { msg_id: a2 })).details.error, "injection_failed");
+		assert.equal((await peerB.tools.get("coms_get").execute("gb1-c", { msg_id: b1 })).details.error, "injection_failed");
+		assert.equal(readRegistry(receiver2).busy, false);
+	});
+
+	it("closes already-delivered bundled siblings with session_closed during reload while preserving later queued items", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const project = "p-1430-deliv";
+		const receiverSessionId = "r-deliv-1430";
+		const peerA = await startPeer({ name: "peer-a", sessionId: "s-dlv-a", project, cwd: workspace, comsDir });
+		const peerB = await startPeer({ name: "peer-b", sessionId: "s-dlv-b", project, cwd: workspace, comsDir });
+		const peerC = await startPeer({ name: "peer-c", sessionId: "s-dlv-c", project, cwd: workspace, comsDir });
+		const receiver1 = await startPeer({ name: "receiver", sessionId: receiverSessionId, project, cwd: workspace, comsDir });
+
+		// Occupy receiver with m0, queue [b1, b2] from peer-b, finish m0 so [b1, b2] become the active bundle.
+		const r0 = await peerA.tools.get("coms_send").execute("s0", { target: "receiver", prompt: "blocker" });
+		const m0 = r0.details.msg_id as string;
+		await deliverLatestInbound(receiver1, m0);
+
+		const rb1 = await peerB.tools.get("coms_send").execute("sb1", { target: "receiver", prompt: "bundled 1" });
+		const rb2 = await peerB.tools.get("coms_send").execute("sb2", { target: "receiver", prompt: "bundled 2" });
+		const b1 = rb1.details.msg_id as string;
+		const b2 = rb2.details.msg_id as string;
+		await emitTurnEnd(receiver1, "done blocker", "stop");
+
+		// Deliver [b1, b2] into the turn, then queue c1 behind it, then trigger reload shutdown.
+		await deliverLatestInbound(receiver1, b1);
+		const rc1 = await peerC.tools.get("coms_send").execute("sc1", { target: "receiver", prompt: "queued after bundle" });
+		const c1 = rc1.details.msg_id as string;
+
+		await receiver1.shutdown({ reason: "reload" });
+
+		// Both b1 and its already-delivered sibling b2 must receive session_closed; c1 must stay pending.
+		await waitUntil(async () => {
+			const gb1 = await peerB.tools.get("coms_get").execute("gb1", { msg_id: b1 });
+			const gb2 = await peerB.tools.get("coms_get").execute("gb2", { msg_id: b2 });
+			return gb1.details.status === "complete" && gb2.details.status === "complete";
+		});
+		assert.equal((await peerB.tools.get("coms_get").execute("gb1-c", { msg_id: b1 })).details.error, "session_closed");
+		assert.equal((await peerB.tools.get("coms_get").execute("gb2-c", { msg_id: b2 })).details.error, "session_closed");
+		assert.equal((await peerC.tools.get("coms_get").execute("gc1-pre", { msg_id: c1 })).details.status, "pending");
+
+		// Reloaded peer receives ONLY c1 (never re-runs b1 or b2).
+		const receiver2 = await startPeer({
+			name: "receiver",
+			sessionId: receiverSessionId,
+			project,
+			cwd: workspace,
+			comsDir,
+			reload: true,
+		});
+		await deliverLatestInbound(receiver2, c1);
+		assert.equal(receiver2.messages.some((m) => m?.details?.msg_id === b1 || m?.details?.msg_id === b2), false);
+		await emitTurnEnd(receiver2, "reply to c1", "stop");
+		await waitUntil(async () => (await peerC.tools.get("coms_get").execute("gc1-done", { msg_id: c1 })).details.status === "complete");
+		assert.equal((await peerC.tools.get("coms_get").execute("gc1-c", { msg_id: c1 })).details.response, "reply to c1");
 	});
 });

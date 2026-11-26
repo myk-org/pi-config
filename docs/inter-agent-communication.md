@@ -125,7 +125,7 @@ This is useful when a helper session should not clutter the shared pool. Users s
 
 ### On-Disk Layout and Cleanup
 
-Sessions write two kinds of files under `~/.pi/coms/`, overridable with the `coms_dir` setting (`PI_COMS_DIR`):
+Sessions write files under `~/.pi/coms/`, overridable with the `coms_dir` setting (`PI_COMS_DIR`):
 
 - `projects/<project>/agents/<name>.json` — the registry, one file per live session
 - `projects/<project>/reload-queue-<session-id>.json` — transient `0600` handoff file written only during `/reload` to preserve queued and undelivered inbound messages across the reload boundary (atomically consumed on reload startup; cleaned up with a `session_closed` error on TTL expiry, explicit `coms_stop`, or process exit)

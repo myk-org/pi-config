@@ -31,6 +31,7 @@ import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { createLogger } from "../shared/logger.js";
@@ -377,17 +378,77 @@ interface ReloadQueueGuardEntry {
 	filePath: string;
 	sessionId: string;
 	endpoint: string;
+	items: PersistedReloadInbound[];
+	bindSignals: boolean;
 	timer: NodeJS.Timeout | null;
 }
 
 interface ReloadQueueGuardRegistry {
 	entries: Map<string, ReloadQueueGuardEntry>;
 	exitListenersBound: boolean;
+	signalListenersBound: boolean;
 	onBeforeExit: () => void;
 	onExit: () => void;
+	onSigint: () => void;
+	onSigterm: () => void;
 }
 
 const RELOAD_QUEUE_GUARDS_SYMBOL = Symbol.for("pi.coms.reloadQueueGuards");
+
+const EXIT_NOTIFY_RELOAD_CLOSED_SCRIPT = [
+	'const net = require("net");',
+	'const fs = require("fs");',
+	'const data = JSON.parse(fs.readFileSync(0, "utf8"));',
+	'const items = Array.isArray(data.items) ? data.items : [];',
+	'const tasks = items.map((ib) => new Promise((resolve) => {',
+	'  let done = false;',
+	'  const finish = (ok) => { if (!done) { done = true; try { sock.destroy(); } catch {} resolve(ok); } };',
+	'  const sock = net.createConnection({ path: ib.sender_endpoint });',
+	'  const t = setTimeout(() => finish(false), 450);',
+	'  sock.once("connect", () => {',
+	'    const line = JSON.stringify({',
+	'      type: "response",',
+	'      msg_id: ib.msg_id,',
+	'      sender_session: data.sessionId,',
+	'      sender_endpoint: data.endpoint,',
+	'      hops: 0,',
+	'      timestamp: new Date().toISOString(),',
+	'      response: null,',
+	'      error: "session_closed",',
+	'      queued_msg_ids: [],',
+	'    }) + "\\n";',
+	'    sock.write(line, () => {',
+	'      sock.once("data", () => { clearTimeout(t); finish(true); });',
+	'      sock.once("end", () => { clearTimeout(t); finish(true); });',
+	'    });',
+	'  });',
+	'  sock.once("error", () => { clearTimeout(t); finish(false); });',
+	'}));',
+	'Promise.all(tasks).then((results) => { process.exit(results.every(Boolean) ? 0 : 1); });',
+].join("\n");
+
+function notifyClosedReloadItemsSync(
+	sessionId: string,
+	endpoint: string,
+	items: PersistedReloadInbound[],
+): boolean {
+	if (items.length === 0) return true;
+	try {
+		const res = spawnSync(process.execPath, ["-e", EXIT_NOTIFY_RELOAD_CLOSED_SCRIPT], {
+			input: JSON.stringify({ sessionId, endpoint, items }),
+			timeout: 750,
+			stdio: ["pipe", "ignore", "ignore"],
+		});
+		return res.status === 0;
+	} catch (err) {
+		log.error("reload_queue_exit_notify_failed", {
+			sessionId,
+			count: items.length,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return false;
+	}
+}
 
 function getReloadQueueGuardRegistry(): ReloadQueueGuardRegistry {
 	const g = globalThis as Record<symbol, ReloadQueueGuardRegistry | undefined>;
@@ -396,20 +457,43 @@ function getReloadQueueGuardRegistry(): ReloadQueueGuardRegistry {
 		const created: ReloadQueueGuardRegistry = {
 			entries: new Map(),
 			exitListenersBound: false,
+			signalListenersBound: false,
 			onBeforeExit: () => {
 				for (const key of [...created.entries.keys()]) {
 					void expireReloadQueueGuard(key, "process_before_exit");
 				}
 			},
+			onSigint: () => {
+				for (const key of [...created.entries.keys()]) {
+					void expireReloadQueueGuard(key, "signal_SIGINT");
+				}
+			},
+			onSigterm: () => {
+				for (const key of [...created.entries.keys()]) {
+					void expireReloadQueueGuard(key, "signal_SIGTERM");
+				}
+			},
 			onExit: () => {
-				for (const entry of created.entries.values()) {
+				const pending = [...created.entries.values()];
+				created.entries.clear();
+				unbindReloadExitListenersIfEmpty(created);
+				for (const entry of pending) {
 					if (entry.timer) {
 						try { clearTimeout(entry.timer); } catch { /* ignore */ }
 						entry.timer = null;
 					}
-					try { fs.unlinkSync(entry.filePath); } catch { /* ignore */ }
+					if (!fs.existsSync(entry.filePath)) continue;
+					const notified = notifyClosedReloadItemsSync(entry.sessionId, entry.endpoint, entry.items);
+					if (notified) {
+						try { fs.unlinkSync(entry.filePath); } catch { /* ignore */ }
+					} else {
+						log.error("reload_queue_exit_notify_incomplete", {
+							sessionId: entry.sessionId,
+							filePath: entry.filePath,
+							count: entry.items.length,
+						});
+					}
 				}
-				created.entries.clear();
 			},
 		};
 		g[RELOAD_QUEUE_GUARDS_SYMBOL] = created;
@@ -423,6 +507,12 @@ function unbindReloadExitListenersIfEmpty(reg: ReloadQueueGuardRegistry): void {
 		process.off("beforeExit", reg.onBeforeExit);
 		process.off("exit", reg.onExit);
 		reg.exitListenersBound = false;
+	}
+	const wantsSignals = [...reg.entries.values()].some((e) => e.bindSignals);
+	if (!wantsSignals && reg.signalListenersBound) {
+		process.off("SIGINT", reg.onSigint);
+		process.off("SIGTERM", reg.onSigterm);
+		reg.signalListenersBound = false;
 	}
 }
 
@@ -489,7 +579,11 @@ async function notifyClosedReloadItems(
 				error: "session_closed",
 				queued_msg_ids: [],
 			}).catch((err) => {
-				log.debug("reload_queue_notify_closed_failed", ib.msg_id, err instanceof Error ? err.message : String(err));
+				log.error("reload_queue_notify_closed_failed", {
+					msg_id: ib.msg_id,
+					sender: ib.sender_endpoint,
+					error: err instanceof Error ? err.message : String(err),
+				});
 			}),
 		)),
 		new Promise<void>((resolve) => {
@@ -522,6 +616,7 @@ function persistReloadQueue(
 	endpoint: string,
 	items: PersistedReloadInbound[],
 	ttlMs: number,
+	bindSignals = true,
 ): string {
 	const filePath = reg.reloadQueuePath(project, sessionId);
 	const dir = path.dirname(filePath);
@@ -560,12 +655,19 @@ function persistReloadQueue(
 		filePath,
 		sessionId,
 		endpoint,
+		items: [...items],
+		bindSignals,
 		timer,
 	});
 	if (!guardReg.exitListenersBound) {
 		process.on("beforeExit", guardReg.onBeforeExit);
 		process.on("exit", guardReg.onExit);
 		guardReg.exitListenersBound = true;
+	}
+	if (bindSignals && !guardReg.signalListenersBound) {
+		process.on("SIGINT", guardReg.onSigint);
+		process.on("SIGTERM", guardReg.onSigterm);
+		guardReg.signalListenersBound = true;
 	}
 	log.info("reload_queue_persisted", {
 		sessionId,
@@ -970,6 +1072,7 @@ export function createComsPeerRuntime(
 	const MAX_CLOSED_INBOUND_IDS = 500;
 	const reloadQueueTtlMs = options.reloadQueueTtlMs ?? RELOAD_QUEUE_TTL_MS;
 	let reloadDrainTimer: NodeJS.Timeout | null = null;
+	let lastReloadHandoff: { project: string; sessionId: string } | null = null;
 	let lastTurnStopReason: string | null = null;
 	let pendingSettledAction:
 		| { kind: "reinject"; inbound: InboundContext; gen: number; ctx?: ExtensionContext | null }
@@ -1282,6 +1385,30 @@ export function createComsPeerRuntime(
 			setProcessingInbound(false);
 			return;
 		}
+		const failOrphanPending = async (orphans: InboundContext[]): Promise<boolean> => {
+			const ident = identity!;
+			for (let idx = 0; idx < orphans.length; idx++) {
+				if (isStale()) return false;
+				const orphan = orphans[idx];
+				orphan.fulfilled = true;
+				inboundQueue.delete(orphan.msg_id);
+				finalizingMsgIds.add(orphan.msg_id);
+				try {
+					await sendEnvelope(orphan.sender_endpoint, {
+						type: "response", msg_id: orphan.msg_id,
+						sender_session: ident.coms_session_id, sender_endpoint: ident.endpoint,
+						hops: 0, timestamp: nowIso(),
+						response: null, error: "injection_failed",
+						queued_msg_ids: orphans.slice(idx + 1).map(r => r.msg_id),
+					});
+				} catch (e: any) {
+					log.error("orphan_cleanup_failed", orphan.msg_id, e?.message);
+				} finally {
+					finalizingMsgIds.delete(orphan.msg_id);
+				}
+			}
+			return !isStale();
+		};
 		if (!opts.bundle) {
 			const next = allPending[0];
 			currentInbound = next;
@@ -1294,28 +1421,7 @@ export function createComsPeerRuntime(
 			} catch (drainErr: any) {
 				if (opts.onFail === "fail_orphans") {
 					log.error("fifo_drain_failed", next.msg_id, drainErr?.message);
-					const ident = identity!;
-					for (let idx = 0; idx < allPending.length; idx++) {
-						if (isStale()) return;
-						const orphan = allPending[idx];
-						orphan.fulfilled = true;
-						inboundQueue.delete(orphan.msg_id);
-						finalizingMsgIds.add(orphan.msg_id);
-						try {
-							await sendEnvelope(orphan.sender_endpoint, {
-								type: "response", msg_id: orphan.msg_id,
-								sender_session: ident.coms_session_id, sender_endpoint: ident.endpoint,
-								hops: 0, timestamp: nowIso(),
-								response: null, error: "injection_failed",
-								queued_msg_ids: allPending.slice(idx + 1).map(r => r.msg_id),
-							});
-						} catch (e: any) {
-							log.error("orphan_cleanup_failed", orphan.msg_id, e?.message);
-						} finally {
-							finalizingMsgIds.delete(orphan.msg_id);
-						}
-					}
-					if (isStale()) return;
+					if (!(await failOrphanPending(allPending))) return;
 				}
 				currentInbound = null;
 				inboundDelivered = false;
@@ -1337,7 +1443,10 @@ export function createComsPeerRuntime(
 				writeLiveRegistry();
 				maybeRefreshWidget();
 			} catch (err: any) {
-				if (opts.onFail === "drop") {
+				if (opts.onFail === "fail_orphans") {
+					log.error("fifo_drain_failed", next.msg_id, err?.message);
+					if (!(await failOrphanPending(allPending))) return;
+				} else if (opts.onFail === "drop") {
 					log.error("fifo_drain_failed", next.msg_id, err?.message);
 					next.fulfilled = true;
 					inboundQueue.delete(next.msg_id);
@@ -1363,7 +1472,10 @@ export function createComsPeerRuntime(
 			writeLiveRegistry();
 			maybeRefreshWidget();
 		} catch (err: any) {
-			if (opts.onFail === "drop") {
+			if (opts.onFail === "fail_orphans") {
+				log.error("fifo_bundle_failed", primary.msg_id, err?.message);
+				if (!(await failOrphanPending(allPending))) return;
+			} else if (opts.onFail === "drop") {
 				log.error("fifo_bundle_failed", primary.msg_id, err?.message);
 				for (const ib of senderPending) {
 					ib.fulfilled = true;
@@ -5055,8 +5167,13 @@ Do not respond to this message.`;
 	async function cleanShutdown(stopOptions?: ComsPeerStopOptions): Promise<void> {
 		const isReloadShutdown = stopOptions?.reason === "reload";
 		if (shuttingDown) {
-			if (!isReloadShutdown && stopOptions?.project && stopOptions?.sessionId) {
-				await discardReloadQueue(registry, stopOptions.project, stopOptions.sessionId, stopOptions.reason ?? "stop");
+			if (!isReloadShutdown) {
+				const discardProject = stopOptions?.project ?? lastReloadHandoff?.project;
+				const discardSessionId = stopOptions?.sessionId ?? lastReloadHandoff?.sessionId;
+				lastReloadHandoff = null;
+				if (discardProject && discardSessionId) {
+					await discardReloadQueue(registry, discardProject, discardSessionId, stopOptions?.reason ?? "stop");
+				}
 			}
 			return;
 		}
@@ -5180,6 +5297,7 @@ Do not respond to this message.`;
 		});
 
 		if (isReloadShutdown && ident) {
+			const deliveredBundleIds = new Set<string>();
 			const persistCandidate = (ib: InboundContext | null | undefined) => {
 				if (!ib || ib.fulfilled || finalizingMsgIds.has(ib.msg_id) || persistedIds.has(ib.msg_id)) return;
 				ib.fulfilled = true;
@@ -5189,12 +5307,17 @@ Do not respond to this message.`;
 			if (snapshotCurrent && !wasCurrentDelivered) {
 				persistCandidate(snapshotCurrent);
 				for (const b of snapshotBundled) persistCandidate(b);
-			} else if (snapshotCurrent && !snapshotCurrent.fulfilled && !finalizingMsgIds.has(snapshotCurrent.msg_id)) {
-				snapshotCurrent.fulfilled = true;
-				waitingInbounds.push(snapshotCurrent);
+			} else if (snapshotCurrent && wasCurrentDelivered) {
+				for (const deliveredIb of [snapshotCurrent, ...snapshotBundled]) {
+					deliveredBundleIds.add(deliveredIb.msg_id);
+					if (!deliveredIb.fulfilled && !finalizingMsgIds.has(deliveredIb.msg_id)) {
+						deliveredIb.fulfilled = true;
+						waitingInbounds.push(deliveredIb);
+					}
+				}
 			}
 			for (const ib of inboundQueue.values()) {
-				if (ib === snapshotCurrent && wasCurrentDelivered) continue;
+				if (deliveredBundleIds.has(ib.msg_id)) continue;
 				persistCandidate(ib);
 			}
 			if (persistedInbounds.length > 0) {
@@ -5206,7 +5329,9 @@ Do not respond to this message.`;
 						ident.endpoint,
 						persistedInbounds,
 						reloadQueueTtlMs,
+						registerSignalHandlers,
 					);
+					lastReloadHandoff = { project: ident.project, sessionId: ident.coms_session_id };
 				} catch (err: any) {
 					log.error("reload_queue_persist_failed", {
 						sessionId: ident.coms_session_id,
@@ -5242,8 +5367,9 @@ Do not respond to this message.`;
 				snapshotCurrent.fulfilled = true;
 				waitingInbounds.push(snapshotCurrent);
 			}
-			const discardProject = stopOptions?.project ?? ident?.project;
-			const discardSessionId = stopOptions?.sessionId ?? ident?.coms_session_id ?? options.sessionId;
+			const discardProject = stopOptions?.project ?? ident?.project ?? lastReloadHandoff?.project;
+			const discardSessionId = stopOptions?.sessionId ?? ident?.coms_session_id ?? lastReloadHandoff?.sessionId ?? options.sessionId;
+			lastReloadHandoff = null;
 			if (discardProject && discardSessionId) {
 				await discardReloadQueue(registry, discardProject, discardSessionId, stopOptions?.reason ?? "stop");
 			}
