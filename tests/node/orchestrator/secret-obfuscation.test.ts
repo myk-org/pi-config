@@ -84,7 +84,7 @@ afterEach(() => {
 });
 
 describe("secret_obfuscation settings schema (#1413)", () => {
-  it("defines secret_obfuscation with default false and PI_SECRET_OBFUSCATION env", () => {
+  it("defines secret_obfuscation with default false under Security", () => {
     const def = SETTINGS_KEYS.secret_obfuscation;
     assert.ok(def, "secret_obfuscation key must exist in settings-keys.json");
     assert.equal(def.type, "bool");
@@ -95,7 +95,7 @@ describe("secret_obfuscation settings schema (#1413)", () => {
 });
 
 describe("SecretVault collection & redaction (#1413)", () => {
-  it("collects secret-like env vars (>= 8 chars) and ignores short values and non-secret path vars", () => {
+  it("collects secret-like env vars at least 8 chars long while skipping short or non-secret vars", () => {
     const { logger } = createFakeLogger();
     const ghVal = ["gh", "val", "unit", "12345"].join("_");
     const exactEight = ["1234", "5678"].join("");
@@ -173,7 +173,7 @@ describe("SecretVault collection & redaction (#1413)", () => {
     assert.equal(vault.restoreText(obf), `api=${openAiVal} bare=OPENAIKEY`);
   });
 
-  it("extracts passwords embedded in URL credentials from env and runtime text", () => {
+  it("extracts passwords embedded in URL credentials from env or runtime text", () => {
     const { logger } = createFakeLogger();
     const envPass = ["envdb", "pass", "9876"].join("");
     const runtimePass = ["runtime", "Redis", "Pass42"].join("");
@@ -197,7 +197,7 @@ describe("SecretVault collection & redaction (#1413)", () => {
     assert.equal(vault.restoreText(fromRuntime), runtimeUrl);
   });
 
-  it("redacts built-in credential patterns deterministically and restores them reversibly", () => {
+  it("redacts built-in credential patterns into deterministic reversible placeholders", () => {
     const { logger } = createFakeLogger();
     const vault = createSecretVault({ loadConfigFiles: false, env: {}, log: logger });
 
@@ -250,7 +250,7 @@ describe("SecretVault collection & redaction (#1413)", () => {
     assert.equal(vault.restoreText(bearerObf), bearerRaw);
   });
 
-  it("supports .pi/secrets.jsonc and ~/.pi/agent/secrets.jsonc with obfuscate vs one-way replace modes", () => {
+  it("loads project or global secrets.jsonc supporting reversible obfuscate vs one-way replace modes", () => {
     const { logger } = createFakeLogger();
     const projectDir = trackTempDir("sec-proj-");
     const homeDir = trackTempDir("sec-home-");
@@ -322,7 +322,7 @@ describe("SecretVault collection & redaction (#1413)", () => {
     assert.equal(vault.restoreText(rUrl), "postgres://alice:[REDACTED]@db.local/app");
   });
 
-  it("replaces longest literal secret first and avoids partial corruption", () => {
+  it("replaces longest literal secret first to prevent partial corruption", () => {
     const { logger } = createFakeLogger();
     const shortVal = ["base", "item", "1234"].join("_");
     const longVal = [shortVal, "extended", "9999"].join("_");
@@ -367,7 +367,7 @@ describe("registerSecretObfuscation extension hooks (#1413)", () => {
     assert.equal(res, undefined);
   });
 
-  it("performs full tool_result obfuscation -> tool_call restoration round-trip and never mutates system prompts", async () => {
+  it("round-trips tool_result obfuscation through tool_call restoration without mutating system prompts", async () => {
     const cwd = trackTempDir("sec-on-");
     const homeDir = trackTempDir("sec-on-home-");
     const { logger } = createFakeLogger();
@@ -447,7 +447,7 @@ describe("registerSecretObfuscation extension hooks (#1413)", () => {
     assert.equal(ctxRes.messages[1].content, `Use value ${placeholder} please`);
   });
 
-  it("retains dynamically discovered placeholders across /reload and cwd changes, clears on shutdown, and blocks unresolved placeholders", async () => {
+  it("retains dynamic placeholders across reload or cwd changes while blocking unresolved placeholders after shutdown", async () => {
     const cwd1 = trackTempDir("sec-reload-1-");
     const cwd2 = trackTempDir("sec-reload-2-");
     const homeDir = trackTempDir("sec-reload-home-");

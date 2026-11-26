@@ -876,10 +876,17 @@ interface CachedLayer {
 
 const layerCache = new Map<string, CachedLayer>();
 
-const settingsWrittenListeners = new Set<() => void>();
+export interface SettingsWrittenEvent {
+  filePath: string;
+  changedKey?: string;
+  scope?: SettingsScope;
+  cwd?: string;
+}
+
+const settingsWrittenListeners = new Set<(event: SettingsWrittenEvent) => void>();
 
 /** Subscribe to authorized in-process settings writes (`writeSettingsFile`). */
-export function onSettingsWritten(listener: () => void): () => void {
+export function onSettingsWritten(listener: (event: SettingsWrittenEvent) => void): () => void {
   settingsWrittenListeners.add(listener);
   return () => {
     settingsWrittenListeners.delete(listener);
@@ -1319,7 +1326,7 @@ function rotateSettingsBackups(filePath: string, count: number): void {
 export function writeSettingsFile(
   filePath: string,
   data: Record<string, unknown>,
-  options: { dedupeBackup?: boolean } = {},
+  options: { dedupeBackup?: boolean; changedKey?: string; scope?: SettingsScope; cwd?: string } = {},
 ): void {
   const dir = dirname(filePath);
 
@@ -1376,9 +1383,15 @@ export function writeSettingsFile(
 
   // Always invalidate the unified cache after a successful write.
   clearSettingsCache();
+  const writtenEvent: SettingsWrittenEvent = {
+    filePath,
+    changedKey: options.changedKey,
+    scope: options.scope,
+    cwd: options.cwd,
+  };
   for (const listener of settingsWrittenListeners) {
     try {
-      listener();
+      listener(writtenEvent);
     } catch {
       /* ignore listener errors */
     }
@@ -1436,7 +1449,12 @@ export function updateSetting(
   }
 
   try {
-    writeSettingsFile(filePath, current, options);
+    writeSettingsFile(filePath, current, {
+      ...options,
+      changedKey: key,
+      scope,
+      cwd,
+    });
     return { ok: true, file: filePath, changed: true };
   } catch (error) {
     if (error instanceof SettingsFileCorruptError) {

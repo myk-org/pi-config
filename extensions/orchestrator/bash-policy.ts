@@ -6370,8 +6370,23 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         ? s.slice(1, -1)
         : s;
 
-    const collapseFragments = (text: string): string =>
+    const decodeSimpleEscapes = (text: string): string =>
       text
+        .replace(/\\0([0-7]{2,3})/g, (_, oct: string) => {
+          const code = Number.parseInt(oct, 8);
+          return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
+        })
+        .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex: string) => {
+          const code = Number.parseInt(hex, 16);
+          return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
+        })
+        .replace(/\\u00([0-9a-fA-F]{2})/gi, (_, hex: string) => {
+          const code = Number.parseInt(hex, 16);
+          return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
+        });
+
+    const collapseFragments = (text: string): string =>
+      decodeSimpleEscapes(text)
         // Shell adjacent quotes & empty-quote breaks: "pi-""config" / 'pi-''config' / .pi/"pi-config""-settings.json"
         .replace(/""|''/g, "")
         // Script string concatenation: "pi-" + "config" / 'state.' + 'db' / "pi-" . "config"
@@ -6386,13 +6401,19 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
 
     const expandShellVars = (text: string, vars: Map<string, string>): string => {
       if (vars.size === 0 || !text.includes("$")) return text;
-      return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)\b/g, (m, a, b) => {
-        const name = (a ?? b) as string;
-        return vars.has(name) ? vars.get(name)! : m;
-      });
+      return text.replace(
+        /\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])\}|\$([A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*])/g,
+        (m, a, b) => {
+          const name = (a ?? b) as string;
+          return vars.has(name) ? vars.get(name)! : m;
+        },
+      );
     };
 
-    const hmacKeyRe = /\.approval-hmac-key\b/i;
+    const unresolvedVarOrPositionalRe = /\$(?:\{(?:[A-Za-z_]|[0-9]+|[@*])|[A-Za-z_0-9@*])/;
+    const hmacKeyRe = /(?:\.|\b)approval[-_]?hmac[-_]?key\b/i;
+    const dynamicPiAgentAccessRe =
+      /(?:~|\$HOME|\$\{HOME\}|\/[^\s"'`;|&)]*)\/\.pi\/agent\/[^\s"'`;|&)]*(?:\$|[*?{`])/i;
     const settingsPathRe =
       /(?:^|[\s"'`=:(/<>|;&,])(?:~\/|\/[^\s"'`;|&)]*\/|\.?\/)?\.pi\/(?:pi-config-settings[^\s"'`;|&)]*|pi-config-[^\s"'`;|&)]*[*?[{][^\s"'`;|&)]*|\*[^\s"'`;|&)]*settings[^\s"'`;|&)]*)/i;
     const stateDbUncondRe =
@@ -6402,6 +6423,75 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     const fileMutateOps = new Set(["rm", "unlink", "mv", "cp", "truncate", "dd", "shred", "install", "ln", "sed", "perl", "ruby"]);
     const inlineRuntimeOps = new Set(["python", "python3", "node", "nodejs", "bun", "deno", "tsx", "perl", "ruby"]);
 
+    const SQLITE_SAFE_FLAGS_NO_ARG = new Set([
+      "-readonly",
+      "-json",
+      "-csv",
+      "-line",
+      "-list",
+      "-column",
+      "-header",
+      "-noheader",
+      "-box",
+      "-markdown",
+      "-table",
+      "-batch",
+      "-bail",
+      "-quote",
+      "-ascii",
+      "-html",
+      "-tabs",
+    ]);
+    const SQLITE_SAFE_FLAGS_WITH_ARG = new Set(["-separator", "-newline", "-nullvalue", "-timeout"]);
+    const SQLITE_MUTATING_SQL_RE =
+      /\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|ATTACH|DETACH|VACUUM|REINDEX|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|ANALYZE)\b|\bPRAGMA\b[^;]*=/i;
+    const SQLITE_READONLY_SQL_START_RE = /^\s*(?:SELECT\b|EXPLAIN\s+(?:QUERY\s+PLAN\s+)?SELECT\b|\.tables\b|\.schema\b)/i;
+
+    /**
+     * Strictly verify whether a `sqlite3` CLI segment is a read-only inspection query
+     * (e.g. `sqlite3 .pi/data/state.db "SELECT payload FROM kv_state WHERE ..."`).
+     * Any write, multi-statement `;`, dynamic `$`/backtick, stdin-only mode, `-cmd`/`-init`,
+     * redirection, or non-SELECT query returns false (fail closed).
+     */
+    const isVerifiablyReadOnlySqliteSeg = (
+      expandedTokens: string[],
+      cmdIdx: number,
+      maskedSeg: string,
+    ): boolean => {
+      const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
+      if (cmdWord !== "sqlite3") return false;
+      if (/[<>]/.test(maskedSeg)) return false;
+
+      const positional: string[] = [];
+      for (let i = cmdIdx + 1; i < expandedTokens.length; i++) {
+        const tok = expandedTokens[i]!;
+        if (tok === "--") {
+          for (let j = i + 1; j < expandedTokens.length; j++) positional.push(expandedTokens[j]!);
+          break;
+        }
+        if (tok.startsWith("-")) {
+          if (SQLITE_SAFE_FLAGS_NO_ARG.has(tok)) continue;
+          if (SQLITE_SAFE_FLAGS_WITH_ARG.has(tok)) {
+            i++;
+            continue;
+          }
+          // Reject -cmd, -init, or any unknown flag (fail closed).
+          return false;
+        }
+        positional.push(tok);
+      }
+      // Require explicit <dbPath> and <sql> arguments (reject stdin-driven `sqlite3 db`).
+      if (positional.length < 2) return false;
+      for (const rawSql of positional.slice(1)) {
+        const sql = stripOuterQuotesSimple(rawSql).trim();
+        if (!sql) return false;
+        if (/[;`$]|--|\/\*/.test(sql)) return false;
+        if (SQLITE_MUTATING_SQL_RE.test(sql)) return false;
+        if (!SQLITE_READONLY_SQL_START_RE.test(sql)) return false;
+      }
+      return true;
+    };
+
     const checkProtectedSecurityStorage = (
       script: string,
       parentVars: Map<string, string>,
@@ -6409,7 +6499,7 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     ): "hmac" | "settings" | "state_db" | null => {
       if (depth > 3) return null;
       const defragFull = collapseFragments(script);
-      if (hmacKeyRe.test(defragFull)) return "hmac";
+      if (hmacKeyRe.test(defragFull) || dynamicPiAgentAccessRe.test(script)) return "hmac";
 
       const vars = new Map(parentVars);
       let sawPiFragmentVar = false;
@@ -6418,6 +6508,31 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
       for (const seg of unquotedSegments(script)) {
         const rawTokens = tokenize(seg.text);
         if (rawTokens.length === 0) continue;
+
+        // Track `set -- arg1 arg2 ...` positional parameters ($1, $2, $@, $*)
+        if (rawTokens[0] === "set") {
+          const ddIdx = rawTokens.indexOf("--");
+          if (ddIdx !== -1) {
+            const posArgs = rawTokens
+              .slice(ddIdx + 1)
+              .map((a) => collapseFragments(expandShellVars(stripOuterQuotesSimple(a), vars)));
+            // Clear stale positional params before setting new ones
+            for (const key of [...vars.keys()]) {
+              if (/^[0-9]+$/.test(key) || key === "@" || key === "*") vars.delete(key);
+            }
+            posArgs.forEach((val, idx) => {
+              vars.set(String(idx + 1), val);
+              if (/\.pi\b|pi-config|settings\.json/i.test(val)) sawPiFragmentVar = true;
+              if (/\.pi\/data|state\.db|restricted_folder_approvals/i.test(val)) sawStateDbFragmentVar = true;
+            });
+            if (posArgs.length > 0) {
+              vars.set("@", posArgs.join(" "));
+              vars.set("*", posArgs.join(" "));
+            }
+            if (posArgs.some((v) => hmacKeyRe.test(v))) return "hmac";
+            continue;
+          }
+        }
 
         for (const tok of rawTokens) {
           if (tok === "export" || tok === "local" || tok === "readonly" || tok === "declare" || tok === "typeset") {
@@ -6435,7 +6550,11 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         const defragSeg = collapseFragments(expandedSeg);
         const maskedSeg = maskQuotedRegions(defragSeg);
 
-        if (hmacKeyRe.test(defragSeg)) return "hmac";
+        if (hmacKeyRe.test(defragSeg) || dynamicPiAgentAccessRe.test(expandedSeg)) return "hmac";
+
+        const expandedTokens = tokenize(expandedSeg);
+        const cmdIdx = expandedTokens.length > 0 ? skipToCommandWord(expandedTokens) : 0;
+        const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
 
         // 1. State DB & restricted_folder_approvals tamper check (unconditional)
         const mentionsStateDb =
@@ -6443,9 +6562,10 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           /\brestricted_folder_approvals\b/i.test(defragSeg);
         if (
           sqliteEngineRe.test(defragSeg) &&
+          !isVerifiablyReadOnlySqliteSeg(expandedTokens, cmdIdx, maskedSeg) &&
           (mentionsStateDb ||
             (/\.pi\/data\b/i.test(defragSeg) && !/\b(?:pr-)?reviews\.db\b/i.test(defragSeg)) ||
-            (sawStateDbFragmentVar && /\$(?:\{[A-Za-z_]|[A-Za-z_])/.test(expandedSeg)))
+            (sawStateDbFragmentVar && unresolvedVarOrPositionalRe.test(expandedSeg)))
         ) {
           return "state_db";
         }
@@ -6478,16 +6598,13 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           return "settings";
         }
 
-        const expandedTokens = tokenize(expandedSeg);
         if (expandedTokens.length === 0) continue;
-        const cmdIdx = skipToCommandWord(expandedTokens);
-        const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
 
         // Direct file-mutating commands targeting state.db (note: settings `cp`/interpreter
         // co-occurrence is intentionally kept out of the narrow text guard per PR #950;
         // restricted_folders enforces a monotonic in-process floor against external tampering).
         if (fileMutateOps.has(cmdWord)) {
-          if (mentionsStateDb || (sawStateDbFragmentVar && /\$(?:\{[A-Za-z_]|[A-Za-z_])/.test(expandedSeg))) {
+          if (mentionsStateDb || (sawStateDbFragmentVar && unresolvedVarOrPositionalRe.test(expandedSeg))) {
             return "state_db";
           }
         }

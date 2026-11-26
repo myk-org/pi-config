@@ -23,7 +23,7 @@ export { parseLastValidLine, SKIP_MUTATE };
 const log = createLogger("state-db");
 
 export const STATE_DB_FILENAME = "state.db";
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 export const STATE_DB_BUSY_TIMEOUT_MS = 5000;
 
 interface CachedStateDb {
@@ -139,6 +139,17 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
       if (!migratedCols.has("source_size")) {
         db.exec("ALTER TABLE migrated_stores ADD COLUMN source_size INTEGER NOT NULL DEFAULT 0");
         addedColumns.push("source_size");
+      }
+
+      // v3 -> v4: backfill `signature` column on pre-existing restricted_folder_approvals tables.
+      const approvalCols = new Set(
+        (
+          db.prepare("PRAGMA table_info(restricted_folder_approvals)").all() as Array<{ name?: string }>
+        ).map((col) => col.name),
+      );
+      if (!approvalCols.has("signature")) {
+        db.exec("ALTER TABLE restricted_folder_approvals ADD COLUMN signature TEXT NOT NULL DEFAULT ''");
+        addedColumns.push("signature");
       }
 
       db.prepare(

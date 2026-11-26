@@ -80,6 +80,8 @@ export interface EvaluateRestrictedFolderInput {
   dbPath?: string;
   /** Optional explicit HMAC key path override (defaults to `<homeDir>/.pi/agent/.approval-hmac-key`). */
   hmacKeyPath?: string;
+  /** Optional environment map for resolving inherited shell variables in bash operands (defaults to `process.env`). */
+  env?: NodeJS.ProcessEnv;
   homeDir?: string;
   log?: Logger;
 }
@@ -138,26 +140,34 @@ function loadOrCreateApprovalHmacKey(keyPath: string): Buffer {
   return key;
 }
 
+const APPROVAL_SIG_VERSION = "v2";
+
+function resolveProjectDbIdentity(targetDb: string, cwd: string, homeDir = homedir()): string {
+  return resolveCanonicalPath(targetDb, cwd, homeDir);
+}
+
 function computeApprovalSignature(
   key: Buffer,
+  projectDbId: string,
   scope: ApprovalScope,
   targetPath: string,
   restrictedRoot: string,
 ): string {
   return createHmac("sha256", key)
-    .update(`${scope}\0${targetPath}\0${restrictedRoot}`)
+    .update(`${APPROVAL_SIG_VERSION}\0${projectDbId}\0${scope}\0${targetPath}\0${restrictedRoot}`)
     .digest("hex");
 }
 
 function verifyApprovalSignature(
   key: Buffer,
+  projectDbId: string,
   scope: ApprovalScope,
   targetPath: string,
   restrictedRoot: string,
   signature: string,
 ): boolean {
   if (!signature || !/^[a-f0-9]{64}$/i.test(signature)) return false;
-  const expected = computeApprovalSignature(key, scope, targetPath, restrictedRoot);
+  const expected = computeApprovalSignature(key, projectDbId, scope, targetPath, restrictedRoot);
   try {
     const a = Buffer.from(expected, "hex");
     const b = Buffer.from(signature, "hex");
@@ -256,9 +266,10 @@ export function addPersistentApproval(
   homeDir = homedir(),
 ): RestrictedFolderApproval {
   const targetDb = dbPath ?? getProjectStateDbPath(cwd);
+  const projectDbId = resolveProjectDbIdentity(targetDb, cwd, homeDir);
   const keyPath = hmacKeyPath ?? getApprovalHmacKeyPath(homeDir);
   const key = loadOrCreateApprovalHmacKey(keyPath);
-  const signature = computeApprovalSignature(key, scope, targetPath, restrictedRoot);
+  const signature = computeApprovalSignature(key, projectDbId, scope, targetPath, restrictedRoot);
   const createdAt = new Date().toISOString();
   withTransaction(targetDb, (db) => {
     db.prepare(
@@ -289,6 +300,7 @@ export function listPersistentApprovals(
   const keyPath = hmacKeyPath ?? getApprovalHmacKeyPath(homeDir);
   const key = readApprovalHmacKey(keyPath);
   const targetDb = dbPath ?? getProjectStateDbPath(cwd);
+  const projectDbId = resolveProjectDbIdentity(targetDb, cwd, homeDir);
   const db = openStateDb(targetDb);
   const rows = db
     .prepare(
@@ -316,7 +328,7 @@ export function listPersistentApprovals(
       typeof row.restricted_root === "string"
     ) {
       const sig = typeof row.signature === "string" ? row.signature : "";
-      if (!verifyApprovalSignature(key, row.scope, row.target_path, row.restricted_root, sig)) {
+      if (!verifyApprovalSignature(key, projectDbId, row.scope, row.target_path, row.restricted_root, sig)) {
         log.warn("restricted_folder_invalid_approval_signature", {
           scope: row.scope,
           targetPath: row.target_path,
@@ -483,8 +495,16 @@ export function clearRestrictedFoldersFloor(cwd?: string): void {
   floor.delete(resolveCanonicalPath(cwd, cwd));
 }
 
-onSettingsWritten(() => {
-  clearRestrictedFoldersFloor();
+onSettingsWritten((event) => {
+  // Only reset a floor when `restricted_folders` itself was updated via an authorized save.
+  // Unrelated setting saves (e.g. `dco`, `image_model`) must never unpin restricted folders.
+  if (event.changedKey !== "restricted_folders") return;
+  if (event.scope === "global") {
+    clearRestrictedFoldersFloor();
+    return;
+  }
+  const projectCwd = event.cwd ?? dirname(dirname(event.filePath));
+  clearRestrictedFoldersFloor(projectCwd);
 });
 
 /**
@@ -695,21 +715,162 @@ function looksLikePathToken(token: string): boolean {
   );
 }
 
+const NESTED_SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash"]);
+const MAX_BASH_SCAN_DEPTH = 4;
+
+/** Extract inner commands from `$(...)` and backtick substitutions outside single quotes. */
+function extractCommandSubstitutions(script: string): string[] {
+  const subs: string[] = [];
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let i = 0; i < script.length; i++) {
+    const ch = script[i]!;
+    if (ch === "\\" && !inSingle && i + 1 < script.length) {
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === "\"" && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (inSingle) continue;
+
+    // `$(...)` command substitution (excluding arithmetic `$((...))`)
+    if (ch === "$" && script[i + 1] === "(" && script[i + 2] !== "(") {
+      let depth = 1;
+      let j = i + 2;
+      let innerSingle = false;
+      let innerDouble = false;
+      while (j < script.length && depth > 0) {
+        const c = script[j]!;
+        if (c === "\\" && !innerSingle && j + 1 < script.length) {
+          j += 2;
+          continue;
+        }
+        if (c === "'" && !innerDouble) innerSingle = !innerSingle;
+        else if (c === "\"" && !innerSingle) innerDouble = !innerDouble;
+        else if (!innerSingle && !innerDouble) {
+          if (c === "(") depth++;
+          else if (c === ")") depth--;
+        }
+        j++;
+      }
+      if (depth === 0) {
+        const body = script.slice(i + 2, j - 1).trim();
+        if (body) subs.push(body);
+        i = j - 1;
+      }
+      continue;
+    }
+
+    // Backtick substitution `` `...` ``
+    if (ch === "`") {
+      let j = i + 1;
+      while (j < script.length) {
+        if (script[j] === "\\" && j + 1 < script.length) {
+          j += 2;
+          continue;
+        }
+        if (script[j] === "`") break;
+        j++;
+      }
+      if (j < script.length) {
+        const body = script.slice(i + 1, j).trim();
+        if (body) subs.push(body);
+        i = j;
+      }
+    }
+  }
+  return subs;
+}
+
+/** Extract inline script bodies passed to `eval` or `sh`/`bash`/`zsh` `-c <script>`. */
+function extractNestedShellBodies(tokens: string[]): string[] {
+  const bodies: string[] = [];
+  let cmdIdx = 0;
+  while (cmdIdx < tokens.length) {
+    const t = tokens[cmdIdx]!;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) || t === "env" || t === "command" || t === "exec" || t === "sudo") {
+      cmdIdx++;
+      continue;
+    }
+    break;
+  }
+  if (cmdIdx >= tokens.length) return bodies;
+  const cmdWord = basename(stripOuterQuotes(tokens[cmdIdx]!)).toLowerCase();
+
+  if (cmdWord === "eval") {
+    const args: string[] = [];
+    for (let i = cmdIdx + 1; i < tokens.length; i++) {
+      const tok = tokens[i]!;
+      if (args.length === 0 && tok === "--") continue;
+      args.push(stripOuterQuotes(tok));
+    }
+    if (args.length > 0) bodies.push(args.join(" "));
+    return bodies;
+  }
+
+  if (NESTED_SHELL_NAMES.has(cmdWord)) {
+    for (let i = cmdIdx + 1; i < tokens.length - 1; i++) {
+      if (/^-[a-zA-Z]*c$/.test(tokens[i]!)) {
+        const body = stripOuterQuotes(tokens[i + 1]!);
+        if (body) bodies.push(body);
+      }
+    }
+  }
+  return bodies;
+}
+
+function seedBashVars(
+  sessionCwd: string,
+  homeDir: string,
+  env?: NodeJS.ProcessEnv,
+): Map<string, string> {
+  const vars = new Map<string, string>();
+  const sourceEnv = env ?? process.env;
+  for (const [k, v] of Object.entries(sourceEnv)) {
+    if (typeof v === "string" && v.length > 0 && !DYNAMIC_EXPANSION_RE.test(v)) {
+      vars.set(k, v);
+    }
+  }
+  vars.set("HOME", homeDir);
+  vars.set("PWD", sessionCwd);
+  return vars;
+}
+
 function collectBashTargets(
   command: string,
   sessionCwd: string,
   homeDir: string,
   restrictedFolders: readonly string[],
+  env?: NodeJS.ProcessEnv,
+  parentVars?: Map<string, string>,
+  depth = 0,
 ): ExtractedToolTargets {
   const dirSet = new Set<string>();
   const fileSet = new Set<string>();
   const unresolved: UnresolvedBashTarget[] = [];
 
+  if (depth > MAX_BASH_SCAN_DEPTH) {
+    unresolved.push({
+      kind: "operand",
+      raw: command.slice(0, 80),
+      reason: "nested shell nesting depth exceeded static inspection limit",
+    });
+    return { targets: [], unresolved };
+  }
+
   dirSet.add(sessionCwd);
   dirSet.add(resolveEffectiveCwd(command, sessionCwd));
 
   const running: string[] = [sessionCwd];
-  const vars = new Map<string, string>();
+  const vars = parentVars ? new Map(parentVars) : seedBashVars(sessionCwd, homeDir, env);
+  const dynamicVars = new Set<string>();
 
   const canonicalFolders = restrictedFolders
     .filter((f) => typeof f === "string" && f.trim() !== "")
@@ -727,12 +888,16 @@ function collectBashTargets(
       if (tok === "export" || tok === "local" || tok === "readonly" || tok === "declare") continue;
       const am = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(tok);
       if (!am) break;
-      const val = expandKnownVars(stripOuterQuotes(am[2]!), vars);
+      const varName = am[1]!;
+      const rawVal = stripOuterQuotes(am[2]!);
+      const val = expandKnownVars(rawVal, vars);
       if (!DYNAMIC_EXPANSION_RE.test(val)) {
-        vars.set(am[1]!, val);
+        vars.set(varName, val);
+        dynamicVars.delete(varName);
       } else {
         // Variable holds a dynamic value (e.g. command substitution) — forget any prior static value.
-        vars.delete(am[1]!);
+        vars.delete(varName);
+        dynamicVars.add(varName);
       }
     }
 
@@ -763,8 +928,31 @@ function collectBashTargets(
       }
     }
 
-    // 2. Scan path-like file operands & redirection targets in the segment.
     const activeCwd = running[seg.depth]!;
+
+    // 2. Recursively inspect command substitutions (`$(...)`, `` `...` ``) and nested shells (`bash -c`, `eval`).
+    const innerScripts = [
+      ...extractCommandSubstitutions(seg.text),
+      ...extractNestedShellBodies(tokens),
+    ];
+    for (const inner of innerScripts) {
+      const nestedRes = collectBashTargets(
+        inner,
+        activeCwd,
+        homeDir,
+        restrictedFolders,
+        env,
+        vars,
+        depth + 1,
+      );
+      for (const t of nestedRes.targets) {
+        if (t.isDirectoryHint) dirSet.add(t.path);
+        else fileSet.add(t.path);
+      }
+      unresolved.push(...nestedRes.unresolved);
+    }
+
+    // 3. Scan path-like file operands & redirection targets in the segment.
     for (const rawTok of tokens) {
       if (!rawTok || SHELL_OPERATORS.has(rawTok)) continue;
 
@@ -791,22 +979,30 @@ function collectBashTargets(
 
       if (DYNAMIC_EXPANSION_RE.test(varExpanded)) {
         // Check whether the static prefix before the first expansion character could reach a restricted folder.
+        // If expansion begins at character 0 (e.g. `$UNKNOWN_DIR/file`), we cannot verify the root statically,
+        // so fail closed by recording it as unresolved instead of silently skipping!
         const firstDyn = varExpanded.search(DYNAMIC_EXPANSION_RE);
-        const staticPrefix = firstDyn > 0 ? varExpanded.slice(0, firstDyn) : "";
-        if (staticPrefix) {
-          const prefixExpanded = expandHomePath(staticPrefix, homeDir);
-          const prefixAbs = resolve(activeCwd, prefixExpanded);
-          const prefixCanon = stripTrailingSeparators(resolveRealPathWithDangling(prefixAbs));
-          const couldTouchRestricted = canonicalFolders.some(
-            (rf) => isPathInsideFolder(prefixCanon, rf) || isPathInsideFolder(rf, prefixCanon),
-          );
-          if (couldTouchRestricted) {
-            unresolved.push({
-              kind: "operand",
-              raw: unquoted,
-              reason: `dynamic path operand (${unquoted}) could expand inside a restricted folder`,
-            });
-          }
+        if (firstDyn === 0) {
+          unresolved.push({
+            kind: "operand",
+            raw: unquoted,
+            reason: `dynamic path operand (${unquoted}) starts with an unresolved shell expansion and could reach a restricted folder`,
+          });
+          continue;
+        }
+        const staticPrefix = varExpanded.slice(0, firstDyn);
+        const prefixExpanded = expandHomePath(staticPrefix, homeDir);
+        const prefixAbs = resolve(activeCwd, prefixExpanded);
+        const prefixCanon = stripTrailingSeparators(resolveRealPathWithDangling(prefixAbs));
+        const couldTouchRestricted = canonicalFolders.some(
+          (rf) => isPathInsideFolder(prefixCanon, rf) || isPathInsideFolder(rf, prefixCanon),
+        );
+        if (couldTouchRestricted) {
+          unresolved.push({
+            kind: "operand",
+            raw: unquoted,
+            reason: `dynamic path operand (${unquoted}) could expand inside a restricted folder`,
+          });
         }
         continue;
       }
@@ -843,8 +1039,9 @@ export function extractToolTargetPaths(
   cwd: string,
   homeDir = homedir(),
   restrictedFolders: readonly string[] = [],
+  env?: NodeJS.ProcessEnv,
 ): ExtractedTarget[] {
-  return extractToolTargets(toolName, input, cwd, homeDir, restrictedFolders).targets;
+  return extractToolTargets(toolName, input, cwd, homeDir, restrictedFolders, env).targets;
 }
 
 export function extractToolTargets(
@@ -853,6 +1050,7 @@ export function extractToolTargets(
   cwd: string,
   homeDir = homedir(),
   restrictedFolders: readonly string[] = [],
+  env?: NodeJS.ProcessEnv,
 ): ExtractedToolTargets {
   switch (toolName) {
     case "read":
@@ -891,7 +1089,7 @@ export function extractToolTargets(
     }
     case "bash": {
       const command = typeof input.command === "string" ? input.command : "";
-      return collectBashTargets(command, cwd, homeDir, restrictedFolders);
+      return collectBashTargets(command, cwd, homeDir, restrictedFolders, env);
     }
     default:
       return { targets: [], unresolved: [] };
@@ -971,7 +1169,6 @@ export async function evaluateRestrictedFolderAccess(
   const log = params.log ?? defaultLog;
   const home = params.homeDir ?? homedir();
   const folders = params.restrictedFolders ?? loadRestrictedFolders(params.cwd);
-  if (folders.length === 0) return undefined;
 
   const { targets, unresolved } = extractToolTargets(
     params.toolName,
@@ -979,7 +1176,22 @@ export async function evaluateRestrictedFolderAccess(
     params.cwd,
     home,
     folders,
+    params.env,
   );
+
+  // Always protect the approval signing key even when no restricted_folders are configured.
+  for (const t of targets) {
+    if (isProtectedApprovalKeyPath(t.path, params.cwd, home)) {
+      log.warn("approval_hmac_key_access_blocked", { toolName: params.toolName });
+      return {
+        block: true,
+        reason:
+          "⛔ Direct access to .approval-hmac-key is blocked. Approval integrity keys are managed exclusively by the enforcement system.",
+      };
+    }
+  }
+
+  if (folders.length === 0) return undefined;
 
   // 1. Handle unresolved dynamic bash cd/pushd or restricted-prefix path expansions first.
   //    These can NEVER be satisfied by a cached grant — fail closed when headless or prompt Approve Once / Deny.
