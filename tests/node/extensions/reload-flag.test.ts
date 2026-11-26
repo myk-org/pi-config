@@ -20,6 +20,7 @@ import reloadExtension, {
   shouldSkipReloadFlag,
   isHandshakeParticipant,
   RELOAD_COMMAND,
+  RELOAD_DISPATCH_ACK_TIMEOUT_MS,
   runReloadFlagCommand,
   parkReloadNonce,
   pendingOwnerIsClaimable,
@@ -1403,6 +1404,269 @@ describe("reload-flag", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  test("mid-turn deploy defers while busy (isIdle() === false) and dispatches cleanly on agent_settled (#1438)", async (t) => {
+    const prevLevel = process.env.PI_LOG_RELOAD_FLAG;
+    process.env.PI_LOG_RELOAD_FLAG = "debug";
+    clearLogLevelCache();
+    const records = captureLogs(t);
+    const cwd = makeCwd();
+    const reg = register();
+    t.after(async () => {
+      if (prevLevel === undefined) delete process.env.PI_LOG_RELOAD_FLAG;
+      else process.env.PI_LOG_RELOAD_FLAG = prevLevel;
+      clearLogLevelCache();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    let idle = false;
+    const reloads = { count: 0 };
+    const ctx = {
+      ...makeCtx(cwd, reloads),
+      isIdle: () => idle,
+    };
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+
+    // Deploy lands mid-turn while streaming; reload must not dispatch or park pending early.
+    writeFileSync(reloadFlagPath(cwd), "nonce-mid-turn");
+    await reg.handlers.get("turn_end")!({}, ctx);
+    await reg.handlers.get("turn_end")!({}, ctx);
+    await reg.handlers.get("agent_end")!({}, ctx);
+    assert.equal(reg.sent.length, 0, "mid-turn ticks never dispatch /reload-flag while busy");
+    assert.equal(readFileSync(reloadFlagPath(cwd), "utf-8"), "nonce-mid-turn", "flag untouched while busy");
+    assert.equal(existsSync(reloadPendingPath(cwd)), false, "reload.pending not parked mid-turn");
+    assert.equal(
+      records.filter((line) => line.includes("reload_flag_deferred_busy")).length,
+      1,
+      "busy deferral logs once without spin logging",
+    );
+
+    // Session finishes and settles -> agent_settled dispatches cleanly once idle.
+    idle = true;
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    assert.deepEqual(reg.sent.map((s) => s.text), [RELOAD_COMMAND], "dispatches once session is idle");
+    await reg.commands.get("reload-flag")!("", ctx);
+    assert.equal(reloads.count, 1);
+    await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+    assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "nonce-mid-turn");
+    assert.equal(existsSync(reloadPendingPath(cwd)), false);
+  });
+
+  test("runReloadFlagCommand bounds waitForIdle() with a timeout and never hangs (#1438)", async (t) => {
+    const records = captureLogs(t);
+    const cwd = makeCwd();
+    t.after(() => {
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    writeFileSync(reloadFlagPath(cwd), "nonce-wait-timeout");
+    const lateWait: { reject?: (err: Error) => void } = {};
+    const reloads = { count: 0 };
+    const ctx = {
+      ...makeCtx(cwd, reloads),
+      waitForIdle: () =>
+        new Promise<void>((_resolve, reject) => {
+          lateWait.reject = reject;
+        }),
+    };
+    const ok = await runReloadFlagCommand(ctx, { waitForIdleTimeoutMs: 20 });
+    assert.equal(ok, false, "timed-out waitForIdle returns false");
+    assert.equal(reloads.count, 0, "reload is not called after waitForIdle timeout");
+    assert.ok(
+      records.some((line) => line.includes("[warn]") && line.includes("reload_flag_wait_for_idle_timeout")),
+      "timeout logged at warn",
+    );
+    // Late rejection from timed-out waitForIdle must not cause unhandledRejection.
+    lateWait.reject?.(new Error("late idle rejection"));
+    await new Promise((r) => setTimeout(r, 10));
+  });
+
+  test("runReloadFlagCommand aborts cleanly when session becomes busy again after waitForIdle() (#1438)", async (t) => {
+    const records = captureLogs(t);
+    const cwd = makeCwd();
+    t.after(() => {
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    writeFileSync(reloadFlagPath(cwd), "nonce-busy-after-wait");
+    const reloads = { count: 0 };
+    const ctx = {
+      ...makeCtx(cwd, reloads),
+      waitForIdle: async () => {},
+      isIdle: () => false,
+    };
+    const ok = await runReloadFlagCommand(ctx);
+    assert.equal(ok, false);
+    assert.equal(reloads.count, 0, "never calls ctx.reload() while busy");
+    assert.ok(records.some((line) => line.includes("reload_flag_command_not_idle_after_wait")));
+  });
+
+  test("silent non-shutdown ctx.reload() releases triggered latch and retries stranded self-owned pending after backoff (#1438)", async (t) => {
+    const records = captureLogs(t);
+    const cwd = makeCwd();
+    const reg = register();
+    let now = 400_000;
+    t.mock.method(Date, "now", () => now);
+    t.after(async () => {
+      t.mock.restoreAll();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    // Simulate Pi interactive-mode handleReloadCommand() silently returning undefined
+    // without shutting down the runtime (e.g. refused while streaming or swallowed error).
+    const reloads = { count: 0 };
+    const ctx = {
+      ...makeCtx(cwd, reloads),
+      isIdle: () => true,
+      reload: async () => {
+        reloads.count++;
+      },
+    };
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    writeFileSync(reloadFlagPath(cwd), "nonce-silent-noop");
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    assert.equal(reg.sent.length, 1);
+    await reg.commands.get("reload-flag")!("", ctx);
+    assert.equal(reloads.count, 1);
+    assert.ok(
+      records.some((line) => line.includes("[warn]") && line.includes("reload_flag_reload_did_not_complete")),
+      "silent non-shutdown reload logs warn",
+    );
+
+    now += 500;
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    assert.equal(reg.sent.length, 1, "waits for retry backoff");
+    now += 500;
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    assert.equal(reg.sent.length, 2, "stranded self-owned pending retries after backoff");
+  });
+
+  test("subsequent deploy flag triggers immediately after a silent non-shutdown reload and pending removal (#1438)", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    let now = 450_000;
+    t.mock.method(Date, "now", () => now);
+    t.after(async () => {
+      t.mock.restoreAll();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    const ctx = {
+      ...makeCtx(cwd, { count: 0 }),
+      isIdle: () => true,
+      reload: async () => {},
+    };
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    writeFileSync(reloadFlagPath(cwd), "nonce-first-noop");
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    await reg.commands.get("reload-flag")!("", ctx);
+
+    // Manually deleting stranded pending + writing a brand-new flag must trigger immediately.
+    rmSync(reloadPendingPath(cwd), { force: true });
+    writeFileSync(reloadFlagPath(cwd), "nonce-fresh-after-delete");
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    assert.equal(reg.sent.length, 2, "subsequent deploy still triggers immediately instead of staying deaf");
+  });
+
+  test("ctx.reload() returning false releases triggered latch with retry backoff (#1438)", async (t) => {
+    const records = captureLogs(t);
+    const cwd = makeCwd();
+    const reg = register();
+    let now = 500_000;
+    t.mock.method(Date, "now", () => now);
+    t.after(async () => {
+      t.mock.restoreAll();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    const ctx = {
+      ...makeCtx(cwd, { count: 0 }),
+      isIdle: () => true,
+      reload: async () => false,
+    };
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    writeFileSync(reloadFlagPath(cwd), "nonce-false-return");
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 1);
+    await reg.commands.get("reload-flag")!("", ctx);
+    assert.ok(records.some((line) => line.includes("reload_flag_reload_refused")));
+    now += 1_000;
+    await reg.handlers.get("turn_end")!({}, ctx);
+    assert.equal(reg.sent.length, 2, "retries cleanly after ctx.reload() returned false");
+  });
+
+  test("unacknowledged reload dispatch self-heals after RELOAD_DISPATCH_ACK_TIMEOUT_MS (#1438)", async (t) => {
+    const records = captureLogs(t);
+    const cwd = makeCwd();
+    const reg = register();
+    let now = 600_000;
+    t.mock.method(Date, "now", () => now);
+    t.after(async () => {
+      t.mock.restoreAll();
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    const ctx = { ...makeCtx(cwd, { count: 0 }), isIdle: () => true };
+    await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    writeFileSync(reloadFlagPath(cwd), "nonce-dropped-dispatch");
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    assert.equal(reg.sent.length, 1);
+
+    // Command handler never fires; before ack timeout, no duplicate dispatch.
+    now += RELOAD_DISPATCH_ACK_TIMEOUT_MS - 1_000;
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    assert.equal(reg.sent.length, 1, "does not double-dispatch before ack timeout");
+
+    // Once ack timeout elapses, latch clears with backoff and retries.
+    now += 1_000;
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    assert.ok(records.some((line) => line.includes("reload_flag_dispatch_timeout")));
+    now += 1_000;
+    await reg.handlers.get("agent_settled")!({ aborted: false }, ctx);
+    assert.equal(reg.sent.length, 2, "re-dispatches after ack timeout and backoff");
+  });
+
+  test("non-participant modes ignore reload.flag on agent_end and agent_settled (#1438)", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    t.after(async () => {
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    writeFileSync(reloadFlagPath(cwd), "nonce-protected");
+    for (const mode of ["rpc", "print", "json"]) {
+      const childCtx = { ...makeCtx(cwd, { count: 0 }, "child", mode), isIdle: () => true };
+      await reg.handlers.get("agent_end")!({}, childCtx);
+      await reg.handlers.get("agent_settled")!({ aborted: false }, childCtx);
+    }
+    assert.equal(reg.sent.length, 0, "non-participant modes never dispatch");
+    assert.equal(readFileSync(reloadFlagPath(cwd), "utf-8"), "nonce-protected");
+  });
+
+  test("live foreign reload.pending blocks dispatch on agent_end and agent_settled (#1438)", async (t) => {
+    const cwd = makeCwd();
+    const reg = register();
+    t.after(async () => {
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    const foreignPending = JSON.stringify({ nonce: "foreign-live", owner: "1:other-session" });
+    writeFileSync(reloadPendingPath(cwd), foreignPending);
+    writeFileSync(reloadFlagPath(cwd), "nonce-behind-foreign");
+    const tuiCtx = { ...makeCtx(cwd, { count: 0 }, "session-self", "tui"), isIdle: () => true };
+    await reg.handlers.get("session_start")!({ reason: "startup" }, tuiCtx);
+    await reg.handlers.get("agent_end")!({}, tuiCtx);
+    await reg.handlers.get("agent_settled")!({ aborted: false }, tuiCtx);
+    assert.equal(reg.sent.length, 0, "live foreign owner blocks dispatch on agent_settled");
+    assert.equal(readFileSync(reloadPendingPath(cwd), "utf-8"), foreignPending);
   });
 });
 

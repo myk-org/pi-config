@@ -17,9 +17,10 @@
  *
  *   1. Requester (deploy script or agent) writes `<cwd>/.pi/run/reload.flag`
  *      with a nonce as its content.
- *   2. Watcher (interval + turn_end fallback) sees the flag and dispatches
- *      `/reload-flag` ONCE. The command moves the nonce to `reload.pending`,
- *      deletes the flag, and calls `ctx.reload()` — the last ctx call.
+ *   2. Watcher (interval + agent_settled / agent_end / turn_end) sees the flag
+ *      and, once the session is idle (`ctx.isIdle()`), dispatches `/reload-flag`
+ *      ONCE. The command moves the nonce to `reload.pending`, deletes the flag,
+ *      waits for idle (bounded), and calls `ctx.reload()` — the last ctx call.
  *   3. The NEW runtime fires `session_start` with reason "reload": it reads
  *      `reload.pending`, writes the nonce to `reload.done`, deletes pending.
  *   4. The requester polls `reload.done` for its nonce — match means the new
@@ -81,6 +82,8 @@ export const RELOAD_DONE_FILENAME = "reload.done";
 
 export const RELOAD_RETRY_INITIAL_MS = 1_000;
 export const RELOAD_RETRY_MAX_MS = 30_000;
+export const RELOAD_WAIT_FOR_IDLE_TIMEOUT_MS = 15_000;
+export const RELOAD_DISPATCH_ACK_TIMEOUT_MS = 10_000;
 
 /** Runtime-state dir for the reload handshake (#1020). */
 export function reloadRunDir(cwd: string): string {
@@ -551,9 +554,66 @@ export function parkReloadNonce(cwd: string, owner: string): string | null {
   return null;
 }
 
+export interface RunReloadFlagCommandOptions {
+  waitForIdleTimeoutMs?: number;
+}
+
+/** True unless a live ctx explicitly reports busy (`isIdle() === false`) or throws. */
+function isSessionIdle(ctx: unknown): boolean {
+  if (!isLiveExtensionCtx(ctx)) return false;
+  const isIdleFn = (ctx as { isIdle?: unknown }).isIdle;
+  if (typeof isIdleFn !== "function") return true;
+  try {
+    return Boolean((isIdleFn as () => boolean)());
+  } catch (e: unknown) {
+    log.debug("reload_flag_is_idle_check_failed", { error: String(e) });
+    return false;
+  }
+}
+
+function resolveWaitForIdleTimeoutMs(rawTimeout?: number): number {
+  return typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
+    ? rawTimeout
+    : RELOAD_WAIT_FOR_IDLE_TIMEOUT_MS;
+}
+
+async function waitForIdleWithTimeout(
+  waitForIdle: () => Promise<void>,
+  timeoutMs: number,
+): Promise<"idle" | "timeout"> {
+  const effectiveTimeoutMs = resolveWaitForIdleTimeoutMs(timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const idlePromise = Promise.resolve().then(() => waitForIdle());
+  // Prevent an unhandled rejection if waitForIdle() rejects after timeout already fired.
+  idlePromise.catch(() => {});
+  try {
+    return await Promise.race<"idle" | "timeout">([
+      idlePromise.then(() => "idle" as const),
+      new Promise<"timeout">((resolve) => {
+        // Keep the timeout handle ref'd while awaited (always cleared in finally)
+        // so Node's event loop cannot exit early on an unresolved waitForIdle().
+        timer = setTimeout(() => resolve("timeout"), effectiveTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+}
+
 /** The `/reload-flag` command body — runs with the COMMAND ctx (has reload()). */
 export async function runReloadFlagCommand(
-  ctx: { cwd: string; mode?: string; reload?: () => Promise<void>; waitForIdle?: () => Promise<void>; sessionManager?: { getSessionId?: () => string } },
+  ctx: {
+    cwd: string;
+    mode?: string;
+    isIdle?: () => boolean;
+    reload?: () => Promise<unknown>;
+    waitForIdle?: () => Promise<void>;
+    sessionManager?: { getSessionId?: () => string };
+  },
+  options?: RunReloadFlagCommandOptions,
 ): Promise<boolean> {
   const cwd = ctx.cwd;
   const owner = reloadOwnerId(ctx);
@@ -580,20 +640,31 @@ export async function runReloadFlagCommand(
       });
       return false;
     }
-    // pi's reload action refuses while the session is streaming ("Wait for
-    // the current response to finish") — and deploys typically happen
-    // MID-TURN, so the dispatch arrives while the agent is streaming. Wait
-    // for idle first: the reload fires the moment the turn ends.
+    // Bound waitForIdle() so a stalled or chained run can never park this
+    // command handler indefinitely (#1438).
     if (typeof ctx.waitForIdle === "function") {
-      await ctx.waitForIdle();
+      const timeoutMs = resolveWaitForIdleTimeoutMs(options?.waitForIdleTimeoutMs);
+      const waitResult = await waitForIdleWithTimeout(ctx.waitForIdle, timeoutMs);
+      if (waitResult === "timeout") {
+        log.warn("reload_flag_wait_for_idle_timeout", { cwd, owner, timeoutMs });
+        return false;
+      }
     }
     if (!isLiveExtensionCtx(ctx) || reloadOwnerId(ctx) !== owner) {
       log.debug("reload_flag_command_session_departed", { cwd, owner });
       return false;
     }
+    if (!isSessionIdle(ctx)) {
+      log.warn("reload_flag_command_not_idle_after_wait", { cwd, owner });
+      return false;
+    }
     // LAST ctx calls: ctx.reload() tears this runtime down (session_shutdown
     // reason "reload") and rebuilds it from disk. Never use the old ctx after.
-    await ctx.reload();
+    const reloadResult = await ctx.reload();
+    if (reloadResult === false) {
+      log.warn("reload_flag_reload_refused", { cwd, owner });
+      return false;
+    }
     return true;
   } catch (e: unknown) {
     log.warn("reload_flag_command_failed", { cwd, owner, error: String(e) });
@@ -640,8 +711,14 @@ export default function (pi: ExtensionAPI) {
   // ctx is at hand — maybeTrigger runs from a timer with no ctx (Qodo PR
   // #950 R9).
   let liveOwner: string | null = null;
+  // Live extension ctx used only through isLiveExtensionCtx() to check isIdle().
+  let liveCtx: any = null;
   let watcher: ReturnType<typeof setInterval> | null = null;
   let triggered = false;
+  let triggeredAt: number | null = null;
+  let commandInFlight = false;
+  let commandRunId = 0;
+  let deferredWhileBusy = false;
   let retryDelayMs = RELOAD_RETRY_INITIAL_MS;
   let nextRetryAt = 0;
   let seenFlagNonce: string | null = null;
@@ -679,13 +756,27 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args: string, ctx: any) => {
       const cwd = ctx.cwd;
       const owner = reloadOwnerId(ctx);
-      const ok = await runReloadFlagCommand(ctx);
+      const runId = ++commandRunId;
+      commandInFlight = true;
+      let ok = false;
+      try {
+        ok = await runReloadFlagCommand(ctx);
+      } finally {
+        if (commandRunId === runId) commandInFlight = false;
+      }
+      // On a real reload, session_shutdown already ran synchronously inside
+      // ctx.reload() and cleared liveCwd/liveOwner. If this instance is still
+      // active for the same (cwd, owner) afterwards, reload did NOT tear down
+      // the runtime (e.g. handleReloadCommand() silently refused or swallowed
+      // an error): always release the latch with backoff so the watcher never
+      // goes permanently deaf (#1438).
       if (liveCwd === cwd && liveOwner === owner) {
+        triggered = false;
+        triggeredAt = null;
         if (ok) {
-          resetRetryBackoff();
-          log.debug("reload_flag_command_completed", { cwd, owner });
+          log.warn("reload_flag_reload_did_not_complete", { cwd, owner });
+          scheduleRetryBackoff(cwd, "reload_not_completed");
         } else {
-          triggered = false;
           scheduleRetryBackoff(cwd, "command_failed");
         }
       }
@@ -701,8 +792,25 @@ export default function (pi: ExtensionAPI) {
   };
 
   const maybeTrigger = () => {
-    // Never act twice, and never on a stale cwd snapshot.
-    if (triggered || liveCwd === null) return;
+    // Never act on a stale cwd snapshot or an invalidated extension ctx.
+    if (liveCwd === null) return;
+    if (liveCtx !== null && !isLiveExtensionCtx(liveCtx)) return;
+    if (triggered) {
+      // Self-heal if pi.sendUserMessage(RELOAD_COMMAND) failed asynchronously
+      // and never invoked the command handler (#1438).
+      if (
+        !commandInFlight &&
+        triggeredAt !== null &&
+        Date.now() - triggeredAt >= RELOAD_DISPATCH_ACK_TIMEOUT_MS
+      ) {
+        const elapsedMs = Date.now() - triggeredAt;
+        log.warn("reload_flag_dispatch_timeout", { cwd: liveCwd, owner: liveOwner, elapsedMs });
+        triggered = false;
+        triggeredAt = null;
+        scheduleRetryBackoff(liveCwd, "dispatch_timeout");
+      }
+      return;
+    }
 
     let state = scanReloadControlState(liveCwd);
     const initialFlagPath = state.flagPath;
@@ -735,6 +843,7 @@ export default function (pi: ExtensionAPI) {
     const hasPending = pendingPath !== null;
     if (!hasFlag && !hasPending && state.retained.length === 0) {
       seenFlagNonce = null;
+      deferredWhileBusy = false;
       resetRetryBackoff();
       return;
     }
@@ -772,12 +881,24 @@ export default function (pi: ExtensionAPI) {
         return;
       }
     }
+    // Never dispatch /reload-flag mid-turn (#1438): dispatching while streaming
+    // parks reload.pending early and blocks inside ctx.waitForIdle(). Defer
+    // cleanly until the session is idle (agent_settled / agent_end / watcher).
+    if (liveCtx !== null && !isSessionIdle(liveCtx)) {
+      if (!deferredWhileBusy) {
+        deferredWhileBusy = true;
+        log.debug("reload_flag_deferred_busy", { cwd: liveCwd, owner: liveOwner });
+      }
+      return;
+    }
+    deferredWhileBusy = false;
     triggered = true;
+    triggeredAt = Date.now();
     try {
-      // Dispatches the registered command: executes immediately (even while
-      // streaming), never reaches the LLM. deliverAs satisfies the repo-wide
-      // disposition contract and degrades safely (queued, not thrown) if the
-      // dispatch ever fails. Throws are caught, never escape into a timer.
+      // Dispatches the registered command: executes cleanly while idle and
+      // never reaches the LLM. deliverAs satisfies the repo-wide disposition
+      // contract and degrades safely (queued, not thrown) if the dispatch ever
+      // fails. Throws are caught, never escape into a timer.
       pi.sendUserMessage(RELOAD_COMMAND, {
         expandPromptTemplates: true,
         deliverAs: "followUp",
@@ -785,9 +906,10 @@ export default function (pi: ExtensionAPI) {
       log.info("reload_flag_dispatched", { command: RELOAD_COMMAND });
     } catch (e: unknown) {
       triggered = false; // allow retry after backoff
+      triggeredAt = null;
       scheduleRetryBackoff(liveCwd, "dispatch_failed");
       // warn, not error: this failure is recoverable by design — the latch
-      // was reset and turn_end retries (Qodo PR #950 R8).
+      // was reset and idle hooks retry (Qodo PR #950 R8).
       log.warn("reload_flag_dispatch_failed", { error: String(e) });
     }
   };
@@ -806,7 +928,12 @@ export default function (pi: ExtensionAPI) {
     }
     liveCwd = cwd;
     liveOwner = reloadOwnerId(ctx);
+    liveCtx = ctx;
     triggered = false;
+    triggeredAt = null;
+    commandRunId++;
+    commandInFlight = false;
+    deferredWhileBusy = false;
     seenFlagNonce = null;
     resetRetryBackoff();
     if (continuationTimer !== null) {
@@ -925,20 +1052,34 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // Fallback for watchers that miss the file (also fires between turns).
-  pi.on("turn_end", async (_event: any, ctx: any) => {
+  // Trigger reload on idle boundaries (agent_settled is guaranteed after
+  // streaming stops; agent_end and turn_end cover fallback/legacy runtimes).
+  const triggerFromEvent = (eventName: string, ctx: any) => {
     if (!isLiveExtensionCtx(ctx)) return;
-    // #1091: same rule as session_start — a print/json child must not act on
+    // #1091: same rule as session_start — a print/json/rpc child must not act on
     // the handshake either (it would consume a request addressed to another
     // session and never publish a done marker the requester can trust).
     if (!isHandshakeParticipant(ctx.mode)) return;
     liveCwd = ctx.cwd;
     liveOwner = reloadOwnerId(ctx);
+    liveCtx = ctx;
     try {
       maybeTrigger();
     } catch (e: unknown) {
-      log.error("reload_flag_turn_end_error", { error: String(e) });
+      log.error(`reload_flag_${eventName}_error`, { error: String(e) });
     }
+  };
+
+  pi.on("turn_end", async (_event: any, ctx: any) => {
+    triggerFromEvent("turn_end", ctx);
+  });
+
+  pi.on("agent_end", async (_event: any, ctx: any) => {
+    triggerFromEvent("agent_end", ctx);
+  });
+
+  pi.on("agent_settled", async (_event: any, ctx: any) => {
+    triggerFromEvent("agent_settled", ctx);
   });
 
   pi.on("session_shutdown", (event: any) => {
@@ -962,6 +1103,12 @@ export default function (pi: ExtensionAPI) {
       }
     }
     liveOwner = null;
+    liveCtx = null;
+    triggered = false;
+    triggeredAt = null;
+    commandRunId++;
+    commandInFlight = false;
+    deferredWhileBusy = false;
     // Cancel a pending reload continuation (Qodo PR #950 R8): firing into a
     // closed/replaced session would inject a turn nobody asked for.
     if (continuationTimer !== null) {
