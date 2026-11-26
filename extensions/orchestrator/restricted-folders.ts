@@ -27,9 +27,10 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
+import { acquireTokenFileLock } from "../shared/file-lock.js";
 import { createLogger, type Logger } from "../shared/logger.js";
 import { resolveEffectiveCwd, tokenize, unquotedSegments } from "./bash-policy.js";
 import {
@@ -38,6 +39,7 @@ import {
   loadGlobalSettings,
   loadProjectSettings,
   onSettingsWritten,
+  readSettingsFile,
 } from "./project-settings.js";
 import { createSqliteStateStore, getProjectStateDbPath, openStateDb, withTransaction } from "./state-db.js";
 
@@ -484,20 +486,27 @@ export function isPathInsideFolder(canonicalTarget: string, canonicalFolder: str
   return target.startsWith(folder + sep);
 }
 
-// ── Monotonic Restricted-Folders Floor (fail-closed + cross-process HMAC attestation) ──
+// ── Monotonic Restricted-Folders Floor (fail-closed + versioned cross-process HMAC attestation) ──
 
-const RESTRICTED_FLOOR_SYMBOL = Symbol.for("pi-config.restrictedFoldersFloor.v1");
+const RESTRICTED_FLOOR_SYMBOL = Symbol.for("pi-config.restrictedFoldersFloor.v2");
 const GLOBAL_FLOOR_KEY = "__global__";
-const FLOOR_ATTEST_VERSION = "rf-attest-v1";
+const FLOOR_ATTEST_VERSION = "rf-attest-v2";
 const FLOOR_ATTEST_STORE_KEY = "restricted-folders-attestation";
 
 interface RestrictedFoldersAttestation {
+  generation: number;
   sig: string;
   updatedAt: string;
 }
 
-function getRestrictedFoldersFloor(): Map<string, Set<string>> {
-  const g = globalThis as Record<symbol, Map<string, Set<string>> | undefined>;
+interface FloorBucketState {
+  entries: Set<string>;
+  /** Highest attested generation already accounted for when these entries were pinned. */
+  generation: number;
+}
+
+function getRestrictedFoldersFloor(): Map<string, FloorBucketState> {
+  const g = globalThis as Record<symbol, Map<string, FloorBucketState> | undefined>;
   let map = g[RESTRICTED_FLOOR_SYMBOL];
   if (!map) {
     map = new Map();
@@ -528,10 +537,13 @@ function computeFloorAttestationSig(
   key: Buffer,
   scope: "project" | "global",
   settingsPath: string,
+  generation: number,
   folders: readonly string[],
 ): string {
   return createHmac("sha256", key)
-    .update(`${FLOOR_ATTEST_VERSION}\0${scope}\0${settingsPath}\0${canonicalFolderListPayload(folders)}`)
+    .update(
+      `${FLOOR_ATTEST_VERSION}\0${scope}\0${settingsPath}\0${generation}\0${canonicalFolderListPayload(folders)}`,
+    )
     .digest("hex");
 }
 
@@ -539,11 +551,13 @@ function verifyFloorAttestationSig(
   key: Buffer,
   scope: "project" | "global",
   settingsPath: string,
+  generation: number,
   folders: readonly string[],
   sig: string,
 ): boolean {
+  if (!Number.isInteger(generation) || generation < 1) return false;
   if (!sig || !/^[a-f0-9]{64}$/i.test(sig)) return false;
-  const expected = computeFloorAttestationSig(key, scope, settingsPath, folders);
+  const expected = computeFloorAttestationSig(key, scope, settingsPath, generation, folders);
   try {
     const a = Buffer.from(expected, "hex");
     const b = Buffer.from(sig, "hex");
@@ -557,46 +571,120 @@ function globalAttestationPath(keyPath: string): string {
   return join(dirname(keyPath), ".restricted-folders-global.sig");
 }
 
+function readLiveFoldersFromSettingsFile(settingsFilePath: string): string[] {
+  const raw = readSettingsFile(settingsFilePath);
+  if (!raw || !Array.isArray(raw.restricted_folders)) return [];
+  return raw.restricted_folders.filter((e): e is string => typeof e === "string" && e.trim() !== "");
+}
+
+/**
+ * Atomically persist a monotonically versioned HMAC-SHA256 attestation for the LIVE
+ * on-disk `restricted_folders` list under a cross-process lock (`BEGIN IMMEDIATE` for
+ * project SQLite; token file lock + atomic rename for global `.sig`). Re-reading the
+ * live settings file inside the lock guarantees an older overlapping callback can never
+ * overwrite a newer save's attestation with stale data.
+ *
+ * Returns the new persisted generation (`>= 1`) on success, or `null` on failure.
+ */
 function recordAuthorizedRestrictedFoldersSave(
   scope: "project" | "global",
   settingsFilePath: string,
   projectCwd?: string,
-): void {
+): number | null {
   try {
     const keyPath = getApprovalHmacKeyPath();
     const key = loadOrCreateApprovalHmacKey(keyPath);
     const canonSettingsPath = resolveCanonicalPath(settingsFilePath, projectCwd ?? dirname(settingsFilePath));
-    const currentFolders =
-      scope === "global"
-        ? (loadGlobalSettings().restricted_folders ?? [])
-        : (loadProjectSettings(projectCwd ?? dirname(dirname(settingsFilePath))).restricted_folders ?? []);
-    const sig = computeFloorAttestationSig(key, scope, canonSettingsPath, currentFolders);
-    const payload: RestrictedFoldersAttestation = { sig, updatedAt: new Date().toISOString() };
 
     if (scope === "global") {
       const p = globalAttestationPath(keyPath);
       mkdirSync(dirname(p), { recursive: true, mode: 0o700 });
-      writeFileSync(p, JSON.stringify(payload), { mode: 0o600 });
-    } else {
-      const rootDir = projectCwd ?? dirname(dirname(settingsFilePath));
-      const store = createSqliteStateStore<Record<string, RestrictedFoldersAttestation>>(
-        getProjectStateDbPath(rootDir),
-        FLOOR_ATTEST_STORE_KEY,
-      );
-      store.mutate((s) => {
-        s[canonSettingsPath] = payload;
-      }, {});
+      const releaseLock = acquireTokenFileLock(`${p}.lock`);
+      if (!releaseLock) {
+        defaultLog.error("restricted_folders_attestation_write_failed", {
+          scope,
+          reason: "lock_acquisition_failed",
+        });
+        return null;
+      }
+      try {
+        let prevGen = 0;
+        if (existsSync(p)) {
+          try {
+            const prev = JSON.parse(readFileSync(p, "utf-8")) as Partial<RestrictedFoldersAttestation> | null;
+            if (typeof prev?.generation === "number" && Number.isInteger(prev.generation) && prev.generation > 0) {
+              prevGen = prev.generation;
+            }
+          } catch {
+            prevGen = 0;
+          }
+        }
+        // Re-read the LIVE settings file inside the lock so concurrent saves cannot regress.
+        const liveFolders = readLiveFoldersFromSettingsFile(settingsFilePath);
+        const nextGen = prevGen + 1;
+        const sig = computeFloorAttestationSig(key, scope, canonSettingsPath, nextGen, liveFolders);
+        const payload: RestrictedFoldersAttestation = {
+          generation: nextGen,
+          sig,
+          updatedAt: new Date().toISOString(),
+        };
+        const tmpPath = `${p}.${process.pid}.${Date.now().toString(36)}.tmp`;
+        try {
+          writeFileSync(tmpPath, JSON.stringify(payload), { mode: 0o600, flag: "wx" });
+          renameSync(tmpPath, p);
+        } catch (writeErr) {
+          try {
+            if (existsSync(tmpPath)) unlinkSync(tmpPath);
+          } catch {
+            /* ignore cleanup error */
+          }
+          throw writeErr;
+        }
+        return nextGen;
+      } finally {
+        releaseLock();
+      }
     }
+
+    const rootDir = projectCwd ?? dirname(dirname(settingsFilePath));
+    const store = createSqliteStateStore<Record<string, RestrictedFoldersAttestation>>(
+      getProjectStateDbPath(rootDir),
+      FLOOR_ATTEST_STORE_KEY,
+    );
+    let persistedGen: number | null = null;
+    store.mutate((s) => {
+      // Inside SQLite BEGIN IMMEDIATE: re-read the LIVE settings file so overlapping
+      // saves always attest the latest on-disk folder list with a strictly newer generation.
+      const prev = s[canonSettingsPath];
+      const prevGen =
+        typeof prev?.generation === "number" && Number.isInteger(prev.generation) && prev.generation > 0
+          ? prev.generation
+          : 0;
+      const liveFolders = readLiveFoldersFromSettingsFile(settingsFilePath);
+      const nextGen = prevGen + 1;
+      const sig = computeFloorAttestationSig(key, scope, canonSettingsPath, nextGen, liveFolders);
+      s[canonSettingsPath] = {
+        generation: nextGen,
+        sig,
+        updatedAt: new Date().toISOString(),
+      };
+      persistedGen = nextGen;
+    }, {});
+    return persistedGen;
   } catch (err) {
-    defaultLog.warn("restricted_folders_attestation_write_failed", { scope }, err);
+    defaultLog.error("restricted_folders_attestation_write_failed", { scope }, err);
+    return null;
   }
 }
 
-function hasValidProjectAttestation(cwd: string, projectFolders: readonly string[]): boolean {
+function readVerifiedProjectAttestationGen(
+  cwd: string,
+  projectFolders: readonly string[],
+): number | null {
   try {
     const keyPath = getApprovalHmacKeyPath();
     const key = readApprovalHmacKey(keyPath);
-    if (!key) return false;
+    if (!key) return null;
     const projSettingsPath = resolveCanonicalPath(getSettingsPath(cwd), cwd);
     const store = createSqliteStateStore<Record<string, RestrictedFoldersAttestation>>(
       getProjectStateDbPath(cwd),
@@ -604,28 +692,69 @@ function hasValidProjectAttestation(cwd: string, projectFolders: readonly string
     );
     const map = store.read();
     const projAttest = map?.[projSettingsPath];
-    return Boolean(
-      projAttest && verifyFloorAttestationSig(key, "project", projSettingsPath, projectFolders, projAttest.sig),
-    );
+    if (
+      projAttest &&
+      verifyFloorAttestationSig(key, "project", projSettingsPath, projAttest.generation, projectFolders, projAttest.sig)
+    ) {
+      return projAttest.generation;
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-function hasValidGlobalAttestation(cwd: string, globalFolders: readonly string[]): boolean {
+function readCurrentProjectAttestationGen(cwd: string): number {
+  try {
+    const projSettingsPath = resolveCanonicalPath(getSettingsPath(cwd), cwd);
+    const store = createSqliteStateStore<Record<string, RestrictedFoldersAttestation>>(
+      getProjectStateDbPath(cwd),
+      FLOOR_ATTEST_STORE_KEY,
+    );
+    const map = store.read();
+    const gen = map?.[projSettingsPath]?.generation;
+    return typeof gen === "number" && Number.isInteger(gen) && gen > 0 ? gen : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function readVerifiedGlobalAttestationGen(
+  cwd: string,
+  globalFolders: readonly string[],
+): number | null {
   try {
     const keyPath = getApprovalHmacKeyPath();
     const key = readApprovalHmacKey(keyPath);
-    if (!key) return false;
+    if (!key) return null;
     const globPath = globalAttestationPath(keyPath);
-    if (!existsSync(globPath)) return false;
-    const parsed = JSON.parse(readFileSync(globPath, "utf-8")) as RestrictedFoldersAttestation | null;
+    if (!existsSync(globPath)) return null;
+    const parsed = JSON.parse(readFileSync(globPath, "utf-8")) as Partial<RestrictedFoldersAttestation> | null;
     const globSettingsPath = resolveCanonicalPath(getGlobalSettingsPath(), cwd);
-    return Boolean(
-      parsed?.sig && verifyFloorAttestationSig(key, "global", globSettingsPath, globalFolders, parsed.sig),
-    );
+    if (
+      parsed &&
+      typeof parsed.generation === "number" &&
+      typeof parsed.sig === "string" &&
+      verifyFloorAttestationSig(key, "global", globSettingsPath, parsed.generation, globalFolders, parsed.sig)
+    ) {
+      return parsed.generation;
+    }
+    return null;
   } catch {
-    return false;
+    return null;
+  }
+}
+
+function readCurrentGlobalAttestationGen(): number {
+  try {
+    const globPath = globalAttestationPath(getApprovalHmacKeyPath());
+    if (!existsSync(globPath)) return 0;
+    const parsed = JSON.parse(readFileSync(globPath, "utf-8")) as Partial<RestrictedFoldersAttestation> | null;
+    return typeof parsed?.generation === "number" && Number.isInteger(parsed.generation) && parsed.generation > 0
+      ? parsed.generation
+      : 0;
+  } catch {
+    return 0;
   }
 }
 
@@ -640,23 +769,28 @@ export function clearRestrictedFoldersFloor(cwd?: string): void {
 }
 
 onSettingsWritten((event) => {
-  // Only reset a floor when `restricted_folders` itself was updated via an authorized save.
+  // Only update floors when `restricted_folders` itself was saved via an authorized write.
   // Unrelated setting saves (e.g. `dco`, `image_model`) must never unpin restricted folders.
   if (event.changedKey !== "restricted_folders") return;
   const scope = event.scope ?? "project";
   const projectCwd = event.cwd ?? dirname(dirname(event.filePath));
-  recordAuthorizedRestrictedFoldersSave(scope, event.filePath, projectCwd);
-  if (scope === "global") {
-    getRestrictedFoldersFloor().delete(GLOBAL_FLOOR_KEY);
-    return;
-  }
-  clearRestrictedFoldersFloor(projectCwd);
+  const persistedGen = recordAuthorizedRestrictedFoldersSave(scope, event.filePath, projectCwd);
+  // Fail closed: if persisting the HMAC attestation failed, retain the existing floor!
+  if (persistedGen === null) return;
+
+  const liveFolders = readLiveFoldersFromSettingsFile(event.filePath);
+  const floorKey = scope === "global" ? GLOBAL_FLOOR_KEY : resolveProjectFloorKey(projectCwd);
+  getRestrictedFoldersFloor().set(floorKey, {
+    entries: new Set(liveFolders.map((e) => e.trim()).filter(Boolean)),
+    generation: persistedGen,
+  });
 });
 
 function reconcileScopeFloor(
   floorKey: string,
   diskEntries: readonly string[],
-  isAttested: () => boolean,
+  readVerifiedGen: () => number | null,
+  readCurrentGen: () => number,
 ): string[] {
   const seen = new Set<string>();
   const normalized: string[] = [];
@@ -669,14 +803,20 @@ function reconcileScopeFloor(
   }
 
   const floorMap = getRestrictedFoldersFloor();
-  let pinned = floorMap.get(floorKey);
-  if (!pinned) {
-    pinned = new Set<string>();
-    floorMap.set(floorKey, pinned);
+  let bucket = floorMap.get(floorKey);
+  if (!bucket) {
+    // Seed initial bucket at the current stored attestation generation so an old
+    // pre-existing attestation can never be replayed to clear newly loaded folders.
+    bucket = {
+      entries: new Set<string>(normalized),
+      generation: readCurrentGen(),
+    };
+    floorMap.set(floorKey, bucket);
+    return normalized;
   }
 
   let missingFromDisk = false;
-  for (const prev of pinned) {
+  for (const prev of bucket.entries) {
     if (!seen.has(prev)) {
       missingFromDisk = true;
       break;
@@ -684,14 +824,18 @@ function reconcileScopeFloor(
   }
 
   if (missingFromDisk) {
-    if (isAttested()) {
-      pinned.clear();
-      for (const entry of normalized) pinned.add(entry);
+    // Accept a shrink ONLY when a verified attestation exists with a generation STRICTLY
+    // newer than the generation represented by this process's pinned floor.
+    const attestedGen = readVerifiedGen();
+    if (attestedGen !== null && attestedGen > bucket.generation) {
+      bucket.entries.clear();
+      for (const entry of normalized) bucket.entries.add(entry);
+      bucket.generation = attestedGen;
       return normalized;
     }
 
     let restoredFromFloor = 0;
-    for (const prev of pinned) {
+    for (const prev of bucket.entries) {
       if (!seen.has(prev)) {
         seen.add(prev);
         normalized.push(prev);
@@ -706,8 +850,17 @@ function reconcileScopeFloor(
     }
   }
 
+  // Track any newly added folders and advance observed generation so a pre-existing
+  // attestation for an older empty list can never be replayed against newly pinned folders.
+  let added = false;
   for (const entry of normalized) {
-    pinned.add(entry);
+    if (!bucket.entries.has(entry)) {
+      bucket.entries.add(entry);
+      added = true;
+    }
+  }
+  if (added) {
+    bucket.generation = Math.max(bucket.generation, readCurrentGen());
   }
   return normalized;
 }
@@ -715,19 +868,26 @@ function reconcileScopeFloor(
 /**
  * Union global and project `restricted_folders` AND enforce separate monotonic floors
  * per scope (project keyed by canonical repository root; global keyed independently).
- * Authorized saves via `writeSettingsFile` record an HMAC-signed attestation so both the
- * saving process (from any subdirectory) and other running Pi processes honor legitimate
- * removals while external shell writes fail closed.
+ * Authorized saves via `writeSettingsFile` record a versioned HMAC-SHA256 attestation
+ * under a cross-process lock so both the saving process (from any subdirectory) and
+ * other running Pi processes honor legitimate removals while external tampering or
+ * replayed older signatures fail closed.
  */
 export function loadRestrictedFolders(cwd: string): string[] {
   const globalFolders = loadGlobalSettings().restricted_folders ?? [];
   const projectFolders = loadProjectSettings(cwd).restricted_folders ?? [];
 
-  const effectiveGlobal = reconcileScopeFloor(GLOBAL_FLOOR_KEY, globalFolders, () =>
-    hasValidGlobalAttestation(cwd, globalFolders),
+  const effectiveGlobal = reconcileScopeFloor(
+    GLOBAL_FLOOR_KEY,
+    globalFolders,
+    () => readVerifiedGlobalAttestationGen(cwd, globalFolders),
+    () => readCurrentGlobalAttestationGen(),
   );
-  const effectiveProject = reconcileScopeFloor(resolveProjectFloorKey(cwd), projectFolders, () =>
-    hasValidProjectAttestation(cwd, projectFolders),
+  const effectiveProject = reconcileScopeFloor(
+    resolveProjectFloorKey(cwd),
+    projectFolders,
+    () => readVerifiedProjectAttestationGen(cwd, projectFolders),
+    () => readCurrentProjectAttestationGen(cwd),
   );
 
   const seen = new Set<string>();
@@ -867,6 +1027,27 @@ const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 const SHELL_OPERATORS = new Set(["|", "||", "&&", ";", "&", "(", ")", "{", "}", "!", "then", "do", "done", "fi", "else", "elif"]);
 
 function stripOuterQuotes(s: string): string {
+  if (s.startsWith("$'") && s.endsWith("'") && s.length >= 3) {
+    return s
+      .slice(2, -1)
+      .replace(/\\0([0-7]{2,3})/g, (_, oct: string) => {
+        const code = Number.parseInt(oct, 8);
+        return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
+      })
+      .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex: string) => {
+        const code = Number.parseInt(hex, 16);
+        return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
+      })
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\r/g, "\r")
+      .replace(/\\'/g, "'")
+      .replace(/\\"/g, "\"")
+      .replace(/\\\\/g, "\\");
+  }
+  if (s.startsWith("$\"") && s.endsWith("\"") && s.length >= 3) {
+    return s.slice(2, -1);
+  }
   if ((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("'") && s.endsWith("'"))) {
     return s.slice(1, -1);
   }

@@ -6385,6 +6385,25 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
         });
 
+    const unwrapShellArgQuotes = (s: string): string => {
+      if (s.startsWith("$'") && s.endsWith("'") && s.length >= 3) {
+        return decodeSimpleEscapes(
+          s
+            .slice(2, -1)
+            .replace(/\\n/g, "\n")
+            .replace(/\\t/g, "\t")
+            .replace(/\\r/g, "\r")
+            .replace(/\\'/g, "'")
+            .replace(/\\"/g, "\"")
+            .replace(/\\\\/g, "\\"),
+        );
+      }
+      if (s.startsWith("$\"") && s.endsWith("\"") && s.length >= 3) {
+        return s.slice(2, -1);
+      }
+      return stripOuterQuotesSimple(s);
+    };
+
     const collapseFragments = (text: string): string =>
       decodeSimpleEscapes(text)
         // Shell adjacent quotes & empty-quote breaks: "pi-""config" / 'pi-''config' / .pi/"pi-config""-settings.json"
@@ -6644,13 +6663,13 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
               const tok = expandedTokens[i]!;
               if (tok === "--") break;
               if (/^-[a-zA-Z]*c$/.test(tok) && i + 1 < expandedTokens.length) {
-                const body = stripOuterQuotesSimple(expandedTokens[i + 1]!);
+                const body = unwrapShellArgQuotes(expandedTokens[i + 1]!);
                 if (body) nested.push(body);
                 i++;
               } else {
                 const attached = /^-[a-zA-Z]*c(.+)$/.exec(tok);
                 if (attached) {
-                  const body = stripOuterQuotesSimple(attached[1]!);
+                  const body = unwrapShellArgQuotes(attached[1]!);
                   if (body) nested.push(body);
                 }
               }

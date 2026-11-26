@@ -225,11 +225,11 @@ describe("restricted_folders schema + agent-edit protection (#1416)", () => {
 
     // Simulate Process B pinning ["secrets/prod"]
     assert.deepEqual(loadRestrictedFolders(repo), ["secrets/prod"]);
-    const floorMap = (globalThis as Record<symbol, Map<string, Set<string>>>)[
-      Symbol.for("pi-config.restrictedFoldersFloor.v1")
+    const floorMap = (globalThis as Record<symbol, Map<string, { entries: Set<string>; generation: number }>>)[
+      Symbol.for("pi-config.restrictedFoldersFloor.v2")
     ];
     const savedProcessBFloor = new Map(
-      [...floorMap.entries()].map(([k, v]) => [k, new Set(v)]),
+      [...floorMap.entries()].map(([k, v]) => [k, { entries: new Set(v.entries), generation: v.generation }]),
     );
 
     // Process A authorizes removal via updateSetting (writes HMAC attestation in shared state.db)
@@ -241,6 +241,82 @@ describe("restricted_folders schema + agent-edit protection (#1416)", () => {
     clearSettingsCache();
 
     // Process B verifies the HMAC attestation in shared state.db and accepts the removal
+    assert.deepEqual(loadRestrictedFolders(repo), []);
+  });
+
+  it("retains the local floor when persisting the HMAC attestation fails", () => {
+    const repo = trackTempDir("rf-floor-attest-fail-");
+    // Point HMAC key path at an existing directory so writing the key file fails with EISDIR
+    const blockingDir = path.join(repo, "unwritable-key-dir");
+    fs.mkdirSync(blockingDir, { recursive: true });
+    setApprovalHmacKeyPathForTests(blockingDir);
+
+    fs.mkdirSync(path.join(repo, ".pi"), { recursive: true });
+    const projSettings = path.join(repo, ".pi", "pi-config-settings.json");
+    fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: ["secrets/prod"] }));
+    setGlobalSettingsPath(path.join(repo, "nonexistent-global.json"));
+    clearSettingsCache();
+
+    assert.deepEqual(loadRestrictedFolders(repo), ["secrets/prod"]);
+
+    // Authorized save triggers attestation write which fails -> local floor must stay pinned!
+    assert.equal(updateSetting(repo, "project", "restricted_folders", []).ok, true);
+    clearSettingsCache();
+    assert.deepEqual(loadRestrictedFolders(repo), ["secrets/prod"]);
+  });
+
+  it("rejects replaying an older empty-list attestation after a folder is restored externally", () => {
+    const repo = trackTempDir("rf-floor-replay-");
+    setApprovalHmacKeyPathForTests(path.join(repo, ".test-hmac-key"));
+    fs.mkdirSync(path.join(repo, ".pi"), { recursive: true });
+    const projSettings = path.join(repo, ".pi", "pi-config-settings.json");
+    fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: ["secrets/prod"] }));
+    setGlobalSettingsPath(path.join(repo, "nonexistent-global.json"));
+    clearSettingsCache();
+
+    // 1. Initial load pins ["secrets/prod"] at gen 0; authorized save removes it (signs gen 1, [])
+    assert.deepEqual(loadRestrictedFolders(repo), ["secrets/prod"]);
+    assert.equal(updateSetting(repo, "project", "restricted_folders", []).ok, true);
+    assert.deepEqual(loadRestrictedFolders(repo), []);
+
+    // 2. Folder is restored externally (pinned at gen 1)
+    fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: ["secrets/prod"] }));
+    clearSettingsCache();
+    assert.deepEqual(loadRestrictedFolders(repo), ["secrets/prod"]);
+
+    // 3. Unauthorized external overwrite returns file to [] without a new authorized save
+    //    The old gen-1 attestation for [] must NOT clear the folder pinned at gen 1!
+    fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: [] }));
+    clearSettingsCache();
+    assert.deepEqual(loadRestrictedFolders(repo), ["secrets/prod"]);
+  });
+
+  it("attests the live on-disk folder list across overlapping authorized saves", () => {
+    const repo = trackTempDir("rf-floor-overlap-");
+    setApprovalHmacKeyPathForTests(path.join(repo, ".test-hmac-key"));
+    fs.mkdirSync(path.join(repo, ".pi"), { recursive: true });
+    const projSettings = path.join(repo, ".pi", "pi-config-settings.json");
+    fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: ["secrets/a", "secrets/b"] }));
+    setGlobalSettingsPath(path.join(repo, "nonexistent-global.json"));
+    clearSettingsCache();
+
+    // Reader pins original two folders at gen 0
+    assert.deepEqual(loadRestrictedFolders(repo), ["secrets/a", "secrets/b"]);
+    const floorMap = (globalThis as Record<symbol, Map<string, { entries: Set<string>; generation: number }>>)[
+      Symbol.for("pi-config.restrictedFoldersFloor.v2")
+    ];
+    const readerFloor = new Map(
+      [...floorMap.entries()].map(([k, v]) => [k, { entries: new Set(v.entries), generation: v.generation }]),
+    );
+
+    // Two overlapping authorized updates: first narrows to ["secrets/a"], second clears to []
+    assert.equal(updateSetting(repo, "project", "restricted_folders", ["secrets/a"]).ok, true);
+    assert.equal(updateSetting(repo, "project", "restricted_folders", []).ok, true);
+
+    // Reader retaining its original floor verifies the newer generation and accepts []
+    floorMap.clear();
+    for (const [k, v] of readerFloor) floorMap.set(k, v);
+    clearSettingsCache();
     assert.deepEqual(loadRestrictedFolders(repo), []);
   });
 
@@ -555,6 +631,7 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
       `bash -c 'cat "${tokenFile}"'`,
       `bash -c'cat "${tokenFile}"'`,
       `bash -c"cat ${tokenFile}"`,
+      `bash -c$'cat ${tokenFile}'`,
       `eval "cat '${tokenFile}'"`,
     ]) {
       const decision = await evaluateRestrictedFolderAccess({
@@ -592,6 +669,16 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
       homeDir: fakeHome,
     });
     assert.ok(directRead?.block);
+  });
+
+  it("blocks ANSI-C quoted attached bash -c deletion of state.db", async () => {
+    const root = trackTempDir("rf-ansic-bash-");
+    const res = await evaluateBashPolicy({
+      command: `bash -c$'rm .pi/data/state.db'`,
+      cwd: root,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
   });
 
   it("blocks indirect parameter expansion overwriting state.db", async () => {
