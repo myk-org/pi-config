@@ -876,6 +876,16 @@ interface CachedLayer {
 
 const layerCache = new Map<string, CachedLayer>();
 
+const settingsWrittenListeners = new Set<() => void>();
+
+/** Subscribe to authorized in-process settings writes (`writeSettingsFile`). */
+export function onSettingsWritten(listener: () => void): () => void {
+  settingsWrittenListeners.add(listener);
+  return () => {
+    settingsWrittenListeners.delete(listener);
+  };
+}
+
 /** Clear the unified settings cache (shared by getSetting, file-logger, TUI, and browser-ops). */
 export function clearSettingsCache(): void {
   layerCache.clear();
@@ -1366,6 +1376,13 @@ export function writeSettingsFile(
 
   // Always invalidate the unified cache after a successful write.
   clearSettingsCache();
+  for (const listener of settingsWrittenListeners) {
+    try {
+      listener();
+    } catch {
+      /* ignore listener errors */
+    }
+  }
 }
 
 export type UpdateSettingResult =

@@ -39,6 +39,9 @@ import {
   clearSessionApprovals as clearRestrictedFolderSessionApprovals,
   evaluateRestrictedFolderAccess,
   forgetApprovals,
+  isProtectedApprovalKeyPath,
+  loadRestrictedFolders,
+  normalizeToolPath,
 } from "./restricted-folders.js";
 import { getProjectStateDbPath } from "./state-db.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
@@ -100,6 +103,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
   pi.on("session_start", (_event, ctx) => {
     cachedTrailerSelection = null;
+    // Prime the monotonic restricted_folders floor at session start before any tool runs.
+    loadRestrictedFolders(ctx.cwd);
     if (getSetting(ctx.cwd, "comment_signature")) {
       const modelId = resolveCommentSignatureModelId((ctx as any).model?.id);
       process.env.PI_COMMENT_SIGNATURE = `Assisted-by: PI (${modelId})`;
@@ -172,7 +177,14 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
       const filePath: string | undefined = (event as any).input?.path;
       if (filePath) {
-        const resolvedPath = resolve(ctx.cwd, filePath);
+        const cleanFilePath = normalizeToolPath(filePath);
+        if (isProtectedApprovalKeyPath(cleanFilePath, ctx.cwd)) {
+          return {
+            block: true,
+            reason: "⛔ Direct access to .approval-hmac-key is blocked. Approval integrity keys are managed exclusively by the enforcement system.",
+          };
+        }
+        const resolvedPath = resolve(ctx.cwd, cleanFilePath);
         const realResolvedPath = nearestRealPath(resolvedPath);
         const reviewDbPath = statePath(ctx.cwd);
         const reviewDataDir = dirname(reviewDbPath);
@@ -196,7 +208,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             reason: "⛔ Direct modification of enforcement/review state storage (state.db / pi-config-review-state) blocked. State storage is managed by the enforcement system.",
           };
         }
-        const writeDecision = evaluateFileWritePolicy(filePath, ctx.cwd);
+        const writeDecision = evaluateFileWritePolicy(cleanFilePath, ctx.cwd);
         if (writeDecision) return writeDecision;
       }
 
@@ -211,13 +223,20 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       return undefined;
     }
 
-    // Restricted folder checks for read and search tools (read/grep/find/ls).
+    // Restricted folder & HMAC key checks for read and search tools (read/grep/find/ls).
     if (
       isToolCallEventType("read", event) ||
       isToolCallEventType("grep", event) ||
       isToolCallEventType("find", event) ||
       isToolCallEventType("ls", event)
     ) {
+      const targetPath: string | undefined = (event as any).input?.path;
+      if (targetPath && isProtectedApprovalKeyPath(targetPath, ctx.cwd)) {
+        return {
+          block: true,
+          reason: "⛔ Direct access to .approval-hmac-key is blocked. Approval integrity keys are managed exclusively by the enforcement system.",
+        };
+      }
       const restrictedRead = await evaluateRestrictedFolderAccess({
         toolName: event.toolName,
         input: (event as any).input || {},

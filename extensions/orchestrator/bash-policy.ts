@@ -5555,8 +5555,10 @@ export function evaluateFileWritePolicy(
   filePath: string,
   cwd: string,
 ): { block: true; reason: string } | undefined {
+  const normalizedPath = filePath.trim().replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+  const cleanPath = normalizedPath.startsWith("@") ? normalizedPath.slice(1) : normalizedPath;
   const toReal = (p: string): string => realpathNearestExisting(p) ?? p;
-  const resolved = resolve(cwd, filePath);
+  const resolved = resolve(cwd, cleanPath);
   const realResolved = toReal(resolved);
   const settingsTargets = getProtectedSettingsTargets(cwd);
   if (settingsTargets.has(resolved) || settingsTargets.has(realResolved)) {
@@ -6351,6 +6353,210 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         action: "block",
         reason:
           "\u26d4 Bash command targeting review state storage (pi-config-review-state / state.db) blocked. The review state is managed exclusively by the enforcement system.",
+      };
+    }
+  }
+
+  // Unconditional fail-closed protection for:
+  // 1. `.approval-hmac-key` (never readable or writable from shell)
+  // 2. `.pi/data/state.db*` & `restricted_folder_approvals` (persistent grants & state DB,
+  //    protected regardless of `review_loop_enforcement`)
+  // 3. `.pi/pi-config-settings*` / `~/.pi/pi-config-settings*` (carries `dangerous_command_allowlist`
+  //    and `restricted_folders` — protected even when assembled dynamically via shell variables,
+  //    adjacent quotes, string concatenation, globs, or inline scripts)
+  {
+    const stripOuterQuotesSimple = (s: string): string =>
+      (s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\""))
+        ? s.slice(1, -1)
+        : s;
+
+    const collapseFragments = (text: string): string =>
+      text
+        // Shell adjacent quotes & empty-quote breaks: "pi-""config" / 'pi-''config' / .pi/"pi-config""-settings.json"
+        .replace(/""|''/g, "")
+        // Script string concatenation: "pi-" + "config" / 'state.' + 'db' / "pi-" . "config"
+        .replace(/"\s*[+.]\s*"/g, "")
+        .replace(/'\s*[+.]\s*'/g, "")
+        // Inline quoted segments glued onto paths: .pi/"pi-config-settings.json" -> .pi/pi-config-settings.json
+        .replace(/([/.~-])["']([^"'\s;|&()]+)["']/g, "$1$2")
+        .replace(/["']([^"'\s;|&()]+)["']([/.~-])/g, "$1$2")
+        // Repeated slashes & /./ normalization
+        .replace(/\/{2,}/g, "/")
+        .replace(/\/\.(?=\/)/g, "");
+
+    const expandShellVars = (text: string, vars: Map<string, string>): string => {
+      if (vars.size === 0 || !text.includes("$")) return text;
+      return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)\b/g, (m, a, b) => {
+        const name = (a ?? b) as string;
+        return vars.has(name) ? vars.get(name)! : m;
+      });
+    };
+
+    const hmacKeyRe = /\.approval-hmac-key\b/i;
+    const settingsPathRe =
+      /(?:^|[\s"'`=:(/<>|;&,])(?:~\/|\/[^\s"'`;|&)]*\/|\.?\/)?\.pi\/(?:pi-config-settings[^\s"'`;|&)]*|pi-config-[^\s"'`;|&)]*[*?[{][^\s"'`;|&)]*|\*[^\s"'`;|&)]*settings[^\s"'`;|&)]*)/i;
+    const stateDbUncondRe =
+      /(?:^|[\s"'`=:(/<>|;&,])(?:~\/|\/[^\s"'`;|&)]*\/|\.?\/)?\.pi\/data\/state\.d(?:b(?:-wal|-shm)?|[?*[{][^\s"'`;|&)]*)/i;
+    const sqliteEngineRe = /\b(?:node:sqlite|databasesync|sqlite3|better-sqlite3)\b/i;
+    const scriptWriteRe = /\b(?:writeFileSync|writeFile|createWriteStream|open\s*\(|Path\s*\(|dump\s*\(|unlinkSync|rmSync|renameSync|truncateSync|shutil|os\.remove|os\.replace)\b/i;
+    const fileMutateOps = new Set(["rm", "unlink", "mv", "cp", "truncate", "dd", "shred", "install", "ln", "sed", "perl", "ruby"]);
+    const inlineRuntimeOps = new Set(["python", "python3", "node", "nodejs", "bun", "deno", "tsx", "perl", "ruby"]);
+
+    const checkProtectedSecurityStorage = (
+      script: string,
+      parentVars: Map<string, string>,
+      depth = 0,
+    ): "hmac" | "settings" | "state_db" | null => {
+      if (depth > 3) return null;
+      const defragFull = collapseFragments(script);
+      if (hmacKeyRe.test(defragFull)) return "hmac";
+
+      const vars = new Map(parentVars);
+      let sawPiFragmentVar = false;
+      let sawStateDbFragmentVar = false;
+
+      for (const seg of unquotedSegments(script)) {
+        const rawTokens = tokenize(seg.text);
+        if (rawTokens.length === 0) continue;
+
+        for (const tok of rawTokens) {
+          if (tok === "export" || tok === "local" || tok === "readonly" || tok === "declare" || tok === "typeset") {
+            continue;
+          }
+          const am = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(tok);
+          if (!am) break;
+          const val = collapseFragments(expandShellVars(stripOuterQuotesSimple(am[2]!), vars));
+          vars.set(am[1]!, val);
+          if (/\.pi\b|pi-config|settings\.json/i.test(val)) sawPiFragmentVar = true;
+          if (/\.pi\/data|state\.db|restricted_folder_approvals/i.test(val)) sawStateDbFragmentVar = true;
+        }
+
+        const expandedSeg = expandShellVars(seg.text, vars);
+        const defragSeg = collapseFragments(expandedSeg);
+        const maskedSeg = maskQuotedRegions(defragSeg);
+
+        if (hmacKeyRe.test(defragSeg)) return "hmac";
+
+        // 1. State DB & restricted_folder_approvals tamper check (unconditional)
+        const mentionsStateDb =
+          stateDbUncondRe.test(defragSeg) ||
+          /\brestricted_folder_approvals\b/i.test(defragSeg);
+        if (
+          sqliteEngineRe.test(defragSeg) &&
+          (mentionsStateDb ||
+            (/\.pi\/data\b/i.test(defragSeg) && !/\b(?:pr-)?reviews\.db\b/i.test(defragSeg)) ||
+            (sawStateDbFragmentVar && /\$(?:\{[A-Za-z_]|[A-Za-z_])/.test(expandedSeg)))
+        ) {
+          return "state_db";
+        }
+        if (
+          mentionsStateDb &&
+          (bashWritesToPath(defragSeg, maskedSeg, "\\.pi/data/state\\.d(?:b(?:-wal|-shm)?|[?*[{][^\\s\"'`;|&)]*)") ||
+            /(?:>>?|>\|)\s*["']?[^\s"'`;|&)]*\.pi\/data\/state\.d/i.test(maskedSeg))
+        ) {
+          return "state_db";
+        }
+
+        // 2. pi-config-settings write check (handles fragmented / variable-assembled paths!)
+        const mentionsSettingsPath =
+          settingsPathRe.test(defragSeg) || /\bpi-config-settings\b/i.test(defragSeg);
+        if (
+          mentionsSettingsPath &&
+          (bashWritesToPath(defragSeg, maskedSeg, "pi-config-settings") ||
+            /(?:>>?|>\|)\s*["']?[^\s"'`;|&)]*\.pi\/pi-config-settings/i.test(defragSeg))
+        ) {
+          return "settings";
+        }
+        // Fail closed when a shell redirect (`>` / `>>` / `tee` / `sponge`) writes into `.pi/` via
+        // unresolved variables or globs after an earlier `.pi`/settings fragment assignment.
+        if (
+          sawPiFragmentVar &&
+          /(?:>>?|>\|)\s*["']?[^\s"'`;|&)]*(?:\.pi\/|\$)|(?:^|[\s;&|(])(?:tee|sponge)(?:\s+-[A-Za-z-]+)*\s+["']?[^\s"'`;|&)]*(?:\.pi\/|\$)/i.test(
+            expandedSeg,
+          )
+        ) {
+          return "settings";
+        }
+
+        const expandedTokens = tokenize(expandedSeg);
+        if (expandedTokens.length === 0) continue;
+        const cmdIdx = skipToCommandWord(expandedTokens);
+        const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
+
+        // Direct file-mutating commands targeting state.db (note: settings `cp`/interpreter
+        // co-occurrence is intentionally kept out of the narrow text guard per PR #950;
+        // restricted_folders enforces a monotonic in-process floor against external tampering).
+        if (fileMutateOps.has(cmdWord)) {
+          if (mentionsStateDb || (sawStateDbFragmentVar && /\$(?:\{[A-Za-z_]|[A-Za-z_])/.test(expandedSeg))) {
+            return "state_db";
+          }
+        }
+
+        // Inline scripts (`python3 -c`, `node -e`, etc.) constructing `.pi/data/state.db` / `restricted_folder_approvals`
+        if (inlineRuntimeOps.has(cmdWord)) {
+          const isWriteScript = scriptWriteRe.test(defragSeg) || /\bw\b|['"]w['"]|['"]w\+['"]|['"]a['"]/.test(defragSeg);
+          if (
+            (isWriteScript || sqliteEngineRe.test(defragSeg) || /\bsqlite\b/i.test(defragSeg)) &&
+            (mentionsStateDb ||
+              (/\.pi\b/i.test(defragSeg) &&
+                /(?:state\.db|restricted_folder_approvals)/i.test(defragSeg)) ||
+              (/join\s*\([^)]*\.pi/i.test(defragSeg) && /\bdata\b/i.test(defragSeg)))
+          ) {
+            return "state_db";
+          }
+        }
+
+        // Recurse into nested shells (`bash -c`, `sh -c`, `eval`)
+        if (cmdWord === "eval" || runsNestedShell(expandedTokens)) {
+          const nested: string[] = [];
+          if (cmdWord === "eval") {
+            const evalArgs: string[] = [];
+            for (let i = cmdIdx + 1; i < expandedTokens.length; i++) {
+              const t = expandedTokens[i]!;
+              if (evalArgs.length === 0 && t === "--") continue;
+              evalArgs.push(stripOuterQuotesSimple(t));
+            }
+            if (evalArgs.length > 0) nested.push(evalArgs.join(" "));
+          } else {
+            for (let i = cmdIdx + 1; i < expandedTokens.length - 1; i++) {
+              if (/^-[a-zA-Z]*c$/.test(expandedTokens[i]!)) {
+                const body = stripOuterQuotesSimple(expandedTokens[i + 1]!);
+                if (body) nested.push(body);
+              }
+            }
+          }
+          for (const inner of nested) {
+            const innerHit = checkProtectedSecurityStorage(inner, vars, depth + 1);
+            if (innerHit) return innerHit;
+          }
+        }
+      }
+      return null;
+    };
+
+    const storageHit = checkProtectedSecurityStorage(command, new Map());
+    if (storageHit === "hmac") {
+      enfLog.warn("approval_hmac_key_bash_blocked");
+      return {
+        action: "block",
+        reason:
+          "\u26d4 Access to .approval-hmac-key is blocked. Approval integrity keys are managed exclusively by the enforcement system.",
+      };
+    }
+    if (storageHit === "settings") {
+      enfLog.warn("protected_settings_bash_write_blocked");
+      return {
+        action: "block",
+        reason:
+          "\u26d4 Bash command writing pi-config-settings blocked — it carries the dangerous-command allowlist and restricted folders. Change settings via the /pi-config-settings command or your own editor.",
+      };
+    }
+    if (storageHit === "state_db") {
+      enfLog.warn("state_db_bash_tamper_blocked");
+      return {
+        action: "block",
+        reason:
+          "\u26d4 Bash command targeting enforcement state storage (.pi/data/state.db / restricted_folder_approvals) blocked. State storage is managed exclusively by the enforcement system.",
       };
     }
   }

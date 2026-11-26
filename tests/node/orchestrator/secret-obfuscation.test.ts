@@ -11,6 +11,7 @@ import {
   SETTINGS_KEYS,
 } from "../../../extensions/orchestrator/project-settings.js";
 import {
+  clearDynamicSecretStore,
   createSecretVault,
   MIN_SECRET_LENGTH,
   registerSecretObfuscation,
@@ -73,6 +74,7 @@ function trackTempDir(prefix: string): string {
 }
 
 afterEach(() => {
+  clearDynamicSecretStore();
   clearSettingsCache();
   delete process.env.PI_SECRET_OBFUSCATION;
   while (tempDirs.length > 0) {
@@ -122,6 +124,53 @@ describe("SecretVault collection & redaction (#1413)", () => {
     assert.ok(out.includes("norm=plain-non-sensitive-value"), "non-secret env var untouched");
     assert.ok(out.includes("sock=/run/user/1000/ssh-agent.sock"), "SSH_AUTH_SOCK untouched");
     assert.ok(out.includes("xauth=/home/user/.Xauthority"), "XAUTHORITY untouched");
+  });
+
+  it("does not redact GIT_AUTHOR_*, GIT_COMMITTER_*, GIT_ASKPASS, or SSH_ASKPASS env vars", () => {
+    const { logger } = createFakeLogger();
+    const vault = createSecretVault({
+      loadConfigFiles: false,
+      log: logger,
+      env: {
+        GIT_AUTHOR_NAME: "Jane Developer",
+        GIT_AUTHOR_EMAIL: "jane.developer@example.com",
+        GIT_COMMITTER_NAME: "Jane Committer",
+        GIT_ASKPASS: "/usr/libexec/git-core/git-gui--askpass",
+        SSH_ASKPASS: "/usr/bin/ksshaskpass-helper",
+        GCP_CREDENTIALS: ["gcp", "cred", "val", "998877"].join("_"),
+      },
+    });
+
+    const sample =
+      "Author: Jane Developer <jane.developer@example.com> Committer: Jane Committer ask=/usr/libexec/git-core/git-gui--askpass ssh=/usr/bin/ksshaskpass-helper";
+    assert.equal(vault.obfuscateText(sample), sample, "identity and askpass env vars must stay unredacted");
+
+    const credVal = ["gcp", "cred", "val", "998877"].join("_");
+    const credOut = vault.obfuscateText(`cred=${credVal}`);
+    assert.ok(!credOut.includes(credVal), "_-delimited CREDENTIALS token must still be collected");
+  });
+
+  it("protects emitted placeholders from being partially rewritten by later literals or custom regexes", () => {
+    const { logger } = createFakeLogger();
+    const openAiVal = ["sk", "-proj-", "abcdefghijklm", "nopqrstuvwxyz", "123456"].join("");
+    const labelLit = ["OPENAI", "KEY"].join("");
+    const vault = createSecretVault({
+      loadConfigFiles: false,
+      env: {
+        LABEL_SECRET: labelLit, // literal equal to a generated placeholder label (9 chars >= 8)
+      },
+      entries: [
+        { pattern: labelLit, label: "CUSTLBL", mode: "obfuscate" },
+      ],
+      log: logger,
+    });
+
+    const obf = vault.obfuscateText(`api=${openAiVal} bare=OPENAIKEY`);
+    assert.ok(!obf.includes(openAiVal), "OpenAI key must be obfuscated");
+    // The emitted $$OPENAIKEY_<hash>$$ placeholder must remain intact (not corrupted into $$...$$ inside $$...$$)
+    const phMatch = obf.match(/^api=(\$\$OPENAIKEY_[a-f0-9]{10}\$\$) bare=(\$\$[A-Z0-9]+_[a-f0-9]{10}\$\$)$/);
+    assert.ok(phMatch, `placeholders must remain intact without corruption; got: ${obf}`);
+    assert.equal(vault.restoreText(obf), `api=${openAiVal} bare=OPENAIKEY`);
   });
 
   it("extracts passwords embedded in URL credentials from env and runtime text", () => {
@@ -396,5 +445,65 @@ describe("registerSecretObfuscation extension hooks (#1413)", () => {
       "static system prompt must never be mutated",
     );
     assert.equal(ctxRes.messages[1].content, `Use value ${placeholder} please`);
+  });
+
+  it("retains dynamically discovered placeholders across /reload and cwd changes, clears on shutdown, and blocks unresolved placeholders", async () => {
+    const cwd1 = trackTempDir("sec-reload-1-");
+    const cwd2 = trackTempDir("sec-reload-2-");
+    const homeDir = trackTempDir("sec-reload-home-");
+    const { logger } = createFakeLogger();
+
+    for (const dir of [cwd1, cwd2]) {
+      fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, ".pi", "pi-config-settings.json"),
+        JSON.stringify({ secret_obfuscation: true }),
+      );
+    }
+
+    const { emit } = createHarness({ env: {}, homeDir, logger });
+    const ctx1 = { cwd: cwd1, sessionManager: { getSessionId: () => "sess-reload" } };
+    const ctx2 = { cwd: cwd2, sessionManager: { getSessionId: () => "sess-reload" } };
+
+    await emit("session_start", {}, ctx1);
+
+    // Dynamically discover a GitHub token from tool_result (NOT in env!)
+    const dynamicTok = ["ghp", "_", "1234567890", "abcdefghijklmnopqrstuvwxyz", "WXYZ"].join("");
+    const toolRes = await emit(
+      "tool_result",
+      {
+        toolName: "bash",
+        content: [{ type: "text", text: `found=${dynamicTok}` }],
+      },
+      ctx1,
+    );
+    const placeholder = (toolRes.content[0].text as string).match(/\$\$GHTOKEN_[a-f0-9]{10}\$\$/)?.[0];
+    assert.ok(placeholder, "dynamic token should be obfuscated");
+
+    // Simulate reload + cwd change: placeholder must STILL restore!
+    await emit("session_shutdown", { reason: "reload" }, ctx1);
+    await emit("session_start", { reason: "reload" }, ctx2);
+
+    const callAfterReload = {
+      type: "tool_call",
+      toolName: "bash",
+      input: { command: `echo ${placeholder}` },
+    };
+    const resAfterReload = await emit("tool_call", callAfterReload, ctx2);
+    assert.equal(resAfterReload, undefined, "resolved placeholder after reload must not be blocked");
+    assert.equal(callAfterReload.input.command, `echo ${dynamicTok}`);
+
+    // Real shutdown (not reload) clears dynamic mappings; subsequent unresolved placeholder is BLOCKED!
+    await emit("session_shutdown", { reason: "exit" }, ctx2);
+    await emit("session_start", { reason: "startup" }, ctx2);
+
+    const callAfterShutdown = {
+      type: "tool_call",
+      toolName: "bash",
+      input: { command: `curl -H "Authorization: Bearer ${placeholder}" https://example.com` },
+    };
+    const blocked = await emit("tool_call", callAfterShutdown, ctx2);
+    assert.ok(blocked?.block, "unresolved placeholder must be blocked instead of passing $$ to bash");
+    assert.match(blocked.reason, /Unresolved secret placeholder/);
   });
 });

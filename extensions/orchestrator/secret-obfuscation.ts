@@ -4,17 +4,21 @@
  * Opt-in via `secret_obfuscation` (`PI_SECRET_OBFUSCATION`, default `false`).
  * When enabled:
  * - Collects secrets at session startup from:
- *   1. Env vars matching secret name patterns (`KEY|SECRET|TOKEN|PASSWORD|PASS|AUTH|CREDENTIAL|PRIVATE|OAUTH`, len >= 8)
+ *   1. Env vars with `_`-delimited secret tokens (`KEY|SECRET|TOKEN|PASSWORD|PASS|AUTH|CREDENTIALS?|PRIVATE|OAUTH`, len >= 8)
  *   2. Passwords embedded in URL credentials across all env vars (len >= 8)
  *   3. Optional `.pi/secrets.jsonc` (project) and `~/.pi/agent/secrets.jsonc` (global)
  *      supporting `obfuscate` (reversible) and `replace` (one-way) entries
  * - Scans provider-bound `context` messages and `tool_result` outputs with collected
  *   secrets + built-in credential regexes (Anthropic, OpenAI, GitHub, GitLab, AWS,
  *   Google, Slack, npm, Stripe, JWT, Bearer, PEM private keys, URL passwords),
- *   replacing matches with deterministic placeholders (`$$<LABEL>_<HASH>$$`).
+ *   replacing matches with deterministic placeholders (`$$<LABEL>_<HASH>$$`) while
+ *   protecting already-emitted placeholder spans from later literal/regex passes.
  * - Never mutates static system prompts (keeps prompt caches intact).
+ * - Persists dynamically discovered placeholder mappings across `/reload` and cwd
+ *   changes on `globalThis` (cleared on non-reload `session_shutdown`).
  * - Reversibly restores placeholders in model-authored `tool_call` arguments right
- *   before execution (never restoring one-way `replace` substitutions).
+ *   before execution (never restoring one-way `replace` substitutions), and blocks
+ *   calls if an unresolved reversible placeholder remains (preventing `$$` PID expansion).
  */
 
 import { createHash } from "node:crypto";
@@ -33,20 +37,69 @@ const defaultLog = createLogger("secret-obfuscation");
 /** Minimum character length required in reversible obfuscate mode to avoid redacting ordinary short words. */
 export const MIN_SECRET_LENGTH = 8;
 
-const SECRET_ENV_NAME_RE = /KEY|SECRET|TOKEN|PASSWORD|PASS|AUTH|CREDENTIAL|PRIVATE|OAUTH/i;
+/** Match whole `_`-delimited env-var tokens so GIT_AUTHOR_* and *_ASKPASS are never misclassified. */
+const SECRET_ENV_NAME_RE =
+  /(?:^|_)(?:KEY|SECRET|TOKEN|PASSWORD|PASS|AUTH|CREDENTIALS?|PRIVATE|OAUTH)(?:_|$)/i;
 
-/** Well-known local socket/path env vars whose names match AUTH/KEY but are not credentials. */
+/** Well-known non-secret identity, askpass, socket, and keymap env vars. */
 const IGNORED_ENV_NAMES = new Set([
   "SSH_AUTH_SOCK",
   "XAUTHORITY",
   "DBUS_SESSION_BUS_ADDRESS",
   "KEYMAP",
   "LESSKEY",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_AUTHOR_DATE",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+  "GIT_COMMITTER_DATE",
 ]);
+
+function isIgnoredEnvName(name: string): boolean {
+  return (
+    IGNORED_ENV_NAMES.has(name) ||
+    name.startsWith("GIT_AUTHOR_") ||
+    name.startsWith("GIT_COMMITTER_")
+  );
+}
 
 const PLACEHOLDER_TOKEN_RE = /\$\$[A-Z0-9]+_[a-f0-9]{10,64}\$\$/g;
 const PLACEHOLDER_EXACT_RE = /^\$\$[A-Z0-9]+_[a-f0-9]{10,64}\$\$$/;
 const URL_CREDENTIAL_EXTRACT_RE = /\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/\s:@]+:([^/\s@]{8,})@[^\s"'`<>]+/g;
+
+// ── Process-lifetime dynamic placeholder store (survives /reload & cwd changes) ──
+
+const DYNAMIC_STORE_SYMBOL = Symbol.for("pi-config.secretObfuscationDynamicStore.v1");
+const DEFAULT_VAULT_BUCKET = "__process__";
+
+type DynamicMappingBucket = Map<string, string>; // placeholder -> secret
+
+function getDynamicStore(): Map<string, DynamicMappingBucket> {
+  const g = globalThis as Record<symbol, Map<string, DynamicMappingBucket> | undefined>;
+  let store = g[DYNAMIC_STORE_SYMBOL];
+  if (!store) {
+    store = new Map();
+    g[DYNAMIC_STORE_SYMBOL] = store;
+  }
+  return store;
+}
+
+function dynamicBucketKey(sessionId?: string | null): string {
+  return typeof sessionId === "string" && sessionId.trim() !== "" ? sessionId : DEFAULT_VAULT_BUCKET;
+}
+
+/** Clear persisted dynamic secret mappings (called on non-reload session_shutdown and in tests). */
+export function clearDynamicSecretStore(sessionId?: string | null): void {
+  const store = getDynamicStore();
+  if (sessionId === undefined) {
+    store.clear();
+    return;
+  }
+  store.delete(dynamicBucketKey(sessionId));
+}
 
 interface BuiltinRegexRule {
   label: string;
@@ -131,6 +184,10 @@ export interface SecretVaultOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  /** Optional session ID used to retain dynamically discovered mappings across `/reload` and cwd changes. */
+  sessionId?: string | null;
+  /** Set `true` to seed/persist dynamically discovered mappings on `globalThis` (used by `registerSecretObfuscation`). */
+  persistDynamicMappings?: boolean;
   /** Optional explicit config entries (in addition to `.pi/secrets.jsonc` / `~/.pi/agent/secrets.jsonc`). */
   entries?: SecretConfigEntry[];
   /** Set `false` to skip reading `.pi/secrets.jsonc` and `~/.pi/agent/secrets.jsonc` from disk. */
@@ -171,6 +228,29 @@ function compileGlobalRegex(pattern: string, flags?: string): RegExp | null {
 
 function isPlaceholderToken(value: string): boolean {
   return PLACEHOLDER_EXACT_RE.test(value);
+}
+
+/**
+ * Apply `transform` ONLY to text spans outside intact `$$<LABEL>_<HEX>$$` placeholders
+ * so later literal or regex passes can never rewrite substrings of emitted placeholders.
+ */
+function transformOutsidePlaceholders(text: string, transform: (segment: string) => string): string {
+  if (!text.includes("$$")) return transform(text);
+  PLACEHOLDER_TOKEN_RE.lastIndex = 0;
+  let out = "";
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PLACEHOLDER_TOKEN_RE.exec(text)) !== null) {
+    if (m.index > lastIndex) {
+      out += transform(text.slice(lastIndex, m.index));
+    }
+    out += m[0];
+    lastIndex = m.index + m[0].length;
+  }
+  if (lastIndex < text.length) {
+    out += transform(text.slice(lastIndex));
+  }
+  return out;
 }
 
 /** Parse `.pi/secrets.jsonc` or `~/.pi/agent/secrets.jsonc`. Fail-soft on missing/malformed files. */
@@ -224,6 +304,7 @@ export class SecretVault {
   private readonly replaceRegexes: CompiledReplaceRegex[] = [];
   private readonly oneWayReplacements = new Set<string>(["[REDACTED]"]);
   private readonly obfuscateRegexes: CompiledObfuscateRegex[] = [];
+  private readonly dynamicBucket: DynamicMappingBucket | null;
   private sortedLiterals: string[] = [];
   private literalsDirty = false;
   private readonly log: Logger;
@@ -233,6 +314,19 @@ export class SecretVault {
     const env = options.env ?? process.env;
     const cwd = options.cwd;
     const home = options.homeDir ?? homedir();
+
+    if (options.persistDynamicMappings) {
+      const store = getDynamicStore();
+      const key = dynamicBucketKey(options.sessionId);
+      let bucket = store.get(key);
+      if (!bucket) {
+        bucket = new Map();
+        store.set(key, bucket);
+      }
+      this.dynamicBucket = bucket;
+    } else {
+      this.dynamicBucket = null;
+    }
 
     // 1. Collect explicit & config-file entries first so one-way `replace` rules
     //    take precedence over reversible env collection if the same secret overlaps.
@@ -292,12 +386,25 @@ export class SecretVault {
     // Sort one-way literal replacements longest-first to avoid partial substring clobbering.
     this.replaceLiterals.sort((a, b) => b.value.length - a.value.length);
 
-    // 2. Collect secrets from environment variables.
+    // 2. Seed any previously discovered dynamic placeholder->secret mappings so
+    //    rebuilds after `/reload` or cwd changes still restore existing placeholders.
+    if (this.dynamicBucket) {
+      for (const [placeholder, secret] of this.dynamicBucket) {
+        if (oneWayValues.has(secret) || this.oneWayReplacements.has(placeholder)) continue;
+        if (!this.placeholderToSecret.has(placeholder) && !this.secretToPlaceholder.has(secret)) {
+          this.placeholderToSecret.set(placeholder, secret);
+          this.secretToPlaceholder.set(secret, placeholder);
+          this.literalsDirty = true;
+        }
+      }
+    }
+
+    // 3. Collect secrets from environment variables.
     let envSecretCount = 0;
     let urlPasswordCount = 0;
     for (const [name, value] of Object.entries(env)) {
       if (typeof value !== "string" || value.length < MIN_SECRET_LENGTH) continue;
-      if (IGNORED_ENV_NAMES.has(name)) continue;
+      if (isIgnoredEnvName(name)) continue;
 
       if (SECRET_ENV_NAME_RE.test(name) && !oneWayValues.has(value)) {
         if (this.registerSecret(value, normalizeLabel(name, "ENV"))) {
@@ -360,6 +467,9 @@ export class SecretVault {
 
     this.secretToPlaceholder.set(secret, placeholder);
     this.placeholderToSecret.set(placeholder, secret);
+    if (this.dynamicBucket) {
+      this.dynamicBucket.set(placeholder, secret);
+    }
     this.literalsDirty = true;
     return placeholder;
   }
@@ -374,6 +484,11 @@ export class SecretVault {
     return this.placeholderToSecret.get(placeholder);
   }
 
+  /** True if `token` was intentionally emitted by a one-way `replace` rule. */
+  isOneWayReplacement(token: string): boolean {
+    return this.oneWayReplacements.has(token);
+  }
+
   private getSortedLiterals(): string[] {
     if (this.literalsDirty) {
       this.sortedLiterals = [...this.secretToPlaceholder.keys()].sort((a, b) => b.length - a.length);
@@ -382,7 +497,10 @@ export class SecretVault {
     return this.sortedLiterals;
   }
 
-  /** Obfuscate secrets in `text`, applying one-way replacements first, then reversible secrets + regexes. */
+  /**
+   * Obfuscate secrets in `text`, applying one-way replacements first, then reversible
+   * literals + regexes strictly outside already-emitted placeholder spans.
+   */
   obfuscateText(text: string): string {
     if (!text) return text;
     let result = text;
@@ -390,55 +508,64 @@ export class SecretVault {
     // 1. One-way `replace` literals (longest-first; never added to reverse map).
     for (const rule of this.replaceLiterals) {
       if (result.includes(rule.value)) {
-        result = result.split(rule.value).join(rule.replacement);
+        result = transformOutsidePlaceholders(result, (seg) =>
+          seg.includes(rule.value) ? seg.split(rule.value).join(rule.replacement) : seg,
+        );
       }
     }
 
     // 2. One-way `replace` regexes (never added to reverse map; replacer fn prevents `$` expansion).
     for (const rule of this.replaceRegexes) {
-      rule.regex.lastIndex = 0;
-      result = result.replace(rule.regex, () => rule.replacement);
+      result = transformOutsidePlaceholders(result, (seg) => {
+        rule.regex.lastIndex = 0;
+        return seg.replace(rule.regex, () => rule.replacement);
+      });
     }
 
-    // 3. Known literal reversible secrets (longest-first).
+    // 3. Known literal reversible secrets (longest-first, strictly outside existing placeholders).
     const literals = this.getSortedLiterals();
     for (const secret of literals) {
       if (result.includes(secret)) {
         const placeholder = this.secretToPlaceholder.get(secret)!;
-        result = result.split(secret).join(placeholder);
+        result = transformOutsidePlaceholders(result, (seg) =>
+          seg.includes(secret) ? seg.split(secret).join(placeholder) : seg,
+        );
       }
     }
 
-    // 4. Built-in credential regexes (dynamically register newly seen secrets).
+    // 4. Built-in credential regexes (dynamically register newly seen secrets outside placeholders).
     for (const rule of BUILTIN_CREDENTIAL_RULES) {
-      rule.regex.lastIndex = 0;
-      if (rule.secretGroup === 2) {
-        result = result.replace(rule.regex, (full, prefix: string, secret: string, suffix?: string) => {
-          if (!secret || secret.length < MIN_SECRET_LENGTH || isPlaceholderToken(secret)) {
-            return full;
-          }
-          const placeholder = this.registerSecret(secret, rule.label);
-          if (!placeholder) return full;
-          return `${prefix}${placeholder}${typeof suffix === "string" ? suffix : ""}`;
-        });
-      } else {
-        result = result.replace(rule.regex, (match: string) => {
+      result = transformOutsidePlaceholders(result, (seg) => {
+        rule.regex.lastIndex = 0;
+        if (rule.secretGroup === 2) {
+          return seg.replace(rule.regex, (full, prefix: string, secret: string, suffix?: string) => {
+            if (!secret || secret.length < MIN_SECRET_LENGTH || isPlaceholderToken(secret)) {
+              return full;
+            }
+            const placeholder = this.registerSecret(secret, rule.label);
+            if (!placeholder) return full;
+            return `${prefix}${placeholder}${typeof suffix === "string" ? suffix : ""}`;
+          });
+        }
+        return seg.replace(rule.regex, (match: string) => {
           if (!match || match.length < MIN_SECRET_LENGTH || isPlaceholderToken(match)) {
             return match;
           }
           return this.registerSecret(match, rule.label) ?? match;
         });
-      }
+      });
     }
 
-    // 5. Custom reversible regexes from secrets.jsonc.
+    // 5. Custom reversible regexes from secrets.jsonc (strictly outside placeholders).
     for (const rule of this.obfuscateRegexes) {
-      rule.regex.lastIndex = 0;
-      result = result.replace(rule.regex, (match: string) => {
-        if (!match || match.length < MIN_SECRET_LENGTH || isPlaceholderToken(match)) {
-          return match;
-        }
-        return this.registerSecret(match, rule.label) ?? match;
+      result = transformOutsidePlaceholders(result, (seg) => {
+        rule.regex.lastIndex = 0;
+        return seg.replace(rule.regex, (match: string) => {
+          if (!match || match.length < MIN_SECRET_LENGTH || isPlaceholderToken(match)) {
+            return match;
+          }
+          return this.registerSecret(match, rule.label) ?? match;
+        });
       });
     }
 
@@ -450,6 +577,33 @@ export class SecretVault {
     if (!text || !text.includes("$$") || this.placeholderToSecret.size === 0) return text;
     PLACEHOLDER_TOKEN_RE.lastIndex = 0;
     return text.replace(PLACEHOLDER_TOKEN_RE, (token) => this.placeholderToSecret.get(token) ?? token);
+  }
+
+  /** Collect any `$$<LABEL>_<HEX>$$` tokens in `input` that were NOT restored and are NOT one-way replacements. */
+  findUnresolvedPlaceholders(input: unknown, seen = new WeakSet<object>(), out: string[] = []): string[] {
+    if (typeof input === "string") {
+      if (!input.includes("$$")) return out;
+      PLACEHOLDER_TOKEN_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = PLACEHOLDER_TOKEN_RE.exec(input)) !== null) {
+        const token = m[0];
+        if (!this.placeholderToSecret.has(token) && !this.oneWayReplacements.has(token)) {
+          if (!out.includes(token)) out.push(token);
+        }
+      }
+      return out;
+    }
+    if (!input || typeof input !== "object") return out;
+    if (seen.has(input)) return out;
+    seen.add(input);
+    if (Array.isArray(input)) {
+      for (const el of input) this.findUnresolvedPlaceholders(el, seen, out);
+      return out;
+    }
+    for (const val of Object.values(input as Record<string, unknown>)) {
+      this.findUnresolvedPlaceholders(val, seen, out);
+    }
+    return out;
   }
 
   /** Copy-on-write recursive obfuscation for arbitrary JSON-like values (e.g. structuredContent, toolCall args). */
@@ -670,10 +824,20 @@ export interface RegisterSecretObfuscationOptions {
   log?: Logger;
 }
 
+function sessionIdOf(ctx: any): string | null {
+  try {
+    const id = ctx?.sessionManager?.getSessionId?.();
+    return typeof id === "string" && id.trim() !== "" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Register reversible secret obfuscation hooks on the Pi extension API:
- * - `session_start`: collect secrets when `secret_obfuscation` is enabled
- * - `tool_call`: restore placeholders in `event.input` before enforcement/execution
+ * - `session_start`: collect secrets when `secret_obfuscation` is enabled (retaining dynamic mappings across reload/cwd changes)
+ * - `session_shutdown`: clear persisted dynamic mappings unless `reason === "reload"`
+ * - `tool_call`: restore placeholders in `event.input` before enforcement/execution; block unresolved placeholders
  * - `tool_result`: obfuscate tool outputs before persistence/spill/LLM delivery
  * - `context`: obfuscate provider-bound conversation messages (never system prompts)
  */
@@ -684,19 +848,26 @@ export function registerSecretObfuscation(
   const log = options.log ?? defaultLog;
   let vault: SecretVault | null = null;
   let vaultCwd: string | null = null;
+  let vaultSessionKey: string | null = null;
 
-  function ensureVault(cwd: string): SecretVault | null {
+  function ensureVault(ctx: any): SecretVault | null {
+    const cwd = ctx.cwd;
     if (!getSetting(cwd, "secret_obfuscation")) {
       return null;
     }
-    if (!vault || vaultCwd !== cwd) {
+    const sid = sessionIdOf(ctx);
+    const key = dynamicBucketKey(sid);
+    if (!vault || vaultCwd !== cwd || vaultSessionKey !== key) {
       vault = new SecretVault({
         cwd,
         env: options.env,
         homeDir: options.homeDir,
+        sessionId: sid,
+        persistDynamicMappings: true,
         log,
       });
       vaultCwd = cwd;
+      vaultSessionKey = key;
     }
     return vault;
   }
@@ -704,31 +875,56 @@ export function registerSecretObfuscation(
   pi.on("session_start", (_event, ctx) => {
     vault = null;
     vaultCwd = null;
+    vaultSessionKey = null;
     if (getSetting(ctx.cwd, "secret_obfuscation")) {
+      const sid = sessionIdOf(ctx);
       vault = new SecretVault({
         cwd: ctx.cwd,
         env: options.env,
         homeDir: options.homeDir,
+        sessionId: sid,
+        persistDynamicMappings: true,
         log,
       });
       vaultCwd = ctx.cwd;
+      vaultSessionKey = dynamicBucketKey(sid);
     }
   });
 
+  pi.on("session_shutdown", (event: any, ctx: any) => {
+    if (event?.reason === "reload") return;
+    clearDynamicSecretStore(sessionIdOf(ctx));
+    vault = null;
+    vaultCwd = null;
+    vaultSessionKey = null;
+  });
+
   pi.on("tool_call", (event, ctx) => {
-    const activeVault = ensureVault(ctx.cwd);
+    const activeVault = ensureVault(ctx);
     if (!activeVault) return undefined;
-    const restored = activeVault.restoreToolInput((event as { input?: unknown }).input);
+    const input = (event as { input?: unknown }).input;
+    const restored = activeVault.restoreToolInput(input);
+    const toolName = (event as { toolName?: string }).toolName ?? "unknown";
     if (restored) {
-      log.debug("secret_obfuscation_tool_call_restored", {
-        toolName: (event as { toolName?: string }).toolName ?? "unknown",
+      log.debug("secret_obfuscation_tool_call_restored", { toolName });
+    }
+    const unresolved = activeVault.findUnresolvedPlaceholders(input);
+    if (unresolved.length > 0) {
+      log.warn("secret_obfuscation_unresolved_placeholder_blocked", {
+        toolName,
+        count: unresolved.length,
+        placeholders: unresolved,
       });
+      return {
+        block: true,
+        reason: `⛔ Unresolved secret placeholder (${unresolved.join(", ")}) could not be restored in ${toolName} arguments. Refusing to pass literal placeholder tokens to tool execution (in bash, $$ would expand to the shell PID). Re-read the source or re-supply the credential.`,
+      };
     }
     return undefined;
   });
 
   pi.on("tool_result", (event, ctx): ToolResultEventResult | undefined => {
-    const activeVault = ensureVault(ctx.cwd);
+    const activeVault = ensureVault(ctx);
     if (!activeVault) return undefined;
     const content = Array.isArray(event.content) ? event.content : [];
     const res = activeVault.obfuscateToolResult(content, event.structuredContent);
@@ -745,7 +941,7 @@ export function registerSecretObfuscation(
   });
 
   pi.on("context", (event, ctx) => {
-    const activeVault = ensureVault(ctx.cwd);
+    const activeVault = ensureVault(ctx);
     if (!activeVault) return undefined;
     const res = activeVault.obfuscateMessages(event.messages);
     if (!res.changed) return undefined;

@@ -7,23 +7,28 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { evaluateFileWritePolicy } from "../../../extensions/orchestrator/bash-policy.js";
+import { evaluateBashPolicy, evaluateFileWritePolicy } from "../../../extensions/orchestrator/bash-policy.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import {
   clearSettingsCache,
   setGlobalSettingsPath,
   SETTINGS_KEYS,
+  updateSetting,
 } from "../../../extensions/orchestrator/project-settings.js";
 import {
+  addPersistentApproval,
+  addSessionApproval,
   CHOICE_APPROVE_DIR_PERSISTENT,
   CHOICE_APPROVE_DIR_SESSION,
   CHOICE_APPROVE_FILE_PERSISTENT,
   CHOICE_APPROVE_FILE_SESSION,
   CHOICE_APPROVE_ONCE,
   CHOICE_DENY,
+  clearRestrictedFoldersFloor,
   clearSessionApprovals,
   evaluateRestrictedFolderAccess,
   forgetApprovals,
+  getApprovalHmacKeyPath,
   grantCoversPath,
   isPathInsideFolder,
   listPersistentApprovals,
@@ -31,7 +36,7 @@ import {
   loadRestrictedFolders,
   matchRestrictedFolder,
 } from "../../../extensions/orchestrator/restricted-folders.js";
-import { closeStateDbs, getProjectStateDbPath } from "../../../extensions/orchestrator/state-db.js";
+import { closeStateDbs, getProjectStateDbPath, openStateDb } from "../../../extensions/orchestrator/state-db.js";
 import { validateSettingValue } from "../../../extensions/pidash/browser-ops.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -44,6 +49,7 @@ function trackTempDir(prefix: string): string {
 
 afterEach(() => {
   clearSessionApprovals();
+  clearRestrictedFoldersFloor();
   clearSettingsCache();
   setGlobalSettingsPath(null);
   closeStateDbs();
@@ -63,12 +69,47 @@ describe("restricted_folders settings schema & agent-edit protection (#1416)", (
     assert.equal(def.group, "Enforcement");
   });
 
-  it("protects restricted_folders from agent edits and browser writes", () => {
+  it("protects restricted_folders from agent edits, @-prefixed writes, fragmented bash scripts, and browser writes", async () => {
     const cwd = trackTempDir("rf-protect-");
     const projSettings = path.join(cwd, ".pi", "pi-config-settings.json");
     const writeDecision = evaluateFileWritePolicy(projSettings, cwd);
     assert.ok(writeDecision?.block, "agent write to pi-config-settings.json must be blocked");
     assert.match(writeDecision!.reason, /restricted folders/i);
+
+    const atWriteDecision = evaluateFileWritePolicy(`@${projSettings}`, cwd);
+    assert.ok(atWriteDecision?.block, "@-prefixed write to pi-config-settings.json must be blocked");
+
+    // Dynamically assembled settings paths in bash redirects must be blocked
+    for (const cmd of [
+      `p="pi-config"; s="settings.json"; echo '{"restricted_folders":[]}' > ".pi/$p-$s"`,
+      `echo '{"restricted_folders":[]}' > .pi/"pi-config""-settings.json"`,
+    ]) {
+      const res = await evaluateBashPolicy({ command: cmd, cwd, ui: null });
+      assert.equal(res.action, "block", `fragmented settings write must be blocked: ${cmd}`);
+    }
+
+    // Even if an external script overwrites .pi/pi-config-settings.json directly to clear
+    // restricted_folders, the monotonic in-process floor retains the initial restrictions
+    // while authorized human updates via updateSetting() can remove them cleanly.
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: ["secrets/prod"] }));
+    setGlobalSettingsPath(path.join(cwd, "nonexistent-global.json"));
+    clearSettingsCache();
+    assert.deepEqual(loadRestrictedFolders(cwd), ["secrets/prod"]);
+
+    // Simulate external tamper rewriting the settings file with []
+    fs.writeFileSync(projSettings, JSON.stringify({ restricted_folders: [] }));
+    clearSettingsCache();
+    assert.deepEqual(
+      loadRestrictedFolders(cwd),
+      ["secrets/prod"],
+      "external overwrite of .pi/pi-config-settings.json must NOT clear project restricted_folders",
+    );
+
+    // Authorized human save via updateSetting() updates the floor legitimately
+    const upd = updateSetting(cwd, "project", "restricted_folders", []);
+    assert.equal(upd.ok, true);
+    assert.deepEqual(loadRestrictedFolders(cwd), []);
 
     const browserErr = validateSettingValue("restricted_folders", []);
     assert.ok(browserErr, "browser write to restricted_folders must be refused");
@@ -93,7 +134,8 @@ describe("restricted_folders settings schema & agent-edit protection (#1416)", (
     const loaded = loadRestrictedFolders(cwd);
     assert.deepEqual(loaded, ["~/.ssh", "~/.aws", "secrets/prod"]);
 
-    // Verify empty project array still keeps global entries
+    // Verify empty project array (without prior project entries) still keeps global entries
+    clearRestrictedFoldersFloor(cwd);
     fs.writeFileSync(
       path.join(cwd, ".pi", "pi-config-settings.json"),
       JSON.stringify({ restricted_folders: [] }),
@@ -139,6 +181,29 @@ describe("path boundary & symlink-safe matching (#1416)", () => {
       fakeHome,
     );
     assert.ok(mRel, "relative restricted folder must resolve against cwd");
+
+    // @-prefixed paths and Unicode spaces (matching Pi's resolveToCwd)
+    const mAtHome = matchRestrictedFolder("@~/.ssh/id_rsa", root, ["~/.ssh"], false, fakeHome);
+    assert.ok(mAtHome, "@~/.ssh/id_rsa must match ~/.ssh");
+    const mAtRel = matchRestrictedFolder(
+      "@secrets/api.env",
+      path.join(root, "workspace"),
+      ["secrets"],
+      false,
+      fakeHome,
+    );
+    assert.ok(mAtRel, "@secrets/api.env must match relative secrets folder");
+
+    const spaceDir = path.join(root, "my secrets");
+    fs.mkdirSync(spaceDir, { recursive: true });
+    const mUnicodeSpace = matchRestrictedFolder(
+      path.join(root, "my\u00A0secrets", "k.txt"),
+      root,
+      [spaceDir],
+      false,
+      fakeHome,
+    );
+    assert.ok(mUnicodeSpace, "Unicode space in path must normalize to ASCII space and match");
   });
 
   it("blocks symlink escapes (existing target, non-existent child under symlinked parent, dangling symlink, and inner symlink)", () => {
@@ -175,13 +240,20 @@ describe("path boundary & symlink-safe matching (#1416)", () => {
     assert.ok(m3, "dangling symlink pointing into restricted folder must match");
     assert.equal(m3.canonicalTarget, path.join(fs.realpathSync(restrictedDir), "future.txt"));
 
-    // 4. Symlink located INSIDE restricted folder pointing outside
+    // 4. Symlink located INSIDE restricted folder pointing outside (both direct and nested child!)
     const outsideFile = path.join(outsideDir, "public.txt");
     fs.writeFileSync(outsideFile, "public");
     const innerLink = path.join(restrictedDir, "link-out.txt");
     fs.symlinkSync(outsideFile, innerLink);
     const m4 = matchRestrictedFolder(innerLink, workDir, [restrictedDir]);
     assert.ok(m4, "symlink living inside restricted folder must match");
+
+    const innerDirLink = path.join(restrictedDir, "link-dir");
+    fs.symlinkSync(outsideDir, innerDirLink);
+    const nestedThroughInnerLink = path.join(innerDirLink, "public.txt");
+    const m5 = matchRestrictedFolder(nestedThroughInnerLink, workDir, [restrictedDir]);
+    assert.ok(m5, "nested path beneath symlink inside restricted folder must match");
+    assert.equal(m5.restrictedRoot, fs.realpathSync(restrictedDir));
   });
 });
 
@@ -193,25 +265,35 @@ describe("headless fail-closed & tiered session/SQLite approval grants (#1416)",
     fs.mkdirSync(restricted, { recursive: true });
     fs.mkdirSync(work, { recursive: true });
     const dbPath = path.join(root, "state.db");
+    const hmacKeyPath = path.join(root, ".approval-hmac-key");
 
     for (const call of [
       { toolName: "read", input: { path: path.join(restricted, "a.txt") }, cwd: work },
+      { toolName: "read", input: { path: `@${path.join(restricted, "a.txt")}` }, cwd: work },
       { toolName: "write", input: { path: path.join(restricted, "b.txt") }, cwd: work },
       { toolName: "edit", input: { path: path.join(restricted, "a.txt") }, cwd: work },
       { toolName: "grep", input: { pattern: "x", path: restricted }, cwd: work },
-      { toolName: "find", input: { pattern: "*.txt", path: restricted }, cwd: work },
+      { toolName: "grep", input: { pattern: "x" }, cwd: root }, // omitted path defaults to ancestor cwd
+      { toolName: "find", input: { pattern: "*.txt", path: root }, cwd: work }, // explicit ancestor path
       { toolName: "ls", input: { path: restricted }, cwd: work },
       { toolName: "bash", input: { command: "ls" }, cwd: restricted },
       { toolName: "bash", input: { command: `cd "${restricted}" && ls` }, cwd: work },
       { toolName: "bash", input: { command: `cd "${work}" && (cd "${restricted}" && ls)` }, cwd: work },
+      { toolName: "bash", input: { command: `cat "${path.join(restricted, "a.txt")}"` }, cwd: work },
+      { toolName: "bash", input: { command: `target="${restricted}"; cd "$target" && ls` }, cwd: work },
+      { toolName: "bash", input: { command: `cd "$DYNAMIC_DIR" && ls` }, cwd: work },
+      { toolName: "bash", input: { command: `cd "$(echo /tmp)" && ls` }, cwd: work },
+      { toolName: "bash", input: { command: `pushd "${root}/rest*" && ls` }, cwd: work },
+      { toolName: "bash", input: { command: `cd - && ls` }, cwd: work },
     ]) {
       const decision = await evaluateRestrictedFolderAccess({
         ...call,
         ui: null,
         restrictedFolders: [restricted],
         dbPath,
+        hmacKeyPath,
       });
-      assert.ok(decision?.block, `${call.toolName} must fail closed in headless mode`);
+      assert.ok(decision?.block, `${call.toolName} (${JSON.stringify(call.input)}) must fail closed in headless mode`);
       assert.match(decision!.reason, /headless|interactive approval/i);
     }
 
@@ -223,8 +305,183 @@ describe("headless fail-closed & tiered session/SQLite approval grants (#1416)",
       ui: null,
       restrictedFolders: [restricted],
       dbPath,
+      hmacKeyPath,
     });
     assert.equal(safeDecision, undefined);
+  });
+
+  it("isolates ID-less contexts (never shares __default__ bucket) and omits session choices without sessionId", async () => {
+    const root = trackTempDir("rf-idless-");
+    const restricted = path.join(root, "restricted");
+    fs.mkdirSync(restricted, { recursive: true });
+    const fileA = path.join(restricted, "a.txt");
+    fs.writeFileSync(fileA, "secret");
+    const dbPath = path.join(root, "state.db");
+    const hmacKeyPath = path.join(root, ".approval-hmac-key");
+
+    // Direct API: addSessionApproval/listSessionApprovals ignore null/blank sessionId
+    assert.equal(addSessionApproval(null, "file", fileA, restricted), null);
+    assert.equal(addSessionApproval("   ", "file", fileA, restricted), null);
+    assert.deepEqual(listSessionApprovals(null), []);
+    assert.deepEqual(listSessionApprovals(""), []);
+
+    const offeredOptions: string[][] = [];
+    const ui = {
+      async select(_title: string, options: string[]) {
+        offeredOptions.push(options);
+        return CHOICE_APPROVE_FILE_SESSION; // Even if forcibly returned, must not cache without sessionId
+      },
+    };
+
+    // Context 1 (null sessionId) approves
+    assert.equal(
+      await evaluateRestrictedFolderAccess({
+        toolName: "read",
+        input: { path: fileA },
+        cwd: root,
+        sessionId: null,
+        ui,
+        restrictedFolders: [restricted],
+        dbPath,
+        hmacKeyPath,
+      }),
+      undefined,
+    );
+    assert.ok(
+      !offeredOptions[0]!.includes(CHOICE_APPROVE_FILE_SESSION) &&
+        !offeredOptions[0]!.includes(CHOICE_APPROVE_DIR_SESSION),
+      "session choices must be omitted when sessionId is missing",
+    );
+
+    // Context 2 (also null sessionId) MUST still be denied when headless (no leaked approval!)
+    const ctx2Decision = await evaluateRestrictedFolderAccess({
+      toolName: "read",
+      input: { path: fileA },
+      cwd: root,
+      sessionId: null,
+      ui: null,
+      restrictedFolders: [restricted],
+      dbPath,
+      hmacKeyPath,
+    });
+    assert.ok(ctx2Decision?.block, "second ID-less context must not inherit approval from first");
+  });
+
+  it("blocks recursive grep/find even when directory has a one-level grant, while honoring single-file grep grant", async () => {
+    const root = trackTempDir("rf-recursive-");
+    const restricted = path.join(root, "restricted");
+    const nested = path.join(restricted, "nested");
+    fs.mkdirSync(nested, { recursive: true });
+    const topFile = path.join(restricted, "top.txt");
+    const deepFile = path.join(nested, "deep.txt");
+    fs.writeFileSync(topFile, "hello");
+    fs.writeFileSync(deepFile, "secret");
+    const dbPath = path.join(root, "state.db");
+    const hmacKeyPath = path.join(root, ".approval-hmac-key");
+
+    // Grant direct-children-only directory access on `restricted`
+    addSessionApproval("sess-rec", "directory", fs.realpathSync(restricted), fs.realpathSync(restricted));
+
+    // Direct child read IS allowed
+    assert.equal(
+      await evaluateRestrictedFolderAccess({
+        toolName: "read",
+        input: { path: topFile },
+        cwd: root,
+        sessionId: "sess-rec",
+        ui: null,
+        restrictedFolders: [restricted],
+        dbPath,
+        hmacKeyPath,
+      }),
+      undefined,
+    );
+
+    // Recursive grep/find on `restricted` MUST still prompt / fail closed despite one-level directory grant!
+    const titles: string[] = [];
+    const optionsSeen: string[][] = [];
+    const ui = {
+      async select(title: string, options: string[]) {
+        titles.push(title);
+        optionsSeen.push(options);
+        return CHOICE_DENY;
+      },
+    };
+    const grepDecision = await evaluateRestrictedFolderAccess({
+      toolName: "grep",
+      input: { pattern: "secret", path: restricted },
+      cwd: root,
+      sessionId: "sess-rec",
+      ui,
+      restrictedFolders: [restricted],
+      dbPath,
+      hmacKeyPath,
+    });
+    assert.ok(grepDecision?.block);
+    assert.match(titles[0]!, /recursive/i);
+    assert.deepEqual(optionsSeen[0], [CHOICE_DENY, CHOICE_APPROVE_ONCE]);
+
+    // Single-file grep on an explicitly approved file IS allowed
+    addSessionApproval("sess-rec", "file", fs.realpathSync(topFile), fs.realpathSync(restricted));
+    assert.equal(
+      await evaluateRestrictedFolderAccess({
+        toolName: "grep",
+        input: { pattern: "hello", path: topFile },
+        cwd: root,
+        sessionId: "sess-rec",
+        ui: null,
+        restrictedFolders: [restricted],
+        dbPath,
+        hmacKeyPath,
+      }),
+      undefined,
+    );
+  });
+
+  it("rejects forged SQLite restricted_folder_approvals rows and blocks bash state.db tamper scripts", async () => {
+    const root = trackTempDir("rf-forged-");
+    const restricted = path.join(root, "restricted");
+    fs.mkdirSync(restricted, { recursive: true });
+    const secretFile = path.join(restricted, "key.txt");
+    fs.writeFileSync(secretFile, "top-secret");
+    const dbPath = path.join(root, "state.db");
+    const hmacKeyPath = path.join(root, ".approval-hmac-key");
+
+    // 1. Seed one legitimate signed approval so key exists, then forge an unsigned row directly in SQLite
+    const otherFile = path.join(restricted, "legit.txt");
+    fs.writeFileSync(otherFile, "ok");
+    addPersistentApproval(root, "file", fs.realpathSync(otherFile), fs.realpathSync(restricted), dbPath, hmacKeyPath);
+
+    const db = openStateDb(dbPath);
+    db.prepare(
+      "INSERT INTO restricted_folder_approvals (scope, target_path, restricted_root, signature, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("file", fs.realpathSync(secretFile), fs.realpathSync(restricted), "0".repeat(64), new Date().toISOString());
+
+    const validGrants = listPersistentApprovals(root, dbPath, hmacKeyPath);
+    assert.equal(validGrants.length, 1, "forged SQLite row must be rejected by HMAC verification");
+    assert.equal(validGrants[0]!.targetPath, fs.realpathSync(otherFile));
+
+    // Accessing the forged target MUST still fail closed in headless mode
+    const forgedCheck = await evaluateRestrictedFolderAccess({
+      toolName: "read",
+      input: { path: secretFile },
+      cwd: root,
+      ui: null,
+      restrictedFolders: [restricted],
+      dbPath,
+      hmacKeyPath,
+    });
+    assert.ok(forgedCheck?.block, "forged DB row must never authorize restricted access");
+
+    // 2. Bash scripts dynamically assembling .pi/data/state.db or reading .approval-hmac-key are blocked
+    for (const cmd of [
+      `d=".pi/data"; f="state.db"; sqlite3 "$d/$f" "INSERT INTO restricted_folder_approvals VALUES (1,'file','/a','/a','','now')"`,
+      `python3 -c 'import sqlite3; sqlite3.connect(".pi/data/" + "state.db").execute("DELETE FROM restricted_folder_approvals")'`,
+      `cat ~/.pi/agent/.approval-hmac-key`,
+    ]) {
+      const res = await evaluateBashPolicy({ command: cmd, cwd: root, ui: null });
+      assert.equal(res.action, "block", `tamper bash command must be blocked: ${cmd}`);
+    }
   });
 
   it("supports Approve Once, Approve File (session vs persistent), Approve Directory (direct children only), and Deny/cancel", async () => {
@@ -244,6 +501,7 @@ describe("headless fail-closed & tiered session/SQLite approval grants (#1416)",
     fs.writeFileSync(subChild2, "c2");
     fs.writeFileSync(grandChild, "deep");
     const dbPath = path.join(root, "state.db");
+    const hmacKeyPath = path.join(root, ".approval-hmac-key");
 
     let promptCount = 0;
     let nextChoice: string | undefined = CHOICE_DENY;
@@ -388,10 +646,11 @@ describe("headless fail-closed & tiered session/SQLite approval grants (#1416)",
         ui,
         restrictedFolders: [restricted],
         dbPath,
+        hmacKeyPath,
       }),
       undefined,
     );
-    assert.equal(listPersistentApprovals(root, dbPath).length, 1);
+    assert.equal(listPersistentApprovals(root, dbPath, hmacKeyPath).length, 1);
     clearSessionApprovals();
     // Different session s99 still gets fileB without prompting
     assert.equal(
@@ -403,6 +662,7 @@ describe("headless fail-closed & tiered session/SQLite approval grants (#1416)",
         ui,
         restrictedFolders: [restricted],
         dbPath,
+        hmacKeyPath,
       }),
       undefined,
     );
@@ -466,6 +726,7 @@ describe("headless fail-closed & tiered session/SQLite approval grants (#1416)",
         ui,
         restrictedFolders: [restricted],
         dbPath,
+        hmacKeyPath,
       }),
       undefined,
     );
@@ -480,12 +741,12 @@ describe("headless fail-closed & tiered session/SQLite approval grants (#1416)",
 
     // 6. forgetApprovals clears session and persistent grants
     assert.ok(listSessionApprovals("s1").length > 0);
-    assert.ok(listPersistentApprovals(root, dbPath).length > 0);
+    assert.ok(listPersistentApprovals(root, dbPath, hmacKeyPath).length > 0);
     const cleared = forgetApprovals(root, "s1", "all", dbPath);
     assert.ok(cleared.sessionCleared >= 1);
     assert.ok(cleared.persistentCleared >= 2);
     assert.equal(listSessionApprovals("s1").length, 0);
-    assert.equal(listPersistentApprovals(root, dbPath).length, 0);
+    assert.equal(listPersistentApprovals(root, dbPath, hmacKeyPath).length, 0);
   });
 });
 
@@ -559,12 +820,18 @@ describe("registerEnforcement integration for restricted_folders & /forget-appro
       ui: {},
     };
 
-    // 1. Direct write to project state.db is blocked by enforcement
+    // 1. Direct write to project state.db and direct read of .approval-hmac-key are blocked by enforcement
     const dbTamper = await callTool(
       { type: "tool_call", toolName: "write", input: { path: getProjectStateDbPath(cwd), content: "" } },
       interactiveCtx,
     );
     assert.ok(dbTamper?.block, "direct edit/write to project state.db must be blocked");
+
+    const hmacRead = await callTool(
+      { type: "tool_call", toolName: "read", input: { path: getApprovalHmacKeyPath() } },
+      interactiveCtx,
+    );
+    assert.ok(hmacRead?.block, "direct read of .approval-hmac-key must be blocked");
 
     // 2. Headless read inside restricted folder fails closed
     const headlessBlock = await callTool(

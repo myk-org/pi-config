@@ -120,6 +120,7 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
           scope TEXT NOT NULL CHECK (scope IN ('file', 'directory')),
           target_path TEXT NOT NULL,
           restricted_root TEXT NOT NULL,
+          signature TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
           UNIQUE(scope, target_path)
         );

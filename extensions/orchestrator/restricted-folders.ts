@@ -3,28 +3,36 @@
  *
  * Enforces explicit user approval whenever a tool accesses a path inside any
  * configured `restricted_folders` entry:
- * - Covers `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash` (effective `cwd` + `cd`/`pushd` targets).
- * - Expands `~`, resolves relative paths against `cwd`, canonicalizes symlinks
- *   (including symlinked parents of non-existent paths via `nearestRealPath`),
- *   and enforces strict path-boundary prefix matching (`/a/foo` never matches `/a/foobar`).
- * - Unions global and project `restricted_folders` so a project settings file can
- *   never clear or weaken global folder restrictions.
+ * - Covers `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash` (effective `cwd`,
+ *   `cd`/`pushd` targets — including failing closed / prompting on unresolved shell
+ *   expansions — and path-like file operands such as `cat ~/.ssh/id_rsa`).
+ * - Normalizes paths identically to Pi's file tools (strips leading `@`, normalizes
+ *   Unicode spaces, expands `~`, resolves relative segments against `cwd`).
+ * - Resolves symlinks in BOTH directions (including symlinked parents of non-existent
+ *   paths, dangling symlinks, and nested paths beneath a symlink inside a restricted
+ *   folder such as `/restricted/link/child`) and enforces strict path-boundary prefix
+ *   matching (`/a/foo` never matches `/a/foobar`).
+ * - Accounts for recursive `grep`/`find` traversal: detects restricted folders beneath
+ *   the search root (including omitted `path` defaulting to `cwd`) and never lets a
+ *   direct-children-only directory grant authorize recursive searches.
+ * - Unions global and project `restricted_folders` so project settings can never clear
+ *   or weaken global folder restrictions.
+ * - Isolates session approvals strictly per non-empty `sessionId` (ID-less contexts
+ *   never share a bucket and cannot store session approvals).
+ * - Authenticates persistent SQLite grants in `.pi/data/state.db` with HMAC-SHA256
+ *   so raw forged database rows are rejected.
  * - Fails closed (denies) in headless / non-TUI contexts where interactive approval
  *   cannot be prompted.
- * - Supports tiered grants:
- *   - `Approve Once` (single call, not stored)
- *   - `Approve File` (exact canonical path; session-only or persistent in `.pi/data/state.db`)
- *   - `Approve Directory (direct children only)` (directory itself + direct children only,
- *     never grandchildren; session-only or persistent in `.pi/data/state.db`)
  * - Exposes `/forget-approvals` to clear session and persistent grants.
  */
 
-import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { createLogger, type Logger } from "../shared/logger.js";
-import { resolveEffectiveCwd, unquotedSegments } from "./bash-policy.js";
-import { loadGlobalSettings, loadProjectSettings } from "./project-settings.js";
+import { resolveEffectiveCwd, tokenize, unquotedSegments } from "./bash-policy.js";
+import { loadGlobalSettings, loadProjectSettings, onSettingsWritten } from "./project-settings.js";
 import { getProjectStateDbPath, openStateDb, withTransaction } from "./state-db.js";
 
 const defaultLog = createLogger("restricted-folders");
@@ -51,6 +59,8 @@ export interface RestrictedFolderMatch {
   configuredFolder: string;
   /** Hint that the tool targets a directory (e.g. `bash` cwd, `ls`). */
   isDirectoryHint: boolean;
+  /** True when the tool performs a recursive directory search (`grep` / `find`). */
+  isRecursiveSearch?: boolean;
 }
 
 export interface RestrictedFolderPromptUi {
@@ -68,6 +78,8 @@ export interface EvaluateRestrictedFolderInput {
   restrictedFolders?: readonly string[];
   /** Optional explicit SQLite DB path override (defaults to `getProjectStateDbPath(cwd)`). */
   dbPath?: string;
+  /** Optional explicit HMAC key path override (defaults to `<homeDir>/.pi/agent/.approval-hmac-key`). */
+  hmacKeyPath?: string;
   homeDir?: string;
   log?: Logger;
 }
@@ -83,10 +95,81 @@ export const CHOICE_APPROVE_FILE_PERSISTENT = "Approve File (persistent)";
 export const CHOICE_APPROVE_DIR_SESSION = "Approve Directory — direct children only (this session)";
 export const CHOICE_APPROVE_DIR_PERSISTENT = "Approve Directory — direct children only (persistent)";
 
-// ── Session Approval Store (survives /reload on globalThis) ────────────────
+// ── HMAC Authentication for Persistent SQLite Approvals ────────────────────
+
+export const APPROVAL_HMAC_KEY_FILENAME = ".approval-hmac-key";
+
+export function getApprovalHmacKeyPath(homeDir = homedir()): string {
+  return join(homeDir, ".pi", "agent", APPROVAL_HMAC_KEY_FILENAME);
+}
+
+/** True when `rawPath` resolves to the approval HMAC key file (must never be read/written by agents). */
+export function isProtectedApprovalKeyPath(
+  rawPath: string,
+  baseCwd: string,
+  homeDir = homedir(),
+): boolean {
+  const keyPath = resolveCanonicalPath(getApprovalHmacKeyPath(homeDir), baseCwd, homeDir);
+  const target = resolveCanonicalPath(rawPath, baseCwd, homeDir);
+  if (target === keyPath) return true;
+  // Also catch lexical path before symlink dereference.
+  const expanded = expandHomePath(rawPath, homeDir);
+  const lexical = stripTrailingSeparators(resolve(baseCwd, expanded));
+  return lexical === stripTrailingSeparators(getApprovalHmacKeyPath(homeDir));
+}
+
+function readApprovalHmacKey(keyPath: string): Buffer | null {
+  if (!existsSync(keyPath)) return null;
+  try {
+    const raw = readFileSync(keyPath, "utf-8").trim();
+    if (!raw) return null;
+    return Buffer.from(raw, "hex");
+  } catch {
+    return null;
+  }
+}
+
+function loadOrCreateApprovalHmacKey(keyPath: string): Buffer {
+  const existing = readApprovalHmacKey(keyPath);
+  if (existing && existing.length >= 16) return existing;
+  const key = randomBytes(32);
+  mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 });
+  writeFileSync(keyPath, key.toString("hex"), { mode: 0o600 });
+  return key;
+}
+
+function computeApprovalSignature(
+  key: Buffer,
+  scope: ApprovalScope,
+  targetPath: string,
+  restrictedRoot: string,
+): string {
+  return createHmac("sha256", key)
+    .update(`${scope}\0${targetPath}\0${restrictedRoot}`)
+    .digest("hex");
+}
+
+function verifyApprovalSignature(
+  key: Buffer,
+  scope: ApprovalScope,
+  targetPath: string,
+  restrictedRoot: string,
+  signature: string,
+): boolean {
+  if (!signature || !/^[a-f0-9]{64}$/i.test(signature)) return false;
+  const expected = computeApprovalSignature(key, scope, targetPath, restrictedRoot);
+  try {
+    const a = Buffer.from(expected, "hex");
+    const b = Buffer.from(signature, "hex");
+    return a.length === b.length && timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+// ── Session Approval Store (strictly per non-empty sessionId, survives /reload) ──
 
 const SESSION_APPROVALS_SYMBOL = Symbol.for("pi-config.restrictedFolderSessionApprovals.v1");
-const DEFAULT_SESSION_BUCKET = "__default__";
 
 type SessionGrantMap = Map<string, RestrictedFolderApproval>;
 
@@ -100,26 +183,31 @@ function getSessionStore(): Map<string, SessionGrantMap> {
   return store;
 }
 
-function sessionBucketKey(sessionId?: string | null): string {
-  return typeof sessionId === "string" && sessionId.trim() !== "" ? sessionId : DEFAULT_SESSION_BUCKET;
+function normalizeSessionId(sessionId?: string | null): string | null {
+  return typeof sessionId === "string" && sessionId.trim() !== "" ? sessionId.trim() : null;
 }
 
 function grantKey(scope: ApprovalScope, targetPath: string): string {
   return `${scope}\0${targetPath}`;
 }
 
+/**
+ * Store a session-scoped approval. Returns `null` without storing when `sessionId`
+ * is null/blank so ID-less contexts can never leak approvals across sessions.
+ */
 export function addSessionApproval(
   sessionId: string | null | undefined,
   scope: ApprovalScope,
   targetPath: string,
   restrictedRoot: string,
-): RestrictedFolderApproval {
+): RestrictedFolderApproval | null {
+  const sid = normalizeSessionId(sessionId);
+  if (!sid) return null;
   const store = getSessionStore();
-  const bucketKey = sessionBucketKey(sessionId);
-  let bucket = store.get(bucketKey);
+  let bucket = store.get(sid);
   if (!bucket) {
     bucket = new Map();
-    store.set(bucketKey, bucket);
+    store.set(sid, bucket);
   }
   const record: RestrictedFolderApproval = {
     scope,
@@ -132,8 +220,11 @@ export function addSessionApproval(
   return record;
 }
 
+/** List session approvals for `sessionId`. Always returns `[]` when `sessionId` is null/blank. */
 export function listSessionApprovals(sessionId?: string | null): RestrictedFolderApproval[] {
-  const bucket = getSessionStore().get(sessionBucketKey(sessionId));
+  const sid = normalizeSessionId(sessionId);
+  if (!sid) return [];
+  const bucket = getSessionStore().get(sid);
   return bucket ? [...bucket.values()] : [];
 }
 
@@ -145,14 +236,15 @@ export function clearSessionApprovals(sessionId?: string | null): number {
     store.clear();
     return total;
   }
-  const bucketKey = sessionBucketKey(sessionId);
-  const bucket = store.get(bucketKey);
+  const sid = normalizeSessionId(sessionId);
+  if (!sid) return 0;
+  const bucket = store.get(sid);
   const count = bucket ? bucket.size : 0;
-  store.delete(bucketKey);
+  store.delete(sid);
   return count;
 }
 
-// ── Persistent SQLite Approval Store (.pi/data/state.db) ───────────────────
+// ── Persistent SQLite Approval Store (.pi/data/state.db, HMAC-authenticated) ──
 
 export function addPersistentApproval(
   cwd: string,
@@ -160,17 +252,23 @@ export function addPersistentApproval(
   targetPath: string,
   restrictedRoot: string,
   dbPath?: string,
+  hmacKeyPath?: string,
+  homeDir = homedir(),
 ): RestrictedFolderApproval {
   const targetDb = dbPath ?? getProjectStateDbPath(cwd);
+  const keyPath = hmacKeyPath ?? getApprovalHmacKeyPath(homeDir);
+  const key = loadOrCreateApprovalHmacKey(keyPath);
+  const signature = computeApprovalSignature(key, scope, targetPath, restrictedRoot);
   const createdAt = new Date().toISOString();
   withTransaction(targetDb, (db) => {
     db.prepare(
-      `INSERT INTO restricted_folder_approvals (scope, target_path, restricted_root, created_at)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO restricted_folder_approvals (scope, target_path, restricted_root, signature, created_at)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(scope, target_path) DO UPDATE SET
          restricted_root = excluded.restricted_root,
+         signature = excluded.signature,
          created_at = excluded.created_at`,
-    ).run(scope, targetPath, restrictedRoot, createdAt);
+    ).run(scope, targetPath, restrictedRoot, signature, createdAt);
   });
   return {
     scope,
@@ -181,19 +279,35 @@ export function addPersistentApproval(
   };
 }
 
-export function listPersistentApprovals(cwd: string, dbPath?: string): RestrictedFolderApproval[] {
+export function listPersistentApprovals(
+  cwd: string,
+  dbPath?: string,
+  hmacKeyPath?: string,
+  homeDir = homedir(),
+  log: Logger = defaultLog,
+): RestrictedFolderApproval[] {
+  const keyPath = hmacKeyPath ?? getApprovalHmacKeyPath(homeDir);
+  const key = readApprovalHmacKey(keyPath);
   const targetDb = dbPath ?? getProjectStateDbPath(cwd);
   const db = openStateDb(targetDb);
   const rows = db
     .prepare(
-      "SELECT scope, target_path, restricted_root, created_at FROM restricted_folder_approvals ORDER BY id ASC",
+      "SELECT scope, target_path, restricted_root, signature, created_at FROM restricted_folder_approvals ORDER BY id ASC",
     )
     .all() as Array<{
     scope?: string;
     target_path?: string;
     restricted_root?: string;
+    signature?: string;
     created_at?: string;
   }>;
+  if (rows.length === 0) return [];
+  if (!key) {
+    log.warn("restricted_folder_approvals_missing_hmac_key", {
+      rowCount: rows.length,
+    });
+    return [];
+  }
   const out: RestrictedFolderApproval[] = [];
   for (const row of rows) {
     if (
@@ -201,6 +315,14 @@ export function listPersistentApprovals(cwd: string, dbPath?: string): Restricte
       typeof row.target_path === "string" &&
       typeof row.restricted_root === "string"
     ) {
+      const sig = typeof row.signature === "string" ? row.signature : "";
+      if (!verifyApprovalSignature(key, row.scope, row.target_path, row.restricted_root, sig)) {
+        log.warn("restricted_folder_invalid_approval_signature", {
+          scope: row.scope,
+          targetPath: row.target_path,
+        });
+        continue;
+      }
       out.push({
         scope: row.scope,
         targetPath: row.target_path,
@@ -244,6 +366,8 @@ export function forgetApprovals(
 
 // ── Path Canonicalization & Boundary-Safe Matching ─────────────────────────
 
+const UNICODE_SPACES_RE = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
 function stripTrailingSeparators(p: string): string {
   let out = p;
   while (out.length > 1 && out.endsWith(sep)) {
@@ -252,14 +376,26 @@ function stripTrailingSeparators(p: string): string {
   return out;
 }
 
-/** Expand leading `~` or `~/` to `homeDir`. */
-export function expandHomePath(rawPath: string, homeDir = homedir()): string {
-  const trimmed = rawPath.trim();
-  if (trimmed === "~") return homeDir;
-  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
-    return join(homeDir, trimmed.slice(2));
+/**
+ * Normalize a tool path identically to Pi's `resolveToCwd`/`expandPath`:
+ * replace Unicode space characters with ASCII spaces and strip a single leading `@`.
+ */
+export function normalizeToolPath(rawPath: string): string {
+  let out = rawPath.trim().replace(UNICODE_SPACES_RE, " ");
+  if (out.startsWith("@")) {
+    out = out.slice(1);
   }
-  return trimmed;
+  return out;
+}
+
+/** Normalize tool syntax (`@`, unicode spaces) and expand leading `~` or `~/` to `homeDir`. */
+export function expandHomePath(rawPath: string, homeDir = homedir()): string {
+  const normalized = normalizeToolPath(rawPath);
+  if (normalized === "~") return homeDir;
+  if (normalized.startsWith("~/") || normalized.startsWith("~\\")) {
+    return join(homeDir, normalized.slice(2));
+  }
+  return normalized;
 }
 
 const MAX_SYMLINK_HOPS = 40;
@@ -304,7 +440,7 @@ function resolveRealPathWithDangling(absPath: string): string {
   }
 }
 
-/** Resolve `~`, relative segments against `baseCwd`, and symlinked ancestors (including dangling symlinks). */
+/** Resolve `@`/unicode spaces/`~`, relative segments against `baseCwd`, and symlinked ancestors (including dangling symlinks). */
 export function resolveCanonicalPath(rawPath: string, baseCwd: string, homeDir = homedir()): string {
   const expanded = expandHomePath(rawPath, homeDir);
   const absolute = resolve(baseCwd, expanded);
@@ -323,9 +459,40 @@ export function isPathInsideFolder(canonicalTarget: string, canonicalFolder: str
   return target.startsWith(folder + sep);
 }
 
+// ── Monotonic Restricted-Folders Floor (fail-closed against external shell tampering) ──
+
+const RESTRICTED_FLOOR_SYMBOL = Symbol.for("pi-config.restrictedFoldersFloor.v1");
+
+function getRestrictedFoldersFloor(): Map<string, Set<string>> {
+  const g = globalThis as Record<symbol, Map<string, Set<string>> | undefined>;
+  let map = g[RESTRICTED_FLOOR_SYMBOL];
+  if (!map) {
+    map = new Map();
+    g[RESTRICTED_FLOOR_SYMBOL] = map;
+  }
+  return map;
+}
+
+/** Clear the monotonic restricted-folders floor (called on authorized human settings saves and test teardown). */
+export function clearRestrictedFoldersFloor(cwd?: string): void {
+  const floor = getRestrictedFoldersFloor();
+  if (cwd === undefined) {
+    floor.clear();
+    return;
+  }
+  floor.delete(resolveCanonicalPath(cwd, cwd));
+}
+
+onSettingsWritten(() => {
+  clearRestrictedFoldersFloor();
+});
+
 /**
- * Union global and project `restricted_folders` so project settings can add
- * restrictions but never shadow or clear user-global restricted folders.
+ * Union global and project `restricted_folders` AND enforce a monotonic per-project
+ * floor captured across loads (only reset when settings are saved via the authorized
+ * in-process settings API `writeSettingsFile`). Even if an external shell script
+ * overwrites `.pi/pi-config-settings.json` to clear `restricted_folders`, previously
+ * enforced folders remain active (fail closed).
  */
 export function loadRestrictedFolders(cwd: string): string[] {
   const seen = new Set<string>();
@@ -342,14 +509,53 @@ export function loadRestrictedFolders(cwd: string): string[] {
       combined.push(trimmed);
     }
   }
+
+  const floorKey = resolveCanonicalPath(cwd, cwd);
+  const floorMap = getRestrictedFoldersFloor();
+  let pinned = floorMap.get(floorKey);
+  if (!pinned) {
+    pinned = new Set<string>();
+    floorMap.set(floorKey, pinned);
+  }
+
+  // Detect any external removal of a previously configured restricted folder.
+  let restoredFromFloor = 0;
+  for (const prev of pinned) {
+    if (!seen.has(prev)) {
+      seen.add(prev);
+      combined.push(prev);
+      restoredFromFloor++;
+    }
+  }
+  if (restoredFromFloor > 0) {
+    defaultLog.warn("restricted_folders_external_shrink_ignored", {
+      cwd: floorKey,
+      restoredCount: restoredFromFloor,
+    });
+  }
+  for (const entry of combined) {
+    pinned.add(entry);
+  }
+
   return combined;
 }
 
+/** Split an absolute path into its root and individual path segments. */
+function splitAbsPath(absPath: string): { root: string; segments: string[] } {
+  const parsed = parse(absPath);
+  const rest = absPath.slice(parsed.root.length);
+  const segments = rest ? rest.split(sep).filter(Boolean) : [];
+  return { root: parsed.root, segments };
+}
+
 /**
- * Check whether `rawTarget` falls inside any folder in `restrictedFolders`.
- * Resolves symlinks in BOTH directions:
- * - Symlink outside pointing into a restricted folder (including non-existent children)
- * - Symlink inside a restricted folder pointing outside
+ * Check whether `rawTarget` enters or traverses any folder in `restrictedFolders`.
+ * Resolves symlinks in BOTH directions and across EVERY traversed lexical prefix:
+ * - Symlink outside pointing into a restricted folder (existing, non-existent child, or dangling)
+ * - Symlink inside a restricted folder pointing outside, even when the requested path extends
+ *   beneath that symlink (e.g. `/restricted/link/child` where `link -> /outside`)
+ * - For recursive search tools (`isRecursiveSearch = true`), also matches when any restricted
+ *   folder is a descendant beneath `rawTarget`.
  */
 export function matchRestrictedFolder(
   rawTarget: string,
@@ -357,40 +563,79 @@ export function matchRestrictedFolder(
   restrictedFolders: readonly string[],
   isDirectoryHint = false,
   homeDir = homedir(),
+  isRecursiveSearch = false,
 ): RestrictedFolderMatch | null {
   if (restrictedFolders.length === 0) return null;
 
   const expandedTarget = expandHomePath(rawTarget, homeDir);
   const lexicalAbs = resolve(baseCwd, expandedTarget);
   const canonicalTarget = stripTrailingSeparators(resolveRealPathWithDangling(lexicalAbs));
-  const canonicalLexicalParent = stripTrailingSeparators(resolveRealPathWithDangling(dirname(lexicalAbs)));
+  const { root, segments } = splitAbsPath(lexicalAbs);
 
-  for (const configured of restrictedFolders) {
-    if (!configured || !configured.trim()) continue;
-    const canonicalFolder = resolveCanonicalPath(configured, baseCwd, homeDir);
+  // Precompute canonicalized restricted folders once.
+  const canonicalFolders = restrictedFolders
+    .filter((f) => typeof f === "string" && f.trim() !== "")
+    .map((configured) => ({
+      configured,
+      canonical: resolveCanonicalPath(configured, baseCwd, homeDir),
+    }));
 
-    if (isPathInsideFolder(canonicalTarget, canonicalFolder)) {
+  // 1. Canonical target inside a restricted folder (handles direct access + symlinks pointing IN).
+  for (const { configured, canonical } of canonicalFolders) {
+    if (isPathInsideFolder(canonicalTarget, canonical)) {
       return {
         rawTarget,
         canonicalTarget,
-        restrictedRoot: canonicalFolder,
+        restrictedRoot: canonical,
         configuredFolder: configured,
         isDirectoryHint,
+        isRecursiveSearch,
       };
     }
+  }
 
-    // Catch accessing a symlink located INSIDE a restricted folder even if it points outside.
-    if (isPathInsideFolder(canonicalLexicalParent, canonicalFolder)) {
-      const lexicalCanonicalTarget = stripTrailingSeparators(
-        join(canonicalLexicalParent, basename(lexicalAbs)),
-      );
-      return {
-        rawTarget,
-        canonicalTarget: lexicalCanonicalTarget,
-        restrictedRoot: canonicalFolder,
-        configuredFolder: configured,
-        isDirectoryHint,
-      };
+  // 2. Walk every lexical prefix component to catch paths traversing a symlink located INSIDE
+  //    a restricted folder that points outside (e.g. `/restricted/link/child` -> `/outside/child`).
+  let cursor = root;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]!;
+    const parentCanonical = stripTrailingSeparators(resolveRealPathWithDangling(cursor));
+    const entryLexicalCanonical = stripTrailingSeparators(join(parentCanonical, seg));
+    cursor = join(cursor, seg);
+    const tail = segments.slice(i + 1);
+
+    for (const { configured, canonical } of canonicalFolders) {
+      if (isPathInsideFolder(entryLexicalCanonical, canonical)) {
+        const preservedTarget =
+          tail.length > 0
+            ? stripTrailingSeparators(join(entryLexicalCanonical, ...tail))
+            : entryLexicalCanonical;
+        return {
+          rawTarget,
+          canonicalTarget: preservedTarget,
+          restrictedRoot: canonical,
+          configuredFolder: configured,
+          isDirectoryHint,
+          isRecursiveSearch,
+        };
+      }
+    }
+  }
+
+  // 3. For recursive search tools (`grep`/`find`), also match if any restricted folder lies
+  //    BENEATH the search root (including when omitted `path` defaults to `cwd`).
+  if (isRecursiveSearch) {
+    for (const { configured, canonical } of canonicalFolders) {
+      if (isPathInsideFolder(canonical, canonicalTarget)) {
+        return {
+          rawTarget,
+          canonicalTarget,
+          restrictedRoot: canonical,
+          configuredFolder: configured,
+          isDirectoryHint: true,
+          isRecursiveSearch: true,
+        };
+      }
     }
   }
 
@@ -399,39 +644,197 @@ export function matchRestrictedFolder(
 
 // ── Tool Target Extraction ─────────────────────────────────────────────────
 
-interface ExtractedTarget {
+export interface ExtractedTarget {
   path: string;
   isDirectoryHint: boolean;
+  isRecursiveSearch?: boolean;
+}
+
+export interface UnresolvedBashTarget {
+  kind: "cd" | "operand";
+  raw: string;
+  reason: string;
+}
+
+export interface ExtractedToolTargets {
+  targets: ExtractedTarget[];
+  unresolved: UnresolvedBashTarget[];
 }
 
 const CD_TARGET_RE = /(?:^|[\s;&|({])(?:cd|pushd)(?:\s+(?:--|-L|-P))*\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|()]+))/;
+const DYNAMIC_EXPANSION_RE = /[$*?{`]/;
+const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+const SHELL_OPERATORS = new Set(["|", "||", "&&", ";", "&", "(", ")", "{", "}", "!", "then", "do", "done", "fi", "else", "elif"]);
 
-function collectBashCandidateDirs(command: string, sessionCwd: string, homeDir: string): string[] {
-  const dirs = new Set<string>();
-  dirs.add(sessionCwd);
-  dirs.add(resolveEffectiveCwd(command, sessionCwd));
+function stripOuterQuotes(s: string): string {
+  if ((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+function expandKnownVars(text: string, vars: Map<string, string>): string {
+  if (vars.size === 0 || !text.includes("$")) return text;
+  return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)\b/g, (m, a, b) => {
+    const name = (a ?? b) as string;
+    return vars.has(name) ? vars.get(name)! : m;
+  });
+}
+
+function looksLikePathToken(token: string): boolean {
+  if (!token || URL_SCHEME_RE.test(token)) return false;
+  return (
+    token.includes("/") ||
+    token === "~" ||
+    token.startsWith("~/") ||
+    token.startsWith("@~") ||
+    token === "." ||
+    token === ".." ||
+    token.startsWith("./") ||
+    token.startsWith("../")
+  );
+}
+
+function collectBashTargets(
+  command: string,
+  sessionCwd: string,
+  homeDir: string,
+  restrictedFolders: readonly string[],
+): ExtractedToolTargets {
+  const dirSet = new Set<string>();
+  const fileSet = new Set<string>();
+  const unresolved: UnresolvedBashTarget[] = [];
+
+  dirSet.add(sessionCwd);
+  dirSet.add(resolveEffectiveCwd(command, sessionCwd));
 
   const running: string[] = [sessionCwd];
+  const vars = new Map<string, string>();
+
+  const canonicalFolders = restrictedFolders
+    .filter((f) => typeof f === "string" && f.trim() !== "")
+    .map((f) => resolveCanonicalPath(f, sessionCwd, homeDir));
+
   for (const seg of unquotedSegments(command)) {
     if (running.length > seg.depth + 1) running.length = seg.depth + 1;
     while (running.length <= seg.depth) running.push(running[running.length - 1]!);
 
-    const m = CD_TARGET_RE.exec(seg.text);
-    if (!m) continue;
-    const rawDest = m[1] ?? m[2] ?? m[3] ?? "";
-    if (!rawDest || rawDest === "-") continue;
-    // Skip dynamic shell expansions we cannot resolve statically
-    if (/[$*?{]/.test(rawDest)) continue;
+    const curCwd = running[seg.depth]!;
+    const tokens = tokenize(seg.text);
 
-    const expanded = expandHomePath(rawDest, homeDir);
-    const nextDir = resolve(running[seg.depth]!, expanded);
-    dirs.add(nextDir);
-    if (!seg.backgrounded) {
-      running[seg.depth] = nextDir;
+    // Record leading variable assignments (e.g. `target=/secret` or `dir="$HOME/.ssh"`).
+    for (const tok of tokens) {
+      if (tok === "export" || tok === "local" || tok === "readonly" || tok === "declare") continue;
+      const am = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(tok);
+      if (!am) break;
+      const val = expandKnownVars(stripOuterQuotes(am[2]!), vars);
+      if (!DYNAMIC_EXPANSION_RE.test(val)) {
+        vars.set(am[1]!, val);
+      } else {
+        // Variable holds a dynamic value (e.g. command substitution) — forget any prior static value.
+        vars.delete(am[1]!);
+      }
+    }
+
+    // 1. Track cd / pushd directory changes (flagging unresolved dynamic targets!).
+    const cdMatch = CD_TARGET_RE.exec(seg.text);
+    if (cdMatch) {
+      const rawDest = cdMatch[1] ?? cdMatch[2] ?? cdMatch[3] ?? "";
+      const expandedDest = expandKnownVars(rawDest, vars);
+      if (expandedDest === "-") {
+        unresolved.push({
+          kind: "cd",
+          raw: rawDest,
+          reason: "cd - destination (OLDPWD) cannot be statically verified against restricted_folders",
+        });
+      } else if (DYNAMIC_EXPANSION_RE.test(expandedDest)) {
+        unresolved.push({
+          kind: "cd",
+          raw: rawDest,
+          reason: `dynamic cd/pushd target (${rawDest}) contains shell expansion and could enter a restricted folder`,
+        });
+      } else if (expandedDest) {
+        const homeExpanded = expandHomePath(expandedDest, homeDir);
+        const nextDir = resolve(curCwd, homeExpanded);
+        dirSet.add(nextDir);
+        if (!seg.backgrounded) {
+          running[seg.depth] = nextDir;
+        }
+      }
+    }
+
+    // 2. Scan path-like file operands & redirection targets in the segment.
+    const activeCwd = running[seg.depth]!;
+    for (const rawTok of tokens) {
+      if (!rawTok || SHELL_OPERATORS.has(rawTok)) continue;
+
+      // Strip leading redirection operators (`>`, `>>`, `<`, `2>`, `>|`).
+      const cleanedTok = rawTok.replace(/^[0-9]*[<>]+\|?/, "");
+      if (!cleanedTok) continue;
+
+      // Extract value part of `--flag=path` or `VAR=path` assignments.
+      let candidate = cleanedTok;
+      if (candidate.startsWith("-")) {
+        const eq = candidate.indexOf("=");
+        if (eq === -1) continue;
+        candidate = candidate.slice(eq + 1);
+      } else {
+        const assign = /^[A-Za-z_][A-Za-z0-9_]*=(.+)$/.exec(candidate);
+        if (assign) {
+          candidate = assign[1]!;
+        }
+      }
+
+      const unquoted = stripOuterQuotes(candidate);
+      const varExpanded = expandKnownVars(unquoted, vars);
+      if (!looksLikePathToken(varExpanded)) continue;
+
+      if (DYNAMIC_EXPANSION_RE.test(varExpanded)) {
+        // Check whether the static prefix before the first expansion character could reach a restricted folder.
+        const firstDyn = varExpanded.search(DYNAMIC_EXPANSION_RE);
+        const staticPrefix = firstDyn > 0 ? varExpanded.slice(0, firstDyn) : "";
+        if (staticPrefix) {
+          const prefixExpanded = expandHomePath(staticPrefix, homeDir);
+          const prefixAbs = resolve(activeCwd, prefixExpanded);
+          const prefixCanon = stripTrailingSeparators(resolveRealPathWithDangling(prefixAbs));
+          const couldTouchRestricted = canonicalFolders.some(
+            (rf) => isPathInsideFolder(prefixCanon, rf) || isPathInsideFolder(rf, prefixCanon),
+          );
+          if (couldTouchRestricted) {
+            unresolved.push({
+              kind: "operand",
+              raw: unquoted,
+              reason: `dynamic path operand (${unquoted}) could expand inside a restricted folder`,
+            });
+          }
+        }
+        continue;
+      }
+
+      const resolvedOperand = resolve(activeCwd, expandHomePath(varExpanded, homeDir));
+      fileSet.add(resolvedOperand);
     }
   }
 
-  return [...dirs];
+  const targets: ExtractedTarget[] = [];
+  for (const dir of dirSet) {
+    targets.push({ path: dir, isDirectoryHint: true });
+  }
+  for (const file of fileSet) {
+    if (!dirSet.has(file)) {
+      targets.push({ path: file, isDirectoryHint: false });
+    }
+  }
+  return { targets, unresolved };
+}
+
+function isExistingRegularFile(rawPath: string, cwd: string, homeDir: string): boolean {
+  try {
+    const canon = resolveCanonicalPath(rawPath, cwd, homeDir);
+    return statSync(canon).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export function extractToolTargetPaths(
@@ -439,29 +842,59 @@ export function extractToolTargetPaths(
   input: Record<string, unknown>,
   cwd: string,
   homeDir = homedir(),
+  restrictedFolders: readonly string[] = [],
 ): ExtractedTarget[] {
+  return extractToolTargets(toolName, input, cwd, homeDir, restrictedFolders).targets;
+}
+
+export function extractToolTargets(
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd: string,
+  homeDir = homedir(),
+  restrictedFolders: readonly string[] = [],
+): ExtractedToolTargets {
   switch (toolName) {
     case "read":
     case "write":
     case "edit": {
-      const p = typeof input.path === "string" ? input.path.trim() : "";
-      return p ? [{ path: p, isDirectoryHint: false }] : [];
+      const p = typeof input.path === "string" ? normalizeToolPath(input.path) : "";
+      return {
+        targets: p ? [{ path: p, isDirectoryHint: false }] : [],
+        unresolved: [],
+      };
+    }
+    case "ls": {
+      const raw = typeof input.path === "string" ? normalizeToolPath(input.path) : "";
+      const p = raw !== "" ? raw : cwd;
+      return {
+        targets: [{ path: p, isDirectoryHint: true }],
+        unresolved: [],
+      };
     }
     case "grep":
-    case "find":
-    case "ls": {
-      const p = typeof input.path === "string" && input.path.trim() !== "" ? input.path.trim() : cwd;
-      return [{ path: p, isDirectoryHint: toolName === "ls" }];
+    case "find": {
+      const raw = typeof input.path === "string" ? normalizeToolPath(input.path) : "";
+      const p = raw !== "" ? raw : cwd;
+      // grep on a single existing file is NOT a recursive directory search.
+      const singleFile = toolName === "grep" && isExistingRegularFile(p, cwd, homeDir);
+      return {
+        targets: [
+          {
+            path: p,
+            isDirectoryHint: !singleFile,
+            isRecursiveSearch: !singleFile,
+          },
+        ],
+        unresolved: [],
+      };
     }
     case "bash": {
       const command = typeof input.command === "string" ? input.command : "";
-      return collectBashCandidateDirs(command, cwd, homeDir).map((dir) => ({
-        path: dir,
-        isDirectoryHint: true,
-      }));
+      return collectBashTargets(command, cwd, homeDir, restrictedFolders);
     }
     default:
-      return [];
+      return { targets: [], unresolved: [] };
   }
 }
 
@@ -491,16 +924,18 @@ function findMatchingApproval(
   cwd: string,
   sessionId?: string | null,
   dbPath?: string,
+  hmacKeyPath?: string,
+  homeDir = homedir(),
   log: Logger = defaultLog,
 ): RestrictedFolderApproval | null {
-  // 1. Check session-scoped approvals in memory.
+  // 1. Check session-scoped approvals in memory (only for valid non-empty sessionId).
   for (const grant of listSessionApprovals(sessionId)) {
     if (grantCoversPath(grant, canonicalTarget)) return grant;
   }
 
-  // 2. Check persistent SQLite approvals.
+  // 2. Check HMAC-authenticated persistent SQLite approvals.
   try {
-    for (const grant of listPersistentApprovals(cwd, dbPath)) {
+    for (const grant of listPersistentApprovals(cwd, dbPath, hmacKeyPath, homeDir, log)) {
       if (grantCoversPath(grant, canonicalTarget)) return grant;
     }
   } catch (err) {
@@ -538,32 +973,92 @@ export async function evaluateRestrictedFolderAccess(
   const folders = params.restrictedFolders ?? loadRestrictedFolders(params.cwd);
   if (folders.length === 0) return undefined;
 
-  const targets = extractToolTargetPaths(params.toolName, params.input, params.cwd, home);
+  const { targets, unresolved } = extractToolTargets(
+    params.toolName,
+    params.input,
+    params.cwd,
+    home,
+    folders,
+  );
+
+  // 1. Handle unresolved dynamic bash cd/pushd or restricted-prefix path expansions first.
+  //    These can NEVER be satisfied by a cached grant — fail closed when headless or prompt Approve Once / Deny.
+  if (unresolved.length > 0) {
+    const first = unresolved[0]!;
+    if (!params.ui) {
+      log.warn("restricted_folder_unresolved_bash_denied_headless", {
+        toolName: params.toolName,
+        raw: first.raw,
+        kind: first.kind,
+      });
+      return {
+        block: true,
+        reason: `⛔ Unresolved bash path (${first.raw}) blocked while restricted_folders are configured: ${first.reason}. Explicit interactive approval is required (denied in headless/non-TUI mode).`,
+      };
+    }
+
+    const title = [
+      `🔒 Unresolved bash target with restricted_folders active (${params.toolName})`,
+      `Target: ${first.raw}`,
+      `Reason: ${first.reason}`,
+    ].join("\n");
+
+    let choice: string | undefined;
+    try {
+      choice = await params.ui.select(title, [CHOICE_DENY, CHOICE_APPROVE_ONCE]);
+    } catch (err) {
+      log.warn("restricted_folder_unresolved_prompt_failed", { toolName: params.toolName }, err);
+      choice = undefined;
+    }
+
+    if (choice !== CHOICE_APPROVE_ONCE) {
+      return {
+        block: true,
+        reason: `⛔ Unresolved bash target (${first.raw}) denied by user while restricted_folders are configured.`,
+      };
+    }
+  }
+
   if (targets.length === 0) return undefined;
 
-  const seenCanonical = new Set<string>();
-  for (const target of targets) {
-    const match = matchRestrictedFolder(target.path, params.cwd, folders, target.isDirectoryHint, home);
-    if (!match) continue;
-    if (seenCanonical.has(match.canonicalTarget)) continue;
-    seenCanonical.add(match.canonicalTarget);
+  const sessionAvailable = normalizeSessionId(params.sessionId) !== null;
+  const seenKey = new Set<string>();
 
-    // Check existing session / persistent grants.
-    const existing = findMatchingApproval(
-      match.canonicalTarget,
+  for (const target of targets) {
+    const match = matchRestrictedFolder(
+      target.path,
       params.cwd,
-      params.sessionId,
-      params.dbPath,
-      log,
+      folders,
+      target.isDirectoryHint,
+      home,
+      target.isRecursiveSearch === true,
     );
-    if (existing) {
-      log.debug("restricted_folder_access_granted_cached", {
-        toolName: params.toolName,
-        target: match.canonicalTarget,
-        scope: existing.scope,
-        persistence: existing.persistence,
-      });
-      continue;
+    if (!match) continue;
+    const dedupKey = `${match.canonicalTarget}\0${match.restrictedRoot}\0${match.isRecursiveSearch ? "R" : "D"}`;
+    if (seenKey.has(dedupKey)) continue;
+    seenKey.add(dedupKey);
+
+    // Recursive `grep`/`find` over a directory can traverse grandchildren and restricted
+    // descendants — NEVER authorize it with a cached direct-children-only directory grant!
+    if (!match.isRecursiveSearch) {
+      const existing = findMatchingApproval(
+        match.canonicalTarget,
+        params.cwd,
+        params.sessionId,
+        params.dbPath,
+        params.hmacKeyPath,
+        home,
+        log,
+      );
+      if (existing) {
+        log.debug("restricted_folder_access_granted_cached", {
+          toolName: params.toolName,
+          target: match.canonicalTarget,
+          scope: existing.scope,
+          persistence: existing.persistence,
+        });
+        continue;
+      }
     }
 
     // Fail closed in headless / non-TUI contexts where interactive approval cannot be prompted.
@@ -572,38 +1067,59 @@ export async function evaluateRestrictedFolderAccess(
         toolName: params.toolName,
         target: match.canonicalTarget,
         restrictedRoot: match.restrictedRoot,
+        recursive: match.isRecursiveSearch === true,
       });
       return {
         block: true,
-        reason: `⛔ Access to restricted folder (${match.restrictedRoot}) blocked for ${params.toolName} (${match.canonicalTarget}): explicit interactive approval is required (denied in headless/non-TUI mode).`,
+        reason: match.isRecursiveSearch
+          ? `⛔ Recursive ${params.toolName} search (${match.canonicalTarget}) reaches restricted folder (${match.restrictedRoot}): explicit interactive approval is required (denied in headless/non-TUI mode).`
+          : `⛔ Access to restricted folder (${match.restrictedRoot}) blocked for ${params.toolName} (${match.canonicalTarget}): explicit interactive approval is required (denied in headless/non-TUI mode).`,
       };
     }
 
     const targetIsDir = match.isDirectoryHint || isExistingDirectory(match.canonicalTarget);
     const grantDir = resolveGrantDirectory(match, targetIsDir);
 
-    const options = targetIsDir
-      ? [
-          CHOICE_DENY,
-          CHOICE_APPROVE_ONCE,
-          CHOICE_APPROVE_DIR_SESSION,
-          CHOICE_APPROVE_DIR_PERSISTENT,
-        ]
-      : [
-          CHOICE_DENY,
-          CHOICE_APPROVE_ONCE,
-          CHOICE_APPROVE_FILE_SESSION,
-          CHOICE_APPROVE_FILE_PERSISTENT,
-          CHOICE_APPROVE_DIR_SESSION,
-          CHOICE_APPROVE_DIR_PERSISTENT,
-        ];
+    let options: string[];
+    let title: string;
 
-    const title = [
-      `🔒 Restricted folder access (${params.toolName})`,
-      `Target: ${match.canonicalTarget}`,
-      `Restricted folder: ${match.restrictedRoot}`,
-      `Directory grant scope (if selected): ${grantDir} (direct children only)`,
-    ].join("\n");
+    if (match.isRecursiveSearch) {
+      // Recursive search requires explicit one-time approval — one-level directory grants do not cover it.
+      options = [CHOICE_DENY, CHOICE_APPROVE_ONCE];
+      title = [
+        `🔒 Restricted folder recursive search (${params.toolName}) — searches all subdirectories`,
+        `Search root: ${match.canonicalTarget}`,
+        `Restricted folder affected: ${match.restrictedRoot}`,
+      ].join("\n");
+    } else if (targetIsDir) {
+      options = [
+        CHOICE_DENY,
+        CHOICE_APPROVE_ONCE,
+        ...(sessionAvailable ? [CHOICE_APPROVE_DIR_SESSION] : []),
+        CHOICE_APPROVE_DIR_PERSISTENT,
+      ];
+      title = [
+        `🔒 Restricted folder access (${params.toolName})`,
+        `Target: ${match.canonicalTarget}`,
+        `Restricted folder: ${match.restrictedRoot}`,
+        `Directory grant scope (if selected): ${grantDir} (direct children only)`,
+      ].join("\n");
+    } else {
+      options = [
+        CHOICE_DENY,
+        CHOICE_APPROVE_ONCE,
+        ...(sessionAvailable ? [CHOICE_APPROVE_FILE_SESSION] : []),
+        CHOICE_APPROVE_FILE_PERSISTENT,
+        ...(sessionAvailable ? [CHOICE_APPROVE_DIR_SESSION] : []),
+        CHOICE_APPROVE_DIR_PERSISTENT,
+      ];
+      title = [
+        `🔒 Restricted folder access (${params.toolName})`,
+        `Target: ${match.canonicalTarget}`,
+        `Restricted folder: ${match.restrictedRoot}`,
+        `Directory grant scope (if selected): ${grantDir} (direct children only)`,
+      ].join("\n");
+    }
 
     let choice: string | undefined;
     try {
@@ -634,10 +1150,16 @@ export async function evaluateRestrictedFolderAccess(
         break;
 
       case CHOICE_APPROVE_FILE_SESSION:
-        addSessionApproval(params.sessionId, "file", match.canonicalTarget, match.restrictedRoot);
-        log.info("restricted_folder_approved_file_session", {
-          target: match.canonicalTarget,
-        });
+        if (!sessionAvailable) {
+          log.warn("restricted_folder_session_approval_refused_no_session_id", {
+            target: match.canonicalTarget,
+          });
+        } else {
+          addSessionApproval(params.sessionId, "file", match.canonicalTarget, match.restrictedRoot);
+          log.info("restricted_folder_approved_file_session", {
+            target: match.canonicalTarget,
+          });
+        }
         break;
 
       case CHOICE_APPROVE_FILE_PERSISTENT:
@@ -648,6 +1170,8 @@ export async function evaluateRestrictedFolderAccess(
             match.canonicalTarget,
             match.restrictedRoot,
             params.dbPath,
+            params.hmacKeyPath,
+            home,
           );
           log.info("restricted_folder_approved_file_persistent", {
             target: match.canonicalTarget,
@@ -662,10 +1186,16 @@ export async function evaluateRestrictedFolderAccess(
         break;
 
       case CHOICE_APPROVE_DIR_SESSION:
-        addSessionApproval(params.sessionId, "directory", grantDir, match.restrictedRoot);
-        log.info("restricted_folder_approved_dir_session", {
-          grantDir,
-        });
+        if (!sessionAvailable) {
+          log.warn("restricted_folder_session_approval_refused_no_session_id", {
+            grantDir,
+          });
+        } else {
+          addSessionApproval(params.sessionId, "directory", grantDir, match.restrictedRoot);
+          log.info("restricted_folder_approved_dir_session", {
+            grantDir,
+          });
+        }
         break;
 
       case CHOICE_APPROVE_DIR_PERSISTENT:
@@ -676,6 +1206,8 @@ export async function evaluateRestrictedFolderAccess(
             grantDir,
             match.restrictedRoot,
             params.dbPath,
+            params.hmacKeyPath,
+            home,
           );
           log.info("restricted_folder_approved_dir_persistent", {
             grantDir,
