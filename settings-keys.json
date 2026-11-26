@@ -656,5 +656,62 @@
       "collapsed"
     ],
     "group": "UI"
+  },
+  "session_spill_enabled": {
+    "description": "Externalize oversized text tool results to session spill files (<session-dir>/local/<N>.log) with a bounded head/tail preview",
+    "type": "bool",
+    "env": "PI_SESSION_SPILL_ENABLED",
+    "default": true,
+    "group": "Session"
+  },
+  "session_spill_threshold_chars": {
+    "description": "Character threshold above which text tool results are spilled to disk and replaced with a bounded head/tail preview",
+    "type": "int",
+    "env": "PI_SESSION_SPILL_THRESHOLD_CHARS",
+    "default": 50000,
+    "min": 1000,
+    "max": 5000000,
+    "group": "Session"
+  },
+  "session_blob_externalize": {
+    "description": "Externalize oversized or repeated binary image payloads in tool results to the content-addressed blob store (~/.pi/blobs/<sha256>)",
+    "type": "bool",
+    "env": "PI_SESSION_BLOB_EXTERNALIZE",
+    "default": true,
+    "group": "Session"
+  },
+  "pre_compaction_elision": {
+    "description": "Mechanically elide old bulky tool results before LLM compaction when context crosses the high-water threshold (zero LLM cost)",
+    "type": "bool",
+    "env": "PI_PRE_COMPACTION_ELISION",
+    "default": true,
+    "group": "Session"
+  },
+  "pre_compaction_elision_threshold_pct": {
+    "description": "Context window usage percentage that triggers mechanical elision of old bulky tool results",
+    "type": "int",
+    "env": "PI_PRE_COMPACTION_ELISION_THRESHOLD_PCT",
+    "default": 70,
+    "min": 30,
+    "max": 95,
+    "group": "Session"
+  },
+  "pre_compaction_elision_keep_turns": {
+    "description": "Number of most recent user turns kept completely intact during mechanical pre-compaction elision",
+    "type": "int",
+    "env": "PI_PRE_COMPACTION_ELISION_KEEP_TURNS",
+    "default": 6,
+    "min": 1,
+    "max": 50,
+    "group": "Session"
+  },
+  "pre_compaction_elision_min_chars": {
+    "description": "Minimum character length for an older tool result text block to be eligible for mechanical pre-compaction elision",
+    "type": "int",
+    "env": "PI_PRE_COMPACTION_ELISION_MIN_CHARS",
+    "default": 2000,
+    "min": 200,
+    "max": 500000,
+    "group": "Session"
   }
 }

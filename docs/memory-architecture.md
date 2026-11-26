@@ -27,8 +27,9 @@ The memory system is local, file-backed, and layered. Topic files are the source
 2. The entry is written into a category topic file such as `lessons.md` or `preferences.md`.
 3. The scoring engine updates the `memory-scoring` store in `.pi/data/state.db`, recalculates stability, and assigns a lifecycle state.
 4. The embedding layer lazily creates or refreshes binary `Float32Array` BLOB vectors in `.pi/data/state.db` for semantic search.
-5. On `before_agent_start`, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, and injects that material as structured system-prompt sections (`project_memory`, `contextual_memories`, `past_sessions`) at the tail of the prompt.
-6. As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.
+5. On `before_agent_start`, Pi pins the startup situation report once per session in the structured `project_memory` system-prompt section (keeping the provider prompt prefix cache-stable across turns and mid-session memory writes). Per-turn dynamic context — contextual vector matches, relevant past sessions, ticking async job status, and one-time notices when a snapshot entry is edited/invalidated/removed — is delivered outside the system prompt prefix in a hidden `orchestrator-turn-context` message appended after the user prompt (#1414).
+6. Before compaction (`session_before_compact`), Pi injects a compact, bounded block of standing project memories (pinned, enforced, and top-scored rules/decisions) into the compaction input so summaries stay consistent with project memory; after compaction commits (`session_compact`), the pinned session snapshot refreshes cleanly and pending mid-session notices are cleared (#1422).
+7. As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.
 
 > **Note:** The architecture is intentionally split between human-editable topic files and a WAL-mode SQLite state store (`.pi/data/state.db`, built-in `node:sqlite`, `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`). That keeps memory easy to inspect while providing atomic cross-process concurrency across Pi sessions and COMS peers.
 
@@ -53,7 +54,7 @@ Every layer is a standalone module under `extensions/orchestrator/`:
 |---|---|---|
 | State database | `state-db.ts` | Shared `node:sqlite` (`DatabaseSync`) WAL store for `.pi/data/state.db` (and worktree-scoped review state), schema versioning, `BEGIN IMMEDIATE` transactions, `Float32Array` BLOB encoding, handle caching, and one-time legacy JSONL/JSON migration. |
 | Scoring engine | `memory-scoring.ts` | Stability formula, lifecycle states, category budgets, rebuilds the score index. |
-| Situation report | `situation-report.ts` | Builds the token-budgeted prompt injection and the capacity header. |
+| Situation report | `situation-report.ts` | Builds the token-budgeted prompt injection, capacity header, and bounded pre-compaction standing memory context (#1422). |
 | Memory tree | `memory-tree.ts` | Read-only topic-file index, canonical topic names, and hotness scores. |
 | Embeddings | `memory-embeddings.ts` | Local vector model, embedding store, hybrid search. |
 | Memory tools | `memory-tools.ts` | The `memory_*` tools exposed to the agent. |
@@ -161,23 +162,31 @@ This layer is used in two places:
 
 That means Pi can still find a useful lesson even when your current prompt does not repeat the exact wording of the original memory.
 
-### The injection pipeline runs on three hooks
+### The injection pipeline runs on five hooks
 
-Memory reaches the model through three extension hooks:
+Memory reaches the model through five extension hooks:
 
 | Hook | What happens |
 |---|---|
-| `before_agent_start` | Injects the situation report, vector-matched memories, and relevant session history. Trivial messages such as "ok" or "thanks" are skipped so nothing is wasted on them. |
+| `before_agent_start` | Pins the startup situation report once per session in `sections.project_memory` (deterministic `queryClass: "general"`) so the cached system-prompt prefix stays byte-identical across turns and mid-session memory writes (#1414). Delivers per-turn dynamic context — vector-matched memories, relevant session history, running async agent status, and one-time invalidation/update notices for mutated snapshot entries — in a hidden `orchestrator-turn-context` message appended after the user prompt. Trivial messages such as "ok" or "thanks" skip vector/session recall. |
+| `session_before_compact` | Injects a bounded block of standing project memories (pinned, enforced, and highest-priority rules/decisions; capped by `memory_token_budget` and 600 tokens) into the compaction input so summarization preserves standing constraints (#1422). Fail-soft (never blocks or aborts compaction) and skipped for subagents. |
+| `session_compact` | Refreshes the session's pinned `project_memory` snapshot on the next turn (picking up memories added or updated earlier in the session) and clears pending mid-session invalidation notices (#1422). |
 | `tool_result` | Runs memory-based enforcement: trigger matching followed by `block`, `run_after`, or `warn` actions. |
 | `turn_end` | Injects file-change memory reminders (vector search on modified paths), task-focus enforcement when tasks are active but no tool was called, and semantic enforcement verification that can retry the turn on violations. |
 
-Only the `before_agent_start` material — the situation report, vector-matched memories, and session
-history — is injected at the **tail** of the system prompt, after rules and instructions. That position is
-deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
-Since issue #915 the injection mutates `systemPromptOptions.sections` instead of replacing the whole
-prompt text: Pi appends a transcript delta for the changed sections, which preserves cached prompt
-prefixes on supporting models. When an earlier handler has forced the full prompt (or an older Pi
-version does not expose sections), the extension falls back to appending to the prompt text.
+Only the cache-stable base sections (`orchestrator_rules` and the startup-pinned `project_memory`) are written to
+`systemPromptOptions.sections`. Because providers such as Vertex, Gemini, and Bedrock collapse system-prompt updates
+into the leading system block, mutating sections on every turn previously busted prompt caches (`cacheRead=0`).
+Delivering per-turn recalls, ticking async durations, and snapshot mutation notices in a non-displayed custom message
+appended after the user prompt preserves cached prefixes across turns while keeping recent context at the tail of the
+transcript. When an earlier handler has forced the full prompt (or an older Pi version does not expose sections), the
+extension falls back to appending to the prompt text.
+
+To prevent accidental truncation overwrites when editing from clipped previews (#1414), `memory_edit` (`update`)
+rejects `newText` values that end with `...` or `…` as a strict prefix of the existing entry and returns the full
+unclipped text; lookup misses on clipped prefixes in `memory_edit` and `memory_remove` also return matching full
+unclipped entries from the topic file.
+
 The other hooks deliver differently: `tool_result` enforcement acts on the tool result itself (`warn` appends to
 it, `block` prevents it), and `turn_end` verifier violations are sent as follow-up messages that can trigger a
 retry of the turn.
