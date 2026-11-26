@@ -236,6 +236,16 @@ export class ComsRegistry {
 		return path.join(this.projectAgentsDir(project), `${sessionId}.json`);
 	}
 
+	reloadQueuePath(project: string, sessionId: string): string {
+		if (project.includes("/") || project.includes("\\") || project.includes("..")) {
+			throw new Error(`Invalid project: ${project}`);
+		}
+		if (sessionId.includes("/") || sessionId.includes("\\") || sessionId.includes("..")) {
+			throw new Error(`Invalid session_id: ${sessionId}`);
+		}
+		return path.join(this.comsDir, "projects", project, `reload-queue-${sessionId}.json`);
+	}
+
 	makeEndpoint(sessionId: string): string {
 		if (process.platform === "win32") {
 			return `\\\\.\\pipe\\pi-coms-${sessionId}`;

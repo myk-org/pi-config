@@ -74,6 +74,8 @@ export interface RegisterComsOptions {
     allowSubagentChild?: boolean;
     /** Whether to bind process SIGINT/SIGTERM handlers while active (default: true). */
     registerSignalHandlers?: boolean;
+    /** Override reload-handoff queue TTL in ms (primarily for isolated tests). */
+    reloadQueueTtlMs?: number;
 }
 
 export interface RegisteredComs {
@@ -119,6 +121,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         sessionId: options.sessionId,
         allowSubagentChild: options.allowSubagentChild,
         registerSignalHandlers: options.registerSignalHandlers,
+        reloadQueueTtlMs: options.reloadQueueTtlMs,
     });
 
     const gatedTools = new Set<string>(runtime.gatedToolNames);
@@ -199,6 +202,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                     const self = await runtime.start(ctx, {
                         flags: mapToFlagOverrides(flagValues),
                         origin: savedOrigin,
+                        reload: true,
                     });
                     if (!activationVerified(self, process.platform, existsSync)) {
                         throw new Error("no peer socket was created during reload reactivation");
@@ -211,6 +215,15 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                     syncComsActive(false, ctx);
                     syncComsActiveTools(pi, gatedTools, false);
                     persistCurrentState();
+                    const reloadProject = typeof savedFlags.project === "string" && savedFlags.project ? savedFlags.project : ownProject();
+                    const reloadSessionId = options.sessionId ?? (globalThis as any).__piConfigSessionId;
+                    try {
+                        await runtime.stop({
+                            reason: "reload_failed",
+                            project: reloadProject,
+                            ...(typeof reloadSessionId === "string" && reloadSessionId ? { sessionId: reloadSessionId } : {}),
+                        });
+                    } catch { /* best-effort */ }
                     const msg = err instanceof Error ? err.message : String(err);
                     const error = err instanceof Error ? err : new Error(msg);
                     log.error("reload reactivation failed", msg, error);
@@ -242,14 +255,14 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         }
     });
 
-    pi.on("session_shutdown", async (_evt: any, ctx: any) => {
+    pi.on("session_shutdown", async (evt: any, ctx: any) => {
         if (pidashUnsubscribe) {
             try { pidashUnsubscribe(); } catch { /* ignore */ }
             pidashUnsubscribe = null;
         }
         const shutdownKey = ctx ? resolveBridgeSessionKey(ctx) : activeSessionKey;
         try {
-            await runtime.stop();
+            await runtime.stop({ reason: evt?.reason });
         } catch (err) {
             log.warn("coms_shutdown_failed", { error: err instanceof Error ? err.message : String(err) });
         } finally {
@@ -309,7 +322,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             // run `/coms stop` first.
             log.info("coms_active_claim_cleared", {});
             try {
-                await runtime.stop();
+                await runtime.stop({ reason: "stale_claim" });
             } catch (error: unknown) {
                 log.warn("coms_stale_claim_shutdown_threw", { error: error instanceof Error ? error.message : String(error) });
             }
@@ -526,7 +539,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             parameters: Type.Object({}),
             async execute(_id?: string, _params?: any, _signal?: any, _onUpdate?: any, ctx?: any) {
                 if (!active) return { content: [{ type: "text" as const, text: "coms is not active." }], details: { ok: true, active: false } };
-                try { await runtime.stop(); } catch (e: unknown) { log.warn("coms_stop shutdown threw", e instanceof Error ? e.message : String(e)); }
+                try { await runtime.stop({ reason: "stop" }); } catch (e: unknown) { log.warn("coms_stop shutdown threw", e instanceof Error ? e.message : String(e)); }
                 active = false;
                 syncComsActive(false, ctx);
                 syncComsActiveTools(pi, gatedTools, false);

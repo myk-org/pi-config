@@ -70,6 +70,8 @@ const RECOVERY_PREVIEW_TTL_MS = 5 * 60 * 1000;
 const MAX_RECOVERY_PREVIEWS_PER_SESSION = 20;
 const KEEPALIVE_INTERVAL_MS = 30_000;
 const LINE_CAP_BYTES = 64 * 1024;
+/** #1430: safety TTL for persisted reload-handoff inbound queue files. */
+export const RELOAD_QUEUE_TTL_MS = 60_000;
 
 
 // ━━ Public Runtime Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -87,6 +89,16 @@ export interface ComsPeerFlagOverrides {
 export interface ComsPeerStartOptions {
 	flags?: ComsPeerFlagOverrides;
 	origin?: ComsActivationOrigin;
+	sessionId?: string;
+	/** #1430: true when starting as part of a `/reload` cycle (restores persisted inbound queue). */
+	reload?: boolean;
+}
+
+export interface ComsPeerStopOptions {
+	/** Shutdown reason (e.g. `"reload"`, `"quit"`, `"stop"`, `"signal"`, `"reload_failed"`). */
+	reason?: string;
+	/** Optional project/session hint when discarding a pending reload queue without an active identity. */
+	project?: string;
 	sessionId?: string;
 }
 
@@ -130,11 +142,13 @@ export interface ComsPeerRuntimeOptions {
 	allowSubagentChild?: boolean;
 	/** Register SIGINT/SIGTERM process handlers while active (default: true). */
 	registerSignalHandlers?: boolean;
+	/** Override reload-handoff queue TTL in ms (primarily for isolated tests; default 60s). */
+	reloadQueueTtlMs?: number;
 }
 
 export interface ComsPeerRuntime {
 	start(ctx: ExtensionContext, options?: ComsPeerStartOptions): Promise<ComsPeerSelf | null>;
-	stop(): Promise<void>;
+	stop(options?: ComsPeerStopOptions): Promise<void>;
 	getSelf(): ComsPeerSelf | null;
 	isActive(): boolean;
 	sendAsUser(params: ComsUserSendParams): Promise<ComsUserSendResult>;
@@ -305,6 +319,7 @@ interface InboundContext {
 	sender_cwd: string;
 	prompt: string;
 	tasks?: Array<{ subject: string; description: string }> | null;
+	conversation_id?: string | null;
 	response_schema?: object | null;
 	queued_at: string;
 	fulfilled: boolean;
@@ -312,6 +327,8 @@ interface InboundContext {
 	mixedTurnRetries?: number;
 	/** How many times this inbound was re-injected after an abort/error before delivery (#1226) */
 	undeliveredRetries?: number;
+	/** #1429/#1430: monotonic delivery attempt counter so superseded followUp copies are suppressed. */
+	injectAttempt?: number;
 	/** #1226: true while Pi holds an undelivered followUp copy of this inbound in its queue. */
 	followUpQueued?: boolean;
 	/** #1226: steers injected as followUp for this inbound that have not yet emitted message_start. */
@@ -324,6 +341,264 @@ interface InboundContext {
 	origin?: PromptOrigin;
 	/** #924 §6: last progress-signal emission for this inbound (ms epoch). */
 	lastProgressAt?: number;
+}
+
+interface PersistedReloadInbound {
+	msg_id: string;
+	hops: number;
+	sender_endpoint: string;
+	sender_session: string;
+	sender_name: string;
+	sender_cwd: string;
+	prompt: string;
+	tasks?: Array<{ subject: string; description: string }> | null;
+	conversation_id?: string | null;
+	response_schema?: object | null;
+	queued_at: string;
+	priority?: boolean;
+	origin?: PromptOrigin;
+	injectAttempt?: number;
+	wasInjected?: boolean;
+}
+
+interface ReloadQueuePayload {
+	version: 1;
+	session_id: string;
+	project: string;
+	endpoint: string;
+	saved_at_ms: number;
+	expires_at_ms: number;
+	pid: number;
+	items: PersistedReloadInbound[];
+}
+
+interface ReloadQueueGuardEntry {
+	key: string;
+	filePath: string;
+	sessionId: string;
+	endpoint: string;
+	timer: NodeJS.Timeout | null;
+}
+
+interface ReloadQueueGuardRegistry {
+	entries: Map<string, ReloadQueueGuardEntry>;
+	exitListenersBound: boolean;
+	onBeforeExit: () => void;
+	onExit: () => void;
+}
+
+const RELOAD_QUEUE_GUARDS_SYMBOL = Symbol.for("pi.coms.reloadQueueGuards");
+
+function getReloadQueueGuardRegistry(): ReloadQueueGuardRegistry {
+	const g = globalThis as Record<symbol, ReloadQueueGuardRegistry | undefined>;
+	let reg = g[RELOAD_QUEUE_GUARDS_SYMBOL];
+	if (!reg) {
+		const created: ReloadQueueGuardRegistry = {
+			entries: new Map(),
+			exitListenersBound: false,
+			onBeforeExit: () => {
+				for (const key of [...created.entries.keys()]) {
+					void expireReloadQueueGuard(key, "process_before_exit");
+				}
+			},
+			onExit: () => {
+				for (const entry of created.entries.values()) {
+					if (entry.timer) {
+						try { clearTimeout(entry.timer); } catch { /* ignore */ }
+						entry.timer = null;
+					}
+					try { fs.unlinkSync(entry.filePath); } catch { /* ignore */ }
+				}
+				created.entries.clear();
+			},
+		};
+		g[RELOAD_QUEUE_GUARDS_SYMBOL] = created;
+		reg = created;
+	}
+	return reg;
+}
+
+function unbindReloadExitListenersIfEmpty(reg: ReloadQueueGuardRegistry): void {
+	if (reg.entries.size === 0 && reg.exitListenersBound) {
+		process.off("beforeExit", reg.onBeforeExit);
+		process.off("exit", reg.onExit);
+		reg.exitListenersBound = false;
+	}
+}
+
+function disarmReloadQueueGuard(key: string): void {
+	const reg = getReloadQueueGuardRegistry();
+	const existing = reg.entries.get(key);
+	if (!existing) return;
+	if (existing.timer) {
+		try { clearTimeout(existing.timer); } catch { /* ignore */ }
+		existing.timer = null;
+	}
+	reg.entries.delete(key);
+	unbindReloadExitListenersIfEmpty(reg);
+}
+
+function claimReloadQueueFile(filePath: string): ReloadQueuePayload | null {
+	const claimPath = `${filePath}.${process.pid}.${ulid()}.claim`;
+	try {
+		fs.renameSync(filePath, claimPath);
+	} catch (err: any) {
+		if (err?.code === "ENOENT") return null;
+		log.warn("reload_queue_claim_failed", { filePath, error: err?.message ?? String(err) });
+		return null;
+	}
+	try {
+		const raw = fs.readFileSync(claimPath, "utf-8");
+		const parsed = JSON.parse(raw) as ReloadQueuePayload;
+		if (
+			!parsed
+			|| typeof parsed !== "object"
+			|| parsed.version !== 1
+			|| typeof parsed.session_id !== "string"
+			|| !Array.isArray(parsed.items)
+		) {
+			log.warn("reload_queue_malformed", { filePath });
+			return null;
+		}
+		return parsed;
+	} catch (err: any) {
+		log.warn("reload_queue_read_failed", { filePath, error: err?.message ?? String(err) });
+		return null;
+	} finally {
+		try { fs.unlinkSync(claimPath); } catch { /* ignore */ }
+	}
+}
+
+async function notifyClosedReloadItems(
+	sessionId: string,
+	endpoint: string,
+	items: PersistedReloadInbound[],
+): Promise<void> {
+	if (items.length === 0) return;
+	let notifyTimeout: NodeJS.Timeout | undefined;
+	await Promise.race([
+		Promise.allSettled(items.map((ib) =>
+			sendEnvelope(ib.sender_endpoint, {
+				type: "response",
+				msg_id: ib.msg_id,
+				sender_session: sessionId,
+				sender_endpoint: endpoint,
+				hops: 0,
+				timestamp: nowIso(),
+				response: null,
+				error: "session_closed",
+				queued_msg_ids: [],
+			}).catch((err) => {
+				log.debug("reload_queue_notify_closed_failed", ib.msg_id, err instanceof Error ? err.message : String(err));
+			}),
+		)),
+		new Promise<void>((resolve) => {
+			notifyTimeout = setTimeout(resolve, 500);
+			notifyTimeout.unref?.();
+		}),
+	]);
+	if (notifyTimeout) clearTimeout(notifyTimeout);
+}
+
+async function expireReloadQueueGuard(key: string, reason: string): Promise<void> {
+	const reg = getReloadQueueGuardRegistry();
+	const entry = reg.entries.get(key);
+	if (!entry) return;
+	disarmReloadQueueGuard(key);
+	const payload = claimReloadQueueFile(entry.filePath);
+	if (!payload || payload.items.length === 0) return;
+	log.warn("reload_queue_expired_cleanup", {
+		reason,
+		sessionId: payload.session_id,
+		count: payload.items.length,
+	});
+	await notifyClosedReloadItems(payload.session_id, payload.endpoint, payload.items);
+}
+
+function persistReloadQueue(
+	reg: ComsRegistry,
+	project: string,
+	sessionId: string,
+	endpoint: string,
+	items: PersistedReloadInbound[],
+	ttlMs: number,
+): string {
+	const filePath = reg.reloadQueuePath(project, sessionId);
+	const dir = path.dirname(filePath);
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const now = Date.now();
+	const payload: ReloadQueuePayload = {
+		version: 1,
+		session_id: sessionId,
+		project,
+		endpoint,
+		saved_at_ms: now,
+		expires_at_ms: now + Math.max(1, ttlMs),
+		pid: process.pid,
+		items,
+	};
+	const tmpPath = `${filePath}.${process.pid}.${ulid()}.tmp`;
+	try {
+		fs.writeFileSync(tmpPath, JSON.stringify(payload), { encoding: "utf-8", mode: 0o600 });
+		if (process.platform !== "win32") {
+			try { fs.chmodSync(tmpPath, 0o600); } catch { /* best-effort */ }
+		}
+		fs.renameSync(tmpPath, filePath);
+	} catch (err) {
+		try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+		throw err;
+	}
+
+	const guardReg = getReloadQueueGuardRegistry();
+	disarmReloadQueueGuard(filePath);
+	const timer = setTimeout(() => {
+		void expireReloadQueueGuard(filePath, "ttl_expired");
+	}, Math.max(1, ttlMs));
+	timer.unref?.();
+	guardReg.entries.set(filePath, {
+		key: filePath,
+		filePath,
+		sessionId,
+		endpoint,
+		timer,
+	});
+	if (!guardReg.exitListenersBound) {
+		process.on("beforeExit", guardReg.onBeforeExit);
+		process.on("exit", guardReg.onExit);
+		guardReg.exitListenersBound = true;
+	}
+	log.info("reload_queue_persisted", {
+		sessionId,
+		project,
+		count: items.length,
+		ttlMs,
+		filePath,
+	});
+	return filePath;
+}
+
+async function discardReloadQueue(
+	reg: ComsRegistry,
+	project: string,
+	sessionId: string,
+	reason: string,
+): Promise<void> {
+	let filePath: string;
+	try {
+		filePath = reg.reloadQueuePath(project, sessionId);
+	} catch {
+		return;
+	}
+	disarmReloadQueueGuard(filePath);
+	const payload = claimReloadQueueFile(filePath);
+	if (!payload) return;
+	log.info("reload_queue_discarded", {
+		reason,
+		sessionId: payload.session_id,
+		project,
+		count: payload.items.length,
+	});
+	await notifyClosedReloadItems(payload.session_id, payload.endpoint, payload.items);
 }
 
 /** Inline ping worker — responds to pings on a separate socket, immune to main-thread event-loop blocks */
@@ -690,7 +965,16 @@ export function createComsPeerRuntime(
 	const closedInboundMsgIds = new Set<string>();
 	/** Delivered inbound msg_ids that had pending followUp steers when cleanShutdown() ran (#1226). */
 	const closedSteerTargetIds = new Set<string>();
+	/** #1429/#1430: minimum active inject_attempt per msg_id so older queued followUp copies are suppressed. */
+	const supersededInboundAttempts = new Map<string, number>();
 	const MAX_CLOSED_INBOUND_IDS = 500;
+	const reloadQueueTtlMs = options.reloadQueueTtlMs ?? RELOAD_QUEUE_TTL_MS;
+	let reloadDrainTimer: NodeJS.Timeout | null = null;
+	let lastTurnStopReason: string | null = null;
+	let pendingSettledAction:
+		| { kind: "reinject"; inbound: InboundContext; gen: number; ctx?: ExtensionContext | null }
+		| { kind: "drain"; gen: number; ctx?: ExtensionContext | null }
+		| null = null;
 	/** True while an agent run is active (agent_start -> agent_end) (#1226). */
 	let agentRunning = false;
 	let bundledInbounds: InboundContext[] = [];
@@ -705,6 +989,35 @@ export function createComsPeerRuntime(
 			if (oldest !== undefined) target.delete(oldest);
 		}
 		target.add(msgId);
+	}
+
+	function rememberSupersededAttempt(msgId: string, minAttempt: number): void {
+		if (!msgId || minAttempt <= 0) return;
+		const existing = supersededInboundAttempts.get(msgId);
+		if (existing !== undefined && existing >= minAttempt) return;
+		if (existing === undefined && supersededInboundAttempts.size >= MAX_CLOSED_INBOUND_IDS) {
+			const oldest = supersededInboundAttempts.keys().next().value;
+			if (oldest !== undefined) supersededInboundAttempts.delete(oldest);
+		}
+		supersededInboundAttempts.set(msgId, minAttempt);
+	}
+
+	function isSupersededComsMessage(msg: any): boolean {
+		if (msg?.role !== "custom" || !msg?.details || typeof msg.details !== "object") return false;
+		const d = msg.details;
+		const attempt = typeof d.inject_attempt === "number" ? d.inject_attempt : 0;
+		if (typeof d.msg_id === "string") {
+			const minAttempt = supersededInboundAttempts.get(d.msg_id);
+			if (minAttempt !== undefined && attempt < minAttempt) return true;
+		}
+		if (Array.isArray(d.bundled_msg_ids)) {
+			for (const id of d.bundled_msg_ids) {
+				if (typeof id !== "string") continue;
+				const minAttempt = supersededInboundAttempts.get(id);
+				if (minAttempt !== undefined && attempt < minAttempt) return true;
+			}
+		}
+		return false;
 	}
 
 	function isClosedComsMessage(msg: any): boolean {
@@ -925,7 +1238,7 @@ export function createComsPeerRuntime(
 		ib: InboundContext,
 		opts: {
 			header?: string;
-			bundled?: { header: string; content: string; origin?: PromptOrigin; ids: string[] };
+			bundled?: { header: string; content: string; origin?: PromptOrigin; ids: string[]; attempt?: number };
 			streaming?: boolean;
 			ctx?: ExtensionContext | null;
 		} = {},
@@ -935,7 +1248,8 @@ export function createComsPeerRuntime(
 		const content = opts.bundled
 			? buildInboundContent(opts.bundled.header, opts.bundled.content, null, ib.sender_name, ib.sender_cwd, opts.bundled.origin, ib.sender_session, true)
 			: buildInboundContent(opts.header ?? "", ib.prompt, ib.tasks ?? null, ib.sender_name, ib.sender_cwd, ib.origin, ib.sender_session);
-		const queuedAsFollowUp = opts.streaming === true || isPiStreaming(opts.ctx);
+		const attempt = opts.bundled?.attempt ?? (ib.injectAttempt ?? 0);
+		const queuedAsFollowUp = opts.streaming === true || (opts.streaming !== false && isPiStreaming(opts.ctx));
 		pi.sendMessage(
 			{
 				customType,
@@ -945,6 +1259,7 @@ export function createComsPeerRuntime(
 					msg_id: ib.msg_id,
 					sender_session: ib.sender_session,
 					response_schema: ib.response_schema ?? null,
+					...(attempt > 0 ? { inject_attempt: attempt } : {}),
 					...(opts.bundled ? { bundled_msg_ids: opts.bundled.ids } : {}),
 				},
 			},
@@ -1041,9 +1356,10 @@ export function createComsPeerRuntime(
 		bundledInbounds = senderPending.slice(1);
 		setProcessingInbound(true);
 		const bundle = buildBundledContent(primary.sender_name, senderPending);
+		const bundleAttempt = Math.max(...senderPending.map((ib) => ib.injectAttempt ?? 0));
 		log.debug("fifo_bundle", senderPending.length, "from", primary.sender_name, "origins", senderPending.map((ib) => ib.origin ?? "peer").join(","));
 		try {
-			injectInbound(primary, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id) }, streaming: opts.streaming, ctx: opts.ctx });
+			injectInbound(primary, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id), attempt: bundleAttempt }, streaming: opts.streaming, ctx: opts.ctx });
 			writeLiveRegistry();
 			maybeRefreshWidget();
 		} catch (err: any) {
@@ -1267,6 +1583,7 @@ export function createComsPeerRuntime(
 			sender_cwd: env.sender_cwd,
 			prompt: env.prompt,
 			tasks: Array.isArray(env.tasks) ? env.tasks : null,
+			conversation_id: env.conversation_id ?? null,
 			response_schema: env.response_schema ?? null,
 			queued_at: nowIso(),
 			fulfilled: false,
@@ -1890,6 +2207,65 @@ export function createComsPeerRuntime(
 	}
 
 	// ━━ Peer startup ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	async function restoreReloadQueue(
+		reg: ComsRegistry,
+		project: string,
+		sessionId: string,
+		isReload: boolean,
+	): Promise<InboundContext[]> {
+		let filePath: string;
+		try {
+			filePath = reg.reloadQueuePath(project, sessionId);
+		} catch {
+			return [];
+		}
+		disarmReloadQueueGuard(filePath);
+		const payload = claimReloadQueueFile(filePath);
+		if (!payload) return [];
+		const expired = Date.now() > payload.expires_at_ms;
+		const sessionMismatch = payload.session_id !== sessionId;
+		const foreignOrphan = !isReload && payload.pid !== process.pid;
+		if (expired || sessionMismatch || foreignOrphan) {
+			log.warn("reload_queue_discarded_on_start", {
+				sessionId,
+				project,
+				count: payload.items.length,
+				expired,
+				sessionMismatch,
+				foreignOrphan,
+			});
+			await notifyClosedReloadItems(payload.session_id, payload.endpoint, payload.items);
+			return [];
+		}
+		const restored: InboundContext[] = [];
+		for (const saved of payload.items) {
+			if (!saved || typeof saved.msg_id !== "string" || typeof saved.sender_endpoint !== "string") continue;
+			const nextAttempt = saved.wasInjected ? (saved.injectAttempt ?? 0) + 1 : (saved.injectAttempt ?? 0);
+			if (saved.wasInjected && nextAttempt > 0) {
+				rememberSupersededAttempt(saved.msg_id, nextAttempt);
+			}
+			restored.push({
+				msg_id: saved.msg_id,
+				hops: typeof saved.hops === "number" ? saved.hops : 0,
+				sender_endpoint: saved.sender_endpoint,
+				sender_session: saved.sender_session,
+				sender_name: saved.sender_name,
+				sender_cwd: saved.sender_cwd,
+				prompt: saved.prompt,
+				tasks: Array.isArray(saved.tasks) ? saved.tasks : null,
+				conversation_id: saved.conversation_id ?? null,
+				response_schema: saved.response_schema ?? null,
+				queued_at: saved.queued_at || nowIso(),
+				fulfilled: false,
+				...(saved.priority ? { priority: true } : {}),
+				...(saved.origin ? { origin: saved.origin } : {}),
+				...(nextAttempt > 0 ? { injectAttempt: nextAttempt } : {}),
+			});
+		}
+		log.info("reload_queue_restored", { sessionId, project, count: restored.length });
+		return restored;
+	}
+
 	async function startPeer(ctx: ExtensionContext, startOptions?: ComsPeerStartOptions): Promise<ComsPeerSelf | null> {
 		applyExtensionDefaults(import.meta.url, ctx);
 		unsubMalformedRecoveryAborted?.();
@@ -1897,8 +2273,12 @@ export function createComsPeerRuntime(
 		deferredRecoveryInboundId = null;
 		deferredRecoveryCtx = null;
 		recoverySessionKey = DEFAULT_BRIDGE_SESSION_KEY;
+		if (reloadDrainTimer) { try { clearTimeout(reloadDrainTimer); } catch { /* ignore */ } reloadDrainTimer = null; }
+		pendingSettledAction = null;
+		lastTurnStopReason = null;
 		currentCtx = ctx;
 		sessionGeneration++;
+		const startGen = sessionGeneration;
 		shuttingDown = false;
 		finalizingInbound = false;
 		agentRunning = false;
@@ -2351,12 +2731,38 @@ Do not respond to this message.`;
 		try { (staleCheckTimer as any).unref?.(); } catch {}
 
 		} // end mode guard for timers
+
+		// #1430: restore any inbound messages persisted across a `/reload` boundary for this session.
+		const restoredInbounds = await restoreReloadQueue(
+			registry,
+			project,
+			comsSessionId,
+			startOptions?.reload === true,
+		);
+		if (restoredInbounds.length > 0 && !shuttingDown && sessionGeneration === startGen && identity) {
+			for (const ib of restoredInbounds) {
+				inboundQueue.set(ib.msg_id, ib);
+			}
+			// Mark busy immediately so newly arriving prompts queue behind restored items
+			// until the next-tick drain injects the head of the queue (after session_start
+			// finishes enabling coms_* tools and rebuilding extension resources).
+			setProcessingInbound(true);
+			maybeRefreshWidget();
+			const drainCtx = ctx;
+			reloadDrainTimer = setTimeout(() => {
+				reloadDrainTimer = null;
+				if (shuttingDown || !identity || sessionGeneration !== startGen) return;
+				void drainNextInbound({ bundle: true, onFail: "fail_orphans", streaming: false, ctx: drainCtx }, startGen);
+			}, 0);
+			reloadDrainTimer.unref?.();
+		}
+
 		return getSelf();
 	}
 
 	if (!deferred) {
-		pi.on("session_start", async (_event, ctx) => {
-			await startPeer(ctx);
+		pi.on("session_start", async (event: any, ctx) => {
+			await startPeer(ctx, event?.reason === "reload" ? { reload: true } : undefined);
 		});
 	}
 
@@ -4014,6 +4420,7 @@ Do not respond to this message.`;
 		}
 		agentRunning = true;
 		agentRunningUserTurn = !processingInbound;
+		lastTurnStopReason = null;
 		comsSendCalledThisTurn.clear();
 		userMessageDuringInbound = false;
 		log.debug("agent_start", "userTurn", agentRunningUserTurn, "processingInbound", processingInbound, "currentInbound", currentInbound?.msg_id ?? "null");
@@ -4029,10 +4436,17 @@ Do not respond to this message.`;
 			log.info("closed_inbound_suppressed", msg?.details?.msg_id ?? msg?.details?.target_msg_id ?? "unknown");
 			return;
 		}
+		if (isSupersededComsMessage(msg)) {
+			log.info("superseded_inbound_suppressed", msg?.details?.msg_id ?? "unknown", "attempt", msg?.details?.inject_attempt ?? 0);
+			return;
+		}
 		if (shuttingDown || !identity) return;
 		if (currentInbound && msg?.role === "custom" && msg?.details?.msg_id === currentInbound.msg_id) {
 			inboundDelivered = true;
 			currentInbound.followUpQueued = false;
+			if (pendingSettledAction?.kind === "reinject" && pendingSettledAction.inbound === currentInbound) {
+				pendingSettledAction = null;
+			}
 			inboundSetDuringUserTurn = false;
 			userMessageDuringInbound = false;
 			agentRunningUserTurn = false;
@@ -4056,19 +4470,20 @@ Do not respond to this message.`;
 		}
 	});
 
-	// ━━ context: strip closed COMS follow-ups before any LLM call (#1226) ━━
-	// Pi retains queued followUp messages across cleanShutdown() (including same-closure
-	// restarts). Strip prompts/steers whose senders already received session_closed, and
-	// abort the turn when no live user/peer prompt remains to drive the model.
+	// ━━ context: strip closed/superseded COMS follow-ups before any LLM call (#1226, #1429, #1430) ━━
+	// Pi retains queued followUp messages across cleanShutdown() and programmatic aborts.
+	// Strip prompts/steers whose senders already received session_closed or were superseded by a
+	// newer delivery attempt, and abort the turn when no live user/peer prompt remains.
 	pi.on("context" as any, (event: any, ctx?: ExtensionContext) => {
-		if (closedInboundMsgIds.size === 0 && closedSteerTargetIds.size === 0) return;
+		if (closedInboundMsgIds.size === 0 && closedSteerTargetIds.size === 0 && supersededInboundAttempts.size === 0) return;
 		const msgs = Array.isArray(event?.messages) ? event.messages : null;
 		if (!msgs || msgs.length === 0) return;
-		const filtered = msgs.filter((m: any) => !isClosedComsMessage(m));
+		const shouldStrip = (m: any) => isClosedComsMessage(m) || isSupersededComsMessage(m);
+		const filtered = msgs.filter((m: any) => !shouldStrip(m));
 		if (filtered.length === msgs.length) return;
 		const lastBefore = msgs[msgs.length - 1];
 		const lastAfter = filtered[filtered.length - 1];
-		if (isClosedComsMessage(lastBefore) && (!lastAfter || lastAfter.role === "assistant")) {
+		if (shouldStrip(lastBefore) && (!lastAfter || lastAfter.role === "assistant")) {
 			log.info("closed_inbound_abort_turn", { removed: msgs.length - filtered.length });
 			try { ctx?.abort?.(); } catch { /* best-effort */ }
 		}
@@ -4286,8 +4701,11 @@ Do not respond to this message.`;
 	// Prevents queued followUp messages (async-agent results, coms responses) from
 	// starving agent_end and wedging the inbound FIFO queue indefinitely.
 	pi.on("turn_end" as any, async (event: any, ctx: ExtensionContext) => {
-		if (shuttingDown || !identity || !currentInbound || !inboundDelivered || finalizingInbound) return;
 		const msg = event?.message;
+		if (msg?.role === "assistant" && typeof msg.stopReason === "string") {
+			lastTurnStopReason = msg.stopReason;
+		}
+		if (shuttingDown || !identity || !currentInbound || !inboundDelivered || finalizingInbound) return;
 		if (msg && msg.role !== "assistant") return;
 		// Let agent_end handle aborted/errored turns (runLoop exits immediately after turn_end).
 		if (msg?.stopReason === "error" || msg?.stopReason === "aborted") return;
@@ -4309,9 +4727,101 @@ Do not respond to this message.`;
 		await finalizeCurrentInbound(ctx, msg, { streaming: true });
 	});
 
+	function resolveAgentEndStopReason(event: any): string | null {
+		const msgs = Array.isArray(event?.messages) ? event.messages : null;
+		if (msgs) {
+			for (let i = msgs.length - 1; i >= 0; i--) {
+				const m = msgs[i];
+				if (m?.role === "assistant" && typeof m.stopReason === "string") {
+					return m.stopReason;
+				}
+			}
+		}
+		return lastTurnStopReason;
+	}
+
+	function reinjectUndeliveredInbound(
+		inbound: InboundContext,
+		ctx: ExtensionContext | null | undefined,
+		opts: { streaming?: boolean } = {},
+	): boolean {
+		const retries = inbound.undeliveredRetries ?? 0;
+		inbound.undeliveredRetries = retries + 1;
+		inbound.followUpQueued = false;
+		const nextAttempt = (inbound.injectAttempt ?? 0) + 1;
+		inbound.injectAttempt = nextAttempt;
+		rememberSupersededAttempt(inbound.msg_id, nextAttempt);
+		for (const b of bundledInbounds) {
+			b.injectAttempt = Math.max(b.injectAttempt ?? 0, nextAttempt);
+			rememberSupersededAttempt(b.msg_id, b.injectAttempt);
+		}
+		log.warn("agent_end_undelivered_reinject", inbound.msg_id, "retry", inbound.undeliveredRetries, "attempt", nextAttempt, "from", inbound.sender_name);
+		try {
+			if (bundledInbounds.length > 0) {
+				const senderPending = [inbound, ...bundledInbounds];
+				const bundle = buildBundledContent(inbound.sender_name, senderPending);
+				injectInbound(inbound, {
+					bundled: { ...bundle, ids: senderPending.map(i => i.msg_id), attempt: nextAttempt },
+					streaming: opts.streaming,
+					ctx,
+				});
+			} else {
+				injectInbound(inbound, { streaming: opts.streaming, ctx });
+			}
+			currentInbound = inbound;
+			inboundDelivered = false;
+			return true;
+		} catch (err: any) {
+			log.error("agent_end_undelivered_reinject_failed", inbound.msg_id, err?.message);
+			return false;
+		}
+	}
+
+	async function abortUndeliveredInboundAndDrain(
+		inbound: InboundContext,
+		ident: NonNullable<typeof identity>,
+		ctx: ExtensionContext | null | undefined,
+		gen: number,
+		retries: number,
+	): Promise<void> {
+		log.warn("agent_end_undelivered_aborted", inbound.msg_id, "from", inbound.sender_name, "retries", retries);
+		inbound.fulfilled = true;
+		inboundQueue.delete(inbound.msg_id);
+		rememberClosedId(closedInboundMsgIds, inbound.msg_id);
+		finalizingMsgIds.add(inbound.msg_id);
+		bundledInbounds = [];
+		maybeRefreshWidget();
+		const queuedIds: string[] = [];
+		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
+		try {
+			await sendEnvelope(inbound.sender_endpoint, {
+				type: "response",
+				msg_id: inbound.msg_id,
+				sender_session: ident.coms_session_id,
+				sender_endpoint: ident.endpoint,
+				hops: 0,
+				timestamp: nowIso(),
+				response: null,
+				error: "aborted",
+				queued_msg_ids: queuedIds,
+			});
+		} catch { /* best-effort */ } finally {
+			finalizingMsgIds.delete(inbound.msg_id);
+		}
+		if (shuttingDown || sessionGeneration !== gen) return;
+		if (queuedIds.length > 0 && isPiStreaming(ctx)) {
+			pendingSettledAction = { kind: "drain", gen, ctx };
+			log.debug("agent_end_drain_defer_settled", { queued: queuedIds.length });
+			return;
+		}
+		await drainNextInbound({ bundle: true, onFail: "fail_orphans", ctx }, gen);
+	}
+
 	// ━━ agent_end: safety net for delivered & aborted-before-delivery inbounds ━━
 	pi.on("agent_end", async (event, ctx) => {
 		agentRunning = false;
+		const stopReason = resolveAgentEndStopReason(event);
+		lastTurnStopReason = null;
 		log.info("agent_end_enter", "currentInbound", currentInbound?.msg_id ?? "null", "delivered", inboundDelivered, "identity", !!identity, "processingInbound", processingInbound);
 		if (finalizingInbound) {
 			log.debug("agent_end_skip_finalizing");
@@ -4369,77 +4879,65 @@ Do not respond to this message.`;
 			return;
 		}
 
-		// Pi retains already-queued followUp messages across aborts. While Pi still holds
-		// this inbound in its followUp queue, do not enqueue a duplicate copy or send
-		// "aborted" (which would leave the queued copy deliverable on the next run).
-		if (currentInbound.followUpQueued) {
-			agentRunningUserTurn = false;
-			inboundSetDuringUserTurn = false;
-			userMessageDuringInbound = false;
-			comsSendCalledThisTurn.clear();
-			log.info("agent_end_followup_retained", currentInbound.msg_id, "from", currentInbound.sender_name);
-			return;
-		}
-
-		// Direct-run inbound (not queued as followUp) ended before Pi emitted message_start.
-		// Re-inject once (bounded) so a genuinely lost prompt is recovered, or fail with
-		// "aborted" and drain FIFO so processingInbound cannot stay stranded true at idle (#1226).
+		// #1429: An undelivered inbound (direct-run OR queued as followUp) reached agent_end
+		// without Pi emitting message_start. On abort (e.g. Esc clears Pi's followUp queue)
+		// or any completed turn finishing without delivering it, never return early forever
+		// with processingInbound = true. Clear followUpQueued and enter bounded recovery:
+		// re-inject once (deferred to agent_settled while Pi is still settling so it starts a
+		// fresh run), or fail with "aborted" and drain FIFO so idle cannot stay wedged.
 		const gen = sessionGeneration;
 		const ident = identity;
 		const inbound = currentInbound;
-		currentInbound = null;
-		inboundDelivered = false;
+		const wasFollowUpQueued = inbound.followUpQueued === true;
+		inbound.followUpQueued = false;
 		agentRunningUserTurn = false;
 		inboundSetDuringUserTurn = false;
 		userMessageDuringInbound = false;
 		comsSendCalledThisTurn.clear();
 
+		if (wasFollowUpQueued) {
+			log.warn("agent_end_followup_lost", inbound.msg_id, "from", inbound.sender_name, "stopReason", stopReason ?? "unknown");
+		}
+
 		const MAX_UNDELIVERED_RETRIES = 1;
 		const retries = inbound.undeliveredRetries ?? 0;
 		if (retries < MAX_UNDELIVERED_RETRIES) {
-			inbound.undeliveredRetries = retries + 1;
-			log.warn("agent_end_undelivered_reinject", inbound.msg_id, "retry", inbound.undeliveredRetries, "from", inbound.sender_name);
-			try {
-				if (bundledInbounds.length > 0) {
-					const senderPending = [inbound, ...bundledInbounds];
-					const bundle = buildBundledContent(inbound.sender_name, senderPending);
-					injectInbound(inbound, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id) }, ctx });
-				} else {
-					injectInbound(inbound, { ctx });
-				}
-				currentInbound = inbound;
-				inboundDelivered = false;
+			if (isPiStreaming(ctx)) {
+				pendingSettledAction = { kind: "reinject", inbound, gen, ctx };
+				log.info("agent_end_undelivered_defer_settled", inbound.msg_id, "from", inbound.sender_name, "stopReason", stopReason ?? "unknown");
 				return;
-			} catch (err: any) {
-				log.error("agent_end_undelivered_reinject_failed", inbound.msg_id, err?.message);
 			}
+			currentInbound = null;
+			inboundDelivered = false;
+			if (reinjectUndeliveredInbound(inbound, ctx)) return;
 		}
 
-		log.warn("agent_end_undelivered_aborted", inbound.msg_id, "from", inbound.sender_name, "retries", retries);
-		inbound.fulfilled = true;
-		inboundQueue.delete(inbound.msg_id);
-		finalizingMsgIds.add(inbound.msg_id);
-		bundledInbounds = [];
-		maybeRefreshWidget();
-		const queuedIds: string[] = [];
-		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
-		try {
-			await sendEnvelope(inbound.sender_endpoint, {
-				type: "response",
-				msg_id: inbound.msg_id,
-				sender_session: ident.coms_session_id,
-				sender_endpoint: ident.endpoint,
-				hops: 0,
-				timestamp: nowIso(),
-				response: null,
-				error: "aborted",
-				queued_msg_ids: queuedIds,
-			});
-		} catch { /* best-effort */ } finally {
-			finalizingMsgIds.delete(inbound.msg_id);
+		pendingSettledAction = null;
+		currentInbound = null;
+		inboundDelivered = false;
+		await abortUndeliveredInboundAndDrain(inbound, ident, ctx, gen, retries);
+	});
+
+	// ━━ agent_settled: run deferred undelivered re-inject / FIFO drain once Pi is idle (#1429) ━━
+	pi.on("agent_settled" as any, async (_event: any, ctx?: ExtensionContext) => {
+		const action = pendingSettledAction;
+		pendingSettledAction = null;
+		if (!action) return;
+		if (shuttingDown || !identity || sessionGeneration !== action.gen) return;
+		const useCtx = ctx ?? action.ctx ?? currentCtx;
+		if (action.kind === "reinject") {
+			if (currentInbound !== action.inbound || inboundDelivered || action.inbound.fulfilled) return;
+			currentInbound = null;
+			inboundDelivered = false;
+			if (reinjectUndeliveredInbound(action.inbound, useCtx, { streaming: false })) return;
+			const retries = action.inbound.undeliveredRetries ?? 0;
+			await abortUndeliveredInboundAndDrain(action.inbound, identity, useCtx, action.gen, retries);
+			return;
 		}
-		if (shuttingDown || sessionGeneration !== gen) return;
-		await drainNextInbound({ bundle: true, onFail: "fail_orphans", ctx }, gen);
+		if (action.kind === "drain") {
+			if (currentInbound !== null) return;
+			await drainNextInbound({ bundle: true, onFail: "fail_orphans", streaming: false, ctx: useCtx }, action.gen);
+		}
 	});
 
 	// ━━ #968 part C: pidash browser bridge ─━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4554,10 +5052,19 @@ Do not respond to this message.`;
 		if (!graceful) try { await worker.terminate(); } catch {}
 		log.info("ping_worker_stop", { outcome: graceful ? "graceful" : "terminated" });
 	}
-	async function cleanShutdown(): Promise<void> {
-		if (shuttingDown) return;
+	async function cleanShutdown(stopOptions?: ComsPeerStopOptions): Promise<void> {
+		const isReloadShutdown = stopOptions?.reason === "reload";
+		if (shuttingDown) {
+			if (!isReloadShutdown && stopOptions?.project && stopOptions?.sessionId) {
+				await discardReloadQueue(registry, stopOptions.project, stopOptions.sessionId, stopOptions.reason ?? "stop");
+			}
+			return;
+		}
 		shuttingDown = true;
 		sessionGeneration++;
+		if (reloadDrainTimer) { try { clearTimeout(reloadDrainTimer); } catch { /* ignore */ } reloadDrainTimer = null; }
+		pendingSettledAction = null;
+		lastTurnStopReason = null;
 		try { pi.events.emit("pidash:coms-identity", { name: null, purpose: null }); } catch {}
 		const ident = identity; // snapshot before nulling
 		const shutdownCtx = currentCtx;
@@ -4630,7 +5137,7 @@ Do not respond to this message.`;
 				try { fs.unlinkSync(ident.endpoint); } catch { /* ignore */ }
 			}
 			try { registry.removeEntry(ident.project, ident.coms_session_id); } catch { /* ignore */ }
-			log.info("shutdown", ident.coms_session_id);
+			log.info("shutdown", ident.coms_session_id, "reason", stopOptions?.reason ?? "stop");
 		}
 		for (const pending of pendingReplies.values()) {
 			if (pending.timer) clearTimeout(pending.timer);
@@ -4641,24 +5148,111 @@ Do not respond to this message.`;
 		queueRecoveryPreviews.clear();
 		// Snapshot waiting inbound senders and reset all in-memory inbound queue state so
 		// /coms stop -> /coms start (which reuses this closure) starts completely clean (#1226).
+		// On `/reload` (#1430), persist unfulfilled queued/undelivered inbounds for the same
+		// sessionId instead of replying `session_closed`, so the reloaded runtime drains them.
 		const wasCurrentDelivered = inboundDelivered;
+		const snapshotCurrent = currentInbound;
+		const snapshotBundled = [...bundledInbounds];
 		const waitingInbounds: InboundContext[] = [];
-		const seenInboundIds = new Set<string>();
-		for (const ib of inboundQueue.values()) {
-			if (!ib.fulfilled && !finalizingMsgIds.has(ib.msg_id)) {
+		const persistedInbounds: PersistedReloadInbound[] = [];
+		const persistedIds = new Set<string>();
+		const injectedBeforeReload = new Set<string>();
+		if (snapshotCurrent && !wasCurrentDelivered) {
+			injectedBeforeReload.add(snapshotCurrent.msg_id);
+			for (const b of snapshotBundled) injectedBeforeReload.add(b.msg_id);
+		}
+		const toPersistedReloadInbound = (ib: InboundContext): PersistedReloadInbound => ({
+			msg_id: ib.msg_id,
+			hops: ib.hops,
+			sender_endpoint: ib.sender_endpoint,
+			sender_session: ib.sender_session,
+			sender_name: ib.sender_name,
+			sender_cwd: ib.sender_cwd,
+			prompt: ib.prompt,
+			tasks: ib.tasks ?? null,
+			conversation_id: ib.conversation_id ?? null,
+			response_schema: ib.response_schema ?? null,
+			queued_at: ib.queued_at,
+			...(ib.priority ? { priority: true } : {}),
+			...(ib.origin ? { origin: ib.origin } : {}),
+			...(ib.injectAttempt ? { injectAttempt: ib.injectAttempt } : {}),
+			...(injectedBeforeReload.has(ib.msg_id) ? { wasInjected: true } : {}),
+		});
+
+		if (isReloadShutdown && ident) {
+			const persistCandidate = (ib: InboundContext | null | undefined) => {
+				if (!ib || ib.fulfilled || finalizingMsgIds.has(ib.msg_id) || persistedIds.has(ib.msg_id)) return;
 				ib.fulfilled = true;
-				waitingInbounds.push(ib);
-				seenInboundIds.add(ib.msg_id);
+				persistedIds.add(ib.msg_id);
+				persistedInbounds.push(toPersistedReloadInbound(ib));
+			};
+			if (snapshotCurrent && !wasCurrentDelivered) {
+				persistCandidate(snapshotCurrent);
+				for (const b of snapshotBundled) persistCandidate(b);
+			} else if (snapshotCurrent && !snapshotCurrent.fulfilled && !finalizingMsgIds.has(snapshotCurrent.msg_id)) {
+				snapshotCurrent.fulfilled = true;
+				waitingInbounds.push(snapshotCurrent);
+			}
+			for (const ib of inboundQueue.values()) {
+				if (ib === snapshotCurrent && wasCurrentDelivered) continue;
+				persistCandidate(ib);
+			}
+			if (persistedInbounds.length > 0) {
+				try {
+					persistReloadQueue(
+						registry,
+						ident.project,
+						ident.coms_session_id,
+						ident.endpoint,
+						persistedInbounds,
+						reloadQueueTtlMs,
+					);
+				} catch (err: any) {
+					log.error("reload_queue_persist_failed", {
+						sessionId: ident.coms_session_id,
+						count: persistedInbounds.length,
+						error: err?.message ?? String(err),
+					});
+					// Fail-safe: if persistence failed, notify senders with session_closed so they never hang.
+					for (const item of persistedInbounds) {
+						waitingInbounds.push({
+							msg_id: item.msg_id,
+							hops: item.hops,
+							sender_endpoint: item.sender_endpoint,
+							sender_session: item.sender_session,
+							sender_name: item.sender_name,
+							sender_cwd: item.sender_cwd,
+							prompt: item.prompt,
+							queued_at: item.queued_at,
+							fulfilled: true,
+						});
+					}
+				}
+			}
+		} else {
+			const seenInboundIds = new Set<string>();
+			for (const ib of inboundQueue.values()) {
+				if (!ib.fulfilled && !finalizingMsgIds.has(ib.msg_id)) {
+					ib.fulfilled = true;
+					waitingInbounds.push(ib);
+					seenInboundIds.add(ib.msg_id);
+				}
+			}
+			if (snapshotCurrent && !snapshotCurrent.fulfilled && !finalizingMsgIds.has(snapshotCurrent.msg_id) && !seenInboundIds.has(snapshotCurrent.msg_id)) {
+				snapshotCurrent.fulfilled = true;
+				waitingInbounds.push(snapshotCurrent);
+			}
+			const discardProject = stopOptions?.project ?? ident?.project;
+			const discardSessionId = stopOptions?.sessionId ?? ident?.coms_session_id ?? options.sessionId;
+			if (discardProject && discardSessionId) {
+				await discardReloadQueue(registry, discardProject, discardSessionId, stopOptions?.reason ?? "stop");
 			}
 		}
-		if (currentInbound && !currentInbound.fulfilled && !finalizingMsgIds.has(currentInbound.msg_id) && !seenInboundIds.has(currentInbound.msg_id)) {
-			currentInbound.fulfilled = true;
-			waitingInbounds.push(currentInbound);
-		}
+
 		// Record closed undelivered inbounds (and pending steers on delivered inbounds) BEFORE
 		// sending session_closed so Pi cannot execute any retained followUp copy after stop/restart.
 		for (const ib of waitingInbounds) {
-			if (ib === currentInbound && wasCurrentDelivered) {
+			if (ib === snapshotCurrent && wasCurrentDelivered) {
 				if ((ib.pendingSteers ?? 0) > 0) {
 					rememberClosedId(closedSteerTargetIds, ib.msg_id);
 				}
@@ -4722,11 +5316,11 @@ Do not respond to this message.`;
 		}
 	}
 
-	const handleSigint = () => { log.info("signal_received", { signal: "SIGINT" }); void cleanShutdown(); };
-	const handleSigterm = () => { log.info("signal_received", { signal: "SIGTERM" }); void cleanShutdown(); };
+	const handleSigint = () => { log.info("signal_received", { signal: "SIGINT" }); void cleanShutdown({ reason: "signal" }); };
+	const handleSigterm = () => { log.info("signal_received", { signal: "SIGTERM" }); void cleanShutdown({ reason: "signal" }); };
 	if (!deferred) {
-		pi.on("session_shutdown", async () => {
-			await cleanShutdown();
+		pi.on("session_shutdown", async (event?: any) => {
+			await cleanShutdown({ reason: event?.reason });
 		});
 	}
 
