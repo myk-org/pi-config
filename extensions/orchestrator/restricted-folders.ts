@@ -32,7 +32,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { acquireTokenFileLock } from "../shared/file-lock.js";
 import { createLogger, type Logger } from "../shared/logger.js";
-import { resolveEffectiveCwd, tokenize, unquotedSegments } from "./bash-policy.js";
+import { preprocessAnsiCQuotes, resolveEffectiveCwd, tokenize, unquotedSegments } from "./bash-policy.js";
 import {
   getGlobalSettingsPath,
   getSettingsPath,
@@ -1050,91 +1050,9 @@ const DYNAMIC_EXPANSION_RE = /[$*?{`]/;
 const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 const SHELL_OPERATORS = new Set(["|", "||", "&&", ";", "&", "(", ")", "{", "}", "!", "then", "do", "done", "fi", "else", "elif"]);
 
-function decodeAnsiCEscapes(inner: string): string {
-  return inner.replace(
-    /\\(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|0?([0-7]{1,3})|([ntr'"\\]))/g,
-    (m, hex?: string, uni?: string, oct?: string, esc?: string) => {
-      if (hex !== undefined) {
-        const code = Number.parseInt(hex, 16);
-        return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
-      }
-      if (uni !== undefined) {
-        const code = Number.parseInt(uni, 16);
-        return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
-      }
-      if (oct !== undefined) {
-        const code = Number.parseInt(oct, 8);
-        return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
-      }
-      switch (esc) {
-        case "n": return "\n";
-        case "t": return "\t";
-        case "r": return "\r";
-        case "'": return "'";
-        case "\"": return "\"";
-        case "\\": return "\\";
-        default: return m;
-      }
-    },
-  );
-}
-
-/**
- * Decode Bash ANSI-C `$'...'` literals into equivalent single-quoted strings BEFORE
- * `tokenize()` strips quote delimiters, so encoded `-c $'\x63\x64 ...'` and
- * `-c$'\x63\x64 ...'` scripts are inspected using the command Bash actually runs.
- */
-function preprocessAnsiCQuotes(script: string): string {
-  if (!script.includes("$'")) return script;
-  let out = "";
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i < script.length; i++) {
-    const ch = script[i]!;
-    if (ch === "\\" && !inSingle && i + 1 < script.length) {
-      out += ch + script[i + 1]!;
-      i++;
-      continue;
-    }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      out += ch;
-      continue;
-    }
-    if (ch === "\"" && !inSingle) {
-      inDouble = !inDouble;
-      out += ch;
-      continue;
-    }
-    if (!inSingle && !inDouble && ch === "$" && script[i + 1] === "'") {
-      let j = i + 2;
-      let body = "";
-      while (j < script.length) {
-        const c = script[j]!;
-        if (c === "\\" && j + 1 < script.length) {
-          body += c + script[j + 1]!;
-          j += 2;
-          continue;
-        }
-        if (c === "'") break;
-        body += c;
-        j++;
-      }
-      if (j < script.length && script[j] === "'") {
-        const decoded = decodeAnsiCEscapes(body);
-        out += `'${decoded.replace(/'/g, "'\\''")}'`;
-        i = j;
-        continue;
-      }
-    }
-    out += ch;
-  }
-  return out;
-}
-
 function stripOuterQuotes(s: string): string {
   if (s.startsWith("$'") && s.endsWith("'") && s.length >= 3) {
-    return decodeAnsiCEscapes(s.slice(2, -1));
+    return stripOuterQuotes(preprocessAnsiCQuotes(s));
   }
   if (s.startsWith("$\"") && s.endsWith("\"") && s.length >= 3) {
     return s.slice(2, -1);

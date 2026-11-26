@@ -48,6 +48,102 @@ enfLog.debug("bash-policy module loaded");
  * Split a shell segment into words, honouring quotes and backslash escapes, so
  * `conflicted\ repo` is one word and `-c core.editor="vim -f"` is one option.
  */
+function decodeAnsiCEscapes(inner: string): string {
+  return inner.replace(
+    /\\(?:U([0-9a-fA-F]{1,8})|u([0-9a-fA-F]{1,4})|x([0-9a-fA-F]{1,2})|([0-7]{1,3})|c(.)|([abeEfnrtv?'"\\]))/g,
+    (m, uni8?: string, uni4?: string, hex?: string, oct?: string, ctrl?: string, esc?: string) => {
+      if (uni8 !== undefined) {
+        const code = Number.parseInt(uni8, 16);
+        return code >= 1 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+      }
+      if (uni4 !== undefined) {
+        const code = Number.parseInt(uni4, 16);
+        return code >= 1 && code <= 0xffff ? String.fromCodePoint(code) : m;
+      }
+      if (hex !== undefined) {
+        const code = Number.parseInt(hex, 16);
+        return code >= 1 && code <= 0xff ? String.fromCharCode(code) : m;
+      }
+      if (oct !== undefined) {
+        const code = Number.parseInt(oct, 8) & 0xff;
+        return code >= 1 ? String.fromCharCode(code) : m;
+      }
+      if (ctrl !== undefined) {
+        return String.fromCharCode(ctrl.toUpperCase().charCodeAt(0) ^ 0x40);
+      }
+      switch (esc) {
+        case "a": return "\x07";
+        case "b": return "\b";
+        case "e":
+        case "E": return "\x1b";
+        case "f": return "\f";
+        case "n": return "\n";
+        case "r": return "\r";
+        case "t": return "\t";
+        case "v": return "\v";
+        case "?": return "?";
+        case "'": return "'";
+        case "\"": return "\"";
+        case "\\": return "\\";
+        default: return m;
+      }
+    },
+  );
+}
+
+/**
+ * Decode Bash ANSI-C `$'...'` literals (including `\U`, `\u`, `\x`, octal, `\cX`,
+ * and standard single-letter escapes) into equivalent single-quoted strings BEFORE
+ * `tokenize()` discards quote delimiters.
+ */
+export function preprocessAnsiCQuotes(script: string): string {
+  if (!script.includes("$'")) return script;
+  let out = "";
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < script.length; i++) {
+    const ch = script[i]!;
+    if (ch === "\\" && !inSingle && i + 1 < script.length) {
+      out += ch + script[i + 1]!;
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      out += ch;
+      continue;
+    }
+    if (ch === "\"" && !inSingle) {
+      inDouble = !inDouble;
+      out += ch;
+      continue;
+    }
+    if (!inSingle && !inDouble && ch === "$" && script[i + 1] === "'") {
+      let j = i + 2;
+      let body = "";
+      while (j < script.length) {
+        const c = script[j]!;
+        if (c === "\\" && j + 1 < script.length) {
+          body += c + script[j + 1]!;
+          j += 2;
+          continue;
+        }
+        if (c === "'") break;
+        body += c;
+        j++;
+      }
+      if (j < script.length && script[j] === "'") {
+        const decoded = decodeAnsiCEscapes(body);
+        out += `'${decoded.replace(/'/g, "'\\''")}'`;
+        i = j;
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
 export function tokenize(text: string): string[] {
   enfLog.debug("tokenize", "chars", text.length);
   const tokens: string[] = [];
@@ -6384,87 +6480,6 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           const code = Number.parseInt(hex, 16);
           return code >= 32 && code <= 126 ? String.fromCharCode(code) : _;
         });
-
-    const decodeAnsiCEscapes = (inner: string): string =>
-      inner.replace(
-        /\\(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|0?([0-7]{1,3})|([ntr'"\\]))/g,
-        (m, hex?: string, uni?: string, oct?: string, esc?: string) => {
-          if (hex !== undefined) {
-            const code = Number.parseInt(hex, 16);
-            return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
-          }
-          if (uni !== undefined) {
-            const code = Number.parseInt(uni, 16);
-            return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
-          }
-          if (oct !== undefined) {
-            const code = Number.parseInt(oct, 8);
-            return code >= 1 && code <= 126 ? String.fromCharCode(code) : m;
-          }
-          switch (esc) {
-            case "n": return "\n";
-            case "t": return "\t";
-            case "r": return "\r";
-            case "'": return "'";
-            case "\"": return "\"";
-            case "\\": return "\\";
-            default: return m;
-          }
-        },
-      );
-
-    /**
-     * Decode Bash ANSI-C `$'...'` literals into equivalent single-quoted strings BEFORE
-     * `tokenize()` discards quote delimiters, so encoded `-c $'\x72\x6d ...'` and
-     * `-c$'\x72\x6d ...'` scripts are inspected with their actual executed text.
-     */
-    const preprocessAnsiCQuotes = (script: string): string => {
-      if (!script.includes("$'")) return script;
-      let out = "";
-      let inSingle = false;
-      let inDouble = false;
-      for (let i = 0; i < script.length; i++) {
-        const ch = script[i]!;
-        if (ch === "\\" && !inSingle && i + 1 < script.length) {
-          out += ch + script[i + 1]!;
-          i++;
-          continue;
-        }
-        if (ch === "'" && !inDouble) {
-          inSingle = !inSingle;
-          out += ch;
-          continue;
-        }
-        if (ch === "\"" && !inSingle) {
-          inDouble = !inDouble;
-          out += ch;
-          continue;
-        }
-        if (!inSingle && !inDouble && ch === "$" && script[i + 1] === "'") {
-          let j = i + 2;
-          let body = "";
-          while (j < script.length) {
-            const c = script[j]!;
-            if (c === "\\" && j + 1 < script.length) {
-              body += c + script[j + 1]!;
-              j += 2;
-              continue;
-            }
-            if (c === "'") break;
-            body += c;
-            j++;
-          }
-          if (j < script.length && script[j] === "'") {
-            const decoded = decodeAnsiCEscapes(body);
-            out += `'${decoded.replace(/'/g, "'\\''")}'`;
-            i = j;
-            continue;
-          }
-        }
-        out += ch;
-      }
-      return out;
-    };
 
     const unwrapShellArgQuotes = (s: string): string => {
       if (s.startsWith("$'") && s.endsWith("'") && s.length >= 3) {

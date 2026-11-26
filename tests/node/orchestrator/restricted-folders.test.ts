@@ -674,10 +674,12 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
     const hexEncode = (s: string) =>
       [...s].map((c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`).join("");
     const encodedBody = hexEncode(`cd ${restricted}; cat secret`);
+    const uni8Path = path.join(restricted, "secret").replace(/\//g, "\\U0000002f");
 
     for (const cmd of [
       `bash -c $'${encodedBody}'`,
       `bash -c$'${encodedBody}'`,
+      `cat $'${uni8Path}'`,
     ]) {
       const decision = await evaluateRestrictedFolderAccess({
         toolName: "bash",
@@ -688,7 +690,7 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
         dbPath,
         hmacKeyPath,
       });
-      assert.ok(decision?.block, `encoded ANSI-C bash -c script must be blocked: ${cmd}`);
+      assert.ok(decision?.block, `encoded ANSI-C bash command must be blocked: ${cmd}`);
     }
   });
 
@@ -698,9 +700,10 @@ describe("headless fail-closed + bash operand protection (#1416)", () => {
       `bash -c$'rm .pi/data/state.db'`,
       `bash -c $'\\x72\\x6d \\x2epi/data/state.db'`,
       `bash -c$'\\x72\\x6d \\x2epi/data/state.db'`,
+      `rm $'\\U0000002epi/data/state.db'`,
     ]) {
       const res = await evaluateBashPolicy({ command: cmd, cwd: root, ui: null });
-      assert.equal(res.action, "block", `ANSI-C bash -c delete must be blocked: ${cmd}`);
+      assert.equal(res.action, "block", `ANSI-C state.db delete must be blocked: ${cmd}`);
     }
   });
 
