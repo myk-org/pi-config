@@ -159,7 +159,7 @@ pi-config/
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive, streamLoopAborted) with auto-pruning (#1364, #1374)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
-│   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery)
+│   │   ├── pi-agent-dir.ts          # resolvePiAgentDir, extractAgentDirFromArgv, withPropagatedPiAgentDirEnv helpers (Pi 1.7.0 `--agent-dir` + `PI_CODING_AGENT_DIR`, used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery, subagent-child-spec, coms-wrapper)
 │   │   ├── secret-patterns.mjs      # Shared built-in credential regexes & env-var secret filters (consumed by secret-obfuscation.ts and scripts/diagnostic-report-collect.mjs; typed via secret-patterns.d.mts)
 │   │   ├── tool-namespaces.ts       # Shared Pi 1.6 ToolNamespace definitions (memory, coms, tasks, trail, runtime) and read-only annotation constant
 │   │   ├── compact-message-renderer.ts # Shared compact 1-line / Ctrl+O expandable TUI message renderer primitives (`extractSummaryLine`, `createCompactOneLineComponent`, `createExpandedCustomBox`)

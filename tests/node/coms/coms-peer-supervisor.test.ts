@@ -32,6 +32,7 @@ interface Harness {
   marker: string;
   ready: string;
   envFile: string;
+  agentDirFile: string;
 }
 
 /** A throw-away HOME + coms dir + a stub `pi` whose SIGTERM behaviour the test controls. */
@@ -44,6 +45,7 @@ function harness({ ignoreSigterm = false, exitAfterMs = 200 }: { ignoreSigterm?:
   const marker = join(root, "saw-sigterm");
   const ready = join(root, "ready");
   const envFile = join(root, "child-env.txt");
+  const agentDirFile = join(root, "child-agent-dir.txt");
   mkdirSync(home, { recursive: true });
   mkdirSync(bin, { recursive: true });
   mkdirSync(coms, { recursive: true });
@@ -51,24 +53,44 @@ function harness({ ignoreSigterm = false, exitAfterMs = 200 }: { ignoreSigterm?:
   const trap = ignoreSigterm ? "trap '' TERM" : `trap 'touch ${marker}; sleep ${exitAfterMs / 1000}; exit 0' TERM`;
   writeFileSync(
     join(bin, "pi"),
-    `#!/bin/sh\n${trap}\nprintf '%s' "$PI_COMS_SUPERVISED_PEER" > "${envFile}"\ntouch ${ready}\nwhile :; do sleep 0.05; done\n`,
+    `#!/bin/sh\n${trap}\nprintf '%s' "$PI_COMS_SUPERVISED_PEER" > "${envFile}"\nprintf '%s' "\${PI_CODING_AGENT_DIR-<unset>}" > "${agentDirFile}"\ntouch ${ready}\nwhile :; do sleep 0.05; done\n`,
   );
   chmodSync(join(bin, "pi"), 0o755);
-  return { root, home, bin, coms, marker, ready, envFile };
+  return { root, home, bin, coms, marker, ready, envFile, agentDirFile };
 }
 
 /** `timeoutMs` reaches the supervisor as the string env var, so a test may pass garbage there. */
-function runSupervisor(h: Harness, { timeoutMs = 5000 }: { timeoutMs?: number | string } = {}) {
-  const child = spawn(process.execPath, [supervisor, "peer1", "--project", "proj", "--cwd", h.root], {
-    env: {
-      ...process.env,
-      HOME: h.home,
-      PI_COMS_DIR: h.coms,
-      PATH: `${h.bin}:${process.env.PATH}`,
-      PI_COMS_STOP_TIMEOUT_MS: String(timeoutMs),
+function runSupervisor(
+  h: Harness,
+  {
+    timeoutMs = 5000,
+    extraArgs = [],
+    envOverrides = {},
+  }: {
+    timeoutMs?: number | string;
+    extraArgs?: string[];
+    envOverrides?: Record<string, string | undefined>;
+  } = {},
+) {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    HOME: h.home,
+    PI_COMS_DIR: h.coms,
+    PATH: `${h.bin}:${process.env.PATH}`,
+    PI_COMS_STOP_TIMEOUT_MS: String(timeoutMs),
+    ...envOverrides,
+  };
+  for (const [key, value] of Object.entries(envOverrides)) {
+    if (value === undefined) delete env[key];
+  }
+  const child = spawn(
+    process.execPath,
+    [supervisor, "peer1", "--project", "proj", "--cwd", h.root, ...extraArgs],
+    {
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
     },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  );
   children.push(child);
   return child;
 }
@@ -87,7 +109,14 @@ async function waitFor(predicate: () => boolean, timeoutMs = 8000) {
 }
 
 /** Start a peer and wait until its record exists AND its stub has armed its trap. */
-async function startedPeer(h: Harness, opts?: { timeoutMs?: number | string }) {
+async function startedPeer(
+  h: Harness,
+  opts?: {
+    timeoutMs?: number | string;
+    extraArgs?: string[];
+    envOverrides?: Record<string, string | undefined>;
+  },
+) {
   const child = runSupervisor(h, opts);
   assert.equal(await waitFor(() => existsSync(recordPath(h))), true, "the supervisor records the peer on spawn");
   assert.equal(await waitFor(() => existsSync(h.ready)), true, "the stub armed its SIGTERM trap");
@@ -174,5 +203,43 @@ describe("coms-peer-supervisor shutdown", () => {
       if (previous === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
       else process.env.PI_COMS_SUPERVISED_PEER = previous;
     }
+  });
+
+  it("#1490: forwards --agent-dir CLI flag to spawned peer as PI_CODING_AGENT_DIR", async () => {
+    const h = harness({ exitAfterMs: 100 });
+    const child = await startedPeer(h, {
+      extraArgs: ["--agent-dir", "/custom/peer-agent"],
+      envOverrides: { PI_CODING_AGENT_DIR: undefined },
+    });
+    assert.equal(readFileSync(h.agentDirFile, "utf8"), "/custom/peer-agent");
+    assert.equal(await stopAndWait(child), 0);
+  });
+
+  it("#1490: forwards --agent-dir equals form to spawned peer as PI_CODING_AGENT_DIR", async () => {
+    const h = harness({ exitAfterMs: 100 });
+    const child = await startedPeer(h, {
+      extraArgs: ["--agent-dir=/custom/equals-peer-agent"],
+      envOverrides: { PI_CODING_AGENT_DIR: "/env/overridden" },
+    });
+    assert.equal(readFileSync(h.agentDirFile, "utf8"), "/custom/equals-peer-agent");
+    assert.equal(await stopAndWait(child), 0);
+  });
+
+  it("#1490: preserves inherited PI_CODING_AGENT_DIR on spawned peer", async () => {
+    const h = harness({ exitAfterMs: 100 });
+    const child = await startedPeer(h, {
+      envOverrides: { PI_CODING_AGENT_DIR: "/inherited/peer-agent" },
+    });
+    assert.equal(readFileSync(h.agentDirFile, "utf8"), "/inherited/peer-agent");
+    assert.equal(await stopAndWait(child), 0);
+  });
+
+  it("#1490: omits PI_CODING_AGENT_DIR on spawned peer when unconfigured", async () => {
+    const h = harness({ exitAfterMs: 100 });
+    const child = await startedPeer(h, {
+      envOverrides: { PI_CODING_AGENT_DIR: undefined },
+    });
+    assert.equal(readFileSync(h.agentDirFile, "utf8"), "<unset>");
+    assert.equal(await stopAndWait(child), 0);
   });
 });

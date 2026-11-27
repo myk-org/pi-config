@@ -112,6 +112,86 @@ describe("buildSubagentChildSpec & SETTINGS_KEY_NAMES (#1279)", () => {
     assert.equal(spec.env.PI_HAS_PR, "true");
     assert.equal(spec.resolvedPrompt, "Review prompt");
   });
+
+  it("propagates parent --agent-dir into sync subagent env", () => {
+    const prev = process.env.PI_CODING_AGENT_DIR;
+    delete process.env.PI_CODING_AGENT_DIR;
+    try {
+      const spec = buildSubagentChildSpec({
+        mode: "sync",
+        agentName: "worker",
+        agent: { systemPrompt: "Work" },
+        task: "inspect",
+        cwd,
+        persistSession: false,
+        argv: ["--agent-dir", "/custom/sync-agent"],
+      });
+      assert.equal(spec.env.PI_CODING_AGENT_DIR, "/custom/sync-agent");
+    } finally {
+      if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prev;
+    }
+  });
+
+  it("propagates parent --agent-dir into async subagent env", () => {
+    const prev = process.env.PI_CODING_AGENT_DIR;
+    delete process.env.PI_CODING_AGENT_DIR;
+    try {
+      const spec = buildSubagentChildSpec({
+        mode: "async",
+        agentName: "worker",
+        agent: { systemPrompt: "Work" },
+        task: "inspect",
+        cwd,
+        persistSession: false,
+        argv: ["--agent-dir=/custom/async-agent"],
+      });
+      assert.equal(spec.env.PI_CODING_AGENT_DIR, "/custom/async-agent");
+    } finally {
+      if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prev;
+    }
+  });
+
+  it("omits PI_CODING_AGENT_DIR from subagent env when unconfigured", () => {
+    const prev = process.env.PI_CODING_AGENT_DIR;
+    delete process.env.PI_CODING_AGENT_DIR;
+    try {
+      const spec = buildSubagentChildSpec({
+        mode: "sync",
+        agentName: "worker",
+        agent: { systemPrompt: "Work" },
+        task: "inspect",
+        cwd,
+        persistSession: false,
+        argv: [],
+      });
+      assert.equal("PI_CODING_AGENT_DIR" in spec.env, false);
+    } finally {
+      if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prev;
+    }
+  });
+
+  it("overrides parent PI_CODING_AGENT_DIR when CLI --agent-dir differs", () => {
+    const prev = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = "/env/agent";
+    try {
+      const spec = buildSubagentChildSpec({
+        mode: "async",
+        agentName: "worker",
+        agent: { systemPrompt: "Work" },
+        task: "inspect",
+        cwd,
+        persistSession: false,
+        argv: ["--agent-dir", "/cli/agent"],
+      });
+      assert.equal(spec.env.PI_CODING_AGENT_DIR, "/cli/agent");
+    } finally {
+      if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prev;
+    }
+  });
 });
 
 describe("subagent validateSyncEstimate (#1279) & renderMultiAgentResults (#1284)", () => {
