@@ -1409,4 +1409,83 @@ describe("supervised peer periodic status scaling (#1470)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("invalidates shared git status cache on reconnect after session_shutdown with reason new", async () => {
+    const dir = makeTempDir("pidash-rpc-new-after-shutdown-");
+    const server = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const sockets = new WebSocketServer({ server, path: "/ws/pi" });
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    let currentChanges = 0;
+
+    // Shared fetcher reference across extension reload in the same process (mirrors module-level getGitStatus).
+    const fetchGitStatus = async () => ({
+      branch: "main",
+      dirty: currentChanges > 0,
+      changes: currentChanges,
+    });
+
+    const first = createHarness({ coms: true, cname: "peer-new", project: "pi-config" });
+    const second = createHarness({ coms: true, cname: "peer-new", project: "pi-config" });
+    const ctx = makeCtx("rpc", { cwd: dir });
+
+    try {
+      const port = await listenHttp(server);
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidash_enable: true, pidash_port: port }));
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      registerPidash(first.pi, {
+        periodicStatusTickMs: 25,
+        rpcStatusIntervalMs: 60_000,
+        fetchGitStatus,
+      });
+
+      const reg1Promise = waitForFrame(sockets, (p) => p.type === "register");
+      first.emitPi("session_start", { reason: "startup" }, ctx);
+      const reg1 = await reg1Promise;
+      assert.equal(reg1.gitDirty, false);
+      assert.equal(reg1.gitChanges, 0);
+
+      // Mutate repo while the 30s shared cache entry is still warm, then simulate Pi 1.6.1 RPC new_session:
+      // session_shutdown disconnects the old instance before session_start({ reason: "new" }) reconnects.
+      currentChanges = 1;
+      first.emitPi("session_shutdown", { reason: "new" }, ctx);
+      for (const c of sockets.clients) c.terminate();
+
+      registerPidash(second.pi, {
+        periodicStatusTickMs: 25,
+        rpcStatusIntervalMs: 60_000,
+        fetchGitStatus,
+      });
+
+      const reg2Promise = new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("reconnected peer did not register")), 3000);
+        timer.unref();
+        sockets.once("connection", (socket) => {
+          socket.on("message", (raw) => {
+            const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+            if (parsed.type === "register") {
+              clearTimeout(timer);
+              resolve(parsed);
+            }
+          });
+        });
+      });
+
+      second.emitPi("session_start", { reason: "new" }, ctx);
+      const reg2 = await reg2Promise;
+      assert.equal(reg2.gitDirty, true);
+      assert.equal(reg2.gitChanges, 1);
+    } finally {
+      first.emitPi("session_shutdown", {}, ctx);
+      second.emitPi("session_shutdown", {}, ctx);
+      await closeServer(server, sockets);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

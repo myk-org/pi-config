@@ -1430,6 +1430,9 @@ export function registerPidash(
     if (resolved.lastCtx === ctx) log.debug("lastCtx updated from session_start");
 
     const switchCtx = resolved.switchCtx;
+    if (switchCtx && ["new", "resume", "fork"].includes(event?.reason)) {
+      invalidateSharedPeerGitStatus(switchCtx.cwd, fetchGitStatus);
+    }
     if (!client.connected && switchCtx && canConnectCtx(switchCtx)) {
       void client.connect(switchCtx);
     } else if (client.ws) {
