@@ -73,6 +73,12 @@ export function formatValue(key: string, value: unknown, def: SettingsKeyDef): s
         return entries.length > 0 ? `${entries.length} override(s)` : "(none)";
       }
       return "(none)";
+    case "tool_permissions":
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        const entries = Object.entries(value);
+        return entries.length > 0 ? `${entries.length} rule(s)` : "(none)";
+      }
+      return "(none)";
     default:
       return String(value);
   }

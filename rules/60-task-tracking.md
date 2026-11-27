@@ -14,6 +14,8 @@ The request — **or work any step sets in motion** — needs **2+ distinct acti
 
 ## First Action
 
+All `Task*` tools live in the `tasks` `codemode` namespace — call them via `codemode` (`await tools.TaskBulkCreate({ ... })`, `await tools.TaskUpdate({ ... })`, batchable with `Promise.allSettled`).
+
 Plan the whole job in **one `TaskBulkCreate` call** listing every step — not one `TaskCreate` per step, and not after the first edit. `TaskCreate` is for a single step added later.
 
 **Before dispatching new work, reconcile the board (MANDATORY):** complete, re-scope, or

@@ -13,8 +13,6 @@
  * - Memory dreaming (background consolidation)
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { registerAskUser } from "./ask-user.js";
@@ -59,6 +57,7 @@ import { registerSessionSpill } from "./session-spill.js";
 import { registerPreCompactionElision } from "./pre-compaction-elision.js";
 import { registerMagicKeywords } from "./magic-keywords.js";
 import { registerAdvisor } from "./advisor.js";
+import { registerSnapshots } from "./snapshots.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
@@ -71,155 +70,13 @@ import { registerProviderStreamLog } from "../shared/provider-stream-log.js";
 import { migrateMcpConfig } from "../shared/mcp-config-migration.js";
 import { setGlobalSessionId } from "../shared/file-logger.js";
 import { registerDaemonManageTool } from "../shared/daemon-manager.js";
-import { resolvePiAgentDir } from "../shared/pi-agent-dir.js";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
+import { registerCodemodeActivation } from "./codemode-activation.js";
 
 const IN_CONTAINER = isRunningInContainer();
 ensureGitSshTimeout();
 
 const log = createLogger("orchestrator");
-
-const CODEMODE_TOOL_NAME = "codemode";
-
-type CodemodePref = "included" | "excluded" | "unset";
-
-function isToolModifierEntry(entry: string): boolean {
-  return entry.startsWith("+") || entry.startsWith("-");
-}
-
-/**
- * Matches Pi 1.6.1 `SettingsManager.mergeDefaultTools`: a modifier-only override
- * (`+name`/`-name`) appends to the inherited selection; a plain-name list replaces it.
- */
-function mergePiDefaultTools(
-  base: readonly string[] | undefined,
-  override: readonly string[] | undefined,
-): readonly string[] | undefined {
-  if (override === undefined) return base;
-  if (base === undefined || !override.every(isToolModifierEntry)) return override;
-  return [...base, ...override];
-}
-
-function parseToolListPreference(entries: readonly string[], current: CodemodePref): CodemodePref {
-  const trimmed = entries.map((e) => e.trim()).filter(Boolean);
-  if (trimmed.length === 0) return "excluded";
-  const hasPlain = trimmed.some((e) => !isToolModifierEntry(e));
-  if (hasPlain) {
-    let active = trimmed.includes(CODEMODE_TOOL_NAME);
-    for (const entry of trimmed) {
-      if (entry === `+${CODEMODE_TOOL_NAME}`) active = true;
-      else if (entry === `-${CODEMODE_TOOL_NAME}`) active = false;
-    }
-    return active ? "included" : "excluded";
-  }
-  let state = current;
-  for (const entry of trimmed) {
-    if (entry === `-${CODEMODE_TOOL_NAME}`) state = "excluded";
-    else if (entry === `+${CODEMODE_TOOL_NAME}`) state = "included";
-  }
-  return state;
-}
-
-function readDefaultToolsSetting(filePath: string): string[] | undefined {
-  if (!existsSync(filePath)) return undefined;
-  try {
-    const raw = JSON.parse(readFileSync(filePath, "utf-8")) as { defaultTools?: unknown };
-    if (!Array.isArray(raw?.defaultTools)) return undefined;
-    return raw.defaultTools.filter((v): v is string => typeof v === "string");
-  } catch (err) {
-    log.warn(`codemode_settings_read_failed (${filePath})`, {
-      path: filePath,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return undefined;
-  }
-}
-
-function resolveArgvCodemodePref(argv: readonly string[]): CodemodePref {
-  let pref: CodemodePref = "unset";
-  for (let i = 2; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--") break;
-    if (arg === "--no-tools" || arg === "-nt") {
-      pref = "excluded";
-      continue;
-    }
-    let val: string | undefined;
-    if (arg === "--tools" && i + 1 < argv.length) {
-      val = argv[++i];
-    } else if (arg.startsWith("--tools=")) {
-      val = arg.slice("--tools=".length);
-    }
-    if (val !== undefined) {
-      pref = parseToolListPreference(val.split(","), pref);
-    }
-  }
-  return pref;
-}
-
-export interface EnsureCodemodeActiveOptions {
-  cwd?: string;
-  projectTrusted?: boolean;
-  agentDir?: string | null;
-  argv?: readonly string[];
-  isSubagentChild?: boolean;
-}
-
-/**
- * Activate Pi's built-in `codemode` tool on `session_start` when available and not
- * explicitly excluded via CLI flags or Pi `defaultTools` settings, so native
- * `models.generateImages()` works out of the box in default sessions (#1447).
- */
-export function ensureCodemodeActive(
-  pi: Pick<ExtensionAPI, "getAllTools" | "getActiveTools" | "setActiveTools">,
-  options: EnsureCodemodeActiveOptions = {},
-): boolean {
-  const isSubagentChild = options.isSubagentChild ?? process.env.PI_SUBAGENT_CHILD === "1";
-  if (isSubagentChild) return false;
-  if (
-    typeof pi.getAllTools !== "function" ||
-    typeof pi.getActiveTools !== "function" ||
-    typeof pi.setActiveTools !== "function"
-  ) {
-    return false;
-  }
-
-  // Respect --no-tools, --exclude-tools, --tools allowlists, and -builtin:codemode:
-  // Pi omits disallowed/excluded tools from getAllTools(), and requires reachesTools
-  // on the real codemode tool (same contract as Pi's builtin:mcp extension).
-  const allTools = pi.getAllTools();
-  const hasCodemode = allTools.some(
-    (t) => t.name === CODEMODE_TOOL_NAME && Boolean((t as { reachesTools?: unknown }).reachesTools),
-  );
-  if (!hasCodemode) {
-    log.debug("codemode_auto_activate_skipped", { reason: "unavailable_or_excluded" });
-    return false;
-  }
-
-  const active = pi.getActiveTools();
-  if (active.includes(CODEMODE_TOOL_NAME)) {
-    return false;
-  }
-
-  const globalTools = readDefaultToolsSetting(join(resolvePiAgentDir(options.agentDir), "settings.json"));
-  const projectTools =
-    options.projectTrusted === true && options.cwd
-      ? readDefaultToolsSetting(join(options.cwd, ".pi", "settings.json"))
-      : undefined;
-  const mergedTools = mergePiDefaultTools(globalTools, projectTools);
-  let pref: CodemodePref = mergedTools !== undefined ? parseToolListPreference(mergedTools, "unset") : "unset";
-  const argvPref = resolveArgvCodemodePref(options.argv ?? process.argv);
-  if (argvPref !== "unset") {
-    pref = argvPref;
-  }
-  if (pref === "excluded") {
-    log.debug("codemode_auto_activate_skipped", { reason: "excluded_by_config" });
-    return false;
-  }
-
-  pi.setActiveTools([...active, CODEMODE_TOOL_NAME]);
-  log.info("codemode_auto_activated", { activeCount: active.length + 1 });
-  return true;
-}
 
 export default function (pi: ExtensionAPI) {
   // Set global session ID FIRST so all fileLog callers get per-session files.
@@ -228,10 +85,6 @@ export default function (pi: ExtensionAPI) {
     const sid = ctx.sessionManager?.getSessionId?.();
     log.info("session_start", reason, sid ?? "?");
     if (sid) setGlobalSessionId(sid);
-    ensureCodemodeActive(pi, {
-      cwd: ctx.cwd,
-      projectTrusted: ctx.isProjectTrusted?.() === true,
-    });
   });
 
   // ── Pidash command handler bridge ──────────────────────────────────
@@ -381,6 +234,8 @@ export default function (pi: ExtensionAPI) {
   registerMagicKeywords(pi);
   // Opt-in background read-only advisor/watchdog model (default disabled) (#1419).
   registerAdvisor(pi);
+  // Git-backed per-turn file snapshots with /undo and /redo (#1449).
+  registerSnapshots(pi);
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
     registerWidgetShortcut(
       pi,
@@ -400,11 +255,16 @@ export default function (pi: ExtensionAPI) {
   registerProviderStreamLog(pi);
   // Copy a pre-#848 `~/.pi/pi-config/mcp.json` to where builtin:mcp reads it (#848).
   migrateMcpConfig();
+  // Auto-activate Pi's built-in codemode tool on session_start when available and not excluded (#1451).
+  registerCodemodeActivation(pi);
 
   // ── list_models tool — LLM-callable model discovery ──
   pi.registerTool({
     name: "list_models",
     label: "List Models",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.runtime,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
     description: "List available models and providers. Use when the user asks to run an agent with a specific model, or when you need to discover available models for the subagent model parameter. Returns provider/model pairs that can be passed to subagent(model=\"provider/model-id\").",
     parameters: Type.Object({
       provider: Type.Optional(Type.String({ description: "Filter by provider name (e.g., 'litellm', 'google', 'anthropic')" })),

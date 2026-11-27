@@ -13,6 +13,7 @@
  */
 
 import { createLogger } from "../shared/logger.js";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -80,6 +81,9 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
   pi.registerTool({
     name: "memory_search",
     label: "Memory Search",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.memory,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
     description: "Search memories by keyword and similarity; returns matches with scores and categories.",
     parameters: Type.Object({
       query: Type.String({ description: "Keyword or phrase" }),
@@ -196,6 +200,9 @@ function registerMemoryReinforce(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_reinforce",
     label: "Memory Reinforce",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.memory,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: "Reinforce a relevant memory; bumps evidence count and stability score.",
     parameters: Type.Object({
       entryText: Type.String({ description: "Exact text (no category prefix)" }),
@@ -246,6 +253,9 @@ function registerMemoryTopics(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_topics",
     label: "Memory Topics",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.memory,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
     description: "List topic files with hotness scores, entry counts, and token sizes.",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
@@ -271,6 +281,9 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_add",
     label: "Memory Add",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.memory,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: "Add a short, actionable memory (~100 chars, one line). Never add one-off grants or task-scoped asks.",
     parameters: Type.Object({
       text: Type.String({ description: "One-line actionable text" }),
@@ -327,6 +340,9 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_remove",
     label: "Memory Remove",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.memory,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     description: "Remove an outdated, wrong, or superseded memory.",
     parameters: Type.Object({
       text: Type.String({ description: "Exact text (no category prefix)" }),
@@ -363,6 +379,9 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_reflect",
     label: "Memory Reflect",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.memory,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
     description: "Recall ranked memories (vector + keyword, with provenance) for a question.",
     parameters: Type.Object({
       query: Type.String({ description: "Question to answer from memory" }),
@@ -423,6 +442,9 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_edit",
     label: "Memory Edit",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.memory,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     description: "Update or invalidate a memory in-place, preserving scoring history.",
     parameters: Type.Object({
       op: Type.Union([
@@ -484,6 +506,9 @@ function registerMemoryConsolidate(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_consolidate",
     label: "Memory Consolidate",
+    exposure: "deferred",
+    namespace: TOOL_NAMESPACES.memory,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
     description: "Group all memories by category for conflict resolution, merging, pruning, and promotion.",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {

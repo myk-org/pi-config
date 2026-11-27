@@ -5662,7 +5662,7 @@ export function evaluateFileWritePolicy(
     return {
       block: true,
       reason:
-        "\u26d4 Direct modification of pi-config-settings blocked — it carries the dangerous-command allowlist and restricted folders. Change settings via the /pi-config-settings command or your own editor, never agent tools.",
+        "\u26d4 Direct modification of pi-config-settings blocked — it carries the dangerous-command allowlist, restricted folders, and tool permissions. Change settings via the /pi-config-settings command or your own editor, never agent tools.",
     };
   }
   if (isGitIdentityConfigPath(resolved) || isGitIdentityConfigPath(realResolved)) {
@@ -6635,7 +6635,7 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
             posArgs.forEach((val, idx) => {
               vars.set(String(idx + 1), val);
               if (/\.pi\b|pi-config|settings\.json/i.test(val)) sawPiFragmentVar = true;
-              if (/\.pi\/data|state\.db|restricted_folder_approvals/i.test(val)) sawStateDbFragmentVar = true;
+              if (/\.pi\/data|state\.db|restricted_folder_approvals|tool_host_approvals/i.test(val)) sawStateDbFragmentVar = true;
             });
             if (posArgs.length > 0) {
               vars.set("@", posArgs.join(" "));
@@ -6655,7 +6655,7 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           const val = collapseFragments(expandShellVars(stripOuterQuotesSimple(am[2]!), vars));
           vars.set(am[1]!, val);
           if (/\.pi\b|pi-config|settings\.json/i.test(val)) sawPiFragmentVar = true;
-          if (/\.pi\/data|state\.db|restricted_folder_approvals/i.test(val)) sawStateDbFragmentVar = true;
+          if (/\.pi\/data|state\.db|restricted_folder_approvals|tool_host_approvals/i.test(val)) sawStateDbFragmentVar = true;
         }
 
         const expandedSeg = expandShellVars(seg.text, vars);
@@ -6668,10 +6668,10 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         const cmdIdx = expandedTokens.length > 0 ? skipToCommandWord(expandedTokens) : 0;
         const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
 
-        // 1. State DB & restricted_folder_approvals tamper check (unconditional)
+        // 1. State DB & approval tables tamper check (unconditional)
         const mentionsStateDb =
           stateDbUncondRe.test(defragSeg) ||
-          /\brestricted_folder_approvals\b/i.test(defragSeg);
+          /\b(?:restricted_folder_approvals|tool_host_approvals)\b/i.test(defragSeg);
         if (
           sqliteEngineRe.test(defragSeg) &&
           !isVerifiablyReadOnlySqliteSeg(expandedTokens, cmdIdx, maskedSeg) &&

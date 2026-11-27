@@ -1710,6 +1710,8 @@ export function registerSubagentTool(
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
+    exposure: "model-only",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     description:
       "Delegate tasks to specialized subagents with isolated context (single, parallel, or chain with {previous}). Agents come from package, user (~/.pi/agent/agents), and project (.pi/agents).",
     promptSnippet:
