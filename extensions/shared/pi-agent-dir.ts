@@ -1,71 +1,36 @@
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
-import { createLogger } from "./logger.js";
+import { join } from "node:path";
+import { createLogger, type Logger } from "./logger.js";
+import {
+  extractAgentDirFromArgv,
+  normalizeAgentDir,
+  PI_VALUE_TAKING_FLAGS,
+} from "./pi-agent-dir-parser.mjs";
 
 const log = createLogger("pi-agent-dir");
 
-const AGENT_DIR_FLAG = "--agent-dir";
-const AGENT_DIR_PREFIX = "--agent-dir=";
-
-function expandTilde(value: string): string {
-  if (value === "~") return homedir();
-  if (value.startsWith("~/") || value.startsWith("~\\")) {
-    return join(homedir(), value.slice(2));
-  }
-  return value;
-}
-
-/**
- * Extract the Pi 1.7.0 `--agent-dir` CLI flag value from argv (defaults to `process.argv.slice(2)`).
- * Supports both `--agent-dir <dir>` and `--agent-dir=<dir>`, stops at `--`, applies last-wins
- * for repeated flags, trims whitespace, and ignores missing or empty values.
- */
-export function extractAgentDirFromArgv(argv?: readonly string[]): string | undefined {
-  const args = argv ?? process.argv.slice(2);
-  let found: string | undefined;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (typeof arg !== "string") continue;
-    if (arg === "--") break;
-
-    if (arg === AGENT_DIR_FLAG) {
-      const next = args[i + 1];
-      if (next === undefined || next === "--") break;
-      if (next.startsWith("-")) continue;
-      i++;
-      const trimmed = next.trim();
-      if (trimmed) found = trimmed;
-      continue;
-    }
-
-    if (arg.startsWith(AGENT_DIR_PREFIX)) {
-      const trimmed = arg.slice(AGENT_DIR_PREFIX.length).trim();
-      if (trimmed) found = trimmed;
-    }
-  }
-
-  return found;
-}
+export { extractAgentDirFromArgv, normalizeAgentDir, PI_VALUE_TAKING_FLAGS };
+export type { ExtractAgentDirOptions } from "./pi-agent-dir-parser.mjs";
 
 /**
  * Resolve pi agent config directory.
  * Precedence matches Pi 1.7.0: explicit agentDir → CLI `--agent-dir` → `PI_CODING_AGENT_DIR` → `~/.pi/agent`.
+ * Relative and tilde paths are normalized to absolute paths so parent extensions and spawned children agree.
  */
 export function resolvePiAgentDir(
   agentDir?: string | null,
   argv?: readonly string[],
 ): string {
   const explicit = typeof agentDir === "string" ? agentDir.trim() : "";
-  if (explicit) return expandTilde(explicit);
+  if (explicit) return normalizeAgentDir(explicit);
 
   const cliDir = extractAgentDirFromArgv(argv);
-  if (cliDir) return expandTilde(cliDir);
+  if (cliDir) return normalizeAgentDir(cliDir);
 
   const envDir = typeof process.env.PI_CODING_AGENT_DIR === "string"
     ? process.env.PI_CODING_AGENT_DIR.trim()
     : "";
-  if (envDir) return expandTilde(envDir);
+  if (envDir) return normalizeAgentDir(envDir);
 
   return join(homedir(), ".pi", "agent");
 }
@@ -77,14 +42,14 @@ export function resolvePiAgentDir(
 export function withPropagatedPiAgentDirEnv(
   baseEnv: Record<string, string | undefined> = process.env,
   argv?: readonly string[],
+  logger: Pick<Logger, "debug"> = log,
 ): Record<string, string | undefined> {
   const cliDir = extractAgentDirFromArgv(argv);
   if (!cliDir) return { ...baseEnv };
 
-  const expanded = expandTilde(cliDir);
-  const propagated = isAbsolute(expanded) ? expanded : resolve(expanded);
+  const propagated = normalizeAgentDir(cliDir);
   if (baseEnv.PI_CODING_AGENT_DIR !== propagated) {
-    log.debug("propagating_cli_agent_dir", { agentDir: propagated });
+    logger.debug("propagating_cli_agent_dir", { agentDir: propagated });
   }
   return { ...baseEnv, PI_CODING_AGENT_DIR: propagated };
 }

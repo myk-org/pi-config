@@ -78,6 +78,43 @@ describe("extractAgentDirFromArgv", () => {
       "/valid/agent",
     );
   });
+
+  it("ignores --agent-dir=... consumed as the value of --system-prompt", () => {
+    assert.equal(
+      extractAgentDirFromArgv(["--system-prompt", "--agent-dir=/other/path"]),
+      undefined,
+    );
+  });
+
+  it("ignores --agent-dir=... consumed as the value of --session", () => {
+    assert.equal(
+      extractAgentDirFromArgv(["--session", "--agent-dir=/other/path"]),
+      undefined,
+    );
+  });
+
+  it("keeps genuine --agent-dir when --system-prompt also holds --agent-dir=... as its value", () => {
+    assert.equal(
+      extractAgentDirFromArgv([
+        "--system-prompt",
+        "--agent-dir=/fake/path",
+        "--agent-dir",
+        "/real/agent",
+      ]),
+      "/real/agent",
+    );
+  });
+
+  it("keeps prior genuine --agent-dir when a later --session consumes --agent-dir=...", () => {
+    assert.equal(
+      extractAgentDirFromArgv([
+        "--agent-dir=/real/agent",
+        "--session",
+        "--agent-dir=/fake/path",
+      ]),
+      "/real/agent",
+    );
+  });
 });
 
 describe("resolvePiAgentDir", () => {
@@ -134,6 +171,16 @@ describe("resolvePiAgentDir", () => {
     process.argv.splice(0, process.argv.length, "node", "pi", "--agent-dir", "/from/process-argv");
     assert.equal(resolvePiAgentDir(), "/from/process-argv");
   });
+
+  it("resolves relative --agent-dir to the same absolute path as child env propagation", () => {
+    delete process.env.PI_CODING_AGENT_DIR;
+    const argv = ["--agent-dir", "relative/agent"];
+    assert.equal(resolvePiAgentDir(undefined, argv), resolve("relative/agent"));
+    assert.equal(
+      resolvePiAgentDir(undefined, argv),
+      withPropagatedPiAgentDirEnv({}, argv).PI_CODING_AGENT_DIR,
+    );
+  });
 });
 
 describe("withPropagatedPiAgentDirEnv", () => {
@@ -169,5 +216,37 @@ describe("withPropagatedPiAgentDirEnv", () => {
   it("expands tilde when propagating --agent-dir to child env", () => {
     const env = withPropagatedPiAgentDirEnv({}, ["--agent-dir=~/child-agent"]);
     assert.equal(env.PI_CODING_AGENT_DIR, join(homedir(), "child-agent"));
+  });
+
+  it("emits propagating_cli_agent_dir debug log when PI_CODING_AGENT_DIR changes", () => {
+    const events: Array<{ event: string; payload: unknown }> = [];
+    const stubLogger = {
+      debug(event: string, payload?: unknown) {
+        events.push({ event, payload });
+      },
+    };
+    withPropagatedPiAgentDirEnv(
+      { PI_CODING_AGENT_DIR: "/old/agent" },
+      ["--agent-dir", "/new/agent"],
+      stubLogger,
+    );
+    assert.deepEqual(events, [
+      { event: "propagating_cli_agent_dir", payload: { agentDir: "/new/agent" } },
+    ]);
+  });
+
+  it("does not emit propagating_cli_agent_dir debug log when PI_CODING_AGENT_DIR already matches", () => {
+    const events: Array<{ event: string; payload: unknown }> = [];
+    const stubLogger = {
+      debug(event: string, payload?: unknown) {
+        events.push({ event, payload });
+      },
+    };
+    withPropagatedPiAgentDirEnv(
+      { PI_CODING_AGENT_DIR: "/same/agent" },
+      ["--agent-dir", "/same/agent"],
+      stubLogger,
+    );
+    assert.deepEqual(events, []);
   });
 });

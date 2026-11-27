@@ -205,13 +205,15 @@ describe("coms-peer-supervisor shutdown", () => {
     }
   });
 
-  it("#1490: forwards --agent-dir CLI flag to spawned peer as PI_CODING_AGENT_DIR", async () => {
+  it("#1490: forwards --agent-dir CLI flag to spawned peer as PI_CODING_AGENT_DIR and logs it", async () => {
     const h = harness({ exitAfterMs: 100 });
     const child = await startedPeer(h, {
       extraArgs: ["--agent-dir", "/custom/peer-agent"],
       envOverrides: { PI_CODING_AGENT_DIR: undefined },
     });
     assert.equal(readFileSync(h.agentDirFile, "utf8"), "/custom/peer-agent");
+    const peerLog = readFileSync(join(h.home, ".pi", "logs", "coms-peers", "peer1@proj.log"), "utf8");
+    assert.match(peerLog, /peer peer1 using agent dir \/custom\/peer-agent/);
     assert.equal(await stopAndWait(child), 0);
   });
 
@@ -237,6 +239,18 @@ describe("coms-peer-supervisor shutdown", () => {
   it("#1490: omits PI_CODING_AGENT_DIR on spawned peer when unconfigured", async () => {
     const h = harness({ exitAfterMs: 100 });
     const child = await startedPeer(h, {
+      envOverrides: { PI_CODING_AGENT_DIR: undefined },
+    });
+    assert.equal(readFileSync(h.agentDirFile, "utf8"), "<unset>");
+    const peerLog = readFileSync(join(h.home, ".pi", "logs", "coms-peers", "peer1@proj.log"), "utf8");
+    assert.doesNotMatch(peerLog, /using agent dir/);
+    assert.equal(await stopAndWait(child), 0);
+  });
+
+  it("#1490: ignores --agent-dir=... consumed as the value of --purpose", async () => {
+    const h = harness({ exitAfterMs: 100 });
+    const child = await startedPeer(h, {
+      extraArgs: ["--purpose", "--agent-dir=/fake/peer-agent"],
       envOverrides: { PI_CODING_AGENT_DIR: undefined },
     });
     assert.equal(readFileSync(h.agentDirFile, "utf8"), "<unset>");

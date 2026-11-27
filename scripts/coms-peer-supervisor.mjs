@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { extractAgentDirFromArgv, normalizeAgentDir } from "../extensions/shared/pi-agent-dir-parser.mjs";
 
 // Provenance, read before the env is scrubbed below: a supervisor started from an agent's bash
 // tool inherits the parent session id, a human's own shell does not.
@@ -30,42 +31,13 @@ const flag = (name, fallback = undefined) => {
   const i = rest.indexOf(`--${name}`);
   return i >= 0 && rest[i + 1] ? rest[i + 1] : fallback;
 };
-const extractAgentDir = (argv) => {
-  let found;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--") break;
-    if (arg === "--project" || arg === "--cwd" || arg === "--purpose" || arg === "--session") {
-      i++;
-      continue;
-    }
-    if (arg === "--agent-dir") {
-      const next = argv[i + 1];
-      if (next === undefined || next === "--") break;
-      if (next.startsWith("-")) continue;
-      i++;
-      const trimmed = next.trim();
-      if (trimmed) found = trimmed;
-      continue;
-    }
-    if (arg.startsWith("--agent-dir=")) {
-      const trimmed = arg.slice("--agent-dir=".length).trim();
-      if (trimmed) found = trimmed;
-    }
-  }
-  if (!found) return undefined;
-  const expanded = found === "~"
-    ? os.homedir()
-    : (found.startsWith("~/") || found.startsWith("~\\"))
-      ? path.join(os.homedir(), found.slice(2))
-      : found;
-  return path.isAbsolute(expanded) ? expanded : path.resolve(expanded);
-};
+const SUPERVISOR_VALUE_FLAGS = new Set(["--project", "--cwd", "--purpose", "--session"]);
 const project = flag("project", "default");
 const cwd = flag("cwd", process.cwd());
 const purpose = flag("purpose", "");
 const session = flag("session", "");
-const cliAgentDir = extractAgentDir(rest);
+const rawCliAgentDir = extractAgentDirFromArgv(rest, { valueFlags: SUPERVISOR_VALUE_FLAGS });
+const cliAgentDir = rawCliAgentDir ? normalizeAgentDir(rawCliAgentDir) : undefined;
 
 const comsBase = process.env.PI_COMS_DIR && process.env.PI_COMS_DIR.trim()
   ? process.env.PI_COMS_DIR.trim()
