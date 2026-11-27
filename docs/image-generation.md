@@ -81,13 +81,14 @@ for (const block of result.output) {
 }
 ```
 
-- `aspectRatio`: ratio string such as `"1:1"`, `"16:9"`, `"4:3"`, or `"9:16"`.
-- `size`: resolution tier `"1K"`, `"2K"`, or `"4K"`. Pixel dimensions like `"1024x1536"` are not supported.
-- Options pass through to the provider unchanged. Unsupported values return an error `stopReason`, and unknown option keys throw.
+- `aspectRatio`: non-empty ratio string such as `"1:1"`, `"16:9"`, `"4:3"`, or `"9:16"`.
+- `size`: non-empty resolution tier string `"1K"`, `"2K"`, or `"4K"`. Pixel dimensions like `"1024x1536"` are not supported by OpenRouter image models.
+- **Validation and failure modes:** Unknown option keys, non-object `options`, or empty/non-string `aspectRatio`/`size` values throw before the provider call. Wrap `models.generateImages()` in `try`/`catch` if your script needs a soft error. Valid non-empty strings (including unsupported values such as `"1024x1536"`) pass through to the provider unchanged and may return `stopReason: "error"` with `errorMessage`.
 
 ## Notes
 
 - **Timeouts:** Image generation can take minutes. Set `// @options: {"timeout_ms": 300000}` on the first line of the `codemode` script instead of a short deadline.
 - **Output handling:** Always pass generated image blocks to `image(block)`. It displays the image and writes a temp file whose path is returned in the tool result. Never pass raw base64 `block.data` to `text()`, `console.log()`, or `return`.
 - **Selecting a specific model:** Use `models.getModelOfType("image", provider, id)` when you want a specific provider/model instead of `available[0]`.
-- **Radius models (Pi 1.7.0+):** Pi's built-in catalog and provider discovery include Radius image and classifier models when Radius is enabled for your organization. Discover them dynamically with `models.getAvailableOfType("image")` and `models.getAvailableOfType("classifier")`.
+- **Radius image models (Pi 1.7.0+):** When Radius is authenticated and enabled for your organization, Pi's built-in catalog and provider discovery include Radius image models alongside OpenRouter models. Discover them dynamically with `models.getAvailableOfType("image")`.
+- **Radius classifier models (separate API):** Pi 1.7.0+ also adds Radius decision/classifier models to the built-in catalog via `models.getAvailableOfType("classifier")` for `models.classify()`. Classifier models do not generate images and are not valid inputs to `models.generateImages()`.
