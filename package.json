@@ -53,6 +53,7 @@
     "scripts/build-extension-uis.sh",
     "scripts/trail-allow-scripts.mjs",
     "scripts/pr-retro-collect.mjs",
+    "scripts/diagnostic-report-collect.mjs",
     "agents/",
     "rules/",
     "prompts/",

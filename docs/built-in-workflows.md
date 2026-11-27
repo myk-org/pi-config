@@ -1,6 +1,6 @@
 # Built-in Workflow Commands
 
-Built-in workflow commands cover implementation, review, release, memory, and glossary tasks. Text after the command name is passed to the command as its raw arguments.
+Built-in workflow commands cover implementation, review, release, memory, glossary, and diagnostic bug-reporting tasks. Text after the command name is passed to the command as its raw arguments.
 
 > **Note:** Commands that invoke `myk-pi-tools` require `uv` and `myk-pi-tools` on PATH. See [myk_pi_tools CLI Reference](cli-reference.html) for the underlying CLI commands.
 
@@ -248,6 +248,29 @@ Runs review analytics queries through `myk-pi-tools db`.
 /query-db query "SELECT * FROM comments WHERE status='skipped' LIMIT 10"
 ```
 
+## Diagnostic Command
+
+### `/report`
+
+Collects a redacted runtime snapshot and recent session `warn`/`error` log tail, checks documentation and active configuration to rule out expected behavior, searches open and recently closed GitHub issues for duplicates, and asks for confirmation before filing or commenting.
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `[issue summary]` | string | prompt if empty | Optional short description of the unexpected behavior or bug. |
+
+**What it collects (`$0` via `scripts/diagnostic-report-collect.mjs`):**
+
+- Runtime versions (`pi`, `pi-orchestrator-config`, `myk-pi-tools`, Node) and OS (`platform`, `release`, `arch`).
+- Redacted working directory, active git branch/commit/dirty state, and detected GitHub repository slug.
+- Last 40 `warn`/`error` lines across `~/.pi/logs/*/<current-session-id>/*.log`, irreversibly stripped of credentials, secret env values, auth/cookie headers, and home-directory usernames.
+
+**Return value / effect:** Displays the diagnostic bundle, docs/config verdict, and duplicate check results, then calls `ask_user` before creating a new GitHub issue or commenting on an existing duplicate through `github-expert`. Also available as the bundled `bug-report` skill when asking to report a bug in plain conversation.
+
+```text
+/report
+/report pidash sidebar fails to update after /reload
+```
+
 ## Other Built-in Prompts
 
 These are also shipped as prompt templates in `prompts/`, and are registered by Pi itself rather than by an extension.
@@ -280,6 +303,7 @@ These are also shipped as prompt templates in `prompts/`, and are registered by 
 | Release | Version bumps, changelog generation, GitHub release creation |
 | Memory and skill | Memory entries or `SKILL.md` files |
 | Glossary | `CONTEXT.md` creation or update |
+| Diagnostic | Optional GitHub issue creation or duplicate comment (only after `ask_user` approval) |
 
 > **Warning:** Commands that mutate GitHub state, create releases, or write project files may prompt for confirmation before final actions.
 
