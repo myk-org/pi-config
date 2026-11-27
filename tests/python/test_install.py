@@ -205,7 +205,7 @@ def test_pi_config_cmd_migrates_root_git() -> None:
 
 
 def test_myk_pi_tools_install_is_pypi() -> None:
-    assert MYK_PI_TOOLS_INSTALL_CMD == "uv tool install myk-pi-tools"
+    assert MYK_PI_TOOLS_INSTALL_CMD == "uv tool install --python 3.14 --upgrade myk-pi-tools"
     assert "git+" not in MYK_PI_TOOLS_INSTALL_CMD
 
 
@@ -237,7 +237,8 @@ def test_entrypoint_has_no_pi_config_git_clone() -> None:
 
 def test_install_py_has_no_pi_config_git_commands() -> None:
     text = (REPO / "scripts/install.py").read_text()
-    assert "git:github.com/myk-org/pi-config" not in text
+    assert f"pi install {PI_CONFIG_GIT}" not in text
+    assert f"pi install {PI_VERTEX_GIT}" not in text
     assert "git+https://github.com/myk-org/pi-config" not in text
     assert "agent/git/github.com" not in text
 
@@ -370,9 +371,7 @@ def _tool(
 def test_trail_native_install_uses_audited_strict_npm12_installer(monkeypatch: pytest.MonkeyPatch) -> None:
     tool = _tool(monkeypatch, "trail")
     assert tool.install_fn
-    assert tool.install_cmd == (
-        "DO_NOT_TRACK=1 npm install -g @trailhq/trail-code@latest (strict dynamic script approval)"
-    )
+    assert tool.install_cmd == "DO_NOT_TRACK=1 npm install -g @trailhq/trail-code@latest"
 
 
 def _write_package(path: Path, manifest: dict[str, Any]) -> None:
@@ -1038,9 +1037,377 @@ def test_trail_publication_rolls_back_with_windows_lock(tmp_path: Path, monkeypa
 def test_trail_native_install_checks_node_gyp_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
+    monkeypatch.setattr(install, "SYSTEM", "Linux")
+    monkeypatch.setattr(install.os, "geteuid", lambda: 1000, raising=False)
     monkeypatch.setattr(install.shutil, "which", lambda name: None if name == "make" else f"/usr/bin/{name}")
-    with pytest.raises(RuntimeError, match="make"):
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 1),
+    )
+    with pytest.raises(RuntimeError, match=r"make.*sudo dnf install -y make gcc-c\+\+"):
         install.install_trail()
+
+
+def test_install_py_runs_standalone_without_install_sources(tmp_path: Path) -> None:
+    standalone_dir = tmp_path / "standalone"
+    standalone_dir.mkdir()
+    standalone_script = standalone_dir / "install.py"
+    standalone_script.write_text((REPO / "scripts/install.py").read_text())
+
+    # Stub questionary in a separate dir so standalone import runs without scripts/ on sys.path.
+    stub_dir = tmp_path / "stubs"
+    stub_dir.mkdir()
+    (stub_dir / "questionary.py").write_text(
+        "class Choice:\n    def __init__(self, *a, **kw): pass\n"
+        "def Style(*a, **kw): return None\n"
+        "def confirm(*a, **kw): return None\n"
+        "def checkbox(*a, **kw): return None\n"
+    )
+
+    env = os.environ | {"PYTHONPATH": str(stub_dir)}
+    help_proc = subprocess.run(
+        [sys.executable, str(standalone_script), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert help_proc.returncode == 0
+    assert "--all" in help_proc.stdout
+
+    # Verify standalone fallback constants & helpers stay 100% in sync with install_sources.py.
+    legacy_cfg = '{"packages":["git:github.com/myk-org/pi-config"]}'
+    legacy_vtx = '{"packages":["git:github.com/myk-org/pi-config/packages/pi-vertex-claude"]}'
+    probe = "\n".join([
+        "import importlib.util, json, sys",
+        f"spec = importlib.util.spec_from_file_location('standalone_install', {str(standalone_script)!r})",
+        "mod = importlib.util.module_from_spec(spec)",
+        "sys.modules[spec.name] = mod",
+        "spec.loader.exec_module(mod)",
+        f"legacy_cfg = {legacy_cfg!r}",
+        f"legacy_vtx = {legacy_vtx!r}",
+        "print(json.dumps({",
+        "  'MYK_PI_TOOLS_INSTALL_CMD': mod.MYK_PI_TOOLS_INSTALL_CMD,",
+        "  'PI_CONFIG_NPM': mod.PI_CONFIG_NPM,",
+        "  'PI_VERTEX_NPM': mod.PI_VERTEX_NPM,",
+        "  'cfg_migrate': mod.should_migrate_pi_config_to_npm(legacy_cfg),",
+        "  'cfg_not_vtx': mod.should_migrate_pi_config_to_npm(legacy_vtx),",
+        "  'cfg_cmd': mod.pi_config_pi_cmd(False, legacy_cfg),",
+        "  'vtx_migrate': mod.should_migrate_vertex_to_npm(legacy_vtx),",
+        "  'vtx_cmd': mod.vertex_pi_cmd(False, legacy_vtx),",
+        "}))",
+    ])
+    sync_proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert sync_proc.returncode == 0, sync_proc.stderr
+    data = json.loads(sync_proc.stdout)
+    assert data == {
+        "MYK_PI_TOOLS_INSTALL_CMD": MYK_PI_TOOLS_INSTALL_CMD,
+        "PI_CONFIG_NPM": PI_CONFIG_NPM,
+        "PI_VERTEX_NPM": PI_VERTEX_NPM,
+        "cfg_migrate": should_migrate_pi_config_to_npm(legacy_cfg),
+        "cfg_not_vtx": should_migrate_pi_config_to_npm(legacy_vtx),
+        "cfg_cmd": pi_config_pi_cmd(False, legacy_cfg),
+        "vtx_migrate": should_migrate_vertex_to_npm(legacy_vtx),
+        "vtx_cmd": vertex_pi_cmd(False, legacy_vtx),
+    }
+
+
+def test_ensure_writable_npm_prefix_falls_back_to_user_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    home.mkdir()
+    ro_prefix = tmp_path / "usr-local"
+    ro_prefix.mkdir()
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd == ["npm", "prefix", "-g"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=str(ro_prefix))
+        return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+    real_access = os.access
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(install.subprocess, "run", run)
+    monkeypatch.setattr(
+        install.os,
+        "access",
+        lambda path, mode: False if Path(path).resolve() == ro_prefix.resolve() else real_access(path, mode),
+    )
+
+    result = install._ensure_writable_npm_prefix()
+    expected = (home / ".npm-global").resolve()
+    assert result == expected
+    assert (expected / "bin").is_dir()
+    assert ["npm", "config", "set", "prefix", str(home / ".npm-global")] in calls
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(expected / "bin")
+    assert install._NPM_GLOBAL_BIN_NOTICE == expected / "bin"
+
+    install.show_summary(1, 0, 0)
+    out = capsys.readouterr().out
+    assert str(expected / "bin") in out
+
+
+def test_step4_uses_agent_browser_chromium_and_binary_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(install, "HOME", home)
+    # Empty broken dirs must NOT trigger false-positive installed status.
+    (home / ".cache/ms-playwright/chromium-1234").mkdir(parents=True)
+    (home / ".agent-browser/browsers/chrome-134").mkdir(parents=True)
+    assert install._is_chromium_installed() is False
+
+    # Step 4 must be enabled when Node is present even before agent-browser is installed.
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    steps = install.build_steps(_prereqs(node=True))
+    browser_tool = steps[3].tools[0]
+    assert browser_tool.install_cmd == "agent-browser install --with-deps"
+    assert browser_tool.install_fn is install.install_browser
+    assert browser_tool.disabled == ""
+    assert browser_tool.installed is False
+
+    # An actual executable Chrome binary inside agent-browser cache must be detected.
+    chrome_bin = home / ".agent-browser/browsers/chrome-134/chrome-linux64/chrome"
+    chrome_bin.parent.mkdir(parents=True)
+    chrome_bin.write_text("#!/bin/sh\n")
+    chrome_bin.chmod(0o755)
+    assert install._is_chromium_installed() is True
+
+
+def test_install_browser_runs_agent_browser_with_deps_from_npm_global_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    ab = home / ".npm-global/bin/agent-browser"
+    ab.parent.mkdir(parents=True)
+    ab.write_text("#!/bin/sh\n")
+    ab.chmod(0o755)
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    seen: list[list[str]] = []
+
+    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install.subprocess, "run", run)
+    install.install_browser()
+    assert seen == [[str(ab), "install", "--with-deps"]]
+
+
+def test_trail_native_install_npm10_uses_ignore_scripts_and_scoped_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    prefix = tmp_path / "global"
+    calls: list[list[str]] = []
+    stages: list[Path] = []
+    real_run = subprocess.run
+
+    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd == ["npm", "prefix", "-g"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=str(prefix))
+        if len(cmd) >= 2 and cmd[0] == "node" and cmd[1].endswith("trail-allow-scripts.mjs"):
+            return real_run(cmd, **kwargs)
+        if cmd[:3] == ["npm", "install", "-g"]:
+            stage = Path(cmd[cmd.index("--prefix") + 1])
+            stages.append(stage)
+            root = stage / "lib/node_modules/@trailhq/trail-code"
+            _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"native": "1"}})
+            _write_package(stage / "lib/node_modules/native", {"name": "native", "scripts": {"install": "build"}})
+            (stage / "bin").mkdir()
+            (stage / "bin/trail").write_text("#!/bin/sh\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "10.9.4")
+    monkeypatch.setattr(install.subprocess, "run", run)
+    install.install_trail()
+
+    assert calls[0] == ["npm", "prefix", "-g"]
+    assert calls[1][5:] == ["@trailhq/trail-code@latest", "--ignore-scripts"]
+    assert calls[3] == [
+        "npm",
+        "install",
+        "-g",
+        "--prefix",
+        str(stages[1]),
+        "@trailhq/trail-code@latest",
+        "--ignore-scripts",
+    ]
+    assert calls[4] == ["npm", "rebuild", "-g", "--prefix", str(stages[1]), "native"]
+    assert calls[5] == [str(stages[1] / "bin/trail"), "--version"]
+    assert (prefix / "bin/trail").readlink() == Path("../lib/trail-prefix/bin/trail")
+
+
+def test_trail_native_install_rejects_npm_below_10(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(install.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "9.8.1")
+    with pytest.raises(RuntimeError, match="npm 10\\+"):
+        install.install_trail()
+
+
+def test_trail_prereqs_auto_installs_build_tools_with_passwordless_sudo(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    installed_build_tools = {"ok": False}
+    calls: list[list[str]] = []
+
+    def fake_which(name: str) -> str | None:
+        if name in {"make", "g++"} and not installed_build_tools["ok"]:
+            return None
+        if name == "apt-get":
+            return None
+        return f"/usr/bin/{name}"
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd == ["sudo", "-n", "dnf", "install", "-y", "make", "gcc-c++"]:
+            installed_build_tools["ok"] = True
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install, "SYSTEM", "Linux")
+    monkeypatch.setattr(install.os, "geteuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(install.shutil, "which", fake_which)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install._ensure_trail_prerequisites()
+    assert calls == [
+        ["sudo", "-n", "true"],
+        ["sudo", "-n", "dnf", "install", "-y", "make", "gcc-c++"],
+    ]
+
+
+def test_add_to_gitignore_uses_exact_line_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    gi = tmp_path / "ignore"
+    gi.write_text(".pi/memory/")  # substring of ".pi/" and no trailing newline
+    monkeypatch.setattr(install, "_gitignore_path", lambda: str(gi))
+    monkeypatch.setattr(install.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0),
+    )
+
+    steps = install.build_steps(_prereqs())
+    pi_tool = next(t for t in steps[4].tools if t.name == ".pi/ in gitignore")
+    assert pi_tool.installed is False
+    pi_tool.install_fn()
+    lines = gi.read_text().splitlines()
+    assert lines == [".pi/memory/", ".pi/"]
+
+
+def test_update_pi_runs_with_extensions_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    seen: list[Any] = []
+
+    def run(cmd: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install.subprocess, "run", run)
+    install.update_pi({"pi": True})
+    assert seen == [["pi", "update", "--extensions"]]
+
+
+def test_check_prereqs_quiet_exits_nonzero_when_pi_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(install.shutil, "which", lambda name: None if name == "pi" else f"/usr/bin/{name}")
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "v22.22.0")
+
+    with pytest.raises(SystemExit) as exc_info:
+        install.check_prereqs_quiet()
+
+    assert exc_info.value.code == 1
+    assert "Cannot continue without pi." in capsys.readouterr().out
+
+
+def test_main_exits_nonzero_when_tool_install_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    failing_tool = install.Tool(
+        "demo",
+        "Demo tool",
+        installed=False,
+        disabled="",
+        install_cmd="false",
+        install_fn=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    monkeypatch.setattr(sys, "argv", ["install.py", "--all"])
+    monkeypatch.setattr(install, "check_prereqs_quiet", lambda: _prereqs())
+    monkeypatch.setattr(install, "build_steps", lambda _p: [install.Step("x", "S", "D", [failing_tool])])
+    monkeypatch.setattr(install, "update_pi", lambda _p: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        install.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Failed:    1" in out
+
+
+def test_meaningful_error_lines_filters_npm_boilerplate_and_caps_at_five() -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    stderr = "\n".join([
+        "npm error line 1",
+        "npm error line 2",
+        "npm error code EACCES",
+        "npm error syscall mkdir",
+        "npm error path /usr/local/lib/node_modules",
+        "npm error errno -13",
+        "npm error permission denied",
+        "npm error A complete log of this run can be found in:",
+        "npm error     /home/user/.npm/_logs/2026-04-01-debug-0.log",
+        "",
+    ])
+    lines = install._meaningful_error_lines(stderr)
+    assert lines == [
+        "npm error code EACCES",
+        "npm error syscall mkdir",
+        "npm error path /usr/local/lib/node_modules",
+        "npm error errno -13",
+        "npm error permission denied",
+    ]
+
+
+def test_install_logger_suppresses_last_resort_while_propagating() -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    import logging
+
+    assert any(isinstance(h, logging.NullHandler) for h in install.log.handlers)
+    assert install.log.propagate is True
 
 
 def test_entrypoint_does_not_install_mcpc() -> None:

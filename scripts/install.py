@@ -23,6 +23,7 @@ import argparse
 import glob
 import hashlib
 import json
+import logging
 import os
 import platform
 import shutil
@@ -36,20 +37,60 @@ from pathlib import Path
 from typing import Any
 
 import questionary
-from install_sources import (
-    MYK_PI_TOOLS_INSTALL_CMD,
-    PI_CONFIG_NPM,
-    PI_VERTEX_NPM,
-    create_logger,
-    is_pi_pkg_installed,
-    pi_config_pi_cmd,
-    should_migrate_pi_config_to_npm,
-    should_migrate_vertex_to_npm,
-    vertex_pi_cmd,
-)
 from questionary import Choice
 
+try:
+    from install_sources import (
+        MYK_PI_TOOLS_INSTALL_CMD,
+        PI_CONFIG_NPM,
+        PI_VERTEX_NPM,
+        create_logger,
+        is_pi_pkg_installed,
+        pi_config_pi_cmd,
+        should_migrate_pi_config_to_npm,
+        should_migrate_vertex_to_npm,
+        vertex_pi_cmd,
+    )
+except ModuleNotFoundError:
+    _PI_CONFIG_GIT = "git:github.com/myk-org/pi-config"
+    _PI_VERTEX_GIT = "git:github.com/myk-org/pi-config/packages/pi-vertex-claude"
+    PI_VERTEX_NPM = "npm:@myk-org/pi-vertex-claude"
+    PI_CONFIG_NPM = "npm:pi-orchestrator-config"
+    MYK_PI_TOOLS_INSTALL_CMD = "uv tool install --python 3.14 --upgrade myk-pi-tools"
+
+    def create_logger(name: str = "install") -> logging.Logger:
+        return logging.getLogger(name)
+
+    def is_pi_pkg_installed(settings_text: str, name: str) -> bool:
+        return bool(name) and name in settings_text
+
+    def should_migrate_vertex_to_npm(settings_text: str) -> bool:
+        return is_pi_pkg_installed(settings_text, _PI_VERTEX_GIT)
+
+    def vertex_pi_cmd(installed: bool, settings_text: str = "") -> str:
+        if should_migrate_vertex_to_npm(settings_text):
+            parts = [f"pi uninstall {_PI_VERTEX_GIT}"]
+            if not is_pi_pkg_installed(settings_text, PI_VERTEX_NPM):
+                parts.append(f"pi install {PI_VERTEX_NPM}")
+            return " && ".join(parts)
+        return f"pi {'update' if installed else 'install'} {PI_VERTEX_NPM}"
+
+    def should_migrate_pi_config_to_npm(settings_text: str) -> bool:
+        return f'"{_PI_CONFIG_GIT}"' in settings_text
+
+    def pi_config_pi_cmd(installed: bool, settings_text: str = "") -> str:
+        if should_migrate_pi_config_to_npm(settings_text):
+            parts = [f"pi uninstall {_PI_CONFIG_GIT}"]
+            if not is_pi_pkg_installed(settings_text, PI_CONFIG_NPM):
+                parts.append(f"pi install {PI_CONFIG_NPM}")
+            return " && ".join(parts)
+        return f"pi {'update' if installed else 'install'} {PI_CONFIG_NPM}"
+
+
 log = create_logger("install")
+if not log.handlers:
+    # Prevent Python's logging.lastResort from printing raw warnings onto active spinner lines.
+    log.addHandler(logging.NullHandler())
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -69,6 +110,15 @@ CYAN = "\033[36m"
 RESET = "\033[0m"
 
 ALL_MODE = False
+_NPM_GLOBAL_BIN_NOTICE: Path | None = None
+
+
+class _CommandFailedError(RuntimeError):
+    """Raised by install_fn helpers when a subprocess fails with captured output."""
+
+    def __init__(self, message: str, output: str = "") -> None:
+        super().__init__(message)
+        self.output = output
 
 
 # ── Data Models ────────────────────────────────────────────────────────────
@@ -112,9 +162,27 @@ def _gitignore_path() -> str:
     return path.replace("~", str(HOME))
 
 
-def _npm_global_prefix() -> Path:
-    result = subprocess.run(["npm", "prefix", "-g"], capture_output=True, text=True, timeout=5, check=True)
-    raw = result.stdout.strip()
+def _meaningful_error_lines(text: str, limit: int = 5) -> list[str]:
+    """Return up to the last ``limit`` non-empty error lines, skipping npm log-path boilerplate."""
+    lines: list[str] = []
+    skip_next_log_path = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "A complete log of this run can be found in:" in line:
+            skip_next_log_path = line.endswith(":")
+            continue
+        if skip_next_log_path:
+            skip_next_log_path = False
+            if "_logs" in line or line.endswith(".log"):
+                continue
+        lines.append(line)
+    return lines[-limit:]
+
+
+def _validate_npm_prefix(raw: str) -> tuple[Path, bool]:
+    """Validate an npm global prefix path; return ``(resolved_path, is_writable)``."""
     prefix = Path(raw)
     if not raw or not prefix.is_absolute():
         log.warning("trail unsafe npm global prefix rejected value=%r", raw)
@@ -129,11 +197,53 @@ def _npm_global_prefix() -> Path:
         or resolved == cwd
         or (resolved.exists() and not resolved.is_dir())
         or not writable_parent.is_dir()
-        or not os.access(writable_parent, os.W_OK)
     ):
         log.warning("trail unsafe npm global prefix rejected value=%r", raw)
         raise RuntimeError("npm prefix -g must return a safe absolute path")
+    return resolved, os.access(writable_parent, os.W_OK)
+
+
+def _npm_global_prefix() -> Path:
+    result = subprocess.run(["npm", "prefix", "-g"], capture_output=True, text=True, timeout=5, check=True)
+    raw = result.stdout.strip()
+    resolved, writable = _validate_npm_prefix(raw)
+    if not writable:
+        log.warning("trail unsafe npm global prefix rejected value=%r", raw)
+        raise RuntimeError("npm prefix -g must return a safe absolute path")
     return resolved
+
+
+def _prepend_to_path(bin_dir: Path) -> None:
+    global _NPM_GLOBAL_BIN_NOTICE
+    bin_str = str(bin_dir)
+    current = os.environ.get("PATH", "")
+    parts = current.split(os.pathsep) if current else []
+    if bin_str not in parts:
+        os.environ["PATH"] = f"{bin_str}{os.pathsep}{current}" if current else bin_str
+        _NPM_GLOBAL_BIN_NOTICE = bin_dir
+
+
+def _ensure_writable_npm_prefix() -> Path:
+    """Return a safe, user-writable global npm prefix, switching to ``~/.npm-global`` if root-owned."""
+    result = subprocess.run(["npm", "prefix", "-g"], capture_output=True, text=True, timeout=5, check=True)
+    resolved, writable = _validate_npm_prefix(result.stdout.strip())
+    if writable:
+        return resolved
+    fallback = HOME / ".npm-global"
+    (fallback / "bin").mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["npm", "config", "set", "prefix", str(fallback)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    fallback_resolved, fallback_writable = _validate_npm_prefix(str(fallback))
+    if not fallback_writable:
+        raise RuntimeError("npm prefix -g must return a safe absolute path")
+    _prepend_to_path(fallback_resolved / "bin")
+    log.info("configured user-writable npm prefix=%s", fallback_resolved)
+    return fallback_resolved
 
 
 @contextmanager
@@ -267,17 +377,110 @@ def _install_script_packages(package_dir: Path, install_root: Path) -> list[str]
     return _install_script_packages_python(package_dir, install_root)
 
 
-def install_trail() -> None:
+def _linux_build_tools_cmd() -> list[str] | None:
+    if SYSTEM != "Linux":
+        return None
+    if shutil.which("dnf"):
+        return ["dnf", "install", "-y", "make", "gcc-c++"]
+    if shutil.which("apt-get"):
+        return ["apt-get", "install", "-y", "build-essential"]
+    return None
+
+
+def _ensure_trail_prerequisites() -> None:
     missing = [tool for tool in ("npm", "node", "python3", "make", "g++") if not shutil.which(tool)]
-    if missing:
-        log.warning("trail prerequisites missing=%s", ",".join(missing))
-        raise RuntimeError(f"Trail requires node-gyp prerequisites: {', '.join(missing)}")
-    npm_major = int(_run_quiet(["npm", "--version"]).split(".", 1)[0])
-    if npm_major < 12:
+    if not missing:
+        return
+    pkg_cmd = _linux_build_tools_cmd() if set(missing) <= {"make", "g++"} else None
+    if pkg_cmd:
+        can_install = False
+        full_cmd = pkg_cmd
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            can_install = True
+        elif shutil.which("sudo"):
+            try:
+                probe = subprocess.run(["sudo", "-n", "true"], capture_output=True, text=True, timeout=5)
+                can_install = probe.returncode == 0
+                full_cmd = ["sudo", "-n", *pkg_cmd]
+            except OSError:
+                can_install = False
+        if can_install:
+            log.info("installing missing node-gyp prerequisites via %s", pkg_cmd[0])
+            env = os.environ | ({"DEBIAN_FRONTEND": "noninteractive"} if pkg_cmd[0] == "apt-get" else {})
+            try:
+                subprocess.run(full_cmd, capture_output=True, text=True, timeout=300, check=True, env=env)
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                log.warning("auto-install of node-gyp prerequisites failed error=%s", exc)
+            missing = [tool for tool in ("npm", "node", "python3", "make", "g++") if not shutil.which(tool)]
+            if not missing:
+                return
+    log.warning("trail prerequisites missing=%s", ",".join(missing))
+    hint = f" (install with: sudo {' '.join(pkg_cmd)})" if pkg_cmd else ""
+    raise RuntimeError(f"Trail requires node-gyp prerequisites: {', '.join(missing)}{hint}")
+
+
+def install_agent_browser() -> None:
+    prefix = _ensure_writable_npm_prefix()
+    _prepend_to_path(prefix / "bin")
+    result = subprocess.run(
+        ["npm", "install", "-g", "agent-browser"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise _CommandFailedError("npm install -g agent-browser failed", result.stderr or result.stdout)
+
+
+def _is_chromium_installed() -> bool:
+    """Return True only when an executable Chrome/Chromium binary exists in agent-browser or Playwright caches."""
+    binary_names = {"chrome", "chromium", "chrome.exe", "Google Chrome for Testing", "Chromium"}
+    search_globs = (
+        HOME / ".agent-browser/browsers/chrome-*",
+        HOME / ".cache/ms-playwright/chromium-*",
+    )
+    for pattern in search_globs:
+        for base in glob.glob(str(pattern)):
+            for root, _dirs, files in os.walk(base):
+                for fname in files:
+                    if fname in binary_names:
+                        candidate = Path(root) / fname
+                        if candidate.is_file() and os.access(candidate, os.X_OK):
+                            return True
+    return False
+
+
+def install_browser() -> None:
+    agent_browser = shutil.which("agent-browser")
+    if not agent_browser:
+        candidate = HOME / ".npm-global/bin/agent-browser"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            agent_browser = str(candidate)
+    if not agent_browser:
+        raise RuntimeError("agent-browser not found on PATH; install agent-browser first")
+    result = subprocess.run(
+        [agent_browser, "install", "--with-deps"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise _CommandFailedError("agent-browser install --with-deps failed", result.stderr or result.stdout)
+
+
+def install_trail() -> None:
+    _ensure_trail_prerequisites()
+    npm_version = _run_quiet(["npm", "--version"])
+    try:
+        npm_major = int(npm_version.split(".", 1)[0])
+    except ValueError as exc:
+        log.warning("trail unable to parse npm version=%r", npm_version)
+        raise RuntimeError(f"Unable to determine npm version: {npm_version!r}") from exc
+    if npm_major < 10:
         log.warning("trail secure install unsupported npm-major=%s", npm_major)
-        raise RuntimeError("Trail secure installation requires npm 12+")
+        raise RuntimeError("Trail secure installation requires npm 10+")
     env = os.environ | {"DO_NOT_TRACK": "1"}
-    global_prefix = _npm_global_prefix()
+    global_prefix = _ensure_writable_npm_prefix()
     trail_prefix = global_prefix / "lib/trail-prefix"
     trail_bin = global_prefix / "bin/trail"
     trail_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -288,31 +491,52 @@ def install_trail() -> None:
         subprocess.run(
             ["npm", "install", "-g", "--prefix", str(audit), "@trailhq/trail-code@latest", "--ignore-scripts"],
             check=True,
+            capture_output=True,
+            text=True,
             env=env,
         )
         npm_root = audit / "lib/node_modules"
-        allowed = ",".join(_install_script_packages(npm_root / "@trailhq/trail-code", npm_root))
-        if not allowed:
+        allowed_pkgs = _install_script_packages(npm_root / "@trailhq/trail-code", npm_root)
+        if not allowed_pkgs:
             raise RuntimeError("Trail dependency audit found no install scripts")
 
     with tempfile.TemporaryDirectory(prefix=".trail-prefix-", dir=trail_prefix.parent) as stage_raw:
         stage = Path(stage_raw)
         (stage / "lib").mkdir()
-        subprocess.run(
-            [
-                "npm",
-                "install",
-                "-g",
-                "--prefix",
-                str(stage),
-                "@trailhq/trail-code@latest",
-                f"--allow-scripts={allowed}",
-                "--strict-allow-scripts",
-            ],
-            check=True,
-            env=env,
-        )
-        subprocess.run([str(stage / "bin/trail"), "--version"], check=True, env=env)
+        if npm_major >= 12:
+            allowed = ",".join(allowed_pkgs)
+            subprocess.run(
+                [
+                    "npm",
+                    "install",
+                    "-g",
+                    "--prefix",
+                    str(stage),
+                    "@trailhq/trail-code@latest",
+                    f"--allow-scripts={allowed}",
+                    "--strict-allow-scripts",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        else:
+            subprocess.run(
+                ["npm", "install", "-g", "--prefix", str(stage), "@trailhq/trail-code@latest", "--ignore-scripts"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            subprocess.run(
+                ["npm", "rebuild", "-g", "--prefix", str(stage), *allowed_pkgs],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        subprocess.run([str(stage / "bin/trail"), "--version"], check=True, capture_output=True, text=True, env=env)
 
         _publish_trail(stage, trail_prefix, trail_bin, global_prefix / ".trail-install.lock")
     log.info("trail installation verified")
@@ -465,31 +689,32 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=bool(shutil.which("agent-browser")),
                 disabled=nd,
                 install_cmd="npm install -g agent-browser",
+                install_fn=install_agent_browser,
             ),
             Tool(
                 "trail",
                 "Local repository code graph for the optional Trail extension",
                 installed=bool(shutil.which("trail")),
                 disabled=nd,
-                install_cmd="DO_NOT_TRACK=1 npm install -g @trailhq/trail-code@latest (strict dynamic script approval)",
+                install_cmd="DO_NOT_TRACK=1 npm install -g @trailhq/trail-code@latest",
                 install_fn=install_trail,
             ),
         ],
     )
 
     # ── Step 4: Browser Automation ───────────────────────────────────────
-    pw_inst = bool(glob.glob(str(HOME / ".cache/ms-playwright/chromium-*")))
     step4 = Step(
         "🌐",
         "Browser Automation",
         "Headless browser for agent-browser web automation",
         [
             Tool(
-                "playwright + chromium",
+                "agent-browser Chromium",
                 "Headless Chromium browser engine",
-                installed=pw_inst,
+                installed=_is_chromium_installed(),
                 disabled=nd,
-                install_cmd="npx playwright install --with-deps chromium",
+                install_cmd="agent-browser install --with-deps",
+                install_fn=install_browser,
             ),
         ],
     )
@@ -518,9 +743,10 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
             stdout=subprocess.DEVNULL,
         )
         content = gi_path.read_text()
-        if entry not in content:
+        if entry not in content.splitlines():
+            prefix = "\n" if content and not content.endswith("\n") else ""
             with gi_path.open("a") as f:
-                f.write(f"{entry}\n")
+                f.write(f"{prefix}{entry}\n")
 
     step5 = Step(
         "⚙️",
@@ -677,13 +903,29 @@ def install_all(selections: list[Tool]) -> tuple[int, int, list[Tool]]:
                 installed += 1
             else:
                 print(f"\r\033[2K  {RED}✗{RESET} {tool.name} — failed")
-                if result.stderr:
-                    for line in result.stderr.strip().splitlines()[-2:]:
-                        print(f"    {DIM}{line}{RESET}")
+                for line in _meaningful_error_lines(result.stderr or result.stdout):
+                    print(f"    {DIM}{line}{RESET}")
                 failed += 1
                 failed_tools.append(tool)
         except subprocess.TimeoutExpired:
             print(f"\r\033[2K  {RED}✗{RESET} {tool.name} — timed out (5m)")
+            failed += 1
+            failed_tools.append(tool)
+        except _CommandFailedError as exc:
+            print(f"\r\033[2K  {RED}✗{RESET} {tool.name} — failed")
+            for line in _meaningful_error_lines(exc.output):
+                print(f"    {DIM}{line}{RESET}")
+            failed += 1
+            failed_tools.append(tool)
+        except subprocess.CalledProcessError as exc:
+            print(f"\r\033[2K  {RED}✗{RESET} {tool.name} — failed")
+            err_text = (exc.stderr or "") or (exc.output or "")
+            lines = _meaningful_error_lines(err_text) if isinstance(err_text, str) else []
+            if lines:
+                for line in lines:
+                    print(f"    {DIM}{line}{RESET}")
+            else:
+                print(f"    {DIM}{exc}{RESET}")
             failed += 1
             failed_tools.append(tool)
         except Exception as exc:
@@ -698,7 +940,7 @@ def install_all(selections: list[Tool]) -> tuple[int, int, list[Tool]]:
 
 
 def update_pi(prereqs: dict[str, bool]) -> None:
-    """Run pi update to update pi itself and all installed packages."""
+    """Run pi update --extensions to update pi itself and all installed packages."""
     if not prereqs.get("pi"):
         return
 
@@ -706,8 +948,7 @@ def update_pi(prereqs: dict[str, bool]) -> None:
     print("  ⏳ Updating pi and packages...", end="", flush=True)
     try:
         result = subprocess.run(
-            "pi update",
-            shell=True,
+            ["pi", "update", "--extensions"],
             capture_output=True,
             text=True,
             timeout=300,
@@ -716,9 +957,8 @@ def update_pi(prereqs: dict[str, bool]) -> None:
             print(f"\r\033[2K  {GREEN}✓{RESET} pi and packages updated")
         else:
             print(f"\r\033[2K  {RED}✗{RESET} pi update failed")
-            if result.stderr:
-                for line in result.stderr.strip().splitlines()[-2:]:
-                    print(f"    {DIM}{line}{RESET}")
+            for line in _meaningful_error_lines(result.stderr or result.stdout):
+                print(f"    {DIM}{line}{RESET}")
     except subprocess.TimeoutExpired:
         print(f"\r\033[2K  {RED}✗{RESET} pi update timed out (5m)")
     except Exception as exc:
@@ -742,7 +982,14 @@ def show_summary(installed: int, failed: int, skipped: int, failed_tools: list[T
         print()
         print(f"  {BOLD}To install failed tools manually:{RESET}")
         for tool in failed_tools:
-            print(f"    {DIM}${RESET} {tool.install_cmd}")
+            if tool.install_cmd:
+                print(f"    {DIM}${RESET} {tool.install_cmd}")
+            else:
+                print(f"    {DIM}-{RESET} {tool.name}")
+    if _NPM_GLOBAL_BIN_NOTICE is not None:
+        print()
+        print(f"  {BOLD}Add npm global bin to your shell PATH:{RESET}")
+        print(f'    export PATH="{_NPM_GLOBAL_BIN_NOTICE}:$PATH"')
     print()
     print("  Run 'pi' to start a session!")
     print()
@@ -817,6 +1064,9 @@ def main() -> None:
     # Summary
     show_summary(installed, failed, skipped, failed_tools)
 
+    if failed > 0:
+        sys.exit(1)
+
 
 def check_prereqs_quiet() -> dict[str, bool]:
     """Check prerequisites without interactive prompts (for --all mode)."""
@@ -850,6 +1100,12 @@ def check_prereqs_quiet() -> dict[str, bool]:
         color = GREEN if present else RED
         hint = f"  ({hints[name]})" if not present else ""
         print(f"  {color}  {icon}{RESET} {name}{hint}")
+
+    if not prereqs["pi"]:
+        print()
+        print(f"  {RED}{BOLD}Cannot continue without pi.{RESET}")
+        print("  Install: npm install -g @earendil-works/pi-coding-agent")
+        sys.exit(1)
 
     if not all(prereqs.values()):
         print()

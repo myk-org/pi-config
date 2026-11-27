@@ -13,7 +13,7 @@ PI_VERTEX_NPM = "npm:@myk-org/pi-vertex-claude"
 # Preferred source since 4.3.7 — pi-config itself installs from npm, not a
 # git clone under ~/.pi (that tree is package-managed, not a scratch checkout).
 PI_CONFIG_NPM = "npm:pi-orchestrator-config"
-MYK_PI_TOOLS_INSTALL_CMD = "uv tool install myk-pi-tools"
+MYK_PI_TOOLS_INSTALL_CMD = "uv tool install --python 3.14 --upgrade myk-pi-tools"
 # Live npm install tree (pi unpacks packages here — not a git clone).
 PI_NPM_PKG_DIR = "$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config"
 # Explicit paths — directory globs like extensions/pidash/ pack nested
