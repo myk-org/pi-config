@@ -353,7 +353,61 @@ export function buildTellRequest(
 	return { target: peer.name, prompt, ...(peer.project ? { project: peer.project } : {}), ...(peer.endpoint ? { expectedEndpoint: peer.endpoint } : {}) };
 }
 
-/** Build the customType string for coms inbound display (shown as the header by pi).
+export const COMS_INBOUND_CUSTOM_TYPE = "coms-inbound";
+export const COMS_RESPONSE_CUSTOM_TYPE = "coms-response";
+export const COMS_PEER_JOINED_CUSTOM_TYPE = "coms-peer-joined";
+export const COMS_PEER_LEFT_CUSTOM_TYPE = "coms-peer-left";
+
+export interface ComsInboundDetails {
+	msg_id: string;
+	header: string;
+	sender: string;
+	target: string;
+	sender_session?: string;
+	sender_cwd?: string;
+	origin?: PromptOrigin;
+	response_schema?: unknown;
+	inject_attempt?: number;
+	bundled_msg_ids?: string[];
+	steer?: boolean;
+	target_msg_id?: string;
+	summaryLine: string;
+}
+
+export interface ComsResponseDetails {
+	msg_id: string;
+	header: string;
+	sender: string;
+	target: string;
+	target_name?: string;
+	error: string | null;
+	queued_msg_ids: string[];
+	queuedMsgIds: string[];
+	summaryLine: string;
+}
+
+export interface ComsPeerEventDetails {
+	peer: string;
+	model?: string;
+	purpose?: string;
+}
+
+/** Match both fixed `"coms-inbound"` and legacy dynamic `"from ..."` / `"steer from ..."` customTypes. */
+export function isComsInboundCustomType(customType: string | undefined | null): boolean {
+	if (typeof customType !== "string") return false;
+	return customType === COMS_INBOUND_CUSTOM_TYPE
+		|| customType.startsWith("from ")
+		|| customType.startsWith("steer from ");
+}
+
+/** Match both fixed `"coms-response"` and legacy dynamic `"coms response from ..."` customTypes. */
+export function isComsResponseCustomType(customType: string | undefined | null): boolean {
+	if (typeof customType !== "string") return false;
+	return customType === COMS_RESPONSE_CUSTOM_TYPE
+		|| customType.startsWith("coms response from ");
+}
+
+/** Build the header string for coms inbound display (stored in `details.header` on `"coms-inbound"` messages).
  *  Sanitizes all inputs since senderName/senderCwd come from untrusted peers. */
 export function formatComsInboundType(senderName: string, selfName: string, senderCwd: string, origin?: PromptOrigin): string {
 	const safeSender = sanitizeComsName(senderName);
@@ -555,7 +609,7 @@ export interface BranchEntry {
 export function detectMixedTurn(
 	branch: ReadonlyArray<BranchEntry>,
 	inboundMsgId: string,
-	inboundCustomType: string,
+	inboundCustomType: string = COMS_INBOUND_CUSTOM_TYPE,
 ): boolean {
 	let passedAssistant = false;
 	for (let i = branch.length - 1; i >= 0; i--) {
@@ -565,7 +619,9 @@ export function detectMixedTurn(
 			continue;
 		}
 		if (!passedAssistant) continue; // still in trailing tool results etc.
-		if (entry.type === "custom_message" && entry.customType === inboundCustomType
+		const matchesInbound = entry.customType === inboundCustomType
+			|| (inboundCustomType === COMS_INBOUND_CUSTOM_TYPE && isComsInboundCustomType(entry.customType));
+		if (entry.type === "custom_message" && matchesInbound
 			&& entry.details?.msg_id === inboundMsgId) {
 			// Reached the coms inbound injection for this message — no user message in between.
 			return false;

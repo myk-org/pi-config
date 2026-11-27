@@ -32,6 +32,8 @@ Ask Pi to run a specialist in the background:
 
 Pi can keep your main session free while the background job runs and report back when it finishes.
 
+In the TUI, completed and failed `async-agent-result` messages render as a single compact summary line by default (for example `✓ security-auditor (14s) — No issues found  (ctrl+o to expand)`). Press `Ctrl+O` to expand the full output body in place; the LLM always receives the complete result content regardless of collapse state.
+
 2. Monitor running async work.
 
 Open the async overlay:
