@@ -20,6 +20,10 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
   `eval $(curl)`, nested `$(bash -c "$(curl)")`, prefix assignments (`VAR=$(curl) cmd`), and path-prefixed exec
   (`/bin/bash -c`), while allowing a safe `VAR=$(curl ...)` capture followed by an unrelated interpreter/`eval` call
   (still blocking if exec consumes the captured var or reads untrackable stdin/file input)
+- Runaway loop guards: `sleep`-loop and long-sleep blocking in `bash-policy.ts`
+  (`enforcement_loop_sleep_threshold_s` / `enforcement_sleep_threshold_s`, orchestrator only) and streaming
+  repetition abort in `stream-loop-guard.ts`; repeated identical bash commands are intentionally allowed
+  (no consecutive repeat-command block)
 - `comment_signature`: injects `Assisted-by: PI (<model>)` into `gh pr|issue create|comment|edit` `--body` / heredoc (`injectGhBodySignature`)
 - Conflict handoff: in `git-expert`, `git add` / `git restore` / `git rm` / `git update-index` / `git reset` /
   `git checkout --ours|--theirs` and the `--continue` / `--skip` / `--quit` flags of
