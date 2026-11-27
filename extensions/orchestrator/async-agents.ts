@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { AgentConfig, AgentDiscoveryResult } from "./agents.js";
 import { buildSubagentChildSpec } from "./subagent-child-spec.js";
@@ -47,6 +48,16 @@ import { setSlot } from "./status-bar.js";
 import { getSetting } from "./project-settings.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { sendSystemNote } from "../shared/system-note.js";
+import {
+  createCompactOneLineComponent,
+  createExpandedCustomBox,
+  extractMessageText,
+  extractSummaryLine,
+  formatExpandHint,
+  stripAnsiAndControl,
+  type CompactCustomMessage,
+  type CompactMessageRenderOptions,
+} from "../shared/compact-message-renderer.js";
 import { isCronNoopOutput } from "./cron-store.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -438,6 +449,103 @@ export function planSpawnExitRecovery(args: { status: string; hasLiveCtx: boolea
   return { record: true, deliver: args.hasLiveCtx };
 }
 
+export interface AsyncAgentResultDetails {
+  displayName: string;
+  agent: string;
+  status: "complete" | "failed";
+  durationMs: number;
+  summaryLine: string;
+  killOrigin?: AsyncKillOrigin;
+  /** True when the result arrived after the timeout fallback already delivered an empty one. */
+  late?: boolean;
+  /** Non-empty warning badge text (e.g. task auto-complete failure or unapplied late reviewer). */
+  warning?: string;
+}
+
+/**
+ * Fallback parser for legacy `async-agent-result` messages persisted before
+ * structured `details` were attached.
+ */
+function parseLegacyAsyncResultFallback(body: string): {
+  displayName: string;
+  status: "complete" | "failed";
+  durationStr: string;
+  summaryLine: string;
+  late: boolean;
+  warning?: string;
+} {
+  const headerMatch = body.match(/^## Async Agent Result:\s*(.+?)\s+(✅ completed|❌ failed)/m);
+  const displayName = headerMatch?.[1]?.trim() || "async-agent";
+  const status: "complete" | "failed" = headerMatch?.[2]?.startsWith("❌") ? "failed" : "complete";
+  const durMatch = body.match(/^Duration:\s*(.+)$/m);
+  const durationStr = durMatch?.[1]?.trim() || "";
+  const late = /_\(late result/m.test(body);
+  const warnings: string[] = [];
+  if (/⚠️ Failed to auto-complete task/.test(body)) warnings.push("task auto-complete failed");
+  if (/⚠️ Reviewer .+ produced its result AFTER the delivery timeout/.test(body)) warnings.push("late reviewer unapplied");
+  // Drop the `## Async Agent Result:` header + `Task:` + `Duration:` preamble before extracting output summary
+  const stripped = body
+    .replace(/^## Async Agent Result:[^\n]*\n*/m, "")
+    .replace(/^_\(late result[^\n]*\n*/m, "")
+    .replace(/^Task:[^\n]*\n*/m, "")
+    .replace(/^Duration:[^\n]*\n*/m, "");
+  const summaryLine = extractSummaryLine(stripped) || (status === "complete" ? "completed" : "failed");
+  return { displayName, status, durationStr, summaryLine, late, warning: warnings.join("; ") || undefined };
+}
+
+/** Compact 1-line TUI renderer for `async-agent-result` messages (Ctrl+O expands full output). */
+export function renderAsyncAgentResultMessage(
+  message: CompactCustomMessage<AsyncAgentResultDetails>,
+  options: CompactMessageRenderOptions,
+  theme: Theme,
+): Component {
+  const body = extractMessageText(message.content);
+  if (options.expanded) {
+    return createExpandedCustomBox("async-agent-result", body, options.outputPad, theme);
+  }
+  const d = message.details && typeof message.details === "object"
+    ? (message.details as Partial<AsyncAgentResultDetails>)
+    : undefined;
+  const fallback = d?.displayName && d?.status ? null : parseLegacyAsyncResultFallback(body);
+  const displayName = stripAnsiAndControl(d?.displayName || d?.agent || fallback?.displayName || "async-agent")
+    .replace(/[\r\n]+/g, " ")
+    .trim() || "async-agent";
+  const status: "complete" | "failed" = d?.status === "failed" || (!d?.status && fallback?.status === "failed")
+    ? "failed"
+    : "complete";
+  const durationStr = typeof d?.durationMs === "number" && Number.isFinite(d.durationMs)
+    ? formatDuration(Math.max(0, d.durationMs))
+    : (fallback?.durationStr || "");
+  const killLabel = d?.killOrigin && Object.hasOwn(KILL_ORIGIN_LABELS, d.killOrigin)
+    ? KILL_ORIGIN_LABELS[d.killOrigin]
+    : "";
+  const rawSummary = typeof d?.summaryLine === "string" && d.summaryLine.trim().length > 0
+    ? extractSummaryLine(d.summaryLine)
+    : (killLabel || fallback?.summaryLine || (status === "complete" ? "completed" : "failed"));
+  const isLate = d?.late === true || (!d && fallback?.late === true);
+  const warningText = typeof d?.warning === "string" && d.warning.trim().length > 0
+    ? extractSummaryLine(d.warning, 60)
+    : (!d && fallback?.warning ? fallback.warning : "");
+  const badgeParts: string[] = [];
+  if (warningText) badgeParts.push(warningText);
+  if (isLate && !warningText.toLowerCase().includes("late")) badgeParts.push("late");
+  const warnBadge = badgeParts.length > 0 ? theme.fg("warning", ` ⚠ ${badgeParts.join("; ")}`) : "";
+  const ok = status === "complete";
+  const icon = theme.fg(ok ? "success" : "error", ok ? "✓" : "✗");
+  const namePart = theme.bold(displayName);
+  const durPart = durationStr ? theme.fg("dim", ` (${durationStr})`) : "";
+  const prefix = `${icon} ${namePart}${durPart}${warnBadge}`;
+  const summary = rawSummary ? theme.fg(ok ? "muted" : "error", rawSummary) : "";
+  const hint = formatExpandHint(options, theme);
+  return createCompactOneLineComponent({
+    prefix,
+    summary,
+    separator: theme.fg("dim", " — "),
+    hint,
+    outputPad: options.outputPad,
+  });
+}
+
 export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
@@ -463,6 +571,11 @@ export function registerAsyncAgents(
 
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
+
+  if (typeof pi.registerMessageRenderer === "function") {
+    pi.registerMessageRenderer<AsyncAgentResultDetails>("async-agent-result", renderAsyncAgentResultMessage);
+    log.debug("registered_message_renderer", { customType: "async-agent-result" });
+  }
 
   function resultOutputPath(job: Pick<AsyncJob, "agent" | "id" | "workerDir">): string {
     const workerOutputPath = path.join(job.workerDir, "output.log");
@@ -1075,10 +1188,28 @@ export function registerAsyncAgents(
           log.debug(`deliver: skipping already-delivered result for ${job.id}`);
         } else {
           try {
+            const rawSummary = extractSummaryLine(output);
+            const summaryLine = rawSummary
+              || (job.killOrigin ? KILL_ORIGIN_LABELS[job.killOrigin] : (job.status === "complete" ? "completed" : "failed"));
+            const warnings: string[] = [];
+            if (autoCompleteError) warnings.push("task auto-complete failed");
+            if (lateReviewNote) warnings.push("late reviewer unapplied");
+            const warning = warnings.join("; ") || undefined;
+            const details: AsyncAgentResultDetails = {
+              displayName,
+              agent: job.agent,
+              status: job.status === "complete" ? "complete" : "failed",
+              durationMs: duration,
+              summaryLine,
+              ...(job.killOrigin ? { killOrigin: job.killOrigin } : {}),
+              ...(isLate ? { late: true } : {}),
+              ...(warning ? { warning } : {}),
+            };
             pi.sendMessage({
               customType: "async-agent-result",
               content,
               display: true,
+              details,
             }, { triggerTurn: true, deliverAs: "followUp" });
             recordDelivered(job.id);
             job.delivered = true;

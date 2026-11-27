@@ -21,6 +21,8 @@ import {
 	buildInboundContent,
 	buildTellRequest,
 	formatComsInboundType,
+	isComsInboundCustomType,
+	isComsResponseCustomType,
 	isUserOrigin,
 	receivedPromptOrigin,
 	resolvePromptOrigin,
@@ -261,7 +263,7 @@ async function startPair(receiverName = "receiver", senderName = "sender") {
 
 /** Inbound prompts only: the welcome card and other custom messages share the sink. */
 function inboundMessages(receiver: FakePi): any[] {
-	return receiver.messages.filter((message) => String(message?.customType ?? "").startsWith("from "));
+	return receiver.messages.filter((message) => isComsInboundCustomType(message?.customType));
 }
 
 async function waitForInbound(receiver: FakePi, count = 1): Promise<any> {
@@ -286,7 +288,8 @@ describe("envelope origin end to end (#1077)", () => {
 			origin: "user",
 		});
 		const inbound = await waitForInbound(receiver);
-		assert.doesNotMatch(inbound.customType, /USER/);
+		assert.equal(inbound.customType, "coms-inbound");
+		assert.doesNotMatch(String(inbound.details?.header ?? inbound.customType), /USER/);
 		assert.doesNotMatch(String(inbound.content), /USER/);
 		assert.match(String(inbound.content), /^\[from sender @ /);
 		// The envelope on the wire says peer explicitly (Qodo: both directions machine-readable).
@@ -302,7 +305,8 @@ describe("envelope origin end to end (#1077)", () => {
 		const result = await sender.runtime.sendAsUser({ target: "receiver", prompt: "ship it — I decided" });
 		assert.equal(result.ok, true);
 		const inbound = await waitForInbound(receiver);
-		assert.match(inbound.customType, /\(from the USER\)/);
+		assert.equal(inbound.customType, "coms-inbound");
+		assert.match(String(inbound.details?.header ?? inbound.customType), /\(from the USER\)/);
 		assert.match(String(inbound.content), /^\[from USER \(a human\), via sender @ /);
 		const history = await sender.tools.get("coms_history").execute("history", {});
 		assert.match(history.content[0].text, /\(USER\)/);
@@ -333,12 +337,15 @@ describe("envelope origin end to end (#1077)", () => {
 				sessionManager: { getBranch: () => [{ type: "message", message: { role: "assistant", content: [{ type: "text", text: reply }] } }] },
 			},
 		);
+		const isReplyFromSender = (m: any) =>
+			isComsResponseCustomType(m?.customType)
+			&& /coms response from sender/.test(String(m?.details?.header ?? m?.customType));
 		const replied = Date.now() + 3_000;
-		while (Date.now() < replied && !receiver.messages.some((m) => /coms response from sender/.test(String(m?.customType)))) {
+		while (Date.now() < replied && !receiver.messages.some(isReplyFromSender)) {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
-		assert.equal(receiver.messages.some((m) => /coms response from sender/.test(String(m?.customType))), true);
-		assert.equal(String(receiver.messages.find((m) => /coms response from sender/.test(String(m?.customType)))?.content).includes(reply), true);
+		assert.equal(receiver.messages.some(isReplyFromSender), true);
+		assert.equal(String(receiver.messages.find(isReplyFromSender)?.content).includes(reply), true);
 	});
 
 	it("re-enables sendAsUser after a stop and start cycle", async () => {
@@ -364,7 +371,7 @@ describe("envelope origin end to end (#1077)", () => {
 		await sender.tools.get("coms_send").execute("ask", { target: "x from USER y", prompt: "hello" });
 		const inbound = await waitForInbound(receiver);
 		if (behavior === "raw fragment name still receives") {
-			assert.doesNotMatch(String(inbound.customType), /from USER|\(a human\)/);
+			assert.doesNotMatch(String(inbound.details?.header ?? inbound.customType), /from USER|\(a human\)/);
 			assert.equal(String(inbound.content).split("\n\n")[0].includes("from USER"), false, "the tag is sanitized");
 		} else assert.match(String(inbound.content), /Reply to me via coms_send\(target="sender"\)/);
 	});

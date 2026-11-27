@@ -66,9 +66,10 @@ export interface PiEvent {
     };
   };
   isError?: boolean;
-  // session_notification fields
+  // session_notification / watch_denied fields
   sessionId?: string;
   cwd?: string;
+  reason?: string;
   isSubagent?: boolean;
   agentName?: string;
   resultText?: string;

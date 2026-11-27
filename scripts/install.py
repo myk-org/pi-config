@@ -41,9 +41,15 @@ from questionary import Choice
 
 try:
     from install_sources import (
+        BASEDPYRIGHT_INSTALL_CMD,
+        GOPLS_INSTALL_CMD,
         MYK_PI_TOOLS_INSTALL_CMD,
         PI_CONFIG_NPM,
         PI_VERTEX_NPM,
+        TS_LSP_BIN_DIR_REL,
+        TS_LSP_INSTALL_CMD,
+        TS_LSP_NPM_PACKAGES,
+        TS_LSP_PREFIX_REL,
         create_logger,
         is_pi_pkg_installed,
         pi_config_pi_cmd,
@@ -57,6 +63,12 @@ except ModuleNotFoundError:
     PI_VERTEX_NPM = "npm:@myk-org/pi-vertex-claude"
     PI_CONFIG_NPM = "npm:pi-orchestrator-config"
     MYK_PI_TOOLS_INSTALL_CMD = "uv tool install --python 3.14 --upgrade myk-pi-tools"
+    BASEDPYRIGHT_INSTALL_CMD = "uv tool install --upgrade basedpyright"
+    TS_LSP_NPM_PACKAGES = ("typescript@6", "typescript-language-server")
+    TS_LSP_PREFIX_REL = ".pi/lsp/ts-lsp"
+    TS_LSP_BIN_DIR_REL = ".pi/lsp/bin"
+    TS_LSP_INSTALL_CMD = "npm install --prefix ~/.pi/lsp/ts-lsp typescript@6 typescript-language-server"
+    GOPLS_INSTALL_CMD = "go install golang.org/x/tools/gopls@latest"
 
     def create_logger(name: str = "install") -> logging.Logger:
         return logging.getLogger(name)
@@ -99,7 +111,7 @@ ARCH = platform.machine()
 ARCH_DL = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(ARCH, ARCH)
 OS_LOWER = SYSTEM.lower()
 HOME = Path.home()
-TOTAL_STEPS = 5
+TOTAL_STEPS = 6
 
 
 GREEN = "\033[32m"
@@ -111,6 +123,7 @@ RESET = "\033[0m"
 
 ALL_MODE = False
 _NPM_GLOBAL_BIN_NOTICE: Path | None = None
+_PATH_NOTICE_DIRS: list[Path] = []
 
 
 class _CommandFailedError(RuntimeError):
@@ -203,14 +216,60 @@ def _validate_npm_prefix(raw: str) -> tuple[Path, bool]:
     return resolved, os.access(writable_parent, os.W_OK)
 
 
+def _trusted_home_tool_bin_dirs() -> tuple[Path, ...]:
+    """Standard user-owned tool bin directories that remain valid even when cwd is $HOME."""
+    home = HOME.resolve()
+    return (
+        (home / ".local/bin").resolve(),
+        (home / ".npm-global/bin").resolve(),
+        (home / "go/bin").resolve(),
+        (home / TS_LSP_BIN_DIR_REL).resolve(),
+    )
+
+
+def _validate_safe_tool_bin_dir(raw: str | Path) -> Path | None:
+    """Return resolved absolute bin dir if safe (not relative, not root, not an untrusted checkout dir)."""
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+        candidate = Path(raw)
+    else:
+        candidate = raw
+    if not candidate.is_absolute():
+        log.warning("unsafe relative tool bin dir rejected value=%r", str(candidate))
+        return None
+    try:
+        resolved = candidate.resolve()
+        cwd = Path.cwd().resolve()
+    except OSError:
+        return None
+    if resolved == Path(resolved.anchor):
+        log.warning("unsafe root tool bin dir rejected path=%s", resolved)
+        return None
+    if resolved.exists() and not resolved.is_dir():
+        return None
+    if resolved in _trusted_home_tool_bin_dirs() and resolved != cwd:
+        return resolved
+    if resolved == cwd or cwd in resolved.parents:
+        log.warning("unsafe checkout tool bin dir rejected path=%s", resolved)
+        return None
+    return resolved
+
+
 def _prepend_to_path(bin_dir: Path) -> None:
     global _NPM_GLOBAL_BIN_NOTICE
-    bin_str = str(bin_dir)
+    safe_dir = _validate_safe_tool_bin_dir(bin_dir)
+    if safe_dir is None:
+        return
+    bin_str = str(safe_dir)
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
     if bin_str not in parts:
         os.environ["PATH"] = f"{bin_str}{os.pathsep}{current}" if current else bin_str
-        _NPM_GLOBAL_BIN_NOTICE = bin_dir
+        _NPM_GLOBAL_BIN_NOTICE = safe_dir
+        if safe_dir not in _PATH_NOTICE_DIRS:
+            _PATH_NOTICE_DIRS.append(safe_dir)
 
 
 def _ensure_writable_npm_prefix() -> Path:
@@ -458,20 +517,137 @@ def _is_chromium_installed() -> bool:
     return False
 
 
-def _find_agent_browser() -> str | None:
-    found = shutil.which("agent-browser")
+def _find_npm_bin(name: str) -> str | None:
+    found = shutil.which(name)
     if found:
         return found
     candidates: list[Path] = []
     if shutil.which("npm"):
         prefix = _run_quiet(["npm", "prefix", "-g"])
         if prefix:
-            candidates.append(Path(prefix) / "bin/agent-browser")
-    candidates.append(HOME / ".npm-global/bin/agent-browser")
+            candidates.append(Path(prefix) / "bin" / name)
+    candidates.append(HOME / ".npm-global/bin" / name)
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return None
+
+
+def _find_agent_browser() -> str | None:
+    return _find_npm_bin("agent-browser")
+
+
+def _find_uv_tool_bin(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    raw_dirs: list[str | Path] = []
+    env_bin_dir = os.environ.get("UV_TOOL_BIN_DIR", "").strip()
+    if env_bin_dir:
+        raw_dirs.append(env_bin_dir)
+    if shutil.which("uv"):
+        uv_bin_dir = _run_quiet(["uv", "tool", "dir", "--bin"])
+        if uv_bin_dir:
+            raw_dirs.append(uv_bin_dir)
+    raw_dirs.append(HOME / ".local/bin")
+    for raw_dir in raw_dirs:
+        safe_dir = _validate_safe_tool_bin_dir(raw_dir)
+        if safe_dir is None:
+            continue
+        candidate = safe_dir / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def _find_go_bin(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    raw_dirs: list[Path] = []
+    if shutil.which("go"):
+        gopath = _run_quiet(["go", "env", "GOPATH"])
+        if gopath:
+            for root in gopath.split(os.pathsep):
+                if root:
+                    raw_dirs.append(Path(root) / "bin")
+    raw_dirs.append(HOME / "go/bin")
+    for raw_dir in raw_dirs:
+        safe_dir = _validate_safe_tool_bin_dir(raw_dir)
+        if safe_dir is None:
+            continue
+        candidate = safe_dir / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def _find_ts_lsp_bin() -> str | None:
+    managed_bin = HOME / TS_LSP_BIN_DIR_REL / "typescript-language-server"
+    if managed_bin.is_file() and os.access(managed_bin, os.X_OK):
+        return str(managed_bin)
+    return _find_npm_bin("typescript-language-server")
+
+
+def install_typescript_lsp() -> None:
+    if not shutil.which("npm"):
+        raise RuntimeError("npm not found on PATH")
+    prefix = HOME / TS_LSP_PREFIX_REL
+    bin_dir = HOME / TS_LSP_BIN_DIR_REL
+    prefix.mkdir(parents=True, exist_ok=True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["npm", "install", "--prefix", str(prefix), *TS_LSP_NPM_PACKAGES],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise _CommandFailedError(f"{TS_LSP_INSTALL_CMD} failed", result.stderr or result.stdout)
+    target = prefix / "node_modules/.bin/typescript-language-server"
+    link = bin_dir / "typescript-language-server"
+    if target.is_file():
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(target)
+    _prepend_to_path(bin_dir)
+    log.info("typescript-language-server installed in isolated prefix=%s bin_dir=%s", prefix, bin_dir)
+
+
+def install_basedpyright() -> None:
+    if not shutil.which("uv"):
+        raise RuntimeError("uv not found on PATH")
+    result = subprocess.run(
+        ["uv", "tool", "install", "--upgrade", "basedpyright"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise _CommandFailedError(f"{BASEDPYRIGHT_INSTALL_CMD} failed", result.stderr or result.stdout)
+    found = _find_uv_tool_bin("basedpyright-langserver")
+    uv_bin = _validate_safe_tool_bin_dir(Path(found).parent if found else HOME / ".local/bin")
+    if uv_bin is not None and uv_bin.is_dir():
+        _prepend_to_path(uv_bin)
+    log.info("basedpyright installation verified bin_dir=%s", uv_bin)
+
+
+def install_gopls() -> None:
+    if not shutil.which("go"):
+        raise RuntimeError("go not found on PATH")
+    result = subprocess.run(
+        ["go", "install", "golang.org/x/tools/gopls@latest"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise _CommandFailedError(f"{GOPLS_INSTALL_CMD} failed", result.stderr or result.stdout)
+    gopath = _run_quiet(["go", "env", "GOPATH"])
+    go_bin = Path(gopath.split(os.pathsep)[0]) / "bin" if gopath else HOME / "go/bin"
+    if go_bin.is_dir():
+        _prepend_to_path(go_bin)
+    log.info("gopls installation verified")
 
 
 def install_browser() -> None:
@@ -794,7 +970,41 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         ],
     )
 
-    return [step1, step2, step3, step4, step5]
+    # ── Step 6: Language Servers (LSP) ───────────────────────────────────
+    has_go = shutil.which("go") is not None
+    step6 = Step(
+        "🧠",
+        "Language Servers (LSP)",
+        "Optional language servers for opt-in write/edit LSP diagnostics",
+        [
+            Tool(
+                "typescript-language-server",
+                "TypeScript/JavaScript LSP (isolated typescript@6 + typescript-language-server)",
+                installed=bool(_find_ts_lsp_bin()),
+                disabled=nd,
+                install_cmd=TS_LSP_INSTALL_CMD,
+                install_fn=install_typescript_lsp,
+            ),
+            Tool(
+                "basedpyright",
+                "Python LSP server (basedpyright-langserver)",
+                installed=bool(_find_uv_tool_bin("basedpyright-langserver")),
+                disabled=uv_dis,
+                install_cmd=BASEDPYRIGHT_INSTALL_CMD,
+                install_fn=install_basedpyright,
+            ),
+            Tool(
+                "gopls",
+                "Go language server (skipped if go is not installed)",
+                installed=bool(_find_go_bin("gopls")),
+                disabled="" if has_go else "requires go",
+                install_cmd=GOPLS_INSTALL_CMD,
+                install_fn=install_gopls,
+            ),
+        ],
+    )
+
+    return [step1, step2, step3, step4, step5, step6]
 
 
 # ── Step UI ────────────────────────────────────────────────────────────────
@@ -1011,10 +1221,14 @@ def show_summary(installed: int, failed: int, skipped: int, failed_tools: list[T
                 print(f"    {DIM}${RESET} {tool.install_cmd}")
             else:
                 print(f"    {DIM}-{RESET} {tool.name} (re-run the installer to retry)")
-    if _NPM_GLOBAL_BIN_NOTICE is not None:
+    notice_dirs = list(_PATH_NOTICE_DIRS)
+    if _NPM_GLOBAL_BIN_NOTICE is not None and _NPM_GLOBAL_BIN_NOTICE not in notice_dirs:
+        notice_dirs.append(_NPM_GLOBAL_BIN_NOTICE)
+    if notice_dirs:
+        joined = os.pathsep.join(str(d) for d in notice_dirs)
         print()
-        print(f"  {BOLD}Add npm global bin to your shell PATH:{RESET}")
-        print(f'    export PATH="{_NPM_GLOBAL_BIN_NOTICE}:$PATH"')
+        print(f"  {BOLD}Add newly installed tool bin directories to your shell PATH:{RESET}")
+        print(f'    export PATH="{joined}:$PATH"')
     print()
     print("  Run 'pi' to start a session!")
     print()

@@ -4,6 +4,19 @@ import type { SessionInfo } from "../types";
 const RETRY_BASE_MS = 2000;
 const RETRY_MAX_MS = 10000;
 
+/**
+ * Merge a `session_updated` payload into an existing `SessionInfo`, clearing
+ * COMS identity fields when the server explicitly serializes them as `null`.
+ */
+export function mergeSessionUpdate(prev: SessionInfo, update: Partial<SessionInfo>): SessionInfo {
+  const merged: SessionInfo = { ...prev, ...update };
+  const raw = update as Record<string, unknown>;
+  if (raw.comsName === null) delete merged.comsName;
+  if (raw.comsPurpose === null) delete merged.comsPurpose;
+  if (raw.comsProject === null) delete merged.comsProject;
+  return merged;
+}
+
 export function useSessions(wsConnected: boolean, onMessage: (h: (d: any) => void) => () => void) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const sessionsRef = useRef<SessionInfo[]>(sessions);
@@ -71,7 +84,7 @@ export function useSessions(wsConnected: boolean, onMessage: (h: (d: any) => voi
       if (ev.type === "session_added" || ev.type === "session_removed") load();
       if (ev.type === "session_updated" && ev.session) {
         setSessions((prev) => prev.map((s) =>
-          s.sessionId === ev.session.sessionId ? { ...s, ...ev.session } : s
+          s.sessionId === ev.session.sessionId ? mergeSessionUpdate(s, ev.session) : s
         ));
       }
     });

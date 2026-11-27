@@ -14,22 +14,21 @@ import { createRequire } from "node:module";
 import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import {
-  authorizeWorktreeBrowserCommand,
   buildSessionNotification,
-  buildWorktreeCommandErrorFrame,
+  buildSessionUpdatedBroadcast,
   clearPendingUiRequests,
   createAsyncAgentRegistry,
   disconnectPidashSession,
   dismissAllViewAsks,
-  forwardBrowserUiResponse,
+  handlePidashBrowserMessage,
+  handlePidashBrowserWatch,
   isInteractiveUiRequest,
   isLoopbackAddress,
-  isWorktreeCommand,
   processPiPendingUiEvent,
   reconcileActiveAsyncAgents,
   registerPidashSession,
   resetSessionViewState,
-  sendSessionSnapshot,
+  shouldDeliverSupervisedPeerBroadcast,
   shouldNotifyWorktreeChange,
   updatePidashSession,
   type PiClient,
@@ -77,7 +76,27 @@ function getActiveSessions(): SessionInfo[] {
 }
 
 function sendToWatchers(sessionId: string, eventOrRaw: object | string) {
-  sendToMatchingBrowsers((_browser, watchId) => watchId === sessionId, eventOrRaw);
+  const session = piClients.get(sessionId)?.session;
+  sendToMatchingBrowsers(
+    (browser, watchId) =>
+      watchId === sessionId
+      && shouldDeliverSupervisedPeerBroadcast({
+        session,
+        remoteAddress: browserRemoteAddrMap.get(browser),
+      }),
+    eventOrRaw,
+  );
+}
+
+function broadcastAuthorizedBrowsers(session: SessionInfo, eventOrRaw: object | string) {
+  sendToMatchingBrowsers(
+    (browser) =>
+      shouldDeliverSupervisedPeerBroadcast({
+        session,
+        remoteAddress: browserRemoteAddrMap.get(browser),
+      }),
+    eventOrRaw,
+  );
 }
 
 function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClient: (c: any) => void, rawMsg?: string): void {
@@ -116,11 +135,11 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     if (parsed.contextWindow !== undefined) piClient.session.contextWindow = parsed.contextWindow;
     if (parsed.diffPort !== undefined) piClient.session.diffPort = parsed.diffPort;
     if (parsed.thinkingLevel !== undefined) piClient.session.thinkingLevel = parsed.thinkingLevel;
-    if (parsed.comsName !== undefined) piClient.session.comsName = parsed.comsName;
-    if (parsed.comsPurpose !== undefined) piClient.session.comsPurpose = parsed.comsPurpose;
-    if (parsed.comsProject !== undefined) piClient.session.comsProject = parsed.comsProject;
+    if (parsed.comsName !== undefined) piClient.session.comsName = parsed.comsName || undefined;
+    if (parsed.comsPurpose !== undefined) piClient.session.comsPurpose = parsed.comsPurpose || undefined;
+    if (parsed.comsProject !== undefined) piClient.session.comsProject = parsed.comsProject || undefined;
     updatePidashSession(piClient.session, parsed);
-    broadcastToBrowsers({ type: "session_updated", session: piClient.session });
+    broadcastToBrowsers(buildSessionUpdatedBroadcast(piClient.session, parsed));
     return;
   }
 
@@ -259,24 +278,24 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
       }
     }
 
-    // Broadcast metadata-only notification frame to browsers (skip during replay;
+    // Broadcast metadata-only notification frame to authorized browsers (skip during replay;
     // never broadcast raw tool output text to browsers watching other sessions).
     if (parsed.type === "tool_execution_end" && !piClient.replaying) {
-      broadcastToBrowsers(buildSessionNotification(sid, piClient.session.cwd, parsed));
+      broadcastAuthorizedBrowsers(piClient.session, buildSessionNotification(sid, piClient.session.cwd, parsed));
     }
 
-    // Broadcast AI turn complete to ALL browsers (skip during replay)
+    // Broadcast AI turn complete to authorized browsers (skip during replay)
     if (parsed.type === "agent_end" && !piClient.replaying) {
-      broadcastToBrowsers({
+      broadcastAuthorizedBrowsers(piClient.session, {
         type: "session_turn_complete",
         sessionId: sid,
         cwd: piClient.session.cwd,
       });
     }
 
-    // Broadcast input-needed events to ALL browsers (skip during replay)
+    // Broadcast input-needed events to authorized browsers (skip during replay)
     if (!piClient.replaying && isInteractiveUiRequest(parsed)) {
-      broadcastToBrowsers({
+      broadcastAuthorizedBrowsers(piClient.session, {
         type: "session_input_needed",
         sessionId: sid,
         cwd: piClient.session.cwd,
@@ -288,64 +307,14 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
 }
 
 function handleBrowserMessage(ws: any, parsed: any): void {
-  if (parsed.type === "prompt" && (parsed.text || parsed.images) && parsed.sessionId) {
-    const piClient = piClients.get(parsed.sessionId);
-    if (piClient && piClient.ws) {
-      const fwd: any = { type: "prompt", text: parsed.text || "" };
-      if (parsed.images && parsed.images.length > 0) fwd.images = parsed.images;
-      piClient.ws.send(JSON.stringify(fwd));
-      log(`prompt forwarded to ${parsed.sessionId}: ${(parsed.text || "").slice(0, 50)}${parsed.images ? ` [+${parsed.images.length} images]` : ""}`);
-    }
-    return;
-  }
-
-  // Forward extension UI responses (ask_user answers) to pi session
-  if (parsed.type === "extension_ui_response" && parsed.id) {
-    if (!parsed.sessionId) return;
-    const piClient = piClients.get(parsed.sessionId);
-    const response = piClient ? forwardBrowserUiResponse(piClient, parsed) : null;
-    if (response) {
-      log(`UI response forwarded to ${parsed.sessionId}: ${JSON.stringify(response).slice(0, 100)}`);
-    }
-    return;
-  }
-
-  // Forward pidash commands to pi session
-  if (parsed.type === "pidash-command") {
-    if (!parsed.sessionId) return;
-    const piClient = piClients.get(parsed.sessionId);
-    if (isWorktreeCommand(parsed.command)) {
-      const auth = authorizeWorktreeBrowserCommand({
-        command: parsed.command,
-        targetSessionId: parsed.sessionId,
-        watchedSessionId: browserWatchMap.get(ws),
-        remoteAddress: browserRemoteAddrMap.get(ws),
-      });
-      if (!auth.allowed) {
-        serverLog.warn("worktree_command_rejected", {
-          command: parsed.command,
-          sessionId: parsed.sessionId,
-          remoteAddress: browserRemoteAddrMap.get(ws) ?? "unknown",
-          reason: auth.reason,
-        });
-        try {
-          ws.send(JSON.stringify(buildWorktreeCommandErrorFrame(parsed, auth.reason, piClient?.session.cwd ?? "")));
-        } catch {}
-        return;
-      }
-      if (!piClient || !piClient.ws || !piClient.session.active) {
-        try {
-          ws.send(JSON.stringify(buildWorktreeCommandErrorFrame(parsed, "Watched Pi session is disconnected.", piClient?.session.cwd ?? "")));
-        } catch {}
-        return;
-      }
-    }
-    if (piClient && piClient.ws) {
-      piClient.ws.send(JSON.stringify(parsed));
-      log(`command forwarded to ${parsed.sessionId}: ${parsed.command}`);
-    }
-    return;
-  }
+  handlePidashBrowserMessage({
+    ws,
+    parsed,
+    piClients,
+    watchedSessionId: browserWatchMap.get(ws),
+    remoteAddress: browserRemoteAddrMap.get(ws),
+    onLog: log,
+  });
 }
 
 const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, start } = createDaemonServer({
@@ -373,18 +342,14 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
     });
   },
 
-  onBrowserWatch: (ws, watchId, client) => {
-    // Emit single canonical session_snapshot frame instead of replaying raw deltas
-    if (client) {
-      const { messageCount, pendingCount } = sendSessionSnapshot(ws, client);
-      if (pendingCount > 0) {
-        log(`sent session_snapshot (${messageCount} messages + ${pendingCount} pending UI request(s)) for ${watchId}`);
-      } else {
-        log(`sent session_snapshot (${messageCount} messages) for ${watchId}`);
-      }
-    }
-    return watchId;  // pidash stores just the sessionId string
-  },
+  onBrowserWatch: (ws, watchId, client) =>
+    handlePidashBrowserWatch({
+      ws,
+      watchId,
+      client,
+      remoteAddress: browserRemoteAddrMap.get(ws),
+      onLog: log,
+    }),
 
   onBrowserConnect: (ws, req) => {
     browserWatchMap.set(ws, null);

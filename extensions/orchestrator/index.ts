@@ -57,6 +57,7 @@ import { registerSessionSpill } from "./session-spill.js";
 import { registerPreCompactionElision } from "./pre-compaction-elision.js";
 import { registerMagicKeywords } from "./magic-keywords.js";
 import { registerAdvisor } from "./advisor.js";
+import { registerLsp } from "./lsp.js";
 import { registerSnapshots } from "./snapshots.js";
 import { registerQaOverlay } from "./qa-overlay.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
@@ -164,6 +165,10 @@ export default function (pi: ExtensionAPI) {
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerProjectSettings(pi);
   registerTrail(pi);
+  // Opt-in LSP diagnostics appended to write/edit tool results (default disabled) (#1445).
+  // Registered BEFORE registerSecretObfuscation so server-supplied diagnostics pass through
+  // tool_result secret redaction (and before session-spill).
+  registerLsp(pi);
   // Reversible secret obfuscation (#1413): restore tool_call placeholders BEFORE
   // enforcement sees arguments, obfuscate tool_result BEFORE spill/LLM, and
   // obfuscate provider-bound context without mutating static system prompts.

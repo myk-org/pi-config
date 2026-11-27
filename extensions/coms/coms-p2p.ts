@@ -16,12 +16,23 @@
  */
 
 import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
 import {
 	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, resolvePeerTaskStorePath, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, isPeerTaskCreator, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin, loadPitasks, summarizeTaskList, getComsOriginTask, getComsOriginTasks,
+	COMS_INBOUND_CUSTOM_TYPE, COMS_RESPONSE_CUSTOM_TYPE, COMS_PEER_JOINED_CUSTOM_TYPE, COMS_PEER_LEFT_CUSTOM_TYPE,
+	type ComsInboundDetails, type ComsResponseDetails, type ComsPeerEventDetails,
 } from "./coms-shared.js";
+import {
+	createCompactOneLineComponent,
+	createExpandedCustomBox,
+	extractMessageText,
+	extractSummaryLine,
+	formatExpandHint,
+	type CompactCustomMessage,
+	type CompactMessageRenderOptions,
+} from "../shared/compact-message-renderer.js";
 import { resolveStorePath } from "../pitasks/task-store.js";
 import { openTaskBlockers } from "../pitasks/tasks-view.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
@@ -51,7 +62,7 @@ import {
 	resolveBridgeSessionKey,
 	shouldDeferForMalformedRecovery,
 } from "../shared/session-bridge.js";
-import { sanitizePeerText } from "./peer-text.js";
+import { sanitizePeerText, stripOriginMarker } from "./peer-text.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
 	TOGGLE_ALL_WIDGETS_EVENT,
@@ -914,6 +925,182 @@ function isHeadlessOrSupervisedPeer(peerCtx?: ExtensionContext | null): boolean 
 	return false;
 }
 
+// ━━ Compact TUI Message Renderers (#1454) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export function renderComsPeerJoinedMessage(
+	message: CompactCustomMessage<ComsPeerEventDetails>,
+	options: CompactMessageRenderOptions,
+	theme: Theme,
+): Component {
+	const body = extractMessageText(message.content);
+	if (options.expanded) {
+		return createExpandedCustomBox(COMS_PEER_JOINED_CUSTOM_TYPE, body, options.outputPad, theme);
+	}
+	const details = message.details && typeof message.details === "object"
+		? (message.details as Partial<ComsPeerEventDetails>)
+		: undefined;
+	const rawPeer = details?.peer || body.match(/Peer joined:\s*([^\s(\[]+)/)?.[1] || "peer";
+	const peer = sanitizeComsName(rawPeer);
+	const prefix = `${theme.fg("accent", "📡")} ${theme.fg("success", "+")} ${theme.bold(peer)} ${theme.fg("dim", "joined")}`;
+	return createCompactOneLineComponent({ prefix, outputPad: options.outputPad });
+}
+
+export function renderComsPeerLeftMessage(
+	message: CompactCustomMessage<ComsPeerEventDetails>,
+	options: CompactMessageRenderOptions,
+	theme: Theme,
+): Component {
+	const body = extractMessageText(message.content);
+	if (options.expanded) {
+		return createExpandedCustomBox(COMS_PEER_LEFT_CUSTOM_TYPE, body, options.outputPad, theme);
+	}
+	const details = message.details && typeof message.details === "object"
+		? (message.details as Partial<ComsPeerEventDetails>)
+		: undefined;
+	const rawPeer = details?.peer || body.match(/Peer left:\s*([^\s\[]+)/)?.[1] || "peer";
+	const peer = sanitizeComsName(rawPeer);
+	const prefix = `${theme.fg("dim", "📡")} ${theme.fg("warning", "-")} ${theme.fg("muted", peer)} ${theme.fg("dim", "left")}`;
+	return createCompactOneLineComponent({ prefix, outputPad: options.outputPad });
+}
+
+export function renderComsResponseMessage(
+	message: CompactCustomMessage<ComsResponseDetails>,
+	options: CompactMessageRenderOptions,
+	theme: Theme,
+): Component {
+	const body = extractMessageText(message.content);
+	const details = message.details && typeof message.details === "object"
+		? (message.details as Partial<ComsResponseDetails>)
+		: undefined;
+	const queued = Array.isArray(details?.queuedMsgIds)
+		? details.queuedMsgIds
+		: (Array.isArray(details?.queued_msg_ids) ? details.queued_msg_ids : []);
+	const sender = sanitizeComsName(details?.sender || details?.target_name || "peer");
+	const header = details?.header || formatComsResponseType(sender, details?.target, queued);
+	if (options.expanded) {
+		return createExpandedCustomBox(header, body, options.outputPad, theme);
+	}
+	const isError = typeof details?.error === "string" && details.error.trim().length > 0;
+	const summaryLine = typeof details?.summaryLine === "string" && details.summaryLine.trim().length > 0
+		? extractSummaryLine(details.summaryLine)
+		: extractSummaryLine(body);
+	const icon = theme.fg(isError ? "error" : "accent", "📡");
+	const arrow = theme.fg(isError ? "error" : "success", "←");
+	const queueBadge = queued.length > 0 ? theme.fg("warning", ` (+${queued.length})`) : "";
+	const prefix = `${icon} ${arrow} ${theme.bold(sender)}${queueBadge}`;
+	const summary = summaryLine ? theme.fg(isError ? "error" : "muted", summaryLine) : "";
+	const hint = formatExpandHint(options, theme);
+	return createCompactOneLineComponent({
+		prefix,
+		summary,
+		separator: theme.fg("dim", ": "),
+		hint,
+		outputPad: options.outputPad,
+	});
+}
+
+const BUNDLE_SEPARATOR_LINE_RE = /^---\s*Message\s+\d+\s+of\s+\d+(?:\s+\[[^\]]*\])?\s*---\s*$/gm;
+
+/**
+ * Derive a safe single-line collapsed summary for COMS inbound / steer / bundled prompts.
+ * - Strips forged human-origin markers on non-user prompts (matching `buildInboundContent`).
+ * - Strips `--- Message N of M [id] ---` separators and `[from ...]` tags on FIFO bundles
+ *   and prefixes multi-message bundles with `(N msgs) `.
+ */
+export function extractComsInboundSummaryLine(opts: {
+	prompt: string;
+	origin?: PromptOrigin;
+	bundled?: { content: string; ids: string[]; firstOrigin?: PromptOrigin };
+	fallbackContent?: string;
+}): string {
+	if (opts.bundled) {
+		const firstIsUser = opts.bundled.firstOrigin === "user" || opts.origin === "user";
+		const safeFirstPrompt = firstIsUser ? opts.prompt : stripOriginMarker(opts.prompt);
+		const firstLine = extractSummaryLine(safeFirstPrompt);
+		const count = opts.bundled.ids.length;
+		const isMixedUserFirst = opts.bundled.firstOrigin === "user" && opts.origin !== "user";
+		if (count > 1) {
+			const badge = isMixedUserFirst ? `(${count} msgs, USER)` : `(${count} msgs)`;
+			return firstLine ? `${badge} ${firstLine}` : badge;
+		}
+		return isMixedUserFirst && firstLine ? `(USER) ${firstLine}` : firstLine;
+	}
+	const safePrompt = opts.origin === "user" ? opts.prompt : stripOriginMarker(opts.prompt);
+	const fromPrompt = extractSummaryLine(safePrompt);
+	if (fromPrompt) return fromPrompt;
+	if (!opts.fallbackContent) return "";
+	const cleanedFallback = opts.fallbackContent
+		.replace(/^\[from [^\]]+\]\s*/, "")
+		.replace(/\n\nReply to me via coms_send\([^)]*\)/g, "");
+	return extractSummaryLine(opts.origin === "user" ? cleanedFallback : stripOriginMarker(cleanedFallback));
+}
+
+export function renderComsInboundMessage(
+	message: CompactCustomMessage<ComsInboundDetails>,
+	options: CompactMessageRenderOptions,
+	theme: Theme,
+): Component {
+	const body = extractMessageText(message.content);
+	const details = message.details && typeof message.details === "object"
+		? (message.details as Partial<ComsInboundDetails>)
+		: undefined;
+	const parsedSender = body.match(/^\[from (?:USER \(a human\), via )?([^\s@\]]+)/)?.[1];
+	const sender = sanitizeComsName(details?.sender || parsedSender || "peer");
+	const header = details?.header || COMS_INBOUND_CUSTOM_TYPE;
+	if (options.expanded) {
+		return createExpandedCustomBox(header, body, options.outputPad, theme);
+	}
+	const isUser = details?.origin === "user";
+	const summaryIsUser = isUser || details?.summaryOrigin === "user";
+	const isMixedUserFirst = !isUser && details?.summaryOrigin === "user";
+	const strippedBody = body
+		.replace(/^\[from [^\]]+\]\s*/, "")
+		.replace(/^\[BUNDLED:[^\]]*\]\s*/m, "")
+		.replace(BUNDLE_SEPARATOR_LINE_RE, "")
+		.replace(/^\[from [^\]]+\]\s*/gm, "")
+		.replace(/\n\nReply to me via coms_send\([^)]*\)/g, "");
+	let summaryLine = typeof details?.summaryLine === "string" && details.summaryLine.trim().length > 0
+		? extractSummaryLine(summaryIsUser ? details.summaryLine : stripOriginMarker(details.summaryLine))
+		: extractSummaryLine(summaryIsUser ? strippedBody : stripOriginMarker(strippedBody));
+	const bundledCount = Array.isArray(details?.bundled_msg_ids) ? details.bundled_msg_ids.length : 0;
+	if (bundledCount > 1 && !summaryLine.startsWith(`(${bundledCount} msgs`)) {
+		const badge = isMixedUserFirst ? `(${bundledCount} msgs, USER)` : `(${bundledCount} msgs)`;
+		summaryLine = summaryLine ? `${badge} ${summaryLine}` : badge;
+	} else if (bundledCount <= 1 && isMixedUserFirst && !summaryLine.startsWith("(USER)")) {
+		summaryLine = summaryLine ? `(USER) ${summaryLine}` : "(USER)";
+	}
+	const tags: string[] = [];
+	if (isUser) tags.push(theme.fg("warning", "USER"));
+	if (details?.steer) tags.push(theme.fg("warning", "steer"));
+	const tagSuffix = tags.length > 0 ? ` (${tags.join(", ")})` : "";
+	const prefix = `${theme.fg("accent", "📡")} ${theme.fg("accent", "←")} ${theme.bold(sender)}${tagSuffix}`;
+	const summary = summaryLine ? theme.fg("muted", summaryLine) : "";
+	const hint = formatExpandHint(options, theme);
+	return createCompactOneLineComponent({
+		prefix,
+		summary,
+		separator: theme.fg("dim", ": "),
+		hint,
+		outputPad: options.outputPad,
+	});
+}
+
+export function registerComsMessageRenderers(pi: ExtensionAPI): void {
+	if (typeof pi.registerMessageRenderer !== "function") return;
+	pi.registerMessageRenderer<ComsPeerEventDetails>(COMS_PEER_JOINED_CUSTOM_TYPE, renderComsPeerJoinedMessage);
+	pi.registerMessageRenderer<ComsPeerEventDetails>(COMS_PEER_LEFT_CUSTOM_TYPE, renderComsPeerLeftMessage);
+	pi.registerMessageRenderer<ComsResponseDetails>(COMS_RESPONSE_CUSTOM_TYPE, renderComsResponseMessage);
+	pi.registerMessageRenderer<ComsInboundDetails>(COMS_INBOUND_CUSTOM_TYPE, renderComsInboundMessage);
+	log.debug("registered_coms_message_renderers", {
+		types: [
+			COMS_PEER_JOINED_CUSTOM_TYPE,
+			COMS_PEER_LEFT_CUSTOM_TYPE,
+			COMS_RESPONSE_CUSTOM_TYPE,
+			COMS_INBOUND_CUSTOM_TYPE,
+		],
+	});
+}
+
 // ━━ Instantiable Peer Runtime & Default Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export function createComsPeerRuntime(
@@ -944,6 +1131,8 @@ export function createComsPeerRuntime(
 	let maxHops = 5;
 	let timeoutMs = 1_800_000;
 	let signalsBound = false;
+
+	registerComsMessageRenderers(pi);
 
 	// ━━ Register identity CLI flags so pi's parser accepts them. ━━━━━━━━━
 	// Without these, pi 0.73+ rejects the invocation with "Unknown options:
@@ -1378,8 +1567,8 @@ export function createComsPeerRuntime(
 		knownPeerSessions.delete(sid);
 		if (!shouldAnnouncePeerLeft(peerCards.values(), name)) return false;
 		const content = `📡 Peer left: ${name} [${new Date().toISOString()}]`;
-		try { pi.sendMessage({ customType: "coms-peer-left", content, display: true }, { triggerTurn: false }); } catch {}
-		try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-left", content }); } catch {}
+		try { pi.sendMessage({ customType: COMS_PEER_LEFT_CUSTOM_TYPE, content, display: true, details: { peer: name } }, { triggerTurn: false }); } catch {}
+		try { pi.events.emit("pidash:coms-peer-event", { customType: COMS_PEER_LEFT_CUSTOM_TYPE, content }); } catch {}
 		return true;
 	}
 
@@ -1441,21 +1630,36 @@ export function createComsPeerRuntime(
 		} = {},
 	): void {
 		const origin = opts.bundled ? opts.bundled.origin : ib.origin;
-		const customType = formatComsInboundType(ib.sender_name, sanitizeComsName(identity?.name ?? "?"), ib.sender_cwd, origin);
+		const selfName = sanitizeComsName(identity?.name ?? "?");
+		const sender = sanitizeComsName(ib.sender_name);
+		const header = formatComsInboundType(ib.sender_name, selfName, ib.sender_cwd, origin);
 		const content = opts.bundled
 			? buildInboundContent(opts.bundled.header, opts.bundled.content, null, ib.sender_name, ib.sender_cwd, opts.bundled.origin, ib.sender_session, true)
 			: buildInboundContent(opts.header ?? "", ib.prompt, ib.tasks ?? null, ib.sender_name, ib.sender_cwd, ib.origin, ib.sender_session);
+		const summaryLine = extractComsInboundSummaryLine({
+			prompt: ib.prompt,
+			origin,
+			bundled: opts.bundled ? { content: opts.bundled.content, ids: opts.bundled.ids, firstOrigin: ib.origin } : undefined,
+			fallbackContent: content,
+		});
 		const attempt = opts.bundled?.attempt ?? (ib.injectAttempt ?? 0);
 		const queuedAsFollowUp = opts.streaming === true || (opts.streaming !== false && isPiStreaming(opts.ctx));
 		sendTurnMessage(
 			{
-				customType,
+				customType: COMS_INBOUND_CUSTOM_TYPE,
 				content,
 				display: true,
 				details: {
 					msg_id: ib.msg_id,
+					header,
+					sender,
+					target: selfName,
 					sender_session: ib.sender_session,
+					sender_cwd: ib.sender_cwd,
+					...(origin ? { origin } : {}),
+					...(opts.bundled && ib.origin ? { summaryOrigin: ib.origin } : {}),
 					response_schema: ib.response_schema ?? null,
+					summaryLine,
 					...(attempt > 0 ? { inject_attempt: attempt } : {}),
 					...(opts.bundled ? { bundled_msg_ids: opts.bundled.ids } : {}),
 				},
@@ -1713,20 +1917,36 @@ export function createComsPeerRuntime(
 				// to inject must not be recorded as delivered.
 				let injected = false;
 				try {
+					const steerSender = sanitizeComsName(env.sender_name);
+					const steerTarget = sanitizeComsName(identity.name);
+					const steerOrigin = inboundOrigin(env);
+					const steerHeader = `steer from ${steerSender} → ${steerTarget} @ ${sanitizeComsName(env.sender_cwd || "?")}${steerOrigin === "user" ? " (from the USER)" : ""}`;
 					sendTurnMessage(
 						{
-							customType: `steer from ${sanitizeComsName(env.sender_name)} → ${sanitizeComsName(identity.name)} @ ${sanitizeComsName(env.sender_cwd || "?")}${inboundOrigin(env) === "user" ? " (from the USER)" : ""}`,
+							customType: COMS_INBOUND_CUSTOM_TYPE,
 							content: buildInboundContent(
-								`[STEER from ${sanitizeComsName(env.sender_name)} — mid-turn course correction. Read this BEFORE continuing your current work; it may change instructions.]`,
+								`[STEER from ${steerSender} — mid-turn course correction. Read this BEFORE continuing your current work; it may change instructions.]`,
 								env.prompt,
 								null,
 								env.sender_name,
 								env.sender_cwd,
-								inboundOrigin(env),
+								steerOrigin,
 								env.sender_session,
 							),
 							display: true,
-							details: { msg_id: env.msg_id, steer: true, target_msg_id: currentInbound.msg_id },
+							details: {
+								msg_id: env.msg_id,
+								header: steerHeader,
+								sender: steerSender,
+								target: steerTarget,
+								...(steerOrigin ? { origin: steerOrigin } : {}),
+								steer: true,
+								target_msg_id: currentInbound.msg_id,
+								summaryLine: extractComsInboundSummaryLine({
+									prompt: env.prompt,
+									origin: steerOrigin,
+								}),
+							},
 						},
 						"(empty message)",
 					);
@@ -1915,24 +2135,31 @@ export function createComsPeerRuntime(
 			// Auto-deliver response as followUp so the LLM sees it without polling
 			const targetName = pending.target_name ?? "peer";
 			const selfName = sanitizeComsName(identity?.name ?? "?");
-			const responseType = formatComsResponseType(targetName, selfName, queuedMsgIds);
+			const senderName = sanitizeComsName(targetName);
+			const responseHeader = formatComsResponseType(targetName, selfName, queuedMsgIds);
 			let responseBody = formatComsResponseBody(env.response, env.error ?? null);
 			const yourPending = Array.isArray(env.your_pending) ? env.your_pending : [];
 			if (yourPending.length > 0) {
 				responseBody += `\n\nPeer still has ${yourPending.length} of your messages queued:\n` +
 					yourPending.filter((p: any) => p && typeof p === "object").map((p: any, i: number) => `  ${i + 1}. [${p.msg_id ?? "?"}] "${p.preview ?? ""}…"`).join("\n");
 			}
+			const summaryLine = extractSummaryLine(responseBody);
 			try {
 				sendTurnMessage(
 					{
-						customType: responseType,
+						customType: COMS_RESPONSE_CUSTOM_TYPE,
 						content: responseBody,
 						display: true,
 						details: {
 							msg_id: env.msg_id,
+							header: responseHeader,
+							sender: senderName,
+							target: selfName,
 							target_name: targetName,
 							error: env.error ?? null,
 							queued_msg_ids: queuedMsgIds,
+							queuedMsgIds,
+							summaryLine,
 						},
 					},
 					"(no response)",
@@ -2760,8 +2987,19 @@ Do not respond to this message.`;
 			if (welcomeShown && !knownPeerSessions.has(entry.coms_session_id)) {
 				knownPeerSessions.set(entry.coms_session_id, entry.name);
 				const content = `📡 Peer joined: ${entry.name} (${entry.model})${entry.purpose ? ` — ${entry.purpose}` : ""} [${new Date().toISOString()}]`;
-				try { pi.sendMessage({ customType: "coms-peer-joined", content, display: true }, { triggerTurn: false }); } catch {}
-				try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-joined", content }); } catch {}
+				try {
+					pi.sendMessage({
+						customType: COMS_PEER_JOINED_CUSTOM_TYPE,
+						content,
+						display: true,
+						details: {
+							peer: entry.name,
+							model: entry.model,
+							...(entry.purpose ? { purpose: entry.purpose } : {}),
+						},
+					}, { triggerTurn: false });
+				} catch {}
+				try { pi.events.emit("pidash:coms-peer-event", { customType: COMS_PEER_JOINED_CUSTOM_TYPE, content }); } catch {}
 			}
 		};
 

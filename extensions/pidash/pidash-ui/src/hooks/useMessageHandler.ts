@@ -7,6 +7,7 @@ import {
   type TranscriptSink,
 } from "../../../../shared/pidash-transcript-reducer.ts";
 import { createLogger } from "../lib/create-logger";
+import { mergeSessionUpdate } from "./useSessions";
 
 const log = createLogger("MessageHandler");
 
@@ -188,7 +189,7 @@ export function useMessageHandler(
             setStreaming(update.streaming);
           }
         }
-        setSession((prev) => (prev && prev.sessionId === update.sessionId ? { ...prev, ...update } : prev));
+        setSession((prev) => (prev && prev.sessionId === update.sessionId ? mergeSessionUpdate(prev, update) : prev));
         return;
       }
 
@@ -402,6 +403,44 @@ export function useMessageHandler(
           pendingUi: ev.pendingUiRequests?.length ?? 0,
           streaming: Boolean(ev.streaming),
         });
+        return;
+      }
+      if (ev.type === "watch_denied") {
+        const expectedSessionId = watchedSessionIdRef.current;
+        if (ev.sessionId && expectedSessionId && ev.sessionId !== expectedSessionId) {
+          log.debug("stale watch_denied ignored", {
+            deniedSessionId: ev.sessionId,
+            watchedSessionId: expectedSessionId,
+          });
+          return;
+        }
+        if (deltaRafRef.current !== null) {
+          cancelFrame(deltaRafRef.current);
+          deltaRafRef.current = null;
+        }
+        dirtyDeltaRef.current = { think: false, assist: false };
+        replaying = false;
+        replayBuffer.length = 0;
+        refsRef.current = emptyTranscriptRefs();
+
+        const reason =
+          (typeof ev.reason === "string" && ev.reason)
+          || (typeof ev.message === "string" && ev.message)
+          || "Supervised headless peers can only be watched or controlled from localhost clients.";
+        const notice: ChatMessage = {
+          id: nextId(),
+          role: "system",
+          text: `🔒 ${reason}`,
+          timestamp: Date.now(),
+        };
+        messagesRef.current = [notice];
+        setMessages([notice]);
+        setTokens(null);
+        setStreaming(false);
+        setQueuedCount(0);
+        setStreamingBehavior(null);
+        setAvailableCommands([]);
+        log.debug("watch_denied applied", { sessionId: ev.sessionId, reason });
         return;
       }
       if (ev.type === "replay_start") {

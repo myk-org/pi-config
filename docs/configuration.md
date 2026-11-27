@@ -1181,6 +1181,43 @@ Elision never rewrites user messages, assistant prose, thinking/reasoning blocks
 export PI_MAGIC_KEYWORDS=false
 ```
 
+## Opt-In LSP Diagnostics
+
+### `lsp_enabled`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `lsp_enabled` | boolean | `false` | `PI_LSP_ENABLED` | Enables opt-in language server diagnostics after `write` and `edit` tool calls. | Defaults to `false` for zero CPU and memory overhead. **Trust model:** read strictly from global `~/.pi/pi-config-settings.json` or `PI_LSP_ENABLED` — repo-committed `.pi/pi-config-settings.json` files cannot enable LSP or spawn commands on edit. When `true`, lazily starts a shared 1-per-`(worktreeRoot, serverId)` `0600` UNIX-socket LSP broker (`~/.pi/run/lsp/lsp-<sha256>.sock`, deduplicated with an atomic lockfile and protected by a per-worktree broken-server circuit breaker) so the main TUI session, COMS peers, and editing subagents (`PI_SUBAGENT_CHILD=1`, opt out with `PI_LSP_IN_SUBAGENTS=0`) share one warm language server per worktree while separate worktrees stay isolated. Auto-detects already-installed servers on `PATH` (`typescript-language-server --stdio`, `basedpyright-langserver --stdio` / `pyright-langserver --stdio` / `ruff server`, `gopls`), debounces rapid notifications (~`150ms`) within a hard `1500ms` timeout, appends concise error/warning lines (`file:line:col [error|warning] message`, capped at 20 lines; omitted severity defaults to `error`) before secret obfuscation runs, and auto-shuts down idle brokers after 5 minutes. When a built-in server is missing on `PATH`, interactive TUI sessions prompt once (`Install <server>` / `Not now` / `Don't ask again` persisted in `~/.pi/data/state.db`), while headless peers and subagents never block and emit a concise one-line hint once per server. You can also pre-install `typescript-language-server` (installed into an isolated `~/.pi/lsp/ts-lsp` prefix alongside `typescript@6` — exposing only `~/.pi/lsp/bin/typescript-language-server` so global `tsc` is never downgraded), `basedpyright`, and conditional `gopls` via `uv run scripts/install.py`. |
+
+```json
+{
+  "lsp_enabled": true
+}
+```
+
+```bash
+export PI_LSP_ENABLED=true
+```
+
+### `lsp_servers`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `lsp_servers` | object (`Record<string, { command, args?, extensions }>`) | `{}` | none | Optional per-server LSP overrides or additions (global settings only). | Maps a server ID to `{ "command": "...", "args": [...], "extensions": [".ext"] }`. **Trust model:** read strictly from global `~/.pi/pi-config-settings.json`; project-level `lsp_servers` entries are ignored so untrusted repositories cannot execute arbitrary binaries on edit. Commands must be bare binary names resolved against absolute `PATH` directories or explicit absolute paths (relative paths like `./server` are rejected). Overrides matching built-in server IDs (`typescript`, `python`, `go`) or adds servers for other extensions, and hot-replaces any active pooled client when an override changes. |
+
+```json
+{
+  "lsp_enabled": true,
+  "lsp_servers": {
+    "rust": {
+      "command": "rust-analyzer",
+      "args": [],
+      "extensions": [".rs"]
+    }
+  }
+}
+```
+
 ## Per-Turn File Snapshots
 
 ### `turn_snapshots`
