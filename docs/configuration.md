@@ -1185,7 +1185,7 @@ export PI_MAGIC_KEYWORDS=false
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `turn_snapshots` | boolean | `true` | `PI_TURN_SNAPSHOTS` | Enables lightweight git shadow-tree snapshots before mutating turns for `/undo` and `/redo`. | When `true`, captures a shadow git tree using a temporary `GIT_INDEX_FILE` before the first `write`, `edit`, or `bash` call in a turn inside a git repo and records the turn on `agent_end` only if files changed (bounded per-session stack of 20 turns). `/undo` reverts that turn's working-tree changes (removing files created during the turn) without touching `.git/index`, `HEAD`, branches, reflog, `git stash`, or gitignored files; `/redo` reapplies the undone turn. Safely no-ops outside git repos and in subagent children (`PI_SUBAGENT_CHILD=1`). |
+| `turn_snapshots` | boolean | `true` | `PI_TURN_SNAPSHOTS` | Enables lightweight git shadow-tree snapshots before mutating turns for `/undo` and `/redo`. | When `true`, asynchronously captures a shadow git tree using a temporary `GIT_INDEX_FILE` before the first `write`, `edit`, or `bash` call in a turn inside a git repo (default 30s timeout, override via `PI_TURN_SNAPSHOTS_TIMEOUT_MS`) and records the turn on `agent_end` only if files changed (bounded per-session stack of 20 turns). `/undo` and `/redo` restore only the paths affected by that turn, abort on conflicting post-turn edits or ignored-file collisions, and never touch `.git/index`, `HEAD`, branches, reflog, `git stash`, or gitignored files. Safely no-ops outside git repos and in subagent children (`PI_SUBAGENT_CHILD=1`). |
 
 ```json
 {

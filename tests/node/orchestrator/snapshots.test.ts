@@ -1,17 +1,28 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  DEFAULT_SNAPSHOT_TIMEOUT_MS,
   MAX_SNAPSHOT_STACK,
   captureShadowTree,
   parseDiffTreeRawZ,
   registerSnapshots,
+  resolveSnapshotTimeoutMs,
   restoreShadowTree,
 } from "../../../extensions/orchestrator/snapshots.js";
+import { runGitAsync } from "../../../extensions/orchestrator/git-helpers.js";
 import {
   clearSettingsCache,
   setGlobalSettingsPath,
@@ -51,7 +62,7 @@ interface MockHarness {
   hooks: Map<string, Array<(...args: any[]) => any>>;
   notifications: Array<{ msg: string; level: string }>;
   messages: Array<{ content: string; customType: string }>;
-  emit: (eventName: string, event: any, ctx: any) => void;
+  emit: (eventName: string, event: any, ctx: any) => Promise<void>;
   makeCtx: (cwd: string, sessionId?: string, hasUI?: boolean) => any;
 }
 
@@ -75,9 +86,9 @@ function createHarness(): MockHarness {
     },
   };
 
-  const emit = (eventName: string, event: any, ctx: any): void => {
+  const emit = async (eventName: string, event: any, ctx: any): Promise<void> => {
     for (const fn of hooks.get(eventName) ?? []) {
-      fn(event, ctx);
+      await fn(event, ctx);
     }
   };
 
@@ -95,23 +106,24 @@ function createHarness(): MockHarness {
   return { pi, commands, hooks, notifications, messages, emit, makeCtx };
 }
 
-function runTurn(
+async function runTurn(
   harness: MockHarness,
   ctx: any,
   prompt: string,
   toolName: string,
   mutate: () => void,
-): void {
-  harness.emit("before_agent_start", { prompt, messageType: "user" }, ctx);
-  harness.emit("tool_call", { toolName }, ctx);
+): Promise<void> {
+  await harness.emit("before_agent_start", { prompt, messageType: "user" }, ctx);
+  await harness.emit("tool_call", { toolName }, ctx);
   mutate();
-  harness.emit("agent_end", {}, ctx);
+  await harness.emit("agent_end", {}, ctx);
 }
 
 describe("orchestrator turn snapshots (/undo & /redo)", () => {
   let globalTmp: string;
   const savedEnv = {
     PI_TURN_SNAPSHOTS: process.env.PI_TURN_SNAPSHOTS,
+    PI_TURN_SNAPSHOTS_TIMEOUT_MS: process.env.PI_TURN_SNAPSHOTS_TIMEOUT_MS,
     PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD,
   };
 
@@ -120,6 +132,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     globalTmp = makeTempDir("pi-snap-global-");
     setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
     delete process.env.PI_TURN_SNAPSHOTS;
+    delete process.env.PI_TURN_SNAPSHOTS_TIMEOUT_MS;
     delete process.env.PI_SUBAGENT_CHILD;
   });
 
@@ -146,7 +159,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(repo);
 
-    runTurn(harness, ctx, "Edit README", "edit", () => {
+    await runTurn(harness, ctx, "Edit README", "edit", () => {
       writeFileSync(join(repo, "README.md"), "# changed by turn\n");
     });
 
@@ -183,7 +196,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(repo);
 
-    runTurn(harness, ctx, "Refactor app and add helper", "write", () => {
+    await runTurn(harness, ctx, "Refactor app and add helper", "write", () => {
       writeFileSync(join(repo, "src", "app.ts"), "export const v = 2;\n");
       rmSync(join(repo, "src", "keep.ts"));
       mkdirSync(join(repo, "src", "brand-new"), { recursive: true });
@@ -229,7 +242,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(repo);
 
-    runTurn(harness, ctx, "Turn 1", "write", () => {
+    await runTurn(harness, ctx, "Turn 1", "write", () => {
       writeFileSync(join(repo, "README.md"), "# turn 1\n");
       writeFileSync(join(repo, "added.txt"), "new file\n");
     });
@@ -245,7 +258,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
 
     // Undo again, then perform a brand-new mutating turn — redo stack must clear.
     await harness.commands.get("undo")!.handler("", ctx);
-    runTurn(harness, ctx, "Turn 2", "bash", () => {
+    await runTurn(harness, ctx, "Turn 2", "bash", () => {
       writeFileSync(join(repo, "turn2.txt"), "t2\n");
     });
 
@@ -254,25 +267,249 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     assert.equal(readFileSync(join(repo, "turn2.txt"), "utf-8"), "t2\n");
   });
 
+  it("preserves unrelated user edits made after agent_end and detects conflicts on affected files", async () => {
+    const repo = initRepo(makeTempDir("pi-snap-user-edits-"));
+    writeFileSync(join(repo, "unrelated.txt"), "orig\n");
+    git(repo, ["add", "unrelated.txt"]);
+    git(repo, ["commit", "-q", "-m", "add unrelated"]);
+
+    const harness = createHarness();
+    registerSnapshots(harness.pi);
+    const ctx = harness.makeCtx(repo);
+
+    await runTurn(harness, ctx, "Edit README only", "edit", () => {
+      writeFileSync(join(repo, "README.md"), "# turn edit\n");
+    });
+
+    // User modifies an unrelated tracked file and creates a brand-new file AFTER agent_end.
+    writeFileSync(join(repo, "unrelated.txt"), "user later edit\n");
+    writeFileSync(join(repo, "user-created.txt"), "keep me\n");
+
+    await harness.commands.get("undo")!.handler("", ctx);
+    assert.equal(readFileSync(join(repo, "README.md"), "utf-8"), "# initial\n");
+    assert.equal(readFileSync(join(repo, "unrelated.txt"), "utf-8"), "user later edit\n");
+    assert.equal(readFileSync(join(repo, "user-created.txt"), "utf-8"), "keep me\n");
+
+    // Redo also preserves the unrelated edits.
+    await harness.commands.get("redo")!.handler("", ctx);
+    assert.equal(readFileSync(join(repo, "README.md"), "utf-8"), "# turn edit\n");
+    assert.equal(readFileSync(join(repo, "unrelated.txt"), "utf-8"), "user later edit\n");
+    assert.equal(readFileSync(join(repo, "user-created.txt"), "utf-8"), "keep me\n");
+
+    // Now user modifies the SAME file the turn touched -> /undo must refuse with a conflict.
+    writeFileSync(join(repo, "README.md"), "# manual conflict edit\n");
+    await harness.commands.get("undo")!.handler("", ctx);
+    const conflictNotice = harness.notifications.at(-1)!;
+    assert.equal(conflictNotice.level, "error");
+    assert.match(conflictNotice.msg, /Conflicting changes.*README\.md/);
+    assert.equal(readFileSync(join(repo, "README.md"), "utf-8"), "# manual conflict edit\n");
+  });
+
+  it("protects originally-ignored files when a turn removes an ignore rule and newly-ignored files on /redo", async () => {
+    const repo = initRepo(makeTempDir("pi-snap-ignore-change-"));
+    writeFileSync(join(repo, "secret.ignored"), "precious user secret\n");
+
+    const harness = createHarness();
+    registerSnapshots(harness.pi);
+    const ctx = harness.makeCtx(repo);
+
+    // Scenario A: turn removes `*.ignored` from .gitignore, exposing pre-existing secret.ignored.
+    await runTurn(harness, ctx, "Update gitignore", "edit", () => {
+      writeFileSync(join(repo, ".gitignore"), ".env\n.pi/\n");
+    });
+
+    await harness.commands.get("undo")!.handler("", ctx);
+    assert.equal(harness.notifications.at(-1)!.level, "error");
+    assert.match(harness.notifications.at(-1)!.msg, /previously gitignored.*secret\.ignored/);
+    assert.equal(readFileSync(join(repo, "secret.ignored"), "utf-8"), "precious user secret\n");
+
+    // Scenario B: turn creates a new file, user undoes it, then adds it to .gitignore and writes a local ignored file.
+    const repo2 = initRepo(makeTempDir("pi-snap-redo-ignored-"));
+    const harness2 = createHarness();
+    registerSnapshots(harness2.pi);
+    const ctx2 = harness2.makeCtx(repo2);
+
+    await runTurn(harness2, ctx2, "Create generated file", "write", () => {
+      writeFileSync(join(repo2, "local.cfg"), "from turn\n");
+    });
+    await harness2.commands.get("undo")!.handler("", ctx2);
+    assert.equal(existsSync(join(repo2, "local.cfg")), false);
+
+    // User adds local.cfg to .gitignore and writes their own ignored replacement.
+    writeFileSync(join(repo2, ".gitignore"), ".env\n.pi/\n*.ignored\nlocal.cfg\n");
+    writeFileSync(join(repo2, "local.cfg"), "my private local config\n");
+
+    await harness2.commands.get("redo")!.handler("", ctx2);
+    assert.equal(harness2.notifications.at(-1)!.level, "error");
+    assert.match(harness2.notifications.at(-1)!.msg, /currently gitignored.*local\.cfg/);
+    assert.equal(readFileSync(join(repo2, "local.cfg"), "utf-8"), "my private local config\n");
+  });
+
+  it("preflights file-vs-directory collision with ignored child without deleting any files", async () => {
+    const repo = initRepo(makeTempDir("pi-snap-preflight-"));
+    writeFileSync(join(repo, "item"), "original-file\n");
+    git(repo, ["add", "item"]);
+    git(repo, ["commit", "-q", "-m", "add item"]);
+
+    const harness = createHarness();
+    registerSnapshots(harness.pi);
+    const ctx = harness.makeCtx(repo);
+
+    await runTurn(harness, ctx, "Replace item with dir", "bash", () => {
+      rmSync(join(repo, "item"));
+      mkdirSync(join(repo, "item"), { recursive: true });
+      writeFileSync(join(repo, "item", "child.txt"), "child content\n");
+      writeFileSync(join(repo, "item", "keep.ignored"), "ignored child\n");
+    });
+
+    await harness.commands.get("undo")!.handler("", ctx);
+    assert.equal(harness.notifications.at(-1)!.level, "error");
+    assert.match(harness.notifications.at(-1)!.msg, /(?:gitignored|preserved\/ignored).*item\/keep\.ignored/);
+    // Preflight must abort BEFORE deleting item/child.txt!
+    assert.equal(readFileSync(join(repo, "item", "child.txt"), "utf-8"), "child content\n");
+    assert.equal(readFileSync(join(repo, "item", "keep.ignored"), "utf-8"), "ignored child\n");
+
+    // Also verify empty-subdir collision is caught in preflight before deleting item/child.txt.
+    rmSync(join(repo, "item", "keep.ignored"));
+    mkdirSync(join(repo, "item", "empty-sub"), { recursive: true });
+    await harness.commands.get("undo")!.handler("", ctx);
+    assert.equal(harness.notifications.at(-1)!.level, "error");
+    assert.match(harness.notifications.at(-1)!.msg, /preserved\/ignored.*item\/empty-sub\//);
+    assert.equal(readFileSync(join(repo, "item", "child.txt"), "utf-8"), "child content\n");
+  });
+
+  it("rolls back already-removed files if checkout-index fails mid-restore", async () => {
+    const repo = initRepo(makeTempDir("pi-snap-rollback-"));
+    const preTree = await captureShadowTree(repo);
+    assert.ok(preTree);
+
+    writeFileSync(join(repo, "README.md"), "# mutated\n");
+    writeFileSync(join(repo, "added-in-turn.txt"), "keep on rollback\n");
+    const postTree = await captureShadowTree(repo);
+    assert.ok(postTree);
+
+    const failingCheckoutGit: typeof runGitAsync = async (args, cwd, env, timeoutMs, input) => {
+      if (args[0] === "checkout-index" && env?.GIT_INDEX_FILE) {
+        // Fail the first checkout-index call (restore), allow rollback checkout-index.
+        if (!failOnceDone) {
+          failOnceDone = true;
+          return { stdout: "", stderr: "simulated checkout failure", code: 1 };
+        }
+      }
+      return runGitAsync(args, cwd, env, timeoutMs, input);
+    };
+    let failOnceDone = false;
+
+    const res = await restoreShadowTree(repo, postTree, preTree, { runGit: failingCheckoutGit });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /Failed to restore files/);
+    assert.equal(
+      readFileSync(join(repo, "added-in-turn.txt"), "utf-8"),
+      "keep on rollback\n",
+      "removed file must be rolled back when checkout fails",
+    );
+  });
+
+  it("rejects symlinked parent directories pointing outside the repository before delete or checkout", async () => {
+    const outsideDir = makeTempDir("pi-snap-outside-");
+    const outsideTarget = join(outsideDir, "victim.txt");
+    writeFileSync(outsideTarget, "DO NOT DELETE OR OVERWRITE\n");
+
+    const repo = initRepo(makeTempDir("pi-snap-symlink-"));
+    mkdirSync(join(repo, "sub"), { recursive: true });
+    writeFileSync(join(repo, "sub", "victim.txt"), "in-repo-before\n");
+    git(repo, ["add", "sub/victim.txt"]);
+    git(repo, ["commit", "-q", "-m", "add sub/victim"]);
+
+    const preTree = await captureShadowTree(repo);
+    assert.ok(preTree);
+    writeFileSync(join(repo, "sub", "victim.txt"), "in-repo-after\n");
+    writeFileSync(join(repo, "sub", "extra.txt"), "added\n");
+    const postTree = await captureShadowTree(repo);
+    assert.ok(postTree);
+
+    // Swap `sub` directory with a symlink pointing outside the repo AFTER capture!
+    rmSync(join(repo, "sub"), { recursive: true, force: true });
+    symlinkSync(outsideDir, join(repo, "sub"));
+
+    const res = await restoreShadowTree(repo, postTree, preTree);
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /symlinked parent directory|Conflicting changes/i);
+    assert.equal(readFileSync(outsideTarget, "utf-8"), "DO NOT DELETE OR OVERWRITE\n");
+
+    // Also verify symlink rejection even when drift check is bypassed by simulating swap right after capture:
+    const repo2 = initRepo(makeTempDir("pi-snap-symlink-race-"));
+    const pre2 = await captureShadowTree(repo2);
+    assert.ok(pre2);
+    mkdirSync(join(repo2, "dir"), { recursive: true });
+    writeFileSync(join(repo2, "dir", "victim.txt"), "temp\n");
+    const post2 = await captureShadowTree(repo2);
+    assert.ok(post2);
+
+    let swapped = false;
+    const raceGit: typeof runGitAsync = async (args, cwd, env, timeoutMs, input) => {
+      const r = await runGitAsync(args, cwd, env, timeoutMs, input);
+      // Swap `dir` for symlink to outsideDir right after current-tree write-tree completes.
+      if (!swapped && args[0] === "write-tree") {
+        swapped = true;
+        rmSync(join(repo2, "dir"), { recursive: true, force: true });
+        symlinkSync(outsideDir, join(repo2, "dir"));
+      }
+      return r;
+    };
+
+    const res2 = await restoreShadowTree(repo2, post2, pre2, { runGit: raceGit });
+    assert.equal(res2.ok, false);
+    assert.match(res2.error ?? "", /Refused symlinked parent directory: dir/);
+    assert.equal(readFileSync(outsideTarget, "utf-8"), "DO NOT DELETE OR OVERWRITE\n");
+  });
+
+  it("supports configurable timeout and warns visibly when pre-turn snapshot capture fails", async () => {
+    assert.equal(resolveSnapshotTimeoutMs(), DEFAULT_SNAPSHOT_TIMEOUT_MS);
+    process.env.PI_TURN_SNAPSHOTS_TIMEOUT_MS = "45000";
+    assert.equal(resolveSnapshotTimeoutMs(), 45_000);
+    assert.equal(resolveSnapshotTimeoutMs(12_000), 12_000);
+
+    const repo = initRepo(makeTempDir("pi-snap-timeout-"));
+    const timingOutGit: typeof runGitAsync = async (args, cwd, env, timeoutMs, input) => {
+      if (args[0] === "add") {
+        return { stdout: "", stderr: "", code: 1, timedOut: true };
+      }
+      return runGitAsync(args, cwd, env, timeoutMs, input);
+    };
+
+    const harness = createHarness();
+    registerSnapshots(harness.pi, { timeoutMs: 2500, runGit: timingOutGit });
+    const ctx = harness.makeCtx(repo);
+
+    await runTurn(harness, ctx, "Large repo edit", "edit", () => {
+      writeFileSync(join(repo, "README.md"), "# edited\n");
+    });
+
+    assert.equal(harness.notifications.length, 1);
+    assert.equal(harness.notifications[0]!.level, "warning");
+    assert.match(harness.notifications[0]!.msg, /Turn snapshot capture failed.*timed out after 2500ms/);
+
+    await harness.commands.get("undo")!.handler("", ctx);
+    assert.match(harness.notifications.at(-1)!.msg, /last snapshot capture failed: git add -A timed out/);
+  });
+
   it("read-only turns and unchanged bash turns push nothing and preserve redo stack", async () => {
     const repo = initRepo(makeTempDir("pi-snap-noop-"));
     const harness = createHarness();
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(repo);
 
-    // Pure read turn — never captures.
-    runTurn(harness, ctx, "Read file", "read", () => {});
+    await runTurn(harness, ctx, "Read file", "read", () => {});
     await harness.commands.get("undo")!.handler("", ctx);
     assert.match(harness.notifications.at(-1)!.msg, /Nothing to undo/);
 
-    // Record one real mutating turn and undo it so redoStack has 1 entry.
-    runTurn(harness, ctx, "Mutate", "edit", () => {
+    await runTurn(harness, ctx, "Mutate", "edit", () => {
       writeFileSync(join(repo, "README.md"), "# mutated\n");
     });
     await harness.commands.get("undo")!.handler("", ctx);
 
-    // Bash turn that mutates nothing must neither push to undo nor clear redo.
-    runTurn(harness, ctx, "Inspect status", "bash", () => {});
+    await runTurn(harness, ctx, "Inspect status", "bash", () => {});
     await harness.commands.get("undo")!.handler("", ctx);
     assert.match(harness.notifications.at(-1)!.msg, /Nothing to undo/);
 
@@ -288,18 +525,16 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     const ctx = harness.makeCtx(repo);
 
     for (let i = 1; i <= 22; i++) {
-      runTurn(harness, ctx, `Turn ${i}`, "write", () => {
+      await runTurn(harness, ctx, `Turn ${i}`, "write", () => {
         writeFileSync(join(repo, "counter.txt"), `${i}\n`);
       });
     }
 
-    // 20 undos should succeed, stepping back from 22 to 2 (turns 1 and 2 were evicted).
     for (let i = 0; i < 20; i++) {
       await harness.commands.get("undo")!.handler("", ctx);
     }
     assert.equal(readFileSync(join(repo, "counter.txt"), "utf-8"), "2\n");
 
-    // 21st undo must report nothing left.
     await harness.commands.get("undo")!.handler("", ctx);
     assert.match(harness.notifications.at(-1)!.msg, /Nothing to undo/);
   });
@@ -314,7 +549,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(repo);
 
-    runTurn(harness, ctx, "Edit while disabled", "write", () => {
+    await runTurn(harness, ctx, "Edit while disabled", "write", () => {
       writeFileSync(join(repo, "README.md"), "# changed\n");
     });
 
@@ -336,7 +571,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(nonGit);
 
-    runTurn(harness, ctx, "Edit outside git", "write", () => {
+    await runTurn(harness, ctx, "Edit outside git", "write", () => {
       writeFileSync(join(nonGit, "file.txt"), "v2\n");
     });
 
@@ -363,7 +598,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(subDir);
 
-    runTurn(harness, ctx, "Create spaced file", "write", () => {
+    await runTurn(harness, ctx, "Create spaced file", "write", () => {
       writeFileSync(join(subDir, "my file.txt"), "hello spaces\n");
     });
 
@@ -374,14 +609,16 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     assert.equal(readFileSync(join(subDir, "my file.txt"), "utf-8"), "hello spaces\n");
   });
 
-  it("cleans up temporary GIT_INDEX_FILE directories unconditionally", () => {
+  it("cleans up temporary GIT_INDEX_FILE directories unconditionally", async () => {
     const repo = initRepo(makeTempDir("pi-snap-cleanup-"));
     const before = new Set(readdirSync(tmpdir()).filter((n) => n.startsWith("pi-snapshot-")));
 
-    const tree1 = captureShadowTree(repo);
+    const tree1 = await captureShadowTree(repo);
     assert.ok(tree1);
     writeFileSync(join(repo, "README.md"), "# temp\n");
-    const res = restoreShadowTree(repo, tree1);
+    const tree2 = await captureShadowTree(repo);
+    assert.ok(tree2);
+    const res = await restoreShadowTree(repo, tree2, tree1);
     assert.equal(res.ok, true);
 
     const leaked = readdirSync(tmpdir()).filter((n) => n.startsWith("pi-snapshot-") && !before.has(n));
@@ -409,14 +646,14 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(repo);
 
-    harness.emit("before_agent_start", { prompt: "Multi-step turn", messageType: "user" }, ctx);
-    harness.emit("tool_call", { toolName: "write" }, ctx);
+    await harness.emit("before_agent_start", { prompt: "Multi-step turn", messageType: "user" }, ctx);
+    await harness.emit("tool_call", { toolName: "write" }, ctx);
     writeFileSync(join(repo, "a.txt"), "a\n");
-    harness.emit("tool_call", { toolName: "edit" }, ctx);
+    await harness.emit("tool_call", { toolName: "edit" }, ctx);
     writeFileSync(join(repo, "README.md"), "# multi\n");
-    harness.emit("tool_call", { toolName: "bash" }, ctx);
+    await harness.emit("tool_call", { toolName: "bash" }, ctx);
     writeFileSync(join(repo, "b.txt"), "b\n");
-    harness.emit("agent_end", {}, ctx);
+    await harness.emit("agent_end", {}, ctx);
 
     await harness.commands.get("undo")!.handler("", ctx);
     assert.equal(existsSync(join(repo, "a.txt")), false);
@@ -437,7 +674,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(repo);
 
-    runTurn(harness, ctx, "Replace file with dir", "bash", () => {
+    await runTurn(harness, ctx, "Replace file with dir", "bash", () => {
       rmSync(join(repo, "item"));
       mkdirSync(join(repo, "item"), { recursive: true });
       writeFileSync(join(repo, "item", "child.txt"), "dir-version\n");
@@ -449,7 +686,6 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     await harness.commands.get("redo")!.handler("", ctx);
     assert.equal(readFileSync(join(repo, "item", "child.txt"), "utf-8"), "dir-version\n");
 
-    // Env override disables snapshots dynamically.
     process.env.PI_TURN_SNAPSHOTS = "false";
     clearSettingsCache();
     await harness.commands.get("undo")!.handler("", ctx);
@@ -463,7 +699,7 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     registerSnapshots(harness.pi);
     const ctx = harness.makeCtx(repo, "sess-noui", false);
 
-    runTurn(harness, ctx, "Headless edit", "write", () => {
+    await runTurn(harness, ctx, "Headless edit", "write", () => {
       writeFileSync(join(repo, "README.md"), "# headless\n");
     });
 
