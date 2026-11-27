@@ -655,6 +655,72 @@ describe("createDaemonClient lifecycle (#1358)", () => {
     assert.equal(h.sockets.length, 1);
   });
 
+  it("ignores tool_result reconnect for rpc ctx by default", async () => {
+    const h = makeClient();
+    const { ctx } = createFakeCtx({ mode: "rpc", hasUI: false });
+
+    h.emit("tool_result", {}, ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(h.sockets.length, 0);
+  });
+
+  it("uses shouldConnectCtx for tool_result reconnect", async () => {
+    const h = makeClient({
+      shouldConnectCtx: (c) => c?.mode === "rpc",
+    });
+    const { ctx } = createFakeCtx({ mode: "rpc", hasUI: false });
+
+    h.emit("tool_result", {}, ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(h.sockets.length, 1);
+  });
+
+  it("ignores periodic reconnect poll for rpc ctx by default", async () => {
+    const h = makeClient({ reconnectPollIntervalMs: 15 });
+    const { ctx } = createFakeCtx({ mode: "rpc", hasUI: false });
+    h.client.setLastCtx(ctx);
+
+    await new Promise((r) => setTimeout(r, 45));
+    assert.equal(h.sockets.length, 0);
+  });
+
+  it("uses shouldConnectCtx for periodic reconnect poll", async () => {
+    const h = makeClient({
+      reconnectPollIntervalMs: 15,
+      shouldConnectCtx: (c) => c?.mode === "rpc",
+    });
+    const { ctx } = createFakeCtx({ mode: "rpc", hasUI: false });
+    h.client.setLastCtx(ctx);
+
+    await new Promise((r) => setTimeout(r, 45));
+    assert.equal(h.sockets.length, 1);
+  });
+
+  it("skips auto-spawn when shouldAutoSpawn returns false while daemon is offline", async () => {
+    const h = makeClient({
+      probeHealth: async () => false,
+      shouldAutoSpawn: (c) => c?.mode === "tui",
+    });
+    const { ctx } = createFakeCtx({ mode: "rpc", hasUI: false });
+
+    await h.client.connect(ctx);
+    assert.equal(h.spawns.length, 0);
+    assert.equal(h.sockets.length, 0);
+    assert.equal(h.client.connecting, false);
+  });
+
+  it("attaches to running daemon even when shouldAutoSpawn returns false", async () => {
+    const h = makeClient({
+      probeHealth: async () => true,
+      shouldAutoSpawn: (c) => c?.mode === "tui",
+    });
+    const { ctx } = createFakeCtx({ mode: "rpc", hasUI: false });
+
+    await h.client.connect(ctx);
+    assert.equal(h.spawns.length, 0);
+    assert.equal(h.sockets.length, 1);
+  });
+
   it("clears stale lastCtx on periodic reconnect poll", async () => {
     const h = makeClient({ reconnectPollIntervalMs: 15 });
     const staleCtx = { get mode(): string { throw new Error("stale"); } };

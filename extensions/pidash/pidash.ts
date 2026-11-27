@@ -155,6 +155,25 @@ function isContainer(): boolean {
 let diffPort: number | null = null;
 let isStreaming = false;
 
+/**
+ * True when a session context should connect to the pidash daemon:
+ * - Interactive TUI sessions (`ctx.mode === "tui"`)
+ * - Supervised headless COMS peers (`ctx.mode === "rpc"` with `PI_COMS_SUPERVISED_PEER === "1"`)
+ *
+ * Excludes subagent children, unsupervised RPC sessions (e.g. `pi-sidecar`),
+ * `print`/`json` modes, and missing/stale contexts.
+ */
+export function isPidashConnectableCtx(
+  ctx: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env.PI_SUBAGENT_CHILD === "1") return false;
+  if (!isLiveExtensionCtx(ctx)) return false;
+  const mode = (ctx as { mode?: unknown }).mode;
+  if (mode === "tui") return true;
+  return mode === "rpc" && env.PI_COMS_SUPERVISED_PEER === "1";
+}
+
 // ── Registration ─────────────────────────────────────────────────────
 
 export function registerPidash(
@@ -162,6 +181,11 @@ export function registerPidash(
 ): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
   if (shouldSkipOneshotRegister(log)) return;
+  const registrationEnv: NodeJS.ProcessEnv = {
+    PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD,
+    PI_COMS_SUPERVISED_PEER: process.env.PI_COMS_SUPERVISED_PEER,
+  };
+  const canConnectCtx = (ctx: unknown): boolean => isPidashConnectableCtx(ctx, registrationEnv);
   currentPiEvents = pi.events;
 
   const projectCwd = process.cwd();
@@ -730,6 +754,10 @@ export function registerPidash(
     port: pidashPort,
     startFailureHint: " — check ~/.pi/pidash-server.log",
     strictCommandUsage: true,
+    shouldConnectCtx: canConnectCtx,
+    // Only interactive TUI sessions auto-spawn pidash-server; supervised COMS RPC peers
+    // attach whenever pidash-server is already running and avoid burst-spawn races.
+    shouldAutoSpawn: (ctx) => ctx?.mode === "tui",
 
     spawn() {
       spawnDaemon(pidashPort);
@@ -766,6 +794,17 @@ export function registerPidash(
       try {
         thinking = (pi as any).getThinkingLevel?.() || "medium";
       } catch (e: any) { log.debug(`getThinkingLevel failed: session=${sessionId} error=${e?.message || e}`); }
+      const stringFlag = (flag: string): string | undefined => {
+        const val = (pi as any).getFlag?.(flag);
+        return typeof val === "string" && val.length > 0 ? val : undefined;
+      };
+      const comsFlagName = stringFlag("cname");
+      const comsFlagPurpose = stringFlag("purpose");
+      const comsFlagActive =
+        Boolean(comsIdentityName || comsFlagName)
+        || (pi as any).getFlag?.("coms") === true
+        || registrationEnv.PI_COMS_SUPERVISED_PEER === "1";
+      const comsFlagProject = comsFlagActive ? stringFlag("project") : undefined;
       const reg = JSON.stringify({
         type: "register",
         pid: process.pid,
@@ -792,9 +831,9 @@ export function registerPidash(
         thinkingLevel: thinking,
         diffPort,
         name: (pi as any).getSessionName?.() || undefined,
-        comsName: comsIdentityName || (pi as any).getFlag?.("cname") || undefined,
-        comsPurpose: comsIdentityPurpose || (pi as any).getFlag?.("purpose") || undefined,
-        comsProject: comsIdentityProject || undefined,
+        comsName: comsIdentityName || comsFlagName,
+        comsPurpose: comsIdentityPurpose || comsFlagPurpose,
+        comsProject: comsIdentityProject || comsFlagProject,
         trailTokenSavings,
       });
       log.debug(`sending register: ${reg}`);
@@ -1101,7 +1140,7 @@ export function registerPidash(
         client.setLastCtx(null);
         return;
       }
-      if (ctx.mode !== "tui") return;
+      if (!canConnectCtx(ctx)) return;
       inFlight = true;
       try {
         const now = Date.now();
@@ -1164,7 +1203,7 @@ export function registerPidash(
     if (resolved.lastCtx === ctx) log.debug("lastCtx updated from session_start");
 
     const switchCtx = resolved.switchCtx;
-    if (!client.connected && switchCtx && switchCtx.mode === "tui") {
+    if (!client.connected && switchCtx && canConnectCtx(switchCtx)) {
       void client.connect(switchCtx);
     } else if (client.ws) {
       if (!switchCtx) {
