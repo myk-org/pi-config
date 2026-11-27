@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import {
+  buildSessionNotification,
   buildSessionUpdatedBroadcast,
   clearPendingUiRequests,
   createAsyncAgentRegistry,
@@ -277,23 +278,10 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
       }
     }
 
-    // Broadcast notification-worthy events to ALL browsers (skip during replay)
+    // Broadcast metadata-only notification frame to authorized browsers (skip during replay;
+    // never broadcast raw tool output text to browsers watching other sessions).
     if (parsed.type === "tool_execution_end" && !piClient.replaying) {
-      const toolName = parsed.toolName || "";
-      const isSubagent = toolName === "subagent" || !!(parsed.args?.agent);
-      const isError = parsed.isError === true;
-      const resultText = parsed.result?.content?.[0]?.text || "";
-
-      broadcastAuthorizedBrowsers(piClient.session, {
-        type: "session_notification",
-        sessionId: sid,
-        cwd: piClient.session.cwd,
-        toolName,
-        isError,
-        isSubagent,
-        agentName: parsed.args?.name || parsed.args?.agent || "",
-        resultText: resultText.slice(0, 200),
-      });
+      broadcastAuthorizedBrowsers(piClient.session, buildSessionNotification(sid, piClient.session.cwd, parsed));
     }
 
     // Broadcast AI turn complete to authorized browsers (skip during replay)

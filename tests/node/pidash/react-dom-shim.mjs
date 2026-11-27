@@ -74,6 +74,7 @@ class FakeElement extends FakeNode {
   }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  hasAttribute(name) { return this.attributes.has(name); }
   removeAttribute(name) { this.attributes.delete(name); }
   focus() { this.ownerDocument.activeElement = this; }
   matches() { return false; }
@@ -144,7 +145,15 @@ export function installReactDomShim() {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   globalThis.innerWidth = 1200;
   globalThis.innerHeight = 800;
-  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "", direction: "ltr" });
+  globalThis.getComputedStyle = () => ({
+    getPropertyValue: () => "",
+    direction: "ltr",
+    transitionDuration: "0s",
+    transitionDelay: "0s",
+    animationName: "none",
+    animationDuration: "0s",
+    animationDelay: "0s",
+  });
   globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
 
   const container = document.createElement("div");

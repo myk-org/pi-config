@@ -1245,7 +1245,7 @@ describe("bash tool card Copy output button (#1448)", () => {
 
     assert.ok(
       (logBag().__pidashUiLogs ?? []).some(
-        (entry) => entry.name === "MessageList" && entry.level === "debug" && entry.msg.includes("copied bash tool output"),
+        (entry) => entry.name === "MessageList" && entry.level === "debug" && entry.msg.includes("copied section content"),
       ),
     );
   });
@@ -1275,12 +1275,12 @@ describe("bash tool card Copy output button (#1448)", () => {
 
     assert.ok(
       (logBag().__pidashUiLogs ?? []).some(
-        (entry) => entry.name === "MessageList" && entry.level === "warn" && entry.msg.includes("failed to copy bash tool output"),
+        (entry) => entry.name === "MessageList" && entry.level === "warn" && entry.msg.includes("failed to copy section content"),
       ),
     );
   });
 
-  it("omits the header Copy output button on non-bash tool cards", async () => {
+  it("renders the header Copy output button on non-bash tool cards", async () => {
     const { container } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);
@@ -1291,6 +1291,6 @@ describe("bash tool card Copy output button (#1448)", () => {
     await act(async () => root.render(createElement(ToolGroup, { call, result })));
 
     const copyBtn = elements(container, "button").find((b) => b.getAttribute("aria-label") === "Copy output");
-    assert.equal(copyBtn, undefined);
+    assert.equal(Boolean(copyBtn), true);
   });
 });

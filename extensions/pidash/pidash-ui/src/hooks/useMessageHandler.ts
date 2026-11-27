@@ -248,7 +248,9 @@ export function useMessageHandler(
           const repo = ev.cwd?.split("/").pop() || "session";
           const txt = (ev.resultText || "").toLowerCase();
           const tl = (ev.toolName || "").toLowerCase();
-          const isTestEvent = tl.includes("test") || txt.includes("pytest") || txt.includes("test_");
+          const isTestEvent = typeof ev.isTestEvent === "boolean"
+            ? ev.isTestEvent
+            : (tl.includes("test") || txt.includes("pytest") || txt.includes("test_"));
 
           if (ev.isError && n.preferences.sessionError) {
             n.notify(`Error — ${repo}`, { body: "Tool execution failed" });
@@ -256,7 +258,9 @@ export function useMessageHandler(
             const agentLabel = ev.agentName || "agent";
             n.notify(`Agent finished — ${repo}`, { body: agentLabel });
           } else if (isTestEvent && n.preferences.testResults) {
-            const passed = !ev.isError && !txt.includes("fail") && !txt.includes("error");
+            const passed = typeof ev.testPassed === "boolean"
+              ? ev.testPassed
+              : (!ev.isError && !txt.includes("fail") && !txt.includes("error"));
             n.notify(passed ? `Tests: ✓ Passed — ${repo}` : `Tests: ✗ Failed — ${repo}`);
           } else if (n.preferences.toolComplete && !ev.isError && !ev.isSubagent) {
             n.notify(`Tool: ${ev.toolName || "tool"} — ${repo}`);
