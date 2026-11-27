@@ -33,7 +33,6 @@ import {
   isReadOnlyStatement,
   splitBashStatements,
   isRmInProjectTmp,
-  normalizeForRepeatCheck,
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
@@ -700,26 +699,6 @@ describe("pipe splitting integration", () => {
 
   it("cat file | zsh DOES trigger", () => {
     assert.ok(wouldTriggerDangerous("cat file | zsh"));
-  });
-});
-
-// ── normalizeForRepeatCheck ──
-
-describe("normalizeForRepeatCheck", () => {
-  it("strips cd prefix", () => {
-    assert.equal(normalizeForRepeatCheck("cd /foo && ls"), "ls");
-  });
-  it("collapses whitespace", () => {
-    assert.equal(normalizeForRepeatCheck("ls   -la    /tmp"), "ls -la /tmp");
-  });
-  it("trims leading/trailing whitespace", () => {
-    assert.equal(normalizeForRepeatCheck("  git status  "), "git status");
-  });
-  it("strips multiple cd prefixes", () => {
-    assert.equal(normalizeForRepeatCheck("cd /a && cd /b && echo hi"), "cd /b && echo hi");
-  });
-  it("returns empty for whitespace-only", () => {
-    assert.equal(normalizeForRepeatCheck("   "), "");
   });
 });
 
@@ -4844,8 +4823,6 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     writeFileSync(globalFile, "{}");
     setGlobalSettingsPath(globalFile);
     try {
-      // A command NOT used by the neighboring tests: the repeat-command
-      // guard blocks the 3rd consecutive identical command in a process.
       choice = "Always allow (everywhere): sudo poweroff";
       const res = await runBash("sudo poweroff");
       assert.equal(res?.block, undefined, "approved command runs");
@@ -5751,6 +5728,25 @@ describe("git protection fast-path (#1194)", () => {
       assert.equal(commitRes, undefined);
       const abbrevCalls = readCalls().filter((line) => line.includes("rev-parse --abbrev-ref HEAD"));
       assert.equal(abbrevCalls.length, 1, `expected single getCurrentBranch spawn, got: ${JSON.stringify(abbrevCalls)}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("allows repeated identical bash commands through registerEnforcement without writing .repeat state", async () => {
+    const { toolCall, mkCtx, cleanup } = setupInstrumentedRepo();
+    try {
+      const ctx = mkCtx();
+      for (let i = 0; i < 5; i++) {
+        const res = await toolCall(
+          { type: "tool_call", toolName: "bash", input: { command: "echo edit-retest-loop" } },
+          ctx,
+        );
+        assert.equal(res, undefined, `run #${i + 1} should not be blocked`);
+      }
+      const tmpDir = join(ctx.cwd, ".pi", "tmp");
+      const repeatFiles = existsSync(tmpDir) ? readdirSync(tmpDir).filter((f) => f.startsWith(".repeat-")) : [];
+      assert.deepEqual(repeatFiles, [], "no .repeat-*.json temp file should be created");
     } finally {
       cleanup();
     }
