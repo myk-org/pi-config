@@ -224,6 +224,54 @@ describe("COMS busy reporting during non-inbound agent turns (#1466)", () => {
 		assert.equal((await pingAgentCard(peer.endpoint)).busy, true);
 	});
 
+	it("writes busy true to the registry on before_agent_start before agent_start fires", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const peer = await startPeer({ name: "worker", sessionId: "s-before-reg-1466", project: "p-1466", cwd: workspace, comsDir });
+
+		assert.equal(Boolean(readRegistry(peer).busy), false);
+
+		await peer.handlers.get("before_agent_start")!({}, peer.ctx);
+
+		assert.equal(readRegistry(peer).busy, true);
+	});
+
+	it("updates the ping worker card to busy on before_agent_start before agent_start fires", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		const peer = await startPeer({ name: "worker", sessionId: "s-before-ping-1466", project: "p-1466", cwd: workspace, comsDir });
+
+		await peer.handlers.get("before_agent_start")!({}, peer.ctx);
+
+		await waitUntil(async () => {
+			try {
+				return (await pingAgentCard(`${peer.endpoint}.ping`)).busy === true;
+			} catch {
+				return false;
+			}
+		});
+	});
+
+	it("self-heals busy to false when live ctx.isIdle reports true after a missed agent_end", async () => {
+		const { workspace, comsDir } = makeWorkspace();
+		let idle = false;
+		const peer = await startPeer({
+			name: "worker",
+			sessionId: "s-heal-1466",
+			project: "p-1466",
+			cwd: workspace,
+			comsDir,
+			isIdle: () => idle,
+		});
+
+		await peer.handlers.get("before_agent_start")!({}, peer.ctx);
+		await peer.handlers.get("agent_start")!({}, peer.ctx);
+		assert.equal(readRegistry(peer).busy, true);
+		assert.equal((await pingAgentCard(peer.endpoint)).busy, true);
+
+		// Simulate a missed agent_end/agent_settled: Pi returns to idle without emitting end hooks.
+		idle = true;
+		assert.equal((await pingAgentCard(peer.endpoint)).busy, false);
+	});
+
 	it("resets registry busy to false once agent_end finishes a non-inbound turn", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const peer = await startPeer({ name: "worker", sessionId: "s-end-reg-1466", project: "p-1466", cwd: workspace, comsDir });
@@ -283,7 +331,7 @@ describe("COMS busy reporting during non-inbound agent turns (#1466)", () => {
 		assert.equal((await pingAgentCard(peer.endpoint)).busy, false);
 	});
 
-	it("clears agentActive on stop so a restarted peer reports idle", async () => {
+	it("clears busy tracking on stop so a restarted peer reports idle", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const peer = await startPeer({ name: "worker", sessionId: "s-stop-1466", project: "p-1466", cwd: workspace, comsDir });
 
@@ -300,7 +348,7 @@ describe("COMS busy reporting during non-inbound agent turns (#1466)", () => {
 		assert.equal((await pingAgentCard(peer.endpoint)).busy, false);
 	});
 
-	it("preserves COMS inbound reply capture when agentActive toggles during an overlapping turn", async () => {
+	it("preserves COMS inbound reply capture when non-inbound busy tracking toggles during an overlapping turn", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const sender = await startPeer({ name: "sender", sessionId: "s-send-1466", project: "p-overlap", cwd: workspace, comsDir });
 		const receiver = await startPeer({ name: "receiver", sessionId: "s-recv-1466", project: "p-overlap", cwd: workspace, comsDir });
@@ -338,7 +386,7 @@ describe("COMS busy reporting during non-inbound agent turns (#1466)", () => {
 		assert.equal(readRegistry(receiver).busy, false);
 	});
 
-	it("preserves FIFO queue drain across consecutive peer inbounds while agentActive toggles", async () => {
+	it("preserves FIFO queue drain across consecutive peer inbounds while non-inbound busy tracking toggles", async () => {
 		const { workspace, comsDir } = makeWorkspace();
 		const peerA = await startPeer({ name: "peer-a", sessionId: "s-a-1466", project: "p-fifo", cwd: workspace, comsDir });
 		const peerB = await startPeer({ name: "peer-b", sessionId: "s-b-1466", project: "p-fifo", cwd: workspace, comsDir });
