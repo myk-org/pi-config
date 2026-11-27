@@ -437,6 +437,51 @@ describe("cron lifecycle", { concurrency: false }, () => {
     assert.equal(h.messages.length, 2);
   });
 
+  it("records cron-user-message provenance before sendUserMessage on slash-command dispatch", async () => {
+    const cwd = makeTempDir("pi-cron-provenance-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    fs.writeFileSync(
+      store,
+      JSON.stringify({
+        version: 1,
+        tasks: [{ id: "due-prov", scope: "project", cwd, description: "review", task: "/review-local", intervalMs: 10_000, createdAt: 1, nextRun: 1 }],
+      }),
+    );
+    const h = makeCron();
+    const order: string[] = [];
+    const appended: Array<{ customType: string; data: unknown }> = [];
+    h.pi.appendEntry = (customType: string, data: unknown) => {
+      appended.push({ customType, data });
+      order.push(`appendEntry:${customType}`);
+    };
+    const origEmit = h.pi.events.emit;
+    h.pi.events.emit = (event: string, data: any) => {
+      if (event === "cron:dispatch-command") order.push(`emit:${event}`);
+      origEmit(event, data);
+    };
+    const origSend = h.pi.sendUserMessage;
+    h.pi.sendUserMessage = (message: string, options: any) => {
+      order.push(`sendUserMessage:${message}`);
+      origSend(message, options);
+    };
+    registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    const due = h.timeouts.find((timer) => timer.delay === 0)!;
+    await due.fn();
+
+    assert.deepEqual(appended, [{ customType: "cron-user-message", data: { command: "/review-local" } }]);
+    assert.ok(
+      h.emitted.some((e) => e.event === "cron:dispatch-command" && e.data?.command === "/review-local"),
+      "expected cron:dispatch-command event to be emitted",
+    );
+    assert.deepEqual(order, [
+      "appendEntry:cron-user-message",
+      "emit:cron:dispatch-command",
+      "sendUserMessage:/review-local",
+    ]);
+  });
+
   for (const action of ["resume", "remove", "shutdown", "switch", "kill-all"]) {
     it(`stops discovery's stale continuation after ${action}`, async () => {
       const cwd = makeTempDir("pi-cron-discovery-"); dirs.push(cwd);

@@ -24,6 +24,7 @@ the internals that are not visible from usage alone.
 | `/coms` | `coms/coms-wrapper.ts` + `coms-peers-ui.ts` + `coms-p2p.ts` | Zero-arg fullscreen P2P peers overlay (`f` scope toggle, `q` local inbound queue with `Space` multi-select `x` kill, `Space` multi-select `m` message / `x` kill, `X` kill all, `Enter` drilldown) |
 | `/repair` | `session-validation.ts` | Repair session — fix orphaned tool calls that break API requests |
 | `/tasks` | `pitasks/index.ts` + `tasks-ui.ts` | Zero-arg fullscreen task list overlay (`Space` multi-select `s` start / `d` done / `x` delete, `n` add, `e` edit, `f` mine/all, `Enter` detail) |
+| `/qa` | `qa-overlay.ts` | Zero-arg fullscreen human Q&A reader overlay (shortcut `qa_overlay_shortcut`, default `alt+q`): browse newest-first, `/` live filter, `Enter` scrollable reader, `r` quote whole answer, `1`–`9` quote Markdown heading/numbered item via `pasteToEditor()`, plus a 1-line dim buried-answer widget hint; plain-text fallback when headless |
 
 ## Cron Delivery Internals
 
@@ -48,6 +49,7 @@ The `tasks` (`aboveEditor`) and `coms-pool` (`belowEditor`) widgets support two 
   - `widget_tasks_shortcut` (default `alt+t`): collapse/expand the tasks widget.
   - `widget_coms_shortcut` (default `alt+c`): collapse/expand the coms widget.
   - `widget_all_shortcut` (default `alt+w`): collapse/expand both widgets via `pi.events` `"ui:toggle-all-widgets"` (collapses both if either is expanded; second press restores prior modes).
+  - `qa_overlay_shortcut` (default `alt+q`): open the `/qa` human Q&A reader overlay (empty string disables; `/qa` command remains available).
 - **Default mode:** `widgets_default_mode` (`"expanded" | "collapsed"`, default `"expanded"`).
 
 Shared state and shortcut helpers live in `extensions/shared/widget-visibility.ts`.

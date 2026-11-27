@@ -58,6 +58,7 @@ import { registerPreCompactionElision } from "./pre-compaction-elision.js";
 import { registerMagicKeywords } from "./magic-keywords.js";
 import { registerAdvisor } from "./advisor.js";
 import { registerSnapshots } from "./snapshots.js";
+import { registerQaOverlay } from "./qa-overlay.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
@@ -242,6 +243,8 @@ export default function (pi: ExtensionAPI) {
   registerAdvisor(pi);
   // Git-backed per-turn file snapshots with /undo and /redo (#1449).
   registerSnapshots(pi);
+  // Human Q&A reader overlay (/qa, Alt+Q), 1-key quoting, and buried-answer hint (#1453).
+  registerQaOverlay(pi);
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
     registerWidgetShortcut(
       pi,
