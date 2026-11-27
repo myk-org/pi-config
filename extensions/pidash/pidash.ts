@@ -122,18 +122,23 @@ export function gitStatusEqual(a: GitStatus | null, b: GitStatus): boolean {
   return a !== null && a.branch === b.branch && a.dirty === b.dirty && a.changes === b.changes;
 }
 
-/** True only when an async git status check still belongs to the active connection and session epoch. */
+/** True only when an async git status check still belongs to the active connection, session epoch, and latest scan generation. */
 export function shouldPublishPeriodicGitStatus(opts: {
   shuttingDown: boolean;
   connected: boolean;
   sameSocket: boolean;
   startEpoch: number;
   currentEpoch: number;
+  scanSeq?: number;
+  currentScanSeq?: number;
   lastGitStatus: GitStatus | null;
   nextGitStatus: GitStatus;
 }): boolean {
   if (opts.shuttingDown || !opts.connected || !opts.sameSocket) return false;
   if (opts.startEpoch !== opts.currentEpoch) return false;
+  if (opts.scanSeq !== undefined && opts.currentScanSeq !== undefined && opts.scanSeq !== opts.currentScanSeq) {
+    return false;
+  }
   return !gitStatusEqual(opts.lastGitStatus, opts.nextGitStatus);
 }
 
@@ -388,6 +393,7 @@ export function registerPidash(
   let lastWorktreeSummary: WorktreeSummary | null = null;
   let lastWorktreeDirtyScanAt = 0;
   let lastStatusPollAt = 0;
+  let gitStatusScanSeq = 0;
   let sessionEpoch = 0;
   const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
 
@@ -980,6 +986,7 @@ export function registerPidash(
       lastGitStatus = resolvedGit;
       lastWorktreeSummary = initialWorktrees;
       lastStatusPollAt = Date.now();
+      gitStatusScanSeq++;
       const regWorktrees = initialWorktrees ?? { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
       const m = ctx.model;
       let thinking = "medium";
@@ -1067,6 +1074,7 @@ export function registerPidash(
       lastWorktreeSummary = null;
       lastWorktreeDirtyScanAt = 0;
       lastStatusPollAt = 0;
+      gitStatusScanSeq++;
     },
 
     onBeforeShutdown(event, activeWs, isConnected) {
@@ -1349,6 +1357,7 @@ export function registerPidash(
         return;
       }
       lastStatusPollAt = now;
+      const scanSeq = ++gitStatusScanSeq;
       inFlight = true;
       try {
         const shouldScanDirty = policy.pollWorktrees && now - lastWorktreeDirtyScanAt >= WORKTREE_DIRTY_POLL_INTERVAL_MS;
@@ -1370,6 +1379,8 @@ export function registerPidash(
           sameSocket: client.ws === activeWs,
           startEpoch,
           currentEpoch: sessionEpoch,
+          scanSeq,
+          currentScanSeq: gitStatusScanSeq,
           lastGitStatus,
           nextGitStatus: git,
         });
@@ -1432,9 +1443,10 @@ export function registerPidash(
       lastGitStatus = null;
       lastWorktreeSummary = { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
       lastWorktreeDirtyScanAt = 0;
-      lastStatusPollAt = 0;
+      lastStatusPollAt = Date.now();
       invalidateSharedPeerGitStatus(switchCtx.cwd, fetchGitStatus);
       const switchEpoch = sessionEpoch;
+      const switchScanSeq = ++gitStatusScanSeq;
       const switchWs = client.ws;
       const switchPolicy = getPeriodicStatusPolicy(switchCtx, registrationEnv, {
         tuiIntervalMs: periodicStatusTickMs,
@@ -1465,12 +1477,13 @@ export function registerPidash(
             sameSocket: client.ws === switchWs,
             startEpoch: switchEpoch,
             currentEpoch: sessionEpoch,
+            scanSeq: switchScanSeq,
+            currentScanSeq: gitStatusScanSeq,
             lastGitStatus,
             nextGitStatus: git,
           });
           if (gitChanged) {
             lastGitStatus = git;
-            lastStatusPollAt = Date.now();
             switchWs.send(JSON.stringify({
               type: "update_info",
               branch: git.branch,

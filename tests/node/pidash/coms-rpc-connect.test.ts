@@ -18,6 +18,7 @@ import {
   isPidashConnectableCtx,
   registerPidash,
   resolveComsRegistrationIdentity,
+  shouldPublishPeriodicGitStatus,
 } from "../../../extensions/pidash/pidash.ts";
 import { registerPidiff } from "../../../extensions/pidiff/pidiff.ts";
 import { setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
@@ -1295,6 +1296,110 @@ describe("supervised peer periodic status scaling (#1470)", () => {
       const upd = await freshUpdate;
       assert.equal(upd.gitDirty, true);
       assert.equal(upd.gitChanges, 3);
+    } finally {
+      emitPi("session_shutdown", {}, ctx);
+      await closeServer(server, sockets);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops superseded git status scan when scanSeq is older than currentScanSeq", () => {
+    assert.equal(
+      shouldPublishPeriodicGitStatus({
+        shuttingDown: false,
+        connected: true,
+        sameSocket: true,
+        startEpoch: 2,
+        currentEpoch: 2,
+        scanSeq: 3,
+        currentScanSeq: 4,
+        lastGitStatus: { branch: "main", dirty: true, changes: 5 },
+        nextGitStatus: { branch: "main", dirty: false, changes: 0 },
+      }),
+      false,
+    );
+    assert.equal(
+      shouldPublishPeriodicGitStatus({
+        shuttingDown: false,
+        connected: true,
+        sameSocket: true,
+        startEpoch: 2,
+        currentEpoch: 2,
+        scanSeq: 4,
+        currentScanSeq: 4,
+        lastGitStatus: { branch: "main", dirty: false, changes: 0 },
+        nextGitStatus: { branch: "main", dirty: true, changes: 5 },
+      }),
+      true,
+    );
+  });
+
+  it("ignores slow switch git status scan after newer periodic scan completes", async () => {
+    const dir = makeTempDir("pidash-overlap-git-");
+    const server = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const sockets = new WebSocketServer({ server, path: "/ws/pi" });
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    let callCount = 0;
+    let resolveSwitchScan!: (v: { branch: string; dirty: boolean; changes: number }) => void;
+
+    const fetchGitStatus = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return { branch: "main", dirty: false, changes: 0 };
+      }
+      if (callCount === 2) {
+        // Slow switch-time scan that resolves AFTER a newer periodic scan finishes.
+        return await new Promise<{ branch: string; dirty: boolean; changes: number }>((resolve) => {
+          resolveSwitchScan = resolve;
+        });
+      }
+      return { branch: "feat/newer", dirty: true, changes: 7 };
+    };
+
+    const { pi, emitPi } = createHarness();
+    const ctx = makeCtx("tui", { cwd: dir });
+
+    try {
+      const port = await listenHttp(server);
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidash_enable: true, pidash_port: port }));
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      delete process.env.PI_COMS_SUPERVISED_PEER;
+
+      const updateFrames: Record<string, unknown>[] = [];
+      sockets.on("connection", (socket) => {
+        socket.on("message", (raw) => {
+          const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (parsed.type === "update_info" && parsed.branch !== undefined) {
+            updateFrames.push(parsed);
+          }
+        });
+      });
+
+      registerPidash(pi, {
+        periodicStatusTickMs: 25,
+        fetchGitStatus,
+        fetchWorktreeSummary: async () => null,
+      });
+
+      const registerFrame = waitForFrame(sockets, (p) => p.type === "register");
+      emitPi("session_start", { reason: "startup" }, ctx);
+      await registerFrame;
+
+      const newerUpdate = waitForFrame(sockets, (p) => p.type === "update_info" && p.branch === "feat/newer", 2000);
+      emitPi("session_start", { reason: "new" }, ctx);
+      await newerUpdate;
+
+      // Now complete the older switch-time scan with stale data — it must be dropped.
+      resolveSwitchScan({ branch: "stale-old", dirty: false, changes: 0 });
+      await new Promise((r) => setTimeout(r, 40));
+
+      assert.equal(updateFrames.some((f) => f.branch === "stale-old"), false);
+      assert.equal(updateFrames[updateFrames.length - 1]?.branch, "feat/newer");
     } finally {
       emitPi("session_shutdown", {}, ctx);
       await closeServer(server, sockets);
