@@ -198,6 +198,7 @@ The internals mostly stay out of your way, but they explain several behaviors yo
 | A peer shows `⚙busy` | It is currently processing an inbound message |
 | A pending reply shows a progress note | The peer sent a progress signal (~60s interval) while still working |
 | An inbound says `(from the USER)` | A human sent it with the `m` composer in `/coms`. The marker is display only and unauthenticated — any local process can assert it |
+| COMS messages appear as 1 compact line (`📡 ← peer: summary  (ctrl+o to expand)` or `📡 + peer joined`) | Custom TUI message renderers collapse `coms-inbound`, `coms-response`, `coms-peer-joined`, and `coms-peer-left` to one line by default; press `Ctrl+O` to expand the full header and body (the LLM still receives the full `content`) |
 
 A few practical implications are worth remembering:
 
