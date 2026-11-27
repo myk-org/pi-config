@@ -9,10 +9,10 @@
  *   from QuickJS codemode scripts): validates strictly against `settings-keys.json`,
  *   enforces `global_only`, fails closed without a local interactive TUI terminal
  *   (never bridged over unauthenticated browser WebSockets), displays a complete
- *   un-truncated diff for explicit user approval via `ctx.ui.select(...,
- *   { blockedKind: "permission" })`, verifies no concurrent modification occurred
- *   before writing via compare-and-swap, clears paired model keys when providers
- *   change, and persists atomically via `updateSetting()`.
+ *   un-truncated, control-escaped, order-aware diff for explicit user approval via
+ *   `ctx.ui.select(..., { blockedKind: "permission" })`, verifies no concurrent
+ *   modification occurred across processes via locked `updateSettingsTransaction()`,
+ *   and atomically clears paired model keys in the same transaction when providers change.
  */
 
 import { isDeepStrictEqual } from "node:util";
@@ -23,6 +23,7 @@ import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-nam
 import { isBrowserDispatch } from "../shared/live-ctx.js";
 import {
   SETTINGS_KEYS,
+  type SettingMutation,
   type SettingSource,
   type SettingsKeyDef,
   type SettingsScope,
@@ -30,9 +31,10 @@ import {
   getCachedSettingsLayers,
   getFilePathForScope,
   getSettingEnvValue,
+  isOrderSensitiveDeepEqual,
   readSettingsFile,
   resolveSetting,
-  updateSetting,
+  updateSettingsTransaction,
   validateSetting,
 } from "./project-settings.js";
 import { CATEGORIES, maskSettingValue, sanitizeSettingValueForModel } from "./settings-tui-helpers.js";
@@ -89,15 +91,26 @@ export interface SettingBreakdown {
   set_in: Array<"project" | "global" | "env">;
 }
 
+/**
+ * Serialize any value or key as a single-line escaped JSON literal so embedded newlines,
+ * ANSI escape sequences, C0/C1 control characters, or bidi overrides can never forge
+ * prompt lines or alter terminal rendering.
+ */
+function safePromptJson(value: unknown): string {
+  return JSON.stringify(value).replace(/[\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, (ch) =>
+    `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
 function formatScalarPromptValue(key: string, value: unknown, def: SettingsKeyDef, isSet: boolean): string {
   if (!isSet) return "(unset)";
   const masked = maskSettingValue(key, value, def);
-  if (typeof masked === "string") return masked === "" ? '""' : JSON.stringify(masked);
+  if (typeof masked === "string") return masked === "" ? '""' : safePromptJson(masked);
   if (typeof masked === "boolean" || typeof masked === "number") return String(masked);
-  return JSON.stringify(masked);
+  return safePromptJson(masked);
 }
 
-/** Build a complete, un-truncated line-by-line diff of a string_list change. */
+/** Build a complete, un-truncated, control-escaped line-by-line diff of a string_list change. */
 function formatStringListDiffLines(
   action: "set" | "reset",
   hadOld: boolean,
@@ -126,7 +139,7 @@ function formatStringListDiffLines(
     if (alreadyKept < keepCount) {
       seenRemoved.set(entry, alreadyKept + 1);
     } else {
-      diffLines.push(`  - ${JSON.stringify(entry)}`);
+      diffLines.push(`  - ${safePromptJson(entry)}`);
     }
   }
   const seenAdded = new Map<string, number>();
@@ -136,7 +149,7 @@ function formatStringListDiffLines(
     if (alreadyMatched < oldCount) {
       seenAdded.set(entry, alreadyMatched + 1);
     } else {
-      diffLines.push(`  + ${JSON.stringify(entry)}`);
+      diffLines.push(`  + ${safePromptJson(entry)}`);
     }
   }
 
@@ -153,33 +166,89 @@ function formatStringListDiffLines(
   return [header, ...diffLines];
 }
 
-/** Build a complete, un-truncated key-by-key diff of an object setting change. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Check whether two key arrays have any relative order difference among shared keys. */
+function sharedKeysReordered(oldKeys: readonly string[], newKeys: readonly string[]): boolean {
+  const newSet = new Set(newKeys);
+  const oldSet = new Set(oldKeys);
+  const oldShared = oldKeys.filter((k) => newSet.has(k));
+  const newShared = newKeys.filter((k) => oldSet.has(k));
+  if (oldShared.length !== newShared.length) return true;
+  for (let i = 0; i < oldShared.length; i++) {
+    if (oldShared[i] !== newShared[i]) return true;
+  }
+  return false;
+}
+
+/** Format an ordered list of `[key, value]` rule entries with escaped JSON literals. */
+function formatOrderedRuleEntries(obj: Record<string, unknown>, indent = "    "): string[] {
+  const entries = Object.entries(obj);
+  if (entries.length === 0) return [`${indent}(none)`];
+  return entries.map(([k, v], idx) => `${indent}${idx + 1}. ${safePromptJson(k)}: ${safePromptJson(v)}`);
+}
+
+/**
+ * Build a complete, un-truncated, control-escaped diff of an object setting change.
+ * For `tool_permissions` (last-match-wins insertion-order semantics), detects reordering
+ * at both top-level and nested host-rule objects and displays the full ordered sequences.
+ */
 function formatObjectDiffLines(
   action: "set" | "reset",
   hadOld: boolean,
   oldValue: unknown,
   newValue: unknown,
+  orderSensitive: boolean,
 ): string[] {
-  const oldObj = hadOld && oldValue !== null && typeof oldValue === "object" && !Array.isArray(oldValue)
-    ? (oldValue as Record<string, unknown>)
-    : {};
-  const newObj = action === "reset"
-    ? {}
-    : newValue !== null && typeof newValue === "object" && !Array.isArray(newValue)
-      ? (newValue as Record<string, unknown>)
-      : {};
+  const oldObj = hadOld && isPlainObject(oldValue) ? oldValue : {};
+  const newObj = action === "reset" ? {} : isPlainObject(newValue) ? newValue : {};
 
-  const allKeys = [...new Set([...Object.keys(oldObj), ...Object.keys(newObj)])].sort();
+  const oldKeys = Object.keys(oldObj);
+  const newKeys = Object.keys(newObj);
+
+  if (orderSensitive && action === "set") {
+    const topOrderChanged = sharedKeysReordered(oldKeys, newKeys);
+    const anyNestedOrderChanged = oldKeys.some((k) => {
+      if (!(k in newObj)) return false;
+      const ov = oldObj[k];
+      const nv = newObj[k];
+      return isPlainObject(ov) && isPlainObject(nv) && sharedKeysReordered(Object.keys(ov), Object.keys(nv));
+    });
+
+    if (topOrderChanged || anyNestedOrderChanged) {
+      return [
+        `Change (rule evaluation order changed — last-match-wins, ${hadOld ? `${oldKeys.length}` : "unset"} -> ${newKeys.length} rule(s)):`,
+        "  Old order:",
+        ...formatOrderedRuleEntries(oldObj),
+        "  New order:",
+        ...formatOrderedRuleEntries(newObj),
+      ];
+    }
+  }
+
+  // Preserve insertion order for order-sensitive objects, sorted otherwise.
+  const allKeys = orderSensitive
+    ? [...new Set([...oldKeys, ...newKeys])]
+    : [...new Set([...oldKeys, ...newKeys])].sort();
+
   const diffLines: string[] = [];
   for (const k of allKeys) {
     const inOld = k in oldObj;
     const inNew = k in newObj;
+    const keyLiteral = safePromptJson(k);
     if (inOld && !inNew) {
-      diffLines.push(`  - ${k}: ${JSON.stringify(oldObj[k])}`);
+      diffLines.push(`  - ${keyLiteral}: ${safePromptJson(oldObj[k])}`);
     } else if (!inOld && inNew) {
-      diffLines.push(`  + ${k}: ${JSON.stringify(newObj[k])}`);
-    } else if (!isDeepStrictEqual(oldObj[k], newObj[k])) {
-      diffLines.push(`  ~ ${k}: ${JSON.stringify(oldObj[k])} -> ${JSON.stringify(newObj[k])}`);
+      diffLines.push(`  + ${keyLiteral}: ${safePromptJson(newObj[k])}`);
+    } else {
+      const equal = orderSensitive
+        ? isOrderSensitiveDeepEqual(oldObj[k], newObj[k])
+        : isDeepStrictEqual(oldObj[k], newObj[k]);
+      if (!equal) {
+        diffLines.push(`  ~ ${keyLiteral}: ${safePromptJson(oldObj[k])} -> ${safePromptJson(newObj[k])}`);
+      }
     }
   }
 
@@ -189,8 +258,8 @@ function formatObjectDiffLines(
   }
 
   const header = action === "reset"
-    ? `Change (reset ${Object.keys(oldObj).length} key(s) -> unset):`
-    : `Change (${hadOld ? `${Object.keys(oldObj).length} key(s)` : "unset"} -> ${Object.keys(newObj).length} key(s)):`;
+    ? `Change (reset ${oldKeys.length} key(s) -> unset):`
+    : `Change (${hadOld ? `${oldKeys.length} key(s)` : "unset"} -> ${newKeys.length} key(s)):`;
   return [header, ...diffLines];
 }
 
@@ -254,7 +323,7 @@ export function buildSettingBreakdown(
   };
 }
 
-/** Build the complete, un-truncated user-facing permission prompt for `settings_set`. */
+/** Build the complete, un-truncated, control-escaped user-facing permission prompt for `settings_set`. */
 export function buildSettingsApprovalPrompt(params: {
   action: "set" | "reset";
   key: string;
@@ -264,9 +333,10 @@ export function buildSettingsApprovalPrompt(params: {
   hadOld: boolean;
   oldValue: unknown;
   newValue: unknown;
+  pairedModelState?: { key: string; hadOld: boolean; oldValue: unknown };
   reconfirmNote?: string;
 }): string {
-  const { action, key, scope, scopeFile, def, hadOld, oldValue, newValue, reconfirmNote } = params;
+  const { action, key, scope, scopeFile, def, hadOld, oldValue, newValue, pairedModelState, reconfirmNote } = params;
 
   const lines: string[] = [];
   if (PROTECTED_SETTING_KEYS.has(key)) {
@@ -280,15 +350,19 @@ export function buildSettingsApprovalPrompt(params: {
   lines.push(`Scope:  ${scope} (${scopeFile})`);
   lines.push(`Action: ${action}`);
 
-  const pairedModelKey = PAIRED_MODEL_KEYS[key];
-  if (pairedModelKey) {
-    lines.push(`Side-effect: also clears ${pairedModelKey} in ${scope} scope`);
+  const pairedKey = pairedModelState?.key ?? PAIRED_MODEL_KEYS[key];
+  if (pairedKey) {
+    const pairedDef = SETTINGS_KEYS[pairedKey];
+    const pairedOldStr = pairedModelState && pairedDef
+      ? formatScalarPromptValue(pairedKey, pairedModelState.oldValue, pairedDef, pairedModelState.hadOld)
+      : "(current)";
+    lines.push(`Side-effect: also clears ${pairedKey} in ${scope} scope (${pairedOldStr} -> "")`);
   }
 
   if (def.type === "string_list") {
     lines.push(...formatStringListDiffLines(action, hadOld, oldValue, newValue));
   } else if (def.type === "agent_overrides" || def.type === "tool_permissions") {
-    lines.push(...formatObjectDiffLines(action, hadOld, oldValue, newValue));
+    lines.push(...formatObjectDiffLines(action, hadOld, oldValue, newValue, def.type === "tool_permissions"));
   } else {
     const oldStr = formatScalarPromptValue(key, oldValue, def, hadOld);
     const newStr =
@@ -505,6 +579,7 @@ export function registerSettingsTools(pi: ExtensionAPI): void {
       }
 
       const scopeFile = getFilePathForScope(scope, cwd);
+      const pairedModelKey = PAIRED_MODEL_KEYS[key];
 
       let reconfirmNote: string | undefined;
       for (let attempt = 0; attempt <= MAX_CONFLICT_REPROMPTS; attempt++) {
@@ -516,6 +591,14 @@ export function registerSettingsTools(pi: ExtensionAPI): void {
 
         const hadOld = key in current;
         const oldValue = hadOld ? current[key] : undefined;
+
+        const pairedModelState = pairedModelKey
+          ? {
+              key: pairedModelKey,
+              hadOld: pairedModelKey in current,
+              oldValue: pairedModelKey in current ? current[pairedModelKey] : undefined,
+            }
+          : undefined;
 
         if (action === "reset" && !hadOld) {
           log.debug("settings_set_reset_noop", { key, scope });
@@ -546,6 +629,7 @@ export function registerSettingsTools(pi: ExtensionAPI): void {
           hadOld,
           oldValue,
           newValue: validatedValue,
+          pairedModelState,
           reconfirmNote,
         });
 
@@ -578,10 +662,23 @@ export function registerSettingsTools(pi: ExtensionAPI): void {
           );
         }
 
-        // Atomic compare-and-swap against the exact value reviewed by the user.
-        const result = updateSetting(cwd, scope, key, action === "reset" ? undefined : validatedValue, {
-          expected: { exists: hadOld, value: oldValue },
-        });
+        // Atomic cross-process locked transaction covering both the target key and any paired model clear.
+        const mutations: SettingMutation[] = [
+          {
+            key,
+            value: action === "reset" ? undefined : validatedValue,
+            expected: { exists: hadOld, value: oldValue },
+          },
+        ];
+        if (pairedModelState) {
+          mutations.push({
+            key: pairedModelState.key,
+            value: "",
+            expected: { exists: pairedModelState.hadOld, value: pairedModelState.oldValue },
+          });
+        }
+
+        const result = updateSettingsTransaction(cwd, scope, mutations);
 
         if (!result.ok) {
           if (result.reason === "conflict" && attempt < MAX_CONFLICT_REPROMPTS) {
@@ -593,25 +690,12 @@ export function registerSettingsTools(pi: ExtensionAPI): void {
           return errorResult(`Failed to ${action} "${key}" in ${scope} scope: ${result.error}`);
         }
 
-        // Match TUI behavior: changing/resetting a provider clears its paired model in the same scope.
-        const pairedModelKey = PAIRED_MODEL_KEYS[key];
-        let clearedPairedKey: string | undefined;
-        if (pairedModelKey) {
-          const pairedRes = updateSetting(cwd, scope, pairedModelKey, "");
-          if (pairedRes.ok) {
-            clearedPairedKey = pairedModelKey;
-            try {
-              pi.events.emit("orchestrator:settings-changed", { key: pairedModelKey, cwd });
-            } catch {
-              /* ignore listener errors */
-            }
-          } else {
-            log.warn("settings_set_paired_clear_failed", {
-              key,
-              pairedModelKey,
-              scope,
-              error: pairedRes.error,
-            });
+        const clearedPairedKey = pairedModelState?.key;
+        if (clearedPairedKey) {
+          try {
+            pi.events.emit("orchestrator:settings-changed", { key: clearedPairedKey, cwd });
+          } catch {
+            /* ignore listener errors */
           }
         }
 

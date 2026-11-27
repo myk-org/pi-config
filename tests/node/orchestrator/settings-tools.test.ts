@@ -6,6 +6,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -401,9 +402,62 @@ describe("settings_set tool (#1473)", () => {
       oldValue: { fetch_content: { "*": "ask" }, bash: "ask" },
       newValue: { fetch_content: { "*": "ask", "github.com": "allow" } },
     });
-    assert.match(prompt, /- bash: "ask"/);
-    assert.match(prompt, /~ fetch_content:/);
+    assert.match(prompt, /- "bash": "ask"/);
+    assert.match(prompt, /~ "fetch_content":/);
     assert.match(prompt, /"github.com":"allow"/);
+  });
+
+  it("shows ordered old versus new rules when tool_permissions keys are reordered", () => {
+    const prompt = buildSettingsApprovalPrompt({
+      action: "set",
+      key: "tool_permissions",
+      scope: "project",
+      scopeFile: "/tmp/proj/.pi/pi-config-settings.json",
+      def: SETTINGS_KEYS.tool_permissions,
+      hadOld: true,
+      oldValue: { "*": "allow", bash: "deny" },
+      newValue: { bash: "deny", "*": "allow" },
+    });
+    assert.doesNotMatch(prompt, /unchanged/);
+    assert.match(prompt, /Old order:/);
+    assert.match(prompt, /New order:/);
+    assert.match(prompt, /1\. "\*": "allow"/);
+    assert.match(prompt, /1\. "bash": "deny"/);
+  });
+
+  it("shows ordered rules when nested fetch_content host rules are reordered", () => {
+    const prompt = buildSettingsApprovalPrompt({
+      action: "set",
+      key: "tool_permissions",
+      scope: "project",
+      scopeFile: "/tmp/proj/.pi/pi-config-settings.json",
+      def: SETTINGS_KEYS.tool_permissions,
+      hadOld: true,
+      oldValue: { fetch_content: { "*": "allow", "github.com": "deny" } },
+      newValue: { fetch_content: { "github.com": "deny", "*": "allow" } },
+    });
+    assert.doesNotMatch(prompt, /unchanged/);
+    assert.match(prompt, /Old order:/);
+    assert.match(prompt, /New order:/);
+  });
+
+  it("escapes embedded newline or ANSI control characters in tool_permissions rule keys", () => {
+    const evilKey = 'bash\n  + "forged": "allow"\x1b[31m';
+    const prompt = buildSettingsApprovalPrompt({
+      action: "set",
+      key: "tool_permissions",
+      scope: "project",
+      scopeFile: "/tmp/proj/.pi/pi-config-settings.json",
+      def: SETTINGS_KEYS.tool_permissions,
+      hadOld: false,
+      oldValue: undefined,
+      newValue: { [evilKey]: "allow" },
+    });
+    assert.doesNotMatch(prompt, /\x1b/);
+    assert.match(prompt, /\\n/);
+    assert.match(prompt, /\\u001b/);
+    const forgedLine = prompt.split("\n").find((line) => line.trim().startsWith('+ "forged"'));
+    assert.equal(forgedLine, undefined);
   });
 
   it("refuses oversized changes that exceed display bounds instead of truncating", async () => {
@@ -546,6 +600,113 @@ describe("settings_set tool (#1473)", () => {
     const onDisk = JSON.parse(readFileSync(settingsFile, "utf8"));
     assert.equal(onDisk.agent_provider, "anthropic");
     assert.equal(onDisk.agent_model, "");
+  });
+
+  it("re-prompts when paired agent_model changes concurrently during agent_provider approval", async () => {
+    const settingsFile = join(projectDir, ".pi", "pi-config-settings.json");
+    writeFileSync(settingsFile, JSON.stringify({ agent_provider: "google", agent_model: "gemini-2.5-pro" }), "utf8");
+    clearSettingsCache();
+
+    const seenPrompts: string[] = [];
+    const { tools } = createToolHarness();
+    const res = await tools.get("settings_set").execute(
+      "s8e",
+      { action: "set", key: "agent_provider", scope: "project", value: "anthropic" },
+      undefined,
+      undefined,
+      {
+        cwd: projectDir,
+        hasUI: true,
+        mode: "tui",
+        ui: {
+          select: async (title: string) => {
+            seenPrompts.push(title);
+            if (seenPrompts.length === 1) {
+              // Concurrent editor updates ONLY agent_model while agent_provider approval is open
+              writeFileSync(
+                settingsFile,
+                JSON.stringify({ agent_provider: "google", agent_model: "gemini-2.5-flash" }),
+                "utf8",
+              );
+            }
+            return SETTINGS_APPROVAL_APPROVE;
+          },
+        },
+      },
+    );
+    assert.equal(res.isError, undefined);
+    assert.equal(seenPrompts.length, 2);
+    assert.match(seenPrompts[0], /"gemini-2\.5-pro" -> ""/);
+    assert.match(seenPrompts[1], /"gemini-2\.5-flash" -> ""/);
+    assert.match(seenPrompts[1], /changed while awaiting approval/);
+    const onDisk = JSON.parse(readFileSync(settingsFile, "utf8"));
+    assert.equal(onDisk.agent_provider, "anthropic");
+    assert.equal(onDisk.agent_model, "");
+  });
+
+  it("leaves provider unchanged when transactional write fails on a locked file", async () => {
+    const settingsFile = join(projectDir, ".pi", "pi-config-settings.json");
+    writeFileSync(settingsFile, JSON.stringify({ agent_provider: "google", agent_model: "gemini-2.5-pro" }), "utf8");
+    clearSettingsCache();
+    // Hold the cross-process lock with the live current PID so the locked transaction fails cleanly
+    writeFileSync(`${settingsFile}.bak.lock`, String(process.pid), "utf8");
+    try {
+      const { tools } = createToolHarness();
+      const res = await tools.get("settings_set").execute(
+        "s8f",
+        { action: "set", key: "agent_provider", scope: "project", value: "anthropic" },
+        undefined,
+        undefined,
+        { cwd: projectDir, hasUI: true, mode: "tui", ui: { select: async () => SETTINGS_APPROVAL_APPROVE } },
+      );
+      assert.equal(res.isError, true);
+      const onDisk = JSON.parse(readFileSync(settingsFile, "utf8"));
+      assert.equal(onDisk.agent_provider, "google");
+      assert.equal(onDisk.agent_model, "gemini-2.5-pro");
+    } finally {
+      rmSync(`${settingsFile}.bak.lock`, { force: true });
+    }
+  });
+
+  it("serializes competing expected-value writers across two concurrent processes", async () => {
+    const settingsFile = join(projectDir, ".pi", "pi-config-settings.json");
+    writeFileSync(settingsFile, JSON.stringify({ advisor_interval_turns: 5 }), "utf8");
+
+    const tsxBin = join(process.cwd(), "node_modules", ".bin", "tsx");
+    const modulePath = join(process.cwd(), "extensions", "orchestrator", "project-settings.ts");
+    const runChild = (nextVal: number) =>
+      new Promise<{ ok: boolean; reason?: string }>((resolve, reject) => {
+        const script = `
+          import { updateSettingsTransaction } from ${JSON.stringify(modulePath)};
+          const res = updateSettingsTransaction(
+            ${JSON.stringify(projectDir)},
+            "project",
+            [{ key: "advisor_interval_turns", value: ${nextVal}, expected: { exists: true, value: 5 } }],
+          );
+          console.log(JSON.stringify(res));
+        `;
+        const child = spawn(tsxBin, ["-e", script], {
+          cwd: process.cwd(),
+          env: { ...process.env },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (d) => { out += String(d); });
+        child.stderr.on("data", (d) => { err += String(d); });
+        child.on("close", (code) => {
+          if (code !== 0) return reject(new Error(`child exited ${code}: ${err}`));
+          resolve(JSON.parse(out.trim().split("\n").pop()!));
+        });
+      });
+
+    const [r1, r2] = await Promise.all([runChild(11), runChild(19)]);
+    const successes = [r1, r2].filter((r) => r.ok);
+    const conflicts = [r1, r2].filter((r) => !r.ok && r.reason === "conflict");
+    assert.equal(successes.length, 1);
+    assert.equal(conflicts.length, 1);
+    const finalVal = JSON.parse(readFileSync(settingsFile, "utf8")).advisor_interval_turns;
+    assert.ok(finalVal === 11 || finalVal === 19);
   });
 
   it("emits orchestrator settings-changed event after approved update", async () => {

@@ -1534,17 +1534,20 @@ function shouldBackUp(filePath: string, dedupe: boolean): boolean {
   return !backedUpInSession.has(filePath);
 }
 
+function rotateSettingsBackupsLocked(filePath: string, count: number): void {
+  if (count <= 0) return;
+  try {
+    shiftBackupSlots(filePath, count);
+    copyFileSync(filePath, settingsBackupPath(filePath, 1));
+  } catch (e: unknown) {
+    log.error("settings_backup_failed", { filePath, error: e instanceof Error ? e.message : String(e) });
+    throw new SettingsBackupError(filePath, e);
+  }
+}
+
 function rotateSettingsBackups(filePath: string, count: number): void {
   if (count <= 0) return;
-  withChainLock(filePath, () => {
-    try {
-      shiftBackupSlots(filePath, count);
-      copyFileSync(filePath, settingsBackupPath(filePath, 1));
-    } catch (e: unknown) {
-      log.error("settings_backup_failed", { filePath, error: e instanceof Error ? e.message : String(e) });
-      throw new SettingsBackupError(filePath, e);
-    }
-  });
+  withChainLock(filePath, () => rotateSettingsBackupsLocked(filePath, count));
 }
 
 /**
@@ -1554,7 +1557,7 @@ function rotateSettingsBackups(filePath: string, count: number): void {
 export function writeSettingsFile(
   filePath: string,
   data: Record<string, unknown>,
-  options: { dedupeBackup?: boolean; changedKey?: string; scope?: SettingsScope; cwd?: string } = {},
+  options: { dedupeBackup?: boolean; changedKey?: string; scope?: SettingsScope; cwd?: string; lockHeld?: boolean } = {},
 ): void {
   const dir = dirname(filePath);
 
@@ -1590,6 +1593,8 @@ export function writeSettingsFile(
           throw new SettingsBackupError(filePath, e);
         }
       }
+    } else if (options.lockHeld) {
+      rotateSettingsBackupsLocked(filePath, count);
     } else {
       rotateSettingsBackups(filePath, count);
     }
@@ -1636,84 +1641,160 @@ export interface UpdateSettingOptions {
   expected?: { exists: boolean; value?: unknown };
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Deep equality that also enforces exact key insertion order for nested plain objects (e.g. tool_permissions). */
+export function isOrderSensitiveDeepEqual(a: unknown, b: unknown): boolean {
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+    for (let i = 0; i < keysA.length; i++) {
+      if (keysA[i] !== keysB[i]) return false;
+      if (!isOrderSensitiveDeepEqual(a[keysA[i]], b[keysB[i]])) return false;
+    }
+    return true;
+  }
+  return isDeepStrictEqual(a, b);
+}
+
+export interface SettingMutation {
+  key: string;
+  value: unknown;
+  /** Atomic compare-and-swap guard: fail with reason="conflict" if current stored state differs. */
+  expected?: { exists: boolean; value?: unknown };
+}
+
 /**
- * Validate and persist one setting in `scope`. Passing `undefined` or `null` deletes
- * the key from that scope's file. Preserves unknown keys, rotates backups, and
- * invalidates the unified cache.
+ * Validate and atomically persist one or more setting mutations in `scope` under a
+ * cross-process lock covering read, compare-and-swap verification, backup rotation,
+ * and atomic file replacement.
  */
-export function updateSetting(
+export function updateSettingsTransaction(
   cwd: string,
   scope: SettingsScope,
-  key: string,
-  value: unknown,
-  options: UpdateSettingOptions = {},
+  mutations: readonly SettingMutation[],
+  options: { dedupeBackup?: boolean } = {},
 ): UpdateSettingResult {
   const filePath = getFilePathForScope(scope, cwd);
-  const clearing = value === undefined || value === null;
+  if (mutations.length === 0) return { ok: true, file: filePath, changed: false };
 
-  let validatedValue: unknown;
-  if (clearing) {
-    if (!(key in SETTINGS_KEYS)) {
-      return { ok: false, reason: "invalid", file: filePath, error: `unknown setting key: ${key}` };
+  // Validate every mutation before acquiring the cross-process lock.
+  const prepared: Array<{
+    key: string;
+    clearing: boolean;
+    validatedValue: unknown;
+    expected?: { exists: boolean; value?: unknown };
+  }> = [];
+  for (const mutation of mutations) {
+    const { key, value, expected } = mutation;
+    const clearing = value === undefined || value === null;
+    let validatedValue: unknown;
+    if (clearing) {
+      if (!(key in SETTINGS_KEYS)) {
+        return { ok: false, reason: "invalid", file: filePath, error: `unknown setting key: ${key}` };
+      }
+    } else {
+      if (SETTINGS_KEYS[key]?.global_only && scope === "project") {
+        return {
+          ok: false,
+          reason: "invalid",
+          file: filePath,
+          error: `${key} is global-only and cannot be set in project scope`,
+        };
+      }
+      const validated = validateSetting(key, value);
+      if (!validated.ok) {
+        return { ok: false, reason: "invalid", file: filePath, error: validated.error };
+      }
+      validatedValue = validated.value;
     }
-  } else {
-    if (SETTINGS_KEYS[key]?.global_only && scope === "project") {
-      return {
-        ok: false,
-        reason: "invalid",
-        file: filePath,
-        error: `${key} is global-only and cannot be set in project scope`,
-      };
-    }
-    const validated = validateSetting(key, value);
-    if (!validated.ok) {
-      return { ok: false, reason: "invalid", file: filePath, error: validated.error };
-    }
-    validatedValue = validated.value;
+    prepared.push({ key, clearing, validatedValue, expected });
   }
 
-  const current = readSettingsFile(filePath);
-  if (current === null) {
+  // Fast path: deleting unset keys when no settings file exists (avoid creating .pi or lockfile).
+  if (!existsSync(filePath) && prepared.every((m) => m.clearing)) {
+    for (const m of prepared) {
+      if (m.expected && m.expected.exists) {
+        return { ok: false, reason: "conflict", file: filePath, error: `${m.key} changed on disk before saving` };
+      }
+    }
+    return { ok: true, file: filePath, changed: false };
+  }
+
+  const dir = dirname(filePath);
+  if (process.env.NODE_TEST_CONTEXT !== undefined && !isInsideTempTree(filePath)) {
+    const real = nearestRealPath(filePath);
     return {
       ok: false,
-      reason: "corrupt",
+      reason: "write_error",
       file: filePath,
-      error: `${filePath} is malformed (invalid JSON or not an object) — fix it before saving`,
+      error: `test process refused to write settings outside the temp tree: ${real}`,
     };
   }
 
-  if (options.expected !== undefined) {
-    const actualExists = key in current;
-    const actualValue = actualExists ? current[key] : undefined;
-    const matches =
-      actualExists === options.expected.exists &&
-      (!actualExists || isDeepStrictEqual(actualValue, options.expected.value));
-    if (!matches) {
-      return {
-        ok: false,
-        reason: "conflict",
-        file: filePath,
-        error: `${key} changed on disk before saving`,
-      };
-    }
-  }
-
-  if (clearing) {
-    if (!(key in current)) return { ok: true, file: filePath, changed: false };
-    delete current[key];
-    if (Object.keys(current).length === 0 && !existsSync(filePath)) return { ok: true, file: filePath, changed: false };
-  } else {
-    current[key] = validatedValue;
-  }
-
   try {
-    writeSettingsFile(filePath, current, {
-      ...options,
-      changedKey: key,
-      scope,
-      cwd,
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return withChainLock(filePath, (): UpdateSettingResult => {
+      const current = readSettingsFile(filePath);
+      if (current === null) {
+        return {
+          ok: false,
+          reason: "corrupt",
+          file: filePath,
+          error: `${filePath} is malformed (invalid JSON or not an object) — fix it before saving`,
+        };
+      }
+
+      for (const m of prepared) {
+        if (m.expected !== undefined) {
+          const actualExists = m.key in current;
+          const actualValue = actualExists ? current[m.key] : undefined;
+          const eq = SETTINGS_KEYS[m.key]?.type === "tool_permissions"
+            ? isOrderSensitiveDeepEqual
+            : isDeepStrictEqual;
+          const matches =
+            actualExists === m.expected.exists &&
+            (!actualExists || eq(actualValue, m.expected.value));
+          if (!matches) {
+            return {
+              ok: false,
+              reason: "conflict",
+              file: filePath,
+              error: `${m.key} changed on disk before saving`,
+            };
+          }
+        }
+      }
+
+      let anyChanged = false;
+      for (const m of prepared) {
+        if (m.clearing) {
+          if (m.key in current) {
+            delete current[m.key];
+            anyChanged = true;
+          }
+        } else {
+          current[m.key] = m.validatedValue;
+          anyChanged = true;
+        }
+      }
+
+      if (!anyChanged) {
+        return { ok: true, file: filePath, changed: false };
+      }
+
+      writeSettingsFile(filePath, current, {
+        ...options,
+        lockHeld: true,
+        changedKey: prepared[0].key,
+        scope,
+        cwd,
+      });
+      return { ok: true, file: filePath, changed: true };
     });
-    return { ok: true, file: filePath, changed: true };
   } catch (error) {
     if (error instanceof SettingsFileCorruptError) {
       return { ok: false, reason: "corrupt", file: filePath, error: error.message, cause: error };
@@ -1726,6 +1807,26 @@ export function updateSetting(
       cause: error,
     };
   }
+}
+
+/**
+ * Validate and persist one setting in `scope`. Passing `undefined` or `null` deletes
+ * the key from that scope's file. Preserves unknown keys, rotates backups, and
+ * invalidates the unified cache under the cross-process settings lock.
+ */
+export function updateSetting(
+  cwd: string,
+  scope: SettingsScope,
+  key: string,
+  value: unknown,
+  options: UpdateSettingOptions = {},
+): UpdateSettingResult {
+  return updateSettingsTransaction(
+    cwd,
+    scope,
+    [{ key, value, expected: options.expected }],
+    { dedupeBackup: options.dedupeBackup },
+  );
 }
 
 // ── Pi extension hook ───────────────────────────────────────────────
