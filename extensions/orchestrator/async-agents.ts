@@ -79,6 +79,8 @@ export interface AsyncJob {
   lateResultSent?: boolean;
   sideEffectsApplied?: boolean;
   fireAndForget?: boolean;
+  /** Stable cron task UUID when spawned by `registerCron`; persisted across `/reload` for outcome history. */
+  cronTaskId?: string;
   /** When true, a successful worker whose trimmed output starts with `[NOOP]` suppresses parent followUp delivery. */
   quietOnNoop?: boolean;
   /** One-shot: fires once with the ingested result text. Used by async chains to feed {previous}. */
@@ -444,7 +446,7 @@ export function registerAsyncAgents(
     discoverAgents?: (cwd: string, scope: "both") => Pick<AgentDiscoveryResult, "agents">;
   } = {},
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; quietOnNoop?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; cronTaskId?: string; quietOnNoop?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
   reviveAsyncJob: (jobRef: AsyncStatusJobView | string) => Promise<ReviveJobResult>;
   /** The full job record: callers read `taskStorePath` and the delivery flags off it. */
@@ -938,6 +940,19 @@ export function registerAsyncAgents(
     if (asyncState.poller.unref) asyncState.poller.unref();
   }
 
+  function emitCronRunCompleted(job: AsyncJob, opts: { isError: boolean; isLate: boolean }) {
+    if (!job.cronTaskId) return;
+    safeEmit("cron:run-completed", {
+      cronTaskId: job.cronTaskId,
+      runId: job.id,
+      startedAt: job.startedAt,
+      quietOnNoop: job.quietOnNoop === true,
+      text: typeof job.output === "string" ? job.output : "",
+      isError: opts.isError,
+      isLate: opts.isLate,
+    });
+  }
+
   /** Deliver ONE job's result the moment it finishes. Never gated on `groupId`: a finished
    *  agent must not wait for its slowest sibling (issue #1110). `groupId` stays display-only.
    *  Idempotent (`job.delivered` + the in-flight set), so the watcher, the poller sweep, the
@@ -1021,6 +1036,7 @@ export function registerAsyncAgents(
         job.delivered = true;
         if (isLate) job.lateResultSent = true;
         log.info("deliver_suppressed_quiet_noop", { job: job.id, name: job.name, isLate });
+        emitCronRunCompleted(job, { isError: false, isLate });
         if (fireHook && !withholdChainHook) fireOnComplete(job);
       } else if (getLiveAsyncCtx()) {
         const displayName = job.name || job.agent;
@@ -1061,6 +1077,10 @@ export function registerAsyncAgents(
               job.lateResultSent = true;
               log.info("deliver_late_result", { job: job.id, agent: job.agent });
             }
+            emitCronRunCompleted(job, {
+              isError: job.status !== "complete" || Boolean(job.killOrigin) || noIngestedResult,
+              isLate,
+            });
             log.debug("deliver_ok", job.id);
           } catch (e: any) {
             log.error(`deliver: sendMessage failed for ${job.id}: ${e?.message}`);
@@ -1260,7 +1280,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; quietOnNoop?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState },
+    options?: { fireAndForget?: boolean; cronTaskId?: string; quietOnNoop?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -1326,6 +1346,7 @@ export function registerAsyncAgents(
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
       resultsDir: ASYNC_RESULTS_DIR,
       fireAndForget: options?.fireAndForget || false,
+      cronTaskId: options?.cronTaskId || null,
       quietOnNoop: options?.quietOnNoop === true,
       parentPid: process.pid,
       parentStartTime,
@@ -1424,6 +1445,7 @@ export function registerAsyncAgents(
       startedAt: Date.now(),
       updatedAt: Date.now(),
       fireAndForget: options?.fireAndForget,
+      cronTaskId: options?.cronTaskId || undefined,
       quietOnNoop: options?.quietOnNoop === true || undefined,
       onComplete: options?.onComplete,
       groupId: options?.groupId,
@@ -1668,6 +1690,7 @@ export function registerAsyncAgents(
             lateResultSent: status.lateResultSent === true || undefined,
             sideEffectsApplied: isComplete && alreadySent,
             fireAndForget: marker.fireAndForget || false,
+            cronTaskId: typeof marker.cronTaskId === "string" && marker.cronTaskId ? marker.cronTaskId : undefined,
             quietOnNoop: marker.quietOnNoop === true || undefined,
             taskId: marker.taskId || undefined,
             taskStorePath: marker.taskStorePath || undefined,

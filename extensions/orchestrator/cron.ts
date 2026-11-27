@@ -12,7 +12,7 @@ import { parseModelOverride } from "./parse-model-override.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
 import { setSlot } from "./status-bar.js";
 import { isBrowserDispatch } from "../shared/live-ctx.js";
-import { acquireLeaderLock, durableCronSupported, isCronNoopOutput, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, readDurableCronStoreOutcome, refreshLeaderLock, releaseLeaderLock, setDurableCronPaused, validateDurableCronTask, type CronLockOwner, type CronRunOutcome, type CronScope, type DurableCronTask } from "./cron-store.js";
+import { acquireLeaderLock, applyCronRunOutcomeUpdate, durableCronSupported, isCronNoopOutput, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, readDurableCronStoreOutcome, recordDurableCronRunOutcome, refreshLeaderLock, releaseLeaderLock, setDurableCronPaused, validateDurableCronTask, type CronLockOwner, type CronRunOutcome, type CronScope, type DurableCronTask } from "./cron-store.js";
 
 export { isCronNoopOutput, type CronRunOutcome } from "./cron-store.js";
 
@@ -23,7 +23,7 @@ export const CRON_QUIET_NOOP_PROMPT_SUFFIX =
 const EDITABLE_CRON_FIELDS = ["description", "task", "model", "interval_seconds", "at_hour", "at_minute", "quiet_on_noop"] as const;
 
 const log = createLogger("cron");
-export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; /** "provider/model-id" or bare "model-id"; undefined inherits the normal resolution chain. */ model?: string; /** Paused by the user: kept, never armed (issue #1087). */ paused?: boolean; /** Suppress parent followUp chat turn when a successful worker replies starting with `[NOOP]`. */ quiet_on_noop?: boolean; /** Number of completed/executed runs recorded for this cron. */ runCount?: number; /** Outcome of the most recent completed run. */ lastOutcome?: CronRunOutcome; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
+export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; /** "provider/model-id" or bare "model-id"; undefined inherits the normal resolution chain. */ model?: string; /** Paused by the user: kept, never armed (issue #1087). */ paused?: boolean; /** Suppress parent followUp chat turn when a successful worker replies starting with `[NOOP]`. */ quiet_on_noop?: boolean; /** Number of completed/executed runs recorded for this cron. */ runCount?: number; /** Outcome of the most recent completed run. */ lastOutcome?: CronRunOutcome; /** Worker run id that last updated `lastOutcome`, used for idempotent/late-result reconciliation. */ lastRunId?: string; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
 type Timer = ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>;
 const durable = (scope: CronScope) => scope === "project";
 let sessionStore = "";
@@ -45,6 +45,7 @@ function validateSessionCronTask(task: unknown): asserts task is CronTask {
   if (value.quiet_on_noop !== undefined && typeof value.quiet_on_noop !== "boolean") throw new Error("Invalid session cron quiet_on_noop flag");
   if (value.runCount !== undefined && (!Number.isInteger(value.runCount) || value.runCount < 0)) throw new Error("Invalid session cron runCount");
   if (value.lastOutcome !== undefined && value.lastOutcome !== "delivered" && value.lastOutcome !== "noop" && value.lastOutcome !== "error") throw new Error("Invalid session cron lastOutcome");
+  if (value.lastRunId !== undefined && (typeof value.lastRunId !== "string" || !value.lastRunId)) throw new Error("Invalid session cron lastRunId");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid session cron timestamp");
 }
 function writeSessionTasks(file: string, tasks: Iterable<CronTask>) {
@@ -75,6 +76,7 @@ function syncTaskFields(target: CronTask, source: CronTask): void {
   target.quiet_on_noop = source.quiet_on_noop;
   target.runCount = source.runCount;
   target.lastOutcome = source.lastOutcome;
+  target.lastRunId = source.lastRunId;
   target.lastRun = source.lastRun;
   target.nextRun = source.nextRun;
   target.leader = source.leader;
@@ -201,8 +203,8 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
     try { if (ctx?.hasUI) setSlot("crons", formatCronStatusSlot([...tasks.values()], ctx.ui.theme), ctx); } catch {}
     pi.events.emit("pidash:cron-status", { count: tasks.size, tasks: [...tasks.values()].map(t => ({ id: qualifyCronId(t), scope: t.scope, description: t.description, schedule: formatCronSchedule(t), lastRun: t.lastRun, nextRun: t.nextRun, leader: t.leader, paused: t.paused === true, quiet_on_noop: t.quiet_on_noop === true, runCount: t.runCount, lastOutcome: t.lastOutcome })) });
   }
-  /** Persist run timestamps/outcomes without clobbering peer edits, `paused`, or a changed schedule (#1089, #1381, #1452). */
-  function persist(task: CronTask, kind: "lastRun" | "nextRun" | "runOutcome"): boolean {
+  /** Persist run timestamps without clobbering peer edits, `paused`, or a changed schedule (#1089, #1381). */
+  function persist(task: CronTask, kind: "lastRun" | "nextRun"): boolean {
     try {
       if (task.scope === "session") { if (sessionStore) writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session")); return true; }
       const file = projectStore(task.cwd);
@@ -212,18 +214,12 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
         return false;
       }
       let scheduleMismatch = false;
-      let persistedRunCount: number | undefined;
       mutateDurableCronStore(file, old => old.map(t => {
         if (t.id !== task.id) return t;
         if (kind === "lastRun") return { ...t, lastRun: task.lastRun } as DurableCronTask;
-        if (kind === "runOutcome") {
-          persistedRunCount = Math.max((t.runCount ?? 0) + 1, task.runCount ?? 1);
-          return { ...t, lastRun: task.lastRun, runCount: persistedRunCount, lastOutcome: task.lastOutcome } as DurableCronTask;
-        }
         if (!sameSchedule(t, task)) { scheduleMismatch = true; return t; }
         return { ...t, nextRun: task.nextRun } as DurableCronTask;
       }));
-      if (kind === "runOutcome" && persistedRunCount !== undefined) task.runCount = persistedRunCount;
       if (scheduleMismatch) {
         log.info("cron_persist_schedule_mismatch", { id: qualifyCronId(task) });
         syncStore("project", file);
@@ -232,24 +228,86 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
       return true;
     } catch (error: any) { log.error("cron_persist_failed", qualifyCronId(task), error?.message || error); return false; }
   }
-  /** Record completion outcome (`delivered`, `noop`, `error`) and run history for a cron execution. */
-  function recordCronRunOutcome(id: string, scope: CronScope, quietOnNoop: boolean, result: { text: string; isError: boolean }) {
-    const live = tasks.get(id);
-    if (!live || live.scope !== scope) {
-      log.debug("cron_run_outcome_skipped_missing", { id: `${scope === "project" ? "persist" : "session"}:${id}` });
+  interface CronRunCompletionEvent {
+    cronTaskId: string;
+    runId: string;
+    startedAt?: number;
+    quietOnNoop: boolean;
+    text: string;
+    isError: boolean;
+    isLate?: boolean;
+  }
+  /**
+   * Record completion outcome (`delivered`, `noop`, `error`) and run history by stable cron UUID.
+   * Works across scope moves, `/reload`, late result ingestion, and leader handoffs without
+   * mutating dispatch-start `lastRun` or clobbering peer edits.
+   */
+  function recordCronRunOutcome(event: CronRunCompletionEvent) {
+    const suppressed = event.quietOnNoop && !event.isError && isCronNoopOutput(event.text);
+    const outcome: CronRunOutcome = event.isError ? "error" : suppressed ? "noop" : "delivered";
+    const live = tasks.get(event.cronTaskId);
+    if (!live) {
+      if (ctx?.cwd) {
+        try {
+          const res = recordDurableCronRunOutcome(projectStore(ctx.cwd), {
+            id: event.cronTaskId,
+            runId: event.runId,
+            startedAt: event.startedAt,
+            outcome,
+            isLate: event.isLate === true,
+          });
+          if (res.found) {
+            if (suppressed) {
+              log.info("cron_noop_suppressed", { id: `persist:${event.cronTaskId}`, runId: event.runId, runCount: res.runCount, preview: event.text.trim().slice(0, 120) });
+            } else {
+              log.debug("cron_run_completed", { id: `persist:${event.cronTaskId}`, runId: event.runId, outcome, runCount: res.runCount, isLate: event.isLate === true });
+            }
+            return;
+          }
+        } catch (error: any) {
+          log.error("cron_run_outcome_persist_failed", { id: event.cronTaskId, runId: event.runId, error: error?.message || String(error) });
+        }
+      }
+      log.debug("cron_run_outcome_skipped_missing", { id: event.cronTaskId, runId: event.runId });
       return;
     }
-    const suppressed = quietOnNoop && !result.isError && isCronNoopOutput(result.text);
-    const outcome: CronRunOutcome = result.isError ? "error" : suppressed ? "noop" : "delivered";
-    live.lastRun = Date.now();
-    live.runCount = (live.runCount ?? 0) + 1;
-    live.lastOutcome = outcome;
-    persist(live, "runOutcome");
+    if (live.scope === "session") {
+      const next = applyCronRunOutcomeUpdate(live, {
+        runId: event.runId,
+        startedAt: event.startedAt,
+        outcome,
+        isLate: event.isLate === true,
+      });
+      live.runCount = next.runCount;
+      live.lastOutcome = next.lastOutcome;
+      live.lastRunId = next.lastRunId;
+      if (sessionStore) {
+        try { writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session")); }
+        catch (error: any) { log.error("cron_run_outcome_session_persist_failed", { id: qualifyCronId(live), error: error?.message || String(error) }); }
+      }
+    } else {
+      try {
+        const res = recordDurableCronRunOutcome(projectStore(live.cwd), {
+          id: live.id,
+          runId: event.runId,
+          startedAt: event.startedAt,
+          outcome,
+          isLate: event.isLate === true,
+        });
+        if (res.found) {
+          live.runCount = res.runCount;
+          live.lastOutcome = res.lastOutcome;
+          live.lastRunId = res.lastRunId;
+        }
+      } catch (error: any) {
+        log.error("cron_run_outcome_durable_persist_failed", { id: qualifyCronId(live), runId: event.runId, error: error?.message || String(error) });
+      }
+    }
     updateStatus();
     if (suppressed) {
-      log.info("cron_noop_suppressed", { id: qualifyCronId(live), runCount: live.runCount, preview: result.text.trim().slice(0, 120) });
+      log.info("cron_noop_suppressed", { id: qualifyCronId(live), runId: event.runId, runCount: live.runCount, preview: event.text.trim().slice(0, 120) });
     } else {
-      log.debug("cron_run_completed", { id: qualifyCronId(live), outcome, runCount: live.runCount });
+      log.debug("cron_run_completed", { id: qualifyCronId(live), runId: event.runId, outcome, runCount: live.runCount, isLate: event.isLate === true });
     }
   }
   /** Write only the `paused` flag of the stored record; true when it reached the store. */
@@ -283,6 +341,8 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
     return task.paused === true ? "paused" : "active";
   }
   async function execute(task: CronTask, isCurrent: () => boolean) {
+    let dispatched = false;
+    let runStartedAt = 0;
     try {
       if (durable(task.scope)) {
         const file = projectStore(task.cwd); const owner = owned.get(file);
@@ -291,7 +351,9 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
           election(); return;
         }
       }
-      task.lastRun = Date.now(); persist(task, "lastRun"); updateStatus(); log.info("cron_execute", qualifyCronId(task));
+      runStartedAt = Date.now();
+      task.lastRun = runStartedAt; persist(task, "lastRun"); updateStatus(); log.info("cron_execute", qualifyCronId(task));
+      dispatched = true;
       const cmd = task.task.trim();
       if (cmd.startsWith("/")) {
         if (durable(task.scope) && !refreshLeaderLock(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) {
@@ -299,10 +361,15 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
           election(); return;
         }
         pi.sendUserMessage(cmd, { deliverAs: "followUp" });
-        task.runCount = (task.runCount ?? 0) + 1;
-        task.lastOutcome = "delivered";
-        persist(task, "runOutcome");
-        updateStatus();
+        recordCronRunOutcome({
+          cronTaskId: task.id,
+          runId: randomUUID(),
+          startedAt: runStartedAt,
+          quietOnNoop: false,
+          text: "",
+          isError: false,
+          isLate: false,
+        });
         return;
       }
       const { discoverAgents } = await import("./agents.js");
@@ -320,10 +387,15 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
           election(); return;
         }
         pi.sendUserMessage(liveCmd, { deliverAs: "followUp" });
-        task.runCount = (task.runCount ?? 0) + 1;
-        task.lastOutcome = "delivered";
-        persist(task, "runOutcome");
-        updateStatus();
+        recordCronRunOutcome({
+          cronTaskId: task.id,
+          runId: randomUUID(),
+          startedAt: runStartedAt,
+          quietOnNoop: false,
+          text: "",
+          isError: false,
+          isLate: false,
+        });
         return;
       }
       const liveExplicit = parseModelOverride(task.model);
@@ -335,18 +407,38 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
         election(); return;
       }
       const workerPrompt = quietOnNoop ? `${liveCmd}${CRON_QUIET_NOOP_PROMPT_SUFFIX}` : liveCmd;
-      const taskId = task.id;
-      const taskScope = task.scope;
       const spawned = spawnAsyncAgent("worker", workerPrompt, task.cwd, agents, {
         name: `Cron: ${task.description.slice(0, 40)}`,
+        cronTaskId: task.id,
         ...(liveExplicit ? { explicit: liveExplicit } : {}),
         ...(quietOnNoop ? { quietOnNoop: true } : {}),
-        onComplete: (result: { text: string; isError: boolean }) => recordCronRunOutcome(taskId, taskScope, quietOnNoop, result),
       });
       if (spawned?.error) {
         log.warn("cron_spawn_failed", { id: qualifyCronId(task), error: spawned.error });
+        recordCronRunOutcome({
+          cronTaskId: task.id,
+          runId: randomUUID(),
+          startedAt: runStartedAt,
+          quietOnNoop,
+          text: String(spawned.error),
+          isError: true,
+          isLate: false,
+        });
       }
-    } catch (error: any) { log.error("cron_execute_failed", qualifyCronId(task), error?.message || error); }
+    } catch (error: any) {
+      log.error("cron_execute_failed", qualifyCronId(task), error?.message || error);
+      if (dispatched) {
+        recordCronRunOutcome({
+          cronTaskId: task.id,
+          runId: randomUUID(),
+          startedAt: runStartedAt,
+          quietOnNoop: task.quiet_on_noop === true,
+          text: String(error?.message || error),
+          isError: true,
+          isLate: false,
+        });
+      }
+    }
   }
   function stop(id: string) { const timer = timers.get(id); if (timer) { clearTimeout(timer as any); clearInterval(timer as any); timers.delete(id); } }
   function start(task: CronTask) {
@@ -740,6 +832,20 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
         },
       });
     },
+  });
+  pi.events.on("cron:run-completed", (payload: unknown) => {
+    if (!payload || typeof payload !== "object") return;
+    const ev = payload as Partial<CronRunCompletionEvent>;
+    if (typeof ev.cronTaskId !== "string" || !ev.cronTaskId || typeof ev.runId !== "string" || !ev.runId) return;
+    recordCronRunOutcome({
+      cronTaskId: ev.cronTaskId,
+      runId: ev.runId,
+      startedAt: typeof ev.startedAt === "number" ? ev.startedAt : undefined,
+      quietOnNoop: ev.quietOnNoop === true,
+      text: typeof ev.text === "string" ? ev.text : "",
+      isError: ev.isError === true,
+      isLate: ev.isLate === true,
+    });
   });
   pi.events.on("pidash:cron-kill", (target: unknown) => {
     if (target !== "all") { if (typeof target === "string") remove(target); return; }
