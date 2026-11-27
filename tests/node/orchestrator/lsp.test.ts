@@ -1,5 +1,6 @@
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -97,6 +98,11 @@ const getArg = (prefix, fallback = "") => {
 const mode = getArg("--mode=", "normal");
 const logFile = getArg("--log=", "");
 const tag = getArg("--tag=", "");
+const ignoreSigterm = args.includes("--ignore-sigterm");
+
+if (ignoreSigterm) {
+  process.on("SIGTERM", () => {});
+}
 
 function record(entry) {
   if (!logFile) return;
@@ -238,11 +244,14 @@ function handleMessage(msg) {
     }
     if (mode === "mixed-versioned-unversioned") {
       if (doc.uri.endsWith("/versioned.ts")) {
-        send({
-          jsonrpc: "2.0",
-          method: "textDocument/publishDiagnostics",
-          params: { uri: doc.uri, version: doc.version, diagnostics: diagnosticsForText(doc.text) },
-        });
+        const delayMs = doc.text.includes("SLOW_VER") ? 180 : 0;
+        setTimeout(() => {
+          send({
+            jsonrpc: "2.0",
+            method: "textDocument/publishDiagnostics",
+            params: { uri: doc.uri, version: doc.version, diagnostics: diagnosticsForText(doc.text) },
+          });
+        }, delayMs);
         return;
       }
       const delayMs = doc.text.includes("OLD_ERR") ? 280 : 20;
@@ -1138,7 +1147,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       assert.equal(await waitForPidExit(oldPid, 2000), true);
     });
 
-    it("tracks versioned diagnostic attribution per document rather than per client", async () => {
+    it("returns diagnostics for a versioned document on a mixed-mode server", async () => {
       writeGlobalSettings({
         lsp_enabled: true,
         lsp_servers: {
@@ -1149,43 +1158,159 @@ describe("LSP diagnostics integration (#1445)", () => {
           },
         },
       });
-      const versionedFile = join(testDir, "versioned.ts");
-      const unversionedFile = join(testDir, "unversioned.ts");
-      writeFileSync(versionedFile, "TYPE_ERROR\n");
-      writeFileSync(unversionedFile, "OLD_ERR\n");
+      writeFileSync(join(testDir, "versioned.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 180 });
+      const { manager } = registerLsp(pi, { timeoutMs: 1000 });
       activeManagers.push(manager);
 
-      // 1. Versioned document succeeds first
       const verRes = await fire(
         "tool_result",
         { toolName: "write", input: { path: "versioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
         { cwd: testDir },
       );
       assert.ok(verRes?.content?.[1]?.text.includes("versioned.ts:3:5 [error]"));
+    });
 
-      // 2. Unversioned document times out (must still mark client ambiguous despite versioned.ts!)
-      const unvRes1 = await fire(
+    it("delivers fresh diagnostics after an unversioned document timeout on a mixed-mode server", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=mixed-versioned-unversioned"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "versioned.ts"), "TYPE_ERROR\n");
+      const unversionedFile = join(testDir, "unversioned.ts");
+      writeFileSync(unversionedFile, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerLsp(pi, { timeoutMs: 180 });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "versioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const timedOut = await fire(
         "tool_result",
         { toolName: "write", input: { path: "unversioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
         { cwd: testDir },
       );
-      assert.equal(unvRes1, undefined);
-      const oldPid = manager.getActivePids()[0];
-      assert.ok(oldPid);
+      assert.equal(timedOut, undefined);
 
-      // 3. Next edit to unversioned.ts resets cleanly and gets only fresh diagnostics
       writeFileSync(unversionedFile, "line1\nNEW_ERR\n");
-      const unvRes2 = await fire(
+      const recovered = await fire(
         "tool_result",
         { toolName: "edit", input: { path: "unversioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
         { cwd: testDir },
       );
-      assert.ok(unvRes2?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
-      assert.ok(!unvRes2.content[1].text.includes("STALE_EDIT_1_ERROR"));
+      assert.ok(recovered?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
+      assert.ok(!recovered.content[1].text.includes("STALE_EDIT_1_ERROR"));
+    });
+
+    it("terminates the replaced server process after a mixed-mode unversioned reset", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=mixed-versioned-unversioned"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "versioned.ts"), "TYPE_ERROR\n");
+      const unversionedFile = join(testDir, "unversioned.ts");
+      writeFileSync(unversionedFile, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerLsp(pi, { timeoutMs: 180 });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "versioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "unversioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const oldPid = manager.getActivePids()[0];
+      assert.ok(oldPid);
+
+      writeFileSync(unversionedFile, "line1\nNEW_ERR\n");
+      await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "unversioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
       assert.equal(await waitForPidExit(oldPid, 2000), true);
+    });
+
+    it("preserves pending diagnostics for an unrelated file while resetting a timed-out unversioned file", async () => {
+      const overrides = {
+        typescript: {
+          command: process.execPath,
+          args: [mockServerScript, "--mode=mixed-versioned-unversioned"],
+          extensions: [".ts"],
+        },
+      };
+      const versionedFile = join(testDir, "versioned.ts");
+      const unversionedFile = join(testDir, "unversioned.ts");
+      writeFileSync(unversionedFile, "OLD_ERR\n");
+      writeFileSync(versionedFile, "SLOW_VER\n// line 2\nconst x = TYPE_ERROR;\n");
+
+      const sharedMgr = new LspManager({ timeoutMs: 120 });
+      activeManagers.push(sharedMgr);
+      const firstUnv = await sharedMgr.getDiagnosticsForFile(testDir, "unversioned.ts", overrides);
+      assert.equal(firstUnv, null);
+
+      (sharedMgr as any).timeoutMs = 800;
+      writeFileSync(unversionedFile, "line1\nNEW_ERR\n");
+      const versionedPromise = sharedMgr.getDiagnosticsForFile(testDir, "versioned.ts", overrides);
+      const unversionedPromise = sharedMgr.getDiagnosticsForFile(testDir, "unversioned.ts", overrides);
+
+      const [verDiag, unvDiag] = await Promise.all([versionedPromise, unversionedPromise]);
+      assert.ok(verDiag?.includes("versioned.ts:3:5 [error]"), `expected versioned.ts diagnostics to survive, got: ${verDiag}`);
+      assert.ok(unvDiag?.includes("FRESH_EDIT_2_ERROR"), `expected unversioned.ts fresh diagnostics after drain, got: ${unvDiag}`);
+    });
+
+    it("bounds overlapping unversioned reset teardown within the single per-edit timeout budget", async () => {
+      const overrides = {
+        typescript: {
+          command: process.execPath,
+          args: [mockServerScript, "--mode=hang", "--ignore-sigterm"],
+          extensions: [".ts"],
+        },
+      };
+      const file = join(testDir, "budget.ts");
+      writeFileSync(file, "OLD_ERR\n");
+
+      const manager = new LspManager({
+        timeoutMs: 250,
+        shutdownGraceMs: 500,
+        killGraceMs: 400,
+      });
+      activeManagers.push(manager);
+
+      // Start two overlapping edits simultaneously against a hung server that ignores SIGTERM
+      const started = Date.now();
+      const [r1, r2] = await Promise.all([
+        manager.getDiagnosticsForFile(testDir, "budget.ts", overrides),
+        manager.getDiagnosticsForFile(testDir, "budget.ts", overrides),
+      ]);
+      const elapsed = Date.now() - started;
+
+      assert.equal(r1, null);
+      assert.equal(r2, null);
+      assert.ok(elapsed < 600, `expected overlapping reset to stay within 250ms budget (+jitter), got ${elapsed}ms`);
     });
 
     it("resets an unversioned client when two edits for the same file start simultaneously", async () => {
@@ -1452,27 +1577,42 @@ describe("LSP diagnostics integration (#1445)", () => {
       assert.ok(events.some((e) => e.event === "exit"), "expected graceful LSP exit notification");
     });
 
-    it("terminates active child processes synchronously via killAllSync exit teardown", async () => {
-      const overrides = {
-        typescript: {
-          command: process.execPath,
-          args: [mockServerScript, "--mode=normal"],
-          extensions: [".ts"],
-        },
-      };
-      writeFileSync(join(testDir, "exit.ts"), "TYPE_ERROR\n");
+    it("terminates SIGTERM-ignoring child servers when the parent process exits abruptly", async () => {
+      const target = join(testDir, "abrupt.ts");
+      writeFileSync(target, "TYPE_ERROR\n");
+      const lspModuleUrl = new URL("../../../extensions/orchestrator/lsp.ts", import.meta.url).href;
+      const runnerScript = join(testDir, "parent-exit-runner.mjs");
+      writeFileSync(
+        runnerScript,
+        `import { LspManager } from ${JSON.stringify(lspModuleUrl)};
+const manager = new LspManager({ timeoutMs: 2000 });
+await manager.getDiagnosticsForFile(${JSON.stringify(testDir)}, "abrupt.ts", {
+  typescript: {
+    command: ${JSON.stringify(process.execPath)},
+    args: [${JSON.stringify(mockServerScript)}, "--mode=normal", "--ignore-sigterm"],
+    extensions: [".ts"],
+  },
+});
+const pid = manager.getActivePids()[0];
+process.stdout.write(String(pid) + "\\n");
+process.exit(0);
+`,
+        "utf8",
+      );
 
-      const manager = new LspManager({ timeoutMs: 1500 });
-      activeManagers.push(manager);
-
-      const formatted = await manager.getDiagnosticsForFile(testDir, "exit.ts", overrides);
-      assert.ok(formatted?.includes("exit.ts:3:5 [error]"));
-      const pid = manager.getActivePids()[0];
-      assert.ok(pid && isPidAlive(pid));
-
-      manager.killAllSync();
-      assert.equal(manager.activeCount, 0);
-      assert.equal(await waitForPidExit(pid, 3000), true, `expected killAllSync to terminate PID ${pid}`);
+      const tsxBin = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+      const out = execFileSync(tsxBin, [runnerScript], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        timeout: 15_000,
+      }).trim();
+      const childLspPid = Number.parseInt(out.split("\n").pop() ?? "", 10);
+      assert.ok(Number.isInteger(childLspPid) && childLspPid > 0, `expected valid child PID, got: ${out}`);
+      assert.equal(
+        await waitForPidExit(childLspPid, 3000),
+        true,
+        `expected SIGTERM-ignoring LSP PID ${childLspPid} to terminate on abrupt parent exit`,
+      );
     });
   });
 });

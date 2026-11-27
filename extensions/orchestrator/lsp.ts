@@ -369,8 +369,9 @@ export class LspClient {
   private readonly openedDocs = new Map<string, number>();
   private readonly waiters = new Map<string, Set<DiagnosticWaiter>>();
   private readonly inFlightUriCounts = new Map<string, number>();
+  private readonly uriReleaseListeners = new Set<() => void>();
   private readonly versionedUris = new Set<string>();
-  private unversionedAmbiguous = false;
+  private readonly ambiguousUris = new Set<string>();
   private initPromise: Promise<boolean> | null = null;
   private initialized = false;
   private closed = false;
@@ -408,14 +409,46 @@ export class LspClient {
     return this.closed;
   }
 
-  /** True when an unversioned document timed out, making later attribution ambiguous until reset. */
-  get needsReset(): boolean {
-    return this.unversionedAmbiguous;
+  /** True when `uri` timed out on an unversioned document, making later attribution ambiguous until reset. */
+  needsResetFor(uri: string): boolean {
+    return this.ambiguousUris.has(uri);
   }
 
-  /** True when this URI has an active check in flight on a document not known to receive versioned diagnostics. */
+  /** True when `uri` has an active check in flight on a document not known to receive versioned diagnostics. */
   hasUnversionedInFlight(uri: string): boolean {
     return !this.versionedUris.has(uri) && (this.inFlightUriCounts.get(uri) ?? 0) > 0;
+  }
+
+  /** True when any document other than `uri` currently has an active check in flight on this client. */
+  hasOtherActiveChecks(uri: string): boolean {
+    for (const [activeUri, count] of this.inFlightUriCounts) {
+      if (activeUri !== uri && count > 0) return true;
+    }
+    return false;
+  }
+
+  /** Wait until all checks for URIs other than `uri` finish, bounded by `maxWaitMs`. */
+  waitForOtherChecks(uri: string, maxWaitMs: number): Promise<boolean> {
+    if (!this.hasOtherActiveChecks(uri) || this.closed) return Promise.resolve(true);
+    if (maxWaitMs <= 0) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.uriReleaseListeners.delete(onRelease);
+      };
+      const onRelease = () => {
+        if (!this.hasOtherActiveChecks(uri) || this.closed) {
+          cleanup();
+          resolve(true);
+        }
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(!this.hasOtherActiveChecks(uri) || this.closed);
+      }, Math.max(1, maxWaitMs));
+      timer.unref();
+      this.uriReleaseListeners.add(onRelease);
+    });
   }
 
   /** Synchronously reserve `uri` before any async boundary so simultaneous same-URI checks see overlap. */
@@ -427,6 +460,9 @@ export class LspClient {
     const next = (this.inFlightUriCounts.get(uri) ?? 0) - 1;
     if (next > 0) this.inFlightUriCounts.set(uri, next);
     else this.inFlightUriCounts.delete(uri);
+    for (const listener of [...this.uriReleaseListeners]) {
+      listener();
+    }
   }
 
   matchesServer(command: string, args: readonly string[]): boolean {
@@ -533,6 +569,11 @@ export class LspClient {
     }
     this.inFlightUriCounts.clear();
     this.versionedUris.clear();
+    this.ambiguousUris.clear();
+    for (const listener of [...this.uriReleaseListeners]) {
+      listener();
+    }
+    this.uriReleaseListeners.clear();
 
     this.onDispose();
   }
@@ -661,9 +702,10 @@ export class LspClient {
 
       if (version !== undefined) {
         this.versionedUris.add(uri);
+        this.ambiguousUris.delete(uri);
       } else {
         this.versionedUris.delete(uri);
-        if (this.unversionedAmbiguous) {
+        if (this.ambiguousUris.has(uri)) {
           this.log.debug("lsp_ambiguous_unversioned_diagnostics_dropped", {
             serverId: this.serverId,
             uri,
@@ -825,10 +867,10 @@ export class LspClient {
           set?.delete(waiter);
           if (set && set.size === 0) this.waiters.delete(uri);
           // For documents that do not receive versioned diagnostics, a timed-out edit makes any
-          // future unversioned publication unattributable (it could belong to the old edit or never
-          // arrive at all). Mark this client for clean reset before the next check.
+          // future unversioned publication for this URI unattributable. Mark ONLY this URI
+          // ambiguous so unrelated documents on the same server are never disrupted.
           if (!this.versionedUris.has(uri)) {
-            this.unversionedAmbiguous = true;
+            this.ambiguousUris.add(uri);
           }
           this.log.debug("lsp_diagnostics_timeout", { serverId: this.serverId, filePath: absPath, timeoutMs });
           resolve(null);
@@ -955,7 +997,12 @@ export class LspClient {
     return this.shutdownPromise;
   }
 
-  /** Synchronous last-resort kill for Node `process.on("exit")`. */
+  /**
+   * Synchronous last-resort kill for Node `process.on("exit")`.
+   * Uses `SIGKILL` because Node cannot run async grace timers once exiting, so
+   * even servers that trap or ignore `SIGTERM` are guaranteed to terminate.
+   * Normal `session_shutdown` and idle teardown retain graceful `shutdown`/`exit`.
+   */
   killSync(): void {
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
@@ -965,12 +1012,32 @@ export class LspClient {
     const child = this.child;
     if (child && child.exitCode === null && child.signalCode === null) {
       try {
-        child.kill("SIGTERM");
+        child.kill("SIGKILL");
       } catch {
-        // Ignore
+        // Ignore — process may already have exited
       }
     }
   }
+}
+
+function waitWithinBudget(promise: Promise<unknown>, deadline: number): Promise<boolean> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(false);
+    }, Math.max(1, remaining));
+    timer.unref();
+    promise.finally(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
 }
 
 // ── Per-(rootDir, serverId) Manager Pool ─────────────────────────────
@@ -1044,13 +1111,15 @@ export class LspManager {
     resolvedRoot: string,
     server: ResolvedLspServer,
     uri: string,
+    deadline: number,
   ): Promise<LspClient | null> {
     for (;;) {
-      if (this.shuttingDown) return null;
+      if (this.shuttingDown || Date.now() >= deadline) return null;
 
       const pendingReplace = this.replacing.get(poolKey);
       if (pendingReplace) {
-        await pendingReplace;
+        const finishedInTime = await waitWithinBudget(pendingReplace, deadline);
+        if (!finishedInTime) return null;
         continue;
       }
 
@@ -1061,10 +1130,18 @@ export class LspManager {
           continue;
         }
         const overrideChanged = !existing.matchesServer(server.command, server.args);
-        const ambiguousUnversioned = existing.needsReset || existing.hasUnversionedInFlight(uri);
+        const ambiguousUnversioned = existing.needsResetFor(uri) || existing.hasUnversionedInFlight(uri);
         if (!overrideChanged && !ambiguousUnversioned) {
           existing.reserveUri(uri);
           return existing;
+        }
+
+        // If an unversioned reset is needed for `uri`, let unrelated in-flight URIs finish
+        // within our remaining deadline instead of cancelling their pending diagnostics.
+        if (!overrideChanged && existing.hasOtherActiveChecks(uri)) {
+          const drained = await existing.waitForOtherChecks(uri, deadline - Date.now());
+          if (!drained) return null;
+          continue;
         }
 
         this.log.info(
@@ -1078,11 +1155,12 @@ export class LspManager {
           }
         });
         this.replacing.set(poolKey, replacePromise);
-        await replacePromise;
+        const finishedInTime = await waitWithinBudget(replacePromise, deadline);
+        if (!finishedInTime) return null;
         continue;
       }
 
-      if (this.shuttingDown) return null;
+      if (this.shuttingDown || Date.now() >= deadline) return null;
 
       const created = new LspClient({
         rootDir: resolvedRoot,
@@ -1121,6 +1199,7 @@ export class LspManager {
     overrides: LspServersConfig = {},
   ): Promise<string | null> {
     if (this.shuttingDown) return null;
+    const deadline = Date.now() + Math.max(1, this.timeoutMs);
 
     const resolvedRoot = path.resolve(rootDir);
     const absPath = path.resolve(resolvedRoot, filePath);
@@ -1138,13 +1217,14 @@ export class LspManager {
 
     const poolKey = `${resolvedRoot}\0${server.serverId}`;
     const uri = normalizeFileUri(pathToFileURL(absPath).href);
-    const client = await this.acquireClient(poolKey, resolvedRoot, server, uri);
+    const client = await this.acquireClient(poolKey, resolvedRoot, server, uri, deadline);
     if (!client) return null;
 
     let diagnostics: LspDiagnostic[] | null;
     try {
-      if (this.shuttingDown) return null;
-      diagnostics = await client.checkFile(absPath, this.timeoutMs);
+      const remaining = deadline - Date.now();
+      if (this.shuttingDown || remaining <= 0) return null;
+      diagnostics = await client.checkFile(absPath, remaining);
     } finally {
       client.releaseUri(uri);
     }
