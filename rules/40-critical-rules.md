@@ -55,10 +55,13 @@ Always pass `cwd` when delegating to subagents in all modes — omitting it caus
 
 ## Scheduled Tasks (`cron_manage`)
 
-- To modify an existing cron (schedule, prompt, description, or model), call `cron_manage(action="edit", id=...)` with only the
+- To modify an existing cron (schedule, prompt, description, model, or `quiet_on_noop`), call `cron_manage(action="edit", id=...)` with only the
   changed fields (`model=""` clears a pinned model) — never `remove` + `add`, which loses the ID, run history, and paused state.
 - To temporarily stop or restart a cron without deleting it, call `cron_manage(action="pause", id=...)` or
   `cron_manage(action="resume", id=...)` (resuming starts a fresh interval without catching up missed runs).
+- For monitoring crons that often find nothing to report, set `quiet_on_noop: true` on `add` or `edit`: the spawned worker is instructed to reply starting with `[NOOP]`
+  when nothing changed, and successful `[NOOP]` runs record history (`lastOutcome: "noop"`) without sending a `followUp` chat turn. Failures and non-`[NOOP]` outputs
+  always deliver.
 
 ---
 

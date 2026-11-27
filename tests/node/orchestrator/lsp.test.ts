@@ -64,6 +64,10 @@ function createMockPi() {
   return { pi, fire };
 }
 
+function registerDirectLsp(pi: any, opts: Record<string, any> = {}) {
+  return registerLsp(pi, { useBroker: false, ...opts });
+}
+
 function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -710,7 +714,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "a.ts"), "const x: number = TYPE_ERROR;\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 1000 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000 });
       activeManagers.push(manager);
 
       const res = await fire(
@@ -739,7 +743,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 500 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 500 });
       activeManagers.push(manager);
 
       const res = await fire(
@@ -768,7 +772,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 1000, envPath: "" });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000, envPath: "" });
       activeManagers.push(manager);
 
       const res = await fire(
@@ -782,7 +786,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       assert.equal(existsSync(logFile), false);
     });
 
-    it("skips LSP in subagent children unless PI_LSP_IN_SUBAGENTS=1", async () => {
+    it("enables LSP for editing subagents by default when lsp_enabled is true", async () => {
       const logFile = join(testDir, "subagent.log");
       writeGlobalSettings({
         lsp_enabled: true,
@@ -797,7 +801,33 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "a.ts"), "const x = TYPE_ERROR;\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 1000, isSubagentChild: () => true });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000, isSubagentChild: () => true });
+      activeManagers.push(manager);
+
+      const enabled = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(enabled?.content?.[1]?.text.includes("a.ts:3:5 [error]"));
+    });
+
+    it("skips LSP in subagent children when PI_LSP_IN_SUBAGENTS is explicitly false", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "a.ts"), "const x = TYPE_ERROR;\n");
+      setEnv("PI_LSP_IN_SUBAGENTS", "0");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000, isSubagentChild: () => true });
       activeManagers.push(manager);
 
       const skipped = await fire(
@@ -807,14 +837,6 @@ describe("LSP diagnostics integration (#1445)", () => {
       );
       assert.equal(skipped, undefined);
       assert.equal(manager.activeCount, 0);
-
-      setEnv("PI_LSP_IN_SUBAGENTS", "1");
-      const optedIn = await fire(
-        "tool_result",
-        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
-        { cwd: testDir },
-      );
-      assert.ok(optedIn?.content?.[1]?.text.includes("a.ts:3:5 [error]"));
     });
 
     it("lazily initializes on write, reuses the server for didChange edits, caps at 20 lines", async () => {
@@ -833,7 +855,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(file, "const foo = 1;\n// line 2\nconst x = TYPE_ERROR + UNUSED_WARN + INFO_ONLY;\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 1500 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1500 });
       activeManagers.push(manager);
 
       // 1. First write triggers lazy start -> initialize -> didOpen
@@ -918,7 +940,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "hung.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 200 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 200 });
       activeManagers.push(manager);
 
       const started = Date.now();
@@ -951,7 +973,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 500, envPath: "" });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 500, envPath: "" });
       activeManagers.push(manager);
 
       const res = await fire(
@@ -977,7 +999,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 500 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 500 });
       activeManagers.push(manager);
 
       const res = await fire(
@@ -1003,7 +1025,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "swap.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 1500 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1500 });
       activeManagers.push(manager);
 
       const res1 = await fire(
@@ -1054,7 +1076,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "b.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 2000 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 2000 });
       activeManagers.push(manager);
 
       await fire(
@@ -1116,7 +1138,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(file, "OLD_ERR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 250 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 250 });
       activeManagers.push(manager);
 
       const res1 = await fire(
@@ -1150,7 +1172,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(file, "OLD_ERR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 180 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 180 });
       activeManagers.push(manager);
 
       const res1 = await fire(
@@ -1188,7 +1210,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(file, "OLD_ERR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 120 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 120 });
       activeManagers.push(manager);
 
       const timedOut = await fire(
@@ -1225,7 +1247,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "versioned.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 1000 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000 });
       activeManagers.push(manager);
 
       const verRes = await fire(
@@ -1252,7 +1274,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(unversionedFile, "OLD_ERR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 180 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 180 });
       activeManagers.push(manager);
 
       await fire(
@@ -1293,7 +1315,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(unversionedFile, "OLD_ERR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 180 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 180 });
       activeManagers.push(manager);
 
       await fire(
@@ -1393,7 +1415,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(warmup, "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 1200 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1200 });
       activeManagers.push(manager);
 
       // Pre-warm the client so both simultaneous calls hit an already-active pooled client
@@ -1440,7 +1462,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       const file = join(testDir, "rapid.ts");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 1200 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1200 });
       activeManagers.push(manager);
 
       // Edit 1 (slow 180ms versionless publish) starts first
@@ -1488,7 +1510,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       assert.ok(lspCallIdx > 0 && secCallIdx > 0 && lspCallIdx < secCallIdx, "registerLsp must run before registerSecretObfuscation");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 1500 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1500 });
       activeManagers.push(manager);
       registerSecretObfuscation(pi, { env: { DEMO_API_TOKEN: secretToken }, homeDir: testDir });
 
@@ -1523,7 +1545,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "idle.ts"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 2000, idleTimeoutMs: 250 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 2000, idleTimeoutMs: 250 });
       activeManagers.push(manager);
 
       await fire(
@@ -1559,7 +1581,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "late.other"), "TYPE_ERROR\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 150 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 150 });
       activeManagers.push(manager);
 
       await fire(
@@ -1605,7 +1627,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       writeFileSync(join(testDir, "stuck.hung"), "hello\n");
 
       const { pi, fire } = createMockPi();
-      const { manager } = registerLsp(pi, { timeoutMs: 250 });
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 250 });
       activeManagers.push(manager);
 
       await fire(

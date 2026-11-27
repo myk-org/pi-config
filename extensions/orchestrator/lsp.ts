@@ -18,29 +18,44 @@
  *   `session_shutdown`, and silent degradation on missing binaries or errors.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import type { ExtensionAPI, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
+import { acquireTokenFileLock } from "../shared/file-lock.js";
 import { createLogger, type Logger } from "../shared/logger.js";
 import {
   loadGlobalSettings,
   readSettingsFile,
   type LspServersConfig,
 } from "./project-settings.js";
+import { openStateDb, withTransaction } from "./state-db.js";
+import { resolveWorktreeRoot } from "./utils.js";
 
+const execFileAsync = promisify(execFile);
 const defaultLog = createLogger("lsp");
 
 export const DEFAULT_DIAGNOSTICS_TIMEOUT_MS = 1_500;
 export const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1_000;
+export const DEFAULT_DEBOUNCE_MS = 150;
 export const DEFAULT_SHUTDOWN_GRACE_MS = 500;
 export const DEFAULT_KILL_GRACE_MS = 300;
+export const DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 2;
+export const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1_000;
 export const MAX_DIAGNOSTIC_LINES = 20;
 
 const MAX_RPC_BUFFER_BYTES = 10 * 1024 * 1024;
+const CIRCUIT_CRASH_WINDOW_MS = 60_000;
+const LSP_INSTALL_DISMISSED_KEY = "lsp_install_dismissed";
 const HEADER_DELIM = Buffer.from("\r\n\r\n", "ascii");
 const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
+const FALSY_ENV = new Set(["0", "false", "no", "off"]);
+const BROKER_DAEMON_SCRIPT = fileURLToPath(new URL("./lsp-broker-daemon.mjs", import.meta.url));
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -79,12 +94,27 @@ export interface LspDiagnostic {
   code?: string | number;
 }
 
+export interface LspInstallRecipe {
+  serverId: string;
+  label: string;
+  binary: string;
+  displayCmd: string;
+  prereq: string;
+}
+
 export interface LspManagerOptions {
   timeoutMs?: number;
   idleTimeoutMs?: number;
+  debounceMs?: number;
   shutdownGraceMs?: number;
   killGraceMs?: number;
   maxDiagnosticLines?: number;
+  circuitBreakerThreshold?: number;
+  circuitBreakerCooldownMs?: number;
+  /** When true, route diagnostics through the shared 1-per-(worktreeRoot, serverId) UNIX-socket broker. */
+  useBroker?: boolean;
+  /** Override broker socket directory (defaults to `~/.pi/run/lsp`). */
+  brokerRunDir?: string;
   envPath?: string;
   logger?: Logger;
 }
@@ -92,7 +122,37 @@ export interface LspManagerOptions {
 export interface RegisterLspOptions extends LspManagerOptions {
   /** Override subagent-child check in tests. */
   isSubagentChild?: () => boolean;
+  /** Override SQLite DB path for "Don't ask again" install prompt persistence in tests. */
+  installPrefsDbPath?: string;
+  /** Override installer execution in tests. Return `{ ok, error? }`. */
+  installRunner?: (recipe: LspInstallRecipe) => Promise<{ ok: boolean; error?: string }>;
+  /** Override executable verification after install in tests. */
+  verifyInstalled?: (binary: string, envPath?: string) => string | null;
 }
+
+export const BUILTIN_INSTALL_RECIPES: Readonly<Record<string, LspInstallRecipe>> = Object.freeze({
+  typescript: {
+    serverId: "typescript",
+    label: "typescript-language-server",
+    binary: "typescript-language-server",
+    displayCmd: "npm install -g typescript typescript-language-server",
+    prereq: "npm",
+  },
+  python: {
+    serverId: "python",
+    label: "basedpyright",
+    binary: "basedpyright-langserver",
+    displayCmd: "uv tool install --upgrade basedpyright",
+    prereq: "uv",
+  },
+  go: {
+    serverId: "go",
+    label: "gopls",
+    binary: "gopls",
+    displayCmd: "go install golang.org/x/tools/gopls@latest",
+    prereq: "go",
+  },
+});
 
 export const BUILTIN_LSP_SERVERS: readonly BuiltinLspServerSpec[] = Object.freeze([
   {
@@ -308,9 +368,261 @@ export function formatDiagnostics(
   return `LSP diagnostics (${serverId}):\n${lines.join("\n")}`;
 }
 
-function isLspAllowedInSubagents(): boolean {
+function isLspDisabledInSubagents(): boolean {
   const raw = (process.env.PI_LSP_IN_SUBAGENTS ?? "").trim().toLowerCase();
-  return TRUTHY_ENV.has(raw);
+  return FALSY_ENV.has(raw);
+}
+
+/**
+ * Return the built-in server ID matching `filePath` when none of its binaries are
+ * installed on `PATH` and no `lsp_servers` override replaces that built-in ID.
+ */
+export function findMissingBuiltinServerId(
+  filePath: string,
+  overrides: LspServersConfig = {},
+  envPath: string = process.env.PATH ?? "",
+): string | null {
+  const ext = path.extname(filePath).toLowerCase();
+  if (!ext) return null;
+  if (resolveServerForFile(filePath, overrides, envPath) !== null) return null;
+
+  for (const spec of BUILTIN_LSP_SERVERS) {
+    if (spec.id in overrides) continue;
+    if (!spec.extensions.includes(ext)) continue;
+    if (BUILTIN_INSTALL_RECIPES[spec.id]) return spec.id;
+  }
+  return null;
+}
+
+// ── Missing-server install prompt persistence (SQLite kv_state) ──────
+
+export function getDefaultLspPrefsDbPath(): string {
+  const dir = path.join(os.homedir(), ".pi", "data");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return path.join(dir, "state.db");
+}
+
+function readDismissedLspServers(dbPath: string): Set<string> {
+  try {
+    const db = openStateDb(dbPath);
+    const row = db
+      .prepare("SELECT payload FROM kv_state WHERE store_key = ?")
+      .get(LSP_INSTALL_DISMISSED_KEY) as { payload?: string } | undefined;
+    if (!row?.payload) return new Set();
+    const parsed = JSON.parse(row.payload) as { dismissed?: unknown };
+    if (!Array.isArray(parsed?.dismissed)) return new Set();
+    return new Set(parsed.dismissed.filter((v): v is string => typeof v === "string"));
+  } catch (err: any) {
+    defaultLog.debug("lsp_read_dismissed_failed", { dbPath, error: err?.message ?? String(err) });
+    return new Set();
+  }
+}
+
+export function isLspInstallDismissed(serverId: string, dbPath: string = getDefaultLspPrefsDbPath()): boolean {
+  return readDismissedLspServers(dbPath).has(serverId);
+}
+
+export function dismissLspInstallPermanently(serverId: string, dbPath: string = getDefaultLspPrefsDbPath()): void {
+  try {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
+    withTransaction(dbPath, (db) => {
+      const existing = readDismissedLspServers(dbPath);
+      existing.add(serverId);
+      const payload = JSON.stringify({ dismissed: [...existing].sort() });
+      db.prepare(
+        `INSERT INTO kv_state (store_key, payload, revision, updated_at)
+         VALUES (?, ?, 1, ?)
+         ON CONFLICT(store_key) DO UPDATE SET
+           payload = excluded.payload,
+           revision = kv_state.revision + 1,
+           updated_at = excluded.updated_at`,
+      ).run(LSP_INSTALL_DISMISSED_KEY, payload, new Date().toISOString());
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_persist_dismissed_failed", { serverId, error: err?.message ?? String(err) });
+  }
+}
+
+function prependDirToProcessPath(binDir: string): void {
+  if (!binDir || !path.isAbsolute(binDir)) return;
+  const current = process.env.PATH ?? "";
+  const parts = current.split(path.delimiter).filter(Boolean);
+  if (!parts.includes(binDir)) {
+    process.env.PATH = current ? `${binDir}${path.delimiter}${current}` : binDir;
+  }
+}
+
+/**
+ * Safely run a built-in LSP server install recipe (no shell interpolation).
+ * Mirrors `scripts/install.py` user-writable `~/.npm-global` prefix fallback.
+ */
+export async function runLspServerInstall(
+  recipe: LspInstallRecipe,
+  envPath: string = process.env.PATH ?? "",
+): Promise<{ ok: boolean; error?: string }> {
+  const prereqBin = findExecutableOnPath(recipe.prereq, envPath);
+  if (!prereqBin) {
+    return { ok: false, error: `${recipe.prereq} is not installed on PATH` };
+  }
+
+  try {
+    if (recipe.serverId === "typescript") {
+      const { stdout } = await execFileAsync(prereqBin, ["prefix", "-g"], { timeout: 10_000 });
+      const rawPrefix = stdout.trim();
+      let prefixDir = rawPrefix && path.isAbsolute(rawPrefix) ? rawPrefix : "";
+      let writable = false;
+      if (prefixDir && fs.existsSync(prefixDir) && fs.statSync(prefixDir).isDirectory()) {
+        try {
+          fs.accessSync(prefixDir, fs.constants.W_OK);
+          writable = true;
+        } catch {
+          writable = false;
+        }
+      }
+      if (!writable) {
+        prefixDir = path.join(os.homedir(), ".npm-global");
+        fs.mkdirSync(path.join(prefixDir, "bin"), { recursive: true });
+        await execFileAsync(prereqBin, ["config", "set", "prefix", prefixDir], { timeout: 10_000 });
+      }
+      prependDirToProcessPath(path.join(prefixDir, "bin"));
+      await execFileAsync(prereqBin, ["install", "-g", "typescript", "typescript-language-server"], {
+        timeout: 180_000,
+      });
+      return { ok: true };
+    }
+
+    if (recipe.serverId === "python") {
+      await execFileAsync(prereqBin, ["tool", "install", "--upgrade", "basedpyright"], { timeout: 180_000 });
+      prependDirToProcessPath(path.join(os.homedir(), ".local", "bin"));
+      return { ok: true };
+    }
+
+    if (recipe.serverId === "go") {
+      await execFileAsync(prereqBin, ["install", "golang.org/x/tools/gopls@latest"], { timeout: 180_000 });
+      let goBin = path.join(os.homedir(), "go", "bin");
+      try {
+        const { stdout } = await execFileAsync(prereqBin, ["env", "GOPATH"], { timeout: 5_000 });
+        const gopath = stdout.trim().split(path.delimiter)[0];
+        if (gopath && path.isAbsolute(gopath)) goBin = path.join(gopath, "bin");
+      } catch {
+        // Fallback to ~/go/bin
+      }
+      prependDirToProcessPath(goBin);
+      return { ok: true };
+    }
+
+    return { ok: false, error: `Unsupported server recipe: ${recipe.serverId}` };
+  } catch (err: any) {
+    const detail = (err?.stderr || err?.message || String(err)).toString().trim().slice(0, 300);
+    return { ok: false, error: detail };
+  }
+}
+
+// ── Shared UNIX-socket broker helpers ────────────────────────────────
+
+function tryRealPath(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+export function getDefaultLspBrokerRunDir(): string {
+  return path.join(os.homedir(), ".pi", "run", "lsp");
+}
+
+/** Deterministic `0600` UNIX socket path per `(worktreeRoot, serverId)`, safely under 104 bytes. */
+export function getLspBrokerSocketPath(
+  worktreeRoot: string,
+  serverId: string,
+  runDir: string = getDefaultLspBrokerRunDir(),
+): string {
+  const canonicalRoot = tryRealPath(worktreeRoot);
+  const hash = createHash("sha256").update(`${canonicalRoot}\0${serverId}`).digest("hex").slice(0, 16);
+  return path.join(runDir, `lsp-${hash}.sock`);
+}
+
+export function sendBrokerRequest(
+  socketPath: string,
+  payload: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let raw = "";
+    const socket = net.createConnection(socketPath);
+
+    const done = (err: Error | null, res?: any) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (err) reject(err);
+      else resolve(res);
+    };
+
+    const timer = setTimeout(() => {
+      done(new Error("LSP broker request timed out"));
+    }, Math.max(1, timeoutMs));
+    timer.unref();
+
+    socket.on("error", (err) => done(err));
+    socket.on("connect", () => {
+      try {
+        socket.write(`${JSON.stringify(payload)}\n`);
+      } catch (err: any) {
+        done(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+    socket.on("data", (chunk) => {
+      raw += chunk.toString("utf8");
+      if (Buffer.byteLength(raw, "utf8") > MAX_RPC_BUFFER_BYTES) {
+        done(new Error("LSP broker reply exceeded max buffer size"));
+        return;
+      }
+      const nl = raw.indexOf("\n");
+      if (nl === -1) return;
+      const line = raw.slice(0, nl).trim();
+      try {
+        done(null, JSON.parse(line));
+      } catch (err: any) {
+        done(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+    socket.on("end", () => {
+      if (!settled) {
+        const line = raw.trim();
+        if (line) {
+          try {
+            done(null, JSON.parse(line));
+            return;
+          } catch {
+            // Fall through
+          }
+        }
+        done(new Error("LSP broker closed connection without reply"));
+      }
+    });
+  });
+}
+
+async function acquireLockAsync(lockPath: string, deadline: number): Promise<(() => void) | null> {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  while (Date.now() < deadline) {
+    const release = acquireTokenFileLock(lockPath, { attempts: 1 });
+    if (release) return release;
+    const waitMs = Math.min(25, Math.max(1, deadline - Date.now()));
+    await new Promise((r) => {
+      const t = setTimeout(r, waitMs);
+      t.unref();
+    });
+  }
+  return null;
+}
+
+function sameStringArray(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 /**
@@ -1039,7 +1351,12 @@ function waitWithinBudget(promise: Promise<unknown>, deadline: number): Promise<
   });
 }
 
-// ── Per-(rootDir, serverId) Manager Pool ─────────────────────────────
+// ── Per-(worktreeRoot, serverId) Manager Pool ────────────────────────
+
+interface CircuitState {
+  crashes: number[];
+  openUntil: number;
+}
 
 export class LspManager {
   private readonly clients = new Map<string, LspClient>();
@@ -1047,12 +1364,21 @@ export class LspManager {
   private readonly allClients = new Set<LspClient>();
   /** Serializes replacement/reset per poolKey so concurrent edits never overwrite each other's client. */
   private readonly replacing = new Map<string, Promise<void>>();
+  /** Broken-server circuit breaker state per (worktreeRoot, serverId, command, args). */
+  private readonly circuits = new Map<string, CircuitState>();
+  /** Broker sockets touched by this manager instance (used by `shutdownBrokers()`). */
+  private readonly touchedBrokerSockets = new Set<string>();
   private readonly missingLogged = new Set<string>();
   private readonly timeoutMs: number;
   private readonly idleTimeoutMs: number;
+  private readonly debounceMs: number;
   private readonly shutdownGraceMs: number;
   private readonly killGraceMs: number;
   private readonly maxDiagnosticLines: number;
+  private readonly circuitThreshold: number;
+  private readonly circuitCooldownMs: number;
+  private readonly useBroker: boolean;
+  private readonly brokerRunDir: string;
   private readonly envPath?: string;
   private readonly log: Logger;
   private exitHookRegistered = false;
@@ -1074,11 +1400,62 @@ export class LspManager {
   constructor(options: LspManagerOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_DIAGNOSTICS_TIMEOUT_MS;
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.shutdownGraceMs = options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
     this.maxDiagnosticLines = options.maxDiagnosticLines ?? MAX_DIAGNOSTIC_LINES;
+    this.circuitThreshold = options.circuitBreakerThreshold ?? DEFAULT_CIRCUIT_BREAKER_THRESHOLD;
+    this.circuitCooldownMs = options.circuitBreakerCooldownMs ?? DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS;
+    this.useBroker = options.useBroker ?? false;
+    this.brokerRunDir = options.brokerRunDir ?? getDefaultLspBrokerRunDir();
     this.envPath = options.envPath;
     this.log = options.logger ?? defaultLog;
+  }
+
+  private circuitKey(worktreeRoot: string, server: ResolvedLspServer): string {
+    return `${worktreeRoot}\0${server.serverId}\0${server.command}\0${JSON.stringify(server.args)}`;
+  }
+
+  isCircuitOpen(rootDir: string, server: ResolvedLspServer): boolean {
+    const worktreeRoot = resolveWorktreeRoot(path.resolve(rootDir));
+    const state = this.circuits.get(this.circuitKey(worktreeRoot, server));
+    if (!state) return false;
+    if (Date.now() < state.openUntil) return true;
+    this.circuits.delete(this.circuitKey(worktreeRoot, server));
+    return false;
+  }
+
+  private openCircuit(worktreeRoot: string, server: ResolvedLspServer): void {
+    const key = this.circuitKey(worktreeRoot, server);
+    const now = Date.now();
+    this.circuits.set(key, { crashes: [now], openUntil: now + this.circuitCooldownMs });
+    this.log.warn("lsp_circuit_breaker_open", {
+      serverId: server.serverId,
+      worktreeRoot,
+      cooldownMs: this.circuitCooldownMs,
+    });
+  }
+
+  private recordCrash(worktreeRoot: string, server: ResolvedLspServer): void {
+    const key = this.circuitKey(worktreeRoot, server);
+    const now = Date.now();
+    const state = this.circuits.get(key) ?? { crashes: [], openUntil: 0 };
+    state.crashes = state.crashes.filter((t) => now - t <= CIRCUIT_CRASH_WINDOW_MS);
+    state.crashes.push(now);
+    if (state.crashes.length >= this.circuitThreshold) {
+      state.openUntil = now + this.circuitCooldownMs;
+      this.log.warn("lsp_circuit_breaker_open", {
+        serverId: server.serverId,
+        worktreeRoot,
+        crashes: state.crashes.length,
+        cooldownMs: this.circuitCooldownMs,
+      });
+    }
+    this.circuits.set(key, state);
+  }
+
+  private clearCircuit(worktreeRoot: string, server: ResolvedLspServer): void {
+    this.circuits.delete(this.circuitKey(worktreeRoot, server));
   }
 
   get activeCount(): number {
@@ -1103,6 +1480,194 @@ export class LspManager {
     if (!this.exitHookRegistered || this.allClients.size > 0) return;
     this.exitHookRegistered = false;
     process.off("exit", this.onProcessExit);
+  }
+
+  private async ensureBrokerRunning(
+    worktreeRoot: string,
+    server: ResolvedLspServer,
+    socketPath: string,
+    deadline: number,
+  ): Promise<boolean> {
+    const lockPath = `${socketPath}.lock`;
+    const release = await acquireLockAsync(lockPath, deadline);
+    if (!release) {
+      this.log.debug("lsp_broker_lock_timeout", { serverId: server.serverId, socketPath });
+      return false;
+    }
+
+    try {
+      // Re-probe inside the lock: another peer/subagent may have just started the broker.
+      try {
+        const pong = await sendBrokerRequest(socketPath, { op: "ping" }, Math.min(250, Math.max(50, deadline - Date.now())));
+        if (pong?.ok) {
+          if (pong.command === server.command && sameStringArray(pong.args ?? [], server.args)) {
+            if (pong.broken) {
+              this.openCircuit(worktreeRoot, server);
+              return false;
+            }
+            return true;
+          }
+          // Server override changed — shut down the mismatched broker first.
+          await sendBrokerRequest(socketPath, { op: "shutdown" }, Math.min(300, Math.max(50, deadline - Date.now()))).catch(() => {});
+          while (Date.now() < deadline && fs.existsSync(socketPath)) {
+            await new Promise((r) => {
+              const t = setTimeout(r, 20);
+              t.unref();
+            });
+          }
+        }
+      } catch {
+        // Not running yet — proceed to spawn
+      }
+
+      if (this.shuttingDown || Date.now() >= deadline) return false;
+
+      fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+      try {
+        const st = fs.lstatSync(socketPath);
+        if (st.isSymbolicLink()) {
+          this.log.warn("lsp_broker_socket_symlink_refused", { socketPath });
+          return false;
+        }
+        if (st.isSocket()) fs.unlinkSync(socketPath);
+      } catch {
+        // Not present
+      }
+
+      const child = spawn(
+        process.execPath,
+        [
+          BROKER_DAEMON_SCRIPT,
+          `--socket=${socketPath}`,
+          `--root=${worktreeRoot}`,
+          `--server-id=${server.serverId}`,
+          `--command=${server.command}`,
+          `--args-json=${JSON.stringify(server.args)}`,
+          `--idle-ms=${this.idleTimeoutMs}`,
+          `--debounce-ms=${this.debounceMs}`,
+        ],
+        {
+          cwd: worktreeRoot,
+          detached: true,
+          stdio: "ignore",
+        },
+      );
+      child.on("error", (err) => {
+        this.log.warn("lsp_broker_spawn_error", { serverId: server.serverId, error: err.message });
+      });
+      child.unref();
+      this.log.info("lsp_broker_spawned", {
+        serverId: server.serverId,
+        worktreeRoot,
+        socketPath,
+        brokerPid: child.pid,
+      });
+
+      while (Date.now() < deadline && !this.shuttingDown) {
+        try {
+          const pong = await sendBrokerRequest(socketPath, { op: "ping" }, Math.min(200, Math.max(25, deadline - Date.now())));
+          if (pong?.ok) return true;
+        } catch {
+          // Broker still binding socket
+        }
+        await new Promise((r) => {
+          const t = setTimeout(r, 25);
+          t.unref();
+        });
+      }
+      return false;
+    } finally {
+      release();
+    }
+  }
+
+  private async checkViaBroker(
+    worktreeRoot: string,
+    absPath: string,
+    server: ResolvedLspServer,
+    deadline: number,
+  ): Promise<LspDiagnostic[] | null> {
+    if (this.isCircuitOpen(worktreeRoot, server)) {
+      this.log.debug("lsp_circuit_breaker_skipped", { serverId: server.serverId, worktreeRoot });
+      return null;
+    }
+
+    const socketPath = getLspBrokerSocketPath(worktreeRoot, server.serverId, this.brokerRunDir);
+    this.touchedBrokerSockets.add(socketPath);
+
+    const runCheck = async (): Promise<{
+      diagnostics: LspDiagnostic[] | null;
+      retryable: boolean;
+      mismatch: boolean;
+      broken: boolean;
+    }> => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { diagnostics: null, retryable: false, mismatch: false, broken: false };
+      try {
+        const resp = await sendBrokerRequest(
+          socketPath,
+          {
+            op: "check",
+            filePath: absPath,
+            command: server.command,
+            args: server.args,
+            timeoutMs: remaining,
+          },
+          remaining,
+        );
+        if (resp?.ok) {
+          this.clearCircuit(worktreeRoot, server);
+          return {
+            diagnostics: Array.isArray(resp.diagnostics) ? resp.diagnostics : null,
+            retryable: false,
+            mismatch: false,
+            broken: false,
+          };
+        }
+        if (resp?.broken || resp?.error === "circuit_open") {
+          this.openCircuit(worktreeRoot, server);
+          return { diagnostics: null, retryable: false, mismatch: false, broken: true };
+        }
+        if (resp?.error === "server_mismatch") {
+          return { diagnostics: null, retryable: true, mismatch: true, broken: false };
+        }
+        return { diagnostics: null, retryable: false, mismatch: false, broken: false };
+      } catch {
+        return { diagnostics: null, retryable: true, mismatch: false, broken: false };
+      }
+    };
+
+    const first = await runCheck();
+    if (!first.retryable || this.shuttingDown || Date.now() >= deadline) {
+      return first.diagnostics;
+    }
+
+    const started = await this.ensureBrokerRunning(worktreeRoot, server, socketPath, deadline);
+    if (!started || this.shuttingDown || Date.now() >= deadline) return null;
+
+    const second = await runCheck();
+    return second.diagnostics;
+  }
+
+  /** Ping the shared broker for `(rootDir, serverId)`, or `null` if not running. */
+  async pingBroker(rootDir: string, serverId: string, timeoutMs = 300): Promise<any | null> {
+    const worktreeRoot = resolveWorktreeRoot(path.resolve(rootDir));
+    const socketPath = getLspBrokerSocketPath(worktreeRoot, serverId, this.brokerRunDir);
+    try {
+      const pong = await sendBrokerRequest(socketPath, { op: "ping" }, timeoutMs);
+      return pong?.ok ? pong : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Shut down all shared broker sockets touched by this manager (mainly for cleanup/tests). */
+  async shutdownBrokers(): Promise<void> {
+    const sockets = [...this.touchedBrokerSockets];
+    this.touchedBrokerSockets.clear();
+    await Promise.allSettled(
+      sockets.map((sock) => sendBrokerRequest(sock, { op: "shutdown" }, 500).catch(() => {})),
+    );
   }
 
   private async acquireClient(
@@ -1216,6 +1781,19 @@ export class LspManager {
 
     const poolKey = `${resolvedRoot}\0${server.serverId}`;
     const uri = normalizeFileUri(pathToFileURL(absPath).href);
+    const worktreeRoot = resolveWorktreeRoot(resolvedRoot);
+
+    if (this.useBroker) {
+      const brokerDiagnostics = await this.checkViaBroker(worktreeRoot, absPath, server, deadline);
+      if (this.shuttingDown || !brokerDiagnostics || brokerDiagnostics.length === 0) return null;
+      return formatDiagnostics(brokerDiagnostics, absPath, resolvedRoot, server.serverId, this.maxDiagnosticLines);
+    }
+
+    if (this.isCircuitOpen(resolvedRoot, server)) {
+      this.log.debug("lsp_circuit_breaker_skipped", { serverId: server.serverId, rootDir: resolvedRoot });
+      return null;
+    }
+
     const client = await this.acquireClient(poolKey, resolvedRoot, server, uri, deadline);
     if (!client) return null;
 
@@ -1224,6 +1802,11 @@ export class LspManager {
       const remaining = deadline - Date.now();
       if (this.shuttingDown || remaining <= 0) return null;
       diagnostics = await client.checkFile(absPath, remaining);
+      if (diagnostics === null && client.isClosed && !this.shuttingDown) {
+        this.recordCrash(worktreeRoot, server);
+      } else if (diagnostics !== null) {
+        this.clearCircuit(worktreeRoot, server);
+      }
     } finally {
       client.releaseUri(uri);
     }
@@ -1254,9 +1837,112 @@ export class LspManager {
 
 export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}): { manager: LspManager } {
   const log = options.logger ?? defaultLog;
-  const manager = new LspManager(options);
+  // Default to the shared per-worktree UNIX-socket broker in production registration
+  // so main session, COMS peers, and editing subagents share 1 warm LSP server per worktree.
+  const manager = new LspManager({ useBroker: true, ...options });
   const checkSubagent = options.isSubagentChild ?? (() => process.env.PI_SUBAGENT_CHILD === "1");
+  const installRunner = options.installRunner ?? ((recipe) => runLspServerInstall(recipe, options.envPath));
+  const verifyInstalled = options.verifyInstalled ?? ((binary, envPath) => findExecutableOnPath(binary, envPath));
   const warnedUntrustedProject = new Set<string>();
+  const promptedThisSession = new Set<string>();
+  const promptInFlight = new Map<string, Promise<string | null>>();
+
+  const handleMissingServer = async (
+    missingId: string,
+    ctx: any,
+    cwd: string,
+    filePath: string,
+    overrides: LspServersConfig,
+  ): Promise<string | null> => {
+    const recipe = BUILTIN_INSTALL_RECIPES[missingId];
+    if (!recipe) return null;
+
+    const prefsDbPath = options.installPrefsDbPath ?? getDefaultLspPrefsDbPath();
+    if (promptedThisSession.has(missingId) || isLspInstallDismissed(missingId, prefsDbPath)) {
+      return null;
+    }
+
+    const existingPrompt = promptInFlight.get(missingId);
+    if (existingPrompt) {
+      await existingPrompt;
+      return null;
+    }
+
+    const runPrompt = (async (): Promise<string | null> => {
+      if (promptedThisSession.has(missingId) || isLspInstallDismissed(missingId, prefsDbPath)) {
+        return null;
+      }
+
+      // Interactive TUI: ask user once with 3 clear choices
+      if (ctx?.hasUI === true && typeof ctx.ui?.select === "function") {
+        const installChoice = `Install ${recipe.label}`;
+        const notNowChoice = "Not now";
+        const dismissChoice = `Don't ask again for ${recipe.label}`;
+        const title =
+          `LSP server "${recipe.label}" is not installed on PATH.\n` +
+          `Command: ${recipe.displayCmd}`;
+
+        let choice: string | undefined;
+        try {
+          choice = await ctx.ui.select(title, [installChoice, notNowChoice, dismissChoice]);
+        } catch (err: any) {
+          log.debug("lsp_install_prompt_failed", { serverId: missingId, error: err?.message });
+          promptedThisSession.add(missingId);
+          return null;
+        }
+
+        promptedThisSession.add(missingId);
+
+        if (choice === dismissChoice) {
+          dismissLspInstallPermanently(missingId, prefsDbPath);
+          log.info("lsp_install_prompt_dismissed_permanently", { serverId: missingId });
+          return null;
+        }
+
+        if (choice !== installChoice) {
+          log.info("lsp_install_prompt_skipped_session", { serverId: missingId });
+          return null;
+        }
+
+        ctx.ui?.notify?.(`Installing ${recipe.label}...`, "info");
+        log.info("lsp_install_started", { serverId: missingId, command: recipe.displayCmd });
+        const result = await installRunner(recipe);
+        if (!result.ok) {
+          log.warn("lsp_install_failed", { serverId: missingId, error: result.error });
+          ctx.ui?.notify?.(`Failed to install ${recipe.label}: ${result.error || "unknown error"}`, "warning");
+          return null;
+        }
+
+        const verified = verifyInstalled(recipe.binary, options.envPath ?? process.env.PATH ?? "");
+        if (!verified) {
+          log.warn("lsp_install_binary_not_on_path", { serverId: missingId, binary: recipe.binary });
+          ctx.ui?.notify?.(
+            `Installed ${recipe.label}, but "${recipe.binary}" is not yet on PATH.`,
+            "warning",
+          );
+          return null;
+        }
+
+        log.info("lsp_install_verified", { serverId: missingId, binary: verified });
+        ctx.ui?.notify?.(`Installed ${recipe.label} — LSP diagnostics active.`, "info");
+        return manager.getDiagnosticsForFile(cwd, filePath, overrides);
+      }
+
+      // Headless COMS peer / subagent: never block; emit a concise 1-line hint once per server
+      promptedThisSession.add(missingId);
+      log.info("lsp_missing_server_hint", { serverId: missingId, binary: recipe.binary });
+      return `[LSP] ${recipe.label} not found on PATH; run \`uv run scripts/install.py\` or edit in TUI to install (${recipe.displayCmd}).`;
+    })();
+
+    promptInFlight.set(missingId, runPrompt);
+    try {
+      return await runPrompt;
+    } finally {
+      if (promptInFlight.get(missingId) === runPrompt) {
+        promptInFlight.delete(missingId);
+      }
+    }
+  };
 
   pi.on("tool_result", async (event, ctx): Promise<ToolResultEventResult | undefined> => {
     try {
@@ -1264,7 +1950,9 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
       if (toolName !== "write" && toolName !== "edit") return undefined;
       if ((event as any).isError === true) return undefined;
 
-      if (checkSubagent() && !isLspAllowedInSubagents()) return undefined;
+      // Editing subagents are enabled by default when lsp_enabled is true (sharing the
+      // per-worktree broker); opt out explicitly via PI_LSP_IN_SUBAGENTS=0/false.
+      if (checkSubagent() && isLspDisabledInSubagents()) return undefined;
 
       // Check trusted global/env enablement FIRST before touching any project file
       // so disabled LSP never triggers legacy settings migration or git checks.
@@ -1294,7 +1982,13 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
       if (typeof filePath !== "string" || !filePath.trim()) return undefined;
 
       const overrides = resolveTrustedLspServers();
-      const formatted = await manager.getDiagnosticsForFile(cwd, filePath, overrides);
+      const absPath = path.resolve(cwd, filePath);
+      const envPath = options.envPath ?? process.env.PATH ?? "";
+      const missingId = findMissingBuiltinServerId(absPath, overrides, envPath);
+
+      const formatted = missingId
+        ? await handleMissingServer(missingId, ctx, cwd, filePath, overrides)
+        : await manager.getDiagnosticsForFile(cwd, filePath, overrides);
       if (!formatted) return undefined;
 
       const currentContent = Array.isArray((event as any).content) ? (event as any).content : [];

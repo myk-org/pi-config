@@ -41,9 +41,13 @@ from questionary import Choice
 
 try:
     from install_sources import (
+        BASEDPYRIGHT_INSTALL_CMD,
+        GOPLS_INSTALL_CMD,
         MYK_PI_TOOLS_INSTALL_CMD,
         PI_CONFIG_NPM,
         PI_VERTEX_NPM,
+        TS_LSP_INSTALL_CMD,
+        TS_LSP_NPM_PACKAGES,
         create_logger,
         is_pi_pkg_installed,
         pi_config_pi_cmd,
@@ -57,6 +61,10 @@ except ModuleNotFoundError:
     PI_VERTEX_NPM = "npm:@myk-org/pi-vertex-claude"
     PI_CONFIG_NPM = "npm:pi-orchestrator-config"
     MYK_PI_TOOLS_INSTALL_CMD = "uv tool install --python 3.14 --upgrade myk-pi-tools"
+    BASEDPYRIGHT_INSTALL_CMD = "uv tool install --upgrade basedpyright"
+    TS_LSP_NPM_PACKAGES = ("typescript", "typescript-language-server")
+    TS_LSP_INSTALL_CMD = "npm install -g typescript typescript-language-server"
+    GOPLS_INSTALL_CMD = "go install golang.org/x/tools/gopls@latest"
 
     def create_logger(name: str = "install") -> logging.Logger:
         return logging.getLogger(name)
@@ -99,7 +107,7 @@ ARCH = platform.machine()
 ARCH_DL = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(ARCH, ARCH)
 OS_LOWER = SYSTEM.lower()
 HOME = Path.home()
-TOTAL_STEPS = 5
+TOTAL_STEPS = 6
 
 
 GREEN = "\033[32m"
@@ -458,20 +466,84 @@ def _is_chromium_installed() -> bool:
     return False
 
 
-def _find_agent_browser() -> str | None:
-    found = shutil.which("agent-browser")
+def _find_npm_bin(name: str) -> str | None:
+    found = shutil.which(name)
     if found:
         return found
     candidates: list[Path] = []
     if shutil.which("npm"):
         prefix = _run_quiet(["npm", "prefix", "-g"])
         if prefix:
-            candidates.append(Path(prefix) / "bin/agent-browser")
-    candidates.append(HOME / ".npm-global/bin/agent-browser")
+            candidates.append(Path(prefix) / "bin" / name)
+    candidates.append(HOME / ".npm-global/bin" / name)
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return None
+
+
+def _find_agent_browser() -> str | None:
+    return _find_npm_bin("agent-browser")
+
+
+def _find_uv_tool_bin(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    candidate = HOME / ".local/bin" / name
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
+
+
+def _find_go_bin(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    candidates: list[Path] = []
+    if shutil.which("go"):
+        gopath = _run_quiet(["go", "env", "GOPATH"])
+        if gopath:
+            for root in gopath.split(os.pathsep):
+                if root:
+                    candidates.append(Path(root) / "bin" / name)
+    candidates.append(HOME / "go/bin" / name)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def install_typescript_lsp() -> None:
+    prefix = _ensure_writable_npm_prefix()
+    _prepend_to_path(prefix / "bin")
+    result = subprocess.run(
+        ["npm", "install", "-g", *TS_LSP_NPM_PACKAGES],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise _CommandFailedError(f"{TS_LSP_INSTALL_CMD} failed", result.stderr or result.stdout)
+    log.info("typescript-language-server installation verified prefix=%s", prefix)
+
+
+def install_gopls() -> None:
+    if not shutil.which("go"):
+        raise RuntimeError("go not found on PATH")
+    result = subprocess.run(
+        ["go", "install", "golang.org/x/tools/gopls@latest"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise _CommandFailedError(f"{GOPLS_INSTALL_CMD} failed", result.stderr or result.stdout)
+    gopath = _run_quiet(["go", "env", "GOPATH"])
+    go_bin = Path(gopath.split(os.pathsep)[0]) / "bin" if gopath else HOME / "go/bin"
+    if go_bin.is_dir():
+        _prepend_to_path(go_bin)
+    log.info("gopls installation verified")
 
 
 def install_browser() -> None:
@@ -794,7 +866,40 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         ],
     )
 
-    return [step1, step2, step3, step4, step5]
+    # ── Step 6: Language Servers (LSP) ───────────────────────────────────
+    has_go = shutil.which("go") is not None
+    step6 = Step(
+        "🧠",
+        "Language Servers (LSP)",
+        "Optional language servers for opt-in write/edit LSP diagnostics",
+        [
+            Tool(
+                "typescript-language-server",
+                "TypeScript/JavaScript LSP (typescript + typescript-language-server)",
+                installed=bool(_find_npm_bin("typescript-language-server")),
+                disabled=nd,
+                install_cmd=TS_LSP_INSTALL_CMD,
+                install_fn=install_typescript_lsp,
+            ),
+            Tool(
+                "basedpyright",
+                "Python LSP server (basedpyright-langserver)",
+                installed=bool(_find_uv_tool_bin("basedpyright-langserver")),
+                disabled=uv_dis,
+                install_cmd=BASEDPYRIGHT_INSTALL_CMD,
+            ),
+            Tool(
+                "gopls",
+                "Go language server (skipped if go is not installed)",
+                installed=bool(_find_go_bin("gopls")),
+                disabled="" if has_go else "requires go",
+                install_cmd=GOPLS_INSTALL_CMD,
+                install_fn=install_gopls,
+            ),
+        ],
+    )
+
+    return [step1, step2, step3, step4, step5, step6]
 
 
 # ── Step UI ────────────────────────────────────────────────────────────────

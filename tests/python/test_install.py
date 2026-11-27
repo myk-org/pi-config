@@ -1592,3 +1592,81 @@ def test_entrypoint_installs_required_npm_packages() -> None:
     text = (REPO / "entrypoint.sh").read_text()
     assert "npm install -g @earendil-works/pi-coding-agent" in text
     assert "npm install -g acpx" not in text
+
+
+def test_build_steps_includes_lsp_servers_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(install, "HOME", tmp_path)
+    monkeypatch.setattr(
+        install.shutil, "which", lambda name: f"/usr/bin/{name}" if name in {"go", "npm", "uv"} else None
+    )
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "")
+
+    steps = install.build_steps(_prereqs())
+    assert len(steps) == install.TOTAL_STEPS == 6
+    lsp_tools = {t.name: t for t in steps[5].tools}
+    assert set(lsp_tools.keys()) == {"typescript-language-server", "basedpyright", "gopls"}
+    assert lsp_tools["typescript-language-server"].install_fn is install.install_typescript_lsp
+    assert lsp_tools["basedpyright"].install_cmd == "uv tool install --upgrade basedpyright"
+    assert lsp_tools["gopls"].install_fn is install.install_gopls
+    assert lsp_tools["gopls"].disabled == ""
+
+
+def test_build_steps_disables_gopls_when_go_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(install, "HOME", tmp_path)
+    monkeypatch.setattr(install.shutil, "which", lambda name: None if name in {"go", "gopls"} else f"/usr/bin/{name}")
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "")
+
+    steps = install.build_steps(_prereqs())
+    gopls_tool = next(t for t in steps[5].tools if t.name == "gopls")
+    assert gopls_tool.disabled == "requires go"
+    assert gopls_tool not in install.auto_select_all(steps)
+
+
+def test_install_typescript_lsp_uses_writable_npm_prefix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    prefix = tmp_path / "npm-global"
+    prefix.mkdir()
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install, "_ensure_writable_npm_prefix", lambda: prefix)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_typescript_lsp()
+    assert seen == [["npm", "install", "-g", "typescript", "typescript-language-server"]]
+
+
+def test_install_gopls_runs_go_install_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/go" if name == "go" else None)
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: str(tmp_path / "gopath"))
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_gopls()
+    assert seen == [["go", "install", "golang.org/x/tools/gopls@latest"]]
+
+
+def test_install_standalone_fallback_matches_install_sources_lsp_constants() -> None:
+    import install_sources
+
+    install_text = (SCRIPTS / "install.py").read_text(encoding="utf-8")
+    fallback_section = install_text.split("except ModuleNotFoundError:", 1)[1].split("log = create_logger", 1)[0]
+    assert f'BASEDPYRIGHT_INSTALL_CMD = "{install_sources.BASEDPYRIGHT_INSTALL_CMD}"' in fallback_section
+    assert f'TS_LSP_INSTALL_CMD = "{install_sources.TS_LSP_INSTALL_CMD}"' in fallback_section
+    assert f'GOPLS_INSTALL_CMD = "{install_sources.GOPLS_INSTALL_CMD}"' in fallback_section
+    assert 'TS_LSP_NPM_PACKAGES = ("typescript", "typescript-language-server")' in fallback_section

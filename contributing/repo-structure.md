@@ -81,7 +81,8 @@ pi-config/
 │   │   ├── pre-compaction-elision.ts    # Deterministic zero-LLM-cost mechanical elision of old bulky tool results via context hook (#1421)
 │   │   ├── magic-keywords.ts            # Per-turn thinking magic keywords (`ultrathink` / `chillax`) with strict prose-only parser and single-turn restore (#1418)
 │   │   ├── advisor.ts                   # Opt-in background read-only advisor/watchdog model (`advisor_enabled`, `advisor_model` provider/model-id, `advisor_interval_turns`) (#1419)
-│   │   ├── lsp.ts                       # Opt-in zero-dep JSON-RPC 2.0 stdio LSP diagnostics hook after write/edit (`lsp_enabled`, `lsp_servers`) (#1445)
+│   │   ├── lsp.ts                       # Opt-in zero-dep JSON-RPC 2.0 stdio LSP client, shared per-worktree broker client, circuit breaker, & lazy TUI install prompt (`lsp_enabled`, `lsp_servers`) (#1445)
+│   │   ├── lsp-broker-daemon.mjs        # Shared 1-per-(worktreeRoot, serverId) `0600` UNIX-socket LSP broker daemon with debounce, circuit breaker, & idle shutdown (#1445)
 │   │   ├── snapshots.ts                 # Git-backed per-turn shadow-tree snapshots with `/undo` and `/redo` commands (`turn_snapshots`) (#1449)
 │   │   ├── state-db.ts                  # Shared node:sqlite WAL state store (.pi/data/state.db, Float32 BLOB embeddings, legacy JSONL migration)
 │   │   ├── state-jsonl.ts               # JSONL append log + legacy JSONL helpers (JsonlAppendLog, truncateJsonlFile, parseLastValidLine)
@@ -157,6 +158,7 @@ pi-config/
 │   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive, streamLoopAborted) with auto-pruning (#1364, #1374)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery)
+│   │   ├── secret-patterns.mjs      # Shared built-in credential regexes & env-var secret filters (consumed by secret-obfuscation.ts and scripts/diagnostic-report-collect.mjs; typed via secret-patterns.d.mts)
 │   │   ├── tool-namespaces.ts       # Shared Pi 1.6 ToolNamespace definitions (memory, coms, tasks, trail, runtime) and read-only annotation constant
 │   │   ├── widget-visibility.ts     # Shared collapse/expand widget state (expanded/collapsed, header-always-visible), globalThis reload persistence, shortcut validation/registration, and ui:toggle-all-widgets bridge
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
@@ -178,10 +180,18 @@ pi-config/
 │   ├── refine-review.md
 │   ├── release.md
 │   ├── remember.md
+│   ├── report.md
 │   ├── retro.md
 │   ├── review-handler.md
 │   ├── review-local.md
 │   └── scout-and-plan.md
+├── skills/                          # Bundled skills (auto-discovered by Pi)
+│   ├── bug-report/SKILL.md          # Diagnostic bug-report workflow paired with /report (issue #1446)
+│   ├── conflict-resolver/SKILL.md
+│   ├── skill-creator/SKILL.md
+│   ├── systematic-debugging/SKILL.md
+│   ├── test-driven-development/SKILL.md
+│   └── update-agents-md/SKILL.md
 ├── rules/                           # Orchestrator rules (auto-loaded alphabetically)
 │   ├── 00-orchestrator-core.md
 │   ├── 05-issue-first-workflow.md
@@ -223,6 +233,7 @@ pi-config/
 │   ├── pidiff-git-ignore.ts         # Chokidar gitignore filter (top-level dirs vs nested prefixes)
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
 │   ├── pr-retro-collect.mjs         # Deterministic $0 PR + session + check-config telemetry collector (issue #1343)
+│   ├── diagnostic-report-collect.mjs # Deterministic $0 runtime snapshot & redacted session warn/error log collector (issue #1446)
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
 ├── packages/                        # Workspace packages
 │   ├── pi-sidecar/                  # HTTP sidecar wrapping Pi SDK (@myk-org/pi-sidecar)
