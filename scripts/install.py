@@ -203,16 +203,6 @@ def _validate_npm_prefix(raw: str) -> tuple[Path, bool]:
     return resolved, os.access(writable_parent, os.W_OK)
 
 
-def _npm_global_prefix() -> Path:
-    result = subprocess.run(["npm", "prefix", "-g"], capture_output=True, text=True, timeout=5, check=True)
-    raw = result.stdout.strip()
-    resolved, writable = _validate_npm_prefix(raw)
-    if not writable:
-        log.warning("trail unsafe npm global prefix rejected value=%r", raw)
-        raise RuntimeError("npm prefix -g must return a safe absolute path")
-    return resolved
-
-
 def _prepend_to_path(bin_dir: Path) -> None:
     global _NPM_GLOBAL_BIN_NOTICE
     bin_str = str(bin_dir)
@@ -392,6 +382,7 @@ def _ensure_trail_prerequisites() -> None:
     if not missing:
         return
     pkg_cmd = _linux_build_tools_cmd() if set(missing) <= {"make", "g++"} else None
+    auto_install_error: str | None = None
     if pkg_cmd:
         can_install = False
         full_cmd = pkg_cmd
@@ -409,14 +400,21 @@ def _ensure_trail_prerequisites() -> None:
             env = os.environ | ({"DEBIAN_FRONTEND": "noninteractive"} if pkg_cmd[0] == "apt-get" else {})
             try:
                 subprocess.run(full_cmd, capture_output=True, text=True, timeout=300, check=True, env=env)
-            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            except subprocess.CalledProcessError as exc:
+                err_text = (exc.stderr or "") or (exc.output or "")
+                detail_lines = _meaningful_error_lines(err_text, limit=2) if isinstance(err_text, str) else []
+                auto_install_error = "; ".join(detail_lines) if detail_lines else str(exc)
+                log.warning("auto-install of node-gyp prerequisites failed error=%s", auto_install_error)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                auto_install_error = str(exc)
                 log.warning("auto-install of node-gyp prerequisites failed error=%s", exc)
             missing = [tool for tool in ("npm", "node", "python3", "make", "g++") if not shutil.which(tool)]
             if not missing:
                 return
     log.warning("trail prerequisites missing=%s", ",".join(missing))
     hint = f" (install with: sudo {' '.join(pkg_cmd)})" if pkg_cmd else ""
-    raise RuntimeError(f"Trail requires node-gyp prerequisites: {', '.join(missing)}{hint}")
+    reason = f"; auto-install failed: {auto_install_error}" if auto_install_error else ""
+    raise RuntimeError(f"Trail requires node-gyp prerequisites: {', '.join(missing)}{hint}{reason}")
 
 
 def install_agent_browser() -> None:
@@ -433,7 +431,7 @@ def install_agent_browser() -> None:
 
 
 def _is_chromium_installed() -> bool:
-    """Return True only when an executable Chrome/Chromium binary exists in agent-browser or Playwright caches."""
+    """Return True only when a launchable Chrome/Chromium binary exists in agent-browser or Playwright caches."""
     binary_names = {"chrome", "chromium", "chrome.exe", "Google Chrome for Testing", "Chromium"}
     search_globs = (
         HOME / ".agent-browser/browsers/chrome-*",
@@ -446,16 +444,41 @@ def _is_chromium_installed() -> bool:
                     if fname in binary_names:
                         candidate = Path(root) / fname
                         if candidate.is_file() and os.access(candidate, os.X_OK):
-                            return True
+                            try:
+                                probe = subprocess.run(
+                                    [str(candidate), "--version"],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5,
+                                )
+                            except (OSError, subprocess.TimeoutExpired):
+                                continue
+                            if probe.returncode == 0:
+                                return True
     return False
 
 
-def install_browser() -> None:
-    agent_browser = shutil.which("agent-browser")
-    if not agent_browser:
-        candidate = HOME / ".npm-global/bin/agent-browser"
+def _find_agent_browser() -> str | None:
+    found = shutil.which("agent-browser")
+    if found:
+        return found
+    candidates: list[Path] = []
+    if shutil.which("npm"):
+        prefix = _run_quiet(["npm", "prefix", "-g"])
+        if prefix:
+            candidates.append(Path(prefix) / "bin/agent-browser")
+    candidates.append(HOME / ".npm-global/bin/agent-browser")
+    for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
-            agent_browser = str(candidate)
+            return str(candidate)
+    return None
+
+
+def install_browser() -> None:
+    agent_browser = _find_agent_browser()
+    if not agent_browser:
+        install_agent_browser()
+        agent_browser = _find_agent_browser()
     if not agent_browser:
         raise RuntimeError("agent-browser not found on PATH; install agent-browser first")
     result = subprocess.run(
@@ -696,7 +719,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 "Local repository code graph for the optional Trail extension",
                 installed=bool(shutil.which("trail")),
                 disabled=nd,
-                install_cmd="DO_NOT_TRACK=1 npm install -g @trailhq/trail-code@latest",
                 install_fn=install_trail,
             ),
         ],
@@ -939,10 +961,10 @@ def install_all(selections: list[Tool]) -> tuple[int, int, list[Tool]]:
 # ── Update ─────────────────────────────────────────────────────────────────
 
 
-def update_pi(prereqs: dict[str, bool]) -> None:
+def update_pi(prereqs: dict[str, bool]) -> bool:
     """Run pi update --extensions to update pi itself and all installed packages."""
     if not prereqs.get("pi"):
-        return
+        return True
 
     print()
     print("  ⏳ Updating pi and packages...", end="", flush=True)
@@ -955,14 +977,17 @@ def update_pi(prereqs: dict[str, bool]) -> None:
         )
         if result.returncode == 0:
             print(f"\r\033[2K  {GREEN}✓{RESET} pi and packages updated")
-        else:
-            print(f"\r\033[2K  {RED}✗{RESET} pi update failed")
-            for line in _meaningful_error_lines(result.stderr or result.stdout):
-                print(f"    {DIM}{line}{RESET}")
+            return True
+        print(f"\r\033[2K  {RED}✗{RESET} pi update failed")
+        for line in _meaningful_error_lines(result.stderr or result.stdout):
+            print(f"    {DIM}{line}{RESET}")
+        return False
     except subprocess.TimeoutExpired:
         print(f"\r\033[2K  {RED}✗{RESET} pi update timed out (5m)")
+        return False
     except Exception as exc:
         print(f"\r\033[2K  {RED}✗{RESET} pi update — {exc}")
+        return False
 
 
 # ── Summary ────────────────────────────────────────────────────────────────
@@ -985,7 +1010,7 @@ def show_summary(installed: int, failed: int, skipped: int, failed_tools: list[T
             if tool.install_cmd:
                 print(f"    {DIM}${RESET} {tool.install_cmd}")
             else:
-                print(f"    {DIM}-{RESET} {tool.name}")
+                print(f"    {DIM}-{RESET} {tool.name} (re-run the installer to retry)")
     if _NPM_GLOBAL_BIN_NOTICE is not None:
         print()
         print(f"  {BOLD}Add npm global bin to your shell PATH:{RESET}")
@@ -1036,8 +1061,10 @@ def main() -> None:
         print()
         print("  Nothing to install.")
         # Still update pi and existing packages
-        update_pi(prereqs)
+        update_ok = update_pi(prereqs)
         print()
+        if not update_ok:
+            sys.exit(1)
         return
 
     # Show plan
@@ -1056,7 +1083,7 @@ def main() -> None:
     installed, failed, failed_tools = install_all(selections)
 
     # Update pi and all packages
-    update_pi(prereqs)
+    update_ok = update_pi(prereqs)
 
     # Adjust skipped to account for failures
     skipped = total_tools - installed - failed
@@ -1064,7 +1091,7 @@ def main() -> None:
     # Summary
     show_summary(installed, failed, skipped, failed_tools)
 
-    if failed > 0:
+    if failed > 0 or not update_ok:
         sys.exit(1)
 
 

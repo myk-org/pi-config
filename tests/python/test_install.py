@@ -371,7 +371,28 @@ def _tool(
 def test_trail_native_install_uses_audited_strict_npm12_installer(monkeypatch: pytest.MonkeyPatch) -> None:
     tool = _tool(monkeypatch, "trail")
     assert tool.install_fn
-    assert tool.install_cmd == "DO_NOT_TRACK=1 npm install -g @trailhq/trail-code@latest"
+    assert not tool.install_cmd
+
+
+def test_show_summary_does_not_print_unaudited_npm_install_for_failed_trail(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    tool = _tool(monkeypatch, "trail")
+    install = importlib.import_module("install")
+    install.show_summary(0, 1, 0, [tool])
+    out = capsys.readouterr().out
+    assert "re-run the installer to retry" in out
+    assert "npm install -g @trailhq/trail-code" not in out
+
+
+def test_user_facing_myk_pi_tools_hints_specify_python_314() -> None:
+    for rel in (
+        "extensions/orchestrator/session-validation.ts",
+        "docs/cli-reference.md",
+        "README.md",
+        "docs/quickstart.md",
+    ):
+        assert MYK_PI_TOOLS_INSTALL_CMD in (REPO / rel).read_text(), rel
 
 
 def _write_package(path: Path, manifest: dict[str, Any]) -> None:
@@ -694,7 +715,13 @@ def test_trail_native_install_rejects_unsafe_npm_prefix(
     assert trail_bin.readlink() == Path("../lib/trail-prefix/bin/trail")
 
 
-def test_npm_global_prefix_rejects_empty_output_before_resolving(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dead_npm_global_prefix_helper_is_removed() -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    assert not hasattr(install, "_npm_global_prefix")
+
+
+def test_npm_prefix_validation_rejects_empty_output_before_resolving(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     monkeypatch.setattr(
@@ -705,10 +732,12 @@ def test_npm_global_prefix_rejects_empty_output_before_resolving(monkeypatch: py
     monkeypatch.setattr(Path, "resolve", lambda _path: pytest.fail("empty prefix was resolved"))
 
     with pytest.raises(RuntimeError, match="safe absolute path"):
-        install._npm_global_prefix()
+        install._ensure_writable_npm_prefix()
 
 
-def test_npm_global_prefix_accepts_writable_home_descendant(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_npm_prefix_validation_accepts_writable_home_descendant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     home = tmp_path / "home"
@@ -721,11 +750,11 @@ def test_npm_global_prefix_accepts_writable_home_descendant(tmp_path: Path, monk
         lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=str(prefix)),
     )
 
-    assert install._npm_global_prefix() == prefix
+    assert install._ensure_writable_npm_prefix() == prefix
 
 
 @pytest.mark.parametrize("name", ["temporary", "custom"])
-def test_npm_global_prefix_accepts_absolute_writable_prefix(
+def test_npm_prefix_validation_accepts_absolute_writable_prefix(
     name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _stub_questionary()
@@ -738,10 +767,10 @@ def test_npm_global_prefix_accepts_absolute_writable_prefix(
         lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=str(prefix)),
     )
 
-    assert install._npm_global_prefix() == prefix
+    assert install._ensure_writable_npm_prefix() == prefix
 
 
-def test_npm_global_prefix_rejects_current_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_npm_prefix_validation_rejects_current_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     monkeypatch.chdir(tmp_path)
@@ -752,10 +781,10 @@ def test_npm_global_prefix_rejects_current_directory(tmp_path: Path, monkeypatch
     )
 
     with pytest.raises(RuntimeError, match="safe absolute path"):
-        install._npm_global_prefix()
+        install._ensure_writable_npm_prefix()
 
 
-def test_npm_global_prefix_rejects_regular_file_ancestor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_npm_prefix_validation_rejects_regular_file_ancestor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     ancestor = tmp_path / "file"
@@ -768,22 +797,31 @@ def test_npm_global_prefix_rejects_regular_file_ancestor(tmp_path: Path, monkeyp
     )
 
     with pytest.raises(RuntimeError, match="safe absolute path"):
-        install._npm_global_prefix()
+        install._ensure_writable_npm_prefix()
 
 
-def test_npm_global_prefix_rejects_unwritable_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_npm_prefix_validation_reports_unwritable_prefix_and_rejects_unwritable_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
+    home = tmp_path / "home"
+    home.mkdir()
     prefix = tmp_path / "custom"
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install.os, "access", lambda _path, _mode: False)
+
+    resolved, writable = install._validate_npm_prefix(str(prefix))
+    assert resolved == prefix.resolve()
+    assert writable is False
+
     monkeypatch.setattr(
         install.subprocess,
         "run",
         lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=str(prefix)),
     )
-    monkeypatch.setattr(install.os, "access", lambda _path, _mode: False)
-
     with pytest.raises(RuntimeError, match="safe absolute path"):
-        install._npm_global_prefix()
+        install._ensure_writable_npm_prefix()
 
 
 def test_trail_native_install_checks_npm_prefix_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1190,6 +1228,20 @@ def test_step4_uses_agent_browser_chromium_and_binary_detection(
     assert install._is_chromium_installed() is True
 
 
+def test_is_chromium_installed_rejects_broken_binary_exiting_127(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    broken = home / ".cache/ms-playwright/chromium-1234/chrome-linux/chrome"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("#!/bin/sh\nexit 127\n")
+    broken.chmod(0o755)
+    monkeypatch.setattr(install, "HOME", home)
+    assert install._is_chromium_installed() is False
+
+
 def test_install_browser_runs_agent_browser_with_deps_from_npm_global_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1211,6 +1263,60 @@ def test_install_browser_runs_agent_browser_with_deps_from_npm_global_fallback(
     monkeypatch.setattr(install.subprocess, "run", run)
     install.install_browser()
     assert seen == [[str(ab), "install", "--with-deps"]]
+
+
+def test_install_browser_resolves_configured_npm_prefix_not_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    home.mkdir()
+    custom_prefix = tmp_path / "custom-npm"
+    ab = custom_prefix / "bin/agent-browser"
+    ab.parent.mkdir(parents=True)
+    ab.write_text("#!/bin/sh\n")
+    ab.chmod(0o755)
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr(install, "_run_quiet", lambda cmd: str(custom_prefix) if cmd == ["npm", "prefix", "-g"] else "")
+    seen: list[list[str]] = []
+
+    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install.subprocess, "run", run)
+    install.install_browser()
+    assert seen == [[str(ab), "install", "--with-deps"]]
+
+
+def test_install_browser_auto_installs_agent_browser_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    home.mkdir()
+    installed_bin = home / ".npm-global/bin/agent-browser"
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    events: list[Any] = []
+
+    def fake_install_agent_browser() -> None:
+        events.append("install_agent_browser")
+        installed_bin.parent.mkdir(parents=True, exist_ok=True)
+        installed_bin.write_text("#!/bin/sh\n")
+        installed_bin.chmod(0o755)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        events.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install, "install_agent_browser", fake_install_agent_browser)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+    install.install_browser()
+    assert events == ["install_agent_browser", [str(installed_bin), "install", "--with-deps"]]
 
 
 def test_trail_native_install_npm10_uses_ignore_scripts_and_scoped_rebuild(
@@ -1300,6 +1406,29 @@ def test_trail_prereqs_auto_installs_build_tools_with_passwordless_sudo(monkeypa
     ]
 
 
+def test_trail_prereqs_surfaces_auto_install_failure_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+
+    def fake_which(name: str) -> str | None:
+        if name in {"make", "g++", "apt-get"}:
+            return None
+        return f"/usr/bin/{name}"
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd == ["sudo", "-n", "true"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        raise subprocess.CalledProcessError(1, cmd, stderr="Error: Unable to find a match: gcc-c++\n")
+
+    monkeypatch.setattr(install, "SYSTEM", "Linux")
+    monkeypatch.setattr(install.os, "geteuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(install.shutil, "which", fake_which)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="auto-install failed: Error: Unable to find a match: gcc-c\\+\\+"):
+        install._ensure_trail_prerequisites()
+
+
 def test_add_to_gitignore_uses_exact_line_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
@@ -1331,8 +1460,19 @@ def test_update_pi_runs_with_extensions_flag(monkeypatch: pytest.MonkeyPatch) ->
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(install.subprocess, "run", run)
-    install.update_pi({"pi": True})
+    assert install.update_pi({"pi": True}) is True
     assert seen == [["pi", "update", "--extensions"]]
+
+
+def test_update_pi_returns_false_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="network error"),
+    )
+    assert install.update_pi({"pi": True}) is False
 
 
 def test_check_prereqs_quiet_exits_nonzero_when_pi_missing(
@@ -1366,7 +1506,7 @@ def test_main_exits_nonzero_when_tool_install_fails(
     monkeypatch.setattr(sys, "argv", ["install.py", "--all"])
     monkeypatch.setattr(install, "check_prereqs_quiet", lambda: _prereqs())
     monkeypatch.setattr(install, "build_steps", lambda _p: [install.Step("x", "S", "D", [failing_tool])])
-    monkeypatch.setattr(install, "update_pi", lambda _p: None)
+    monkeypatch.setattr(install, "update_pi", lambda _p: True)
 
     with pytest.raises(SystemExit) as exc_info:
         install.main()
@@ -1374,6 +1514,36 @@ def test_main_exits_nonzero_when_tool_install_fails(
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "Failed:    1" in out
+
+
+def test_main_exits_nonzero_when_update_pi_fails_after_tool_installs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    ok_tool = install.Tool("demo", "Demo tool", installed=False, disabled="", install_fn=lambda: None)
+    monkeypatch.setattr(sys, "argv", ["install.py", "--all"])
+    monkeypatch.setattr(install, "check_prereqs_quiet", lambda: _prereqs())
+    monkeypatch.setattr(install, "build_steps", lambda _p: [install.Step("x", "S", "D", [ok_tool])])
+    monkeypatch.setattr(install, "update_pi", lambda _p: False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        install.main()
+
+    assert exc_info.value.code == 1
+
+
+def test_main_exits_nonzero_when_update_pi_fails_with_no_selections(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    done_tool = install.Tool("demo", "Demo tool", installed=True, disabled="")
+    monkeypatch.setattr(sys, "argv", ["install.py", "--all"])
+    monkeypatch.setattr(install, "check_prereqs_quiet", lambda: _prereqs())
+    monkeypatch.setattr(install, "build_steps", lambda _p: [install.Step("x", "S", "D", [done_tool])])
+    monkeypatch.setattr(install, "update_pi", lambda _p: False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        install.main()
+
+    assert exc_info.value.code == 1
 
 
 def test_meaningful_error_lines_filters_npm_boilerplate_and_caps_at_five() -> None:
