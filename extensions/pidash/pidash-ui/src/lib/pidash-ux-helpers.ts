@@ -401,6 +401,8 @@ export function stripToolResultPrefix(text: string): string {
   return text.replace(/^[✓✗] /, "");
 }
 
+export { formatToolCallSummary } from "../../../../shared/pidash-transcript-reducer.ts";
+
 /**
  * Resolve which prompt message owns global 1-9 hotkeys:
  * inspects only the newest unanswered prompt in the unfiltered transcript

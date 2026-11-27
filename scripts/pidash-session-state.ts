@@ -11,6 +11,7 @@ import {
   appendAsyncAgentEventText,
   applyTranscriptEvent,
   ASYNC_AGENT_TEXT_MAX,
+  extractToolContentText,
   type TranscriptAddOptions,
   type TranscriptRefs,
   type TranscriptSink,
@@ -26,6 +27,62 @@ export const ASYNC_AGENTS_MAX = 100;
 
 export function isLoopbackAddress(addr: string | undefined | null): boolean {
   return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
+
+/** Detect actual test-runner failure summaries/statuses without false-positives on test names. */
+function hasTestFailureSignal(text: string): boolean {
+  if (!text) return false;
+  // Numeric failure/error counts (ignores `0 failed` / `0 errors`)
+  if (/\b[1-9]\d*\s+(?:failed|failing|errors?)\b/i.test(text)) return true;
+  // node:test summary line (`ℹ fail 1`)
+  if (/ℹ\s+fail\s+[1-9]\d*\b/i.test(text)) return true;
+  // Explicit runner status tokens (pytest FAILED/ERROR, go FAIL, node ✖/✗)
+  if (/(?:^|\s)(?:FAILED|ERROR)(?=\s|$|:)/m.test(text)) return true;
+  if (/^\s*(?:[✖✗]\s|---\s+FAIL:|FAIL\b)/m.test(text)) return true;
+  return false;
+}
+
+/**
+ * Build a metadata-only `session_notification` frame for global browser broadcast.
+ * Evaluates test-result signals server-side so raw tool output is never leaked to
+ * browsers watching other sessions.
+ */
+export function buildSessionNotification(
+  sessionId: string,
+  cwd: string,
+  parsed: any,
+): {
+  type: "session_notification";
+  sessionId: string;
+  cwd: string;
+  toolName: string;
+  isError: boolean;
+  isSubagent: boolean;
+  agentName: string;
+  isTestEvent: boolean;
+  testPassed: boolean;
+} {
+  const toolName = typeof parsed?.toolName === "string" ? parsed.toolName : "";
+  const isSubagent = toolName === "subagent" || Boolean(parsed?.args?.agent);
+  const isError = parsed?.isError === true;
+  const fullText = extractToolContentText(parsed?.result?.content);
+  const snippet = fullText.slice(0, 200).toLowerCase();
+  const tl = toolName.toLowerCase();
+  const isTestEvent = tl.includes("test") || snippet.includes("pytest") || snippet.includes("test_");
+  const exitCode = parsed?.result?.details?.exitCode;
+  const nonZeroExit = typeof exitCode === "number" && exitCode !== 0;
+  const testPassed = isTestEvent && !isError && !nonZeroExit && !hasTestFailureSignal(fullText);
+  return {
+    type: "session_notification",
+    sessionId,
+    cwd,
+    toolName,
+    isError,
+    isSubagent,
+    agentName: parsed?.args?.name || parsed?.args?.agent || "",
+    isTestEvent,
+    testPassed,
+  };
 }
 
 /**

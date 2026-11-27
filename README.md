@@ -2,7 +2,7 @@
 
 A [pi package](https://github.com/badlogic/pi-mono) that implements an **orchestrator pattern** — the main agent delegates all work to specialist subagents.
 
-📚 **[Full Documentation](https://myk-org.github.io/pi-config/)**
+📚 **[Full Documentation](https://myk-org.github.io/pi-config/)** · **[Features Overview](docs/features.md)**
 
 ## Deploy reload confirmation
 
@@ -484,8 +484,10 @@ Project agents included by default (`agentScope` defaults to `"both"`).
 
 ### Image Generation
 
-Image generation uses Pi 1.6's native `codemode` image API (`models.getAvailableOfType("image")` + `models.generateImages()` + `image()`),
+Image generation uses Pi's native `codemode` image API (`models.getAvailableOfType("image")` + `models.generateImages(model, context, options?)` + `image()`),
 reusing the session's configured provider credentials and usage tracking with zero extra top-level tool schema tokens when unused.
+In Pi 1.7.0+, `models.generateImages()` accepts an optional third `{ aspectRatio, size }` argument for OpenRouter image models,
+and Radius image and classifier models are included in the built-in catalog.
 Images are generated only on explicit user request; the model does not generate images unprompted.
 `pi-config` activates `codemode` automatically on `session_start` in default sessions unless explicitly excluded.
 
