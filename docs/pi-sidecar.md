@@ -306,6 +306,11 @@ Notes:
   runtime is seeded with at startup.
 - Settings seeded from `settings.json` never re-enable compaction — sidecar
   sessions are short-lived and always run with compaction disabled.
+- Invalid `models.json` syntax or schema values (such as a string
+  `contextWindow`) are logged as `INTERNAL_RUNTIME_DIAGNOSTIC` warnings at
+  startup (and logged via `internal-runtime-diagnostics` on
+  `POST /models/refresh`) and retained on runtime diagnostics, while the sidecar
+  continues serving built-in providers.
 - Starting in Pi 1.6.1, `models.json` model entries using `google-generative-ai`
   or `google-vertex` support `compat.supportsStrictMode` as `true` or `false`.
   Set `"compat": { "supportsStrictMode": true }` on custom-ID, non-versioned, or
@@ -426,6 +431,7 @@ results = await run_parallel_with_limit(tasks, max_concurrency=5)
 | Client connection errors | Align `SIDECAR_URL` with the server port (`9100` vs `9201`). |
 | `/health` stuck on `starting` / 503 | Wait for discovery; check logs (`PI_SIDECAR_LOG_LEVEL=debug`). |
 | Empty model list | Auth providers; `POST /models/refresh`; check `GET /models/:provider/status`. |
+| Custom `models.json` provider missing | Check startup logs for `INTERNAL_RUNTIME_DIAGNOSTIC` (`models.json error:`) warnings or `POST /models/refresh` logs for `[internal-runtime-diagnostics]` warnings (for example, schema type errors like a string `contextWindow`). |
 | Session create rejects model | Use an id from `GET /models`; interactive OAuth-only providers are blocked in this headless service. |
 | `409` / session busy or `request_id` mismatch | Wait for the current prompt, `POST .../abort`, or retry the same `message` with the same `request_id`. Use a new `request_id` for a different `message`. |
 | `agent_dir` rejected | Bind on loopback, or use `DEV_MODE=true` (value discarded). |

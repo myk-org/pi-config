@@ -718,6 +718,120 @@ export function snapshotLegacyAmbientProviders(
   legacyAmbientProvidersLog.debug("Legacy ambient registrations classified", { registrationCount: registrations.length, legacyCount });
 }
 
+export type { AgentSessionRuntimeDiagnostic };
+
+/** Minimal shape accepted by `collectServiceDiagnostics()` for Pi 1.6.x and 1.7.0+ compatibility. */
+export interface ServiceDiagnosticsSource {
+  diagnostics?: readonly unknown[];
+  modelRuntime?: { getError?: () => string | undefined };
+  resourceLoader?: {
+    getExtensions?: () => { errors?: ReadonlyArray<{ path: string; error: string }> };
+  };
+}
+
+/**
+ * Scrub common credential patterns from diagnostic messages logged without a
+ * per-session API key (for example startup models.json or extension errors).
+ * Preserves schema field paths such as `providers.acme.apiKey: must be string`.
+ */
+export function redactDiagnosticSecrets(value: string): string {
+  return value
+    // URL userinfo (scheme://<user>:<pass>@host) -> scheme://[REDACTED]@host
+    .replace(/((?:https?|wss?):\/\/)([^/\s@:]+:[^/\s@]+)@/gi, "$1[REDACTED]@")
+    // Authorization / Bearer tokens
+    .replace(/\b(Bearer\s+)(?!\[REDACTED\])[^\s'",;)}\]]+/gi, "$1[REDACTED]")
+    // Quoted JSON credential fields (preserves "$ENV_VAR" references)
+    .replace(
+      /("[a-zA-Z0-9_-]{0,40}(?:api[_-]?key|authorization|x-api-key|x-goog-api-key|access[_-]?token|refresh[_-]?token|auth[_-]?token|secret|password)"\s*:\s*)"(?!\$[A-Z0-9_]+")([^"]+)"/gi,
+      '$1"[REDACTED]"',
+    )
+    // Header-style auth values: x-api-key: <val>, x-goog-api-key: <val>, authorization: <val>
+    // Negative lookbehind preserves dotted schema paths like `providers.acme.headers.Authorization: must be string`.
+    .replace(
+      /(?<![.\w-])((?:x-api-key|x-goog-api-key|authorization)\s*:\s*)(?!\[REDACTED\]|Bearer\s+\[REDACTED\])[^\r\n'",;)}\]]+/gi,
+      "$1[REDACTED]",
+    )
+    // Key=value secret assignments: api_key=..., token=..., secret=..., password=...
+    .replace(
+      /\b([a-zA-Z0-9_-]{0,40}(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|secret|password)\s*=\s*)(?!\[REDACTED\])(?:"[^"]*"|'[^']*'|[^\s&,;)}\]]+)/gi,
+      "$1[REDACTED]",
+    )
+    // Well-known provider API key prefixes
+    .replace(
+      /\b(?:sk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g,
+      "[REDACTED]",
+    );
+}
+
+/**
+ * Collect startup diagnostics from `createAgentSessionServices()` defensively.
+ *
+ * - Works when `services.diagnostics` is absent or empty (older SDKs / stubs).
+ * - Preserves Pi 1.7.0+ `services.diagnostics` warnings (including upstream #12523
+ *   invalid `models.json` warnings) without duplicating them.
+ * - Backfills `services.modelRuntime.getError()` as a warning on Pi 1.6.x where
+ *   `createAgentSessionServices()` does not yet populate `models.json` diagnostics.
+ * - Appends extension load errors and scrubs inline secrets from all messages.
+ */
+export function collectServiceDiagnostics(
+  services: ServiceDiagnosticsSource,
+): AgentSessionRuntimeDiagnostic[] {
+  const serviceDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
+  if (Array.isArray(services.diagnostics)) {
+    for (const entry of services.diagnostics) {
+      if (
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as { message?: unknown }).message === "string" &&
+        ((entry as { type?: unknown }).type === "error" ||
+          (entry as { type?: unknown }).type === "warning" ||
+          (entry as { type?: unknown }).type === "info")
+      ) {
+        serviceDiagnostics.push({
+          type: (entry as AgentSessionRuntimeDiagnostic).type,
+          message: redactDiagnostic((entry as AgentSessionRuntimeDiagnostic).message, redactDiagnosticSecrets),
+        });
+      }
+    }
+  }
+
+  let backfilledModelsJsonWarning = false;
+  const modelsJsonError =
+    typeof services.modelRuntime?.getError === "function"
+      ? services.modelRuntime.getError()
+      : undefined;
+  if (typeof modelsJsonError === "string" && modelsJsonError.trim().length > 0) {
+    const modelsJsonMessage = redactDiagnostic(`models.json error: ${modelsJsonError}`, redactDiagnosticSecrets);
+    const alreadyReported = serviceDiagnostics.some(
+      (diag) => diag.type === "warning" && diag.message === modelsJsonMessage,
+    );
+    if (!alreadyReported) {
+      serviceDiagnostics.push({
+        type: "warning",
+        message: modelsJsonMessage,
+      });
+      backfilledModelsJsonWarning = true;
+    }
+  }
+
+  const rawExtensionErrors = services.resourceLoader?.getExtensions?.()?.errors;
+  const extensionErrors: AgentSessionRuntimeDiagnostic[] = Array.isArray(rawExtensionErrors)
+    ? rawExtensionErrors.map(({ path, error }) => ({
+        type: "error" as const,
+        message: redactDiagnostic(`Failed to load extension "${path}": ${error}`, redactDiagnosticSecrets),
+      }))
+    : [];
+
+  const diagnostics = [...serviceDiagnostics, ...extensionErrors];
+  internalRuntimeDiagnosticsLog.debug("Collected service diagnostics", {
+    serviceCount: serviceDiagnostics.length,
+    backfilledModelsJsonWarning,
+    extensionErrorCount: extensionErrors.length,
+    totalCount: diagnostics.length,
+  });
+  return diagnostics;
+}
+
 /**
  * Builds the CreateAgentSessionRuntimeFactory for the internal registrar
  * runtime (see PiProviderRuntime.ensureInternalRuntime()).
@@ -753,11 +867,8 @@ function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientPro
       sessionStartEvent,
       tools: [],
     });
-    const extensionErrors = services.resourceLoader.getExtensions().errors.map(({ path, error }) => ({
-      type: "error" as const,
-      message: `Failed to load extension "${path}": ${error}`,
-    }));
-    return { ...created, services, diagnostics: [...services.diagnostics, ...extensionErrors] };
+    const diagnostics = collectServiceDiagnostics(services);
+    return { ...created, services, diagnostics };
   };
 }
 
@@ -773,7 +884,7 @@ export function logUnreportedRuntimeDiagnostics(
   internalRuntimeDiagnosticsLog.debug("Drained internal runtime diagnostics", { count: diagnostics.length });
   for (const diagnostic of diagnostics) {
     const log = diagnostic.type === "error" ? logger.error : diagnostic.type === "warning" ? logger.warn : logger.debug;
-    const message = redactDiagnostic(diagnostic.message, redact);
+    const message = redactDiagnostic(diagnostic.message, (value) => redactDiagnosticSecrets(redact(value)));
     log(`[sidecar] INTERNAL_RUNTIME_DIAGNOSTIC: type=${diagnostic.type}, message=${message}`);
   }
   return diagnostics.length;
@@ -986,6 +1097,7 @@ export interface CreatedRuntimeSession {
 export interface ProviderRuntime {
   readonly ready: boolean;
   readonly discoveryError: string | null;
+  getInternalDiagnostics?(): readonly AgentSessionRuntimeDiagnostic[];
   getProviders(): Promise<DiscoveredProvider[]>;
   getModels(): Promise<DiscoveredModel[]>;
   refreshModels(): Promise<DiscoveredModel[]>;
@@ -1275,6 +1387,17 @@ export class PiProviderRuntime implements ProviderRuntime {
         const result = await this.modelRuntime!.refresh({ force: true, allowNetwork: false });
         for (const [providerId, err] of result.errors) {
           logger.warn(`[sidecar] MODEL_REFRESH_PROVIDER_FAILED: provider=${providerId}, error=${err.message}`);
+        }
+        const refreshModelsJsonError =
+          typeof this.modelRuntime?.getError === "function"
+            ? this.modelRuntime.getError()
+            : undefined;
+        if (typeof refreshModelsJsonError === "string" && refreshModelsJsonError.trim().length > 0) {
+          const message = redactDiagnostic(`models.json error: ${refreshModelsJsonError}`, redactDiagnosticSecrets);
+          internalRuntimeDiagnosticsLog.warn("models.json diagnostic detected during refresh", {
+            type: "warning",
+            message,
+          });
         }
       }
 
