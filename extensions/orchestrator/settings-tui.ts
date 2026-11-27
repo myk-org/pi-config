@@ -1,15 +1,16 @@
 /**
  * Settings TUI — interactive editor for pi-config settings.
  *
- * /pi-config-settings opens a fullscreen overlay with category tabs,
- * themed header/footer, colored source glyphs, and fuzzy-searchable pickers.
- * Left/Right arrows switch categories. Tab switches project/global scope.
+ * /pi-config-settings opens a fullscreen overlay with a scrollable left
+ * category sidebar, cross-category search, strict Global/Project scope
+ * isolation, themed header/footer, colored source glyphs, and fuzzy pickers.
  */
 
 import { createLogger } from "../shared/logger.js";
 import type { ExtensionAPI, ExtensionCommandContext, ModelRegistry, Theme } from "@earendil-works/pi-coding-agent";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import {
+  Input,
   type SelectItem,
   type SettingItem,
   SettingsList,
@@ -23,11 +24,11 @@ import {
   EMPTY_VALUE_SENTINEL,
   SETTINGS_KEYS,
   type SettingSource,
+  type SettingsScope,
   type SettingsSourceSnapshot,
-  getSetting,
   clearSettingsCache,
-  detectSource,
   loadSettingsSourceSnapshot,
+  resolveSettingForScope,
   getFilePathForScope,
   readSettingsFile,
   beginSettingsEditSession,
@@ -38,12 +39,17 @@ import {
 import { discoverAgents } from "./agents.js";
 import {
   CATEGORIES,
+  type CategoryDef,
+  computeSidebarWindow,
+  filterSettingsAcrossCategories,
   formatValue,
-  registerSettingsTuiCommand,
+  getCategoryLabelForKey,
   isSecretNoChange,
+  isSecretSettingKey,
+  registerSettingsTuiCommand,
+  resolveModelKeySubmenu,
   resolveSecretPrefill,
   sourceGlyph,
-  resolveModelKeySubmenu,
   type ModelSelectItem,
 } from "./settings-tui-helpers.js";
 import {
@@ -67,7 +73,12 @@ log.debug("settings-tui module loaded");
 export {
   CATEGORIES,
   type CategoryDef,
+  computeSidebarWindow,
+  filterSettingsAcrossCategories,
   formatValue,
+  getCategoryLabelForKey,
+  isSecretSettingKey,
+  maskSettingValue,
   parseRawValue,
   registerSettingsTuiCommand,
   isSecretNoChange,
@@ -121,17 +132,36 @@ function getAvailableAgentNames(cwd: string): string[] {
   return agents.map((a) => a.name).sort();
 }
 
-// ── Refresh a single item's label + value in-place ──────────────────
+// ── Label + in-place refresh (strictly scope-aware) ─────────────────
 
-function refreshItem(item: SettingItem, cwd: string, theme: Theme): void {
+function formatItemLabel(
+  key: string,
+  source: SettingSource,
+  theme: Theme,
+  showCategoryTag: boolean,
+  categoryLabel?: string,
+): string {
+  const glyph = sourceGlyph(source, theme);
+  if (!showCategoryTag) return `${glyph} ${key}`;
+  const cat = categoryLabel ?? getCategoryLabelForKey(key);
+  return `${glyph} ${key} ${theme.fg("dim", `[${cat}]`)}`;
+}
+
+export function refreshItem(
+  item: SettingItem,
+  cwd: string,
+  editScope: SettingsScope,
+  theme: Theme,
+  showCategoryTag = false,
+  categoryLabel?: string,
+): void {
   const def = SETTINGS_KEYS[item.id];
   if (!def) return;
-  const effectiveValue = getSetting(cwd, item.id as any);
-  const source = detectSource(item.id, def, cwd);
-  const displayValue = formatValue(item.id, effectiveValue, def);
-  const glyph = sourceGlyph(source, theme);
+  const resolved = resolveSettingForScope(cwd, item.id, editScope);
+  if (!resolved) return;
+  const displayValue = formatValue(item.id, resolved.value, def);
   // Mutate in-place — SettingsList stores items array by reference (verified in pi-tui source)
-  item.label = `${glyph} ${item.id}`;
+  item.label = formatItemLabel(item.id, resolved.source, theme, showCategoryTag, categoryLabel);
   item.currentValue = displayValue;
 }
 
@@ -141,22 +171,25 @@ export interface BuildCategoryItemsOptions {
   snapshot?: SettingsSourceSnapshot;
   getProviderModelInfo?: () => ProviderModelInfo;
   getAvailableAgents?: () => string[];
+  showCategoryTag?: boolean;
+  categories?: readonly CategoryDef[];
 }
 
 export function buildCategoryItems(
   categoryIndex: number,
   cwd: string,
-  editScope: "project" | "global",
+  editScope: SettingsScope,
   theme: Theme,
   modelRegistry?: ModelRegistry,
   options?: BuildCategoryItemsOptions,
 ): SettingItem[] {
-  const category = CATEGORIES[categoryIndex];
+  const categories = options?.categories ?? CATEGORIES;
+  const category = categories[categoryIndex];
   if (!category) return [];
 
   const items: SettingItem[] = [];
   const snapshot = options?.snapshot ?? loadSettingsSourceSnapshot(cwd);
-  const scopeRaw = editScope === "project" ? snapshot.project : snapshot.global;
+  const showCategoryTag = options?.showCategoryTag === true;
   let pmInfoCache: ProviderModelInfo | undefined;
   const resolvePmInfo = (): ProviderModelInfo => {
     if (pmInfoCache === undefined) {
@@ -180,16 +213,20 @@ export function buildCategoryItems(
     const def = SETTINGS_KEYS[key];
     if (!def) continue;
 
-    const effectiveValue = getSetting(cwd, key as any);
-    const source = detectSource(key, def, cwd, snapshot);
-    const displayValue = formatValue(key, effectiveValue, def);
-    const glyph = sourceGlyph(source, theme);
+    // Strictly respect active editScope: Global never leaks Project overrides.
+    const resolved = resolveSettingForScope(cwd, key, editScope, snapshot);
+    if (!resolved) continue;
+    const displayValue = formatValue(key, resolved.value, def);
 
     const item: SettingItem = {
       id: key,
-      label: `${glyph} ${key}`,
+      label: formatItemLabel(key, resolved.source, theme, showCategoryTag, category.label),
       currentValue: displayValue,
-      description: [def.description, def.env ? `env: ${def.env}` : ""].filter(Boolean).join(" · "),
+      description: [
+        def.description,
+        def.global_only ? "global-only" : "",
+        def.env ? `env: ${def.env}` : "",
+      ].filter(Boolean).join(" · "),
     };
 
     // Configure interaction based on type and key
@@ -201,21 +238,24 @@ export function buildCategoryItems(
 
     if (isProviderKey && resolvePmInfo().providers.length > 0) {
       const pmInfo = resolvePmInfo();
-      item.submenu = (_current: string, done: (val?: string) => void): Component => {
-        return new PickerSubmenu(`Select provider for ${key}`, pmInfo.providers, theme, done);
+      item.submenu = (current: string, done: (val?: string) => void): Component => {
+        const normalizedCurrent = current === EMPTY_VALUE_SENTINEL ? "" : current.trim();
+        return new PickerSubmenu(`Select provider for ${key}`, pmInfo.providers, theme, done, normalizedCurrent);
       };
     } else if (isModelKey && resolvePmInfo().models.length > 0) {
       const pmInfo = resolvePmInfo();
-      // Resolve provider/models inside the callback so refreshItem after
-      // agent_provider / internal_operations_provider changes does not leave a stale list.
+      // Resolve provider/models inside the callback strictly for editScope so
+      // Global never picks up Project's provider and refreshes stay fresh.
       item.submenu = (current: string, done: (val?: string) => void): Component => {
         const normalizedCurrent = current === EMPTY_VALUE_SENTINEL ? "" : current.trim();
+        const agentProviderVal = resolveSettingForScope(cwd, "agent_provider", editScope)?.value;
+        const internalProviderVal = resolveSettingForScope(cwd, "internal_operations_provider", editScope)?.value;
         const submenu = resolveModelKeySubmenu(
           key,
           pmInfo.models,
           {
-            agent_provider: getSetting(cwd, "agent_provider"),
-            internal_operations_provider: getSetting(cwd, "internal_operations_provider"),
+            agent_provider: typeof agentProviderVal === "string" ? agentProviderVal : "",
+            internal_operations_provider: typeof internalProviderVal === "string" ? internalProviderVal : "",
           },
           normalizedCurrent,
         );
@@ -250,7 +290,7 @@ export function buildCategoryItems(
           item.submenu = (current: string, done: (val?: string) => void): Component => {
             return new InputSubmenu(
               `${key} (bool or custom string)`,
-              current === "true" || current === "false" ? current : current,
+              current,
               'Enter "true", "false", or a custom string',
               theme,
               done,
@@ -268,16 +308,16 @@ export function buildCategoryItems(
             break;
           }
 
-          const SECRET_PATTERN = /token|secret|password|auth/i;
-          const isSecret = SECRET_PATTERN.test(key) || (typeof def?.env === "string" && SECRET_PATTERN.test(def.env));
-          const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd, scopeRaw) : null;
+          const isSecret = isSecretSettingKey(key, def);
           item.submenu = (current: string, done: (val?: string) => void): Component => {
+            // Re-read secret scope info fresh on open so repeated edits never see stale state.
+            const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd) : null;
             const prefill = secretInfo ? secretInfo.prefill : current;
             const hint = secretInfo
-            ? secretInfo.hint
-            : key === "advisor_model"
-              ? "Enter provider/model-id (e.g. google/gemini-2.5-flash; empty = session model)"
-              : "Enter new value (empty to clear)";
+              ? secretInfo.hint
+              : key === "advisor_model"
+                ? "Enter provider/model-id (e.g. google/gemini-2.5-flash; empty = session model)"
+                : "Enter new value (empty to clear)";
             return new InputSubmenu(key, prefill, hint, theme, (val?: string) => {
               if (isSecret && secretInfo && isSecretNoChange(val, secretInfo.scopeValue !== null)) {
                 done(undefined);
@@ -300,12 +340,12 @@ export function buildCategoryItems(
         case "string_list": {
           item.submenu = (_current: string, done: (val?: string) => void): Component => {
             // Read the SCOPE'S OWN list fresh at every open — never the merged
-            // effective value (a project override must not leak into the global
-            // editor) and never a stale closure captured before a save
-            // (Qodo PR #950 R3).
+            // effective value and never a stale closure captured before a save.
             const scopeFile = getFilePathForScope(editScope, cwd);
             const raw = readSettingsFile(scopeFile);
-            const scopeList = raw && Array.isArray(raw[key]) ? (raw[key] as string[]).filter((e): e is string => typeof e === "string") : [];
+            const scopeList = raw && Array.isArray(raw[key])
+              ? (raw[key] as string[]).filter((e): e is string => typeof e === "string")
+              : [];
             log.debug("settings_string_list_open", key, editScope, scopeList.length);
             return new StringListSubmenu(
               key === "restricted_folders" ? `${key} — folders` : `${key} — patterns`,
@@ -322,12 +362,18 @@ export function buildCategoryItems(
           const pmInfo = resolvePmInfo();
           const availableAgents = resolveAvailableAgents();
           item.submenu = (_current: string, done: (val?: string) => void): Component => {
-            const currentOverrides = (typeof effectiveValue === "object" && effectiveValue !== null && !Array.isArray(effectiveValue))
-              ? effectiveValue as Record<string, { provider?: string | null; model?: string | null }>
-              : {};
+            // Strictly read the target scope's own overrides fresh on open so Project
+            // edits never copy Global overrides and Global edits never see Project ones.
+            const scopeFile = getFilePathForScope(editScope, cwd);
+            const raw = readSettingsFile(scopeFile);
+            const scopeOverrides =
+              raw && typeof raw[key] === "object" && raw[key] !== null && !Array.isArray(raw[key])
+                ? (raw[key] as Record<string, { provider?: string | null; model?: string | null }>)
+                : {};
+            log.debug("settings_agent_overrides_open", editScope, Object.keys(scopeOverrides).length);
             return new AgentOverridesSubmenu(
               "Agent overrides — per-agent provider/model",
-              currentOverrides,
+              scopeOverrides,
               availableAgents,
               theme,
               done,
@@ -365,23 +411,27 @@ export function buildCategoryItems(
   return items;
 }
 
-// Keep legacy buildSettingItems for backward compat / tests
+// Keep buildSettingItems for cross-category search and backward compat / tests
 export function buildSettingItems(
   cwd: string,
-  editScope: "project" | "global",
+  editScope: SettingsScope,
   theme: Theme,
   modelRegistry?: ModelRegistry,
+  options?: Pick<BuildCategoryItemsOptions, "showCategoryTag" | "categories" | "getAvailableAgents" | "getProviderModelInfo">,
 ): SettingItem[] {
+  const categories = options?.categories ?? CATEGORIES;
   const snapshot = loadSettingsSourceSnapshot(cwd);
   let pmInfoCache: ProviderModelInfo | undefined;
   let agentsCache: string[] | undefined;
   const sharedOptions: BuildCategoryItemsOptions = {
     snapshot,
-    getProviderModelInfo: () => (pmInfoCache ??= getProviderModelInfo(modelRegistry)),
-    getAvailableAgents: () => (agentsCache ??= getAvailableAgentNames(cwd)),
+    categories,
+    showCategoryTag: options?.showCategoryTag,
+    getProviderModelInfo: options?.getProviderModelInfo ?? (() => (pmInfoCache ??= getProviderModelInfo(modelRegistry))),
+    getAvailableAgents: options?.getAvailableAgents ?? (() => (agentsCache ??= getAvailableAgentNames(cwd))),
   };
   const all: SettingItem[] = [];
-  for (let i = 0; i < CATEGORIES.length; i++) {
+  for (let i = 0; i < categories.length; i++) {
     all.push(...buildCategoryItems(i, cwd, editScope, theme, modelRegistry, sharedOptions));
   }
   return all;
@@ -410,28 +460,36 @@ export function getSettingsListState(list: SettingsList): {
 
 // ── Thin save/delete adapters over the deep settings store ──────
 
-function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string) {
+function saveChange(key: string, value: unknown, scope: SettingsScope, cwd: string) {
   return updateSetting(cwd, scope, key, value, { dedupeBackup: true });
 }
 
-function deleteFromScope(key: string, scope: "project" | "global", cwd: string) {
+function deleteFromScope(key: string, scope: SettingsScope, cwd: string) {
   return updateSetting(cwd, scope, key, undefined, { dedupeBackup: true });
 }
 
 // ── Settings overlay component ──────────────────────────────────
 
-class SettingsOverlay implements Component {
+export interface SettingsOverlayOptions {
+  categories?: readonly CategoryDef[];
+}
+
+export class SettingsOverlay implements Component {
   private tui: TUI;
   private theme: Theme;
   private cwd: string;
   private modelRegistry: ModelRegistry | undefined;
-  private editScope: "project" | "global";
+  private editScope: SettingsScope;
   private categoryIndex: number;
+  private focusPane: "sidebar" | "items";
+  private categories: readonly CategoryDef[];
   private done: (value: undefined) => void;
   private notify: (msg: string, level: "info" | "error") => void;
   private onSettingChanged?: (key: string) => void;
+  private searchInput: Input;
   private settingsList!: SettingsList;
   private currentItems: SettingItem[];
+  private allSearchItemsCache: SettingItem[] | null;
   private cachedAvailableAgents?: string[];
   private cachedWidth?: number;
   private cachedLines?: string[];
@@ -441,10 +499,11 @@ class SettingsOverlay implements Component {
     theme: Theme,
     cwd: string,
     modelRegistry: ModelRegistry | undefined,
-    initialScope: "project" | "global",
+    initialScope: SettingsScope,
     done: (value: undefined) => void,
     notify: (msg: string, level: "info" | "error") => void,
     onSettingChanged?: (key: string) => void,
+    options?: SettingsOverlayOptions,
   ) {
     this.tui = tui;
     this.theme = theme;
@@ -452,37 +511,75 @@ class SettingsOverlay implements Component {
     this.modelRegistry = modelRegistry;
     this.editScope = initialScope;
     this.categoryIndex = 0;
+    this.focusPane = "items";
+    this.categories = options?.categories && options.categories.length > 0 ? options.categories : CATEGORIES;
     this.done = done;
     this.notify = notify;
     this.onSettingChanged = onSettingChanged;
+    this.searchInput = new Input();
     this.currentItems = [];
+    this.allSearchItemsCache = null;
     this.rebuild();
   }
 
-  private rebuild(): void {
-    // Provider/model metadata is resolved lazily per rebuild (never pinned for the whole overlay
-    // visit) so models discovered asynchronously while the overlay is open appear on tab switch.
-    this.currentItems = buildCategoryItems(
-      this.categoryIndex,
-      this.cwd,
-      this.editScope,
-      this.theme,
-      this.modelRegistry,
-      {
-        getAvailableAgents: () => (this.cachedAvailableAgents ??= getAvailableAgentNames(this.cwd)),
-      },
-    );
+  private get searchQuery(): string {
+    return this.searchInput.getValue().trim();
+  }
 
-    this.settingsList = new SettingsList(
-      this.currentItems,
-      20,
+  private get hasRawSearch(): boolean {
+    return this.searchInput.getValue().length > 0;
+  }
+
+  private getCategoryLabelFor(id: string): string {
+    for (const cat of this.categories) {
+      if (cat.keys.includes(id)) return cat.label;
+    }
+    return getCategoryLabelForKey(id);
+  }
+
+  private getAllSearchItems(): SettingItem[] {
+    if (!this.allSearchItemsCache) {
+      this.allSearchItemsCache = buildSettingItems(
+        this.cwd,
+        this.editScope,
+        this.theme,
+        this.modelRegistry,
+        {
+          categories: this.categories,
+          showCategoryTag: true,
+          getAvailableAgents: () => (this.cachedAvailableAgents ??= getAvailableAgentNames(this.cwd)),
+        },
+      );
+    }
+    return this.allSearchItemsCache;
+  }
+
+  private createSettingsList(items: SettingItem[], isSearchMode: boolean): SettingsList {
+    const rows = this.tui.terminal.rows || 30;
+    const maxVisible = Math.max(5, Math.min(20, rows - 13));
+
+    return new SettingsList(
+      items,
+      maxVisible,
       getSettingsListTheme(),
       (id: string, newValue: string) => {
         if (!(id in SETTINGS_KEYS)) return;
+        const item = this.currentItems.find((i) => i.id === id);
+
+        if (SETTINGS_KEYS[id]?.global_only && this.editScope === "project") {
+          this.notify(`${id} is global-only — press Tab to switch to Global scope`, "error");
+          if (item) refreshItem(item, this.cwd, this.editScope, this.theme, isSearchMode, this.getCategoryLabelFor(id));
+          this.invalidate();
+          this.tui.requestRender();
+          return;
+        }
 
         const parsedResult = parseSettingInput(id, newValue);
         if (!parsedResult.ok) {
           this.notify(`Invalid value for ${id}: ${parsedResult.error}`, "error");
+          if (item) refreshItem(item, this.cwd, this.editScope, this.theme, isSearchMode, this.getCategoryLabelFor(id));
+          this.invalidate();
+          this.tui.requestRender();
           return;
         }
         const parsed = parsedResult.value;
@@ -493,78 +590,169 @@ class SettingsOverlay implements Component {
             ? `Failed to save: settings file is corrupt (${result.file})`
             : `Failed to write settings: ${result.error || "unknown error"}`;
           this.notify(msg, "error");
+          if (item) refreshItem(item, this.cwd, this.editScope, this.theme, isSearchMode, this.getCategoryLabelFor(id));
+          this.invalidate();
+          this.tui.requestRender();
           return;
         }
         // Array-valued settings (e.g. dangerous_command_allowlist) log only
         // their entry COUNT — entries may contain inline credentials, and the
-        // settings log must not copy them out of the settings file
-        // (Qodo PR #950 R5).
+        // settings log must not copy them out of the settings file.
         const logValue = Array.isArray(parsed)
           ? `${parsed.length} entr${parsed.length === 1 ? "y" : "ies"} (values not logged)`
           : typeof parsed === "object" && parsed !== null
             ? `${Object.keys(parsed).length} rule(s) (values not logged)`
             : String(parsed).slice(0, 60);
-        log.info("settings_changed", id, logValue);
+        log.info("settings_changed", id, this.editScope, logValue);
 
-        // When provider changes, auto-clear the paired model to prevent stale cross-provider model
+        // When provider changes, auto-clear the paired model in the same scope
         if (id === "agent_provider") {
           saveChange("agent_model", "", this.editScope, this.cwd);
           const modelItem = this.currentItems.find((i) => i.id === "agent_model");
-          if (modelItem) refreshItem(modelItem, this.cwd, this.theme);
+          if (modelItem) {
+            refreshItem(modelItem, this.cwd, this.editScope, this.theme, isSearchMode, this.getCategoryLabelFor("agent_model"));
+          }
         } else if (id === "internal_operations_provider") {
           saveChange("internal_operations_model", "", this.editScope, this.cwd);
           const modelItem = this.currentItems.find((i) => i.id === "internal_operations_model");
-          if (modelItem) refreshItem(modelItem, this.cwd, this.theme);
+          if (modelItem) {
+            refreshItem(
+              modelItem,
+              this.cwd,
+              this.editScope,
+              this.theme,
+              isSearchMode,
+              this.getCategoryLabelFor("internal_operations_model"),
+            );
+          }
         }
 
-        // Update label + value in-place (SettingsList stores items by reference, no render cache)
-        const item = this.currentItems.find((i) => i.id === id);
-        if (item) refreshItem(item, this.cwd, this.theme);
+        // Invalidate cached cross-category items so toggling search shows fresh values.
+        if (!isSearchMode) this.allSearchItemsCache = null;
+
+        // Update label + value in-place strictly for the active scope.
+        if (item) refreshItem(item, this.cwd, this.editScope, this.theme, isSearchMode, this.getCategoryLabelFor(id));
         this.onSettingChanged?.(id);
-        // SettingsOverlay render cache must be cleared; SettingsList has no render cache
         this.invalidate();
         this.tui.requestRender();
       },
       () => this.done(undefined),
-      { enableSearch: true },
+      { enableSearch: false },
     );
+  }
 
+  private rebuild(): void {
+    const query = this.searchQuery;
+    if (query.length > 0) {
+      const allItems = this.getAllSearchItems();
+      this.currentItems = filterSettingsAcrossCategories(
+        allItems,
+        query,
+        (id) => this.getCategoryLabelFor(id),
+      );
+      this.settingsList = this.createSettingsList(this.currentItems, true);
+    } else {
+      // Provider/model metadata is resolved lazily per rebuild (never pinned for the whole overlay
+      // visit) so models discovered asynchronously while the overlay is open appear on switch.
+      this.currentItems = buildCategoryItems(
+        this.categoryIndex,
+        this.cwd,
+        this.editScope,
+        this.theme,
+        this.modelRegistry,
+        {
+          categories: this.categories,
+          showCategoryTag: false,
+          getAvailableAgents: () => (this.cachedAvailableAgents ??= getAvailableAgentNames(this.cwd)),
+        },
+      );
+      this.settingsList = this.createSettingsList(this.currentItems, false);
+    }
     this.invalidate();
   }
 
   handleInput(data: string): void {
     // While a submenu (e.g. StringListSubmenu) is open, its local edits exist
-    // ONLY in the submenu component — rebuilding the settings list would
-    // silently drop them (Qodo PR #950 R7). Tab / category arrows must not
-    // switch anything until the submenu closes (Esc submits or cancels).
+    // ONLY in the submenu component — rebuilding would silently drop them.
     const state = getSettingsListState(this.settingsList);
-    const submenuOpen = state.hasActiveSubmenu;
+    if (state.hasActiveSubmenu) {
+      this.settingsList.handleInput?.(data);
+      this.invalidate();
+      this.tui.requestRender();
+      return;
+    }
 
-    // Tab to switch scope
-    if (!submenuOpen && matchesKey(data, Key.tab)) {
+    // Tab switches scope (Project <-> Global) and refreshes all displayed items immediately.
+    if (matchesKey(data, Key.tab)) {
       this.editScope = this.editScope === "project" ? "global" : "project";
+      this.allSearchItemsCache = null;
+      log.debug("settings_scope_toggled", { scope: this.editScope, query: this.searchQuery });
       this.rebuild();
       this.tui.requestRender();
       return;
     }
 
-    // Left/Right to switch category tabs
-    if (!submenuOpen && matchesKey(data, Key.left)) {
-      this.categoryIndex = (this.categoryIndex - 1 + CATEGORIES.length) % CATEGORIES.length;
-      this.rebuild();
-      this.tui.requestRender();
+    // ── Sidebar focus ──
+    if (this.focusPane === "sidebar") {
+      if (matchesKey(data, Key.escape)) {
+        if (this.hasRawSearch) {
+          this.searchInput.setValue("");
+          this.rebuild();
+          this.tui.requestRender();
+        } else {
+          this.done(undefined);
+        }
+        return;
+      }
+      if (matchesKey(data, Key.up) || data === "k") {
+        this.categoryIndex = (this.categoryIndex - 1 + this.categories.length) % this.categories.length;
+        if (this.hasRawSearch) this.searchInput.setValue("");
+        this.rebuild();
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, Key.down) || data === "j") {
+        this.categoryIndex = (this.categoryIndex + 1) % this.categories.length;
+        if (this.hasRawSearch) this.searchInput.setValue("");
+        this.rebuild();
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, Key.right) || matchesKey(data, Key.enter) || data === "l" || data === "/") {
+        this.focusPane = "items";
+        this.invalidate();
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, Key.left) || data === "h") {
+        return;
+      }
       return;
     }
-    if (!submenuOpen && matchesKey(data, Key.right)) {
-      this.categoryIndex = (this.categoryIndex + 1) % CATEGORIES.length;
-      this.rebuild();
+
+    // ── Items + cross-category search focus ──
+    if (matchesKey(data, Key.escape)) {
+      if (this.hasRawSearch) {
+        this.searchInput.setValue("");
+        this.rebuild();
+        this.tui.requestRender();
+      } else {
+        this.done(undefined);
+      }
+      return;
+    }
+
+    // Left arrow (when search is empty) switches focus to the left category sidebar.
+    if (!this.hasRawSearch && matchesKey(data, Key.left)) {
+      this.focusPane = "sidebar";
+      this.invalidate();
       this.tui.requestRender();
       return;
     }
 
-    // Delete key: remove setting from current scope (skip when search active or submenu open)
+    // Delete key: remove setting from current scope (skip when search is active).
     if (matchesKey(data, Key.delete)) {
-      if (!state.hasActiveSubmenu && !state.hasActiveSearch) {
+      if (!this.hasRawSearch) {
         const selectedItem = state.displayItems[state.selectedIndex];
         if (selectedItem) {
           const delResult = deleteFromScope(selectedItem.id, this.editScope, this.cwd);
@@ -577,7 +765,15 @@ class SettingsOverlay implements Component {
             this.notify(`${selectedItem.id} is not set in ${this.editScope} scope`, "info");
           } else {
             this.notify(`Deleted ${selectedItem.id} from ${this.editScope} scope`, "info");
-            refreshItem(selectedItem, this.cwd, this.theme);
+            this.allSearchItemsCache = null;
+            refreshItem(
+              selectedItem,
+              this.cwd,
+              this.editScope,
+              this.theme,
+              false,
+              this.getCategoryLabelFor(selectedItem.id),
+            );
             this.onSettingChanged?.(selectedItem.id);
           }
           this.invalidate();
@@ -587,10 +783,126 @@ class SettingsOverlay implements Component {
       }
     }
 
-    // Forward all input to SettingsList (handles navigation, enter, space, escape, search)
-    this.settingsList.handleInput?.(data);
-    this.invalidate();
+    // List navigation & activation go directly to SettingsList.
+    if (
+      matchesKey(data, Key.up) ||
+      matchesKey(data, Key.down) ||
+      matchesKey(data, Key.pageUp) ||
+      matchesKey(data, Key.pageDown) ||
+      matchesKey(data, Key.enter) ||
+      (data === " " && !this.hasRawSearch)
+    ) {
+      this.settingsList.handleInput?.(data);
+      this.invalidate();
+      this.tui.requestRender();
+      return;
+    }
+
+    // All other input edits the cross-category search query.
+    const previousQuery = this.searchInput.getValue();
+    this.searchInput.handleInput(data);
+    if (this.searchInput.getValue() !== previousQuery) {
+      this.rebuild();
+    } else {
+      this.invalidate();
+    }
     this.tui.requestRender();
+  }
+
+  private renderSidebarLines(sidebarWidth: number, bodyHeight: number, isSearchMode: boolean): string[] {
+    const theme = this.theme;
+    const total = this.categories.length;
+    const needsScroll = total > bodyHeight;
+    const listRows = needsScroll ? Math.max(1, bodyHeight - 1) : bodyHeight;
+    const { start, end } = computeSidebarWindow(total, this.categoryIndex, listRows);
+
+    const matchCounts = new Map<string, number>();
+    if (isSearchMode) {
+      for (const item of this.currentItems) {
+        const cat = this.getCategoryLabelFor(item.id);
+        matchCounts.set(cat, (matchCounts.get(cat) ?? 0) + 1);
+      }
+    }
+
+    const lines: string[] = [];
+    for (let i = start; i < end; i++) {
+      const cat = this.categories[i];
+      const isSelected = i === this.categoryIndex;
+      const count = isSearchMode ? (matchCounts.get(cat.label) ?? 0) : cat.keys.length;
+      const countText = `(${count})`;
+      const cursor = isSelected
+        ? (this.focusPane === "sidebar" ? theme.fg("accent", "❯") : theme.fg("dim", "▸"))
+        : " ";
+
+      // Layout: " " + cursor(1) + " " + label + padding + countText + " "
+      const fixedWidth = 4 + countText.length;
+      const maxLabelW = Math.max(4, sidebarWidth - fixedWidth);
+      const rawLabel = truncateToWidth(cat.label, maxLabelW, "…");
+      const padSpaces = Math.max(1, sidebarWidth - 3 - visibleWidth(rawLabel) - countText.length - 1);
+
+      let styledLabel: string;
+      let styledCount: string;
+      if (isSelected && this.focusPane === "sidebar") {
+        styledLabel = theme.fg("accent", theme.bold(rawLabel));
+        styledCount = theme.fg("accent", countText);
+      } else if (isSearchMode && count === 0) {
+        styledLabel = theme.fg("dim", rawLabel);
+        styledCount = theme.fg("dim", countText);
+      } else if (isSelected && !isSearchMode) {
+        styledLabel = theme.fg("accent", rawLabel);
+        styledCount = theme.fg("dim", countText);
+      } else if (isSearchMode && count > 0) {
+        styledLabel = theme.fg("text", rawLabel);
+        styledCount = theme.fg("accent", countText);
+      } else {
+        styledLabel = theme.fg("text", rawLabel);
+        styledCount = theme.fg("dim", countText);
+      }
+
+      lines.push(` ${cursor} ${styledLabel}${" ".repeat(padSpaces)}${styledCount} `);
+    }
+
+    while (lines.length < listRows) lines.push("");
+
+    if (needsScroll) {
+      const upInd = start > 0 ? "▲" : " ";
+      const downInd = end < total ? "▼" : " ";
+      const status = `  ${upInd} ${this.categoryIndex + 1}/${total} ${downInd}`;
+      lines.push(theme.fg("dim", truncateToWidth(status, sidebarWidth)));
+    }
+
+    return lines;
+  }
+
+  private renderRightPaneLines(rightWidth: number, bodyHeight: number, isSearchMode: boolean): string[] {
+    const theme = this.theme;
+    const lines: string[] = [];
+
+    // Cross-category search input bar
+    const searchPrefix = ` ${theme.fg("dim", "🔍")} `;
+    const inputWidth = Math.max(8, rightWidth - 4);
+    if (this.hasRawSearch) {
+      const inputLine = this.searchInput.render(inputWidth)[0] ?? "";
+      lines.push(truncateToWidth(`${searchPrefix}${inputLine}`, rightWidth));
+    } else {
+      const placeholder = this.focusPane === "items"
+        ? theme.fg("dim", "Type to search all categories…")
+        : theme.fg("dim", "Press → or / to search all categories…");
+      lines.push(truncateToWidth(`${searchPrefix}${placeholder}`, rightWidth));
+    }
+    lines.push(theme.fg("border", "─".repeat(rightWidth)));
+
+    if (isSearchMode && this.currentItems.length === 0) {
+      lines.push(truncateToWidth(theme.fg("dim", `  No matching settings for "${this.searchQuery}"`), rightWidth));
+    } else {
+      const settingsLines = this.settingsList.render(rightWidth);
+      for (const sl of settingsLines) {
+        if (lines.length >= bodyHeight) break;
+        lines.push(sl);
+      }
+    }
+
+    return lines;
   }
 
   render(width: number): string[] {
@@ -601,52 +913,92 @@ class SettingsOverlay implements Component {
     const innerWidth = Math.max(0, width - 2);
     const lines: string[] = [];
 
-    const currentCategory = CATEGORIES[this.categoryIndex];
+    const currentCategory = this.categories[this.categoryIndex] ?? this.categories[0];
     const scopeLabel = this.editScope === "project" ? "Project" : "Global";
+    const otherScope = this.editScope === "project" ? "Global" : "Project";
+    const isSearchMode = this.searchQuery.length > 0;
+    const state = getSettingsListState(this.settingsList);
 
-    // ── Header: category tabs ──
-    const tabs: string[] = [];
-    for (let i = 0; i < CATEGORIES.length; i++) {
-      const cat = CATEGORIES[i];
-      if (i === this.categoryIndex) {
-        tabs.push(theme.fg("accent", theme.bold(` ${cat.label} `)));
-      } else {
-        tabs.push(theme.fg("dim", ` ${cat.label} `));
-      }
-    }
+    // ── Header: Title + active scope + mode summary ──
     const headerLeft = theme.fg("accent", theme.bold("Settings"));
-    lines.push(truncateToWidth(`  ${headerLeft}  ${tabs.join(theme.fg("border", "│"))}`, width));
+    const scopeBadge = this.editScope === "project"
+      ? theme.fg("success", theme.bold(`[${scopeLabel}]`))
+      : theme.fg("accent", theme.bold(`[${scopeLabel}]`));
+    const modeSummary = isSearchMode
+      ? theme.fg("dim", `Search "${this.searchQuery}" · ${this.currentItems.length} match${this.currentItems.length === 1 ? "" : "es"} across ${this.categories.length} categories`)
+      : theme.fg("dim", `${currentCategory?.label ?? ""} · Tab → ${otherScope}`);
+    lines.push(truncateToWidth(`  ${headerLeft}  ${scopeBadge}  ${modeSummary}`, width));
 
-    // ── Top border with title ──
-    const borderTitle = `${currentCategory.label} · ${scopeLabel} · ${currentCategory.keys.length} keys`;
-    lines.push(
-      theme.fg("border", "╭") +
-      borderSegment(theme, innerWidth, borderTitle) +
-      theme.fg("border", "╮"),
-    );
-
-    // ── Settings list body ──
     const divider = theme.fg("border", "│");
     const bodyHeight = Math.max(6, rows - 6);
-    const settingsLines = this.settingsList.render(innerWidth);
 
-    for (let i = 0; i < bodyHeight; i++) {
-      const line = settingsLines[i] ?? "";
-      lines.push(divider + padAnsi(line, innerWidth) + divider);
+    if (state.hasActiveSubmenu || innerWidth < 50) {
+      // Submenu open (or ultra-narrow terminal): full inner width for comfortable editing
+      const borderTitle = state.hasActiveSubmenu
+        ? `Editing (${scopeLabel})`
+        : isSearchMode
+          ? `Search: "${this.searchQuery}" · ${scopeLabel} · ${this.currentItems.length} matches`
+          : `${currentCategory?.label ?? "Settings"} · ${scopeLabel} · ${currentCategory?.keys.length ?? 0} keys`;
+      lines.push(
+        theme.fg("border", "╭") +
+        borderSegment(theme, innerWidth, borderTitle) +
+        theme.fg("border", "╮"),
+      );
+
+      const bodyLines = state.hasActiveSubmenu
+        ? this.settingsList.render(innerWidth)
+        : this.renderRightPaneLines(innerWidth, bodyHeight, isSearchMode);
+
+      for (let i = 0; i < bodyHeight; i++) {
+        lines.push(divider + padAnsi(bodyLines[i] ?? "", innerWidth) + divider);
+      }
+
+      lines.push(
+        theme.fg("border", "╰") +
+        theme.fg("border", "─".repeat(innerWidth)) +
+        theme.fg("border", "╯"),
+      );
+    } else {
+      // Two-pane layout: scrollable left category sidebar + right settings/search pane
+      const sidebarWidth = Math.max(18, Math.min(24, Math.floor(innerWidth * 0.25)));
+      const rightWidth = Math.max(20, innerWidth - sidebarWidth - 1);
+
+      const leftTitle = `Categories (${this.categories.length})`;
+      const rightTitle = isSearchMode
+        ? `Search: "${this.searchQuery}" · ${scopeLabel} · ${this.currentItems.length} match${this.currentItems.length === 1 ? "" : "es"}`
+        : `${currentCategory?.label ?? "Settings"} · ${scopeLabel} · ${currentCategory?.keys.length ?? 0} keys`;
+
+      lines.push(
+        theme.fg("border", "╭") +
+        borderSegment(theme, sidebarWidth, leftTitle) +
+        theme.fg("border", "┬") +
+        borderSegment(theme, rightWidth, rightTitle) +
+        theme.fg("border", "╮"),
+      );
+
+      const sidebarLines = this.renderSidebarLines(sidebarWidth, bodyHeight, isSearchMode);
+      const rightLines = this.renderRightPaneLines(rightWidth, bodyHeight, isSearchMode);
+
+      for (let i = 0; i < bodyHeight; i++) {
+        const left = padAnsi(sidebarLines[i] ?? "", sidebarWidth);
+        const right = padAnsi(rightLines[i] ?? "", rightWidth);
+        lines.push(divider + left + divider + right + divider);
+      }
+
+      lines.push(
+        theme.fg("border", "╰") +
+        theme.fg("border", "─".repeat(sidebarWidth)) +
+        theme.fg("border", "┴") +
+        theme.fg("border", "─".repeat(rightWidth)) +
+        theme.fg("border", "╯"),
+      );
     }
-
-    // ── Bottom border ──
-    lines.push(
-      theme.fg("border", "╰") +
-      theme.fg("border", "─".repeat(innerWidth)) +
-      theme.fg("border", "╯"),
-    );
 
     // ── Footer legend + hints ──
     const legend = `  ${theme.fg("success", "P")}=${theme.fg("dim", "project")}  ${theme.fg("accent", "G")}=${theme.fg("dim", "global")}  ${theme.fg("warning", "E")}=${theme.fg("dim", "env")}  ${theme.fg("dim", "D")}=${theme.fg("dim", "default")}`;
     lines.push(truncateToWidth(legend, width));
     lines.push(truncateToWidth(
-      theme.fg("dim", `  ←→ category · Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · Del remove · Esc close`),
+      theme.fg("dim", `  ←→/hl pane · ↑↓ navigate · Type to search all · Tab: ${otherScope} · Enter edit · Del remove · Esc close`),
       width,
     ));
 
@@ -671,7 +1023,7 @@ async function openSettingsTui(ctx: ExtensionCommandContext, pi?: ExtensionAPI):
     return;
   }
 
-  const editScope: "project" | "global" = "project";
+  const editScope: SettingsScope = "project";
   const cwd = ctx.cwd;
   const modelRegistry = ctx.modelRegistry;
 

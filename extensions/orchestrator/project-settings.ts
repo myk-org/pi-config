@@ -106,6 +106,7 @@ export interface SettingsKeyDef {
   max?: number;
   strict_digits?: boolean;
   per_key_resolution?: boolean;
+  global_only?: boolean;
   enum?: string[];
   group?: string;
 }
@@ -1125,6 +1126,24 @@ export interface ResolvedSetting<T = AnySettingValue> {
   path?: string | null;
 }
 
+/** Return a fresh copy of a setting's schema default value (avoids mutating shared arrays/objects). */
+export function cloneDefaultValue(def: SettingsKeyDef): AnySettingValue {
+  return def.type === "string_list"
+    ? (Array.isArray(def.default) ? [...(def.default as string[])] : [])
+    : def.type === "agent_overrides"
+      ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as AgentOverrides) } : {})
+      : def.type === "tool_permissions"
+        ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as ToolPermissions) } : {})
+        : (def.default as AnySettingValue);
+}
+
+/** Return the parsed environment-variable value for `key`, or `undefined` when unset/invalid. */
+export function getSettingEnvValue(key: string): AnySettingValue | undefined {
+  const def = SETTINGS_KEYS[key];
+  if (!def) return undefined;
+  return parseEnvSetting(key, def) as AnySettingValue | undefined;
+}
+
 /**
  * Resolve a setting value and its winning source (`P` | `G` | `E` | `D`) through the
  * single coordinated cache and schema validator. Returns `null` for unknown keys.
@@ -1141,11 +1160,13 @@ export function resolveSetting(
   if (!def) return null;
   const audit = options?.audit === true;
 
-  const projectLayer = readCachedLayer("project", cwd);
-  const projectVal = (projectLayer.parsed as Record<string, unknown>)[key];
-  if (projectVal !== undefined) {
-    if (audit) log.debug("resolved setting", { key, source: "project", path: projectLayer.file });
-    return { value: projectVal as AnySettingValue, source: "P", path: projectLayer.file };
+  if (!def.global_only) {
+    const projectLayer = readCachedLayer("project", cwd);
+    const projectVal = (projectLayer.parsed as Record<string, unknown>)[key];
+    if (projectVal !== undefined) {
+      if (audit) log.debug("resolved setting", { key, source: "project", path: projectLayer.file });
+      return { value: projectVal as AnySettingValue, source: "P", path: projectLayer.file };
+    }
   }
 
   const globalLayer = readCachedLayer("global", cwd);
@@ -1162,15 +1183,55 @@ export function resolveSetting(
   }
 
   if (audit) log.debug("resolved setting", { key, source: "default" });
-  const defaultVal =
-    def.type === "string_list"
-      ? (Array.isArray(def.default) ? [...(def.default as string[])] : [])
-      : def.type === "agent_overrides"
-        ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as AgentOverrides) } : {})
-        : def.type === "tool_permissions"
-          ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as ToolPermissions) } : {})
-          : (def.default as AnySettingValue);
-  return { value: defaultVal, source: "D" };
+  return { value: cloneDefaultValue(def), source: "D" };
+}
+
+/**
+ * Resolve a setting strictly for the requested editor scope (`global` vs `project`).
+ *
+ * - `global`: inspects ONLY the Global layer (`G` when set in global, `D` + default when unset —
+ *   NEVER leaks Project `P` overrides).
+ * - `project`: inspects Project first (`P` when set), then inherited Global (`G`), Env (`E`),
+ *   and schema Default (`D`). For `global_only` keys, skips the Project layer.
+ */
+export function resolveSettingForScope(
+  cwd: string,
+  key: string,
+  scope: SettingsScope,
+  snapshot?: SettingsSourceSnapshot,
+): ResolvedSetting | null {
+  const def = SETTINGS_KEYS[key];
+  if (!def) return null;
+
+  if (scope === "global") {
+    const globalParsed = snapshot ? snapshot.global : readCachedLayer("global", cwd).parsed;
+    const globalVal = globalParsed ? (globalParsed as Record<string, unknown>)[key] : undefined;
+    if (globalVal !== undefined) {
+      return { value: globalVal as AnySettingValue, source: "G", path: getGlobalSettingsPath() };
+    }
+    return { value: cloneDefaultValue(def), source: "D" };
+  }
+
+  if (!def.global_only) {
+    const projectParsed = snapshot ? snapshot.project : readCachedLayer("project", cwd).parsed;
+    const projectVal = projectParsed ? (projectParsed as Record<string, unknown>)[key] : undefined;
+    if (projectVal !== undefined) {
+      return { value: projectVal as AnySettingValue, source: "P", path: getSettingsPath(cwd) };
+    }
+  }
+
+  const globalParsed = snapshot ? snapshot.global : readCachedLayer("global", cwd).parsed;
+  const globalVal = globalParsed ? (globalParsed as Record<string, unknown>)[key] : undefined;
+  if (globalVal !== undefined) {
+    return { value: globalVal as AnySettingValue, source: "G", path: getGlobalSettingsPath() };
+  }
+
+  const envVal = parseEnvSetting(key, def);
+  if (envVal !== undefined) {
+    return { value: envVal as AnySettingValue, source: "E" };
+  }
+
+  return { value: cloneDefaultValue(def), source: "D" };
 }
 
 /**
@@ -1213,10 +1274,12 @@ export function detectSource(
   cwd: string,
   snapshot?: SettingsSourceSnapshot,
 ): SettingSource {
-  const project = snapshot
-    ? snapshot.project
-    : (existsSync(getSettingsPath(cwd)) ? parseSettingsFile(getSettingsPath(cwd)) : null);
-  if (project && (project as Record<string, unknown>)[key] !== undefined) return "P";
+  if (!def.global_only) {
+    const project = snapshot
+      ? snapshot.project
+      : (existsSync(getSettingsPath(cwd)) ? parseSettingsFile(getSettingsPath(cwd)) : null);
+    if (project && (project as Record<string, unknown>)[key] !== undefined) return "P";
+  }
 
   const global = snapshot
     ? snapshot.global
@@ -1587,6 +1650,14 @@ export function updateSetting(
       return { ok: false, reason: "invalid", file: filePath, error: `unknown setting key: ${key}` };
     }
   } else {
+    if (SETTINGS_KEYS[key]?.global_only && scope === "project") {
+      return {
+        ok: false,
+        reason: "invalid",
+        file: filePath,
+        error: `${key} is global-only and cannot be set in project scope`,
+      };
+    }
     const validated = validateSetting(key, value);
     if (!validated.ok) {
       return { ok: false, reason: "invalid", file: filePath, error: validated.error };

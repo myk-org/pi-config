@@ -70,7 +70,7 @@ Always pass `cwd` when delegating to subagents in all modes — omitting it caus
 Pi 1.6 `codemode` is auto-activated when available. Extension tools live in `codemode` namespaces (`memory`, `coms`, `tasks`, `trail`, `runtime`) —
 call them via `codemode` (`await tools.<name>({ ... })`, batchable with `Promise.allSettled`).
 Rare admin tools (`skill_adopt`, `memory_dream`, `memory_consolidate`, `review_status`) use `deferred` exposure (0 inline tokens; callable in `codemode`
-and discoverable via `searchTools` / `describeNamespace`). `ask_user` and `subagent` remain direct `model-only` tools.
+and discoverable via `searchTools` / `describeNamespace`). `ask_user`, `subagent`, and `settings_set` remain direct `model-only` tools.
 
 Prefer the built-in runtime tools (`runtime` namespace) over ad-hoc shell commands when inspecting or managing session state:
 
@@ -80,6 +80,8 @@ Prefer the built-in runtime tools (`runtime` namespace) over ad-hoc shell comman
 | `session_status` | Return the unified `/status` snapshot (async agents, crons, git branch/dirty state, worktrees, context %, loaded resources) |
 | `worktree_status` | List git worktrees (`action="list"`) with dirty counts, PRs, and active COMS peers, or prune stale worktrees (`action="prune"`) |
 | `daemon_manage` | Check or control local `pidash`/`pidiff` daemons (`action="status"\|"start"\|"stop"\|"restart"`) |
+| `settings_get` | Read pi-config settings (`key`, `category`, `only_overrides`) with exact effective value, per-scope `env`/`project`/`global`/`default` breakdown, `source`, and `global_only` |
+| `settings_set` | Direct `model-only` tool (never in `codemode`) to `set` or `reset` a validated setting in `global` or `project` scope with code-enforced user approval (fails closed when headless/subagent; direct file edits to `pi-config-settings.json` remain hard-blocked) |
 | `skill_adopt` | List unmarked adoptable skills (`action="list"`) or adopt one (`action="adopt"`, `name`) |
 | `memory_dream` | Inspect dreaming state (`status`), run consolidation now (`run`), or toggle auto-dreaming (`auto_on`/`auto_off`) |
 

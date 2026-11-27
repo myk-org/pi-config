@@ -72,3 +72,62 @@ export function displaySettingValue(v: unknown): string {
   if (typeof v === "object") return JSON.stringify(v, null, 2);
   return String(v);
 }
+
+export interface SettingsCategoryGroup {
+  name: string;
+  keys: SettingsKey[];
+}
+
+/** Group settings keys into sidebar categories while preserving schema order. */
+export function buildSettingsCategories(keys: readonly SettingsKey[]): SettingsCategoryGroup[] {
+  const byGroup = new Map<string, SettingsKey[]>();
+  for (const k of keys) {
+    const group = k.group || "Other";
+    if (!byGroup.has(group)) byGroup.set(group, []);
+    byGroup.get(group)!.push(k);
+  }
+  return [...byGroup.entries()].map(([name, groupKeys]) => ({ name, keys: groupKeys }));
+}
+
+/** Cross-category search over key name, category/group label, and description. */
+export function filterSettingsKeys(keys: readonly SettingsKey[], query: string): SettingsKey[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [...keys];
+
+  const exact: SettingsKey[] = [];
+  const prefix: SettingsKey[] = [];
+  const rest: SettingsKey[] = [];
+
+  for (const k of keys) {
+    const keyLower = k.key.toLowerCase();
+    const groupLower = (k.group || "Other").toLowerCase();
+    const descLower = (k.description || "").toLowerCase();
+    if (keyLower === q || groupLower === q) {
+      exact.push(k);
+    } else if (keyLower.startsWith(q) || keyLower.includes(`_${q}`) || groupLower.startsWith(q)) {
+      prefix.push(k);
+    } else if (keyLower.includes(q) || groupLower.includes(q) || descLower.includes(q)) {
+      rest.push(k);
+    }
+  }
+  return [...exact, ...prefix, ...rest];
+}
+
+/** Resolve the copyable text representation for a setting row (draft > stored > effective > default). */
+export function getCopyableSettingValue(def: SettingsKey, hasDraft: boolean, draftValue?: unknown): string {
+  const raw = hasDraft
+    ? draftValue
+    : def.stored !== undefined
+      ? def.stored
+      : def.effective !== undefined
+        ? def.effective
+        : def.default;
+  if (raw === undefined || raw === null) return "";
+  if (typeof raw === "string") return raw;
+  if (typeof raw === "boolean" || typeof raw === "number") return String(raw);
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return String(raw);
+  }
+}

@@ -88,10 +88,10 @@ More detail: [Neovim Integration](neovim-integration.html).
 
 ### /pi-config-settings
 
-Full-screen interactive settings editor: category tabs, per-key editing, project/global scope, and delete.
+Full-screen interactive settings editor with a scrollable left category sidebar, cross-category search, strict Project/Global scope isolation, per-key editing, and delete.
 
-- **Arguments:** none — `Tab` toggles Project/Global scope inside the TUI
-- **Keys in the TUI:** `←→` category, `Tab` scope, `↑↓` navigate, `Enter` edit, `Del` remove, `Esc` close
+- **Arguments:** none — `Tab` toggles Project/Global scope inside the TUI (Global shows only Global/Default values; Project shows Project overrides plus inherited Global/Env/Default values)
+- **Keys in the TUI:** `←→` / `h`/`l` switch between category sidebar and items pane, `↑↓` / `j`/`k` navigate, type to search across all categories, `Tab` scope, `Enter` edit, `Del` remove from current scope, `Esc` clear search / close
 
 ```text
 /pi-config-settings
@@ -322,7 +322,7 @@ Watching depends on the platform's `fs.watch` support and event delivery. Replac
 reliable notifications are not covered; there is no polling fallback or replay of changes made while the watcher is closed. Watcher errors close and clear the handles so a later
 `reopen()` can try again. There is no automatic retry timer during an active session.
 
-### Core tools (12 tools)
+### Core tools (14 tools)
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
@@ -330,6 +330,8 @@ reliable notifications are not covered; there is no polling fallback or replay o
 | `session_status` | Return the unified `/status` snapshot (async agents, crons, git branch/dirty state, worktrees, context %, loaded resources) | none |
 | `worktree_status` | List git worktrees (branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata | `action` (`list`, `prune`) |
 | `daemon_manage` | Check status or start/stop/restart local `pidash` and `pidiff` daemons (handles disabled daemons cleanly) | `name` (`pidash`, `pidiff`), `action` (`status`, `start`, `stop`, `restart`) |
+| `settings_get` | Inspect effective and per-scope (`env`/`project`/`global`/`default`) pi-config settings (`codemode`, `runtime` namespace, read-only) | `key` (optional), `category` (optional), `only_overrides` (optional bool) |
+| `settings_set` | Approval-gated `set`/`reset` of a validated setting in `global` or `project` scope (`model-only`, never in `codemode`, fails closed when headless) | `action` (`set`, `reset`), `key`, `scope` (`global`, `project`), `value` (required for `set`) |
 | `skill_adopt` | List unmarked adoptable skills or adopt a named skill with `skill-maintenance: auto` | `action` (`list`, `adopt`), `name` (required for `adopt`) |
 | `cron_manage` | Manage scheduled tasks (`add`, `list`, `edit`, `pause`, `resume`, `remove`); `persist=true` keeps a task across Pi sessions in the project | `action` (`add`, `list`, `edit`, `pause`, `resume`, `remove`), `persist`, `description`, `task`, `model` (`""` on `edit` clears pinned model), `interval_seconds` (min 10), `at_hour` (0–23), `at_minute` (0–59, requires `at_hour` unless editing a daily cron), `id` |
 | `subagent` | Delegate to a subagent with isolated context; modes are single (`agent`+`task`), parallel (`tasks[]`), and chain (`chain[]` with a `{previous}` placeholder). A chain also runs async with `async: true`: each step needs its own `taskId` and `cwd`, each step gets the previous step's output as `{previous}`, and a failed step stops the chain | `agent`, `task`, `tasks[]`, `chain[]`, `agentScope`, `confirmProjectAgents`, `cwd`, `estimatedSeconds` (required for sync; `>= 30` forces async), `async`, `fireAndForget`, `name`, `taskId` (`-1` if unlinked), `asyncKill`, `persistSession`, `model` (`provider/model-id`) |

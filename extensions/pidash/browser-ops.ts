@@ -47,8 +47,11 @@ import {
   getSettingsPath,
   loadGlobalSettings,
   loadProjectSettings,
+  loadSettingsSourceSnapshot,
+  resolveSettingForScope,
   updateSetting,
   validateSetting,
+  type SettingSource,
   type SettingsScope,
 } from "../orchestrator/project-settings.js";
 
@@ -66,8 +69,13 @@ export interface SettingsKeyPayload {
   enum?: string[];
   min?: number;
   max?: number;
+  globalOnly?: boolean;
   /** Value stored in the scope's file (undefined = not set there). */
   stored: unknown;
+  /** Scope-aware effective value (Global strictly ignores Project overrides). */
+  effective?: unknown;
+  /** Scope-aware source indicator (`P` | `G` | `E` | `D`). */
+  source?: SettingSource;
 }
 
 export interface SettingsPayload {
@@ -89,22 +97,28 @@ export function buildSettingsPayload(cwd: string, scope: unknown): SettingsPaylo
   if (!isSettingsScope(scope)) return { scope: "project", keys: [], error: "invalid scope" };
   try {
     clearSettingsCache();
+    const snapshot = loadSettingsSourceSnapshot(cwd);
     const stored = (
       scope === "project" ? loadProjectSettings(cwd) : loadGlobalSettings()
     ) as Record<string, unknown>;
-    const keys: SettingsKeyPayload[] = Object.entries(SETTINGS_KEYS).map(([key, def]) => ({
-      key,
-      description: def.description,
-      type: def.type,
-      env: def.env,
-      default: def.default,
-      group: def.group ?? "General",
-      enum: def.enum,
-      min: def.min,
-      max: def.max,
-      stored: key in stored ? stored[key] : undefined,
-    }));
-    keys.sort((a, b) => (a.group === b.group ? a.key.localeCompare(b.key) : a.group.localeCompare(b.group)));
+    const keys: SettingsKeyPayload[] = Object.entries(SETTINGS_KEYS).map(([key, def]) => {
+      const resolved = resolveSettingForScope(cwd, key, scope, snapshot);
+      return {
+        key,
+        description: def.description,
+        type: def.type,
+        env: def.env,
+        default: def.default,
+        group: def.group ?? "Other",
+        enum: def.enum,
+        min: def.min,
+        max: def.max,
+        ...(def.global_only ? { globalOnly: true } : {}),
+        stored: key in stored ? stored[key] : undefined,
+        effective: resolved?.value,
+        source: resolved?.source ?? "D",
+      };
+    });
     log.debug("settings_payload_built", { scope, keys: keys.length });
     // Resolved file path (project scope only) — identity of the settings
     // file being described, independent of the session's cwd (Qodo R5).
@@ -118,12 +132,15 @@ export function buildSettingsPayload(cwd: string, scope: unknown): SettingsPaylo
 /**
  * Validate a browser-supplied value against the unified settings schema.
  * Adds the browser-only security policy blocking `dangerous_command_allowlist`,
- * `restricted_folders`, and `tool_permissions`.
+ * `restricted_folders`, and `tool_permissions`, and enforces `global_only`.
  * Returns an error string, or null when the value is valid.
  */
-export function validateSettingValue(key: string, value: unknown): string | null {
+export function validateSettingValue(key: string, value: unknown, scope?: SettingsScope): string | null {
   if (key === "dangerous_command_allowlist" || key === "restricted_folders" || key === "tool_permissions") {
     return `${key} is managed by the terminal settings editor only`;
+  }
+  if (scope === "project" && value !== null && SETTINGS_KEYS[key]?.global_only) {
+    return `${key} is global-only and cannot be set in project scope`;
   }
   const result = validateSetting(key, value, { allowNull: true });
   return result.ok ? null : result.error;
@@ -137,7 +154,7 @@ export function applySetting(
   value: unknown,
 ): { ok: boolean; error?: string } {
   if (!isSettingsScope(scope)) return { ok: false, error: "invalid scope" };
-  const validationError = validateSettingValue(key, value);
+  const validationError = validateSettingValue(key, value, scope);
   if (validationError) {
     log.warn("browser_setting_rejected", { scope, key, error: validationError });
     return { ok: false, error: validationError };
