@@ -20,6 +20,7 @@ CODERABBIT_CHECK_NAME = "CodeRabbit"
 CODERABBIT_APP_SLUG = "coderabbitai"
 CODERABBIT_BOT_LOGIN = "coderabbitai[bot]"
 REPLY_LOOKBACK_SECONDS = 300
+REPLY_LOOKAHEAD_SECONDS = 300
 
 
 def _parse_iso_timestamp(ts: str | None) -> datetime | None:
@@ -150,7 +151,8 @@ def find_rate_limit_reply_comment(
         comments = fetched if isinstance(fetched, list) else []
 
     completed_dt = _parse_iso_timestamp(completed_at)
-    cutoff = completed_dt - timedelta(seconds=REPLY_LOOKBACK_SECONDS) if completed_dt is not None else None
+    min_ts = completed_dt - timedelta(seconds=REPLY_LOOKBACK_SECONDS) if completed_dt is not None else None
+    max_ts = completed_dt + timedelta(seconds=REPLY_LOOKAHEAD_SECONDS) if completed_dt is not None else None
 
     matching: list[dict[str, Any]] = []
     for comment in comments:
@@ -162,9 +164,9 @@ def find_rate_limit_reply_comment(
         body = comment.get("body")
         if not isinstance(body, str) or SUMMARY_MARKER in body or "rate limit" not in body.lower():
             continue
-        if cutoff is not None:
+        if min_ts is not None and max_ts is not None:
             created_dt = _parse_iso_timestamp(comment.get("created_at"))
-            if created_dt is None or created_dt < cutoff:
+            if created_dt is None or created_dt < min_ts or created_dt > max_ts:
                 continue
         matching.append(comment)
 

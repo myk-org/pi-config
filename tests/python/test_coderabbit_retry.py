@@ -19,6 +19,7 @@ def _rate_limited_status(
     check_run_id: int = 42,
     updated_at: str = "2020-01-01T00:00:00Z",
     parsed_wait_seconds: int | None = 150,
+    wait_reference_at: str | None = None,
 ) -> RateLimitStatus:
     return RateLimitStatus(
         rate_limited=True,
@@ -28,6 +29,7 @@ def _rate_limited_status(
         title="Review rate limited",
         updated_at=updated_at,
         parsed_wait_seconds=parsed_wait_seconds,
+        wait_reference_at=wait_reference_at,
     )
 
 
@@ -254,9 +256,19 @@ def test_wait_capped_at_one_hour(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_run_check_includes_updated_at(capsys: pytest.CaptureFixture[str]) -> None:
-    """run_check rate_limited JSON includes updated_at and check_run_id fields."""
+    """run_check rate_limited JSON includes updated_at, check_run_id, and remaining wait_seconds."""
+    from datetime import datetime
+    from unittest.mock import MagicMock
+
+    now = datetime(2025, 1, 1, 0, 0, 30, tzinfo=UTC)
+    mock_datetime = MagicMock()
+    mock_datetime.now.return_value = now
+    mock_datetime.fromisoformat = datetime.fromisoformat
     status = _rate_limited_status(updated_at="2025-01-01T00:00:00Z", parsed_wait_seconds=150)
-    with patch(f"{_MODULE}.detect_rate_limit", return_value=(status, "")):
+    with (
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(status, "")),
+        patch(f"{_MODULE}.datetime", mock_datetime),
+    ):
         from myk_pi_tools.coderabbit.rate_limit import run_check
 
         assert run_check("owner/repo", 1) == 0
@@ -264,8 +276,39 @@ def test_run_check_includes_updated_at(capsys: pytest.CaptureFixture[str]) -> No
     result = json.loads(out)
     assert result["rate_limited"] is True
     assert result["updated_at"] == "2025-01-01T00:00:00Z"
-    assert result["wait_seconds"] == 150
+    assert result["wait_seconds"] == 120  # 150 - 30s elapsed
     assert result["check_run_id"] == 42
+
+
+def test_run_retry_uses_wait_reference_at_over_updated_at(capsys: pytest.CaptureFixture[str]) -> None:
+    """run_retry subtracts elapsed time from wait_reference_at rather than updated_at when they differ."""
+    from datetime import datetime
+    from unittest.mock import MagicMock
+
+    now = datetime(2026, 4, 1, 10, 11, 0, tzinfo=UTC)
+    mock_datetime = MagicMock()
+    mock_datetime.now.return_value = now
+    mock_datetime.fromisoformat = datetime.fromisoformat
+    status = _rate_limited_status(
+        updated_at="2026-04-01T10:01:00Z",  # 600s elapsed
+        wait_reference_at="2026-04-01T09:59:00Z",  # 120s earlier -> 720s elapsed -> 1000 - 720 = 280s
+        parsed_wait_seconds=1000,
+    )
+    with (
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(status, "")),
+        patch(f"{_MODULE}._post_review_trigger", return_value=99),
+        patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
+        patch(f"{_MODULE}.time") as mock_time,
+        patch(f"{_MODULE}.datetime", mock_datetime),
+    ):
+        from myk_pi_tools.coderabbit.rate_limit import run_retry
+
+        assert run_retry("owner/repo", 1) == 0
+        mock_time.sleep.assert_called_once_with(280)
+        mock_find_reply.assert_called_once_with("owner/repo", 1, 99)
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "triggered"
+    assert result["waited_seconds"] == 280
 
 
 class TestParseWaitSeconds:

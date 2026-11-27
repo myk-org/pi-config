@@ -66,13 +66,14 @@ It prints JSON to stdout:
   (`{"rate_limited": false}`), or the latest run is not rate limited (also includes
   `check_run_id`, `head_sha`, `conclusion`, `title`). Notify the user
   "Not rate limited" and exit.
-- `rate_limited: true`: includes `wait_seconds`, `check_run_id`, `head_sha`,
-  `conclusion`, `title`, `updated_at` (the check run's ISO `completed_at`
-  timestamp), and optionally `fallback: true`. Read `wait_seconds` and proceed to
-  Phase 3.
-  - If `fallback` is `true`, the wait time is **estimated** from the check run's
-    `completed_at` timestamp (1-hour window), not parsed from the reply comment or
-    check run output. Warn the user that timing is approximate.
+- `rate_limited: true`: includes `wait_seconds` (the **remaining** seconds to wait,
+  already subtracting elapsed time since the reply comment or check run timestamp),
+  `check_run_id`, `head_sha`, `conclusion`, `title`, `updated_at` (the check run's
+  ISO `completed_at` timestamp), and optionally `fallback: true`. Read
+  `wait_seconds` and proceed to Phase 3.
+  - If `fallback` is `true`, the remaining wait time is **estimated** from the
+    check run's `completed_at` timestamp (1-hour window), not parsed from the reply
+    comment or check run output. Warn the user that timing is approximate.
 
 ### Phase 3: Wait and Trigger Review
 

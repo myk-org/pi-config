@@ -164,6 +164,7 @@ class RateLimitStatus:
     title: str | None = None
     updated_at: str | None = None
     parsed_wait_seconds: int | None = None
+    wait_reference_at: str | None = None
 
 
 def detect_rate_limit(
@@ -209,6 +210,7 @@ def detect_rate_limit(
         )
 
     parsed_wait = _parse_anchored_wait_seconds(f"{summary}\n{text}")
+    wait_reference_at = completed_at
     if parsed_wait is None:
         reply, reply_err = _find_rate_limit_reply_comment(
             owner_repo,
@@ -228,6 +230,10 @@ def detect_rate_limit(
             raw_reply_body = reply.get("body")
             reply_body = raw_reply_body if isinstance(raw_reply_body, str) else ""
             parsed_wait = _parse_wait_seconds(reply_body)
+            if parsed_wait is not None:
+                raw_reply_created = reply.get("created_at")
+                if isinstance(raw_reply_created, str) and raw_reply_created.strip():
+                    wait_reference_at = raw_reply_created.strip()
 
     return (
         RateLimitStatus(
@@ -238,6 +244,7 @@ def detect_rate_limit(
             title=title,
             updated_at=completed_at,
             parsed_wait_seconds=parsed_wait,
+            wait_reference_at=wait_reference_at,
         ),
         "",
     )
@@ -351,21 +358,17 @@ def run_check(owner_repo: str, pr_number: int) -> int:
             )
         return 0
 
-    fallback = False
-    if status.parsed_wait_seconds is None:
-        fallback = True
-        wait_seconds, _, parsed_ok = compute_remaining_wait(DEFAULT_RATE_LIMIT_WINDOW, status.updated_at)
-        if not parsed_ok:
-            log.warning(
-                "Could not parse check-run timestamp '%s' — using full fallback window",
-                status.updated_at,
-            )
-            print(
-                f"Warning: Could not parse check-run timestamp '{status.updated_at}' — using full fallback window",
-                file=sys.stderr,
-            )
-    else:
-        wait_seconds = status.parsed_wait_seconds
+    fallback = status.parsed_wait_seconds is None
+    raw_wait = DEFAULT_RATE_LIMIT_WINDOW if status.parsed_wait_seconds is None else status.parsed_wait_seconds
+    reference_ts = status.wait_reference_at or status.updated_at
+    wait_seconds, _, parsed_ok = compute_remaining_wait(raw_wait, reference_ts)
+    if not parsed_ok:
+        suffix = "using full fallback window" if fallback else "using full wait"
+        log.warning("Could not parse check-run timestamp '%s' — %s", reference_ts, suffix)
+        print(
+            f"Warning: Could not parse check-run timestamp '{reference_ts}' — {suffix}",
+            file=sys.stderr,
+        )
 
     result: dict[str, Any] = {
         "rate_limited": True,
@@ -463,12 +466,13 @@ def run_retry(owner_repo: str, pr_number: int) -> int:
     is_fallback = status.parsed_wait_seconds is None
     wait_seconds: int = DEFAULT_RATE_LIMIT_WINDOW if status.parsed_wait_seconds is None else status.parsed_wait_seconds
 
-    # Calculate remaining wait from check-run timestamp
-    remaining, elapsed, parsed_ok = compute_remaining_wait(wait_seconds, status.updated_at)
+    # Calculate remaining wait from rate-limit reference timestamp
+    reference_ts = status.wait_reference_at or status.updated_at
+    remaining, elapsed, parsed_ok = compute_remaining_wait(wait_seconds, reference_ts)
     if not parsed_ok:
-        log.warning("Could not parse check-run timestamp '%s' — using full wait", status.updated_at)
+        log.warning("Could not parse check-run timestamp '%s' — using full wait", reference_ts)
         print(
-            f"Warning: Could not parse check-run timestamp '{status.updated_at}' — using full wait",
+            f"Warning: Could not parse check-run timestamp '{reference_ts}' — using full wait",
             file=sys.stderr,
         )
 

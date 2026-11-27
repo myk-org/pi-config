@@ -292,6 +292,32 @@ class TestFindRateLimitReplyComment:
         assert found is None
         assert err == ""
 
+    def test_rejects_future_reply_after_300s_lookahead_from_completed_at(self) -> None:
+        just_past = _make_comment(comment_id=12, created_at="2026-04-01T10:06:01Z")
+        much_later = _make_comment(comment_id=13, created_at="2026-04-01T12:01:00Z")
+        found, err = find_rate_limit_reply_comment(
+            "owner/repo",
+            6743,
+            completed_at="2026-04-01T10:01:00Z",
+            comments=[just_past, much_later],
+        )
+
+        assert found is None
+        assert err == ""
+
+    def test_accepts_reply_within_300s_lookahead_after_completed_at(self) -> None:
+        within_lookahead = _make_comment(comment_id=14, created_at="2026-04-01T10:02:00Z")
+        found, err = find_rate_limit_reply_comment(
+            "owner/repo",
+            6743,
+            completed_at="2026-04-01T10:01:00Z",
+            comments=[within_lookahead],
+        )
+
+        assert err == ""
+        assert found is not None
+        assert found["id"] == 14
+
     def test_ignores_summary_comment_even_when_mentioning_rate_limit(self) -> None:
         summary = _make_comment(
             comment_id=20,
@@ -348,6 +374,7 @@ class TestDetectRateLimitAndRunCheck:
     """Tests for rate_limit.detect_rate_limit and rate_limit.run_check."""
 
     def test_neutral_rate_limited_with_fresh_reply_comment(self, capsys: pytest.CaptureFixture[str]) -> None:
+        now = datetime(2026, 4, 1, 10, 1, 0, tzinfo=UTC)
         check_run = _make_check_run(
             run_id=9001,
             conclusion="neutral",
@@ -368,6 +395,7 @@ class TestDetectRateLimitAndRunCheck:
         with (
             patch.object(rate_limit, "_find_coderabbit_check_run", return_value=(check_run, "")),
             patch.object(utils, "run_gh_api_result", return_value=([summary_no_rate_limit, fresh_reply], "")),
+            patch.object(rate_limit, "datetime", _freeze_rate_limit_now(now)),
         ):
             rc = run_check("owner/repo", 6743)
 
@@ -375,13 +403,161 @@ class TestDetectRateLimitAndRunCheck:
         payload = json.loads(capsys.readouterr().out)
         assert payload == {
             "rate_limited": True,
-            "wait_seconds": 2640,
+            "wait_seconds": 2611,  # 2640 - 29s elapsed since reply created_at
             "check_run_id": 9001,
             "head_sha": _SHA,
             "conclusion": "neutral",
             "title": "Review rate limited",
             "updated_at": "2026-04-01T10:01:00Z",
         }
+        assert "fallback" not in payload
+
+    def test_run_check_subtracts_elapsed_time_for_parsed_reply_wait(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        now = datetime(2026, 4, 1, 10, 11, 0, tzinfo=UTC)
+        check_run = _make_check_run(
+            run_id=9010,
+            conclusion="neutral",
+            title="Review rate limited",
+            summary="No duration in summary.",
+            completed_at="2026-04-01T10:01:00Z",
+        )
+        reply = _make_comment(
+            comment_id=20,
+            body="Rate limit exceeded. Your next included review will be available in 44 minutes.",
+            created_at="2026-04-01T10:01:00Z",  # 10 minutes (600s) elapsed -> 2640 - 600 = 2040
+        )
+        with (
+            patch.object(rate_limit, "_find_coderabbit_check_run", return_value=(check_run, "")),
+            patch.object(utils, "run_gh_api_result", return_value=([reply], "")),
+            patch.object(rate_limit, "datetime", _freeze_rate_limit_now(now)),
+        ):
+            rc = run_check("owner/repo", 6743)
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["rate_limited"] is True
+        assert payload["wait_seconds"] == 2040
+        assert payload["updated_at"] == "2026-04-01T10:01:00Z"
+        assert "fallback" not in payload
+
+    def test_run_check_parsed_wait_with_unparseable_timestamp_warns_and_emits_full_wait(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        status = RateLimitStatus(
+            rate_limited=True,
+            check_run_id=9011,
+            head_sha=_SHA,
+            conclusion="neutral",
+            title="Review rate limited",
+            updated_at="not-a-timestamp",
+            parsed_wait_seconds=1200,
+            wait_reference_at="not-a-timestamp",
+        )
+        with patch.object(rate_limit, "detect_rate_limit", return_value=(status, "")):
+            rc = run_check("owner/repo", 1)
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "Could not parse check-run timestamp" in captured.err
+        assert "using full wait" in captured.err
+        payload = json.loads(captured.out)
+        assert payload["rate_limited"] is True
+        assert payload["wait_seconds"] == 1200
+        assert "fallback" not in payload
+
+    def test_detect_rate_limit_sets_wait_reference_at_to_reply_created_at(self) -> None:
+        check_run = _make_check_run(
+            run_id=9012,
+            conclusion="neutral",
+            title="Review rate limited",
+            summary="No duration in summary.",
+            completed_at="2026-04-01T10:01:00Z",
+        )
+        reply = _make_comment(
+            comment_id=21,
+            body="Rate limit exceeded. Your next included review will be available in 44 minutes.",
+            created_at="2026-04-01T09:59:00Z",
+        )
+        with (
+            patch.object(rate_limit, "_find_coderabbit_check_run", return_value=(check_run, "")),
+            patch.object(utils, "run_gh_api_result", return_value=([reply], "")),
+        ):
+            status, err = detect_rate_limit("owner/repo", 1)
+
+        assert err == ""
+        assert status is not None
+        assert status.rate_limited is True
+        assert status.parsed_wait_seconds == 2640
+        assert status.updated_at == "2026-04-01T10:01:00Z"
+        assert status.wait_reference_at == "2026-04-01T09:59:00Z"
+
+    def test_detect_rate_limit_sets_wait_reference_at_to_completed_at_for_output_wait(self) -> None:
+        check_run = _make_check_run(
+            run_id=9013,
+            conclusion="neutral",
+            title="Review rate limited",
+            summary="Rate limit hit.",
+            text="Your next included review will be available in 25 minutes.",
+            completed_at="2026-04-01T10:01:00Z",
+        )
+        with patch.object(rate_limit, "_find_coderabbit_check_run", return_value=(check_run, "")):
+            status, err = detect_rate_limit("owner/repo", 1)
+
+        assert err == ""
+        assert status is not None
+        assert status.parsed_wait_seconds == 1500
+        assert status.updated_at == "2026-04-01T10:01:00Z"
+        assert status.wait_reference_at == "2026-04-01T10:01:00Z"
+
+    def test_detect_rate_limit_sets_wait_reference_at_to_completed_at_on_fallback(self) -> None:
+        check_run = _make_check_run(
+            run_id=9014,
+            conclusion="neutral",
+            title="Review rate limited",
+            summary="No duration in summary.",
+            completed_at="2026-04-01T10:01:00Z",
+        )
+        with (
+            patch.object(rate_limit, "_find_coderabbit_check_run", return_value=(check_run, "")),
+            patch.object(rate_limit, "_find_rate_limit_reply_comment", return_value=(None, "")),
+        ):
+            status, err = detect_rate_limit("owner/repo", 1)
+
+        assert err == ""
+        assert status is not None
+        assert status.parsed_wait_seconds is None
+        assert status.updated_at == "2026-04-01T10:01:00Z"
+        assert status.wait_reference_at == "2026-04-01T10:01:00Z"
+
+    def test_run_check_uses_wait_reference_at_over_updated_at(self, capsys: pytest.CaptureFixture[str]) -> None:
+        now = datetime(2026, 4, 1, 10, 11, 0, tzinfo=UTC)
+        check_run = _make_check_run(
+            run_id=9015,
+            conclusion="neutral",
+            title="Review rate limited",
+            summary="No duration in summary.",
+            completed_at="2026-04-01T10:01:00Z",  # 600s elapsed
+        )
+        reply = _make_comment(
+            comment_id=22,
+            body="Rate limit exceeded. Your next included review will be available in 44 minutes.",
+            created_at="2026-04-01T09:59:00Z",  # 120s earlier -> 720s elapsed -> 2640 - 720 = 1920
+        )
+        with (
+            patch.object(rate_limit, "_find_coderabbit_check_run", return_value=(check_run, "")),
+            patch.object(utils, "run_gh_api_result", return_value=([reply], "")),
+            patch.object(rate_limit, "datetime", _freeze_rate_limit_now(now)),
+        ):
+            rc = run_check("owner/repo", 1)
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["wait_seconds"] == 1920
+        assert payload["updated_at"] == "2026-04-01T10:01:00Z"
         assert "fallback" not in payload
 
     def test_neutral_rate_limited_without_reply_uses_fallback_from_completed_at(
@@ -702,3 +878,110 @@ class TestPollCoderabbitRateLimitIntegration:
         mock_resume.assert_called_once_with("o/r", 5)
         mock_sleep.assert_not_called()
         assert json.loads(captured.out)["approved"] is True
+
+    def test_poll_uses_wait_reference_at_over_updated_at(self, tmp_path: Path) -> None:
+        now = datetime(2026, 4, 1, 10, 11, 0, tzinfo=UTC)
+        status = RateLimitStatus(
+            rate_limited=True,
+            check_run_id=9020,
+            head_sha=_SHA,
+            conclusion="neutral",
+            title="Review rate limited",
+            updated_at="2026-04-01T10:01:00Z",  # 600s elapsed
+            wait_reference_at="2026-04-01T09:59:00Z",  # 120s earlier -> 720s elapsed -> 1000 - 720 = 280s + 30s = 310s
+            parsed_wait_seconds=1000,
+        )
+        summary_calls = 0
+
+        def fake_find_summary(_owner_repo: str, _pr: int) -> tuple[int, str, str, str]:
+            nonlocal summary_calls
+            summary_calls += 1
+            if summary_calls == 1:
+                return (10, f"{SUMMARY_MARKER}\nPending", "2026-04-01T10:00:00Z", "")
+            return (10, f"{SUMMARY_MARKER}\n{_APPROVED_MARKER}", "2026-04-01T10:20:00Z", "")
+
+        with (
+            patch.object(poll, "get_pr_info", return_value=("o", "r", "5")),
+            patch.object(poll, "validate_owner_repo", return_value=True),
+            patch.object(poll, "find_summary_comment", side_effect=fake_find_summary),
+            patch.object(poll, "fetch_run", return_value={"human": [], "qodo": [], "coderabbit": []}),
+            patch.object(poll, "detect_rate_limit", return_value=(status, "")),
+            patch.object(poll, "run_trigger", return_value=0) as mock_trigger,
+            patch.object(rate_limit, "datetime", _freeze_rate_limit_now(now)),
+            patch("builtins.print"),
+        ):
+            rc = poll.run(source="coderabbit", output_dir=str(tmp_path))
+
+        assert rc == 0
+        mock_trigger.assert_called_once_with("o/r", 5, 310)
+
+    def test_poll_sleeps_default_window_and_rechecks_when_parsed_cooldown_exceeds_one_hour(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        clock = {"now": datetime(2026, 4, 1, 10, 1, 0, tzinfo=UTC)}
+        mock_dt = MagicMock()
+        mock_dt.now.side_effect = lambda _tz=None: clock["now"]
+        mock_dt.fromisoformat = datetime.fromisoformat
+
+        status = RateLimitStatus(
+            rate_limited=True,
+            check_run_id=9021,
+            head_sha=_SHA,
+            conclusion="neutral",
+            title="Review rate limited",
+            updated_at="2026-04-01T10:01:00Z",
+            wait_reference_at="2026-04-01T10:01:00Z",
+            parsed_wait_seconds=7200,  # 2h remaining on cycle 1 (> 3600s)
+        )
+        events: list[tuple[str, int]] = []
+        detect_calls = 0
+        summary_calls = 0
+
+        def fake_find_summary(_owner_repo: str, _pr: int) -> tuple[int, str, str, str]:
+            nonlocal summary_calls
+            summary_calls += 1
+            if summary_calls <= 2:
+                return (10, f"{SUMMARY_MARKER}\nPending", "2026-04-01T10:00:00Z", "")
+            return (10, f"{SUMMARY_MARKER}\n{_APPROVED_MARKER}", "2026-04-01T12:05:00Z", "")
+
+        def fake_detect(
+            _owner_repo: str,
+            _pr: int,
+            *,
+            comments: list[dict[str, Any]] | None = None,  # noqa: ARG001
+        ) -> tuple[RateLimitStatus, str]:
+            nonlocal detect_calls
+            detect_calls += 1
+            events.append(("detect", detect_calls))
+            return (status, "")
+
+        def fake_sleep(seconds: int) -> None:
+            events.append(("sleep", seconds))
+            clock["now"] = clock["now"] + timedelta(seconds=seconds)
+
+        def fake_trigger(_owner_repo: str, _pr: int, wait_seconds: int) -> int:
+            events.append(("trigger", wait_seconds))
+            return 0
+
+        with (
+            patch.object(poll, "get_pr_info", return_value=("o", "r", "5")),
+            patch.object(poll, "validate_owner_repo", return_value=True),
+            patch.object(poll, "find_summary_comment", side_effect=fake_find_summary),
+            patch.object(poll, "fetch_run", return_value={"human": [], "qodo": [], "coderabbit": []}),
+            patch.object(poll, "detect_rate_limit", side_effect=fake_detect),
+            patch.object(poll, "run_trigger", side_effect=fake_trigger),
+            patch.object(rate_limit, "datetime", mock_dt),
+            patch.object(poll.time, "sleep", side_effect=fake_sleep),
+        ):
+            rc = poll.run(source="coderabbit", output_dir=str(tmp_path))
+
+        assert rc == 0
+        assert events == [
+            ("detect", 1),
+            ("sleep", DEFAULT_RATE_LIMIT_WINDOW),
+            ("detect", 2),
+            ("trigger", DEFAULT_RATE_LIMIT_WINDOW + 30),
+        ]
+        assert json.loads(capsys.readouterr().out)["approved"] is True

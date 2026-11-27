@@ -534,10 +534,11 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
             else:
                 wait_seconds = rate_limit_status.parsed_wait_seconds
 
-            remaining, elapsed, parsed_ok = compute_remaining_wait(wait_seconds, rate_limit_status.updated_at)
+            reference_ts = rate_limit_status.wait_reference_at or rate_limit_status.updated_at
+            remaining, elapsed, parsed_ok = compute_remaining_wait(wait_seconds, reference_ts)
             if not parsed_ok:
                 print_stderr("[poll] Warning: Could not parse check-run timestamp. Using full wait time.")
-            elif rate_limit_status.updated_at:
+            elif reference_ts:
                 log.debug(
                     "[poll] Rate limit posted %ds ago. Original: %ds, remaining: %ds",
                     elapsed,
@@ -545,7 +546,20 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
                     remaining,
                 )
 
-            remaining = min(remaining, DEFAULT_RATE_LIMIT_WINDOW)
+            if rate_limit_status.parsed_wait_seconds is not None and remaining > DEFAULT_RATE_LIMIT_WINDOW:
+                log.info(
+                    "[poll] Remaining cooldown (%ds) exceeds %ds check interval; sleeping %ds before rechecking.",
+                    remaining,
+                    DEFAULT_RATE_LIMIT_WINDOW,
+                    DEFAULT_RATE_LIMIT_WINDOW,
+                )
+                print_stderr(
+                    f"[poll] CodeRabbit cooldown ({remaining}s remaining) exceeds {DEFAULT_RATE_LIMIT_WINDOW}s "
+                    f"check interval. Sleeping {DEFAULT_RATE_LIMIT_WINDOW}s before rechecking rate-limit state..."
+                )
+                time.sleep(DEFAULT_RATE_LIMIT_WINDOW)
+                continue
+
             total_wait = remaining + _RATE_LIMIT_BUFFER_SECONDS
             print_stderr(f"[poll] CodeRabbit is rate limited. Waiting {total_wait}s then triggering re-review...")
 
