@@ -1151,6 +1151,12 @@ Elision never rewrites user messages, assistant prose, thinking/reasoning blocks
 |---|---|---|---|---|---|
 | `pre_compaction_elision_min_chars` | integer `200`-`500000` | `2000` | `PI_PRE_COMPACTION_ELISION_MIN_CHARS` | Minimum character length for an older `toolResult` text block to be elided. | Smaller older tool results stay inline untouched. |
 
+### `auto_compact_threshold_pct`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `auto_compact_threshold_pct` | integer `0` or `20`-`99` | `0` | `PI_AUTO_COMPACT_THRESHOLD_PCT` | Opt-in context window usage percentage that triggers LLM auto-compaction on `agent_end`. | `0` disables percentage-based auto-compaction and leaves Pi's default token reserve (`compaction.reserveTokens`) in charge. Values `20`-`99` trigger `ctx.compact()` on `agent_end` (after mechanical `pre_compaction_elision` runs on `turn_end`) whenever context usage reaches `>= N%`, skipping oneshot runs (`pi -p` / `--mode json`) and subagent children (`PI_SUBAGENT_CHILD=1`) and suppressing repeat attempts until usage drops below the threshold or the session resets. Values `1`-`19`, `<0`, `>99`, and non-integers are rejected. |
+
 ```json
 {
   "session_spill_enabled": true,
@@ -1159,7 +1165,8 @@ Elision never rewrites user messages, assistant prose, thinking/reasoning blocks
   "pre_compaction_elision": true,
   "pre_compaction_elision_threshold_pct": 70,
   "pre_compaction_elision_keep_turns": 6,
-  "pre_compaction_elision_min_chars": 2000
+  "pre_compaction_elision_min_chars": 2000,
+  "auto_compact_threshold_pct": 0
 }
 ```
 

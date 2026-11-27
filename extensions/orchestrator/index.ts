@@ -55,6 +55,7 @@ import { registerPrRetro } from "./pr-retro.js";
 import { registerSecretObfuscation } from "./secret-obfuscation.js";
 import { registerSessionSpill } from "./session-spill.js";
 import { registerPreCompactionElision } from "./pre-compaction-elision.js";
+import { registerAutoCompact } from "./auto-compact.js";
 import { registerMagicKeywords } from "./magic-keywords.js";
 import { registerAdvisor } from "./advisor.js";
 import { registerLsp } from "./lsp.js";
@@ -242,6 +243,8 @@ export default function (pi: ExtensionAPI) {
   registerSessionSpill(pi);
   // Mechanical pre-compaction elision of old bulky tool results (#1421).
   registerPreCompactionElision(pi);
+  // Opt-in percentage-based LLM auto-compaction trigger on agent_end (#1486).
+  registerAutoCompact(pi);
   // Per-turn reasoning-effort magic keywords (`ultrathink` / `chillax`) (#1418).
   registerMagicKeywords(pi);
   // Opt-in background read-only advisor/watchdog model (default disabled) (#1419).

@@ -55,6 +55,27 @@ describe("parseTypedSetting", () => {
     assert.ok(parseTypedSetting("abc", key("int")).error);
   });
 
+  it("accepts 0 for allow_zero int keys", () => {
+    assert.deepEqual(
+      parseTypedSetting("0", key("int", { min: 20, max: 99, allow_zero: true })),
+      { value: 0 },
+    );
+  });
+
+  it("accepts in-range values for allow_zero int keys", () => {
+    const def = key("int", { min: 20, max: 99, allow_zero: true });
+    assert.deepEqual(parseTypedSetting("20", def), { value: 20 });
+    assert.deepEqual(parseTypedSetting("99", def), { value: 99 });
+  });
+
+  it("rejects out-of-range values for allow_zero int keys", () => {
+    const def = key("int", { min: 20, max: 99, allow_zero: true });
+    assert.ok(parseTypedSetting("1", def).error);
+    assert.ok(parseTypedSetting("19", def).error);
+    assert.ok(parseTypedSetting("-1", def).error);
+    assert.ok(parseTypedSetting("100", def).error);
+  });
+
   it("int rejects trailing garbage instead of silently parsing a prefix", () => {
     // parseInt("12abc") === 12 — must be an error, not a silent 12 (Qodo R1)
     assert.ok(parseTypedSetting("12abc", key("int")).error);

@@ -143,6 +143,7 @@ export interface SettingsKey {
   enum?: string[];
   min?: number;
   max?: number;
+  allow_zero?: boolean;
   stored: unknown;
 }
 

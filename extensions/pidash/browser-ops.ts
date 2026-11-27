@@ -66,6 +66,7 @@ export interface SettingsKeyPayload {
   enum?: string[];
   min?: number;
   max?: number;
+  allow_zero?: boolean;
   /** Value stored in the scope's file (undefined = not set there). */
   stored: unknown;
 }
@@ -102,6 +103,7 @@ export function buildSettingsPayload(cwd: string, scope: unknown): SettingsPaylo
       enum: def.enum,
       min: def.min,
       max: def.max,
+      allow_zero: def.allow_zero,
       stored: key in stored ? stored[key] : undefined,
     }));
     keys.sort((a, b) => (a.group === b.group ? a.key.localeCompare(b.key) : a.group.localeCompare(b.group)));

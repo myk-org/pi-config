@@ -68,6 +68,7 @@ export class NumberInputSubmenu implements Component {
   private label: string;
   private min?: number;
   private max?: number;
+  private allowZero: boolean;
   private isInt: boolean;
   private error: string;
   private done: (value?: string) => void;
@@ -83,6 +84,7 @@ export class NumberInputSubmenu implements Component {
     this.label = label;
     this.min = def.min;
     this.max = def.max;
+    this.allowZero = def.allow_zero === true;
     this.isInt = def.type === "int" || def.type === "port";
     this.error = "";
     this.done = done;
@@ -99,6 +101,10 @@ export class NumberInputSubmenu implements Component {
       this.done(trimmed);
       return;
     }
+    if (this.isInt && !/^-?\d+$/.test(trimmed)) {
+      this.error = "Must be an integer";
+      return;
+    }
     const num = Number(trimmed);
     if (!Number.isFinite(num)) {
       this.error = "Invalid number";
@@ -108,13 +114,21 @@ export class NumberInputSubmenu implements Component {
       this.error = "Must be an integer";
       return;
     }
-    if (this.min !== undefined && num < this.min) {
-      this.error = `Minimum: ${this.min}`;
-      return;
-    }
-    if (this.max !== undefined && num > this.max) {
-      this.error = `Maximum: ${this.max}`;
-      return;
+    const allowedZero = this.allowZero && num === 0;
+    if (!allowedZero) {
+      if (this.min !== undefined && num < this.min) {
+        this.error = this.allowZero
+          ? `Must be 0 (disabled) or ${this.min}-${this.max ?? "∞"}`
+          : `Minimum: ${this.min}`;
+        return;
+      }
+      if (this.max !== undefined && num > this.max) {
+        this.error =
+          this.allowZero && this.min !== undefined
+            ? `Must be 0 (disabled) or ${this.min}-${this.max}`
+            : `Maximum: ${this.max}`;
+        return;
+      }
     }
     this.done(trimmed);
   }
@@ -125,6 +139,7 @@ export class NumberInputSubmenu implements Component {
     lines.push(truncateToWidth(`  ${t.fg("accent", t.bold(this.label))}`, width));
 
     const constraints: string[] = [];
+    if (this.allowZero) constraints.push("0 = disabled");
     if (this.min !== undefined) constraints.push(`min: ${this.min}`);
     if (this.max !== undefined) constraints.push(`max: ${this.max}`);
     if (this.isInt) constraints.push("integer");
