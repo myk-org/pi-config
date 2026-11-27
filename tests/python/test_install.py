@@ -1780,6 +1780,70 @@ def test_find_uv_tool_bin_accepts_trusted_absolute_custom_dir(monkeypatch: pytes
     assert install._find_uv_tool_bin("basedpyright-langserver") == str(langserver.resolve())
 
 
+def test_prepend_to_path_allows_home_tool_bins_when_invoked_from_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    npm_bin = home / ".npm-global/bin"
+    uv_bin = home / ".local/bin"
+    go_bin = home / "go/bin"
+    untrusted_repo_bin = home / "cloned-repo/bin"
+    for d in (npm_bin, uv_bin, go_bin, untrusted_repo_bin):
+        d.mkdir(parents=True)
+
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    install._prepend_to_path(npm_bin)
+    install._prepend_to_path(uv_bin)
+    install._prepend_to_path(go_bin)
+    install._prepend_to_path(untrusted_repo_bin)
+
+    install.show_summary(3, 0, 0)
+    out = capsys.readouterr().out
+    expected = os.pathsep.join([str(npm_bin.resolve()), str(uv_bin.resolve()), str(go_bin.resolve())])
+    assert f'export PATH="{expected}:$PATH"' in out
+    assert str(untrusted_repo_bin.resolve()) not in out
+
+
+def test_install_basedpyright_records_home_uv_bin_when_invoked_from_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    uv_bin = home / ".local/bin"
+    uv_bin.mkdir(parents=True)
+    langserver = uv_bin / "basedpyright-langserver"
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd == ["uv", "tool", "dir", "--bin"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{uv_bin}\n", stderr="")
+        langserver.write_text("#!/bin/sh\n")
+        langserver.chmod(0o755)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_basedpyright()
+    assert str(uv_bin.resolve()) in os.environ["PATH"].split(os.pathsep)
+
+    install.show_summary(1, 0, 0)
+    out = capsys.readouterr().out
+    assert f'export PATH="{uv_bin.resolve()}:$PATH"' in out
+
+
 def test_install_standalone_fallback_matches_install_sources_lsp_constants() -> None:
     import install_sources
 

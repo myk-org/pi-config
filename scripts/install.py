@@ -212,8 +212,18 @@ def _validate_npm_prefix(raw: str) -> tuple[Path, bool]:
     return resolved, os.access(writable_parent, os.W_OK)
 
 
+def _trusted_home_tool_bin_dirs() -> tuple[Path, ...]:
+    """Standard user-owned tool bin directories that remain valid even when cwd is $HOME."""
+    home = HOME.resolve()
+    return (
+        (home / ".local/bin").resolve(),
+        (home / ".npm-global/bin").resolve(),
+        (home / "go/bin").resolve(),
+    )
+
+
 def _validate_safe_tool_bin_dir(raw: str | Path) -> Path | None:
-    """Return resolved absolute bin dir if safe (not relative, not root, not inside cwd)."""
+    """Return resolved absolute bin dir if safe (not relative, not root, not an untrusted checkout dir)."""
     if isinstance(raw, str):
         raw = raw.strip()
         if not raw:
@@ -229,10 +239,15 @@ def _validate_safe_tool_bin_dir(raw: str | Path) -> Path | None:
         cwd = Path.cwd().resolve()
     except OSError:
         return None
-    if resolved == Path(resolved.anchor) or resolved == cwd or cwd in resolved.parents:
-        log.warning("unsafe checkout tool bin dir rejected path=%s", resolved)
+    if resolved == Path(resolved.anchor):
+        log.warning("unsafe root tool bin dir rejected path=%s", resolved)
         return None
     if resolved.exists() and not resolved.is_dir():
+        return None
+    if resolved in _trusted_home_tool_bin_dirs() and resolved != cwd:
+        return resolved
+    if resolved == cwd or cwd in resolved.parents:
+        log.warning("unsafe checkout tool bin dir rejected path=%s", resolved)
         return None
     return resolved
 
