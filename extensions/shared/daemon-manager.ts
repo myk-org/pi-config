@@ -409,6 +409,17 @@ export interface DaemonClientAdapter<TConnectData = void> {
   port?: number;
   /** Optional readiness guard before `connect()` runs (e.g. pidiff requires `lockDir`). */
   canConnect?: (ctx: any) => boolean;
+  /**
+   * Predicate deciding whether `ctx` is eligible for automatic daemon connection
+   * (`tool_result` reconnect fallback and periodic `reconnectPoller`).
+   * Defaults to `ctx?.mode === "tui"`.
+   */
+  shouldConnectCtx?: (ctx: any) => boolean;
+  /**
+   * Predicate deciding whether `connect()` may auto-spawn the daemon when it is
+   * not already running. Defaults to `() => true`.
+   */
+  shouldAutoSpawn?: (ctx: any) => boolean;
   /** Probe for an already-running daemon port. Defaults to probing `adapter.port`. */
   findRunningPort?: (ctx: any) => Promise<number | null>;
   /** Port to probe and display for `/<name> status`. Defaults to `adapter.port ?? null`. */
@@ -508,6 +519,8 @@ export function createDaemonClient<TConnectData = void>(
   const probeHealth = adapter.probeHealth ?? checkHealth;
   const waitReady = adapter.waitReady ?? ((port, maxWaitSeconds, onLog) => waitForDaemon(port, maxWaitSeconds, onLog, probeHealth));
   const sleep = adapter.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const shouldConnectCtx = adapter.shouldConnectCtx ?? ((ctx: any) => ctx?.mode === "tui");
+  const shouldAutoSpawn = adapter.shouldAutoSpawn ?? (() => true);
 
   let activeSocket: any = null;
   let ws: any = null;
@@ -588,6 +601,11 @@ export function createDaemonClient<TConnectData = void>(
     if (livePort !== null) {
       adapter.onPortResolved?.(livePort);
       return { port: livePort };
+    }
+
+    if (!shouldAutoSpawn(ctx)) {
+      adapter.log.debug("auto-spawn skipped — adapter declined spawn for ctx", { mode: ctx?.mode });
+      return { port: null };
     }
 
     if (inFlightSpawn) {
@@ -921,7 +939,7 @@ export function createDaemonClient<TConnectData = void>(
 
   // Reconnect fallback on tool_result (/reload recovery)
   pi.on("tool_result", (_event, ctx) => {
-    if (!connected && !shuttingDown && isLiveExtensionCtx(ctx) && ctx.mode === "tui") {
+    if (!connected && !shuttingDown && isLiveExtensionCtx(ctx) && shouldConnectCtx(ctx)) {
       void connect(ctx);
     }
   });
@@ -936,7 +954,7 @@ export function createDaemonClient<TConnectData = void>(
       }
       return;
     }
-    if (lastCtx.mode === "tui") void connect(lastCtx);
+    if (shouldConnectCtx(lastCtx)) void connect(lastCtx);
   }, reconnectPollIntervalMs);
   if (typeof reconnectPoller.unref === "function") reconnectPoller.unref();
 

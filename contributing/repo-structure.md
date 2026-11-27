@@ -46,9 +46,10 @@ pi-config/
 │   │   ├── cron-status-ui.ts        # /cron overlay (uses overlay-dashboard)
 │   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
 │   │   ├── cron-store.ts            # Durable cron envelopes, atomic mutation, and leader locks
-│   │   ├── settings-tui.ts          # /pi-config-settings thin TUI overlay adapter (uses project-settings + overlay-dashboard)
-│   │   ├── settings-tui-helpers.ts  # Pure TUI presentation & model-picker helpers (categories, formatting, secret prefill, model-picker filtering)
+│   │   ├── settings-tui.ts          # /pi-config-settings TUI overlay (scrollable left category sidebar, cross-category search, strict scope isolation)
+│   │   ├── settings-tui-helpers.ts  # Pure TUI presentation, sidebar window, cross-category search, secret masking & model-picker helpers
 │   │   ├── settings-tui-submenus.ts # Submenu components (input, number, picker, select, string-list, overrides)
+│   │   ├── settings-tools.ts        # Structured LLM settings tools: settings_get (codemode, runtime) and approval-gated settings_set (model-only)
 │   │   ├── async-capability.ts      # Internal ops provider settings lookup (getInternalOpsProvider)
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files

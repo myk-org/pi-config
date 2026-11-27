@@ -65,9 +65,10 @@ export interface PiEvent {
     };
   };
   isError?: boolean;
-  // session_notification fields
+  // session_notification / watch_denied fields
   sessionId?: string;
   cwd?: string;
+  reason?: string;
   isSubagent?: boolean;
   agentName?: string;
   resultText?: string;
@@ -158,7 +159,10 @@ export interface SettingsKey {
   enum?: string[];
   min?: number;
   max?: number;
+  globalOnly?: boolean;
   stored: unknown;
+  effective?: unknown;
+  source?: "P" | "G" | "E" | "D";
 }
 
 export interface SettingsData {

@@ -28,6 +28,227 @@ export function isLoopbackAddress(addr: string | undefined | null): boolean {
   return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
+/**
+ * Authorize browser watch or control actions targeting a Pi session.
+ *
+ * Supervised headless COMS RPC peers remain visible in the sidebar for all
+ * browsers, but watching their snapshot or forwarding prompts, UI responses,
+ * or commands is restricted to localhost clients because PiDash binds to
+ * 0.0.0.0 without browser authentication.
+ */
+export function authorizeSupervisedPeerBrowserAccess(opts: {
+  targetSession: Pick<SessionInfo, "supervisedPeer"> | null | undefined;
+  remoteAddress: string | undefined | null;
+}): { allowed: true } | { allowed: false; reason: string } {
+  if (opts.targetSession?.supervisedPeer !== true) {
+    return { allowed: true };
+  }
+  if (!isLoopbackAddress(opts.remoteAddress)) {
+    return {
+      allowed: false,
+      reason: "Supervised headless peers can only be watched or controlled from localhost clients.",
+    };
+  }
+  return { allowed: true };
+}
+
+/**
+ * Predicate deciding whether a browser connection is authorized to receive
+ * live events or broadcasts originating from `session`.
+ */
+export function shouldDeliverSupervisedPeerBroadcast(opts: {
+  session: Pick<SessionInfo, "supervisedPeer"> | null | undefined;
+  remoteAddress: string | undefined | null;
+}): boolean {
+  return authorizeSupervisedPeerBrowserAccess({
+    targetSession: opts.session,
+    remoteAddress: opts.remoteAddress,
+  }).allowed;
+}
+
+/**
+ * Build a `session_updated` wire payload that preserves explicit `null` clears
+ * for COMS identity fields across JSON serialization while keeping the
+ * server-side `SessionInfo` fields as `undefined`.
+ */
+export function buildSessionUpdatedBroadcast(
+  session: SessionInfo,
+  parsed?: { comsName?: unknown; comsPurpose?: unknown; comsProject?: unknown },
+): { type: "session_updated"; session: Record<string, unknown> } {
+  const wire: Record<string, unknown> = { ...session };
+  if (parsed?.comsName === null) wire.comsName = null;
+  if (parsed?.comsPurpose === null) wire.comsPurpose = null;
+  if (parsed?.comsProject === null) wire.comsProject = null;
+  return { type: "session_updated", session: wire };
+}
+
+export function handlePidashBrowserWatch(opts: {
+  ws: { send: (data: string) => void };
+  watchId: string | null;
+  client: PiClient | null;
+  remoteAddress: string | undefined | null;
+  onLog?: (msg: string) => void;
+}): string | null {
+  const { ws, watchId, client, remoteAddress, onLog } = opts;
+  if (!client) return watchId;
+
+  const auth = authorizeSupervisedPeerBrowserAccess({
+    targetSession: client.session,
+    remoteAddress,
+  });
+  if (!auth.allowed) {
+    log.warn("supervised_peer_watch_rejected", {
+      sessionId: watchId,
+      remoteAddress: remoteAddress ?? "unknown",
+      reason: auth.reason,
+    });
+    try {
+      ws.send(JSON.stringify({
+        type: "watch_denied",
+        sessionId: watchId,
+        reason: auth.reason,
+        message: auth.reason,
+      }));
+    } catch {}
+    return null;
+  }
+
+  const { messageCount, pendingCount } = sendSessionSnapshot(ws, client);
+  if (pendingCount > 0) {
+    onLog?.(`sent session_snapshot (${messageCount} messages + ${pendingCount} pending UI request(s)) for ${watchId}`);
+  } else {
+    onLog?.(`sent session_snapshot (${messageCount} messages) for ${watchId}`);
+  }
+  return watchId;
+}
+
+export function handlePidashBrowserMessage(opts: {
+  ws: { send: (data: string) => void };
+  parsed: any;
+  piClients: Map<string, PiClient>;
+  watchedSessionId: string | null | undefined;
+  remoteAddress: string | undefined | null;
+  onLog?: (msg: string) => void;
+}): boolean {
+  const { ws, parsed, piClients, watchedSessionId, remoteAddress, onLog } = opts;
+
+  if (parsed.type === "prompt" && (parsed.text || parsed.images) && parsed.sessionId) {
+    const piClient = piClients.get(parsed.sessionId);
+    const peerAuth = authorizeSupervisedPeerBrowserAccess({
+      targetSession: piClient?.session,
+      remoteAddress,
+    });
+    if (!peerAuth.allowed) {
+      log.warn("supervised_peer_prompt_rejected", {
+        sessionId: parsed.sessionId,
+        remoteAddress: remoteAddress ?? "unknown",
+        reason: peerAuth.reason,
+      });
+      try {
+        ws.send(JSON.stringify({ type: "notification", level: "warning", message: peerAuth.reason }));
+      } catch {}
+      return false;
+    }
+    if (piClient && piClient.ws) {
+      const fwd: any = { type: "prompt", text: parsed.text || "" };
+      if (parsed.images && parsed.images.length > 0) fwd.images = parsed.images;
+      piClient.ws.send(JSON.stringify(fwd));
+      onLog?.(`prompt forwarded to ${parsed.sessionId}: ${(parsed.text || "").slice(0, 50)}${parsed.images ? ` [+${parsed.images.length} images]` : ""}`);
+      return true;
+    }
+    return false;
+  }
+
+  // Forward extension UI responses (ask_user answers) to pi session
+  if (parsed.type === "extension_ui_response" && parsed.id) {
+    if (!parsed.sessionId) return false;
+    const piClient = piClients.get(parsed.sessionId);
+    const peerAuth = authorizeSupervisedPeerBrowserAccess({
+      targetSession: piClient?.session,
+      remoteAddress,
+    });
+    if (!peerAuth.allowed) {
+      log.warn("supervised_peer_ui_response_rejected", {
+        sessionId: parsed.sessionId,
+        remoteAddress: remoteAddress ?? "unknown",
+        reason: peerAuth.reason,
+      });
+      try {
+        ws.send(JSON.stringify({ type: "notification", level: "warning", message: peerAuth.reason }));
+      } catch {}
+      return false;
+    }
+    const response = piClient ? forwardBrowserUiResponse(piClient, parsed) : null;
+    if (response) {
+      onLog?.(`UI response forwarded to ${parsed.sessionId}: ${JSON.stringify(response).slice(0, 100)}`);
+      return true;
+    }
+    return false;
+  }
+
+  // Forward pidash commands to pi session
+  if (parsed.type === "pidash-command") {
+    if (!parsed.sessionId) return false;
+    const piClient = piClients.get(parsed.sessionId);
+    const peerAuth = authorizeSupervisedPeerBrowserAccess({
+      targetSession: piClient?.session,
+      remoteAddress,
+    });
+    if (!peerAuth.allowed) {
+      log.warn("supervised_peer_command_rejected", {
+        command: parsed.command,
+        sessionId: parsed.sessionId,
+        remoteAddress: remoteAddress ?? "unknown",
+        reason: peerAuth.reason,
+      });
+      try {
+        ws.send(
+          JSON.stringify(
+            isWorktreeCommand(parsed.command)
+              ? buildWorktreeCommandErrorFrame(parsed, peerAuth.reason, piClient?.session.cwd ?? "")
+              : { type: "notification", level: "warning", message: peerAuth.reason },
+          ),
+        );
+      } catch {}
+      return false;
+    }
+    if (isWorktreeCommand(parsed.command)) {
+      const auth = authorizeWorktreeBrowserCommand({
+        command: parsed.command,
+        targetSessionId: parsed.sessionId,
+        watchedSessionId,
+        remoteAddress,
+      });
+      if (!auth.allowed) {
+        log.warn("worktree_command_rejected", {
+          command: parsed.command,
+          sessionId: parsed.sessionId,
+          remoteAddress: remoteAddress ?? "unknown",
+          reason: auth.reason,
+        });
+        try {
+          ws.send(JSON.stringify(buildWorktreeCommandErrorFrame(parsed, auth.reason, piClient?.session.cwd ?? "")));
+        } catch {}
+        return false;
+      }
+      if (!piClient || !piClient.ws || !piClient.session.active) {
+        try {
+          ws.send(JSON.stringify(buildWorktreeCommandErrorFrame(parsed, "Watched Pi session is disconnected.", piClient?.session.cwd ?? "")));
+        } catch {}
+        return false;
+      }
+    }
+    if (piClient && piClient.ws) {
+      piClient.ws.send(JSON.stringify(parsed));
+      onLog?.(`command forwarded to ${parsed.sessionId}: ${parsed.command}`);
+      return true;
+    }
+    return false;
+  }
+
+  return false;
+}
+
 export function isWorktreeCommand(command: unknown): boolean {
   return (
     command === "worktrees-list" ||
@@ -740,6 +961,7 @@ function registeredSession(parsed: any): SessionInfo {
     comsName: parsed.comsName || undefined,
     comsPurpose: parsed.comsPurpose || undefined,
     comsProject: parsed.comsProject || undefined,
+    ...(parsed.supervisedPeer === true ? { supervisedPeer: true } : {}),
     trailTokenSavings: Number.isSafeInteger(parsed.trailTokenSavings) && parsed.trailTokenSavings >= 0 ? parsed.trailTokenSavings : undefined,
     worktreeCount: Number.isSafeInteger(parsed.worktreeCount) && parsed.worktreeCount >= 0 ? parsed.worktreeCount : undefined,
     worktreeDirtyCount: Number.isSafeInteger(parsed.worktreeDirtyCount) && parsed.worktreeDirtyCount >= 0 ? parsed.worktreeDirtyCount : undefined,
@@ -795,9 +1017,12 @@ export function registerPidashSession(
   let client: PiClient;
   if (existing) {
     if (!session.name && existing.session.name) session.name = existing.session.name;
-    if (!session.comsName && existing.session.comsName) session.comsName = existing.session.comsName;
-    if (!session.comsPurpose && existing.session.comsPurpose) session.comsPurpose = existing.session.comsPurpose;
-    if (!session.comsProject && existing.session.comsProject) session.comsProject = existing.session.comsProject;
+    if (!session.comsName && parsed.comsName !== null && existing.session.comsName) session.comsName = existing.session.comsName;
+    if (!session.comsPurpose && parsed.comsPurpose !== null && existing.session.comsPurpose) session.comsPurpose = existing.session.comsPurpose;
+    if (!session.comsProject && parsed.comsProject !== null && existing.session.comsProject) session.comsProject = existing.session.comsProject;
+    if (!session.supervisedPeer && existing.session.supervisedPeer && parsed.supervisedPeer !== false) {
+      session.supervisedPeer = true;
+    }
     const preservedCommands = existing.viewState.availableCommands;
     existing.ws = ws;
     existing.session = session;

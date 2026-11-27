@@ -146,7 +146,7 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto">
+      <div className={cn("flex-1 min-h-0", activeTab === "settings" ? "overflow-hidden" : "overflow-y-auto")}>
         {activeTab === "tasks" && <TasksPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
         {activeTab === "worktrees" && (
           <WorktreesPanel

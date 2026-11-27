@@ -63,7 +63,7 @@ Side-panel parity commands (`tasks-list`, `worktrees-list`, `worktrees-detail`, 
 - **Files appear under `.pi/tmp/`:** Expect job folders, result JSON, and debug logs there, plus pidiff lockfiles under `.pi/run/`. They are project-scoped working state, not source code — keep `.pi/` out of git (the installer can configure this; see [Installation & Quickstart](quickstart.html)).
 - **Graceful degradation:** If a daemon cannot start (port busy, slow first compile, firewall), the terminal session keeps working; real-time dashboard features simply stay disconnected until `/pidash start` or `/pidiff start` succeeds.
 
-> **Warning:** pidash requires TUI mode. Headless or non-UI invocations will not keep a dashboard connection.
+> **Note:** Interactive TUI sessions connect to and auto-spawn `pidash`. Supervised headless COMS RPC peers (`PI_COMS_SUPERVISED_PEER=1`) attach to an already-running `pidash` daemon for Coms sidebar visibility on a slower 60s git-status cadence (skipping periodic worktree scans), with snapshot watching and browser control restricted to localhost clients. Unsupervised RPC (`pi-sidecar`), `print`/`json`, subagent child, and `pidiff` headless sessions do not connect.
 
 ## Related Pages
 
