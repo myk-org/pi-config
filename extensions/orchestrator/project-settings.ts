@@ -22,6 +22,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import {
   copyFileSync,
   existsSync,
@@ -1219,6 +1220,26 @@ export interface ResolvedSetting<T = AnySettingValue> {
   path?: string | null;
 }
 
+/** Return a fresh copy of a setting's schema default value (avoids mutating shared arrays/objects). */
+export function cloneDefaultValue(def: SettingsKeyDef): AnySettingValue {
+  return def.type === "string_list"
+    ? (Array.isArray(def.default) ? [...(def.default as string[])] : [])
+    : def.type === "agent_overrides"
+      ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as AgentOverrides) } : {})
+      : def.type === "lsp_servers"
+        ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as LspServersConfig) } : {})
+        : def.type === "tool_permissions"
+          ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as ToolPermissions) } : {})
+          : (def.default as AnySettingValue);
+}
+
+/** Return the parsed environment-variable value for `key`, or `undefined` when unset/invalid. */
+export function getSettingEnvValue(key: string): AnySettingValue | undefined {
+  const def = SETTINGS_KEYS[key];
+  if (!def) return undefined;
+  return parseEnvSetting(key, def) as AnySettingValue | undefined;
+}
+
 /**
  * Resolve a setting value and its winning source (`P` | `G` | `E` | `D`) through the
  * single coordinated cache and schema validator. Returns `null` for unknown keys.
@@ -1258,17 +1279,55 @@ export function resolveSetting(
   }
 
   if (audit) log.debug("resolved setting", { key, source: "default" });
-  const defaultVal =
-    def.type === "string_list"
-      ? (Array.isArray(def.default) ? [...(def.default as string[])] : [])
-      : def.type === "agent_overrides"
-        ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as AgentOverrides) } : {})
-        : def.type === "lsp_servers"
-          ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as LspServersConfig) } : {})
-          : def.type === "tool_permissions"
-            ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as ToolPermissions) } : {})
-            : (def.default as AnySettingValue);
-  return { value: defaultVal, source: "D" };
+  return { value: cloneDefaultValue(def), source: "D" };
+}
+
+/**
+ * Resolve a setting strictly for the requested editor scope (`global` vs `project`).
+ *
+ * - `global`: inspects ONLY the Global layer (`G` when set in global, `D` + default when unset —
+ *   NEVER leaks Project `P` overrides).
+ * - `project`: inspects Project first (`P` when set), then inherited Global (`G`), Env (`E`),
+ *   and schema Default (`D`). For `global_only` keys, skips the Project layer.
+ */
+export function resolveSettingForScope(
+  cwd: string,
+  key: string,
+  scope: SettingsScope,
+  snapshot?: SettingsSourceSnapshot,
+): ResolvedSetting | null {
+  const def = SETTINGS_KEYS[key];
+  if (!def) return null;
+
+  if (scope === "global") {
+    const globalParsed = snapshot ? snapshot.global : readCachedLayer("global", cwd).parsed;
+    const globalVal = globalParsed ? (globalParsed as Record<string, unknown>)[key] : undefined;
+    if (globalVal !== undefined) {
+      return { value: globalVal as AnySettingValue, source: "G", path: getGlobalSettingsPath() };
+    }
+    return { value: cloneDefaultValue(def), source: "D" };
+  }
+
+  if (!def.global_only) {
+    const projectParsed = snapshot ? snapshot.project : readCachedLayer("project", cwd).parsed;
+    const projectVal = projectParsed ? (projectParsed as Record<string, unknown>)[key] : undefined;
+    if (projectVal !== undefined) {
+      return { value: projectVal as AnySettingValue, source: "P", path: getSettingsPath(cwd) };
+    }
+  }
+
+  const globalParsed = snapshot ? snapshot.global : readCachedLayer("global", cwd).parsed;
+  const globalVal = globalParsed ? (globalParsed as Record<string, unknown>)[key] : undefined;
+  if (globalVal !== undefined) {
+    return { value: globalVal as AnySettingValue, source: "G", path: getGlobalSettingsPath() };
+  }
+
+  const envVal = parseEnvSetting(key, def);
+  if (envVal !== undefined) {
+    return { value: envVal as AnySettingValue, source: "E" };
+  }
+
+  return { value: cloneDefaultValue(def), source: "D" };
 }
 
 /**
@@ -1423,8 +1482,8 @@ function visitSnapshotPath(filePath: string): string {
 /** Reusable 4-byte buffer for synchronous lock backoff. */
 const sleepBuf = new Int32Array(new SharedArrayBuffer(4));
 
-/** Serialize chain mutations across processes with an O_EXCL pid lockfile. */
-function withChainLock<T>(filePath: string, fn: () => T): T {
+/** Serialize read-modify-write and backup-chain mutations across processes with an O_EXCL pid lockfile. */
+export function withSettingsFileLock<T>(filePath: string, fn: () => T): T {
   const lockPath = `${filePath}.bak.lock`;
   let locked = false;
   try {
@@ -1498,10 +1557,10 @@ function promoteSnapshotLocked(snapshotPath: string, filePath: string): void {
 function promoteSnapshot(snapshotPath: string): void {
   const filePath = snapshotPath.replace(/\.bak\.visit-\d+$/, "");
   if (!existsSync(snapshotPath)) return;
-  withChainLock(filePath, () => promoteSnapshotLocked(snapshotPath, filePath));
+  withSettingsFileLock(filePath, () => promoteSnapshotLocked(snapshotPath, filePath));
 }
 
-function reapStaleVisitSnapshots(filePath: string): void {
+function reapStaleVisitSnapshots(filePath: string, lockHeld = false): void {
   const dir = dirname(filePath);
   const marker = `${basename(filePath)}.bak.visit-`;
   let entries: string[] = [];
@@ -1522,7 +1581,12 @@ function reapStaleVisitSnapshots(filePath: string): void {
       /* dead owner — promote snapshot */
     }
     try {
-      promoteSnapshot(join(dir, name));
+      const snapshotPath = join(dir, name);
+      if (lockHeld) {
+        if (existsSync(snapshotPath)) promoteSnapshotLocked(snapshotPath, filePath);
+      } else {
+        promoteSnapshot(snapshotPath);
+      }
       log.info("settings_visit_snapshot_recovered", { filePath, pid });
     } catch (e: unknown) {
       log.warn("settings_visit_snapshot_recover_failed", {
@@ -1570,17 +1634,20 @@ function shouldBackUp(filePath: string, dedupe: boolean): boolean {
   return !backedUpInSession.has(filePath);
 }
 
+function rotateSettingsBackupsLocked(filePath: string, count: number): void {
+  if (count <= 0) return;
+  try {
+    shiftBackupSlots(filePath, count);
+    copyFileSync(filePath, settingsBackupPath(filePath, 1));
+  } catch (e: unknown) {
+    log.error("settings_backup_failed", { filePath, error: e instanceof Error ? e.message : String(e) });
+    throw new SettingsBackupError(filePath, e);
+  }
+}
+
 function rotateSettingsBackups(filePath: string, count: number): void {
   if (count <= 0) return;
-  withChainLock(filePath, () => {
-    try {
-      shiftBackupSlots(filePath, count);
-      copyFileSync(filePath, settingsBackupPath(filePath, 1));
-    } catch (e: unknown) {
-      log.error("settings_backup_failed", { filePath, error: e instanceof Error ? e.message : String(e) });
-      throw new SettingsBackupError(filePath, e);
-    }
-  });
+  withSettingsFileLock(filePath, () => rotateSettingsBackupsLocked(filePath, count));
 }
 
 /**
@@ -1590,7 +1657,7 @@ function rotateSettingsBackups(filePath: string, count: number): void {
 export function writeSettingsFile(
   filePath: string,
   data: Record<string, unknown>,
-  options: { dedupeBackup?: boolean; changedKey?: string; scope?: SettingsScope; cwd?: string } = {},
+  options: { dedupeBackup?: boolean; changedKey?: string; scope?: SettingsScope; cwd?: string; lockHeld?: boolean } = {},
 ): void {
   const dir = dirname(filePath);
 
@@ -1617,7 +1684,7 @@ export function writeSettingsFile(
     if (options.dedupeBackup === true && editSessionDepth > 0) {
       if (shouldBackUp(filePath, true) && count > 0) {
         try {
-          reapStaleVisitSnapshots(filePath);
+          reapStaleVisitSnapshots(filePath, Boolean(options.lockHeld));
           copyFileSync(filePath, visitSnapshotPath(filePath));
           backedUpInSession.add(filePath);
           visitSnapshots.add(visitSnapshotPath(filePath));
@@ -1626,6 +1693,8 @@ export function writeSettingsFile(
           throw new SettingsBackupError(filePath, e);
         }
       }
+    } else if (options.lockHeld) {
+      rotateSettingsBackupsLocked(filePath, count);
     } else {
       rotateSettingsBackups(filePath, count);
     }
@@ -1664,62 +1733,158 @@ export function writeSettingsFile(
 
 export type UpdateSettingResult =
   | { ok: true; file: string; changed?: boolean }
-  | { ok: false; reason: "invalid" | "corrupt" | "write_error"; file: string; error: string; cause?: unknown };
+  | { ok: false; reason: "invalid" | "corrupt" | "write_error" | "conflict"; file: string; error: string; cause?: unknown };
+
+export interface UpdateSettingOptions {
+  dedupeBackup?: boolean;
+  /** Atomic compare-and-swap guard: fail with reason="conflict" if current stored state differs. */
+  expected?: { exists: boolean; value?: unknown };
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Deep equality that also enforces exact key insertion order for nested plain objects (e.g. tool_permissions). */
+export function isOrderSensitiveDeepEqual(a: unknown, b: unknown): boolean {
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+    for (let i = 0; i < keysA.length; i++) {
+      if (keysA[i] !== keysB[i]) return false;
+      if (!isOrderSensitiveDeepEqual(a[keysA[i]], b[keysB[i]])) return false;
+    }
+    return true;
+  }
+  return isDeepStrictEqual(a, b);
+}
+
+export interface SettingMutation {
+  key: string;
+  value: unknown;
+  /** Atomic compare-and-swap guard: fail with reason="conflict" if current stored state differs. */
+  expected?: { exists: boolean; value?: unknown };
+}
 
 /**
- * Validate and persist one setting in `scope`. Passing `undefined` or `null` deletes
- * the key from that scope's file. Preserves unknown keys, rotates backups, and
- * invalidates the unified cache.
+ * Validate and atomically persist one or more setting mutations in `scope` under a
+ * cross-process lock covering read, compare-and-swap verification, backup rotation,
+ * and atomic file replacement.
  */
-export function updateSetting(
+export function updateSettingsTransaction(
   cwd: string,
   scope: SettingsScope,
-  key: string,
-  value: unknown,
+  mutations: readonly SettingMutation[],
   options: { dedupeBackup?: boolean } = {},
 ): UpdateSettingResult {
   const filePath = getFilePathForScope(scope, cwd);
-  const clearing = value === undefined || value === null;
+  if (mutations.length === 0) return { ok: true, file: filePath, changed: false };
 
-  let validatedValue: unknown;
-  if (clearing) {
-    if (!(key in SETTINGS_KEYS)) {
-      return { ok: false, reason: "invalid", file: filePath, error: `unknown setting key: ${key}` };
+  // Validate every mutation before acquiring the cross-process lock.
+  const prepared: Array<{
+    key: string;
+    clearing: boolean;
+    validatedValue: unknown;
+    expected?: { exists: boolean; value?: unknown };
+  }> = [];
+  for (const mutation of mutations) {
+    const { key, value, expected } = mutation;
+    const clearing = value === undefined || value === null;
+    let validatedValue: unknown;
+    if (clearing) {
+      if (!(key in SETTINGS_KEYS)) {
+        return { ok: false, reason: "invalid", file: filePath, error: `unknown setting key: ${key}` };
+      }
+    } else {
+      if (SETTINGS_KEYS[key]?.global_only && scope === "project") {
+        return {
+          ok: false,
+          reason: "invalid",
+          file: filePath,
+          error: `${key} is global-only and cannot be set in project scope`,
+        };
+      }
+      const validated = validateSetting(key, value);
+      if (!validated.ok) {
+        return { ok: false, reason: "invalid", file: filePath, error: validated.error };
+      }
+      validatedValue = validated.value;
     }
-  } else {
-    const validated = validateSetting(key, value);
-    if (!validated.ok) {
-      return { ok: false, reason: "invalid", file: filePath, error: validated.error };
-    }
-    validatedValue = validated.value;
+    prepared.push({ key, clearing, validatedValue, expected });
   }
 
-  const current = readSettingsFile(filePath);
-  if (current === null) {
+  const dir = dirname(filePath);
+  if (process.env.NODE_TEST_CONTEXT !== undefined && !isInsideTempTree(filePath)) {
+    const real = nearestRealPath(filePath);
     return {
       ok: false,
-      reason: "corrupt",
+      reason: "write_error",
       file: filePath,
-      error: `${filePath} is malformed (invalid JSON or not an object) — fix it before saving`,
+      error: `test process refused to write settings outside the temp tree: ${real}`,
     };
   }
 
-  if (clearing) {
-    if (!(key in current)) return { ok: true, file: filePath, changed: false };
-    delete current[key];
-    if (Object.keys(current).length === 0 && !existsSync(filePath)) return { ok: true, file: filePath, changed: false };
-  } else {
-    current[key] = validatedValue;
-  }
-
   try {
-    writeSettingsFile(filePath, current, {
-      ...options,
-      changedKey: key,
-      scope,
-      cwd,
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return withSettingsFileLock(filePath, (): UpdateSettingResult => {
+      const current = readSettingsFile(filePath);
+      if (current === null) {
+        return {
+          ok: false,
+          reason: "corrupt",
+          file: filePath,
+          error: `${filePath} is malformed (invalid JSON or not an object) — fix it before saving`,
+        };
+      }
+
+      for (const m of prepared) {
+        if (m.expected !== undefined) {
+          const actualExists = m.key in current;
+          const actualValue = actualExists ? current[m.key] : undefined;
+          const eq = SETTINGS_KEYS[m.key]?.type === "tool_permissions"
+            ? isOrderSensitiveDeepEqual
+            : isDeepStrictEqual;
+          const matches =
+            actualExists === m.expected.exists &&
+            (!actualExists || eq(actualValue, m.expected.value));
+          if (!matches) {
+            return {
+              ok: false,
+              reason: "conflict",
+              file: filePath,
+              error: `${m.key} changed on disk before saving`,
+            };
+          }
+        }
+      }
+
+      let anyChanged = false;
+      for (const m of prepared) {
+        if (m.clearing) {
+          if (m.key in current) {
+            delete current[m.key];
+            anyChanged = true;
+          }
+        } else {
+          current[m.key] = m.validatedValue;
+          anyChanged = true;
+        }
+      }
+
+      if (!anyChanged) {
+        return { ok: true, file: filePath, changed: false };
+      }
+
+      writeSettingsFile(filePath, current, {
+        ...options,
+        lockHeld: true,
+        changedKey: prepared[0].key,
+        scope,
+        cwd,
+      });
+      return { ok: true, file: filePath, changed: true };
     });
-    return { ok: true, file: filePath, changed: true };
   } catch (error) {
     if (error instanceof SettingsFileCorruptError) {
       return { ok: false, reason: "corrupt", file: filePath, error: error.message, cause: error };
@@ -1732,6 +1897,26 @@ export function updateSetting(
       cause: error,
     };
   }
+}
+
+/**
+ * Validate and persist one setting in `scope`. Passing `undefined` or `null` deletes
+ * the key from that scope's file. Preserves unknown keys, rotates backups, and
+ * invalidates the unified cache under the cross-process settings lock.
+ */
+export function updateSetting(
+  cwd: string,
+  scope: SettingsScope,
+  key: string,
+  value: unknown,
+  options: UpdateSettingOptions = {},
+): UpdateSettingResult {
+  return updateSettingsTransaction(
+    cwd,
+    scope,
+    [{ key, value, expected: options.expected }],
+    { dedupeBackup: options.dedupeBackup },
+  );
 }
 
 // ── Pi extension hook ───────────────────────────────────────────────

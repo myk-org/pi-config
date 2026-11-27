@@ -144,7 +144,10 @@ export interface SettingsKey {
   min?: number;
   max?: number;
   allow_zero?: boolean;
+  globalOnly?: boolean;
   stored: unknown;
+  effective?: unknown;
+  source?: "P" | "G" | "E" | "D";
 }
 
 export interface SettingsData {

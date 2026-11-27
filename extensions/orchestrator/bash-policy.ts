@@ -8,12 +8,11 @@
 
 import { createLogger } from "../shared/logger.js";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync, mkdirSync, rmdirSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { basename, dirname, join, resolve } from "node:path";
-import { acquireDirLock } from "../shared/file-lock.js";
 import { escapeRegExp, getProjectDataDir, realpathNearestExisting, sanitizeModelId } from "./utils.js";
 import {
   getGlobalSettingsPath,
@@ -24,6 +23,7 @@ import {
   loadProjectSettings,
   readSettingsFile,
   SETTINGS_FILENAMES,
+  withSettingsFileLock,
   writeSettingsFile,
 } from "./project-settings.js";
 import {
@@ -3248,31 +3248,30 @@ export function addDangerousAllowlistEntry(
     }
   }
   const file = scope === "project" ? getSettingsPath(cwd) : getGlobalSettingsPath();
-  const lockDir = `${file}.lock`;
   const entry = command.replace(/[\\*?]/g, (c) => `\\${c}`);
-  let locked = false;
   try {
-    // The lock dir's parent may not exist yet on a first-ever write
-    mkdirSync(path.dirname(file), { recursive: true });
-    locked = acquireDirLock(lockDir, 10, 50);
-    const data = readSettingsFile(file);
-    if (data === null) {
-      // Corrupt/unparseable settings file — NEVER overwrite it with just the
-      // new entry: earlier approvals and every other setting would be lost
-      // (Qodo PR #950 R2). Bail fail-soft and let the user repair the file.
-      enfLog.warn("dangerous_allowlist_settings_unreadable", {
-        file,
-        hashPrefix: dangerousCommandHash(command).slice(0, 12),
-      });
-      return { ok: false, reason: "corrupt", file };
-    }
-    const list = Array.isArray(data.dangerous_command_allowlist)
-      ? data.dangerous_command_allowlist.filter((e: unknown): e is string => typeof e === "string" && e.length > 0)
-      : [];
-    if (!list.includes(entry)) list.push(entry);
-    data.dangerous_command_allowlist = list;
-    writeSettingsFile(file, data);
-    return { ok: true, scope, file };
+    // The settings dir may not exist yet on a first-ever write
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    return withSettingsFileLock(file, () => {
+      const data = readSettingsFile(file);
+      if (data === null) {
+        // Corrupt/unparseable settings file — NEVER overwrite it with just the
+        // new entry: earlier approvals and every other setting would be lost
+        // (Qodo PR #950 R2). Bail fail-soft and let the user repair the file.
+        enfLog.warn("dangerous_allowlist_settings_unreadable", {
+          file,
+          hashPrefix: dangerousCommandHash(command).slice(0, 12),
+        });
+        return { ok: false, reason: "corrupt", file } as const;
+      }
+      const list = Array.isArray(data.dangerous_command_allowlist)
+        ? data.dangerous_command_allowlist.filter((e: unknown): e is string => typeof e === "string" && e.length > 0)
+        : [];
+      if (!list.includes(entry)) list.push(entry);
+      data.dangerous_command_allowlist = list;
+      writeSettingsFile(file, data, { lockHeld: true });
+      return { ok: true, scope, file } as const;
+    });
   } catch (error: any) {
     // Hash prefix + path identify the affected approval without copying
     // command text into global logs (Qodo PR #950).
@@ -3282,14 +3281,6 @@ export function addDangerousAllowlistEntry(
       file,
     });
     return { ok: false, reason: "write_failed", file };
-  } finally {
-    if (locked) {
-      try {
-        rmdirSync(lockDir);
-      } catch {
-        // stale lock — the next writer's retry loop handles it
-      }
-    }
   }
 }
 
