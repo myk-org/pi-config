@@ -5867,6 +5867,7 @@ Do not respond to this message.`;
 		finalizingInbound = false;
 		processingInbound = false;
 		pendingDrainAfterKill = false;
+		emitComsQueue(true);
 		if (agentRunning || beforeAgentStartPending) {
 			log.debug("agent_busy_transition", { busy: false, agentRunning: false, beforeAgentStartPending: false, processingInbound: false, reason: "shutdown" });
 		}

@@ -6,6 +6,7 @@ import { CopyButton } from "@/components/CopyButton";
 import type { MemoryStatus } from "@/types";
 
 const log = createLogger("MemoryPanel");
+const DREAM_RESULT_TIMEOUT_MS = 15_000;
 
 interface Props {
   sendCmd: (command: string, extra?: Record<string, unknown>) => void;
@@ -20,16 +21,25 @@ export function MemoryPanel({ sendCmd, onMessage, notify }: Props) {
   const [dreaming, setDreaming] = useState(false);
   const [reportOpen, setReportOpen] = useState(true);
   const pendingDreamReqRef = useRef<string | null>(null);
+  const dreamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearDreamTimer = () => {
+    if (dreamTimerRef.current) {
+      clearTimeout(dreamTimerRef.current);
+      dreamTimerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     sendCmd("memory-status");
-    return onMessage((ev: any) => {
+    const unsub = onMessage((ev: any) => {
       if (ev.type === "memory-status") {
         setRefreshing(false);
         setStatus(ev as MemoryStatus);
       }
       if (ev.type === "memory-dream-result") {
         if (pendingDreamReqRef.current && ev.requestId && ev.requestId !== pendingDreamReqRef.current) return;
+        clearDreamTimer();
         pendingDreamReqRef.current = null;
         setDreaming(false);
         if (ev.ok) {
@@ -40,6 +50,10 @@ export function MemoryPanel({ sendCmd, onMessage, notify }: Props) {
         }
       }
     });
+    return () => {
+      clearDreamTimer();
+      unsub();
+    };
   }, [sendCmd, onMessage, notify]);
 
   const refresh = () => {
@@ -53,6 +67,15 @@ export function MemoryPanel({ sendCmd, onMessage, notify }: Props) {
     const requestId = `dream-${Date.now()}`;
     pendingDreamReqRef.current = requestId;
     setDreaming(true);
+    clearDreamTimer();
+    dreamTimerRef.current = setTimeout(() => {
+      if (pendingDreamReqRef.current !== requestId) return;
+      dreamTimerRef.current = null;
+      pendingDreamReqRef.current = null;
+      setDreaming(false);
+      log.warn("memory_dream_timeout", { requestId });
+      notify?.("Memory dreaming timed out — no response from session.", "error");
+    }, DREAM_RESULT_TIMEOUT_MS);
     log.debug("memory_dream_trigger", { requestId });
     sendCmd("memory-dream", { requestId });
   };

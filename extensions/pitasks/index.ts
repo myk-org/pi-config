@@ -554,6 +554,22 @@ export default function (pi: ExtensionAPI) {
 	}
 	function handleTaskOp(data: any): void {
 		const op = data?.op;
+		let completeResultEmitted = false;
+		const emitCompleteResult = (ok: boolean, error?: string) => {
+			if (completeResultEmitted) return;
+			completeResultEmitted = true;
+			try {
+				pi.events.emit("pidash:task-op-result", {
+					requestId: typeof data?.requestId === "string" ? data.requestId : undefined,
+					op: "complete",
+					taskId: data?.taskId,
+					ok,
+					...(ok ? {} : { error: error || "Task could not be completed (already completed or missing)." }),
+				});
+			} catch (e: any) {
+				log.warn("pidash_task_op_result_emit_failed", { taskId: data?.taskId, error: e?.message });
+			}
+		};
 		try {
 			switch (op) {
 				case "create": {
@@ -574,28 +590,20 @@ export default function (pi: ExtensionAPI) {
 					if (data.taskId) { store.update(data.taskId, { status: "in_progress" }); widget.setActiveTask(data.taskId, true); }
 					break;
 				case "complete": {
-					if (data.taskId) {
-						const rawNote = typeof data.completionNote === "string"
-							? data.completionNote.trim().slice(0, COMPLETION_NOTE_MAX)
-							: "";
-						const ok = manualTaskOperations(currentUiCtx).completeTask(data.taskId, {
-							by: "user",
-							...(rawNote ? { note: rawNote } : {}),
-						});
-						if (ok) widget.setActiveTask(data.taskId, false);
-						log.debug("pidash_task_complete", { taskId: data.taskId, ok, hasNote: rawNote.length > 0 });
-						try {
-							pi.events.emit("pidash:task-op-result", {
-								requestId: typeof data.requestId === "string" ? data.requestId : undefined,
-								op: "complete",
-								taskId: data.taskId,
-								ok,
-								...(ok ? {} : { error: "Task could not be completed (already completed or missing)." }),
-							});
-						} catch (e: any) {
-							log.warn("pidash_task_op_result_emit_failed", { taskId: data.taskId, error: e?.message });
-						}
+					if (!data.taskId) {
+						emitCompleteResult(false, "Task ID is required.");
+						break;
 					}
+					const rawNote = typeof data.completionNote === "string"
+						? data.completionNote.trim().slice(0, COMPLETION_NOTE_MAX)
+						: "";
+					const ok = manualTaskOperations(currentUiCtx).completeTask(data.taskId, {
+						by: "user",
+						...(rawNote ? { note: rawNote } : {}),
+					});
+					if (ok) widget.setActiveTask(data.taskId, false);
+					log.debug("pidash_task_complete", { taskId: data.taskId, ok, hasNote: rawNote.length > 0 });
+					emitCompleteResult(ok);
 					break;
 				}
 				case "delete":
@@ -618,6 +626,9 @@ export default function (pi: ExtensionAPI) {
 			log.info("pidash_task_op", { op, taskId: data.taskId });
 		} catch (e: any) {
 			log.warn("pidash_task_op_failed", { op, error: e?.message });
+			if (op === "complete" && data?.taskId) {
+				emitCompleteResult(false, e?.message || "Task completion failed.");
+			}
 		}
 	}
 	pi.events.on("pidash:tasks-list-request", () => broadcastTasks());

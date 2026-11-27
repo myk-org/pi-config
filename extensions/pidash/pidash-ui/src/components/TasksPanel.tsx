@@ -63,23 +63,48 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
   const [assignee, setAssignee] = useState<"llm" | "user">("llm");
   const [completingTaskId, setCompletingTaskId] = useState<string | null>(null);
   const [completionNote, setCompletionNote] = useState("");
-  const [submittingCompleteId, setSubmittingCompleteId] = useState<string | null>(null);
-  const pendingCompleteRef = useRef<{ requestId: string; taskId: string } | null>(null);
+  const [submittingCompleteIds, setSubmittingCompleteIds] = useState<Set<string>>(() => new Set());
+  const pendingCompletesRef = useRef<Map<string, string>>(new Map());
+  const completingTaskIdRef = useRef<string | null>(completingTaskId);
+  completingTaskIdRef.current = completingTaskId;
 
   useEffect(() => {
     sendCmd("tasks-list");
     return onMessage((ev: any) => {
       if (ev.type === "tasks-list" && Array.isArray(ev.tasks)) setTasks(ev.tasks);
       if (ev.type === "task-op-result" && ev.op === "complete") {
-        const pending = pendingCompleteRef.current;
-        if (!pending) return;
-        if (ev.requestId && ev.requestId !== pending.requestId) return;
-        if (!ev.requestId && ev.taskId !== pending.taskId) return;
-        pendingCompleteRef.current = null;
-        setSubmittingCompleteId(null);
+        const pending = pendingCompletesRef.current;
+        if (pending.size === 0) return;
+        let matchedReqId: string | null = null;
+        let matchedTaskId: string | null = null;
+        if (typeof ev.requestId === "string" && pending.has(ev.requestId)) {
+          matchedReqId = ev.requestId;
+          matchedTaskId = pending.get(ev.requestId) ?? null;
+        } else if (!ev.requestId && typeof ev.taskId === "string") {
+          for (const [reqId, tid] of pending.entries()) {
+            if (tid === ev.taskId) {
+              matchedReqId = reqId;
+              matchedTaskId = tid;
+              break;
+            }
+          }
+        }
+        if (!matchedReqId || !matchedTaskId) return;
+        pending.delete(matchedReqId);
+        const stillSubmitting = [...pending.values()].includes(matchedTaskId);
+        if (!stillSubmitting) {
+          setSubmittingCompleteIds((prev) => {
+            if (!prev.has(matchedTaskId!)) return prev;
+            const next = new Set(prev);
+            next.delete(matchedTaskId!);
+            return next;
+          });
+        }
         if (ev.ok) {
-          setCompletingTaskId(null);
-          setCompletionNote("");
+          if (completingTaskIdRef.current === matchedTaskId) {
+            setCompletingTaskId(null);
+            setCompletionNote("");
+          }
           notify("Task completed");
         } else {
           notify(ev.error || "Task could not be completed", "error");
@@ -133,11 +158,15 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
   };
 
   const submitUserComplete = (taskId: string) => {
-    if (submittingCompleteId === taskId) return;
+    if (submittingCompleteIds.has(taskId) || [...pendingCompletesRef.current.values()].includes(taskId)) return;
     const trimmed = completionNote.trim().slice(0, COMPLETION_NOTE_MAX);
     const requestId = `task-complete-${Date.now()}-${++taskOpSeq}`;
-    pendingCompleteRef.current = { requestId, taskId };
-    setSubmittingCompleteId(taskId);
+    pendingCompletesRef.current.set(requestId, taskId);
+    setSubmittingCompleteIds((prev) => {
+      const next = new Set(prev);
+      next.add(taskId);
+      return next;
+    });
     op("complete", {
       taskId,
       requestId,
@@ -326,6 +355,7 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
           const userAssigned = isUserTask(t);
           const isExpanded = expandedIds.has(t.id);
           const isCompleting = completingTaskId === t.id;
+          const isSubmittingThis = submittingCompleteIds.has(t.id);
           const blockedBy = Array.isArray(t.blockedBy) ? t.blockedBy : [];
           return (
             <div
@@ -443,11 +473,11 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
                     maxLength={COMPLETION_NOTE_MAX}
                     value={completionNote}
                     onChange={(e) => setCompletionNote(e.target.value)}
-                    disabled={submittingCompleteId === t.id}
+                    disabled={isSubmittingThis}
                     autoFocus
                     onKeyDown={(e) => {
                       if (e.key === "Enter") submitUserComplete(t.id);
-                      if (e.key === "Escape" && submittingCompleteId !== t.id) {
+                      if (e.key === "Escape" && !isSubmittingThis) {
                         setCompletingTaskId(null);
                         setCompletionNote("");
                       }
@@ -456,7 +486,7 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
                   <div className="flex gap-1 justify-end">
                     <button
                       type="button"
-                      disabled={submittingCompleteId === t.id}
+                      disabled={isSubmittingThis}
                       className="px-1.5 py-0.5 text-[10px] rounded bg-muted/60 hover:bg-muted disabled:opacity-50"
                       onClick={() => {
                         setCompletingTaskId(null);
@@ -467,11 +497,11 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
                     </button>
                     <button
                       type="button"
-                      disabled={submittingCompleteId === t.id}
+                      disabled={isSubmittingThis}
                       className="px-2 py-0.5 text-[10px] rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
                       onClick={() => submitUserComplete(t.id)}
                     >
-                      {submittingCompleteId === t.id ? "Completing…" : "Confirm Done"}
+                      {isSubmittingThis ? "Completing…" : "Confirm Done"}
                     </button>
                   </div>
                 </div>

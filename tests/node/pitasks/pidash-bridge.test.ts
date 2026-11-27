@@ -205,6 +205,42 @@ describe("pitasks pidash bridge", () => {
     assert.equal((resEvent!.data as any).ok, false);
   });
 
+  it("task-op complete emits correlated failure result when completion throws", () => {
+    const task = taskStore.create(
+      "Deploy release",
+      "Verify rollout",
+      { type: "local", origin: "user", session: "", project: "" },
+      undefined,
+      undefined,
+      "user",
+    );
+    const origUpdate = taskStore.update.bind(taskStore);
+    taskStore.update = () => {
+      throw new Error("store write failed");
+    };
+    try {
+      env.fire("pidash:task-op", {
+        op: "complete",
+        taskId: task.id,
+        requestId: "req-throw-1",
+      });
+    } finally {
+      taskStore.update = origUpdate;
+    }
+
+    const resEvent = [...env.captured.events]
+      .reverse()
+      .find((e) => e.channel === "pidash:task-op-result");
+    assert.ok(resEvent, "pidash:task-op-result emitted");
+    assert.deepEqual(resEvent!.data, {
+      requestId: "req-throw-1",
+      op: "complete",
+      taskId: task.id,
+      ok: false,
+      error: "store write failed",
+    });
+  });
+
   it("unknown op is ignored without throwing", () => {
     env.fire("pidash:task-op", { op: "explode" });
     // No new tasks-list beyond initial ops — just verify no throw

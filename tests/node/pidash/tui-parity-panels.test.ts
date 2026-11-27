@@ -303,6 +303,71 @@ describe("TasksPanel (#1481)", () => {
     assert.equal(view.notices.some((n) => n.level === "error" && n.msg.includes("Task already completed")), true);
   });
 
+  it("tracks concurrent user task completions independently without overwriting the first pending requestId", async () => {
+    const view = await mountPanel(TasksPanel);
+    const task1 = sampleTasks()[0];
+    const task4 = {
+      id: "4",
+      subject: "Sign off release changelog",
+      description: "Verify release notes",
+      status: "pending",
+      assignee: "user",
+      blockedBy: [],
+    };
+    await view.emit({ type: "tasks-list", tasks: [task1, task4] });
+
+    const cardFor = (id: string) =>
+      elements(view.container, "div").find((d) => d.getAttribute("data-task-id") === id);
+
+    // Submit Task #1
+    const done1 = elements(cardFor("1")!, "button").find((b) => b.textContent.trim() === "Done");
+    await clickEl(done1);
+    const confirm1 = elements(cardFor("1")!, "button").find((b) => b.textContent.trim() === "Confirm Done");
+    await clickEl(confirm1);
+    const req1 = view.sent.at(-1)?.extra?.requestId;
+    assert.equal(view.sent.at(-1)?.extra?.taskId, "1");
+    assert.equal(typeof req1, "string");
+
+    // Submit Task #4 while Task #1 is still pending
+    const done4 = elements(cardFor("4")!, "button").find((b) => b.textContent.trim() === "Done");
+    await clickEl(done4);
+    const confirm4 = elements(cardFor("4")!, "button").find((b) => b.textContent.trim() === "Confirm Done");
+    await clickEl(confirm4);
+    const req4 = view.sent.at(-1)?.extra?.requestId;
+    assert.equal(view.sent.at(-1)?.extra?.taskId, "4");
+    assert.equal(typeof req4, "string");
+    assert.notEqual(req4, req1);
+
+    // Task #1 fails — error toast fires for Task #1 and Task #4 stays submitting
+    await view.emit({
+      type: "task-op-result",
+      op: "complete",
+      taskId: "1",
+      requestId: req1,
+      ok: false,
+      error: "Task #1 rejected",
+    });
+    assert.equal(view.notices.some((n) => n.level === "error" && n.msg.includes("Task #1 rejected")), true);
+    assert.equal(view.notices.some((n) => n.msg === "Task completed"), false);
+    const stillSubmitting4 = elements(cardFor("4")!, "button").find((b) => b.textContent.trim() === "Completing…");
+    assert.ok(stillSubmitting4, "Task #4 remains in submitting state");
+
+    // Task #4 succeeds — Task #4's completion form closes and notifies success
+    await view.emit({
+      type: "task-op-result",
+      op: "complete",
+      taskId: "4",
+      requestId: req4,
+      ok: true,
+    });
+    assert.equal(
+      elements(cardFor("4")!, "input").some((i) => (i.getAttribute("placeholder") || "").includes("completion note")),
+      false,
+      "Task #4 completion form closed",
+    );
+    assert.equal(view.notices.some((n) => n.msg === "Task completed"), true);
+  });
+
   it("expands blocking task when blockedBy link button is clicked", async () => {
     const view = await mountPanel(TasksPanel);
     await view.emit({ type: "tasks-list", tasks: sampleTasks() });
@@ -489,6 +554,35 @@ describe("MemoryPanel (#1481)", () => {
       message: "Started background memory consolidation (job d1).",
     });
     assert.ok(view.notices.some((n) => n.msg.includes("job d1")));
+  });
+
+  it("times out after 15s when no memory-dream-result arrives, re-enables Dream, and notifies error", async (t) => {
+    const view = await mountPanel(MemoryPanel);
+    await view.emit({ type: "memory-status", usagePct: 10, topics: [], report: "ok" });
+
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const dreamBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "Dream");
+      await clickEl(dreamBtn);
+
+      const dreamingBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "Dreaming…");
+      assert.ok(dreamingBtn, "Dream button enters Dreaming… state");
+      assert.equal(dreamingBtn.hasAttribute("disabled"), true);
+
+      await act(async () => {
+        t.mock.timers.tick(15_000);
+      });
+
+      const reEnabledBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "Dream");
+      assert.ok(reEnabledBtn, "Dream button re-enabled after 15s timeout");
+      assert.equal(reEnabledBtn.hasAttribute("disabled"), false);
+      assert.ok(
+        view.notices.some((n) => n.level === "error" && /timed out/i.test(n.msg)),
+        "notifies error on dream timeout",
+      );
+    } finally {
+      t.mock.timers.reset();
+    }
   });
 });
 
