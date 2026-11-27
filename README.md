@@ -47,7 +47,7 @@ Single extension that provides:
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
 | **Trail-code integration** | On by default when the `trail` binary is installed. Main agents and subagents query the local code map before raw project navigation: the first project navigation per turn is gated behind a `trail_*` call, guidance is map-first (`trail_find_code` first, `trail_repo_map` once per session), and injected hits carry source. Worktrees resolve the map under `graft/` or `.trail/cache/`, inherit enablement from the main checkout, and seed from it instead of cold-building. Stale maps stay usable and failures fall open. |
-| **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching, live session name updates, reasoning token display, and side panels (Tasks, Worktrees with guarded remove/prune/detail, Coms, Memory, MCP, Settings) |
+| **Pidash dashboard** | Live web dashboard — multi-session monitoring with browser tab title sync, sidebar Needs Attention / Pin / Archived grouping, browser messaging, `1`–`9` keyboard `ask_user` + multi-line answers, one-click bash output copy, model switching, live session name updates, reasoning token display, and side panels (Tasks, Worktrees with guarded remove/prune/detail, Coms, Memory, MCP, Settings) |
 | **Pidiff viewer** | Per-project diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory (configured via `dream_auto_enable` and `dream_interval_hours` in `/pi-config-settings`; LLM invokes `memory_dream`) |
 | **Skill self-improvement** | Non-blocking skill maintenance across project, user-global, and symlinked shared skills loaded by Pi: `/adopt-skill` opens a TUI overlay with `Space` multi-select + `a`/`Enter` to mark one or more non-package skills with `skill-maintenance: auto` (brand-new `.pi/skills/<name>/SKILL.md` writes auto-adopt), a failed adopted skill steers the turn to fix it, and skill edits log to `.pi/data/skill-review.jsonl` with a one-line turn summary (see `docs/skill-self-improvement.md`) |
@@ -712,7 +712,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 
 **Features:**
 
-- Multi-session dashboard with sidebar grouped by project
+- Multi-session dashboard with browser tab title sync (`[!]` prefix when waiting for input) and sidebar grouped by **Needs attention**, **Pinned**, project folders, **Coms**,
+  and collapsible **Archived** (auto-unarchives on send)
 - Live conversation streaming (user, assistant, tool, thinking)
 - Send messages from browser to pi
 - Model and thinking level switching from browser
@@ -720,8 +721,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Info bar: model, tokens, context %, git status (with PR `#N` when present)
 - TUI status line: clickable `pi-diff` / `pi-dash` labels and open-PR `#N` hyperlink
 - Per-project diff viewer (pidiff) — opens in browser via clickable `pi-diff` status-line link, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
-- Collapsible thinking and tool blocks with copy buttons
-- ask_user tool bridging (answer from browser or TUI)
+- Collapsible thinking and tool blocks with one-click **Copy** output button on bash/shell tool cards
+- ask_user tool bridging (answer from browser or TUI, with `1`–`9` keyboard option selection and multi-line custom answers)
 - **Full TUI parity (#968)** — every interactive prompt and surface is answerable/operable from either TUI or browser, first answer wins:
   - Dangerous-command approvals, commit-trailer selection, and project-agent confirmations render in both surfaces
   - `/tasks` itself is a zero-arg terminal-only overlay: list/view with `[you]`/`[llm]` assignee tags,
