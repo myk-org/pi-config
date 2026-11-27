@@ -58,22 +58,26 @@ function synth(prefix: string, bodyChar: string, len: number): string {
 }
 
 describe("prompts/report.md contract (#1446)", () => {
-  it("declares frontmatter and preserves the raw arguments block", () => {
+  it("declares YAML frontmatter with description and argument-hint", () => {
     assert.match(REPORT_PROMPT, /^---\ndescription: /);
     assert.match(REPORT_PROMPT, /argument-hint: "\[issue summary\]"/);
+  });
+
+  it("preserves the raw arguments block", () => {
     assert.match(REPORT_PROMPT, /## Raw Arguments\n\n```text\n\$ARGUMENTS\n```/);
   });
 
-  it("invokes scripts/diagnostic-report-collect.mjs with git-root and npm-install fallback", () => {
-    assert.match(REPORT_PROMPT, /scripts\/diagnostic-report-collect\.mjs/);
+  it("resolves the packaged collector independently of the current git checkout", () => {
     assert.match(
       REPORT_PROMPT,
-      /\.pi\/agent\/npm\/node_modules\/pi-orchestrator-config\/scripts\/diagnostic-report-collect\.mjs/,
+      /COLLECTOR="\$HOME\/\.pi\/agent\/npm\/node_modules\/pi-orchestrator-config\/scripts\/diagnostic-report-collect\.mjs"/,
     );
+    assert.doesNotMatch(REPORT_PROMPT, /GIT_ROOT\/scripts\/diagnostic-report-collect\.mjs/);
+    assert.match(REPORT_PROMPT, /ask_user.*checkout-local|checkout-local.*ask_user/s);
     assert.match(REPORT_PROMPT, /--max-lines 40/);
   });
 
-  it("includes all 4 required diagnostic steps and safety boundaries", () => {
+  it("defines the 4-step diagnostic workflow with docs check, duplicate search, and ask_user gate", () => {
     assert.match(REPORT_PROMPT, /Step 1 — Collect Runtime & Redacted Log Snapshot/);
     assert.match(REPORT_PROMPT, /Step 2 — Check Docs & Active Config/);
     assert.match(REPORT_PROMPT, /Step 3 — Search Open & Recently Closed Duplicate Issues/);
@@ -86,16 +90,22 @@ describe("prompts/report.md contract (#1446)", () => {
   });
 });
 
-describe("skills/bug-report/SKILL.md and packaging (#1446)", () => {
-  it("defines the bundled bug-report skill with required steps and ask_user gate", () => {
+describe("skills/bug-report/SKILL.md contract (#1446)", () => {
+  it("defines the bug-report skill frontmatter", () => {
     assert.match(BUG_REPORT_SKILL, /^---\nname: bug-report\n/);
-    assert.match(BUG_REPORT_SKILL, /scripts\/diagnostic-report-collect\.mjs/);
-    assert.match(BUG_REPORT_SKILL, /gh issue list/);
-    assert.match(BUG_REPORT_SKILL, /ask_user/);
-    assert.match(BUG_REPORT_SKILL, /redact/i);
   });
 
-  it("includes diagnostic collector, prompts, skills, and shared modules in package.json files", () => {
+  it("uses the packaged collector by default and requires ask_user before checkout-local execution", () => {
+    assert.match(
+      BUG_REPORT_SKILL,
+      /COLLECTOR="\$HOME\/\.pi\/agent\/npm\/node_modules\/pi-orchestrator-config\/scripts\/diagnostic-report-collect\.mjs"/,
+    );
+    assert.doesNotMatch(BUG_REPORT_SKILL, /GIT_ROOT\/scripts\/diagnostic-report-collect\.mjs/);
+    assert.match(BUG_REPORT_SKILL, /ask_user.*checkout-local/s);
+    assert.match(BUG_REPORT_SKILL, /gh issue list/);
+  });
+
+  it("includes diagnostic collector and supporting directories in package.json files", () => {
     const files = PACKAGE_JSON.files ?? [];
     assert.ok(files.includes("scripts/diagnostic-report-collect.mjs"));
     assert.ok(files.includes("prompts/"));
@@ -129,46 +139,114 @@ describe("redactDiagnosticText", () => {
     assert.match(out, /\[REDACTED:PEMKEY\]/);
   });
 
-  it("redacts truncated PEM blocks, auth/cookie headers, and key-value secrets without mangling benign fields", () => {
-    const k1 = "api_" + "key";
-    const k2 = "pass" + "word";
+  it("redacts truncated PEM private key blocks", () => {
     const ecBegin = ["-----BEGIN ", "EC PRIVATE KEY-----"].join("");
-    const raw = [
-      JSON.stringify({ [k1]: "mysecretvalue123", [k2]: "hunter22", secret: false, tokenCount: 42 }),
-      "Authorization: Basic " + "dXNlcjpwYXNzMTIz",
-      "Cookie: session_id=" + "abc123xyz789",
-      `${ecBegin}\\nPARTIALKEYDATA`,
-    ].join("\n");
+    const out = redactDiagnosticText(`${ecBegin}\\nPARTIALKEYDATA`, { env: {}, homeDir: "/home/tester" });
+    assert.ok(!out.includes("PARTIALKEYDATA"));
+    assert.match(out, /\[REDACTED:PEMKEY\]/);
+  });
 
+  it("redacts quoted secrets containing escaped quotes without leaking trailing text", () => {
+    const key = "pass" + "word";
+    const line = JSON.stringify({ [key]: 'abc"trailing_secret_tail', status: "ok" });
+    const out = redactDiagnosticText(line, { env: {}, homeDir: "/home/tester" });
+
+    assert.ok(!out.includes("abc"));
+    assert.ok(!out.includes("trailing_secret_tail"));
+    assert.match(out, /"status":"ok"/);
+  });
+
+  it("redacts structured JSON authorization and cookie fields", () => {
+    const payload = JSON.stringify({
+      authorization: "Basic " + "dXNlcjpwYXNzMTIz",
+      "proxy-authorization": "Basic " + "cHJveHk6c2VjcmV0",
+      cookie: "session_id=" + "abc123xyz789",
+      "set-cookie": "sid=" + "def456uvw012; HttpOnly",
+      ok: true,
+    });
+    const out = redactDiagnosticText(payload, { env: {}, homeDir: "/home/tester" });
+
+    for (const leaked of ["dXNlcjpwYXNzMTIz", "cHJveHk6c2VjcmV0", "abc123xyz789", "def456uvw012"]) {
+      assert.ok(!out.includes(leaked), `expected header value redacted: ${leaked}`);
+    }
+    assert.match(out, /"ok":true/);
+  });
+
+  it("redacts raw Authorization and Cookie header lines", () => {
+    const raw = [
+      "2026-11-27T10:00:00.000Z [warn] [http] Authorization: Basic " + "dXNlcjpwYXNzMTIz",
+      "2026-11-27T10:00:01.000Z [warn] [http] Cookie: session_id=" + "abc123xyz789",
+    ].join("\n");
     const out = redactDiagnosticText(raw, { env: {}, homeDir: "/home/tester" });
-    assert.ok(!out.includes("mysecretvalue123"));
-    assert.ok(!out.includes("hunter22"));
+
     assert.ok(!out.includes("dXNlcjpwYXNzMTIz"));
     assert.ok(!out.includes("abc123xyz789"));
-    assert.ok(!out.includes("PARTIALKEYDATA"));
+    assert.match(out, /Authorization: Basic \[REDACTED:AUTH\]/);
+    assert.match(out, /Cookie: \[REDACTED:COOKIE\]/);
+  });
+
+  it("redacts short passwords and numeric secret codes while preserving benign booleans and counts", () => {
+    const kPass = "pass" + "word";
+    const kKey = "api_" + "key";
+    const raw = JSON.stringify({
+      [kPass]: "ab",
+      pwd: "123",
+      [kKey]: 987654,
+      secret: false,
+      tokenCount: 42,
+    });
+    const out = redactDiagnosticText(raw, { env: {}, homeDir: "/home/tester" });
+
+    assert.ok(!out.includes('"ab"'));
+    assert.ok(!out.includes('"123"'));
+    assert.ok(!out.includes("987654"));
     assert.match(out, /"secret":false/);
     assert.match(out, /"tokenCount":42/);
   });
 
-  it("redacts secret env var values and embedded URL passwords while ignoring non-secret env vars", () => {
+  it("redacts config-sourced credential fields absent from process.env", () => {
+    const kCred = "service_" + "credentials";
+    const kBot = "discord_bot_" + "token";
+    const kPhrase = "pass" + "phrase";
+    const payload = JSON.stringify({
+      [kCred]: "cfg_cred_not_in_env_999",
+      [kBot]: "cfg_bot_val_888",
+      [kPhrase]: "cfg_phrase_777",
+      memory_token_budget: 1700,
+    });
+    const out = redactDiagnosticText(payload, { env: {}, homeDir: "/home/tester" });
+
+    assert.ok(!out.includes("cfg_cred_not_in_env_999"));
+    assert.ok(!out.includes("cfg_bot_val_888"));
+    assert.ok(!out.includes("cfg_phrase_777"));
+    assert.match(out, /"memory_token_budget":1700/);
+  });
+
+  it("redacts secret environment variable values and embedded URL passwords", () => {
     const customSecret = ["x9k2", "custom", "internal", "value", "99"].join("_");
     const dbPass = ["db", "secret", "pass", "42"].join("_");
     const env: Record<string, string> = {
       ["MY_SERVICE_" + "API_KEY"]: customSecret,
       DATABASE_URL: ["postgres://svc:", dbPass, "@db.internal:5432/app"].join(""),
-      GIT_AUTHOR_NAME: "Jane Developer",
     };
 
-    const out = redactDiagnosticText(
-      `failed with ${customSecret} and ${dbPass} by Jane Developer`,
-      { env, homeDir: "/home/jane" },
-    );
+    const out = redactDiagnosticText(`failed with ${customSecret} and ${dbPass}`, {
+      env,
+      homeDir: "/home/jane",
+    });
     assert.ok(!out.includes(customSecret));
     assert.ok(!out.includes(dbPass));
+  });
+
+  it("preserves ignored non-secret environment variables such as GIT_AUTHOR_NAME", () => {
+    const out = redactDiagnosticText("author=Jane Developer", {
+      env: { GIT_AUTHOR_NAME: "Jane Developer" },
+      homeDir: "/home/jane",
+    });
     assert.match(out, /Jane Developer/);
   });
 
-  it("redacts local home directory and POSIX/Windows user home paths to ~", () => {
+  it("replaces local, POSIX, and Windows home paths with tilde", () => {
     const out = redactDiagnosticText(
       "cwd=/home/alice/git/repo mac=/Users/bob/src/app win=C:\\Users\\carol\\proj",
       { env: {}, homeDir: "/home/alice" },
@@ -183,19 +261,18 @@ describe("redactDiagnosticText", () => {
 });
 
 describe("collectRedactedDiagnosticLogs", () => {
-  it("collects bounded warn/error lines sorted chronologically and redacts secrets before truncating", () => {
+  it("collects bounded warn and error lines sorted chronologically across loggers", () => {
     const home = trackTempDir("diag-logs-home-");
     const logsDir = join(home, ".pi", "logs");
     const sid = "sess-1446";
     mkdirSync(join(logsDir, "orchestrator", sid), { recursive: true });
     mkdirSync(join(logsDir, "coms", sid), { recursive: true });
 
-    const token = synth("ghp_", "Z", 36);
     writeFileSync(
       join(logsDir, "orchestrator", sid, "main.log"),
       [
         "2026-11-27T10:00:00.000Z [info] [orchestrator] info line must be skipped",
-        `2026-11-27T10:00:01.000Z [warn] [orchestrator] token=${token} path=${home}/work`,
+        "2026-11-27T10:00:01.000Z [warn] [orchestrator] first warning",
         "2026-11-27T10:00:05.000Z [error] [orchestrator] latest error",
       ].join("\n") + "\n",
     );
@@ -209,6 +286,7 @@ describe("collectRedactedDiagnosticLogs", () => {
 
     const res = collectRedactedDiagnosticLogs({
       logsDir,
+      fallbackLogsDirs: [],
       sessionId: sid,
       maxLines: 2,
       homeDir: home,
@@ -222,21 +300,186 @@ describe("collectRedactedDiagnosticLogs", () => {
     assert.equal(res.returnedLines, 2);
     assert.equal(res.truncated, true);
     assert.equal(res.entries[0].logger, "coms");
+    assert.equal(res.entries[0].scope, "session");
     assert.equal(res.entries[1].logger, "orchestrator");
+  });
 
-    // Verify full set redacts secret & home path
-    const all = collectRedactedDiagnosticLogs({
+  it("truncates long warn lines to maxLineChars after redacting secrets spanning the cut point", () => {
+    const home = trackTempDir("diag-truncate-");
+    const logsDir = join(home, ".pi", "logs");
+    const sid = "sess-trunc";
+    mkdirSync(join(logsDir, "orchestrator", sid), { recursive: true });
+
+    // Place a 40-char secret straddling the 75-char cut point (index 51..91) so redaction must run BEFORE slicing.
+    const spanningSecret = synth("ghp_", "Q", 36);
+    writeFileSync(
+      join(logsDir, "orchestrator", sid, "main.log"),
+      `2026-11-27T10:00:01.000Z [warn] [orchestrator] tok=${spanningSecret} ${"x".repeat(80)}\n`,
+    );
+
+    const res = collectRedactedDiagnosticLogs({
       logsDir,
+      fallbackLogsDirs: [],
       sessionId: sid,
-      maxLines: 10,
+      maxLineChars: 90,
       homeDir: home,
       env: {},
     });
-    assert.equal(all.entries.length, 3);
-    assert.ok(!all.entries[0].line.includes(token));
-    assert.ok(!all.entries[0].line.includes(home));
-    assert.match(all.entries[0].line, /\[REDACTED:GHTOKEN\]/);
-    assert.match(all.entries[0].line, /path=~\/work/);
+
+    assert.equal(res.entries.length, 1);
+    const line = res.entries[0].line;
+    assert.equal(line.length, 90);
+    assert.ok(line.endsWith("... [truncated]"));
+    assert.ok(!line.includes("ghp_"));
+    assert.ok(!line.includes("QQQQ"));
+    assert.match(line, /\[REDACTED:GHTOKEN\]/);
+  });
+
+  it("does not misclassify canonical info lines containing error text as errors", () => {
+    const home = trackTempDir("diag-info-noise-");
+    const logsDir = join(home, ".pi", "logs");
+    const sid = "sess-info";
+    mkdirSync(join(logsDir, "orchestrator", sid), { recursive: true });
+
+    writeFileSync(
+      join(logsDir, "orchestrator", sid, "main.log"),
+      [
+        '2026-11-27T10:00:00.000Z [info] [orchestrator] handled [error] payload {"level":"error"}',
+        "2026-11-27T10:00:01.000Z info vertex handled [error] text",
+        "2026-11-27T10:00:02.000Z [warn] [orchestrator] actual warning",
+      ].join("\n") + "\n",
+    );
+
+    const res = collectRedactedDiagnosticLogs({
+      logsDir,
+      fallbackLogsDirs: [],
+      sessionId: sid,
+      homeDir: home,
+      env: {},
+    });
+
+    assert.equal(res.entries.length, 1);
+    assert.equal(res.entries[0].level, "warn");
+    assert.match(res.entries[0].line, /actual warning/);
+  });
+
+  it("redacts credential-like values in emitted sessionId, logger, and file metadata", () => {
+    const home = trackTempDir("diag-meta-redact-");
+    const logsDir = join(home, ".pi", "logs");
+    const secretSid = synth("ghp_", "S", 36);
+    const secretLogger = synth("npm_", "L", 36);
+    const secretFile = `${synth("AIza", "F", 35)}.log`;
+    mkdirSync(join(logsDir, secretLogger, secretSid), { recursive: true });
+    writeFileSync(
+      join(logsDir, secretLogger, secretSid, secretFile),
+      "2026-11-27T10:00:00.000Z [error] [mod] boom\n",
+    );
+
+    const res = collectRedactedDiagnosticLogs({
+      logsDir,
+      fallbackLogsDirs: [],
+      sessionId: secretSid,
+      homeDir: home,
+      env: {},
+    });
+
+    assert.equal(res.entries.length, 1);
+    assert.ok(!String(res.sessionId).includes(secretSid));
+    assert.ok(!res.entries[0].logger.includes(secretLogger));
+    assert.ok(!res.entries[0].file.includes(secretLogger));
+    assert.ok(!res.entries[0].file.includes(secretFile.slice(0, -4)));
+    assert.match(String(res.sessionId), /\[REDACTED:GHTOKEN\]/);
+    assert.match(res.entries[0].logger, /\[REDACTED:NPMTOKEN\]/);
+    assert.match(res.entries[0].file, /\[REDACTED:GOOGLEKEY\]/);
+  });
+
+  it("discovers flat Vertex session logs and parses unbracketed warn and error lines", () => {
+    const home = trackTempDir("diag-vertex-");
+    const logsDir = join(home, ".pi", "logs");
+    const sid = "vertex-sid-1";
+    mkdirSync(join(logsDir, "pi-vertex-claude"), { recursive: true });
+    writeFileSync(
+      join(logsDir, "pi-vertex-claude", `${sid}.log`),
+      [
+        "2026-11-27T10:00:00.000Z info request started",
+        "2026-11-27T10:00:01.000Z warn vertex quota approaching limit",
+        "2026-11-27T10:00:02.000Z error vertex stream aborted",
+      ].join("\n") + "\n",
+    );
+
+    const res = collectRedactedDiagnosticLogs({
+      logsDir,
+      fallbackLogsDirs: [],
+      sessionId: sid,
+      homeDir: home,
+      env: {},
+    });
+
+    assert.equal(res.filesScanned, 1);
+    assert.equal(res.entries.length, 2);
+    assert.equal(res.entries[0].logger, "pi-vertex-claude");
+    assert.equal(res.entries[0].level, "warn");
+    assert.equal(res.entries[1].level, "error");
+    assert.match(res.entries[1].line, /vertex stream aborted/);
+  });
+
+  it("selects a flat Vertex session log during latest-session fallback", () => {
+    const home = trackTempDir("diag-vertex-latest-");
+    const logsDir = join(home, ".pi", "logs");
+    mkdirSync(join(logsDir, "orchestrator", "older-sid"), { recursive: true });
+    mkdirSync(join(logsDir, "pi-vertex-claude"), { recursive: true });
+
+    const olderFile = join(logsDir, "orchestrator", "older-sid", "main.log");
+    const vertexFile = join(logsDir, "pi-vertex-claude", "newer-vertex-sid.log");
+    writeFileSync(olderFile, "2026-11-27T09:00:00.000Z [error] [orchestrator] old\n");
+    writeFileSync(vertexFile, "2026-11-27T11:00:00.000Z error latest vertex failure\n");
+    const oldTime = new Date("2026-11-27T09:00:00Z");
+    const newTime = new Date("2026-11-27T11:00:00Z");
+    utimesSync(olderFile, oldTime, oldTime);
+    utimesSync(vertexFile, newTime, newTime);
+
+    const res = collectRedactedDiagnosticLogs({
+      logsDir,
+      fallbackLogsDirs: [],
+      homeDir: home,
+      env: {},
+    });
+    assert.equal(res.sessionId, "newer-vertex-sid");
+    assert.equal(res.sessionSource, "latest-fallback");
+    assert.equal(res.entries.length, 1);
+    assert.match(res.entries[0].line, /latest vertex failure/);
+  });
+
+  it("collects unscoped entries from project and home fallback log directories", () => {
+    const home = trackTempDir("diag-fallback-home-");
+    const projectDir = trackTempDir("diag-fallback-proj-");
+    const projFallback = join(projectDir, ".pi", "tmp", "pi-logs");
+    const homeFallback = join(home, ".pi", "tmp", "pi-logs");
+    mkdirSync(projFallback, { recursive: true });
+    mkdirSync(homeFallback, { recursive: true });
+
+    writeFileSync(
+      join(projFallback, "orchestrator.log"),
+      "2026-11-27T10:00:01.000Z [warn] [orchestrator] project fallback warn\n",
+    );
+    writeFileSync(
+      join(homeFallback, "providers.log"),
+      "2026-11-27T10:00:02.000Z [error] [providers] home fallback error\n",
+    );
+
+    const res = collectRedactedDiagnosticLogs({
+      cwd: projectDir,
+      logsDir: join(home, ".pi", "missing-logs"),
+      homeDir: home,
+      env: {},
+    });
+
+    assert.equal(res.fallbackFilesScanned, 2);
+    assert.equal(res.entries.length, 2);
+    assert.equal(res.entries[0].scope, "fallback-project");
+    assert.match(res.entries[0].line, /project fallback warn/);
+    assert.equal(res.entries[1].scope, "fallback-home");
+    assert.match(res.entries[1].line, /home fallback error/);
   });
 
   it("prefers __PI_PARENT_SESSION_ID over __PI_CONFIG_SESSION_ID when resolving from env", () => {
@@ -250,6 +493,7 @@ describe("collectRedactedDiagnosticLogs", () => {
 
     const res = collectRedactedDiagnosticLogs({
       logsDir,
+      fallbackLogsDirs: [],
       homeDir: home,
       env: {
         __PI_PARENT_SESSION_ID: "parent-sid",
@@ -262,29 +506,7 @@ describe("collectRedactedDiagnosticLogs", () => {
     assert.match(res.entries[0].line, /from parent session/);
   });
 
-  it("falls back to the most recently modified session when no session ID is provided", () => {
-    const home = trackTempDir("diag-latest-sid-");
-    const logsDir = join(home, ".pi", "logs");
-    mkdirSync(join(logsDir, "orchestrator", "old-sid"), { recursive: true });
-    mkdirSync(join(logsDir, "orchestrator", "new-sid"), { recursive: true });
-
-    const oldFile = join(logsDir, "orchestrator", "old-sid", "main.log");
-    const newFile = join(logsDir, "orchestrator", "new-sid", "main.log");
-    writeFileSync(oldFile, "2026-11-27T09:00:00.000Z [error] [orchestrator] stale\n");
-    writeFileSync(newFile, "2026-11-27T11:00:00.000Z [error] [orchestrator] fresh\n");
-    const oldTime = new Date("2026-11-27T09:00:00Z");
-    const newTime = new Date("2026-11-27T11:00:00Z");
-    utimesSync(oldFile, oldTime, oldTime);
-    utimesSync(newFile, newTime, newTime);
-
-    const res = collectRedactedDiagnosticLogs({ logsDir, homeDir: home, env: {} });
-    assert.equal(res.sessionId, "new-sid");
-    assert.equal(res.sessionSource, "latest-fallback");
-    assert.equal(res.returnedLines, 1);
-    assert.match(res.entries[0].line, /fresh/);
-  });
-
-  it("skips symlinked log files and rejects traversal session IDs", () => {
+  it("does not read symlinked log files", () => {
     const home = trackTempDir("diag-symlink-");
     const logsDir = join(home, ".pi", "logs");
     const outsideFile = join(home, "secret.log");
@@ -294,29 +516,38 @@ describe("collectRedactedDiagnosticLogs", () => {
     mkdirSync(sidDir, { recursive: true });
     symlinkSync(outsideFile, join(sidDir, "evil.log"));
 
-    const symRes = collectRedactedDiagnosticLogs({
+    const res = collectRedactedDiagnosticLogs({
       logsDir,
+      fallbackLogsDirs: [],
       sessionId: "sid-sym",
       homeDir: home,
       env: {},
     });
-    assert.equal(symRes.filesScanned, 0);
-    assert.equal(symRes.entries.length, 0);
+    assert.equal(res.filesScanned, 0);
+    assert.equal(res.entries.length, 0);
+  });
 
-    const travRes = collectRedactedDiagnosticLogs({
+  it("rejects traversal session IDs", () => {
+    const home = trackTempDir("diag-traversal-");
+    const logsDir = join(home, ".pi", "logs");
+    mkdirSync(join(logsDir, "orchestrator"), { recursive: true });
+
+    const res = collectRedactedDiagnosticLogs({
       logsDir,
+      fallbackLogsDirs: [],
       sessionId: "..",
       homeDir: home,
       env: {},
     });
-    assert.equal(travRes.sessionId, null);
-    assert.equal(travRes.filesScanned, 0);
+    assert.equal(res.sessionId, null);
+    assert.equal(res.filesScanned, 0);
   });
 
-  it("handles a missing logs directory gracefully", () => {
+  it("returns an empty collection when the logs directory does not exist", () => {
     const home = trackTempDir("diag-missing-");
     const res = collectRedactedDiagnosticLogs({
       logsDir: join(home, "does-not-exist"),
+      fallbackLogsDirs: [],
       homeDir: home,
       env: {},
     });
@@ -326,8 +557,8 @@ describe("collectRedactedDiagnosticLogs", () => {
   });
 });
 
-describe("parseCliArgs, parseRemoteRepoSlug, and collectDiagnosticReport", () => {
-  it("parses CLI flags and bounds --max-lines", () => {
+describe("parseCliArgs", () => {
+  it("parses valid CLI flags", () => {
     const opts = parseCliArgs([
       "--cwd",
       "/tmp/proj",
@@ -340,24 +571,36 @@ describe("parseCliArgs, parseRemoteRepoSlug, and collectDiagnosticReport", () =>
     ]);
     assert.equal(opts.sessionId, "s1");
     assert.equal(opts.maxLines, 25);
+  });
 
+  it("falls back to default maxLines when --max-lines is out of range", () => {
     const outOfRange = parseCliArgs(["--max-lines", "9999"]);
     assert.equal(outOfRange.maxLines, DEFAULT_MAX_LOG_LINES);
   });
+});
 
-  it("extracts owner/repo from SSH and HTTPS remotes without leaking credentials", () => {
+describe("parseRemoteRepoSlug", () => {
+  it("extracts owner/repo from SSH remotes", () => {
     assert.equal(
       parseRemoteRepoSlug("git@github.com:myk-org/pi-config.git"),
       "myk-org/pi-config",
     );
+  });
+
+  it("strips credentials from HTTPS remotes before extracting owner/repo", () => {
     assert.equal(
       parseRemoteRepoSlug(["https://user:", "tok123456789", "@github.com/myk-org/pi-config.git"].join("")),
       "myk-org/pi-config",
     );
-    assert.equal(parseRemoteRepoSlug("https://gitlab.example.test/group/repo.git"), null);
   });
 
-  it("collects a complete redacted snapshot with stubbed command probes", () => {
+  it("returns null for non-GitHub remotes", () => {
+    assert.equal(parseRemoteRepoSlug("https://gitlab.example.test/group/repo.git"), null);
+  });
+});
+
+describe("collectDiagnosticReport", () => {
+  it("collects a redacted runtime snapshot from stubbed command probes", () => {
     const home = trackTempDir("diag-report-");
     const cwd = join(home, "git", "pi-config");
     mkdirSync(cwd, { recursive: true });
@@ -377,6 +620,7 @@ describe("parseCliArgs, parseRemoteRepoSlug, and collectDiagnosticReport", () =>
       cwd,
       homeDir: home,
       logsDir: join(home, ".pi", "logs"),
+      fallbackLogsDirs: [],
       env: {},
       execFn: execStub,
     });
@@ -393,7 +637,7 @@ describe("parseCliArgs, parseRemoteRepoSlug, and collectDiagnosticReport", () =>
     assert.equal(report.git.dirty, true);
   });
 
-  it("runs directly via plain node CLI and outputs redacted JSON", () => {
+  it("emits redacted JSON when executed directly via node CLI", () => {
     const home = trackTempDir("diag-cli-");
     const logsDir = join(home, ".pi", "logs");
     const sid = "cli-sid";

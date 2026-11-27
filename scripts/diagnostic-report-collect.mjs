@@ -4,8 +4,10 @@
  *
  * Collects runtime versions (Pi, pi-orchestrator-config, myk-pi-tools, Node, OS),
  * redacted git/cwd metadata, and a bounded tail of recent `warn`/`error` log lines
- * from `~/.pi/logs/<logger>/<session-id>/*.log` with mandatory one-way secret and home-path
- * redaction.
+ * from `~/.pi/logs/<logger>/<session-id>/*.log`, flat `<logger>/<session-id>.log`
+ * (e.g. Vertex logger), and `file-logger` fallback directories
+ * (`<cwd>/.pi/tmp/pi-logs/*.log`, `~/.pi/tmp/pi-logs/*.log`) with mandatory
+ * one-way secret and home-path redaction.
  *
  * Usage:
  *   node scripts/diagnostic-report-collect.mjs [--cwd <dir>] [--session-id <id>]
@@ -41,23 +43,29 @@ const log = createLogger("diagnostic-report-collect");
 export const DEFAULT_MAX_LOG_LINES = 40;
 export const MAX_ALLOWED_LOG_LINES = 200;
 export const DEFAULT_MAX_LINE_CHARS = 500;
+const TRUNCATED_SUFFIX = "... [truncated]";
 const MAX_FILE_TAIL_BYTES = 256 * 1024;
 const SELF_LOGGER_DIR = "diagnostic-report-collect";
+const IGNORED_FLAT_LOG_NAMES = new Set(["install.log"]);
 
-const CANONICAL_LOG_LINE_RE =
-  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s+\[(warn|error)\]\s+(.*)$/i;
-const FALLBACK_LEVEL_RE =
-  /(?:\[(warn|warning|error)\]|"(?:level|severity)"\s*:\s*"(warn|warning|error)")/i;
-const FALLBACK_TS_RE = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\b/;
+const CANONICAL_BRACKETED_RE =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s+\[(debug|info|warn|warning|error)\]\s+(.*)$/i;
+const CANONICAL_UNBRACKETED_RE =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s+(debug|info|warn|warning|error)\s+(.*)$/i;
+const LEADING_BRACKET_LEVEL_RE = /^\[(debug|info|warn|warning|error)\]\s+/i;
 
 const AUTH_HEADER_RE =
   /(\b(?:Authorization|Proxy-Authorization)\s*:\s*(?:Basic|Digest|Token|ApiKey)\s+)([^\s,;'"`]+)/gi;
 const COOKIE_HEADER_RE =
-  /(\b(?:Set-Cookie|Cookie)\s*:\s*)([^\r\n]+)/gi;
+  /(\b(?:Set-Cookie|Cookie)\s*:\s*)(?!["'])([^\r\n]+)/gi;
 const TRUNCATED_PEM_RE =
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[^\r\n]*/g;
-const KV_SECRET_RE =
-  /((?<![A-Za-z0-9_-])["']?(?:api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|client[_-]?secret|private[_-]?key|x-api-key|password|passwd|pwd|secret|token)["']?\s*[:=]\s*)(?:"([^"\r\n]{4,})"|'([^'\r\n]{4,})'|([^\s,;'"`\]})]{6,}))/gi;
+const SECRET_KEY_PATTERN =
+  "(?:[A-Za-z0-9_-]+[_-])?(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|private[_-]?key|encryption[_-]?key|master[_-]?key|signing[_-]?key|auth[_-]?key|token|secret|password|passwd|pwd|passphrase|credentials?|oauth|authorization|cookie)";
+const KV_SECRET_RE = new RegExp(
+  `((?<![A-Za-z0-9_-])["']?${SECRET_KEY_PATTERN}["']?\\s*[:=]\\s*)(?:"((?:\\\\.|[^"\\\\\\r\\n])+)"|'((?:\\\\.|[^'\\\\\\r\\n])+)'|([^\\s,;'"\`\\]})]+))`,
+  "gi",
+);
 const NON_SECRET_LITERALS = new Set([
   "true",
   "false",
@@ -120,8 +128,9 @@ function collectEnvSecretLiterals(env) {
  * One-way irreversible redaction for diagnostic snapshots and log excerpts.
  *
  * Strips built-in credential patterns (shared with `secret-obfuscation.ts`),
- * generic key/value secrets, auth/cookie headers, secret environment variable
- * values, and local home-directory paths containing usernames.
+ * structured JSON & key/value secrets (including escaped quotes, short/numeric
+ * secrets, and credential-named fields), auth/cookie headers, secret environment
+ * variable values, and local home-directory paths containing usernames.
  */
 export function redactDiagnosticText(text, options = {}) {
   if (typeof text !== "string" || text.length === 0) return text ?? "";
@@ -144,7 +153,7 @@ export function redactDiagnosticText(text, options = {}) {
     }
   }
 
-  // 2. Truncated PEM blocks, auth headers, and Cookie headers.
+  // 2. Truncated PEM blocks, raw auth headers, and raw Cookie headers.
   TRUNCATED_PEM_RE.lastIndex = 0;
   out = out.replace(TRUNCATED_PEM_RE, "[REDACTED:PEMKEY]");
   AUTH_HEADER_RE.lastIndex = 0;
@@ -156,16 +165,18 @@ export function redactDiagnosticText(text, options = {}) {
     val.trim().startsWith("[REDACTED") ? full : `${prefix}[REDACTED:COOKIE]`,
   );
 
-  // 3. Generic key=value / JSON secret fields (skip booleans, null, numbers, already redacted).
+  // 3. Structured JSON & key=value secret fields (handles escaped quotes, short & numeric values).
   KV_SECRET_RE.lastIndex = 0;
-  out = out.replace(KV_SECRET_RE, (full, prefix, dbl, sgl, bare) => {
+  out = out.replace(KV_SECRET_RE, (full, prefix, dbl, sgl, bare, offset, str) => {
     const val = dbl ?? sgl ?? bare ?? "";
     const lower = val.toLowerCase();
     if (
       !val ||
       val.startsWith("[REDACTED") ||
       NON_SECRET_LITERALS.has(lower) ||
-      /^\d+(?:\.\d+)?$/.test(val)
+      (bare !== undefined &&
+        /^(?:bearer|basic|digest|token|apikey)$/i.test(bare) &&
+        /^[ \t]+\[REDACTED/.test(str.slice(offset + full.length)))
     ) {
       return full;
     }
@@ -265,6 +276,8 @@ function findLatestSessionId(logsDir) {
   for (const loggerName of listNonSymlinkSubdirs(logsDir)) {
     if (loggerName === SELF_LOGGER_DIR) continue;
     const loggerDir = join(logsDir, loggerName);
+
+    // 1. Nested session dirs: <logsDir>/<logger>/<sid>/*.log
     for (const sid of listNonSymlinkSubdirs(loggerDir)) {
       const sidDir = join(loggerDir, sid);
       try {
@@ -280,6 +293,29 @@ function findLatestSessionId(logsDir) {
         log.debug("scan_latest_session_failed", { sidDir, error: String(err?.message ?? err) });
       }
     }
+
+    // 2. Flat session files (e.g. pi-vertex-claude): <logsDir>/<logger>/<sid>.log
+    try {
+      for (const entry of readdirSync(loggerDir, { withFileTypes: true })) {
+        if (
+          !entry.isFile() ||
+          entry.isSymbolicLink() ||
+          !entry.name.endsWith(".log") ||
+          IGNORED_FLAT_LOG_NAMES.has(entry.name)
+        ) {
+          continue;
+        }
+        const sid = entry.name.slice(0, -4);
+        if (!sanitizeSegment(sid)) continue;
+        const st = statSync(join(loggerDir, entry.name));
+        if (st.mtimeMs > bestMtime) {
+          bestMtime = st.mtimeMs;
+          bestSid = sid;
+        }
+      }
+    } catch (err) {
+      log.debug("scan_latest_flat_session_failed", { loggerDir, error: String(err?.message ?? err) });
+    }
   }
   return bestSid;
 }
@@ -288,52 +324,159 @@ function scanSessionFiles(logsDir, safeSid) {
   const files = [];
   for (const loggerName of listNonSymlinkSubdirs(logsDir)) {
     if (loggerName === SELF_LOGGER_DIR) continue;
-    const sidDir = join(logsDir, loggerName, safeSid);
+    const loggerDir = join(logsDir, loggerName);
+
+    // 1. Nested session files: <logsDir>/<logger>/<safeSid>/*.log
+    const sidDir = join(loggerDir, safeSid);
     try {
       const st = lstatSync(sidDir);
-      if (!st.isDirectory() || st.isSymbolicLink()) continue;
-      const names = readdirSync(sidDir, { withFileTypes: true })
-        .filter((d) => d.isFile() && !d.isSymbolicLink() && d.name.endsWith(".log"))
-        .map((d) => d.name)
-        .sort();
-      for (const fileName of names) {
+      if (st.isDirectory() && !st.isSymbolicLink()) {
+        const names = readdirSync(sidDir, { withFileTypes: true })
+          .filter((d) => d.isFile() && !d.isSymbolicLink() && d.name.endsWith(".log"))
+          .map((d) => d.name)
+          .sort();
+        for (const fileName of names) {
+          files.push({
+            logger: loggerName,
+            file: `${loggerName}/${fileName}`,
+            fullPath: join(sidDir, fileName),
+            scope: "session",
+          });
+        }
+      }
+    } catch {
+      // Logger has no nested directory for this session — normal.
+    }
+
+    // 2. Flat session file (e.g. pi-vertex-claude): <logsDir>/<logger>/<safeSid>.log
+    const flatFile = join(loggerDir, `${safeSid}.log`);
+    try {
+      const st = lstatSync(flatFile);
+      if (st.isFile() && !st.isSymbolicLink()) {
         files.push({
           logger: loggerName,
-          file: `${loggerName}/${fileName}`,
-          fullPath: join(sidDir, fileName),
+          file: `${loggerName}/${safeSid}.log`,
+          fullPath: flatFile,
+          scope: "session",
         });
       }
     } catch {
-      // Logger has no directory for this session — normal.
+      // Logger has no flat session file — normal.
     }
   }
   return files;
 }
 
-function parseWarnOrErrorLine(rawLine) {
-  const canonical = CANONICAL_LOG_LINE_RE.exec(rawLine);
-  if (canonical) {
-    return {
-      timestamp: canonical[1],
-      level: canonical[2].toLowerCase(),
-      raw: rawLine,
-    };
+function scanFallbackDirFiles(dirPath, scope) {
+  const files = [];
+  try {
+    const st = lstatSync(dirPath);
+    if (!st.isDirectory() || st.isSymbolicLink()) return files;
+    const entries = readdirSync(dirPath, { withFileTypes: true })
+      .filter((d) => d.isFile() && !d.isSymbolicLink() && d.name.endsWith(".log"))
+      .map((d) => d.name)
+      .sort();
+    for (const fileName of entries) {
+      const loggerName = fileName.slice(0, -4);
+      if (loggerName === SELF_LOGGER_DIR) continue;
+      files.push({
+        logger: loggerName,
+        file: `${scope}:${fileName}`,
+        fullPath: join(dirPath, fileName),
+        scope,
+      });
+    }
+  } catch {
+    // Fallback dir does not exist or is unreadable — normal.
   }
-  const fallback = FALLBACK_LEVEL_RE.exec(rawLine);
-  if (fallback) {
-    const rawLevel = (fallback[1] || fallback[2] || "warn").toLowerCase();
-    const tsMatch = FALLBACK_TS_RE.exec(rawLine);
-    return {
-      timestamp: tsMatch ? tsMatch[1] : null,
-      level: rawLevel === "warning" ? "warn" : rawLevel,
-      raw: rawLine,
-    };
-  }
+  return files;
+}
+
+function normalizeWarnOrError(rawLevel) {
+  const lower = rawLevel.toLowerCase();
+  if (lower === "warn" || lower === "warning") return "warn";
+  if (lower === "error") return "error";
   return null;
 }
 
+function parseWarnOrErrorLine(rawLine) {
+  // 1. Canonical bracketed logger format: `<ISO> [level] [prefix] msg`
+  const bracketed = CANONICAL_BRACKETED_RE.exec(rawLine);
+  if (bracketed) {
+    const level = normalizeWarnOrError(bracketed[2]);
+    return level ? { timestamp: bracketed[1], level, raw: rawLine } : null;
+  }
+
+  // 2. Canonical unbracketed logger format (e.g. pi-vertex-claude): `<ISO> level msg`
+  const unbracketed = CANONICAL_UNBRACKETED_RE.exec(rawLine);
+  if (unbracketed) {
+    const level = normalizeWarnOrError(unbracketed[2]);
+    return level ? { timestamp: unbracketed[1], level, raw: rawLine } : null;
+  }
+
+  // 3. Structured JSON log line (only inspect top-level `level`/`severity` property)
+  if (rawLine.startsWith("{") && rawLine.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(rawLine);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const rawLevel =
+          typeof parsed.level === "string"
+            ? parsed.level
+            : typeof parsed.severity === "string"
+              ? parsed.severity
+              : null;
+        if (rawLevel) {
+          const level = normalizeWarnOrError(rawLevel);
+          if (!level) return null;
+          const ts =
+            typeof parsed.timestamp === "string"
+              ? parsed.timestamp
+              : typeof parsed.time === "string"
+                ? parsed.time
+                : null;
+          return { timestamp: ts, level, raw: rawLine };
+        }
+      }
+    } catch {
+      // Not valid JSON — ignore.
+    }
+  }
+
+  // 4. Leading bracketed level at line start: `[warn] ...` / `[error] ...`
+  const leading = LEADING_BRACKET_LEVEL_RE.exec(rawLine);
+  if (leading) {
+    const level = normalizeWarnOrError(leading[1]);
+    return level ? { timestamp: null, level, raw: rawLine } : null;
+  }
+
+  return null;
+}
+
+function resolveFallbackDirs(options, homeDir) {
+  if (Array.isArray(options.fallbackLogsDirs)) {
+    return options.fallbackLogsDirs.map((item, idx) =>
+      typeof item === "string"
+        ? { dir: item, scope: `fallback-${idx}` }
+        : { dir: item.dir, scope: item.scope || `fallback-${idx}` },
+    );
+  }
+  const dirs = [];
+  const seen = new Set();
+  if (options.cwd) {
+    const projFallback = join(resolve(options.cwd), ".pi", "tmp", "pi-logs");
+    seen.add(projFallback);
+    dirs.push({ dir: projFallback, scope: "fallback-project" });
+  }
+  const homeFallback = join(homeDir, ".pi", "tmp", "pi-logs");
+  if (!seen.has(homeFallback)) {
+    dirs.push({ dir: homeFallback, scope: "fallback-home" });
+  }
+  return dirs;
+}
+
 /**
- * Collect bounded recent `warn`/`error` log lines across `~/.pi/logs/<logger>/<session-id>/*.log`
+ * Collect bounded recent `warn`/`error` log lines across `~/.pi/logs/<logger>/<session-id>/*.log`,
+ * flat `<logger>/<session-id>.log` files, and `file-logger` fallback directories,
  * with mandatory secret and home-directory redaction.
  */
 export function collectRedactedDiagnosticLogs(options = {}) {
@@ -352,65 +495,62 @@ export function collectRedactedDiagnosticLogs(options = {}) {
   const redact = (s) => redactDiagnosticText(s, { env, homeDir, _envSecrets: envSecrets });
 
   const redactedLogsDir = redact(logsDir);
-  if (!existsSync(logsDir)) {
-    log.debug("logs_dir_missing", { logsDir: redactedLogsDir });
-    return {
-      sessionId: null,
-      sessionSource: "none",
-      logsDir: redactedLogsDir,
-      filesScanned: 0,
-      totalWarnErrorLines: 0,
-      returnedLines: 0,
-      truncated: false,
-      entries: [],
-    };
-  }
-
   let resolvedSessionId = null;
   let sessionSource = "none";
   let matchedFiles = [];
 
-  if (options.sessionId) {
-    resolvedSessionId = sanitizeSegment(options.sessionId);
-    sessionSource = "explicit";
-    if (resolvedSessionId) {
-      matchedFiles = scanSessionFiles(logsDir, resolvedSessionId);
-    }
-  } else {
-    const candidates = [
-      sanitizeSegment(env.__PI_PARENT_SESSION_ID),
-      sanitizeSegment(env.__PI_CONFIG_SESSION_ID),
-    ].filter((v, idx, arr) => v && arr.indexOf(v) === idx);
-
-    if (candidates.length > 0) {
-      sessionSource = "env";
-      resolvedSessionId = candidates[0];
-      for (const candidate of candidates) {
-        const found = scanSessionFiles(logsDir, candidate);
-        if (found.length > 0) {
-          resolvedSessionId = candidate;
-          matchedFiles = found;
-          break;
-        }
+  if (existsSync(logsDir)) {
+    if (options.sessionId) {
+      resolvedSessionId = sanitizeSegment(options.sessionId);
+      sessionSource = "explicit";
+      if (resolvedSessionId) {
+        matchedFiles = scanSessionFiles(logsDir, resolvedSessionId);
       }
     } else {
-      const latest = findLatestSessionId(logsDir);
-      if (latest) {
-        resolvedSessionId = latest;
-        sessionSource = "latest-fallback";
-        matchedFiles = scanSessionFiles(logsDir, latest);
+      const candidates = [
+        sanitizeSegment(env.__PI_PARENT_SESSION_ID),
+        sanitizeSegment(env.__PI_CONFIG_SESSION_ID),
+      ].filter((v, idx, arr) => v && arr.indexOf(v) === idx);
+
+      if (candidates.length > 0) {
+        sessionSource = "env";
+        resolvedSessionId = candidates[0];
+        for (const candidate of candidates) {
+          const found = scanSessionFiles(logsDir, candidate);
+          if (found.length > 0) {
+            resolvedSessionId = candidate;
+            matchedFiles = found;
+            break;
+          }
+        }
+      } else {
+        const latest = findLatestSessionId(logsDir);
+        if (latest) {
+          resolvedSessionId = latest;
+          sessionSource = "latest-fallback";
+          matchedFiles = scanSessionFiles(logsDir, latest);
+        }
       }
     }
+  } else {
+    log.debug("logs_dir_missing", { logsDir: redactedLogsDir });
   }
 
+  // Also inspect file-logger fallback dirs (unscoped flat `<logger>.log` files written when ~/.pi/logs fails).
+  const fallbackFiles = [];
+  for (const { dir, scope } of resolveFallbackDirs(options, homeDir)) {
+    fallbackFiles.push(...scanFallbackDirFiles(dir, scope));
+  }
+
+  const allFiles = [...matchedFiles, ...fallbackFiles];
   const collected = [];
   let seq = 0;
-  for (const item of matchedFiles) {
+  for (const item of allFiles) {
     let text = "";
     try {
       text = readTailText(item.fullPath, MAX_FILE_TAIL_BYTES);
     } catch (err) {
-      log.warn("read_log_file_failed", { file: item.file, error: String(err?.message ?? err) });
+      log.warn("read_log_file_failed", { file: redact(item.file), error: String(err?.message ?? err) });
       continue;
     }
     if (!text) continue;
@@ -422,6 +562,7 @@ export function collectRedactedDiagnosticLogs(options = {}) {
         seq: seq++,
         logger: item.logger,
         file: item.file,
+        scope: item.scope,
         level: parsed.level,
         timestamp: parsed.timestamp,
         raw: parsed.raw,
@@ -442,11 +583,12 @@ export function collectRedactedDiagnosticLogs(options = {}) {
     const redacted = redact(entry.raw);
     const line =
       redacted.length > maxLineChars
-        ? `${redacted.slice(0, maxLineChars - 14)}... [truncated]`
+        ? `${redacted.slice(0, maxLineChars - TRUNCATED_SUFFIX.length)}${TRUNCATED_SUFFIX}`
         : redacted;
     return {
-      logger: entry.logger,
-      file: entry.file,
+      logger: redact(entry.logger),
+      file: redact(entry.file),
+      scope: entry.scope,
       level: entry.level,
       timestamp: entry.timestamp,
       line,
@@ -456,15 +598,17 @@ export function collectRedactedDiagnosticLogs(options = {}) {
   log.info("diagnostic_logs_collected", {
     sessionSource,
     filesScanned: matchedFiles.length,
+    fallbackFilesScanned: fallbackFiles.length,
     totalWarnErrorLines,
     returnedLines: entries.length,
   });
 
   return {
-    sessionId: resolvedSessionId,
+    sessionId: resolvedSessionId ? redact(resolvedSessionId) : null,
     sessionSource,
     logsDir: redactedLogsDir,
     filesScanned: matchedFiles.length,
+    fallbackFilesScanned: fallbackFiles.length,
     totalWarnErrorLines,
     returnedLines: entries.length,
     truncated: totalWarnErrorLines > entries.length,
@@ -524,7 +668,9 @@ export function collectDiagnosticReport(options = {}) {
   const remoteRaw = runSoft(execFn, "git", ["remote", "get-url", "origin"], cwd);
 
   const logs = collectRedactedDiagnosticLogs({
+    cwd,
     logsDir: options.logsDir,
+    fallbackLogsDirs: options.fallbackLogsDirs,
     sessionId: options.sessionId,
     maxLines: options.maxLines,
     maxLineChars: options.maxLineChars,

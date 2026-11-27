@@ -24,20 +24,28 @@ asking to file.
 
 ## Step 1 — Collect Runtime & Redacted Log Snapshot
 
-1. Locate the `$0` collector script from the git root, falling back to the installed npm package, and run it:
+1. Run the **packaged** `$0` collector from the installed `pi-orchestrator-config` package (independent of the current git checkout so untrusted repositories can never execute
+   arbitrary code):
 
    ```bash
-   GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
-   COLLECTOR="$GIT_ROOT/scripts/diagnostic-report-collect.mjs"
-   [ -f "$COLLECTOR" ] || COLLECTOR="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/diagnostic-report-collect.mjs"
-   node "$COLLECTOR" --cwd "$PWD" --max-lines 40
+   COLLECTOR="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/diagnostic-report-collect.mjs"
+   [ -f "$COLLECTOR" ] || COLLECTOR="$(npm root -g 2>/dev/null)/pi-orchestrator-config/scripts/diagnostic-report-collect.mjs"
+   if [ -f "$COLLECTOR" ]; then
+     node "$COLLECTOR" --cwd "$PWD" --max-lines 40
+   else
+     echo "PACKAGED_COLLECTOR_NOT_FOUND"
+   fi
    ```
+
+   If `PACKAGED_COLLECTOR_NOT_FOUND` is returned (for example, inside a local `pi-config` dev checkout without a global install), do **not** run a checkout-local script
+   automatically — call `ask_user` to get explicit approval before running `./scripts/diagnostic-report-collect.mjs`.
 
 2. Inspect the JSON snapshot returned by the collector:
    - **Versions:** `pi`, `pi-orchestrator-config`, `myk-pi-tools`, `node`
    - **OS & Git:** platform/release/arch, redacted `cwd`, active branch/commit/dirty state, detected `remoteRepo`
-   - **Redacted session logs:** bounded tail of up to 40 recent `warn`/`error` lines across `~/.pi/logs/*/<current-session-id>/*.log` (already stripped of credentials, secret env
-     vars, and home paths)
+   - **Redacted session logs:** bounded tail of up to 40 recent `warn`/`error` lines across `~/.pi/logs/<logger>/<session-id>/*.log`, flat `<logger>/<session-id>.log` files
+     (including Vertex logs), and `file-logger` fallback directories (`<cwd>/.pi/tmp/pi-logs/*.log`, `~/.pi/tmp/pi-logs/*.log`), already stripped of credentials, secret env vars,
+     and home paths
 3. If `$ARGUMENTS` is empty and the user's recent conversation does not specify the symptom, ask the user (via `ask_user`) for a brief description of the unexpected behavior and
    reproduction steps before continuing.
 

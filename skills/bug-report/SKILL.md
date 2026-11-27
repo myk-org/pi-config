@@ -17,16 +17,21 @@ Follow this 4-step workflow whenever a user reports unexpected behavior or wants
 ## Steps
 
 1. **Collect runtime & redacted log snapshot:**
-   Run the `$0` collector (resolving from git root, falling back to the npm install):
+   Run the **packaged** `$0` collector independently of the current git checkout (never execute a checkout-local collector without explicit `ask_user` approval):
 
    ```bash
-   GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
-   COLLECTOR="$GIT_ROOT/scripts/diagnostic-report-collect.mjs"
-   [ -f "$COLLECTOR" ] || COLLECTOR="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/diagnostic-report-collect.mjs"
-   node "$COLLECTOR" --cwd "$PWD" --max-lines 40
+   COLLECTOR="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/diagnostic-report-collect.mjs"
+   [ -f "$COLLECTOR" ] || COLLECTOR="$(npm root -g 2>/dev/null)/pi-orchestrator-config/scripts/diagnostic-report-collect.mjs"
+   if [ -f "$COLLECTOR" ]; then
+     node "$COLLECTOR" --cwd "$PWD" --max-lines 40
+   else
+     echo "PACKAGED_COLLECTOR_NOT_FOUND"
+   fi
    ```
 
-   This collects `pi`, `pi-orchestrator-config`, `myk-pi-tools`, Node/OS versions, redacted git/cwd state, and the last 40 redacted `warn`/`error` lines across `~/.pi/logs/*/<current-session-id>/*.log`.
+   If `PACKAGED_COLLECTOR_NOT_FOUND` is returned, ask the user via `ask_user` before running a checkout-local `./scripts/diagnostic-report-collect.mjs`. The collector gathers
+   `pi`, `pi-orchestrator-config`, `myk-pi-tools`, Node/OS versions, redacted git/cwd state, and the last 40 redacted `warn`/`error` lines across
+   `~/.pi/logs/<logger>/<session-id>/*.log`, flat `<logger>/<session-id>.log` files, and `file-logger` fallback directories.
 
 2. **Check docs & active config:**
    Search `docs/`, `README.md`, `settings-keys.json`, and active non-secret settings to verify whether the behavior is documented/expected or a genuine bug.

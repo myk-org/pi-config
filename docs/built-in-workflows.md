@@ -262,7 +262,7 @@ Collects a redacted runtime snapshot and recent session `warn`/`error` log tail,
 
 - Runtime versions (`pi`, `pi-orchestrator-config`, `myk-pi-tools`, Node) and OS (`platform`, `release`, `arch`).
 - Redacted working directory, active git branch/commit/dirty state, and detected GitHub repository slug.
-- Last 40 `warn`/`error` lines across `~/.pi/logs/*/<current-session-id>/*.log`, irreversibly stripped of credentials, secret env values, auth/cookie headers, and home-directory usernames.
+- Last 40 `warn`/`error` lines across `~/.pi/logs/<logger>/<session-id>/*.log`, flat `<logger>/<session-id>.log` files, and `file-logger` fallback directories, irreversibly stripped of credentials, secret env values, auth/cookie headers, and home-directory usernames.
 
 **Return value / effect:** Displays the diagnostic bundle, docs/config verdict, and duplicate check results, then calls `ask_user` before creating a new GitHub issue or commenting on an existing duplicate through `github-expert`. Also available as the bundled `bug-report` skill when asking to report a bug in plain conversation.
 
