@@ -1,0 +1,117 @@
+# Features overview
+
+A single-page index of every capability `pi-config` adds on top of upstream Pi, grouped by subsystem. Each item covers only `pi-config` extensions, agents, prompts, skills, rules, daemons, CLI tools, and workspace packages, excluding built-in Pi features.
+
+## Orchestration and subagents
+
+- **Subagent delegation (`subagent`).** Delegates isolated work to specialist agents in single, parallel, sequential chain (`{previous}`), async, and async-chain modes with optional per-call `provider/model-id` overrides ([Managing Custom Agents](managing-custom-agents.html)).
+- **Bundled specialist agents.** Ships 30 agent definitions across languages, infrastructure, git and GitHub workflows, documentation, five parallel code reviewers, three issue reviewers, security auditing, and conflict resolution, with user and project override layers ([Agents Reference](agents-reference.html)).
+- **Async background agents and `/async`.** Spawns detached background agents that deliver 1-line expandable results automatically, backed by a fullscreen `/async` overlay with Roster and Activity tabs, live output, job revive, and multi-select kill ([Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)).
+- **LLM model discovery (`list_models`).** Lists configured `provider/model-id` pairs so the orchestrator can pick explicit overrides for `subagent` calls ([Commands and Tools Reference](commands-and-tools.html)).
+- **Codemode auto-activation and tool namespaces.** Enables Pi's `codemode` on session start unless excluded and groups extension tools into `memory`, `coms`, `tasks`, `trail`, and `runtime` namespaces alongside `deferred` admin tools and `model-only` interactive tools ([Commands and Tools Reference](commands-and-tools.html)).
+- **Runtime session tools.** Gives the model structured tool parity (`async_status`, `session_status`, `worktree_status`, `daemon_manage`, `settings_get`, `settings_set`, `skill_adopt`, `memory_dream`) for inspecting and controlling session state without shell scraping ([Commands and Tools Reference](commands-and-tools.html)).
+- **Structured user prompts (`ask_user`).** Presents selectable options and free-text input in the TUI, browser dashboard, or Discord when a workflow needs a user decision ([Commands and Tools Reference](commands-and-tools.html)).
+- **Per-agent model and provider resolution.** Resolves subagent models through explicit call overrides, per-agent `agent_overrides`, default `agent_provider` and `agent_model` settings, and parent-session inheritance ([Managing Custom Agents](managing-custom-agents.html)).
+- **Agent-triggered self-reload (`reload-flag`).** Watches `.pi/run/reload.flag` with a `reload.pending` and `reload.done` nonce handshake so deploy scripts can reload a live interactive Pi session once it becomes idle ([Configuration & Settings](configuration.html#reload-handshake)).
+
+## Inter-agent communication (COMS)
+
+- **Peer-to-peer session messaging (`coms`).** Connects independent Pi sessions over local Unix domain sockets or Windows named pipes through a project-scoped registry with no central broker ([Inter-Agent Communication](inter-agent-communication.html)).
+- **On-demand COMS lifecycle (`coms_start` and `coms_stop`).** Turns an active session into a discoverable peer on demand or tears down its socket without restarting Pi ([Inter-Agent Communication](inter-agent-communication.html)).
+- **Supervised peer spawning (`coms_peer_spawn`, `coms_peer_kill`, `coms_peers`).** Launches, lists, and stops detached `pi --mode rpc --coms` worker peers managed by `scripts/coms-peer-supervisor.mjs` ([Inter-Agent Communication](inter-agent-communication.html)).
+- **Broadcasts and message history (`coms_broadcast` and `coms_history`).** Sends announcements across connected peers and queries size-rotated JSONL message logs per peer ([Inter-Agent Communication](inter-agent-communication.html)).
+- **Remote task delegation (`coms_tasks_create` and `coms_task_*`).** Writes structured tasks directly into a peer's task store with an automatic completion-report task, sender ownership checks, and silent status reads ([Inter-Agent Communication](inter-agent-communication.html)).
+- **Queue recovery and local queue control (`coms_queue_*` and `coms_local_queue`).** Previews queued peer messages without exposing bodies, edits or prioritizes pending messages, clears stale entries safely, and cancels items in the local inbound queue ([Inter-Agent Communication](inter-agent-communication.html)).
+- **Interactive `/coms` overlay.** Opens a fullscreen TUI with Roster and Activity tabs, project or global scope toggle, stopped-peer revive, multi-select messaging and kill, workload drilldown, and inbound queue management ([Commands and Tools Reference](commands-and-tools.html)).
+- **Peer workload inspection and compact TUI traffic.** Queries active tasks, async jobs, and crons over peer sockets while rendering inbound and outbound peer events as compact 1-line `Ctrl+O`-expandable cards ([Inter-Agent Communication](inter-agent-communication.html)).
+
+## TUI overlays and workflow UX
+
+- **Unified `/status` snapshot.** Summarizes active async agents, cron tasks, git branch and dirty state, linked worktrees, container state, and loaded resources in one view ([Commands and Tools Reference](commands-and-tools.html)).
+- **Human Q&A reader (`/qa` and `Alt+Q`).** Filters out background turns to browse real user Q&A pairs newest-first with live search, 1-key editor quoting (`r` or `1` through `9`), and a buried-answer hint when background output pushes replies off-screen ([Commands and Tools Reference](commands-and-tools.html)).
+- **Git worktree manager (`/worktree`).** Opens a fullscreen overlay listing branches, dirty counts, open PRs, and active COMS peers per worktree with guarded removal, path copy, and metadata pruning ([Commands and Tools Reference](commands-and-tools.html)).
+- **Live status bar and desktop notifications.** Displays git status, worktree badges, clickable PR links, async, cron, dream, Trail, and review slots, and an inactivity clock, and sends `notify-send` alerts when input or attention is needed ([Configuration & Settings](configuration.html)).
+- **Collapsible TUI widgets.** Toggles the tasks and COMS widgets between expanded lists and 1-line headers via configurable shortcuts (`Alt+T`, `Alt+C`, `Alt+W`) while persisting visibility across reloads ([Configuration & Settings](configuration.html)).
+- **Display-only markdown formatting.** Renders visual badges for memory categories, review severities, task states, async job statuses, and COMS headers in the terminal without altering stored messages or model context.
+- **GitHub `#` issue and command argument autocomplete.** Suggests repository issues and PRs when typing `#` and tab-completes branches, PR numbers, agents, and tags for slash commands.
+- **Neovim quickfix integration (`/nvim-changed-files`).** Sends branch-changed files and review findings straight to Neovim's quickfix list when Pi runs inside a Neovim terminal buffer ([Neovim Integration](neovim-integration.html)).
+- **Local file preview server.** Serves agent-generated HTML and frontend artifacts on a free localhost port through `scripts/httpd.py` for browser inspection.
+- **Session repair and startup checks (`/repair`).** Fixes orphaned `toolCall` entries on the active session branch that break provider API requests, checks required CLI tools on startup, and shows release notes after version upgrades ([Commands and Tools Reference](commands-and-tools.html)).
+
+## Web dashboards (`pidash` and `pidiff`)
+
+- **Multi-session web dashboard (`pidash` and `/pidash`).** Monitors and drives active Pi sessions from a React browser UI with sidebar attention, pin, and archive grouping, model switching, reasoning token display, one-click bash copy, and live session naming ([Using the Web Dashboard](using-the-web-dashboard.html)).
+- **Bidirectional TUI and browser parity.** Bridges `ask_user`, dangerous-command confirmations, commit-trailer pickers, and project-agent prompts between terminal and browser on a first-answer-wins basis alongside live Tasks, Worktrees, COMS, Memory, MCP, and Settings panels ([Pidash TUI Parity](pidash-tui-parity.html)).
+- **Per-project visual diff viewer (`pidiff` and `/pidiff`).** Runs a per-worktree diff server built on `@pierre/diffs` and `@pierre/trees` with a file tree, git-aware ignores, and inline review comments ([Daemon and WebSockets](daemon-and-websockets.html)).
+- **Discord remote control bot.** Runs inside the `pidash` daemon to watch sessions, send prompts and files, answer interactive prompts with buttons or menus, manage per-session threads or a forum board, and control runs through slash commands and reactions ([Discord Bot](discord-bot.html)).
+- **Platform-neutral chat bridge.** Separates prompt bridging, streaming, chunking, and session routing in `extensions/shared/chat/` from transport adapters so additional chat clients can plug in cleanly ([Chat Clients](chat-clients.html)).
+
+## Project memory and dreaming
+
+- **Topic-organized project memory (`memory_*`).** Stores durable preferences, lessons, mistakes, patterns, decisions, and completions under `.pi/memory/topics/` with stability decay scoring, provenance fields, and LLM tools for search, reflection, editing, and reinforcement ([Memory Architecture](memory-architecture.html)).
+- **Vector semantic recall and situation report.** Embeds memory entries locally with `fastembed` in `.pi/data/state.db` to inject a token-budgeted situation report and high-similarity contextual memories into prompts ([Memory Architecture](memory-architecture.html)).
+- **Memory contradiction gate.** Detects conflicting entries via clause-scoped polarity checks and vector narrowing before saving so outdated rules are superseded explicitly ([Memory Architecture](memory-architecture.html)).
+- **Background memory dreaming (`memory_dream`).** Consolidates recent session history periodically and on session end to extract durable knowledge, deduplicate entries, distill preference candidates, and refresh topic files ([Background Memory Consolidation](background-dreaming.html)).
+- **Automatic preference extraction.** Captures recurring user preferences from conversation turns into `.pi/memory/preference-candidates.jsonl` for review and consolidation ([Curating Project Memory](curating-project-memory.html)).
+- **Memory promotion queue.** Tracks evidence counts on recurring lessons and writes graduation candidates to `.pi/memory/promotions.md` for skills, enforced guards, or project rules ([Memory Architecture](memory-architecture.html)).
+- **Zero-cost past session search (`session_search`).** Indexes conversation summaries in SQLite so the model can search prior sessions by keyword without spending LLM tokens ([Commands and Tools Reference](commands-and-tools.html)).
+- **Review-to-memory learning.** Distills addressed PR review findings into project memory lessons automatically after `myk-pi-tools reviews address` runs ([Curating Project Memory](curating-project-memory.html)).
+
+## Task board (`pitasks`)
+
+- **Structured task board (`Task*` tools and `/tasks`).** Tracks multi-step workflows with `pending`, `in_progress`, `completed`, and `deleted` states, dependency blockers (`blocks` and `blockedBy`), bulk operations, and a fullscreen `/tasks` TUI overlay ([Commands and Tools Reference](commands-and-tools.html)).
+- **Human vs. agent assignees (`[you]` and `[llm]`).** Separates agent work from owner-only actions like merges or live UI checks, blocking agents from closing `[you]` tasks and delivering owner completion notes back on the next turn ([Commands and Tools Reference](commands-and-tools.html)).
+- **Async job badges and task reminders.** Displays live `[⏳ ...]` badges on tasks bound to running async subagents, auto-clears old completed tasks, and nudges idle sessions or headless COMS peers about open unblocked work ([Configuration & Settings](configuration.html)).
+- **Flexible file-backed task scopes.** Persists tasks per session or per project via `PI_TASK_SCOPE` and `PI_TASKS`, watches store files across atomic replacements and symlinks, and backs up corrupt JSON before overwriting ([Commands and Tools Reference](commands-and-tools.html)).
+
+## Safety, security, and enforcement
+
+- **Shell policy and dangerous command gate.** Parses bash commands to block remote script execution (`curl | bash`), `pip` (rewriting `python` to `uv run python`), protected-branch commits or pushes, `--no-verify`, and `git add .`, and confirms destructive commands like `rm -rf` or `sudo` with session or allowlist grants ([Safety Enforcements](safety-enforcements.html)).
+- **Restricted folders gate (`restricted_folders`).** Blocks symlink-resolved read, write, edit, search, and bash access to configured directories until approved once, per file, or per directory, failing closed in headless sessions and clearing grants via `/forget-approvals` ([Configuration & Settings](configuration.html)).
+- **Declarative tool permissions and per-host web fetch (`tool_permissions`).** Evaluates last-match-wins glob rules (`allow`, `ask`, `deny`), Pi tool annotation selectors (`destructive`, `openWorld`), and per-host `fetch_content` grants stored with HMAC-SHA256 authentication in SQLite ([Configuration & Settings](configuration.html)).
+- **Reversible secret obfuscation (`secret_obfuscation`).** Redacts environment secrets, URL passwords, credential patterns, and `secrets.jsonc` entries to deterministic placeholders before text reaches the provider and restores reversible placeholders in `tool_call` arguments ([Configuration & Settings](configuration.html)).
+- **Code-enforced memory rules.** Turns memory entries with `trigger`, `action` (`block`, `run_after`, `warn`), and optional `verifier` fields into runtime tool guards that the model cannot ignore ([Safety Enforcements](safety-enforcements.html)).
+- **Git conflict handoff enforcement.** Blocks `git-expert` from resolving or staging conflicted files and requires delegating merge, rebase, or cherry-pick conflicts to `conflict-resolver` ([Managing Custom Agents](managing-custom-agents.html)).
+- **Git workflow compliance guards.** Supports automatic `--signoff` (`dco`), configurable commit trailers (`commit_trailer`), worktree-only branch enforcement (`use_worktrees`), PR and issue comment signatures (`comment_signature`), and optional orchestrator edit/write blocking (`orchestrator_edit_write_block`) ([Configuration & Settings](configuration.html)).
+- **Agent-edit settings protection.** Blocks agent file tools from directly editing `pi-config-settings.json` so security settings change only through `/pi-config-settings` or approval-gated `settings_set` ([Configuration & Settings](configuration.html)).
+- **Runtime fault guards.** Forces retries when invalid tool arguments are rejected before execution (`tool-arg-guard`), retries bounded `MALFORMED_RESPONSE` provider aborts (`malformed-response-recovery`), and aborts runaway streaming repetition loops (`stream-loop-guard`).
+
+## Code intelligence and context efficiency
+
+- **Trail local code map (`trail_*`).** Indexes trusted git worktrees with `trail`, injects relevant source hits per turn, and gates initial raw search or file reads behind seven map-first code-graph tools ([Commands and Tools Reference](commands-and-tools.html)).
+- **Opt-in shared LSP diagnostics (`lsp_enabled`).** Runs a shared per-worktree UNIX-socket LSP broker daemon to append compiler and type diagnostics after `write` and `edit` calls, with a circuit breaker, idle shutdown, and a one-time install prompt for missing servers ([Configuration & Settings](configuration.html)).
+- **Session spill and binary blob externalization.** Moves oversized text tool results to `<session-dir>/local/<N>.log` with bounded head/tail previews and deduplicates large or repeated image payloads into `~/.pi/blobs/<sha256>` ([Configuration & Settings](configuration.html)).
+- **Mechanical pre-compaction elision.** Elides old bulky tool results outside the recent-turn window at zero LLM cost when context usage crosses the configured threshold while keeping recoverable spill file pointers ([Configuration & Settings](configuration.html)).
+- **Per-turn file snapshots (`/undo` and `/redo`).** Captures shadow git trees before mutating turns through a temporary `GIT_INDEX_FILE` so `/undo` and `/redo` revert or reapply working-tree edits without touching `.git/index`, commits, stash, or gitignored files ([Commands and Tools Reference](commands-and-tools.html)).
+- **Per-turn thinking magic keywords (`magic_keywords`).** Detects `ultrathink` or `chillax` in plain user prose to raise or lower reasoning effort for one turn and restores the previous thinking level afterward ([Configuration & Settings](configuration.html)).
+- **Bounded `.pi/tmp` cleanup.** Sweeps old entries from `.pi/tmp` asynchronously at session start only when total size exceeds `project_tmp_max_size` and entries are older than `project_tmp_retention_days` ([Configuration & Settings](configuration.html)).
+
+## Reviews, crons, and automation
+
+- **Scheduled tasks (`/cron` and `cron_manage`).** Runs interval or daily background tasks scoped to the session or persisted in `.pi/cron/crons.json` with `flock` locking, pinned models, `quiet_on_noop` suppression, and a fullscreen `/cron` overlay ([Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)).
+- **Automated PR review loop (`/review-handler`, `/pr-review`, `/review-local`, `/qodo-review`).** Fetches human, Qodo, and CodeRabbit feedback, tracks review state and cycles via `/review-status`, applies fixes, posts bulk replies, and polls until approved ([Automating Code Reviews](automating-code-reviews.html)).
+- **Background read-only advisor (`advisor_enabled`).** Periodically audits recent transcript deltas with a zero-tool model and injects a hidden warning only on concrete bugs, spec drift, or stuck retry loops ([Configuration & Settings](configuration.html)).
+- **Post-merge PR retrospectives (`/retro` and `pr_retro_on_merge`).** Collects zero-token PR, CI, and session telemetry via `scripts/pr-retro-collect.mjs` to write a structured retrospective report under `.pi/data/retros/` ([Built-in Workflow Commands](built-in-workflows.html)).
+- **Skill self-improvement (`/adopt-skill` and `skill_adopt`).** Tracks adopted skills marked with `skill-maintenance: auto`, nudges turns to fix broken skill steps, and logs provenance to `.pi/data/skill-review.jsonl` ([Skill Self-Improvement](skill-self-improvement.html)).
+- **Built-in workflow prompt templates.** Ships 20 slash-command workflows including `/implement`, `/scout-and-plan`, `/implement-and-review`, `/issue-review`, `/release`, `/report`, `/domain-model`, `/refine-review`, `/coderabbit-rate-limit`, `/create-commit`, `/create-skill`, `/create-coms-feature-manager`, `/query-db`, and `/remember` ([Built-in Workflow Commands](built-in-workflows.html)).
+- **Bundled procedural skills.** Includes six reusable skills (`bug-report`, `conflict-resolver`, `skill-creator`, `systematic-debugging`, `test-driven-development`, and `update-agents-md`) discovered automatically by Pi.
+- **Diagnostic bug reporting (`/report`).** Collects a redacted runtime snapshot and recent session warnings or errors via `scripts/diagnostic-report-collect.mjs`, checks docs and duplicate GitHub issues, and asks before filing ([Built-in Workflow Commands](built-in-workflows.html)).
+
+## Settings and rules architecture
+
+- **Schema-driven layered settings (`settings-keys.json`).** Resolves typed settings across project `.pi/pi-config-settings.json`, global `~/.pi/pi-config-settings.json`, environment variables, and defaults with atomic writes, backups, and one-time `.jsonc` migration ([Project Settings Internals](project-settings.html)).
+- **Interactive settings TUI (`/pi-config-settings`).** Provides a fullscreen editor with a scrollable category sidebar, cross-category search, strict Project and Global scope switching (`Tab`), model pickers, secret masking, and instant persistence ([Configuration & Settings](configuration.html)).
+- **Three-layer orchestrator rules (`rules/`).** Loads package (`00-69`), user (`70-89`), and project (`90-99`) Markdown rules alphabetically with filename overrides so behavioral instructions stay customizable per user or repository ([Rules and Layers](rules-and-layers.html)).
+- **Conditional and lazy-scoped rule assembly.** Evaluates `{{IF:...}}` and `{{IFNOT:...}}` conditionals plus frontmatter gates (`alwaysApply`, `globs`, `tools`, `requires_setting`, `enabled`) so path- or tool-scoped rules inject lazily without busting the cached system prompt prefix ([Rules and Layers](rules-and-layers.html)).
+- **One-time legacy MCP config migration.** Copies a pre-migration `~/.pi/pi-config/mcp.json` into `~/.pi/agent/mcp.json` on startup when the destination is absent so existing servers carry over to Pi's built-in MCP client ([MCP Servers](mcp-servers.html)).
+
+## Providers, packages, and CLI
+
+- **Default model and thinking-level restore (`providers`).** Restores the configured default model on cold start after auth races and persists the last chosen thinking level per model ([Async & Runtime Internals](async-internals.html)).
+- **OpenAI-compatible `/v1/models` discovery.** Queries configured OpenAI-compatible endpoints to populate Pi's model picker dynamically with optional capability and reasoning metadata enrichment ([Configuration & Settings](configuration.html)).
+- **Raw provider stream logging (`log_providers`).** Logs depth- and size-bounded, secret-redacted provider stream chunks and safe response headers to `~/.pi/logs/providers/` when `log_providers` is set to `debug` ([Configuration & Settings](configuration.html)).
+- **Google Vertex AI Claude provider (`@myk-org/pi-vertex-claude`).** Runs Claude models on Vertex AI using Google Cloud IAM and Application Default Credentials, with optional 1M-context registration (`vertex_claude_1m`) ([Google Vertex Claude Provider](vertex-claude-provider.html)).
+- **Pi SDK HTTP sidecar (`@myk-org/pi-sidecar` and `pi-sidecar-client`).** Exposes Pi sessions over a local HTTP API with matching Node and Python clients, per-session API key support, and optional redacted JSONL transcript recording ([Pi Sidecar HTTP API](pi-sidecar.html)).
+- **Static Markdown docs generator (`pi-docsite`).** Renders a flat directory of Markdown files into deterministic HTML with sidebar navigation, a full-text search index, and `llms.txt` / `llms-full.txt` exports ([pi-docsite](pi-docsite.html)).
+- **Python tooling CLI (`myk-pi-tools`).** Provides seven lazy-loaded command groups (`coderabbit`, `db`, `memory`, `pr`, `release`, `reviews`, `settings`) for PR review automation, SQLite review analytics, scoped monorepo releases, memory curation, and settings management ([myk_pi_tools CLI Reference](cli-reference.html)).
+- **Interactive installer and container image (`scripts/install.py` and `Dockerfile`).** Installs `pi-config`, `myk-pi-tools`, `trail`, `prek`, `agent-browser`, git excludes, and optional LSP servers in one command, or runs everything isolated inside a published container image ([Installation & Quickstart](quickstart.html)).

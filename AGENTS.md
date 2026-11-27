@@ -14,7 +14,8 @@
 
 1. All gates exit 0: `prek run --all-files`, `uv run --group tests pytest`, `npx tsx --test tests/node/**/*.test.ts`, `npm run typecheck`.
 2. Update docs when code/features change:
-   - New feature/command/tool → `README.md` feature table; new prompt template → `README.md` prompt table; new CLI tool/dep → `README.md` tools table + `Dockerfile`.
+   - New, changed, or removed feature/command/tool → `docs/features.md` + `README.md` feature table; new prompt template → `docs/features.md` + `README.md` prompt table;
+     new CLI tool/dep → `docs/features.md` + `README.md` tools table + `Dockerfile`.
    - New/modified extension module → `contributing/repo-structure.md`; new/removed agent → `contributing/repo-structure.md` +
      `rules/10-agent-routing.md` + `rules/50-agent-bug-reporting.md`; dev workflow → `DEVELOPMENT.md`.
 3. **LLM-facing capability is TAUGHT, not just built:** document new tools, params, keys, or modes in BOTH `rules/` (injected every
