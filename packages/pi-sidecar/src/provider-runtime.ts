@@ -1206,6 +1206,13 @@ export class PiProviderRuntime implements ProviderRuntime {
 
   private readonly createInternalRuntimeOverride?: PiProviderRuntimeOptions["createInternalRuntime"];
 
+  /**
+   * Post-startup `models.json` warning state updated by `runRefreshModels()`.
+   * `undefined` = no post-startup refresh yet; `null` = latest refresh cleared
+   * any `models.json` error; diagnostic object = latest refresh reported an error.
+   */
+  private refreshModelsJsonDiagnostic: AgentSessionRuntimeDiagnostic | null | undefined = undefined;
+
   constructor(options?: PiProviderRuntimeOptions) {
     this.agentDir = resolveInternalAgentDir(options?.agentDir);
     this.settingsSeed = readSettingsSeed(this.agentDir);
@@ -1236,7 +1243,16 @@ export class PiProviderRuntime implements ProviderRuntime {
 
   /** Read-only view of retained diagnostics from the internal registrar runtime. */
   getInternalDiagnostics(): readonly AgentSessionRuntimeDiagnostic[] {
-    return this.internalRuntime?.diagnostics ?? [];
+    const startupDiagnostics = this.internalRuntime?.diagnostics ?? [];
+    if (this.refreshModelsJsonDiagnostic === undefined) {
+      return startupDiagnostics;
+    }
+    const nonModelsJsonDiagnostics = startupDiagnostics.filter(
+      (diag) => !(diag.type === "warning" && diag.message.startsWith("models.json error:")),
+    );
+    return this.refreshModelsJsonDiagnostic
+      ? [...nonModelsJsonDiagnostics, this.refreshModelsJsonDiagnostic]
+      : nonModelsJsonDiagnostics;
   }
 
   /** Drain unreported diagnostics from the internal registrar runtime, logging each once. */
@@ -1388,16 +1404,18 @@ export class PiProviderRuntime implements ProviderRuntime {
         for (const [providerId, err] of result.errors) {
           logger.warn(`[sidecar] MODEL_REFRESH_PROVIDER_FAILED: provider=${providerId}, error=${err.message}`);
         }
-        const refreshModelsJsonError =
-          typeof this.modelRuntime?.getError === "function"
-            ? this.modelRuntime.getError()
-            : undefined;
+        const hasGetError = typeof this.modelRuntime?.getError === "function";
+        const refreshModelsJsonError = hasGetError ? this.modelRuntime!.getError() : undefined;
         if (typeof refreshModelsJsonError === "string" && refreshModelsJsonError.trim().length > 0) {
           const message = redactDiagnostic(`models.json error: ${refreshModelsJsonError}`, redactDiagnosticSecrets);
+          this.refreshModelsJsonDiagnostic = { type: "warning", message };
           internalRuntimeDiagnosticsLog.warn("models.json diagnostic detected during refresh", {
             type: "warning",
             message,
           });
+        } else if (hasGetError) {
+          this.refreshModelsJsonDiagnostic = null;
+          internalRuntimeDiagnosticsLog.debug("Cleared refresh models.json diagnostic state");
         }
       }
 
@@ -1978,5 +1996,6 @@ export class PiProviderRuntime implements ProviderRuntime {
     this.modelRuntime = undefined;
     this.modelRegistry = undefined;
     this.runtimeInit = undefined;
+    this.refreshModelsJsonDiagnostic = undefined;
   }
 }

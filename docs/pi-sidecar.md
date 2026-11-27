@@ -309,8 +309,9 @@ Notes:
 - Invalid `models.json` syntax or schema values (such as a string
   `contextWindow`) are logged as `INTERNAL_RUNTIME_DIAGNOSTIC` warnings at
   startup (and logged via `internal-runtime-diagnostics` on
-  `POST /models/refresh`) and retained on runtime diagnostics, while the sidecar
-  continues serving built-in providers.
+  `POST /models/refresh`) and retained on runtime diagnostics (updated or
+  cleared on subsequent `POST /models/refresh`), while the sidecar continues
+  serving built-in providers.
 - Starting in Pi 1.6.1, `models.json` model entries using `google-generative-ai`
   or `google-vertex` support `compat.supportsStrictMode` as `true` or `false`.
   Set `"compat": { "supportsStrictMode": true }` on custom-ID, non-versioned, or

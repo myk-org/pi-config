@@ -480,4 +480,141 @@ describe("models.json startup and refresh diagnostics", { concurrency: false }, 
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("updates getInternalDiagnostics() when models.json becomes invalid or changes error on refreshModels()", async () => {
+    const tempDir = makeTempDir("sidecar-diag-1489-refresh-getter-");
+    const modelsPath = join(tempDir, "models.json");
+    writeFileSync(
+      modelsPath,
+      JSON.stringify({
+        providers: {
+          "acme-refresh-getter": {
+            baseUrl: "http://127.0.0.1:9/v1",
+            api: "openai-completions",
+            apiKey: "test-key-1489", // pragma: allowlist secret — synthetic test credential
+            models: [{ id: "m1", name: "M1", contextWindow: 32000 }],
+          },
+        },
+      }),
+    );
+
+    const store = new SessionStore({ agentDir: tempDir });
+    const stub = stubLogger();
+    try {
+      await store.refreshModels();
+      assert.deepEqual(store.getInternalDiagnostics(), []);
+
+      // Break models.json with a schema error and refresh.
+      writeFileSync(
+        modelsPath,
+        JSON.stringify({
+          providers: {
+            "acme-refresh-getter": {
+              baseUrl: "http://127.0.0.1:9/v1",
+              api: "openai-completions",
+              apiKey: "test-key-1489", // pragma: allowlist secret — synthetic test credential
+              models: [{ id: "m1", name: "M1", contextWindow: "32000" }],
+            },
+          },
+        }),
+      );
+      await store.refreshModels();
+      const afterSchemaError = store.getInternalDiagnostics();
+      assert.equal(afterSchemaError.length, 1);
+      assert.equal(afterSchemaError[0].type, "warning");
+      assert.ok(
+        afterSchemaError[0].message.includes("models.json error:") &&
+          afterSchemaError[0].message.includes("contextWindow"),
+        `expected contextWindow warning in getInternalDiagnostics(), got: ${JSON.stringify(afterSchemaError)}`,
+      );
+
+      // Replace with a syntax error and verify the getter reflects only the latest error.
+      writeFileSync(modelsPath, "{ providers: broken");
+      await store.refreshModels();
+      const afterSyntaxError = store.getInternalDiagnostics();
+      assert.equal(afterSyntaxError.length, 1);
+      assert.equal(afterSyntaxError[0].type, "warning");
+      assert.ok(
+        afterSyntaxError[0].message.includes("models.json error:") &&
+          !afterSyntaxError[0].message.includes("contextWindow"),
+        `expected updated syntax warning without stale schema warning, got: ${JSON.stringify(afterSyntaxError)}`,
+      );
+    } finally {
+      stub.restore();
+      await store.disposeAll();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("clears models.json warnings from getInternalDiagnostics() on a clean refresh while preserving extension errors", async () => {
+    const tempDir = makeTempDir("sidecar-diag-1489-refresh-clear-");
+    const modelsPath = join(tempDir, "models.json");
+    const extDir = join(tempDir, "extensions", "broken-diag-ext-1489");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(
+      join(extDir, "index.ts"),
+      'throw new Error("synthetic extension load failure 1489");\n',
+    );
+    writeFileSync(
+      modelsPath,
+      JSON.stringify({
+        providers: {
+          "acme-refresh-clear": {
+            baseUrl: "http://127.0.0.1:9/v1",
+            api: "openai-completions",
+            apiKey: "test-key-1489", // pragma: allowlist secret — synthetic test credential
+            models: [{ id: "m1", name: "M1", contextWindow: "32000" }],
+          },
+        },
+      }),
+    );
+
+    const store = new SessionStore({ agentDir: tempDir });
+    const stub = stubLogger();
+    try {
+      await store.refreshModels();
+      const initial = store.getInternalDiagnostics();
+      assert.ok(
+        initial.some((d) => d.type === "warning" && d.message.includes("models.json error:")),
+        `expected initial models.json warning, got: ${JSON.stringify(initial)}`,
+      );
+      assert.ok(
+        initial.some(
+          (d) => d.type === "error" && d.message.includes("synthetic extension load failure 1489"),
+        ),
+        `expected initial extension error, got: ${JSON.stringify(initial)}`,
+      );
+
+      // Fix models.json and refresh: models.json warning clears, extension error remains.
+      writeFileSync(
+        modelsPath,
+        JSON.stringify({
+          providers: {
+            "acme-refresh-clear": {
+              baseUrl: "http://127.0.0.1:9/v1",
+              api: "openai-completions",
+              apiKey: "test-key-1489", // pragma: allowlist secret — synthetic test credential
+              models: [{ id: "m1", name: "M1", contextWindow: 32000 }],
+            },
+          },
+        }),
+      );
+      await store.refreshModels();
+      const afterFix = store.getInternalDiagnostics();
+      assert.ok(
+        !afterFix.some((d) => d.type === "warning" && d.message.includes("models.json error:")),
+        `expected models.json warning to clear after fix, got: ${JSON.stringify(afterFix)}`,
+      );
+      assert.ok(
+        afterFix.some(
+          (d) => d.type === "error" && d.message.includes("synthetic extension load failure 1489"),
+        ),
+        `expected extension error to remain after clean refresh, got: ${JSON.stringify(afterFix)}`,
+      );
+    } finally {
+      stub.restore();
+      await store.disposeAll();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
