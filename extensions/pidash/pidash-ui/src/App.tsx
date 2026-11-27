@@ -15,7 +15,18 @@ import { KeybindingSettings } from "@/components/KeybindingSettings";
 import { SidePanel, type PanelTab } from "@/components/SidePanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { createLogger } from "@/lib/create-logger";
-import { groupAndSortSessions } from "@/lib/group-sessions";
+import {
+  ARCHIVED_SESSIONS_STORAGE_KEY,
+  PINNED_SESSIONS_STORAGE_KEY,
+  flattenSidebarSessions,
+  formatDocumentTitle,
+  loadSessionIdSet,
+  partitionSidebarSessions,
+  saveSessionIdSet,
+  toggleArchivedSession,
+  togglePinnedSession,
+  unarchiveSessionId,
+} from "@/lib/pidash-ux-helpers";
 import type { SessionInfo } from "@/types";
 
 const log = createLogger("App");
@@ -58,6 +69,10 @@ export function App() {
   const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile ? true : saved.current.sidebarCollapsed);
   const [sidebarWidth, setSidebarWidth] = useState(saved.current.sidebarWidth);
+  const [sidebarFlags, setSidebarFlags] = useState(() => ({
+    pinned: loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY),
+    archived: loadSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY),
+  }));
   const sidebarRef = useRef<HTMLDivElement>(null);
   const restoredRef = useRef(false);
   const messageCacheRef = useRef(new Map<string, { messages: any[]; model: string; tokens: any }>());
@@ -130,6 +145,41 @@ export function App() {
   const renameSession = useCallback((sessionId: string, name: string) => {
     send({ type: "pidash-command", command: "rename-session", sessionId, name });
   }, [send]);
+
+  const handleTogglePin = useCallback((sessionId: string) => {
+    setSidebarFlags((prev) => {
+      const next = togglePinnedSession(prev.pinned, prev.archived, sessionId);
+      log.debug("session pin toggled", { sessionId, pinned: next.isPinned });
+      return { pinned: next.pinned, archived: next.archived };
+    });
+  }, []);
+
+  const handleToggleArchive = useCallback((sessionId: string) => {
+    setSidebarFlags((prev) => {
+      const next = toggleArchivedSession(prev.pinned, prev.archived, sessionId);
+      log.debug("session archive toggled", { sessionId, archived: next.isArchived });
+      return { pinned: next.pinned, archived: next.archived };
+    });
+  }, []);
+
+  useEffect(() => {
+    saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, sidebarFlags.pinned);
+    saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, sidebarFlags.archived);
+  }, [sidebarFlags]);
+
+  const hasPendingPrompt = useMemo(
+    () => messages.some((m) => Boolean(m.className?.startsWith("ask|"))),
+    [messages],
+  );
+
+  // Sync browser tab title with the watched session and waiting-for-input state
+  useEffect(() => {
+    document.title = formatDocumentTitle(selectedSession, hasPendingPrompt);
+  }, [selectedSession, hasPendingPrompt]);
+
+  useEffect(() => () => {
+    document.title = "pidash";
+  }, []);
 
   // Persist UI state to localStorage
   useEffect(() => {
@@ -211,10 +261,21 @@ export function App() {
     return next;
   }, [messages]);
 
-  // Flatten sessions matching sidebar order: active groups first, then alphabetical, active sessions first within groups
+  const extraAttentionIds = useMemo(() => {
+    if (selectedSession?.active && hasPendingPrompt) {
+      return new Set([selectedSession.sessionId]);
+    }
+    return undefined;
+  }, [selectedSession, hasPendingPrompt]);
+
+  // Flatten sessions matching sidebar visual order: Needs attention → Pinned → project groups → Archived
   const flatSessions = useMemo(
-    () => groupAndSortSessions(sessions).flatMap((g) => g.sessions),
-    [sessions],
+    () => flattenSidebarSessions(partitionSidebarSessions(sessions, {
+      pinnedIds: sidebarFlags.pinned,
+      archivedIds: sidebarFlags.archived,
+      extraAttentionIds,
+    })),
+    [sessions, sidebarFlags.pinned, sidebarFlags.archived, extraAttentionIds],
   );
 
   useKeyboardNavigation({
@@ -226,6 +287,12 @@ export function App() {
 
   const handleSend = useCallback((text: string, images?: Array<{ data: string; mimeType: string; filename: string }>) => {
     if (!session) return;
+    setSidebarFlags((prev) => {
+      const { archived, changed } = unarchiveSessionId(prev.archived, session.sessionId);
+      if (!changed) return prev;
+      log.info("auto-unarchived session on send", { sessionId: session.sessionId });
+      return { ...prev, archived };
+    });
     setLastUserText(text);
     addMsg("user", text + (images ? ` [+${images.length} file(s)]` : ""));
     send({ type: "prompt", sessionId: session.sessionId, text, images: images || undefined });
@@ -256,6 +323,11 @@ export function App() {
             onToggle={() => setSidebarCollapsed(true)}
             notifications={notifications}
             onSettings={() => setShowSettings(prev => !prev)}
+            pinnedSessionIds={sidebarFlags.pinned}
+            archivedSessionIds={sidebarFlags.archived}
+            extraAttentionIds={extraAttentionIds}
+            onTogglePin={handleTogglePin}
+            onToggleArchive={handleToggleArchive}
           />
           <div
             className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/30 z-10 max-md:hidden"
@@ -309,6 +381,7 @@ export function App() {
               streaming={streaming}
               scrollKey={scrollKey}
               onAskResponse={handleAskResponse}
+              promptHotkeysPaused={showSwitcher || showSettings || showNewSession}
             />
             {queuedCount > 0 && (
               <div className="px-3 py-1.5 bg-yellow-500/10 border-t border-yellow-500/20 text-xs text-yellow-500 flex items-center gap-1.5">

@@ -214,12 +214,12 @@ describe("MessageItem ask-answered state sync (#1331)", () => {
     };
 
     await act(async () => root.render(createElement(MessageItem, { msg: activeMsg })));
-    assert.equal(elements(container, "input").length, 1);
+    assert.equal(elements(container, "textarea").length, 1);
 
     const dismissedMsg: ChatMessage = { ...activeMsg, className: "ask-answered|ask-2" };
     await act(async () => root.render(createElement(MessageItem, { msg: dismissedMsg })));
 
-    assert.equal(elements(container, "input").length, 0);
+    assert.equal(elements(container, "textarea").length, 0);
     assert.match(container.textContent ?? "", /✓ Answered: dismissed/);
   });
 
@@ -241,7 +241,7 @@ describe("MessageItem ask-answered state sync (#1331)", () => {
       onAskResponse: (id: string, value: string) => { chosen = [id, value]; },
     })));
 
-    const alphaBtn = elements(container, "button").find((b) => b.textContent === "Alpha");
+    const alphaBtn = elements(container, "button").find((b) => b.textContent?.includes("Alpha"));
     assert.ok(alphaBtn);
     await act(async () => alphaBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     assert.deepEqual(chosen, ["ask-3", "Alpha"]);

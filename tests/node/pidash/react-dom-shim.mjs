@@ -3,6 +3,11 @@ class FakeEvent {
     this.type = type;
     this.bubbles = init.bubbles ?? true;
     this.key = init.key;
+    this.ctrlKey = Boolean(init.ctrlKey);
+    this.metaKey = Boolean(init.metaKey);
+    this.altKey = Boolean(init.altKey);
+    this.shiftKey = Boolean(init.shiftKey);
+    this.isComposing = Boolean(init.isComposing);
     this.defaultPrevented = false;
     this.cancelBubble = false;
   }
@@ -44,6 +49,8 @@ class FakeNode {
     return !event.defaultPrevented;
   }
   contains(node) { return node === this || this.childNodes.some((child) => child.contains?.(node)); }
+  querySelector() { return null; }
+  querySelectorAll() { return []; }
   get nodeValue() { return this.nodeType === 3 ? this.data : null; }
   set nodeValue(value) { if (this.nodeType === 3) this.data = String(value); }
   get textContent() { return this.nodeType === 3 ? this.data : this.childNodes.map((child) => child.textContent).join(""); }
@@ -57,7 +64,10 @@ class FakeNode {
 class FakeElement extends FakeNode {
   constructor(tag, ownerDocument) {
     super(1, String(tag).toUpperCase(), ownerDocument);
-    this.style = {};
+    this.style = {
+      setProperty(name, value) { this[name] = String(value); },
+      removeProperty(name) { delete this[name]; },
+    };
     this.attributes = new Map();
   }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
@@ -78,8 +88,10 @@ export function installReactDomShim() {
     node.data = String(text);
     return node;
   };
+  document.head = document.createElement("head");
   document.body = document.createElement("body");
   document.documentElement = document.createElement("html");
+  document.head.parentNode = document.documentElement;
   document.body.parentNode = document;
   document.documentElement.parentNode = document;
   document.defaultView = globalThis;
@@ -90,6 +102,16 @@ export function installReactDomShim() {
   globalThis.Element = FakeElement;
   globalThis.HTMLElement = FakeElement;
   globalThis.HTMLIFrameElement = class {};
+  globalThis.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+    takeRecords() { return []; }
+  };
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
   globalThis.Event = FakeEvent;
   globalThis.MouseEvent = FakeEvent;
   globalThis.KeyboardEvent = FakeEvent;

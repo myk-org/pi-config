@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil, Plus, MessagesSquare, Sun, Moon } from "lucide-react";
+import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil, Plus, MessagesSquare, Sun, Moon, Pin, PinOff, Archive, ArchiveRestore, AlertCircle } from "lucide-react";
 import { Badge } from "@ui/badge";
 import { Button } from "@ui/button";
 import { ScrollArea } from "@ui/scroll-area";
@@ -9,9 +9,10 @@ import type { SessionInfo, NotificationPreferences } from "@/types";
 import { sessionActivityDisplay } from "@/lib/activity-display";
 import { loadTheme, setTheme, type Theme } from "@/lib/theme";
 import { createLogger } from "@/lib/create-logger";
-import { groupAndSortSessions } from "@/lib/group-sessions";
+import { partitionSidebarSessions } from "@/lib/pidash-ux-helpers";
 
 const log = createLogger("SessionSidebar");
+const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
 
 function ago(iso: string): string {
   const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -31,6 +32,11 @@ interface Props {
   onSettings?: () => void;
   onNewSession?: () => void;
   onRename?: (sessionId: string, name: string) => void;
+  pinnedSessionIds?: ReadonlySet<string>;
+  archivedSessionIds?: ReadonlySet<string>;
+  extraAttentionIds?: ReadonlySet<string>;
+  onTogglePin?: (sessionId: string) => void;
+  onToggleArchive?: (sessionId: string) => void;
   notifications?: {
     permission: NotificationPermission;
     supported: boolean;
@@ -75,10 +81,27 @@ function saveCollapsedProjects(projects: Set<string>): void {
   try { localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...projects])); } catch {}
 }
 
-export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, onSettings, onNewSession, onRename, notifications }: Props) {
+export function SessionSidebar({
+  sessions,
+  activeSessionId,
+  connected,
+  onSelect,
+  collapsed,
+  onToggle,
+  onSettings,
+  onNewSession,
+  onRename,
+  pinnedSessionIds,
+  archivedSessionIds,
+  extraAttentionIds,
+  onTogglePin,
+  onToggleArchive,
+  notifications,
+}: Props) {
   const [collapsedProjects, setCollapsedProjectsRaw] = useState<Set<string>>(() => loadCollapsedProjects());
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [archivedSectionOpen, setArchivedSectionOpen] = useState(false);
   // Coms section: a second, collapsible view at the BOTTOM of the list. Sessions
   // appear both here (under their project) and in the directory tree — a cheap
   // cross-reference, since rows cost nothing and members are few.
@@ -94,7 +117,14 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
     });
   };
   const [theme, setThemeState] = useState<Theme>(() => loadTheme());
-  const sortedGroups = useMemo(() => groupAndSortSessions(sessions), [sessions]);
+  const { needsAttention, pinned, groups: sortedGroups, archived } = useMemo(
+    () => partitionSidebarSessions(sessions, {
+      pinnedIds: pinnedSessionIds ?? EMPTY_SESSION_IDS,
+      archivedIds: archivedSessionIds ?? EMPTY_SESSION_IDS,
+      extraAttentionIds,
+    }),
+    [sessions, pinnedSessionIds, archivedSessionIds, extraAttentionIds],
+  );
 
   // Wrap setter to persist to localStorage
   const setCollapsedProjects = (update: Set<string> | ((prev: Set<string>) => Set<string>)) => {
@@ -107,29 +137,36 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
 
   if (collapsed) return null;
 
-  /** One session row — shared by the directory tree and the coms lens. */
-  const renderSession = (s: SessionInfo, showLocation = false) => {
+  /** One session row — shared by Needs attention, Pinned, directory groups, Coms, and Archived. */
+  const renderSession = (
+    s: SessionInfo,
+    opts: { showLocation?: boolean; keyPrefix?: string; compactIndent?: boolean } = {},
+  ) => {
     const isActive = s.sessionId === activeSessionId;
+    const isPinned = Boolean(pinnedSessionIds?.has(s.sessionId));
+    const isArchived = Boolean(archivedSessionIds?.has(s.sessionId));
     const status = sessionActivityDisplay(s);
+    const rowKey = opts.keyPrefix ? `${opts.keyPrefix}:${s.sessionId}` : s.sessionId;
     return (
       <div
-        key={s.sessionId}
+        key={rowKey}
         className={cn(
-          "group/session pl-7 pr-3 py-2 cursor-pointer transition-colors border-b border-border/50",
+          "group/session py-2 cursor-pointer transition-colors border-b border-border/50 min-w-0",
+          opts.compactIndent ? "pl-3 pr-2.5" : "pl-7 pr-2.5",
           isActive && "bg-accent border-l-3 border-l-primary",
           !isActive && "hover:bg-accent/30",
           !s.active && "opacity-35",
         )}
         onClick={() => onSelect(s)}
       >
-        <div className={cn("text-xs font-medium truncate flex items-center gap-1.5", s.active ? "text-primary" : "text-muted-foreground")}>
-          {showLocation && (
+        <div className={cn("text-xs font-medium flex items-center gap-1.5 min-w-0", s.active ? "text-primary" : "text-muted-foreground")}>
+          {opts.showLocation && (
             <span
               className="shrink-0 flex items-center gap-0.5 px-1 rounded border border-border bg-muted text-[9px] font-normal text-muted-foreground"
               title={`Session lives in ${s.cwd}`}
             >
-              <Folder className="h-2.5 w-2.5" />
-              <span className="max-w-[6.5rem] truncate">{s.cwd.split("/").pop() || s.cwd}</span>
+              <Folder className="h-2.5 w-2.5 shrink-0" />
+              <span className="max-w-[5.5rem] truncate">{s.cwd.split("/").pop() || s.cwd}</span>
             </span>
           )}
           {!s.active && <Pause className="h-3 w-3 flex-shrink-0 text-muted-foreground" />}
@@ -144,7 +181,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
           )}
           {editingSessionId === s.sessionId ? (
             <input
-              className="bg-transparent border-b border-primary outline-none text-xs w-full"
+              className="bg-transparent border-b border-primary outline-none text-xs w-full min-w-0"
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               onKeyDown={(e) => {
@@ -160,39 +197,84 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
             />
           ) : (
             <>
-              <span className="truncate">{s.name || s.model || "—"}</span>
-              {onRename && (
-                <Pencil
-                  className="h-3 w-3 flex-shrink-0 opacity-0 group-hover/session:opacity-100 text-muted-foreground hover:text-primary cursor-pointer transition-opacity"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setEditingSessionId(s.sessionId);
-                    setEditName(s.name || s.model || "");
-                  }}
-                />
+              <span className="truncate min-w-0 flex-1">{s.name || s.model || "—"}</span>
+              {(onRename || onTogglePin || onToggleArchive) && (
+                <span className="flex items-center gap-0.5 shrink-0">
+                  {onRename && (
+                    <button
+                      type="button"
+                      className="p-0.5 rounded opacity-0 group-hover/session:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-primary hover:bg-accent/50 cursor-pointer transition-opacity"
+                      title="Rename session"
+                      aria-label="Rename session"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingSessionId(s.sessionId);
+                        setEditName(s.name || s.model || "");
+                      }}
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                  )}
+                  {onTogglePin && (
+                    <button
+                      type="button"
+                      className={cn(
+                        "p-0.5 rounded hover:bg-accent/50 cursor-pointer transition-opacity",
+                        isPinned
+                          ? "text-primary opacity-85 group-hover/session:opacity-100"
+                          : "opacity-0 group-hover/session:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-primary",
+                      )}
+                      title={isPinned ? "Unpin session" : "Pin session"}
+                      aria-label={isPinned ? "Unpin session" : "Pin session"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onTogglePin(s.sessionId);
+                      }}
+                    >
+                      {isPinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
+                    </button>
+                  )}
+                  {onToggleArchive && (
+                    <button
+                      type="button"
+                      className="p-0.5 rounded opacity-0 group-hover/session:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-primary hover:bg-accent/50 cursor-pointer transition-opacity"
+                      title={isArchived ? "Unarchive session" : "Archive session"}
+                      aria-label={isArchived ? "Unarchive session" : "Archive session"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleArchive(s.sessionId);
+                      }}
+                    >
+                      {isArchived ? <ArchiveRestore className="h-3 w-3" /> : <Archive className="h-3 w-3" />}
+                    </button>
+                  )}
+                </span>
               )}
             </>
           )}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground min-w-0 overflow-hidden">
           {s.branch && (
-            <span className="flex items-center gap-0.5">
-              <GitBranch className="h-2.5 w-2.5" />
-              <span className={s.gitDirty ? "text-red-500" : "text-green-500"}>
+            <span className="flex items-center gap-0.5 min-w-0">
+              <GitBranch className="h-2.5 w-2.5 shrink-0" />
+              <span className={cn("shrink-0", s.gitDirty ? "text-red-500" : "text-green-500")}>
                 {s.gitDirty ? "●" : "✓"}
               </span>
               <span className="truncate">{s.branch}</span>
             </span>
           )}
           {s.comsProject && (
-            <span className="flex items-center gap-0.5 text-cyan-700 dark:text-cyan-400/90" title={`Coms project: ${s.comsProject}${s.comsName ? ` (you are ${s.comsName})` : ""}`}>
+            <span className="flex items-center gap-0.5 shrink-0 text-cyan-700 dark:text-cyan-400/90" title={`Coms project: ${s.comsProject}${s.comsName ? ` (you are ${s.comsName})` : ""}`}>
               <span aria-hidden="true">◆</span>
               <span className="truncate max-w-[5rem]">{s.comsProject}</span>
             </span>
           )}
-          <span>{ago(s.startedAt)}</span>
-          {s.activity === "waiting_for_input" && <span className="text-cyan-400">waiting for input</span>}
-          {s.container && <Badge variant="outline" className="text-[8px] px-1 py-0 h-3">📦</Badge>}
+          <span className="shrink-0">{ago(s.startedAt)}</span>
+          {s.activity === "waiting_for_input" && <span className="shrink-0 text-cyan-400">waiting for input</span>}
+          {isArchived && opts.keyPrefix === "attention" && (
+            <span className="shrink-0 text-[9px] px-1 rounded bg-muted text-muted-foreground">archived</span>
+          )}
+          {s.container && <Badge variant="outline" className="text-[8px] px-1 py-0 h-3 shrink-0">📦</Badge>}
         </div>
       </div>
     );
@@ -227,7 +309,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
   };
 
   return (
-    <div className="flex flex-col h-full border-r border-border">
+    <div className="flex flex-col h-full border-r border-border min-w-0 overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
         <span className="text-sm font-bold text-primary">pidash</span>
         <span className="flex items-center gap-2">
@@ -271,6 +353,30 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
       <ScrollArea className="flex-1">
         {sessions.length === 0 && (
           <p className="p-4 text-center text-xs text-muted-foreground">No sessions</p>
+        )}
+
+        {needsAttention.length > 0 && (
+          <div className="border-b border-border bg-cyan-500/5" data-section="needs-attention">
+            <div className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-cyan-600 dark:text-cyan-400 border-b border-border/60">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Needs attention</span>
+              <span className="ml-auto text-[10px] font-medium px-1.5 rounded-full bg-cyan-500/15">
+                {needsAttention.length}
+              </span>
+            </div>
+            {needsAttention.map((s) => renderSession(s, { showLocation: true, keyPrefix: "attention", compactIndent: true }))}
+          </div>
+        )}
+
+        {pinned.length > 0 && (
+          <div className="border-b border-border" data-section="pinned">
+            <div className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-primary border-b border-border/60">
+              <Pin className="h-3 w-3 shrink-0" />
+              <span className="truncate">Pinned</span>
+              <span className="ml-auto text-[10px] font-normal text-muted-foreground">{pinned.length}</span>
+            </div>
+            {pinned.map((s) => renderSession(s, { showLocation: true, keyPrefix: "pinned", compactIndent: true }))}
+          </div>
         )}
 
         {sortedGroups.map((group) => {
@@ -359,10 +465,40 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
                     <span className="truncate">{project}</span>
                     <span className="ml-auto text-[10px] font-normal">{info.sessions.length}</span>
                   </div>
-                  {isProjectOpen && info.sessions.map((s) => renderSession(s, true))}
+                  {isProjectOpen && info.sessions.map((s) => renderSession(s, { showLocation: true, keyPrefix: `coms:${project}` }))}
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {archived.length > 0 && (
+          <div className="border-t border-border mt-1" data-section="archived">
+            <div
+              className="flex items-center gap-1.5 px-3 py-2 cursor-pointer text-sm font-semibold text-muted-foreground hover:bg-accent/30 focus:outline-none focus:ring-1 focus:ring-primary focus:ring-inset"
+              onClick={() => {
+                setArchivedSectionOpen((prev) => {
+                  const next = !prev;
+                  log.debug("archived section toggled", { open: next, count: archived.length });
+                  return next;
+                });
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                setArchivedSectionOpen((prev) => !prev);
+              }}
+              role="button"
+              tabIndex={0}
+              aria-expanded={archivedSectionOpen}
+              title={`${archived.length} archived session${archived.length === 1 ? "" : "s"}`}
+            >
+              {archivedSectionOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+              <Archive className="h-3 w-3 shrink-0" />
+              <span className="truncate">Archived</span>
+              <span className="ml-auto text-[10px] font-normal">{archived.length}</span>
+            </div>
+            {archivedSectionOpen && archived.map((s) => renderSession(s, { showLocation: true, keyPrefix: "archived", compactIndent: true }))}
           </div>
         )}
       </ScrollArea>

@@ -1,9 +1,16 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@ui/collapsible";
 import { Button } from "@ui/button";
 import { ChevronRight, ChevronDown, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types";
+import {
+  isBashToolRole,
+  isEditableTarget,
+  resolvePromptOptionIndex,
+  shouldSubmitMultilineAnswer,
+  stripToolResultPrefix,
+} from "@/lib/pidash-ux-helpers";
 
 import { createLogger } from "@/lib/create-logger";
 
@@ -16,6 +23,7 @@ interface Props {
   streaming?: boolean;
   scrollKey?: number;
   onAskResponse?: (id: string, value: string) => void;
+  promptHotkeysPaused?: boolean;
 }
 
 function formatClock(ts?: number): string {
@@ -57,7 +65,7 @@ function formatDuration(ms: number): string {
   return rem > 0 ? `${m}m${rem}s` : `${m}m`;
 }
 
-export function MessageList({ messages, searchQuery, searchType, streaming, scrollKey, onAskResponse }: Props) {
+export function MessageList({ messages, searchQuery, searchType, streaming, scrollKey, onAskResponse, promptHotkeysPaused = false }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -95,6 +103,20 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
     }
     return out;
   }, [messages, searchQuery, searchType]);
+
+  // Only the latest unanswered option prompt responds to global 1-9 hotkeys.
+  const activeAskHotkeyId = useMemo(() => {
+    if (promptHotkeysPaused) return null;
+    for (let i = grouped.length - 1; i >= 0; i--) {
+      const item = grouped[i];
+      if ("call" in item) continue;
+      const m = item as ChatMessage;
+      if (!m.className?.startsWith("ask|")) continue;
+      const method = m.className.split("|")[2] || "select";
+      if (method === "select" || method === "confirm") return m.id;
+    }
+    return null;
+  }, [grouped, promptHotkeysPaused]);
 
   const [replaying, setReplaying] = useState(false);
   const autoScrollRef = useRef(true);
@@ -192,7 +214,15 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
             return <ToolGroup key={item.call!.id} call={item.call!} result={item.result!} searchQuery={searchQuery} />;
           }
           const msg = item as ChatMessage;
-          return <MessageItem key={msg.id} msg={msg} searchQuery={searchQuery} onAskResponse={onAskResponse} />;
+          return (
+            <MessageItem
+              key={msg.id}
+              msg={msg}
+              searchQuery={searchQuery}
+              onAskResponse={onAskResponse}
+              hotkeyEnabled={msg.id === activeAskHotkeyId}
+            />
+          );
         })}
         {streaming && (
           <div className="flex items-center gap-2 py-2 text-muted-foreground text-xs">
@@ -213,12 +243,21 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
 
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+  }, []);
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        setCopied(false);
+      }, 2000);
     } catch {}
   };
 
@@ -235,64 +274,194 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
+export function CopyOutputButton({ text, compact = false }: { text: string; compact?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+  }, []);
+
+  const handleCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      log.debug("copied bash tool output", { chars: text.length });
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        setCopied(false);
+      }, 2000);
+    } catch (err) {
+      log.warn("failed to copy bash tool output", { error: String(err) });
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        "inline-flex items-center gap-1 rounded text-[10px] font-medium transition-colors cursor-pointer shrink-0",
+        compact
+          ? "px-1.5 py-0.5 text-muted-foreground hover:text-foreground hover:bg-accent/60"
+          : "px-1.5 py-0.5 bg-background/80 border border-border/70 text-muted-foreground hover:text-foreground hover:bg-accent/60 absolute top-1.5 right-1.5",
+        copied && "text-green-500 hover:text-green-500",
+      )}
+      onClick={handleCopy}
+      title="Copy output"
+      aria-label="Copy output"
+    >
+      {copied ? <Check className="h-3 w-3 shrink-0" /> : <Copy className="h-3 w-3 shrink-0" />}
+      <span>{copied ? "Copied" : "Copy"}</span>
+    </button>
+  );
+}
+
+export function AskPromptCard({
+  msg,
+  onAskResponse,
+  hotkeyEnabled = true,
+}: {
+  msg: ChatMessage;
+  onAskResponse?: (id: string, value: string) => void;
+  hotkeyEnabled?: boolean;
+}) {
+  const className = msg.className || "";
+  const isAnswered = className.startsWith("ask-answered|");
+  const parts = className.split("|");
+  const askId = parts[1];
+  const method = parts[2] || "select";
+  const options = useMemo(
+    () => (isAnswered ? [] : parts.slice(3).join("|").split("|||").filter(Boolean)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [className, isAnswered],
+  );
+  const [answered, setAnswered] = useState(isAnswered);
+  const [selectedOpt, setSelectedOpt] = useState("");
+  const [customAnswer, setCustomAnswer] = useState("");
+  const isDone = answered || isAnswered;
+
+  const submitOption = useCallback((opt: string) => {
+    setAnswered(true);
+    setSelectedOpt(opt);
+    log.debug("prompt option selected", { askId, method });
+    if (method === "confirm") {
+      onAskResponse?.(askId, opt === "Yes" ? "__confirmed__" : "__denied__");
+    } else {
+      onAskResponse?.(askId, opt);
+    }
+  }, [askId, method, onAskResponse]);
+
+  const submitCustomAnswer = useCallback(() => {
+    const val = customAnswer.trim();
+    if (!val) return;
+    setAnswered(true);
+    setSelectedOpt(val);
+    log.debug("prompt custom answer submitted", { askId, lines: val.split("\n").length });
+    onAskResponse?.(askId, val);
+  }, [askId, customAnswer, onAskResponse]);
+
+  useEffect(() => {
+    if (isDone || !hotkeyEnabled || (method !== "select" && method !== "confirm") || options.length === 0) {
+      return;
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target, typeof document !== "undefined" ? document.activeElement : null)) {
+        return;
+      }
+      const idx = resolvePromptOptionIndex(e, options.length);
+      if (idx === null) return;
+      e.preventDefault();
+      submitOption(options[idx]);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [isDone, hotkeyEnabled, method, options, submitOption]);
+
+  return (
+    <div>
+      <div className={cn("text-[10px] font-bold uppercase tracking-wider mb-0.5", getRoleColor("ask_user"))}>
+        {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
+        action required
+      </div>
+      <div className="rounded-md bg-card p-3 text-[13px] whitespace-pre-wrap break-words border-l-2 border-cyan-400">
+        <div className="mb-2">{msg.text}</div>
+        {isDone ? (
+          <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words">✓ Answered: {selectedOpt || "dismissed"}</div>
+        ) : method === "input" ? (
+          <form
+            className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 mt-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitCustomAnswer();
+            }}
+          >
+            <textarea
+              name="answer"
+              rows={2}
+              value={customAnswer}
+              onChange={(e) => setCustomAnswer(e.target.value)}
+              onKeyDown={(e) => {
+                if (shouldSubmitMultilineAnswer(e)) {
+                  e.preventDefault();
+                  submitCustomAnswer();
+                }
+              }}
+              placeholder="Type your answer... (Enter to send, Shift+Enter for new line)"
+              className="flex-1 min-w-0 px-2.5 py-1.5 text-sm rounded-md bg-background border border-border outline-none focus:border-primary font-mono resize-y max-h-40"
+              autoFocus
+            />
+            <button
+              type="submit"
+              className="px-3 py-1.5 text-sm rounded-md bg-accent/50 hover:bg-accent transition-colors shrink-0 cursor-pointer"
+            >
+              Submit
+            </button>
+          </form>
+        ) : (
+          <div className="flex flex-wrap gap-2 mt-2">
+            {options.map((opt, idx) => (
+              <button
+                key={opt}
+                type="button"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-accent/50 hover:bg-accent transition-colors cursor-pointer max-w-full"
+                onClick={() => submitOption(opt)}
+              >
+                {idx < 9 && (
+                  <kbd
+                    className="inline-flex items-center justify-center min-w-[1.125rem] h-[1.125rem] px-1 text-[10px] font-mono rounded bg-background/70 border border-border/70 text-muted-foreground shrink-0"
+                    aria-hidden="true"
+                  >
+                    {idx + 1}
+                  </kbd>
+                )}
+                <span className="break-words text-left">{opt}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Memoized: during streaming every text delta updates ONE message — without
 // memo the whole (potentially 1000+ item) list re-rendered per delta.
-export const MessageItem = memo(function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; searchQuery?: string; onAskResponse?: (id: string, value: string) => void }) {
+export const MessageItem = memo(function MessageItem({
+  msg,
+  searchQuery,
+  onAskResponse,
+  hotkeyEnabled = true,
+}: {
+  msg: ChatMessage;
+  searchQuery?: string;
+  onAskResponse?: (id: string, value: string) => void;
+  hotkeyEnabled?: boolean;
+}) {
   // Inline ask_user with clickable options
   if (msg.className?.startsWith("ask|") || msg.className?.startsWith("ask-answered|")) {
-    const isAnswered = msg.className?.startsWith("ask-answered|");
-    const parts = msg.className.split("|");
-    const askId = parts[1];
-    const method = parts[2] || "select";
-    const options = isAnswered ? [] : parts.slice(3).join("|").split("|||").filter(Boolean);
-    const [answered, setAnswered] = useState(isAnswered || false);
-    const [selectedOpt, setSelectedOpt] = useState("");
-    const isDone = answered || isAnswered;
-
-    return (
-      <div>
-        <div className={cn("text-[10px] font-bold uppercase tracking-wider mb-0.5", getRoleColor("ask_user"))}>
-          {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
-          action required
-        </div>
-        <div className="rounded-md bg-card p-3 text-[13px] whitespace-pre-wrap break-words border-l-2 border-cyan-400">
-          <div className="mb-2">{msg.text}</div>
-          {isDone ? (
-            <div className="text-xs text-muted-foreground">✓ Answered: {selectedOpt || "dismissed"}</div>
-          ) : method === "input" ? (
-            <form className="flex gap-2 mt-2" onSubmit={(e) => {
-              e.preventDefault();
-              const input = (e.target as HTMLFormElement).elements.namedItem("answer") as HTMLInputElement;
-              const val = input?.value.trim();
-              if (val) { setAnswered(true); setSelectedOpt(val); onAskResponse?.(askId, val); }
-            }}>
-              <input name="answer" className="flex-1 px-2 py-1.5 text-sm rounded-md bg-background border border-border outline-none focus:border-primary font-mono" autoFocus />
-              <button type="submit" className="px-3 py-1.5 text-sm rounded-md bg-accent/50 hover:bg-accent transition-colors">Submit</button>
-            </form>
-          ) : (
-            <div className="flex flex-wrap gap-2 mt-2">
-              {options.map((opt) => (
-                <button
-                  key={opt}
-                  className="px-3 py-1.5 text-sm rounded-md bg-accent/50 hover:bg-accent transition-colors"
-                  onClick={() => {
-                    setAnswered(true);
-                    setSelectedOpt(opt);
-                    if (method === "confirm") {
-                      onAskResponse?.(askId, opt === "Yes" ? "__confirmed__" : "__denied__");
-                    } else {
-                      onAskResponse?.(askId, opt);
-                    }
-                  }}
-                >
-                  {opt}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    );
+    return <AskPromptCard msg={msg} onAskResponse={onAskResponse} hotkeyEnabled={hotkeyEnabled} />;
   }
 
   if (msg.role !== "user" && msg.role !== "assistant") {
@@ -316,13 +485,14 @@ export const MessageItem = memo(function MessageItem({ msg, searchQuery, onAskRe
   );
 });
 
-const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: { call: ChatMessage; result: ChatMessage; searchQuery?: string }) {
+export const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: { call: ChatMessage; result: ChatMessage; searchQuery?: string }) {
   const [open, setOpen] = useState(false);
   const matchesSearch = searchQuery && (
     call.text.toLowerCase().includes(searchQuery.toLowerCase()) ||
     result.text.toLowerCase().includes(searchQuery.toLowerCase())
   );
   const color = getRoleColor(call.role);
+  const isBash = isBashToolRole(call.role);
   const isError = result.text.startsWith("✗");
   const borderColor = isError ? "border-red-500" : "border-green-600";
   const cv = { contentVisibility: "auto" as const, containIntrinsicSize: "auto 40px" };
@@ -331,6 +501,7 @@ const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: { call:
   const statusIcon = isError ? "✗" : "✓";
   const statusColor = isError ? "text-red-500" : "text-green-500";
   const callSummary = call.text.split("\n")[0].slice(0, 120);
+  const copyableOutput = stripToolResultPrefix(result.text);
 
   // Build stats string from meta
   let statsStr = "";
@@ -349,23 +520,26 @@ const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: { call:
 
   return (
     <Collapsible open={open || !!matchesSearch} onOpenChange={setOpen} style={cv}>
-      <CollapsibleTrigger className={cn(
-        "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none hover:opacity-80 w-full text-left",
-        color,
-      )}>
-        {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
-        {call.timestamp && <span className="font-normal normal-case tracking-normal text-muted-foreground flex-shrink-0">[{formatClock(call.timestamp)}]</span>}
-        <span className="flex-shrink-0">{call.role}</span>
-        <span className={cn("flex-shrink-0", statusColor)}>{statusIcon}</span>
-        {!open && statsStr && (
-          <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 text-[10px] truncate">
-            {statsStr}
-          </span>
-        )}
-        {!open && !statsStr && (
-          <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{callSummary}</span>
-        )}
-      </CollapsibleTrigger>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <CollapsibleTrigger className={cn(
+          "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none hover:opacity-80 flex-1 min-w-0 text-left",
+          color,
+        )}>
+          {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
+          {call.timestamp && <span className="font-normal normal-case tracking-normal text-muted-foreground flex-shrink-0">[{formatClock(call.timestamp)}]</span>}
+          <span className="flex-shrink-0">{call.role}</span>
+          <span className={cn("flex-shrink-0", statusColor)}>{statusIcon}</span>
+          {!open && statsStr && (
+            <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 text-[10px] truncate">
+              {statsStr}
+            </span>
+          )}
+          {!open && !statsStr && (
+            <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{callSummary}</span>
+          )}
+        </CollapsibleTrigger>
+        {isBash && <CopyOutputButton text={copyableOutput} compact />}
+      </div>
       <CollapsibleContent>
         <div className={cn(
           "mt-1 rounded-md bg-card p-2.5 text-[11px] whitespace-pre-wrap break-words border-l-2 relative group",
@@ -380,7 +554,7 @@ const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: { call:
         )}>
           <div className="text-[9px] font-bold uppercase text-muted-foreground mb-1">result</div>
           <HighlightText text={result.text} query={searchQuery} />
-          <CopyBtn text={result.text} />
+          {isBash ? <CopyOutputButton text={copyableOutput} /> : <CopyBtn text={result.text} />}
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -392,6 +566,7 @@ function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuer
   const matchesSearch = searchQuery && msg.text.toLowerCase().includes(searchQuery.toLowerCase());
   const color = getRoleColor(msg.role);
   const isResult = msg.className === "tool-result";
+  const isBashResult = isResult && isBashToolRole(msg.role);
   const isError = isResult && msg.text.startsWith("✗");
   const borderColor = msg.role === "thinking" ? "border-purple-500" : isResult ? (isError ? "border-red-500" : "border-green-600") : "border-orange-500";
   // content-visibility: the browser skips layout/paint for offscreen items —
@@ -400,23 +575,27 @@ function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuer
   const cv = { contentVisibility: "auto" as const, containIntrinsicSize: "auto 40px" };
 
   const summary = msg.text.split("\n")[0].slice(0, 100);
+  const copyableOutput = isBashResult ? stripToolResultPrefix(msg.text) : msg.text;
 
   return (
     <Collapsible open={open || !!matchesSearch} onOpenChange={setOpen} style={cv}>
-      <CollapsibleTrigger className={cn(
-        "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none hover:opacity-80 w-full text-left",
-        color,
-      )}>
-        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        {msg.timestamp && <span className="font-normal normal-case tracking-normal text-muted-foreground">[{formatClock(msg.timestamp)}]</span>}
-        {msg.role}
-        {!open && msg.meta?.startTs && msg.meta?.endTs && (
-          <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 flex-shrink-0">
-            {formatDuration(msg.meta.endTs - msg.meta.startTs)}
-          </span>
-        )}
-        {!open && <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{summary}</span>}
-      </CollapsibleTrigger>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <CollapsibleTrigger className={cn(
+          "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none hover:opacity-80 flex-1 min-w-0 text-left",
+          color,
+        )}>
+          {open ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+          {msg.timestamp && <span className="font-normal normal-case tracking-normal text-muted-foreground shrink-0">[{formatClock(msg.timestamp)}]</span>}
+          <span className="shrink-0">{msg.role}</span>
+          {!open && msg.meta?.startTs && msg.meta?.endTs && (
+            <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 flex-shrink-0">
+              {formatDuration(msg.meta.endTs - msg.meta.startTs)}
+            </span>
+          )}
+          {!open && <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{summary}</span>}
+        </CollapsibleTrigger>
+        {isBashResult && <CopyOutputButton text={copyableOutput} compact />}
+      </div>
       <CollapsibleContent>
         <div className={cn(
           "mt-1 rounded-md bg-card p-2.5 text-[13px] whitespace-pre-wrap break-words border-l-2 relative group",
@@ -425,7 +604,7 @@ function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuer
           (msg.className === "tool-call" || msg.className === "tool-result") && "text-[11px]",
         )}>
           <HighlightText text={msg.text} query={searchQuery} />
-          <CopyBtn text={msg.text} />
+          {isBashResult ? <CopyOutputButton text={copyableOutput} /> : <CopyBtn text={msg.text} />}
         </div>
       </CollapsibleContent>
     </Collapsible>
