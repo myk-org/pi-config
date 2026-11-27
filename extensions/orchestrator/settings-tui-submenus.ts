@@ -298,6 +298,7 @@ export class SelectSubmenu implements Component {
 
 export class AgentOverridesSubmenu implements Component {
   private overrides: Record<string, { provider?: string | null; model?: string | null }>;
+  private dirty: boolean;
   private agentNames: string[];
   private selectedIndex: number;
   private done: (value?: string) => void;
@@ -324,6 +325,7 @@ export class AgentOverridesSubmenu implements Component {
   ) {
     this.label = label;
     this.overrides = JSON.parse(JSON.stringify(currentOverrides || {}));
+    this.dirty = false;
     this.agentNames = availableAgents;
     this.selectedIndex = 0;
     this.done = done;
@@ -492,7 +494,10 @@ export class AgentOverridesSubmenu implements Component {
         return;
       }
       if (data === "d") {
-        delete this.overrides[this.editingAgent];
+        if (this.editingAgent in this.overrides) {
+          delete this.overrides[this.editingAgent];
+          this.dirty = true;
+        }
         this.mode = "list";
         return;
       }
@@ -506,9 +511,11 @@ export class AgentOverridesSubmenu implements Component {
         this.searchInput.setValue("");
         this.filteredAgents = this.agentNames;
         this.selectedIndex = 0;
-      } else {
-        // Save & close
+      } else if (this.dirty) {
+        // Save & close only when edits were actually made
         this.done(JSON.stringify(this.overrides));
+      } else {
+        this.done(undefined);
       }
       return;
     }
@@ -535,7 +542,10 @@ export class AgentOverridesSubmenu implements Component {
     }
     if (data === "d") {
       const agent = this.filteredAgents[this.selectedIndex];
-      if (agent) delete this.overrides[agent];
+      if (agent && agent in this.overrides) {
+        delete this.overrides[agent];
+        this.dirty = true;
+      }
       return;
     }
     // All other keys go to search input
@@ -553,6 +563,7 @@ export class AgentOverridesSubmenu implements Component {
 
   private applyOverride(agent: string, field: "provider" | "model", val: string): void {
     const trimmed = val.trim();
+    this.dirty = true;
     if (!this.overrides[agent]) this.overrides[agent] = {};
 
     if (trimmed === "") {

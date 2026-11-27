@@ -146,7 +146,10 @@ export interface SettingsKey {
   enum?: string[];
   min?: number;
   max?: number;
+  globalOnly?: boolean;
   stored: unknown;
+  effective?: unknown;
+  source?: "P" | "G" | "E" | "D";
 }
 
 export interface SettingsData {

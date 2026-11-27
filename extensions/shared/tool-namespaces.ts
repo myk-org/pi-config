@@ -35,9 +35,9 @@ export const TOOL_NAMESPACES = {
   runtime: {
     name: "runtime",
     description:
-      "Session diagnostics, async subagent status, git worktrees, daemons, scheduled crons, model discovery, and past session search.",
+      "Session diagnostics, async subagent status, git worktrees, daemons, scheduled crons, model discovery, settings inspection, and past session search.",
     instructions:
-      'Call via codemode (`await tools.session_status({})`, `await tools.async_status({})`, `await tools.list_models({})`). Rare admin tools (`skill_adopt`, `review_status`) are deferred — discover via `searchTools` or `describeNamespace("runtime")`.',
+      'Call via codemode (`await tools.session_status({})`, `await tools.async_status({})`, `await tools.list_models({})`, `await tools.settings_get({})`). Rare admin tools (`skill_adopt`, `review_status`) are deferred — discover via `searchTools` or `describeNamespace("runtime")`.',
   },
 } as const satisfies Record<string, ToolNamespace>;
 
