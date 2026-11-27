@@ -185,6 +185,19 @@ describe("redactDiagnosticText", () => {
     assert.match(out, /Cookie: \[REDACTED:COOKIE\]/);
   });
 
+  it("redacts bare secret values containing closing brackets and braces", () => {
+    const kPass = "pass" + "word";
+    const out = redactDiagnosticText(
+      `${kPass}=abc]SECRET_TAIL1 ${kPass}=abc}SECRET_TAIL2 {"api_key":123456}`,
+      { env: {}, homeDir: "/home/tester" },
+    );
+
+    assert.ok(!out.includes("SECRET_TAIL1"));
+    assert.ok(!out.includes("SECRET_TAIL2"));
+    assert.ok(!out.includes("123456"));
+    assert.equal(out, `${kPass}=[REDACTED] ${kPass}=[REDACTED] {"api_key":[REDACTED]}`);
+  });
+
   it("redacts short passwords and numeric secret codes while preserving benign booleans and counts", () => {
     const kPass = "pass" + "word";
     const kKey = "api_" + "key";
@@ -448,6 +461,87 @@ describe("collectRedactedDiagnosticLogs", () => {
     assert.equal(res.sessionSource, "latest-fallback");
     assert.equal(res.entries.length, 1);
     assert.match(res.entries[0].line, /latest vertex failure/);
+  });
+
+  it("rejects non-date JSON timestamps containing secrets and home paths", () => {
+    const home = trackTempDir("diag-json-ts-");
+    const logsDir = join(home, ".pi", "logs");
+    const sid = "sess-json-ts";
+    const secretTok = synth("ghp_", "T", 36);
+    mkdirSync(join(logsDir, "orchestrator", sid), { recursive: true });
+    writeFileSync(
+      join(logsDir, "orchestrator", sid, "main.log"),
+      `${JSON.stringify({ level: "warn", timestamp: `${home}/secret ${secretTok}`, msg: "oops" })}\n`,
+    );
+
+    const res = collectRedactedDiagnosticLogs({
+      logsDir,
+      fallbackLogsDirs: [],
+      sessionId: sid,
+      homeDir: home,
+      env: {},
+    });
+
+    assert.equal(res.entries.length, 1);
+    assert.equal(res.entries[0].timestamp, null);
+    assert.ok(!res.entries[0].line.includes(secretTok));
+    assert.ok(!res.entries[0].line.includes(home));
+    assert.match(res.entries[0].line, /\[REDACTED:GHTOKEN\]/);
+  });
+
+  it("sorts JSON log timestamps with timezone offsets by numeric instant", () => {
+    const home = trackTempDir("diag-tz-sort-");
+    const logsDir = join(home, ".pi", "logs");
+    const sid = "sess-tz";
+    mkdirSync(join(logsDir, "orchestrator", sid), { recursive: true });
+    writeFileSync(
+      join(logsDir, "orchestrator", sid, "main.log"),
+      [
+        JSON.stringify({ level: "warn", timestamp: "2026-11-27T15:00:00-05:00", msg: "actually later (20:00Z)" }),
+        JSON.stringify({ level: "warn", timestamp: "2026-11-27T16:00:00Z", msg: "actually earlier (16:00Z)" }),
+      ].join("\n") + "\n",
+    );
+
+    const res = collectRedactedDiagnosticLogs({
+      logsDir,
+      fallbackLogsDirs: [],
+      sessionId: sid,
+      maxLines: 1,
+      homeDir: home,
+      env: {},
+    });
+
+    assert.equal(res.entries.length, 1);
+    assert.equal(res.entries[0].timestamp, "2026-11-27T15:00:00-05:00");
+    assert.match(res.entries[0].line, /actually later/);
+  });
+
+  it("excludes unrelated session lines from fallback log directories when a sessionId is resolved", () => {
+    const home = trackTempDir("diag-fallback-scope-home-");
+    const projectDir = trackTempDir("diag-fallback-scope-proj-");
+    const projFallback = join(projectDir, ".pi", "tmp", "pi-logs");
+    mkdirSync(projFallback, { recursive: true });
+    writeFileSync(
+      join(projFallback, "orchestrator.log"),
+      [
+        "2026-11-27T10:00:01.000Z [warn] [orchestrator] session=sess-current current session fallback",
+        "2026-11-27T10:00:02.000Z [error] [orchestrator] session=sess-other unrelated session fallback",
+        "2026-11-27T10:00:03.000Z [error] [orchestrator] unscoped line from unknown session",
+      ].join("\n") + "\n",
+    );
+
+    const res = collectRedactedDiagnosticLogs({
+      cwd: projectDir,
+      logsDir: join(home, ".pi", "missing-logs"),
+      sessionId: "sess-current",
+      homeDir: home,
+      env: {},
+    });
+
+    assert.equal(res.entries.length, 1);
+    assert.equal(res.entries[0].scope, "fallback-project");
+    assert.match(res.entries[0].line, /current session fallback/);
+    assert.ok(!res.entries[0].line.includes("unrelated session"));
   });
 
   it("collects unscoped entries from project and home fallback log directories", () => {

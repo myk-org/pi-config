@@ -63,7 +63,7 @@ const TRUNCATED_PEM_RE =
 const SECRET_KEY_PATTERN =
   "(?:[A-Za-z0-9_-]+[_-])?(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|private[_-]?key|encryption[_-]?key|master[_-]?key|signing[_-]?key|auth[_-]?key|token|secret|password|passwd|pwd|passphrase|credentials?|oauth|authorization|cookie)";
 const KV_SECRET_RE = new RegExp(
-  `((?<![A-Za-z0-9_-])["']?${SECRET_KEY_PATTERN}["']?\\s*[:=]\\s*)(?:"((?:\\\\.|[^"\\\\\\r\\n])+)"|'((?:\\\\.|[^'\\\\\\r\\n])+)'|([^\\s,;'"\`\\]})]+))`,
+  `((?<![A-Za-z0-9_-])["']?${SECRET_KEY_PATTERN}["']?\\s*[:=]\\s*)(?:"((?:\\\\.|[^"\\\\\\r\\n])+)"|'((?:\\\\.|[^'\\\\\\r\\n])+)'|([^\\s,;'"\`]*[^\\s,;'"\`\\]})]))`,
   "gi",
 );
 const NON_SECRET_LITERALS = new Set([
@@ -265,7 +265,7 @@ function listNonSymlinkSubdirs(dirPath) {
       .map((d) => d.name)
       .sort();
   } catch (err) {
-    log.debug("list_subdirs_failed", { dirPath, error: String(err?.message ?? err) });
+    log.warn("list_subdirs_failed", { dirPath, error: String(err?.message ?? err) });
     return [];
   }
 }
@@ -290,7 +290,7 @@ function findLatestSessionId(logsDir) {
           }
         }
       } catch (err) {
-        log.debug("scan_latest_session_failed", { sidDir, error: String(err?.message ?? err) });
+        log.warn("scan_latest_session_failed", { sidDir, error: String(err?.message ?? err) });
       }
     }
 
@@ -314,7 +314,7 @@ function findLatestSessionId(logsDir) {
         }
       }
     } catch (err) {
-      log.debug("scan_latest_flat_session_failed", { loggerDir, error: String(err?.message ?? err) });
+      log.warn("scan_latest_flat_session_failed", { loggerDir, error: String(err?.message ?? err) });
     }
   }
   return bestSid;
@@ -399,19 +399,35 @@ function normalizeWarnOrError(rawLevel) {
   return null;
 }
 
+const ISO_DATE_LIKE_RE =
+  /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/i;
+
+function parseValidTimestamp(rawTs) {
+  if (typeof rawTs !== "string") return { timestamp: null, timestampMs: null };
+  const trimmed = rawTs.trim();
+  if (!ISO_DATE_LIKE_RE.test(trimmed)) return { timestamp: null, timestampMs: null };
+  const ms = Date.parse(trimmed);
+  if (!Number.isFinite(ms)) return { timestamp: null, timestampMs: null };
+  return { timestamp: trimmed, timestampMs: ms };
+}
+
 function parseWarnOrErrorLine(rawLine) {
   // 1. Canonical bracketed logger format: `<ISO> [level] [prefix] msg`
   const bracketed = CANONICAL_BRACKETED_RE.exec(rawLine);
   if (bracketed) {
     const level = normalizeWarnOrError(bracketed[2]);
-    return level ? { timestamp: bracketed[1], level, raw: rawLine } : null;
+    if (!level) return null;
+    const { timestamp, timestampMs } = parseValidTimestamp(bracketed[1]);
+    return { timestamp, timestampMs, level, raw: rawLine };
   }
 
   // 2. Canonical unbracketed logger format (e.g. pi-vertex-claude): `<ISO> level msg`
   const unbracketed = CANONICAL_UNBRACKETED_RE.exec(rawLine);
   if (unbracketed) {
     const level = normalizeWarnOrError(unbracketed[2]);
-    return level ? { timestamp: unbracketed[1], level, raw: rawLine } : null;
+    if (!level) return null;
+    const { timestamp, timestampMs } = parseValidTimestamp(unbracketed[1]);
+    return { timestamp, timestampMs, level, raw: rawLine };
   }
 
   // 3. Structured JSON log line (only inspect top-level `level`/`severity` property)
@@ -428,13 +444,14 @@ function parseWarnOrErrorLine(rawLine) {
         if (rawLevel) {
           const level = normalizeWarnOrError(rawLevel);
           if (!level) return null;
-          const ts =
+          const rawTs =
             typeof parsed.timestamp === "string"
               ? parsed.timestamp
               : typeof parsed.time === "string"
                 ? parsed.time
                 : null;
-          return { timestamp: ts, level, raw: rawLine };
+          const { timestamp, timestampMs } = parseValidTimestamp(rawTs);
+          return { timestamp, timestampMs, level, raw: rawLine };
         }
       }
     } catch {
@@ -446,7 +463,7 @@ function parseWarnOrErrorLine(rawLine) {
   const leading = LEADING_BRACKET_LEVEL_RE.exec(rawLine);
   if (leading) {
     const level = normalizeWarnOrError(leading[1]);
-    return level ? { timestamp: null, level, raw: rawLine } : null;
+    return level ? { timestamp: null, timestampMs: null, level, raw: rawLine } : null;
   }
 
   return null;
@@ -499,22 +516,27 @@ export function collectRedactedDiagnosticLogs(options = {}) {
   let sessionSource = "none";
   let matchedFiles = [];
 
-  if (existsSync(logsDir)) {
-    if (options.sessionId) {
-      resolvedSessionId = sanitizeSegment(options.sessionId);
-      sessionSource = "explicit";
-      if (resolvedSessionId) {
-        matchedFiles = scanSessionFiles(logsDir, resolvedSessionId);
-      }
-    } else {
-      const candidates = [
-        sanitizeSegment(env.__PI_PARENT_SESSION_ID),
-        sanitizeSegment(env.__PI_CONFIG_SESSION_ID),
-      ].filter((v, idx, arr) => v && arr.indexOf(v) === idx);
+  const logsDirExists = existsSync(logsDir);
+  if (!logsDirExists) {
+    log.debug("logs_dir_missing", { logsDir: redactedLogsDir });
+  }
 
-      if (candidates.length > 0) {
-        sessionSource = "env";
-        resolvedSessionId = candidates[0];
+  if (options.sessionId) {
+    resolvedSessionId = sanitizeSegment(options.sessionId);
+    sessionSource = "explicit";
+    if (logsDirExists && resolvedSessionId) {
+      matchedFiles = scanSessionFiles(logsDir, resolvedSessionId);
+    }
+  } else {
+    const candidates = [
+      sanitizeSegment(env.__PI_PARENT_SESSION_ID),
+      sanitizeSegment(env.__PI_CONFIG_SESSION_ID),
+    ].filter((v, idx, arr) => v && arr.indexOf(v) === idx);
+
+    if (candidates.length > 0) {
+      sessionSource = "env";
+      resolvedSessionId = candidates[0];
+      if (logsDirExists) {
         for (const candidate of candidates) {
           const found = scanSessionFiles(logsDir, candidate);
           if (found.length > 0) {
@@ -523,26 +545,37 @@ export function collectRedactedDiagnosticLogs(options = {}) {
             break;
           }
         }
-      } else {
-        const latest = findLatestSessionId(logsDir);
-        if (latest) {
-          resolvedSessionId = latest;
-          sessionSource = "latest-fallback";
-          matchedFiles = scanSessionFiles(logsDir, latest);
-        }
+      }
+    } else if (logsDirExists) {
+      const latest = findLatestSessionId(logsDir);
+      if (latest) {
+        resolvedSessionId = latest;
+        sessionSource = "latest-fallback";
+        matchedFiles = scanSessionFiles(logsDir, latest);
       }
     }
-  } else {
-    log.debug("logs_dir_missing", { logsDir: redactedLogsDir });
   }
 
-  // Also inspect file-logger fallback dirs (unscoped flat `<logger>.log` files written when ~/.pi/logs fails).
+  // Also inspect file-logger fallback dirs. When a sessionId is resolved, strictly
+  // restrict fallback entries to files/lines carrying that sessionId so unrelated
+  // sessions never leak into the current session's snapshot.
   const fallbackFiles = [];
   for (const { dir, scope } of resolveFallbackDirs(options, homeDir)) {
-    fallbackFiles.push(...scanFallbackDirFiles(dir, scope));
+    for (const item of scanFallbackDirFiles(dir, scope)) {
+      const fileMatchesSession =
+        resolvedSessionId !== null &&
+        (item.logger === resolvedSessionId || item.logger.endsWith(`-${resolvedSessionId}`));
+      fallbackFiles.push({
+        ...item,
+        requireSessionInLine: resolvedSessionId !== null && !fileMatchesSession,
+      });
+    }
   }
 
-  const allFiles = [...matchedFiles, ...fallbackFiles];
+  const allFiles = [
+    ...matchedFiles.map((f) => ({ ...f, requireSessionInLine: false })),
+    ...fallbackFiles,
+  ];
   const collected = [];
   let seq = 0;
   for (const item of allFiles) {
@@ -556,6 +589,7 @@ export function collectRedactedDiagnosticLogs(options = {}) {
     if (!text) continue;
     for (const rawLine of text.split(/\r?\n/)) {
       if (!rawLine) continue;
+      if (item.requireSessionInLine && !rawLine.includes(resolvedSessionId)) continue;
       const parsed = parseWarnOrErrorLine(rawLine);
       if (!parsed) continue;
       collected.push({
@@ -565,14 +599,15 @@ export function collectRedactedDiagnosticLogs(options = {}) {
         scope: item.scope,
         level: parsed.level,
         timestamp: parsed.timestamp,
+        timestampMs: parsed.timestampMs,
         raw: parsed.raw,
       });
     }
   }
 
   collected.sort((a, b) => {
-    if (a.timestamp && b.timestamp && a.timestamp !== b.timestamp) {
-      return a.timestamp < b.timestamp ? -1 : 1;
+    if (a.timestampMs !== null && b.timestampMs !== null && a.timestampMs !== b.timestampMs) {
+      return a.timestampMs - b.timestampMs;
     }
     return a.seq - b.seq;
   });
@@ -590,7 +625,7 @@ export function collectRedactedDiagnosticLogs(options = {}) {
       file: redact(entry.file),
       scope: entry.scope,
       level: entry.level,
-      timestamp: entry.timestamp,
+      timestamp: entry.timestamp ? redact(entry.timestamp) : null,
       line,
     };
   });
