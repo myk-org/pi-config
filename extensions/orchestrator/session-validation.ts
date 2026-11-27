@@ -212,7 +212,7 @@ async function checkSessionTools(ctx: any): Promise<void> {
     optional.push("gh — GitHub CLI. Install: https://cli.github.com/");
   if (!hasCmd("myk-pi-tools"))
     optional.push(
-      "myk-pi-tools — PR/release/review CLI. Install: uv tool install myk-pi-tools",
+      "myk-pi-tools — PR/release/review CLI. Install: uv tool install --python 3.14 --upgrade myk-pi-tools",
     );
 
   // Check agent-browser skill

@@ -800,7 +800,7 @@ export function clearRestrictedFoldersFloor(cwd?: string): void {
 
 onSettingsWritten((event) => {
   // Only update floors when `restricted_folders` itself was saved via an authorized write.
-  // Unrelated setting saves (e.g. `dco`, `image_model`) must never unpin restricted folders.
+  // Unrelated setting saves (e.g. `dco`, `agent_model`) must never unpin restricted folders.
   if (event.changedKey !== "restricted_folders") return;
   const scope = event.scope ?? "project";
   const projectCwd = event.cwd ?? dirname(dirname(event.filePath));

@@ -10,12 +10,18 @@ import { useNotifications } from "@/hooks/useNotifications";
 import { useKeybindings } from "@/hooks/useKeybindings";
 import { useMessageHandler, nextId } from "@/hooks/useMessageHandler";
 import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation";
+import { useSidebarSessionFlags } from "@/hooks/useSidebarSessionFlags";
 import { SessionSwitcher } from "@/components/SessionSwitcher";
 import { KeybindingSettings } from "@/components/KeybindingSettings";
 import { SidePanel, type PanelTab } from "@/components/SidePanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { createLogger } from "@/lib/create-logger";
-import { groupAndSortSessions } from "@/lib/group-sessions";
+import {
+  flattenSidebarSessions,
+  formatDocumentTitle,
+  partitionSidebarSessions,
+  shouldPausePromptHotkeys,
+} from "@/lib/pidash-ux-helpers";
 import type { SessionInfo } from "@/types";
 
 const log = createLogger("App");
@@ -55,10 +61,24 @@ export function App() {
     const savedPanel = saved.current.activePanel;
     return savedPanel === "tasks" || savedPanel === "worktrees" || savedPanel === "coms" || savedPanel === "memory" || savedPanel === "mcp" || savedPanel === "settings" ? savedPanel : null;
   });
-  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile ? true : saved.current.sidebarCollapsed);
+  const [isMobileViewport, setIsMobileViewport] = useState(() => typeof window !== "undefined" && window.innerWidth <= 768);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobileViewport ? true : saved.current.sidebarCollapsed);
   const [sidebarWidth, setSidebarWidth] = useState(saved.current.sidebarWidth);
+  const {
+    pinned: pinnedSessionIds,
+    archived: archivedSessionIds,
+    togglePin: handleTogglePin,
+    toggleArchive: handleToggleArchive,
+    unarchive: unarchiveSession,
+  } = useSidebarSessionFlags();
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    const onResize = () => setIsMobileViewport(window.innerWidth <= 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const restoredRef = useRef(false);
   const messageCacheRef = useRef(new Map<string, { messages: any[]; model: string; tokens: any }>());
   const MAX_CACHED_SESSIONS = 5;
@@ -130,6 +150,20 @@ export function App() {
   const renameSession = useCallback((sessionId: string, name: string) => {
     send({ type: "pidash-command", command: "rename-session", sessionId, name });
   }, [send]);
+
+  const hasPendingPrompt = useMemo(
+    () => messages.some((m) => Boolean(m.className?.startsWith("ask|"))),
+    [messages],
+  );
+
+  // Sync browser tab title with the watched session and waiting-for-input state
+  useEffect(() => {
+    document.title = formatDocumentTitle(selectedSession, hasPendingPrompt);
+  }, [selectedSession, hasPendingPrompt]);
+
+  useEffect(() => () => {
+    document.title = "pidash";
+  }, []);
 
   // Persist UI state to localStorage
   useEffect(() => {
@@ -211,10 +245,21 @@ export function App() {
     return next;
   }, [messages]);
 
-  // Flatten sessions matching sidebar order: active groups first, then alphabetical, active sessions first within groups
+  const extraAttentionIds = useMemo(() => {
+    if (selectedSession?.active && hasPendingPrompt) {
+      return new Set([selectedSession.sessionId]);
+    }
+    return undefined;
+  }, [selectedSession, hasPendingPrompt]);
+
+  // Flatten sessions matching sidebar visual order: Needs attention → Pinned → project groups → Archived
   const flatSessions = useMemo(
-    () => groupAndSortSessions(sessions).flatMap((g) => g.sessions),
-    [sessions],
+    () => flattenSidebarSessions(partitionSidebarSessions(sessions, {
+      pinnedIds: pinnedSessionIds,
+      archivedIds: archivedSessionIds,
+      extraAttentionIds,
+    })),
+    [sessions, pinnedSessionIds, archivedSessionIds, extraAttentionIds],
   );
 
   useKeyboardNavigation({
@@ -226,10 +271,11 @@ export function App() {
 
   const handleSend = useCallback((text: string, images?: Array<{ data: string; mimeType: string; filename: string }>) => {
     if (!session) return;
+    unarchiveSession(session.sessionId);
     setLastUserText(text);
     addMsg("user", text + (images ? ` [+${images.length} file(s)]` : ""));
     send({ type: "prompt", sessionId: session.sessionId, text, images: images || undefined });
-  }, [session, send, addMsg, setLastUserText]);
+  }, [session, send, addMsg, setLastUserText, unarchiveSession]);
 
   return (
     <div className="flex w-screen overflow-hidden" style={{ height: '100dvh' }}>
@@ -256,6 +302,11 @@ export function App() {
             onToggle={() => setSidebarCollapsed(true)}
             notifications={notifications}
             onSettings={() => setShowSettings(prev => !prev)}
+            pinnedSessionIds={pinnedSessionIds}
+            archivedSessionIds={archivedSessionIds}
+            extraAttentionIds={extraAttentionIds}
+            onTogglePin={handleTogglePin}
+            onToggleArchive={handleToggleArchive}
           />
           <div
             className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/30 z-10 max-md:hidden"
@@ -309,6 +360,14 @@ export function App() {
               streaming={streaming}
               scrollKey={scrollKey}
               onAskResponse={handleAskResponse}
+              promptHotkeysPaused={shouldPausePromptHotkeys({
+                showSwitcher,
+                showSettings,
+                showNewSession,
+                hasActivePanel: Boolean(activePanel),
+                sidebarOpen: !sidebarCollapsed,
+                isMobileViewport,
+              })}
             />
             {queuedCount > 0 && (
               <div className="px-3 py-1.5 bg-yellow-500/10 border-t border-yellow-500/20 text-xs text-yellow-500 flex items-center gap-1.5">

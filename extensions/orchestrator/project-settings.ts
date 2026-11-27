@@ -1000,16 +1000,6 @@ export function parseAdvisorModelSpec(raw: string): { provider: string; model: s
   return { provider, model };
 }
 
-/** True when a model id looks like a Google/Gemini image-generation model. */
-export function isImageGenModelId(id: string): boolean {
-  const lower = id.toLowerCase();
-  return (
-    lower.includes("imagen") ||
-    lower.includes("image-generation") ||
-    /(?:^|[-_./])image(?:[-_./]|$)/.test(lower)
-  );
-}
-
 // ── File reading & schema-driven parsing ────────────────────────────
 
 /**
@@ -1745,9 +1735,5 @@ export function registerProjectSettings(pi: ExtensionAPI): void {
     const sidecarLogLevel = getSetting(cwd, "sidecar_log_level");
     if (sidecarLogLevel) process.env.PI_SIDECAR_LOG_LEVEL = sidecarLogLevel;
     else delete process.env.PI_SIDECAR_LOG_LEVEL;
-
-    const imageModel = getSetting(cwd, "image_model");
-    if (imageModel) process.env.PI_IMAGE_MODEL = imageModel;
-    else delete process.env.PI_IMAGE_MODEL;
   });
 }

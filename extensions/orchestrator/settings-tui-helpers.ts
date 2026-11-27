@@ -9,7 +9,6 @@ import {
   EMPTY_VALUE_SENTINEL,
   SETTINGS_KEYS,
   getFilePathForScope,
-  isImageGenModelId,
   parseSettingInput,
   readSettingsFile,
   type SettingsKeyDef,
@@ -135,20 +134,7 @@ export type ModelSelectItem = {
   value: string;
   label: string;
   description?: string;
-  /** Registry input modalities when present (vision ≠ image generation). */
-  input?: string[];
-  /** Registry output modalities when present (`image` = image-generation capable). */
-  output?: string[];
 };
-
-/** Image-gen picker: prefer `output` includes `image`; else id pattern. Not `input` (vision). */
-export function isImageCapablePickerItem(item: ModelSelectItem): boolean {
-  if (Array.isArray(item.output) && item.output.includes("image")) {
-    log.debug("isImageCapablePickerItem", { id: item.value, via: "output" });
-    return true;
-  }
-  return isImageGenModelId(item.value);
-}
 
 export type ModelPickerPairedSettings = {
   agent_provider?: string;
@@ -164,21 +150,11 @@ export function filterModelsByProvider(
   return allModels.filter((m) => m.description === provider);
 }
 
-/** Registry provider hardwired for image_model picker (no image_provider setting). */
-export const IMAGE_MODEL_PROVIDER = "google";
-
-/**
- * Registry provider used to filter the model picker for a settings key.
- * image_model is hardwired to IMAGE_MODEL_PROVIDER (no image_provider setting).
- */
+/** Registry provider used to filter the model picker for a settings key. */
 export function resolveModelPickerProvider(
   key: string,
   paired: ModelPickerPairedSettings = {},
 ): string | undefined {
-  if (key === "image_model") {
-    log.debug("resolveModelPickerProvider", { key, provider: IMAGE_MODEL_PROVIDER });
-    return IMAGE_MODEL_PROVIDER;
-  }
   if (key === "agent_model") {
     const p = paired.agent_provider?.trim();
     log.debug("resolveModelPickerProvider", { key, provider: p || undefined });
@@ -195,7 +171,6 @@ export function resolveModelPickerProvider(
 
 /**
  * Models shown in the settings TUI picker for a key.
- * image_model: IMAGE_MODEL_PROVIDER + image-capable only — never falls back to all providers.
  * advisor_model: formats items as explicit `provider/model-id` pairs across all providers,
  *   with a leading empty option to inherit the session model.
  * agent_model / internal_operations_model: fall back to all models when filter is empty.
@@ -238,18 +213,9 @@ export function resolveModelPickerItems(
     log.debug("resolveModelPickerItems advisor_model", { count: qualified.length });
     return qualified;
   }
-  const effectiveProvider = key === "image_model" ? IMAGE_MODEL_PROVIDER : provider;
-  const filtered = filterModelsByProvider(allModels, effectiveProvider);
-  if (key === "image_model") {
-    const imageCapable = filtered.filter(isImageCapablePickerItem);
-    log.debug("resolveModelPickerItems image_model", {
-      googleCount: filtered.length,
-      imageCapableCount: imageCapable.length,
-    });
-    return imageCapable;
-  }
+  const filtered = filterModelsByProvider(allModels, provider);
   const result = filtered.length > 0 ? filtered : allModels;
-  log.debug("resolveModelPickerItems", { key, provider: effectiveProvider, count: result.length });
+  log.debug("resolveModelPickerItems", { key, provider, count: result.length });
   return result;
 }
 
@@ -265,7 +231,7 @@ export function resolveModelKeySubmenu(
 ): ModelKeySubmenu {
   const provider = resolveModelPickerProvider(key, paired);
   const models = resolveModelPickerItems(key, allModels, provider, currentValue);
-  if ((key === "image_model" || key === "advisor_model") && models.length === 0) {
+  if (key === "advisor_model" && models.length === 0) {
     log.debug("resolveModelKeySubmenu", { key, mode: "input", provider });
     return { mode: "input", provider };
   }

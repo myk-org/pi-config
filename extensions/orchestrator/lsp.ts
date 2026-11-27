@@ -368,8 +368,8 @@ export class LspClient {
   private readonly pendingRequests = new Map<number, PendingRequest>();
   private readonly openedDocs = new Map<string, number>();
   private readonly waiters = new Map<string, Set<DiagnosticWaiter>>();
-  private readonly inFlightUris = new Set<string>();
-  private serverSupportsVersionedDiagnostics = false;
+  private readonly inFlightUriCounts = new Map<string, number>();
+  private readonly versionedUris = new Set<string>();
   private unversionedAmbiguous = false;
   private initPromise: Promise<boolean> | null = null;
   private initialized = false;
@@ -408,14 +408,25 @@ export class LspClient {
     return this.closed;
   }
 
-  /** True when an unversioned server timed out, making later attribution ambiguous until reset. */
+  /** True when an unversioned document timed out, making later attribution ambiguous until reset. */
   get needsReset(): boolean {
     return this.unversionedAmbiguous;
   }
 
-  /** True when this URI has an active edit in flight on a server not known to send diagnostic versions. */
+  /** True when this URI has an active check in flight on a document not known to receive versioned diagnostics. */
   hasUnversionedInFlight(uri: string): boolean {
-    return !this.serverSupportsVersionedDiagnostics && this.inFlightUris.has(uri);
+    return !this.versionedUris.has(uri) && (this.inFlightUriCounts.get(uri) ?? 0) > 0;
+  }
+
+  /** Synchronously reserve `uri` before any async boundary so simultaneous same-URI checks see overlap. */
+  reserveUri(uri: string): void {
+    this.inFlightUriCounts.set(uri, (this.inFlightUriCounts.get(uri) ?? 0) + 1);
+  }
+
+  releaseUri(uri: string): void {
+    const next = (this.inFlightUriCounts.get(uri) ?? 0) - 1;
+    if (next > 0) this.inFlightUriCounts.set(uri, next);
+    else this.inFlightUriCounts.delete(uri);
   }
 
   matchesServer(command: string, args: readonly string[]): boolean {
@@ -520,7 +531,8 @@ export class LspClient {
       }
       this.waiters.delete(uri);
     }
-    this.inFlightUris.clear();
+    this.inFlightUriCounts.clear();
+    this.versionedUris.clear();
 
     this.onDispose();
   }
@@ -648,13 +660,16 @@ export class LspClient {
       const latestVersion = this.openedDocs.get(uri);
 
       if (version !== undefined) {
-        this.serverSupportsVersionedDiagnostics = true;
-      } else if (this.unversionedAmbiguous) {
-        this.log.debug("lsp_ambiguous_unversioned_diagnostics_dropped", {
-          serverId: this.serverId,
-          uri,
-        });
-        return;
+        this.versionedUris.add(uri);
+      } else {
+        this.versionedUris.delete(uri);
+        if (this.unversionedAmbiguous) {
+          this.log.debug("lsp_ambiguous_unversioned_diagnostics_dropped", {
+            serverId: this.serverId,
+            uri,
+          });
+          return;
+        }
       }
 
       const set = this.waiters.get(uri);
@@ -757,12 +772,10 @@ export class LspClient {
     if (this.closed) return null;
     const uri = normalizeFileUri(pathToFileURL(absPath).href);
     this.inFlightRequests++;
-    this.inFlightUris.add(uri);
     this.clearIdleTimer();
     try {
       return await this.checkFileInner(absPath, uri, timeoutMs);
     } finally {
-      this.inFlightUris.delete(uri);
       this.inFlightRequests = Math.max(0, this.inFlightRequests - 1);
       this.armIdleTimer();
     }
@@ -811,10 +824,10 @@ export class LspClient {
         timer: setTimeout(() => {
           set?.delete(waiter);
           if (set && set.size === 0) this.waiters.delete(uri);
-          // For servers that omit diagnostic versions, a timed-out edit makes any future
-          // unversioned publication unattributable (it could belong to the old edit or never
+          // For documents that do not receive versioned diagnostics, a timed-out edit makes any
+          // future unversioned publication unattributable (it could belong to the old edit or never
           // arrive at all). Mark this client for clean reset before the next check.
-          if (!this.serverSupportsVersionedDiagnostics) {
+          if (!this.versionedUris.has(uri)) {
             this.unversionedAmbiguous = true;
           }
           this.log.debug("lsp_diagnostics_timeout", { serverId: this.serverId, filePath: absPath, timeoutMs });
@@ -979,12 +992,18 @@ export class LspManager {
   private exitHookRegistered = false;
   private shuttingDown = false;
   private readonly onProcessExit = (): void => {
+    this.killAllSync();
+  };
+
+  /** Synchronous last-resort teardown for Node `process.on("exit")` hooks. */
+  killAllSync(): void {
     for (const client of this.allClients) {
       client.killSync();
     }
     this.clients.clear();
     this.allClients.clear();
-  };
+    this.releaseExitHookIfEmpty();
+  }
 
   constructor(options: LspManagerOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_DIAGNOSTICS_TIMEOUT_MS;
@@ -1044,6 +1063,7 @@ export class LspManager {
         const overrideChanged = !existing.matchesServer(server.command, server.args);
         const ambiguousUnversioned = existing.needsReset || existing.hasUnversionedInFlight(uri);
         if (!overrideChanged && !ambiguousUnversioned) {
+          existing.reserveUri(uri);
           return existing;
         }
 
@@ -1084,6 +1104,7 @@ export class LspManager {
       this.clients.set(poolKey, created);
       this.allClients.add(created);
       this.ensureExitHook();
+      created.reserveUri(uri);
       return created;
     }
   }
@@ -1118,9 +1139,15 @@ export class LspManager {
     const poolKey = `${resolvedRoot}\0${server.serverId}`;
     const uri = normalizeFileUri(pathToFileURL(absPath).href);
     const client = await this.acquireClient(poolKey, resolvedRoot, server, uri);
-    if (!client || this.shuttingDown) return null;
+    if (!client) return null;
 
-    const diagnostics = await client.checkFile(absPath, this.timeoutMs);
+    let diagnostics: LspDiagnostic[] | null;
+    try {
+      if (this.shuttingDown) return null;
+      diagnostics = await client.checkFile(absPath, this.timeoutMs);
+    } finally {
+      client.releaseUri(uri);
+    }
     if (this.shuttingDown || !diagnostics || diagnostics.length === 0) return null;
 
     return formatDiagnostics(diagnostics, absPath, resolvedRoot, server.serverId, this.maxDiagnosticLines);

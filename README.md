@@ -47,7 +47,7 @@ Single extension that provides:
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
 | **Trail-code integration** | On by default when the `trail` binary is installed. Main agents and subagents query the local code map before raw project navigation: the first project navigation per turn is gated behind a `trail_*` call, guidance is map-first (`trail_find_code` first, `trail_repo_map` once per session), and injected hits carry source. Worktrees resolve the map under `graft/` or `.trail/cache/`, inherit enablement from the main checkout, and seed from it instead of cold-building. Stale maps stay usable and failures fall open. |
-| **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching, live session name updates, reasoning token display, and side panels (Tasks, Worktrees with guarded remove/prune/detail, Coms, Memory, MCP, Settings) |
+| **Pidash dashboard** | Live web dashboard — multi-session monitoring with browser tab title sync, sidebar Needs Attention / Pin / Archived grouping, browser messaging, `1`–`9` keyboard `ask_user` + multi-line answers, one-click bash output copy, model switching, live session name updates, reasoning token display, and side panels (Tasks, Worktrees with guarded remove/prune/detail, Coms, Memory, MCP, Settings) |
 | **Pidiff viewer** | Per-project diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory (configured via `dream_auto_enable` and `dream_interval_hours` in `/pi-config-settings`; LLM invokes `memory_dream`) |
 | **Skill self-improvement** | Non-blocking skill maintenance across project, user-global, and symlinked shared skills loaded by Pi: `/adopt-skill` opens a TUI overlay with `Space` multi-select + `a`/`Enter` to mark one or more non-package skills with `skill-maintenance: auto` (brand-new `.pi/skills/<name>/SKILL.md` writes auto-adopt), a failed adopted skill steers the turn to fix it, and skill edits log to `.pi/data/skill-review.jsonl` with a one-line turn summary (see `docs/skill-self-improvement.md`) |
@@ -199,13 +199,22 @@ See the [Docker section](#docker-sandboxed-execution) below for the full run com
 
 ### Native (without Docker)
 
+Install `pi` first (`npm install -g @earendil-works/pi-coding-agent`). On Linux distros with system-packaged Node.js
+(root-owned `/usr` or `/usr/local` npm prefix), configure a user-writable npm prefix first or install `pi` with `sudo`:
+
+```bash
+mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global
+export PATH="$HOME/.npm-global/bin:$PATH"
+npm install -g @earendil-works/pi-coding-agent
+```
+
 Install from npm and PyPI — no git clone of this repo:
 
 ```bash
 pi install npm:pi-orchestrator-config
 pi install npm:@myk-org/pi-vertex-claude   # optional Vertex Claude models
 pi install npm:pi-web-access               # optional web search/fetch
-uv tool install myk-pi-tools
+uv tool install --python 3.14 --upgrade myk-pi-tools
 ```
 
 Or run the interactive installer (downloads the script only; packages still come from npm/PyPI):
@@ -222,10 +231,10 @@ uv run scripts/install.py
 
 The installer covers:
 
-- **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, myk-pi-tools, bun
+- **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, myk-pi-tools
 - **Python Tools** — prek
 - **npm Packages** — agent-browser, trail-code (`@trailhq/trail-code`)
-- **Browser Automation** — playwright + chromium
+- **Browser Automation** — agent-browser Chromium (`agent-browser install --with-deps`)
 - **Environment Setup** — gitignore configuration
 
 For non-interactive (CI) usage:
@@ -247,7 +256,7 @@ The container runs `pi update` automatically on each start.
 ### Native
 
 ```bash
-pi update                          # Pi package
+pi update --extensions             # Pi and installed packages
 uv tool upgrade myk-pi-tools      # CLI tool
 ```
 
@@ -471,20 +480,13 @@ Project agents included by default (`agentScope` defaults to `"both"`).
 
 ### Image Generation
 
-The `generate_image` tool creates images from structured descriptions via Gemini API.
+Image generation uses Pi 1.6's native `codemode` image API (`models.getAvailableOfType("image")` + `models.generateImages()` + `image()`),
+reusing the session's configured provider credentials and usage tracking with zero extra top-level tool schema tokens when unused.
+Images are generated only on explicit user request; the model does not generate images unprompted.
+`pi-config` activates `codemode` automatically on `session_start` in default sessions unless explicitly excluded.
 
-**Configuration:**
-
-Set `image_model` in `pi-config-settings.json` or use `PI_IMAGE_MODEL` env var.
-
-| Setting / Variable                   | Description                                                                                        |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `image_model` / `PI_IMAGE_MODEL`     | Google/Gemini image model for `generate_image` (Settings TUI filters to google; empty = disabled). |
-| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini API key (env only)                                                                          |
-
-**Usage:** Ask naturally — "generate an image of a sunset" — or use structured params: `subject`, `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio`.
-
-In containers, images are auto-served via HTTP for browser preview.
+The legacy `extensions/image-gen/` extension (`generate_image`) and `image_model` setting were retired in favor of native `codemode` image models;
+existing `image_model` entries in `pi-config-settings.json` are ignored safely. See [Image Generation](docs/image-generation.md).
 
 ### Trail-code code map (on by default)
 
@@ -506,8 +508,10 @@ dedicated npm prefix, audits that isolated dependency tree for lifecycle scripts
 and strictly rebuilds it with only those packages approved. The completed prefix
 is published under the global npm prefix and its `trail` binary linked globally,
 so unrelated global packages are never evaluated. It verifies `trail --version`;
-`DO_NOT_TRACK=1` disables Trail telemetry. Requirements: Node.js 22+, npm 12+,
-and the node-gyp prerequisites (Python 3, `make`, G++). If the binary is missing
+`DO_NOT_TRACK=1` disables Trail telemetry. Requirements: Node.js 22+, npm 10+
+(strict `--allow-scripts` on npm 12+; audited `--ignore-scripts` + scoped
+`npm rebuild` on npm 10–11), and the node-gyp prerequisites (Python 3, `make`,
+G++). If the binary is missing
 or the install fails, pi continues without the map and the `trail_*` tools are
 simply absent.
 
@@ -622,7 +626,7 @@ docker run --rm -it \
 ### Environment file
 
 Create a `.env` file with external service credentials and container-specific
-variables. Pi-config settings (`image_model`, `vertex_claude_1m`, etc.)
+variables. Pi-config settings (`agent_model`, `vertex_claude_1m`, etc.)
 go in `.pi/pi-config-settings.json` — not here:
 
 ```env
@@ -648,7 +652,7 @@ GITHUB_TOKEN=ghp_xxx
 GITHUB_API_TOKEN=ghp_xxx
 GH_CONFIG_DIR=/home/youruser/.config/gh
 
-# Gemini (optional — required for image generation)
+# Gemini (optional — Google/Gemini API key)
 GEMINI_API_KEY=xxx
 ```
 
@@ -709,7 +713,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 
 **Features:**
 
-- Multi-session dashboard with sidebar grouped by project
+- Multi-session dashboard with browser tab title sync (`[!]` prefix when waiting for input) and sidebar grouped by **Needs attention**, **Pinned**, project folders, **Coms**,
+  and collapsible **Archived** (auto-unarchives on send)
 - Live conversation streaming (user, assistant, tool, thinking)
 - Send messages from browser to pi
 - Model and thinking level switching from browser
@@ -717,8 +722,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Info bar: model, tokens, context %, git status (with PR `#N` when present)
 - TUI status line: clickable `pi-diff` / `pi-dash` labels and open-PR `#N` hyperlink
 - Per-project diff viewer (pidiff) — opens in browser via clickable `pi-diff` status-line link, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
-- Collapsible thinking and tool blocks with copy buttons
-- ask_user tool bridging (answer from browser or TUI)
+- Collapsible thinking and tool blocks with one-click **Copy** output button on bash/shell tool cards
+- ask_user tool bridging (answer from browser or TUI, with `1`–`9` keyboard option selection and multi-line custom answers)
 - **Full TUI parity (#968)** — every interactive prompt and surface is answerable/operable from either TUI or browser, first answer wins:
   - Dangerous-command approvals, commit-trailer selection, and project-agent confirmations render in both surfaces
   - `/tasks` itself is a zero-arg terminal-only overlay: list/view with `[you]`/`[llm]` assignee tags,
@@ -1134,7 +1139,7 @@ files change. `npm run typecheck:tests` checks the test tree alone.
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.6.0**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.6.1**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)

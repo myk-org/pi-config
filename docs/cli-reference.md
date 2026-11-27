@@ -1,6 +1,6 @@
 # myk_pi_tools CLI Reference
 
-`myk-pi-tools` is installed with `uv tool install myk-pi-tools`. It exposes seven command groups: `coderabbit`, `db`, `memory`, `pr`, `release`, `reviews`, and `settings`. This page documents `db`, `reviews`, and `memory`; the rest are covered on their own pages.
+`myk-pi-tools` is installed with `uv tool install --python 3.14 --upgrade myk-pi-tools`. It exposes seven command groups: `coderabbit`, `db`, `memory`, `pr`, `release`, `reviews`, and `settings`. This page documents `db`, `reviews`, and `memory`; the rest are covered on their own pages.
 
 - `coderabbit`, `pr`, `reviews` — PR review automation. See [Automating Code Reviews](automating-code-reviews.html).
 - `memory` — project memory topic files. See [Curating Project Memory](curating-project-memory.html).
