@@ -126,6 +126,18 @@ function formatSubagentSteps(items: unknown[]): string[] {
   });
 }
 
+/** Concise 1-line preview for collapsed tool/collapsible rows without dropping full expanded text. */
+export function formatToolCallSummary(text: string, maxLen = 120): string {
+  if (!text) return "";
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return trimmed.replace(/\s+/g, " ").slice(0, maxLen);
+  }
+  const firstNonEmpty = text.split("\n").find((line) => line.trim().length > 0) ?? "";
+  return firstNonEmpty.trim().slice(0, maxLen);
+}
+
 /**
  * Format full, lossless tool call arguments for every tool.
  * First line stays concise for collapsed row previews while expanded CALL boxes
@@ -213,23 +225,23 @@ export function formatToolCallDetail(toolName: string, args: unknown): string {
 
   if (normalized === "subagent") {
     if (typeof a.asyncKill === "string" && a.asyncKill) {
-      const extra = omitNonNullish(a, ["asyncKill", "agent", "name"]);
+      const extra = omitNonNullish(a, ["asyncKill"]);
       return extra ? `kill: ${a.asyncKill}\n\n${safeFormatJson(extra)}` : `kill: ${a.asyncKill}`;
     }
     if (typeof a.task === "string") {
-      const extra = omitNonNullish(a, ["task", "agent", "name"]);
+      const extra = omitNonNullish(a, ["task"]);
       return extra ? `${a.task}\n\n${safeFormatJson(extra)}` : a.task;
     }
     if (Array.isArray(a.tasks)) {
       const header = `${a.tasks.length} parallel task${a.tasks.length === 1 ? "" : "s"}`;
-      const extra = omitNonNullish(a, ["tasks", "agent", "name"]);
+      const extra = omitNonNullish(a, ["tasks"]);
       const sections = [header, ...formatSubagentSteps(a.tasks)];
       if (extra) sections.push(safeFormatJson(extra));
       return sections.join("\n\n");
     }
     if (Array.isArray(a.chain)) {
       const header = `${a.chain.length} chain step${a.chain.length === 1 ? "" : "s"}`;
-      const extra = omitNonNullish(a, ["chain", "agent", "name"]);
+      const extra = omitNonNullish(a, ["chain"]);
       const sections = [header, ...formatSubagentSteps(a.chain)];
       if (extra) sections.push(safeFormatJson(extra));
       return sections.join("\n\n");
@@ -274,13 +286,8 @@ export function appendAsyncAgentEventText(
 
   if (inner.type === "tool_execution_start") {
     const name = inner.toolName || "tool";
-    const fullDetail = formatToolCallDetail(name, inner.args);
-    const preview = fullDetail
-      ? (fullDetail.startsWith("{") || fullDetail.startsWith("[")
-        ? fullDetail.replace(/\s+/g, " ").trim()
-        : (fullDetail.split("\n").find((l) => l.trim().length > 0) ?? "").trim())
-      : "";
-    const detail = preview ? ` ${preview.slice(0, 100)}` : "";
+    const preview = formatToolCallSummary(formatToolCallDetail(name, inner.args), 100);
+    const detail = preview ? ` ${preview}` : "";
     tracked.text += `\n🔧 ${name}${detail}`;
     changed = true;
   }
@@ -503,14 +510,19 @@ export function applyTranscriptEvent(
     }
 
     case "tool_execution_end": {
-      const matchedCall = (ev.toolCallId && ev.toolCallId !== refs.tool.callId)
+      const idMismatch = Boolean(ev.toolCallId && ev.toolCallId !== refs.tool.callId);
+      const matchedCall = idMismatch
         ? sink.findLast((m) => m.className === "tool-call" && m.meta?.callId === ev.toolCallId)
         : undefined;
-      const callMsgId = matchedCall ? matchedCall.id : refs.tool.id;
-      const toolName = matchedCall?.role || refs.tool.name || ev.toolName || "tool";
-      const startTs = matchedCall ? (matchedCall.timestamp ?? 0) : refs.tool.startTs;
-      const callId = matchedCall?.meta?.callId || refs.tool.callId || ev.toolCallId || "";
-      if (!matchedCall) {
+      const callMsgId = idMismatch ? (matchedCall?.id ?? "") : refs.tool.id;
+      const toolName = idMismatch
+        ? (matchedCall?.role || ev.toolName || "tool")
+        : (refs.tool.name || ev.toolName || "tool");
+      const startTs = idMismatch ? (matchedCall?.timestamp ?? 0) : refs.tool.startTs;
+      const callId = idMismatch
+        ? (matchedCall?.meta?.callId || ev.toolCallId || "")
+        : (refs.tool.callId || ev.toolCallId || "");
+      if (!idMismatch) {
         refs.tool = { id: "", name: "", startTs: 0, callId: "" };
       }
       if (callMsgId) {

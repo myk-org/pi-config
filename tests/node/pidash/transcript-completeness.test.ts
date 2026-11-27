@@ -19,10 +19,12 @@ import {
   applyTranscriptEvent,
   extractToolContentText,
   formatToolCallDetail,
+  formatToolCallSummary as reducerFormatToolCallSummary,
   type TranscriptRefs,
   type TranscriptSink,
 } from "../../../extensions/shared/pidash-transcript-reducer.ts";
 import { replaySessionHistory } from "../../../extensions/pidash/pidash.ts";
+import { buildSessionNotification } from "../../../scripts/pidash-session-state.ts";
 import { formatToolCallSummary } from "../../../extensions/pidash/pidash-ui/src/lib/pidash-ux-helpers.ts";
 import type { ChatMessage } from "../../../extensions/shared/types.ts";
 import { elements, installReactDomShim } from "./react-dom-shim.mjs";
@@ -133,10 +135,20 @@ describe("formatToolCallDetail (#1479)", () => {
   it("preserves subagent single task longer than 150 characters without truncation", () => {
     const longTask = `${"Implement full lossless transcript rendering. ".repeat(10)}TAIL_MARKER_1479`;
     assert.ok(longTask.length > 300);
-    const detail = formatToolCallDetail("subagent", { agent: "ts-expert", task: longTask, cwd: "/repo" });
+    const detail = formatToolCallDetail("subagent", { agent: "ts-expert", name: "ui-fix", task: longTask, cwd: "/repo" });
     assert.equal(detail.includes(longTask), true);
     assert.equal(detail.includes("TAIL_MARKER_1479"), true);
+    assert.equal(detail.includes('"agent": "ts-expert"'), true);
+    assert.equal(detail.includes('"name": "ui-fix"'), true);
     assert.equal(detail.includes('"/repo"'), true);
+  });
+
+  it("preserves top-level agent identity fields in subagent parallel mode", () => {
+    const detail = formatToolCallDetail("subagent", {
+      name: "batch-run",
+      tasks: [{ agent: "worker", task: "Check status", cwd: "/repo" }],
+    });
+    assert.equal(detail.includes('"name": "batch-run"'), true);
   });
 
   it("preserves all subagent parallel tasks without truncation", () => {
@@ -307,6 +319,61 @@ describe("applyTranscriptEvent lossless tool lifecycle (#1479)", () => {
     assert.equal(results[1].text, "✓ contents of b");
   });
 
+  it("leaves the active running tool untouched when an evicted callId finishes", () => {
+    const { messages, refs, sink } = makeReducerHarness();
+
+    applyTranscriptEvent(
+      { type: "tool_execution_start", toolCallId: "active-2", toolName: "bash", args: { command: "sleep 10" }, timestamp: 200 },
+      refs,
+      sink,
+    );
+    applyTranscriptEvent(
+      { type: "tool_execution_update", toolCallId: "active-2", partialResult: { content: [{ type: "text", text: "still running" }] } },
+      refs,
+      sink,
+    );
+    applyTranscriptEvent(
+      {
+        type: "tool_execution_end",
+        toolCallId: "evicted-1",
+        toolName: "read",
+        isError: false,
+        timestamp: 250,
+        result: { content: [{ type: "text", text: "late result" }] },
+      },
+      refs,
+      sink,
+    );
+
+    const activeCall = messages.find((m) => m.className === "tool-call" && m.meta?.callId === "active-2");
+    const lateResult = messages.find((m) => m.className === "tool-result");
+    assert.equal(refs.tool.callId, "active-2");
+    assert.equal(activeCall?.meta?.partialOutput, "still running");
+    assert.equal(lateResult?.meta?.callId, "evicted-1");
+    assert.equal(lateResult?.role, "read" as any);
+    assert.equal(lateResult?.meta?.startTs, undefined);
+  });
+
+  it("omits raw tool result text from global session_notification broadcasts", () => {
+    const frame = buildSessionNotification("101:/repo", "/repo", {
+      toolName: "codemode",
+      isError: false,
+      result: {
+        content: [
+          { type: "text", text: "Output:" },
+          { type: "text", text: "pytest 12 passed; SECRET_TOKEN_12345" },
+        ],
+      },
+    });
+    assert.equal("resultText" in frame, false);
+    assert.equal(frame.isTestEvent, true);
+    assert.equal(frame.testPassed, true);
+  });
+
+  it("shares one formatToolCallSummary function between reducer plus UI helpers", () => {
+    assert.equal(formatToolCallSummary, reducerFormatToolCallSummary);
+  });
+
   it("joins multi-part tool_execution_end blocks inside appendAsyncAgentEventText", () => {
     const tracked = { text: "" };
     const changed = appendAsyncAgentEventText(tracked, {
@@ -432,6 +499,7 @@ describe("replaySessionHistory lossless replay (#1479)", () => {
 
 let vite: ViteDevServer;
 let createRoot: (container: Element) => Root;
+let MessageList: any;
 let MessageItem: any;
 let ToolGroup: any;
 let CollapsibleMessage: any;
@@ -458,7 +526,7 @@ describe("MessageList universal Copy buttons (#1479)", () => {
       server: { middlewareMode: true, hmr: false },
       appType: "custom",
     });
-    ({ MessageItem, ToolGroup, CollapsibleMessage } = await vite.ssrLoadModule("/src/components/MessageList.tsx"));
+    ({ MessageList, MessageItem, ToolGroup, CollapsibleMessage } = await vite.ssrLoadModule("/src/components/MessageList.tsx"));
   });
 
   after(() => vite?.close());
@@ -481,12 +549,13 @@ describe("MessageList universal Copy buttons (#1479)", () => {
     mounted.push(root);
 
     const call: ChatMessage = { id: "c1", role: "codemode" as any, text: "return 42;", className: "tool-call", meta: { callId: "k1" } };
-    const result: ChatMessage = { id: "r1", role: "codemode" as any, text: "✓ Output:\n42", className: "tool-result", meta: { callId: "k1" } };
+    const result: ChatMessage = { id: "r1", role: "codemode" as any, text: "✓ Output:\n42", className: "tool-result", meta: { callId: "k1", startTs: 1000, endTs: 2000 } };
 
     await act(async () => root.render(createElement(ToolGroup, { call, result })));
 
     const copyBtn = elements(container, "button").find((b) => b.getAttribute("aria-label") === "Copy output");
     assert.equal(Boolean(copyBtn), true);
+    assert.equal((container.textContent ?? "").includes("return 42;"), true);
   });
 
   it("copies full call arguments from an expanded ToolGroup CALL section", async () => {
@@ -635,5 +704,27 @@ describe("MessageList universal Copy buttons (#1479)", () => {
 
     const copyBtn = elements(container, "button").find((b) => b.getAttribute("aria-label") === "Copy message");
     assert.equal(Boolean(copyBtn), true);
+  });
+
+  it("retains running tool calls in MessageList when searchQuery matches only partialOutput", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const messages: ChatMessage[] = [
+      {
+        id: "live-1",
+        role: "bash" as any,
+        text: "npm test",
+        className: "tool-call",
+        meta: { callId: "k-search", partialOutput: "UNIQUE_PROGRESS_TOKEN_1479" },
+      },
+    ];
+
+    await act(async () => root.render(createElement(MessageList, { messages, searchQuery: "UNIQUE_PROGRESS_TOKEN_1479" })));
+
+    const text = container.textContent ?? "";
+    assert.equal(text.includes("npm test"), true);
+    assert.equal(text.includes("UNIQUE_PROGRESS_TOKEN_1479"), true);
   });
 });

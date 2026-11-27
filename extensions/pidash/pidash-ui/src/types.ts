@@ -72,6 +72,8 @@ export interface PiEvent {
   isSubagent?: boolean;
   agentName?: string;
   resultText?: string;
+  isTestEvent?: boolean;
+  testPassed?: boolean;
   partialResult?: { content?: Array<{ type: string; text?: string; mimeType?: string; [key: string]: unknown }> };
   // session_snapshot fields
   messages?: ChatMessage[];

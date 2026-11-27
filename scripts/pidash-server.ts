@@ -15,6 +15,7 @@ import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./d
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import {
   authorizeWorktreeBrowserCommand,
+  buildSessionNotification,
   buildWorktreeCommandErrorFrame,
   clearPendingUiRequests,
   createAsyncAgentRegistry,
@@ -35,7 +36,6 @@ import {
 } from "./pidash-session-state.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
 import { applyActivityEvent, initialActivityState, shouldAcceptActivityEvent } from "../extensions/pidash/activity-state.ts";
-import { extractToolContentText } from "../extensions/shared/pidash-transcript-reducer.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
 
 const activityLog = createLogger("pidash");
@@ -259,23 +259,10 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
       }
     }
 
-    // Broadcast notification-worthy events to ALL browsers (skip during replay)
+    // Broadcast metadata-only notification frame to browsers (skip during replay;
+    // never broadcast raw tool output text to browsers watching other sessions).
     if (parsed.type === "tool_execution_end" && !piClient.replaying) {
-      const toolName = parsed.toolName || "";
-      const isSubagent = toolName === "subagent" || !!(parsed.args?.agent);
-      const isError = parsed.isError === true;
-      const resultText = extractToolContentText(parsed.result?.content);
-
-      broadcastToBrowsers({
-        type: "session_notification",
-        sessionId: sid,
-        cwd: piClient.session.cwd,
-        toolName,
-        isError,
-        isSubagent,
-        agentName: parsed.args?.name || parsed.args?.agent || "",
-        resultText: resultText.slice(0, 200),
-      });
+      broadcastToBrowsers(buildSessionNotification(sid, piClient.session.cwd, parsed));
     }
 
     // Broadcast AI turn complete to ALL browsers (skip during replay)

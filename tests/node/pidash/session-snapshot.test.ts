@@ -189,7 +189,7 @@ describe("SessionViewState server snapshot (#1398)", () => {
         ["user", "Run tests", null],
         ["thinking", "Checking suite", null],
         ["assistant", "Running tests now.", null],
-        ["subagent (test-runner)", "Run pytest", "tool-call"],
+        ["subagent (test-runner)", 'Run pytest\n\n{\n  "agent": "test-runner"\n}', "tool-call"],
         ["subagent (test-runner)", "✓ all green", "tool-result"],
         ["system", "Summary ready", null],
         ["system", "Peer ping", null],

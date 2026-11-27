@@ -11,6 +11,7 @@ import {
   appendAsyncAgentEventText,
   applyTranscriptEvent,
   ASYNC_AGENT_TEXT_MAX,
+  extractToolContentText,
   type TranscriptAddOptions,
   type TranscriptRefs,
   type TranscriptSink,
@@ -26,6 +27,46 @@ export const ASYNC_AGENTS_MAX = 100;
 
 export function isLoopbackAddress(addr: string | undefined | null): boolean {
   return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
+
+/**
+ * Build a metadata-only `session_notification` frame for global browser broadcast.
+ * Evaluates test-result signals server-side so raw tool output is never leaked to
+ * browsers watching other sessions.
+ */
+export function buildSessionNotification(
+  sessionId: string,
+  cwd: string,
+  parsed: any,
+): {
+  type: "session_notification";
+  sessionId: string;
+  cwd: string;
+  toolName: string;
+  isError: boolean;
+  isSubagent: boolean;
+  agentName: string;
+  isTestEvent: boolean;
+  testPassed: boolean;
+} {
+  const toolName = typeof parsed?.toolName === "string" ? parsed.toolName : "";
+  const isSubagent = toolName === "subagent" || Boolean(parsed?.args?.agent);
+  const isError = parsed?.isError === true;
+  const snippet = extractToolContentText(parsed?.result?.content).slice(0, 200).toLowerCase();
+  const tl = toolName.toLowerCase();
+  const isTestEvent = tl.includes("test") || snippet.includes("pytest") || snippet.includes("test_");
+  const testPassed = isTestEvent && !isError && !snippet.includes("fail") && !snippet.includes("error");
+  return {
+    type: "session_notification",
+    sessionId,
+    cwd,
+    toolName,
+    isError,
+    isSubagent,
+    agentName: parsed?.args?.name || parsed?.args?.agent || "",
+    isTestEvent,
+    testPassed,
+  };
 }
 
 export function isWorktreeCommand(command: unknown): boolean {

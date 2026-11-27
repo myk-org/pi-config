@@ -73,9 +73,12 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
   // Grouping memoized: it ran per render — during streaming that is every
   // text delta over the whole (large) history (Qodo UX: slow UI).
   const grouped = useMemo(() => {
+    const q = searchQuery?.toLowerCase();
     const filtered = messages.filter((msg) => {
       if (searchType && searchType !== "all" && msg.role !== searchType) return false;
-      if (searchQuery && !msg.text.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (q && !msg.text.toLowerCase().includes(q) && !msg.meta?.partialOutput?.toLowerCase().includes(q)) {
+        return false;
+      }
       return true;
     });
 
@@ -580,11 +583,11 @@ export const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: 
           <span className="flex-shrink-0">{call.role}</span>
           <span className={cn("flex-shrink-0", statusColor)}>{statusIcon}</span>
           {!isExpanded && statsStr && (
-            <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 text-[10px] truncate">
+            <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 text-[10px] flex-shrink-0">
               {statsStr}
             </span>
           )}
-          {!isExpanded && !statsStr && callSummary && (
+          {!isExpanded && callSummary && (
             <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{callSummary}</span>
           )}
         </CollapsibleTrigger>
