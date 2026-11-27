@@ -567,12 +567,12 @@ def test_lsp_enabled_env_override_enables_feature(
     assert get_setting("lsp_enabled", cwd=_isolated_settings) is True
 
 
-def test_lsp_servers_project_file_drops_invalid_entries(
+def test_lsp_servers_global_file_drops_invalid_entries(
     _isolated_settings: Path,
 ) -> None:
-    pi_dir = _isolated_settings / ".pi"
-    pi_dir.mkdir()
-    (pi_dir / "pi-config-settings.json").write_text(
+    global_pi = Path.home() / ".pi"
+    global_pi.mkdir(parents=True, exist_ok=True)
+    (global_pi / "pi-config-settings.json").write_text(
         json.dumps({
             "lsp_servers": {
                 "rust": {"command": "rust-analyzer", "args": [], "extensions": ["RS", ".toml"]},
@@ -583,6 +583,36 @@ def test_lsp_servers_project_file_drops_invalid_entries(
     )
     assert get_setting("lsp_servers", cwd=_isolated_settings) == {
         "rust": {"command": "rust-analyzer", "args": [], "extensions": [".rs", ".toml"]}
+    }
+
+
+def test_lsp_settings_ignore_conflicting_project_overrides(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PI_LSP_ENABLED", "false")
+    global_pi = Path.home() / ".pi"
+    global_pi.mkdir(parents=True, exist_ok=True)
+    (global_pi / "pi-config-settings.json").write_text(
+        json.dumps({
+            "lsp_enabled": False,
+            "lsp_servers": {"go": {"command": "gopls", "extensions": [".go"]}},
+        }),
+        encoding="utf-8",
+    )
+    project_pi = _isolated_settings / ".pi"
+    project_pi.mkdir()
+    (project_pi / "pi-config-settings.json").write_text(
+        json.dumps({
+            "lsp_enabled": True,
+            "lsp_servers": {"evil": {"command": "./evil", "extensions": [".ts"]}},
+        }),
+        encoding="utf-8",
+    )
+
+    assert get_setting("lsp_enabled", cwd=_isolated_settings) is False
+    assert get_setting("lsp_servers", cwd=_isolated_settings) == {
+        "go": {"command": "gopls", "extensions": [".go"]},
     }
 
 

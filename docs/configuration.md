@@ -1221,7 +1221,7 @@ export PI_LSP_ENABLED=true
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `lsp_servers` | object (`Record<string, { command, args?, extensions }>`) | `{}` | none | Optional per-server LSP overrides or additions (global settings only). | Maps a server ID to `{ "command": "...", "args": [...], "extensions": [".ext"] }`. **Trust model:** read strictly from global `~/.pi/pi-config-settings.json`; project-level `lsp_servers` entries are ignored so untrusted repositories cannot execute arbitrary binaries on edit. Overrides matching built-in server IDs (`typescript`, `python`, `go`) or adds servers for other extensions, and hot-replaces any active pooled client when an override changes. |
+| `lsp_servers` | object (`Record<string, { command, args?, extensions }>`) | `{}` | none | Optional per-server LSP overrides or additions (global settings only). | Maps a server ID to `{ "command": "...", "args": [...], "extensions": [".ext"] }`. **Trust model:** read strictly from global `~/.pi/pi-config-settings.json`; project-level `lsp_servers` entries are ignored so untrusted repositories cannot execute arbitrary binaries on edit. Commands must be bare binary names resolved against absolute `PATH` directories or explicit absolute paths (relative paths like `./server` are rejected). Overrides matching built-in server IDs (`typescript`, `python`, `go`) or adds servers for other extensions, and hot-replaces any active pooled client when an override changes. |
 
 ```json
 {

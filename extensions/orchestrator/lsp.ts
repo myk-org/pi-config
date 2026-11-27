@@ -26,7 +26,7 @@ import type { ExtensionAPI, ToolResultEventResult } from "@earendil-works/pi-cod
 import { createLogger, type Logger } from "../shared/logger.js";
 import {
   loadGlobalSettings,
-  loadProjectSettings,
+  readSettingsFile,
   type LspServersConfig,
 } from "./project-settings.js";
 
@@ -39,7 +39,6 @@ export const DEFAULT_KILL_GRACE_MS = 300;
 export const MAX_DIAGNOSTIC_LINES = 20;
 
 const MAX_RPC_BUFFER_BYTES = 10 * 1024 * 1024;
-const UNACKED_SEND_TTL_MS = 10_000;
 const HEADER_DELIM = Buffer.from("\r\n\r\n", "ascii");
 const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
 
@@ -180,8 +179,10 @@ function isExecutableFile(candidatePath: string): boolean {
 }
 
 /**
- * Find an already-installed executable on `PATH` (or at an explicit path).
- * Pure filesystem check — never spawns a shell and never downloads binaries.
+ * Find an already-installed executable on `PATH` (or at an explicit absolute path).
+ * Pure filesystem check — never spawns a shell, never downloads binaries, and
+ * rejects relative path commands or relative `PATH` directories so spawning under
+ * an untrusted project `cwd` can never resolve a repository-supplied binary.
  */
 export function findExecutableOnPath(
   command: string,
@@ -190,11 +191,17 @@ export function findExecutableOnPath(
   const trimmed = command.trim();
   if (!trimmed) return null;
 
-  if (trimmed.includes("/") || trimmed.includes(path.sep) || (process.platform === "win32" && trimmed.includes("\\"))) {
+  const hasSeparator =
+    trimmed.includes("/") ||
+    trimmed.includes(path.sep) ||
+    (process.platform === "win32" && trimmed.includes("\\"));
+
+  if (hasSeparator) {
+    if (!path.isAbsolute(trimmed)) return null;
     return isExecutableFile(trimmed) ? trimmed : null;
   }
 
-  const dirs = envPath.split(path.delimiter).filter(Boolean);
+  const dirs = envPath.split(path.delimiter).filter((dir) => dir.length > 0 && path.isAbsolute(dir));
   const exts =
     process.platform === "win32"
       ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
@@ -361,7 +368,9 @@ export class LspClient {
   private readonly pendingRequests = new Map<number, PendingRequest>();
   private readonly openedDocs = new Map<string, number>();
   private readonly waiters = new Map<string, Set<DiagnosticWaiter>>();
-  private readonly unackedSends = new Map<string, Array<{ version: number; sentAt: number }>>();
+  private readonly inFlightUris = new Set<string>();
+  private serverSupportsVersionedDiagnostics = false;
+  private unversionedAmbiguous = false;
   private initPromise: Promise<boolean> | null = null;
   private initialized = false;
   private closed = false;
@@ -397,6 +406,16 @@ export class LspClient {
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  /** True when an unversioned server timed out, making later attribution ambiguous until reset. */
+  get needsReset(): boolean {
+    return this.unversionedAmbiguous;
+  }
+
+  /** True when this URI has an active edit in flight on a server not known to send diagnostic versions. */
+  hasUnversionedInFlight(uri: string): boolean {
+    return !this.serverSupportsVersionedDiagnostics && this.inFlightUris.has(uri);
   }
 
   matchesServer(command: string, args: readonly string[]): boolean {
@@ -501,7 +520,7 @@ export class LspClient {
       }
       this.waiters.delete(uri);
     }
-    this.unackedSends.clear();
+    this.inFlightUris.clear();
 
     this.onDispose();
   }
@@ -627,27 +646,15 @@ export class LspClient {
       const diagnostics: LspDiagnostic[] = Array.isArray(msg.params.diagnostics) ? msg.params.diagnostics : [];
       const version = typeof msg.params.version === "number" ? msg.params.version : undefined;
       const latestVersion = this.openedDocs.get(uri);
-      const queue = this.unackedSends.get(uri);
 
       if (version !== undefined) {
-        if (queue) {
-          const remaining = queue.filter((entry) => entry.version > version);
-          if (remaining.length > 0) this.unackedSends.set(uri, remaining);
-          else this.unackedSends.delete(uri);
-        }
-      } else if (queue && queue.length > 0) {
-        // Consume the oldest unacknowledged send; if newer sends remain in flight,
-        // this versionless notification belongs to an earlier edit and must be dropped.
-        queue.shift();
-        if (queue.length > 0) {
-          this.log.debug("lsp_stale_unversioned_diagnostics_dropped", {
-            serverId: this.serverId,
-            uri,
-            pendingNewer: queue.length,
-          });
-          return;
-        }
-        this.unackedSends.delete(uri);
+        this.serverSupportsVersionedDiagnostics = true;
+      } else if (this.unversionedAmbiguous) {
+        this.log.debug("lsp_ambiguous_unversioned_diagnostics_dropped", {
+          serverId: this.serverId,
+          uri,
+        });
+        return;
       }
 
       const set = this.waiters.get(uri);
@@ -748,17 +755,20 @@ export class LspClient {
    */
   async checkFile(absPath: string, timeoutMs: number): Promise<LspDiagnostic[] | null> {
     if (this.closed) return null;
+    const uri = normalizeFileUri(pathToFileURL(absPath).href);
     this.inFlightRequests++;
+    this.inFlightUris.add(uri);
     this.clearIdleTimer();
     try {
-      return await this.checkFileInner(absPath, timeoutMs);
+      return await this.checkFileInner(absPath, uri, timeoutMs);
     } finally {
+      this.inFlightUris.delete(uri);
       this.inFlightRequests = Math.max(0, this.inFlightRequests - 1);
       this.armIdleTimer();
     }
   }
 
-  private async checkFileInner(absPath: string, timeoutMs: number): Promise<LspDiagnostic[] | null> {
+  private async checkFileInner(absPath: string, uri: string, timeoutMs: number): Promise<LspDiagnostic[] | null> {
     const deadline = Date.now() + Math.max(1, timeoutMs);
     const ready = await this.ensureInitialized(deadline - Date.now());
     if (!ready || this.closed) return null;
@@ -774,7 +784,6 @@ export class LspClient {
       return null;
     }
 
-    const uri = normalizeFileUri(pathToFileURL(absPath).href);
     const prevVersion = this.openedDocs.get(uri);
     const nextVersion = prevVersion === undefined ? 1 : prevVersion + 1;
     this.openedDocs.set(uri, nextVersion);
@@ -789,14 +798,6 @@ export class LspClient {
       existingWaiters.clear();
     }
 
-    const now = Date.now();
-    const recentUnacked = (this.unackedSends.get(uri) ?? []).filter(
-      (entry) => now - entry.sentAt <= UNACKED_SEND_TTL_MS,
-    );
-    const sendRecord = { version: nextVersion, sentAt: now };
-    recentUnacked.push(sendRecord);
-    this.unackedSends.set(uri, recentUnacked);
-
     const diagnosticsPromise = new Promise<LspDiagnostic[] | null>((resolve) => {
       let set = this.waiters.get(uri);
       if (!set) {
@@ -810,6 +811,12 @@ export class LspClient {
         timer: setTimeout(() => {
           set?.delete(waiter);
           if (set && set.size === 0) this.waiters.delete(uri);
+          // For servers that omit diagnostic versions, a timed-out edit makes any future
+          // unversioned publication unattributable (it could belong to the old edit or never
+          // arrive at all). Mark this client for clean reset before the next check.
+          if (!this.serverSupportsVersionedDiagnostics) {
+            this.unversionedAmbiguous = true;
+          }
           this.log.debug("lsp_diagnostics_timeout", { serverId: this.serverId, filePath: absPath, timeoutMs });
           resolve(null);
         }, Math.max(1, remaining)),
@@ -834,12 +841,6 @@ export class LspClient {
           });
 
     if (!sent) {
-      const queue = this.unackedSends.get(uri);
-      if (queue) {
-        const idx = queue.indexOf(sendRecord);
-        if (idx >= 0) queue.splice(idx, 1);
-        if (queue.length === 0) this.unackedSends.delete(uri);
-      }
       const set = this.waiters.get(uri);
       if (set) {
         for (const waiter of set) {
@@ -963,6 +964,10 @@ export class LspClient {
 
 export class LspManager {
   private readonly clients = new Map<string, LspClient>();
+  /** Tracks every created live client (including clients mid-replacement) so shutdown never misses any process. */
+  private readonly allClients = new Set<LspClient>();
+  /** Serializes replacement/reset per poolKey so concurrent edits never overwrite each other's client. */
+  private readonly replacing = new Map<string, Promise<void>>();
   private readonly missingLogged = new Set<string>();
   private readonly timeoutMs: number;
   private readonly idleTimeoutMs: number;
@@ -974,10 +979,11 @@ export class LspManager {
   private exitHookRegistered = false;
   private shuttingDown = false;
   private readonly onProcessExit = (): void => {
-    for (const client of this.clients.values()) {
+    for (const client of this.allClients) {
       client.killSync();
     }
     this.clients.clear();
+    this.allClients.clear();
   };
 
   constructor(options: LspManagerOptions = {}) {
@@ -991,12 +997,12 @@ export class LspManager {
   }
 
   get activeCount(): number {
-    return this.clients.size;
+    return this.allClients.size;
   }
 
   getActivePids(): number[] {
     const pids: number[] = [];
-    for (const client of this.clients.values()) {
+    for (const client of this.allClients) {
       if (client.pid !== undefined) pids.push(client.pid);
     }
     return pids;
@@ -1009,9 +1015,77 @@ export class LspManager {
   }
 
   private releaseExitHookIfEmpty(): void {
-    if (!this.exitHookRegistered || this.clients.size > 0) return;
+    if (!this.exitHookRegistered || this.allClients.size > 0) return;
     this.exitHookRegistered = false;
     process.off("exit", this.onProcessExit);
+  }
+
+  private async acquireClient(
+    poolKey: string,
+    resolvedRoot: string,
+    server: ResolvedLspServer,
+    uri: string,
+  ): Promise<LspClient | null> {
+    for (;;) {
+      if (this.shuttingDown) return null;
+
+      const pendingReplace = this.replacing.get(poolKey);
+      if (pendingReplace) {
+        await pendingReplace;
+        continue;
+      }
+
+      const existing = this.clients.get(poolKey);
+      if (existing) {
+        if (existing.isClosed) {
+          this.clients.delete(poolKey);
+          continue;
+        }
+        const overrideChanged = !existing.matchesServer(server.command, server.args);
+        const ambiguousUnversioned = existing.needsReset || existing.hasUnversionedInFlight(uri);
+        if (!overrideChanged && !ambiguousUnversioned) {
+          return existing;
+        }
+
+        this.log.info(
+          overrideChanged ? "lsp_server_override_changed" : "lsp_unversioned_client_reset",
+          { serverId: server.serverId, rootDir: resolvedRoot },
+        );
+        this.clients.delete(poolKey);
+        const replacePromise = existing.shutdown().finally(() => {
+          if (this.replacing.get(poolKey) === replacePromise) {
+            this.replacing.delete(poolKey);
+          }
+        });
+        this.replacing.set(poolKey, replacePromise);
+        await replacePromise;
+        continue;
+      }
+
+      if (this.shuttingDown) return null;
+
+      const created = new LspClient({
+        rootDir: resolvedRoot,
+        serverId: server.serverId,
+        command: server.command,
+        args: server.args,
+        idleTimeoutMs: this.idleTimeoutMs,
+        shutdownGraceMs: this.shutdownGraceMs,
+        killGraceMs: this.killGraceMs,
+        log: this.log,
+        onDispose: () => {
+          if (this.clients.get(poolKey) === created) {
+            this.clients.delete(poolKey);
+          }
+          this.allClients.delete(created);
+          this.releaseExitHookIfEmpty();
+        },
+      });
+      this.clients.set(poolKey, created);
+      this.allClients.add(created);
+      this.ensureExitHook();
+      return created;
+    }
   }
 
   /**
@@ -1042,43 +1116,9 @@ export class LspManager {
     }
 
     const poolKey = `${resolvedRoot}\0${server.serverId}`;
-    let client = this.clients.get(poolKey);
-    if (client && client.isClosed) {
-      this.clients.delete(poolKey);
-      client = undefined;
-    } else if (client && !client.matchesServer(server.command, server.args)) {
-      this.log.info("lsp_server_override_changed", {
-        serverId: server.serverId,
-        rootDir: resolvedRoot,
-      });
-      this.clients.delete(poolKey);
-      await client.shutdown();
-      client = undefined;
-    }
-
-    if (this.shuttingDown) return null;
-
-    if (!client) {
-      const created = new LspClient({
-        rootDir: resolvedRoot,
-        serverId: server.serverId,
-        command: server.command,
-        args: server.args,
-        idleTimeoutMs: this.idleTimeoutMs,
-        shutdownGraceMs: this.shutdownGraceMs,
-        killGraceMs: this.killGraceMs,
-        log: this.log,
-        onDispose: () => {
-          if (this.clients.get(poolKey) === created) {
-            this.clients.delete(poolKey);
-          }
-          this.releaseExitHookIfEmpty();
-        },
-      });
-      this.clients.set(poolKey, created);
-      this.ensureExitHook();
-      client = created;
-    }
+    const uri = normalizeFileUri(pathToFileURL(absPath).href);
+    const client = await this.acquireClient(poolKey, resolvedRoot, server, uri);
+    if (!client || this.shuttingDown) return null;
 
     const diagnostics = await client.checkFile(absPath, this.timeoutMs);
     if (this.shuttingDown || !diagnostics || diagnostics.length === 0) return null;
@@ -1088,10 +1128,17 @@ export class LspManager {
 
   async shutdownAll(): Promise<void> {
     this.shuttingDown = true;
-    while (this.clients.size > 0) {
-      const active = [...this.clients.values()];
+    while (this.allClients.size > 0 || this.replacing.size > 0) {
+      const pendingReplaces = [...this.replacing.values()];
+      const active = [...this.allClients];
       this.clients.clear();
-      await Promise.allSettled(active.map((c) => c.shutdown()));
+      await Promise.allSettled([
+        ...pendingReplaces,
+        ...active.map((c) => c.shutdown()),
+      ]);
+      for (const c of active) {
+        this.allClients.delete(c);
+      }
     }
     this.releaseExitHookIfEmpty();
   }
@@ -1113,21 +1160,29 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
 
       if (checkSubagent() && !isLspAllowedInSubagents()) return undefined;
 
-      const cwd = ctx?.cwd || process.cwd();
-      const projectSettings = loadProjectSettings(cwd);
-      if (
-        (projectSettings.lsp_enabled !== undefined ||
-          (projectSettings.lsp_servers && Object.keys(projectSettings.lsp_servers).length > 0)) &&
-        !warnedUntrustedProject.has(cwd)
-      ) {
-        warnedUntrustedProject.add(cwd);
-        log.warn("lsp_project_settings_ignored", {
-          cwd,
-          reason: "lsp_enabled and lsp_servers must be set in global settings or PI_LSP_ENABLED env",
-        });
-      }
-
+      // Check trusted global/env enablement FIRST before touching any project file
+      // so disabled LSP never triggers legacy settings migration or git checks.
       if (!resolveTrustedLspEnabled()) return undefined;
+
+      const cwd = ctx?.cwd || process.cwd();
+      if (!warnedUntrustedProject.has(cwd)) {
+        // Pure read-only inspection (no findSettingsFile / legacy .jsonc migration).
+        const projectJsonPath = path.join(cwd, ".pi", "pi-config-settings.json");
+        const rawProject = fs.existsSync(projectJsonPath) ? readSettingsFile(projectJsonPath) : null;
+        if (
+          rawProject &&
+          (rawProject.lsp_enabled !== undefined ||
+            (typeof rawProject.lsp_servers === "object" &&
+              rawProject.lsp_servers !== null &&
+              Object.keys(rawProject.lsp_servers as Record<string, unknown>).length > 0))
+        ) {
+          warnedUntrustedProject.add(cwd);
+          log.warn("lsp_project_settings_ignored", {
+            cwd,
+            reason: "lsp_enabled and lsp_servers must be set in global settings or PI_LSP_ENABLED env",
+          });
+        }
+      }
 
       const filePath: unknown = (event as any).input?.path;
       if (typeof filePath !== "string" || !filePath.trim()) return undefined;

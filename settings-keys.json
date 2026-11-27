@@ -784,12 +784,14 @@
     "type": "bool",
     "env": "PI_LSP_ENABLED",
     "default": false,
+    "global_only": true,
     "group": "LSP"
   },
   "lsp_servers": {
     "description": "Optional per-server LSP overrides mapping server id to {command, args?, extensions} (global settings only; project settings are ignored for security)",
     "type": "lsp_servers",
     "default": {},
+    "global_only": true,
     "group": "LSP"
   }
 }

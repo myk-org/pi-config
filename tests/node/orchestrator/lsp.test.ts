@@ -21,6 +21,7 @@ import {
 import {
   SETTINGS_KEYS,
   clearSettingsCache,
+  getSetting,
   parseSettingInput,
   setGlobalSettingsPath,
   validateSetting,
@@ -203,8 +204,18 @@ function handleMessage(msg) {
   if (msg.method === "textDocument/didOpen") {
     const doc = msg.params.textDocument;
     record({ event: "didOpen", uri: doc.uri, version: doc.version, languageId: doc.languageId });
+    if (mode === "versionless-omit-first") {
+      if (doc.text.includes("OLD_ERR")) {
+        return;
+      }
+      send({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+      });
+      return;
+    }
     if (mode === "versionless-delayed") {
-      // Delay edit 1's versionless publish so it arrives AFTER edit 2 starts waiting
       setTimeout(() => {
         send({
           jsonrpc: "2.0",
@@ -212,6 +223,17 @@ function handleMessage(msg) {
           params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
         });
       }, 180);
+      return;
+    }
+    if (mode === "versionless-late-old") {
+      const delayMs = doc.text.includes("OLD_ERR") ? 280 : 20;
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "textDocument/publishDiagnostics",
+          params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+        });
+      }, delayMs);
       return;
     }
     send({
@@ -383,6 +405,21 @@ describe("LSP diagnostics integration (#1445)", () => {
       assert.deepEqual(resolveTrustedLspServers(), {});
     });
 
+    it("ignores conflicting project lsp settings in unified getSetting resolution", () => {
+      writeGlobalSettings({
+        lsp_enabled: false,
+        lsp_servers: { go: { command: "gopls", extensions: [".go"] } },
+      });
+      writeProjectSettings({
+        lsp_enabled: true,
+        lsp_servers: { evil: { command: "./evil.sh", extensions: [".ts"] } },
+      });
+      assert.equal(getSetting(testDir, "lsp_enabled"), false);
+      assert.deepEqual(getSetting(testDir, "lsp_servers"), {
+        go: { command: "gopls", extensions: [".go"] },
+      });
+    });
+
     it("normalizes lsp_servers extensions in strict validation", () => {
       const valid = validateSetting("lsp_servers", {
         rust: { command: "rust-analyzer", args: ["--stdio"], extensions: ["RS", ".toml"] },
@@ -473,6 +510,25 @@ describe("LSP diagnostics integration (#1445)", () => {
       assert.equal(findExecutableOnPath("not-exec", binDir), null);
       assert.equal(findExecutableOnPath("missing-bin", binDir), null);
       assert.equal(findExecutableOnPath(execBin, ""), execBin);
+    });
+
+    it("rejects relative command paths or relative PATH entries to block repo binary hijacking", () => {
+      const repoDir = join(testDir, "repo");
+      mkdirSync(repoDir, { recursive: true });
+      const repoBin = join(repoDir, "server");
+      writeFileSync(repoBin, "#!/bin/sh\nexit 0\n");
+      chmodSync(repoBin, 0o755);
+
+      const prevCwd = process.cwd();
+      try {
+        process.chdir(repoDir);
+        assert.equal(findExecutableOnPath("./server", ""), null);
+        assert.equal(findExecutableOnPath("server", "."), null);
+        assert.equal(findExecutableOnPath("repo/server", ""), null);
+        assert.equal(findExecutableOnPath(repoBin, ""), repoBin);
+      } finally {
+        process.chdir(prevCwd);
+      }
     });
 
     it("resolves built-in servers by PATH candidate priority", () => {
@@ -617,6 +673,30 @@ describe("LSP diagnostics integration (#1445)", () => {
       assert.equal(res, undefined);
       assert.equal(manager.activeCount, 0);
       assert.equal(existsSync(logFile), false);
+    });
+
+    it("leaves legacy project settings untouched when lsp_enabled is false", async () => {
+      writeGlobalSettings({ lsp_enabled: false });
+      const piDir = join(testDir, ".pi");
+      mkdirSync(piDir, { recursive: true });
+      const legacyFile = join(piDir, "pi-config-settings.jsonc");
+      const targetJson = join(piDir, "pi-config-settings.json");
+      writeFileSync(legacyFile, '{"lsp_enabled": true}\n', "utf8");
+      writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerLsp(pi, { timeoutMs: 500 });
+      activeManagers.push(manager);
+
+      const res = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+
+      assert.equal(res, undefined);
+      assert.equal(existsSync(legacyFile), true);
+      assert.equal(existsSync(targetJson), false);
     });
 
     it("refuses to spawn project-configured lsp_servers from an untrusted repo", async () => {
@@ -903,6 +983,140 @@ describe("LSP diagnostics integration (#1445)", () => {
       assert.notEqual(pid2, pid1);
       assert.ok(res2.content[1].text.includes("[v2]"));
       assert.equal(await waitForPidExit(pid1, 2000), true, "expected replaced LSP process to exit");
+    });
+
+    it("serializes concurrent edits across an override change without orphaning servers", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", "--tag=v1"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
+      writeFileSync(join(testDir, "b.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerLsp(pi, { timeoutMs: 2000 });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const pid1 = manager.getActivePids()[0];
+      assert.ok(pid1);
+
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", "--tag=v2"],
+            extensions: [".ts"],
+          },
+        },
+      });
+
+      const [resA, resB] = await Promise.all([
+        fire(
+          "tool_result",
+          { toolName: "edit", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+          { cwd: testDir },
+        ),
+        fire(
+          "tool_result",
+          { toolName: "write", input: { path: "b.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+          { cwd: testDir },
+        ),
+      ]);
+
+      assert.ok(resA?.content?.[1]?.text.includes("[v2]"));
+      assert.ok(resB?.content?.[1]?.text.includes("[v2]"));
+      assert.equal(manager.activeCount, 1);
+      const activePid = manager.getActivePids()[0];
+      assert.ok(activePid && activePid !== pid1);
+      assert.equal(await waitForPidExit(pid1, 2000), true);
+
+      await fire("session_shutdown", {}, { cwd: testDir });
+      assert.equal(manager.activeCount, 0);
+      assert.equal(await waitForPidExit(activePid, 2000), true);
+    });
+
+    it("recovers current edit errors when an unversioned server omits the first publication", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=versionless-omit-first"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      const file = join(testDir, "omit.ts");
+      writeFileSync(file, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerLsp(pi, { timeoutMs: 250 });
+      activeManagers.push(manager);
+
+      const res1 = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "omit.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(res1, undefined);
+
+      writeFileSync(file, "line1\nNEW_ERR\n");
+      const res2 = await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "omit.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(res2?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
+    });
+
+    it("resets an ambiguous unversioned client so a delayed prior publication cannot taint a later edit", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=versionless-late-old"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      const file = join(testDir, "late.ts");
+      writeFileSync(file, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerLsp(pi, { timeoutMs: 180 });
+      activeManagers.push(manager);
+
+      const res1 = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "late.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(res1, undefined);
+      const oldPid = manager.getActivePids()[0];
+      assert.ok(oldPid);
+
+      writeFileSync(file, "line1\nNEW_ERR\n");
+      const res2 = await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "late.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(res2?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
+      assert.ok(!res2.content[1].text.includes("STALE_EDIT_1_ERROR"));
+      assert.equal(await waitForPidExit(oldPid, 2000), true);
     });
 
     it("drops stale unversioned publishDiagnostics from an earlier rapid edit", async () => {

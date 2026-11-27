@@ -713,9 +713,10 @@ def _resolve_key(key: str, ctx: _SettingsContext) -> SettingValue:
     """Resolve one setting from a pre-loaded settings context."""
     meta = SETTINGS_KEYS[key]
     typ = meta["type"]
+    source = ctx.global_settings if meta.get("global_only") else ctx.merged
 
-    if key in ctx.merged:
-        value = ctx.merged[key]
+    if key in source:
+        value = source[key]
         if typ == "port":
             min_port = meta.get("min", 0)
             if isinstance(value, int) and not isinstance(value, bool) and min_port <= value <= 65535:

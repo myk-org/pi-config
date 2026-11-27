@@ -109,6 +109,7 @@ export interface SettingsKeyDef {
   max?: number;
   strict_digits?: boolean;
   per_key_resolution?: boolean;
+  global_only?: boolean;
   enum?: string[];
   group?: string;
 }
@@ -1225,11 +1226,13 @@ export function resolveSetting(
   if (!def) return null;
   const audit = options?.audit === true;
 
-  const projectLayer = readCachedLayer("project", cwd);
-  const projectVal = (projectLayer.parsed as Record<string, unknown>)[key];
-  if (projectVal !== undefined) {
-    if (audit) log.debug("resolved setting", { key, source: "project", path: projectLayer.file });
-    return { value: projectVal as AnySettingValue, source: "P", path: projectLayer.file };
+  if (!def.global_only) {
+    const projectLayer = readCachedLayer("project", cwd);
+    const projectVal = (projectLayer.parsed as Record<string, unknown>)[key];
+    if (projectVal !== undefined) {
+      if (audit) log.debug("resolved setting", { key, source: "project", path: projectLayer.file });
+      return { value: projectVal as AnySettingValue, source: "P", path: projectLayer.file };
+    }
   }
 
   const globalLayer = readCachedLayer("global", cwd);
@@ -1299,10 +1302,12 @@ export function detectSource(
   cwd: string,
   snapshot?: SettingsSourceSnapshot,
 ): SettingSource {
-  const project = snapshot
-    ? snapshot.project
-    : (existsSync(getSettingsPath(cwd)) ? parseSettingsFile(getSettingsPath(cwd)) : null);
-  if (project && (project as Record<string, unknown>)[key] !== undefined) return "P";
+  if (!def.global_only) {
+    const project = snapshot
+      ? snapshot.project
+      : (existsSync(getSettingsPath(cwd)) ? parseSettingsFile(getSettingsPath(cwd)) : null);
+    if (project && (project as Record<string, unknown>)[key] !== undefined) return "P";
+  }
 
   const global = snapshot
     ? snapshot.global
