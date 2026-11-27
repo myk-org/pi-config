@@ -81,7 +81,7 @@ Prefer the built-in runtime tools (`runtime` namespace) over ad-hoc shell comman
 | `worktree_status` | List git worktrees (`action="list"`) with dirty counts, PRs, and active COMS peers, or prune stale worktrees (`action="prune"`) |
 | `daemon_manage` | Check or control local `pidash`/`pidiff` daemons (`action="status"\|"start"\|"stop"\|"restart"`) |
 | `settings_get` | Read pi-config settings (`key`, `category`, `only_overrides`) with exact effective value, per-scope `env`/`project`/`global`/`default` breakdown, `source`, and `global_only` |
-| `settings_set` | Direct `model-only` tool (never in `codemode`) to `set` or `reset` a validated setting in `global` or `project` scope with code-enforced user approval (fails closed when headless/subagent; direct file edits to `pi-config-settings.json` remain hard-blocked) |
+| `settings_set` | Direct `model-only` tool (never in `codemode`) to `set` or `reset` a validated setting in `global` or `project` scope with local terminal user approval (never bridged over unauthenticated browser WebSockets; fails closed when headless/browser/subagent; direct file edits to `pi-config-settings.json` remain hard-blocked) |
 | `skill_adopt` | List unmarked adoptable skills (`action="list"`) or adopt one (`action="adopt"`, `name`) |
 | `memory_dream` | Inspect dreaming state (`status`), run consolidation now (`run`), or toggle auto-dreaming (`auto_on`/`auto_off`) |
 

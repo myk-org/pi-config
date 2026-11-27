@@ -15,11 +15,13 @@ import {
   setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
 import {
+  PROTECTED_SETTING_KEYS,
   SETTINGS_APPROVAL_APPROVE,
   SETTINGS_APPROVAL_DENY,
   buildSettingsApprovalPrompt,
   registerSettingsTools,
 } from "../../../extensions/orchestrator/settings-tools.js";
+import { markBrowserDispatch } from "../../../extensions/shared/live-ctx.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 function createToolHarness() {
@@ -122,6 +124,31 @@ describe("settings_get tool (#1473)", () => {
     assert.equal(res.isError, true);
     assert.match(res.content[0].text, /Unknown setting key/);
   });
+
+  it("redacts inline credentials inside dangerous_command_allowlist entries", async () => {
+    const fakeToken = "ghp_" + "1234567890abcdef1234567890abcdef"; // pragma: allowlist secret
+    const entry = `curl -H "Authorization: Bearer ${fakeToken}" https://alice:supersecret@example.com/api`; // pragma: allowlist secret
+    writeFileSync(
+      join(projectDir, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ dangerous_command_allowlist: [entry] }),
+      "utf8",
+    );
+    clearSettingsCache();
+
+    const { tools } = createToolHarness();
+    const res = await tools.get("settings_get").execute(
+      "c5",
+      { key: "dangerous_command_allowlist" },
+      undefined,
+      undefined,
+      { cwd: projectDir },
+    );
+    assert.equal(res.isError, undefined);
+    const rawText = res.content[0].text;
+    assert.doesNotMatch(rawText, new RegExp(fakeToken));
+    assert.doesNotMatch(rawText, /supersecret/);
+    assert.match(rawText, /\[REDACTED\]/);
+  });
 });
 
 describe("settings_set tool (#1473)", () => {
@@ -159,6 +186,13 @@ describe("settings_set tool (#1473)", () => {
     assert.equal(tool.annotations?.readOnlyHint, false);
   });
 
+  it("lists only real schema keys inside PROTECTED_SETTING_KEYS", () => {
+    assert.ok(PROTECTED_SETTING_KEYS.size > 0);
+    for (const key of PROTECTED_SETTING_KEYS) {
+      assert.ok(key in SETTINGS_KEYS, `protected key "${key}" missing from real settings-keys.json`);
+    }
+  });
+
   it("rejects unknown setting keys before prompting", async () => {
     let prompted = false;
     const { tools } = createToolHarness();
@@ -167,7 +201,7 @@ describe("settings_set tool (#1473)", () => {
       { action: "set", key: "bogus_key", scope: "project", value: true },
       undefined,
       undefined,
-      { cwd: projectDir, hasUI: true, ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } } },
+      { cwd: projectDir, hasUI: true, mode: "tui", ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } } },
     );
     assert.equal(res.isError, true);
     assert.equal(prompted, false);
@@ -181,7 +215,7 @@ describe("settings_set tool (#1473)", () => {
       { action: "set", key: "advisor_interval_turns", scope: "project", value: 999 },
       undefined,
       undefined,
-      { cwd: projectDir, hasUI: true, ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } } },
+      { cwd: projectDir, hasUI: true, mode: "tui", ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } } },
     );
     assert.equal(res.isError, true);
     assert.equal(prompted, false);
@@ -199,7 +233,7 @@ describe("settings_set tool (#1473)", () => {
         { action: "set", key: "dco", scope: "project", value: true },
         undefined,
         undefined,
-        { cwd: projectDir, hasUI: true, ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } } },
+        { cwd: projectDir, hasUI: true, mode: "tui", ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } } },
       );
       assert.equal(res.isError, true);
       assert.equal(prompted, false);
@@ -220,7 +254,7 @@ describe("settings_set tool (#1473)", () => {
       { cwd: projectDir, hasUI: false },
     );
     assert.equal(res.isError, true);
-    assert.match(res.content[0].text, /interactive UI/);
+    assert.match(res.content[0].text, /local interactive terminal UI/);
     assert.equal(existsSync(join(projectDir, ".pi", "pi-config-settings.json")), false);
   });
 
@@ -232,10 +266,67 @@ describe("settings_set tool (#1473)", () => {
       { action: "set", key: "dco", scope: "project", value: true },
       undefined,
       undefined,
-      { cwd: projectDir, hasUI: true, ui: { select: async () => SETTINGS_APPROVAL_APPROVE } },
+      { cwd: projectDir, hasUI: true, mode: "tui", ui: { select: async () => SETTINGS_APPROVAL_APPROVE } },
     );
     assert.equal(res.isError, true);
     assert.equal(existsSync(join(projectDir, ".pi", "pi-config-settings.json")), false);
+  });
+
+  it("fails closed for browser-dispatched contexts without prompting", async () => {
+    let prompted = false;
+    const { tools } = createToolHarness();
+    const browserCtx = {
+      cwd: projectDir,
+      hasUI: true,
+      mode: "tui",
+      ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } },
+    };
+    markBrowserDispatch(browserCtx);
+    const res = await tools.get("settings_set").execute(
+      "s5b",
+      { action: "set", key: "dco", scope: "project", value: true },
+      undefined,
+      undefined,
+      browserCtx,
+    );
+    assert.equal(res.isError, true);
+    assert.equal(prompted, false);
+    assert.equal(existsSync(join(projectDir, ".pi", "pi-config-settings.json")), false);
+  });
+
+  it("fails closed when session mode is non-TUI", async () => {
+    let prompted = false;
+    const { tools } = createToolHarness();
+    const res = await tools.get("settings_set").execute(
+      "s5c",
+      { action: "set", key: "dco", scope: "project", value: true },
+      undefined,
+      undefined,
+      { cwd: projectDir, hasUI: true, mode: "rpc", ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } } },
+    );
+    assert.equal(res.isError, true);
+    assert.equal(prompted, false);
+  });
+
+  it("never emits pidash browser UI bridge events during approval", async () => {
+    const { tools, emitted } = createToolHarness();
+    const res = await tools.get("settings_set").execute(
+      "s5d",
+      { action: "set", key: "dangerous_command_allowlist", scope: "project", value: ["git status"] },
+      undefined,
+      undefined,
+      {
+        cwd: projectDir,
+        hasUI: true,
+        mode: "tui",
+        ui: {
+          custom: async () => { throw new Error("custom bridged dialog must not be invoked"); },
+          select: async () => SETTINGS_APPROVAL_APPROVE,
+        },
+      },
+    );
+    assert.equal(res.isError, undefined);
+    assert.equal(emitted.some((e) => e.channel === "pidash:ui-request"), false);
   });
 
   it("refuses to write when user denies the permission prompt", async () => {
@@ -249,6 +340,7 @@ describe("settings_set tool (#1473)", () => {
       {
         cwd: projectDir,
         hasUI: true,
+        mode: "tui",
         ui: {
           select: async (_title: string, _options: string[], opts: any) => {
             seenOpts = opts;
@@ -272,6 +364,7 @@ describe("settings_set tool (#1473)", () => {
       {
         cwd: projectDir,
         hasUI: true,
+        mode: "tui",
         ui: { select: async () => undefined },
       },
     );
@@ -279,20 +372,59 @@ describe("settings_set tool (#1473)", () => {
     assert.equal(existsSync(join(projectDir, ".pi", "pi-config-settings.json")), false);
   });
 
-  it("includes explicit security warning banner for protected keys", () => {
+  it("shows complete un-truncated line-by-line diff for long string_list changes", () => {
+    const longEntries = Array.from({ length: 8 }, (_, i) => `echo benign-command-number-${i}-with-extra-padding`);
+    const nextEntries = [...longEntries, "*"];
     const prompt = buildSettingsApprovalPrompt({
       action: "set",
       key: "dangerous_command_allowlist",
       scope: "project",
       scopeFile: "/tmp/proj/.pi/pi-config-settings.json",
       def: SETTINGS_KEYS.dangerous_command_allowlist,
-      hadOld: false,
-      oldValue: undefined,
-      newValue: ["rm -rf /tmp/foo"],
+      hadOld: true,
+      oldValue: longEntries,
+      newValue: nextEntries,
     });
     assert.match(prompt, /SECURITY-SENSITIVE SETTING CHANGE/);
-    assert.match(prompt, /dangerous_command_allowlist/);
-    assert.match(prompt, /\(unset\) -> \["rm -rf \/tmp\/foo"\]/);
+    assert.match(prompt, /\+ "\*"/);
+    assert.doesNotMatch(prompt, /\.\.\./);
+  });
+
+  it("shows key-by-key object diff for tool_permissions changes", () => {
+    const prompt = buildSettingsApprovalPrompt({
+      action: "set",
+      key: "tool_permissions",
+      scope: "project",
+      scopeFile: "/tmp/proj/.pi/pi-config-settings.json",
+      def: SETTINGS_KEYS.tool_permissions,
+      hadOld: true,
+      oldValue: { fetch_content: { "*": "ask" }, bash: "ask" },
+      newValue: { fetch_content: { "*": "ask", "github.com": "allow" } },
+    });
+    assert.match(prompt, /- bash: "ask"/);
+    assert.match(prompt, /~ fetch_content:/);
+    assert.match(prompt, /"github.com":"allow"/);
+  });
+
+  it("refuses oversized changes that exceed display bounds instead of truncating", async () => {
+    let prompted = false;
+    const hugeList = Array.from({ length: 250 }, (_, i) => `cmd-${i}`);
+    const { tools } = createToolHarness();
+    const res = await tools.get("settings_set").execute(
+      "s7b",
+      { action: "set", key: "dangerous_command_allowlist", scope: "project", value: hugeList },
+      undefined,
+      undefined,
+      {
+        cwd: projectDir,
+        hasUI: true,
+        mode: "tui",
+        ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } },
+      },
+    );
+    assert.equal(res.isError, true);
+    assert.equal(prompted, false);
+    assert.match(res.content[0].text, /too large to display completely/);
   });
 
   it("persists approved set change to target scope file", async () => {
@@ -307,6 +439,7 @@ describe("settings_set tool (#1473)", () => {
       {
         cwd: projectDir,
         hasUI: true,
+        mode: "tui",
         ui: {
           select: async (title: string, options: string[]) => {
             seenTitle = title;
@@ -326,6 +459,95 @@ describe("settings_set tool (#1473)", () => {
     assert.equal(onDisk.dco, true);
   });
 
+  it("redacts inline credentials in settings_set response while persisting exact entry", async () => {
+    const fakeToken = "ghp_" + "abcdef1234567890abcdef1234567890"; // pragma: allowlist secret
+    const cmd = `git clone https://user:secretpass@github.com/org/repo.git --config http.extraheader="Authorization: Bearer ${fakeToken}"`; // pragma: allowlist secret
+    const { tools } = createToolHarness();
+    const res = await tools.get("settings_set").execute(
+      "s8a",
+      { action: "set", key: "dangerous_command_allowlist", scope: "project", value: [cmd] },
+      undefined,
+      undefined,
+      { cwd: projectDir, hasUI: true, mode: "tui", ui: { select: async () => SETTINGS_APPROVAL_APPROVE } },
+    );
+    assert.equal(res.isError, undefined);
+    assert.doesNotMatch(res.content[0].text, new RegExp(fakeToken));
+    assert.doesNotMatch(res.content[0].text, /secretpass/);
+
+    const onDisk = JSON.parse(readFileSync(join(projectDir, ".pi", "pi-config-settings.json"), "utf8"));
+    assert.deepEqual(onDisk.dangerous_command_allowlist, [cmd]);
+  });
+
+  it("re-prompts when settings file changes concurrently during approval", async () => {
+    const seenPrompts: string[] = [];
+    const settingsFile = join(projectDir, ".pi", "pi-config-settings.json");
+    writeFileSync(settingsFile, JSON.stringify({ advisor_interval_turns: 5 }), "utf8");
+    clearSettingsCache();
+
+    const { tools } = createToolHarness();
+    const res = await tools.get("settings_set").execute(
+      "s8c",
+      { action: "set", key: "advisor_interval_turns", scope: "project", value: 12 },
+      undefined,
+      undefined,
+      {
+        cwd: projectDir,
+        hasUI: true,
+        mode: "tui",
+        ui: {
+          select: async (title: string) => {
+            seenPrompts.push(title);
+            if (seenPrompts.length === 1) {
+              // Simulate another editor modifying the same key while prompt was open
+              writeFileSync(settingsFile, JSON.stringify({ advisor_interval_turns: 8 }), "utf8");
+            }
+            return SETTINGS_APPROVAL_APPROVE;
+          },
+        },
+      },
+    );
+    assert.equal(res.isError, undefined);
+    assert.equal(seenPrompts.length, 2);
+    assert.match(seenPrompts[0], /5 -> 12/);
+    assert.match(seenPrompts[1], /8 -> 12/);
+    assert.match(seenPrompts[1], /changed while awaiting approval/);
+    const onDisk = JSON.parse(readFileSync(settingsFile, "utf8"));
+    assert.equal(onDisk.advisor_interval_turns, 12);
+  });
+
+  it("clears paired agent_model when updating agent_provider", async () => {
+    const settingsFile = join(projectDir, ".pi", "pi-config-settings.json");
+    writeFileSync(settingsFile, JSON.stringify({ agent_provider: "google", agent_model: "gemini-2.5-pro" }), "utf8");
+    clearSettingsCache();
+
+    let seenTitle = "";
+    const { tools } = createToolHarness();
+    const res = await tools.get("settings_set").execute(
+      "s8d",
+      { action: "set", key: "agent_provider", scope: "project", value: "anthropic" },
+      undefined,
+      undefined,
+      {
+        cwd: projectDir,
+        hasUI: true,
+        mode: "tui",
+        ui: {
+          select: async (title: string) => {
+            seenTitle = title;
+            return SETTINGS_APPROVAL_APPROVE;
+          },
+        },
+      },
+    );
+    assert.equal(res.isError, undefined);
+    assert.match(seenTitle, /also clears agent_model/);
+    const parsed = JSON.parse(res.content[0].text);
+    assert.equal(parsed.cleared_paired_key, "agent_model");
+    const onDisk = JSON.parse(readFileSync(settingsFile, "utf8"));
+    assert.equal(onDisk.agent_provider, "anthropic");
+    assert.equal(onDisk.agent_model, "");
+  });
+
   it("emits orchestrator settings-changed event after approved update", async () => {
     const { tools, emitted } = createToolHarness();
     const res = await tools.get("settings_set").execute(
@@ -336,6 +558,7 @@ describe("settings_set tool (#1473)", () => {
       {
         cwd: projectDir,
         hasUI: true,
+        mode: "tui",
         ui: { select: async () => SETTINGS_APPROVAL_APPROVE },
       },
     );
@@ -356,6 +579,7 @@ describe("settings_set tool (#1473)", () => {
       {
         cwd: projectDir,
         hasUI: true,
+        mode: "tui",
         ui: { select: async () => SETTINGS_APPROVAL_APPROVE },
       },
     );
@@ -376,6 +600,7 @@ describe("settings_set tool (#1473)", () => {
       {
         cwd: projectDir,
         hasUI: true,
+        mode: "tui",
         ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } },
       },
     );

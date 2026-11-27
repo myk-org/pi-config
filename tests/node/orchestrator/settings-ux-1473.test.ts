@@ -24,7 +24,6 @@ import {
   computeSidebarWindow,
   filterSettingsAcrossCategories,
   refreshItem,
-  type CategoryDef,
 } from "../../../extensions/orchestrator/settings-tui.js";
 import { AgentOverridesSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -311,43 +310,34 @@ describe("left category sidebar and cross-category search (#1473)", () => {
     assert.match(rendered, /Search: "turn_snapshots"/);
   });
 
-  it("matches LSP category keys via cross-category search helper", () => {
-    const items = [
-      { id: "dco", description: "DCO signoff" },
-      { id: "lsp_enabled", description: "Enable LSP diagnostics" },
-      { id: "lsp_servers", description: "Configured LSP servers" },
-    ];
-    const catMap: Record<string, string> = {
-      dco: "Git",
-      lsp_enabled: "LSP",
-      lsp_servers: "LSP",
-    };
-    const matches = filterSettingsAcrossCategories(items, "lsp", (id) => catMap[id] ?? "Other");
-    assert.deepEqual(
-      matches.map((m) => m.id),
-      ["lsp_enabled", "lsp_servers"],
-    );
+  it("matches real Trail category keys via cross-category search helper", () => {
+    const items = Object.entries(SETTINGS_KEYS).map(([id, def]) => ({
+      id,
+      description: def.description,
+    }));
+    const matches = filterSettingsAcrossCategories(items, "trail");
+    assert.ok(matches.some((m) => m.id === "trail_enable"));
+    assert.ok(matches.some((m) => m.id === "log_trail"));
   });
 
-  it("renders a custom trailing LSP category inside SettingsOverlay sidebar", () => {
-    const customCategories: CategoryDef[] = [
-      ...CATEGORIES,
-      { label: "LSP", keys: ["dco"] },
-    ];
+  it("shows focus-specific footer hints in items pane versus sidebar pane", () => {
     const overlay = new SettingsOverlay(
-      makeFakeTui(34),
+      makeFakeTui(30),
       stubTheme,
       projectDir,
       undefined,
       "project",
       () => {},
       () => {},
-      undefined,
-      { categories: customCategories },
     );
-    const rendered = stripAnsi(overlay.render(120).join("\n"));
-    assert.match(rendered, /LSP/);
-    assert.match(rendered, new RegExp(`Categories \\(${customCategories.length}\\)`));
+    const itemsFooter = stripAnsi(overlay.render(120).at(-1) ?? "");
+    assert.match(itemsFooter, /← sidebar/);
+    assert.doesNotMatch(itemsFooter, /\/hl/);
+
+    overlay.handleInput(LEFT);
+    const sidebarFooter = stripAnsi(overlay.render(120).at(-1) ?? "");
+    assert.match(sidebarFooter, /↑↓\/jk category/);
+    assert.match(sidebarFooter, /→\/l\/Enter items/);
   });
 
   it("clears active search on first Escape before closing overlay on second Escape", () => {

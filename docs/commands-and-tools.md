@@ -91,7 +91,7 @@ More detail: [Neovim Integration](neovim-integration.html).
 Full-screen interactive settings editor with a scrollable left category sidebar, cross-category search, strict Project/Global scope isolation, per-key editing, and delete.
 
 - **Arguments:** none — `Tab` toggles Project/Global scope inside the TUI (Global shows only Global/Default values; Project shows Project overrides plus inherited Global/Env/Default values)
-- **Keys in the TUI:** `←→` / `h`/`l` switch between category sidebar and items pane, `↑↓` / `j`/`k` navigate, type to search across all categories, `Tab` scope, `Enter` edit, `Del` remove from current scope, `Esc` clear search / close
+- **Keys in the TUI:** in the items pane, `←` switches to the category sidebar, `↑↓` navigate settings, typing searches across all categories, `Enter` edits, and `Del` removes from the current scope; in the sidebar, `↑↓` or `j`/`k` navigate categories, `→`/`l`/`Enter` return to items, and `/` jumps to search. `Tab` switches Project/Global scope and `Esc` clears search or closes from either pane.
 
 ```text
 /pi-config-settings

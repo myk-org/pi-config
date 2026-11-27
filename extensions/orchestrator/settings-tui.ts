@@ -994,13 +994,13 @@ export class SettingsOverlay implements Component {
       );
     }
 
-    // ── Footer legend + hints ──
+    // ── Footer legend + context-aware hints ──
     const legend = `  ${theme.fg("success", "P")}=${theme.fg("dim", "project")}  ${theme.fg("accent", "G")}=${theme.fg("dim", "global")}  ${theme.fg("warning", "E")}=${theme.fg("dim", "env")}  ${theme.fg("dim", "D")}=${theme.fg("dim", "default")}`;
     lines.push(truncateToWidth(legend, width));
-    lines.push(truncateToWidth(
-      theme.fg("dim", `  ←→/hl pane · ↑↓ navigate · Type to search all · Tab: ${otherScope} · Enter edit · Del remove · Esc close`),
-      width,
-    ));
+    const hints = this.focusPane === "sidebar"
+      ? `  ↑↓/jk category · →/l/Enter items · / search · Tab: ${otherScope} · Esc close`
+      : `  ← sidebar · ↑↓ navigate · Type to search all · Tab: ${otherScope} · Enter edit · Del remove · Esc close`;
+    lines.push(truncateToWidth(theme.fg("dim", hints), width));
 
     this.cachedLines = lines;
     this.cachedWidth = width;

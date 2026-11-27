@@ -22,6 +22,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import {
   copyFileSync,
   existsSync,
@@ -1627,7 +1628,13 @@ export function writeSettingsFile(
 
 export type UpdateSettingResult =
   | { ok: true; file: string; changed?: boolean }
-  | { ok: false; reason: "invalid" | "corrupt" | "write_error"; file: string; error: string; cause?: unknown };
+  | { ok: false; reason: "invalid" | "corrupt" | "write_error" | "conflict"; file: string; error: string; cause?: unknown };
+
+export interface UpdateSettingOptions {
+  dedupeBackup?: boolean;
+  /** Atomic compare-and-swap guard: fail with reason="conflict" if current stored state differs. */
+  expected?: { exists: boolean; value?: unknown };
+}
 
 /**
  * Validate and persist one setting in `scope`. Passing `undefined` or `null` deletes
@@ -1639,7 +1646,7 @@ export function updateSetting(
   scope: SettingsScope,
   key: string,
   value: unknown,
-  options: { dedupeBackup?: boolean } = {},
+  options: UpdateSettingOptions = {},
 ): UpdateSettingResult {
   const filePath = getFilePathForScope(scope, cwd);
   const clearing = value === undefined || value === null;
@@ -1673,6 +1680,22 @@ export function updateSetting(
       file: filePath,
       error: `${filePath} is malformed (invalid JSON or not an object) — fix it before saving`,
     };
+  }
+
+  if (options.expected !== undefined) {
+    const actualExists = key in current;
+    const actualValue = actualExists ? current[key] : undefined;
+    const matches =
+      actualExists === options.expected.exists &&
+      (!actualExists || isDeepStrictEqual(actualValue, options.expected.value));
+    if (!matches) {
+      return {
+        ok: false,
+        reason: "conflict",
+        file: filePath,
+        error: `${key} changed on disk before saving`,
+      };
+    }
   }
 
   if (clearing) {

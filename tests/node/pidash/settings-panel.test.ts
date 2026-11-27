@@ -61,43 +61,41 @@ describe("PiDash settings payload scope isolation (#1473)", () => {
     assert.equal((projAllowlist.stored as string[]).length, 10);
     assert.equal(projAllowlist.source, "P");
   });
-});
 
-describe("PiDash SettingsPanel sidebar, search, and copy helpers (#1473)", () => {
-  const sampleKeys: any[] = [
-    { key: "dco", description: "Auto-inject signoff", type: "bool", default: false, group: "Git", stored: undefined, effective: false, source: "D" },
-    { key: "lsp_enabled", description: "Enable LSP diagnostics", type: "bool", default: false, group: "LSP", stored: true, effective: true, source: "P" },
-    { key: "lsp_servers", description: "LSP server config", type: "string", default: "", group: "LSP", stored: undefined, effective: "pyright", source: "G" },
-    { key: "turn_snapshots", description: "Per-turn snapshots", type: "bool", default: true, group: "Session", stored: undefined, effective: true, source: "D" },
-  ];
-
-  it("groups keys into sidebar categories preserving order", () => {
-    const categories = buildSettingsCategories(sampleKeys);
-    assert.deepEqual(
-      categories.map((c) => [c.name, c.keys.length]),
-      [
-        ["Git", 1],
-        ["LSP", 2],
-        ["Session", 1],
-      ],
-    );
+  it("groups real schema keys into sidebar categories preserving tail categories", () => {
+    const payload = buildSettingsPayload(projectDir, "project");
+    const categories = buildSettingsCategories(payload.keys);
+    assert.ok(categories.length >= 15);
+    assert.equal(categories[0].name, "Git");
+    assert.equal(categories[categories.length - 1].name, "Session");
   });
 
-  it("filters keys across all categories when searching for lsp", () => {
-    const matches = filterSettingsKeys(sampleKeys, "lsp");
-    assert.deepEqual(
-      matches.map((m) => m.key),
-      ["lsp_enabled", "lsp_servers"],
-    );
+  it("filters real schema keys across all categories when searching for turn_snapshots", () => {
+    const payload = buildSettingsPayload(projectDir, "project");
+    const matches = filterSettingsKeys(payload.keys, "turn_snapshots");
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0].key, "turn_snapshots");
+    assert.equal(matches[0].group, "Session");
   });
 
   it("resolves copyable value from draft, stored, effective, then default", () => {
-    assert.equal(getCopyableSettingValue(sampleKeys[0], true, "true"), "true");
-    assert.equal(getCopyableSettingValue(sampleKeys[1], false), "true");
-    assert.equal(getCopyableSettingValue(sampleKeys[2], false), "pyright");
-    assert.equal(getCopyableSettingValue(sampleKeys[3], false), "true");
-  });
+    writeFileSync(join(globalDir, "pi-config-settings.json"), JSON.stringify({ agent_provider: "google" }), "utf8");
+    writeFileSync(join(projectDir, ".pi", "pi-config-settings.json"), JSON.stringify({ dco: true }), "utf8");
+    clearSettingsCache();
 
+    const payload = buildSettingsPayload(projectDir, "project");
+    const dcoKey = payload.keys.find((k) => k.key === "dco")!;
+    const provKey = payload.keys.find((k) => k.key === "agent_provider")!;
+    const snapKey = payload.keys.find((k) => k.key === "turn_snapshots")!;
+
+    assert.equal(getCopyableSettingValue(dcoKey, true, "false"), "false");
+    assert.equal(getCopyableSettingValue(dcoKey, false), "true");
+    assert.equal(getCopyableSettingValue(provKey, false), "google");
+    assert.equal(getCopyableSettingValue(snapKey, false), "true");
+  });
+});
+
+describe("PiDash SettingsPanel parity wiring (#1473)", () => {
   it("renders left category sidebar container in SettingsPanel.tsx", () => {
     const source = readFileSync(
       join(process.cwd(), "extensions/pidash/pidash-ui/src/components/SettingsPanel.tsx"),

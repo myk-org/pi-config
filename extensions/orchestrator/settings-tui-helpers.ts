@@ -56,6 +56,61 @@ export function maskSettingValue(key: string, value: unknown, def?: SettingsKeyD
   return value;
 }
 
+const INLINE_CREDENTIAL_RULES: ReadonlyArray<[RegExp, string]> = [
+  // Embedded URL credentials: scheme://user:<redacted>@host
+  [/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/\s:@]+:)([^/\s@]+)(@)/g, "$1[REDACTED]$3"],
+  // Authorization headers / bearer / basic tokens
+  [/(\b(?:Bearer|Basic|Token)\s+)([A-Za-z0-9._~+/=-]{6,})/gi, "$1[REDACTED]"],
+  // Well-known API key / PAT prefixes
+  [/\b(?:ghp|gho|ghu|ghs|ghr|glpat|npm)_[A-Za-z0-9_]{8,}\b/g, "[REDACTED]"],
+  [/\bgithub_pat_[A-Za-z0-9_]{12,}\b/g, "[REDACTED]"],
+  [/\b(?:sk-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g, "[REDACTED]"],
+  // Env / query / key=value credential assignments
+  [/(\b[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|AUTH|CREDENTIAL)[A-Za-z0-9_]*=)(?:'[^']*'|"[^"]*"|[^\s;&|'"]+)/gi, "$1[REDACTED]"],
+  // CLI flags like --token value / --password=value / -p=...
+  [/(--?(?:token|password|passwd|secret|api-key|apikey|auth)(?:=|\s+))(?:'[^']*'|"[^"]*"|[^\s;&|'"]+)/gi, "$1[REDACTED]"],
+  // curl -u user:pass
+  [/(\s-u\s+[^\s:'"]+:)(?:'[^']*'|"[^"]*"|[^\s;&|'"]+)/g, "$1[REDACTED]"],
+];
+
+/** Redact inline credentials from command patterns or free-text values before returning to the LLM. */
+export function redactInlineCredentials(text: string): string {
+  let out = text;
+  for (const [pattern, replacement] of INLINE_CREDENTIAL_RULES) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
+/**
+ * Sanitize a setting value for model-visible tool output:
+ * - masks secret-named string keys completely
+ * - redacts inline credentials inside strings, string arrays (e.g. dangerous_command_allowlist),
+ *   and nested object values (e.g. tool_permissions, agent_overrides)
+ * Persistence paths must never pass their write payloads through this function.
+ */
+export function sanitizeSettingValueForModel(key: string, value: unknown, def?: SettingsKeyDef): unknown {
+  if (def?.type === "string" && isSecretSettingKey(key, def)) {
+    return maskSettingValue(key, value, def);
+  }
+  if (typeof value === "string") {
+    return redactInlineCredentials(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) =>
+      typeof entry === "string" ? redactInlineCredentials(entry) : sanitizeSettingValueForModel(key, entry),
+    );
+  }
+  if (value !== null && typeof value === "object") {
+    const sanitized: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      sanitized[k] = sanitizeSettingValueForModel(k, v);
+    }
+    return sanitized;
+  }
+  return value;
+}
+
 /** Return the schema category label for a setting key. */
 export function getCategoryLabelForKey(key: string): string {
   return SETTINGS_KEYS[key]?.group || "Other";
