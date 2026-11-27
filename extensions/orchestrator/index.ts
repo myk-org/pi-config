@@ -69,6 +69,8 @@ import { registerProviderStreamLog } from "../shared/provider-stream-log.js";
 import { migrateMcpConfig } from "../shared/mcp-config-migration.js";
 import { setGlobalSessionId } from "../shared/file-logger.js";
 import { registerDaemonManageTool } from "../shared/daemon-manager.js";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
+import { registerCodemodeActivation } from "./codemode-activation.js";
 
 const IN_CONTAINER = isRunningInContainer();
 ensureGitSshTimeout();
@@ -250,11 +252,16 @@ export default function (pi: ExtensionAPI) {
   registerProviderStreamLog(pi);
   // Copy a pre-#848 `~/.pi/pi-config/mcp.json` to where builtin:mcp reads it (#848).
   migrateMcpConfig();
+  // Auto-activate Pi's built-in codemode tool on session_start when available and not excluded (#1451).
+  registerCodemodeActivation(pi);
 
   // ── list_models tool — LLM-callable model discovery ──
   pi.registerTool({
     name: "list_models",
     label: "List Models",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.runtime,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
     description: "List available models and providers. Use when the user asks to run an agent with a specific model, or when you need to discover available models for the subagent model parameter. Returns provider/model pairs that can be passed to subagent(model=\"provider/model-id\").",
     parameters: Type.Object({
       provider: Type.Optional(Type.String({ description: "Filter by provider name (e.g., 'litellm', 'google', 'anthropic')" })),

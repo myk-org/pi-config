@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import {
   clearDangerousSessionApprovals,
@@ -570,6 +571,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   pi.registerTool({
     name: "review_status",
     label: "Review Status",
+    exposure: "deferred",
+    namespace: TOOL_NAMESPACES.runtime,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
     description:
       "Get current review loop enforcement state. Use to check if review is needed, in progress, clean, or has findings before committing. Pass worktree_path to check a specific worktree's state.",
     parameters: Type.Object({

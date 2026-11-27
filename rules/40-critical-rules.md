@@ -64,7 +64,12 @@ Always pass `cwd` when delegating to subagents in all modes — omitting it caus
 
 ## Runtime & Session Tools
 
-Prefer the built-in runtime tools over ad-hoc shell commands when inspecting or managing session state:
+Pi 1.6 `codemode` is auto-activated when available. Extension tools live in `codemode` namespaces (`memory`, `coms`, `tasks`, `trail`, `runtime`) —
+call them via `codemode` (`await tools.<name>({ ... })`, batchable with `Promise.allSettled`).
+Rare admin tools (`skill_adopt`, `memory_dream`, `memory_consolidate`, `review_status`) use `deferred` exposure (0 inline tokens; callable in `codemode`
+and discoverable via `searchTools` / `describeNamespace`). `ask_user` and `subagent` remain direct `model-only` tools.
+
+Prefer the built-in runtime tools (`runtime` namespace) over ad-hoc shell commands when inspecting or managing session state:
 
 | Tool | Purpose |
 | --- | --- |

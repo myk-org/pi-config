@@ -27,6 +27,7 @@ import { openTaskBlockers } from "../pitasks/tasks-view.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import { projectProblem, userTargetProblem } from "./coms-peers.js";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -1001,13 +1002,18 @@ export function createComsPeerRuntime(
 		if (typeof tool?.name === "string" && tool.name) {
 			gatedToolNames.add(tool.name);
 		}
+		const enriched = {
+			...tool,
+			exposure: tool.exposure ?? ("codemode" as const),
+			namespace: tool.namespace ?? TOOL_NAMESPACES.coms,
+		};
 		if (!deferred) {
-			pi.registerTool(tool);
+			pi.registerTool(enriched);
 			return;
 		}
-		const origExecute = tool.execute;
+		const origExecute = enriched.execute;
 		pi.registerTool({
-			...tool,
+			...enriched,
 			defaultActive: false,
 			execute: async (callId, params, signal, onUpdate, ctx) => {
 				if (!identity) {
@@ -3502,6 +3508,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_list",
 		label: "Coms List",
+		annotations: READ_ONLY_LOCAL_ANNOTATIONS,
 		description:
 			"List peer agents discoverable via coms. Returns names, models, and live context-window usage. " +
 			"Use project=\"*\" to scan all projects. include_explicit=true reveals agents marked --explicit.",
@@ -3578,6 +3585,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_send",
 		label: "Coms Send",
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 		description:
 			"Send a prompt to a peer; returns msg_id on ack. Reply auto-delivers as a followUp (use coms_get to poll). Throws if unreachable or rejected.\n\n" +
 			"- `tasks`: structured items added to the peer's task list.\n" +
@@ -3673,6 +3681,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_broadcast",
 		label: "Coms Broadcast",
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 		description:
 			"Broadcast one prompt to multiple peers at once; returns per-peer msg_id or error (partial failures reported). " +
 			"Replies auto-deliver as followUps. Use targets=[\"*\"] for all non-explicit peers in this project.",
@@ -3768,6 +3777,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_history",
 		label: "Coms History",
+		annotations: READ_ONLY_LOCAL_ANNOTATIONS,
 		description:
 			"Query local coms message history (prompts, steers, replies, status), newest last. Previews are truncated.",
 		parameters: Type.Object({
@@ -3815,6 +3825,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_get",
 		label: "Coms Get",
+		annotations: READ_ONLY_LOCAL_ANNOTATIONS,
 		description:
 			"Non-blocking poll of a pending coms_send reply. Returns status pending|complete|error and (when complete) the response.",
 		parameters: Type.Object({
@@ -3898,6 +3909,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_queue_inspect",
 		label: "Coms Queue Inspect",
+		annotations: READ_ONLY_LOCAL_ANNOTATIONS,
 		description: "Preview your queued inbound messages on a peer before any irreversible recovery. Returns IDs, sender, target, age, FIFO position, and delivery state, never full message bodies. Pass preview_id to coms_queue_clear.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
@@ -3931,6 +3943,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_queue_delete",
 		label: "Coms Queue Delete",
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		description: "Irreversibly delete one of your messages shown by coms_queue_inspect. Only the owner may delete it.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
@@ -3946,6 +3959,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_queue_edit",
 		label: "Coms Queue Edit",
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		description: "Replace the content of your queued message on a peer. Only works on your own pending messages.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
@@ -3961,6 +3975,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_queue_clear",
 		label: "Coms Queue Clear",
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		description: "Irreversibly clear only the messages shown by a preceding coms_queue_inspect preview. Ownership is enforced by the peer; untouched messages retain FIFO order.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
@@ -3976,6 +3991,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_queue_prioritize",
 		label: "Coms Queue Prioritize",
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 		description: "Move your message to the front of a peer's queue. Only works on your own pending messages.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
@@ -4080,6 +4096,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_local_queue",
 		label: "Coms Local Queue",
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
 		description:
 			"Inspect or kill messages in THIS session's own inbound coms queue (equivalent to /coms → q). Use action='list' to view processing and pending inbound messages, or action='kill' with msg_id to cancel one and notify the sender.",
 		parameters: Type.Object({
@@ -4163,6 +4180,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_tasks_create",
 		label: "Coms Tasks Create",
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 		description: "Create multiple tasks on a peer's task list. Automatically adds a 'Report completion to sender' task blocked by all created tasks, and sends a message to the peer to start working.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
@@ -4358,6 +4376,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_task_delete",
 		label: "Coms Task Delete",
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		description: "Delete a task from a peer's task list. Only works on tasks you created (createdBy match).",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
@@ -4391,6 +4410,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_task_list",
 		label: "Coms Task List",
+		annotations: READ_ONLY_LOCAL_ANNOTATIONS,
 		description: "List tasks on a peer's task list without sending a message.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
@@ -4442,6 +4462,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_task_get",
 		label: "Coms Task Get",
+		annotations: READ_ONLY_LOCAL_ANNOTATIONS,
 		description: "Get a specific task from a peer's task list without sending a message.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
@@ -4487,6 +4508,7 @@ Do not respond to this message.`;
 	registerPeerTool({
 		name: "coms_task_update",
 		label: "Coms Task Update",
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		description: "Update a task on a peer's task list. Only works on tasks you created (createdBy match).",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),

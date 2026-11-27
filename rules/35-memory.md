@@ -6,6 +6,9 @@ Scored, topic-organized memory injected into system prompts (Situation Report, v
 
 ## Memory Tools & Proactive Rules (MANDATORY)
 
+Memory tools live in the `memory` `codemode` namespace — call them via `codemode` (`await tools.memory_search(...)`, batchable with `Promise.allSettled`).
+Rare admin tools (`memory_consolidate`, `memory_dream`) are `deferred` (callable in `codemode`, discoverable via `searchTools` / `describeNamespace("memory")`).
+
 - **`memory_search`** — **Call first** before answering questions about prior sessions, user preferences, or past decisions.
 - **`memory_reinforce`** — Call whenever an existing memory is relevant to the current task to prevent decay.
 - **`memory_add`** — Save immediately after any turn worth remembering (do NOT wait for background dreaming or shutdown). Duplicates auto-reinforce.

@@ -7,7 +7,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { promisify } from "node:util";
 import { acquireTokenFileLock } from "../shared/file-lock.js";
 import { REDIRECT_TOKEN, skipToCommandWord, unquotedSegments, type ShellSegment } from "./bash-policy.js";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolAnnotations } from "@earendil-works/pi-coding-agent";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import { Type } from "typebox";
 import { createLogger, type Logger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
@@ -936,7 +937,7 @@ export function createTrailIntegration(options: Options) {
     state.events = pi.events;
     const registerTools = () => {
       if (state.toolsRegistered) return; state.toolsRegistered = true;
-      const tool = (name: string, description: string, parameters: any, args: (params: any) => string[] | null, special?: (params: any) => Promise<string> | string | null) => pi.registerTool({ name, label: name.replace("trail_", "Trail ").replace(/_/g, " "), description, parameters, async execute(_id, params) { const specialResult = special ? await special(params) : null; const command = specialResult ? null : args(params); return { content: [{ type: "text" as const, text: specialResult ?? (command ? await invoke(command) : "Invalid input: use an existing project-relative path.") }], details: {} }; } });
+      const tool = (name: string, description: string, parameters: any, args: (params: any) => string[] | null, special?: (params: any) => Promise<string> | string | null, annotations: ToolAnnotations = READ_ONLY_LOCAL_ANNOTATIONS) => pi.registerTool({ name, label: name.replace("trail_", "Trail ").replace(/_/g, " "), description, exposure: "codemode", namespace: TOOL_NAMESPACES.trail, annotations, parameters, async execute(_id, params) { const specialResult = special ? await special(params) : null; const command = specialResult ? null : args(params); return { content: [{ type: "text" as const, text: specialResult ?? (command ? await invoke(command) : "Invalid input: use an existing project-relative path.") }], details: {} }; } });
       tool("trail_find_code", "Find compact ranked code references in the local Trail graph.", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })), path: Type.Optional(Type.String()) }), p => { const q = text(p.query), file = p.path === undefined ? undefined : projectPath(state.root, p.path); return q && (p.path === undefined || file) ? ["ask", q, ".", "--limit", String(p.limit ?? 8), ...(file ? ["--in", file] : [])] : null; });
       tool("trail_find_all", "Search indexed project files.", Type.Object({ pattern: Type.String(), path: Type.Optional(Type.String()), fixed: Type.Optional(Type.Boolean()) }), p => { const pattern = text(p.pattern), file = p.path === undefined ? undefined : projectPath(state.root, p.path); return pattern && (p.path === undefined || file) ? ["grep", ...(p.fixed ? ["--fixed"] : []), ...(file ? ["--in", file] : []), pattern] : null; });
       tool("trail_file_api", "Get a signatures-only API view for a project file.", Type.Object({ path: Type.String() }), p => { const file = projectPath(state.root, p.path); return file ? ["skeleton", file] : null; });
@@ -945,7 +946,7 @@ export function createTrailIntegration(options: Options) {
       // vs ~237 find_code calls (issue #978), so after the first one we redirect
       // instead of running the CLI again.
       tool("trail_repo_map", "Show a compact graph-based repository map.", Type.Object({ max_dirs: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })) }), p => ["map", "--max-dirs", String(p.max_dirs ?? 16)], () => { if (!state.repoMapShown) { state.repoMapShown = true; return null; } log.info("repo_map_capped", { root: state.root }); return "[trail] The repository map was already shown in this session. Use trail_find_code to search for the concept you need instead of re-orienting."; });
-      if (!child) { tool("trail_refresh", "Rebuild the local Trail graph.", Type.Object({}), () => ["build"]); tool("trail_blast_radius", "Find dependencies affected by the local diff.", Type.Object({ depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }), p => ["blast", "--depth", String(p.depth ?? 2)]); }
+      if (!child) { tool("trail_refresh", "Rebuild the local Trail graph.", Type.Object({}), () => ["build"], undefined, { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }); tool("trail_blast_radius", "Find dependencies affected by the local diff.", Type.Object({ depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }), p => ["blast", "--depth", String(p.depth ?? 2)]); }
     };
     pi.on("session_start", async (event: any, ctx: any) => {
       state.ctx = ctx; log.info("session_start_enter", { reason: event?.reason, mode: ctx?.mode, trusted: trusted(ctx) });
