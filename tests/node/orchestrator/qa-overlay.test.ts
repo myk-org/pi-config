@@ -1446,6 +1446,30 @@ describe("real pi-tui & SessionManager end-to-end integration", () => {
     assert.fail(`Timed out waiting for ${label} after ${timeoutMs}ms`);
   }
 
+  async function awaitWithTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 2_000): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label} after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  async function openQaFromHintInRealTui(
+    ui: ReturnType<typeof createRealTuiHarness>,
+    harness: ReturnType<typeof createFakePi>,
+  ): Promise<{ overlayDone: Promise<void> }> {
+    await harness.emit("agent_end", {}, ui.ctx);
+    const overlayDone = harness.shortcuts.get("alt+q").handler(ui.ctx) as Promise<void>;
+    await waitForCondition(() => /Human Q&A/.test(ui.vt.readPlain()), "Human Q&A list frame");
+    return { overlayDone };
+  }
+
   it("renders buried-answer hint widget in real TuiAltScreen after background turn", async () => {
     const harness = createFakePi();
     withSubagentChildEnv(undefined, () => {
@@ -1465,7 +1489,7 @@ describe("real pi-tui & SessionManager end-to-end integration", () => {
     }
   });
 
-  it("pastes section quote via Alt+Q filter in real TuiAltScreen", async () => {
+  it("clears buried-answer hint when Alt+Q opens overlay in real TuiAltScreen", async () => {
     const harness = createFakePi();
     withSubagentChildEnv(undefined, () => {
       registerQaOverlay(harness.pi, { cwd: tempDir });
@@ -1473,13 +1497,75 @@ describe("real pi-tui & SessionManager end-to-end integration", () => {
     });
     const ui = createRealTuiHarness(tempDir);
     try {
-      await harness.emit("agent_end", {}, ui.ctx);
-      assert.equal(ui.mountedWidgets.has(QA_HINT_WIDGET_KEY), true);
-
-      const overlayDone = harness.shortcuts.get("alt+q").handler(ui.ctx);
-      await waitForCondition(() => /Human Q&A/.test(ui.vt.readPlain()), "Human Q&A list frame");
+      const { overlayDone } = await openQaFromHintInRealTui(ui, harness);
       assert.equal(ui.mountedWidgets.has(QA_HINT_WIDGET_KEY), false);
 
+      ui.vt.send("\x03");
+      await awaitWithTimeout(overlayDone, "Ctrl+C closing Alt+Q list overlay");
+    } finally {
+      ui.stop();
+    }
+  });
+
+  it("narrows real TuiAltScreen overlay rows on live slash filter", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+    const ui = createRealTuiHarness(tempDir);
+    try {
+      const { overlayDone } = await openQaFromHintInRealTui(ui, harness);
+      for (const seq of ["/", "l", "r", "u"]) {
+        ui.vt.send(seq);
+      }
+      await waitForCondition(() => /1\/2 matching/.test(ui.vt.readPlain()), "filtered match frame");
+      assert.match(ui.vt.readPlain(), /Explain caching strategy/);
+
+      ui.vt.send("\x03");
+      await awaitWithTimeout(overlayDone, "Ctrl+C closing filtered list overlay");
+    } finally {
+      ui.stop();
+    }
+  });
+
+  it("opens Q&A Reader on Enter in real TuiAltScreen", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+    const ui = createRealTuiHarness(tempDir);
+    try {
+      const { overlayDone } = await openQaFromHintInRealTui(ui, harness);
+      for (const seq of ["/", "l", "r", "u"]) {
+        ui.vt.send(seq);
+      }
+      await waitForCondition(() => /1\/2 matching/.test(ui.vt.readPlain()), "filtered match frame");
+
+      ui.vt.send("\r");
+      await waitForCondition(() => /Q&A Reader/.test(ui.vt.readPlain()), "Q&A Reader detail frame");
+      assert.match(ui.vt.readPlain(), /\[2\] 1\. Use LRU map/);
+
+      ui.vt.clearOutput();
+      ui.vt.send("\x03");
+      await waitForCondition(() => /Human Q&A/.test(ui.vt.readPlain()), "return to list frame");
+      ui.vt.send("\x03");
+      await awaitWithTimeout(overlayDone, "Ctrl+C closing overlay after reader");
+    } finally {
+      ui.stop();
+    }
+  });
+
+  it("pastes section quote into real Editor on digit 2 in real TuiAltScreen", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+    const ui = createRealTuiHarness(tempDir);
+    try {
+      const { overlayDone } = await openQaFromHintInRealTui(ui, harness);
       for (const seq of ["/", "l", "r", "u"]) {
         ui.vt.send(seq);
       }
@@ -1489,7 +1575,7 @@ describe("real pi-tui & SessionManager end-to-end integration", () => {
       await waitForCondition(() => /Q&A Reader/.test(ui.vt.readPlain()), "Q&A Reader detail frame");
 
       ui.vt.send("2");
-      await overlayDone;
+      await awaitWithTimeout(overlayDone, "digit-2 section quote closing overlay");
       assert.equal(ui.editor.getText(), 'Re: "Use LRU map" — ');
     } finally {
       ui.stop();
@@ -1504,11 +1590,11 @@ describe("real pi-tui & SessionManager end-to-end integration", () => {
     });
     const ui = createRealTuiHarness(tempDir);
     try {
-      const overlayDone = harness.commands.get("qa").handler("", ui.ctx);
+      const overlayDone = harness.commands.get("qa").handler("", ui.ctx) as Promise<void>;
       await waitForCondition(() => /Human Q&A/.test(ui.vt.readPlain()), "Human Q&A list frame");
 
       ui.vt.send("r");
-      await overlayDone;
+      await awaitWithTimeout(overlayDone, "r whole-answer quote closing overlay");
       assert.equal(ui.editor.getText(), 'Re: "Recommendation for Issue #2" — ');
     } finally {
       ui.stop();
