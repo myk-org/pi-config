@@ -51,11 +51,12 @@ export interface PiEvent {
   };
   toolCallId?: string;
   toolName?: string;
-  args?: { command?: string; agent?: string; name?: string; task?: string; tasks?: any[]; chain?: any[]; asyncKill?: string; async?: boolean };
+  args?: Record<string, any>;
   result?: {
-    content?: Array<{ type: string; text: string }>;
+    content?: Array<{ type: string; text?: string; mimeType?: string; [key: string]: unknown }>;
     details?: {
       mode?: string;
+      fullOutputError?: string;
       results?: Array<{
         agent?: string;
         usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: number; contextTokens?: number; turns?: number };
@@ -71,7 +72,7 @@ export interface PiEvent {
   isSubagent?: boolean;
   agentName?: string;
   resultText?: string;
-  partialResult?: { content?: Array<{ type: string; text: string }> };
+  partialResult?: { content?: Array<{ type: string; text?: string; mimeType?: string; [key: string]: unknown }> };
   // session_snapshot fields
   messages?: ChatMessage[];
   live?: SessionLiveState;

@@ -35,6 +35,7 @@ import {
 } from "./pidash-session-state.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
 import { applyActivityEvent, initialActivityState, shouldAcceptActivityEvent } from "../extensions/pidash/activity-state.ts";
+import { extractToolContentText } from "../extensions/shared/pidash-transcript-reducer.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
 
 const activityLog = createLogger("pidash");
@@ -263,7 +264,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
       const toolName = parsed.toolName || "";
       const isSubagent = toolName === "subagent" || !!(parsed.args?.agent);
       const isError = parsed.isError === true;
-      const resultText = parsed.result?.content?.[0]?.text || "";
+      const resultText = extractToolContentText(parsed.result?.content);
 
       broadcastToBrowsers({
         type: "session_notification",

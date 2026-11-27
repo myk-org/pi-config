@@ -401,6 +401,18 @@ export function stripToolResultPrefix(text: string): string {
   return text.replace(/^[✓✗] /, "");
 }
 
+/** Concise 1-line preview for collapsed tool/collapsible rows without dropping full expanded text. */
+export function formatToolCallSummary(text: string, maxLen = 120): string {
+  if (!text) return "";
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return trimmed.replace(/\s+/g, " ").slice(0, maxLen);
+  }
+  const firstNonEmpty = text.split("\n").find((line) => line.trim().length > 0) ?? "";
+  return firstNonEmpty.trim().slice(0, maxLen);
+}
+
 /**
  * Resolve which prompt message owns global 1-9 hotkeys:
  * inspects only the newest unanswered prompt in the unfiltered transcript

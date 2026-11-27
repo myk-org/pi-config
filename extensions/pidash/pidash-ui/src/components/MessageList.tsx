@@ -1,12 +1,11 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@ui/collapsible";
-import { Button } from "@ui/button";
 import { ChevronRight, ChevronDown, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types";
 import {
   findActiveSelectHotkeyId,
-  isBashToolRole,
+  formatToolCallSummary,
   isEditableTarget,
   resolvePromptOptionIndex,
   shouldSubmitMultilineAnswer,
@@ -229,7 +228,7 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
         </div>
       )}
       <div
-        className="h-full overflow-y-auto"
+        className="h-full overflow-y-auto overflow-x-hidden"
         ref={viewportRef}
       onScroll={() => {
         const el = viewportRef.current;
@@ -270,40 +269,15 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
   );
 }
 
-function CopyBtn({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => {
-    if (timerRef.current !== null) clearTimeout(timerRef.current);
-  }, []);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      if (timerRef.current !== null) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        setCopied(false);
-      }, 2000);
-    } catch {}
-  };
-
-  return (
-    <Button
-      variant="ghost"
-      size="icon"
-      className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity absolute top-1.5 right-1.5 text-muted-foreground hover:text-foreground"
-      onClick={handleCopy}
-      title="Copy"
-    >
-      {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
-    </Button>
-  );
-}
-
-export function CopyOutputButton({ text, compact = false }: { text: string; compact?: boolean }) {
+export function CopyOutputButton({
+  text,
+  compact = false,
+  label = "Copy output",
+}: {
+  text: string;
+  compact?: boolean;
+  label?: string;
+}) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -316,14 +290,14 @@ export function CopyOutputButton({ text, compact = false }: { text: string; comp
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      log.debug("copied bash tool output", { chars: text.length });
+      log.debug("copied section content", { label, chars: text.length });
       if (timerRef.current !== null) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
         timerRef.current = null;
         setCopied(false);
       }, 2000);
     } catch (err) {
-      log.warn("failed to copy bash tool output", { error: String(err) });
+      log.warn("failed to copy section content", { label, error: String(err) });
     }
   };
 
@@ -338,8 +312,8 @@ export function CopyOutputButton({ text, compact = false }: { text: string; comp
         copied && "text-green-500 hover:text-green-500",
       )}
       onClick={handleCopy}
-      title="Copy output"
-      aria-label="Copy output"
+      title={label}
+      aria-label={label}
     >
       {copied ? <Check className="h-3 w-3 shrink-0" /> : <Copy className="h-3 w-3 shrink-0" />}
       <span>{copied ? "Copied" : "Copy"}</span>
@@ -438,10 +412,13 @@ export function AskPromptCard({
   };
 
   return (
-    <div>
-      <div className={cn("text-[10px] font-bold uppercase tracking-wider mb-0.5", getRoleColor("ask_user"))}>
-        {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
-        action required
+    <div className="min-w-0">
+      <div className="flex items-center justify-between gap-1.5 min-w-0 mb-0.5">
+        <div className={cn("text-[10px] font-bold uppercase tracking-wider min-w-0 truncate", getRoleColor("ask_user"))}>
+          {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
+          action required
+        </div>
+        <CopyOutputButton text={msg.text} compact label="Copy prompt" />
       </div>
       <div
         ref={cardRef}
@@ -540,17 +517,19 @@ export const MessageItem = memo(function MessageItem({
   }
 
   return (
-    <div style={{ contentVisibility: "auto", containIntrinsicSize: "auto 90px" }}>
-      <div className={cn("text-[10px] font-bold uppercase tracking-wider mb-0.5", getRoleColor(msg.role))}>
-        {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
-        {msg.role}
+    <div className="min-w-0" style={{ contentVisibility: "auto", containIntrinsicSize: "auto 90px" }}>
+      <div className="flex items-center justify-between gap-1.5 min-w-0 mb-0.5">
+        <div className={cn("text-[10px] font-bold uppercase tracking-wider min-w-0 truncate", getRoleColor(msg.role))}>
+          {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
+          {msg.role}
+        </div>
+        <CopyOutputButton text={msg.text} compact label="Copy message" />
       </div>
       <div className={cn(
-        "rounded-md bg-card p-2.5 text-[13px] whitespace-pre-wrap break-words relative group",
+        "rounded-md bg-card p-2.5 text-[13px] whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0",
         msg.className === "streaming" && "border-l-2 border-cyan-400",
       )}>
         <HighlightText text={msg.text} query={searchQuery} />
-        <CopyBtn text={msg.text} />
       </div>
     </div>
   );
@@ -562,8 +541,8 @@ export const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: 
     call.text.toLowerCase().includes(searchQuery.toLowerCase()) ||
     result.text.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const isExpanded = open || !!matchesSearch;
   const color = getRoleColor(call.role);
-  const isBash = isBashToolRole(call.role);
   const isError = result.text.startsWith("✗");
   const borderColor = isError ? "border-red-500" : "border-green-600";
   const cv = { contentVisibility: "auto" as const, containIntrinsicSize: "auto 40px" };
@@ -571,7 +550,7 @@ export const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: 
   const meta = result.meta;
   const statusIcon = isError ? "✗" : "✓";
   const statusColor = isError ? "text-red-500" : "text-green-500";
-  const callSummary = call.text.split("\n")[0].slice(0, 120);
+  const callSummary = formatToolCallSummary(call.text, 120);
   const copyableOutput = stripToolResultPrefix(result.text);
 
   // Build stats string from meta
@@ -590,54 +569,65 @@ export const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: 
   }
 
   return (
-    <Collapsible open={open || !!matchesSearch} onOpenChange={setOpen} style={cv}>
+    <Collapsible open={isExpanded} onOpenChange={setOpen} style={cv}>
       <div className="flex items-center gap-1.5 min-w-0">
         <CollapsibleTrigger className={cn(
           "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none hover:opacity-80 flex-1 min-w-0 text-left",
           color,
         )}>
-          {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
+          {isExpanded ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
           {call.timestamp && <span className="font-normal normal-case tracking-normal text-muted-foreground flex-shrink-0">[{formatClock(call.timestamp)}]</span>}
           <span className="flex-shrink-0">{call.role}</span>
           <span className={cn("flex-shrink-0", statusColor)}>{statusIcon}</span>
-          {!open && statsStr && (
+          {!isExpanded && statsStr && (
             <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 text-[10px] truncate">
               {statsStr}
             </span>
           )}
-          {!open && !statsStr && (
+          {!isExpanded && !statsStr && callSummary && (
             <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{callSummary}</span>
           )}
         </CollapsibleTrigger>
-        {isBash && <CopyOutputButton text={copyableOutput} compact />}
+        {!isExpanded && <CopyOutputButton text={copyableOutput} compact label="Copy output" />}
       </div>
       <CollapsibleContent>
         <div className={cn(
-          "mt-1 rounded-md bg-card p-2.5 text-[11px] whitespace-pre-wrap break-words border-l-2 relative group",
+          "mt-1 rounded-md bg-card p-2.5 text-[11px] whitespace-pre-wrap break-words [overflow-wrap:anywhere] border-l-2 min-w-0",
           "border-orange-500",
         )}>
-          <div className="text-[9px] font-bold uppercase text-muted-foreground mb-1">call</div>
-          <HighlightText text={call.text} query={searchQuery} />
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <span className="text-[9px] font-bold uppercase text-muted-foreground">call</span>
+            <CopyOutputButton text={call.text} compact label="Copy call" />
+          </div>
+          {call.text
+            ? <HighlightText text={call.text} query={searchQuery} />
+            : <span className="text-muted-foreground italic">(no arguments)</span>}
         </div>
         <div className={cn(
-          "mt-1 rounded-md bg-card p-2.5 text-[11px] whitespace-pre-wrap break-words border-l-2 relative group",
+          "mt-1 rounded-md bg-card p-2.5 text-[11px] whitespace-pre-wrap break-words [overflow-wrap:anywhere] border-l-2 min-w-0",
           borderColor,
         )}>
-          <div className="text-[9px] font-bold uppercase text-muted-foreground mb-1">result</div>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <span className="text-[9px] font-bold uppercase text-muted-foreground">result</span>
+            <CopyOutputButton text={copyableOutput} compact label="Copy output" />
+          </div>
           <HighlightText text={result.text} query={searchQuery} />
-          {isBash ? <CopyOutputButton text={copyableOutput} /> : <CopyBtn text={result.text} />}
         </div>
       </CollapsibleContent>
     </Collapsible>
   );
 });
 
-function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuery?: string }) {
+export function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuery?: string }) {
   const [open, setOpen] = useState(false);
-  const matchesSearch = searchQuery && msg.text.toLowerCase().includes(searchQuery.toLowerCase());
+  const matchesSearch = searchQuery && (
+    msg.text.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    Boolean(msg.meta?.partialOutput?.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
+  const isExpanded = open || !!matchesSearch;
   const color = getRoleColor(msg.role);
   const isResult = msg.className === "tool-result";
-  const isBashResult = isResult && isBashToolRole(msg.role);
+  const isCall = msg.className === "tool-call";
   const isError = isResult && msg.text.startsWith("✗");
   const borderColor = msg.role === "thinking" ? "border-purple-500" : isResult ? (isError ? "border-red-500" : "border-green-600") : "border-orange-500";
   // content-visibility: the browser skips layout/paint for offscreen items —
@@ -645,38 +635,50 @@ function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuer
   // instant scrolling.
   const cv = { contentVisibility: "auto" as const, containIntrinsicSize: "auto 40px" };
 
-  const summary = msg.text.split("\n")[0].slice(0, 100);
-  const copyableOutput = isBashResult ? stripToolResultPrefix(msg.text) : msg.text;
+  const summary = formatToolCallSummary(msg.text, 100);
+  const copyableOutput = isResult ? stripToolResultPrefix(msg.text) : msg.text;
+  const copyLabel = isResult ? "Copy output" : isCall ? "Copy call" : "Copy content";
+  const partialOutput = isCall ? msg.meta?.partialOutput : undefined;
 
   return (
-    <Collapsible open={open || !!matchesSearch} onOpenChange={setOpen} style={cv}>
+    <Collapsible open={isExpanded} onOpenChange={setOpen} style={cv}>
       <div className="flex items-center gap-1.5 min-w-0">
         <CollapsibleTrigger className={cn(
           "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none hover:opacity-80 flex-1 min-w-0 text-left",
           color,
         )}>
-          {open ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+          {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
           {msg.timestamp && <span className="font-normal normal-case tracking-normal text-muted-foreground shrink-0">[{formatClock(msg.timestamp)}]</span>}
           <span className="shrink-0">{msg.role}</span>
-          {!open && msg.meta?.startTs && msg.meta?.endTs && (
+          {!isExpanded && msg.meta?.startTs && msg.meta?.endTs && (
             <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 flex-shrink-0">
               {formatDuration(msg.meta.endTs - msg.meta.startTs)}
             </span>
           )}
-          {!open && <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{summary}</span>}
+          {!isExpanded && summary && <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{summary}</span>}
         </CollapsibleTrigger>
-        {isBashResult && <CopyOutputButton text={copyableOutput} compact />}
+        <CopyOutputButton text={copyableOutput} compact label={copyLabel} />
       </div>
       <CollapsibleContent>
         <div className={cn(
-          "mt-1 rounded-md bg-card p-2.5 text-[13px] whitespace-pre-wrap break-words border-l-2 relative group",
+          "mt-1 rounded-md bg-card p-2.5 text-[13px] whitespace-pre-wrap break-words [overflow-wrap:anywhere] border-l-2 min-w-0",
           borderColor,
           msg.role === "thinking" && "text-muted-foreground italic",
-          (msg.className === "tool-call" || msg.className === "tool-result") && "text-[11px]",
+          (isCall || isResult) && "text-[11px]",
         )}>
-          <HighlightText text={msg.text} query={searchQuery} />
-          {isBashResult ? <CopyOutputButton text={copyableOutput} /> : <CopyBtn text={msg.text} />}
+          {msg.text
+            ? <HighlightText text={msg.text} query={searchQuery} />
+            : <span className="text-muted-foreground italic">(empty)</span>}
         </div>
+        {partialOutput && (
+          <div className="mt-1 rounded-md bg-card p-2.5 text-[11px] whitespace-pre-wrap break-words [overflow-wrap:anywhere] border-l-2 border-cyan-500 min-w-0">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <span className="text-[9px] font-bold uppercase text-muted-foreground">progress</span>
+              <CopyOutputButton text={partialOutput} compact label="Copy output" />
+            </div>
+            <HighlightText text={partialOutput} query={searchQuery} />
+          </div>
+        )}
       </CollapsibleContent>
     </Collapsible>
   );

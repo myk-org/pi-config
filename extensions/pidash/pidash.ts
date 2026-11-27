@@ -29,6 +29,7 @@ import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
 import { markBrowserDispatch } from "../shared/ui-bridge.js";
 import { createLogger } from "../shared/logger.js";
+import { extractToolContentText } from "../shared/pidash-transcript-reducer.js";
 import { markHumanRelayedPrompt, resolveBridgeSessionKey } from "../shared/session-bridge.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
@@ -153,6 +154,118 @@ function isContainer(): boolean {
   } catch { return false; }
 }
 
+/** Replay session history to the WebSocket client for browser display. */
+export function replaySessionHistory(wsClient: any, ctx: any, pushBuffered: (ev: string) => void): void {
+  // Wrap the whole history in the replay markers the browser already
+  // understands. Without them every entry arrived as its own frame, so a
+  // large transcript cost one React render per event and the browser visibly
+  // crawled through the history before reaching the bottom.
+  const send = (ev: object) => { try { pushBuffered(JSON.stringify(ev)); } catch {} };
+  send({ type: "replay_start" });
+  try {
+    const entries = ctx.sessionManager?.getEntries?.() || [];
+    let historyCount = 0;
+    for (const entry of entries) {
+      const e = entry as any;
+      if (e.type !== "message" || !e.message) continue;
+      const msg = e.message;
+      const ts = e.timestamp ? new Date(e.timestamp).getTime() : Date.now();
+
+      if (msg.role === "user") {
+        pushBuffered(JSON.stringify({ type: "message_start", message: msg, timestamp: ts }));
+      }
+
+      if (msg.role === "assistant" && msg.content) {
+        // Send thinking blocks
+        for (const part of msg.content) {
+          if (part.type === "thinking" && part.thinking) {
+            const thinkEv = JSON.stringify({
+              type: "message_update",
+              assistantMessageEvent: { type: "thinking_delta", delta: part.thinking, partial: { model: msg.model, usage: msg.usage } },
+              timestamp: ts,
+            });
+            pushBuffered(thinkEv);
+          }
+        }
+
+        // Send text blocks
+        for (const part of msg.content) {
+          if (part.type === "text" && part.text) {
+            const textEv = JSON.stringify({
+              type: "message_update",
+              assistantMessageEvent: { type: "text_delta", delta: part.text, partial: { model: msg.model, usage: msg.usage } },
+              timestamp: ts,
+            });
+            pushBuffered(textEv);
+          }
+        }
+
+        // Send tool calls with full arguments and correlation ID
+        for (const part of msg.content) {
+          if (part.type === "toolCall") {
+            const toolEv = JSON.stringify({
+              type: "tool_execution_start",
+              ...(part.id !== undefined ? { toolCallId: part.id } : {}),
+              toolName: part.name,
+              args: part.arguments,
+              timestamp: ts,
+            });
+            pushBuffered(toolEv);
+          }
+        }
+
+        // Send message_end
+        pushBuffered(JSON.stringify({ type: "message_end", message: msg, timestamp: ts }));
+      }
+
+      // Tool results — preserve full content[0..N], toolCallId, and details
+      if (msg.role === "toolResult") {
+        const resultEv = JSON.stringify({
+          type: "tool_execution_end",
+          ...(msg.toolCallId !== undefined ? { toolCallId: msg.toolCallId } : {}),
+          toolName: msg.toolName,
+          result: {
+            content: msg.content,
+            ...(msg.details !== undefined ? { details: msg.details } : {}),
+          },
+          isError: msg.isError || false,
+          timestamp: ts,
+        });
+        pushBuffered(resultEv);
+      }
+
+      // Custom messages (async agent results, etc.)
+      if (msg.role === "custom" && msg.display) {
+        const content = typeof msg.content === "string"
+          ? msg.content
+          : Array.isArray(msg.content)
+            ? (extractToolContentText(msg.content) || JSON.stringify(msg.content))
+            : JSON.stringify(msg.content || "");
+        pushBuffered(JSON.stringify({
+          type: "message_start",
+          message: { role: "custom", display: true, content, customType: msg.customType },
+          timestamp: ts,
+        }));
+      }
+
+      // Catch-all: any other message role — forward as-is
+      if (!["user", "assistant", "toolResult", "custom"].includes(msg.role)) {
+        pushBuffered(JSON.stringify({ type: "message_start", message: msg, timestamp: ts }));
+      }
+
+      historyCount++;
+    }
+    if (historyCount > 0) log.debug(`loaded ${historyCount} entries from session history`);
+  } catch (e: any) {
+    log.debug(`session history load error: ${e.message}`);
+  }
+
+  // Close the batch: the browser applies the buffered history in ONE pass.
+  send({ type: "replay_end" });
+  // Signal replay is complete so the server can stop suppressing notifications
+  try { wsClient.send(JSON.stringify({ type: "replay_complete" })); } catch {}
+}
+
 let diffPort: number | null = null;
 let isStreaming = false;
 
@@ -247,109 +360,6 @@ export function registerPidash(
   });
 
   // ── Extracted inner functions ──────────────────────────────────────
-
-  /** Replay session history to the WebSocket client for browser display. */
-  function replaySessionHistory(wsClient: any, ctx: any, pushBuffered: (ev: string) => void): void {
-    // Wrap the whole history in the replay markers the browser already
-    // understands. Without them every entry arrived as its own frame, so a
-    // large transcript cost one React render per event and the browser visibly
-    // crawled through the history before reaching the bottom.
-    const send = (ev: object) => { try { pushBuffered(JSON.stringify(ev)); } catch {} };
-    send({ type: "replay_start" });
-    try {
-      const entries = ctx.sessionManager?.getEntries?.() || [];
-      let historyCount = 0;
-      for (const entry of entries) {
-        const e = entry as any;
-        if (e.type !== "message" || !e.message) continue;
-        const msg = e.message;
-        const ts = e.timestamp ? new Date(e.timestamp).getTime() : Date.now();
-
-        if (msg.role === "user") {
-          pushBuffered(JSON.stringify({ type: "message_start", message: msg, timestamp: ts }));
-        }
-
-        if (msg.role === "assistant" && msg.content) {
-          // Send thinking blocks
-          for (const part of msg.content) {
-            if (part.type === "thinking" && part.thinking) {
-              const thinkEv = JSON.stringify({
-                type: "message_update",
-                assistantMessageEvent: { type: "thinking_delta", delta: part.thinking, partial: { model: msg.model, usage: msg.usage } },
-                timestamp: ts,
-              });
-              pushBuffered(thinkEv);
-            }
-          }
-
-          // Send text blocks
-          for (const part of msg.content) {
-            if (part.type === "text" && part.text) {
-              const textEv = JSON.stringify({
-                type: "message_update",
-                assistantMessageEvent: { type: "text_delta", delta: part.text, partial: { model: msg.model, usage: msg.usage } },
-                timestamp: ts,
-              });
-              pushBuffered(textEv);
-            }
-          }
-
-          // Send tool calls
-          for (const part of msg.content) {
-            if (part.type === "toolCall") {
-              const toolEv = JSON.stringify({
-                type: "tool_execution_start",
-                toolName: part.name,
-                args: part.arguments,
-                timestamp: ts,
-              });
-              pushBuffered(toolEv);
-            }
-          }
-
-          // Send message_end
-          pushBuffered(JSON.stringify({ type: "message_end", message: msg, timestamp: ts }));
-        }
-
-        // Tool results
-        if (msg.role === "toolResult") {
-          const resultEv = JSON.stringify({
-            type: "tool_execution_end",
-            toolName: msg.toolName,
-            result: { content: msg.content },
-            isError: msg.isError || false,
-            timestamp: ts,
-          });
-          pushBuffered(resultEv);
-        }
-
-        // Custom messages (async agent results, etc.)
-        if (msg.role === "custom" && msg.display) {
-          const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content || "");
-          pushBuffered(JSON.stringify({
-            type: "message_start",
-            message: { role: "custom", display: true, content, customType: msg.customType },
-            timestamp: ts,
-          }));
-        }
-
-        // Catch-all: any other message role — forward as-is
-        if (!["user", "assistant", "toolResult", "custom"].includes(msg.role)) {
-          pushBuffered(JSON.stringify({ type: "message_start", message: msg, timestamp: ts }));
-        }
-
-        historyCount++;
-      }
-      if (historyCount > 0) log.debug(`loaded ${historyCount} entries from session history`);
-    } catch (e: any) {
-      log.debug(`session history load error: ${e.message}`);
-    }
-
-    // Close the batch: the browser applies the buffered history in ONE pass.
-    send({ type: "replay_end" });
-    // Signal replay is complete so the server can stop suppressing notifications
-    try { wsClient.send(JSON.stringify({ type: "replay_complete" })); } catch {}
-  }
 
   /** Handle incoming WebSocket messages from the pidash daemon (prompts, commands). */
   async function handleWsMessage(data: Buffer): Promise<void> {

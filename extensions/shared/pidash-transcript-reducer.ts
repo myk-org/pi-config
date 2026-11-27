@@ -67,6 +67,183 @@ export function textFromMessage(msg: any): string {
     .join("\n");
 }
 
+/**
+ * Extract full displayable text from a tool result or partialResult `content` field.
+ * Joins ALL `text` blocks across `content[0..N]` and emits `[image: <mimeType>]`
+ * markers for image blocks so multi-part outputs (e.g. codemode) never lose data.
+ */
+export function extractToolContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as { type?: unknown; text?: unknown; mimeType?: unknown };
+    if (b.type === "text" && typeof b.text === "string") {
+      if (b.text.length > 0) parts.push(b.text);
+    } else if (b.type === "image") {
+      const mime = typeof b.mimeType === "string" && b.mimeType.trim() ? b.mimeType.trim() : "unknown";
+      parts.push(`[image: ${mime}]`);
+    }
+  }
+  return parts.join("\n");
+}
+
+function safeFormatJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function omitNonNullish(
+  obj: Record<string, unknown>,
+  exclude: readonly string[],
+): Record<string, unknown> | null {
+  const skip = new Set(exclude);
+  const rest: Record<string, unknown> = {};
+  let hasKeys = false;
+  for (const [k, v] of Object.entries(obj)) {
+    if (skip.has(k) || v === undefined || v === null) continue;
+    rest[k] = v;
+    hasKeys = true;
+  }
+  return hasKeys ? rest : null;
+}
+
+function formatSubagentSteps(items: unknown[]): string[] {
+  return items.map((item, idx) => {
+    if (!item || typeof item !== "object") return `[${idx + 1}] ${String(item)}`;
+    const step = item as Record<string, unknown>;
+    const agent = typeof step.agent === "string" && step.agent ? step.agent : "agent";
+    const who = typeof step.name === "string" && step.name ? `${agent} (${step.name})` : agent;
+    const meta = omitNonNullish(step, ["agent", "name", "task"]);
+    const lines = [`[${idx + 1}] ${who}`];
+    if (typeof step.task === "string" && step.task) lines.push(step.task);
+    if (meta) lines.push(safeFormatJson(meta));
+    return lines.join("\n");
+  });
+}
+
+/**
+ * Format full, lossless tool call arguments for every tool.
+ * First line stays concise for collapsed row previews while expanded CALL boxes
+ * preserve 100% of arguments without truncation.
+ */
+export function formatToolCallDetail(toolName: string, args: unknown): string {
+  if (args === undefined || args === null) return "";
+  let parsedArgs: unknown = args;
+  if (typeof args === "string") {
+    try {
+      const parsed = JSON.parse(args);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        parsedArgs = parsed;
+      } else {
+        return args;
+      }
+    } catch {
+      return args;
+    }
+  }
+  if (typeof parsedArgs !== "object") return String(parsedArgs);
+  if (Array.isArray(parsedArgs)) return safeFormatJson(parsedArgs);
+
+  const a = parsedArgs as Record<string, unknown>;
+  if (Object.keys(a).length === 0) return "";
+
+  const normalized = (toolName || "").trim().toLowerCase();
+
+  if ((normalized === "bash" || normalized === "shell") && typeof a.command === "string") {
+    const extra = omitNonNullish(a, ["command"]);
+    return extra ? `${a.command}\n\n${safeFormatJson(extra)}` : a.command;
+  }
+
+  if (normalized === "codemode" && typeof a.code === "string") {
+    const extra = omitNonNullish(a, ["code"]);
+    return extra ? `${a.code}\n\n${safeFormatJson(extra)}` : a.code;
+  }
+
+  if (normalized === "read" && typeof a.path === "string") {
+    const range: string[] = [];
+    if (a.offset !== undefined && a.offset !== null) range.push(`offset: ${a.offset}`);
+    if (a.limit !== undefined && a.limit !== null) range.push(`limit: ${a.limit}`);
+    const header = range.length > 0 ? `${a.path} (${range.join(", ")})` : a.path;
+    const extra = omitNonNullish(a, ["path", "offset", "limit"]);
+    return extra ? `${header}\n\n${safeFormatJson(extra)}` : header;
+  }
+
+  if (normalized === "write" && typeof a.path === "string") {
+    const sections = [a.path];
+    if (typeof a.content === "string" && a.content.length > 0) sections.push(a.content);
+    const extra = omitNonNullish(a, ["path", "content"]);
+    if (extra) sections.push(safeFormatJson(extra));
+    return sections.join("\n\n");
+  }
+
+  if (normalized === "edit" && typeof a.path === "string") {
+    if (Array.isArray(a.edits)) {
+      const header = `${a.path} (${a.edits.length} edit${a.edits.length === 1 ? "" : "s"})`;
+      const formattedEdits = a.edits.map((ed, idx) => {
+        if (ed && typeof ed === "object" && !Array.isArray(ed)) {
+          const rec = ed as Record<string, unknown>;
+          if (typeof rec.oldText === "string" && typeof rec.newText === "string") {
+            const edExtra = omitNonNullish(rec, ["oldText", "newText"]);
+            const block = `--- edit ${idx + 1} (old) ---\n${rec.oldText}\n+++ edit ${idx + 1} (new) +++\n${rec.newText}`;
+            return edExtra ? `${block}\n${safeFormatJson(edExtra)}` : block;
+          }
+        }
+        return `[edit ${idx + 1}]\n${safeFormatJson(ed)}`;
+      });
+      const extra = omitNonNullish(a, ["path", "edits"]);
+      const sections = [header, ...formattedEdits];
+      if (extra) sections.push(safeFormatJson(extra));
+      return sections.join("\n\n");
+    }
+    if (typeof a.oldText === "string" || typeof a.newText === "string") {
+      const sections = [
+        a.path,
+        `--- old ---\n${typeof a.oldText === "string" ? a.oldText : ""}\n+++ new +++\n${typeof a.newText === "string" ? a.newText : ""}`,
+      ];
+      const extra = omitNonNullish(a, ["path", "oldText", "newText"]);
+      if (extra) sections.push(safeFormatJson(extra));
+      return sections.join("\n\n");
+    }
+  }
+
+  if (normalized === "subagent") {
+    if (typeof a.asyncKill === "string" && a.asyncKill) {
+      const extra = omitNonNullish(a, ["asyncKill", "agent", "name"]);
+      return extra ? `kill: ${a.asyncKill}\n\n${safeFormatJson(extra)}` : `kill: ${a.asyncKill}`;
+    }
+    if (typeof a.task === "string") {
+      const extra = omitNonNullish(a, ["task", "agent", "name"]);
+      return extra ? `${a.task}\n\n${safeFormatJson(extra)}` : a.task;
+    }
+    if (Array.isArray(a.tasks)) {
+      const header = `${a.tasks.length} parallel task${a.tasks.length === 1 ? "" : "s"}`;
+      const extra = omitNonNullish(a, ["tasks", "agent", "name"]);
+      const sections = [header, ...formatSubagentSteps(a.tasks)];
+      if (extra) sections.push(safeFormatJson(extra));
+      return sections.join("\n\n");
+    }
+    if (Array.isArray(a.chain)) {
+      const header = `${a.chain.length} chain step${a.chain.length === 1 ? "" : "s"}`;
+      const extra = omitNonNullish(a, ["chain", "agent", "name"]);
+      const sections = [header, ...formatSubagentSteps(a.chain)];
+      if (extra) sections.push(safeFormatJson(extra));
+      return sections.join("\n\n");
+    }
+  }
+
+  if (typeof a.command === "string") {
+    const extra = omitNonNullish(a, ["command"]);
+    return extra ? `${a.command}\n\n${safeFormatJson(extra)}` : a.command;
+  }
+
+  return safeFormatJson(a);
+}
+
 function appendFullOutputErrorNotice(text: string, details: any): string {
   const fullOutputError =
     typeof details?.fullOutputError === "string" ? details.fullOutputError.trim() : "";
@@ -97,17 +274,20 @@ export function appendAsyncAgentEventText(
 
   if (inner.type === "tool_execution_start") {
     const name = inner.toolName || "tool";
-    const detail = typeof inner.args?.command === "string" && inner.args.command
-      ? ` ${inner.args.command.slice(0, 100)}`
+    const fullDetail = formatToolCallDetail(name, inner.args);
+    const preview = fullDetail
+      ? (fullDetail.startsWith("{") || fullDetail.startsWith("[")
+        ? fullDetail.replace(/\s+/g, " ").trim()
+        : (fullDetail.split("\n").find((l) => l.trim().length > 0) ?? "").trim())
       : "";
+    const detail = preview ? ` ${preview.slice(0, 100)}` : "";
     tracked.text += `\n🔧 ${name}${detail}`;
     changed = true;
   }
 
   if (inner.type === "tool_execution_end") {
-    const rawResult = inner.result?.content?.[0]?.text
-      ? String(inner.result.content[0].text).slice(0, 200)
-      : "";
+    const extracted = extractToolContentText(inner.result?.content);
+    const rawResult = extracted ? extracted.slice(0, 200) : "";
     const result = appendFullOutputErrorNotice(rawResult, inner.result?.details);
     if (result) {
       tracked.text += `\n${inner.isError ? "✗" : "✓"} ${result}`;
@@ -202,9 +382,14 @@ export function applyTranscriptEvent(
         refs.lastUserText = "";
       } else if (msg.role === "custom" && msg.display) {
         const content = msg.content || "";
+        const text = typeof content === "string"
+          ? content
+          : Array.isArray(content)
+            ? (extractToolContentText(content) || safeFormatJson(content))
+            : safeFormatJson(content);
         sink.add(
           "system",
-          typeof content === "string" ? content : JSON.stringify(content),
+          text,
           undefined,
           undefined,
           { timestamp: ts },
@@ -288,35 +473,54 @@ export function applyTranscriptEvent(
     case "tool_execution_start": {
       hooks.onFlushLiveDeltas?.();
       refs.lastUserText = "";
-      let name = ev.toolName || "tool";
-      let detail = typeof ev.args?.command === "string" ? ev.args.command : "";
-      if (name === "subagent" && ev.args) {
+      const rawName = ev.toolName || "tool";
+      let name = rawName;
+      if (rawName === "subagent" && ev.args) {
         const label = ev.args.name || ev.args.agent;
         if (label) name = `subagent (${label})`;
-        if (ev.args.asyncKill) detail = `kill: ${ev.args.asyncKill}`;
-        else if (ev.args.task) detail = String(ev.args.task).slice(0, 150);
-        else if (Array.isArray(ev.args.tasks)) detail = `${ev.args.tasks.length} parallel tasks`;
-        else if (Array.isArray(ev.args.chain)) detail = `${ev.args.chain.length} chain steps`;
       }
+      const detail = formatToolCallDetail(rawName, ev.args);
       const cid = ev.toolCallId || sink.nextId();
       const id = sink.add(name as MessageRole, detail, "tool-call", { callId: cid }, { timestamp: ts, protect: true });
       refs.tool = { id, name, startTs: ts, callId: cid };
       return true;
     }
 
-    case "tool_execution_update":
-      if (refs.tool.id && ev.partialResult?.content?.[0]?.text) {
-        const text = `${refs.tool.name}: ${ev.partialResult.content[0].text}`;
-        sink.patch(refs.tool.id, (m) => ({ ...m, text }));
+    case "tool_execution_update": {
+      const targetId = (ev.toolCallId && ev.toolCallId !== refs.tool.callId)
+        ? sink.findLast((m) => m.className === "tool-call" && m.meta?.callId === ev.toolCallId)?.id
+        : refs.tool.id;
+      if (targetId) {
+        const partial = extractToolContentText(ev.partialResult?.content);
+        if (partial) {
+          sink.patch(targetId, (m) => ({
+            ...m,
+            meta: { ...m.meta, partialOutput: partial },
+          }));
+        }
       }
       return true;
+    }
 
     case "tool_execution_end": {
-      const toolName = refs.tool.name || ev.toolName || "tool";
-      const startTs = refs.tool.startTs;
-      const callId = refs.tool.callId || ev.toolCallId || "";
-      refs.tool = { id: "", name: "", startTs: 0, callId: "" };
-      const rawText = typeof ev.result?.content?.[0]?.text === "string" ? ev.result.content[0].text : "";
+      const matchedCall = (ev.toolCallId && ev.toolCallId !== refs.tool.callId)
+        ? sink.findLast((m) => m.className === "tool-call" && m.meta?.callId === ev.toolCallId)
+        : undefined;
+      const callMsgId = matchedCall ? matchedCall.id : refs.tool.id;
+      const toolName = matchedCall?.role || refs.tool.name || ev.toolName || "tool";
+      const startTs = matchedCall ? (matchedCall.timestamp ?? 0) : refs.tool.startTs;
+      const callId = matchedCall?.meta?.callId || refs.tool.callId || ev.toolCallId || "";
+      if (!matchedCall) {
+        refs.tool = { id: "", name: "", startTs: 0, callId: "" };
+      }
+      if (callMsgId) {
+        sink.patch(callMsgId, (m) => {
+          if (!m.meta || m.meta.partialOutput === undefined) return m;
+          const { partialOutput: _drop, ...restMeta } = m.meta;
+          return { ...m, meta: restMeta };
+        });
+      }
+      const rawText = extractToolContentText(ev.result?.content);
       const t = appendFullOutputErrorNotice(rawText, ev.result?.details);
       if (t) {
         let meta: ChatMessage["meta"] = startTs ? { startTs, endTs: ts, callId } : { callId };

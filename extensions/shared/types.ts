@@ -149,6 +149,7 @@ export interface ChatMessage {
     endTs?: number;
     cost?: number;
     callId?: string;
+    partialOutput?: string;
   };
 }
 
