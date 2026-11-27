@@ -62,7 +62,7 @@ import {
 	resolveBridgeSessionKey,
 	shouldDeferForMalformedRecovery,
 } from "../shared/session-bridge.js";
-import { sanitizePeerText } from "./peer-text.js";
+import { sanitizePeerText, stripOriginMarker } from "./peer-text.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
 	TOGGLE_ALL_WIDGETS_EVENT,
@@ -999,6 +999,41 @@ export function renderComsResponseMessage(
 	});
 }
 
+const BUNDLE_SEPARATOR_LINE_RE = /^---\s*Message\s+\d+\s+of\s+\d+(?:\s+\[[^\]]*\])?\s*---\s*$/gm;
+
+/**
+ * Derive a safe single-line collapsed summary for COMS inbound / steer / bundled prompts.
+ * - Strips forged human-origin markers on non-user prompts (matching `buildInboundContent`).
+ * - Strips `--- Message N of M [id] ---` separators and `[from ...]` tags on FIFO bundles
+ *   and prefixes multi-message bundles with `(N msgs) `.
+ */
+export function extractComsInboundSummaryLine(opts: {
+	prompt: string;
+	origin?: PromptOrigin;
+	bundled?: { content: string; ids: string[] };
+	fallbackContent?: string;
+}): string {
+	if (opts.bundled) {
+		const cleanedBundle = opts.bundled.content
+			.replace(BUNDLE_SEPARATOR_LINE_RE, "")
+			.replace(/^\[from [^\]]+\]\s*/gm, "");
+		const firstLine = extractSummaryLine(cleanedBundle);
+		const count = opts.bundled.ids.length;
+		if (count > 1) {
+			return firstLine ? `(${count} msgs) ${firstLine}` : `(${count} msgs)`;
+		}
+		return firstLine;
+	}
+	const safePrompt = opts.origin === "user" ? opts.prompt : stripOriginMarker(opts.prompt);
+	const fromPrompt = extractSummaryLine(safePrompt);
+	if (fromPrompt) return fromPrompt;
+	if (!opts.fallbackContent) return "";
+	const cleanedFallback = opts.fallbackContent
+		.replace(/^\[from [^\]]+\]\s*/, "")
+		.replace(/\n\nReply to me via coms_send\([^)]*\)/g, "");
+	return extractSummaryLine(opts.origin === "user" ? cleanedFallback : stripOriginMarker(cleanedFallback));
+}
+
 export function renderComsInboundMessage(
 	message: CompactCustomMessage<ComsInboundDetails>,
 	options: CompactMessageRenderOptions,
@@ -1014,14 +1049,22 @@ export function renderComsInboundMessage(
 	if (options.expanded) {
 		return createExpandedCustomBox(header, body, options.outputPad, theme);
 	}
+	const isUser = details?.origin === "user";
 	const strippedBody = body
 		.replace(/^\[from [^\]]+\]\s*/, "")
+		.replace(/^\[BUNDLED:[^\]]*\]\s*/m, "")
+		.replace(BUNDLE_SEPARATOR_LINE_RE, "")
+		.replace(/^\[from [^\]]+\]\s*/gm, "")
 		.replace(/\n\nReply to me via coms_send\([^)]*\)/g, "");
-	const summaryLine = typeof details?.summaryLine === "string" && details.summaryLine.trim().length > 0
-		? extractSummaryLine(details.summaryLine)
-		: extractSummaryLine(strippedBody);
+	let summaryLine = typeof details?.summaryLine === "string" && details.summaryLine.trim().length > 0
+		? extractSummaryLine(isUser ? details.summaryLine : stripOriginMarker(details.summaryLine))
+		: extractSummaryLine(isUser ? strippedBody : stripOriginMarker(strippedBody));
+	const bundledCount = Array.isArray(details?.bundled_msg_ids) ? details.bundled_msg_ids.length : 0;
+	if (bundledCount > 1 && !summaryLine.startsWith(`(${bundledCount} msgs)`)) {
+		summaryLine = summaryLine ? `(${bundledCount} msgs) ${summaryLine}` : `(${bundledCount} msgs)`;
+	}
 	const tags: string[] = [];
-	if (details?.origin === "user") tags.push(theme.fg("warning", "USER"));
+	if (isUser) tags.push(theme.fg("warning", "USER"));
 	if (details?.steer) tags.push(theme.fg("warning", "steer"));
 	const tagSuffix = tags.length > 0 ? ` (${tags.join(", ")})` : "";
 	const prefix = `${theme.fg("accent", "📡")} ${theme.fg("accent", "←")} ${theme.bold(sender)}${tagSuffix}`;
@@ -1587,8 +1630,12 @@ export function createComsPeerRuntime(
 		const content = opts.bundled
 			? buildInboundContent(opts.bundled.header, opts.bundled.content, null, ib.sender_name, ib.sender_cwd, opts.bundled.origin, ib.sender_session, true)
 			: buildInboundContent(opts.header ?? "", ib.prompt, ib.tasks ?? null, ib.sender_name, ib.sender_cwd, ib.origin, ib.sender_session);
-		const summarySource = opts.bundled ? opts.bundled.content : ib.prompt;
-		const summaryLine = extractSummaryLine(summarySource) || extractSummaryLine(content);
+		const summaryLine = extractComsInboundSummaryLine({
+			prompt: ib.prompt,
+			origin,
+			bundled: opts.bundled ? { content: opts.bundled.content, ids: opts.bundled.ids } : undefined,
+			fallbackContent: content,
+		});
 		const attempt = opts.bundled?.attempt ?? (ib.injectAttempt ?? 0);
 		const queuedAsFollowUp = opts.streaming === true || (opts.streaming !== false && isPiStreaming(opts.ctx));
 		sendTurnMessage(
@@ -1888,7 +1935,10 @@ export function createComsPeerRuntime(
 								...(steerOrigin ? { origin: steerOrigin } : {}),
 								steer: true,
 								target_msg_id: currentInbound.msg_id,
-								summaryLine: extractSummaryLine(env.prompt),
+								summaryLine: extractComsInboundSummaryLine({
+									prompt: env.prompt,
+									origin: steerOrigin,
+								}),
 							},
 						},
 						"(empty message)",

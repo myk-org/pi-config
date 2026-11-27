@@ -4,7 +4,14 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import {
+  convertToLlm,
+  CustomMessageComponent,
+  getMarkdownTheme,
+  initTheme,
+  type MessageRenderer,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   registerAsyncAgents,
@@ -13,6 +20,7 @@ import {
 } from "../../../extensions/orchestrator/async-agents.js";
 import {
   extractSummaryLine,
+  stripAnsiAndControl,
   type CompactCustomMessage,
   type CompactMessageRenderOptions,
 } from "../../../extensions/shared/compact-message-renderer.js";
@@ -156,6 +164,73 @@ describe("renderAsyncAgentResultMessage (#1454)", () => {
     assert.match(rendered, /Third finding line/);
   });
 
+  it("renders markdown headings without literal hash prefixes when expanded", () => {
+    const msg = makeMessage("## Async Agent Result: worker ✅ completed\n\n- bullet one\n- bullet two", {
+      displayName: "worker",
+      agent: "worker",
+      status: "complete",
+      durationMs: 2_000,
+      summaryLine: "bullet one",
+    });
+
+    const rendered = renderAsyncAgentResultMessage(msg, makeOptions({ expanded: true }), theme).render(100).join("\n");
+    assert.match(rendered, /Async Agent Result: worker ✅ completed/);
+    assert.equal(rendered.includes("## Async Agent Result:"), false);
+    assert.match(rendered, /bullet one/);
+  });
+
+  it("shows a warning badge in the collapsed line when task auto-complete failed", () => {
+    const msg = makeMessage("body", {
+      displayName: "worker",
+      agent: "worker",
+      status: "complete",
+      durationMs: 5_000,
+      summaryLine: "Done",
+      warning: "task auto-complete failed",
+    });
+
+    const lines = renderAsyncAgentResultMessage(msg, makeOptions({ expanded: false }), theme).render(140);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /⚠ task auto-complete failed/);
+    assert.match(lines[0], /Done/);
+  });
+
+  it("shows a late badge in the collapsed line when the result arrived late", () => {
+    const msg = makeMessage("body", {
+      displayName: "worker",
+      agent: "worker",
+      status: "complete",
+      durationMs: 9_000,
+      summaryLine: "Late output",
+      late: true,
+    });
+
+    const lines = renderAsyncAgentResultMessage(msg, makeOptions({ expanded: false }), theme).render(140);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /⚠ late/);
+    assert.match(lines[0], /Late output/);
+  });
+
+  it("surfaces legacy warning badges when details are absent", () => {
+    const legacyContent = [
+      "## Async Agent Result: legacy-worker ✅ completed",
+      "",
+      "_(late result — it arrived after the timeout fallback already delivered an empty one)_",
+      "",
+      "Task: check",
+      "Duration: 9s",
+      "",
+      "Result body",
+      "",
+      "⚠️ Failed to auto-complete task #4: boom",
+    ].join("\n");
+    const msg = makeMessage(legacyContent, undefined);
+
+    const lines = renderAsyncAgentResultMessage(msg, makeOptions({ expanded: false }), theme).render(140);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /⚠ task auto-complete failed; late/);
+  });
+
   it("leaves message content completely unchanged for LLM context", () => {
     const fullContent = "## Async Agent Result: worker ✅ completed\n\nTask: check\nDuration: 3s\n\nDetailed output line 1\nDetailed output line 2";
     const msg = makeMessage(fullContent, {
@@ -217,5 +292,57 @@ describe("registerAsyncAgents message renderer registration (#1454)", () => {
     });
 
     assert.equal(registered.get("async-agent-result"), renderAsyncAgentResultMessage);
+  });
+});
+
+describe("Pi CustomMessageComponent E2E rendering (#1454)", () => {
+  it("renders collapsed one-line summary in Pi CustomMessageComponent", () => {
+    initTheme();
+    const content = "## Async Agent Result: Cron: Refresh digest ✅ completed\n\nTask: refresh\nDuration: 37.0s\n\nopen=1 approved=1 ready=1\nDetail line 2";
+    const msg = makeMessage(content, {
+      displayName: "Cron: Refresh digest",
+      agent: "worker",
+      status: "complete",
+      durationMs: 37_000,
+      summaryLine: "open=1 approved=1 ready=1",
+    });
+    const comp = new CustomMessageComponent(msg, renderAsyncAgentResultMessage as MessageRenderer, getMarkdownTheme(), 1);
+    const nonEmpty = comp.render(100).map((l) => stripAnsiAndControl(l).trimEnd()).filter((l) => l.length > 0);
+    assert.equal(nonEmpty.length, 1);
+    assert.match(nonEmpty[0], /✓ Cron: Refresh digest \(37\.0s\) — open=1 approved=1 ready=1  \(ctrl\+o to expand\)/);
+  });
+
+  it("expands to Markdown-formatted body on setExpanded(true) in Pi CustomMessageComponent", () => {
+    initTheme();
+    const content = "## Async Agent Result: worker ✅ completed\n\nTask: check\nDuration: 5.0s\n\n- item one\n- item two";
+    const msg = makeMessage(content, {
+      displayName: "worker",
+      agent: "worker",
+      status: "complete",
+      durationMs: 5_000,
+      summaryLine: "item one",
+    });
+    const comp = new CustomMessageComponent(msg, renderAsyncAgentResultMessage as MessageRenderer, getMarkdownTheme(), 1);
+    comp.setExpanded(true);
+    const rendered = comp.render(100).map((l) => stripAnsiAndControl(l)).join("\n");
+    assert.match(rendered, /\[async-agent-result\]/);
+    assert.match(rendered, /Async Agent Result: worker ✅ completed/);
+    assert.equal(rendered.includes("## Async Agent Result:"), false);
+    assert.match(rendered, /item two/);
+  });
+
+  it("preserves exact LLM content through Pi convertToLlm", () => {
+    const content = "## Async Agent Result: worker ✅ completed\n\nTask: check\nDuration: 5.0s\n\nFull output";
+    const msg = makeMessage(content, {
+      displayName: "worker",
+      agent: "worker",
+      status: "complete",
+      durationMs: 5_000,
+      summaryLine: "Full output",
+    });
+    const llmMessages = convertToLlm([msg]);
+    assert.equal(llmMessages.length, 1);
+    const firstBlock = Array.isArray(llmMessages[0].content) ? llmMessages[0].content[0] : null;
+    assert.equal(firstBlock && firstBlock.type === "text" ? firstBlock.text : "", content);
   });
 });

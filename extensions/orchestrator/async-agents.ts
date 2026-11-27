@@ -456,6 +456,10 @@ export interface AsyncAgentResultDetails {
   durationMs: number;
   summaryLine: string;
   killOrigin?: AsyncKillOrigin;
+  /** True when the result arrived after the timeout fallback already delivered an empty one. */
+  late?: boolean;
+  /** Non-empty warning badge text (e.g. task auto-complete failure or unapplied late reviewer). */
+  warning?: string;
 }
 
 /**
@@ -467,12 +471,18 @@ function parseLegacyAsyncResultFallback(body: string): {
   status: "complete" | "failed";
   durationStr: string;
   summaryLine: string;
+  late: boolean;
+  warning?: string;
 } {
   const headerMatch = body.match(/^## Async Agent Result:\s*(.+?)\s+(✅ completed|❌ failed)/m);
   const displayName = headerMatch?.[1]?.trim() || "async-agent";
   const status: "complete" | "failed" = headerMatch?.[2]?.startsWith("❌") ? "failed" : "complete";
   const durMatch = body.match(/^Duration:\s*(.+)$/m);
   const durationStr = durMatch?.[1]?.trim() || "";
+  const late = /_\(late result/m.test(body);
+  const warnings: string[] = [];
+  if (/⚠️ Failed to auto-complete task/.test(body)) warnings.push("task auto-complete failed");
+  if (/⚠️ Reviewer .+ produced its result AFTER the delivery timeout/.test(body)) warnings.push("late reviewer unapplied");
   // Drop the `## Async Agent Result:` header + `Task:` + `Duration:` preamble before extracting output summary
   const stripped = body
     .replace(/^## Async Agent Result:[^\n]*\n*/m, "")
@@ -480,7 +490,7 @@ function parseLegacyAsyncResultFallback(body: string): {
     .replace(/^Task:[^\n]*\n*/m, "")
     .replace(/^Duration:[^\n]*\n*/m, "");
   const summaryLine = extractSummaryLine(stripped) || (status === "complete" ? "completed" : "failed");
-  return { displayName, status, durationStr, summaryLine };
+  return { displayName, status, durationStr, summaryLine, late, warning: warnings.join("; ") || undefined };
 }
 
 /** Compact 1-line TUI renderer for `async-agent-result` messages (Ctrl+O expands full output). */
@@ -512,11 +522,19 @@ export function renderAsyncAgentResultMessage(
   const rawSummary = typeof d?.summaryLine === "string" && d.summaryLine.trim().length > 0
     ? extractSummaryLine(d.summaryLine)
     : (killLabel || fallback?.summaryLine || (status === "complete" ? "completed" : "failed"));
+  const isLate = d?.late === true || (!d && fallback?.late === true);
+  const warningText = typeof d?.warning === "string" && d.warning.trim().length > 0
+    ? extractSummaryLine(d.warning, 60)
+    : (!d && fallback?.warning ? fallback.warning : "");
+  const badgeParts: string[] = [];
+  if (warningText) badgeParts.push(warningText);
+  if (isLate && !warningText.toLowerCase().includes("late")) badgeParts.push("late");
+  const warnBadge = badgeParts.length > 0 ? theme.fg("warning", ` ⚠ ${badgeParts.join("; ")}`) : "";
   const ok = status === "complete";
   const icon = theme.fg(ok ? "success" : "error", ok ? "✓" : "✗");
   const namePart = theme.bold(displayName);
   const durPart = durationStr ? theme.fg("dim", ` (${durationStr})`) : "";
-  const prefix = `${icon} ${namePart}${durPart}`;
+  const prefix = `${icon} ${namePart}${durPart}${warnBadge}`;
   const summary = rawSummary ? theme.fg(ok ? "muted" : "error", rawSummary) : "";
   const hint = formatExpandHint(options, theme);
   return createCompactOneLineComponent({
@@ -1173,6 +1191,10 @@ export function registerAsyncAgents(
             const rawSummary = extractSummaryLine(output);
             const summaryLine = rawSummary
               || (job.killOrigin ? KILL_ORIGIN_LABELS[job.killOrigin] : (job.status === "complete" ? "completed" : "failed"));
+            const warnings: string[] = [];
+            if (autoCompleteError) warnings.push("task auto-complete failed");
+            if (lateReviewNote) warnings.push("late reviewer unapplied");
+            const warning = warnings.join("; ") || undefined;
             const details: AsyncAgentResultDetails = {
               displayName,
               agent: job.agent,
@@ -1180,6 +1202,8 @@ export function registerAsyncAgents(
               durationMs: duration,
               summaryLine,
               ...(job.killOrigin ? { killOrigin: job.killOrigin } : {}),
+              ...(isLate ? { late: true } : {}),
+              ...(warning ? { warning } : {}),
             };
             pi.sendMessage({
               customType: "async-agent-result",

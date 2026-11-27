@@ -7,7 +7,7 @@
  */
 
 import type { MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Spacer, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth, type Component, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { createLogger } from "./logger.js";
 
 export type CompactCustomMessage<T = unknown> = Parameters<MessageRenderer<T>>[0];
@@ -83,7 +83,10 @@ export function formatExpandHint(
   if (typeof options?.keyHint === "function") {
     try {
       const inner = options.keyHint("app.tools.expand", "to expand");
-      if (inner) return `${theme.fg("dim", "(")}${inner}${theme.fg("dim", ")")}`;
+      const plain = inner ? stripAnsiAndControl(inner).trim() : "";
+      if (plain && !plain.startsWith("to expand")) {
+        return `${theme.fg("dim", "(")}${inner}${theme.fg("dim", ")")}`;
+      }
     } catch (err) {
       log.debug("expand_hint_fallback", { error: err instanceof Error ? err.message : String(err) });
     }
@@ -143,8 +146,27 @@ export function createCompactOneLineComponent(parts: CompactOneLineParts): Compo
   };
 }
 
+function buildMarkdownTheme(theme: Theme): MarkdownTheme {
+  return {
+    heading: (text) => theme.fg("mdHeading", text),
+    link: (text) => theme.fg("mdLink", text),
+    linkUrl: (text) => theme.fg("mdLinkUrl", text),
+    code: (text) => theme.fg("mdCode", text),
+    codeBlock: (text) => theme.fg("mdCodeBlock", text),
+    codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
+    quote: (text) => theme.fg("mdQuote", text),
+    quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
+    hr: (text) => theme.fg("mdHr", text),
+    listBullet: (text) => theme.fg("mdListBullet", text),
+    bold: (text) => theme.bold(text),
+    italic: (text) => theme.italic(text),
+    underline: (text) => theme.underline(text),
+    strikethrough: (text) => theme.strikethrough(text),
+  };
+}
+
 /**
- * Render the expanded custom message box with styled header and full text body,
+ * Render the expanded custom message box with styled header and full Markdown body,
  * matching Pi's built-in CustomMessageComponent layout.
  */
 export function createExpandedCustomBox(
@@ -152,6 +174,7 @@ export function createExpandedCustomBox(
   body: string,
   outputPad: number,
   theme: Theme,
+  markdownTheme?: MarkdownTheme,
 ): Component {
   const padX = Math.max(0, Math.floor(outputPad ?? 1));
   const box = new Box(padX, 1, (text) => theme.bg("customMessageBg", text));
@@ -159,7 +182,15 @@ export function createExpandedCustomBox(
   box.addChild(new Text(theme.fg("customMessageLabel", theme.bold(`[${safeHeader}]`)), 0, 0));
   if (body.length > 0) {
     box.addChild(new Spacer(1));
-    box.addChild(new Text(theme.fg("customMessageText", body), 0, 0));
+    box.addChild(
+      new Markdown(
+        body,
+        0,
+        0,
+        markdownTheme ?? buildMarkdownTheme(theme),
+        { color: (text: string) => theme.fg("customMessageText", text) },
+      ),
+    );
   }
   return box;
 }
