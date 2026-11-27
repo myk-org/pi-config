@@ -1201,6 +1201,24 @@ export PI_MAGIC_KEYWORDS=false
 export PI_TURN_SNAPSHOTS=false
 ```
 
+## Human Q&A Reader Overlay
+
+### `qa_overlay_shortcut`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `qa_overlay_shortcut` | string | `"alt+q"` | `PI_QA_OVERLAY_SHORTCUT` | Keyboard shortcut to open the `/qa` human Q&A reader overlay. | Registers a Pi keyboard shortcut that opens the scrollable `/qa` overlay (listing human Q&A pairs newest-first with `/` live filter, `Enter` full reader, `r` whole-answer quoting, and `1`–`9` section/item quoting via `ctx.ui.pasteToEditor()`). Set to `""` to disable the shortcut while keeping the `/qa` slash command active; invalid key syntax logs a warning and falls back to `/qa` in the 1-line buried-answer hint widget. Skipped in subagent children (`PI_SUBAGENT_CHILD=1`). |
+
+```json
+{
+  "qa_overlay_shortcut": "alt+q"
+}
+```
+
+```bash
+export PI_QA_OVERLAY_SHORTCUT=""
+```
+
 ## Environment-only Process Flag
 
 ### `PI_SUBAGENT_CHILD`

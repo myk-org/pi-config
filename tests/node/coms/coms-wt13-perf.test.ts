@@ -7,7 +7,7 @@ import { join } from "node:path";
 import comsP2p from "../../../extensions/coms/coms-p2p.js";
 import { ComsRegistry } from "../../../extensions/coms/coms-registry.js";
 import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
-import { loadPitasks, summarizeTaskList } from "../../../extensions/coms/coms-shared.js";
+import { isComsInboundCustomType, loadPitasks, summarizeTaskList } from "../../../extensions/coms/coms-shared.js";
 import { publishTaskStore, publishWorkloadSources, resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
@@ -278,7 +278,7 @@ describe("WT-13 coms & tasks performance/correctness", { concurrency: false }, (
 		});
 		assert.equal(byName.details.target_session, "sess-beta-other");
 
-		await waitUntil(() => beta.messages.filter((m) => m.customType?.startsWith("from alpha")).length >= 2);
+		await waitUntil(() => beta.messages.filter((m) => isComsInboundCustomType(m.customType) && String(m.details?.header ?? m.customType).startsWith("from alpha")).length >= 2);
 		const bodies = beta.messages.map((m) => m.content).join("\n");
 		assert.match(bodies, /ping-by-id/);
 		assert.match(bodies, /ping-by-name/);
