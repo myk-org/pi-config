@@ -1277,6 +1277,16 @@ PI_SUBAGENT_CHILD=1
 
 See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
 
+### `PI_CODING_AGENT_DIR` / `--agent-dir`
+
+| Parameter | Type | Default | Description | Effect |
+|---|---|---|---|---|
+| `PI_CODING_AGENT_DIR` / `--agent-dir` | string | `~/.pi/agent` | Custom Pi agent configuration directory (Pi 1.7.0 `--agent-dir <dir>` or `--agent-dir=<dir>` CLI flag, or `PI_CODING_AGENT_DIR` env var). | Extensions resolve agent files in order: explicit parameter → CLI `--agent-dir` → `PI_CODING_AGENT_DIR` → `~/.pi/agent`. When launched with `--agent-dir`, spawned subagents and supervised COMS peers inherit it via `PI_CODING_AGENT_DIR`. |
+
+```bash
+pi --agent-dir /path/to/custom-agent
+```
+
 ## Related Pages
 
 - [Installation & Quickstart](quickstart.html)

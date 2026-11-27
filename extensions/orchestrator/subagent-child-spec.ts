@@ -5,6 +5,7 @@
  */
 
 import { createLogger } from "../shared/logger.js";
+import { withPropagatedPiAgentDirEnv } from "../shared/pi-agent-dir.js";
 import type { AgentConfig } from "./agents.js";
 import { getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
@@ -29,6 +30,8 @@ export interface SubagentChildSpecOptions {
   parentSessionId?: string;
   explicit?: { model?: string; provider?: string };
   extraEnv?: Record<string, string | undefined>;
+  /** Override CLI argv inspected for `--agent-dir` propagation (defaults to `process.argv.slice(2)`). */
+  argv?: readonly string[];
   onWarn?: (msg: string) => void;
 }
 
@@ -111,8 +114,9 @@ export function buildSubagentChildSpec(opts: SubagentChildSpecOptions): Subagent
   }
 
   const sessionId = (globalThis as any).__piConfigSessionId || "";
+  const baseEnv = withPropagatedPiAgentDirEnv(process.env, opts.argv);
   const env: Record<string, string | undefined> = {
-    ...process.env,
+    ...baseEnv,
     PI_MODEL: effectiveModel || undefined,
     PI_SUBAGENT_CHILD: "1",
     PI_AGENT_NAME: agentName,
