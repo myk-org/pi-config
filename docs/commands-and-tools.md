@@ -221,7 +221,17 @@ More detail: [Daemon and WebSockets](daemon-and-websockets.html) for how task st
 
 ## Tools
 
-### coms_* (15 tools)
+### Pi 1.6 Tool Exposure, Namespaces, and Annotations
+
+The orchestrator auto-activates Pi's built-in `codemode` tool on `session_start` when registered and not excluded via `--no-tools`, `--exclude-tools`, or `defaultTools: ["-codemode"]`. Extension tools declare Pi 1.6 `exposure`, `namespace`, and MCP-style `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`):
+
+| Exposure | Tools | How the model reaches them |
+|---|---|---|
+| `model-only` | `ask_user`, `subagent` | Declared top-level to the LLM; never callable from inside QuickJS `codemode` scripts |
+| `codemode` | `memory` (7), `coms` (21), `tasks` (7), `trail` (7), `runtime` (7) | Called via `codemode` (`await tools.<name>(args)`, batchable with `Promise.allSettled`), grouped under named namespaces |
+| `deferred` | `skill_adopt`, `memory_dream`, `memory_consolidate`, `review_status` | 0 top-level and 0 inline tokens; callable via `codemode` and discoverable via `searchTools()` / `describeNamespace()` |
+
+### coms_* (21 tools, `coms` namespace)
 
 All require active coms (`coms_start`); while inactive every one of them returns the same "coms not active" text. See [Inter-Agent Communication](inter-agent-communication.html) for the protocol, peer discovery, and queue semantics.
 

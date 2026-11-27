@@ -35,7 +35,8 @@ pi-config/
 │   ├── orchestrator/                # Orchestrator extension
 │   │   ├── index.ts                 # Main entry — imports and wires all modules
 │   │   ├── agents.ts                # Agent discovery
-│   │   ├── ask-user.ts              # ask_user tool
+│   │   ├── ask-user.ts              # ask_user tool (exposure: model-only)
+│   │   ├── codemode-activation.ts   # Auto-activate Pi 1.6 codemode on session_start (respects --no-tools / --exclude-tools)
 │   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery, onComplete callbacks, async_status tool)
 │   │   ├── overlay-dashboard.ts     # Shared fullscreen list→detail overlay (async/cron/tasks/coms/worktree/adopt-skill)
 │   │   ├── overlay-dashboard-utils.ts # Pure selection reconcile helpers
@@ -153,6 +154,7 @@ pi-config/
 │   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive, streamLoopAborted) with auto-pruning (#1364, #1374)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery)
+│   │   ├── tool-namespaces.ts       # Shared Pi 1.6 ToolNamespace definitions (memory, coms, tasks, trail, runtime) and read-only annotation constant
 │   │   ├── widget-visibility.ts     # Shared collapse/expand widget state (expanded/collapsed, header-always-visible), globalThis reload persistence, shortcut validation/registration, and ui:toggle-all-widgets bridge
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
 │   ├── providers/                  # Default model restore & thinking-level persistence extension

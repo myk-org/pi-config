@@ -5,6 +5,7 @@
 import { parseAsyncOutputLine } from "./async-status-parse.js";
 import { isProcessAlive, signalAndReportSurvivors } from "./async-kill-signal.js";
 import { createLogger } from "../shared/logger.js";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1941,6 +1942,9 @@ export function registerAsyncAgents(
     pi.registerTool({
       name: "async_status",
       label: "Async Status",
+      exposure: "codemode",
+      namespace: TOOL_NAMESPACES.runtime,
+      annotations: READ_ONLY_LOCAL_ANNOTATIONS,
       description:
         "List running and recent async/sync subagent jobs (ID, name, agent, status, elapsed time, current tool), or pass id to inspect a specific job's metadata and recent output tail (equivalent to /async).",
       parameters: Type.Object({

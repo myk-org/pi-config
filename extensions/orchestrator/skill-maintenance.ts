@@ -15,6 +15,7 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
+import { TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import { fileLog } from "../shared/file-logger.js";
 import { isBrowserDispatch } from "../shared/live-ctx.js";
 import {
@@ -1082,6 +1083,9 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
     pi.registerTool({
       name: "skill_adopt",
       label: "Skill Adopt",
+      exposure: "deferred",
+      namespace: TOOL_NAMESPACES.runtime,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "List adoptable skills not yet marked with skill-maintenance: auto, or adopt a named skill so agents keep it accurate (programmatic counterpart to /adopt-skill).",
       parameters: Type.Object({

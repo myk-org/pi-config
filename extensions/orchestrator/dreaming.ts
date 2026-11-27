@@ -12,6 +12,7 @@
  */
 
 import { createLogger } from "../shared/logger.js";
+import { TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 
 const log = createLogger("dreaming");
 import * as path from "node:path";
@@ -341,6 +342,9 @@ export function registerDreaming(
     pi.registerTool({
       name: "memory_dream",
       label: "Memory Dream",
+      exposure: "deferred",
+      namespace: TOOL_NAMESPACES.memory,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description:
         "Inspect background memory dreaming status, trigger consolidation now, or toggle automatic dreaming for this session.",
       parameters: Type.Object({
