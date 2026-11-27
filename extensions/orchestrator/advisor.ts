@@ -28,6 +28,7 @@ import { resolveStorePath } from "../pitasks/task-store.js";
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import {
+  consumeHumanRelayedPrompt,
   DEFAULT_BRIDGE_SESSION_KEY,
   publishedTaskStore,
   resolveBridgeSessionKey,
@@ -63,8 +64,6 @@ const ASYNC_CONTENT_RE = /^\s*##\s*Async Agent Result:/i;
 const COMS_CUSTOM_TYPE_RE = /^(?:coms(?:[\s_-]|$)|from\s+\S.*\s+→\s+|steer\s+from\s+)/i;
 const COMS_CONTENT_RE =
   /^\s*(?:📡\s*Connected to coms\b|\[(?:from\s+|coms\s+response\s+from\s+|BUNDLED:\s*\d+\s+messages?\s+from\s+))/i;
-const SYSTEM_CONTENT_RE =
-  /^\s*(?:<!--\s*pi-system-note\s*-->|Runtime reloaded\b|\[System\]|You have \d+ open tasks?\b)/i;
 
 export const ADVISOR_SYSTEM_PROMPT = [
   "You are a lightweight, strictly read-only background watchdog reviewing an active coding-agent transcript delta.",
@@ -335,17 +334,17 @@ export function classifyTurnTrigger(
     const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
     if (!prompt) return "system";
 
-    if (CRON_CONTENT_RE.test(prompt)) return "cron";
-    if (ASYNC_CONTENT_RE.test(prompt)) return "async";
-    if (COMS_CONTENT_RE.test(prompt)) return "coms";
-    if (SYSTEM_CONTENT_RE.test(prompt)) return "system";
-
-    if (
-      pendingSyntheticPrompt !== null &&
-      (pendingSyntheticPrompt === "" ||
-        prompt === pendingSyntheticPrompt ||
-        prompt.startsWith(pendingSyntheticPrompt))
-    ) {
+    // Only classify user-shaped prompts as automated when verified as synthetic
+    // extension-originated input so human prompts starting with text like "Cron:"
+    // or "You have 2 open tasks" are never misclassified as automated turns.
+    const synthetic =
+      typeof pendingSyntheticPrompt === "string" ? pendingSyntheticPrompt.trim() : "";
+    const isSynthetic =
+      synthetic.length > 0 && (prompt === synthetic || prompt.startsWith(synthetic));
+    if (isSynthetic) {
+      if (CRON_CONTENT_RE.test(prompt)) return "cron";
+      if (ASYNC_CONTENT_RE.test(prompt)) return "async";
+      if (COMS_CONTENT_RE.test(prompt)) return "coms";
       return "system";
     }
 
@@ -377,11 +376,7 @@ function extractAskUserDecision(event: any): string | null {
   for (const tr of event.toolResults) {
     if (tr?.toolName !== "ask_user") continue;
     const text = extractTextFromContent(tr?.content).trim();
-    const cancelledOrBlocked =
-      tr?.isError === true ||
-      /^User cancelled\b/i.test(text) ||
-      /^ask_user is blocked\b/i.test(text);
-    if (cancelledOrBlocked || !text) {
+    if (tr?.isError === true || !text) {
       log.debug("advisor_ask_user_ignored", {
         isError: tr?.isError === true,
         empty: !text,
@@ -410,7 +405,7 @@ export function readOpenTasks(cwd: string, sessionId?: string): ActiveTaskSummar
       if (Array.isArray(listed)) rawTasks = listed;
     }
   } catch (err) {
-    log.debug("advisor_active_tasks_bridge_failed", {
+    log.warn("advisor_active_tasks_bridge_failed", {
       error: err instanceof Error ? err.message : String(err),
     });
   }
@@ -427,7 +422,7 @@ export function readOpenTasks(cwd: string, sessionId?: string): ActiveTaskSummar
         }
       }
     } catch (err) {
-      log.debug("advisor_active_tasks_disk_failed", {
+      log.warn("advisor_active_tasks_disk_failed", {
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -776,7 +771,18 @@ export function registerAdvisor(pi: ExtensionAPI, opts: AdvisorOptions = {}): vo
   pi.on("input", (event, ctx) => {
     const state = getState(ctx);
     if (event?.source === "extension") {
-      state.pendingSyntheticPrompt = typeof event.text === "string" ? event.text : "";
+      const text = typeof event.text === "string" ? event.text.trim() : "";
+      if (!text) {
+        // Never record "" for non-string/image-only content (it would match any later prompt).
+        state.pendingSyntheticPrompt = null;
+        return;
+      }
+      if (consumeHumanRelayedPrompt(text, resolveBridgeSessionKey(ctx))) {
+        state.pendingSyntheticPrompt = null;
+        log.debug("advisor_human_relayed_prompt_recognized", { chars: text.length });
+        return;
+      }
+      state.pendingSyntheticPrompt = text;
     } else {
       state.pendingSyntheticPrompt = null;
     }
@@ -785,6 +791,13 @@ export function registerAdvisor(pi: ExtensionAPI, opts: AdvisorOptions = {}): vo
   pi.on("before_agent_start", (event, ctx) => {
     const cwd = ctx?.cwd || process.cwd();
     const state = getState(ctx);
+
+    if (event?.messageType === "user" && typeof event.prompt === "string" && event.prompt.trim()) {
+      // Clean up any queued human-relayed marker if the host skipped the `input` hook.
+      if (consumeHumanRelayedPrompt(event.prompt, resolveBridgeSessionKey(ctx))) {
+        state.pendingSyntheticPrompt = null;
+      }
+    }
 
     const trigger = classifyTurnTrigger(event, state.pendingSyntheticPrompt);
     state.pendingSyntheticPrompt = null;

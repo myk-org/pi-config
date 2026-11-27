@@ -16,7 +16,12 @@ import {
   resolveAdvisorModel,
   type AdvisorCheckSummary,
 } from "../../../extensions/orchestrator/advisor.ts";
-import { publishTaskStore } from "../../../extensions/shared/session-bridge.ts";
+import {
+  consumeHumanRelayedPrompt,
+  markHumanRelayedPrompt,
+  publishTaskStore,
+  resetSessionBridge,
+} from "../../../extensions/shared/session-bridge.ts";
 import {
   SETTINGS_KEYS,
   clearSettingsCache,
@@ -863,6 +868,155 @@ describe("advisor / watchdog (#1419)", () => {
       );
     });
 
+    it("classifies synthetic extension prompt with Cron prefix as cron trigger", () => {
+      assert.equal(
+        classifyTurnTrigger({ messageType: "user", prompt: "Cron: check PR queue" }, "Cron: check PR queue"),
+        "cron",
+      );
+    });
+
+    it("keeps human prompt starting with Cron prefix classified as human", () => {
+      assert.equal(
+        classifyTurnTrigger({ messageType: "user", prompt: "Cron: why did the PR check fail?" }),
+        "human",
+      );
+    });
+
+    it("keeps human prompt starting with Async Agent Result prefix classified as human", () => {
+      assert.equal(
+        classifyTurnTrigger({ messageType: "user", prompt: "## Async Agent Result: look at this trace" }),
+        "human",
+      );
+    });
+
+    it("keeps human prompt starting with open tasks prefix classified as human", () => {
+      assert.equal(
+        classifyTurnTrigger({ messageType: "user", prompt: "You have 2 open tasks, why are they stuck?" }),
+        "human",
+      );
+    });
+
+    it("keeps human prompt starting with COMS bracket prefix classified as human", () => {
+      assert.equal(
+        classifyTurnTrigger({ messageType: "user", prompt: "[from alice] can you explain this line?" }),
+        "human",
+      );
+    });
+
+    it("tracks pidash browser prompt relayed via sendUserMessage as a new open human goal", async () => {
+      const payloads: string[] = [];
+      const sessionId = "adv-pidash-browser-prompt";
+      const { fire, ctx, waitSettled } = createAdvisorHarness({
+        sessionId,
+        settings: { advisor_enabled: true, advisor_interval_turns: 1 },
+        completeFn: async (_m, context) => {
+          payloads.push(String(context.messages[0]!.content));
+          return makeAssistantResponse('{"status":"clean"}');
+        },
+      });
+
+      try {
+        await fire("before_agent_start", { messageType: "user", prompt: "Initial TUI question" }, ctx);
+        const p1 = waitSettled();
+        await fire(
+          "turn_end",
+          { turnIndex: 0, outcome: "completed", continue: false, message: { content: "Initial answer." } },
+          ctx,
+        );
+        await p1;
+
+        const browserPrompt = "Fix the regression in parser.ts";
+        markHumanRelayedPrompt(browserPrompt, sessionId);
+        await fire("input", { source: "extension", text: browserPrompt }, ctx);
+        await fire("before_agent_start", { messageType: "user", prompt: browserPrompt }, ctx);
+        const p2 = waitSettled();
+        await fire(
+          "turn_end",
+          { turnIndex: 1, outcome: "completed", continue: true, message: { content: "Inspecting parser.ts", stopReason: "toolUse" } },
+          ctx,
+        );
+        await p2;
+
+        assert.match(payloads[1]!, /"Fix the regression in parser\.ts"/);
+        assert.match(payloads[1]!, /<goal_status id="[0-9a-f]+">\s*\{"status":"open"\}/);
+        assert.match(payloads[1]!, /"trigger":\s*"human"/);
+      } finally {
+        resetSessionBridge({ sessionKey: sessionId, slot: "humanRelayedPrompts" });
+      }
+    });
+
+    it("tracks pidiff published review comment relayed via sendUserMessage as a new open human goal", async () => {
+      let seenPayload = "";
+      const sessionId = "adv-pidiff-review-prompt";
+      const { fire, ctx, waitSettled } = createAdvisorHarness({
+        sessionId,
+        settings: { advisor_enabled: true, advisor_interval_turns: 1 },
+        completeFn: async (_m, context) => {
+          seenPayload = String(context.messages[0]!.content);
+          return makeAssistantResponse('{"status":"clean"}');
+        },
+      });
+
+      try {
+        const reviewMsg = "## pidiff: Code Review Comments\n- Fix null check in advisor.ts";
+        markHumanRelayedPrompt(reviewMsg, sessionId);
+        await fire("input", { source: "extension", text: reviewMsg }, ctx);
+        await fire("before_agent_start", { messageType: "user", prompt: reviewMsg }, ctx);
+        const p = waitSettled();
+        await fire(
+          "turn_end",
+          { turnIndex: 0, outcome: "completed", continue: true, message: { content: "Reviewing comment", stopReason: "toolUse" } },
+          ctx,
+        );
+        await p;
+
+        assert.match(seenPayload, /pidiff: Code Review Comments/);
+        assert.match(seenPayload, /<goal_status id="[0-9a-f]+">\s*\{"status":"open"\}/);
+        assert.match(seenPayload, /"trigger":\s*"human"/);
+      } finally {
+        resetSessionBridge({ sessionKey: sessionId, slot: "humanRelayedPrompts" });
+      }
+    });
+
+    it("does not misclassify a later human prompt after non-string extension image input", async () => {
+      let seenPayload = "";
+      const { fire, ctx, waitSettled } = createAdvisorHarness({
+        sessionId: "adv-nonstring-ext-input",
+        settings: { advisor_enabled: true, advisor_interval_turns: 1 },
+        completeFn: async (_m, context) => {
+          seenPayload = String(context.messages[0]!.content);
+          return makeAssistantResponse('{"status":"clean"}');
+        },
+      });
+
+      await fire("input", { source: "extension", text: undefined }, ctx);
+      await fire("before_agent_start", { messageType: "user", prompt: "Inspect screenshot bug" }, ctx);
+      const p = waitSettled();
+      await fire(
+        "turn_end",
+        { turnIndex: 0, outcome: "completed", continue: true, message: { content: "Checking screenshot", stopReason: "toolUse" } },
+        ctx,
+      );
+      await p;
+
+      assert.match(seenPayload, /"Inspect screenshot bug"/);
+      assert.match(seenPayload, /"trigger":\s*"human"/);
+    });
+
+    it("isolates human-relayed prompt marks across concurrent sessions", () => {
+      const s1 = "adv-relay-s1";
+      const s2 = "adv-relay-s2";
+      try {
+        markHumanRelayedPrompt("Browser prompt A", s1);
+        assert.equal(consumeHumanRelayedPrompt("Browser prompt A", s2), false);
+        assert.equal(consumeHumanRelayedPrompt("Browser prompt A", s1), true);
+        assert.equal(consumeHumanRelayedPrompt("Browser prompt A", s1), false);
+      } finally {
+        resetSessionBridge({ sessionKey: s1, slot: "humanRelayedPrompts" });
+        resetSessionBridge({ sessionKey: s2, slot: "humanRelayedPrompts" });
+      }
+    });
+
     it("marks goal status open when human prompt starts before final reply", async () => {
       let seenPayload = "";
       const { fire, ctx, waitSettled } = createAdvisorHarness({
@@ -1124,7 +1278,7 @@ describe("advisor / watchdog (#1419)", () => {
           toolResults: [
             {
               toolName: "ask_user",
-              isError: false,
+              isError: true,
               content: [{ type: "text", text: "ask_user is blocked in this non-TUI/headless session." }],
             },
           ],
@@ -1134,6 +1288,42 @@ describe("advisor / watchdog (#1419)", () => {
       await p;
 
       assert.ok(!seenPayload.includes("<ask_user_decision"));
+    });
+
+    it("records valid ask_user selection starting with cancellation phrase when isError is false", async () => {
+      let seenPayload = "";
+      const { fire, ctx, waitSettled } = createAdvisorHarness({
+        sessionId: "adv-ask-user-literal-prefix",
+        settings: { advisor_enabled: true, advisor_interval_turns: 1 },
+        completeFn: async (_m, context) => {
+          seenPayload = String(context.messages[0]!.content);
+          return makeAssistantResponse('{"status":"clean"}');
+        },
+      });
+
+      await fire("before_agent_start", { messageType: "user", prompt: "Pick label to test" }, ctx);
+      const p = waitSettled();
+      await fire(
+        "turn_end",
+        {
+          turnIndex: 0,
+          outcome: "completed",
+          continue: true,
+          message: { content: "Asked user", stopReason: "toolUse" },
+          toolResults: [
+            {
+              toolName: "ask_user",
+              isError: false,
+              content: [{ type: "text", text: "User cancelled state needs a regression test" }],
+            },
+          ],
+        },
+        ctx,
+      );
+      await p;
+
+      assert.match(seenPayload, /<ask_user_decision id="[0-9a-f]+">/);
+      assert.ok(seenPayload.includes("User cancelled state needs a regression test"));
     });
 
     it("tags transcript delta turns with their classified trigger source", async () => {

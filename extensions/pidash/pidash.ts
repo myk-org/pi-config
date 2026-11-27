@@ -29,6 +29,7 @@ import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
 import { markBrowserDispatch } from "../shared/ui-bridge.js";
 import { createLogger } from "../shared/logger.js";
+import { markHumanRelayedPrompt, resolveBridgeSessionKey } from "../shared/session-bridge.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import {
@@ -358,6 +359,9 @@ export function registerPidash(
         log.debug(`received prompt from browser: ${(parsed.text || "").slice(0, 100)}${parsed.images ? ` [+${parsed.images.length} images]` : ""}`);
         // Notify browser if prompt is queued during streaming
         if (isStreaming) client.send({ type: "prompt-queued" });
+        if (typeof parsed.text === "string" && parsed.text.trim()) {
+          markHumanRelayedPrompt(parsed.text, resolveBridgeSessionKey(client.lastCtx));
+        }
         if (parsed.images && parsed.images.length > 0) {
           // Build content array with text + images
           const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
