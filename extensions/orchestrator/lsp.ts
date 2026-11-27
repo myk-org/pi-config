@@ -132,7 +132,10 @@ export interface RegisterLspOptions extends LspManagerOptions {
   /** Override SQLite DB path for "Don't ask again" install prompt persistence in tests. */
   installPrefsDbPath?: string;
   /** Override installer execution in tests. Return `{ ok, error? }`. */
-  installRunner?: (recipe: LspInstallRecipe) => Promise<{ ok: boolean; error?: string }>;
+  installRunner?: (
+    recipe: LspInstallRecipe,
+    options?: { signal?: AbortSignal },
+  ) => Promise<{ ok: boolean; error?: string }>;
   /** Override executable verification after install in tests. */
   verifyInstalled?: (binary: string, envPath?: string) => string | null;
   /** Poll interval for idle cross-process pending install checks (`0` disables watcher). */
@@ -820,16 +823,35 @@ function prependDirToProcessPath(binDir: string): void {
 export async function runLspServerInstall(
   recipe: LspInstallRecipe,
   envPath: string = process.env.PATH ?? "",
-  options: { managedLspDir?: string } = {},
+  options: { managedLspDir?: string; signal?: AbortSignal } = {},
 ): Promise<{ ok: boolean; error?: string }> {
+  if (options.signal?.aborted) {
+    return { ok: false, error: "Install aborted" };
+  }
   const prereqBin = findExecutableOnPath(recipe.prereq, envPath);
   if (!prereqBin) {
     return { ok: false, error: `${recipe.prereq} is not installed on PATH` };
   }
+  if (recipe.serverId !== "typescript" && recipe.serverId !== "python" && recipe.serverId !== "go") {
+    return { ok: false, error: `Unsupported server recipe: ${recipe.serverId}` };
+  }
 
+  let releaseLock: (() => void) | null = null;
   try {
+    const managedDir = options.managedLspDir ?? getManagedLspDir();
+    fs.mkdirSync(managedDir, { recursive: true });
+    releaseLock = acquireTokenFileLock(
+      path.join(managedDir, `.install-${recipe.serverId}.lock`),
+      { uniqueClaim: true, linkTemp: true },
+    );
+    if (!releaseLock) {
+      return { ok: false, error: "Another LSP installation is already in progress" };
+    }
+    if (options.signal?.aborted) {
+      return { ok: false, error: "Install aborted" };
+    }
+
     if (recipe.serverId === "typescript") {
-      const managedDir = options.managedLspDir ?? getManagedLspDir();
       const prefixDir = getManagedTsLspPrefix(managedDir);
       const binDir = getManagedLspBinDir(managedDir);
       fs.mkdirSync(prefixDir, { recursive: true });
@@ -837,8 +859,11 @@ export async function runLspServerInstall(
       await execFileAsync(
         prereqBin,
         ["install", "--prefix", prefixDir, "typescript@6", "typescript-language-server"],
-        { timeout: 180_000 },
+        { timeout: 180_000, signal: options.signal },
       );
+      if (options.signal?.aborted) {
+        return { ok: false, error: "Install aborted" };
+      }
       const target = path.join(prefixDir, "node_modules", ".bin", "typescript-language-server");
       const link = path.join(binDir, "typescript-language-server");
       if (fs.existsSync(target)) {
@@ -855,29 +880,48 @@ export async function runLspServerInstall(
     }
 
     if (recipe.serverId === "python") {
-      await execFileAsync(prereqBin, ["tool", "install", "--upgrade", "basedpyright"], { timeout: 180_000 });
+      await execFileAsync(prereqBin, ["tool", "install", "--upgrade", "basedpyright"], {
+        timeout: 180_000,
+        signal: options.signal,
+      });
+      if (options.signal?.aborted) {
+        return { ok: false, error: "Install aborted" };
+      }
       prependDirToProcessPath(path.join(os.homedir(), ".local", "bin"));
       return { ok: true };
     }
 
-    if (recipe.serverId === "go") {
-      await execFileAsync(prereqBin, ["install", "golang.org/x/tools/gopls@latest"], { timeout: 180_000 });
-      let goBin = path.join(os.homedir(), "go", "bin");
-      try {
-        const { stdout } = await execFileAsync(prereqBin, ["env", "GOPATH"], { timeout: 5_000 });
-        const gopath = stdout.trim().split(path.delimiter)[0];
-        if (gopath && path.isAbsolute(gopath)) goBin = path.join(gopath, "bin");
-      } catch {
-        // Fallback to ~/go/bin
-      }
-      prependDirToProcessPath(goBin);
-      return { ok: true };
+    await execFileAsync(prereqBin, ["install", "golang.org/x/tools/gopls@latest"], {
+      timeout: 180_000,
+      signal: options.signal,
+    });
+    if (options.signal?.aborted) {
+      return { ok: false, error: "Install aborted" };
     }
-
-    return { ok: false, error: `Unsupported server recipe: ${recipe.serverId}` };
+    let goBin = path.join(os.homedir(), "go", "bin");
+    try {
+      const { stdout } = await execFileAsync(prereqBin, ["env", "GOPATH"], {
+        timeout: 5_000,
+        signal: options.signal,
+      });
+      const gopath = stdout.trim().split(path.delimiter)[0];
+      if (gopath && path.isAbsolute(gopath)) goBin = path.join(gopath, "bin");
+    } catch {
+      if (options.signal?.aborted) {
+        return { ok: false, error: "Install aborted" };
+      }
+      // Fallback to ~/go/bin
+    }
+    prependDirToProcessPath(goBin);
+    return { ok: true };
   } catch (err: any) {
+    if (options.signal?.aborted || err?.name === "AbortError" || err?.code === "ABORT_ERR") {
+      return { ok: false, error: "Install aborted" };
+    }
     const detail = (err?.stderr || err?.message || String(err)).toString().trim().slice(0, 300);
     return { ok: false, error: detail };
+  } finally {
+    releaseLock?.();
   }
 }
 
@@ -2196,7 +2240,9 @@ export class LspManager {
 export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}): { manager: LspManager } {
   const log = options.logger ?? defaultLog;
   const checkSubagent = options.isSubagentChild ?? (() => process.env.PI_SUBAGENT_CHILD === "1");
-  const installRunner = options.installRunner ?? ((recipe) => runLspServerInstall(recipe, options.envPath));
+  const installRunner =
+    options.installRunner ??
+    ((recipe, runOpts) => runLspServerInstall(recipe, options.envPath, { signal: runOpts?.signal }));
   const verifyInstalled = options.verifyInstalled ?? ((binary, envPath) => findExecutableOnPath(binary, envPath));
   const pendingPollIntervalMs = options.pendingPollIntervalMs ?? DEFAULT_PENDING_INSTALL_POLL_MS;
   const claimTtlMs = options.pendingClaimTtlMs ?? DEFAULT_PENDING_CLAIM_TTL_MS;
@@ -2279,6 +2325,7 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
     const runPrompt = (async (): Promise<boolean> => {
       let ownershipLost = false;
       let claimFinalized = false;
+      const installAbortController = new AbortController();
       let renewTimer: ReturnType<typeof setInterval> | null = null;
       const stopRenewTimer = (): void => {
         if (renewTimer) {
@@ -2297,6 +2344,7 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
           if (!renewPendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath)) {
             ownershipLost = true;
             stopRenewTimer();
+            installAbortController.abort(new Error("LSP install claim lost"));
           }
         }, renewIntervalMs);
         renewTimer.unref();
@@ -2363,7 +2411,7 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
         let result: { ok: boolean; error?: string };
         activeInstallServerIds.add(serverId);
         try {
-          result = await installRunner(recipe);
+          result = await installRunner(recipe, { signal: installAbortController.signal });
         } catch (err: any) {
           result = { ok: false, error: err?.message ?? String(err) };
         } finally {
@@ -2371,6 +2419,18 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
           if (shuttingDown && activeInstallServerIds.size === 0) {
             hasPendingClaims = false;
           }
+        }
+
+        if (
+          ownershipLost ||
+          installAbortController.signal.aborted ||
+          !renewPendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath)
+        ) {
+          log.warn("lsp_install_claim_lost", { serverId, stage: "post_install" });
+          releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+          claimFinalized = true;
+          promptRetryAfter.set(serverId, Date.now() + Math.max(0, promptErrorBackoffMs));
+          return false;
         }
 
         if (!result.ok) {

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  BUILTIN_INSTALL_RECIPES,
   BUILTIN_LSP_SERVERS,
   MAX_DIAGNOSTIC_LINES,
   LspManager,
@@ -29,6 +30,7 @@ import {
   resolveServerForFile,
   resolveTrustedLspEnabled,
   resolveTrustedLspServers,
+  runLspServerInstall,
   type LspDiagnostic,
   type RegisterLspOptions,
 } from "../../../extensions/orchestrator/lsp.ts";
@@ -3007,6 +3009,222 @@ recordPendingLspInstallRequest(
       await new Promise((r) => setTimeout(r, 80));
       await tui1.fire("agent_end", {}, ctx1);
       assert.equal(tui1Selects, 2);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("rejects concurrent runLspServerInstall calls while the per-server lock is held", async () => {
+      const binDir = join(testDir, "fake-bin");
+      const managedDir = join(testDir, "managed-lsp");
+      mkdirSync(binDir, { recursive: true });
+      const markerFile = join(testDir, "npm-started");
+      const fakeNpm = join(binDir, "npm");
+      writeFileSync(
+        fakeNpm,
+        `#!${process.execPath}\n` +
+          `const fs = require("node:fs");\n` +
+          `fs.writeFileSync(${JSON.stringify(markerFile)}, "started");\n` +
+          `setTimeout(() => {}, 60_000);\n`,
+        "utf8",
+      );
+      chmodSync(fakeNpm, 0o755);
+
+      const ac = new AbortController();
+      const firstPromise = runLspServerInstall(BUILTIN_INSTALL_RECIPES.typescript, binDir, {
+        managedLspDir: managedDir,
+        signal: ac.signal,
+      });
+      try {
+        const deadline = Date.now() + 3000;
+        while (!existsSync(markerFile) && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        assert.equal(existsSync(markerFile), true);
+
+        const secondRes = await runLspServerInstall(BUILTIN_INSTALL_RECIPES.typescript, binDir, {
+          managedLspDir: managedDir,
+        });
+        assert.equal(secondRes.ok, false);
+        assert.equal(secondRes.error, "Another LSP installation is already in progress");
+      } finally {
+        ac.abort();
+        await firstPromise;
+      }
+      assert.equal(existsSync(join(managedDir, ".install-typescript.lock")), false);
+    });
+
+    it("returns an aborted failure from runLspServerInstall when AbortSignal is aborted", async () => {
+      const binDir = join(testDir, "fake-bin");
+      const managedDir = join(testDir, "managed-lsp");
+      mkdirSync(binDir, { recursive: true });
+      const markerFile = join(testDir, "npm-started");
+      const fakeNpm = join(binDir, "npm");
+      writeFileSync(
+        fakeNpm,
+        `#!${process.execPath}\n` +
+          `const fs = require("node:fs");\n` +
+          `fs.writeFileSync(${JSON.stringify(markerFile)}, "started");\n` +
+          `setTimeout(() => {}, 60_000);\n`,
+        "utf8",
+      );
+      chmodSync(fakeNpm, 0o755);
+
+      // Already-aborted signal short-circuits immediately before spawning installer
+      const preAborted = new AbortController();
+      preAborted.abort();
+      const preRes = await runLspServerInstall(BUILTIN_INSTALL_RECIPES.typescript, binDir, {
+        managedLspDir: managedDir,
+        signal: preAborted.signal,
+      });
+      assert.equal(preRes.ok, false);
+      assert.equal(preRes.error, "Install aborted");
+      assert.equal(existsSync(markerFile), false);
+
+      // Aborting an in-flight install terminates it cleanly and releases lock
+      const ac = new AbortController();
+      const livePromise = runLspServerInstall(BUILTIN_INSTALL_RECIPES.typescript, binDir, {
+        managedLspDir: managedDir,
+        signal: ac.signal,
+      });
+      try {
+        const deadline = Date.now() + 3000;
+        while (!existsSync(markerFile) && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        assert.equal(existsSync(markerFile), true);
+        ac.abort();
+      } finally {
+        ac.abort();
+      }
+      const liveRes = await livePromise;
+      assert.equal(liveRes.ok, false);
+      assert.equal(liveRes.error, "Install aborted");
+      assert.equal(existsSync(join(managedDir, ".install-typescript.lock")), false);
+    });
+
+    it("aborts the installRunner AbortSignal when claim renewal fails mid-install", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("python", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+
+      let markInstallStarted!: () => void;
+      const installStarted = new Promise<void>((r) => {
+        markInstallStarted = r;
+      });
+      let receivedSignal: AbortSignal | undefined;
+      let abortedSeen = false;
+
+      const tui = createMockPi();
+      const { manager } = registerDirectLsp(tui.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+        pendingClaimTtlMs: 30,
+        promptErrorBackoffMs: 40,
+        verifyInstalled: () => "/fake/bin/basedpyright-langserver",
+        installRunner: async (_recipe, opts) => {
+          receivedSignal = opts?.signal;
+          markInstallStarted();
+          await new Promise<void>((resolve) => {
+            if (opts?.signal?.aborted) {
+              abortedSeen = true;
+              resolve();
+              return;
+            }
+            opts?.signal?.addEventListener(
+              "abort",
+              () => {
+                abortedSeen = true;
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          return { ok: false, error: "Install aborted" };
+        },
+      });
+      activeManagers.push(manager);
+
+      const drain = tui.fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async (_title: string, choices: string[]) => choices[0],
+            notify: () => {},
+          },
+        },
+      );
+      await installStarted;
+
+      // Steal claim ownership while install is running (ttlMs = 0 simulates takeover)
+      assert.equal(claimPendingLspInstallRequest("python", "new-owner", prefsDbPath, 0), true);
+      await drain;
+
+      assert.ok(receivedSignal, "installRunner should receive AbortSignal");
+      assert.equal(abortedSeen, true, "installRunner signal should be aborted on lease renewal failure");
+    });
+
+    it("preserves pending row on post-install ownership loss without notifying success or marking promptedThisSession", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("python", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+
+      const notifications: Array<{ msg: string; level: string }> = [];
+      let selectCount = 0;
+      let installAttempts = 0;
+
+      const tui = createMockPi();
+      const { manager } = registerDirectLsp(tui.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+        pendingClaimTtlMs: 60_000,
+        promptErrorBackoffMs: 0,
+        verifyInstalled: () => "/fake/bin/basedpyright-langserver",
+        installRunner: async () => {
+          installAttempts++;
+          if (installAttempts === 1) {
+            // Simulate ownership takeover right before runner returns ok: true
+            assert.equal(claimPendingLspInstallRequest("python", "new-owner", prefsDbPath, 0), true);
+          }
+          return { ok: true };
+        },
+      });
+      activeManagers.push(manager);
+
+      const ctx = {
+        cwd: testDir,
+        hasUI: true,
+        mode: "tui",
+        ui: {
+          select: async (_title: string, choices: string[]) => {
+            selectCount++;
+            return choices[0];
+          },
+          notify: (msg: string, level: string) => notifications.push({ msg, level }),
+        },
+      };
+
+      await tui.fire("agent_end", {}, ctx);
+
+      assert.equal(selectCount, 1);
+      assert.equal(
+        notifications.some((n) => n.msg.includes("Installed ")),
+        false,
+        "must not notify install success after losing ownership",
+      );
+      assert.deepEqual(
+        listPendingLspInstallRequests(prefsDbPath).map((r) => r.serverId),
+        ["python"],
+      );
+      // New owner's claim must remain untouched
+      assert.equal(claimPendingLspInstallRequest("python", "third-owner", prefsDbPath, 60_000), false);
+
+      // Releasing the other owner's claim lets this session prompt again (promptedThisSession was not set)
+      releasePendingLspInstallClaim("python", "new-owner", prefsDbPath);
+      await tui.fire("agent_end", {}, ctx);
+      assert.equal(selectCount, 2);
       assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
     });
   });
