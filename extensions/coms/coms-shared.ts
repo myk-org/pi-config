@@ -86,10 +86,14 @@ export function syncComsActiveTools(
         log.debug("coms_active_tools_sync_skipped", { reason: "api_unavailable", active });
         return;
     }
+    const current = pi.getActiveTools();
     const allTools = typeof (pi as any).getAllTools === "function" ? (pi as any).getAllTools() : null;
-    const hasCodemode =
-        Array.isArray(allTools) &&
-        allTools.some((t: any) => t?.name === "codemode" && t?.exposure !== "hidden");
+    // Codemode is registered with defaultActive: false, so only treat it as reaching
+    // codemode/deferred COMS tools when it is actually active in the current loadout.
+    const codemodeActive =
+        current.includes("codemode") &&
+        (!Array.isArray(allTools) ||
+            allTools.some((t: any) => t?.name === "codemode" && t?.exposure !== "hidden"));
     const exposureByName = new Map<string, string>();
     if (Array.isArray(allTools)) {
         for (const t of allTools) {
@@ -98,14 +102,13 @@ export function syncComsActiveTools(
             }
         }
     }
-    const current = pi.getActiveTools();
     if (active) {
-        // When Pi's codemode tool is registered, keep exposure: "codemode" / "deferred"
+        // When Pi's codemode tool is active, keep exposure: "codemode" / "deferred"
         // tools out of the top-level active set so coms_start never promotes COMS schemas
         // back into direct model declarations (#1451).
         const toAdd = [...gatedTools].filter((name) => {
             if (current.includes(name)) return false;
-            if (hasCodemode) {
+            if (codemodeActive) {
                 const exp = exposureByName.get(name);
                 if (exp === "codemode" || exp === "deferred") return false;
             }

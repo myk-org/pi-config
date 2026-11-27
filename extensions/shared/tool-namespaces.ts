@@ -41,6 +41,19 @@ export const TOOL_NAMESPACES = {
   },
 } as const satisfies Record<string, ToolNamespace>;
 
+/** Extension namespaces owned by pi-config (used when falling back to direct activation without codemode). */
+export const EXTENSION_NAMESPACE_NAMES: ReadonlySet<string> = new Set(
+  Object.values(TOOL_NAMESPACES).map((ns) => ns.name),
+);
+
+/** COMS tools always available even before `coms_start` activates gated P2P tools. */
+export const COMS_ALWAYS_AVAILABLE_TOOLS: ReadonlySet<string> = new Set([
+  "coms_start",
+  "coms_peers",
+  "coms_peer_spawn",
+  "coms_peer_kill",
+]);
+
 /** Standard MCP-style annotations for strictly local read-only, idempotent queries. */
 export const READ_ONLY_LOCAL_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: true,
