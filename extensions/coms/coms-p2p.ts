@@ -1014,10 +1014,9 @@ export function extractComsInboundSummaryLine(opts: {
 	fallbackContent?: string;
 }): string {
 	if (opts.bundled) {
-		const cleanedBundle = opts.bundled.content
-			.replace(BUNDLE_SEPARATOR_LINE_RE, "")
-			.replace(/^\[from [^\]]+\]\s*/gm, "");
-		const firstLine = extractSummaryLine(cleanedBundle);
+		const firstIsUser = opts.bundled.firstOrigin === "user" || opts.origin === "user";
+		const safeFirstPrompt = firstIsUser ? opts.prompt : stripOriginMarker(opts.prompt);
+		const firstLine = extractSummaryLine(safeFirstPrompt);
 		const count = opts.bundled.ids.length;
 		const isMixedUserFirst = opts.bundled.firstOrigin === "user" && opts.origin !== "user";
 		if (count > 1) {

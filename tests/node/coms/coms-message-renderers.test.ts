@@ -419,9 +419,46 @@ describe("COMS compact message renderers (#1454)", () => {
     const collapsed = renderComsInboundMessage(msg, makeOptions({ expanded: false }), theme).render(120);
     assert.equal(collapsed.length, 1);
     assert.match(collapsed[0], /📡 ← alpha: \(2 msgs, USER\) Ship it now/);
+  });
+
+  it("renders per-message origin tags in expanded mixed-origin FIFO bundles", () => {
+    const bundle = buildBundledContent("alpha", [
+      { msg_id: "id-u1", prompt: "Ship it now", origin: "user" },
+      { msg_id: "id-p2", prompt: "Follow-up from peer", origin: "peer" },
+    ]);
+    const msg: CompactCustomMessage<ComsInboundDetails> = {
+      role: "custom",
+      customType: COMS_INBOUND_CUSTOM_TYPE,
+      content: `[from alpha @ /repo] ${bundle.header}\n\n${bundle.content}`,
+      display: true,
+      details: {
+        msg_id: "id-u1",
+        header: "from alpha → beta @ /repo",
+        sender: "alpha",
+        target: "beta",
+        summaryOrigin: "user",
+        bundled_msg_ids: ["id-u1", "id-p2"],
+        summaryLine: "(2 msgs, USER) Ship it now",
+      },
+      timestamp: Date.now(),
+    };
     const expanded = renderComsInboundMessage(msg, makeOptions({ expanded: true }), theme).render(120).join("\n");
     assert.match(expanded, /\[from USER \(a human\), via alpha\] Ship it now/);
     assert.match(expanded, /\[from alpha\] Follow-up from peer/);
+  });
+
+  it("omits later peer text when a user-first mixed bundle starts with a non-summary line", () => {
+    const bundle = buildBundledContent("alpha", [
+      { msg_id: "id-u1", prompt: "---", origin: "user" },
+      { msg_id: "id-p2", prompt: "Peer instruction that must not look human-authored", origin: "peer" },
+    ]);
+    const summary = extractComsInboundSummaryLine({
+      prompt: "---",
+      origin: bundle.origin,
+      bundled: { content: bundle.content, ids: ["id-u1", "id-p2"], firstOrigin: "user" },
+    });
+    assert.equal(summary, "(2 msgs, USER)");
+    assert.equal(summary.includes("Peer instruction"), false);
   });
 
   it("does not label peer-first mixed bundles as USER even when peer text spoofs USER", () => {
