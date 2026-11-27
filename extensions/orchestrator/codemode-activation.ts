@@ -141,6 +141,38 @@ function isToolExcludedBySettings(pi: ExtensionAPI, toolName: string): boolean {
   }
 }
 
+/** Check Pi settings `defaultTools` for an explicit selection of `toolName` (plain entry or `+name`, not later removed by `-name`). */
+function isToolSelectedBySettings(pi: ExtensionAPI, toolName: string): boolean {
+  const getSettings = (pi as any).getSettings;
+  if (typeof getSettings !== "function") return false;
+  try {
+    const defaultTools = getSettings.call(pi)?.defaultTools;
+    if (!Array.isArray(defaultTools)) return false;
+    // Match Pi's resolveDefaultTools: plain names form the base set, then +name/-name modifiers apply in order.
+    let selected = defaultTools.some(
+      (entry: unknown) => typeof entry === "string" && !entry.startsWith("+") && !entry.startsWith("-") && matchesToolPattern(toolName, entry),
+    );
+    for (const entry of defaultTools) {
+      if (entry === `+${toolName}`) selected = true;
+      else if (entry === `-${toolName}`) selected = false;
+    }
+    return selected;
+  } catch (err: unknown) {
+    log.debug("codemode_settings_check_failed", { error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}
+
+/** Whether CLI flags (`--tools` allowlist or `+name`) or `defaultTools` settings explicitly selected `toolName`. */
+function isToolExplicitlySelected(pi: ExtensionAPI, toolName: string, parsedArgv: ParsedToolArgv): boolean {
+  if (isToolExcludedByArgv(toolName, parsedArgv)) return false;
+  if (parsedArgv.allowlistPatterns !== null) {
+    return parsedArgv.allowlistPatterns.some((pattern) => matchesToolPattern(toolName, pattern));
+  }
+  if (parsedArgv.modifierExcluded.get(toolName) === false) return true;
+  return isToolSelectedBySettings(pi, toolName);
+}
+
 /**
  * Fallback when `codemode` is excluded or not registered: directly activate pi-config's
  * ungated `codemode`/`deferred` extension tools so tools like `TaskCreate` and
@@ -243,7 +275,7 @@ export function ensureCodemodeActive(
     // Because extensions load alphabetically (`coms` before `orchestrator`), `coms`
     // may transiently add gated `exposure: "codemode"` tools to `activeTools` before
     // `codemode` activates on `session_start`. Demote those once `codemode` is active
-    // unless explicitly requested via `+name` in argv/settings.
+    // unless explicitly selected via `--tools` (allowlist or `+name`) or `defaultTools`.
     const toolByName = new Map<string, any>();
     for (const t of safeAllTools) {
       if (typeof t?.name === "string") toolByName.set(t.name, t);
@@ -253,7 +285,7 @@ export function ensureCodemodeActive(
       if (!tool) return true;
       if (tool.exposure !== "codemode" && tool.exposure !== "deferred") return true;
       if (tool.namespace?.name !== "coms" || COMS_ALWAYS_AVAILABLE_TOOLS.has(name)) return true;
-      if (parsedArgv.modifierExcluded.get(name) === false) return true;
+      if (isToolExplicitlySelected(pi, name, parsedArgv)) return true;
       return false;
     });
 

@@ -330,6 +330,18 @@ describe("Pi 1.6 tool exposure, namespaces, and annotations (#1451)", () => {
 });
 
 describe("session_start codemode auto-activation (#1451)", () => {
+  const sampleFallbackTools = [
+    { name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" },
+    { name: "TaskCreate", exposure: "codemode", namespace: TOOL_NAMESPACES.tasks },
+    { name: "memory_search", exposure: "codemode", namespace: TOOL_NAMESPACES.memory },
+    { name: "memory_dream", exposure: "deferred", namespace: TOOL_NAMESPACES.memory },
+    { name: "trail_find_code", exposure: "codemode", namespace: TOOL_NAMESPACES.trail },
+    { name: "cron_manage", exposure: "codemode", namespace: TOOL_NAMESPACES.runtime },
+    { name: "coms_start", exposure: "codemode", namespace: TOOL_NAMESPACES.coms },
+    { name: "coms_send", exposure: "codemode", namespace: TOOL_NAMESPACES.coms, defaultActive: false },
+    { name: "mcp__external__ping", exposure: "codemode", namespace: { name: "mcp__external" } },
+  ];
+
   it("activates codemode on session_start when registered and inactive", async () => {
     const { pi, getActive, getSetActiveCalls, emit } = createMockPi({
       initialTools: [{ name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" }],
@@ -354,7 +366,7 @@ describe("session_start codemode auto-activation (#1451)", () => {
     assert.equal(getSetActiveCalls(), 0);
   });
 
-  it("respects --no-tools, -nt, --exclude-tools, --tools, and defaultTools exclusions", () => {
+  it("detects CLI flags that exclude codemode via isCodemodeExcludedByArgv", () => {
     assert.equal(isCodemodeExcludedByArgv(["node", "pi", "--no-tools"]), true);
     assert.equal(isCodemodeExcludedByArgv(["node", "pi", "-nt"]), true);
     assert.equal(isCodemodeExcludedByArgv(["node", "pi", "--exclude-tools", "codemode"]), true);
@@ -365,64 +377,51 @@ describe("session_start codemode auto-activation (#1451)", () => {
     assert.equal(isCodemodeExcludedByArgv(["node", "pi", "--tools", "read,codemode"]), false);
     assert.equal(isCodemodeExcludedByArgv(["node", "pi", "--tools", "+codemode"]), false);
     assert.equal(isCodemodeExcludedByArgv(["node", "pi", "--", "--no-tools"]), false);
+  });
 
+  it("skips codemode activation when defaultTools contains -codemode", () => {
     const { pi, getActive, getSetActiveCalls } = createMockPi({
-      initialTools: [{ name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" }],
-      initialActive: ["read", "bash"],
-    });
-    assert.deepEqual(ensureCodemodeActive(pi, ["node", "pi", "--no-tools"]), { activated: false, reason: "excluded" });
-    assert.deepEqual(ensureCodemodeActive(pi, ["node", "pi", "--exclude-tools", "codemode"]), { activated: false, reason: "excluded" });
-    assert.deepEqual(getActive(), ["read", "bash"]);
-    assert.equal(getSetActiveCalls(), 0);
-
-    const withSettings = createMockPi({
       initialTools: [{ name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" }],
       initialActive: ["read", "bash"],
       settings: { defaultTools: ["-codemode"] },
     });
-    assert.deepEqual(ensureCodemodeActive(withSettings.pi, ["node", "pi"]), { activated: false, reason: "excluded" });
-    assert.equal(withSettings.getSetActiveCalls(), 0);
+
+    assert.deepEqual(ensureCodemodeActive(pi, ["node", "pi"]), { activated: false, reason: "excluded" });
+    assert.deepEqual(getActive(), ["read", "bash"]);
+    assert.equal(getSetActiveCalls(), 0);
   });
 
-  it("falls back gracefully without throwing when codemode is absent or tool APIs are missing", () => {
-    const noCodemode = createMockPi({
+  it("returns not_registered without throwing when codemode is absent and no fallback tools exist", () => {
+    const { pi, getSetActiveCalls } = createMockPi({
       initialTools: [{ name: "read", exposure: "direct" }],
       initialActive: ["read"],
     });
-    assert.deepEqual(ensureCodemodeActive(noCodemode.pi, ["node", "pi"]), {
+
+    assert.deepEqual(ensureCodemodeActive(pi, ["node", "pi"]), {
       activated: false,
       reason: "not_registered",
     });
-    assert.equal(noCodemode.getSetActiveCalls(), 0);
+    assert.equal(getSetActiveCalls(), 0);
+  });
 
-    const minimalPi = createMockPi({ omitToolApis: true });
-    assert.deepEqual(ensureCodemodeActive(minimalPi.pi, ["node", "pi"]), {
+  it("returns api_unavailable without throwing when tool registry APIs are missing", () => {
+    const { pi } = createMockPi({ omitToolApis: true });
+
+    assert.deepEqual(ensureCodemodeActive(pi, ["node", "pi"]), {
       activated: false,
       reason: "api_unavailable",
     });
   });
 
-  it("activates ungated extension tools directly as fallback when codemode is excluded or absent", () => {
-    const sampleTools = [
-      { name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" },
-      { name: "TaskCreate", exposure: "codemode", namespace: TOOL_NAMESPACES.tasks },
-      { name: "memory_search", exposure: "codemode", namespace: TOOL_NAMESPACES.memory },
-      { name: "memory_dream", exposure: "deferred", namespace: TOOL_NAMESPACES.memory },
-      { name: "trail_find_code", exposure: "codemode", namespace: TOOL_NAMESPACES.trail },
-      { name: "cron_manage", exposure: "codemode", namespace: TOOL_NAMESPACES.runtime },
-      { name: "coms_start", exposure: "codemode", namespace: TOOL_NAMESPACES.coms },
-      { name: "coms_send", exposure: "codemode", namespace: TOOL_NAMESPACES.coms, defaultActive: false },
-      { name: "mcp__external__ping", exposure: "codemode", namespace: { name: "mcp__external" } },
-    ];
-
-    // --exclude-tools codemode activates ungated extension tools (excluding gated coms_send and MCP tools).
-    const excluded = createMockPi({
-      initialTools: sampleTools,
+  it("activates ungated extension tools as fallback when --exclude-tools codemode is set", () => {
+    const { pi, getActive } = createMockPi({
+      initialTools: sampleFallbackTools,
       initialActive: ["read", "bash"],
     });
-    const resExcluded = ensureCodemodeActive(excluded.pi, ["node", "pi", "--exclude-tools", "codemode"]);
-    assert.deepEqual(resExcluded, { activated: false, reason: "excluded", fallbackCount: 6 });
-    assert.deepEqual(excluded.getActive(), [
+
+    const res = ensureCodemodeActive(pi, ["node", "pi", "--exclude-tools", "codemode"]);
+    assert.deepEqual(res, { activated: false, reason: "excluded", fallbackCount: 6 });
+    assert.deepEqual(getActive(), [
       "read",
       "bash",
       "TaskCreate",
@@ -432,88 +431,135 @@ describe("session_start codemode auto-activation (#1451)", () => {
       "cron_manage",
       "coms_start",
     ]);
-
-    // Per-tool exclusion alongside codemode keeps the excluded tool omitted.
-    const perToolExcluded = createMockPi({
-      initialTools: sampleTools,
-      initialActive: ["read", "bash"],
-    });
-    const resPerTool = ensureCodemodeActive(perToolExcluded.pi, ["node", "pi", "--exclude-tools", "codemode,cron_manage"]);
-    assert.deepEqual(resPerTool, { activated: false, reason: "excluded", fallbackCount: 5 });
-    assert.equal(perToolExcluded.getActive().includes("cron_manage"), false);
-    assert.equal(perToolExcluded.getActive().includes("TaskCreate"), true);
-
-    // Absent codemode (not registered) also falls back to direct activation.
-    const absent = createMockPi({
-      initialTools: sampleTools.filter((t) => t.name !== CODEMODE_TOOL_NAME),
-      initialActive: ["read", "bash"],
-    });
-    const resAbsent = ensureCodemodeActive(absent.pi, ["node", "pi"]);
-    assert.deepEqual(resAbsent, { activated: false, reason: "not_registered", fallbackCount: 6 });
-    assert.equal(absent.getActive().includes("TaskCreate"), true);
-    assert.equal(absent.getActive().includes("memory_search"), true);
-    assert.equal(absent.getActive().includes("coms_send"), false);
-    assert.equal(absent.getActive().includes("mcp__external__ping"), false);
-
-    // --no-tools and explicit --tools allowlists do NOT trigger fallback activation.
-    const noTools = createMockPi({ initialTools: sampleTools, initialActive: [] });
-    assert.deepEqual(ensureCodemodeActive(noTools.pi, ["node", "pi", "--no-tools"]), {
-      activated: false,
-      reason: "excluded",
-    });
-    assert.deepEqual(noTools.getActive(), []);
-
-    const allowlist = createMockPi({ initialTools: sampleTools, initialActive: ["read", "bash"] });
-    assert.deepEqual(ensureCodemodeActive(allowlist.pi, ["node", "pi", "--tools", "read,bash"]), {
-      activated: false,
-      reason: "excluded",
-    });
-    assert.deepEqual(allowlist.getActive(), ["read", "bash"]);
   });
 
-  it("keeps codemode-exposed gated COMS tools out of activeTools only when codemode is actually active", () => {
-    // Codemode active -> gated COMS tools remain codemode-only (not promoted to top-level activeTools).
-    const withActiveCodemode = createMockPi({
+  it("keeps explicitly excluded tools omitted during codemode-excluded fallback", () => {
+    const { pi, getActive } = createMockPi({
+      initialTools: sampleFallbackTools,
+      initialActive: ["read", "bash"],
+    });
+
+    const res = ensureCodemodeActive(pi, ["node", "pi", "--exclude-tools", "codemode,cron_manage"]);
+    assert.deepEqual(res, { activated: false, reason: "excluded", fallbackCount: 5 });
+    assert.equal(getActive().includes("cron_manage"), false);
+    assert.equal(getActive().includes("TaskCreate"), true);
+  });
+
+  it("activates ungated extension tools as fallback when codemode is not registered", () => {
+    const { pi, getActive } = createMockPi({
+      initialTools: sampleFallbackTools.filter((t) => t.name !== CODEMODE_TOOL_NAME),
+      initialActive: ["read", "bash"],
+    });
+
+    const res = ensureCodemodeActive(pi, ["node", "pi"]);
+    assert.deepEqual(res, { activated: false, reason: "not_registered", fallbackCount: 6 });
+    assert.equal(getActive().includes("TaskCreate"), true);
+    assert.equal(getActive().includes("memory_search"), true);
+    assert.equal(getActive().includes("coms_send"), false);
+    assert.equal(getActive().includes("mcp__external__ping"), false);
+  });
+
+  it("does not activate fallback tools when --no-tools is passed", () => {
+    const { pi, getActive } = createMockPi({
+      initialTools: sampleFallbackTools,
+      initialActive: [],
+    });
+
+    assert.deepEqual(ensureCodemodeActive(pi, ["node", "pi", "--no-tools"]), {
+      activated: false,
+      reason: "excluded",
+    });
+    assert.deepEqual(getActive(), []);
+  });
+
+  it("does not activate fallback tools when an explicit --tools allowlist omits codemode", () => {
+    const { pi, getActive } = createMockPi({
+      initialTools: sampleFallbackTools,
+      initialActive: ["read", "bash"],
+    });
+
+    assert.deepEqual(ensureCodemodeActive(pi, ["node", "pi", "--tools", "read,bash"]), {
+      activated: false,
+      reason: "excluded",
+    });
+    assert.deepEqual(getActive(), ["read", "bash"]);
+  });
+
+  it("keeps gated COMS tools out of activeTools when codemode is active", () => {
+    const { pi, getActive } = createMockPi({
       initialTools: [
         { name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" },
         { name: "coms_send", exposure: "codemode" },
       ],
       initialActive: ["read", "bash", CODEMODE_TOOL_NAME],
     });
-    syncComsActiveTools(withActiveCodemode.pi, new Set(["coms_send"]), true);
-    assert.deepEqual(withActiveCodemode.getActive(), ["read", "bash", CODEMODE_TOOL_NAME]);
 
-    // Codemode registered (defaultActive: false) but NOT active -> gated COMS tools MUST be activated directly!
-    const withInactiveCodemode = createMockPi({
+    syncComsActiveTools(pi, new Set(["coms_send"]), true);
+    assert.deepEqual(getActive(), ["read", "bash", CODEMODE_TOOL_NAME]);
+  });
+
+  it("activates gated COMS tools directly when codemode is registered but inactive", () => {
+    const { pi, getActive } = createMockPi({
       initialTools: [
         { name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" },
         { name: "coms_send", exposure: "codemode" },
       ],
       initialActive: ["read", "bash"],
     });
-    syncComsActiveTools(withInactiveCodemode.pi, new Set(["coms_send"]), true);
-    assert.deepEqual(withInactiveCodemode.getActive(), ["read", "bash", "coms_send"]);
 
-    // Codemode not registered at all -> gated COMS tools activated directly.
-    const withoutCodemode = createMockPi({
+    syncComsActiveTools(pi, new Set(["coms_send"]), true);
+    assert.deepEqual(getActive(), ["read", "bash", "coms_send"]);
+  });
+
+  it("activates gated COMS tools directly when codemode is not registered", () => {
+    const { pi, getActive } = createMockPi({
       initialTools: [{ name: "coms_send", exposure: "codemode" }],
       initialActive: ["read", "bash"],
     });
-    syncComsActiveTools(withoutCodemode.pi, new Set(["coms_send"]), true);
-    assert.deepEqual(withoutCodemode.getActive(), ["read", "bash", "coms_send"]);
 
-    // Extension load order (`coms` before `orchestrator`): gated COMS tools added while
-    // codemode is still inactive get demoted once ensureCodemodeActive activates codemode.
-    const loadOrder = createMockPi({
+    syncComsActiveTools(pi, new Set(["coms_send"]), true);
+    assert.deepEqual(getActive(), ["read", "bash", "coms_send"]);
+  });
+
+  it("demotes transiently activated gated COMS tools once ensureCodemodeActive activates codemode", () => {
+    const { pi, getActive } = createMockPi({
       initialTools: [
         { name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" },
         { name: "coms_send", exposure: "codemode", namespace: TOOL_NAMESPACES.coms },
       ],
       initialActive: ["read", "bash"],
     });
-    syncComsActiveTools(loadOrder.pi, new Set(["coms_send"]), true);
-    assert.deepEqual(loadOrder.getActive(), ["read", "bash", "coms_send"]);
-    ensureCodemodeActive(loadOrder.pi, ["node", "pi"]);
-    assert.deepEqual(loadOrder.getActive(), ["read", "bash", CODEMODE_TOOL_NAME]);
+
+    syncComsActiveTools(pi, new Set(["coms_send"]), true);
+    assert.deepEqual(getActive(), ["read", "bash", "coms_send"]);
+    ensureCodemodeActive(pi, ["node", "pi"]);
+    assert.deepEqual(getActive(), ["read", "bash", CODEMODE_TOOL_NAME]);
+  });
+
+  it("preserves gated COMS tools explicitly selected via --tools allowlist when codemode activates", () => {
+    const { pi, getActive } = createMockPi({
+      initialTools: [
+        { name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" },
+        { name: "coms_send", exposure: "codemode", namespace: TOOL_NAMESPACES.coms },
+      ],
+      initialActive: ["read", "coms_send"],
+    });
+
+    ensureCodemodeActive(pi, ["node", "pi", "--tools", "read,codemode,coms_send"]);
+    assert.deepEqual(getActive(), ["read", "coms_send", CODEMODE_TOOL_NAME]);
+  });
+
+  it("preserves gated COMS tools explicitly selected via defaultTools settings when codemode activates", () => {
+    const { pi, getActive } = createMockPi({
+      initialTools: [
+        { name: CODEMODE_TOOL_NAME, exposure: "model-only", reachesTools: () => "all" },
+        { name: "coms_send", exposure: "codemode", namespace: TOOL_NAMESPACES.coms },
+      ],
+      initialActive: ["read", "bash", "coms_send"],
+      settings: { defaultTools: ["+coms_send"] },
+    });
+
+    ensureCodemodeActive(pi, ["node", "pi"]);
+    assert.deepEqual(getActive(), ["read", "bash", "coms_send", CODEMODE_TOOL_NAME]);
   });
 });
