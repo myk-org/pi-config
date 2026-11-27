@@ -550,7 +550,7 @@ def test_commented_json_settings_fall_back_to_commentjson(
     assert "commentjson" in sys.modules
 
 
-def test_lsp_settings_defaults_and_override_parsing(
+def test_lsp_enabled_defaults_to_false(
     _isolated_settings: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -558,14 +558,22 @@ def test_lsp_settings_defaults_and_override_parsing(
     assert get_setting("lsp_enabled", cwd=_isolated_settings) is False
     assert get_setting("lsp_servers", cwd=_isolated_settings) == {}
 
+
+def test_lsp_enabled_env_override_enables_feature(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("PI_LSP_ENABLED", "true")
     assert get_setting("lsp_enabled", cwd=_isolated_settings) is True
 
+
+def test_lsp_servers_project_file_drops_invalid_entries(
+    _isolated_settings: Path,
+) -> None:
     pi_dir = _isolated_settings / ".pi"
     pi_dir.mkdir()
     (pi_dir / "pi-config-settings.json").write_text(
         json.dumps({
-            "lsp_enabled": True,
             "lsp_servers": {
                 "rust": {"command": "rust-analyzer", "args": [], "extensions": ["RS", ".toml"]},
                 "bad": {"command": "", "extensions": [".ts"]},

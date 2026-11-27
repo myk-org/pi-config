@@ -154,6 +154,10 @@ export default function (pi: ExtensionAPI) {
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerProjectSettings(pi);
   registerTrail(pi);
+  // Opt-in LSP diagnostics appended to write/edit tool results (default disabled) (#1445).
+  // Registered BEFORE registerSecretObfuscation so server-supplied diagnostics pass through
+  // tool_result secret redaction (and before session-spill).
+  registerLsp(pi);
   // Reversible secret obfuscation (#1413): restore tool_call placeholders BEFORE
   // enforcement sees arguments, obfuscate tool_result BEFORE spill/LLM, and
   // obfuscate provider-bound context without mutating static system prompts.
@@ -223,8 +227,6 @@ export default function (pi: ExtensionAPI) {
   registerSessionSearch(pi);
   registerSettingsTui(pi);
   registerMarkdownTransformer(pi);
-  // Opt-in LSP diagnostics appended to write/edit tool results (default disabled) (#1445).
-  registerLsp(pi);
   // Register session spill LAST among tool_result hooks so enforcement, trail,
   // review-learning, pr-retro, and skill-maintenance inspect full outputs first (#1420).
   registerSessionSpill(pi);

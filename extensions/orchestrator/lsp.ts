@@ -24,7 +24,11 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 import { createLogger, type Logger } from "../shared/logger.js";
-import { getSetting, type LspServersConfig } from "./project-settings.js";
+import {
+  loadGlobalSettings,
+  loadProjectSettings,
+  type LspServersConfig,
+} from "./project-settings.js";
 
 const defaultLog = createLogger("lsp");
 
@@ -35,6 +39,7 @@ export const DEFAULT_KILL_GRACE_MS = 300;
 export const MAX_DIAGNOSTIC_LINES = 20;
 
 const MAX_RPC_BUFFER_BYTES = 10 * 1024 * 1024;
+const UNACKED_SEND_TTL_MS = 10_000;
 const HEADER_DELIM = Buffer.from("\r\n\r\n", "ascii");
 const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
 
@@ -256,11 +261,17 @@ export function formatDiagnostics(
   serverId: string,
   maxLines: number = MAX_DIAGNOSTIC_LINES,
 ): string | null {
-  const relevant = diagnostics.filter((d) => d && (d.severity === 1 || d.severity === 2));
+  // Per LSP 3.17, diagnostic.severity is optional; omitted severity defaults to Error (1).
+  const effectiveSeverity = (d: LspDiagnostic): number => d.severity ?? 1;
+  const relevant = diagnostics.filter((d) => {
+    if (!d) return false;
+    const sev = effectiveSeverity(d);
+    return sev === 1 || sev === 2;
+  });
   if (relevant.length === 0) return null;
 
   const sorted = [...relevant].sort((a, b) => {
-    const sevDiff = (a.severity ?? 9) - (b.severity ?? 9);
+    const sevDiff = effectiveSeverity(a) - effectiveSeverity(b);
     if (sevDiff !== 0) return sevDiff;
     const lineDiff = (a.range?.start?.line ?? 0) - (b.range?.start?.line ?? 0);
     if (lineDiff !== 0) return lineDiff;
@@ -277,7 +288,7 @@ export function formatDiagnostics(
   const lines = shown.map((d) => {
     const line = (d.range?.start?.line ?? 0) + 1;
     const col = (d.range?.start?.character ?? 0) + 1;
-    const severity = d.severity === 1 ? "error" : "warning";
+    const severity = effectiveSeverity(d) === 1 ? "error" : "warning";
     const message = String(d.message ?? "").replace(/\s+/g, " ").trim() || "(no message)";
     return `${displayPath}:${line}:${col} [${severity}] ${message}`;
   });
@@ -293,6 +304,30 @@ export function formatDiagnostics(
 function isLspAllowedInSubagents(): boolean {
   const raw = (process.env.PI_LSP_IN_SUBAGENTS ?? "").trim().toLowerCase();
   return TRUTHY_ENV.has(raw);
+}
+
+/**
+ * Resolve `lsp_enabled` from trusted user-controlled sources only (global settings
+ * or `PI_LSP_ENABLED` env). Project `.pi/pi-config-settings.json` is never allowed
+ * to silently enable LSP in cloned/untrusted repositories.
+ */
+export function resolveTrustedLspEnabled(): boolean {
+  const globalVal = loadGlobalSettings().lsp_enabled;
+  if (typeof globalVal === "boolean") return globalVal;
+  const rawEnv = process.env.PI_LSP_ENABLED;
+  if (rawEnv !== undefined && rawEnv !== "") {
+    return TRUTHY_ENV.has(rawEnv.trim().toLowerCase());
+  }
+  return false;
+}
+
+/**
+ * Resolve `lsp_servers` strictly from global `~/.pi/pi-config-settings.json`.
+ * Repo-committed project settings are ignored so cloned repos cannot run arbitrary
+ * binaries on write/edit.
+ */
+export function resolveTrustedLspServers(): LspServersConfig {
+  return loadGlobalSettings().lsp_servers ?? {};
 }
 
 // ── JSON-RPC 2.0 Stdio LSP Client ────────────────────────────────────
@@ -326,6 +361,7 @@ export class LspClient {
   private readonly pendingRequests = new Map<number, PendingRequest>();
   private readonly openedDocs = new Map<string, number>();
   private readonly waiters = new Map<string, Set<DiagnosticWaiter>>();
+  private readonly unackedSends = new Map<string, Array<{ version: number; sentAt: number }>>();
   private initPromise: Promise<boolean> | null = null;
   private initialized = false;
   private closed = false;
@@ -361,6 +397,14 @@ export class LspClient {
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  matchesServer(command: string, args: readonly string[]): boolean {
+    return (
+      this.command === command &&
+      this.args.length === args.length &&
+      this.args.every((arg, idx) => arg === args[idx])
+    );
   }
 
   private clearIdleTimer(): void {
@@ -457,6 +501,7 @@ export class LspClient {
       }
       this.waiters.delete(uri);
     }
+    this.unackedSends.clear();
 
     this.onDispose();
   }
@@ -581,11 +626,40 @@ export class LspClient {
       const uri = normalizeFileUri(msg.params.uri);
       const diagnostics: LspDiagnostic[] = Array.isArray(msg.params.diagnostics) ? msg.params.diagnostics : [];
       const version = typeof msg.params.version === "number" ? msg.params.version : undefined;
+      const latestVersion = this.openedDocs.get(uri);
+      const queue = this.unackedSends.get(uri);
+
+      if (version !== undefined) {
+        if (queue) {
+          const remaining = queue.filter((entry) => entry.version > version);
+          if (remaining.length > 0) this.unackedSends.set(uri, remaining);
+          else this.unackedSends.delete(uri);
+        }
+      } else if (queue && queue.length > 0) {
+        // Consume the oldest unacknowledged send; if newer sends remain in flight,
+        // this versionless notification belongs to an earlier edit and must be dropped.
+        queue.shift();
+        if (queue.length > 0) {
+          this.log.debug("lsp_stale_unversioned_diagnostics_dropped", {
+            serverId: this.serverId,
+            uri,
+            pendingNewer: queue.length,
+          });
+          return;
+        }
+        this.unackedSends.delete(uri);
+      }
 
       const set = this.waiters.get(uri);
       if (!set || set.size === 0) return;
 
       for (const waiter of [...set]) {
+        if (latestVersion !== undefined && waiter.minVersion < latestVersion) {
+          set.delete(waiter);
+          clearTimeout(waiter.timer);
+          waiter.resolve(null);
+          continue;
+        }
         if (version !== undefined && version < waiter.minVersion) continue;
         set.delete(waiter);
         clearTimeout(waiter.timer);
@@ -705,6 +779,24 @@ export class LspClient {
     const nextVersion = prevVersion === undefined ? 1 : prevVersion + 1;
     this.openedDocs.set(uri, nextVersion);
 
+    // Supersede any older waiters for this URI so stale edits never receive mismatched publishes.
+    const existingWaiters = this.waiters.get(uri);
+    if (existingWaiters) {
+      for (const oldWaiter of existingWaiters) {
+        clearTimeout(oldWaiter.timer);
+        oldWaiter.resolve(null);
+      }
+      existingWaiters.clear();
+    }
+
+    const now = Date.now();
+    const recentUnacked = (this.unackedSends.get(uri) ?? []).filter(
+      (entry) => now - entry.sentAt <= UNACKED_SEND_TTL_MS,
+    );
+    const sendRecord = { version: nextVersion, sentAt: now };
+    recentUnacked.push(sendRecord);
+    this.unackedSends.set(uri, recentUnacked);
+
     const diagnosticsPromise = new Promise<LspDiagnostic[] | null>((resolve) => {
       let set = this.waiters.get(uri);
       if (!set) {
@@ -742,6 +834,12 @@ export class LspClient {
           });
 
     if (!sent) {
+      const queue = this.unackedSends.get(uri);
+      if (queue) {
+        const idx = queue.indexOf(sendRecord);
+        if (idx >= 0) queue.splice(idx, 1);
+        if (queue.length === 0) this.unackedSends.delete(uri);
+      }
       const set = this.waiters.get(uri);
       if (set) {
         for (const waiter of set) {
@@ -874,6 +972,7 @@ export class LspManager {
   private readonly envPath?: string;
   private readonly log: Logger;
   private exitHookRegistered = false;
+  private shuttingDown = false;
   private readonly onProcessExit = (): void => {
     for (const client of this.clients.values()) {
       client.killSync();
@@ -926,6 +1025,8 @@ export class LspManager {
     filePath: string,
     overrides: LspServersConfig = {},
   ): Promise<string | null> {
+    if (this.shuttingDown) return null;
+
     const resolvedRoot = path.resolve(rootDir);
     const absPath = path.resolve(resolvedRoot, filePath);
     const envPath = this.envPath ?? process.env.PATH ?? "";
@@ -945,7 +1046,17 @@ export class LspManager {
     if (client && client.isClosed) {
       this.clients.delete(poolKey);
       client = undefined;
+    } else if (client && !client.matchesServer(server.command, server.args)) {
+      this.log.info("lsp_server_override_changed", {
+        serverId: server.serverId,
+        rootDir: resolvedRoot,
+      });
+      this.clients.delete(poolKey);
+      await client.shutdown();
+      client = undefined;
     }
+
+    if (this.shuttingDown) return null;
 
     if (!client) {
       const created = new LspClient({
@@ -970,15 +1081,18 @@ export class LspManager {
     }
 
     const diagnostics = await client.checkFile(absPath, this.timeoutMs);
-    if (!diagnostics || diagnostics.length === 0) return null;
+    if (this.shuttingDown || !diagnostics || diagnostics.length === 0) return null;
 
     return formatDiagnostics(diagnostics, absPath, resolvedRoot, server.serverId, this.maxDiagnosticLines);
   }
 
   async shutdownAll(): Promise<void> {
-    const active = [...this.clients.values()];
-    this.clients.clear();
-    await Promise.allSettled(active.map((c) => c.shutdown()));
+    this.shuttingDown = true;
+    while (this.clients.size > 0) {
+      const active = [...this.clients.values()];
+      this.clients.clear();
+      await Promise.allSettled(active.map((c) => c.shutdown()));
+    }
     this.releaseExitHookIfEmpty();
   }
 }
@@ -989,6 +1103,7 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
   const log = options.logger ?? defaultLog;
   const manager = new LspManager(options);
   const checkSubagent = options.isSubagentChild ?? (() => process.env.PI_SUBAGENT_CHILD === "1");
+  const warnedUntrustedProject = new Set<string>();
 
   pi.on("tool_result", async (event, ctx): Promise<ToolResultEventResult | undefined> => {
     try {
@@ -999,12 +1114,25 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
       if (checkSubagent() && !isLspAllowedInSubagents()) return undefined;
 
       const cwd = ctx?.cwd || process.cwd();
-      if (!getSetting(cwd, "lsp_enabled")) return undefined;
+      const projectSettings = loadProjectSettings(cwd);
+      if (
+        (projectSettings.lsp_enabled !== undefined ||
+          (projectSettings.lsp_servers && Object.keys(projectSettings.lsp_servers).length > 0)) &&
+        !warnedUntrustedProject.has(cwd)
+      ) {
+        warnedUntrustedProject.add(cwd);
+        log.warn("lsp_project_settings_ignored", {
+          cwd,
+          reason: "lsp_enabled and lsp_servers must be set in global settings or PI_LSP_ENABLED env",
+        });
+      }
+
+      if (!resolveTrustedLspEnabled()) return undefined;
 
       const filePath: unknown = (event as any).input?.path;
       if (typeof filePath !== "string" || !filePath.trim()) return undefined;
 
-      const overrides = getSetting(cwd, "lsp_servers");
+      const overrides = resolveTrustedLspServers();
       const formatted = await manager.getDiagnosticsForFile(cwd, filePath, overrides);
       if (!formatted) return undefined;
 
