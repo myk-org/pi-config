@@ -189,7 +189,7 @@ describe("SessionViewState server snapshot (#1398)", () => {
         ["user", "Run tests", null],
         ["thinking", "Checking suite", null],
         ["assistant", "Running tests now.", null],
-        ["subagent (test-runner)", "Run pytest", "tool-call"],
+        ["subagent (test-runner)", 'Run pytest\n\n{\n  "agent": "test-runner"\n}', "tool-call"],
         ["subagent (test-runner)", "✓ all green", "tool-result"],
         ["system", "Summary ready", null],
         ["system", "Peer ping", null],
@@ -605,6 +605,13 @@ describe("useMessageHandler session_snapshot hydration (#1398)", () => {
       h.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "lo world" } });
       h.emit({ type: "message_end", message: { role: "assistant", model: "opus-4" } });
       h.emit({ type: "tool_execution_update", partialResult: { content: [{ type: "text", text: "running..." }] } });
+    });
+
+    const inFlightCall = h.state().messages.find((m) => m.className === "tool-call");
+    assert.equal(inFlightCall?.text, "echo hi");
+    assert.equal(inFlightCall?.meta?.partialOutput, "running...");
+
+    await act(async () => {
       h.emit({ type: "tool_execution_end", toolName: "bash", result: { content: [{ type: "text", text: "hi" }] }, isError: false, timestamp: 150 });
       h.emit({ type: "async_agent_event", id: "async-1", sessionId: "101:/repo", event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " + step 2" } } });
       h.emit({ type: "async_agent_complete", id: "async-1", sessionId: "101:/repo", success: true });
@@ -623,7 +630,8 @@ describe("useMessageHandler session_snapshot hydration (#1398)", () => {
     assert.equal(thinking?.text, "Part 1");
     assert.equal(assistant?.text, "Hello world");
     assert.equal(assistant?.className, undefined);
-    assert.equal(toolCall?.text, "bash: running...");
+    assert.equal(toolCall?.text, "echo hi");
+    assert.equal(toolCall?.meta?.partialOutput, undefined);
     assert.equal(toolResult?.text, "✓ hi");
     assert.equal(toolResult?.meta?.callId, "tc-live");
     assert.equal(toolResult?.meta?.startTs, 110);

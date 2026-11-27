@@ -151,15 +151,22 @@ After presenting your analysis, respect the user's decision.
 
 ## Image Generation
 
-Generate images **only on explicit user request** using Pi 1.6's native `codemode` image API (the standalone `generate_image` extension was retired;
-`pi-config` activates `codemode` automatically in default sessions unless explicitly excluded):
+Generate images **only on explicit user request** using Pi's native `codemode` image API (Pi 1.6.1+; `{ aspectRatio, size }` options and Radius catalog in Pi 1.7.0+;
+the standalone `generate_image` extension was retired, and `pi-config` activates `codemode` automatically in default sessions unless explicitly excluded):
 
 1. If `codemode` is unavailable (explicitly disabled by user config/flags), inform the user and suggest enabling it (`pi --tools +codemode`).
-2. Discover an available image model with `await models.getAvailableOfType("image")`. When passing reference images for edits, pick a model whose `input` includes `"image"`.
-   If none is available, report that no configured provider exposes a suitable image model.
-3. Call `await models.generateImages(model, { input: [{ type: "text", text: prompt }] })` (set `// @options: {"timeout_ms": 300000}` — image generation can take minutes).
+2. Discover an available image model with `await models.getAvailableOfType("image")` (built-in catalog covers OpenRouter and, in Pi 1.7.0+, Radius image models).
+   When passing reference images for edits, pick a model whose `input` includes `"image"`. If none is available, report that no configured provider exposes a suitable image model.
+3. Call `await models.generateImages(model, { input: [{ type: "text", text: prompt }] })` (set `// @options: {"timeout_ms": 300000}`, as image generation can take minutes).
+   - When the user asks for an aspect ratio or resolution (OpenRouter image models, Pi 1.7.0+), pass an optional 3rd literal object such as
+     `await models.generateImages(model, { input: [{ type: "text", text: prompt }] }, { aspectRatio: "16:9", size: "2K" })` (`size` accepts `"1K"`, `"2K"`, or `"4K"`).
+   - Unknown option keys, non-object options, or empty/non-string `aspectRatio`/`size` values throw before the provider call (wrap in `try`/`catch` if a soft error is needed).
+     Valid non-empty strings (including unsupported values such as pixel dimensions `"1024x1536"`) pass through to the provider and may return `stopReason: "error"`.
 4. Check `result.stopReason === "stop"` and display each image block via `image(block)` (also saves a temp file and returns its path).
    **NEVER** print raw base64 `block.data` with `text()`, `console`, or `return`.
+
+Note: In Pi 1.7.0+, Radius also exposes decision/classifier models via `models.getAvailableOfType("classifier")` for `models.classify()`;
+classifier models are not valid for `models.generateImages()`.
 
 ---
 

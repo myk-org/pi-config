@@ -192,12 +192,14 @@ describe("MessageItem ask-answered state sync (#1331)", () => {
     };
 
     await act(async () => root.render(createElement(MessageItem, { msg: activeMsg })));
-    assert.equal(elements(container, "button").length, 2);
+    const optionButtons = () =>
+      elements(container, "button").filter((b) => b.getAttribute("aria-label") !== "Copy prompt");
+    assert.equal(optionButtons().length, 2);
 
     const dismissedMsg: ChatMessage = { ...activeMsg, className: "ask-answered|ask-1" };
     await act(async () => root.render(createElement(MessageItem, { msg: dismissedMsg })));
 
-    assert.equal(elements(container, "button").length, 0);
+    assert.equal(optionButtons().length, 0);
     assert.match(container.textContent ?? "", /✓ Answered: dismissed/);
   });
 
