@@ -13,6 +13,8 @@
  * - Memory dreaming (background consolidation)
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { registerAskUser } from "./ask-user.js";
@@ -69,11 +71,137 @@ import { registerProviderStreamLog } from "../shared/provider-stream-log.js";
 import { migrateMcpConfig } from "../shared/mcp-config-migration.js";
 import { setGlobalSessionId } from "../shared/file-logger.js";
 import { registerDaemonManageTool } from "../shared/daemon-manager.js";
+import { resolvePiAgentDir } from "../shared/pi-agent-dir.js";
 
 const IN_CONTAINER = isRunningInContainer();
 ensureGitSshTimeout();
 
 const log = createLogger("orchestrator");
+
+const CODEMODE_TOOL_NAME = "codemode";
+
+type CodemodePref = "included" | "excluded" | "unset";
+
+function parseToolListPreference(entries: readonly string[], current: CodemodePref): CodemodePref {
+  const trimmed = entries.map((e) => e.trim()).filter(Boolean);
+  if (trimmed.length === 0) return "excluded";
+  const isModifierList = trimmed.every((e) => e.startsWith("+") || e.startsWith("-"));
+  if (!isModifierList) {
+    return trimmed.includes(CODEMODE_TOOL_NAME) ? "included" : "excluded";
+  }
+  let state = current;
+  for (const entry of trimmed) {
+    if (entry === `-${CODEMODE_TOOL_NAME}`) state = "excluded";
+    else if (entry === `+${CODEMODE_TOOL_NAME}`) state = "included";
+  }
+  return state;
+}
+
+function readDefaultToolsSetting(filePath: string): string[] | undefined {
+  if (!existsSync(filePath)) return undefined;
+  try {
+    const raw = JSON.parse(readFileSync(filePath, "utf-8")) as { defaultTools?: unknown };
+    if (!Array.isArray(raw?.defaultTools)) return undefined;
+    return raw.defaultTools.filter((v): v is string => typeof v === "string");
+  } catch (err) {
+    log.debug("codemode_settings_read_failed", {
+      path: filePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  }
+}
+
+function resolveArgvCodemodePref(argv: readonly string[]): CodemodePref {
+  let pref: CodemodePref = "unset";
+  for (let i = 2; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--") break;
+    if (arg === "--no-tools" || arg === "-nt") {
+      pref = "excluded";
+      continue;
+    }
+    let val: string | undefined;
+    if (arg === "--tools" && i + 1 < argv.length) {
+      val = argv[++i];
+    } else if (arg.startsWith("--tools=")) {
+      val = arg.slice("--tools=".length);
+    }
+    if (val !== undefined) {
+      pref = parseToolListPreference(val.split(","), pref);
+    }
+  }
+  return pref;
+}
+
+export interface EnsureCodemodeActiveOptions {
+  cwd?: string;
+  projectTrusted?: boolean;
+  agentDir?: string | null;
+  argv?: readonly string[];
+  isSubagentChild?: boolean;
+}
+
+/**
+ * Activate Pi's built-in `codemode` tool on `session_start` when available and not
+ * explicitly excluded via CLI flags or Pi `defaultTools` settings, so native
+ * `models.generateImages()` works out of the box in default sessions (#1447).
+ */
+export function ensureCodemodeActive(
+  pi: Pick<ExtensionAPI, "getAllTools" | "getActiveTools" | "setActiveTools">,
+  options: EnsureCodemodeActiveOptions = {},
+): boolean {
+  const isSubagentChild = options.isSubagentChild ?? process.env.PI_SUBAGENT_CHILD === "1";
+  if (isSubagentChild) return false;
+  if (
+    typeof pi.getAllTools !== "function" ||
+    typeof pi.getActiveTools !== "function" ||
+    typeof pi.setActiveTools !== "function"
+  ) {
+    return false;
+  }
+
+  // Respect --no-tools, --exclude-tools, --tools allowlists, and -builtin:codemode:
+  // Pi omits disallowed/excluded tools from getAllTools(), and requires reachesTools
+  // on the real codemode tool (same contract as Pi's builtin:mcp extension).
+  const allTools = pi.getAllTools();
+  const hasCodemode = allTools.some(
+    (t) => t.name === CODEMODE_TOOL_NAME && Boolean((t as { reachesTools?: unknown }).reachesTools),
+  );
+  if (!hasCodemode) {
+    log.debug("codemode_auto_activate_skipped", { reason: "unavailable_or_excluded" });
+    return false;
+  }
+
+  const active = pi.getActiveTools();
+  if (active.includes(CODEMODE_TOOL_NAME)) {
+    return false;
+  }
+
+  let pref: CodemodePref = "unset";
+  const globalTools = readDefaultToolsSetting(join(resolvePiAgentDir(options.agentDir), "settings.json"));
+  if (globalTools !== undefined) {
+    pref = parseToolListPreference(globalTools, pref);
+  }
+  if (options.projectTrusted === true && options.cwd) {
+    const projectTools = readDefaultToolsSetting(join(options.cwd, ".pi", "settings.json"));
+    if (projectTools !== undefined) {
+      pref = parseToolListPreference(projectTools, pref);
+    }
+  }
+  const argvPref = resolveArgvCodemodePref(options.argv ?? process.argv);
+  if (argvPref !== "unset") {
+    pref = argvPref;
+  }
+  if (pref === "excluded") {
+    log.debug("codemode_auto_activate_skipped", { reason: "excluded_by_config" });
+    return false;
+  }
+
+  pi.setActiveTools([...active, CODEMODE_TOOL_NAME]);
+  log.info("codemode_auto_activated", { activeCount: active.length + 1 });
+  return true;
+}
 
 export default function (pi: ExtensionAPI) {
   // Set global session ID FIRST so all fileLog callers get per-session files.
@@ -82,6 +210,10 @@ export default function (pi: ExtensionAPI) {
     const sid = ctx.sessionManager?.getSessionId?.();
     log.info("session_start", reason, sid ?? "?");
     if (sid) setGlobalSessionId(sid);
+    ensureCodemodeActive(pi, {
+      cwd: ctx.cwd,
+      projectTrusted: ctx.isProjectTrusted?.() === true,
+    });
   });
 
   // ── Pidash command handler bridge ──────────────────────────────────

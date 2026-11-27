@@ -6,7 +6,7 @@ Generate images directly in chat using Pi 1.6's native `codemode` image API (`mo
 
 ## Prerequisites
 
-- `pi` >= 1.6.1 with `codemode` enabled
+- `pi` >= 1.6.1 (`pi-config` activates `codemode` automatically on `session_start` in default sessions unless explicitly excluded with `--no-tools`, `--exclude-tools`, `--tools -codemode`, or `defaultTools`)
 - Credentials for any provider in Pi's model catalog that exposes an image model (for example Google/Gemini, OpenRouter, or OpenAI)
 
 ## Quick Example
@@ -42,8 +42,11 @@ Pass existing images alongside text prompts by reading them with `tools.read()`:
 ```js
 // @options: {"timeout_ms": 300000}
 const available = await models.getAvailableOfType("image");
+const editor = available.find((m) => Array.isArray(m.input) && m.input.includes("image"));
+if (!editor) return "No available image model accepts image input for reference edits.";
+
 const ref = await tools.read({ path: "mockup.png" });
-const result = await models.generateImages(available[0], {
+const result = await models.generateImages(editor, {
   input: [
     ref,
     { type: "text", text: "Make the background dark slate with subtle grid lines" },

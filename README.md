@@ -469,6 +469,7 @@ Project agents included by default (`agentScope` defaults to `"both"`).
 
 Image generation uses Pi 1.6's native `codemode` image API (`models.getAvailableOfType("image")` + `models.generateImages()` + `image()`),
 reusing the session's configured provider credentials and usage tracking with zero extra top-level tool schema tokens when unused.
+`pi-config` activates `codemode` automatically on `session_start` in default sessions unless explicitly excluded.
 
 The legacy `extensions/image-gen/` extension (`generate_image`) and `image_model` setting were retired in favor of native `codemode` image models;
 existing `image_model` entries in `pi-config-settings.json` are ignored safely. See [Image Generation](docs/image-generation.md).
