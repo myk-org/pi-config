@@ -516,32 +516,58 @@ describe("collectRedactedDiagnosticLogs", () => {
     assert.match(res.entries[0].line, /actually later/);
   });
 
-  it("excludes unrelated session lines from fallback log directories when a sessionId is resolved", () => {
-    const home = trackTempDir("diag-fallback-scope-home-");
-    const projectDir = trackTempDir("diag-fallback-scope-proj-");
-    const projFallback = join(projectDir, ".pi", "tmp", "pi-logs");
-    mkdirSync(projFallback, { recursive: true });
-    writeFileSync(
-      join(projFallback, "orchestrator.log"),
-      [
-        "2026-11-27T10:00:01.000Z [warn] [orchestrator] session=sess-current current session fallback",
-        "2026-11-27T10:00:02.000Z [error] [orchestrator] session=sess-other unrelated session fallback",
-        "2026-11-27T10:00:03.000Z [error] [orchestrator] unscoped line from unknown session",
-      ].join("\n") + "\n",
-    );
+  it("selects only the resolved session from real file-logger fallback output", async () => {
+    const home = trackTempDir("diag-fallback-real-home-");
+    const projectDir = trackTempDir("diag-fallback-real-proj-");
+    const prevHome = process.env.HOME;
+    const prevUserProfile = process.env.USERPROFILE;
+    const prevCwd = process.cwd();
+    const prevSid = process.env.__PI_CONFIG_SESSION_ID;
+    const prevParentSid = process.env.__PI_PARENT_SESSION_ID;
+    const prevGlobalSid = (globalThis as { __piConfigSessionId?: string }).__piConfigSessionId;
 
-    const res = collectRedactedDiagnosticLogs({
-      cwd: projectDir,
-      logsDir: join(home, ".pi", "missing-logs"),
-      sessionId: "sess-current",
-      homeDir: home,
-      env: {},
-    });
+    try {
+      // Force file-logger onto its project fallback path by blocking ~/.pi/logs with a file.
+      mkdirSync(join(home, ".pi"), { recursive: true });
+      writeFileSync(join(home, ".pi", "logs"), "not-a-dir");
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      delete process.env.__PI_PARENT_SESSION_ID;
+      process.chdir(projectDir);
 
-    assert.equal(res.entries.length, 1);
-    assert.equal(res.entries[0].scope, "fallback-project");
-    assert.match(res.entries[0].line, /current session fallback/);
-    assert.ok(!res.entries[0].line.includes("unrelated session"));
+      const fileLogger = await import(`../../../extensions/shared/file-logger.ts?diag=${Date.now()}`);
+      fileLogger.setGlobalSessionId("sess-current");
+      assert.equal(fileLogger.fileLog("orchestrator", "warn", "orchestrator", "primary log dir blocked"), true);
+
+      fileLogger.setGlobalSessionId("sess-current-2");
+      assert.equal(fileLogger.fileLog("orchestrator", "error", "orchestrator", "unrelated sibling session"), true);
+
+      const res = collectRedactedDiagnosticLogs({
+        cwd: projectDir,
+        logsDir: join(home, ".pi", "logs"),
+        sessionId: "sess-current",
+        homeDir: home,
+        env: {},
+      });
+
+      assert.equal(res.entries.length, 1);
+      assert.equal(res.entries[0].scope, "fallback-project");
+      assert.equal(res.entries[0].level, "warn");
+      assert.match(res.entries[0].line, /primary log dir blocked/);
+      assert.ok(!res.entries[0].line.includes("unrelated sibling session"));
+    } finally {
+      process.chdir(prevCwd);
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevUserProfile;
+      if (prevSid === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+      else process.env.__PI_CONFIG_SESSION_ID = prevSid;
+      if (prevParentSid === undefined) delete process.env.__PI_PARENT_SESSION_ID;
+      else process.env.__PI_PARENT_SESSION_ID = prevParentSid;
+      if (prevGlobalSid === undefined) delete (globalThis as { __piConfigSessionId?: string }).__piConfigSessionId;
+      else (globalThis as { __piConfigSessionId?: string }).__piConfigSessionId = prevGlobalSid;
+    }
   });
 
   it("collects unscoped entries from project and home fallback log directories", () => {

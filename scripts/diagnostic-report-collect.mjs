@@ -53,6 +53,7 @@ const CANONICAL_BRACKETED_RE =
 const CANONICAL_UNBRACKETED_RE =
   /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s+(debug|info|warn|warning|error)\s+(.*)$/i;
 const LEADING_BRACKET_LEVEL_RE = /^\[(debug|info|warn|warning|error)\]\s+/i;
+const FALLBACK_SESSION_TAG_RE = /\[session=([A-Za-z0-9._-]+)\]/;
 
 const AUTH_HEADER_RE =
   /(\b(?:Authorization|Proxy-Authorization)\s*:\s*(?:Basic|Digest|Token|ApiKey)\s+)([^\s,;'"`]+)/gi;
@@ -589,7 +590,10 @@ export function collectRedactedDiagnosticLogs(options = {}) {
     if (!text) continue;
     for (const rawLine of text.split(/\r?\n/)) {
       if (!rawLine) continue;
-      if (item.requireSessionInLine && !rawLine.includes(resolvedSessionId)) continue;
+      if (item.requireSessionInLine) {
+        const tagMatch = FALLBACK_SESSION_TAG_RE.exec(rawLine);
+        if (!tagMatch || tagMatch[1] !== resolvedSessionId) continue;
+      }
       const parsed = parseWarnOrErrorLine(rawLine);
       if (!parsed) continue;
       collected.push({

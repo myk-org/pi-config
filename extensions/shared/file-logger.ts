@@ -245,9 +245,18 @@ export function writeFileLogLine(name: string, line: string): boolean {
     } catch {
       /* no home — nothing left to try */
     }
+    const sid = (globalThis as any).__piConfigSessionId as string | undefined;
+    const parentSid = process.env.__PI_PARENT_SESSION_ID;
+    const effectiveSid = parentSid && parentSid !== sid ? parentSid : sid;
+    const safeSid = effectiveSid ? effectiveSid.replace(/[^a-zA-Z0-9._-]/g, "_") : "";
+    const fallbackLine = safeSid
+      ? /^\S+\s+\[[a-z]+\]\s+/i.test(line)
+        ? line.replace(/^(\S+\s+\[[a-z]+\]\s+)/i, `$1[session=${safeSid}] `)
+        : `[session=${safeSid}] ${line}`
+      : line;
     for (const fallbackDir of fallbackDirs) {
       try {
-        appendLine(path.join(fallbackDir, `${safe}.log`), line);
+        appendLine(path.join(fallbackDir, `${safe}.log`), fallbackLine);
         return true;
       } catch (fallbackErr) {
         recordWriteError(fallbackErr);
