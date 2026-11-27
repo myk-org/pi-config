@@ -13,6 +13,7 @@ export function runGit(
   args: string[],
   cwd?: string,
   input?: string,
+  env?: NodeJS.ProcessEnv,
 ): { stdout: string; code: number } {
   try {
     const stdout = execFileSync("git", ["--no-optional-locks", ...args], {
@@ -27,6 +28,7 @@ export function runGit(
         LANGUAGE: "C",
         GIT_TERMINAL_PROMPT: "0",
         GCM_INTERACTIVE: "Never",
+        ...env,
       },
     });
     return { stdout: stdout.trimEnd(), code: 0 };
@@ -41,10 +43,14 @@ export function runGit(
 }
 
 export type GitAsyncResult = { stdout: string; stderr?: string; code: number };
-export type GitAsyncRunner = (args: string[], cwd?: string) => Promise<GitAsyncResult>;
+export type GitAsyncRunner = (args: string[], cwd?: string, env?: NodeJS.ProcessEnv) => Promise<GitAsyncResult>;
 
 /** Async `git --no-optional-locks` runner (non-interactive, 5s timeout, C locale). */
-export function runGitAsync(args: string[], cwd?: string): Promise<GitAsyncResult> {
+export function runGitAsync(
+  args: string[],
+  cwd?: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<GitAsyncResult> {
   return new Promise((resolvePromise) => {
     execFile(
       "git",
@@ -60,6 +66,7 @@ export function runGitAsync(args: string[], cwd?: string): Promise<GitAsyncResul
           LANGUAGE: "C",
           GIT_TERMINAL_PROMPT: "0",
           GCM_INTERACTIVE: "Never",
+          ...env,
         },
       },
       (err, stdout, stderr) => {

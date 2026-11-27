@@ -765,5 +765,12 @@
     "env": "PI_MAGIC_KEYWORDS",
     "default": true,
     "group": "Session"
+  },
+  "turn_snapshots": {
+    "description": "Capture lightweight git shadow-tree snapshots before mutating turns so /undo and /redo can revert or reapply a turn without touching .git/index or gitignored files",
+    "type": "bool",
+    "env": "PI_TURN_SNAPSHOTS",
+    "default": true,
+    "group": "Session"
   }
 }

@@ -57,6 +57,7 @@ import { registerSessionSpill } from "./session-spill.js";
 import { registerPreCompactionElision } from "./pre-compaction-elision.js";
 import { registerMagicKeywords } from "./magic-keywords.js";
 import { registerAdvisor } from "./advisor.js";
+import { registerSnapshots } from "./snapshots.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
@@ -231,6 +232,8 @@ export default function (pi: ExtensionAPI) {
   registerMagicKeywords(pi);
   // Opt-in background read-only advisor/watchdog model (default disabled) (#1419).
   registerAdvisor(pi);
+  // Git-backed per-turn file snapshots with /undo and /redo (#1449).
+  registerSnapshots(pi);
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
     registerWidgetShortcut(
       pi,
