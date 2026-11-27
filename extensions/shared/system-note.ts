@@ -27,6 +27,8 @@ export interface SystemNoteOptions {
   deliverAs?: "steer" | "followUp" | "nextTurn";
   /** Render in the TUI transcript. */
   display?: boolean;
+  /** Optional structured provenance metadata (not sent to LLM). */
+  details?: Record<string, unknown>;
 }
 
 /** Send machine-generated text, marked so it cannot be mistaken for user input. */
@@ -38,7 +40,12 @@ export async function sendSystemNote(
   const body = text.startsWith(SYSTEM_NOTE_MARKER) ? text : `${SYSTEM_NOTE_MARKER}\n${text}`;
   log.debug("send_system_note", { customType: options.customType, chars: body.length });
   await pi.sendMessage(
-    { customType: options.customType, content: body, display: options.display ?? true },
+    {
+      customType: options.customType,
+      content: body,
+      display: options.display ?? true,
+      ...(options.details ? { details: options.details } : {}),
+    },
     { triggerTurn: options.triggerTurn, deliverAs: options.deliverAs },
   );
 }
