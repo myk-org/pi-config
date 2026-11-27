@@ -424,24 +424,6 @@ export PI_PIDIFF_DAEMON_STARTUP_TIMEOUT_S=120
 export PI_PIDIFF_STALE_LOCK_TIMEOUT_MS=60000
 ```
 
-### `image_model`
-
-| Parameter | Type | Default | Environment variable | Description | Effect |
-|---|---|---|---|---|---|
-| `image_model` | string | `""` | `PI_IMAGE_MODEL` | Gemini image generation model name. | Enables the `generate_image` tool to call the Gemini API. Requires `GEMINI_API_KEY` or `GOOGLE_API_KEY` to be set. |
-
-```json
-{
-  "image_model": "gemini-3-pro-image"
-}
-```
-
-```bash
-export PI_IMAGE_MODEL=gemini-3-pro-image
-```
-
-See [Image Generation](image-generation.html) for details.
-
 ## Code Map Keys
 
 ### `trail_enable`

@@ -55,8 +55,8 @@ afterEach(() => {
 });
 
 describe("minimum Pi version", () => {
-  it("requires Pi 1.6.0", () => {
-    assert.equal(MIN_PI_VERSION, "1.6.0");
+  it("requires Pi 1.6.1", () => {
+    assert.equal(MIN_PI_VERSION, "1.6.1");
   });
 });
 
@@ -117,17 +117,23 @@ describe("checkMinPiVersion", () => {
     assert.equal(r.ok, true);
   });
 
-  it("rejects prerelease versions of the floor while accepting exact and higher stable versions", () => {
-    useFakePi("1.6.0-beta.1");
+  it("rejects older and prerelease versions of the floor while accepting exact and higher stable versions", () => {
+    useFakePi("1.6.0");
+    const older = checkMinPiVersion();
+    assert.equal(older.installed, "1.6.0");
+    assert.equal(older.required, "1.6.1");
+    assert.equal(older.ok, false);
+
+    useFakePi("1.6.1-beta.1");
     const pre = checkMinPiVersion();
-    assert.equal(pre.installed, "1.6.0-beta.1");
-    assert.equal(pre.required, "1.6.0");
+    assert.equal(pre.installed, "1.6.1-beta.1");
+    assert.equal(pre.required, "1.6.1");
     assert.equal(pre.ok, false);
 
-    useFakePi("1.6.0");
+    useFakePi("1.6.1");
     assert.equal(checkMinPiVersion().ok, true);
 
-    useFakePi("1.6.1");
+    useFakePi("1.6.2");
     assert.equal(checkMinPiVersion().ok, true);
   });
 

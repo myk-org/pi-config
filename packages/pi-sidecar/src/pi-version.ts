@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const piVersionLog = createLogger("pi-version");
 
 /** Minimum @earendil-works/pi-coding-agent version the sidecar supports (same floor as pi-config orchestrator). */
-export const MIN_PI_VERSION = "1.6.0";
+export const MIN_PI_VERSION = "1.6.1";
 
 /**
  * Locate `<packageName>/package.json` using Node built-ins only (no SDK imports)

@@ -970,9 +970,9 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     const cwd = makeCwd();
     try {
       const result = await addMemoryEntry(cwd, {
-        text: "Generate images only on explicit request",
+        text: "Prefer official docs when searching the web",
         category: "preference",
-        trigger: "tool_name generate_image",
+        trigger: "tool_name web_search",
         action: "warn",
       });
       assert.equal(result.status, "added");

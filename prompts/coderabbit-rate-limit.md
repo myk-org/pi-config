@@ -54,12 +54,26 @@ gh repo view --json nameWithOwner -q .nameWithOwner
 uvx myk-pi-tools@latest coderabbit check <owner/repo> <pr_number>
 ```
 
-This outputs JSON to stdout. Parse the result:
+`coderabbit check` inspects the latest `CodeRabbit` check run on the PR's head SHA
+rather than the summary comment. A run counts as rate limited when `conclusion` is
+`"neutral"` and `output.title` or `output.summary` contains `"rate limit"`. The
+command reads `wait_seconds` from the check run output or a matching CodeRabbit
+reply comment.
 
-- If `rate_limited` is `false` — notify user "Not rate limited" and exit
-- If `rate_limited` is `true` — read `wait_seconds` and proceed to Phase 3
-  - If `fallback` is `true`, the wait time is **estimated** from the comment timestamp
-    (1-hour window), not parsed from the comment body. Warn the user that timing is approximate.
+It prints JSON to stdout:
+
+- `rate_limited: false`: either no `CodeRabbit` check run exists yet
+  (`{"rate_limited": false}`), or the latest run is not rate limited (also includes
+  `check_run_id`, `head_sha`, `conclusion`, `title`). Notify the user
+  "Not rate limited" and exit.
+- `rate_limited: true`: includes `wait_seconds` (the **remaining** seconds to wait,
+  already subtracting elapsed time since the reply comment or check run timestamp),
+  `check_run_id`, `head_sha`, `conclusion`, `title`, `updated_at` (the check run's
+  ISO `completed_at` timestamp), and optionally `fallback: true`. Read
+  `wait_seconds` and proceed to Phase 3.
+  - If `fallback` is `true`, the remaining wait time is **estimated** from the
+    check run's `completed_at` timestamp (1-hour window), not parsed from the reply
+    comment or check run output. Warn the user that timing is approximate.
 
 ### Phase 3: Wait and Trigger Review
 

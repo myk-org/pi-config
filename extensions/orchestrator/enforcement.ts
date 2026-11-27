@@ -4,7 +4,6 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
 import path, { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
@@ -46,41 +45,14 @@ import {
 } from "./restricted-folders.js";
 import { getProjectStateDbPath } from "./state-db.js";
 import { evaluateToolPermissions, forgetToolHostApprovals } from "./tool-permissions.js";
-import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
+import { resolveWorktreeRoot } from "./utils.js";
 
 const log = createLogger("enforcement");
 
 export { isBumpVersionBranch, getCachedBranch };
 
-// Repeat detection via temp file — immune to module reload / closure issues.
-let REPEAT_FILE = "";
-
 /** Cached trailer selection for comma-separated commit_trailer values (reset on session_start). */
 let cachedTrailerSelection: string | null = null;
-
-function ensureRepeatFile(cwd: string): void {
-  if (!REPEAT_FILE) {
-    REPEAT_FILE = join(getProjectTmpDir(cwd), `.repeat-${process.pid}.json`);
-  }
-}
-
-function readRepeatState(): { lastCmd: string; count: number } {
-  if (!REPEAT_FILE) return { lastCmd: "", count: 0 };
-  try {
-    return JSON.parse(readFileSync(REPEAT_FILE, "utf-8"));
-  } catch {
-    return { lastCmd: "", count: 0 };
-  }
-}
-
-function writeRepeatState(state: { lastCmd: string; count: number }): void {
-  if (!REPEAT_FILE) return;
-  try {
-    writeFileSync(REPEAT_FILE, JSON.stringify(state));
-  } catch (e: any) {
-    log.debug("enforcement: write repeat state failed:", e?.message || e);
-  }
-}
 
 /** Resolve the model id used in commit/PR trailers (env first, then ctx). */
 export function commitTrailerModelId(ctx: any): string {
@@ -273,17 +245,6 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           set: (value: string) => {
             cachedTrailerSelection = value;
           },
-        },
-        trackRepeat: (normalized) => {
-          ensureRepeatFile(ctx.cwd);
-          const rs = readRepeatState();
-          if (normalized === rs.lastCmd) {
-            rs.count++;
-            writeRepeatState(rs);
-            return rs.count;
-          }
-          writeRepeatState({ lastCmd: normalized, count: 1 });
-          return 1;
         },
         checkReviewLoopCommit: (gitCwd, branch) => {
           if (!isBumpVersionBranch(branch) && getSetting(gitCwd, "review_loop_enforcement") && !isCommitAllowed(gitCwd)) {

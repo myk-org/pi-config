@@ -79,6 +79,7 @@ export interface SessionBridgeSlot {
   workload?: WorkloadSources;
   malformedRecovery?: MalformedRecoveryBridgeSlot;
   comsActive?: boolean;
+  comsPeerName?: string;
   streamLoopAborted?: boolean;
 }
 
@@ -394,31 +395,54 @@ export function notifyMalformedRecoveryAborted(sessionKey?: string): void {
 
 // ── comsActive slot ─────────────────────────────────────────────────────────
 
-/** Set whether P2P coms is active for a specific session. */
-export function setComsActive(active: boolean, sessionKey?: string): void {
+/** Set whether P2P coms is active for a specific session (and its optional active peer name). */
+export function setComsActive(active: boolean, sessionKey?: string, peerName?: string): void {
   const key = normalizeBridgeSessionKey(sessionKey);
-  const current = getSessionSlot(key)?.comsActive === true;
-  if (current === active) {
+  const normalizedPeerName = active && typeof peerName === "string" ? peerName.trim() || undefined : undefined;
+  const existing = getSessionSlot(key);
+  const current = existing?.comsActive === true;
+  const currentPeerName = existing?.comsPeerName;
+  if (current === active && currentPeerName === normalizedPeerName) {
     log.debug("coms_active_noop", { sessionKey: key, active });
     return;
   }
   if (active) {
-    getOrCreateSessionSlot(key).comsActive = true;
+    const slot = getOrCreateSessionSlot(key);
+    slot.comsActive = true;
+    if (normalizedPeerName) {
+      slot.comsPeerName = normalizedPeerName;
+    } else {
+      delete slot.comsPeerName;
+    }
   } else {
     const map = getExistingBridgeMap();
     const slot = map?.get(key);
     if (slot) {
       delete slot.comsActive;
+      delete slot.comsPeerName;
       pruneSessionSlot(map, key);
     }
   }
-  log.info("coms_active_changed", { sessionKey: key, active });
+  log.info("coms_active_changed", {
+    sessionKey: key,
+    active,
+    ...(normalizedPeerName ? { peerName: normalizedPeerName } : {}),
+  });
 }
 
 /** Report whether P2P coms is active for a specific session (never falls back across sessions). */
 export function isComsActive(sessionKey?: string): boolean {
   const key = normalizeBridgeSessionKey(sessionKey);
   return getSessionSlot(key)?.comsActive === true;
+}
+
+/** Report the active P2P coms peer name for a specific session (never falls back across sessions). */
+export function getComsPeerName(sessionKey?: string): string | null {
+  const key = normalizeBridgeSessionKey(sessionKey);
+  const slot = getSessionSlot(key);
+  if (slot?.comsActive !== true) return null;
+  const name = slot.comsPeerName;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
 }
 
 // ── streamLoopAborted slot ──────────────────────────────────────────────────
@@ -483,6 +507,9 @@ export function resetSessionBridge(options: ResetSessionBridgeOptions): void {
     const entry = map.get(key);
     if (!entry || typeof entry !== "object") return;
     delete entry[slotName];
+    if (slotName === "comsActive") {
+      delete entry.comsPeerName;
+    }
     pruneSessionSlot(map, key);
     log.debug("session_bridge_slot_cleared", { sessionKey: key, slot: slotName });
     return;

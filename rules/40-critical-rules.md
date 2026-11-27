@@ -55,10 +55,13 @@ Always pass `cwd` when delegating to subagents in all modes — omitting it caus
 
 ## Scheduled Tasks (`cron_manage`)
 
-- To modify an existing cron (schedule, prompt, description, or model), call `cron_manage(action="edit", id=...)` with only the
+- To modify an existing cron (schedule, prompt, description, model, or `quiet_on_noop`), call `cron_manage(action="edit", id=...)` with only the
   changed fields (`model=""` clears a pinned model) — never `remove` + `add`, which loses the ID, run history, and paused state.
 - To temporarily stop or restart a cron without deleting it, call `cron_manage(action="pause", id=...)` or
   `cron_manage(action="resume", id=...)` (resuming starts a fresh interval without catching up missed runs).
+- For monitoring crons that often find nothing to report, set `quiet_on_noop: true` on `add` or `edit`: the spawned worker is instructed to reply starting with `[NOOP]`
+  when nothing changed, and successful `[NOOP]` runs record history (`lastOutcome: "noop"`) without sending a `followUp` chat turn. Failures and non-`[NOOP]` outputs
+  always deliver.
 
 ---
 
@@ -141,6 +144,20 @@ After presenting your analysis, respect the user's decision.
   exact host (clearable via `/forget-approvals`).
 - Use `agent-browser` CLI for interactive pages requiring clicks, forms, screenshots.
 - **NEVER** use `curl` for reading web pages or SearXNG MCP.
+
+---
+
+## Image Generation
+
+Generate images **only on explicit user request** using Pi 1.6's native `codemode` image API (the standalone `generate_image` extension was retired;
+`pi-config` activates `codemode` automatically in default sessions unless explicitly excluded):
+
+1. If `codemode` is unavailable (explicitly disabled by user config/flags), inform the user and suggest enabling it (`pi --tools +codemode`).
+2. Discover an available image model with `await models.getAvailableOfType("image")`. When passing reference images for edits, pick a model whose `input` includes `"image"`.
+   If none is available, report that no configured provider exposes a suitable image model.
+3. Call `await models.generateImages(model, { input: [{ type: "text", text: prompt }] })` (set `// @options: {"timeout_ms": 300000}` — image generation can take minutes).
+4. Check `result.stopReason === "stop"` and display each image block via `image(block)` (also saves a temp file and returns its path).
+   **NEVER** print raw base64 `block.data` with `text()`, `console`, or `return`.
 
 ---
 

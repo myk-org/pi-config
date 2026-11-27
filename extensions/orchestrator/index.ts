@@ -151,8 +151,15 @@ export default function (pi: ExtensionAPI) {
   // to inject getArgumentCompletions before other modules register their commands.
   registerExtendedAutocomplete(pi);
 
-  registerAskUser(pi, terminalNotify);
-  const { spawnAsyncAgent, killAsyncAgent, getAsyncJobs } = registerAsyncAgents(pi, terminalNotify);
+  // Track the active session key before wiring notification callers so in-session COMS peer
+  // activation (`coms_start`) is reflected in desktop notification titles.
+  let workloadSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
+  const sessionTerminalNotify = (title: string, body: string): void => {
+    terminalNotify(title, body, { sessionKey: workloadSessionKey });
+  };
+
+  registerAskUser(pi, sessionTerminalNotify);
+  const { spawnAsyncAgent, killAsyncAgent, getAsyncJobs } = registerAsyncAgents(pi, sessionTerminalNotify);
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerProjectSettings(pi);
   registerTrail(pi);
@@ -170,13 +177,12 @@ export default function (pi: ExtensionAPI) {
   registerReviewUI(pi);
   registerRules(pi, getAsyncJobs);
 
-  registerStatusLine(pi, IN_CONTAINER, terminalNotify);
+  registerStatusLine(pi, IN_CONTAINER, sessionTerminalNotify);
   registerDreaming(pi, spawnAsyncAgent);
   registerSkillMaintenance(pi);
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   // #1083: peers report their OWN workload — session crons live only in this process, so the
   // coms extension must read them here rather than scan for them.
-  let workloadSessionKey = DEFAULT_BRIDGE_SESSION_KEY;
   let unregisterWorkload: (() => void) | null = null;
   const publishOwnWorkload = (ctx?: any, preserveNamedOnMissingId = false): void => {
     const resolvedKey = ctx ? resolveBridgeSessionKey(ctx) : workloadSessionKey;

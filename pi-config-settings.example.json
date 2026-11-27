@@ -19,7 +19,6 @@
   "pidash_port": 19190,
   "pidiff_stale_lock_timeout_ms": 60000,
   "pidiff_daemon_startup_timeout_s": 60,
-  "image_model": "",
   "internal_operations_provider": "",
   "internal_operations_model": "",
   "agent_provider": "",

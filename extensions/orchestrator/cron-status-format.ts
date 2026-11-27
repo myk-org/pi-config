@@ -2,6 +2,7 @@
  * Pure cron status display helpers — no TUI deps (unit-testable).
  */
 import { createLogger } from "../shared/logger.js";
+import type { CronRunOutcome } from "./cron-store.js";
 
 const log = createLogger("cron_status");
 
@@ -22,6 +23,12 @@ export interface CronStatusTaskView {
   nextRun?: number;
   /** Paused by the user: kept in the store, never armed (issue #1087). */
   paused?: boolean;
+  /** Suppress parent followUp chat delivery when a successful worker replies starting with `[NOOP]`. */
+  quiet_on_noop?: boolean;
+  /** Number of completed/executed runs recorded for this cron. */
+  runCount?: number;
+  /** Outcome of the most recent completed run. */
+  lastOutcome?: CronRunOutcome;
   /** Optional scope and leader-state label shown in overlay rows. */
   sessionLabel?: string;
   isLocal?: boolean;
@@ -97,7 +104,17 @@ export function formatLastRunLabel(
   now = Date.now(),
 ): string {
   if (task.lastRun == null) return "never";
-  return `${formatRelativeMs(now - task.lastRun)} ago`;
+  const base = `${formatRelativeMs(now - task.lastRun)} ago`;
+  return task.lastOutcome === "noop" || task.lastOutcome === "error"
+    ? `${base} (${task.lastOutcome})`
+    : base;
+}
+
+/** Optional quiet-mode badge shown in `/cron` rows when `quiet_on_noop` is enabled. */
+export function formatCronQuietBadge(
+  task: Pick<CronStatusTaskView, "quiet_on_noop">,
+): string | undefined {
+  return task.quiet_on_noop ? "quiet" : undefined;
 }
 
 export function formatNextRunLabel(
@@ -256,7 +273,13 @@ export function cronDetailRows(
   ];
   if (task.sessionLabel) rows.push(["Session", task.sessionLabel]);
   if (task.model) rows.push(["Model", task.model]);
-  log.debug("cron_detail_rows", { id: task.id, rows: rows.length, model: task.model || "inherit" });
+  if (task.quiet_on_noop) rows.push(["Mode", "quiet on noop"]);
+  if (task.runCount !== undefined) {
+    rows.push(["Runs", `${task.runCount}${task.lastOutcome ? ` (last: ${task.lastOutcome})` : ""}`]);
+  } else if (task.lastOutcome) {
+    rows.push(["Outcome", task.lastOutcome]);
+  }
+  log.debug("cron_detail_rows", { id: task.id, rows: rows.length, model: task.model || "inherit", quiet: !!task.quiet_on_noop });
   return rows;
 }
 
@@ -274,6 +297,9 @@ export function toCronStatusTaskView(
     lastRun?: number;
     nextRun?: number;
     paused?: boolean;
+    quiet_on_noop?: boolean;
+    runCount?: number;
+    lastOutcome?: CronRunOutcome;
   },
   opts: {
     overlayId: string;
@@ -295,6 +321,9 @@ export function toCronStatusTaskView(
     lastRun: task.lastRun,
     nextRun: task.nextRun,
     paused: task.paused,
+    quiet_on_noop: task.quiet_on_noop,
+    runCount: task.runCount,
+    lastOutcome: task.lastOutcome,
     sessionLabel: opts.sessionLabel,
     isLocal: opts.isLocal,
     cronFile: opts.cronFile,

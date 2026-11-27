@@ -9,20 +9,35 @@ from unittest.mock import patch
 
 import pytest
 
+from myk_pi_tools.coderabbit.rate_limit import RateLimitStatus
+
 _MODULE = "myk_pi_tools.coderabbit.rate_limit"
 
-_RATE_LIMITED_BODY = (
-    "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n"
-    "Please wait **2 minutes and 30 seconds** before trying again."
-)
-_NOT_RATE_LIMITED_BODY = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nSummary of changes."
+
+def _rate_limited_status(
+    *,
+    check_run_id: int = 42,
+    updated_at: str = "2020-01-01T00:00:00Z",
+    parsed_wait_seconds: int | None = 150,
+    wait_reference_at: str | None = None,
+) -> RateLimitStatus:
+    return RateLimitStatus(
+        rate_limited=True,
+        check_run_id=check_run_id,
+        head_sha="abc1234",
+        conclusion="neutral",
+        title="Review rate limited",
+        updated_at=updated_at,
+        parsed_wait_seconds=parsed_wait_seconds,
+        wait_reference_at=wait_reference_at,
+    )
 
 
 def test_not_rate_limited(capsys: pytest.CaptureFixture[str]) -> None:
     """Not rate limited -> exit 0 with not_rate_limited status."""
     with patch(
-        f"{_MODULE}._find_summary_comment",
-        return_value=(1, _NOT_RATE_LIMITED_BODY, "2025-01-01T00:00:00Z", ""),
+        f"{_MODULE}.detect_rate_limit",
+        return_value=(RateLimitStatus(rate_limited=False, check_run_id=1, conclusion="success"), ""),
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
@@ -34,7 +49,7 @@ def test_not_rate_limited(capsys: pytest.CaptureFixture[str]) -> None:
 def test_rate_limited_wait_elapsed(capsys: pytest.CaptureFixture[str]) -> None:
     """Rate limited but wait already elapsed -> trigger immediately."""
     with (
-        patch(f"{_MODULE}._find_summary_comment", return_value=(42, _RATE_LIMITED_BODY, "2020-01-01T00:00:00Z", "")),
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(_rate_limited_status(), "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time") as mock_time,
@@ -46,7 +61,7 @@ def test_rate_limited_wait_elapsed(capsys: pytest.CaptureFixture[str]) -> None:
         mock_find_reply.assert_called_with("owner/repo", 1, 99)
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["status"] == "triggered"
-    assert parsed["comment_id"] == 42
+    assert parsed["check_run_id"] == 42
     assert parsed["trigger_comment_id"] == 99
 
 
@@ -57,7 +72,7 @@ def test_rate_limited_wait_remaining() -> None:
     recent = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
     # wait_seconds=150 (2m30s), elapsed=30s -> remaining=120s
     with (
-        patch(f"{_MODULE}._find_summary_comment", return_value=(42, _RATE_LIMITED_BODY, recent, "")),
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(_rate_limited_status(updated_at=recent), "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time") as mock_time,
@@ -74,7 +89,7 @@ def test_rate_limited_wait_remaining() -> None:
 def test_trigger_failure() -> None:
     """Trigger fails -> exit 1."""
     with (
-        patch(f"{_MODULE}._find_summary_comment", return_value=(42, _RATE_LIMITED_BODY, "2020-01-01T00:00:00Z", "")),
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(_rate_limited_status(), "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=None),
         patch(f"{_MODULE}.time"),
     ):
@@ -90,11 +105,8 @@ def test_invalid_repo() -> None:
     assert run_retry("bad-format", 1) == 1
 
 
-_UNPARSEABLE_BODY = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\nNo wait time here."
-
-
 def _unparseable_wait_fallback_patches() -> Any:
-    """Shared patches for unparseable-wait fallback tests (45-min-old comment)."""
+    """Shared patches for unparseable-wait fallback tests (45-min-old check run)."""
     from datetime import datetime, timedelta
     from unittest.mock import MagicMock
 
@@ -104,8 +116,9 @@ def _unparseable_wait_fallback_patches() -> Any:
     mock_datetime = MagicMock()
     mock_datetime.now.return_value = now
     mock_datetime.fromisoformat = datetime.fromisoformat
+    status = _rate_limited_status(updated_at=ts, parsed_wait_seconds=None)
     return (
-        patch(f"{_MODULE}._find_summary_comment", return_value=(42, _UNPARSEABLE_BODY, ts, "")),
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(status, "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True),
         patch(f"{_MODULE}.time"),
@@ -151,7 +164,7 @@ def test_unparseable_wait_fallback_waits_remaining(capsys: pytest.CaptureFixture
 
 
 def test_unparseable_wait_expired(capsys: pytest.CaptureFixture[str]) -> None:
-    """No-wait-time body 90 min old -> wait_seconds = 0, trigger immediately."""
+    """No-wait-time check run 90 min old -> wait_seconds = 0, trigger immediately."""
     from datetime import datetime, timedelta
     from unittest.mock import MagicMock
 
@@ -160,8 +173,9 @@ def test_unparseable_wait_expired(capsys: pytest.CaptureFixture[str]) -> None:
     mock_datetime = MagicMock()
     mock_datetime.now.return_value = now
     mock_datetime.fromisoformat = datetime.fromisoformat
+    status = _rate_limited_status(updated_at=ts, parsed_wait_seconds=None)
     with (
-        patch(f"{_MODULE}._find_summary_comment", return_value=(42, _UNPARSEABLE_BODY, ts, "")),
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(status, "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time"),
@@ -177,8 +191,7 @@ def test_unparseable_wait_expired(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_run_check_unparseable_fallback(capsys: pytest.CaptureFixture[str]) -> None:
-    """run_check with no-wait-time body -> JSON with fallback: true, exit 0."""
-    bad_body = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\nNo wait time here."
+    """run_check with unparseable wait -> JSON with fallback: true, exit 0."""
     from datetime import datetime, timedelta
     from unittest.mock import MagicMock
 
@@ -187,26 +200,27 @@ def test_run_check_unparseable_fallback(capsys: pytest.CaptureFixture[str]) -> N
     mock_datetime = MagicMock()
     mock_datetime.now.return_value = now
     mock_datetime.fromisoformat = datetime.fromisoformat
+    status = _rate_limited_status(updated_at=ts, parsed_wait_seconds=None)
     with (
-        patch(f"{_MODULE}._find_summary_comment", return_value=(42, bad_body, ts, "")),
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(status, "")),
         patch(f"{_MODULE}.datetime", mock_datetime),
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_check
 
         assert run_check("owner/repo", 1) == 0
-    import json as _json
 
     out = capsys.readouterr().out
-    result = _json.loads(out)
+    result = json.loads(out)
     assert result["rate_limited"] is True
     assert result["fallback"] is True
     assert result["wait_seconds"] == 900
+    assert result["check_run_id"] == 42
 
 
 def test_bad_timestamp_falls_back(capsys: pytest.CaptureFixture[str]) -> None:
     """Bad updated_at -> warn and fall back to full wait."""
     with (
-        patch(f"{_MODULE}._find_summary_comment", return_value=(42, _RATE_LIMITED_BODY, "not-a-date", "")),
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(_rate_limited_status(updated_at="not-a-date"), "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time") as mock_time,
@@ -217,18 +231,15 @@ def test_bad_timestamp_falls_back(capsys: pytest.CaptureFixture[str]) -> None:
         mock_time.sleep.assert_called_once_with(150)  # full 2m30s wait
         mock_find_reply.assert_called_with("owner/repo", 1, 99)
     captured = capsys.readouterr()
-    assert "Could not parse comment timestamp" in captured.err
+    assert "Could not parse check-run timestamp" in captured.err
     assert '"triggered"' in captured.out
 
 
 def test_wait_capped_at_one_hour(capsys: pytest.CaptureFixture[str]) -> None:
     """Remaining wait > 1 hour -> sleep capped at 3600s."""
-    long_body = (
-        "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n"
-        "Please wait **120 minutes and 0 seconds** before trying again."
-    )
+    status = _rate_limited_status(updated_at="not-a-date", parsed_wait_seconds=7200)
     with (
-        patch(f"{_MODULE}._find_summary_comment", return_value=(42, long_body, "not-a-date", "")),
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(status, "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time") as mock_time,
@@ -245,22 +256,59 @@ def test_wait_capped_at_one_hour(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_run_check_includes_updated_at(capsys: pytest.CaptureFixture[str]) -> None:
-    """run_check rate_limited JSON includes updated_at field."""
-    with patch(
-        f"{_MODULE}._find_summary_comment",
-        return_value=(42, _RATE_LIMITED_BODY, "2025-01-01T00:00:00Z", ""),
+    """run_check rate_limited JSON includes updated_at, check_run_id, and remaining wait_seconds."""
+    from datetime import datetime
+    from unittest.mock import MagicMock
+
+    now = datetime(2025, 1, 1, 0, 0, 30, tzinfo=UTC)
+    mock_datetime = MagicMock()
+    mock_datetime.now.return_value = now
+    mock_datetime.fromisoformat = datetime.fromisoformat
+    status = _rate_limited_status(updated_at="2025-01-01T00:00:00Z", parsed_wait_seconds=150)
+    with (
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(status, "")),
+        patch(f"{_MODULE}.datetime", mock_datetime),
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_check
 
         assert run_check("owner/repo", 1) == 0
     out = capsys.readouterr().out
-    import json as _json
-
-    result = _json.loads(out)
+    result = json.loads(out)
     assert result["rate_limited"] is True
     assert result["updated_at"] == "2025-01-01T00:00:00Z"
-    assert "wait_seconds" in result
-    assert "comment_id" in result
+    assert result["wait_seconds"] == 120  # 150 - 30s elapsed
+    assert result["check_run_id"] == 42
+
+
+def test_run_retry_uses_wait_reference_at_over_updated_at(capsys: pytest.CaptureFixture[str]) -> None:
+    """run_retry subtracts elapsed time from wait_reference_at rather than updated_at when they differ."""
+    from datetime import datetime
+    from unittest.mock import MagicMock
+
+    now = datetime(2026, 4, 1, 10, 11, 0, tzinfo=UTC)
+    mock_datetime = MagicMock()
+    mock_datetime.now.return_value = now
+    mock_datetime.fromisoformat = datetime.fromisoformat
+    status = _rate_limited_status(
+        updated_at="2026-04-01T10:01:00Z",  # 600s elapsed
+        wait_reference_at="2026-04-01T09:59:00Z",  # 120s earlier -> 720s elapsed -> 1000 - 720 = 280s
+        parsed_wait_seconds=1000,
+    )
+    with (
+        patch(f"{_MODULE}.detect_rate_limit", return_value=(status, "")),
+        patch(f"{_MODULE}._post_review_trigger", return_value=99),
+        patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
+        patch(f"{_MODULE}.time") as mock_time,
+        patch(f"{_MODULE}.datetime", mock_datetime),
+    ):
+        from myk_pi_tools.coderabbit.rate_limit import run_retry
+
+        assert run_retry("owner/repo", 1) == 0
+        mock_time.sleep.assert_called_once_with(280)
+        mock_find_reply.assert_called_once_with("owner/repo", 1, 99)
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "triggered"
+    assert result["waited_seconds"] == 280
 
 
 class TestParseWaitSeconds:
@@ -412,3 +460,31 @@ class TestParseWaitSeconds:
 
         body = "Rate limited. Retry after 45 minutes. The window resets every 2 hours."
         assert _parse_wait_seconds(body) == 2700
+
+    def test_next_included_review_minutes(self) -> None:
+        """'Your next included review will be available in 44 minutes.' -> 2640."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Your next included review will be available in 44 minutes."
+        assert _parse_wait_seconds(body) == 2640
+
+    def test_next_included_review_hours_and_minutes(self) -> None:
+        """'Your next included review will be available in **1 hour and 15 minutes**.' -> 4500."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Your next included review will be available in **1 hour and 15 minutes**."
+        assert _parse_wait_seconds(body) == 4500
+
+    def test_parse_anchored_ignores_step_timing_table(self) -> None:
+        """_parse_anchored_wait_seconds ignores bare durations in check-run step timing tables."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_anchored_wait_seconds
+
+        table = "| Prepare review scope | Skipped | 1 minute 36 seconds |"
+        assert _parse_anchored_wait_seconds(table) is None
+
+    def test_parse_anchored_matches_anchored_phrase(self) -> None:
+        """_parse_anchored_wait_seconds parses duration after an anchored rate-limit phrase."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_anchored_wait_seconds
+
+        body = "Next review available in 30 minutes"
+        assert _parse_anchored_wait_seconds(body) == 1800

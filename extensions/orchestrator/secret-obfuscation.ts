@@ -30,45 +30,21 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { createLogger, type Logger } from "../shared/logger.js";
+import {
+  BUILTIN_CREDENTIAL_RULES,
+  isIgnoredEnvName,
+  MIN_SECRET_LENGTH,
+  SECRET_ENV_NAME_RE,
+  URL_CREDENTIAL_EXTRACT_RE,
+} from "../shared/secret-patterns.mjs";
 import { getSetting } from "./project-settings.js";
+
+export { MIN_SECRET_LENGTH };
 
 const defaultLog = createLogger("secret-obfuscation");
 
-/** Minimum character length required in reversible obfuscate mode to avoid redacting ordinary short words. */
-export const MIN_SECRET_LENGTH = 8;
-
-/** Match whole `_`-delimited env-var tokens so GIT_AUTHOR_* and *_ASKPASS are never misclassified. */
-const SECRET_ENV_NAME_RE =
-  /(?:^|_)(?:KEY|SECRET|TOKEN|PASSWORD|PASS|AUTH|CREDENTIALS?|PRIVATE|OAUTH)(?:_|$)/i;
-
-/** Well-known non-secret identity, askpass, socket, and keymap env vars. */
-const IGNORED_ENV_NAMES = new Set([
-  "SSH_AUTH_SOCK",
-  "XAUTHORITY",
-  "DBUS_SESSION_BUS_ADDRESS",
-  "KEYMAP",
-  "LESSKEY",
-  "GIT_ASKPASS",
-  "SSH_ASKPASS",
-  "GIT_AUTHOR_NAME",
-  "GIT_AUTHOR_EMAIL",
-  "GIT_AUTHOR_DATE",
-  "GIT_COMMITTER_NAME",
-  "GIT_COMMITTER_EMAIL",
-  "GIT_COMMITTER_DATE",
-]);
-
-function isIgnoredEnvName(name: string): boolean {
-  return (
-    IGNORED_ENV_NAMES.has(name) ||
-    name.startsWith("GIT_AUTHOR_") ||
-    name.startsWith("GIT_COMMITTER_")
-  );
-}
-
 const PLACEHOLDER_TOKEN_RE = /\$\$[A-Z0-9]+_[a-f0-9]{10,64}\$\$/g;
 const PLACEHOLDER_EXACT_RE = /^\$\$[A-Z0-9]+_[a-f0-9]{10,64}\$\$$/;
-const URL_CREDENTIAL_EXTRACT_RE = /\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/\s:@]+:([^/\s@]{8,})@[^\s"'`<>]+/g;
 
 // ── Process-lifetime dynamic placeholder store (survives /reload & cwd changes) ──
 
@@ -100,70 +76,6 @@ export function clearDynamicSecretStore(sessionId?: string | null): void {
   }
   store.delete(dynamicBucketKey(sessionId));
 }
-
-interface BuiltinRegexRule {
-  label: string;
-  regex: RegExp;
-  /** When set, only this capture group is replaced (e.g. Bearer token or URL password). */
-  secretGroup?: number;
-}
-
-const BUILTIN_CREDENTIAL_RULES: readonly BuiltinRegexRule[] = [
-  {
-    label: "PEMKEY",
-    regex: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
-  },
-  {
-    label: "ANTHROPICKEY",
-    regex: /\bsk-ant-(?:api\d+-|admin\d+-)?[A-Za-z0-9_-]{20,}/g,
-  },
-  {
-    label: "OPENAIKEY",
-    regex: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}/g,
-  },
-  {
-    label: "GHTOKEN",
-    regex: /\b(?:gh[pousr]_[A-Za-z0-9_]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\b/g,
-  },
-  {
-    label: "GLTOKEN",
-    regex: /\b(?:glpat|gloas|glrt)-[A-Za-z0-9_-]{20,}\b/g,
-  },
-  {
-    label: "AWSKEY",
-    regex: /(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])/g,
-  },
-  {
-    label: "GOOGLEKEY",
-    regex: /\bAIza[0-9A-Za-z_-]{35}\b/g,
-  },
-  {
-    label: "SLACKTOKEN",
-    regex: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/g,
-  },
-  {
-    label: "NPMTOKEN",
-    regex: /\bnpm_[A-Za-z0-9]{36}\b/g,
-  },
-  {
-    label: "STRIPEKEY",
-    regex: /\b(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{16,}\b/g,
-  },
-  {
-    label: "JWT",
-    regex: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
-  },
-  {
-    label: "BEARER",
-    regex: /(\bBearer[ \t]+)([A-Za-z0-9._~+/=-]{16,})/gi,
-    secretGroup: 2,
-  },
-  {
-    label: "URLPASS",
-    regex: /(\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/\s:@]+:)([^/\s@]{8,})(@)/g,
-    secretGroup: 2,
-  },
-];
 
 export interface SecretConfigEntry {
   /** Exact literal secret string to match. */
