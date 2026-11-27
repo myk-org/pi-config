@@ -1659,6 +1659,29 @@ def test_install_typescript_lsp_uses_isolated_prefix(monkeypatch: pytest.MonkeyP
     assert not (home / ".pi/lsp/bin/tsc").exists()
 
 
+def test_find_ts_lsp_bin_ignores_prefix_without_managed_bin_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    prefix_bin = home / ".pi/lsp/ts-lsp/node_modules/.bin/typescript-language-server"
+    prefix_bin.parent.mkdir(parents=True)
+    prefix_bin.write_text("#!/bin/sh\n")
+    prefix_bin.chmod(0o755)
+
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "")
+
+    assert install._find_ts_lsp_bin() is None
+
+    managed_link = home / ".pi/lsp/bin/typescript-language-server"
+    managed_link.parent.mkdir(parents=True, exist_ok=True)
+    managed_link.symlink_to(prefix_bin)
+    assert install._find_ts_lsp_bin() == str(managed_link)
+
+
 def test_install_gopls_runs_go_install_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _stub_questionary()
     install = importlib.import_module("install")

@@ -583,13 +583,9 @@ def _find_go_bin(name: str) -> str | None:
 
 
 def _find_ts_lsp_bin() -> str | None:
-    managed_candidates = (
-        HOME / TS_LSP_BIN_DIR_REL / "typescript-language-server",
-        HOME / TS_LSP_PREFIX_REL / "node_modules/.bin/typescript-language-server",
-    )
-    for candidate in managed_candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+    managed_bin = HOME / TS_LSP_BIN_DIR_REL / "typescript-language-server"
+    if managed_bin.is_file() and os.access(managed_bin, os.X_OK):
+        return str(managed_bin)
     return _find_npm_bin("typescript-language-server")
 
 
