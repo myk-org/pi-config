@@ -105,16 +105,11 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
     label: p,
   }));
 
-  const modelItems: ModelSelectItem[] = models.map((m) => {
-    const extra = m as { input?: string[]; output?: string[] };
-    return {
-      value: m.id,
-      label: m.id,
-      description: m.provider,
-      input: Array.isArray(extra.input) ? extra.input : undefined,
-      output: Array.isArray(extra.output) ? extra.output : undefined,
-    };
-  });
+  const modelItems: ModelSelectItem[] = models.map((m) => ({
+    value: m.id,
+    label: m.id,
+    description: m.provider,
+  }));
 
   return { providers, models: modelItems };
 }
@@ -202,7 +197,6 @@ export function buildCategoryItems(
     const isModelKey =
       key === "agent_model" ||
       key === "internal_operations_model" ||
-      key === "image_model" ||
       key === "advisor_model";
 
     if (isProviderKey && resolvePmInfo().providers.length > 0) {
@@ -225,7 +219,7 @@ export function buildCategoryItems(
           },
           normalizedCurrent,
         );
-        // image_model / advisor_model: if picker list is empty, fall back to free-text input
+        // advisor_model: if picker list is empty, fall back to free-text input
         if (submenu.mode === "input") {
           log.debug("model picker empty — free-text fallback", { key, provider: submenu.provider });
           const hint = key === "advisor_model"
@@ -233,7 +227,7 @@ export function buildCategoryItems(
             : "Enter new value (empty to clear)";
           return new InputSubmenu(key, current, hint, theme, done);
         }
-        if (key === "image_model" || key === "advisor_model") {
+        if (key === "advisor_model") {
           log.debug("model picker open", {
             key,
             provider: submenu.provider,

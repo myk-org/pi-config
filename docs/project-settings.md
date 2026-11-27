@@ -61,8 +61,6 @@ For what it looks like from the user side, see [Configuration & Settings](config
 - **Two scopes:** `project` (writes to `<repo>/.pi/pi-config-settings.json`) and `global` (writes to `~/.pi/pi-config-settings.json`). Press Tab to switch.
 - **Source indicators:** Each setting shows its source: `P` (project file), `G` (global file), `E` (env var), `D` (default).
 - **Smart pickers:** Provider and model fields use fuzzy-searchable `SelectList` from `ctx.modelRegistry`.
-  `image_model` is hard-filtered to provider `google` **and** image-capable models; if that filtered list is
-  empty, the TUI falls back to free-text `InputSubmenu`.
 - **Agent overrides:** Nested per-agent provider/model editor.
 - **Secret masking:** Keys matching `token|secret|password|auth` are masked in the list and never prefilled in the editor.
 - **Write format:** The TUI writes plain JSON (atomic write-then-rename) to the scope's settings file.

@@ -16,7 +16,6 @@ import {
 	getSetting,
 	getSettingDynamic,
 	getSettingsPath,
-	isImageGenModelId,
 	parseReviewLoopMaxCycles,
 	parseSettingInput,
 	parseSettingsFile,
@@ -104,7 +103,6 @@ describe("extension settings", () => {
 		PI_PIDASH_ENABLE: process.env.PI_PIDASH_ENABLE,
 		PI_PIDIFF_ENABLE: process.env.PI_PIDIFF_ENABLE,
 		PI_PIDASH_PORT: process.env.PI_PIDASH_PORT,
-		PI_IMAGE_MODEL: process.env.PI_IMAGE_MODEL,
 		PI_INTERNAL_OPERATIONS_PROVIDER: process.env.PI_INTERNAL_OPERATIONS_PROVIDER,
 		PI_INTERNAL_OPERATIONS_MODEL: process.env.PI_INTERNAL_OPERATIONS_MODEL,
 		PI_REVIEW_LOOP_MAX_CYCLES: process.env.PI_REVIEW_LOOP_MAX_CYCLES,
@@ -119,7 +117,6 @@ describe("extension settings", () => {
 		delete process.env.PI_PIDASH_ENABLE;
 		delete process.env.PI_PIDIFF_ENABLE;
 		delete process.env.PI_PIDASH_PORT;
-		delete process.env.PI_IMAGE_MODEL;
 		delete process.env.PI_INTERNAL_OPERATIONS_PROVIDER;
 		delete process.env.PI_INTERNAL_OPERATIONS_MODEL;
 		delete process.env.PI_REVIEW_LOOP_MAX_CYCLES;
@@ -209,24 +206,45 @@ describe("extension settings", () => {
 		assert.equal(getSetting(tmp, "pidash_port"), 7777);
 	});
 
-	it("image_model from settings wins over env", () => {
-		writeSettings({ image_model: "gemini-3-pro-image" });
-		process.env.PI_IMAGE_MODEL = "from-env";
+	it("internal_operations_model from settings wins over env", () => {
+		writeSettings({ internal_operations_model: "claude-sonnet-4" });
+		process.env.PI_INTERNAL_OPERATIONS_MODEL = "from-env";
 		clearSettingsCache();
-		assert.equal(getSetting(tmp, "image_model"), "gemini-3-pro-image");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "claude-sonnet-4");
 	});
 
-	it("image_model from env when project omits it", () => {
-		process.env.PI_IMAGE_MODEL = "from-env";
+	it("internal_operations_model from env when project omits it", () => {
+		process.env.PI_INTERNAL_OPERATIONS_MODEL = "from-env";
 		clearSettingsCache();
-		assert.equal(getSetting(tmp, "image_model"), "from-env");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "from-env");
 	});
 
 	it("project settings win over global settings", () => {
-		writeGlobalSettings({ pidash_port: 7777, image_model: "global-model" });
+		writeGlobalSettings({ pidash_port: 7777, internal_operations_model: "global-model" });
 		writeSettings({ pidash_port: 5555 });
 		assert.equal(getSetting(tmp, "pidash_port"), 5555);
-		assert.equal(getSetting(tmp, "image_model"), "global-model");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "global-model");
+	});
+
+	it("retires extensions/image-gen and ignores legacy image_model in existing settings files (#1447)", () => {
+		assert.equal(existsSync(join(process.cwd(), "extensions", "image-gen")), false);
+		assert.equal("image_model" in SETTINGS_KEYS, false);
+
+		const projectFile = join(tmp, ".pi", "pi-config-settings.json");
+		const globalFile = join(globalTmp, "pi-config-settings.json");
+		writeGlobalSettings({ image_model: "gemini-3-pro-image", pidash_port: 7777 });
+		writeSettings({ image_model: "gemini-2.5-flash-image", coms_max_hops: 8 });
+
+		const parsedProject = parseSettingsFile(projectFile);
+		assert.equal(parsedProject.coms_max_hops, 8);
+		assert.equal("image_model" in parsedProject, false);
+		assert.equal(getSetting(tmp, "coms_max_hops"), 8);
+		assert.equal(getSetting(tmp, "pidash_port"), 7777);
+		assert.equal(parseSettingsFile(globalFile).pidash_port, 7777);
+
+		const saved = updateSetting(tmp, "project", "dco", true);
+		assert.equal(saved.ok, true);
+		assert.equal(getSetting(tmp, "dco"), true);
 	});
 
 	it("internal_operations_provider/model default empty", () => {
@@ -411,13 +429,13 @@ describe("Settings file discovery", () => {
 			join(tmp, ".pi", "pi-config-settings.json"),
 			`{
   // project comment
-  "image_model": "https://example.com/model", // trailing
+  "internal_operations_model": "https://example.com/model", // trailing
   "coms_max_hops": 7
 }
 `,
 		);
 		clearSettingsCache();
-		assert.equal(getSetting(tmp, "image_model"), "https://example.com/model");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "https://example.com/model");
 		assert.equal(getSetting(tmp, "coms_max_hops"), 7);
 	});
 
@@ -425,14 +443,14 @@ describe("Settings file discovery", () => {
 		mkdirSync(join(tmp, ".pi"), { recursive: true });
 		writeFileSync(
 			join(tmp, ".pi", "pi-config-settings.jsonc"),
-			JSON.stringify({ image_model: "from-jsonc" }),
+			JSON.stringify({ internal_operations_model: "from-jsonc" }),
 		);
 		writeFileSync(
 			join(tmp, ".pi", "pi-config-settings.json"),
-			JSON.stringify({ image_model: "from-json" }),
+			JSON.stringify({ internal_operations_model: "from-json" }),
 		);
 		clearSettingsCache();
-		assert.equal(getSetting(tmp, "image_model"), "from-json");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "from-json");
 	});
 
 	it("Global settings file supports comments", () => {
@@ -442,13 +460,13 @@ describe("Settings file discovery", () => {
 			globalJson,
 			`{
   // global comment
-  "image_model": "https://cdn.example.com/global", // keep // in string
+  "internal_operations_model": "https://cdn.example.com/global", // keep // in string
   "coms_max_hops": 9
 }
 `,
 		);
 		clearSettingsCache();
-		assert.equal(getSetting(tmp, "image_model"), "https://cdn.example.com/global");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "https://cdn.example.com/global");
 		assert.equal(getSetting(tmp, "coms_max_hops"), 9);
 	});
 
@@ -479,25 +497,25 @@ describe("Settings file discovery", () => {
 	it("reuses cached project/global layers without re-reading disk (#1207)", () => {
 		const globalJson = join(globalTmp, "pi-config-settings.json");
 		setGlobalSettingsPath(globalJson);
-		writeFileSync(globalJson, JSON.stringify({ pidash_port: 7777, image_model: "global-img" }));
+		writeFileSync(globalJson, JSON.stringify({ pidash_port: 7777, internal_operations_model: "global-model" }));
 		mkdirSync(join(tmp, ".pi"), { recursive: true });
 		const projectJson = join(tmp, ".pi", "pi-config-settings.json");
 		writeFileSync(projectJson, JSON.stringify({ pidash_port: 8888 }));
 		clearSettingsCache();
 
 		assert.equal(getSetting(tmp, "pidash_port"), 8888);
-		assert.equal(getSetting(tmp, "image_model"), "global-img");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "global-model");
 
 		// Mutate disk inside the 30s cache window — cached layers must serve the cached values
 		writeFileSync(projectJson, JSON.stringify({ pidash_port: 9999 }));
-		writeFileSync(globalJson, JSON.stringify({ image_model: "updated-img" }));
+		writeFileSync(globalJson, JSON.stringify({ internal_operations_model: "updated-model" }));
 		assert.equal(getSetting(tmp, "pidash_port"), 8888);
-		assert.equal(getSetting(tmp, "image_model"), "global-img");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "global-model");
 
 		// Explicit cache clear picks up the updated files immediately
 		clearSettingsCache();
 		assert.equal(getSetting(tmp, "pidash_port"), 9999);
-		assert.equal(getSetting(tmp, "image_model"), "updated-img");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "updated-model");
 	});
 });
 
@@ -602,11 +620,11 @@ describe("Deep settings store — unified schema, cache, and atomic persistence 
 	it("preserves empty strings consistently for non-enum string settings", () => {
 		// Global sets a shortcut; project explicitly clears it with ""
 		const globalFile = join(globalTmp, "pi-config-settings.json");
-		writeFileSync(globalFile, JSON.stringify({ widget_tasks_shortcut: "alt+x", image_model: "gemini-2.5-flash-image" }));
+		writeFileSync(globalFile, JSON.stringify({ widget_tasks_shortcut: "alt+x", internal_operations_model: "gemini-2.5-flash" }));
 		clearSettingsCache();
 
 		assert.deepEqual(validateSetting("widget_tasks_shortcut", ""), { ok: true, value: "" });
-		assert.deepEqual(validateSetting("image_model", ""), { ok: true, value: "" });
+		assert.deepEqual(validateSetting("internal_operations_model", ""), { ok: true, value: "" });
 		assert.deepEqual(parseSettingInput("widget_tasks_shortcut", "(empty)"), { ok: true, value: "" });
 
 		const res = updateSetting(tmp, "project", "widget_tasks_shortcut", "");
@@ -650,7 +668,7 @@ describe("Deep settings store — unified schema, cache, and atomic persistence 
 		assert.equal(readFileSync(projectFile, "utf-8"), "{ broken");
 	});
 
-	it("does not emit bypass debug logs on hot getSetting, isImageGenModelId, or parseSettingInput calls", () => {
+	it("does not emit bypass debug logs on hot getSetting or parseSettingInput calls", () => {
 		const debugMessages: string[] = [];
 		setSettingsLogger({
 			debug: (msg) => debugMessages.push(msg),
@@ -661,7 +679,6 @@ describe("Deep settings store — unified schema, cache, and atomic persistence 
 		try {
 			getSetting(tmp, "dco");
 			getSettingDynamic(tmp, "log_coms");
-			isImageGenModelId("gemini-2.5-flash-image");
 			parseSettingInput("dangerous_command_allowlist", '["git status"]');
 			assert.deepEqual(debugMessages, [], "hot lookups must not spam the bypass logger");
 

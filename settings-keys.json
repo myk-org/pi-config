@@ -190,13 +190,6 @@
     "min": 1,
     "group": "Dashboard"
   },
-  "image_model": {
-    "description": "Gemini/Google image model for generate_image (Settings TUI picker: google + image-capable; empty = disabled)",
-    "type": "string",
-    "env": "PI_IMAGE_MODEL",
-    "default": "",
-    "group": "Provider"
-  },
   "internal_operations_provider": {
     "description": "Provider for internal ops like dreaming (empty = use session model)",
     "type": "string",

@@ -467,20 +467,11 @@ Project agents included by default (`agentScope` defaults to `"both"`).
 
 ### Image Generation
 
-The `generate_image` tool creates images from structured descriptions via Gemini API.
+Image generation uses Pi 1.6's native `codemode` image API (`models.getAvailableOfType("image")` + `models.generateImages()` + `image()`),
+reusing the session's configured provider credentials and usage tracking with zero extra top-level tool schema tokens when unused.
 
-**Configuration:**
-
-Set `image_model` in `pi-config-settings.json` or use `PI_IMAGE_MODEL` env var.
-
-| Setting / Variable                   | Description                                                                                        |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `image_model` / `PI_IMAGE_MODEL`     | Google/Gemini image model for `generate_image` (Settings TUI filters to google; empty = disabled). |
-| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini API key (env only)                                                                          |
-
-**Usage:** Ask naturally — "generate an image of a sunset" — or use structured params: `subject`, `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio`.
-
-In containers, images are auto-served via HTTP for browser preview.
+The legacy `extensions/image-gen/` extension (`generate_image`) and `image_model` setting were retired in favor of native `codemode` image models;
+existing `image_model` entries in `pi-config-settings.json` are ignored safely. See [Image Generation](docs/image-generation.md).
 
 ### Trail-code code map (on by default)
 
@@ -618,7 +609,7 @@ docker run --rm -it \
 ### Environment file
 
 Create a `.env` file with external service credentials and container-specific
-variables. Pi-config settings (`image_model`, `vertex_claude_1m`, etc.)
+variables. Pi-config settings (`agent_model`, `vertex_claude_1m`, etc.)
 go in `.pi/pi-config-settings.json` — not here:
 
 ```env
@@ -644,7 +635,7 @@ GITHUB_TOKEN=ghp_xxx
 GITHUB_API_TOKEN=ghp_xxx
 GH_CONFIG_DIR=/home/youruser/.config/gh
 
-# Gemini (optional — required for image generation)
+# Gemini (optional — Google/Gemini API key)
 GEMINI_API_KEY=xxx
 ```
 
@@ -1130,7 +1121,7 @@ files change. `npm run typecheck:tests` checks the test tree alone.
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.6.0**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.6.1**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)
