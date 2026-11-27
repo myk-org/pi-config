@@ -98,6 +98,7 @@ for `git-expert` to commit.
 | `/qodo-review [--autofix] [--fast\|--deep] [--ticket <url>] [path ...]` | Review local changes with Qodo, attach session context, and optionally autofix (max 3 cycles) |
 | `/review-handler [url] [--autorabbit] [--autoqodo]` | Process PR review comments, fix approved items |
 | `/retro [pr-number]` | Run a read-only post-merge PR retrospective using the `$0` telemetry collector and 7 structured categories (writes `.pi/data/retros/pr-<N>.md`) |
+| `/report [issue summary]` | Collect a redacted runtime snapshot & recent session `warn`/`error` logs (`scripts/diagnostic-report-collect.mjs`), check docs/config and duplicate GitHub issues, and ask via `ask_user` before filing (paired with bundled `bug-report` skill) |
 | `/domain-model [focus area]` | Scan codebase and build/update a CONTEXT.md domain glossary for consistent AI vocabulary |
 | `/refine-review <url>` | Refine and improve existing PR review comments |
 | `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
