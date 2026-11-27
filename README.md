@@ -198,13 +198,22 @@ See the [Docker section](#docker-sandboxed-execution) below for the full run com
 
 ### Native (without Docker)
 
+Install `pi` first (`npm install -g @earendil-works/pi-coding-agent`). On Linux distros with system-packaged Node.js
+(root-owned `/usr` or `/usr/local` npm prefix), configure a user-writable npm prefix first or install `pi` with `sudo`:
+
+```bash
+mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global
+export PATH="$HOME/.npm-global/bin:$PATH"
+npm install -g @earendil-works/pi-coding-agent
+```
+
 Install from npm and PyPI — no git clone of this repo:
 
 ```bash
 pi install npm:pi-orchestrator-config
 pi install npm:@myk-org/pi-vertex-claude   # optional Vertex Claude models
 pi install npm:pi-web-access               # optional web search/fetch
-uv tool install myk-pi-tools
+uv tool install --python 3.14 --upgrade myk-pi-tools
 ```
 
 Or run the interactive installer (downloads the script only; packages still come from npm/PyPI):
@@ -221,10 +230,10 @@ uv run scripts/install.py
 
 The installer covers:
 
-- **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, myk-pi-tools, bun
+- **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, myk-pi-tools
 - **Python Tools** — prek
 - **npm Packages** — agent-browser, trail-code (`@trailhq/trail-code`)
-- **Browser Automation** — playwright + chromium
+- **Browser Automation** — agent-browser Chromium (`agent-browser install --with-deps`)
 - **Environment Setup** — gitignore configuration
 
 For non-interactive (CI) usage:
@@ -246,7 +255,7 @@ The container runs `pi update` automatically on each start.
 ### Native
 
 ```bash
-pi update                          # Pi package
+pi update --extensions             # Pi and installed packages
 uv tool upgrade myk-pi-tools      # CLI tool
 ```
 
@@ -505,8 +514,10 @@ dedicated npm prefix, audits that isolated dependency tree for lifecycle scripts
 and strictly rebuilds it with only those packages approved. The completed prefix
 is published under the global npm prefix and its `trail` binary linked globally,
 so unrelated global packages are never evaluated. It verifies `trail --version`;
-`DO_NOT_TRACK=1` disables Trail telemetry. Requirements: Node.js 22+, npm 12+,
-and the node-gyp prerequisites (Python 3, `make`, G++). If the binary is missing
+`DO_NOT_TRACK=1` disables Trail telemetry. Requirements: Node.js 22+, npm 10+
+(strict `--allow-scripts` on npm 12+; audited `--ignore-scripts` + scoped
+`npm rebuild` on npm 10–11), and the node-gyp prerequisites (Python 3, `make`,
+G++). If the binary is missing
 or the install fails, pi continues without the map and the `trail_*` tools are
 simply absent.
 
