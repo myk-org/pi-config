@@ -21,13 +21,13 @@ from typing import Any
 
 from myk_pi_tools.coderabbit.approved import _APPROVED_MARKER
 from myk_pi_tools.coderabbit.rate_limit import (
-    _RATE_LIMITED_MARKER,
     _REVIEWS_PAUSED_FALLBACK_HEADING,
     _REVIEWS_PAUSED_FALLBACK_SETTING,
     _REVIEWS_PAUSED_MARKER,
-    _parse_wait_seconds,
+    DEFAULT_RATE_LIMIT_WINDOW,
     _post_resume_trigger,
     compute_remaining_wait,
+    detect_rate_limit,
     run_trigger,
 )
 from myk_pi_tools.coderabbit.utils import SUMMARY_MARKER, find_summary_comment, validate_owner_repo
@@ -515,25 +515,29 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
         else:
             print_stderr(f"[poll] Fetch failed (exit code {fetch_result}). Will retry in {_POLL_SLEEP_SECONDS}s...")
 
-        # Step 4: Check CodeRabbit rate limit using post-fetch summary state
+        # Step 4: Check CodeRabbit rate limit from the PR head SHA check run
         log.debug("[poll] Checking CodeRabbit rate limit...")
         issue_comments = fetch_ctx.get("issue_comments") if fetch_ctx is not None else None
-        if isinstance(issue_comments, list):
-            comment_id, body, updated_at, error = _extract_coderabbit_summary(issue_comments)
-        else:
-            comment_id, body, updated_at, error = find_summary_comment(owner_repo, pr_num_int)
+        rate_limit_status, rate_limit_error = detect_rate_limit(
+            owner_repo,
+            pr_num_int,
+            comments=issue_comments if isinstance(issue_comments, list) else None,
+        )
 
-        if comment_id is not None and body is not None and _RATE_LIMITED_MARKER in body:
-            # Rate limited -- parse wait time and subtract elapsed time
-            wait_seconds = _parse_wait_seconds(body)
-            if wait_seconds is None:
-                print_stderr("[poll] Warning: Rate limited but could not parse wait time. Using 300s default.")
-                wait_seconds = 300
+        if rate_limit_status is not None and rate_limit_status.rate_limited:
+            if rate_limit_status.parsed_wait_seconds is None:
+                print_stderr(
+                    "[poll] Warning: Rate limited but could not parse wait time. "
+                    f"Using {DEFAULT_RATE_LIMIT_WINDOW}s default."
+                )
+                wait_seconds = DEFAULT_RATE_LIMIT_WINDOW
+            else:
+                wait_seconds = rate_limit_status.parsed_wait_seconds
 
-            remaining, elapsed, parsed_ok = compute_remaining_wait(wait_seconds, updated_at)
+            remaining, elapsed, parsed_ok = compute_remaining_wait(wait_seconds, rate_limit_status.updated_at)
             if not parsed_ok:
-                print_stderr("[poll] Warning: Could not parse comment timestamp. Using full wait time.")
-            elif updated_at:
+                print_stderr("[poll] Warning: Could not parse check-run timestamp. Using full wait time.")
+            elif rate_limit_status.updated_at:
                 log.debug(
                     "[poll] Rate limit posted %ds ago. Original: %ds, remaining: %ds",
                     elapsed,
@@ -541,6 +545,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
                     remaining,
                 )
 
+            remaining = min(remaining, DEFAULT_RATE_LIMIT_WINDOW)
             total_wait = remaining + _RATE_LIMIT_BUFFER_SECONDS
             print_stderr(f"[poll] CodeRabbit is rate limited. Waiting {total_wait}s then triggering re-review...")
 
@@ -555,54 +560,62 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
             emitted, _ = _emit_approval_if_ready(owner_repo, pr_num_int, review_url, output_dir)
             if emitted:
                 return 0
-
-        elif (
-            comment_id is not None
-            and body is not None
-            and (
-                _REVIEWS_PAUSED_MARKER in body
-                or (_REVIEWS_PAUSED_FALLBACK_HEADING in body and _REVIEWS_PAUSED_FALLBACK_SETTING in body)
-            )
-        ):
-            # Reviews paused — auto-resume (max 3 attempts per poll session)
-            resume_attempts += 1
-
-            if resume_attempts > 3:
-                print_stderr(
-                    "[poll] ⚠️  CodeRabbit still paused after 3 resume attempts. "
-                    "Continuing poll without resuming — manual intervention may be needed."
-                )
-            else:
-                print_stderr(
-                    f"[poll] ⚠️  CodeRabbit paused reviews (too many commits). "
-                    f"Auto-resuming (attempt {resume_attempts}/3)..."
-                )
-                print_stderr("[poll] 💡 To prevent this, add to .coderabbit.yaml:")
-                print_stderr("[poll]     reviews:")
-                print_stderr("[poll]       auto_review:")
-                print_stderr("[poll]         auto_pause_after_reviewed_commits: 0")
-
-                resume_id = _post_resume_trigger(owner_repo, pr_num_int)
-                if resume_id is not None:
-                    print_stderr(f"[poll] Posted @coderabbitai resume (comment ID: {resume_id})")
-
-                    # Re-check approval after resume (CodeRabbit may immediately approve)
-                    log.debug("[poll] Re-checking approval after resume trigger...")
-                    emitted, _ = _emit_approval_if_ready(owner_repo, pr_num_int, review_url, output_dir)
-                    if emitted:
-                        return 0
-                else:
-                    print_stderr("[poll] Warning: Failed to post resume trigger. Will retry next cycle.")
-
-        elif comment_id is None:
-            if error and "No CodeRabbit summary comment found" in error:
-                log.debug("[poll] No CodeRabbit summary comment found.")
-            elif error:
-                print_stderr(f"[poll] Could not check rate limit ({error}).")
-            else:
-                log.debug("[poll] No CodeRabbit summary comment found.")
         else:
-            log.debug("[poll] No rate limit detected.")
+            if rate_limit_error:
+                print_stderr(f"[poll] Could not check rate limit ({rate_limit_error}).")
+
+            if isinstance(issue_comments, list):
+                comment_id, body, _updated_at, summary_error = _extract_coderabbit_summary(issue_comments)
+            else:
+                comment_id, body, _updated_at, summary_error = find_summary_comment(owner_repo, pr_num_int)
+
+            if (
+                comment_id is not None
+                and body is not None
+                and (
+                    _REVIEWS_PAUSED_MARKER in body
+                    or (_REVIEWS_PAUSED_FALLBACK_HEADING in body and _REVIEWS_PAUSED_FALLBACK_SETTING in body)
+                )
+            ):
+                # Reviews paused — auto-resume (max 3 attempts per poll session)
+                resume_attempts += 1
+
+                if resume_attempts > 3:
+                    print_stderr(
+                        "[poll] ⚠️  CodeRabbit still paused after 3 resume attempts. "
+                        "Continuing poll without resuming — manual intervention may be needed."
+                    )
+                else:
+                    print_stderr(
+                        f"[poll] ⚠️  CodeRabbit paused reviews (too many commits). "
+                        f"Auto-resuming (attempt {resume_attempts}/3)..."
+                    )
+                    print_stderr("[poll] 💡 To prevent this, add to .coderabbit.yaml:")
+                    print_stderr("[poll]     reviews:")
+                    print_stderr("[poll]       auto_review:")
+                    print_stderr("[poll]         auto_pause_after_reviewed_commits: 0")
+
+                    resume_id = _post_resume_trigger(owner_repo, pr_num_int)
+                    if resume_id is not None:
+                        print_stderr(f"[poll] Posted @coderabbitai resume (comment ID: {resume_id})")
+
+                        # Re-check approval after resume (CodeRabbit may immediately approve)
+                        log.debug("[poll] Re-checking approval after resume trigger...")
+                        emitted, _ = _emit_approval_if_ready(owner_repo, pr_num_int, review_url, output_dir)
+                        if emitted:
+                            return 0
+                    else:
+                        print_stderr("[poll] Warning: Failed to post resume trigger. Will retry next cycle.")
+
+            elif comment_id is None:
+                if summary_error and "No CodeRabbit summary comment found" in summary_error:
+                    log.debug("[poll] No CodeRabbit summary comment found.")
+                elif summary_error:
+                    print_stderr(f"[poll] Could not check summary comment ({summary_error}).")
+                else:
+                    log.debug("[poll] No CodeRabbit summary comment found.")
+            else:
+                log.debug("[poll] No rate limit detected.")
 
         # Step 6: No actionable result -- sleep and loop
         log.debug("[poll] No new comments. Sleeping %ds before next cycle...", _POLL_SLEEP_SECONDS)

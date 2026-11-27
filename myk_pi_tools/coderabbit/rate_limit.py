@@ -13,19 +13,25 @@ import json
 import re
 import sys
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from myk_pi_tools.coderabbit.utils import (
-    find_summary_comment as _find_summary_comment,
+    find_coderabbit_check_run as _find_coderabbit_check_run,
+)
+from myk_pi_tools.coderabbit.utils import (
+    find_rate_limit_reply_comment as _find_rate_limit_reply_comment,
 )
 from myk_pi_tools.coderabbit.utils import (
     validate_owner_repo as _validate_owner_repo,
 )
 from myk_pi_tools.github import post_issue_comment
 from myk_pi_tools.github import run_gh as _run_gh
+from myk_pi_tools.logger import create_logger
 
-_RATE_LIMITED_MARKER = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->"
+log = create_logger(__name__)
+
 _REVIEWS_PAUSED_MARKER = "<!-- This is an auto-generated comment: reviews paused by coderabbit.ai -->"
 # Fallback: match body text when HTML marker is absent — requires both strings
 _REVIEWS_PAUSED_FALLBACK_HEADING = "Reviews paused"
@@ -34,22 +40,23 @@ _REVIEWS_PAUSED_FALLBACK_SETTING = "auto_pause_after_reviewed_commits"
 # Regex to parse wait time from rate limit message (legacy format)
 _WAIT_TIME_RE = re.compile(r"Please wait \*\*(?:(\d+) minutes? and )?(\d+) seconds?\*\*")
 
-# Detect rate-limit phrase even when no duration tokens follow (→ None, not body-wide).
-_RATE_LIMIT_PHRASE_RE = re.compile(
-    r"(?:next review available in|please wait)",
-    re.IGNORECASE,
+_RATE_LIMIT_PHRASE_PATTERN = (
+    r"\b(?:(?:next(?:\s+included)?\s+review\s+)?(?:will\s+be\s+)?available\s+in|please\s+wait)\b"
 )
+
+# Detect rate-limit phrase even when no duration tokens follow (→ None, not body-wide).
+_RATE_LIMIT_PHRASE_RE = re.compile(_RATE_LIMIT_PHRASE_PATTERN, re.IGNORECASE)
 # Match duration tokens near known CodeRabbit rate-limit phrases.
 # Captures one contiguous duration expression (e.g. "58 minutes", "1 hour and 30 minutes").
 # Allows optional bold (**), punctuation, whitespace, and newline between phrase and duration.
 # Two \*{0,2} groups cover markdown like "**Next review available in:** **58 minutes**"
 # (closing bold after colon, then opening bold before the duration).
 _DURATION_CONTEXT_RE = re.compile(
-    r"(?:next review available in|please wait)"
-    r"(?:\s+(?:for|about|approximately))?"
-    r"[,.:;\s\-\u2013\u2014]*\*{0,2}\s*\*{0,2}\s*"
-    r"((?:\d+\s*(?:hours?|minutes?|seconds?)(?:\s*,?\s*(?:and\s+)?)?)+)"
-    r"\s*\*{0,2}",
+    _RATE_LIMIT_PHRASE_PATTERN
+    + r"(?:\s+(?:for|about|approximately))?"
+    + r"[,.:;\s\-\u2013\u2014]*\*{0,2}\s*\*{0,2}\s*"
+    + r"((?:\d+\s*(?:hours?|minutes?|seconds?)(?:\s*,?\s*(?:and\s+)?)?)+)"
+    + r"\s*\*{0,2}",
     re.IGNORECASE | re.MULTILINE,
 )
 _DURATION_TOKEN_RE = re.compile(r"(\d+)\s*(hours?|minutes?|seconds?)", re.IGNORECASE)
@@ -82,6 +89,24 @@ def _sum_duration_tokens(text: str) -> int | None:
     return total if found else None
 
 
+def _parse_anchored_wait_seconds(body: str) -> int | None:
+    """Parse wait time in seconds anchored to a rate-limit phrase only.
+
+    Checks ``_WAIT_TIME_RE`` and ``_DURATION_CONTEXT_RE`` — never falls back to
+    bare duration expressions so check-run timing tables cannot be misparsed.
+    """
+    match = _WAIT_TIME_RE.search(body)
+    if match:
+        minutes = int(match.group(1)) if match.group(1) else 0
+        seconds = int(match.group(2))
+        return minutes * 60 + seconds
+
+    context_match = _DURATION_CONTEXT_RE.search(body)
+    if context_match:
+        return _sum_duration_tokens(context_match.group(1))
+    return None
+
+
 def _parse_wait_seconds(body: str) -> int | None:
     """Parse wait time in seconds from rate limit message body.
 
@@ -92,25 +117,17 @@ def _parse_wait_seconds(body: str) -> int | None:
     Strategy:
     1. Try the legacy regex first (backward compatibility).
     2. Look for durations anchored to known phrases ("Next review available in",
-       "please wait"). If a phrase is found, only tokens within that scope are
-       used; an empty anchored match returns None (triggers timestamp fallback).
+       "available in", "please wait"). If a phrase is found, only tokens within
+       that scope are used; an empty anchored match returns None (triggers
+       timestamp fallback).
     3. If no rate-limit phrase is present, use the first contiguous duration
        expression (not a body-wide sum of all tokens).
 
     Returns total seconds or None if nothing parseable.
     """
-    # Try legacy format first for backward compatibility
-    match = _WAIT_TIME_RE.search(body)
-    if match:
-        minutes = int(match.group(1)) if match.group(1) else 0
-        seconds = int(match.group(2))
-        return minutes * 60 + seconds
-
-    # Prefer duration near known CodeRabbit rate-limit phrases
-    context_match = _DURATION_CONTEXT_RE.search(body)
-    if context_match:
-        # Context phrase found — only parse within that scope.
-        return _sum_duration_tokens(context_match.group(1))
+    anchored = _parse_anchored_wait_seconds(body)
+    if anchored is not None:
+        return anchored
 
     # Phrase present but no contiguous duration tokens → None (timestamp fallback)
     # rather than risking false positives from body-wide scan.
@@ -122,6 +139,108 @@ def _parse_wait_seconds(body: str) -> int | None:
     if first_match:
         return _sum_duration_tokens(first_match.group(1))
     return None
+
+
+def is_rate_limited_check_run(check_run: dict[str, Any]) -> bool:
+    """Return True iff the CodeRabbit check run ended neutral with a rate-limit output."""
+    if check_run.get("conclusion") != "neutral":
+        return False
+    output = check_run.get("output")
+    if not isinstance(output, dict):
+        return False
+    title = output.get("title") if isinstance(output.get("title"), str) else ""
+    summary = output.get("summary") if isinstance(output.get("summary"), str) else ""
+    return "rate limit" in f"{title} {summary}".lower()
+
+
+@dataclass(frozen=True)
+class RateLimitStatus:
+    """Structured CodeRabbit rate-limit status derived from the PR head check run."""
+
+    rate_limited: bool
+    check_run_id: int | None = None
+    head_sha: str | None = None
+    conclusion: str | None = None
+    title: str | None = None
+    updated_at: str | None = None
+    parsed_wait_seconds: int | None = None
+
+
+def detect_rate_limit(
+    owner_repo: str,
+    pr_number: int,
+    *,
+    comments: list[dict[str, Any]] | None = None,
+) -> tuple[RateLimitStatus | None, str]:
+    """Detect CodeRabbit rate limiting from the PR head SHA's CodeRabbit check run."""
+    check_run, error = _find_coderabbit_check_run(owner_repo, pr_number)
+    if error:
+        return None, error
+    if check_run is None:
+        return RateLimitStatus(rate_limited=False), ""
+
+    raw_id = check_run.get("id")
+    check_run_id = raw_id if isinstance(raw_id, int) and not isinstance(raw_id, bool) else None
+    raw_sha = check_run.get("head_sha")
+    head_sha = raw_sha if isinstance(raw_sha, str) and raw_sha else None
+    raw_conclusion = check_run.get("conclusion")
+    conclusion = raw_conclusion if isinstance(raw_conclusion, str) else None
+    raw_output = check_run.get("output")
+    output: dict[str, Any] = raw_output if isinstance(raw_output, dict) else {}
+    raw_title = output.get("title")
+    title = raw_title if isinstance(raw_title, str) else None
+    raw_summary = output.get("summary")
+    summary = raw_summary if isinstance(raw_summary, str) else ""
+    raw_text = output.get("text")
+    text = raw_text if isinstance(raw_text, str) else ""
+    raw_completed = check_run.get("completed_at") or check_run.get("started_at")
+    completed_at = raw_completed if isinstance(raw_completed, str) and raw_completed else None
+
+    if not is_rate_limited_check_run(check_run):
+        return (
+            RateLimitStatus(
+                rate_limited=False,
+                check_run_id=check_run_id,
+                head_sha=head_sha,
+                conclusion=conclusion,
+                title=title,
+            ),
+            "",
+        )
+
+    parsed_wait = _parse_anchored_wait_seconds(f"{summary}\n{text}")
+    if parsed_wait is None:
+        reply, reply_err = _find_rate_limit_reply_comment(
+            owner_repo,
+            pr_number,
+            completed_at=completed_at,
+            comments=comments,
+        )
+        if reply_err:
+            log.warning(
+                "Could not fetch rate-limit reply comment for %s#%d (%s); falling back",
+                owner_repo,
+                pr_number,
+                reply_err,
+            )
+            parsed_wait = None
+        elif reply is not None:
+            raw_reply_body = reply.get("body")
+            reply_body = raw_reply_body if isinstance(raw_reply_body, str) else ""
+            parsed_wait = _parse_wait_seconds(reply_body)
+
+    return (
+        RateLimitStatus(
+            rate_limited=True,
+            check_run_id=check_run_id,
+            head_sha=head_sha,
+            conclusion=conclusion,
+            title=title,
+            updated_at=completed_at,
+            parsed_wait_seconds=parsed_wait,
+        ),
+        "",
+    )
 
 
 def compute_remaining_wait(wait_seconds: int, updated_at: str | None) -> tuple[int, int, bool]:
@@ -194,44 +313,68 @@ def run_check(owner_repo: str, pr_number: int) -> int:
 
     JSON output fields:
         rate_limited (bool): Whether CodeRabbit is rate limited.
-        wait_seconds (int): Seconds to wait (parsed from comment or estimated from timestamp).
-        comment_id (int): The rate-limit comment ID.
-        updated_at (str): ISO 8601 timestamp of the rate-limit comment.
-        fallback (bool, optional): True when wait_seconds is estimated from the comment
-            timestamp using DEFAULT_RATE_LIMIT_WINDOW, not parsed from the comment body.
+        wait_seconds (int): Seconds to wait (when rate_limited is True).
+        check_run_id (int | None): The CodeRabbit check run ID (when present).
+        head_sha (str | None): PR head SHA inspected.
+        conclusion (str | None): Check run conclusion.
+        title (str | None): Check run output title.
+        updated_at (str | None): ISO 8601 timestamp of the check run.
+        fallback (bool, optional): True when wait_seconds is estimated from the check-run
+            timestamp using DEFAULT_RATE_LIMIT_WINDOW, not parsed from text.
 
     Returns exit code (0 = success, 1 = error).
     """
     if not _validate_owner_repo(owner_repo):
         return 1
 
-    comment_id, body, updated_at, error = _find_summary_comment(owner_repo, pr_number)
-
-    if comment_id is None or body is None:
-        print(f"Error: {error}")
+    status, error = detect_rate_limit(owner_repo, pr_number)
+    if status is None:
+        log.error("Rate limit check failed for %s#%d: %s", owner_repo, pr_number, error)
+        print(f"Error: {error}", file=sys.stderr)
         return 1
 
-    if _RATE_LIMITED_MARKER not in body:
-        print(json.dumps({"rate_limited": False}, separators=(",", ":")))
+    if not status.rate_limited:
+        if status.check_run_id is None:
+            print(json.dumps({"rate_limited": False}, separators=(",", ":")))
+        else:
+            print(
+                json.dumps(
+                    {
+                        "rate_limited": False,
+                        "check_run_id": status.check_run_id,
+                        "head_sha": status.head_sha,
+                        "conclusion": status.conclusion,
+                        "title": status.title,
+                    },
+                    separators=(",", ":"),
+                )
+            )
         return 0
 
-    wait_seconds = _parse_wait_seconds(body)
     fallback = False
-    if wait_seconds is None:
-        # Compute fallback wait from comment timestamp
+    if status.parsed_wait_seconds is None:
         fallback = True
-        wait_seconds, _, parsed_ok = compute_remaining_wait(DEFAULT_RATE_LIMIT_WINDOW, updated_at)
+        wait_seconds, _, parsed_ok = compute_remaining_wait(DEFAULT_RATE_LIMIT_WINDOW, status.updated_at)
         if not parsed_ok:
+            log.warning(
+                "Could not parse check-run timestamp '%s' — using full fallback window",
+                status.updated_at,
+            )
             print(
-                f"Warning: Could not parse comment timestamp '{updated_at}' — using full fallback window",
+                f"Warning: Could not parse check-run timestamp '{status.updated_at}' — using full fallback window",
                 file=sys.stderr,
             )
+    else:
+        wait_seconds = status.parsed_wait_seconds
 
     result: dict[str, Any] = {
         "rate_limited": True,
         "wait_seconds": wait_seconds,
-        "comment_id": comment_id,
-        "updated_at": updated_at,
+        "check_run_id": status.check_run_id,
+        "head_sha": status.head_sha,
+        "conclusion": status.conclusion,
+        "title": status.title,
+        "updated_at": status.updated_at,
     }
     if fallback:
         result["fallback"] = True
@@ -307,25 +450,25 @@ def run_retry(owner_repo: str, pr_number: int) -> int:
     if not _validate_owner_repo(owner_repo):
         return 1
 
-    comment_id, body, updated_at, error = _find_summary_comment(owner_repo, pr_number)
-
-    if comment_id is None or body is None:
+    status, error = detect_rate_limit(owner_repo, pr_number)
+    if status is None:
+        log.error("Rate limit check failed for %s#%d: %s", owner_repo, pr_number, error)
         print(f"Error: {error}", file=sys.stderr)
         return 1
 
-    if _RATE_LIMITED_MARKER not in body:
+    if not status.rate_limited:
         print(json.dumps({"status": "not_rate_limited"}, separators=(",", ":")))
         return 0
 
-    parsed_wait = _parse_wait_seconds(body)
-    is_fallback = parsed_wait is None
-    wait_seconds: int = DEFAULT_RATE_LIMIT_WINDOW if parsed_wait is None else parsed_wait
+    is_fallback = status.parsed_wait_seconds is None
+    wait_seconds: int = DEFAULT_RATE_LIMIT_WINDOW if status.parsed_wait_seconds is None else status.parsed_wait_seconds
 
-    # Calculate remaining wait from comment timestamp
-    remaining, elapsed, parsed_ok = compute_remaining_wait(wait_seconds, updated_at)
+    # Calculate remaining wait from check-run timestamp
+    remaining, elapsed, parsed_ok = compute_remaining_wait(wait_seconds, status.updated_at)
     if not parsed_ok:
+        log.warning("Could not parse check-run timestamp '%s' — using full wait", status.updated_at)
         print(
-            f"Warning: Could not parse comment timestamp '{updated_at}' — using full wait",
+            f"Warning: Could not parse check-run timestamp '{status.updated_at}' — using full wait",
             file=sys.stderr,
         )
 
@@ -359,7 +502,7 @@ def run_retry(owner_repo: str, pr_number: int) -> int:
         json.dumps(
             {
                 "status": "triggered",
-                "comment_id": comment_id,
+                "check_run_id": status.check_run_id,
                 "trigger_comment_id": trigger_id,
                 "waited_seconds": remaining,
             },
