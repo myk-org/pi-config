@@ -1177,6 +1177,7 @@ def test_ensure_writable_npm_prefix_falls_back_to_user_dir(
     real_access = os.access
     monkeypatch.setattr(install, "HOME", home)
     monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setattr(install.subprocess, "run", run)
     monkeypatch.setattr(
@@ -1609,6 +1610,7 @@ def test_build_steps_includes_lsp_servers_step(monkeypatch: pytest.MonkeyPatch, 
     assert set(lsp_tools.keys()) == {"typescript-language-server", "basedpyright", "gopls"}
     assert lsp_tools["typescript-language-server"].install_fn is install.install_typescript_lsp
     assert lsp_tools["basedpyright"].install_cmd == "uv tool install --upgrade basedpyright"
+    assert lsp_tools["basedpyright"].install_fn is install.install_basedpyright
     assert lsp_tools["gopls"].install_fn is install.install_gopls
     assert lsp_tools["gopls"].disabled == ""
 
@@ -1659,6 +1661,66 @@ def test_install_gopls_runs_go_install_command(monkeypatch: pytest.MonkeyPatch, 
 
     install.install_gopls()
     assert seen == [["go", "install", "golang.org/x/tools/gopls@latest"]]
+
+
+def test_install_basedpyright_records_uv_bin_dir_for_path_guidance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    uv_bin = tmp_path / ".local/bin"
+    uv_bin.mkdir(parents=True)
+    langserver = uv_bin / "basedpyright-langserver"
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        if cmd == ["uv", "tool", "dir", "--bin"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{uv_bin}\n", stderr="")
+        langserver.write_text("#!/bin/sh\n")
+        langserver.chmod(0o755)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install, "HOME", tmp_path)
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_basedpyright()
+    assert ["uv", "tool", "install", "--upgrade", "basedpyright"] in seen
+    assert str(uv_bin) in os.environ["PATH"].split(os.pathsep)
+    assert uv_bin in install._PATH_NOTICE_DIRS
+
+    install.show_summary(1, 0, 0)
+    out = capsys.readouterr().out
+    assert f'export PATH="{uv_bin}:$PATH"' in out
+
+
+def test_show_summary_combines_all_distinct_prepended_path_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    npm_bin = tmp_path / ".npm-global/bin"
+    uv_bin = tmp_path / ".local/bin"
+    go_bin = tmp_path / "go/bin"
+
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    install._prepend_to_path(npm_bin)
+    install._prepend_to_path(uv_bin)
+    install._prepend_to_path(go_bin)
+    install._prepend_to_path(npm_bin)  # duplicate must not repeat
+
+    install.show_summary(3, 0, 0)
+    out = capsys.readouterr().out
+    expected_joined = os.pathsep.join([str(npm_bin), str(uv_bin), str(go_bin)])
+    assert f'export PATH="{expected_joined}:$PATH"' in out
+    assert "npm global bin" not in out
 
 
 def test_install_standalone_fallback_matches_install_sources_lsp_constants() -> None:

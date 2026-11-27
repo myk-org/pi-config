@@ -613,10 +613,9 @@ async function acquireLockAsync(lockPath: string, deadline: number): Promise<(()
     const release = acquireTokenFileLock(lockPath, { attempts: 1 });
     if (release) return release;
     const waitMs = Math.min(25, Math.max(1, deadline - Date.now()));
-    await new Promise((r) => {
-      const t = setTimeout(r, waitMs);
-      t.unref();
-    });
+    // Keep this short bounded backoff timer ref'd so the event loop cannot exit mid-await
+    // while waiting on an external lockfile or detached broker startup.
+    await new Promise((r) => setTimeout(r, waitMs));
   }
   return null;
 }
@@ -1510,10 +1509,7 @@ export class LspManager {
           // Server override changed — shut down the mismatched broker first.
           await sendBrokerRequest(socketPath, { op: "shutdown" }, Math.min(300, Math.max(50, deadline - Date.now()))).catch(() => {});
           while (Date.now() < deadline && fs.existsSync(socketPath)) {
-            await new Promise((r) => {
-              const t = setTimeout(r, 20);
-              t.unref();
-            });
+            await new Promise((r) => setTimeout(r, 20));
           }
         }
       } catch {
@@ -1570,10 +1566,7 @@ export class LspManager {
         } catch {
           // Broker still binding socket
         }
-        await new Promise((r) => {
-          const t = setTimeout(r, 25);
-          t.unref();
-        });
+        await new Promise((r) => setTimeout(r, 25));
       }
       return false;
     } finally {

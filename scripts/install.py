@@ -119,6 +119,7 @@ RESET = "\033[0m"
 
 ALL_MODE = False
 _NPM_GLOBAL_BIN_NOTICE: Path | None = None
+_PATH_NOTICE_DIRS: list[Path] = []
 
 
 class _CommandFailedError(RuntimeError):
@@ -219,6 +220,8 @@ def _prepend_to_path(bin_dir: Path) -> None:
     if bin_str not in parts:
         os.environ["PATH"] = f"{bin_str}{os.pathsep}{current}" if current else bin_str
         _NPM_GLOBAL_BIN_NOTICE = bin_dir
+        if bin_dir not in _PATH_NOTICE_DIRS:
+            _PATH_NOTICE_DIRS.append(bin_dir)
 
 
 def _ensure_writable_npm_prefix() -> Path:
@@ -490,9 +493,18 @@ def _find_uv_tool_bin(name: str) -> str | None:
     found = shutil.which(name)
     if found:
         return found
-    candidate = HOME / ".local/bin" / name
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate)
+    candidates: list[Path] = []
+    env_bin_dir = os.environ.get("UV_TOOL_BIN_DIR", "").strip()
+    if env_bin_dir:
+        candidates.append(Path(env_bin_dir) / name)
+    if shutil.which("uv"):
+        uv_bin_dir = _run_quiet(["uv", "tool", "dir", "--bin"])
+        if uv_bin_dir:
+            candidates.append(Path(uv_bin_dir) / name)
+    candidates.append(HOME / ".local/bin" / name)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
     return None
 
 
@@ -526,6 +538,24 @@ def install_typescript_lsp() -> None:
     if result.returncode != 0:
         raise _CommandFailedError(f"{TS_LSP_INSTALL_CMD} failed", result.stderr or result.stdout)
     log.info("typescript-language-server installation verified prefix=%s", prefix)
+
+
+def install_basedpyright() -> None:
+    if not shutil.which("uv"):
+        raise RuntimeError("uv not found on PATH")
+    result = subprocess.run(
+        ["uv", "tool", "install", "--upgrade", "basedpyright"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise _CommandFailedError(f"{BASEDPYRIGHT_INSTALL_CMD} failed", result.stderr or result.stdout)
+    found = _find_uv_tool_bin("basedpyright-langserver")
+    uv_bin = Path(found).parent if found else HOME / ".local/bin"
+    if uv_bin.is_dir():
+        _prepend_to_path(uv_bin)
+    log.info("basedpyright installation verified bin_dir=%s", uv_bin)
 
 
 def install_gopls() -> None:
@@ -887,6 +917,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=bool(_find_uv_tool_bin("basedpyright-langserver")),
                 disabled=uv_dis,
                 install_cmd=BASEDPYRIGHT_INSTALL_CMD,
+                install_fn=install_basedpyright,
             ),
             Tool(
                 "gopls",
@@ -1116,10 +1147,14 @@ def show_summary(installed: int, failed: int, skipped: int, failed_tools: list[T
                 print(f"    {DIM}${RESET} {tool.install_cmd}")
             else:
                 print(f"    {DIM}-{RESET} {tool.name} (re-run the installer to retry)")
-    if _NPM_GLOBAL_BIN_NOTICE is not None:
+    notice_dirs = list(_PATH_NOTICE_DIRS)
+    if _NPM_GLOBAL_BIN_NOTICE is not None and _NPM_GLOBAL_BIN_NOTICE not in notice_dirs:
+        notice_dirs.append(_NPM_GLOBAL_BIN_NOTICE)
+    if notice_dirs:
+        joined = os.pathsep.join(str(d) for d in notice_dirs)
         print()
-        print(f"  {BOLD}Add npm global bin to your shell PATH:{RESET}")
-        print(f'    export PATH="{_NPM_GLOBAL_BIN_NOTICE}:$PATH"')
+        print(f"  {BOLD}Add newly installed tool bin directories to your shell PATH:{RESET}")
+        print(f'    export PATH="{joined}:$PATH"')
     print()
     print("  Run 'pi' to start a session!")
     print()
